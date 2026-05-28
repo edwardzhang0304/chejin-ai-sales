@@ -1,0 +1,24 @@
+# Python/cache artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local browser/test state
+.playwright-cli/
+
+# Raw exported chat data and derived sales datasets
+# These files may contain customer/sales private information and should not be committed.
+yxk_chat_export_2026/
+yxk_chat_by_sales/
+
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# OS/editor noise
+.DS_Store
+*.swp
+
+# Generated render temp files
+contracts/rendered_contract/
