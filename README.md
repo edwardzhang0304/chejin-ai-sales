@@ -1,5 +1,17 @@
 # 易销客聊天记录导出
 
+## 官网静态页
+
+项目官网已放在 `website/` 目录，可直接打开 `website/index.html` 预览。
+如需用本地服务查看：
+
+```bash
+cd website
+python3 -m http.server 8765
+```
+
+然后访问 `http://localhost:8765/`。
+
 这个目录里的 `yxk_chat_export.py` 会按下面流程导出当前账号有权限访问的聊天记录：
 
 1. 用 `APP ID + appSecret` 或现成 token 鉴权。
