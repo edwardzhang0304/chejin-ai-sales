@@ -67,6 +67,36 @@ Worker 上报事实：
 - 是否等待销售回复超时并发送飞书通知。
 - 是否停止自动动作。
 
+## 2.1 技术栈与工程实现约束
+
+本期按正式工程产品实施，不按演示 Demo 实施。技术栈选择遵循：优先复用 OmniAuto 现有 Python 能力、减少跨语言链路、保证任务可恢复、错误可定位、部署可复制、二期可演进。
+
+| 层级 | 选型 | 说明 |
+|---|---|---|
+| 服务端语言/框架 | Python 3.11+ / FastAPI | 与 OmniAuto、AI 编排、RPA 生态一致；接口清晰，便于快速工程化。 |
+| ORM/迁移 | SQLAlchemy 2.x / Alembic | 数据模型、状态机、任务表必须可迁移、可回滚、可审计。 |
+| 主数据库 | PostgreSQL 15+ | 作为线索、任务、会话、状态机、错误码、审计日志的唯一事实源。 |
+| 任务调度 | PostgreSQL 任务表 + lease 锁 + APScheduler/服务端扫描进程 | 第一阶段不引入复杂 MQ；任务状态持久化，服务重启后可恢复，避免重复发送。 |
+| 控制面前端 | React + TypeScript + Vite + Ant Design | 适合后台管理、表格、表单、配置、日志和任务看板。 |
+| Worker 桌面端 | Python 3.11+ / PySide6 / wxauto4 或 UIAutomation / PyInstaller | 复用现有 RPA 能力，做成 Windows 可执行程序，界面参照视频中的执行台效果。 |
+| Worker 本地存储 | SQLite + 本地文件目录 | 保存本地配置、运行日志、图片临时文件、未确认发送记录；服务端仍是最终事实源。 |
+| 通信方式 | HTTPS REST + Worker 主动轮询/心跳 | 商家电脑不暴露公网端口；Worker 主动拉任务、上报事实和心跳。 |
+| AI 文本 | OmniAuto AI Engine + DeepSeek API | OmniAuto 负责上下文、RAG、Guard、编排；DeepSeek 负责文本生成。 |
+| 图片理解 | 千问视觉模型 + ImageIntent | 识别图片内容、截图信息、车型线索和置信度；低置信转人工。 |
+| 知识检索 | OmniAuto RAG + 关键词/规则混合检索 | 先基于现有能力工程化；Dify/FastGPT 仅预留 Adapter，不作为第一期核心运行时。 |
+| 车源索引 | 大风车 API + 本地 vehicle_index | 外部接口同步原始车源，AI 只读取白名单字段。 |
+| 文件存储 | Worker 本地图片目录 + 服务端必要文件存储 | 不做长期图片库；服务端仅保存必要文件、识别结果和证据。 |
+| 日志与错误码 | JSON 结构化日志 + error_code 字典 + trace_id | 控制面、Worker、服务端日志使用同一错误码体系，便于运维排障。 |
+| 部署 | Docker Compose 部署服务端；Worker 以 Windows 安装包/可执行文件交付 | 第一阶段不使用 Kubernetes；保证单机可复制部署和备份恢复。 |
+| 测试 | pytest + 接口集成测试 + Worker 端到端录屏/日志验收 | 核心验收看状态机、幂等、防重复发送、错误码、微信串行操作。 |
+
+明确不采用：
+
+- 不把 Dify 作为第一期核心对话运行时，只预留后续 Adapter。
+- 不使用 Kubernetes、服务网格、复杂微服务拆分。
+- 不在第一期做多商户 SaaS、复杂权限、计费和高可用集群。
+- 不读取或破解微信数据库，不使用非公开微信协议。
+
 ## 3. 会话主状态
 
 | 状态 | 含义 | 当前等待谁 | 允许动作 |
@@ -505,7 +535,27 @@ def generate_pdf() -> None:
         ["备注短码", "只作为绑定识别手段。", "移除短码=关闭自动跟进；线下好友补上短码=进入系统跟进。"],
     ], [29 * mm, 57 * mm, 84 * mm], small))
 
-    story.append(p("2. 会话主状态", h1))
+    story.append(p("2. 技术栈与工程实现约束", h1))
+    story.append(p("本期按正式工程产品实施，不按演示Demo实施。技术栈选择遵循：优先复用OmniAuto现有Python能力、减少跨语言链路、保证任务可恢复、错误可定位、部署可复制、二期可演进。", body))
+    story.append(tbl([
+        ["层级", "选型", "说明"],
+        ["服务端", "Python 3.11+ / FastAPI / SQLAlchemy / Alembic", "状态机、任务调度、API、审计日志统一在服务端实现。"],
+        ["数据库", "PostgreSQL 15+", "线索、任务、会话、状态、错误码和审计日志的唯一事实源。"],
+        ["任务调度", "PostgreSQL任务表 + lease锁 + APScheduler/扫描进程", "第一阶段不引入复杂MQ；任务可恢复，防重复发送。"],
+        ["控制面", "React + TypeScript + Vite + Ant Design", "适合后台表格、表单、配置、任务看板和日志查询。"],
+        ["Worker桌面端", "Python 3.11+ / PySide6 / wxauto4或UIAutomation / PyInstaller", "复用现有RPA能力，交付Windows执行台程序。"],
+        ["Worker本地存储", "SQLite + 本地文件目录", "保存本地配置、运行日志、图片临时文件和未确认发送记录。"],
+        ["通信", "HTTPS REST + Worker主动轮询/心跳", "商家电脑不暴露公网端口；Worker拉任务、上报事实和心跳。"],
+        ["AI文本", "OmniAuto AI Engine + DeepSeek API", "OmniAuto负责上下文、RAG、Guard、编排；DeepSeek负责生成。"],
+        ["图片理解", "千问视觉模型 + ImageIntent", "识别图片内容、截图信息、车型线索和置信度；低置信转人工。"],
+        ["知识检索", "OmniAuto RAG + 关键词/规则混合检索", "Dify/FastGPT仅预留Adapter，不作为第一期核心运行时。"],
+        ["车源", "大风车API + 本地vehicle_index", "同步原始车源，AI只读取白名单字段。"],
+        ["日志错误码", "JSON结构化日志 + error_code字典 + trace_id", "控制面、Worker、服务端日志使用同一错误码体系。"],
+        ["部署测试", "Docker Compose服务端 + Windows Worker安装包；pytest/接口集成/端到端验收", "不使用Kubernetes；强调可复制部署和可验收。"],
+    ], [28 * mm, 58 * mm, 84 * mm], small))
+    story.append(p("明确不采用：Dify作为第一期核心对话运行时、Kubernetes、服务网格、复杂微服务拆分、多商户SaaS、复杂权限、计费、高可用集群、读取或破解微信数据库、非公开微信协议。", body))
+
+    story.append(p("3. 会话主状态", h1))
     story.append(tbl([
         ["状态", "含义", "当前等待谁", "允许动作"],
         ["ai_active", "AI正常接待。", "客户/AI", "客户来消息后AI持续回复，不设轮次上限。"],
@@ -517,12 +567,12 @@ def generate_pdf() -> None:
         ["closed", "系统停止自动跟进，常见原因包括销售移除备注短码、销售线下接手、人工确认结束。", "无", "停止AI、召回、飞书提醒和主动关注。"],
     ], [37 * mm, 57 * mm, 30 * mm, 46 * mm], small))
 
-    story.append(p("3. 状态流转规则", h1))
+    story.append(p("4. 状态流转规则", h1))
     story.append(p("客户发消息 -> Worker上报message_event -> 服务端判断可AI回复 -> AI生成回复 -> Worker发送 -> sent_ack -> 状态=waiting_user_reply。命中高风险、高意向、模型失败、图片低置信或证据不足时，进入waiting_sales_reply。", code))
     story.append(p("等待用户回复超过N天且客户未回复、未拒绝、未关闭、未命中静默和上限规则时，服务端创建follow_up_task；Worker发送AI召回内容，发送成功后状态=recalled_waiting_user。", code))
     story.append(p("waiting_sales_reply超过N天且sales_first_reply_at为空时，服务端发送飞书通知销售。飞书只做通知和错误日志，不做按钮、二次发送功能或复杂权限。", code))
 
-    story.append(p("4. 备注短码工具与线下线索接入", h1))
+    story.append(p("5. 备注短码工具与线下线索接入", h1))
     story.append(p("第一期不额外给销售做关闭客户的后台工具。备注短码作为系统托管开关：备注仍包含短码，系统继续托管；备注移除短码，系统进入closed；线下好友补上短码，Worker识别后进入系统跟进。", body))
     story.append(tbl([
         ["场景", "规则", "结果"],
@@ -532,7 +582,7 @@ def generate_pdf() -> None:
         ["短码消失含义", "表示销售接手或不需要系统继续管。", "不等于客户拒绝，不进入rejected。"],
     ], [32 * mm, 82 * mm, 56 * mm], small))
 
-    story.append(p("5. Worker与服务端定时扫描分工", h1))
+    story.append(p("6. Worker与服务端定时扫描分工", h1))
     story.append(tbl([
         ["扫描类型", "谁做", "扫什么", "结果"],
         ["微信事实监听", "Worker", "绑定会话的新消息、图片、销售人工回复、微信异常。", "上报事实事件。"],
@@ -542,7 +592,7 @@ def generate_pdf() -> None:
         ["Worker健康扫描", "服务端", "heartbeat、last_sync_at、当前任务。", "标记离线或卡住。"],
     ], [29 * mm, 23 * mm, 72 * mm, 46 * mm], small))
 
-    story.append(p("6. 微信UI操作串行约束", h1))
+    story.append(p("7. 微信UI操作串行约束", h1))
     story.append(p("所有模拟人操作微信桌面端的动作必须全局串行，统一通过Local WeChat UI Lock控制。不得并行操作微信窗口。非微信UI逻辑可以并行，例如等待AI生成、RAG检索、图片上传、服务端状态机判断、飞书通知和日志写入。", body))
     story.append(tbl([
         ["类别", "动作", "规则"],
@@ -551,7 +601,7 @@ def generate_pdf() -> None:
         ["优先级", "chat_reply、add_friend、follow_up。", "优先级可配置，但不改变微信UI串行原则。"],
     ], [28 * mm, 92 * mm, 50 * mm], small))
 
-    story.append(p("7. 核心数据字段", h1))
+    story.append(p("8. 核心数据字段", h1))
     story.append(tbl([
         ["字段", "含义", "来源"],
         ["last_inbound_at", "最近客户消息时间。", "Worker上报客户消息。"],
@@ -565,7 +615,7 @@ def generate_pdf() -> None:
         ["close_reason", "关闭自动跟进原因。", "备注短码移除、人工关闭、其他。"],
     ], [42 * mm, 80 * mm, 48 * mm], small))
 
-    story.append(p("8. 错误码与运维可解释性原则", h1))
+    story.append(p("9. 错误码与运维可解释性原则", h1))
     story.append(p("所有报错、失败、跳过、暂停、异常恢复都必须有稳定错误码和错误码解释说明。控制面、Worker执行台、日志审计和验收问题单展示同一error_code，不允许只展示“未知错误”。第三方原始错误可以保留，但必须映射为系统内部错误码。", body))
     story.append(tbl([
         ["字段", "要求"],
@@ -591,7 +641,7 @@ def generate_pdf() -> None:
         ["SEND_RESULT_UNKNOWN", "发送中断导致结果未知。", "不自动补发，人工查看微信实际发送结果。"],
     ], [40 * mm, 76 * mm, 54 * mm], small))
 
-    story.append(p("9. 新验收重点", h1))
+    story.append(p("10. 新验收重点", h1))
     story.append(tbl([
         ["编号", "用例", "通过标准"],
         ["S-01", "AI连续多轮接待", "客户持续提问时，AI可持续回复，不因固定轮次停止。"],

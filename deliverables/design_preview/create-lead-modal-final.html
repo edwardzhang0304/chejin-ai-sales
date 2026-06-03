@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>新增客户弹窗设计稿</title>
+    <style>
+      :root {
+        --blue: #4a6fa5;
+        --orange: #f2a65a;
+        --bg: #e6e6e6;
+        --surface: #ffffff;
+        --text: #151b26;
+        --muted: #6f7c8f;
+        --soft: #98a3b3;
+        --line: #d9e0e8;
+        --input: #d3dce7;
+        --danger-bg: #fff0eb;
+        --danger-line: #f6b9a8;
+        --danger-text: #b84d38;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      .canvas {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        padding: 24px;
+        background: var(--bg);
+      }
+
+      .modal {
+        position: relative;
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr) auto;
+        width: 820px;
+        max-height: calc(100vh - 48px);
+        margin: 0 auto;
+        overflow: hidden;
+        border-radius: 8px;
+        background: var(--surface);
+        box-shadow: 0 0 0 1px rgba(74, 111, 165, 0.14), 0 18px 48px rgba(21, 27, 38, 0.12);
+      }
+
+      .modal-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: flex-start;
+        padding: 22px 24px 12px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 24px;
+        line-height: 32px;
+        font-weight: 800;
+        letter-spacing: 0;
+      }
+
+      .modal-body {
+        min-height: 0;
+        overflow: auto;
+        padding: 0 24px 16px;
+      }
+
+      .section {
+        padding: 12px 0 16px;
+        border-bottom: 1px solid #e1e6ed;
+      }
+
+      .section + .section {
+        padding-top: 16px;
+      }
+
+      .section-title {
+        margin: 0 0 12px;
+        font-size: 17px;
+        line-height: 24px;
+        font-weight: 800;
+      }
+
+      .field {
+        margin: 0;
+      }
+
+      .field label,
+      .contact-label,
+      .custom-label {
+        display: block;
+        margin-bottom: 6px;
+        color: var(--soft);
+        font-size: 13px;
+        line-height: 18px;
+        font-weight: 700;
+      }
+
+      .required {
+        color: var(--soft);
+      }
+
+      input,
+      textarea {
+        width: 100%;
+        height: 40px;
+        border: 1px solid var(--input);
+        border-radius: 8px;
+        background: #fff;
+        color: var(--text);
+        font: inherit;
+        font-size: 15px;
+        line-height: 22px;
+        outline: none;
+        padding: 0 12px;
+      }
+
+      textarea {
+        display: block;
+        height: 78px;
+        resize: none;
+        padding-top: 10px;
+      }
+
+      input:focus,
+      textarea:focus {
+        border-color: var(--blue);
+        box-shadow: 0 0 0 4px rgba(74, 111, 165, 0.12);
+      }
+
+      .contact-row {
+        margin: 0;
+      }
+
+      .contact-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .duplicate-alert {
+        display: none;
+        margin-bottom: 24px;
+        border: 2px solid var(--danger-line);
+        border-radius: 14px;
+        background: var(--danger-bg);
+        padding: 20px 22px;
+      }
+
+      .duplicate-alert strong {
+        display: block;
+        margin-bottom: 8px;
+        color: var(--danger-text);
+        font-size: 22px;
+        line-height: 28px;
+        font-weight: 800;
+      }
+
+      .duplicate-alert p {
+        margin: 0;
+        color: #596579;
+        font-size: 20px;
+        line-height: 28px;
+      }
+
+      .section-title-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: 12px;
+      }
+
+      .section-title-row .section-title {
+        margin: 0;
+      }
+
+      .text-action {
+        border: 0;
+        background: transparent;
+        color: var(--blue);
+        font-size: 13px;
+        line-height: 18px;
+        font-weight: 800;
+      }
+
+      .custom-field-row {
+        display: grid;
+        grid-template-columns: 180px minmax(0, 1fr) 72px;
+        gap: 10px;
+        align-items: end;
+        margin-bottom: 10px;
+      }
+
+      .delete {
+        height: 40px;
+        border: 1px solid #e2e7ee;
+        border-radius: 8px;
+        background: #fff;
+        color: #777;
+        font-size: 14px;
+        font-weight: 700;
+      }
+
+      .modal-footer {
+        height: 64px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 24px;
+        border-top: 1px solid #e1e6ed;
+        background: #fff;
+      }
+
+      .footer-right {
+        display: flex;
+        gap: 12px;
+      }
+
+      .button {
+        height: 40px;
+        padding: 0 18px;
+        border-radius: 8px;
+        border: 1px solid var(--input);
+        background: #fff;
+        color: var(--text);
+        font-size: 15px;
+        line-height: 22px;
+        font-weight: 800;
+      }
+
+      .button.primary {
+        min-width: 152px;
+        border-color: var(--blue);
+        background: var(--blue);
+        color: #fff;
+      }
+
+      .button.save {
+        min-width: 72px;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="canvas">
+      <section class="modal" aria-label="新增客户弹窗设计稿">
+        <header class="modal-header">
+          <h1>新增客户</h1>
+        </header>
+
+        <div class="modal-body">
+          <section class="section">
+            <h2 class="section-title">基础信息</h2>
+            <div class="field">
+              <label>客户名称 <span class="required">*</span></label>
+              <input type="text" value="" />
+            </div>
+          </section>
+
+          <section class="section">
+            <h2 class="section-title">联系方式</h2>
+            <div class="contact-grid">
+              <div>
+                <div class="contact-label">手机 <span class="required">*</span></div>
+                <div class="contact-row">
+                  <input type="tel" value="" />
+                </div>
+              </div>
+              <div>
+                <div class="contact-label">微信</div>
+                <div class="contact-row">
+                  <input type="text" value="" />
+                </div>
+              </div>
+              <div>
+                <div class="contact-label">邮箱</div>
+                <div class="contact-row">
+                  <input type="email" value="" />
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="section">
+            <div class="section-title-row">
+              <h2 class="section-title">自定义信息</h2>
+              <button class="text-action" type="button">添加字段</button>
+            </div>
+            <div class="custom-field-row">
+              <div>
+                <div class="custom-label">字段名称</div>
+                <input type="text" value="" />
+              </div>
+              <div>
+                <div class="custom-label">字段内容</div>
+                <input type="text" value="" />
+              </div>
+              <button class="delete" type="button">删除</button>
+            </div>
+            <div class="custom-field-row">
+              <div>
+                <div class="custom-label">字段名称</div>
+                <input type="text" value="" />
+              </div>
+              <div>
+                <div class="custom-label">字段内容</div>
+                <input type="text" value="" />
+              </div>
+              <button class="delete" type="button">删除</button>
+            </div>
+          </section>
+
+          <section class="section">
+            <h2 class="section-title">备注</h2>
+            <textarea placeholder="例如：客户说预算 10 万左右，想看 SUV，周末方便到店。"></textarea>
+          </section>
+        </div>
+
+        <footer class="modal-footer">
+          <button class="button">取消</button>
+          <div class="footer-right">
+            <button class="button save">保存</button>
+            <button class="button primary">保存并继续新增</button>
+          </div>
+        </footer>
+      </section>
+    </main>
+  </body>
+</html>
