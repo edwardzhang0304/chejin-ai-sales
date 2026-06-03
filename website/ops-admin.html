@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>车金 AI 运营后台 - 线索导入与分配</title>
+    <link rel="stylesheet" href="./ops-admin.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="运营后台导航">
+        <a class="brand" href="./ops-admin.html" aria-label="车金 AI 运营后台">
+          <span class="brand-mark">车</span>
+          <span>
+            <strong>车金 AI</strong>
+            <small>运营后台</small>
+          </span>
+        </a>
+
+        <nav class="side-nav">
+          <button type="button" data-module="leads">
+            <span>线索管理</span>
+            <strong>12</strong>
+          </button>
+          <button type="button" data-module="sales">
+            <span>销售管理</span>
+            <strong>4</strong>
+          </button>
+          <a href="#logs">操作日志</a>
+          <a class="disabled" href="#imports">
+            <span>批量导入</span>
+            <em>P2</em>
+          </a>
+          <a class="disabled" href="#ai">
+            <span>AI 跟进</span>
+            <em>后续</em>
+          </a>
+        </nav>
+
+        <div class="phase-card">
+          <span>当前阶段</span>
+          <strong>人工录入 / 去重 / 轮询分配</strong>
+          <p>暂不开放 RPA 加好友、AI 自动回复、销售登录。</p>
+        </div>
+      </aside>
+
+      <main class="workspace is-empty" data-workspace>
+        <section class="empty-workspace" data-empty-workspace>
+          <div>
+            <span class="empty-icon">车</span>
+            <h1>请选择左侧模块</h1>
+            <p>系统会根据当前账号权限展示可访问模块。选择线索管理后，可进行客户录入、去重、列表查看和自动分配结果追踪。</p>
+          </div>
+        </section>
+
+        <section class="screen screen-leads" data-module-content="leads" hidden>
+          <header class="screen-header">
+            <div>
+              <p>线索运营</p>
+              <h1>客户线索导入与分配</h1>
+            </div>
+            <button class="primary-button" type="button" data-open-modal="lead" data-action="reset-lead-form">新增客户</button>
+          </header>
+
+              <section class="metric-grid" aria-label="线索运营指标">
+            <article data-stat="today_new_count">
+              <span>今日新增</span>
+              <strong>28</strong>
+              <p>人工录入 28 条</p>
+            </article>
+            <article data-stat="assigned_count">
+              <span>已分配</span>
+              <strong>24</strong>
+              <p>轮询成功率 85.7%</p>
+            </article>
+            <article data-stat="unassigned_count">
+              <span>未分配</span>
+              <strong class="warning-text">4</strong>
+              <p>无可用销售 3 条</p>
+            </article>
+            <article data-stat="duplicate_event_count">
+              <span>重复录入</span>
+              <strong>7</strong>
+              <p>备注已追加到原线索</p>
+            </article>
+          </section>
+
+          <div class="work-grid">
+            <section class="panel lead-list-panel">
+              <div class="panel-header">
+                <div>
+                  <h2>线索列表</h2>
+                  <p>手机号默认脱敏，无效线索可按状态筛选。</p>
+                </div>
+                <button class="text-button icon-text-button" type="button" aria-label="重新分配线索" data-action="retry-assign">
+                  <svg viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M13.2 6.5a5.3 5.3 0 0 0-9.7-2.1L2.2 6M2.2 3v3h3M2.8 9.5a5.3 5.3 0 0 0 9.7 2.1l1.3-1.6M13.8 13v-3h-3" />
+                  </svg>
+                  <span>重新分配线索</span>
+                </button>
+              </div>
+
+              <div class="filter-card">
+                <label>
+                  <span>搜索</span>
+                  <input type="search" placeholder="客户名称、手机号后四位、微信、备注" aria-label="搜索客户名称、手机号后四位、微信、备注" data-filter="keyword" />
+                </label>
+                <label>
+                  <span>状态</span>
+                  <select aria-label="筛选线索状态" data-filter="status">
+                    <option value="">全部状态</option>
+                    <option value="assigned">已分配</option>
+                    <option value="unassigned">未分配</option>
+                    <option value="invalid">无效</option>
+                  </select>
+                </label>
+                <label>
+                  <span>销售</span>
+                  <select aria-label="筛选销售" data-filter="sales_id">
+                    <option value="">全部销售</option>
+                    <option>张伟</option>
+                    <option>王敏</option>
+                    <option>李强</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="bulk-row">
+                <span data-selected-count>已选 2 条</span>
+                <div>
+                  <button type="button" data-open-modal="invalid" data-invalid-mode="batch">标记无效</button>
+                  <button type="button" data-action="export-selected">导出</button>
+                </div>
+              </div>
+
+              <div class="table-card">
+                <table>
+                  <thead>
+                    <tr>
+                      <th><input type="checkbox" aria-label="全选线索" data-select-all-leads /></th>
+                      <th>客户</th>
+                      <th>联系方式</th>
+                      <th>状态</th>
+                      <th>销售</th>
+                      <th>重复</th>
+                      <th>备注摘要</th>
+                      <th>更新时间</th>
+                      <th>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody data-leads-table>
+                    <tr class="selected">
+                      <td><input type="checkbox" checked aria-label="选择王先生" /></td>
+                      <td class="lead-cell"><strong>王先生</strong><small>人工录入 · 运营小陈</small></td>
+                      <td class="contact-cell"><strong>138****6678</strong><small>wx_car_2026</small></td>
+                      <td><span class="status assigned">已分配</span></td>
+                      <td>张伟</td>
+                      <td><button class="link-button" type="button" data-open-drawer>3 次</button></td>
+                      <td>预算 10 万，想看 SUV...</td>
+                      <td>06-02 14:30</td>
+                      <td><button class="link-button" type="button" data-open-drawer>查看详情</button></td>
+                    </tr>
+                    <tr>
+                      <td><input type="checkbox" aria-label="选择李女士" /></td>
+                      <td class="lead-cell"><strong>李女士</strong><small>小程序表单 · 门店预约</small></td>
+                      <td class="contact-cell"><strong>139****9081</strong><small>wx_li_auto</small></td>
+                      <td><span class="status unassigned">未分配</span></td>
+                      <td>暂无</td>
+                      <td>0 次</td>
+                      <td>想周末到店看车</td>
+                      <td>06-02 13:12</td>
+                      <td><button class="link-button" type="button" data-open-drawer>查看详情</button></td>
+                    </tr>
+                    <tr>
+                      <td><input type="checkbox" checked aria-label="选择刘先生" /></td>
+                      <td class="lead-cell"><strong>刘先生</strong><small>人工录入 · 运营小赵</small></td>
+                      <td class="contact-cell"><strong>136****4210</strong><small>未填写微信</small></td>
+                      <td><span class="status assigned">已分配</span></td>
+                      <td>王敏</td>
+                      <td>1 次</td>
+                      <td>关注贷款月供</td>
+                      <td>06-02 11:08</td>
+                      <td><button class="link-button" type="button" data-open-drawer>查看详情</button></td>
+                    </tr>
+                    <tr>
+                      <td><input type="checkbox" aria-label="选择赵女士" /></td>
+                      <td class="lead-cell"><strong>赵女士</strong><small>人工录入 · 运营小陈</small></td>
+                      <td class="contact-cell"><strong>137****2331</strong><small>wx_zhao_car</small></td>
+                      <td><span class="status invalid">无效</span></td>
+                      <td>李强</td>
+                      <td>0 次</td>
+                      <td>无效原因：空号</td>
+                      <td>06-01 18:42</td>
+                      <td><button class="link-button" type="button" data-open-modal="restore">恢复有效</button></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="pagination-row">
+                <div class="pagination-total">
+                  <span>共 <strong data-total-count>128</strong> 条</span>
+                  <select aria-label="每页条数" data-page-size>
+                    <option value="20">20条/页</option>
+                    <option value="50">50条/页</option>
+                    <option value="100">100条/页</option>
+                  </select>
+                </div>
+                <nav aria-label="线索分页" data-pagination>
+                  <button type="button">上一页</button>
+                  <strong>1</strong>
+                  <button type="button">2</button>
+                  <button type="button">3</button>
+                  <span>...</span>
+                  <button type="button">7</button>
+                  <button type="button">下一页</button>
+                </nav>
+              </div>
+            </section>
+
+            <aside class="panel detail-drawer" data-drawer>
+              <div class="drawer-head">
+                <div>
+                  <p>线索详情</p>
+                  <h2 data-detail-name>王先生</h2>
+                </div>
+                <button class="icon-button" type="button" data-close-drawer aria-label="关闭详情">×</button>
+              </div>
+
+              <section class="identity-card">
+                <span class="status assigned" data-detail-status>已分配</span>
+                <dl>
+                  <div>
+                    <dt>主手机号</dt>
+                    <dd data-detail-phone>138****6678</dd>
+                  </div>
+                  <div>
+                    <dt>当前销售</dt>
+                    <dd data-detail-sales>张伟</dd>
+                  </div>
+                  <div>
+                    <dt>分配方式</dt>
+                    <dd>轮询自动分配</dd>
+                  </div>
+                  <div>
+                    <dt>创建时间</dt>
+                    <dd data-detail-created>2026-06-02 14:30</dd>
+                  </div>
+                </dl>
+              </section>
+
+              <div class="tabs" role="tablist" aria-label="线索详情标签">
+                <button class="active" type="button">概览</button>
+                <button type="button">备注</button>
+                <button type="button">重复记录</button>
+                <button type="button">分配记录</button>
+              </div>
+
+              <section class="detail-block" data-detail-contacts>
+                <h3>联系方式</h3>
+                <div class="contact-row">
+                  <span>手机</span>
+                  <strong>138****6678</strong>
+                  <button type="button">查看完整</button>
+                </div>
+                <div class="contact-row">
+                  <span>微信</span>
+                  <strong>wx_car_2026</strong>
+                  <button type="button">复制</button>
+                </div>
+                <div class="contact-row">
+                  <span>邮箱</span>
+                  <strong>未填写</strong>
+                </div>
+              </section>
+
+              <section class="detail-block" data-detail-flow>
+                <h3>任务链路</h3>
+                <ol class="flow-list">
+                  <li>
+                    <strong>手机号去重完成</strong>
+                    <span>未新建重复线索，记录可追溯。</span>
+                  </li>
+                  <li>
+                    <strong>轮询分配完成</strong>
+                    <span>指针 A -> B，分配给张伟。</span>
+                  </li>
+                  <li>
+                    <strong>重复备注已追加</strong>
+                    <span>2026-06-02 14:30 运营小陈追加。</span>
+                  </li>
+                </ol>
+              </section>
+
+              <section class="detail-actions">
+                <h3>操作</h3>
+                <button type="button" data-action="edit-active-lead">编辑线索</button>
+                <button type="button" data-open-modal="invalid" data-invalid-mode="single">标记无效</button>
+              </section>
+            </aside>
+          </div>
+        </section>
+
+        <section class="screen screen-sales" data-module-content="sales" hidden>
+          <header class="screen-header">
+            <div>
+              <p>销售运营</p>
+              <h1>销售管理</h1>
+            </div>
+            <button class="primary-button" type="button" data-action="new-sales">新增销售</button>
+          </header>
+
+          <section class="panel sales-config-panel">
+            <h2>销售轮询配置</h2>
+            <p>只有启用且参与轮询的销售，才参与新线索自动分配。</p>
+            <div class="sales-card-grid" data-sales-grid>
+              <article>
+                <header>
+                  <h3>张伟</h3>
+                  <span class="status assigned">启用</span>
+                </header>
+                <p>参与轮询 · 排序 10 · 名下线索 46</p>
+                <label aria-label="张伟参与轮询"><input type="checkbox" checked /> 参与轮询</label>
+              </article>
+              <article>
+                <header>
+                  <h3>王敏</h3>
+                  <span class="status assigned">启用</span>
+                </header>
+                <p>参与轮询 · 排序 20 · 名下线索 38</p>
+                <label aria-label="王敏参与轮询"><input type="checkbox" checked /> 参与轮询</label>
+              </article>
+              <article>
+                <header>
+                  <h3>李强</h3>
+                  <span class="status invalid">停用</span>
+                </header>
+                <p>不参与轮询 · 排序 30 · 名下线索 12</p>
+                <label aria-label="李强不参与轮询"><input type="checkbox" disabled /> 不参与轮询</label>
+              </article>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <div class="modal-backdrop" data-modal="lead" hidden>
+      <section class="modal">
+        <header>
+          <h2>新增客户</h2>
+          <button class="icon-button" type="button" data-close-modal aria-label="关闭新增客户">×</button>
+        </header>
+        <div class="form-stack">
+          <section class="form-section">
+            <h3>基础信息</h3>
+            <div class="form-grid">
+              <label>
+                <span>客户名称 <b>*</b></span>
+                <input type="text" value="王先生" aria-required="true" data-lead-field="customer_name" />
+              </label>
+              <label>
+                <span>意向车型</span>
+                <input type="text" value="SUV" data-lead-field="car_type" />
+              </label>
+              <label class="full">
+                <span>备注 <b>*</b></span>
+                <textarea rows="3" aria-required="true" data-lead-field="remark">预算 10 万，想看 SUV，周末到店。</textarea>
+              </label>
+            </div>
+          </section>
+
+          <section class="form-section">
+            <div class="section-title-row">
+              <h3>联系方式</h3>
+              <button class="text-button" type="button">添加联系方式</button>
+            </div>
+            <div class="contact-editor">
+              <label>
+                <span>类型</span>
+                <select aria-label="联系方式类型 1" data-contact-type>
+                  <option value="phone">手机</option>
+                  <option value="wechat">微信</option>
+                  <option value="email">邮箱</option>
+                </select>
+              </label>
+              <label>
+                <span>号码/账号 <b>*</b></span>
+                <input type="tel" value="13896676678" aria-required="true" data-contact-value />
+              </label>
+              <button type="button" disabled>删除</button>
+            </div>
+            <div class="contact-editor">
+              <label>
+                <span>类型</span>
+                <select aria-label="联系方式类型 2" data-contact-type>
+                  <option value="wechat">微信</option>
+                  <option value="phone">手机</option>
+                  <option value="email">邮箱</option>
+                </select>
+              </label>
+              <label>
+                <span>号码/账号</span>
+                <input type="text" value="wx_car_2026" data-contact-value />
+              </label>
+              <button type="button">删除</button>
+            </div>
+            <div class="duplicate-note strong-note" data-duplicate-note>
+              <strong>重复手机号提示</strong>
+              <p>相同手机号不创建新线索，本次备注会追加到原线索备注记录。</p>
+            </div>
+          </section>
+
+          <section class="form-section">
+            <div class="section-title-row">
+              <h3>自定义信息</h3>
+              <button class="text-button" type="button">添加字段</button>
+            </div>
+            <div class="custom-field-row">
+              <input type="text" value="预算" aria-label="自定义字段名称 1" data-custom-key />
+              <input type="text" value="10 万以内" aria-label="自定义字段内容 1" data-custom-value />
+            </div>
+            <div class="custom-field-row">
+              <input type="text" value="到店时间" aria-label="自定义字段名称 2" data-custom-key />
+              <input type="text" value="本周末" aria-label="自定义字段内容 2" data-custom-value />
+            </div>
+          </section>
+        </div>
+        <footer>
+          <button type="button" data-close-modal>取消</button>
+          <button class="primary-button" type="button" data-action="save-lead">保存</button>
+          <button class="primary-button" type="button" data-action="save-lead-continue">保存并继续新增</button>
+        </footer>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" data-modal="invalid" hidden>
+      <section class="modal small-modal">
+        <header>
+          <h2>标记为无效线索</h2>
+        </header>
+        <label>
+          <span>无效原因</span>
+          <select data-invalid-reason>
+            <option value="empty_number">空号</option>
+            <option value="wrong_info">信息错误</option>
+            <option value="not_target_customer">非目标客户</option>
+            <option value="test_data">测试数据</option>
+            <option value="duplicate_or_mistaken">重复误录</option>
+            <option value="other">其他</option>
+          </select>
+        </label>
+        <label>
+          <span>补充说明</span>
+          <textarea rows="3" placeholder="请输入补充说明" data-invalid-remark></textarea>
+        </label>
+        <footer>
+          <button type="button" data-close-modal>取消</button>
+          <button class="danger-button" type="button" data-action="confirm-invalid">确认标记无效</button>
+        </footer>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" data-modal="restore" hidden>
+      <section class="modal small-modal">
+        <header>
+          <h2>恢复为有效线索</h2>
+        </header>
+        <p class="modal-copy">恢复后，如果线索存在当前销售，状态回到已分配；否则回到未分配并可触发重新分配。</p>
+        <footer>
+          <button type="button" data-close-modal>取消</button>
+          <button class="primary-button" type="button" data-action="confirm-restore">确认恢复有效</button>
+        </footer>
+      </section>
+    </div>
+
+    <div class="app-toast" data-toast hidden></div>
+    <script src="./ops-admin.js"></script>
+  </body>
+</html>

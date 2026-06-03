@@ -1,0 +1,57 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chejin-leads-api
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://chejin:chejin_password@db:5432/chejin_leads}
+      PHONE_HASH_SECRET: ${PHONE_HASH_SECRET:-dev-only-phone-hash-secret-change-before-production}
+      CONTACT_ENCRYPTION_SECRET: ${CONTACT_ENCRYPTION_SECRET:-dev-only-contact-encryption-secret-change-before-production}
+      AUTO_CREATE_TABLES: ${AUTO_CREATE_TABLES:-true}
+      DOCS_ENABLED: ${DOCS_ENABLED:-true}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,null}
+      WAIT_FOR_DB: "1"
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz', timeout=2).read()",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  db:
+    image: postgres:15-alpine
+    container_name: chejin-leads-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-chejin_leads}
+      POSTGRES_USER: ${POSTGRES_USER:-chejin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-chejin_password}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - chejin_leads_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-chejin} -d ${POSTGRES_DB:-chejin_leads}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  chejin_leads_pgdata:

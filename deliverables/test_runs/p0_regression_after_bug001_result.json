@@ -1,0 +1,720 @@
+{
+  "generated_at": "2026-06-02T13:43:49.829350+00:00",
+  "base_url": "http://127.0.0.1:8000/api",
+  "functional": [
+    {
+      "case_id": "ENV-001",
+      "name": "健康检查",
+      "passed": true,
+      "actual": {
+        "status": "ok"
+      },
+      "expected": "返回 status=ok",
+      "priority": "P0",
+      "elapsed_ms": 47.91
+    },
+    {
+      "case_id": "TC-014",
+      "name": "销售管理加载",
+      "passed": true,
+      "actual": {
+        "count": 3
+      },
+      "expected": "至少返回 1 个销售",
+      "priority": "P0",
+      "elapsed_ms": 40.84
+    },
+    {
+      "case_id": "TC-002",
+      "name": "进入线索管理并加载真实列表",
+      "passed": true,
+      "actual": {
+        "list_total": 8,
+        "stats": {
+          "today_new_count": 8,
+          "assigned_count": 6,
+          "unassigned_count": 0,
+          "duplicate_event_count": 4
+        }
+      },
+      "expected": "列表和指标接口均成功返回",
+      "priority": "P0",
+      "elapsed_ms": 14.09
+    },
+    {
+      "case_id": "TC-003",
+      "name": "人工新增客户线索",
+      "passed": true,
+      "actual": {
+        "created": true,
+        "id": "317b2965-aea8-4975-8b9e-bae5cc67d79a",
+        "status": "assigned",
+        "assign_status": "assigned",
+        "sales_id": "8a5dbbf8-03b3-4fc7-aa48-c7a7a1b01864",
+        "sales_name": "张伟",
+        "lead": {
+          "id": "317b2965-aea8-4975-8b9e-bae5cc67d79a",
+          "status": "assigned",
+          "sales_id": "8a5dbbf8-03b3-4fc7-aa48-c7a7a1b01864",
+          "sales_name": "张伟"
+        },
+        "assignment": {
+          "status": "succeeded",
+          "failure_reason": null
+        },
+        "potential_duplicates": {
+          "wechat": [],
+          "email": []
+        }
+      },
+      "expected": "创建成功，状态为 assigned 或 unassigned",
+      "priority": "P0",
+      "elapsed_ms": 19.04
+    },
+    {
+      "case_id": "TC-004",
+      "name": "手机号重复预查",
+      "passed": true,
+      "actual": [
+        {
+          "phone_masked": "139****9455",
+          "has_active_duplicate": true,
+          "duplicated": true,
+          "lead_id": "317b2965-aea8-4975-8b9e-bae5cc67d79a",
+          "customer_name": "压测前功能客户07769455",
+          "sales_name": "张伟",
+          "duplicate_count": 0,
+          "duplicate_lead": {
+            "id": "317b2965-aea8-4975-8b9e-bae5cc67d79a",
+            "customer_name": "压测前功能客户07769455",
+            "primary_phone_masked": "139****9455",
+            "sales_id": "8a5dbbf8-03b3-4fc7-aa48-c7a7a1b01864",
+            "sales_name": "张伟",
+            "created_at": "2026-06-02T13:42:49.565632+00:00",
+            "updated_at": "2026-06-02T13:42:49.571862+00:00"
+          },
+          "potential_invalid_duplicates": []
+        }
+      ],
+      "expected": "已存在手机号返回 active duplicate",
+      "priority": "P0",
+      "elapsed_ms": 6.0
+    },
+    {
+      "case_id": "TC-005",
+      "name": "保存时重复手机号查重",
+      "passed": true,
+      "actual": {
+        "code": "LEAD_PHONE_DUPLICATED",
+        "message": "该手机号已存在，不能重复新建。已重复录入 1 次，日期：2026-06-02。本次备注已追加到原线索。",
+        "data": {
+          "created": false,
+          "duplicate_lead": {
+            "id": "317b2965-aea8-4975-8b9e-bae5cc67d79a",
+            "customer_name": "压测前功能客户07769455",
+            "primary_phone_masked": "139****9455",
+            "sales_id": "8a5dbbf8-03b3-4fc7-aa48-c7a7a1b01864",
+            "sales_name": "张伟",
+            "created_at": "2026-06-02T13:42:49.565632+00:00",
+            "updated_at": "2026-06-02T13:42:49.591714+00:00"
+          },
+          "duplicate_count": 1,
+          "duplicate_dates": [
+            "2026-06-02"
+          ],
+          "note_appended": true
+        }
+      },
+      "expected": "返回 409/LEAD_PHONE_DUPLICATED 且不创建新线索",
+      "priority": "P0",
+      "elapsed_ms": 8.29
+    },
+    {
+      "case_id": "TC-006",
+      "name": "自动轮询分配",
+      "passed": true,
+      "actual": {
+        "assign_status": "assigned",
+        "sales_name": "张伟",
+        "task_nodes": [
+          {
+            "key": "lead_created",
+            "label": "客户线索已创建",
+            "time": "2026-06-02T13:42:49.565632+00:00"
+          },
+          {
+            "key": "phone_deduped",
+            "label": "手机号去重完成",
+            "time": "2026-06-02T13:42:49.565632+00:00"
+          },
+          {
+            "key": "duplicate_note_appended",
+            "label": "重复备注已追加",
+            "time": "2026-06-02T13:42:49.590470+00:00"
+          },
+          {
+            "key": "round_robin_assigned",
+            "label": "轮询分配完成",
+            "time": "2026-06-02T13:42:49.568063+00:00"
+          }
+        ]
+      },
+      "expected": "有可用销售时自动分配并展示轮询分配完成",
+      "priority": "P0",
+      "elapsed_ms": 11.33
+    },
+    {
+      "case_id": "TC-006A",
+      "name": "分配记录查询",
+      "passed": true,
+      "actual": [
+        {
+          "id": "ec50dd86-286d-45cc-83e0-06a4521bd7cb",
+          "lead_id": "317b2965-aea8-4975-8b9e-bae5cc67d79a",
+          "assignment_result": "succeeded",
+          "sales_id": "8a5dbbf8-03b3-4fc7-aa48-c7a7a1b01864",
+          "sales_name": "张伟",
+          "from_sales_id": null,
+          "to_sales_id": "8a5dbbf8-03b3-4fc7-aa48-c7a7a1b01864",
+          "assignment_type": "round_robin",
+          "assignment_status": "succeeded",
+          "failure_reason": null,
+          "round_robin_cursor_before": "8a5dbbf8-03b3-4fc7-aa48-c7a7a1b01864",
+          "round_robin_cursor_after": "37dd88d0-8045-4fa1-a2ed-4f58a9a84686",
+          "operator_id": null,
+          "remark": "轮询自动分配给 张伟",
+          "created_at": "2026-06-02T13:42:49.572360+00:00"
+        }
+      ],
+      "expected": "返回至少 1 条分配记录",
+      "priority": "P0",
+      "elapsed_ms": 4.08
+    },
+    {
+      "case_id": "TC-009",
+      "name": "标记无效",
+      "passed": true,
+      "actual": {
+        "id": "317b2965-aea8-4975-8b9e-bae5cc67d79a",
+        "customer_name": "压测前功能客户07769455",
+        "status": "invalid",
+        "source_type": "manual",
+        "source_name_snapshot": "人工录入",
+        "primary_phone_masked": "139****9455",
+        "primary_wechat_masked": "wx****55",
+        "sales_id": "8a5dbbf8-03b3-4fc7-aa48-c7a7a1b01864",
+        "sales_name": "张伟",
+        "assign_status": "assigned",
+        "assign_failure_reason": null,
+        "remark_summary": "P0 功能测试新增，预算 10 万，周末",
+        "duplicate_count": 1,
+        "last_duplicate_at": "2026-06-02T13:42:49.590470+00:00",
+        "created_by_name": null,
+        "created_at": "2026-06-02T13:42:49.565632+00:00",
+        "updated_at": "2026-06-02T13:42:49.591714+00:00",
+        "remark": "P0 功能测试新增，预算 10 万，周末到店",
+        "custom_fields": {
+          "budget": "10 万以内",
+          "car_type": "SUV"
+        },
+        "invalid_reason": "test_data",
+        "invalid_remark": "P0 测试标记无效",
+        "invalid_at": "2026-06-02T13:42:49.613112+00:00",
+        "invalid_by": "00000000-0000-0000-0000-000000000001",
+        "contacts": [
+          {
+            "id": "c3dc5e27-aa75-4b7d-8cd8-c11db8a21e53",
+            "contact_type": "phone",
+            "masked_value": "139****9455",
+            "is_primary": true
+          },
+          {
+            "id": "c8f66ba3-6b97-45e4-a407-46bea3d79665",
+            "contact_type": "wechat",
+            "masked_value": "wx****55",
+            "is_primary": true
+          }
+        ],
+        "assignments": [
+          {
+            "id": "ec50dd86-286d-45cc-83e0-06a4521bd7cb",
+            "assignment_result": "succeeded",
+            "sales_id": "8a5dbbf8-03b3-4fc7-aa48-c7a7a1b01864",
+            "sales_name": "张伟",
+            "from_sales_id": null,
+            "to_sales_id": "8a5dbbf8-03b3-4fc7-aa48-c7a7a1b01864",
+            "assignment_type": "round_robin",
+            "assignment_status": "succeeded",
+            "failure_reason": null,
+            "round_robin_cursor_before": "8a5dbbf8-03b3-4fc7-aa48-c7a7a1b01864",
+            "round_robin_cursor_after": "37dd88d0-8045-4fa1-a2ed-4f58a9a84686",
+            "operator_id": null,
+            "remark": "轮询自动分配给 张伟",
+            "created_at": "2026-06-02T13:42:49.572360+00:00"
+          }
+        ],
+        "notes": [
+          {
+            "id": "7addd24e-c5e8-4ecb-942a-dc28c6d2cb22",
+            "note_type": "duplicate_append",
+            "content": "[重复录入追加][2026-06-02 13:42][操作人：Ops Tester]\n本次录入备注：重复提交备注",
+            "operator_id": "00000000-0000-0000-0000-000000000001",
+            "created_at": "2026-06-02T13:42:49.592347+00:00"
+          },
+          {
+            "id": "5e9b06d7-ae92-4c97-a85f-b90988ca936a",
+            "note_type": "manual",
+            "content": "P0 功能测试新增，预算 10 万，周末到店",
+            "operator_id": "00000000-0000-0000-0000-000000000001",
+            "created_at": "2026-06-02T13:42:49.574178+00:00"
+          }
+        ],
+        "duplicate_events": [
+          {
+            "id": "1d3b085f-3859-4b1e-a4d9-2d76ada9b3b9",
+            "submitted_customer_name": "重复客户07769455",
+            "submitted_phone_masked": "139****9455",
+            "submitted_remark": "重复提交备注",
+            "operator_id": "00000000-0000-0000-0000-000000000001",
+            "created_at": "2026-06-02T13:42:49.592028+00:00"
+          }
+        ],
+        "task_nodes": [
+          {
+            "key": "lead_created",
+            "label": "客户线索已创建",
+            "time": "2026-06-02T13:42:49.565632+00:00"
+          },
+          {
+            "key": "phone_deduped",
+            "label": "手机号去重完成",
+            "time": "2026-06-02T13:42:49.565632+00:00"
+          },
+          {
+            "key": "duplicate_note_appended",
+            "label": "重复备注已追加",
+            "time": "2026-06-02T13:42:49.590470+00:00"
+          },
+          {
+            "key": "round_robin_assigned",
+            "label": "轮询分配完成",
+            "time": "2026-06-02T13:42:49.568063+00:00"
+          },
+          {
+            "key": "marked_invalid",
+            "label": "标记无效",
+            "time": "2026-06-02T13:42:49.613112+00:00"
+          }
+        ]
+      },
+      "expected": "线索状态变为 invalid",
+      "priority": "P0",
+      "elapsed_ms": 11.03
+    },
+    {
+      "case_id": "TC-010",
+      "name": "恢复有效",
+      "passed": true,
+      "actual": {
+        "id": "317b2965-aea8-4975-8b9e-bae5cc67d79a",
+        "customer_name": "压测前功能客户07769455",
+        "status": "assigned",
+        "source_type": "manual",
+        "source_name_snapshot": "人工录入",
+        "primary_phone_masked": "139****9455",
+        "primary_wechat_masked": "wx****55",
+        "sales_id": "8a5dbbf8-03b3-4fc7-aa48-c7a7a1b01864",
+        "sales_name": "张伟",
+        "assign_status": "assigned",
+        "assign_failure_reason": null,
+        "remark_summary": "P0 功能测试新增，预算 10 万，周末",
+        "duplicate_count": 1,
+        "last_duplicate_at": "2026-06-02T13:42:49.590470+00:00",
+        "created_by_name": null,
+        "created_at": "2026-06-02T13:42:49.565632+00:00",
+        "updated_at": "2026-06-02T13:42:49.617869+00:00",
+        "remark": "P0 功能测试新增，预算 10 万，周末到店",
+        "custom_fields": {
+          "budget": "10 万以内",
+          "car_type": "SUV"
+        },
+        "invalid_reason": null,
+        "invalid_remark": null,
+        "invalid_at": null,
+        "invalid_by": null,
+        "contacts": [
+          {
+            "id": "c3dc5e27-aa75-4b7d-8cd8-c11db8a21e53",
+            "contact_type": "phone",
+            "masked_value": "139****9455",
+            "is_primary": true
+          },
+          {
+            "id": "c8f66ba3-6b97-45e4-a407-46bea3d79665",
+            "contact_type": "wechat",
+            "masked_value": "wx****55",
+            "is_primary": true
+          }
+        ],
+        "assignments": [
+          {
+            "id": "ec50dd86-286d-45cc-83e0-06a4521bd7cb",
+            "assignment_result": "succeeded",
+            "sales_id": "8a5dbbf8-03b3-4fc7-aa48-c7a7a1b01864",
+            "sales_name": "张伟",
+            "from_sales_id": null,
+            "to_sales_id": "8a5dbbf8-03b3-4fc7-aa48-c7a7a1b01864",
+            "assignment_type": "round_robin",
+            "assignment_status": "succeeded",
+            "failure_reason": null,
+            "round_robin_cursor_before": "8a5dbbf8-03b3-4fc7-aa48-c7a7a1b01864",
+            "round_robin_cursor_after": "37dd88d0-8045-4fa1-a2ed-4f58a9a84686",
+            "operator_id": null,
+            "remark": "轮询自动分配给 张伟",
+            "created_at": "2026-06-02T13:42:49.572360+00:00"
+          }
+        ],
+        "notes": [
+          {
+            "id": "7addd24e-c5e8-4ecb-942a-dc28c6d2cb22",
+            "note_type": "duplicate_append",
+            "content": "[重复录入追加][2026-06-02 13:42][操作人：Ops Tester]\n本次录入备注：重复提交备注",
+            "operator_id": "00000000-0000-0000-0000-000000000001",
+            "created_at": "2026-06-02T13:42:49.592347+00:00"
+          },
+          {
+            "id": "5e9b06d7-ae92-4c97-a85f-b90988ca936a",
+            "note_type": "manual",
+            "content": "P0 功能测试新增，预算 10 万，周末到店",
+            "operator_id": "00000000-0000-0000-0000-000000000001",
+            "created_at": "2026-06-02T13:42:49.574178+00:00"
+          }
+        ],
+        "duplicate_events": [
+          {
+            "id": "1d3b085f-3859-4b1e-a4d9-2d76ada9b3b9",
+            "submitted_customer_name": "重复客户07769455",
+            "submitted_phone_masked": "139****9455",
+            "submitted_remark": "重复提交备注",
+            "operator_id": "00000000-0000-0000-0000-000000000001",
+            "created_at": "2026-06-02T13:42:49.592028+00:00"
+          }
+        ],
+        "task_nodes": [
+          {
+            "key": "lead_created",
+            "label": "客户线索已创建",
+            "time": "2026-06-02T13:42:49.565632+00:00"
+          },
+          {
+            "key": "phone_deduped",
+            "label": "手机号去重完成",
+            "time": "2026-06-02T13:42:49.565632+00:00"
+          },
+          {
+            "key": "duplicate_note_appended",
+            "label": "重复备注已追加",
+            "time": "2026-06-02T13:42:49.590470+00:00"
+          },
+          {
+            "key": "round_robin_assigned",
+            "label": "轮询分配完成",
+            "time": "2026-06-02T13:42:49.568063+00:00"
+          }
+        ]
+      },
+      "expected": "恢复为 assigned 或 unassigned",
+      "priority": "P0",
+      "elapsed_ms": 7.9
+    },
+    {
+      "case_id": "TC-011",
+      "name": "批量选择与批量标记无效",
+      "passed": true,
+      "actual": {
+        "requested": 2,
+        "succeeded": 2,
+        "skipped": 0,
+        "items": [
+          {
+            "lead_id": "317b2965-aea8-4975-8b9e-bae5cc67d79a",
+            "status": "succeeded"
+          },
+          {
+            "lead_id": "298eda71-2ac9-4c85-80e6-40bd5844d27a",
+            "status": "succeeded"
+          }
+        ]
+      },
+      "expected": "两条线索均成功标记无效",
+      "priority": "P0",
+      "elapsed_ms": 6.39
+    },
+    {
+      "case_id": "TC-012",
+      "name": "导出选中线索",
+      "passed": true,
+      "actual": {
+        "status": 200,
+        "csv_preview": [
+          [
+            "客户名称",
+            "主手机号",
+            "主微信",
+            "状态",
+            "销售",
+            "备注摘要",
+            "重复录入次数",
+            "创建时间",
+            "更新时间"
+          ],
+          [
+            "压测前功能客户07769455",
+            "139****9455",
+            "wx****55",
+            "invalid",
+            "张伟",
+            "P0 功能测试新增，预算 10 万，周末",
+            "1",
+            "2026-06-02 13:42:49.565632+00:00",
+            "2026-06-02 13:42:49.641996+00:00"
+          ]
+        ]
+      },
+      "expected": "返回 CSV，手机号脱敏且不包含明文手机号",
+      "priority": "P0",
+      "elapsed_ms": 8.14
+    },
+    {
+      "case_id": "TC-013",
+      "name": "手机号明文查看与审计",
+      "passed": true,
+      "actual": {
+        "reveal": {
+          "contact_id": "c3dc5e27-aa75-4b7d-8cd8-c11db8a21e53",
+          "contact_type": "phone",
+          "value": "13907769455",
+          "revealed_at": "2026-06-02T13:42:49.656279+00:00"
+        },
+        "latest_log_metadata": {
+          "reason": "UAT 电话确认到店时间",
+          "phone_suffix": "9455"
+        }
+      },
+      "expected": "返回明文给前端，审计日志不记录完整手机号",
+      "priority": "P0",
+      "elapsed_ms": 6.26
+    },
+    {
+      "case_id": "TC-016",
+      "name": "筛选与分页",
+      "passed": true,
+      "actual": {
+        "items": [
+          {
+            "id": "317b2965-aea8-4975-8b9e-bae5cc67d79a",
+            "customer_name": "压测前功能客户07769455",
+            "status": "invalid",
+            "source_type": "manual",
+            "source_name_snapshot": "人工录入",
+            "primary_phone_masked": "139****9455",
+            "primary_wechat_masked": "wx****55",
+            "sales_id": "8a5dbbf8-03b3-4fc7-aa48-c7a7a1b01864",
+            "sales_name": "张伟",
+            "assign_status": "assigned",
+            "assign_failure_reason": null,
+            "remark_summary": "P0 功能测试新增，预算 10 万，周末",
+            "duplicate_count": 1,
+            "last_duplicate_at": "2026-06-02T13:42:49.590470+00:00",
+            "created_by_name": null,
+            "created_at": "2026-06-02T13:42:49.565632+00:00",
+            "updated_at": "2026-06-02T13:42:49.641996+00:00"
+          },
+          {
+            "id": "298eda71-2ac9-4c85-80e6-40bd5844d27a",
+            "customer_name": "批量无效客户07769455",
+            "status": "invalid",
+            "source_type": "manual",
+            "source_name_snapshot": "人工录入",
+            "primary_phone_masked": "139****9456",
+            "primary_wechat_masked": null,
+            "sales_id": "37dd88d0-8045-4fa1-a2ed-4f58a9a84686",
+            "sales_name": "王敏",
+            "assign_status": "assigned",
+            "assign_failure_reason": null,
+            "remark_summary": "批量无效验证",
+            "duplicate_count": 0,
+            "last_duplicate_at": null,
+            "created_by_name": null,
+            "created_at": "2026-06-02T13:42:49.631714+00:00",
+            "updated_at": "2026-06-02T13:42:49.641994+00:00"
+          }
+        ],
+        "page": 1,
+        "page_size": 5,
+        "total": 2
+      },
+      "expected": "支持 keyword/status/page/page_size 并返回分页结构",
+      "priority": "P0",
+      "elapsed_ms": 8.21
+    },
+    {
+      "case_id": "TC-007",
+      "name": "无可用销售时分配失败",
+      "passed": true,
+      "actual": {
+        "created": true,
+        "id": "70092f93-85b4-414c-9518-dc9ea9a0b04a",
+        "status": "unassigned",
+        "assign_status": "assign_failed",
+        "sales_id": null,
+        "sales_name": null,
+        "lead": {
+          "id": "70092f93-85b4-414c-9518-dc9ea9a0b04a",
+          "status": "unassigned",
+          "sales_id": null,
+          "sales_name": null
+        },
+        "assignment": {
+          "status": "failed",
+          "failure_reason": "无可用销售"
+        },
+        "potential_duplicates": {
+          "wechat": [],
+          "email": []
+        }
+      },
+      "expected": "线索未分配，分配失败原因为无可用销售",
+      "priority": "P0",
+      "elapsed_ms": 7.49
+    },
+    {
+      "case_id": "TC-008",
+      "name": "重新分配线索",
+      "passed": true,
+      "actual": {
+        "requested": 1,
+        "succeeded": 1,
+        "failed": 0,
+        "skipped": 0,
+        "items": [
+          {
+            "lead_id": "70092f93-85b4-414c-9518-dc9ea9a0b04a",
+            "result": "succeeded",
+            "status": "succeeded",
+            "sales_id": "8a5dbbf8-03b3-4fc7-aa48-c7a7a1b01864",
+            "sales_name": "张伟",
+            "failure_reason": null
+          }
+        ]
+      },
+      "expected": "恢复销售配置后重新分配成功",
+      "priority": "P0",
+      "elapsed_ms": 5.67
+    },
+    {
+      "case_id": "TC-015",
+      "name": "销售轮询开关",
+      "passed": true,
+      "actual": {
+        "update": {
+          "id": "8a5dbbf8-03b3-4fc7-aa48-c7a7a1b01864"
+        },
+        "log_total": 16
+      },
+      "expected": "状态保存且记录 sales_round_robin_changed 日志",
+      "priority": "P0",
+      "elapsed_ms": 3.73
+    }
+  ],
+  "uat": [
+    {
+      "scenario_id": "UAT-001",
+      "role": "运营管理员",
+      "business_scenario": "接到客户线索后人工录入，系统完成去重和销售分配",
+      "passed": true,
+      "acceptance": "线索可创建、可自动分配、详情可追踪任务链路"
+    },
+    {
+      "scenario_id": "UAT-002",
+      "role": "运营管理员",
+      "business_scenario": "重复客户再次报备时不新建，补充备注进入原线索",
+      "passed": true,
+      "acceptance": "重复手机号有预查，保存时事务内拒绝重复新建"
+    },
+    {
+      "scenario_id": "UAT-003",
+      "role": "销售主管",
+      "business_scenario": "所有销售暂停轮询后线索进入待处理，恢复配置后重新分配",
+      "passed": true,
+      "acceptance": "无可用销售不丢线索，恢复后可重新分配"
+    },
+    {
+      "scenario_id": "UAT-004",
+      "role": "运营管理员",
+      "business_scenario": "客户信息敏感操作可审计，导出不泄漏手机号明文",
+      "passed": true,
+      "acceptance": "手机号 reveal 有原因和审计，导出 CSV 保持脱敏"
+    }
+  ],
+  "performance": [
+    {
+      "scenario": "GET /api/leads?page=1&page_size=20",
+      "concurrent_users": 1,
+      "duration_seconds": 15,
+      "requests": 2949,
+      "qps": 196.54,
+      "success": 2949,
+      "error_rate": 0.0,
+      "avg_ms": 4.86,
+      "p95_ms": 5.64,
+      "p99_ms": 8.08,
+      "max_ms": 64.62
+    },
+    {
+      "scenario": "GET /api/leads?page=1&page_size=20",
+      "concurrent_users": 5,
+      "duration_seconds": 15,
+      "requests": 4315,
+      "qps": 287.45,
+      "success": 4315,
+      "error_rate": 0.0,
+      "avg_ms": 17.18,
+      "p95_ms": 24.55,
+      "p99_ms": 43.67,
+      "max_ms": 64.6
+    },
+    {
+      "scenario": "GET /api/leads?page=1&page_size=20",
+      "concurrent_users": 10,
+      "duration_seconds": 15,
+      "requests": 3741,
+      "qps": 249.05,
+      "success": 3741,
+      "error_rate": 0.0,
+      "avg_ms": 39.93,
+      "p95_ms": 68.0,
+      "p99_ms": 99.07,
+      "max_ms": 198.1
+    },
+    {
+      "scenario": "GET /api/leads?page=1&page_size=20",
+      "concurrent_users": 20,
+      "duration_seconds": 15,
+      "requests": 4341,
+      "qps": 288.47,
+      "success": 4341,
+      "error_rate": 0.0,
+      "avg_ms": 69.02,
+      "p95_ms": 105.96,
+      "p99_ms": 126.71,
+      "max_ms": 177.15
+    }
+  ],
+  "summary": {
+    "functional_total": 17,
+    "functional_passed": 17,
+    "uat_total": 4,
+    "uat_passed": 4
+  }
+}

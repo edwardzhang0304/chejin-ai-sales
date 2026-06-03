@@ -1,0 +1,348 @@
+{
+  "generated_at": "2026-06-03T09:55:47.820Z",
+  "app_url": "http://127.0.0.1:5173/",
+  "seed": {
+    "phone": "13980447259",
+    "status": 200,
+    "code": "OK",
+    "lead_id": "55931348-2cb4-455e-a24a-5560c3b59667",
+    "batch_lead_ids": [
+      "43900dec-5518-410d-92d5-1d7c48dca5d8",
+      "83bb0298-a2f4-483d-a39f-d0a5694452f9"
+    ]
+  },
+  "results": [
+    {
+      "case_id": "VITE-001",
+      "name": "默认空白工作区",
+      "passed": true,
+      "actual": {
+        "hasEmptyText": true,
+        "activeModuleCount": 0,
+        "hasPlaceholderModules": false,
+        "hasStaticModuleBadges": false
+      },
+      "expected": "首次进入不默认选中模块，展示空白工作区，不展示未实现占位入口和静态数字 badge。"
+    },
+    {
+      "case_id": "VITE-002",
+      "name": "线索列表加载",
+      "passed": true,
+      "actual": {
+        "rowCount": 20,
+        "totalText": "共 202 条",
+        "pageButtonCount": 6,
+        "hasCreateButton": true,
+        "hasTodaySuccessRate": true,
+        "hasListError": false
+      },
+      "expected": "点击线索管理后从后端加载列表、分页页码组、今日轮询成功率并展示新增入口。"
+    },
+    {
+      "case_id": "VITE-010",
+      "name": "销售筛选可操作",
+      "passed": true,
+      "actual": {
+        "salesFilterBefore": {
+          "options": [
+            {
+              "value": "",
+              "text": "全部销售"
+            },
+            {
+              "value": "8a5dbbf8-03b3-4fc7-aa48-c7a7a1b01864",
+              "text": "张伟"
+            },
+            {
+              "value": "37dd88d0-8045-4fa1-a2ed-4f58a9a84686",
+              "text": "王敏"
+            },
+            {
+              "value": "a4092225-48d2-4693-939c-28414c3c1bd3",
+              "text": "李强"
+            },
+            {
+              "value": "1fe55df7-8a2c-4640-ae26-a641777d45bf",
+              "text": "Vite冒烟销售80048846"
+            },
+            {
+              "value": "f4caf90c-8864-4a4d-ba48-b2d7b3b80dbe",
+              "text": "Vite冒烟销售79175513"
+            },
+            {
+              "value": "9fbc7288-190c-4ef4-8bb9-4997bb5af875",
+              "text": "Vite冒烟销售65310113"
+            },
+            {
+              "value": "6b3a88d2-bc5d-48b9-ad5e-b29c49044889",
+              "text": "Vite冒烟销售65077310"
+            },
+            {
+              "value": "de1465ea-c1d4-4bc5-b15d-96821c6b0586",
+              "text": "Vite冒烟销售64720185"
+            },
+            {
+              "value": "ddf731aa-4807-4947-a6a0-6d10753ba704",
+              "text": "Vite冒烟销售64580329"
+            },
+            {
+              "value": "48fa455a-142b-465c-a03f-c335aaaf8cae",
+              "text": "Vite冒烟销售64467277"
+            },
+            {
+              "value": "470577fc-911c-4df2-aeec-45e3e4ecc74b",
+              "text": "Vite冒烟销售64151251"
+            },
+            {
+              "value": "fbe0a6c9-52b2-455c-af4c-a13ababd1823",
+              "text": "Vite冒烟销售64055003"
+            },
+            {
+              "value": "1621fb6a-fc30-4f83-948d-1b83157e67f6",
+              "text": "Vite冒烟销售63086085"
+            },
+            {
+              "value": "d383bd7f-66e9-4fae-828a-6d9c95abf6fa",
+              "text": "可用性回测销售62794610"
+            },
+            {
+              "value": "6aaf8595-dd37-4dd6-9a6d-096b8f2dce92",
+              "text": "Vite冒烟销售62794294"
+            },
+            {
+              "value": "d4fb451d-3f8b-4f99-bafa-dc004c0206f6",
+              "text": "可用性回测销售62682398"
+            },
+            {
+              "value": "0e0ea3df-2bfb-40e0-b6a1-1cad4fca9e67",
+              "text": "Vite冒烟销售62682393"
+            },
+            {
+              "value": "5931a08d-4d96-4a1f-9fbe-04455c5b2311",
+              "text": "可用性回测销售62502059"
+            },
+            {
+              "value": "694c4818-1a2f-4967-bb80-ce6469d0e84d",
+              "text": "Vite冒烟销售62502064"
+            },
+            {
+              "value": "1551ccbf-20d4-40d0-8687-4717ff4527f9",
+              "text": "可用性回测销售62092647"
+            },
+            {
+              "value": "dc258327-1f53-46d2-bc22-4749a642ab3c",
+              "text": "Vite冒烟销售62092587"
+            },
+            {
+              "value": "f2c27768-e659-4da1-a6c6-e7d13b1cc1bc",
+              "text": "可用性回测销售61813294"
+            },
+            {
+              "value": "e793df7e-fa7c-4bab-abaf-0743ab91f1cc",
+              "text": "Vite冒烟销售61812772"
+            }
+          ]
+        },
+        "selectedOption": {
+          "value": "8a5dbbf8-03b3-4fc7-aa48-c7a7a1b01864",
+          "text": "张伟"
+        },
+        "salesFilterState": {
+          "selected": "8a5dbbf8-03b3-4fc7-aa48-c7a7a1b01864",
+          "rowCount": 20,
+          "salesCells": [
+            "张伟",
+            "张伟",
+            "张伟",
+            "张伟",
+            "张伟",
+            "张伟",
+            "张伟",
+            "张伟",
+            "张伟",
+            "张伟"
+          ],
+          "allVisibleMatch": true
+        }
+      },
+      "expected": "销售筛选下拉加载真实销售，选择后列表仅展示该销售线索。"
+    },
+    {
+      "case_id": "VITE-011",
+      "name": "每页条数可操作",
+      "passed": true,
+      "actual": {
+        "selected": "50",
+        "rowCount": 50,
+        "totalText": "共 203 条20条/页50条/页100条/页"
+      },
+      "expected": "每页条数可切换为 50，列表刷新为最多 50 行。"
+    },
+    {
+      "case_id": "VITE-003",
+      "name": "详情抽屉加载",
+      "passed": true,
+      "actual": {
+        "drawerTitle": "可用性回测客户80447258",
+        "hasContactSection": true,
+        "hasTaskNodes": true,
+        "skipped": false
+      },
+      "expected": "点击列表行后详情抽屉展示客户、联系方式和任务链路。"
+    },
+    {
+      "case_id": "VITE-012",
+      "name": "详情 Tabs 可操作",
+      "passed": true,
+      "actual": [
+        {
+          "clicked": "备注",
+          "selectedText": "备注",
+          "drawerText": "已分配主手机号135****7258当前销售张伟分配方式轮询自动分配创建时间2026/6/3 17:55:37概览备注重复记录分配记录备注manualP0 正常使用标准回测2026/6/3 17:55:37"
+        },
+        {
+          "clicked": "重复记录",
+          "selectedText": "重复记录",
+          "drawerText": "已分配主手机号135****7258当前销售张伟分配方式轮询自动分配创建时间2026/6/3 17:55:37概览备注重复记录分配记录重复记录暂无重复记录"
+        },
+        {
+          "clicked": "分配记录",
+          "selectedText": "分配记录",
+          "drawerText": "已分配主手机号135****7258当前销售张伟分配方式轮询自动分配创建时间2026/6/3 17:55:37概览备注重复记录分配记录分配记录张伟分配成功2026/6/3 17:55:37"
+        },
+        {
+          "clicked": "概览",
+          "selectedText": "概览",
+          "drawerText": "已分配主手机号135****7258当前销售张伟分配方式轮询自动分配创建时间2026/6/3 17:55:37概览备注重复记录分配记录联系方式手机135****7258查看完整微信wx****58邮箱us***@example.com备注P0 正常使用标准回测任务链路客户线索已创建2026/6/3 17:55:37手机号去重完成2026/6/3 17:55:37轮询分配完成2026/6/3 17:55:37操作编辑线索标记无效"
+        }
+      ],
+      "expected": "详情抽屉概览、备注、重复记录、分配记录 tabs 点击后可切换 active 和内容。"
+    },
+    {
+      "case_id": "VITE-004",
+      "name": "重复手机号 409 提示",
+      "passed": true,
+      "actual": {
+        "alertText": "该手机号已存在，不能重复新建已重复录入 1 次，本次备注将追加到原线索。原线索：Vite重复回归种子80447259，销售：张伟。该手机号已存在，不能重复新建。已重复录入 1 次，日期：2026-06-03。本次备注已追加到原线索。（错误码：LEAD_PHONE_DUPLICATED，Trace ID：f8217d1e-9f9f-47ff-8e83-cd6f2bc60c1f）查看原线索",
+        "hasOpenOriginal": true,
+        "modalStillOpen": true,
+        "hasErrorCode": true,
+        "hasTraceId": true,
+        "alertRect": {
+          "top": 91,
+          "bottom": 236.4375
+        },
+        "firstSectionRect": {
+          "top": 252.4375,
+          "bottom": 381.4375
+        }
+      },
+      "expected": "重复手机号提交后弹窗保留，展示后端 409 业务错误和原线索信息，提示区域不遮挡基础信息。"
+    },
+    {
+      "case_id": "VITE-005",
+      "name": "手机号明文查看",
+      "passed": true,
+      "actual": {
+        "hasRevealMessage": true,
+        "hasAuditMessage": true,
+        "contactValues": [
+          "13580447258",
+          "wx****58",
+          "us***@example.com"
+        ],
+        "hasFullPhoneInContactRow": true
+      },
+      "expected": "点击查看完整手机号后要求填写原因，并在联系方式区域展示 11 位明文手机号，同时展示审计提示。"
+    },
+    {
+      "case_id": "VITE-006",
+      "name": "导出选中线索",
+      "passed": true,
+      "actual": {
+        "suggestedFilename": "leads_export_1780480545304.csv",
+        "hasExportMessage": true
+      },
+      "expected": "勾选线索后可导出 CSV，并展示导出成功提示。"
+    },
+    {
+      "case_id": "VITE-007",
+      "name": "批量标记无效",
+      "passed": true,
+      "actual": {
+        "hasSuccessMessage": true,
+        "selectedText": "已选 0 条"
+      },
+      "expected": "勾选多条线索后可批量标记无效并展示成功提示。"
+    },
+    {
+      "case_id": "VITE-008",
+      "name": "单条无效与恢复",
+      "passed": true,
+      "actual": {
+        "hasInvalidMessage": true,
+        "hasRestoreConfirm": true,
+        "hasRestoreMessage": true
+      },
+      "expected": "详情抽屉中可标记无效，并能恢复为有效线索。"
+    },
+    {
+      "case_id": "VITE-009A",
+      "name": "新增销售",
+      "passed": true,
+      "actual": {
+        "hasMessage": true,
+        "hasCard": true,
+        "cardText": "Vite冒烟销售80447259不参与轮询 · 排序 99 · 名下线索 0 · 历史线索保留停用启用销售",
+        "statusCheckboxValid": true,
+        "badgeSingleLine": true
+      },
+      "expected": "点击新增销售后弹窗可打开，保存后销售卡片出现在列表中；销售状态开关控制启用/停用，停用即不参与轮询。"
+    },
+    {
+      "case_id": "VITE-009",
+      "name": "销售状态开关",
+      "passed": true,
+      "actual": {
+        "cardCount": 24,
+        "hasMessage": true,
+        "restoredChecked": true,
+        "disabledSalesTextValid": true
+      },
+      "expected": "销售管理展示销售卡片，并可切换后恢复销售启用/停用状态。"
+    },
+    {
+      "case_id": "VITE-013",
+      "name": "操作日志列表与详情",
+      "passed": true,
+      "actual": {
+        "logListState": {
+          "rowCount": 20,
+          "hasHeaders": true,
+          "hasPhoneReveal": true,
+          "hasPagination": true,
+          "hasError": false
+        },
+        "logDetailState": {
+          "hasDetail": true,
+          "hasOperator": true,
+          "hasObjectId": true,
+          "hasResult": true,
+          "hasCloseButton": true
+        }
+      },
+      "expected": "点击操作日志后展示日志列表，可按操作类型筛选手机号明文查看日志，并可打开日志详情。"
+    }
+  ],
+  "browser_errors": [
+    {
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 409 (Conflict)"
+    }
+  ],
+  "summary": {
+    "total": 14,
+    "passed": 14,
+    "browser_error_count": 1
+  }
+}

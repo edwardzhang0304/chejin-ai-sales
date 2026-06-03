@@ -45,6 +45,36 @@ Worker 上报事实：
 - 是否等待销售回复超时并发送飞书通知。
 - 是否停止自动动作。
 
+## 2.1 技术栈与工程实现约束
+
+本期按正式工程产品实施，不按演示 Demo 实施。技术栈选择遵循：优先复用 OmniAuto 现有 Python 能力、减少跨语言链路、保证任务可恢复、错误可定位、部署可复制、二期可演进。
+
+| 层级 | 选型 | 说明 |
+|---|---|---|
+| 服务端语言/框架 | Python 3.11+ / FastAPI | 与 OmniAuto、AI 编排、RPA 生态一致；接口清晰，便于快速工程化。 |
+| ORM/迁移 | SQLAlchemy 2.x / Alembic | 数据模型、状态机、任务表必须可迁移、可回滚、可审计。 |
+| 主数据库 | PostgreSQL 15+ | 作为线索、任务、会话、状态机、错误码、审计日志的唯一事实源。 |
+| 任务调度 | PostgreSQL 任务表 + lease 锁 + APScheduler/服务端扫描进程 | 第一阶段不引入复杂 MQ；任务状态持久化，服务重启后可恢复，避免重复发送。 |
+| 控制面前端 | React + TypeScript + Vite + Ant Design | 适合后台管理、表格、表单、配置、日志和任务看板。 |
+| Worker 桌面端 | Python 3.11+ / PySide6 / wxauto4 或 UIAutomation / PyInstaller | 复用现有 RPA 能力，做成 Windows 可执行程序，界面参照视频中的执行台效果。 |
+| Worker 本地存储 | SQLite + 本地文件目录 | 保存本地配置、运行日志、图片临时文件、未确认发送记录；服务端仍是最终事实源。 |
+| 通信方式 | HTTPS REST + Worker 主动轮询/心跳 | 商家电脑不暴露公网端口；Worker 主动拉任务、上报事实和心跳。 |
+| AI 文本 | OmniAuto AI Engine + DeepSeek API | OmniAuto 负责上下文、RAG、Guard、编排；DeepSeek 负责文本生成。 |
+| 图片理解 | 千问视觉模型 + ImageIntent | 识别图片内容、截图信息、车型线索和置信度；低置信转人工。 |
+| 知识检索 | OmniAuto RAG + 关键词/规则混合检索 | 先基于现有能力工程化；Dify/FastGPT 仅预留 Adapter，不作为第一期核心运行时。 |
+| 车源索引 | 大风车 API + 本地 vehicle_index | 外部接口同步原始车源，AI 只读取白名单字段。 |
+| 文件存储 | Worker 本地图片目录 + 服务端必要文件存储 | 不做长期图片库；服务端仅保存必要文件、识别结果和证据。 |
+| 日志与错误码 | JSON 结构化日志 + error_code 字典 + trace_id | 控制面、Worker、服务端日志使用同一错误码体系，便于运维排障。 |
+| 部署 | Docker Compose 部署服务端；Worker 以 Windows 安装包/可执行文件交付 | 第一阶段不使用 Kubernetes；保证单机可复制部署和备份恢复。 |
+| 测试 | pytest + 接口集成测试 + Worker 端到端录屏/日志验收 | 核心验收看状态机、幂等、防重复发送、错误码、微信串行操作。 |
+
+明确不采用：
+
+- 不把 Dify 作为第一期核心对话运行时，只预留后续 Adapter。
+- 不使用 Kubernetes、服务网格、复杂微服务拆分。
+- 不在第一期做多商户 SaaS、复杂权限、计费和高可用集群。
+- 不读取或破解微信数据库，不使用非公开微信协议。
+
 ## 3. 会话主状态
 
 | 状态 | 含义 | 当前等待谁 | 允许动作 |

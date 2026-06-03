@@ -1,0 +1,225 @@
+{
+  "generated_at": "2026-06-03T09:58:03.409Z",
+  "app_url": "http://127.0.0.1:5173/",
+  "api_base": "http://127.0.0.1:8000/api",
+  "seed": {
+    "phone": "13980615569",
+    "lead_id": "04260e3d-a8a0-40bd-a49b-dd2b33646652"
+  },
+  "results": [
+    {
+      "case_id": "ERR-API-001",
+      "name": "重复手机号 409 API",
+      "passed": true,
+      "actual": {
+        "api": {
+          "status": 409,
+          "code": "LEAD_PHONE_DUPLICATED",
+          "message": "该手机号已存在，不能重复新建。已重复录入 1 次，日期：2026-06-03。本次备注已追加到原线索。",
+          "data": {
+            "created": false,
+            "duplicate_lead": {
+              "id": "04260e3d-a8a0-40bd-a49b-dd2b33646652",
+              "customer_name": "错误链路种子80615569",
+              "primary_phone_masked": "139****5569",
+              "sales_id": "8a5dbbf8-03b3-4fc7-aa48-c7a7a1b01864",
+              "sales_name": "张伟",
+              "created_at": "2026-06-03T09:56:55.615102+00:00",
+              "updated_at": "2026-06-03T09:56:55.662667+00:00"
+            },
+            "duplicate_count": 1,
+            "duplicate_dates": [
+              "2026-06-03"
+            ],
+            "note_appended": true
+          },
+          "trace_id": "ca046e79-d057-4008-a196-e77885c2c50b"
+        }
+      },
+      "expected": "后端返回 409 / LEAD_PHONE_DUPLICATED / trace_id。"
+    },
+    {
+      "case_id": "ERR-API-002",
+      "name": "参数错误 API",
+      "passed": true,
+      "actual": {
+        "api": {
+          "status": 400,
+          "code": "LEAD_PHONE_INVALID",
+          "message": "手机号格式不正确",
+          "data": {},
+          "trace_id": "c110d1a2-8a17-4441-a8f7-440cb482eead"
+        }
+      },
+      "expected": "后端返回参数错误 code/message/trace_id。"
+    },
+    {
+      "case_id": "ERR-API-003",
+      "name": "未找到数据 API",
+      "passed": true,
+      "actual": {
+        "api": {
+          "status": 404,
+          "code": "LEAD_NOT_FOUND",
+          "message": "线索不存在",
+          "data": {},
+          "trace_id": "e1d86809-993c-4724-9466-af163ecf015d"
+        }
+      },
+      "expected": "后端返回 404 / LEAD_NOT_FOUND / trace_id。"
+    },
+    {
+      "case_id": "ERR-API-004",
+      "name": "服务端异常 API",
+      "passed": true,
+      "actual": {
+        "api": {
+          "status": 500,
+          "code": "INTERNAL_SERVER_ERROR",
+          "message": "服务内部错误，请联系管理员并提供 trace_id",
+          "data": {},
+          "trace_id": "6c9acf2a-8125-4c08-ab0c-b4687b0d004b"
+        }
+      },
+      "expected": "开发环境调试端点返回 500 / INTERNAL_SERVER_ERROR / trace_id。"
+    },
+    {
+      "case_id": "ERR-UI-001",
+      "name": "重复手机号 409 页面展示",
+      "passed": true,
+      "actual": {
+        "api": {
+          "code": "LEAD_PHONE_DUPLICATED",
+          "message": "该手机号已存在，不能重复新建。已重复录入 1 次，日期：2026-06-03。本次备注已追加到原线索。",
+          "data": {
+            "created": false,
+            "duplicate_lead": {
+              "id": "04260e3d-a8a0-40bd-a49b-dd2b33646652",
+              "customer_name": "错误链路种子80615569",
+              "primary_phone_masked": "139****5569",
+              "sales_id": "8a5dbbf8-03b3-4fc7-aa48-c7a7a1b01864",
+              "sales_name": "张伟",
+              "created_at": "2026-06-03T09:56:55.615102+00:00",
+              "updated_at": "2026-06-03T09:56:55.662667+00:00"
+            },
+            "duplicate_count": 1,
+            "duplicate_dates": [
+              "2026-06-03"
+            ],
+            "note_appended": true
+          },
+          "trace_id": "ca046e79-d057-4008-a196-e77885c2c50b"
+        },
+        "ui": {
+          "text": "该手机号已存在，不能重复新建已重复录入 2 次，本次备注将追加到原线索。原线索：错误链路种子80615569，销售：张伟。该手机号已存在，不能重复新建。已重复录入 2 次，日期：2026-06-03。本次备注已追加到原线索。（错误码：LEAD_PHONE_DUPLICATED，Trace ID：6b9554f5-bfdb-49f7-8f85-802e683bc9a8）查看原线索",
+          "hasCode": true,
+          "hasTraceId": true
+        }
+      },
+      "expected": "新增客户弹窗展示明确错误信息、错误码和 Trace ID。"
+    },
+    {
+      "case_id": "ERR-UI-002",
+      "name": "参数错误页面展示",
+      "passed": true,
+      "actual": {
+        "api": {
+          "code": "LEAD_PHONE_INVALID",
+          "message": "手机号格式不正确",
+          "data": {},
+          "trace_id": "c110d1a2-8a17-4441-a8f7-440cb482eead"
+        },
+        "ui": {
+          "text": "手机号格式不正确（错误码：LEAD_PHONE_INVALID，Trace ID：25d3c149-1cc0-450b-b5cc-a38e50b36a8b）",
+          "hasCode": true,
+          "hasTraceId": true
+        }
+      },
+      "expected": "新增客户弹窗展示参数错误、错误码和 Trace ID。"
+    },
+    {
+      "case_id": "ERR-UI-003",
+      "name": "未找到数据页面展示",
+      "passed": true,
+      "actual": {
+        "api": {
+          "code": "LEAD_NOT_FOUND",
+          "message": "线索不存在",
+          "data": {},
+          "trace_id": "e1d86809-993c-4724-9466-af163ecf015d"
+        },
+        "ui": {
+          "text": "线索不存在（错误码：LEAD_NOT_FOUND，Trace ID：e1d86809-993c-4724-9466-af163ecf015d）重试",
+          "hasCode": true,
+          "hasTraceId": true
+        }
+      },
+      "expected": "详情抽屉展示未找到错误、错误码和 Trace ID。"
+    },
+    {
+      "case_id": "ERR-UI-004",
+      "name": "服务端异常页面展示",
+      "passed": true,
+      "actual": {
+        "api": {
+          "code": "INTERNAL_SERVER_ERROR",
+          "message": "服务内部错误，请联系管理员并提供 trace_id",
+          "data": {},
+          "trace_id": "6c9acf2a-8125-4c08-ab0c-b4687b0d004b"
+        },
+        "ui": {
+          "text": "服务内部错误，请联系管理员并提供 trace_id（错误码：INTERNAL_SERVER_ERROR，Trace ID：6c9acf2a-8125-4c08-ab0c-b4687b0d004b）重试",
+          "hasCode": true,
+          "hasTraceId": true
+        }
+      },
+      "expected": "列表错误态展示服务端异常、错误码和 Trace ID。"
+    },
+    {
+      "case_id": "ERR-AUDIT-001",
+      "name": "手机号明文查看审计",
+      "passed": true,
+      "actual": {
+        "api": {
+          "status": 200,
+          "code": "OK",
+          "trace_id": "5ecbff6d-7ee3-448b-a7f7-1e6d779f6f7e",
+          "audit_item": {
+            "id": "e59c3eac-2b24-4485-bb84-86be7baa2896",
+            "event_type": "phone_revealed",
+            "event_name": "查看完整手机号",
+            "event_label": "查看完整手机号",
+            "module": "lead",
+            "target_type": "contact",
+            "target_id": "6dbfc031-2f34-4e9a-b76d-2e9292e13b3b",
+            "lead_id": "04260e3d-a8a0-40bd-a49b-dd2b33646652",
+            "lead_customer_name": "错误链路种子80615569",
+            "operator_id": "00000000-0000-0000-0000-000000000001",
+            "operator_name": "Ops Tester",
+            "ip_address": "192.168.65.1",
+            "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/148.0.0.0 Safari/537.36",
+            "request_id": "c791dbb6-03b3-48f7-ba5e-346226fa25ee",
+            "before_data": null,
+            "after_data": null,
+            "result": "success",
+            "summary": "查看手机号后四位 5569",
+            "created_at": "2026-06-03T09:58:03.057860+00:00",
+            "metadata": {
+              "reason": "错误链路手机号审计",
+              "phone_suffix": "5569"
+            }
+          }
+        },
+        "ui": {
+          "hasRevealMessage": true,
+          "hasAuditMessage": true
+        }
+      },
+      "expected": "前端显示手机号明文和审计提示，操作日志记录 phone_revealed。"
+    }
+  ],
+  "summary": {
+    "total": 9,
+    "passed": 9
+  }
+}
