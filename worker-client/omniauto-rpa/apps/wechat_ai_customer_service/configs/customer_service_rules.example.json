@@ -1,0 +1,41 @@
+{
+  "default_reply": "收到，这块我记下了，后面继续跟进。",
+  "rules": [
+    {
+      "name": "quote",
+      "priority": 80,
+      "keywords": ["价格", "报价", "多少钱", "费用"],
+      "reply": "好的，请发我具体产品、数量和规格，我帮您确认报价。"
+    },
+    {
+      "name": "contact_info",
+      "priority": 70,
+      "keywords": ["姓名", "电话", "地址", "收件"],
+      "reply": "收到资料，我会先帮您记录。"
+    },
+    {
+      "name": "product_detail",
+      "priority": 60,
+      "keywords": ["产品", "数量", "规格", "型号"],
+      "reply": "收到，请再补充联系人姓名和电话，我会一起记录。"
+    },
+    {
+      "name": "small_talk",
+      "priority": 35,
+      "keywords": ["哈哈", "随便看看", "先看看", "客服", "挺快", "谢谢", "辛苦"],
+      "reply": "没问题，您先慢慢看。需要价格、规格、发货或售后信息时，直接把商品和数量发我，我帮您核对。"
+    },
+    {
+      "name": "greeting",
+      "priority": 30,
+      "keywords": ["你好", "您好", "hello", "在吗"],
+      "reply": "你好，我在的，请问有什么可以帮您？"
+    },
+    {
+      "name": "test",
+      "priority": 10,
+      "keywords": ["test", "omniauto"],
+      "reply": "收到测试消息，OmniAuto 客服循环已正常读取。"
+    }
+  ]
+}

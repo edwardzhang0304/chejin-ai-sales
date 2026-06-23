@@ -111,6 +111,9 @@ def assign_lead_round_robin(
         lead_id=lead.id,
         metadata={"sales_id": selected.id, "sales_name": selected.sales_name},
     )
+    from app.services.task_service import create_add_friend_task_for_lead
+
+    create_add_friend_task_for_lead(db, lead, actor)
     return assignment
 
 

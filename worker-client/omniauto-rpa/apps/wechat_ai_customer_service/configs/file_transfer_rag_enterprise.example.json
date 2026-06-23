@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "rules_path": "apps/wechat_ai_customer_service/configs/customer_service_rag_live_rules.example.json",
+  "state_path": "runtime/apps/wechat_ai_customer_service/state/file_transfer_rag_enterprise_state.json",
+  "audit_log_path": "runtime/apps/wechat_ai_customer_service/logs/file_transfer_rag_enterprise_audit.jsonl",
+  "append_live_run_nonce": true,
+  "poll": {
+    "interval_seconds": 1,
+    "iterations": 1
+  },
+  "state_lock": {
+    "timeout_seconds": 120,
+    "stale_seconds": 900
+  },
+  "rate_limits": {
+    "min_seconds_between_replies": 0,
+    "max_replies_per_10_minutes": 200,
+    "max_replies_per_hour": 500,
+    "notice_customer": true,
+    "notice_min_interval_seconds": 300,
+    "notice_reply": "当前自动客服用量已超，请稍等 {retry_after_minutes} 分钟，冷却后我会继续处理您的消息。"
+  },
+  "reply": {
+    "prefix": "[OmniAuto RAG企业测] ",
+    "allow_fallback_send": false
+  },
+  "rag_response": {
+    "enabled": true,
+    "apply_to_unmatched": true,
+    "apply_to_matched_product": false,
+    "apply_to_small_talk": false,
+    "skip_llm_after_apply": true,
+    "min_hit_score": 0.12,
+    "max_reply_chars": 220,
+    "max_snippet_chars": 130,
+    "allowed_source_types": [
+      "product_doc",
+      "manual",
+      "rag_experience"
+    ]
+  },
+  "rag_seed_paths": [
+    {
+      "path": "apps/wechat_ai_customer_service/tests/fixtures/rag_enterprise_live_reference.txt",
+      "source_type": "product_doc",
+      "category": "product_explanations",
+      "product_id": "fl-920"
+    }
+  ],
+  "data_capture": {
+    "enabled": true,
+    "workbook_path": "runtime/apps/wechat_ai_customer_service/test_artifacts/file_transfer_rag_enterprise_customer_leads.xlsx",
+    "sheet_name": "客户线索",
+    "required_fields": [
+      "name",
+      "phone"
+    ],
+    "write_on_send_only": false,
+    "success_reply": "资料我收到了，后面按这个继续跟进。",
+    "incomplete_reply": "资料我看到了，还差：{missing_fields}。您发我一下，我这边补齐。"
+  },
+  "product_knowledge": {
+    "enabled": false,
+    "path": "apps/wechat_ai_customer_service/data/compiled/structured_compat/product_knowledge.example.json"
+  },
+  "handoff": {
+    "enabled": true,
+    "auto_acknowledge": true,
+    "acknowledgement_reply": "这个我现在还不能直接确认，我把情况记下，问清楚负责人意见后再回复您。"
+  },
+  "operator_alert": {
+    "enabled": true,
+    "alert_log_path": "runtime/apps/wechat_ai_customer_service/logs/file_transfer_rag_enterprise_operator_alerts.jsonl"
+  },
+  "service_profile": {
+    "role": "谨慎、真实、不过度承诺的微信客服",
+    "tone": "简短、礼貌、像真人客服",
+    "answer_boundary": "RAG 只能作为软参考；价格、库存、发货、售后、账期、合同等仍以正式规则或人工确认为准。"
+  },
+  "intent_assist": {
+    "enabled": true,
+    "mode": "heuristic",
+    "advisory_only": true,
+    "llm_advisory": {
+      "enabled": false,
+      "provider": "openai",
+      "advisory_only": true,
+      "include_prompt_in_audit": false,
+      "model": "gpt-5.4",
+      "base_url": "https://aiself.vip/v1",
+      "timeout_seconds": 120,
+      "candidate_json_path": ""
+    }
+  },
+  "targets": [
+    {
+      "name": "文件传输助手",
+      "enabled": true,
+      "exact": true,
+      "allow_self_for_test": true,
+      "max_batch_messages": 3
+    }
+  ]
+}

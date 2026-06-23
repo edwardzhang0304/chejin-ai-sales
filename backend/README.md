@@ -1,6 +1,6 @@
 # 车金运营后台后端
 
-P0 范围：人工新增客户线索、手机号去重、销售轮询分配、线索列表详情、无效/恢复、操作日志、手机号明文审计、选中线索导出。
+当前范围：人工新增客户线索、手机号去重、销售轮询分配、线索列表详情、无效/恢复、操作日志、手机号明文审计、选中线索导出、销售管理、Worker 管理。
 
 ## Docker 启动，推荐
 
@@ -8,6 +8,13 @@ P0 范围：人工新增客户线索、手机号去重、销售轮询分配、�
 cd backend
 cp .env.example .env
 docker compose up --build
+```
+
+首次启动或模型变更后执行数据库迁移：
+
+```bash
+cd backend
+docker compose exec api alembic upgrade head
 ```
 
 健康检查：
@@ -49,7 +56,15 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ## 数据库迁移
 
-P0 后端已接入 Alembic 迁移体系。开发环境可临时使用 `AUTO_CREATE_TABLES=true` 自动建表；生产环境必须关闭自动建表并执行迁移。
+P0 后端已接入 Alembic 迁移体系。默认使用 `AUTO_CREATE_TABLES=false`，通过 Alembic 管理表结构；生产环境必须关闭自动建表并执行迁移。
+
+如果是早期开发环境已经通过 `AUTO_CREATE_TABLES=true` 自动建过 0001 表结构、但没有 `alembic_version`，需要先执行：
+
+```bash
+cd backend
+docker compose exec api alembic stamp 20260603_0001
+docker compose exec api alembic upgrade head
+```
 
 执行迁移：
 
@@ -111,7 +126,19 @@ POST /api/leads/export
 
 GET  /api/sales
 POST /api/sales
+GET  /api/sales/{id}
 PUT  /api/sales/{id}
+POST /api/sales/{id}/worker-binding
+DELETE /api/sales/{id}/worker-binding
+
+GET  /api/workers
+POST /api/workers
+GET  /api/workers/{id}
+PUT  /api/workers/{id}
+POST /api/workers/{id}/enable
+POST /api/workers/{id}/disable
+POST /api/workers/{id}/heartbeat
+POST /api/workers/{id}/reset-binding
 
 GET  /api/operation-logs
 GET  /api/leads/{id}/operation-logs

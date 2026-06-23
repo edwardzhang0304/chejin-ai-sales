@@ -128,14 +128,17 @@ export function LeadDetailDrawer({ detail, loading, error, onClose, onRetry, onM
                       <button type="button" className="secondary-button contact-action-button" onClick={() => onRevealPhone(contact.id)}>
                         {revealedPhones[contact.id] ? "已查看" : "查看完整"}
                       </button>
+                    ) : contact.contact_type === "wechat" ? (
+                      <button
+                        type="button"
+                        className="secondary-button contact-action-button"
+                        onClick={() => void navigator.clipboard?.writeText(contact.masked_value)}
+                      >
+                        复制
+                      </button>
                     ) : null}
                   </p>
                 ))}
-              </section>
-
-              <section className="detail-block note-block">
-                <h3>备注</h3>
-                <p>{detail.remark || "暂无备注"}</p>
               </section>
 
               <section className="detail-block task-flow-block">
@@ -150,11 +153,9 @@ export function LeadDetailDrawer({ detail, loading, error, onClose, onRetry, onM
                 </ol>
               </section>
 
-              <section className="detail-actions" aria-label="线索操作">
+              <section className="drawer-action-section detail-actions" aria-label="线索操作">
                 <h3>操作</h3>
-                <button type="button" className="secondary-button" disabled>
-                  编辑线索
-                </button>
+                <div className="drawer-actions">
                 {detail.status === "invalid" ? (
                   <button type="button" className="secondary-button" onClick={() => onRestore(detail.id)}>
                     恢复有效
@@ -164,6 +165,7 @@ export function LeadDetailDrawer({ detail, loading, error, onClose, onRetry, onM
                     标记无效
                   </button>
                 )}
+                </div>
               </section>
             </>
           ) : null}

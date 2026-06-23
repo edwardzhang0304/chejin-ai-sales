@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "package": "wechat_ai_customer_service_server_private_source",
+  "description": "Private VPS-side source and deployment assets that should stay with the platform owner.",
+  "include_paths": [
+    "apps/wechat_ai_customer_service/vps_admin/",
+    "apps/wechat_ai_customer_service/deploy/aliyun1/",
+    "apps/wechat_ai_customer_service/scripts/seed_vps_test_customer.py"
+  ],
+  "shared_dependencies": [
+    "apps/wechat_ai_customer_service/auth/",
+    "apps/wechat_ai_customer_service/exports/",
+    "apps/wechat_ai_customer_service/knowledge_paths.py",
+    "apps/wechat_ai_customer_service/sync/",
+    "apps/wechat_ai_customer_service/workflows/generate_review_candidates.py"
+  ],
+  "never_ship_to_customer": [
+    "runtime/apps/wechat_ai_customer_service/vps_admin/",
+    "apps/wechat_ai_customer_service/data/shared_knowledge/",
+    "apps/wechat_ai_customer_service/data/versions/",
+    "VPS admin credentials",
+    "cloud shared_library state",
+    "customer account registry for other tenants"
+  ]
+}

@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "rules_path": "apps/wechat_ai_customer_service/configs/customer_service_rules.example.json",
+  "state_path": "runtime/apps/wechat_ai_customer_service/state/test_contact_workflow_state.json",
+  "audit_log_path": "runtime/apps/wechat_ai_customer_service/logs/test_contact_audit.jsonl",
+  "poll": {
+    "interval_seconds": 15,
+    "iterations": 1
+  },
+  "state_lock": {
+    "timeout_seconds": 120,
+    "stale_seconds": 900
+  },
+  "rate_limits": {
+    "min_seconds_between_replies": 0,
+    "max_replies_per_10_minutes": 20,
+    "max_replies_per_hour": 100,
+    "notice_customer": true,
+    "notice_min_interval_seconds": 300,
+    "notice_reply": "当前自动客服用量已超，已达到{reason_label}上限，请稍等约 {retry_after_minutes} 分钟，冷却后我会继续处理您的消息。"
+  },
+  "reply": {
+    "prefix": "[OmniAuto客服测试] ",
+    "allow_fallback_send": false
+  },
+  "rag_response": {
+    "enabled": true,
+    "apply_to_unmatched": true,
+    "apply_to_matched_product": false,
+    "apply_to_small_talk": false,
+    "skip_llm_after_apply": true,
+    "min_hit_score": 0.12,
+    "max_reply_chars": 220,
+    "max_snippet_chars": 130
+  },
+  "data_capture": {
+    "enabled": true,
+    "workbook_path": "runtime/apps/wechat_ai_customer_service/test_artifacts/test_contact_customer_leads.xlsx",
+    "sheet_name": "客户线索",
+    "required_fields": [
+      "name",
+      "phone"
+    ],
+    "write_on_send_only": false,
+    "success_reply": "资料我收到了，后面按这个继续跟进。",
+    "incomplete_reply": "资料我看到了，还差：{missing_fields}。您发我一下，我这边补齐。"
+  },
+  "product_knowledge": {
+    "enabled": true,
+    "path": "apps/wechat_ai_customer_service/data/compiled/structured_compat/product_knowledge.example.json"
+  },
+  "handoff": {
+    "enabled": true,
+    "auto_acknowledge": true,
+    "acknowledgement_reply": "这个我现在还不能直接确认，我把情况记下，问清楚负责人意见后再回复您。"
+  },
+  "operator_alert": {
+    "enabled": true,
+    "alert_log_path": "runtime/apps/wechat_ai_customer_service/logs/test_contact_operator_alerts.jsonl"
+  },
+  "service_profile": {
+    "role": "谨慎、真实、不过度承诺的微信客服",
+    "tone": "简短、礼貌、像真人客服",
+    "answer_boundary": "只按规则库、产品知识库和明确授权回答；缺少依据或涉及让利、破例、售后争议时转人工。"
+  },
+  "intent_assist": {
+    "enabled": true,
+    "mode": "heuristic",
+    "advisory_only": true,
+    "llm_advisory": {
+      "enabled": true,
+      "provider": "openai",
+      "advisory_only": true,
+      "include_prompt_in_audit": false,
+      "model": "gpt-5.4",
+      "base_url": "https://aiself.vip/v1",
+      "timeout_seconds": 120,
+      "candidate_json_path": ""
+    }
+  },
+  "targets": [
+    {
+      "name": "许聪",
+      "enabled": true,
+      "exact": true,
+      "allow_self_for_test": false,
+      "max_batch_messages": 3
+    }
+  ]
+}

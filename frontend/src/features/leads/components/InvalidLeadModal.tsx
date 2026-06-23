@@ -1,5 +1,6 @@
 import { FormEvent, useState } from "react";
 
+import { useLockBodyScroll } from "../../../shared/hooks/useLockBodyScroll";
 import type { InvalidLeadPayload, InvalidReason } from "../types";
 
 type Props = {
@@ -20,6 +21,8 @@ const invalidReasons: Array<{ value: InvalidReason; label: string }> = [
 ];
 
 export function InvalidLeadModal({ count, submitting, error, onClose, onSubmit }: Props) {
+  useLockBodyScroll();
+
   const [reason, setReason] = useState<InvalidReason>("wrong_info");
   const [remark, setRemark] = useState("");
 
@@ -33,8 +36,8 @@ export function InvalidLeadModal({ count, submitting, error, onClose, onSubmit }
 
   return (
     <div className="modal-backdrop" role="presentation">
-      <form className="modal" onSubmit={handleSubmit} aria-label="标记无效线索">
-        <header className="modal-head">
+      <form className="modal small-modal invalid-modal" onSubmit={handleSubmit} aria-label="标记无效线索">
+        <header>
           <div>
             <h2>标记为无效线索</h2>
             {count > 1 ? <p>本次将批量处理 {count} 条线索。</p> : null}
@@ -59,11 +62,11 @@ export function InvalidLeadModal({ count, submitting, error, onClose, onSubmit }
           <textarea value={remark} onChange={(event) => setRemark(event.target.value)} rows={3} placeholder="请输入补充说明" />
         </label>
 
-        <footer className="modal-actions">
+        <footer>
           <button type="button" className="secondary-button" onClick={onClose} disabled={submitting}>
             取消
           </button>
-          <button type="submit" className="primary-button" disabled={submitting}>
+          <button type="submit" className="danger-button" disabled={submitting}>
             {submitting ? "处理中..." : "确认标记无效"}
           </button>
         </footer>

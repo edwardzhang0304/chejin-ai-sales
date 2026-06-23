@@ -1,3 +1,4 @@
+import { useLockBodyScroll } from "../../../shared/hooks/useLockBodyScroll";
 import type { LeadListItem } from "../types";
 
 type Props = {
@@ -9,28 +10,20 @@ type Props = {
 };
 
 export function RestoreLeadModal({ lead, submitting, error, onClose, onConfirm }: Props) {
-  const restoreText = lead?.sales_id
-    ? `恢复后将按原销售 ${lead.sales_name || "-"} 回到已分配线索。`
-    : "恢复后因暂无销售归属，将回到未分配线索。";
+  useLockBodyScroll();
 
   return (
     <div className="modal-backdrop" role="presentation">
-      <section className="modal confirm-modal" role="dialog" aria-modal="true" aria-label="恢复为有效线索">
-        <header className="modal-head">
-          <div>
-            <h2>恢复为有效线索</h2>
-            <p>{lead ? `确认恢复「${lead.customer_name}」吗？` : "确认恢复该线索吗？"}</p>
-          </div>
+      <section className="modal small-modal" role="dialog" aria-modal="true" aria-label="恢复为有效线索">
+        <header>
+          <h2>恢复为有效线索</h2>
         </header>
 
         {error ? <div className="inline-alert error">{error}</div> : null}
 
-        <div className="confirm-copy">
-          <p>{restoreText}</p>
-          <p>恢复后该线索会重新进入有效线索列表，后续操作将继续写入操作日志。</p>
-        </div>
+        <p className="modal-copy">恢复后，如果线索存在当前销售，状态回到已分配；否则回到未分配并可触发重新分配。</p>
 
-        <footer className="modal-actions">
+        <footer>
           <button type="button" className="secondary-button" onClick={onClose} disabled={submitting}>
             取消
           </button>

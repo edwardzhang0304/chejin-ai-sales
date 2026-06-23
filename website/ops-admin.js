@@ -18,14 +18,12 @@ const state = {
   apiReady: true,
   module: null,
   leadsLoaded: false,
-  salesLoaded: false,
   leads: [],
   sales: [],
   selectedIds: new Set(),
   activeLeadId: null,
   pendingRestoreLeadId: null,
   invalidMode: "single",
-  editingLeadId: null,
   page: 1,
   pageSize: 20,
   total: 0,
@@ -39,10 +37,326 @@ const drawer = document.querySelector("[data-drawer]");
 const toast = document.querySelector("[data-toast]");
 const staticSnapshot = {
   table: document.querySelector("[data-leads-table]")?.innerHTML || "",
-  sales: document.querySelector("[data-sales-grid]")?.innerHTML || "",
   total: document.querySelector("[data-total-count]")?.textContent || "128",
   pagination: document.querySelector("[data-pagination]")?.innerHTML || "",
   selectedText: document.querySelector("[data-selected-count]")?.textContent || "已选 2 条",
+};
+
+const staticLeadDetails = {
+  "static-lead-1": {
+    customer_name: "王先生",
+    status: "assigned",
+    primary_phone_masked: "138****6678",
+    sales_name: "张伟",
+    created_at: "2026-06-02T14:30:00+08:00",
+    contacts: [
+      { id: "static-phone-1", contact_type: "phone", masked_value: "138****6678" },
+      { id: "static-wechat-1", contact_type: "wechat", masked_value: "wx_car_2026" },
+      { id: "static-email-1", contact_type: "email", masked_value: "未填写" },
+    ],
+    task_nodes: [
+      { label: "手机号去重完成", time: "未新建重复线索，记录可追溯。" },
+      { label: "轮询分配完成", time: "指针 A -> B，分配给张伟。" },
+      { label: "重复备注已追加", time: "2026-06-02 14:30 运营小陈追加。" },
+    ],
+  },
+  "static-lead-2": {
+    customer_name: "李女士",
+    status: "unassigned",
+    primary_phone_masked: "139****9081",
+    sales_name: "暂无",
+    created_at: "2026-06-02T13:12:00+08:00",
+    contacts: [
+      { id: "static-phone-2", contact_type: "phone", masked_value: "139****9081" },
+      { id: "static-wechat-2", contact_type: "wechat", masked_value: "wx_li_auto" },
+      { id: "static-email-2", contact_type: "email", masked_value: "未填写" },
+    ],
+    task_nodes: [
+      { label: "客户线索已创建", time: "2026-06-02 13:12" },
+      { label: "等待可用销售", time: "当前暂无可分配销售。" },
+    ],
+  },
+  "static-lead-3": {
+    customer_name: "刘先生",
+    status: "assigned",
+    primary_phone_masked: "136****4210",
+    sales_name: "王敏",
+    created_at: "2026-06-02T11:08:00+08:00",
+    contacts: [
+      { id: "static-phone-3", contact_type: "phone", masked_value: "136****4210" },
+      { id: "static-wechat-3", contact_type: "wechat", masked_value: "未填写" },
+      { id: "static-email-3", contact_type: "email", masked_value: "未填写" },
+    ],
+    task_nodes: [
+      { label: "手机号去重完成", time: "发现历史备注 1 次。" },
+      { label: "轮询分配完成", time: "分配给王敏。" },
+    ],
+  },
+  "static-lead-4": {
+    customer_name: "赵女士",
+    status: "invalid",
+    primary_phone_masked: "137****2331",
+    sales_name: "李强",
+    created_at: "2026-06-01T18:42:00+08:00",
+    contacts: [
+      { id: "static-phone-4", contact_type: "phone", masked_value: "137****2331" },
+      { id: "static-wechat-4", contact_type: "wechat", masked_value: "wx_zhao_car" },
+      { id: "static-email-4", contact_type: "email", masked_value: "未填写" },
+    ],
+    task_nodes: [
+      { label: "客户线索已创建", time: "2026-06-01 18:42" },
+      { label: "标记为无效", time: "无效原因：空号。" },
+    ],
+  },
+};
+
+const taskStatusMeta = {
+  blocked: { label: "阻塞", className: "blocked" },
+  pending: { label: "待处理", className: "pending" },
+  running: { label: "处理中", className: "running" },
+  completed: { label: "已完成", className: "completed" },
+  failed: { label: "失败", className: "failed" },
+  cancelled: { label: "已取消", className: "cancelled" },
+};
+
+const staticTaskDetails = {
+  "TASK-1831": {
+    status: "running",
+    basic: {
+      任务类型: "添加通讯录邀请",
+      执行状态: "处理中",
+      业务结果: "-",
+      异常原因: "-",
+      当前步骤: "正在搜索手机号 / 微信号",
+      创建时间: "2026-06-05 10:12",
+      更新时间: "2026-06-05 10:18",
+    },
+    object: {
+      客户: "王先生",
+      手机号: "138****6678",
+      微信号: "wx_car_2026",
+      线索状态: "已分配",
+      当前销售: "张伟",
+    },
+    executor: {
+      执行方类型: "Worker",
+      执行方: "Mac-01 展厅机",
+      执行方状态: "在线 / 忙碌",
+      最近心跳: "刚刚",
+      领取时间: "2026-06-05 10:18",
+    },
+    flow: [
+      ["任务已创建", "pending · 10:12 · 服务端"],
+      ["任务已领取", "running · 10:18 · Mac-01"],
+      ["正在搜索手机号", "current_step · 10:18 · Mac-01"],
+    ],
+    note: "暂无备注",
+    actions: ["查看执行方", "取消任务", "补充备注"],
+  },
+  "TASK-1830": {
+    status: "completed",
+    basic: {
+      任务类型: "添加通讯录邀请",
+      执行状态: "已完成",
+      业务结果: "已发送添加通讯录邀请",
+      异常原因: "-",
+      当前步骤: "-",
+      创建时间: "2026-06-05 09:30",
+      更新时间: "2026-06-05 09:42",
+      完成时间: "2026-06-05 09:42",
+    },
+    object: {
+      客户: "李女士",
+      手机号: "139****9081",
+      微信号: "wx_li_auto",
+      线索状态: "已分配",
+      当前销售: "王敏",
+    },
+    executor: {
+      执行方类型: "Worker",
+      执行方: "Mac-02 客服机",
+      执行方状态: "在线 / 空闲",
+      最近心跳: "刚刚",
+      领取时间: "2026-06-05 09:35",
+    },
+    advice: "已发送添加通讯录邀请，不代表客户已同意好友申请。",
+    adviceTitle: "结果说明",
+    flow: [
+      ["任务已创建", "pending · 09:30 · 服务端"],
+      ["任务已领取", "running · 09:35 · Mac-02"],
+      ["任务完成", "completed · 09:42 · invite_sent"],
+    ],
+    note: "暂无备注",
+    actions: ["查看执行结果", "查看执行方", "补充备注"],
+  },
+  "TASK-1829": {
+    status: "failed",
+    basic: {
+      任务类型: "添加通讯录邀请",
+      执行状态: "失败",
+      业务结果: "-",
+      异常原因: "手机号未找到客户",
+      当前步骤: "搜索手机号",
+      创建时间: "2026-06-05 09:10",
+      更新时间: "2026-06-05 09:18",
+    },
+    object: {
+      客户: "赵先生",
+      手机号: "137****2331",
+      微信号: "wx_zhao_car",
+      线索状态: "已分配",
+      当前销售: "张伟",
+    },
+    executor: {
+      执行方类型: "Worker",
+      执行方: "Mac-01 展厅机",
+      执行方状态: "在线 / 空闲",
+      最近心跳: "刚刚",
+      领取时间: "2026-06-05 09:12",
+    },
+    flow: [
+      ["任务已创建", "pending · 09:10 · 服务端"],
+      ["任务已领取", "running · 09:12 · Mac-01"],
+      ["搜索手机号", "current_step · 09:13 · Mac-01"],
+      ["执行失败", "failed · 09:18 · PHONE_NOT_FOUND"],
+    ],
+    note: "微信搜索该手机号未找到客户。",
+    actions: ["重新创建任务", "查看执行方", "补充备注", "标记线索无效"],
+  },
+  "TASK-1828": {
+    status: "blocked",
+    basic: {
+      任务类型: "添加通讯录邀请",
+      执行状态: "阻塞",
+      业务结果: "-",
+      异常原因: "销售未绑定 Worker",
+      当前步骤: "-",
+      创建时间: "2026-06-05 08:52",
+      更新时间: "2026-06-05 08:55",
+    },
+    object: {
+      客户: "周先生",
+      手机号: "136****4210",
+      微信号: "未填写",
+      线索状态: "已分配",
+      当前销售: "李强",
+    },
+    executor: {
+      执行方类型: "Worker",
+      执行方: "未绑定",
+      执行方状态: "-",
+      最近心跳: "-",
+      领取时间: "-",
+    },
+    advice: "该任务当前不可领取。阻塞原因：销售未绑定 Worker。建议进入销售详情，为该销售绑定可用 Worker。",
+    adviceTitle: "处理建议",
+    flow: [
+      ["任务已创建", "pending · 08:52 · 服务端"],
+      ["任务进入阻塞", "blocked · 08:55 · SALES_WORKER_NOT_BOUND"],
+    ],
+    note: "绑定 Worker 后，服务端可将任务恢复为待处理。",
+    actions: ["处理阻塞", "取消任务", "补充备注"],
+  },
+  "TASK-1827": {
+    status: "completed",
+    basic: {
+      任务类型: "添加通讯录邀请",
+      执行状态: "已完成",
+      业务结果: "已是好友",
+      异常原因: "-",
+      当前步骤: "-",
+      创建时间: "2026-06-04 16:20",
+      更新时间: "2026-06-04 16:33",
+      完成时间: "2026-06-04 16:33",
+    },
+    object: {
+      客户: "刘先生",
+      手机号: "136****4604",
+      微信号: "wx****04",
+      线索状态: "已分配",
+      当前销售: "王敏",
+    },
+    executor: {
+      执行方类型: "Worker",
+      执行方: "Mac-02 客服机",
+      执行方状态: "离线 / 空闲",
+      最近心跳: "12 分钟前",
+      领取时间: "2026-06-04 16:24",
+    },
+    advice: "业务结果为已是好友，不代表本次重新发送了添加通讯录邀请。",
+    adviceTitle: "结果说明",
+    flow: [
+      ["任务已创建", "pending · 16:20 · 服务端"],
+      ["任务已领取", "running · 16:24 · Mac-02"],
+      ["任务完成", "completed · 16:33 · already_friend"],
+    ],
+    note: "客户与销售微信已存在好友关系。",
+    actions: ["查看执行结果", "查看执行方", "补充备注"],
+  },
+  "TASK-1826": {
+    status: "pending",
+    basic: {
+      任务类型: "添加通讯录邀请",
+      执行状态: "待处理",
+      业务结果: "-",
+      异常原因: "-",
+      当前步骤: "-",
+      创建时间: "2026-06-04 15:40",
+      更新时间: "2026-06-04 15:40",
+    },
+    object: {
+      客户: "陈女士",
+      手机号: "138****9518",
+      微信号: "未填写",
+      线索状态: "已分配",
+      当前销售: "张伟",
+    },
+    executor: {
+      执行方类型: "Worker",
+      执行方: "待领取",
+      执行方状态: "-",
+      最近心跳: "-",
+      领取时间: "-",
+    },
+    flow: [["任务已创建", "pending · 15:40 · 服务端"]],
+    note: "等待可用 Worker 领取。",
+    actions: ["取消任务", "补充备注"],
+  },
+  "TASK-1825": {
+    status: "cancelled",
+    basic: {
+      任务类型: "添加通讯录邀请",
+      执行状态: "已取消",
+      业务结果: "-",
+      异常原因: "运营取消任务",
+      当前步骤: "-",
+      创建时间: "2026-06-04 14:20",
+      更新时间: "2026-06-04 14:32",
+      取消时间: "2026-06-04 14:32",
+    },
+    object: {
+      客户: "孙先生",
+      手机号: "139****6217",
+      微信号: "wx_sun_auto",
+      线索状态: "已分配",
+      当前销售: "李强",
+    },
+    executor: {
+      执行方类型: "Worker",
+      执行方: "未领取",
+      执行方状态: "-",
+      最近心跳: "-",
+      领取时间: "-",
+    },
+    advice: "任务已取消，终态不可继续回传。如仍需处理，应重新创建新任务，原取消记录保留用于追溯。",
+    adviceTitle: "取消说明",
+    flow: [
+      ["任务已创建", "pending · 14:20 · 服务端"],
+      ["任务已取消", "cancelled · 14:32 · 运营小陈"],
+    ],
+    note: "运营判断该线索暂不需要发送添加通讯录邀请。",
+    actions: ["查看取消信息", "重新创建任务", "补充备注"],
+  },
 };
 
 const escapeHtml = (value) =>
@@ -119,12 +433,10 @@ const markApiUnavailable = (error) => {
 
 const restoreStaticPreview = () => {
   const tbody = document.querySelector("[data-leads-table]");
-  const salesGrid = document.querySelector("[data-sales-grid]");
   const total = document.querySelector("[data-total-count]");
   const pagination = document.querySelector("[data-pagination]");
   const selected = document.querySelector("[data-selected-count]");
   if (tbody && staticSnapshot.table) tbody.innerHTML = staticSnapshot.table;
-  if (salesGrid && staticSnapshot.sales) salesGrid.innerHTML = staticSnapshot.sales;
   if (total) total.textContent = staticSnapshot.total;
   if (pagination && staticSnapshot.pagination) pagination.innerHTML = staticSnapshot.pagination;
   if (selected) selected.textContent = staticSnapshot.selectedText;
@@ -178,7 +490,7 @@ const renderLeads = (data) => {
   if (!tbody) return;
 
   if (!state.leads.length) {
-    tbody.innerHTML = `<tr><td colspan="9">暂无线索，调整筛选条件后重试。</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8">暂无线索，调整筛选条件后重试。</td></tr>`;
     state.selectedIds.clear();
     updateSelectedCount();
     renderPagination();
@@ -195,13 +507,9 @@ const renderLeads = (data) => {
         lead.duplicate_count > 0
           ? `<button class="link-button" type="button" data-action="open-detail" data-lead-id="${escapeHtml(lead.id)}">${lead.duplicate_count} 次</button>`
           : "0 次";
-      const action =
-        lead.status === "invalid"
-          ? `<button class="link-button" type="button" data-open-modal="restore" data-lead-id="${escapeHtml(lead.id)}">恢复有效</button>`
-          : `<button class="link-button" type="button" data-action="open-detail" data-lead-id="${escapeHtml(lead.id)}">查看详情</button>`;
 
       return `
-        <tr class="${checked ? "selected" : ""}">
+        <tr class="${checked ? "selected" : ""}" data-lead-id="${escapeHtml(lead.id)}">
           <td><input type="checkbox" ${checked} aria-label="选择${escapeHtml(lead.customer_name)}" data-select-lead="${escapeHtml(lead.id)}" /></td>
           <td class="lead-cell"><strong>${escapeHtml(lead.customer_name)}</strong><small>${escapeHtml(source)} · ${escapeHtml(lead.created_by_name || "运营")}</small></td>
           <td class="contact-cell"><strong>${escapeHtml(lead.primary_phone_masked || "未填写")}</strong><small>${escapeHtml(contactSub)}</small></td>
@@ -210,7 +518,6 @@ const renderLeads = (data) => {
           <td>${duplicate}</td>
           <td>${escapeHtml(lead.remark_summary || "暂无备注")}</td>
           <td>${formatDate(lead.updated_at)}</td>
-          <td>${action}</td>
         </tr>`;
     })
     .join("");
@@ -242,7 +549,7 @@ const updateSelectedCount = () => {
 
 const loadLeads = async () => {
   const tbody = document.querySelector("[data-leads-table]");
-  if (tbody) tbody.innerHTML = `<tr><td colspan="9">正在加载线索...</td></tr>`;
+  if (tbody) tbody.innerHTML = `<tr><td colspan="8">正在加载线索...</td></tr>`;
   try {
     const [stats, salesData, leadsData] = await Promise.all([
       apiJson("/leads/stats"),
@@ -264,6 +571,13 @@ const loadLeads = async () => {
 
 const loadLeadDetail = async (leadId) => {
   if (!leadId) return;
+  if (!state.apiReady && staticLeadDetails[leadId]) {
+    state.activeLeadId = leadId;
+    state.activeLead = staticLeadDetails[leadId];
+    renderLeadDetail(staticLeadDetails[leadId]);
+    drawer?.classList.remove("closed");
+    return;
+  }
   try {
     const detail = await apiJson(`/leads/${leadId}`);
     state.activeLeadId = leadId;
@@ -308,51 +622,65 @@ const renderLeadDetail = (detail) => {
       .map((node) => `<li><strong>${escapeHtml(node.label)}</strong><span>${formatDate(node.time)}</span></li>`)
       .join("")}</ol>`;
   }
+
+  const actions = document.querySelector("[data-detail-actions]");
+  if (actions) {
+    actions.innerHTML =
+      detail.status === "invalid"
+        ? `<h3>操作</h3><button type="button" data-open-modal="restore">恢复有效</button>`
+        : `<h3>操作</h3><button type="button" data-open-modal="invalid" data-invalid-mode="single">标记无效</button>`;
+  }
 };
 
-const renderSales = (items) => {
-  state.sales = items || [];
-  const grid = document.querySelector("[data-sales-grid]");
-  if (!grid) return;
-  if (!state.sales.length) {
-    grid.innerHTML = `<article><header><h3>暂无销售</h3></header><p>新增销售后可参与轮询分配。</p></article>`;
-    return;
-  }
-  grid.innerHTML = state.sales
-    .map((sales) => {
-      const enabled = sales.enabled;
-      const participates = sales.participate_in_round_robin;
-      const statusClass = enabled ? "assigned" : "invalid";
-      const statusLabel = enabled ? "启用" : "停用";
-      const roundRobinLabel = participates ? "参与轮询" : "不参与轮询";
-      return `
-        <article>
-          <header>
-            <h3>${escapeHtml(sales.sales_name)}</h3>
-            <span class="status ${statusClass}">${statusLabel}</span>
-          </header>
-          <p>${roundRobinLabel} · 排序 ${sales.sort_order ?? "-"} · 名下线索 ${sales.lead_count ?? 0}</p>
-          <label aria-label="${escapeHtml(sales.sales_name)}${roundRobinLabel}">
-            <input type="checkbox" ${participates ? "checked" : ""} ${enabled ? "" : "disabled"} data-action="toggle-sales-round-robin" data-sales-id="${escapeHtml(sales.id)}" />
-            ${roundRobinLabel}
-          </label>
-        </article>`;
-    })
+const renderDefinitionList = (selector, values) => {
+  const node = document.querySelector(selector);
+  if (!node) return;
+  node.innerHTML = Object.entries(values)
+    .map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`)
     .join("");
 };
 
-const loadSales = async () => {
-  const grid = document.querySelector("[data-sales-grid]");
-  if (grid) grid.innerHTML = `<article><header><h3>正在加载销售...</h3></header><p>请稍候。</p></article>`;
-  try {
-    const data = await apiJson("/sales");
-    state.apiReady = true;
-    renderSales(data.items || []);
-    state.salesLoaded = true;
-  } catch (error) {
-    if (!state.salesLoaded) markApiUnavailable(error);
-    else showToast(error.message || "销售列表加载失败", "error");
+const renderTaskDetail = (taskId) => {
+  const detail = staticTaskDetails[taskId] || staticTaskDetails["TASK-1831"];
+  const status = taskStatusMeta[detail.status] || taskStatusMeta.pending;
+  const drawerEl = document.querySelector("[data-task-drawer]");
+  if (!drawerEl) return;
+
+  document.querySelector("[data-task-title]").textContent = taskId;
+  const statusEl = document.querySelector("[data-task-status]");
+  statusEl.textContent = status.label;
+  statusEl.className = `status ${status.className}`;
+  renderDefinitionList("[data-task-basic]", detail.basic);
+  renderDefinitionList("[data-task-object]", detail.object);
+  renderDefinitionList("[data-task-executor]", detail.executor);
+
+  const adviceWrap = document.querySelector("[data-task-advice-wrap]");
+  const advice = document.querySelector("[data-task-advice]");
+  const adviceTitle = document.querySelector("[data-task-advice-title]");
+  if (adviceWrap && advice) {
+    adviceWrap.hidden = !detail.advice;
+    advice.textContent = detail.advice || "";
+    if (adviceTitle) adviceTitle.textContent = detail.adviceTitle || "处理建议";
   }
+
+  const flow = document.querySelector("[data-task-flow]");
+  if (flow) {
+    flow.innerHTML = detail.flow
+      .map(([label, value]) => `<li><strong>${escapeHtml(label)}</strong><span>${escapeHtml(value)}</span></li>`)
+      .join("");
+  }
+
+  const note = document.querySelector("[data-task-note]");
+  if (note) note.textContent = detail.note || "暂无备注";
+
+  const actions = document.querySelector("[data-task-actions]");
+  if (actions) {
+    actions.innerHTML = detail.actions
+      .map((label) => `<button type="button" data-action="task-static-action">${escapeHtml(label)}</button>`)
+      .join("");
+  }
+
+  drawerEl.classList.remove("closed");
 };
 
 const showModule = async (moduleName) => {
@@ -369,7 +697,20 @@ const showModule = async (moduleName) => {
   });
 
   if (moduleName === "leads" && !state.leadsLoaded) await loadLeads();
-  if (moduleName === "sales" && !state.salesLoaded) await loadSales();
+};
+
+const setDrawerMode = (scope, mode) => {
+  document.querySelectorAll(`[data-${scope}-mode]`).forEach((panel) => {
+    panel.classList.toggle("is-active", panel.dataset[`${scope}Mode`] === mode);
+  });
+};
+
+const setSalesEditing = (isEditing) => {
+  document.querySelector("[data-sales-drawer]")?.classList.toggle("is-editing", isEditing);
+};
+
+const setWorkerEditing = (isEditing) => {
+  document.querySelector("[data-worker-drawer]")?.classList.toggle("is-editing", isEditing);
 };
 
 const closeModal = (modal) => {
@@ -383,51 +724,30 @@ const openModal = (name) => {
 };
 
 const resetLeadForm = () => {
-  state.editingLeadId = null;
-  document.querySelector('[data-lead-field="customer_name"]').value = "";
-  document.querySelector('[data-lead-field="car_type"]').value = "";
-  document.querySelector('[data-lead-field="remark"]').value = "";
-  document.querySelectorAll("[data-contact-value]").forEach((input, index) => {
-    input.value = index === 0 ? "" : "";
+  ["customer_name", "phone", "wechat", "email", "remark"].forEach((field) => {
+    const input = document.querySelector(`[data-lead-field="${field}"]`);
+    if (input) input.value = "";
   });
-  document.querySelectorAll("[data-custom-value]").forEach((input) => {
+  document.querySelectorAll("[data-custom-key], [data-custom-value]").forEach((input) => {
     input.value = "";
   });
-  const note = document.querySelector("[data-duplicate-note] p");
-  if (note) note.textContent = "输入手机号后会自动预查重复；最终保存仍由后端事务内查重。";
-};
-
-const fillLeadForm = (lead) => {
-  state.editingLeadId = lead.id;
-  document.querySelector('[data-lead-field="customer_name"]').value = lead.customer_name || "";
-  document.querySelector('[data-lead-field="car_type"]').value = lead.custom_fields?.car_type || "";
-  document.querySelector('[data-lead-field="remark"]').value = lead.remark || "";
-  const contactRows = [...document.querySelectorAll(".contact-editor")];
-  contactRows.forEach((row, index) => {
-    const contact = (lead.contacts || [])[index];
-    if (!contact) return;
-    row.querySelector("[data-contact-type]").value = contact.contact_type;
-    row.querySelector("[data-contact-value]").value = contact.masked_value;
-  });
+  const duplicateNote = document.querySelector("[data-duplicate-note]");
+  if (duplicateNote) duplicateNote.hidden = true;
 };
 
 const collectLeadPayload = () => {
   const customerName = document.querySelector('[data-lead-field="customer_name"]').value.trim();
   const remark = document.querySelector('[data-lead-field="remark"]').value.trim();
-  const carType = document.querySelector('[data-lead-field="car_type"]').value.trim();
-  const contacts = { phones: [], wechats: [], emails: [] };
-
-  document.querySelectorAll(".contact-editor").forEach((row) => {
-    const type = row.querySelector("[data-contact-type]")?.value;
-    const value = row.querySelector("[data-contact-value]")?.value.trim();
-    if (!value) return;
-    if (type === "phone") contacts.phones.push(value);
-    if (type === "wechat") contacts.wechats.push(value);
-    if (type === "email") contacts.emails.push(value);
-  });
+  const phone = document.querySelector('[data-lead-field="phone"]')?.value.trim();
+  const wechat = document.querySelector('[data-lead-field="wechat"]')?.value.trim();
+  const email = document.querySelector('[data-lead-field="email"]')?.value.trim();
+  const contacts = {
+    phones: phone ? [phone] : [],
+    wechats: wechat ? [wechat] : [],
+    emails: email ? [email] : [],
+  };
 
   const customFields = {};
-  if (carType) customFields.car_type = carType;
   document.querySelectorAll(".custom-field-row").forEach((row) => {
     const key = row.querySelector("[data-custom-key]")?.value.trim();
     const value = row.querySelector("[data-custom-value]")?.value.trim();
@@ -439,24 +759,49 @@ const collectLeadPayload = () => {
   return { customer_name: customerName, ...contacts, remark, custom_fields: customFields };
 };
 
+const addCustomField = () => {
+  const list = document.querySelector('[data-modal="lead"] .custom-field-list');
+  if (!list) return;
+  const index = list.querySelectorAll(".custom-field-row").length + 1;
+  const row = document.createElement("div");
+  row.className = "custom-field-row";
+  row.innerHTML = `
+    <label>
+      <span>字段名称</span>
+      <input type="text" aria-label="自定义字段名称 ${index}" data-custom-key />
+    </label>
+    <label>
+      <span>字段内容</span>
+      <input type="text" aria-label="自定义字段内容 ${index}" data-custom-value />
+    </label>
+    <button class="ghost-button" type="button" data-action="remove-custom-field">删除</button>`;
+  list.appendChild(row);
+};
+
+const removeCustomField = (button) => {
+  button.closest(".custom-field-row")?.remove();
+};
+
 const saveLead = async (shouldContinue, button) => {
   await setButtonBusy(button, async () => {
     const payload = collectLeadPayload();
-    const path = state.editingLeadId ? `/leads/${state.editingLeadId}` : "/leads";
-    const method = state.editingLeadId ? "PUT" : "POST";
     try {
-      const data = await apiJson(path, { method, body: JSON.stringify(payload) });
-      showToast(state.editingLeadId ? "线索已更新" : "客户线索已新增", "success");
+      const data = await apiJson("/leads", { method: "POST", body: JSON.stringify(payload) });
+      showToast("客户线索已新增", "success");
       state.page = 1;
       state.leadsLoaded = false;
       await loadLeads();
-      await loadLeadDetail(data.id || data.lead?.id || state.editingLeadId);
+      await loadLeadDetail(data.id || data.lead?.id);
       if (!shouldContinue) closeModal(document.querySelector('[data-modal="lead"]'));
       if (shouldContinue) resetLeadForm();
     } catch (error) {
       if (error.code === "LEAD_PHONE_DUPLICATED") {
-        const note = document.querySelector("[data-duplicate-note] p");
-        if (note) note.textContent = error.message;
+        const note = document.querySelector("[data-duplicate-note]");
+        if (note) {
+          note.hidden = false;
+          const text = note.querySelector("p");
+          if (text) text.textContent = error.message;
+        }
       }
       showToast(error.message || "保存失败", "error");
     }
@@ -464,19 +809,19 @@ const saveLead = async (shouldContinue, button) => {
 };
 
 const duplicatePreview = async () => {
-  const phones = [...document.querySelectorAll(".contact-editor")]
-    .filter((row) => row.querySelector("[data-contact-type]")?.value === "phone")
-    .map((row) => row.querySelector("[data-contact-value]")?.value.trim())
-    .filter(Boolean);
+  const phone = document.querySelector('[data-lead-field="phone"]')?.value.trim();
+  const phones = phone ? [phone] : [];
   if (!phones.length) return;
   try {
     const data = await apiJson("/leads/duplicate-preview", { method: "POST", body: JSON.stringify({ phones }) });
     const hit = (data.items || []).find((item) => item.duplicated);
-    const note = document.querySelector("[data-duplicate-note] p");
+    const note = document.querySelector("[data-duplicate-note]");
     if (note) {
-      note.textContent = hit
+      note.hidden = !hit;
+      const text = note.querySelector("p");
+      if (text) text.textContent = hit
         ? `发现重复手机号：${hit.phone_masked}，原线索 ${hit.customer_name || hit.lead_id}，保存时会追加备注。`
-        : "未发现活跃重复手机号。保存时后端仍会再次查重。";
+        : "";
     }
   } catch (error) {
     console.warn("[ops-admin] duplicate preview failed", error);
@@ -590,49 +935,6 @@ const revealPhone = async (contactId, button) => {
   });
 };
 
-const toggleSalesRoundRobin = async (input) => {
-  const sales = state.sales.find((item) => item.id === input.dataset.salesId);
-  if (!sales) return;
-  const next = { ...sales, participate_in_round_robin: input.checked };
-  try {
-    await apiJson(`/sales/${sales.id}`, {
-      method: "PUT",
-      body: JSON.stringify({
-        sales_name: next.sales_name,
-        enabled: next.enabled,
-        participate_in_round_robin: next.participate_in_round_robin,
-        sort_order: next.sort_order,
-      }),
-    });
-    showToast("销售轮询配置已更新", "success");
-    await loadSales();
-  } catch (error) {
-    input.checked = !input.checked;
-    showToast(error.message || "更新销售失败", "error");
-  }
-};
-
-const createSales = async () => {
-  const salesName = window.prompt("请输入销售姓名");
-  if (!salesName) return;
-  const sortOrder = Number(window.prompt("请输入轮询排序", "10") || "10");
-  try {
-    await apiJson("/sales", {
-      method: "POST",
-      body: JSON.stringify({
-        sales_name: salesName,
-        enabled: true,
-        participate_in_round_robin: true,
-        sort_order: Number.isNaN(sortOrder) ? 10 : sortOrder,
-      }),
-    });
-    showToast("销售已新增", "success");
-    await loadSales();
-  } catch (error) {
-    showToast(error.message || "新增销售失败", "error");
-  }
-};
-
 moduleButtons.forEach((button) => {
   button.addEventListener("click", () => showModule(button.dataset.module));
 });
@@ -674,19 +976,20 @@ document.addEventListener(
       });
       updateSelectedCount();
     }
-    if (event.target.matches("[data-contact-value], [data-contact-type]")) {
+    if (event.target.matches('[data-lead-field="phone"]')) {
       duplicatePreview();
-    }
-    if (event.target.matches('[data-action="toggle-sales-round-robin"]')) {
-      toggleSalesRoundRobin(event.target);
     }
   },
   true
 );
 
 document.addEventListener("click", (event) => {
-  const actionEl = event.target.closest("[data-action]");
-  const openModalButton = event.target.closest("[data-open-modal]");
+  const target = event.target instanceof Element ? event.target : event.target.parentElement;
+  if (!target) return;
+  const actionEl = target.closest("[data-action]");
+  const openModalButton = target.closest("[data-open-modal]");
+  const leadRow = target.closest("tr[data-lead-id]");
+  const taskRow = target.closest("tr[data-task-id]");
 
   if (openModalButton) {
     const modalName = openModalButton.dataset.openModal;
@@ -696,28 +999,43 @@ document.addEventListener("click", (event) => {
     openModal(modalName);
   }
 
-  if (event.target.closest("[data-close-modal]")) {
-    closeModal(event.target.closest(".modal-backdrop"));
+  if (target.closest("[data-close-modal]")) {
+    closeModal(target.closest(".modal-backdrop"));
   }
 
-  if (event.target.closest("[data-close-drawer]")) {
-    drawer.classList.add("closed");
+  if (target.closest("[data-close-drawer]")) {
+    target.closest(".detail-drawer, .management-drawer")?.classList.add("closed");
   }
 
-  if (event.target.classList.contains("modal-backdrop")) {
-    event.target.hidden = true;
+  if (target.classList.contains("modal-backdrop")) {
+    target.hidden = true;
   }
 
-  if (event.target.matches("[data-page]")) {
-    state.page = Number(event.target.dataset.page);
+  if (target.matches("[data-page]")) {
+    state.page = Number(target.dataset.page);
     loadLeads();
+  }
+
+  if (leadRow && !target.closest("button, input, select, textarea, a")) {
+    loadLeadDetail(leadRow.dataset.leadId);
+  }
+
+  if (taskRow && !target.closest("button, input, select, textarea, a")) {
+    taskRow.parentElement?.querySelectorAll("tr").forEach((row) => row.classList.toggle("selected", row === taskRow));
+    renderTaskDetail(taskRow.dataset.taskId);
   }
 
   if (!actionEl) return;
   const action = actionEl.dataset.action;
+  const managementRow = actionEl.closest(".management-table tbody tr");
+  if (managementRow) {
+    managementRow.parentElement?.querySelectorAll("tr").forEach((row) => row.classList.toggle("selected", row === managementRow));
+  }
   if (action === "open-detail") loadLeadDetail(actionEl.dataset.leadId);
   if (action === "save-lead") saveLead(false, actionEl);
   if (action === "save-lead-continue") saveLead(true, actionEl);
+  if (action === "add-custom-field") addCustomField();
+  if (action === "remove-custom-field") removeCustomField(actionEl);
   if (action === "confirm-invalid") confirmInvalid(actionEl);
   if (action === "confirm-restore") confirmRestore(actionEl);
   if (action === "retry-assign") retryAssign(actionEl);
@@ -727,11 +1045,21 @@ document.addEventListener("click", (event) => {
     navigator.clipboard?.writeText(actionEl.dataset.copyValue || "");
     showToast("已复制", "success");
   }
-  if (action === "edit-active-lead" && state.activeLead) {
-    fillLeadForm(state.activeLead);
-    openModal("lead");
+  if (action === "show-sales-detail") {
+    document.querySelector("[data-sales-drawer]")?.classList.remove("closed");
+    setSalesEditing(false);
   }
-  if (action === "new-sales") createSales();
+  if (action === "show-sales-edit") setSalesEditing(true);
+  if (action === "close-sales-drawer") document.querySelector("[data-sales-drawer]")?.classList.add("closed");
+  if (action === "show-worker-detail") {
+    document.querySelector("[data-worker-drawer]")?.classList.remove("closed");
+    setDrawerMode("worker", "detail");
+    setWorkerEditing(false);
+  }
+  if (action === "show-worker-edit") setWorkerEditing(true);
+  if (action === "close-worker-drawer") document.querySelector("[data-worker-drawer]")?.classList.add("closed");
+  if (action === "close-task-drawer") document.querySelector("[data-task-drawer]")?.classList.add("closed");
+  if (action === "task-static-action") showToast("这是任务中心设计稿示意，具体操作由前端按 PRD 接口实现。", "info");
 });
 
 document.addEventListener("keydown", (event) => {
@@ -740,6 +1068,7 @@ document.addEventListener("keydown", (event) => {
     modal.hidden = true;
   });
   drawer.classList.add("closed");
+  document.querySelectorAll(".management-drawer").forEach((panel) => panel.classList.add("closed"));
 });
 
 const initialModule = new URLSearchParams(window.location.search).get("module");

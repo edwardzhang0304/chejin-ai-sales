@@ -1,0 +1,31 @@
+{
+  "source_system": "测试ERP-售后模块",
+  "export_time": "2026-04-26T21:58:00+08:00",
+  "record_type": "after_sales",
+  "sync_status": "imported",
+  "records": [
+    {
+      "external_id": "AS-TEST-20260426-001",
+      "product_name": "静音空气净化器 AP-88",
+      "customer_region": "江苏苏州",
+      "issue": "客户反馈开机 10 分钟后有异响",
+      "standard_action": "先引导客户拍摄视频并确认滤芯安装方向，无法排除时登记售后工单。",
+      "auto_reply_allowed": true
+    },
+    {
+      "external_id": "AS-TEST-20260426-002",
+      "product_name": "升降会议桌 MT-160",
+      "customer_region": "浙江杭州",
+      "issue": "客户要求运输磕碰赔偿 500 元",
+      "standard_action": "赔偿金额不能自动承诺，需要客服收集照片、订单号、外包装情况并转人工确认。",
+      "auto_reply_allowed": false
+    }
+  ],
+  "field_mapping_hint": {
+    "external_id": "外部售后单号",
+    "product_name": "关联商品",
+    "issue": "客户问题",
+    "standard_action": "标准处理方法",
+    "auto_reply_allowed": "是否可自动回复"
+  }
+}

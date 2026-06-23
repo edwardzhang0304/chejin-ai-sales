@@ -1,5 +1,4 @@
-import { ApiError, buildOperatorHeaders, buildUrl, request } from "../../shared/api/client";
-import type { ApiEnvelope } from "../../shared/api/types";
+import { apiErrorFromResponse, buildOperatorHeaders, buildUrl, request } from "../../shared/api/client";
 import type {
   BatchInvalidResult,
   CreateLeadResult,
@@ -73,17 +72,7 @@ export async function exportLeads(leadIds: string[]) {
   });
 
   if (!response.ok) {
-    const envelope = (await response.json().catch(() => null)) as ApiEnvelope<unknown> | null;
-    if (envelope) {
-      throw new ApiError({
-        status: response.status,
-        code: envelope.code,
-        message: envelope.message,
-        data: envelope.data,
-        traceId: envelope.trace_id,
-      });
-    }
-    throw new Error("导出失败，请稍后重试。");
+    throw await apiErrorFromResponse(response);
   }
 
   return response.blob();

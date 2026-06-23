@@ -1,0 +1,11 @@
+[
+  {
+    "name": "rag_soft_reference_reply",
+    "messages": ["型号命名一般怎么看，我想先了解一下？"],
+    "expect_action": "sent",
+    "expect_rule_name": "rag_context_reply",
+    "expect_intent": "product_detail",
+    "expect_reply_contains": ["RAG实盘", "型号命名", "作为参考"],
+    "expect_reply_not_contains": ["请示上级", "无法直接确认"]
+  }
+]

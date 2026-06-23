@@ -10,7 +10,6 @@ type Props = {
   onToggleSelected: (leadId: string) => void;
   onToggleAllVisible: () => void;
   onOpenDetail: (leadId: string) => void;
-  onRestoreLead: (leadId: string) => void;
 };
 
 const statusText: Record<string, string> = {
@@ -29,7 +28,6 @@ export function LeadsTable({
   onToggleSelected,
   onToggleAllVisible,
   onOpenDetail,
-  onRestoreLead,
 }: Props) {
   const allVisibleSelected = items.length > 0 && items.every((item) => selectedIds.has(item.id));
 
@@ -67,7 +65,6 @@ export function LeadsTable({
             <th>重复</th>
             <th>备注摘要</th>
             <th>更新时间</th>
-            <th>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -96,22 +93,6 @@ export function LeadsTable({
               <td>{item.duplicate_count > 0 ? `${item.duplicate_count} 次` : "-"}</td>
               <td>{item.remark_summary || "-"}</td>
               <td>{new Date(item.updated_at).toLocaleString("zh-CN")}</td>
-              <td>
-                <button
-                  type="button"
-                  className="link-button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    if (item.status === "invalid") {
-                      onRestoreLead(item.id);
-                    } else {
-                      onOpenDetail(item.id);
-                    }
-                  }}
-                >
-                  {item.status === "invalid" ? "恢复有效" : "查看详情"}
-                </button>
-              </td>
             </tr>
           ))}
         </tbody>

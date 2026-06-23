@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { formatApiError } from "../../shared/api/client";
+import { useLockBodyScroll } from "../../shared/hooks/useLockBodyScroll";
 import { listOperationLogs } from "./api";
 import type { OperationLogItem, OperationLogQuery, OperationLogResult } from "./types";
 
@@ -20,6 +21,17 @@ const eventOptions = [
   { value: "sales_created", label: "新增销售" },
   { value: "sales_updated", label: "编辑销售" },
   { value: "sales_enabled_changed", label: "启用/停用销售" },
+  { value: "sales_worker_bound", label: "绑定销售 Worker" },
+  { value: "sales_worker_unbound", label: "清空销售 Worker" },
+  { value: "worker_created", label: "新增 Worker" },
+  { value: "worker_updated", label: "编辑 Worker" },
+  { value: "worker_enabled_changed", label: "启用/停用 Worker" },
+  { value: "worker_binding_reset", label: "重置 Worker 绑定" },
+  { value: "task_created", label: "创建任务" },
+  { value: "task_unblocked", label: "解除任务阻塞" },
+  { value: "task_cancelled", label: "取消任务" },
+  { value: "task_retried", label: "重新处理任务" },
+  { value: "task_comment_added", label: "补充任务备注" },
   { value: "phone_revealed", label: "查看完整手机号" },
   { value: "leads_exported", label: "导出选中线索" },
 ];
@@ -29,6 +41,8 @@ const moduleOptions = [
   { value: "lead", label: "客户线索" },
   { value: "assignment", label: "分配" },
   { value: "sales", label: "销售" },
+  { value: "worker", label: "Worker" },
+  { value: "task", label: "任务" },
   { value: "export", label: "导出" },
 ];
 
@@ -143,6 +157,8 @@ export function LogsPage() {
   const [error, setError] = useState<string | null>(null);
   const [activeLog, setActiveLog] = useState<OperationLogItem | null>(null);
   const requestIdRef = useRef(0);
+
+  useLockBodyScroll(Boolean(activeLog));
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     const requestId = ++requestIdRef.current;
@@ -269,7 +285,7 @@ export function LogsPage() {
           ) : items.length === 0 ? (
             <div className="logs-empty state-box">
               <strong>暂无操作日志</strong>
-              <span>新增客户、编辑线索、标记无效、恢复线索、查看完整手机号等操作会记录在这里。</span>
+              <span>新增客户、标记无效、恢复线索、查看完整手机号等操作会记录在这里。</span>
             </div>
           ) : (
             <table className="logs-table">
