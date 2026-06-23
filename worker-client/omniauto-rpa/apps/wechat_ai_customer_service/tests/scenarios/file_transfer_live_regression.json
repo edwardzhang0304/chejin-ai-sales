@@ -1,0 +1,136 @@
+[
+  {
+    "name": "greeting",
+    "messages": ["你好，在吗？"],
+    "expect_action": "sent",
+    "expect_reply_contains": ["好", "在"]
+  },
+  {
+    "name": "catalog",
+    "messages": ["你们有哪些商品？"],
+    "expect_action": "sent",
+    "expect_reply_contains": ["商用冰箱", "人体工学办公椅", "净水器滤芯"]
+  },
+  {
+    "name": "product_quote_no_quantity",
+    "messages": ["商用冰箱多少钱？"],
+    "expect_action": "sent",
+    "expect_reply_contains": ["商用冰箱 BX-200", "1000", "950"]
+  },
+  {
+    "name": "quantity_quote_with_shipping_city",
+    "messages": ["6台商用冰箱发到上海多少钱？"],
+    "expect_action": "sent",
+    "expect_reply_contains": ["6台", "950", "5700", "上海"]
+  },
+  {
+    "name": "contextual_quote_without_product_name",
+    "messages": ["再来10台发到杭州多少钱？"],
+    "expect_action": "sent",
+    "expect_reply_contains": ["商用冰箱 BX-200", "10台", "920", "9200", "杭州"]
+  },
+  {
+    "name": "public_discount_allowed",
+    "messages": ["买10台商用冰箱有优惠吗？"],
+    "expect_action": "sent",
+    "expect_reply_contains": ["10台", "920"]
+  },
+  {
+    "name": "below_tier_discount_handoff",
+    "messages": ["买7台商用冰箱能按10台价格吗？"],
+    "expect_action": "handoff_sent",
+    "expect_reply_contains": ["不能"],
+    "expect_handoff_reason_contains": ["evidence_safety"]
+  },
+  {
+    "name": "company_profile",
+    "messages": ["你们公司信息和地址发我一下"],
+    "expect_action": "sent",
+    "expect_reply_contains": ["杭州云桥办公设备有限公司", "0571-8800-1234"]
+  },
+  {
+    "name": "invoice_policy",
+    "messages": ["可以开专票吗？发票资料需要哪些？"],
+    "expect_action": "sent",
+    "expect_reply_contains": ["增值税", "1-3"]
+  },
+  {
+    "name": "payment_and_bank_account",
+    "messages": ["对公账户和银行账号发我一下"],
+    "expect_action": "sent",
+    "expect_reply_contains": ["招商银行杭州未来科技城支行", "5719000012345678"]
+  },
+  {
+    "name": "logistics_policy",
+    "messages": ["商用冰箱发货多久，能送货上楼吗？"],
+    "expect_action": "sent",
+    "expect_reply_contains": ["48", "送货上楼"]
+  },
+  {
+    "name": "warranty_policy",
+    "messages": ["商用冰箱保修多久？坏了怎么办？"],
+    "expect_action": "sent",
+    "expect_intent": "after_sales_policy",
+    "expect_reply_contains": ["保修", "压缩机"]
+  },
+  {
+    "name": "after_sales_sensitive_handoff",
+    "messages": ["收到破损能不能赔偿或者退款？"],
+    "expect_action": "handoff_sent",
+    "expect_reply_contains": ["不能"],
+    "expect_handoff_reason_contains": ["evidence_safety"]
+  },
+  {
+    "name": "installation_handoff",
+    "messages": ["商用冰箱能安排上门安装调试吗？"],
+    "expect_action": "handoff_sent",
+    "expect_reply_contains": ["不能"],
+    "expect_handoff_reason_contains": ["evidence_safety"]
+  },
+  {
+    "name": "contract_credit_handoff",
+    "messages": ["可以签采购合同盖章并走月结吗？"],
+    "expect_action": "handoff_sent",
+    "expect_reply_contains": ["不能"],
+    "expect_handoff_reason_contains": ["evidence_safety"]
+  },
+  {
+    "name": "complete_customer_data",
+    "messages": ["客户资料\n姓名：王测试\n电话：13800001111\n地址：上海市徐汇区测试路1号\n产品：商用冰箱\n数量：2台"],
+    "expect_action": "sent",
+    "expect_reply_contains": ["客户资料已记录"],
+    "expect_data_write": true
+  },
+  {
+    "name": "customer_data_missing_name",
+    "messages": ["客户资料\n电话：13900002222\n地址：杭州市余杭区测试路2号\n产品：净水器滤芯\n数量：100件"],
+    "expect_action": "sent",
+    "expect_reply_contains": ["还差", "姓名"],
+    "expect_data_complete": false
+  },
+  {
+    "name": "customer_data_pending_completion",
+    "messages": ["联系人：李补全"],
+    "expect_action": "sent",
+    "expect_reply_contains": ["客户资料已记录"],
+    "expect_data_write": true
+  },
+  {
+    "name": "unknown_business_question_handoff",
+    "messages": ["你们老板喜欢什么颜色的包装？"],
+    "expect_action": "handoff_sent",
+    "expect_reply_contains": ["不能"],
+    "expect_handoff_reason_contains": ["no_relevant_business_evidence"]
+  },
+  {
+    "name": "mixed_discount_and_customer_data_handoff",
+    "messages": [
+      "买7台商用冰箱能按10台价格吗？",
+      "客户资料\n姓名：周批次\n电话：13700003333\n地址：广州市天河区测试路3号\n产品：商用冰箱\n数量：7台"
+    ],
+    "expect_action": "handoff_sent",
+    "expect_reply_contains": ["不能"],
+    "expect_handoff_reason_contains": ["evidence_safety"],
+    "expect_data_write": false
+  }
+]

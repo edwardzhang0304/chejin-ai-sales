@@ -1,0 +1,50 @@
+[
+  {
+    "name": "scene_product_not_customer_data",
+    "messages": ["我开便利店，想找个能放饮料的冷柜，别太复杂"],
+    "expect_action": "sent",
+    "expect_intent": "product_detail",
+    "expect_reply_contains": ["商用冰箱", "1000"],
+    "expect_reply_not_contains": ["客户资料", "缺少", "电话"]
+  },
+  {
+    "name": "explicit_product_overrides_scene_context",
+    "messages": ["净水器滤芯标准款多少钱？"],
+    "expect_action": "sent",
+    "expect_reply_contains": ["净水器滤芯", "80"],
+    "expect_reply_not_contains": ["商用冰箱"]
+  },
+  {
+    "name": "warranty_duration_not_logistics",
+    "messages": ["商用冰箱保修多久？坏了怎么办？"],
+    "expect_action": "sent",
+    "expect_intent": "after_sales_policy",
+    "expect_reply_contains": ["保修", "压缩机"]
+  },
+  {
+    "name": "light_small_talk_auto_reply",
+    "messages": ["哈哈我先随便看看，你们客服回复还挺快的"],
+    "expect_action": "sent",
+    "expect_intent": "small_talk",
+    "expect_reply_contains": ["慢慢看", "价格"],
+    "expect_reply_not_contains": ["请示上级", "无法直接确认"]
+  },
+  {
+    "name": "unknown_business_still_handoff",
+    "messages": ["你们老板喜欢什么颜色的包装？"],
+    "expect_action": "handoff_sent",
+    "expect_reply_contains": ["请示上级"],
+    "expect_handoff_reason_contains": ["no_relevant_business_evidence"]
+  },
+  {
+    "name": "unsafe_discount_with_customer_data_handoff_no_write",
+    "messages": [
+      "我买7台商用冰箱，直接按20台价格可以吗？",
+      "客户资料\n姓名：边界测试\n电话：13800008888\n地址：上海市浦东新区测试路18号\n产品：商用冰箱\n数量：7台"
+    ],
+    "expect_action": "handoff_sent",
+    "expect_reply_contains": ["请示上级"],
+    "expect_handoff_reason_contains": ["evidence_safety"],
+    "expect_data_write": false
+  }
+]

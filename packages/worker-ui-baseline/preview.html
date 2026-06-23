@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Worker UI 基准组件预览</title>
+    <link rel="stylesheet" href="./src/worker-ui.tokens.css?v=fix11" />
+    <link rel="stylesheet" href="./src/worker-ui.css?v=fix11" />
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-width: 1120px;
+        margin: 0;
+        color: #171b22;
+        background:
+          linear-gradient(135deg, rgba(74, 110, 165, 0.14), transparent 36%),
+          linear-gradient(230deg, rgba(242, 166, 90, 0.14), transparent 32%),
+          #e6e6e6;
+        font-family: -apple-system, "SF Pro Text", "PingFang SC", system-ui, sans-serif;
+      }
+
+      .preview-shell {
+        display: grid;
+        grid-template-columns: 300px minmax(720px, 1fr);
+        gap: 28px;
+        min-height: 100vh;
+        padding: 32px;
+      }
+
+      .preview-panel {
+        position: sticky;
+        top: 24px;
+        display: grid;
+        gap: 14px;
+        align-self: start;
+        padding: 22px;
+        background: rgba(255, 255, 255, 0.9);
+        border: 1px solid #d8dee6;
+        border-radius: 12px;
+        box-shadow: 0 12px 32px rgba(23, 27, 34, 0.08);
+      }
+
+      .preview-panel p {
+        margin: 0;
+        color: #4a6ea5;
+        font-size: 12px;
+        font-weight: 900;
+      }
+
+      .preview-panel h1 {
+        margin: 0;
+        font-size: 24px;
+        line-height: 32px;
+      }
+
+      .preview-panel small {
+        color: #68717d;
+        font-size: 13px;
+        line-height: 20px;
+      }
+
+      .preview-nav {
+        display: grid;
+        gap: 8px;
+      }
+
+      .preview-nav button {
+        min-height: 34px;
+        padding: 0 14px;
+        color: #68717d;
+        text-align: left;
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        font: inherit;
+        font-weight: 800;
+      }
+
+      .preview-nav button.active,
+      .preview-nav button:hover {
+        color: #34517d;
+        background: #e9eef6;
+        border-color: #e9eef6;
+      }
+
+      .preview-stage {
+        position: relative;
+        display: grid;
+        justify-items: end;
+        min-height: 800px;
+        padding: 48px 62px 40px;
+        border: 1px solid rgba(207, 214, 223, 0.42);
+        border-radius: 14px;
+        background:
+          radial-gradient(circle at 42% 38%, rgba(74, 110, 165, 0.12), transparent 18%),
+          linear-gradient(135deg, #edf3fa, #f8fbff 58%, #e9f1f9);
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.66);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./dist/preview.js"></script>
+  </body>
+</html>

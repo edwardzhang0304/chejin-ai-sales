@@ -1,0 +1,1035 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>微信 AI 客服知识管理台</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260524-rpa-indicator-v1" />
+  </head>
+  <body>
+    <section id="login-screen" class="login-screen">
+      <form id="local-login-form" class="login-card glass-panel">
+        <div>
+          <p class="eyebrow">OmniAuto Local Console</p>
+          <h1>登录客户端</h1>
+          <p>使用分配的账号进入对应知识库。</p>
+        </div>
+        <label class="form-field">
+          <span>账号</span>
+          <input name="username" autocomplete="username" placeholder="请输入账号" required />
+        </label>
+        <label class="form-field">
+          <span>密码</span>
+          <input name="password" autocomplete="current-password" type="password" placeholder="请输入密码" required />
+        </label>
+        <label class="form-field is-hidden" id="local-login-bind-email-field">
+          <span>绑定邮箱</span>
+          <input name="bind_email" autocomplete="email" type="email" placeholder="请输入用于接收验证码的邮箱" />
+        </label>
+        <label class="form-field is-hidden" id="local-login-code-field">
+          <span>邮箱验证码</span>
+          <input name="email_code" autocomplete="one-time-code" inputmode="numeric" placeholder="请输入邮箱收到的验证码" />
+        </label>
+        <label class="checkbox-field is-hidden" id="local-login-trust-field">
+          <input name="trust_device" type="checkbox" />
+          <span>登录后 30 天内信任此设备</span>
+        </label>
+        <div class="button-row">
+          <button class="primary-button" id="local-login-submit" type="submit">登录</button>
+          <button class="secondary-button is-hidden" id="local-login-reset" type="button">重新输入账号密码</button>
+        </div>
+        <div class="status-card warning is-hidden" id="login-message"></div>
+      </form>
+    </section>
+    <section id="local-init-screen" class="init-screen">
+      <form id="local-init-form" class="init-card glass-panel">
+        <div>
+          <p class="eyebrow">Account Setup</p>
+          <h1>首次使用初始化</h1>
+          <p id="local-init-intro">为了保护账号安全，请先修改密码并绑定邮箱。完成后需要用新密码重新登录。</p>
+        </div>
+        <label class="form-field">
+          <span>绑定邮箱</span>
+          <input name="email" autocomplete="email" type="email" placeholder="用于接收登录验证码" required />
+        </label>
+        <label class="form-field">
+          <span>新密码</span>
+          <input name="new_password" autocomplete="new-password" type="password" required />
+        </label>
+        <label class="form-field">
+          <span>再次输入新密码</span>
+          <input name="confirm_password" autocomplete="new-password" type="password" required />
+        </label>
+        <label class="form-field is-hidden" id="local-init-code-field">
+          <span>邮箱验证码</span>
+          <input name="email_code" autocomplete="one-time-code" inputmode="numeric" placeholder="请输入邮箱收到的验证码" />
+        </label>
+        <div class="button-row">
+          <button class="primary-button" id="local-init-submit" type="submit">发送初始化验证码</button>
+          <button class="secondary-button" id="local-init-back" type="button">返回登录</button>
+        </div>
+        <div class="status-card warning is-hidden" id="local-init-message"></div>
+      </form>
+    </section>
+    <main class="shell">
+      <aside class="sidebar glass-panel">
+        <div class="brand">
+          <div class="brand-mark">OA</div>
+          <div>
+            <div class="brand-title">OmniAuto</div>
+            <div class="brand-subtitle">微信运营工作台</div>
+          </div>
+        </div>
+        <nav class="nav-list" aria-label="主导航">
+          <div class="nav-group-title">业务工作台</div>
+          <button class="nav-item is-active" data-view="customer_service">微信智能客服</button>
+          <button class="nav-item" data-view="recorder">AI智能记录员</button>
+          <button class="nav-item" data-view="customer_profiles">客户画像</button>
+          <div class="nav-group-title">知识成长中心</div>
+          <button class="nav-item" data-view="knowledge_center">知识首页</button>
+          <button class="nav-item nav-product-special" data-view="product_catalog">商品库</button>
+          <button class="nav-item" data-view="ai_reference">AI经验池<span class="tab-count-badge is-hidden nav-badge" id="rag-experience-nav-badge">0</span></button>
+          <button class="nav-item" data-view="candidates">待确认知识<span class="tab-count-badge is-hidden nav-badge" id="candidate-nav-badge">0</span></button>
+          <button class="nav-item" data-view="knowledge">正式知识库</button>
+          <button class="nav-item" data-view="uploads">资料导入</button>
+          <button class="nav-item" data-view="diagnostics">知识检测</button>
+          <div class="nav-group-title">系统</div>
+          <button class="nav-item" data-view="settings">系统设置</button>
+        </nav>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar glass-panel">
+          <div>
+            <p class="eyebrow">OmniAuto Local Console</p>
+            <h1 id="view-title">微信智能客服</h1>
+          </div>
+          <div class="topbar-actions">
+            <div class="tenant-switcher tenant-display" id="current-account-space" title="管理员可以切换本机客户数据空间；客户账号只看自己的知识库、记录员消息和设置。">
+              <span>当前账号</span>
+              <strong id="current-account-label">读取中...</strong>
+              <select id="tenant-select" class="is-hidden" aria-label="切换客户数据空间"></select>
+            </div>
+            <div class="status-pill" id="auth-pill">Role</div>
+            <div class="status-pill" id="sync-pill">Sync</div>
+            <div class="status-pill" id="health-pill">连接中</div>
+            <button class="secondary-button danger-button" id="local-logout-button">退出登录</button>
+          </div>
+        </header>
+
+        <section class="hero glass-panel">
+          <div>
+            <p class="eyebrow">Wechat Operations</p>
+            <h2>微信智能客服负责回复，AI智能记录员负责记录，知识成长中心负责审核和管理。</h2>
+          </div>
+          <div class="hero-metrics hero-metrics-compact">
+            <div><span id="metric-knowledge-total">-</span><label>总知识</label></div>
+            <div><span id="metric-candidates">-</span><label>待审核</label></div>
+            <div><span id="metric-diagnostics">-</span><label>检测</label></div>
+          </div>
+        </section>
+
+        <section class="content-grid">
+          <article class="glass-panel content-card view-panel is-visible" data-panel="customer_service">
+            <div class="section-head">
+              <div>
+                <h2>微信智能客服</h2>
+                <p>控制自动回复是否开启，以及客服采用哪种工作模式。</p>
+              </div>
+              <button class="secondary-button" id="refresh-customer-service">刷新</button>
+            </div>
+            <div class="metric-grid metric-grid-tight metric-grid-four" id="customer-service-cards">
+              <div class="status-card loading"><strong><span class="loading-spinner" aria-hidden="true"></span>正在加载客服控制台</strong><span>正在读取自动客服状态。</span></div>
+            </div>
+            <div class="console-layout">
+              <section class="control-panel">
+                <div class="alert-banner is-hidden" id="runtime-tenant-mismatch-banner" style="margin-bottom: 12px; padding: 8px 12px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; color: #856404; font-size: 13px;"></div>
+                <div class="runtime-status-card is-stopped" id="customer-service-runtime-card">
+                  <div class="runtime-status-main">
+                    <span class="service-state-dot is-stopped"></span>
+                    <div>
+                      <strong>已停止</strong>
+                      <p>正在读取自动客服运行状态...</p>
+                    </div>
+                  </div>
+                </div>
+                <div class="control-row">
+                  <div>
+                    <strong>客服总开关</strong>
+                    <span id="customer-service-status">读取中...</span>
+                  </div>
+                  <label class="switch-line"><input id="customer-service-enabled" type="checkbox" /> 开启</label>
+                </div>
+                <label class="form-field">
+                  <span>工作模式</span>
+                  <select id="customer-service-mode"></select>
+                </label>
+                <label class="form-field">
+                  <span>客服大脑模式</span>
+                  <select id="customer-brain-mode"></select>
+                  <span class="inline-muted">已固定为 Brain First；旧兼容模式已隐藏。</span>
+                </label>
+                <div class="setting-grid">
+                  <label class="checkbox-line"><input id="customer-record-messages" type="checkbox" /> 记录客服对话</label>
+                  <label class="checkbox-line"><input id="customer-auto-learn" type="checkbox" /> 自动整理为AI经验池</label>
+                  <label class="checkbox-line"><input id="customer-use-llm" type="checkbox" /> 使用大模型辅助整理</label>
+                  <label class="checkbox-line"><input id="customer-rag-enabled" type="checkbox" /> 使用AI经验池辅助回答</label>
+                  <label class="checkbox-line"><input id="customer-data-capture" type="checkbox" /> 识别客户线索</label>
+                  <label class="checkbox-line"><input id="customer-handoff" type="checkbox" /> 风险问题转人工</label>
+                  <label class="checkbox-line"><input id="customer-operator-alert" type="checkbox" /> 需要人工时提醒</label>
+                  <label class="checkbox-line"><input id="customer-identity-guard" type="checkbox" /> 防暴露AI身份</label>
+                  <label class="checkbox-line"><input id="customer-style-adapter" type="checkbox" /> 实盘话术风格适配</label>
+                  <label class="checkbox-line"><input id="customer-final-polish" type="checkbox" /> 发送前AI轻润色</label>
+                  <label class="checkbox-line"><input id="customer-respond-all-unread" type="checkbox" /> 响应所有未读会话（新会话默认响应）</label>
+                </div>
+                <button class="primary-button" id="customer-save-settings">保存客服设置</button>
+              </section>
+              <section class="helper-card">
+                <strong>客户可以只用记录员，不开自动回复。</strong>
+                <span>选择"只记录不回复"或直接关闭客服总开关，系统仍可记录和整理聊天内容。</span>
+              </section>
+            </div>
+            <div class="helper-card" id="customer-service-session-summary">
+              <strong>当前监听会话：读取中...</strong>
+              <span>请稍等。</span>
+            </div>
+            <div class="section-head sub-head">
+              <div>
+                <h2>会话监听列表</h2>
+                <p>已在列表中的会话由右侧勾选控制；“新会话默认响应/忽略”只影响后续新出现的会话，不会改动当前列表勾选。</p>
+              </div>
+              <div class="button-row">
+                <button class="secondary-button" id="customer-service-discover" type="button">识别会话</button>
+                <button class="secondary-button" id="customer-service-select-all" type="button">新会话默认响应</button>
+                <button class="secondary-button" id="customer-service-clear-selection" type="button">新会话默认忽略</button>
+              </div>
+            </div>
+            <div class="list-pane" id="customer-service-session-list">
+              <div class="status-card loading"><strong><span class="loading-spinner" aria-hidden="true"></span>正在加载会话列表</strong><span>请稍等。</span></div>
+            </div>
+          </article>
+
+          <article class="glass-panel content-card view-panel" data-panel="customer_profiles">
+            <div class="section-head">
+              <div>
+                <h2>客户画像</h2>
+                <p>查看和管理客户档案、标签与聊天记录。</p>
+              </div>
+              <button class="secondary-button" id="refresh-customer-profiles">刷新</button>
+            </div>
+            <div class="profile-layout">
+              <section class="profile-list-panel">
+                <div class="form-field">
+                  <input id="customer-profile-search" type="text" placeholder="搜索客户昵称或标签..." />
+                </div>
+                <div class="profile-list" id="customer-profile-list">
+                  <div class="status-card loading"><strong><span class="loading-spinner" aria-hidden="true"></span>正在加载客户列表</strong></div>
+                </div>
+              </section>
+              <section class="profile-detail-panel" id="customer-profile-detail">
+                <div class="status-card info">
+                  <strong>选择左侧客户查看详情</strong>
+                </div>
+              </section>
+            </div>
+          </article>
+
+          <article class="glass-panel content-card view-panel" data-panel="knowledge_center">
+            <div class="section-head">
+              <div>
+                <h2>知识成长中心</h2>
+                <p>按 AI经验池、候选知识、正式知识的顺序管理客户自己的知识成长。</p>
+              </div>
+              <button class="secondary-button" id="refresh-overview">刷新</button>
+            </div>
+            <div class="metric-grid metric-grid-tight metric-grid-four" id="overview-cards">
+              <div class="status-card loading"><strong><span class="loading-spinner" aria-hidden="true"></span>正在加载总览</strong><span>正在统计知识和系统状态。</span></div>
+            </div>
+            <div class="module-grid">
+              <button class="module-card nav-shortcut product-module-card" data-view="product_catalog"><strong>商品库</strong><span>商品资料是特殊主数据，可在商品库内单独上传、确认和入库。</span></button>
+              <button class="module-card nav-shortcut" data-view="ai_reference"><strong>AI经验池</strong><span>所有资料和聊天内容先进入这里，由 AI 给出处理建议。</span></button>
+              <button class="module-card nav-shortcut" data-view="candidates"><strong>待确认知识</strong><span>像审核清单一样确认AI建议加入的知识。</span></button>
+              <button class="module-card nav-shortcut" data-view="knowledge"><strong>正式知识库</strong><span>管理已生效的政策、流程、边界和话术。</span></button>
+              <button class="module-card nav-shortcut" data-view="uploads"><strong>资料导入</strong><span>上传政策规则、聊天记录和普通资料；整理后先进入AI经验池。</span></button>
+              <button class="module-card nav-shortcut" data-view="diagnostics"><strong>知识检测</strong><span>检查知识冲突、缺失和运行风险。</span></button>
+            </div>
+          </article>
+
+          <article class="glass-panel content-card view-panel" data-panel="product_catalog">
+            <div class="section-head">
+              <div>
+                <h2>商品库</h2>
+                <p>首页只看每台车/商品的关键信息；点开卡片后再查看完整资料、库存和专属话术。</p>
+              </div>
+              <div class="button-row">
+                <button class="secondary-button" id="refresh-product-catalog">刷新</button>
+                <button class="secondary-button" id="product-llm-intake-toggle">AI 助手录入</button>
+              </div>
+            </div>
+            <div class="metric-grid metric-grid-tight metric-grid-four" id="product-catalog-cards">
+              <div class="status-card loading"><strong><span class="loading-spinner" aria-hidden="true"></span>正在加载商品统计</strong><span>请稍等。</span></div>
+            </div>
+            <div class="product-upload-panel is-hidden" id="product-llm-intake-panel">
+              <div class="section-head sub-head">
+                <div>
+                  <h2>AI 助手录入商品</h2>
+                  <p>采用对话式整理：你可以持续补充、修正字段。AI 会按商品标准结构抽取，缺关键信息会主动追问，确认后再执行。</p>
+                </div>
+                <button class="secondary-button" id="close-product-llm-intake-panel">收起</button>
+              </div>
+              <div class="generator-layout product-intake-layout">
+                <div class="generator-chat" id="product-llm-intake-messages"></div>
+                <div class="generator-side">
+                  <label class="form-field">
+                    <span>自然语言描述</span>
+                    <textarea id="product-llm-intake-input" placeholder="例如：把小米电视75寸库存改为499，并新增10台起每台1899元；另把售后改为整机2年保修"></textarea>
+                  </label>
+                  <button class="primary-button" id="product-llm-intake-send">生成/补充</button>
+                  <div class="generator-summary" id="product-llm-intake-summary"></div>
+                  <div id="product-llm-intake-status"></div>
+                  <div class="button-row is-hidden" id="product-llm-intake-actions">
+                    <button class="primary-button" id="product-llm-intake-apply">确认执行</button>
+                    <button class="secondary-button" id="product-llm-intake-reset">重新开始</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="product-home-layout" id="product-catalog-list">
+              <div class="status-card loading"><strong><span class="loading-spinner" aria-hidden="true"></span>正在加载商品库</strong><span>正在读取商品和库存。</span></div>
+            </div>
+          </article>
+
+          <article class="glass-panel content-card view-panel" data-panel="knowledge">
+            <div class="section-head">
+              <div>
+                <h2>正式知识库</h2>
+                <p>这里管理已经生效的结构化业务知识；商品价格、库存、车型和规格只在商品库维护。</p>
+              </div>
+              <div class="button-row">
+                <select id="category-select" aria-label="知识门类"></select>
+                <button class="secondary-button" id="create-category">新增门类</button>
+              </div>
+            </div>
+            <div class="helper-card">
+              <strong>商品库是商品主数据，正式知识库是业务规则。</strong>
+              <span>商品事实不从AI经验池或候选知识升级而来；商品专属问答、规则和解释请从商品详情进入，避免脱离商品单独编辑。</span>
+            </div>
+            <div class="section-head sub-head">
+              <input class="search-input" id="knowledge-search" placeholder="搜索名称、关键词、话术" />
+              <div class="button-row">
+                <button class="secondary-button" id="new-knowledge-item">新增知识</button>
+                <button class="secondary-button" id="edit-knowledge-item">编辑</button>
+                <button class="secondary-button" id="cancel-knowledge-edit">取消</button>
+                <button class="primary-button" id="save-knowledge-item">保存</button>
+                <button class="secondary-button danger-button" id="archive-knowledge-item">归档</button>
+              </div>
+            </div>
+            <div class="product-home-layout knowledge-home-layout" id="knowledge-list">
+              <div class="status-card loading"><strong><span class="loading-spinner" aria-hidden="true"></span>正在加载正式知识库</strong><span>将按每页 20 条读取知识条目。</span></div>
+            </div>
+          </article>
+
+          <article class="glass-panel content-card view-panel" data-panel="intake">
+            <div class="section-head">
+              <div>
+                <h2>资料导入</h2>
+                <p>上传后可自动识别资料类型并整理为 AI经验池；系统默认先沉淀经验，再由你决定是否升级知识。</p>
+              </div>
+              <div class="button-row">
+                <button class="workflow-tab is-active" data-group="intake" data-tab="uploads">资料导入</button>
+                <button class="workflow-tab" data-group="intake" data-tab="generator">手动创建</button>
+                <button class="workflow-tab" data-group="intake" data-tab="rag_experiences">跳转到AI经验池<span class="tab-count-badge is-hidden" id="rag-experience-intake-tab-badge" data-rag-experience-count-badge>0</span></button>
+              </div>
+            </div>
+
+            <div class="flow-guide">
+              <div class="flow-step"><strong>1. 原始内容</strong><span>资料、聊天、群聊、文件传输助手</span></div>
+              <div class="flow-step"><strong>2. AI经验池</strong><span>归纳为可追溯 AI经验池</span></div>
+              <div class="flow-step"><strong>3. 待确认知识</strong><span>已完善、待完善、需确认</span></div>
+              <div class="flow-step"><strong>4. 正式知识库</strong><span>人工应用后生效</span></div>
+            </div>
+
+            <section class="workflow-section is-visible" data-intake-tab="generator">
+              <div class="section-head sub-head">
+                <div>
+                  <h2>手动整理为AI经验池</h2>
+                  <p>管理员主动录入的内容也会先进入 AI经验池；确认有价值后再手动升级为待确认知识。</p>
+                </div>
+                <div class="button-row">
+                  <select id="generator-category">
+                    <option value="">自动判断门类</option>
+                  </select>
+                  <button class="secondary-button" id="reset-generator">清空</button>
+                </div>
+              </div>
+              <div class="generator-layout">
+                <div class="generator-chat" id="generator-chat"></div>
+                <div class="generator-side">
+                  <label class="form-field">
+                    <span>自然语言描述</span>
+                    <textarea id="generator-input" placeholder="例如：新增商品 200L 商用冷柜，单价 1999 元/台，10 台以上 1880 元，24 小时发货"></textarea>
+                  </label>
+                  <button class="primary-button" id="send-generator">生成/补充</button>
+                  <div class="generator-summary" id="generator-summary"></div>
+                  <button class="primary-button" id="confirm-generator" disabled>确认加入AI经验池</button>
+                </div>
+              </div>
+            </section>
+
+            <section class="workflow-section" data-intake-tab="uploads">
+              <div class="section-head sub-head">
+                <div>
+                  <h2>资料导入</h2>
+                  <p>把清洗后的资料直接上传，系统会自动识别类型；默认上传后立即整理进 AI经验池。</p>
+                </div>
+                <button class="primary-button is-hidden" id="upload-button" type="button">手动上传</button>
+              </div>
+              <div class="helper-card">
+                <strong>默认一键自动学习。</strong>
+                <span>上传后会自动整理为 AI经验池，不会直接改动正式知识；需要入库时，再到 AI经验池确认升级。</span>
+              </div>
+              <div class="upload-zone">
+                <input id="upload-file" type="file" multiple />
+                <select id="upload-kind">
+                  <option value="auto" selected>自动识别（推荐）</option>
+                  <option value="products">商品资料</option>
+                  <option value="chats">聊天记录</option>
+                  <option value="policies">政策规则</option>
+                  <option value="erp_exports">ERP 导出</option>
+                </select>
+                <button class="primary-button" id="run-learning">整理未处理资料</button>
+              </div>
+              <div class="button-row">
+                <label class="checkbox-line"><input id="upload-auto-learn" type="checkbox" checked /> 上传后自动整理并吸收经验（推荐）</label>
+              </div>
+              <div id="upload-list" class="compact-list">
+                <div class="status-card loading"><strong><span class="loading-spinner" aria-hidden="true"></span>正在加载上传资料</strong><span>正在读取文件列表。</span></div>
+              </div>
+            </section>
+
+            <section class="workflow-section" data-intake-tab="candidates">
+              <div class="section-head sub-head">
+                <div>
+                  <h2>待确认知识</h2>
+                  <p>请像看商品资料和客服话术一样检查内容。正确就加入，有问题就修改，不需要懂技术。</p>
+                </div>
+                <button class="secondary-button" id="refresh-candidates">刷新</button>
+              </div>
+              <div class="helper-card">
+                <strong>这里不展示底层结构。</strong>
+                <span>页面只告诉你：这条知识是什么、从哪来、是否缺信息、确认后会加入哪里。</span>
+              </div>
+              <div class="split-layout">
+                <div class="list-pane" id="candidate-list">
+                  <div class="status-card loading">
+                    <strong><span class="loading-spinner" aria-hidden="true"></span>正在加载待确认知识</strong>
+                    <span>如果候选内容较多，可能需要几秒钟。</span>
+                  </div>
+                </div>
+                <div class="detail-pane form-pane" id="candidate-detail">正在读取候选内容...</div>
+              </div>
+            </section>
+          </article>
+
+          <article class="glass-panel content-card view-panel" data-panel="recorder">
+            <div class="section-head">
+              <div>
+                <h2>AI智能记录员</h2>
+                <p>记录、选择会话、整理批次和导出资料；知识晋升交给知识成长中心。</p>
+              </div>
+              <div class="button-row">
+                <button class="secondary-button" id="recorder-discover" type="button">识别会话</button>
+              </div>
+            </div>
+            <div class="helper-card">
+              <strong>记录员只负责采集和整理。</strong>
+              <span>记录内容先进入AI经验池；是否升级为待确认知识，需要用户手动确认。</span>
+            </div>
+            <div class="control-row">
+              <div>
+                <strong>记录员总开关</strong>
+                <span id="recorder-status">读取中...</span>
+              </div>
+              <label class="switch-line"><input id="recorder-enabled" type="checkbox" /> 开启</label>
+            </div>
+            <div class="control-row">
+              <div>
+                <strong>监听进程状态</strong>
+                <span id="recorder-runtime-status">读取中...</span>
+              </div>
+              <span class="inline-muted">已合并到左侧“运行控制台”</span>
+            </div>
+            <div class="recorder-toolbar">
+              <label class="checkbox-line"><input id="recorder-notify" type="checkbox" /> 收录后在群内提示</label>
+              <label class="checkbox-line"><input id="recorder-auto-learn" type="checkbox" /> 自动整理为AI经验池</label>
+              <label class="checkbox-line"><input id="recorder-use-llm" type="checkbox" /> 使用大模型辅助提取</label>
+              <button class="secondary-button" id="recorder-save-settings">保存设置</button>
+            </div>
+            <div class="helper-card" id="recorder-selected-summary">
+              <strong>当前监听会话：读取中...</strong>
+              <span>请稍等。</span>
+            </div>
+            <div class="section-head sub-head">
+              <div>
+                <h2>会话监听列表</h2>
+                <p>勾选“记录中”后，该会话会被监听并纳入导出范围。</p>
+              </div>
+              <div class="button-row">
+                <button class="secondary-button" id="recorder-select-groups" type="button">全选群聊</button>
+                <button class="secondary-button" id="recorder-clear-selection" type="button">清空选择</button>
+              </div>
+            </div>
+            <div class="split-layout">
+              <div class="list-pane" id="recorder-group-list">
+                <div class="status-card loading"><strong><span class="loading-spinner" aria-hidden="true"></span>正在加载会话列表</strong><span>正在读取群聊和私聊。</span></div>
+              </div>
+              <div class="detail-pane form-pane" id="recorder-detail">
+                <div class="status-card loading"><strong><span class="loading-spinner" aria-hidden="true"></span>正在加载聊天记录</strong><span>请稍等。</span></div>
+              </div>
+            </div>
+            <div class="helper-card" id="recorder-module-info">
+              <strong>当前结构化导出模块：读取中...</strong>
+              <span>模块决定“规则+LLM抽取逻辑”和结构化 Excel 模板格式。</span>
+            </div>
+            <div class="helper-card">
+              <strong>结构化导出（模块 + LLM）</strong>
+              <span>用于把“记录中”会话抽取成结构化结果。此流程是异步任务：创建任务后会自动刷新状态，任务完成后下载结果。</span>
+              <div class="button-row">
+                <button class="primary-button" id="recorder-export-run-create">导出所有记录（结构化）</button>
+                <button class="secondary-button" id="recorder-export-run-day">按日导出</button>
+                <button class="secondary-button" id="recorder-export-run-week">按周导出</button>
+                <button class="secondary-button" id="recorder-export-run-month">按月导出</button>
+              </div>
+              <details id="recorder-export-advanced" class="helper-card">
+                <summary>高级筛选（日期范围）</summary>
+                <span>默认折叠。可设置开始/结束日期后导出；不设置则按当前会话全量导出（最多10000条）。</span>
+                <div class="button-row">
+                  <label class="checkbox-line">开始日期：<input type="date" id="recorder-export-start-date" /></label>
+                  <label class="checkbox-line">结束日期：<input type="date" id="recorder-export-end-date" /></label>
+                  <button class="primary-button" id="recorder-export-run-custom" type="button">按日期范围导出</button>
+                  <button class="secondary-button" id="recorder-export-date-clear" type="button">清空日期范围</button>
+                </div>
+              </details>
+              <div id="recorder-export-progress" class="compact-metrics">
+                <div class="status-card">
+                  <strong>暂无进行中的结构化导出任务</strong>
+                  <span>点击“导出所有记录（结构化）”后，这里会实时显示排队和处理进度。</span>
+                </div>
+              </div>
+            </div>
+            <details class="helper-card" id="recorder-advanced-actions">
+              <summary>高级操作（补采）</summary>
+              <span>“补采一次”会立即抓取当前“记录中”会话消息，仅执行一次，不会持续监听。</span>
+              <div class="button-row">
+                <button class="secondary-button" id="recorder-capture" type="button">补采一次</button>
+              </div>
+            </details>
+            <div class="helper-card">
+              <strong>原始聊天导出（追踪记录）</strong>
+              <span>导出程序已追踪到的微信原始聊天记录，格式对齐微信聊天导出表（会话信息 + 序号/时间/发送者/消息类型/内容）。</span>
+              <div class="button-row">
+                <button class="secondary-button" id="export-knowledge-type">导出微信聊天Excel（按会话）</button>
+                <button class="secondary-button" id="export-knowledge-time">导出微信聊天Excel（按时间）</button>
+              </div>
+            </div>
+            <div class="metric-grid metric-grid-tight metric-grid-four" id="recorder-cards">
+              <div class="status-card loading"><strong><span class="loading-spinner" aria-hidden="true"></span>正在加载记录员状态</strong><span>请稍等。</span></div>
+            </div>
+            <div class="compact-list compact-list-small" id="recorder-export-runs-list">
+              <div class="status-card loading"><strong><span class="loading-spinner" aria-hidden="true"></span>正在加载结构化导出任务</strong><span>请稍等。</span></div>
+            </div>
+          </article>
+
+          <article class="glass-panel content-card view-panel" data-panel="ai_reference">
+            <div class="section-head">
+              <div>
+                <h2>AI经验池</h2>
+                <p>优先查看 AI 从资料和对话里归纳出的经验；资料片段只作为证据参考。</p>
+              </div>
+              <div class="button-row">
+                <button class="workflow-tab is-active" data-group="reference" data-tab="experiences">AI经验池清单<span class="tab-count-badge is-hidden" id="rag-experience-tab-badge" data-rag-experience-count-badge>0</span></button>
+                <button class="workflow-tab" data-group="reference" data-tab="sources">资料片段</button>
+              </div>
+            </div>
+
+            <section class="workflow-section is-visible" data-reference-tab="experiences">
+              <div class="section-head sub-head">
+                <div>
+                  <h2>AI经验池清单</h2>
+                  <p>这里是 AI 读完资料或真实对话后留下的经验总结和处理建议。</p>
+                </div>
+                <div class="button-row">
+                  <label class="checkbox-line"><input id="show-discarded-rag" type="checkbox" /> 显示全部（含已废弃）</label>
+                  <button class="secondary-button" id="refresh-rag-experiences">刷新经验</button>
+                </div>
+              </div>
+              <div class="helper-card">
+                <strong>经验层不等于正式知识。</strong>
+                <span>所有渠道获取到的信息先在这里沉淀。未确认的经验不会参与回答；需要变成稳定规则时，先手动升级为待确认知识，再人工确认进入正式知识库。</span>
+              </div>
+              <div class="metric-grid metric-grid-tight metric-grid-three" id="rag-experience-cards">
+                <div class="status-card loading"><strong><span class="loading-spinner" aria-hidden="true"></span>正在加载AI经验池统计</strong><span>请稍等。</span></div>
+              </div>
+              <div id="rag-experience-list" class="compact-list">
+                <div class="status-card loading"><strong><span class="loading-spinner" aria-hidden="true"></span>正在加载AI经验池清单</strong><span>如果经验较多，可能需要几秒钟。</span></div>
+              </div>
+            </section>
+
+            <section class="workflow-section" data-reference-tab="sources">
+              <div class="section-head sub-head">
+                <h2>资料片段</h2>
+                <div class="button-row">
+                  <button class="secondary-button" id="refresh-rag">刷新状态</button>
+                  <button class="primary-button" id="rebuild-rag">重建索引</button>
+                </div>
+              </div>
+              <div class="helper-card">
+                <strong>资料片段是证据层。</strong>
+                <span>正式回复仍以结构化知识库和安全规则为准；价格、优惠、赔偿、合同或账期不会只凭参考资料自动决定。</span>
+              </div>
+              <div class="metric-grid metric-grid-tight metric-grid-four" id="rag-status-cards">
+                <div class="status-card loading"><strong><span class="loading-spinner" aria-hidden="true"></span>正在加载资料片段</strong><span>请稍等。</span></div>
+              </div>
+              <div id="rag-analytics" class="compact-list compact-list-small">
+                <div class="status-card loading"><strong><span class="loading-spinner" aria-hidden="true"></span>正在加载运营分析</strong><span>请稍等。</span></div>
+              </div>
+              <div id="rag-source-list" class="compact-list compact-list-small">
+                <div class="status-card loading"><strong><span class="loading-spinner" aria-hidden="true"></span>正在加载资料源列表</strong><span>请稍等。</span></div>
+              </div>
+              <div id="rag-chunk-list" class="compact-list compact-list-small">
+                <div class="status-card loading"><strong><span class="loading-spinner" aria-hidden="true"></span>正在加载资料切片预览</strong><span>请稍等。</span></div>
+              </div>
+              <div class="rag-search-grid">
+                <label class="form-field">
+                  <span>检索问题</span>
+                  <input id="rag-query" placeholder="例如：酒店公寓门锁安装注意事项" />
+                </label>
+                <label class="form-field">
+                  <span>商品 ID（可选）</span>
+                  <input id="rag-product-id" placeholder="例如：fl-920" />
+                </label>
+                <button class="primary-button" id="rag-search">检索资料</button>
+              </div>
+              <div id="rag-results" class="compact-list">等待检索</div>
+            </section>
+          </article>
+
+          <article class="glass-panel content-card view-panel" data-panel="diagnostics">
+            <div class="section-head">
+              <h2>知识检测</h2>
+              <div class="button-row">
+                <button class="secondary-button" id="quick-diagnostics">快速检测</button>
+                <button class="primary-button" id="full-diagnostics">全量检测</button>
+              </div>
+            </div>
+            <div id="diagnostics-report" class="report-panel">等待检测</div>
+          </article>
+
+          <article class="glass-panel content-card view-panel" data-panel="settings">
+            <div class="section-head">
+              <div>
+                <h2>系统设置</h2>
+                <p>管理账号安全、备份还原和后续客户端辅助设置。</p>
+              </div>
+            </div>
+            <section class="settings-section">
+              <div class="section-head sub-head">
+                <div>
+                  <h2>大模型配置</h2>
+                  <p>配置主用与备选大模型供应商，用于 AI 辅助整理和自动回复。</p>
+                </div>
+              </div>
+              <div id="llm-config-summary" class="security-summary">大模型配置读取中...</div>
+              <div class="security-grid">
+                <section class="security-panel">
+                  <div class="security-panel-head">
+                    <h3>主用供应商</h3>
+                    <span>当前默认走这条链路</span>
+                  </div>
+                  <form class="security-form" id="llm-config-form">
+                    <label class="form-field">
+                      <span>供应商</span>
+                      <select name="provider" id="llm-provider-select"></select>
+                    </label>
+                    <label class="form-field">
+                      <span>Base URL</span>
+                      <input name="base_url" type="url" autocomplete="off" placeholder="https://.../v1" id="llm-base-url-input" />
+                    </label>
+                    <label class="form-field wide-field">
+                      <span>API Key</span>
+                      <input name="api_key" type="password" autocomplete="off" placeholder="输入 API Key 后点击保存" id="llm-api-key-input" />
+                      <small id="llm-api-key-current">当前 Key 状态读取中...</small>
+                    </label>
+                    <label class="checkbox-field wide-field">
+                      <input name="allow_insecure_tls" type="checkbox" id="llm-insecure-tls-input" />
+                      <span>允许自签名证书（仅自有或可信中转）</span>
+                    </label>
+                    <div class="llm-route-grid wide-field">
+                      <section class="llm-route-card">
+                        <div class="llm-route-head">
+                          <strong>浅任务入口</strong>
+                          <span>低延迟 / 高频调用</span>
+                        </div>
+                        <label class="form-field">
+                          <span>模型</span>
+                          <select id="llm-flash-model-select" aria-label="选择浅任务模型"></select>
+                          <input name="flash_model" type="hidden" id="llm-flash-model-input" />
+                        </label>
+                        <label class="form-field">
+                          <span>思考强度</span>
+                          <select name="flash_reasoning_effort" id="llm-flash-reasoning-input"></select>
+                        </label>
+                        <small>用于意图识别、字段抽取、资料整理、普通自动回复等浅任务。</small>
+                      </section>
+                      <section class="llm-route-card">
+                        <div class="llm-route-head">
+                          <strong>深度思考入口</strong>
+                          <span>复杂推理 / 高风险场景</span>
+                        </div>
+                        <label class="form-field">
+                          <span>模型</span>
+                          <select id="llm-pro-model-select" aria-label="选择深度思考模型"></select>
+                          <input name="pro_model" type="hidden" id="llm-pro-model-input" />
+                        </label>
+                        <label class="form-field">
+                          <span>思考强度</span>
+                          <select name="pro_reasoning_effort" id="llm-pro-reasoning-input"></select>
+                        </label>
+                        <small>用于长上下文、高风险回复、复杂规则判断和需要更强推理的深度任务。</small>
+                      </section>
+                    </div>
+                    <datalist id="llm-model-options"></datalist>
+                    <div class="llm-model-list wide-field" id="llm-model-availability-note">可用模型读取中...</div>
+                    <div class="security-actions">
+                      <button class="primary-button compact-button" type="submit" id="llm-config-save">保存主备配置</button>
+                      <button class="secondary-button compact-button" type="button" id="llm-config-test">测试浅任务</button>
+                      <button class="secondary-button compact-button" type="button" id="llm-config-test-pro">测试深度思考</button>
+                      <button class="secondary-button compact-button" type="button" id="llm-config-toggle">显示</button>
+                    </div>
+                  </form>
+                </section>
+                <section class="security-panel">
+                  <div class="security-panel-head">
+                    <h3>备选供应商</h3>
+                    <span>主链路异常时自动切换</span>
+                  </div>
+                  <div class="security-form">
+                    <label class="checkbox-field wide-field">
+                      <input name="fallback_enabled" type="checkbox" id="llm-fallback-enabled-input" />
+                      <span>启用备选自动切换</span>
+                    </label>
+                    <label class="form-field">
+                      <span>备选供应商</span>
+                      <select name="fallback_provider" id="llm-fallback-provider-select"></select>
+                    </label>
+                    <label class="form-field">
+                      <span>备选 Base URL</span>
+                      <input name="fallback_base_url" type="url" autocomplete="off" placeholder="https://.../v1" id="llm-fallback-base-url-input" />
+                    </label>
+                    <label class="form-field wide-field">
+                      <span>备选 API Key</span>
+                      <input name="fallback_api_key" type="password" autocomplete="off" placeholder="输入备选 API Key 后点击保存" id="llm-fallback-api-key-input" />
+                      <small id="llm-fallback-api-key-current">当前备选 Key 状态读取中...</small>
+                    </label>
+                    <label class="checkbox-field wide-field">
+                      <input name="fallback_allow_insecure_tls" type="checkbox" id="llm-fallback-insecure-tls-input" />
+                      <span>备选链路允许自签名证书（仅自有或可信中转）</span>
+                    </label>
+                    <div class="llm-route-grid wide-field">
+                      <section class="llm-route-card">
+                        <div class="llm-route-head">
+                          <strong>备选浅任务入口</strong>
+                          <span>主链路异常时接管浅任务</span>
+                        </div>
+                        <label class="form-field">
+                          <span>模型</span>
+                          <select id="llm-fallback-flash-model-select" aria-label="选择备选浅任务模型"></select>
+                          <input name="fallback_flash_model" type="hidden" id="llm-fallback-flash-model-input" />
+                        </label>
+                        <label class="form-field">
+                          <span>思考强度</span>
+                          <select name="fallback_flash_reasoning_effort" id="llm-fallback-flash-reasoning-input"></select>
+                        </label>
+                        <small>主用上游短暂超时、503、限流时，用于接管浅任务。</small>
+                      </section>
+                      <section class="llm-route-card">
+                        <div class="llm-route-head">
+                          <strong>备选深度思考入口</strong>
+                          <span>主链路异常时接管深度任务</span>
+                        </div>
+                        <label class="form-field">
+                          <span>模型</span>
+                          <select id="llm-fallback-pro-model-select" aria-label="选择备选深度思考模型"></select>
+                          <input name="fallback_pro_model" type="hidden" id="llm-fallback-pro-model-input" />
+                        </label>
+                        <label class="form-field">
+                          <span>思考强度</span>
+                          <select name="fallback_pro_reasoning_effort" id="llm-fallback-pro-reasoning-input"></select>
+                        </label>
+                        <small>主用上游短暂不可用时，用于接管复杂推理和高风险场景。</small>
+                      </section>
+                    </div>
+                    <div class="llm-model-list wide-field" id="llm-fallback-model-availability-note">备选可用模型读取中...</div>
+                    <div class="security-actions">
+                      <button class="secondary-button compact-button" type="button" id="llm-fallback-test">测试备选浅任务</button>
+                      <button class="secondary-button compact-button" type="button" id="llm-fallback-test-pro">测试备选深度思考</button>
+                      <button class="secondary-button compact-button" type="button" id="llm-fallback-toggle">显示</button>
+                    </div>
+                  </div>
+                </section>
+                <section class="security-panel">
+                  <div class="security-panel-head">
+                    <h3>当前路由预览</h3>
+                    <span>运行时按任务类型自动选择，主链路异常时自动切备选</span>
+                  </div>
+                  <div class="llm-info-grid">
+                    <div><span>供应商</span><strong id="llm-info-provider">—</strong></div>
+                    <div><span>浅任务模型</span><strong id="llm-info-flash-model">—</strong></div>
+                    <div><span>浅任务思考强度</span><strong id="llm-info-flash-effort">—</strong></div>
+                    <div><span>深度思考模型</span><strong id="llm-info-pro-model">—</strong></div>
+                    <div><span>深度思考强度</span><strong id="llm-info-pro-effort">—</strong></div>
+                    <div><span>Base URL</span><strong id="llm-info-base-url">—</strong></div>
+                    <div><span>TLS 校验</span><strong id="llm-info-tls">—</strong></div>
+                    <div><span>主链路适配</span><strong id="llm-info-adapter">—</strong></div>
+                    <div><span>备选开关</span><strong id="llm-info-fallback-enabled">—</strong></div>
+                    <div><span>备选供应商</span><strong id="llm-info-fallback-provider">—</strong></div>
+                    <div><span>备选浅任务模型</span><strong id="llm-info-fallback-flash-model">—</strong></div>
+                    <div><span>备选深度思考模型</span><strong id="llm-info-fallback-pro-model">—</strong></div>
+                    <div><span>备选 Base URL</span><strong id="llm-info-fallback-base-url">—</strong></div>
+                    <div><span>备选 TLS</span><strong id="llm-info-fallback-tls">—</strong></div>
+                    <div><span>备选适配</span><strong id="llm-info-fallback-adapter">—</strong></div>
+                  </div>
+                </section>
+              </div>
+              <div class="security-note">
+                <strong>Key 存储位置</strong>
+                <span>主用与备选 API Key 都保存在客户端本地的 llm_config.json 中，不会上传到 VPS 服务端；第三方中转请选择对应供应商并填写正确的 Base URL。</span>
+              </div>
+            </section>
+            <section class="settings-section">
+              <div class="section-head sub-head">
+                <div>
+                  <h2>飞书转人工通知</h2>
+                  <p>当微信掉线、风控停机或命中不可自动处理规则时，自动推送给绑定的飞书值班人或群。</p>
+                </div>
+              </div>
+              <div id="feishu-config-summary" class="security-summary">飞书配置读取中...</div>
+              <div class="security-grid">
+                <section class="security-panel">
+                  <div class="security-panel-head">
+                    <h3>连接方式</h3>
+                    <span>Webhook 或自建应用机器人</span>
+                  </div>
+                  <form class="security-form" id="feishu-config-form">
+                    <label class="checkbox-field wide-field">
+                      <input name="enabled" type="checkbox" id="feishu-enabled-input" />
+                      <span>启用飞书转人工通知</span>
+                    </label>
+                    <label class="form-field">
+                      <span>推送模式</span>
+                      <select name="mode" id="feishu-mode-select">
+                        <option value="webhook">群机器人 Webhook</option>
+                        <option value="app_bot">自建应用机器人</option>
+                      </select>
+                    </label>
+                    <label class="form-field">
+                      <span>默认接收 ID 类型</span>
+                      <select name="receive_id_type" id="feishu-receive-id-type-select">
+                        <option value="open_id">open_id</option>
+                        <option value="user_id">user_id</option>
+                        <option value="union_id">union_id</option>
+                        <option value="email">email</option>
+                        <option value="chat_id">chat_id</option>
+                      </select>
+                    </label>
+                    <label class="form-field wide-field">
+                      <span>Webhook 地址</span>
+                      <input name="webhook_url" type="password" autocomplete="off" placeholder="粘贴飞书群机器人 Webhook；留空保留已保存值" id="feishu-webhook-url-input" />
+                      <small id="feishu-webhook-url-current">当前 Webhook 状态读取中...</small>
+                    </label>
+                    <label class="form-field wide-field">
+                      <span>Webhook 签名密钥</span>
+                      <input name="webhook_secret" type="password" autocomplete="off" placeholder="可选；开启签名校验时填写，留空保留" id="feishu-webhook-secret-input" />
+                      <small id="feishu-webhook-secret-current">当前签名密钥状态读取中...</small>
+                    </label>
+                    <label class="form-field">
+                      <span>App ID</span>
+                      <input name="app_id" autocomplete="off" placeholder="cli_xxx" id="feishu-app-id-input" />
+                    </label>
+                    <label class="form-field">
+                      <span>App Secret</span>
+                      <input name="app_secret" type="password" autocomplete="off" placeholder="留空保留已保存值" id="feishu-app-secret-input" />
+                      <small id="feishu-app-secret-current">当前 App Secret 状态读取中...</small>
+                    </label>
+                    <label class="form-field wide-field">
+                      <span>默认接收 ID</span>
+                      <textarea name="default_receive_ids" id="feishu-default-receive-ids-input" placeholder="每行一个 open_id/user_id/email/chat_id。Webhook 模式可留空。"></textarea>
+                      <small>自建应用机器人模式下，如果没有命中绑定账号，会推送到这里配置的默认接收人或群。</small>
+                    </label>
+                    <label class="form-field wide-field">
+                      <span>绑定账号</span>
+                      <textarea name="bound_accounts" id="feishu-bound-accounts-input" placeholder="每行：显示名 | 租户ID | ID类型 | 接收ID&#10;例如：许聪 | chejin | open_id | ou_xxx"></textarea>
+                      <small>租户 ID 可留空作为通用接收人；Webhook 模式不需要填写。</small>
+                    </label>
+                    <label class="checkbox-field">
+                      <input name="notify_on_handoff" type="checkbox" id="feishu-notify-handoff-input" />
+                      <span>转人工时通知</span>
+                    </label>
+                    <label class="checkbox-field">
+                      <input name="notify_on_logout" type="checkbox" id="feishu-notify-logout-input" />
+                      <span>微信掉线时通知</span>
+                    </label>
+                    <div class="security-actions wide-field">
+                      <button class="primary-button compact-button" type="submit" id="feishu-config-save">保存飞书配置</button>
+                      <button class="secondary-button compact-button" type="button" id="feishu-config-test">测试连接</button>
+                      <button class="secondary-button compact-button" type="button" id="feishu-config-test-dry">干跑校验</button>
+                    </div>
+                  </form>
+                </section>
+                <section class="security-panel">
+                  <div class="security-panel-head">
+                    <h3>推送规则</h3>
+                    <span>当前生效预览</span>
+                  </div>
+                  <div class="llm-info-grid">
+                    <div><span>通知开关</span><strong id="feishu-info-enabled">—</strong></div>
+                    <div><span>模式</span><strong id="feishu-info-mode">—</strong></div>
+                    <div><span>Webhook</span><strong id="feishu-info-webhook">—</strong></div>
+                    <div><span>应用机器人</span><strong id="feishu-info-app">—</strong></div>
+                    <div><span>默认接收人</span><strong id="feishu-info-default-targets">—</strong></div>
+                    <div><span>绑定账号</span><strong id="feishu-info-bound-targets">—</strong></div>
+                  </div>
+                </section>
+              </div>
+              <div class="security-note">
+                <strong>推荐接入方式</strong>
+                <span>先用 Webhook 接入一个人工值班群验证流程；需要按客户空间或负责人精准推送时，再切换到自建应用机器人并配置接收 ID。</span>
+              </div>
+            </section>
+            <section class="settings-section">
+              <div class="section-head sub-head">
+                <div>
+                  <h2>备份还原</h2>
+                  <p>仅保留最近 20 条备份快照，超过数量的旧备份会自动清理。</p>
+                </div>
+                <div class="button-row">
+                  <button class="primary-button" id="create-backup">一键备份</button>
+                  <button class="secondary-button" id="refresh-versions">刷新</button>
+                </div>
+              </div>
+              <div id="version-list" class="compact-list">
+                <div class="status-card loading"><strong><span class="loading-spinner" aria-hidden="true"></span>正在加载备份快照</strong><span>请稍等。</span></div>
+              </div>
+            </section>
+            <section class="settings-section">
+              <div class="section-head security-head">
+                <div>
+                  <h2>账号安全</h2>
+                  <p>维护当前账号的登录密码和验证码邮箱。</p>
+                </div>
+              </div>
+              <div class="security-summary" id="local-security-summary">账号安全信息读取中...</div>
+              <div class="security-grid">
+                <section class="security-panel">
+                  <div class="security-panel-head">
+                    <h3>修改密码</h3>
+                    <span>保存后请用新密码重新登录</span>
+                  </div>
+                  <form class="security-form" id="local-password-form">
+                    <label class="form-field"><span>当前密码</span><input name="current_password" type="password" autocomplete="current-password" required /></label>
+                    <label class="form-field"><span>新密码</span><input name="new_password" type="password" autocomplete="new-password" required /></label>
+                    <label class="form-field"><span>再次输入新密码</span><input name="confirm_password" type="password" autocomplete="new-password" required /></label>
+                    <label class="form-field is-hidden" id="local-password-code-field"><span>邮箱验证码</span><input name="email_code" autocomplete="one-time-code" inputmode="numeric" placeholder="请输入验证码" /></label>
+                    <div class="security-actions">
+                      <button class="primary-button compact-button" type="submit">发送验证码并修改</button>
+                    </div>
+                  </form>
+                </section>
+                <section class="security-panel">
+                  <div class="security-panel-head">
+                    <h3>绑定邮箱</h3>
+                    <span>用于登录和改密验证码</span>
+                  </div>
+                  <form class="security-form" id="local-email-form">
+                    <label class="form-field wide-field"><span>邮箱</span><input name="email" type="email" autocomplete="email" placeholder="请输入绑定邮箱" required /></label>
+                    <label class="form-field is-hidden" id="local-email-code-field"><span>邮箱验证码</span><input name="email_code" autocomplete="one-time-code" inputmode="numeric" placeholder="请输入验证码" /></label>
+                    <div class="security-actions">
+                      <button class="primary-button compact-button" type="submit">发送绑定验证码</button>
+                    </div>
+                  </form>
+                </section>
+              </div>
+              <div class="security-note">
+                <strong>邮箱验证码登录</strong>
+                <span>客户端只负责绑定邮箱和填写验证码，SMTP 发信配置由 VPS 服务端统一管理。</span>
+              </div>
+            </section>
+            <section class="settings-section muted-section">
+              <h2>后续设置</h2>
+              <p>后续可以在这里加入界面风格、日志清理、端口检查等辅助功能。</p>
+            </section>
+          </article>
+
+          <article class="glass-panel content-card view-panel is-hidden" data-panel="versions">
+            <div class="section-head">
+              <div>
+                <h2>备份还原</h2>
+                <p>已整合到系统设置。</p>
+              </div>
+              <div class="button-row">
+              </div>
+            </div>
+          </article>
+
+          <article class="glass-panel content-card view-panel is-hidden" data-panel="security">
+            <div class="section-head security-head">
+              <div>
+                <h2>账号安全</h2>
+                <p>已整合到系统设置。</p>
+              </div>
+            </div>
+          </article>
+        </section>
+      </section>
+    </main>
+    <aside class="customer-service-float is-stopped" id="customer-service-float" aria-live="polite">
+      <div class="float-header float-drag-handle" title="按住拖动浮窗位置">
+        <span class="service-state-dot is-stopped"></span>
+        <strong>运行控制台</strong>
+        <span class="float-hotkey-inline">按F8启动/停止</span>
+      </div>
+    </aside>
+    <div id="diagnostic-merge-modal" class="modal is-hidden">
+      <div class="modal-overlay"></div>
+      <div class="modal-content glass-panel">
+        <h3>合并知识条目</h3>
+        <div class="merge-preview-grid">
+          <div id="merge-primary-panel"></div>
+          <div id="merge-secondary-panel"></div>
+        </div>
+        <div id="merge-result-preview"></div>
+        <div class="button-row">
+          <button class="primary-button" id="confirm-merge">确认合并</button>
+          <button class="secondary-button" id="cancel-merge">取消</button>
+        </div>
+      </div>
+    </div>
+    <div id="product-detail-modal" class="modal product-detail-modal is-hidden" aria-hidden="true">
+      <div class="modal-overlay product-detail-close" aria-hidden="true"></div>
+      <div class="modal-content glass-panel product-detail-modal-content" role="dialog" aria-modal="true" aria-labelledby="product-detail-title">
+        <div id="product-catalog-detail">
+          <div class="status-card loading"><strong><span class="loading-spinner" aria-hidden="true"></span>正在加载商品详情</strong><span>请稍等。</span></div>
+        </div>
+      </div>
+    </div>
+    <div id="knowledge-detail-modal" class="modal product-detail-modal knowledge-detail-modal is-hidden" aria-hidden="true">
+      <div class="modal-overlay knowledge-detail-close" aria-hidden="true"></div>
+      <div class="modal-content glass-panel product-detail-modal-content knowledge-detail-modal-content" role="dialog" aria-modal="true" aria-labelledby="knowledge-detail-title">
+        <div id="knowledge-detail">
+          <div class="status-card loading"><strong><span class="loading-spinner" aria-hidden="true"></span>正在加载知识详情</strong><span>请稍等。</span></div>
+        </div>
+      </div>
+    </div>
+    <script src="/static/app.js?v=20260524-rpa-indicator-v1"></script>
+  </body>
+</html>
