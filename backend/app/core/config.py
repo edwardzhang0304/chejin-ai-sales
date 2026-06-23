@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     cors_origins: Annotated[list[str], NoDecode] = ["*"]
     auto_create_tables: bool = True
     docs_enabled: bool = True
+    auth_enforcement: bool = False
+    admin_api_token: str | None = None
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
@@ -54,6 +56,8 @@ class Settings(BaseSettings):
                 raise ValueError("生产环境必须配置安全的 PHONE_HASH_SECRET")
             if self.contact_encryption_secret in UNSAFE_SECRET_VALUES:
                 raise ValueError("生产环境必须配置安全的 CONTACT_ENCRYPTION_SECRET")
+            if self.auth_enforcement and (not self.admin_api_token or self.admin_api_token in UNSAFE_SECRET_VALUES):
+                raise ValueError("生产环境启用鉴权时必须配置安全的 ADMIN_API_TOKEN")
         return self
 
     @property

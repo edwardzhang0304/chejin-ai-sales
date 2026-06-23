@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.api.response import error_response
-from app.api.routes import assignment, debug, leads, operation_logs, sales
+from app.api.routes import assignment, debug, leads, operation_logs, sales, tasks, wechat, workers
 from app.core.config import get_settings
 from app.core.database import Base, SessionLocal, engine
 from app.core.request_id import new_request_id, reset_request_id, set_request_id
@@ -76,6 +76,9 @@ def create_app() -> FastAPI:
 
     app.include_router(leads.router, prefix=settings.api_prefix)
     app.include_router(sales.router, prefix=settings.api_prefix)
+    app.include_router(workers.router, prefix=settings.api_prefix)
+    app.include_router(wechat.router, prefix=settings.api_prefix)
+    app.include_router(tasks.router, prefix=settings.api_prefix)
     app.include_router(operation_logs.router, prefix=settings.api_prefix)
     app.include_router(assignment.router, prefix=settings.api_prefix)
     if not settings.is_production:

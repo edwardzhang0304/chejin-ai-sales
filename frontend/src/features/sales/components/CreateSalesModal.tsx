@@ -1,10 +1,12 @@
 import { FormEvent, useState } from "react";
 
-import type { SalesUpsertPayload } from "../types";
+import { useLockBodyScroll } from "../../../shared/hooks/useLockBodyScroll";
+import type { SalesUpsertPayload, SalesWorkerSummary } from "../types";
 
 type Props = {
   submitting: boolean;
   error: string | null;
+  workerOptions: SalesWorkerSummary[];
   onClose: () => void;
   onSubmit: (payload: SalesUpsertPayload) => Promise<boolean>;
 };
@@ -14,13 +16,14 @@ function optionalText(value: string) {
   return trimmed ? trimmed : null;
 }
 
-export function CreateSalesModal({ submitting, error, onClose, onSubmit }: Props) {
+export function CreateSalesModal({ submitting, error, workerOptions, onClose, onSubmit }: Props) {
+  useLockBodyScroll();
+
   const [salesName, setSalesName] = useState("");
   const [phone, setPhone] = useState("");
   const [wechat, setWechat] = useState("");
-  const [sortOrder, setSortOrder] = useState("");
-  const [remark, setRemark] = useState("");
   const [enabled, setEnabled] = useState(true);
+  const [workerId, setWorkerId] = useState("");
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -29,9 +32,10 @@ export function CreateSalesModal({ submitting, error, onClose, onSubmit }: Props
       phone: optionalText(phone),
       wechat: optionalText(wechat),
       feishu_user_id: null,
+      worker_id: optionalText(workerId),
       enabled,
-      sort_order: sortOrder.trim() ? Number(sortOrder) : null,
-      remark: optionalText(remark),
+      sort_order: null,
+      remark: null,
     });
 
     if (saved) {
@@ -39,18 +43,14 @@ export function CreateSalesModal({ submitting, error, onClose, onSubmit }: Props
     }
   }
 
-  const canSubmit = salesName.trim().length > 0 && !submitting;
-
   return (
     <div className="modal-backdrop" role="presentation">
       <form className="modal sales-modal" onSubmit={(event) => void handleSubmit(event)} aria-label="新增销售">
-        <header className="modal-head">
-          <div>
-            <h2>新增销售</h2>
-          </div>
+        <header>
+          <h2>新增销售</h2>
         </header>
 
-        <div className="modal-body sales-modal-body">
+        <div className="form-stack">
           {error ? (
             <div className="inline-alert error" role="alert">
               <strong>{error}</strong>
@@ -58,54 +58,55 @@ export function CreateSalesModal({ submitting, error, onClose, onSubmit }: Props
           ) : null}
 
           <section className="form-section">
-            <h3>基础信息</h3>
-            <div className="sales-form-grid">
+            <div className="drawer-form">
               <label>
-                <span>销售姓名 *</span>
-                <input value={salesName} onChange={(event) => setSalesName(event.target.value)} required />
+                <span>
+                  销售姓名 <b>*</b>
+                </span>
+                <input value={salesName} onChange={(event) => setSalesName(event.target.value)} placeholder="请输入销售姓名" required />
               </label>
 
               <label>
                 <span>手机号</span>
-                <input value={phone} onChange={(event) => setPhone(event.target.value)} inputMode="tel" />
+                <input value={phone} onChange={(event) => setPhone(event.target.value)} inputMode="tel" placeholder="请输入手机号" />
               </label>
 
               <label>
-                <span>微信</span>
-                <input value={wechat} onChange={(event) => setWechat(event.target.value)} />
+                <span>微信号</span>
+                <input value={wechat} onChange={(event) => setWechat(event.target.value)} placeholder="请输入微信号" />
               </label>
 
               <label>
-                <span>排序</span>
-                <input value={sortOrder} onChange={(event) => setSortOrder(event.target.value)} inputMode="numeric" type="number" min="0" />
+                <span className="field-label">
+                  状态 <span className="tip-icon" tabIndex={0} title="启用/关闭分配线索" aria-label="状态说明">!</span>
+                </span>
+                <select value={enabled ? "enabled" : "disabled"} onChange={(event) => setEnabled(event.target.value === "enabled")}>
+                  <option value="enabled">启用</option>
+                  <option value="disabled">停用</option>
+                </select>
+              </label>
+
+              <label>
+                <span>选择 Worker</span>
+                <select value={workerId} onChange={(event) => setWorkerId(event.target.value)}>
+                  <option value="">请选择 Worker，可暂不绑定</option>
+                  {workerOptions.map((worker) => (
+                    <option key={worker.id} value={worker.id}>
+                      {worker.worker_name}（{worker.online_status === "online" ? "在线" : "离线"} / {worker.enabled ? "启用" : "停用"}）
+                    </option>
+                  ))}
+                </select>
               </label>
             </div>
-          </section>
-
-          <section className="form-section">
-            <h3>销售状态</h3>
-            <div className="sales-check-grid">
-              <label className="toggle-row">
-                <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
-                启用销售
-              </label>
-            </div>
-          </section>
-
-          <section className="form-section">
-            <h3>备注</h3>
-            <label>
-              <span>备注内容</span>
-              <textarea value={remark} onChange={(event) => setRemark(event.target.value)} rows={3} />
-            </label>
+            <p className="drawer-hint">如需后续绑定或更换 Worker，请进入销售详情抽屉，点击“编辑销售”处理。</p>
           </section>
         </div>
 
-        <footer className="modal-actions">
-          <button type="button" className="secondary-button" onClick={onClose}>
+        <footer>
+          <button type="button" onClick={onClose}>
             取消
           </button>
-          <button type="submit" className="primary-button" disabled={!canSubmit}>
+          <button type="submit" className="primary-button" disabled={submitting}>
             {submitting ? "保存中..." : "保存"}
           </button>
         </footer>

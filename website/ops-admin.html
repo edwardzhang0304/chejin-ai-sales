@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>车金 AI 运营后台 - 线索导入与分配</title>
-    <link rel="stylesheet" href="./ops-admin.css" />
+    <link rel="stylesheet" href="./ops-admin.css?v=design-audit-20260606a" />
   </head>
   <body>
     <div class="app-shell">
@@ -20,21 +20,17 @@
         <nav class="side-nav">
           <button type="button" data-module="leads">
             <span>线索管理</span>
-            <strong>12</strong>
           </button>
           <button type="button" data-module="sales">
             <span>销售管理</span>
-            <strong>4</strong>
+          </button>
+          <button type="button" data-module="workers">
+            <span>Worker 管理</span>
+          </button>
+          <button type="button" data-module="tasks">
+            <span>任务中心</span>
           </button>
           <a href="#logs">操作日志</a>
-          <a class="disabled" href="#imports">
-            <span>批量导入</span>
-            <em>P2</em>
-          </a>
-          <a class="disabled" href="#ai">
-            <span>AI 跟进</span>
-            <em>后续</em>
-          </a>
         </nav>
 
         <div class="phase-card">
@@ -145,22 +141,20 @@
                       <th>重复</th>
                       <th>备注摘要</th>
                       <th>更新时间</th>
-                      <th>操作</th>
                     </tr>
                   </thead>
                   <tbody data-leads-table>
-                    <tr class="selected">
+                    <tr class="selected" data-lead-id="static-lead-1">
                       <td><input type="checkbox" checked aria-label="选择王先生" /></td>
                       <td class="lead-cell"><strong>王先生</strong><small>人工录入 · 运营小陈</small></td>
                       <td class="contact-cell"><strong>138****6678</strong><small>wx_car_2026</small></td>
                       <td><span class="status assigned">已分配</span></td>
                       <td>张伟</td>
-                      <td><button class="link-button" type="button" data-open-drawer>3 次</button></td>
+                      <td><button class="link-button" type="button" data-action="open-detail" data-lead-id="static-lead-1">3 次</button></td>
                       <td>预算 10 万，想看 SUV...</td>
                       <td>06-02 14:30</td>
-                      <td><button class="link-button" type="button" data-open-drawer>查看详情</button></td>
                     </tr>
-                    <tr>
+                    <tr data-lead-id="static-lead-2">
                       <td><input type="checkbox" aria-label="选择李女士" /></td>
                       <td class="lead-cell"><strong>李女士</strong><small>小程序表单 · 门店预约</small></td>
                       <td class="contact-cell"><strong>139****9081</strong><small>wx_li_auto</small></td>
@@ -169,9 +163,8 @@
                       <td>0 次</td>
                       <td>想周末到店看车</td>
                       <td>06-02 13:12</td>
-                      <td><button class="link-button" type="button" data-open-drawer>查看详情</button></td>
                     </tr>
-                    <tr>
+                    <tr data-lead-id="static-lead-3">
                       <td><input type="checkbox" checked aria-label="选择刘先生" /></td>
                       <td class="lead-cell"><strong>刘先生</strong><small>人工录入 · 运营小赵</small></td>
                       <td class="contact-cell"><strong>136****4210</strong><small>未填写微信</small></td>
@@ -180,9 +173,8 @@
                       <td>1 次</td>
                       <td>关注贷款月供</td>
                       <td>06-02 11:08</td>
-                      <td><button class="link-button" type="button" data-open-drawer>查看详情</button></td>
                     </tr>
-                    <tr>
+                    <tr data-lead-id="static-lead-4">
                       <td><input type="checkbox" aria-label="选择赵女士" /></td>
                       <td class="lead-cell"><strong>赵女士</strong><small>人工录入 · 运营小陈</small></td>
                       <td class="contact-cell"><strong>137****2331</strong><small>wx_zhao_car</small></td>
@@ -191,7 +183,6 @@
                       <td>0 次</td>
                       <td>无效原因：空号</td>
                       <td>06-01 18:42</td>
-                      <td><button class="link-button" type="button" data-open-modal="restore">恢复有效</button></td>
                     </tr>
                   </tbody>
                 </table>
@@ -292,9 +283,8 @@
                 </ol>
               </section>
 
-              <section class="detail-actions">
+              <section class="detail-actions" data-detail-actions>
                 <h3>操作</h3>
-                <button type="button" data-action="edit-active-lead">编辑线索</button>
                 <button type="button" data-open-modal="invalid" data-invalid-mode="single">标记无效</button>
               </section>
             </aside>
@@ -307,128 +297,718 @@
               <p>销售运营</p>
               <h1>销售管理</h1>
             </div>
-            <button class="primary-button" type="button" data-action="new-sales">新增销售</button>
+            <button class="primary-button" type="button" data-open-modal="sales">新增销售</button>
           </header>
 
-          <section class="panel sales-config-panel">
-            <h2>销售轮询配置</h2>
-            <p>只有启用且参与轮询的销售，才参与新线索自动分配。</p>
-            <div class="sales-card-grid" data-sales-grid>
-              <article>
-                <header>
-                  <h3>张伟</h3>
-                  <span class="status assigned">启用</span>
-                </header>
-                <p>参与轮询 · 排序 10 · 名下线索 46</p>
-                <label aria-label="张伟参与轮询"><input type="checkbox" checked /> 参与轮询</label>
-              </article>
-              <article>
-                <header>
-                  <h3>王敏</h3>
-                  <span class="status assigned">启用</span>
-                </header>
-                <p>参与轮询 · 排序 20 · 名下线索 38</p>
-                <label aria-label="王敏参与轮询"><input type="checkbox" checked /> 参与轮询</label>
-              </article>
-              <article>
-                <header>
-                  <h3>李强</h3>
-                  <span class="status invalid">停用</span>
-                </header>
-                <p>不参与轮询 · 排序 30 · 名下线索 12</p>
-                <label aria-label="李强不参与轮询"><input type="checkbox" disabled /> 不参与轮询</label>
-              </article>
-            </div>
+          <section class="metric-grid management-metrics" aria-label="销售管理指标">
+            <article>
+              <span>销售总数</span>
+              <strong>4</strong>
+              <p>启用 3 人</p>
+            </article>
+            <article>
+              <span>已绑定 Worker</span>
+              <strong>2</strong>
+              <p>未绑定 2 人</p>
+            </article>
+            <article>
+              <span>今日分配</span>
+              <strong>36</strong>
+              <p>轮询自动分配</p>
+            </article>
+            <article>
+              <span>阻塞任务</span>
+              <strong class="warning-text">1</strong>
+              <p>需运营处理</p>
+            </article>
           </section>
+
+          <div class="management-grid">
+            <section class="panel management-list-panel">
+              <div class="panel-header">
+                <div>
+                  <h2>销售列表</h2>
+                  <p>维护销售启停、轮询排序，并在详情抽屉中绑定 Worker。</p>
+                </div>
+              </div>
+
+              <div class="management-filter-card">
+                <label>
+                  <span>搜索</span>
+                  <input type="search" value="张伟" aria-label="搜索销售姓名、手机号、微信号" />
+                </label>
+                <label>
+                  <span>状态</span>
+                  <select aria-label="筛选销售状态">
+                    <option>全部状态</option>
+                    <option>启用</option>
+                    <option>停用</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Worker</span>
+                  <select aria-label="筛选绑定 Worker">
+                    <option>全部 Worker</option>
+                    <option>已绑定</option>
+                    <option>未绑定</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="management-table-card">
+                <table class="management-table">
+                  <thead>
+                    <tr>
+                      <th>销售姓名</th>
+                      <th>手机号</th>
+                      <th>微信号</th>
+                      <th>状态</th>
+                      <th>当前 Worker</th>
+                      <th>Worker 状态</th>
+                      <th>排序</th>
+                      <th>今日</th>
+                      <th>阻塞</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr class="selected" data-action="show-sales-detail">
+                      <td class="lead-cell"><strong>张伟</strong><small>一店销售</small></td>
+                      <td>138****1234</td>
+                      <td>wx_zhang</td>
+                      <td><span class="status assigned">启用</span></td>
+                      <td>Mac-01 展厅机</td>
+                      <td><span class="status assigned">在线 / 空闲</span></td>
+                      <td>1</td>
+                      <td>8</td>
+                      <td>0</td>
+                    </tr>
+                    <tr data-action="show-sales-detail">
+                      <td class="lead-cell"><strong>王敏</strong><small>二店销售</small></td>
+                      <td>139****9081</td>
+                      <td>wx_wangmin</td>
+                      <td><span class="status assigned">启用</span></td>
+                      <td>Mac-02 客服机</td>
+                      <td><span class="status unassigned">离线 / 空闲</span></td>
+                      <td>2</td>
+                      <td>6</td>
+                      <td>1</td>
+                    </tr>
+                    <tr data-action="show-sales-detail">
+                      <td class="lead-cell"><strong>李强</strong><small>备用销售</small></td>
+                      <td>136****4210</td>
+                      <td>wx_liqiang</td>
+                      <td><span class="status invalid">停用</span></td>
+                      <td>未绑定</td>
+                      <td>-</td>
+                      <td>3</td>
+                      <td>0</td>
+                      <td>0</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <aside class="panel management-drawer sales-detail-drawer" data-sales-drawer>
+              <div class="drawer-mode is-active" data-sales-mode="detail">
+                <div class="drawer-head">
+                  <div>
+                    <p><span class="read-value">销售详情</span><span class="edit-value">销售详情 · 编辑中</span></p>
+                    <h2>张伟</h2>
+                  </div>
+                  <button class="icon-button" type="button" data-close-drawer data-action="close-sales-drawer" aria-label="关闭销售详情">×</button>
+                </div>
+                <section class="drawer-section">
+                  <h3>基础信息</h3>
+                  <dl class="drawer-dl">
+                    <div><dt>销售姓名</dt><dd><span class="read-value">张伟</span><input class="edit-value" value="张伟" /></dd></div>
+                    <div><dt>手机号</dt><dd><span class="read-value">138****1234</span><input class="edit-value" value="138****1234" /></dd></div>
+                    <div><dt>微信号</dt><dd><span class="read-value">wx_zhang</span><input class="edit-value" value="wx_zhang" /></dd></div>
+                    <div>
+                      <dt>
+                        <span class="field-label">状态 <span class="tip-icon" tabindex="0" data-tooltip="启用/关闭分配线索" aria-label="状态说明">!</span></span>
+                      </dt>
+                      <dd><span class="read-value status assigned">启用</span><select class="edit-value"><option>启用</option><option>停用</option></select></dd>
+                    </div>
+                    <div><dt>轮询排序</dt><dd><span class="read-value">1</span><input class="edit-value" value="1" /></dd></div>
+                  </dl>
+                </section>
+                <section class="drawer-section">
+                  <h3>Worker 信息</h3>
+                  <dl class="drawer-dl">
+                    <div><dt>当前 Worker</dt><dd><span class="read-value">Mac-01 展厅机</span><select class="edit-value"><option>Mac-01 展厅机</option><option>Mac-02 客服机（离线 / 启用）</option><option>清空 Worker</option></select></dd></div>
+                    <div><dt>Worker 状态</dt><dd>在线 / 空闲</dd></div>
+                    <div><dt>最近心跳</dt><dd>刚刚</dd></div>
+                  </dl>
+                </section>
+                <section class="drawer-section">
+                  <h3>分配统计</h3>
+                  <dl class="drawer-dl">
+                    <div><dt>今日分配</dt><dd>8</dd></div>
+                    <div><dt>阻塞任务</dt><dd>0</dd></div>
+                  </dl>
+                </section>
+                <section class="drawer-action-section">
+                  <h3>操作</h3>
+                  <div class="drawer-actions">
+                    <button class="read-value" type="button" data-action="show-sales-edit">编辑销售</button>
+                    <button class="edit-value" type="button" data-action="show-sales-detail">取消</button>
+                    <button class="primary-button edit-value" type="button" data-action="show-sales-detail">保存</button>
+                  </div>
+                </section>
+              </div>
+
+            </aside>
+          </div>
+        </section>
+
+        <section class="screen screen-workers" data-module-content="workers" hidden>
+          <header class="screen-header">
+            <div>
+              <p>Worker 运营</p>
+              <h1>Worker 管理</h1>
+            </div>
+            <button class="primary-button" type="button" data-open-modal="worker">新增 Worker</button>
+          </header>
+
+          <section class="metric-grid management-metrics" aria-label="Worker 管理指标">
+            <article>
+              <span>Worker 总数</span>
+              <strong>3</strong>
+              <p>启用 2 台</p>
+            </article>
+            <article>
+              <span>客户端已绑定</span>
+              <strong>2</strong>
+              <p>未绑定 1 台</p>
+            </article>
+            <article>
+              <span>在线</span>
+              <strong>1</strong>
+              <p>离线 1 台</p>
+            </article>
+            <article>
+              <span>忙碌</span>
+              <strong class="warning-text">1</strong>
+              <p>当前任务 1 个</p>
+            </article>
+          </section>
+
+          <div class="management-grid">
+            <section class="panel management-list-panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Worker 列表</h2>
+                  <p>Worker Token 不在列表展示，只在详情抽屉中查看。</p>
+                </div>
+              </div>
+
+              <div class="management-filter-card">
+                <label>
+                  <span>搜索</span>
+                  <input type="search" value="Mac" aria-label="搜索 Worker 名称或 ID" />
+                </label>
+                <label>
+                  <span>状态</span>
+                  <select aria-label="筛选 Worker 状态"><option>全部状态</option><option>启用</option><option>停用</option></select>
+                </label>
+                <label>
+                  <span>绑定状态</span>
+                  <select aria-label="筛选客户端绑定状态"><option>全部</option><option>已绑定</option><option>未绑定</option></select>
+                </label>
+              </div>
+
+              <div class="management-table-card">
+                <table class="management-table worker-table">
+                  <thead>
+                    <tr>
+                      <th>Worker 名称</th>
+                      <th>Worker ID</th>
+                      <th>状态</th>
+                      <th>客户端</th>
+                      <th>在线</th>
+                      <th>运行</th>
+                      <th>当前任务</th>
+                      <th>绑定销售</th>
+                      <th>最近心跳</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr class="selected" data-action="show-worker-detail">
+                      <td class="lead-cell"><strong>Mac-01 展厅机</strong><small>主接待电脑</small></td>
+                      <td>wk_20260605_8f3a2c9b</td>
+                      <td><span class="status assigned">启用</span></td>
+                      <td><span class="status assigned">已绑定</span></td>
+                      <td><span class="status assigned">在线</span></td>
+                      <td><span class="status assigned">空闲</span></td>
+                      <td>-</td>
+                      <td>张伟</td>
+                      <td>刚刚</td>
+                    </tr>
+                    <tr data-action="show-worker-detail">
+                      <td class="lead-cell"><strong>Mac-02 客服机</strong><small>客服区电脑</small></td>
+                      <td>wk_20260605_2a91bd45</td>
+                      <td><span class="status assigned">启用</span></td>
+                      <td><span class="status assigned">已绑定</span></td>
+                      <td><span class="status unassigned">离线</span></td>
+                      <td><span class="status assigned">空闲</span></td>
+                      <td>-</td>
+                      <td>王敏</td>
+                      <td>12 分钟前</td>
+                    </tr>
+                    <tr data-action="show-worker-detail">
+                      <td class="lead-cell"><strong>Mac-03 备用机</strong><small>未投入使用</small></td>
+                      <td>wk_20260605_b7349c10</td>
+                      <td><span class="status invalid">停用</span></td>
+                      <td><span class="status unassigned">未绑定</span></td>
+                      <td><span class="status unassigned">离线</span></td>
+                      <td><span class="status assigned">空闲</span></td>
+                      <td>-</td>
+                      <td>未绑定</td>
+                      <td>暂无</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <aside class="panel management-drawer worker-detail-drawer" data-worker-drawer>
+              <div class="drawer-mode is-active" data-worker-mode="detail">
+                <div class="drawer-head">
+                  <div>
+                    <p><span class="read-value">Worker 详情</span><span class="edit-value">Worker 详情 · 编辑中</span></p>
+                    <h2>Mac-01 展厅机</h2>
+                  </div>
+                  <button class="icon-button" type="button" data-close-drawer data-action="close-worker-drawer" aria-label="关闭 Worker 详情">×</button>
+                </div>
+                <section class="drawer-section">
+                  <h3>基础信息</h3>
+                  <dl class="drawer-dl">
+                    <div><dt>Worker 名称</dt><dd><span class="read-value">Mac-01 展厅机</span><input class="edit-value" value="Mac-01 展厅机" /></dd></div>
+                    <div><dt>Worker ID</dt><dd>wk_20260605_8f3a2c9b</dd></div>
+                    <div><dt>Worker Token</dt><dd class="token-text">wkt_6f0a9d...c21b</dd></div>
+                    <div><dt>状态</dt><dd><span class="read-value status assigned">启用</span><select class="edit-value"><option>启用</option><option>停用</option></select></dd></div>
+                  </dl>
+                </section>
+                <section class="drawer-section">
+                  <h3>客户端绑定</h3>
+                  <dl class="drawer-dl">
+                    <div><dt>绑定状态</dt><dd>已绑定</dd></div>
+                    <div><dt>客户端实例</dt><dd>cli_9d2c...18a7</dd></div>
+                    <div><dt>最近心跳</dt><dd>刚刚</dd></div>
+                    <div><dt>运行状态</dt><dd>空闲</dd></div>
+                  </dl>
+                </section>
+                <section class="drawer-section">
+                  <h3>绑定销售</h3>
+                  <dl class="drawer-dl">
+                    <div><dt>当前销售</dt><dd>张伟</dd></div>
+                  </dl>
+                  <p class="drawer-hint">如需绑定或更换销售，请前往销售管理 > 销售详情 > 编辑销售处理。</p>
+                </section>
+                <section class="drawer-action-section">
+                  <h3>操作</h3>
+                  <div class="drawer-actions">
+                    <button class="read-value" type="button" data-action="show-worker-edit">编辑 Worker</button>
+                    <button class="read-value" type="button" data-open-modal="reset-worker">重置绑定</button>
+                    <button class="edit-value" type="button" data-action="show-worker-detail">取消</button>
+                    <button class="primary-button edit-value" type="button" data-action="show-worker-detail">保存</button>
+                  </div>
+                </section>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+        <section class="screen screen-tasks" data-module-content="tasks" hidden>
+          <header class="screen-header">
+            <div>
+              <p>任务运营</p>
+              <h1>任务中心</h1>
+            </div>
+          </header>
+
+          <section class="metric-grid task-metrics" aria-label="任务中心指标">
+            <article>
+              <span>阻塞任务</span>
+              <strong class="warning-text">3</strong>
+              <p>需运营处理</p>
+            </article>
+            <article>
+              <span>待处理任务</span>
+              <strong>12</strong>
+              <p>等待执行方领取</p>
+            </article>
+            <article>
+              <span>处理中任务</span>
+              <strong>2</strong>
+              <p>执行方正在处理</p>
+            </article>
+            <article>
+              <span>今日已完成</span>
+              <strong>28</strong>
+              <p>邀请 / 回复 / 召回</p>
+            </article>
+            <article>
+              <span>今日失败</span>
+              <strong class="warning-text">4</strong>
+              <p>需复盘处理</p>
+            </article>
+          </section>
+
+          <div class="management-grid task-management-grid">
+            <section class="panel management-list-panel task-list-panel">
+              <div class="panel-header">
+                <div>
+                  <h2>任务列表</h2>
+                  <p>任务状态由服务端维护，Worker / RPA / 人工只上报执行事实。</p>
+                </div>
+              </div>
+
+              <div class="task-filter-card">
+                <label class="task-search">
+                  <span>搜索</span>
+                  <input type="search" placeholder="搜索任务ID、客户姓名、手机号后四位" aria-label="搜索任务ID、客户姓名、手机号后四位" />
+                </label>
+                <label>
+                  <span>任务类型</span>
+                  <select aria-label="筛选任务类型">
+                    <option>全部类型</option>
+                    <option>添加通讯录邀请</option>
+                  </select>
+                </label>
+                <label>
+                  <span>执行状态</span>
+                  <select aria-label="筛选执行状态">
+                    <option>全部状态</option>
+                    <option>阻塞</option>
+                    <option>待处理</option>
+                    <option>处理中</option>
+                    <option>已完成</option>
+                    <option>失败</option>
+                    <option>已取消</option>
+                  </select>
+                </label>
+                <label>
+                  <span>业务结果</span>
+                  <select aria-label="筛选业务结果">
+                    <option>全部结果</option>
+                    <option>已发送添加通讯录邀请</option>
+                    <option>已是好友</option>
+                  </select>
+                </label>
+                <label>
+                  <span>异常原因</span>
+                  <select aria-label="筛选异常原因">
+                    <option>全部原因</option>
+                    <option>销售未绑定 Worker</option>
+                    <option>手机号未找到客户</option>
+                  </select>
+                </label>
+                <label>
+                  <span>销售</span>
+                  <select aria-label="筛选任务销售">
+                    <option>全部销售</option>
+                    <option>张伟</option>
+                    <option>王敏</option>
+                    <option>李强</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Worker</span>
+                  <select aria-label="筛选任务 Worker">
+                    <option>全部 Worker</option>
+                    <option>Mac-01 展厅机</option>
+                    <option>Mac-02 客服机</option>
+                    <option>未绑定</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="management-table-card task-table-card">
+                <table class="task-table">
+                  <thead>
+                    <tr>
+                      <th>任务ID</th>
+                      <th>任务类型</th>
+                      <th>客户</th>
+                      <th>销售</th>
+                      <th>执行方</th>
+                      <th>执行状态</th>
+                      <th>业务结果 / 异常原因</th>
+                      <th>当前步骤</th>
+                      <th>更新时间</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr class="selected" data-task-id="TASK-1831">
+                      <td>TASK-1831</td>
+                      <td>添加通讯录邀请</td>
+                      <td class="lead-cell"><strong>王先生</strong><small>138****6678</small></td>
+                      <td>张伟</td>
+                      <td>Mac-01</td>
+                      <td><span class="status running">处理中</span></td>
+                      <td>-</td>
+                      <td>正在搜索手机号 / 微信号</td>
+                      <td>10:18</td>
+                    </tr>
+                    <tr data-task-id="TASK-1830">
+                      <td>TASK-1830</td>
+                      <td>添加通讯录邀请</td>
+                      <td class="lead-cell"><strong>李女士</strong><small>139****9081</small></td>
+                      <td>王敏</td>
+                      <td>Mac-02</td>
+                      <td><span class="status completed">已完成</span></td>
+                      <td>已发送添加通讯录邀请</td>
+                      <td>-</td>
+                      <td>09:42</td>
+                    </tr>
+                    <tr data-task-id="TASK-1829">
+                      <td>TASK-1829</td>
+                      <td>添加通讯录邀请</td>
+                      <td class="lead-cell"><strong>赵先生</strong><small>137****2331</small></td>
+                      <td>张伟</td>
+                      <td>Mac-01</td>
+                      <td><span class="status failed">失败</span></td>
+                      <td>手机号未找到客户</td>
+                      <td>搜索手机号</td>
+                      <td>09:18</td>
+                    </tr>
+                    <tr data-task-id="TASK-1828">
+                      <td>TASK-1828</td>
+                      <td>添加通讯录邀请</td>
+                      <td class="lead-cell"><strong>周先生</strong><small>136****4210</small></td>
+                      <td>李强</td>
+                      <td>未绑定</td>
+                      <td><span class="status blocked">阻塞</span></td>
+                      <td>销售未绑定 Worker</td>
+                      <td>-</td>
+                      <td>08:55</td>
+                    </tr>
+                    <tr data-task-id="TASK-1827">
+                      <td>TASK-1827</td>
+                      <td>添加通讯录邀请</td>
+                      <td class="lead-cell"><strong>刘先生</strong><small>136****4604</small></td>
+                      <td>王敏</td>
+                      <td>Mac-02</td>
+                      <td><span class="status completed">已完成</span></td>
+                      <td>已是好友</td>
+                      <td>-</td>
+                      <td>昨天</td>
+                    </tr>
+                    <tr data-task-id="TASK-1826">
+                      <td>TASK-1826</td>
+                      <td>添加通讯录邀请</td>
+                      <td class="lead-cell"><strong>陈女士</strong><small>138****9518</small></td>
+                      <td>张伟</td>
+                      <td>待领取</td>
+                      <td><span class="status pending">待处理</span></td>
+                      <td>-</td>
+                      <td>-</td>
+                      <td>昨天</td>
+                    </tr>
+                    <tr data-task-id="TASK-1825">
+                      <td>TASK-1825</td>
+                      <td>添加通讯录邀请</td>
+                      <td class="lead-cell"><strong>孙先生</strong><small>139****6217</small></td>
+                      <td>李强</td>
+                      <td>未领取</td>
+                      <td><span class="status cancelled">已取消</span></td>
+                      <td>运营取消任务</td>
+                      <td>-</td>
+                      <td>昨天</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="pagination-row task-pagination">
+                <div class="pagination-total">
+                  <span>共</span>
+                  <strong>128</strong>
+                  <span>条</span>
+                  <select aria-label="每页条数">
+                    <option>20条/页</option>
+                    <option>50条/页</option>
+                  </select>
+                </div>
+                <nav aria-label="任务分页">
+                  <button type="button" disabled>上一页</button>
+                  <strong>1</strong>
+                  <button type="button">2</button>
+                  <button type="button">3</button>
+                  <span>...</span>
+                  <button type="button">7</button>
+                  <button type="button">下一页</button>
+                </nav>
+              </div>
+            </section>
+
+            <aside class="panel management-drawer task-detail-drawer" data-task-drawer>
+              <div class="drawer-head">
+                <div>
+                  <p>任务详情</p>
+                  <h2 data-task-title>TASK-1831</h2>
+                </div>
+                <button class="icon-button" type="button" data-close-drawer data-action="close-task-drawer" aria-label="关闭任务详情">×</button>
+              </div>
+
+              <div class="task-status-row">
+                <span class="status running" data-task-status>处理中</span>
+              </div>
+
+              <section class="drawer-section">
+                <h3>基础信息</h3>
+                <dl class="drawer-dl" data-task-basic>
+                  <div><dt>任务类型</dt><dd>添加通讯录邀请</dd></div>
+                  <div><dt>执行状态</dt><dd>处理中</dd></div>
+                  <div><dt>业务结果</dt><dd>-</dd></div>
+                  <div><dt>异常原因</dt><dd>-</dd></div>
+                  <div><dt>当前步骤</dt><dd>正在搜索手机号 / 微信号</dd></div>
+                  <div><dt>创建时间</dt><dd>2026-06-05 10:12</dd></div>
+                  <div><dt>更新时间</dt><dd>2026-06-05 10:18</dd></div>
+                </dl>
+              </section>
+
+              <section class="drawer-section">
+                <h3>业务对象</h3>
+                <dl class="drawer-dl" data-task-object>
+                  <div><dt>客户</dt><dd>王先生</dd></div>
+                  <div><dt>手机号</dt><dd>138****6678</dd></div>
+                  <div><dt>微信号</dt><dd>wx_car_2026</dd></div>
+                  <div><dt>线索状态</dt><dd>已分配</dd></div>
+                  <div><dt>当前销售</dt><dd>张伟</dd></div>
+                </dl>
+              </section>
+
+              <section class="drawer-section">
+                <h3>执行信息</h3>
+                <dl class="drawer-dl" data-task-executor>
+                  <div><dt>执行方类型</dt><dd>Worker</dd></div>
+                  <div><dt>执行方</dt><dd>Mac-01 展厅机</dd></div>
+                  <div><dt>执行方状态</dt><dd>在线 / 忙碌</dd></div>
+                  <div><dt>最近心跳</dt><dd>刚刚</dd></div>
+                  <div><dt>领取时间</dt><dd>2026-06-05 10:18</dd></div>
+                </dl>
+              </section>
+
+              <section class="drawer-section" data-task-advice-wrap hidden>
+                <h3 data-task-advice-title>处理建议</h3>
+                <p class="drawer-hint" data-task-advice>该任务当前不可领取。</p>
+              </section>
+
+              <section class="drawer-section">
+                <h3>状态流转</h3>
+                <ol class="flow-list task-flow-list" data-task-flow>
+                  <li><strong>任务已创建</strong><span>pending · 10:12 · 服务端</span></li>
+                  <li><strong>任务已领取</strong><span>running · 10:18 · Mac-01</span></li>
+                  <li><strong>正在搜索手机号</strong><span>current_step · 10:18 · Mac-01</span></li>
+                </ol>
+              </section>
+
+              <section class="drawer-section">
+                <h3>备注</h3>
+                <p class="task-note" data-task-note>暂无备注</p>
+              </section>
+
+              <section class="drawer-action-section">
+                <h3>操作</h3>
+                <div class="drawer-actions" data-task-actions>
+                  <button type="button" data-action="task-jump-worker">查看执行方</button>
+                  <button type="button" data-action="task-cancel">取消任务</button>
+                  <button type="button" data-action="task-add-note">补充备注</button>
+                </div>
+              </section>
+            </aside>
+          </div>
         </section>
       </main>
     </div>
 
     <div class="modal-backdrop" data-modal="lead" hidden>
-      <section class="modal">
-        <header>
-          <h2>新增客户</h2>
-          <button class="icon-button" type="button" data-close-modal aria-label="关闭新增客户">×</button>
+      <section class="modal create-lead-modal" aria-label="新增客户">
+        <header class="modal-head">
+          <div>
+            <h2>新增客户</h2>
+          </div>
         </header>
-        <div class="form-stack">
+        <div class="modal-body">
+          <div class="duplicate-alert" data-duplicate-note hidden>
+            <strong>该手机号已存在，不能重复新建</strong>
+            <p>重复录入后，本次备注将追加到原线索。</p>
+          </div>
+
           <section class="form-section">
             <h3>基础信息</h3>
-            <div class="form-grid">
-              <label>
-                <span>客户名称 <b>*</b></span>
-                <input type="text" value="王先生" aria-required="true" data-lead-field="customer_name" />
-              </label>
-              <label>
-                <span>意向车型</span>
-                <input type="text" value="SUV" data-lead-field="car_type" />
-              </label>
-              <label class="full">
-                <span>备注 <b>*</b></span>
-                <textarea rows="3" aria-required="true" data-lead-field="remark">预算 10 万，想看 SUV，周末到店。</textarea>
-              </label>
-            </div>
+            <label>
+              <span>客户名称 <b>*</b></span>
+              <input type="text" value="王先生" aria-required="true" data-lead-field="customer_name" />
+            </label>
           </section>
 
           <section class="form-section">
-            <div class="section-title-row">
-              <h3>联系方式</h3>
-              <button class="text-button" type="button">添加联系方式</button>
-            </div>
-            <div class="contact-editor">
+            <h3>联系方式</h3>
+            <div class="contact-grid">
               <label>
-                <span>类型</span>
-                <select aria-label="联系方式类型 1" data-contact-type>
-                  <option value="phone">手机</option>
-                  <option value="wechat">微信</option>
-                  <option value="email">邮箱</option>
-                </select>
+                <span>手机 <b>*</b></span>
+                <input type="tel" value="13899996678" aria-required="true" data-lead-field="phone" />
               </label>
               <label>
-                <span>号码/账号 <b>*</b></span>
-                <input type="tel" value="13896676678" aria-required="true" data-contact-value />
-              </label>
-              <button type="button" disabled>删除</button>
-            </div>
-            <div class="contact-editor">
-              <label>
-                <span>类型</span>
-                <select aria-label="联系方式类型 2" data-contact-type>
-                  <option value="wechat">微信</option>
-                  <option value="phone">手机</option>
-                  <option value="email">邮箱</option>
-                </select>
+                <span>微信</span>
+                <input type="text" value="wx_car_2026" data-lead-field="wechat" />
               </label>
               <label>
-                <span>号码/账号</span>
-                <input type="text" value="wx_car_2026" data-contact-value />
+                <span>邮箱</span>
+                <input type="email" placeholder="请输入邮箱" data-lead-field="email" />
               </label>
-              <button type="button">删除</button>
-            </div>
-            <div class="duplicate-note strong-note" data-duplicate-note>
-              <strong>重复手机号提示</strong>
-              <p>相同手机号不创建新线索，本次备注会追加到原线索备注记录。</p>
             </div>
           </section>
 
           <section class="form-section">
             <div class="section-title-row">
               <h3>自定义信息</h3>
-              <button class="text-button" type="button">添加字段</button>
+              <button class="link-button" type="button" data-action="add-custom-field">添加字段</button>
             </div>
-            <div class="custom-field-row">
-              <input type="text" value="预算" aria-label="自定义字段名称 1" data-custom-key />
-              <input type="text" value="10 万以内" aria-label="自定义字段内容 1" data-custom-value />
-            </div>
-            <div class="custom-field-row">
-              <input type="text" value="到店时间" aria-label="自定义字段名称 2" data-custom-key />
-              <input type="text" value="本周末" aria-label="自定义字段内容 2" data-custom-value />
+            <div class="custom-field-list">
+              <div class="custom-field-row">
+                <label>
+                  <span>字段名称</span>
+                  <input type="text" value="意向车型" aria-label="自定义字段名称 1" data-custom-key />
+                </label>
+                <label>
+                  <span>字段内容</span>
+                  <input type="text" value="SUV" aria-label="自定义字段内容 1" data-custom-value />
+                </label>
+                <button class="ghost-button" type="button" data-action="remove-custom-field">删除</button>
+              </div>
+              <div class="custom-field-row">
+                <label>
+                  <span>字段名称</span>
+                  <input type="text" value="预算" aria-label="自定义字段名称 2" data-custom-key />
+                </label>
+                <label>
+                  <span>字段内容</span>
+                  <input type="text" value="10 万左右" aria-label="自定义字段内容 2" data-custom-value />
+                </label>
+                <button class="ghost-button" type="button" data-action="remove-custom-field">删除</button>
+              </div>
             </div>
           </section>
+
+          <section class="form-section">
+            <h3>备注</h3>
+            <label>
+              <span>备注内容</span>
+              <textarea rows="4" data-lead-field="remark">客户说预算 10 万左右，想看 SUV，周末方便到店。</textarea>
+            </label>
+          </section>
         </div>
-        <footer>
+        <footer class="modal-actions">
           <button type="button" data-close-modal>取消</button>
-          <button class="primary-button" type="button" data-action="save-lead">保存</button>
-          <button class="primary-button" type="button" data-action="save-lead-continue">保存并继续新增</button>
+          <div class="footer-right">
+            <button class="primary-button save-button" type="button" data-action="save-lead">保存</button>
+            <button class="primary-button continue-button" type="button" data-action="save-lead-continue">保存并继续新增</button>
+          </div>
         </footer>
       </section>
     </div>
@@ -460,6 +1040,58 @@
       </section>
     </div>
 
+    <div class="modal-backdrop" data-modal="sales" hidden>
+      <section class="modal sales-modal">
+        <header>
+          <h2>新增销售</h2>
+        </header>
+        <div class="form-stack">
+          <section class="form-section">
+            <div class="drawer-form">
+              <label><span>销售姓名 <b>*</b></span><input placeholder="请输入销售姓名" /></label>
+              <label><span>手机号</span><input placeholder="请输入手机号" /></label>
+              <label><span>微信号</span><input placeholder="请输入微信号" /></label>
+              <label>
+                <span class="field-label">状态 <span class="tip-icon" tabindex="0" data-tooltip="启用/关闭分配线索" aria-label="状态说明">!</span></span>
+                <select><option>启用</option><option>停用</option></select>
+              </label>
+              <label><span>选择 Worker</span><select><option>请选择 Worker，可暂不绑定</option><option>Mac-02 客服机（离线 / 启用）</option></select></label>
+            </div>
+            <p class="drawer-hint">如需后续绑定或更换 Worker，请进入销售详情抽屉，点击“编辑销售”处理。</p>
+          </section>
+        </div>
+        <footer>
+          <button type="button" data-close-modal>取消</button>
+          <button class="primary-button" type="button" data-close-modal>保存</button>
+        </footer>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" data-modal="worker" hidden>
+      <section class="modal worker-modal">
+        <header>
+          <h2>新增 Worker</h2>
+        </header>
+        <div class="form-stack">
+          <section class="form-section">
+            <div class="drawer-form">
+              <label><span>Worker 名称 <b>*</b></span><input placeholder="请输入 Worker 名称" /></label>
+              <label><span>状态</span><select><option>启用</option><option>停用</option></select></label>
+            </div>
+            <div class="generated-note">
+              <strong>保存后系统生成</strong>
+              <span>Worker ID</span>
+              <span>Worker Token</span>
+            </div>
+          </section>
+        </div>
+        <footer>
+          <button type="button" data-close-modal>取消</button>
+          <button class="primary-button" type="button" data-close-modal>保存</button>
+        </footer>
+      </section>
+    </div>
+
     <div class="modal-backdrop" data-modal="restore" hidden>
       <section class="modal small-modal">
         <header>
@@ -473,7 +1105,22 @@
       </section>
     </div>
 
+    <div class="modal-backdrop" data-modal="reset-worker" hidden>
+      <section class="modal small-modal">
+        <header>
+          <h2>重置客户端绑定</h2>
+        </header>
+        <p class="modal-copy">
+          重置后将生成新的 Worker Token，旧 Token 立即失效。若该 Worker 有进行中任务，客户端需要重新绑定后才能继续上报。
+        </p>
+        <footer>
+          <button type="button" data-close-modal>取消</button>
+          <button class="danger-button" type="button" data-close-modal>确认重置绑定</button>
+        </footer>
+      </section>
+    </div>
+
     <div class="app-toast" data-toast hidden></div>
-    <script src="./ops-admin.js"></script>
+    <script src="./ops-admin.js?v=design-audit-20260605g"></script>
   </body>
 </html>

@@ -6,6 +6,7 @@ class SalesUpsert(BaseModel):
     phone: str | None = Field(default=None, max_length=64)
     wechat: str | None = Field(default=None, max_length=64)
     feishu_user_id: str | None = Field(default=None, max_length=128)
+    worker_id: str | None = Field(default=None, max_length=36)
     enabled: bool = True
     sort_order: int | None = None
     remark: str | None = None
@@ -25,7 +26,12 @@ class SalesOut(BaseModel):
     phone: str | None
     wechat: str | None
     feishu_user_id: str | None
+    worker_id: str | None = None
     enabled: bool
     sort_order: int | None
     remark: str | None
     lead_count: int = 0
+
+
+class SalesWorkerBindRequest(BaseModel):
+    worker_id: str | None = Field(default=None, max_length=36)

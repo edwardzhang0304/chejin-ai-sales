@@ -8,6 +8,9 @@ from app.models.lead import (
     LeadNote,
 )
 from app.models.sales import Sales
+from app.models.task import Task, TaskEvent, TaskEvidence, TaskNote
+from app.models.wechat import MessageEvent, WechatSessionBinding
+from app.models.worker import Worker, WorkerHeartbeatLog
 
 __all__ = [
     "AssignmentRoundRobinState",
@@ -17,7 +20,14 @@ __all__ = [
     "LeadContact",
     "LeadDuplicateEvent",
     "LeadNote",
+    "MessageEvent",
     "OperationLog",
     "Sales",
+    "Task",
+    "TaskEvent",
+    "TaskEvidence",
+    "TaskNote",
+    "WechatSessionBinding",
+    "Worker",
+    "WorkerHeartbeatLog",
 ]
-

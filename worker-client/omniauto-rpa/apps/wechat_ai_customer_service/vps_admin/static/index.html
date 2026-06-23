@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>VPS 管理控制台</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <section id="login-screen" class="login-screen">
+      <form id="login-form" class="login-card glass-panel">
+        <div>
+          <p class="eyebrow">OmniAuto VPS Console</p>
+          <h1>登录服务端</h1>
+          <p>这里仅供唯一 admin 管理员使用，客户不会接触这个入口。</p>
+        </div>
+        <label class="form-field">
+          <span>管理员账号</span>
+          <input name="username" autocomplete="username" value="admin" />
+        </label>
+        <label class="form-field">
+          <span>管理员密码</span>
+          <input name="password" autocomplete="current-password" type="password" />
+        </label>
+        <label class="form-field is-hidden" id="login-bind-email-field">
+          <span>绑定邮箱</span>
+          <input name="bind_email" autocomplete="email" type="email" placeholder="请输入用于接收验证码的邮箱" />
+        </label>
+        <label class="form-field is-hidden" id="login-code-field">
+          <span>邮箱验证码</span>
+          <input name="email_code" autocomplete="one-time-code" inputmode="numeric" placeholder="请输入邮箱收到的验证码" />
+        </label>
+        <label class="checkbox-field is-hidden" id="login-trust-field">
+          <input name="trust_device" type="checkbox" />
+          <span>登录后 30 天内信任此设备</span>
+        </label>
+        <div class="button-row">
+          <button class="primary-button" id="login-submit" type="submit">登录服务端</button>
+          <button class="secondary-button is-hidden" id="login-reset" type="button">重新输入账号密码</button>
+        </div>
+        <div class="status-card warning is-hidden" id="login-message"></div>
+      </form>
+    </section>
+
+    <section id="init-screen" class="init-screen">
+      <form id="init-form" class="init-card glass-panel">
+        <div>
+          <p class="eyebrow">Account Setup</p>
+          <h1>首次使用初始化</h1>
+          <p id="init-intro">为了保护账号安全，请先修改密码、绑定邮箱，再进入控制台。</p>
+        </div>
+        <label class="form-field">
+          <span>绑定邮箱</span>
+          <input name="email" autocomplete="email" type="email" placeholder="用于接收登录验证码" required />
+        </label>
+        <label class="form-field">
+          <span>新密码</span>
+          <input name="new_password" autocomplete="new-password" type="password" required />
+        </label>
+        <label class="form-field">
+          <span>再次输入新密码</span>
+          <input name="confirm_password" autocomplete="new-password" type="password" required />
+        </label>
+        <div class="workflow-section is-visible" id="init-smtp-section">
+          <h2>SMTP 与邮箱验证码</h2>
+          <p>admin 首次初始化时需要设置服务端发信方式。暂未配置真实 SMTP 时，本地测试会写入开发 outbox。</p>
+          <div class="form-grid compact-form">
+            <label class="form-field"><span>SMTP 服务器</span><input name="smtp_server" placeholder="smtp.example.com" /></label>
+            <label class="form-field"><span>端口</span><input name="smtp_port" type="number" value="465" min="1" max="65535" /></label>
+            <label class="form-field"><span>SMTP 账号</span><input name="smtp_username" autocomplete="username" /></label>
+            <label class="form-field"><span>SMTP 密码/授权码</span><input name="smtp_password" type="password" autocomplete="new-password" /></label>
+            <label class="form-field"><span>发件邮箱</span><input name="smtp_from_email" type="email" placeholder="通常与 SMTP 账号相同" /></label>
+            <label class="form-field"><span>发件人名称</span><input name="smtp_sender_name" value="OmniAuto" /></label>
+            <label class="form-field"><span>验证码位数</span><input name="smtp_code_length" type="number" min="4" max="8" value="4" /></label>
+            <label class="form-field"><span>有效期（分钟）</span><input name="smtp_ttl_minutes" type="number" min="1" max="60" value="15" /></label>
+            <label class="form-field"><span>信任设备天数</span><input name="smtp_trusted_device_days" type="number" min="1" max="120" value="30" /></label>
+            <label class="checkbox-field"><input name="smtp_otp_required" type="checkbox" checked /><span>登录和改密必须验证邮箱</span></label>
+            <label class="checkbox-field"><input name="smtp_use_ssl" type="checkbox" checked /><span>使用 SSL</span></label>
+            <label class="checkbox-field"><input name="smtp_use_tls" type="checkbox" /><span>使用 STARTTLS</span></label>
+          </div>
+        </div>
+        <label class="form-field is-hidden" id="init-code-field">
+          <span>邮箱验证码</span>
+          <input name="email_code" autocomplete="one-time-code" inputmode="numeric" placeholder="请输入邮箱收到的验证码" />
+        </label>
+        <div class="button-row">
+          <button class="primary-button" id="init-submit" type="submit">发送初始化验证码</button>
+          <button class="secondary-button" id="init-back" type="button">返回登录</button>
+        </div>
+        <div class="status-card warning is-hidden" id="init-message"></div>
+      </form>
+    </section>
+
+    <main class="shell">
+      <aside class="sidebar glass-panel">
+        <div class="brand">
+          <div class="brand-mark">VA</div>
+          <div>
+            <div class="brand-title">OmniAuto</div>
+            <div class="brand-subtitle">VPS 管理控制台</div>
+          </div>
+        </div>
+
+        <nav class="nav-list" aria-label="主导航">
+          <button class="nav-item is-active" data-view="overview">运行总览</button>
+          <button class="nav-item" data-view="accounts">客户与权限</button>
+          <button class="nav-item" data-view="customerData">客户数据</button>
+          <button class="nav-item" data-view="sharedKnowledge">共享公共知识</button>
+          <button class="nav-item" data-view="nodes">客户电脑连接</button>
+          <button class="nav-item" data-view="backupRestore">备份与还原</button>
+          <button class="nav-item" data-view="updates">版本更新</button>
+          <button class="nav-item" data-view="security">账号安全</button>
+          <button class="nav-item" data-view="audit">操作审计</button>
+        </nav>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar glass-panel">
+          <div>
+            <p class="eyebrow">OmniAuto VPS Console</p>
+            <h1 id="view-title">运行总览</h1>
+          </div>
+          <div class="topbar-actions">
+            <div class="status-pill" id="login-pill">未登录</div>
+            <div class="status-pill" id="health-pill">连接中</div>
+            <button id="refresh-button" class="secondary-button">刷新</button>
+            <button id="logout-button" class="secondary-button danger-button">退出登录</button>
+          </div>
+        </header>
+
+        <section class="hero glass-panel">
+          <div>
+            <p class="eyebrow">服务端 · 客户端协作</p>
+            <h2>集中管理客户账号、共享公共知识候选、客户数据包、远程备份还原和版本发布；客户日常维护仍在 Local 客户端完成。</h2>
+          </div>
+          <div class="hero-metrics">
+            <div><span id="metric-customers">-</span><label>客户账号</label></div>
+            <div><span id="metric-nodes">-</span><label>客户电脑</label></div>
+            <div><span id="metric-pending">-</span><label>待处理</label></div>
+          </div>
+        </section>
+
+        <section id="message" class="status-card warning is-hidden"></section>
+
+        <section class="content-grid">
+          <article class="glass-panel content-card view-panel is-visible" data-panel="overview">
+            <div class="section-head">
+              <div>
+                <h2>运行总览</h2>
+                <p>快速确认客户账号、客户电脑连接、数据包、共享知识候选和备份状态。</p>
+              </div>
+              <button class="secondary-button" data-action="refresh">刷新状态</button>
+            </div>
+            <div class="metric-grid" id="overview-cards"></div>
+            <div class="compact-list compact-list-small" id="overview-recommendations"></div>
+          </article>
+
+          <article class="glass-panel content-card view-panel" data-panel="accounts">
+            <div class="section-head">
+              <div>
+                <h2>客户与权限</h2>
+                <p>客户账号就是客户本人；访客账号只能由 admin 指定可查看的客户，不能修改任何内容。</p>
+              </div>
+            </div>
+            <div class="workflow-section is-visible">
+              <h2>新增账号</h2>
+              <form class="form-grid compact-form" id="user-form">
+                <label class="form-field"><span>账号名称</span><input name="username" required /></label>
+                <label class="form-field"><span>密码</span><input name="password" type="password" required /></label>
+                <label class="form-field"><span>登录邮箱</span><input name="email" type="email" placeholder="用于登录验证码" /></label>
+                <label class="form-field"><span>账号类型</span><select name="role" id="new-user-role"><option value="customer">客户 customer</option><option value="guest">访客 guest</option></select></label>
+                <label class="form-field" id="industry-select-field">
+                  <span>行业</span>
+                  <select name="industry_id" id="new-user-industry">
+                    <option value="home_appliance">家电</option>
+                    <option value="used_car">二手车</option>
+                    <option value="fast_food">快餐</option>
+                    <option value="lab_instruments">实验室仪器</option>
+                  </select>
+                </label>
+                <label class="form-field" id="authorized-customer-field"><span>访客可查看客户</span><select name="authorized_customer" id="authorized-customer-select"></select></label>
+                <button class="primary-button" type="submit">创建账号</button>
+              </form>
+            </div>
+            <div class="compact-list" id="user-list"></div>
+            <div class="workflow-section is-visible">
+              <h2>AI智能记录员模块分配</h2>
+              <p>基础采集链路固定不变，这里只切换“聊天整理/导出模板模块”。</p>
+              <div class="inline-help">
+                <strong>生效规则：账号独立绑定；未绑定账号才使用全局兜底</strong>
+                <span>推荐为每个账号单独配置模块，彼此独立互不影响。全局兜底仅用于新账号尚未配置时的临时默认值。</span>
+              </div>
+              <div class="compact-list compact-list-small" id="recorder-module-cards">
+                <div class="status-card loading"><strong><span class="loading-spinner" aria-hidden="true"></span>正在加载记录员模块</strong></div>
+              </div>
+              <form class="form-grid compact-form" id="recorder-user-binding-form">
+                <label class="form-field"><span>目标账号（独立绑定）</span><select name="scope_user_id" id="recorder-user-binding-user"></select></label>
+                <label class="form-field"><span>模块</span><select name="module_key" id="recorder-user-binding-module"></select></label>
+                <label class="checkbox-field"><input name="enabled" type="checkbox" checked /><span>启用绑定</span></label>
+                <button class="primary-button" type="submit">保存账号绑定</button>
+              </form>
+              <details class="workflow-section">
+                <summary>高级配置（可选）：全局兜底</summary>
+                <form class="form-grid compact-form" id="recorder-global-binding-form">
+                  <label class="form-field"><span>全局兜底（仅账号未配置时）</span><select name="module_key" id="recorder-global-binding-module"></select></label>
+                  <label class="checkbox-field"><input name="enabled" type="checkbox" checked /><span>启用绑定</span></label>
+                  <button class="secondary-button" type="submit">保存全局兜底</button>
+                </form>
+              </details>
+              <div class="compact-list" id="recorder-binding-list">
+                <div class="status-card loading"><strong><span class="loading-spinner" aria-hidden="true"></span>正在加载模块绑定</strong></div>
+              </div>
+            </div>
+          </article>
+
+          <article class="glass-panel content-card view-panel" data-panel="customerData">
+            <div class="section-head">
+              <div>
+                <h2>客户数据</h2>
+                <p>管理员选择客户后打包该客户本地数据；详情页默认展示人能看懂的摘要，技术校验清单放在底部。</p>
+              </div>
+            </div>
+            <div class="workflow-section is-visible">
+              <h2>打包指定客户数据</h2>
+              <form class="form-grid compact-form" id="customer-package-form">
+                <label class="form-field"><span>客户账号</span><select name="account_username" id="package-user-select"></select></label>
+                <button class="primary-button" type="submit">打包所选客户数据</button>
+              </form>
+            </div>
+            <div class="compact-list" id="customer-data-list"></div>
+            <div class="detail-drawer is-hidden" id="customer-data-detail"></div>
+          </article>
+
+          <article class="glass-panel content-card view-panel" data-panel="sharedKnowledge">
+            <div class="section-head">
+              <div>
+                <h2>共享公共知识</h2>
+                <p>Local 只从 customer 正式知识提交候选；管理员采纳后进入云端正式共享库，客户电脑收到通知后拉取云端快照。</p>
+              </div>
+              <div class="button-row">
+                <button class="primary-button" id="generate-shared-candidates">AI 提炼候选共享知识</button>
+                <button class="secondary-button" id="sync-shared" title="保存云端正式共享库当前状态，作为可审计快照，不会直接改客户电脑。">保存云端正式库快照</button>
+              </div>
+            </div>
+            <div class="inline-help">
+              <strong>云端正式库快照</strong>
+              <span>用于记录云端正式共享公共知识的状态，方便审计和排查；推送命令只通知客户电脑刷新云端快照。</span>
+            </div>
+            <div class="flow-guide server-flow-guide">
+              <div><strong>1. 候选待审</strong><span>来自客户 Local 上传</span></div>
+              <div><strong>2. 正式共享库</strong><span>admin 确认后的公共知识</span></div>
+              <div><strong>3. 生成发布记录</strong><span>每次采纳都会留下 patch 审计记录</span></div>
+              <div><strong>4. 手动推送</strong><span>客户电脑轮询后刷新云端快照</span></div>
+            </div>
+            <div class="metric-grid" id="shared-cards"></div>
+            <div class="split-layout single-main">
+              <div class="compact-list" id="shared-proposal-list"></div>
+              <div class="compact-list" id="shared-library-list"></div>
+            </div>
+            <div class="workflow-section is-visible">
+              <h2>新增正式共享知识</h2>
+              <div class="button-row" style="margin-bottom:12px;">
+                <button class="secondary-button" type="button" id="shared-ai-draft-toggle">用自然语言创建（AI 对话）</button>
+              </div>
+              <div class="ai-draft-panel is-hidden glass-panel" id="shared-ai-draft-panel" style="margin-bottom:16px;padding:16px;">
+                <div id="shared-ai-draft-messages" style="max-height:320px;overflow-y:auto;margin-bottom:12px;"></div>
+                <div class="form-field" style="display:flex;gap:8px;">
+                  <input id="shared-ai-draft-input" placeholder="用自然语言描述这条共享知识，例如：客户询问发货时效时，应该告知48小时内发货并说明偏远地区除外" style="flex:1;" />
+                  <button class="primary-button" type="button" id="shared-ai-draft-send">发送</button>
+                </div>
+                <div id="shared-ai-draft-status" style="margin-top:8px;font-size:13px;"></div>
+                <div class="button-row is-hidden" id="shared-ai-draft-actions" style="margin-top:12px;">
+                  <button class="primary-button" type="button" id="shared-ai-draft-apply">确认填入表单</button>
+                  <button class="secondary-button" type="button" id="shared-ai-draft-reset">重新描述</button>
+                </div>
+              </div>
+              <form class="shared-library-form compact-form" id="library-form">
+                <label class="form-field"><span>条目 ID</span><input name="item_id" placeholder="可留空自动生成" /></label>
+                <label class="form-field">
+                  <span>行业范围</span>
+                  <select name="industry_id">
+                    <option value="global">全行业通用</option>
+                    <option value="used_car">二手车</option>
+                    <option value="home_appliance">家电</option>
+                    <option value="fast_food">快餐</option>
+                    <option value="lab_instruments">实验室仪器</option>
+                  </select>
+                </label>
+                <label class="form-field">
+                  <span>分类</span>
+                  <select name="category_id">
+                    <option value="global_guidelines">通用客服规则</option>
+                    <option value="reply_style">回复口吻</option>
+                    <option value="after_sale">售后规则</option>
+                    <option value="payment">付款/开票</option>
+                    <option value="logistics">物流发货</option>
+                    <option value="risk_control">风险/转人工</option>
+                    <option value="product_common">通用商品说明</option>
+                  </select>
+                </label>
+                <label class="form-field"><span>标题</span><input name="title" placeholder="例如：客户要求最低价时的回复规则" required /></label>
+                <label class="form-field"><span>关键词</span><input name="keywords" placeholder="最低价、优惠、议价" /></label>
+                <label class="form-field wide-field"><span>适用场景</span><input name="applies_to" placeholder="客户咨询通用规则时使用，不绑定某个客户商品" /></label>
+                <label class="form-field full-field"><span>正文</span><textarea name="content" rows="5" placeholder="直接输入自然语言规则，例如：遇到客户要求最低价时，先说明价格以正式报价为准，不承诺未核实折扣；超出授权范围时转人工。" required></textarea></label>
+                <label class="form-field full-field"><span>管理员备注</span><input name="notes" placeholder="可选：补充审核原因、来源、注意事项" /></label>
+                <div class="form-actions"><button class="primary-button" type="submit">加入正式库</button></div>
+              </form>
+            </div>
+            <div class="compact-list compact-list-small" id="shared-patch-list"></div>
+            <div class="detail-drawer is-hidden" id="shared-proposal-detail"></div>
+            <div class="detail-drawer is-hidden" id="shared-detail"></div>
+          </article>
+
+          <article class="glass-panel content-card view-panel" data-panel="nodes">
+            <div class="section-head">
+              <div>
+                <h2>客户电脑连接</h2>
+                <p>Local 客户端登录后会向 VPS 报到。这里显示能接收远程备份、还原、检查更新命令的客户电脑。</p>
+              </div>
+            </div>
+            <div class="compact-list" id="node-list"></div>
+            <div class="compact-list compact-list-small" id="command-list"></div>
+          </article>
+
+          <article class="glass-panel content-card view-panel" data-panel="backupRestore">
+            <div class="section-head">
+              <div>
+                <h2>备份与还原</h2>
+                <p>备份记录可以下载、还原或删除。还原默认只创建演练命令，避免误覆盖客户本地数据。</p>
+              </div>
+              <div class="button-row">
+                <button class="primary-button" id="backup-all">一键备份所有数据</button>
+                <button class="secondary-button danger-button" id="restore-latest">一键还原所有数据（演练）</button>
+              </div>
+            </div>
+            <div class="split-layout single-main">
+              <div class="compact-list" id="backup-list"></div>
+              <div class="compact-list" id="restore-list"></div>
+            </div>
+          </article>
+
+          <article class="glass-panel content-card view-panel" data-panel="updates">
+            <div class="section-head">
+              <div>
+                <h2>版本更新</h2>
+                <p>标准做法是先把构建好的更新包放到 VPS 可下载地址，再在这里登记版本。Local 端检查更新时读取这里的发布记录。</p>
+              </div>
+            </div>
+            <div class="workflow-section is-visible">
+              <h2>登记新版本</h2>
+              <form class="form-grid compact-form" id="release-form">
+                <label class="form-field"><span>版本号</span><input name="version" placeholder="0.2.0" required /></label>
+                <label class="form-field"><span>渠道</span><select name="channel"><option value="stable">稳定版</option><option value="canary">灰度版</option><option value="dev">开发版</option></select></label>
+                <label class="form-field"><span>标题</span><input name="title" /></label>
+                <label class="form-field wide-field"><span>更新包地址</span><input name="artifact_url" placeholder="https://你的域名/downloads/wechat-ai-cs-0.2.0.zip" /></label>
+                <label class="form-field wide-field"><span>SHA256 校验码</span><input name="sha256" placeholder="可选，用于后续安装包校验" /></label>
+                <label class="form-field wide-field"><span>签名</span><input name="signature" placeholder="可选，正式更新建议填写" /></label>
+                <label class="form-field full-field"><span>更新说明</span><textarea name="notes" rows="3" placeholder="这次更新解决了什么、客户需要注意什么"></textarea></label>
+                <button class="primary-button" type="submit">登记版本</button>
+              </form>
+            </div>
+            <div class="compact-list compact-list-small">
+              <div class="record-row">
+                <strong>标准操作方法</strong>
+                <span>1. 构建 zip/安装包；2. 上传到 VPS 下载目录；3. 在这里填写版本号和下载地址；4. Local 客户端通过“检查更新”读取最新记录。后续打包安装器应内置运行时和更新工具。</span>
+              </div>
+            </div>
+            <div class="compact-list compact-list-small" id="release-list"></div>
+          </article>
+
+          <article class="glass-panel content-card view-panel" data-panel="security">
+            <div class="section-head">
+              <div>
+                <h2>账号安全</h2>
+                <p>修改当前 admin 登录密码。保存后建议重新登录，并把新密码同步到安全的密码管理器。</p>
+              </div>
+            </div>
+            <div class="workflow-section is-visible">
+              <h2>修改管理员密码</h2>
+              <form class="form-grid compact-form" id="password-form">
+                <label class="form-field"><span>当前密码</span><input name="current_password" type="password" autocomplete="current-password" required /></label>
+                <label class="form-field"><span>新密码</span><input name="new_password" type="password" autocomplete="new-password" required /></label>
+                <label class="form-field"><span>再次输入新密码</span><input name="confirm_password" type="password" autocomplete="new-password" required /></label>
+                <label class="form-field is-hidden" id="password-code-field"><span>邮箱验证码</span><input name="email_code" autocomplete="one-time-code" inputmode="numeric" placeholder="请输入邮箱收到的验证码" /></label>
+                <button class="primary-button" type="submit">发送验证码并修改</button>
+              </form>
+            </div>
+            <div class="compact-list compact-list-small" id="security-account-summary"></div>
+            <div class="workflow-section is-visible">
+              <h2>绑定或更换管理员邮箱</h2>
+              <form class="form-grid compact-form" id="email-form">
+                <label class="form-field"><span>管理员邮箱</span><input name="email" type="email" autocomplete="email" placeholder="请输入用于登录验证码的邮箱" required /></label>
+                <label class="form-field is-hidden" id="email-code-field"><span>邮箱验证码</span><input name="email_code" autocomplete="one-time-code" inputmode="numeric" placeholder="请输入邮箱收到的验证码" /></label>
+                <button class="primary-button" type="submit">发送绑定验证码</button>
+              </form>
+            </div>
+            <div class="workflow-section is-visible">
+              <h2>SMTP 与邮箱验证码</h2>
+              <p>服务端统一负责发验证码。客户端和客户账号只需要绑定邮箱，不需要知道 SMTP 密码。</p>
+              <form class="form-grid compact-form" id="smtp-form">
+                <label class="form-field"><span>SMTP 服务器</span><input name="server" placeholder="smtp.example.com" /></label>
+                <label class="form-field"><span>端口</span><input name="port" type="number" value="465" min="1" max="65535" /></label>
+                <label class="form-field"><span>SMTP 账号</span><input name="username" autocomplete="username" /></label>
+                <label class="form-field"><span>SMTP 密码/授权码</span><input name="password" type="password" autocomplete="new-password" placeholder="留空则保留原密码" /></label>
+                <label class="form-field"><span>发件邮箱</span><input name="from_email" type="email" placeholder="通常与 SMTP 账号相同" /></label>
+                <label class="form-field"><span>发件人名称</span><input name="sender_name" value="OmniAuto" /></label>
+                <label class="form-field"><span>验证码位数</span><input name="code_length" type="number" min="4" max="8" value="4" /></label>
+                <label class="form-field"><span>有效期（分钟）</span><input name="ttl_minutes" type="number" min="1" max="60" value="15" /></label>
+                <label class="form-field"><span>信任设备天数</span><input name="trusted_device_days" type="number" min="1" max="120" value="30" /></label>
+                <label class="form-field"><span>测试收件邮箱</span><input name="test_email" type="email" placeholder="保存后可发送测试邮件" /></label>
+                <label class="checkbox-field"><input name="otp_required" type="checkbox" checked /><span>登录和改密必须验证邮箱</span></label>
+                <label class="checkbox-field"><input name="use_ssl" type="checkbox" checked /><span>使用 SSL（常见端口 465）</span></label>
+                <label class="checkbox-field"><input name="use_tls" type="checkbox" /><span>使用 STARTTLS（常见端口 587）</span></label>
+                <button class="primary-button" type="submit">保存邮箱设置</button>
+                <button class="secondary-button" id="smtp-test" type="button">发送测试邮件</button>
+              </form>
+              <div class="status-card warning" id="smtp-status">SMTP 状态读取中...</div>
+            </div>
+            <div class="compact-list compact-list-small">
+              <div class="record-row">
+                <strong>邮箱验证码</strong>
+                <span>正式商用时请在这里配置 SMTP，并确认已勾选“登录和改密必须验证邮箱”。未配置完整 SMTP 时，验证码会写入本机开发 outbox，适合本地模拟测试。</span>
+              </div>
+            </div>
+          </article>
+
+          <article class="glass-panel content-card view-panel" data-panel="audit">
+            <div class="section-head">
+              <div>
+                <h2>操作审计</h2>
+                <p>账号、共享知识、备份还原、版本发布等关键操作都会留下记录，仅保留最近 20 条。</p>
+              </div>
+            </div>
+            <div class="compact-list" id="audit-list"></div>
+          </article>
+        </section>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

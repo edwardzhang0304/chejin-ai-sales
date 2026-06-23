@@ -1,0 +1,22 @@
+[
+  {
+    "name": "rag_hybrid_synonym_live",
+    "messages": ["民宿客房智能锁安装前要不要确认供电？"],
+    "expect_action": "sent",
+    "expect_rule_name": "rag_context_reply",
+    "expect_intent": "product_detail",
+    "expect_rag_applied": true,
+    "expect_rag_experience_recorded": true,
+    "expect_retrieval_mode": "hybrid_lexical_semantic",
+    "expect_reply_contains": ["作为参考", "供电"],
+    "expect_reply_not_contains": ["请示上级", "无法直接确认"]
+  },
+  {
+    "name": "rag_risk_boundary_live",
+    "messages": ["老客户能不能月结先发货？"],
+    "expect_action": "handoff_sent",
+    "expect_rag_applied": false,
+    "expect_reply_contains": ["请示上级"],
+    "expect_reply_not_contains": ["可以月结", "先发货"]
+  }
+]

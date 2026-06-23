@@ -3,6 +3,7 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.api.response import ok
+from app.core.auth import require_admin_auth
 from app.core.database import get_db
 from app.core.request_context import ActorContext, get_actor_context
 from app.errors import AppError, DuplicateLeadError
@@ -20,7 +21,7 @@ from app.services import export_service, lead_service
 from app.services.assignment_service import retry_auto_assign
 
 
-router = APIRouter(tags=["leads"])
+router = APIRouter(tags=["leads"], dependencies=[Depends(require_admin_auth)])
 
 
 @router.get("/leads")

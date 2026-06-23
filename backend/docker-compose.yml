@@ -12,7 +12,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://chejin:chejin_password@db:5432/chejin_leads}
       PHONE_HASH_SECRET: ${PHONE_HASH_SECRET:-dev-only-phone-hash-secret-change-before-production}
       CONTACT_ENCRYPTION_SECRET: ${CONTACT_ENCRYPTION_SECRET:-dev-only-contact-encryption-secret-change-before-production}
-      AUTO_CREATE_TABLES: ${AUTO_CREATE_TABLES:-true}
+      AUTO_CREATE_TABLES: ${AUTO_CREATE_TABLES:-false}
       DOCS_ENABLED: ${DOCS_ENABLED:-true}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,null}
       WAIT_FOR_DB: "1"

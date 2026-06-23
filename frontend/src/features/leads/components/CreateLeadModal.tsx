@@ -1,5 +1,6 @@
 import { FormEvent, useState } from "react";
 
+import { useLockBodyScroll } from "../../../shared/hooks/useLockBodyScroll";
 import type { DuplicateLeadErrorData, LeadCreatePayload } from "../types";
 
 type CustomFieldRow = {
@@ -25,6 +26,8 @@ function updateCustomFieldValue(values: CustomFieldRow[], index: number, patch: 
 }
 
 export function CreateLeadModal({ submitting, error, duplicateData, onClose, onOpenDuplicateLead, onSubmit }: Props) {
+  useLockBodyScroll();
+
   const [customerName, setCustomerName] = useState("");
   const [phone, setPhone] = useState("");
   const [wechat, setWechat] = useState("");
@@ -73,8 +76,6 @@ export function CreateLeadModal({ submitting, error, duplicateData, onClose, onO
       resetForm();
     }
   }
-
-  const canSubmit = customerName.trim().length > 0 && phone.trim().length > 0 && !submitting;
 
   return (
     <div className="modal-backdrop" role="presentation">
@@ -183,14 +184,14 @@ export function CreateLeadModal({ submitting, error, duplicateData, onClose, onO
         </div>
 
         <footer className="modal-actions">
-          <button type="button" className="secondary-button" onClick={onClose}>
+          <button type="button" onClick={onClose}>
             取消
           </button>
           <div className="footer-right">
-            <button type="submit" className="secondary-button save-button" value="save" disabled={!canSubmit}>
+            <button type="submit" className="primary-button save-button" value="save" disabled={submitting}>
               {submitting ? "保存中..." : "保存"}
             </button>
-            <button type="submit" className="primary-button continue-button" value="continue" disabled={!canSubmit}>
+            <button type="submit" className="primary-button continue-button" value="continue" disabled={submitting}>
               {submitting ? "保存中..." : "保存并继续新增"}
             </button>
           </div>

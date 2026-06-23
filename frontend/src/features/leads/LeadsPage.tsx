@@ -369,10 +369,6 @@ export function LeadsPage() {
             onToggleSelected={leads.toggleSelected}
             onToggleAllVisible={leads.toggleAllVisible}
             onOpenDetail={leads.setActiveLeadId}
-            onRestoreLead={(leadId) => {
-              setRestoreError(null);
-              setRestoreLeadId(leadId);
-            }}
           />
 
           <footer className="pagination-row">

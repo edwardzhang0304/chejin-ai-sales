@@ -2,11 +2,12 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.api.response import ok
+from app.core.auth import require_admin_auth
 from app.core.database import get_db
 from app.services.audit_service import build_log_query, paginate_logs
 
 
-router = APIRouter(tags=["operation-logs"])
+router = APIRouter(tags=["operation-logs"], dependencies=[Depends(require_admin_auth)])
 
 
 @router.get("/operation-logs")

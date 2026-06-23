@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Any
 
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy import Select, cast, func, select
 from sqlalchemy import Text
 from sqlalchemy.orm import Session
@@ -24,7 +25,18 @@ EVENT_NAMES: dict[str, str] = {
     "sales_created": "新增销售",
     "sales_updated": "编辑销售",
     "sales_enabled_changed": "启用/停用销售",
+    "sales_worker_bound": "绑定销售 Worker",
+    "sales_worker_unbound": "清空销售 Worker",
+    "worker_created": "新增 Worker",
+    "worker_updated": "编辑 Worker",
+    "worker_enabled_changed": "启用/停用 Worker",
+    "worker_binding_reset": "重置 Worker 绑定",
     "leads_exported": "导出选中线索",
+    "task_created": "创建任务",
+    "task_unblocked": "解除任务阻塞",
+    "task_cancelled": "取消任务",
+    "task_retried": "重新处理任务",
+    "task_comment_added": "补充任务备注",
 }
 
 FAILED_EVENTS = {"lead_assign_failed"}
@@ -64,9 +76,24 @@ def _summary_for(log: OperationLog, lead_name: str | None) -> str:
         after_enabled = after.get("enabled")
         if before_enabled is not None and after_enabled is not None:
             return f"销售状态从{'启用' if before_enabled else '停用'}改为{'启用' if after_enabled else '停用'}"
+    if log.event_type == "worker_enabled_changed":
+        before_enabled = before.get("enabled")
+        after_enabled = after.get("enabled")
+        if before_enabled is not None and after_enabled is not None:
+            return f"Worker 状态从{'启用' if before_enabled else '停用'}改为{'启用' if after_enabled else '停用'}"
+    if log.event_type == "sales_worker_bound":
+        return f"绑定 Worker：{after.get('worker_id')}"
+    if log.event_type == "sales_worker_unbound":
+        return "清空销售 Worker 绑定"
+    if log.event_type == "worker_binding_reset":
+        return "重置 Worker Token，客户端需重新绑定"
     if log.event_type == "leads_exported":
         count = metadata.get("selected_count")
         return f"导出 {count} 条线索" if count is not None else "导出选中线索"
+    if log.event_type == "task_unblocked":
+        return "销售已绑定 Worker，任务恢复为 pending"
+    if log.event_type == "task_retried":
+        return f"创建新任务 {metadata.get('new_task_id')}" if metadata.get("new_task_id") else "重新处理任务"
     if lead_name:
         return f"操作对象：{lead_name}"
     return EVENT_NAMES.get(log.event_type, log.event_type)
@@ -96,9 +123,9 @@ def write_log(
         ip_address=actor.ip_address,
         user_agent=actor.user_agent,
         request_id=actor.request_id,
-        before_data=before_data,
-        after_data=after_data,
-        extra_metadata=metadata or {},
+        before_data=jsonable_encoder(before_data) if before_data is not None else None,
+        after_data=jsonable_encoder(after_data) if after_data is not None else None,
+        extra_metadata=jsonable_encoder(metadata or {}),
     )
     db.add(log)
     return log
