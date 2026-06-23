@@ -1,0 +1,83 @@
+from datetime import datetime
+
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, JSON, String, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.core.database import Base
+from app.models.base import TimestampMixin, new_id, utcnow
+
+
+class WechatSessionBinding(Base, TimestampMixin):
+    __tablename__ = "wechat_session_bindings"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    conversation_id: Mapped[str] = mapped_column(String(36), nullable=False, default=new_id)
+    lead_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("leads.id"), nullable=True)
+    sales_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("sales.id"), nullable=True)
+    worker_id: Mapped[str] = mapped_column(String(36), ForeignKey("workers.id"), nullable=False)
+    remark_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    rpa_session_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    row_fingerprint: Mapped[str] = mapped_column(String(255), nullable=False)
+    bind_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unbound")
+    listen_status: Mapped[str] = mapped_column(String(32), nullable=False, default="not_started")
+    allow_listening: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    unread_hint: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_message_preview: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ocr_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    last_ingested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_scan_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    lead: Mapped["Lead | None"] = relationship()
+    sales: Mapped["Sales | None"] = relationship()
+    worker: Mapped["Worker"] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint("conversation_id", name="uq_wechat_session_bindings_conversation_id"),
+        UniqueConstraint("worker_id", "rpa_session_key", name="uq_wechat_session_bindings_worker_session"),
+    )
+
+
+Index("idx_wechat_bindings_lead_status", WechatSessionBinding.lead_id, WechatSessionBinding.bind_status)
+Index("idx_wechat_bindings_worker_status", WechatSessionBinding.worker_id, WechatSessionBinding.bind_status, WechatSessionBinding.listen_status)
+Index("idx_wechat_bindings_remark_code", WechatSessionBinding.remark_code)
+
+
+class MessageEvent(Base):
+    __tablename__ = "message_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    conversation_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    binding_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("wechat_session_bindings.id"), nullable=True)
+    lead_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("leads.id"), nullable=True)
+    sales_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("sales.id"), nullable=True)
+    worker_id: Mapped[str] = mapped_column(String(36), ForeignKey("workers.id"), nullable=False)
+    rpa_session_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    read_run_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    dedupe_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    sender_role: Mapped[str] = mapped_column(String(32), nullable=False)
+    message_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    image_local_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    raw_payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    evidence: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    ocr_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    ingest_status: Mapped[str] = mapped_column(String(32), nullable=False, default="ingested")
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    binding: Mapped["WechatSessionBinding | None"] = relationship()
+    worker: Mapped["Worker"] = relationship()
+
+    __table_args__ = (UniqueConstraint("worker_id", "conversation_id", "dedupe_key", name="uq_message_events_worker_conversation_dedupe"),)
+
+
+Index("idx_message_events_conversation_ingested", MessageEvent.conversation_id, MessageEvent.ingested_at.desc())
+Index("idx_message_events_worker_ingested", MessageEvent.worker_id, MessageEvent.ingested_at.desc())
+Index("idx_message_events_lead_ingested", MessageEvent.lead_id, MessageEvent.ingested_at.desc())

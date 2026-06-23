@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Worker 状态组件苹果风格方案</title>
+    <link rel="stylesheet" href="./worker-status-options.css?v=20260618e" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="page-head">
+        <p>P1a / Worker 状态组件</p>
+        <h1>状态信息块优化方案</h1>
+        <span>仅对截图中的状态组件做风格探索，不改正式 Worker 设计稿。</span>
+      </header>
+
+      <section class="options-grid" aria-label="Worker 状态组件方案">
+        <article class="option option-featured">
+          <div class="option-meta">
+            <strong>方案 E</strong>
+            <span>两列精简版 / 按你标注优化</span>
+          </div>
+          <div class="phone-canvas worker-width-canvas">
+            <div class="clean-status-card">
+              <div class="clean-top">
+                <strong>张伟</strong>
+                <em class="pill blue">暂停接单</em>
+              </div>
+              <div class="clean-bottom">
+                <div class="clean-state">
+                  <span>自动化组件</span>
+                  <strong>
+                    <svg class="state-dot green" viewBox="0 0 12 12" aria-hidden="true">
+                      <circle cx="6" cy="6" r="4"></circle>
+                    </svg>
+                    <em class="pill green">可用</em>
+                  </strong>
+                </div>
+                <div class="clean-state">
+                  <span>微信状态</span>
+                  <strong>
+                    <svg class="state-dot green" viewBox="0 0 12 12" aria-hidden="true">
+                      <circle cx="6" cy="6" r="4"></circle>
+                    </svg>
+                    <em class="pill green">已连接</em>
+                  </strong>
+                </div>
+              </div>
+            </div>
+          </div>
+          <p class="note">去掉上排标签，主信息更直接；下排只保留两个运行依赖状态。</p>
+        </article>
+
+        <article class="option">
+          <div class="option-meta">
+            <strong>方案 A</strong>
+            <span>系统设置分组列表</span>
+          </div>
+          <div class="phone-canvas">
+            <div class="status-list-card">
+              <div class="status-row">
+                <span>当前绑定销售</span>
+                <strong>张伟</strong>
+              </div>
+              <div class="status-row">
+                <span>Worker 状态</span>
+                <strong><em class="pill blue">暂停接单</em></strong>
+              </div>
+              <div class="status-row">
+                <span>自动化组件</span>
+                <strong>
+                  <svg class="state-dot green" viewBox="0 0 12 12" aria-hidden="true">
+                    <circle cx="6" cy="6" r="4"></circle>
+                  </svg>
+                  可用
+                </strong>
+              </div>
+              <div class="status-row">
+                <span>微信状态</span>
+                <strong>
+                  <svg class="state-dot green" viewBox="0 0 12 12" aria-hidden="true">
+                    <circle cx="6" cy="6" r="4"></circle>
+                  </svg>
+                  已连接
+                </strong>
+              </div>
+            </div>
+          </div>
+          <p class="note">最像 Apple 设置页，信息密度高，最干净。</p>
+        </article>
+
+        <article class="option">
+          <div class="option-meta">
+            <strong>方案 B</strong>
+            <span>主状态突出 + 次信息列表</span>
+          </div>
+          <div class="phone-canvas">
+            <div class="hero-status-card">
+              <div class="hero-status-top">
+                <span>当前状态</span>
+                <em class="pill blue">暂停接单</em>
+              </div>
+              <strong>张伟的 Worker</strong>
+              <div class="mini-status-list">
+                <span>
+                  <svg class="state-dot green" viewBox="0 0 12 12" aria-hidden="true">
+                    <circle cx="6" cy="6" r="4"></circle>
+                  </svg>
+                  自动化组件可用
+                </span>
+                <span>
+                  <svg class="state-dot green" viewBox="0 0 12 12" aria-hidden="true">
+                    <circle cx="6" cy="6" r="4"></circle>
+                  </svg>
+                  微信已连接
+                </span>
+              </div>
+            </div>
+          </div>
+          <p class="note">适合工作台首页，用户第一眼只看“能不能接单”。</p>
+        </article>
+
+        <article class="option">
+          <div class="option-meta">
+            <strong>方案 C</strong>
+            <span>轻量 2x2 信息卡</span>
+          </div>
+          <div class="phone-canvas">
+            <div class="soft-grid">
+              <div class="soft-tile">
+                <span>当前绑定销售</span>
+                <strong>张伟</strong>
+              </div>
+              <div class="soft-tile">
+                <span>Worker 状态</span>
+                <strong><em class="pill blue">暂停接单</em></strong>
+              </div>
+              <div class="soft-tile">
+                <span>自动化组件</span>
+                <strong>
+                  <svg class="state-dot green" viewBox="0 0 12 12" aria-hidden="true">
+                    <circle cx="6" cy="6" r="4"></circle>
+                  </svg>
+                  可用
+                </strong>
+              </div>
+              <div class="soft-tile">
+                <span>微信状态</span>
+                <strong>
+                  <svg class="state-dot green" viewBox="0 0 12 12" aria-hidden="true">
+                    <circle cx="6" cy="6" r="4"></circle>
+                  </svg>
+                  已连接
+                </strong>
+              </div>
+            </div>
+          </div>
+          <p class="note">保留现在的 2x2 结构，但减弱边框和块感。</p>
+        </article>
+
+        <article class="option">
+          <div class="option-meta">
+            <strong>方案 D</strong>
+            <span>紧凑胶囊状态栏</span>
+          </div>
+          <div class="phone-canvas">
+            <div class="compact-bar">
+              <div class="compact-line">
+                <strong>张伟</strong>
+                <em class="pill blue">暂停接单</em>
+              </div>
+              <div class="compact-line secondary">
+                <span>
+                  <svg class="state-dot green" viewBox="0 0 12 12" aria-hidden="true">
+                    <circle cx="6" cy="6" r="4"></circle>
+                  </svg>
+                  自动化可用
+                </span>
+                <span>
+                  <svg class="state-dot green" viewBox="0 0 12 12" aria-hidden="true">
+                    <circle cx="6" cy="6" r="4"></circle>
+                  </svg>
+                  微信已连接
+                </span>
+              </div>
+            </div>
+          </div>
+          <p class="note">最省空间，把更多高度留给任务链路。</p>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

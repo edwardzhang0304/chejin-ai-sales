@@ -1,0 +1,514 @@
+{
+  "version": 1,
+  "rules_path": "apps/wechat_ai_customer_service/configs/platform_fallback_rules.example.json",
+  "state_path": "runtime/apps/wechat_ai_customer_service/tenants/chejin/state/xucong_live_customer_service_state.json",
+  "audit_log_path": "runtime/apps/wechat_ai_customer_service/tenants/chejin/logs/xucong_live_customer_service_audit.jsonl",
+  "poll": {
+    "interval_seconds": 3,
+    "interval_min_seconds": 3,
+    "interval_max_seconds": 5,
+    "iterations": 999999
+  },
+  "transport_risk_guard": {
+    "enabled": true,
+    "counter_window_seconds": 600,
+    "login_detect_stop_threshold": 1,
+    "hard_block_stop_threshold": 1,
+    "send_input_not_ready_stop_threshold": 3,
+    "warning_cooldown_seconds": 120,
+    "cooldown_near_threshold": 2,
+    "loop_jitter_seconds": 1.2,
+    "passive_logout_probe_enabled": true,
+    "passive_logout_probe_interval_seconds": 45,
+    "passive_logout_probe_fail_stop_threshold": 1,
+    "passive_logout_probe_timeout_seconds": 12,
+    "interactive_calibration_enabled": true,
+    "startup_interactive_calibration_enabled": true,
+    "resume_interactive_calibration_enabled": true,
+    "passive_probe_recalibrate_enabled": true,
+    "passive_probe_recalibrate_fail_threshold": 2,
+    "passive_probe_recalibrate_cooldown_seconds": 45,
+    "passive_probe_empty_ocr_fail_enabled": true,
+    "passive_probe_empty_ocr_min_count": 1
+  },
+  "rpa_humanized_send": {
+    "enabled": true,
+    "input_method": "sendinput_unicode",
+    "typing_chunk_min_chars": 2,
+    "typing_chunk_max_chars": 5,
+    "typing_char_delay_min_ms": 45,
+    "typing_char_delay_max_ms": 145,
+    "typing_micro_pause_every_chars": 18,
+    "typing_micro_pause_min_ms": 180,
+    "typing_micro_pause_max_ms": 480,
+    "typing_typo_probability": 0.1,
+    "typing_typo_max": 1,
+    "send_pre_delay_min_ms": 250,
+    "send_pre_delay_max_ms": 900,
+    "send_post_input_delay_min_ms": 450,
+    "send_post_input_delay_max_ms": 1200,
+    "adaptive_speed_enabled": true,
+    "fast_send_confirmation_enabled": true,
+    "send_trigger_mode": "enter_only",
+    "send_rate_min_interval_seconds": 0,
+    "send_rate_burst_window_seconds": 600,
+    "send_rate_burst_limit": 20,
+    "send_input_confirm_attempts": 1
+  },
+  "rpa_operator_guard": {
+    "enabled": true,
+    "block_manual_input": true,
+    "floating_indicator_enabled": true,
+    "control_hotkey": "f8",
+    "esc_double_press_window_ms": 420,
+    "pause_poll_interval_ms": 550
+  },
+  "state_lock": {
+    "timeout_seconds": 120,
+    "stale_seconds": 900
+  },
+  "rate_limits": {
+    "min_seconds_between_replies": 0,
+    "max_replies_per_10_minutes": 20,
+    "max_replies_per_hour": 100,
+    "notice_customer": true,
+    "notice_min_interval_seconds": 300,
+    "notice_reply": "当前消息较多，请稍等约 {retry_after_minutes} 分钟，我会继续处理您的消息。"
+  },
+  "reply": {
+    "prefix": "",
+    "allow_fallback_send": false
+  },
+  "raw_messages": {
+    "enabled": true,
+    "learning_enabled": true,
+    "auto_learn": true,
+    "use_llm": true,
+    "notify_enabled": false
+  },
+  "message_envelope": {
+    "message_envelope_enabled": true,
+    "ocr_bubble_geometry_enabled": true,
+    "recorder_strict_clean_content_enabled": true,
+    "recorder_auto_learn_default_enabled": false,
+    "customer_service_reference_context_enabled": true
+  },
+  "history_backfill": {
+    "enabled": true,
+    "mode": "anchor_until_found",
+    "load_times": 0,
+    "max_load_times": 0,
+    "max_scroll_steps": 6,
+    "max_duration_seconds": 20,
+    "max_snapshots": 8,
+    "min_delay_ms": 220,
+    "max_delay_ms": 720,
+    "trigger_when_anchor_missing": true,
+    "block_on_anchor_not_found": true,
+    "overflow_batch_on_anchor_missing": true,
+    "restore_to_latest": true,
+    "trigger_visible_unprocessed_count": 6,
+    "max_messages_after_load": 80,
+    "freshness_load_times": 0,
+    "gap_guard_enabled": true,
+    "block_on_gap_risk": true,
+    "first_window_gap_guard": false
+  },
+  "semantic_batch_planner": {
+    "enabled": true,
+    "max_messages": 12,
+    "spam_repeat_threshold": 0.72
+  },
+  "realtime_reply": {
+    "enabled": true,
+    "watchdog_timeout_seconds": 25,
+    "prefer_local_intent": true,
+    "allow_foreground_llm": true,
+    "business_local_style_foreground_llm_enabled": true,
+    "foreground_llm_timeout_seconds": 8,
+    "foreground_llm_retry_count": 0,
+    "max_prompt_tokens": 3000,
+    "max_completion_tokens": 180,
+    "max_history_messages": 4,
+    "history_char_budget": 800,
+    "max_rag_hits": 2,
+    "max_rag_text_chars": 180,
+    "max_catalog_candidates": 3,
+    "auto_degrade": {
+      "enabled": true,
+      "timeout_window": 3,
+      "cooldown_seconds": 600
+    }
+  },
+  "rag_response": {
+    "enabled": true,
+    "apply_to_unmatched": true,
+    "apply_to_matched_product": false,
+    "apply_to_small_talk": false,
+    "skip_llm_after_apply": true,
+    "min_hit_score": 0.12,
+    "max_reply_chars": 150,
+    "max_snippet_chars": 140
+  },
+  "reply_style_adapter": {
+    "enabled": true,
+    "mode": "fast_local",
+    "apply_to_realtime": true,
+    "apply_to_rag": true,
+    "apply_to_llm": true,
+    "apply_to_rule": true,
+    "apply_to_handoff": true,
+    "identity_guard_aware": true,
+    "avoid_repetition": true,
+    "max_examples": 3,
+    "min_similarity": 0.08,
+    "include_rag_style_hits": true,
+    "max_reply_chars": 150,
+    "shadow_mode": false
+  },
+  "llm_reply_synthesis": {
+    "enabled": true,
+    "provider": "openai",
+    "mode": "guarded_auto",
+    "default_foreground": false,
+    "shadow_mode": false,
+    "require_evidence": true,
+    "require_structured_for_authority": true,
+    "fallback_to_existing_reply": true,
+    "max_history_messages": 40,
+    "history_char_budget": 14000,
+    "max_rag_hits": 7,
+    "max_rag_text_chars": 900,
+    "max_catalog_candidates": 8,
+    "quality_priority": true,
+    "model_routing": {
+      "enabled": true,
+      "default_tier": "flash",
+      "flash_model": "gpt-5.4",
+      "pro_model": "gpt-5.4",
+      "force_model_tier": "",
+      "pro_intent_tags": [
+        "payment",
+        "invoice",
+        "after_sales",
+        "handoff",
+        "customer_data"
+      ],
+      "pro_safety_reasons": [
+        "matched_faq_requires_handoff",
+        "invoice_amount_entity",
+        "contract_risk",
+        "payment_boundary",
+        "price_approval_required"
+      ],
+      "pro_when_must_handoff": false,
+      "pro_when_rag_only_authority": false,
+      "pro_when_long_context": false,
+      "pro_when_long_message": false,
+      "pro_min_history_count": 120,
+      "pro_min_message_chars": 600
+    },
+    "profiles": {
+      "flash": {
+        "max_history_messages": 12,
+        "history_char_budget": 5000,
+        "max_rag_hits": 3,
+        "max_rag_text_chars": 360,
+        "max_catalog_candidates": 5,
+        "max_tokens": 1800,
+        "temperature": 0.35
+      },
+      "pro": {
+        "max_history_messages": 40,
+        "history_char_budget": 14000,
+        "max_rag_hits": 7,
+        "max_rag_text_chars": 900,
+        "max_catalog_candidates": 8,
+        "max_tokens": 3600,
+        "temperature": 0.38
+      }
+    },
+    "cost_controls": {
+      "enabled": true,
+      "max_llm_calls_per_run": 0,
+      "skip_llm_when_deterministic_reply": false,
+      "safe_deterministic_rule_names": []
+    },
+    "min_confidence": 0.35,
+    "max_reply_chars": 150,
+    "max_tokens": 3600,
+    "temperature": 0.38,
+    "retry_count": 0,
+    "timeout_seconds": 12,
+    "include_evidence_pack_in_audit": false,
+    "candidate_json_path": "",
+    "platform_safety_rules_path": "apps/wechat_ai_customer_service/configs/platform_safety_rules.example.json",
+    "platform_understanding_rules_path": "apps/wechat_ai_customer_service/configs/platform_understanding_rules.example.json",
+    "base_url": "https://aiself.vip/v1",
+    "model": "gpt-5.4"
+  },
+  "customer_service_brain": {
+    "enabled": false,
+    "mode": "off",
+    "provider": "openai",
+    "model_tier": "flash",
+    "model": "gpt-5.4",
+    "base_url": "https://aiself.vip/v1",
+    "timeout_seconds": 35,
+    "large_prompt_timeout_seconds": 60,
+    "very_large_prompt_timeout_seconds": 90,
+    "fallback_timeout_seconds": 45,
+    "large_prompt_timeout_threshold_chars": 5000,
+    "very_large_prompt_timeout_threshold_chars": 12000,
+    "max_tokens": 900,
+    "temperature": 0.35,
+    "max_reply_segments": 3,
+    "require_fact_claims": true,
+    "require_final_visible_polish": true,
+    "quality_verifier_enabled": true,
+    "quality_repair_enabled": true,
+    "max_quality_repair_attempts": 1,
+    "quality_repair_timeout_seconds": 12,
+    "quality_repair_max_tokens": 520,
+    "quality_reply_max_chars": 120,
+    "quality_mixed_topic_reply_max_chars": 180,
+    "quality_segment_soft_max_chars": 96,
+    "social_reply_soft_max_chars": 70,
+    "quality_gate_v2_enabled": true,
+    "semantic_reviewer_enabled": true,
+    "semantic_reviewer_mode": "suspicious_only",
+    "semantic_reviewer_timeout_seconds": 8,
+    "semantic_reviewer_fallback_timeout_seconds": 8,
+    "semantic_reviewer_max_tokens": 350,
+    "semantic_reviewer_temperature": 0.1,
+    "semantic_reviewer_cache_enabled": true,
+    "semantic_reviewer_soft_pass_low_risk": true,
+    "semantic_reviewer_brain_handoff_soft_pass_enabled": true,
+    "fallback_to_legacy_on_error": false,
+    "history_char_budget": 1200,
+    "summary_char_budget": 280,
+    "current_batch_char_budget": 420,
+    "max_prompt_product_items": 5,
+    "max_prompt_formal_items": 3,
+    "max_prompt_style_examples": 1,
+    "max_prompt_rag_hits": 1,
+    "prompt_item_text_chars": 220,
+    "low_authority_fast_profile_enabled": true,
+    "low_authority_fast_max_message_chars": 40,
+    "low_authority_fast_smalltalk_max_chars": 24,
+    "low_authority_fast_max_messages": 1,
+    "low_authority_fast_timeout_seconds": 12,
+    "low_authority_fast_fallback_timeout_seconds": 10,
+    "low_authority_fast_max_tokens": 360,
+    "low_authority_fast_repair_timeout_seconds": 6,
+    "low_authority_fast_repair_max_tokens": 260,
+    "blocking_shadow_enabled": false,
+    "include_brain_input_in_audit": false,
+    "include_evidence_pack_in_audit": false
+  },
+  "customer_service_brain_startup_guard": {
+    "enabled": true
+  },
+  "customer_service_brain_failure_alert": {
+    "enabled": true,
+    "window_seconds": 600,
+    "threshold": 3,
+    "cooldown_seconds": 600
+  },
+  "final_visible_llm_polish": {
+    "enabled": true,
+    "required_for_send": true,
+    "provider": "openai",
+    "model_tier": "flash",
+    "model": "gpt-5.4",
+    "timeout_seconds": 4,
+    "retry_count": 0,
+    "max_tokens": 120,
+    "temperature": 0.35,
+    "max_reply_chars": 150,
+    "allow_send_when_unavailable": true,
+    "min_confidence": 0.25,
+    "fast_prompt_enabled": true,
+    "brain_source_policy": "llm_micro_verify",
+    "handoff_source_policy": "llm_micro_verify",
+    "micro_verify_source_channels": ["brain", "handoff"],
+    "brain_micro_guard_fallback_to_draft": true,
+    "brain_micro_timeout_seconds": 5,
+    "brain_micro_max_tokens": 80,
+    "brain_micro_temperature": 0.25,
+    "brain_micro_min_similarity": 0.72,
+    "cache_enabled": true,
+    "cache_ttl_seconds": 86400,
+    "cache_max_entries": 512,
+    "base_url": "https://aiself.vip/v1"
+  },
+  "reply_multi_bubble": {
+    "enabled": true,
+    "min_split_chars": 82,
+    "max_segments": 3,
+    "preferred_segment_chars": 54,
+    "max_segment_chars": 84,
+    "min_segment_chars": 22,
+    "three_segment_threshold_chars": 166,
+    "inter_segment_delay_min_ms": 240,
+    "inter_segment_delay_max_ms": 560,
+    "verify_each_segment": false,
+    "retry_on_transient_send_failures": true,
+    "max_transient_retry_per_segment": 1,
+    "transient_retry_delay_min_ms": 850,
+    "transient_retry_delay_max_ms": 1650
+  },
+  "scheduler_freshness": {
+    "enabled": true,
+    "mode": "preview_first",
+    "strict_check_interval_seconds": 180,
+    "strict_check_after_llm_seconds": 90,
+    "strict_check_on_first_send": false,
+    "preview_from_session_list_require_content_match": false
+  },
+  "data_capture": {
+    "enabled": true,
+    "workbook_path": "runtime/apps/wechat_ai_customer_service/tenants/chejin/test_artifacts/xucong_live_leads.xlsx",
+    "sheet_name": "二手车线索",
+    "required_fields": [
+      "name",
+      "phone"
+    ],
+    "write_on_send_only": false,
+    "success_reply": "资料我收到了，这边会继续跟进。",
+    "incomplete_reply": "资料我看到了，还差：{missing_fields}。您发我一下，我这边补齐。"
+  },
+  "product_knowledge": {
+    "enabled": false
+  },
+  "handoff": {
+    "enabled": true,
+    "auto_acknowledge": true,
+    "acknowledgement_reply": "这个需要负责人确认一下，我把情况记下，问清楚后再回复您。"
+  },
+  "operator_alert": {
+    "enabled": true,
+    "alert_log_path": "runtime/apps/wechat_ai_customer_service/tenants/chejin/logs/xucong_live_operator_alerts.jsonl"
+  },
+  "intent_router": {
+    "heuristic_first": true,
+    "heuristic_first_min_confidence": 0.5,
+    "llm": {
+      "enabled": true,
+      "timeout_seconds": 2,
+      "max_tokens": 256
+    },
+    "cache_seconds": 60
+  },
+  "service_profile": {
+    "role": "谨慎、真实、不过度承诺的微信客服；具体行业身份以当前客户可见知识库为准",
+    "tone": "简短、礼貌、像真人客服",
+    "answer_boundary": "只按当前客户可见的商品库、正式知识、商品专属知识、共享公共知识中的底层规则和当前会话事实回答；AI经验池、历史聊天和话术样例只作问法理解与表达风格参考，不授权商品事实、政策或承诺；缺少依据或涉及高风险承诺时必须转人工。"
+  },
+  "intent_assist": {
+    "enabled": true,
+    "mode": "heuristic",
+    "advisory_only": true,
+    "llm_advisory": {
+      "enabled": true,
+      "provider": "openai",
+      "advisory_only": true,
+      "include_prompt_in_audit": false,
+      "model": "gpt-5.4",
+      "base_url": "https://aiself.vip/v1",
+      "timeout_seconds": 15,
+      "candidate_json_path": ""
+    }
+  },
+  "targets": [
+    {
+      "name": "许聪",
+      "enabled": true,
+      "exact": true,
+      "allow_self_for_test": false,
+      "max_batch_messages": 8
+    }
+  ],
+  "multi_target": {
+    "enabled": true,
+    "default_max_batch_messages": 8,
+    "dynamic_max_batch_messages": 8,
+    "max_targets_per_iteration": 2,
+    "min_switch_interval_seconds": 1,
+    "prioritize_active_sessions": true,
+    "rpa_low_risk_mode": true,
+    "scan_all_whitelist_each_iteration": false,
+    "max_scan_targets_per_iteration": 0,
+    "idle_whitelist_sweep_count": 0,
+    "switch_human_delay_enabled": true,
+    "switch_human_delay_min_seconds": 1,
+    "switch_human_delay_max_seconds": 3,
+    "capture_one_target_per_round": false,
+    "initial_preview_can_raise_unread": false,
+    "preview_change_can_raise_unread": false,
+    "short_preview_can_raise_unread": true,
+    "require_unread_badge_for_dispatch": true,
+    "require_preview_signal_with_unread_badge": true,
+    "change_warmup_enabled": false,
+    "change_warmup_min_seconds": 0,
+    "change_warmup_max_seconds": 0
+  },
+  "concurrency_scheduler": {
+    "enabled": true,
+    "capture_max_sessions_per_round": 3,
+    "llm_max_concurrency": 4,
+    "planner_max_concurrency": 4,
+    "polish_max_concurrency": 4,
+    "send_max_replies_per_round": 1,
+    "same_session_single_inflight": true,
+    "stale_reply_policy": "discard_and_requeue",
+    "pending_session_ttl_seconds": 1800,
+    "reply_ready_ttl_seconds": 900,
+    "max_pending_sessions": 30,
+    "max_pending_messages_per_session": 80
+  },
+  "customer_profiles": {
+    "enabled": true,
+    "analysis": {
+      "enabled": true,
+      "model_tier": "flash",
+      "max_messages_per_analysis": 20,
+      "update_summary_every_n_messages": 10
+    },
+    "greeting": {
+      "enabled": true,
+      "formality_threshold": {
+        "new_customer": "formal",
+        "engaged": "casual"
+      }
+    },
+    "history": {
+      "max_rounds_in_context": 12,
+      "max_chars_in_context": 3500
+    }
+  },
+  "rpa_reply_safety": {
+    "enabled": true,
+    "max_auto_reply_chars": 150,
+    "defer_standalone_greeting": false,
+    "rate_limit_notice_customer": true
+  },
+  "live_safety_guard": {
+    "enabled": true,
+    "allowed_targets": [
+      "许聪"
+    ],
+    "require_exact_targets": true,
+    "disable_respond_all_unread_sessions": true,
+    "reject_group_targets": false,
+    "low_risk_single_target_scan": true,
+    "backend_state_scheduler_enabled": true,
+    "low_frequency_reply_limits": false,
+    "require_recent_bootstrap": true,
+    "startup_auto_bootstrap_refresh_enabled": true,
+    "bootstrap_max_age_seconds": 900,
+    "defer_standalone_greeting": false,
+    "max_auto_reply_chars": 150,
+    "customer_experience_first": true
+  }
+}

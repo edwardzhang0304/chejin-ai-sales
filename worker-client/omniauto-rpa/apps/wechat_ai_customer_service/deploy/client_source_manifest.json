@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "package": "wechat_ai_customer_service_client_source",
+  "description": "Source paths that may be delivered to customer-side client installations. Server-only VPS admin source must be excluded.",
+  "include_paths": [
+    "apps/wechat_ai_customer_service/__init__.py",
+    "apps/wechat_ai_customer_service/adapters/",
+    "apps/wechat_ai_customer_service/admin_backend/",
+    "apps/wechat_ai_customer_service/auth/",
+    "apps/wechat_ai_customer_service/configs/",
+    "apps/wechat_ai_customer_service/data/",
+    "apps/wechat_ai_customer_service/exports/",
+    "apps/wechat_ai_customer_service/knowledge_paths.py",
+    "apps/wechat_ai_customer_service/llm_config.py",
+    "apps/wechat_ai_customer_service/storage/",
+    "apps/wechat_ai_customer_service/sync/",
+    "apps/wechat_ai_customer_service/workflows/",
+    "apps/wechat_ai_customer_service/scripts/run_customer_service_listener.py"
+  ],
+  "exclude_paths": [
+    "apps/wechat_ai_customer_service/vps_admin/",
+    "apps/wechat_ai_customer_service/scripts/seed_vps_test_customer.py",
+    "apps/wechat_ai_customer_service/data/shared_knowledge/",
+    "apps/wechat_ai_customer_service/data/versions/",
+    "apps/wechat_ai_customer_service/data/raw_inbox/",
+    "apps/wechat_ai_customer_service/data/review_candidates/",
+    "runtime/apps/wechat_ai_customer_service/vps_admin/",
+    "apps/wechat_ai_customer_service/deploy/aliyun1/"
+  ],
+  "boundary_check": "apps/wechat_ai_customer_service/tests/run_delivery_boundary_checks.py"
+}

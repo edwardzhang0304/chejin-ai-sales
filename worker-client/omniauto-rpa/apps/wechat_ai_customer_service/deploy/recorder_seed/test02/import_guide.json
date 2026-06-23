@@ -1,0 +1,59 @@
+{
+  "guide_version": "1.1.0",
+  "package_type": "wechat_ai_recorder_seed",
+  "tenant_id": "test02",
+  "workspace_default": "D:\\AI\\omniauto",
+  "artifacts": {
+    "seed_zip": "test02_recorder_only_20260602_040502.zip",
+    "installer_script": "install_seed.ps1",
+    "human_guide": "操作指南.md",
+    "quick_readme": "README.md"
+  },
+  "integrity": {
+    "sha256": "E30BF60FB04E87D5098C9A8B3700E31CB302B3DF6C4D94AE4D5EC5FFFDD47618"
+  },
+  "safety_scope": {
+    "imports_only": [
+      "payload/runtime/tenants/test02/*"
+    ],
+    "default_merge_targets": [
+      "runtime/apps/wechat_ai_customer_service/admin/recorder_modules/module_bindings.json (tenant=test02 only)",
+      "runtime/apps/wechat_ai_customer_service/admin/recorder_modules/module_registry.json (module_key in [order_sheet_lab_v1, raw_message_log_v1])"
+    ],
+    "optional_disable_global_merge_flag": [
+      "-ApplyGlobalRecorderModules:$false"
+    ]
+  },
+  "steps": [
+    {
+      "id": 1,
+      "name": "stop_services",
+      "instruction": "Stop admin backend and related worker processes before import."
+    },
+    {
+      "id": 2,
+      "name": "run_installer",
+      "command": "powershell -ExecutionPolicy Bypass -File .\\apps\\wechat_ai_customer_service\\deploy\\recorder_seed\\test02\\install_seed.ps1 -WorkspaceRoot \"D:\\AI\\omniauto\""
+    },
+    {
+      "id": 21,
+      "name": "run_installer_without_global_merge",
+      "command": "powershell -ExecutionPolicy Bypass -File .\\apps\\wechat_ai_customer_service\\deploy\\recorder_seed\\test02\\install_seed.ps1 -WorkspaceRoot \"D:\\AI\\omniauto\" -ApplyGlobalRecorderModules:$false"
+    },
+    {
+      "id": 3,
+      "name": "restart_services",
+      "instruction": "Restart admin backend and workers."
+    },
+    {
+      "id": 4,
+      "name": "verify",
+      "instruction": "Login with test02 and verify recorder history (conversations, export runs, downloadable files)."
+    }
+  ],
+  "rollback": {
+    "backup_folder": "runtime/apps/wechat_ai_customer_service/migration_import_backups",
+    "backup_pattern": "test02_before_import_*.zip",
+    "restore_target": "runtime/apps/wechat_ai_customer_service/tenants/test02/"
+  }
+}

@@ -2,6 +2,17 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.venv/
+*.egg-info/
+*.db
+*.sqlite
+*.sqlite3
+
+# JS/build artifacts
+node_modules/
+dist/
+build/
+*.tsbuildinfo
 
 # Local browser/test state
 .playwright-cli/
