@@ -14,6 +14,18 @@ ENSURE_VISIBLE_ACTION_MANUAL_TRAY = "manual_open_tray"
 WINDOW_SELECTION_EMPTY_SCORE = (-1, -1, -1, -1, -1)
 
 
+def recommended_window_scale_for_screen(screen_width: int, screen_height: int, *, screen_metrics_available: bool) -> float:
+    if not screen_metrics_available:
+        return 1.0
+    width = max(0, int(screen_width or 0))
+    height = max(0, int(screen_height or 0))
+    if width >= 3200 and height >= 1800:
+        return 1.5
+    if width >= 2400 and height >= 1350:
+        return 1.25
+    return 1.0
+
+
 def _geometry_int(geometry: dict[str, Any], key: str) -> int:
     try:
         return int(geometry.get(key) or 0)
@@ -25,6 +37,7 @@ def plan_normalize_wechat_window(
     before: dict[str, Any],
     *,
     enabled: bool,
+    dpi_scale: float,
     requested_width: Any,
     requested_height: Any,
     requested_left: Any,
@@ -45,24 +58,45 @@ def plan_normalize_wechat_window(
     if not enabled:
         return {"ok": True, "enabled": False, "applied": False, "before": before_geometry}
 
-    target_width = bounded_int(requested_width, default=default_width, minimum=min_width, maximum=max_width)
-    target_height = bounded_int(requested_height, default=default_height, minimum=min_height, maximum=max_height)
+    safe_max_width = max(1, int(max_width or 1))
+    safe_max_height = max(1, int(max_height or 1))
+    try:
+        normalized_dpi_scale = max(1.0, float(dpi_scale or 1.0))
+    except (TypeError, ValueError):
+        normalized_dpi_scale = 1.0
+    resolution_scale = recommended_window_scale_for_screen(
+        screen_width,
+        screen_height,
+        screen_metrics_available=screen_metrics_available,
+    )
+    scaled_default_width = min(safe_max_width, max(1, int(round(default_width * resolution_scale))))
+    scaled_default_height = min(safe_max_height, max(1, int(round(default_height * resolution_scale))))
+    base_min_width = min(safe_max_width, max(1, int(min_width or 1)))
+    base_min_height = min(safe_max_height, max(1, int(min_height or 1)))
+    target_width = bounded_int(requested_width, default=scaled_default_width, minimum=base_min_width, maximum=safe_max_width)
+    target_height = bounded_int(requested_height, default=scaled_default_height, minimum=base_min_height, maximum=safe_max_height)
     requested_target = {"width": target_width, "height": target_height}
     recommended_floor_applied = False
     if enforce_recommended:
-        if target_width < default_width:
-            target_width = default_width
+        if target_width < scaled_default_width:
+            target_width = scaled_default_width
             recommended_floor_applied = True
-        if target_height < default_height:
-            target_height = default_height
+        if target_height < scaled_default_height:
+            target_height = scaled_default_height
             recommended_floor_applied = True
     effective_target = {"width": target_width, "height": target_height}
 
     safe_screen_width = int(screen_width or 0) if screen_metrics_available else 0
     safe_screen_height = int(screen_height or 0) if screen_metrics_available else 0
     if screen_metrics_available:
-        safe_width = min(target_width, max(640, safe_screen_width - 12))
-        safe_height = min(target_height, max(640, safe_screen_height - 58))
+        screen_width_limit = max(1, safe_screen_width - 12) if safe_screen_width > 0 else 0
+        screen_height_limit = max(1, safe_screen_height - 48) if safe_screen_height > 0 else 0
+        safe_width = min(target_width, max(640, screen_width_limit))
+        safe_height = min(target_height, max(640, screen_height_limit))
+        if 0 < safe_screen_width < safe_width:
+            safe_width = safe_screen_width
+        if 0 < safe_screen_height < safe_height:
+            safe_height = safe_screen_height
         if fixed_origin:
             left = bounded_int(
                 requested_left,
@@ -106,6 +140,8 @@ def plan_normalize_wechat_window(
         "recommended_floor_applied": bool(recommended_floor_applied),
         "fixed_origin": bool(fixed_origin),
         "screen": {"width": safe_screen_width, "height": safe_screen_height},
+        "dpi_scale": normalized_dpi_scale,
+        "resolution_scale": resolution_scale,
         "left": int(left),
         "top": int(top),
         "width": int(safe_width),
@@ -182,8 +218,9 @@ def visible_window_candidate_score(
     except (TypeError, ValueError):
         parsed_content_score = 0
     safe_action_size = 1 if width >= int(min_send_width) and height >= int(min_send_height) else 0
+    capture_rank = 0 if parsed_content_score < 0 else (1 if capture_ready else 0)
     return (
-        1 if capture_ready else 0,
+        capture_rank,
         parsed_content_score,
         safe_action_size,
         area,

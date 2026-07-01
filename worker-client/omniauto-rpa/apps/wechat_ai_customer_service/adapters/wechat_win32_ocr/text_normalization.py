@@ -173,6 +173,8 @@ def strip_session_time_suffix(name: str) -> str:
 def is_session_name_candidate(text: str) -> bool:
     if not text:
         return False
+    if is_file_transfer_session_alias(text):
+        return True
     if len(text) > 28:
         return False
     if text.startswith("["):

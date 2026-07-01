@@ -24,7 +24,8 @@ ONLINE_TIMEOUT_SECONDS = 120
 OFFLINE_TASK_NOTICE_SECONDS = 600
 RUN_STATUS_VALUES = {"running", "paused"}
 RPA_COMPONENT_STATUS_VALUES = {"ready", "unavailable"}
-RUNNING_TASK_STATUSES = {"running", "busy", "executing"}
+RUNNING_TASK_STATUSES = {"running"}
+RUNNING_STATUS_VALUES = {"idle", "running"}
 
 
 def computed_online_status(worker: Worker) -> str:
@@ -65,17 +66,14 @@ def worker_summary(db: Session, worker: Worker | None, *, include_token: bool = 
         "enabled": worker.enabled,
         "online_status": computed_online_status(worker),
         "running_status": worker.running_status,
-        "runtime_status": worker.running_status,
         "run_status": worker.run_status,
         "rpa_component_status": worker.rpa_component_status,
         "wechat_status": worker.wechat_status,
         "current_task": worker.current_task,
-        "current_task_id": worker.current_task,
         "current_step": worker.current_step,
         "local_lock_summary": worker.local_lock_summary,
         "last_heartbeat_at": worker.last_heartbeat_at,
         "client_binding_state": worker.client_binding_state,
-        "client_bind_status": "bound" if worker.client_instance_id else "unbound",
         "client_instance_id": worker.client_instance_id,
         "bound_at": worker.bound_at,
         "offline_seconds": worker_offline_seconds(worker),
@@ -220,6 +218,8 @@ def heartbeat_worker(db: Session, worker_id: str, worker_token: str | None, payl
         if payload.rpa_component_status not in RPA_COMPONENT_STATUS_VALUES:
             raise AppError("WORKER_RPA_STATUS_INVALID", "RPA 组件状态不合法", 400)
         worker.rpa_component_status = payload.rpa_component_status
+    if payload.running_status not in RUNNING_STATUS_VALUES:
+        raise AppError("WORKER_RUNNING_STATUS_INVALID", "Worker 执行状态仅支持 idle / running", 400)
     worker.running_status = payload.running_status
     worker.current_task = payload.current_task
     worker.current_step = payload.current_step
@@ -234,10 +234,9 @@ def heartbeat_worker(db: Session, worker_id: str, worker_token: str | None, payl
             client_instance_id=payload.client_instance_id,
             online_status="online",
             run_status=worker.run_status,
-            runtime_status=worker.running_status,
             rpa_component_status=worker.rpa_component_status,
             wechat_status=worker.wechat_status,
-            current_task_id=worker.current_task,
+            current_task=worker.current_task,
             current_step=worker.current_step,
             local_lock_summary=worker.local_lock_summary,
             created_at=worker.last_heartbeat_at,

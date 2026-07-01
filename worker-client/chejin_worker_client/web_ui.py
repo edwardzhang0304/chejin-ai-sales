@@ -33,7 +33,7 @@ from .ui_lock import lock_summary
 
 WINDOW_WIDTH = 316
 WINDOW_HEIGHT = 628
-CLIENT_VERSION = "V16 · Worker C2 客户端"
+CLIENT_VERSION = "V16.18 · Worker C2/C3 客户端"
 TITLEBAR_HEIGHT = 28
 WINDOW_CONTROL_WIDTH = 90
 WINDOW_RADIUS = 10
@@ -122,6 +122,10 @@ class WorkerWebBridge(QObject):
     @Slot(bool, str, str)
     def updateAcceptSchedule(self, enabled: bool, start: str, end: str) -> None:
         self.window.update_accept_schedule(enabled, start, end)
+
+    @Slot()
+    def triggerWechatScan(self) -> None:
+        self.window.trigger_wechat_scan()
 
     @Slot(int, int)
     def startWindowDrag(self, screen_x: int, screen_y: int) -> None:
@@ -339,6 +343,8 @@ class WorkerWebWindow(QMainWindow):
             "lastBoundCount": stats.get("last_bound_count") or 0,
             "lastMessageReadAt": stats.get("last_message_read_at"),
             "lastIngestedCount": stats.get("last_ingested_count") or 0,
+            "lastVisibleHitCount": stats.get("last_visible_hit_count") or 0,
+            "lastStateTargetCount": stats.get("last_state_target_count") or 0,
             "lastError": stats.get("last_error"),
         }
 
@@ -454,6 +460,11 @@ class WorkerWebWindow(QMainWindow):
             "accept_schedule_changed",
             f"自动接单时段{'开启' if self.accept_schedule['enabled'] else '关闭'}：{self.accept_schedule['start']} 至 {self.accept_schedule['end']}。",
         )
+        self._publish()
+
+    def trigger_wechat_scan(self) -> None:
+        self.runner.request_immediate_scan()
+        append_log("INFO", "c2_manual_scan_requested", "已触发手动立即扫描。")
         self._publish()
 
     @Slot(object)

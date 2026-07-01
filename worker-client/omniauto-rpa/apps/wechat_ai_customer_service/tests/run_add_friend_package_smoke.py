@@ -947,6 +947,12 @@ def test_add_friend_uses_shared_operator_guard_module() -> None:
     guard_source = (
         PROJECT_ROOT / "apps/wechat_ai_customer_service/adapters/add_friend_operator_guard.py"
     ).read_text(encoding="utf-8")
+    rpa_guard_source = (
+        PROJECT_ROOT / "apps/wechat_ai_customer_service/adapters/rpa_operator_guard.py"
+    ).read_text(encoding="utf-8")
+    rpa_guard_script = (
+        PROJECT_ROOT / "apps/wechat_ai_customer_service/scripts/run_rpa_operator_guard.py"
+    ).read_text(encoding="utf-8")
     sidecar = (
         PROJECT_ROOT / "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py"
     ).read_text(encoding="utf-8")
@@ -957,15 +963,98 @@ def test_add_friend_uses_shared_operator_guard_module() -> None:
     flow_source = (PROJECT_ROOT / "apps/wechat_ai_customer_service/adapters/add_friend_flow.py").read_text(
         encoding="utf-8"
     )
-    assert_true("run_rpa_operator_guard.py" in guard_source, "add_friend must reuse the shared floating-ball operator guard script")
-    assert_true("--block-manual-input" in guard_source, "operator guard should default to locking/blocking manual keyboard and mouse input")
-    assert_true("block_manual_input" in guard_source, "operator guard settings should expose the manual-input lock flag")
+    assert_true("rpa_operator_guard" in guard_source, "add_friend guard must delegate to the shared RPA operator guard")
+    assert_true("start_rpa_operator_guard(" in guard_source, "add_friend start wrapper should call shared guard start")
+    assert_true("stop_rpa_operator_guard(" in guard_source, "add_friend stop wrapper should call shared guard stop")
+    assert_true("rpa_operator_guard_checkpoint(" in guard_source, "add_friend checkpoint wrapper should call shared checkpoint")
+    assert_true("subprocess.Popen" not in guard_source, "add_friend adapter must not own guard process launching")
     assert_true("SetWindowsHookExW" not in guard_source, "add_friend adapter must not duplicate keyboard/mouse hook logic")
+    assert_true("run_rpa_operator_guard.py" in rpa_guard_source, "shared guard must reuse the floating-ball operator guard script")
+    assert_true("--block-manual-input" in rpa_guard_source, "operator guard should support locking/blocking manual keyboard and mouse input")
+    assert_true("block_manual_input" in rpa_guard_source, "operator guard settings should expose the manual-input lock flag")
+    assert_true("--floating-indicator" in rpa_guard_source, "shared guard should start the floating indicator")
+    assert_true("mode == \"stopped\"" in rpa_guard_source, "shared checkpoint should honor stop requests")
+    assert_true("mode != \"paused\"" in rpa_guard_source, "shared checkpoint should honor pause/resume requests")
+    assert_true("--block-manual-input" in rpa_guard_script, "guard runner must expose block-manual-input")
+    assert_true("--floating-indicator" in rpa_guard_script, "guard runner must expose floating-indicator")
+    assert_true("toggle_pause" in rpa_guard_script, "guard runner must support pause/resume")
+    assert_true("stop" in rpa_guard_script, "guard runner must support stop")
     assert_true("start_add_friend_operator_guard(" in implementation_source, "add_friend Windows path should start operator guard before click flow")
     assert_true("stop_add_friend_operator_guard(" in implementation_source, "add_friend Windows path should stop operator guard after click flow")
     assert_true("OPERATOR_GUARD_NOT_READY" in implementation_source, "operator guard failure should be a first-class add_friend failure")
     assert_true("add_friend_operator_guard_checkpoint(" in flow_source, "flow should honor floating-ball pause/stop checkpoints")
     assert_true("GetCursorPos" not in flow_source, "flow should not implement a separate mouse-idle guard")
+
+
+def test_add_friend_operator_guard_compat_wrapper_calls_shared_module() -> None:
+    import apps.wechat_ai_customer_service.adapters.add_friend_operator_guard as compat
+
+    expected_functions = [
+        "add_friend_operator_guard_settings",
+        "add_friend_operator_guard_dir",
+        "add_friend_operator_guard_paths",
+        "start_add_friend_operator_guard",
+        "stop_add_friend_operator_guard",
+        "add_friend_operator_guard_checkpoint",
+    ]
+    for name in expected_functions:
+        assert_true(callable(getattr(compat, name, None)), f"compat wrapper must expose add_friend API: {name}")
+
+    calls: list[tuple[str, object]] = []
+    original_start = compat.start_rpa_operator_guard
+    original_stop = compat.stop_rpa_operator_guard
+    original_checkpoint = compat.rpa_operator_guard_checkpoint
+    try:
+        compat.start_rpa_operator_guard = lambda **kwargs: calls.append(("start", kwargs)) or {"ok": True}
+        compat.stop_rpa_operator_guard = lambda guard, **kwargs: calls.append(("stop", {"guard": guard, **kwargs})) or {"ok": True}
+        compat.rpa_operator_guard_checkpoint = lambda **kwargs: calls.append(("checkpoint", kwargs)) or {"ok": True}
+
+        compat.start_add_friend_operator_guard(route="add-friend-entry-click-plan-windows", artifact_dir="artifact-dir")
+        compat.stop_add_friend_operator_guard({"enabled": True}, reason="finished")
+        compat.add_friend_operator_guard_checkpoint(reason="pause:add_friend")
+    finally:
+        compat.start_rpa_operator_guard = original_start
+        compat.stop_rpa_operator_guard = original_stop
+        compat.rpa_operator_guard_checkpoint = original_checkpoint
+
+    assert_true(
+        calls[0] == (
+            "start",
+            {"operation": "add-friend-entry-click-plan-windows", "artifact_dir": "artifact-dir"},
+        ),
+        f"start wrapper should call shared guard start: {calls}",
+    )
+    assert_true(
+        calls[1] == ("stop", {"guard": {"enabled": True}, "reason": "finished"}),
+        f"stop wrapper should call shared guard stop: {calls}",
+    )
+    assert_true(
+        calls[2] == ("checkpoint", {"reason": "pause:add_friend"}),
+        f"checkpoint wrapper should call shared guard checkpoint: {calls}",
+    )
+
+
+def test_c2_search_by_remark_code_has_no_add_friend_operator_guard_report_fields() -> None:
+    sidecar_source = (
+        PROJECT_ROOT / "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py"
+    ).read_text(encoding="utf-8")
+    function_source = sidecar_source.split("def open_chat_by_remark_code_search(", 1)[1].split(
+        "\ndef message_read_payload(",
+        1,
+    )[0]
+    assert_true('"target_mode": "search_by_remark_code"' in function_source, "C2 targeting must keep search_by_remark_code mode")
+    for forbidden in [
+        "start_add_friend_operator_guard",
+        "stop_add_friend_operator_guard",
+        "add_friend_operator_guard_checkpoint",
+        '"operator_guard"',
+        "'operator_guard'",
+        "operator_guard_release",
+    ]:
+        assert_true(
+            forbidden not in function_source,
+            f"C2 search_by_remark_code must not introduce add_friend operator guard report field: {forbidden}",
+        )
 
 
 def test_add_friend_preflight_blocks_unready_window() -> None:
@@ -1339,6 +1428,7 @@ def test_add_friend_primary_locator_contract() -> None:
     from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar import (
         add_friend_menu_candidate_targets,
         add_friend_plus_entry_target,
+        add_friend_plus_entry_safe_bounds,
         add_friend_query_visible_in_items,
         add_friend_search_result_add_contact_target,
         find_add_friend_page_search_targets,
@@ -1363,6 +1453,17 @@ def test_add_friend_primary_locator_contract() -> None:
         draw.line((center_x - 9, center_y, center_x + 9, center_y), fill=(45, 52, 64), width=3)
         draw.line((center_x, center_y - 9, center_x, center_y + 9), fill=(45, 52, 64), width=3)
         return image
+
+    def plus_icon_image_for_size(width: int, height: int) -> tuple[Image.Image, tuple[int, int], list[int]]:
+        image = Image.new("RGB", (width, height), (246, 248, 250))
+        bounds = add_friend_plus_entry_safe_bounds((width, height))
+        left, top, right, bottom = bounds
+        center_x = min(right - 10, max(left + 18, right - 22))
+        center_y = int((top + bottom) / 2)
+        draw = ImageDraw.Draw(image)
+        draw.line((center_x - 9, center_y, center_x + 9, center_y), fill=(45, 52, 64), width=3)
+        draw.line((center_x, center_y - 9, center_x, center_y + 9), fill=(45, 52, 64), width=3)
+        return image, (center_x, center_y), bounds
 
     def small_add_friend_image() -> Image.Image:
         image = Image.new("RGB", (468, 520), (245, 246, 248))
@@ -1409,6 +1510,36 @@ def test_add_friend_primary_locator_contract() -> None:
     assert_true("diagnostic_windows_current_geometry" in diagnostic_sources, f"plus locator must keep current geometry only as diagnostics: {plus_target}")
     assert_true("diagnostic_windows_1080p_reference_geometry" in diagnostic_sources, f"plus locator must keep reference geometry only as diagnostics: {plus_target}")
 
+    for width, height in [(980, 720), (980, 860), (1225, 816), (1225, 1032), (1470, 1032), (1470, 1290), (2560, 1440)]:
+        matrix_image, expected_point, safe_bounds = plus_icon_image_for_size(width, height)
+        matrix_target = add_friend_plus_entry_target(
+            {"width": width, "height": height, "left": 0, "top": 0, "right": width, "bottom": height},
+            (width, height),
+            [],
+            screenshot=matrix_image,
+            route_kind="windows",
+        )
+        assert_locator(matrix_target, f"plus_entry_{width}x{height}")
+        assert_true(matrix_target.get("source") == "vision_plus_icon", f"matrix plus locator must use vision: {matrix_target}")
+        assert_true(matrix_target.get("executable") is True, f"matrix plus locator should be executable: {matrix_target}")
+        assert_true(matrix_target.get("fallback_used") is False, f"matrix plus locator must not execute fallback: {matrix_target}")
+        actual_point = [int(matrix_target.get("x") or 0), int(matrix_target.get("y") or 0)]
+        assert_true(
+            safe_bounds[0] <= actual_point[0] <= safe_bounds[2] and safe_bounds[1] <= actual_point[1] <= safe_bounds[3],
+            f"matrix plus locator outside calibrated safe bounds: {(width, height, actual_point, safe_bounds, matrix_target)}",
+        )
+        assert_true(
+            abs(actual_point[0] - expected_point[0]) <= 8 and abs(actual_point[1] - expected_point[1]) <= 8,
+            f"matrix plus locator should match visual anchor: {(width, height, actual_point, expected_point, matrix_target)}",
+        )
+        matrix_diagnostic_sources = {
+            str(item.get("source") or "")
+            for item in matrix_target.get("diagnostic_references") or []
+            if isinstance(item, dict)
+        }
+        assert_true("diagnostic_windows_current_geometry" in matrix_diagnostic_sources, f"matrix current geometry diagnostics missing: {matrix_target}")
+        assert_true("diagnostic_windows_1080p_reference_geometry" in matrix_diagnostic_sources, f"matrix reference diagnostics missing: {matrix_target}")
+
     fallback_plus_target = add_friend_plus_entry_target(
         {"width": 981, "height": 860, "left": 0, "top": 0, "right": 981, "bottom": 860},
         (981, 860),
@@ -1419,6 +1550,19 @@ def test_add_friend_primary_locator_contract() -> None:
     assert_true(fallback_plus_target.get("source") == "plus_icon_not_found", f"main route must not execute geometry fallback: {fallback_plus_target}")
     assert_true(fallback_plus_target.get("executable") is False, f"missing visual plus must be non-executable: {fallback_plus_target}")
     assert_true(fallback_plus_target.get("fallback_used") is False, f"geometry fallback must not be executable: {fallback_plus_target}")
+
+    for width, height in [(980, 720), (1225, 816), (1470, 1032), (2560, 1440)]:
+        blank_target = add_friend_plus_entry_target(
+            {"width": width, "height": height, "left": 0, "top": 0, "right": width, "bottom": height},
+            (width, height),
+            [],
+            screenshot=Image.new("RGB", (width, height), (246, 248, 250)),
+            route_kind="windows",
+        )
+        assert_locator(blank_target, f"plus_entry_blank_{width}x{height}")
+        assert_true(blank_target.get("source") == "plus_icon_not_found", f"blank matrix must not use geometry fallback: {blank_target}")
+        assert_true(blank_target.get("executable") is False, f"blank matrix must fail closed: {blank_target}")
+        assert_true(blank_target.get("fallback_used") is False, f"blank matrix fallback must stay non-executable: {blank_target}")
 
     menu_targets = add_friend_menu_candidate_targets(
         [ocr_item("添加朋友", 270, 148, 336, 172)],
@@ -1731,6 +1875,8 @@ def main() -> int:
         test_sidecar_uses_flow_context_for_entry_click,
         test_sidecar_uses_add_friend_payload_builders,
         test_add_friend_uses_shared_operator_guard_module,
+        test_add_friend_operator_guard_compat_wrapper_calls_shared_module,
+        test_c2_search_by_remark_code_has_no_add_friend_operator_guard_report_fields,
         test_add_friend_preflight_blocks_unready_window,
         test_add_friend_requires_operator_guard_before_click_flow,
         test_add_friend_formal_preclick_requires_foreground_and_main_surface,

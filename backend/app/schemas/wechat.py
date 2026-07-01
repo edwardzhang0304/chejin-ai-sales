@@ -7,7 +7,7 @@ class WechatSessionScanItem(BaseModel):
     rpa_session_key: str = Field(min_length=1, max_length=255)
     display_name: str = Field(min_length=1, max_length=255)
     remark_code_candidates: list[str] = Field(default_factory=list, max_length=10)
-    row_fingerprint: str = Field(min_length=1, max_length=255)
+    row_fingerprint: str | None = Field(default=None, max_length=255)
     unread_hint: bool = False
     last_message_preview: str | None = Field(default=None, max_length=1000)
     ocr_confidence: float | None = None
@@ -39,6 +39,6 @@ class WechatMessageItem(BaseModel):
 class WechatMessageIngestRequest(BaseModel):
     read_run_id: str = Field(min_length=1, max_length=128)
     conversation_id: str = Field(min_length=1, max_length=36)
-    rpa_session_key: str = Field(min_length=1, max_length=255)
+    rpa_session_key: str | None = Field(default=None, max_length=255)
     messages: list[WechatMessageItem] = Field(default_factory=list, max_length=500)
     evidence: dict | None = None

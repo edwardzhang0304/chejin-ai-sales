@@ -10,6 +10,15 @@ HEADERS = {
     "X-Operator-Name": "Ops Tester",
     "X-Operator-Role": "admin",
 }
+DEPRECATED_TASK_TOP_LEVEL_FIELDS = {
+    "customer_name",
+    "lead_name",
+    "lead_wechat",
+    "executor_name",
+    "worker_name",
+    "started_at",
+    "result_at",
+}
 
 
 def setup_function():
@@ -72,6 +81,22 @@ def test_assigned_lead_creates_pending_add_friend_task_when_sales_has_worker():
     assert "cancel" in {item["code"] for item in task["available_actions"]}
 
 
+def test_task_list_and_detail_do_not_return_deprecated_flat_display_fields():
+    worker = _create_worker()
+    _create_sales(worker_id=worker["id"])
+    _create_lead()
+
+    list_item = _first_task()
+    detail = client.get(f"/api/tasks/{list_item['id']}", headers=HEADERS).json()["data"]
+
+    assert not DEPRECATED_TASK_TOP_LEVEL_FIELDS.intersection(list_item.keys())
+    assert not DEPRECATED_TASK_TOP_LEVEL_FIELDS.intersection(detail.keys())
+    assert list_item["business_object"]["lead"]["customer_name"] == "王先生"
+    assert list_item["execution"]["worker"]["worker_name"] == worker["worker_name"]
+    assert detail["business_object"]["lead"]["customer_name"] == "王先生"
+    assert detail["execution"]["worker"]["worker_name"] == worker["worker_name"]
+
+
 def test_assigned_lead_without_worker_creates_blocked_task_and_binding_unblocks_it():
     worker = _create_worker()
     sales_id = _create_sales()
@@ -109,6 +134,40 @@ def test_task_list_filters_and_searches_by_name_task_id_and_phone_suffix():
     assert by_suffix["total"] == 1
     assert by_id["total"] == 1
     assert by_status["total"] == 1
+
+
+def test_task_list_metrics_are_calculated_from_full_filtered_result_not_current_page():
+    worker = _create_worker()
+    _create_sales(worker_id=worker["id"])
+    _create_lead(name="客户一", phone="13912345671")
+    _create_lead(name="客户二", phone="13912345672")
+    _create_lead(name="客户三", phone="13912345673")
+    tasks = client.get("/api/tasks?page=1&page_size=10", headers=HEADERS).json()["data"]["items"]
+
+    failed_task = tasks[0]
+    cancelled_task = tasks[1]
+    claim = client.post(f"/api/tasks/{failed_task['id']}/claim", json={"worker_id": worker["id"]}, headers=HEADERS)
+    assert claim.status_code == 200
+    failed = client.post(
+        f"/api/tasks/{failed_task['id']}/fail",
+        json={"error_code": "WECHAT_WINDOW_NOT_FOUND", "failure_step": "opening_add_contact"},
+        headers=HEADERS,
+    )
+    assert failed.status_code == 200
+    cancelled = client.post(f"/api/tasks/{cancelled_task['id']}/cancel", json={"reason": "运营取消"}, headers=HEADERS)
+    assert cancelled.status_code == 200
+
+    page = client.get("/api/tasks?page=1&page_size=1", headers=HEADERS).json()["data"]
+
+    assert page["total"] == 3
+    assert len(page["items"]) == 1
+    assert page["metrics"] == {
+        "blocked": 0,
+        "pending": 1,
+        "running": 0,
+        "completed_today": 0,
+        "failed_today": 1,
+    }
 
 
 def test_running_task_can_update_step_complete_invite_sent_and_terminal_cannot_cancel():
@@ -149,9 +208,13 @@ def test_running_task_can_update_step_complete_invite_sent_and_terminal_cannot_c
     assert client.get("/api/operation-logs?event_type=task_claimed").json()["data"]["total"] == 0
     assert client.get("/api/operation-logs?event_type=task_step_updated").json()["data"]["total"] == 0
     assert client.get("/api/operation-logs?event_type=task_completed").json()["data"]["total"] == 0
+    worker_detail = client.get(f"/api/workers/{worker['id']}", headers=HEADERS).json()["data"]
+    assert worker_detail["running_status"] == "idle"
+    assert worker_detail["current_task"] is None
+    assert worker_detail["current_step"] is None
 
 
-def test_failed_task_retry_creates_new_task_with_original_task_id_and_keeps_error_code_separate():
+def test_failed_task_has_no_retry_action_or_retry_endpoint_and_releases_worker():
     worker = _create_worker()
     _create_sales(worker_id=worker["id"])
     _create_lead()
@@ -168,14 +231,14 @@ def test_failed_task_retry_creates_new_task_with_original_task_id_and_keeps_erro
     assert failed_data["status"] == "failed"
     assert failed_data["error_code"] == "WECHAT_WINDOW_NOT_FOUND"
     assert failed_data["result_code"] is None
+    assert "retry" not in {item["code"] for item in failed_data["available_actions"]}
 
     retry = client.post(f"/api/tasks/{task['id']}/retry", json={"remark": "人工触发重试"}, headers=HEADERS)
-    assert retry.status_code == 200
-    new_task = retry.json()["data"]["new_task"]
-    assert new_task["id"] != task["id"]
-    assert new_task["original_task_id"] == task["id"]
-    assert new_task["status"] == "pending"
-    assert new_task["error_code"] is None
+    assert retry.status_code == 404
+    worker_detail = client.get(f"/api/workers/{worker['id']}", headers=HEADERS).json()["data"]
+    assert worker_detail["running_status"] == "idle"
+    assert worker_detail["current_task"] is None
+    assert worker_detail["current_step"] is None
 
 
 def test_task_comment_writes_note_and_event():

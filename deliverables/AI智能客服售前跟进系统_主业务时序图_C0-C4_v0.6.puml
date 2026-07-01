@@ -1,0 +1,192 @@
+@startuml
+title AI智能客服售前跟进系统 主业务时序图 C0-C4
+
+skinparam monochrome true
+skinparam shadowing false
+skinparam sequence {
+  ArrowColor #222222
+  LifeLineBorderColor #999999
+  LifeLineBackgroundColor #FFFFFF
+  ParticipantBorderColor #222222
+  ParticipantBackgroundColor #FFFFFF
+  BoxBorderColor #777777
+  BoxBackgroundColor #FFFFFF
+  GroupBorderColor #777777
+  GroupBackgroundColor #FFFFFF
+}
+
+autonumber
+
+participant "线索来源/人工导入" as L
+participant "线索与销售服务" as LS
+participant "销售/Worker绑定" as BS
+participant "统一任务中心" as TS
+participant "Worker主进程" as W
+participant "OmniAuto RPA Sidecar" as OA
+participant "销售微信桌面客户端" as WX
+participant "会话状态机" as CP
+participant "服务端AI大脑\nOmniAuto AI Engine/DeepSeek/Guard" as AI
+participant "服务端定时扫描器" as Scan
+participant "飞书机器人" as FS
+participant "销售手机微信" as S
+participant "客户微信" as C
+
+group C0 线索入库、分配、生成加好友任务
+  L -> LS: 手机号线索进入系统
+  LS -> LS: 去重、脱敏、创建 lead/conversation
+  LS -> BS: 查询销售与 Worker 绑定关系
+  alt 销售已绑定 Worker
+    LS -> TS: 创建 add_friend 任务\nstatus=pending
+  else 销售未绑定 Worker
+    LS -> TS: 创建 add_friend 任务\nstatus=blocked\nblock_code=SALES_WORKER_NOT_BOUND
+    BS --> TS: 后续绑定 Worker 后解除阻塞
+    TS -> TS: blocked -> pending
+  end
+end
+
+group C1 add_friend：搜索手机号、申请好友、写客户短码
+  W -> TS: 拉取/领取 add_friend 任务
+  W -> OA: 调用 add-friend-entry-click-plan-windows\nphone_or_wechat / verify_message / remark_code
+  OA -> WX: 手机号搜索、提交好友申请、写入客户短码
+  alt 邀请发送成功
+    OA --> W: completed + result_code=invite_sent
+    W -> TS: 上报 task 完成
+    TS -> CP: conversation.status=add_friend_sent
+  else 已经是好友
+    OA --> W: completed + result_code=already_friend
+    W -> TS: 上报 task 完成
+    TS -> CP: conversation.status=friend_added
+  else 加好友失败/风控
+    OA --> W: failed + error_code
+    W -> TS: 上报失败和证据
+    TS -> CP: 保持当前状态或转人工待处理
+  end
+end
+
+group C2 会话绑定/微信监听：第一屏扫描、定向读取、入库、去重；不进入任务中心
+  loop Worker 运行中
+    W -> OA: sessions 扫描微信当前第一屏
+    OA -> WX: 读取第一屏会话/备注/短码/未读提示
+    OA --> W: rpa_session_key、display_name、remark_code_candidates、unread_hint
+    W -> CP: 上报 session_scan_result
+    alt 第一屏短码唯一匹配或已有绑定
+      CP -> CP: wechat_binding.status=bound
+listen_status=listening
+      W -> W: 第一屏命中进入 visible_hit_queue
+      W -> OA: messages 优先读取第一屏命中会话
+      OA -> WX: 定位/打开指定会话，读取近期消息
+      OA --> W: message_type/content/dedupe_key
+      W -> CP: 上报 message_event
+      CP -> CP: dedupe_key 去重入库
+更新 last_inbound_at
+next_action=none
+    else 未识别短码/短码冲突/绑定冲突
+      CP -> CP: bind_status=unbound/needs_review/binding_failed
+      CP --> W: next_action=none
+    end
+
+    W -> CP: 拉取 read-targets
+    CP --> W: 状态机定向读取目标
+recent_ai_sent / waiting_user_reply / waiting_sales_reply / recall_precheck
+    W -> W: 去重掉本轮第一屏已处理对象
+    W -> OA: messages 定向读取剩余目标
+    OA -> WX: 搜索/定位指定会话并读取消息
+    OA --> W: message_type/content/dedupe_key
+    W -> CP: 上报 message_event
+    CP -> CP: 去重入库；新客户消息进入C3判断
+  end
+end
+
+group C3 AI文字回复：服务端生成 reply_action，Worker 只执行已批准发送
+  C -> WX: 客户通过好友并发送消息
+  W -> CP: C2链路上报 message_event
+  CP -> CP: 判断状态、风控、黑名单、静默、是否已接管
+  alt 允许 AI 继续接待
+    CP -> AI: 生成候选回复/evidence_pack/Guard
+    AI --> CP: send_reply / handoff / no_action
+    alt Guard 通过且可自动回复
+      CP -> TS: 创建 chat_reply 任务和 reply_action
+      W -> TS: claim reply_action
+      W -> OA: pre_send_refresh 定向读取目标会话
+      OA -> WX: 读取最新消息确认上下文未变化
+      W -> CP: 上报 refresh message_event 或无新增
+      alt 没有新客户消息
+        W -> OA: send 已批准回复
+        OA -> WX: 打开会话、输入、发送
+        OA --> W: sent_ack
+        W -> CP: 上报 sent_ack
+        CP -> CP: status=waiting_user_reply
+last_outbound_at=now
+      else 有新客户消息
+        CP -> CP: reply_action=superseded
+不发送旧回复
+        CP -> AI: 新message_batch重新生成回复
+      end
+    else 高意向/高风险/模型失败/低置信
+      CP -> CP: status=waiting_sales_reply
+ai_enabled=false
+      CP -> FS: 飞书通知销售接管
+      FS -> S: 销售收到通知
+    end
+  else 不允许 AI 回复
+    CP -> CP: 保持等待/转人工/关闭/拒绝状态
+  end
+end
+
+group C4 召回与人工跟进：召回前先precheck，Worker只执行已批准任务
+  loop 服务端定时扫描
+    Scan -> CP: 检查 waiting_user_reply / recalled_waiting_user / sales_replied_waiting_user
+    alt 客户 N 天未回复且未拒绝/未关闭/未黑名单
+      Scan -> CP: status=recall_precheck
+生成 recall_precheck read-target
+      W -> CP: 拉取 recall_precheck read-target
+      W -> OA: messages 定向读取该会话
+      OA -> WX: 读取最新消息
+      W -> CP: 上报 precheck message_event 或无新增
+      alt precheck读到新客户消息
+        CP -> CP: 取消召回
+进入AI回复/转人工判断
+      else precheck确认无新客户消息
+        CP -> TS: 创建 follow_up 任务
+        W -> TS: 领取 follow_up
+        W -> OA: 发送固定召回文案
+        OA -> WX: 发送召回
+        W -> CP: 上报 follow_up sent_ack
+        CP -> CP: status=recalled_waiting_user
+recall_count+1
+      else precheck失败/目标不确认
+        CP -> CP: 不发送召回
+记录RECALL_PRECHECK_FAILED
+      end
+    else waiting_sales_reply 销售超时未回复
+      Scan -> FS: 飞书提醒销售
+      FS -> S: 销售收到超时提醒
+    else 未命中规则
+      Scan -> CP: 不生成任务
+    end
+  end
+
+  alt 客户再次回复
+    C -> WX: 客户回复
+    W -> CP: C2链路上报 message_event
+    CP -> CP: 回到 AI 判断或销售处理
+  else 销售手机端人工回复
+    S -> C: 销售在手机微信回复客户
+    WX --> W: 桌面端同步我方消息
+    W -> CP: 上报 sales_reply_event
+    CP -> CP: status=sales_replied_waiting_user
+AI停止
+  else 客户明确拒绝
+    C -> WX: 明确拒绝/拉黑/不需要
+    W -> CP: 上报拒绝消息事实
+    CP -> CP: status=rejected
+停止加好友、AI、召回
+  else 销售移除客户短码或人工关闭
+    S -> WX: 修改备注移除短码/线下成交后关闭
+    W -> CP: 上报 remark_code_removed
+    CP -> CP: status=closed
+停止系统托管
+  end
+end
+
+@enduml

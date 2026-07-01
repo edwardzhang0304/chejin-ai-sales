@@ -30,6 +30,15 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("omniauto-rpa\\apps\\wechat_ai_customer_service\\adapters\\wechat_win32_ocr_sidecar.py", text)
         self.assertIn("python.exe run_checks.py", text)
 
+    def test_source_package_script_excludes_local_env_and_runtime_state(self):
+        text = (ROOT / "scripts" / "build-source-package.py").read_text(encoding="utf-8")
+
+        self.assertIn("*.local.env", text)
+        self.assertIn('".env"', text)
+        self.assertIn('"runtime"', text)
+        self.assertIn('"cache"', text)
+        self.assertIn('"forbidden_entries"', text)
+
 
 if __name__ == "__main__":
     unittest.main()
