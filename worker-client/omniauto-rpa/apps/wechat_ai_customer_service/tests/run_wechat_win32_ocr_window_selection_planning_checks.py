@@ -86,6 +86,29 @@ def test_candidate_score_prefers_readable_window_over_larger_blank_window() -> N
     assert_true(int((selected or {}).get("content_health_score") or 0) == 38, f"content score mismatch: {selected}")
 
 
+def test_candidate_score_prefers_readable_small_window_over_blank_capture_ready_window() -> None:
+    larger_blank = make_candidate(
+        hwnd=1001,
+        title="微信",
+        geometry={"left": 0, "top": 0, "right": 785, "bottom": 688, "width": 785, "height": 688},
+        capture_ready=True,
+        content_health_score=-100,
+    )
+    readable_login = make_candidate(
+        hwnd=1002,
+        title="微信",
+        geometry={"left": 621, "top": 266, "right": 915, "bottom": 653, "width": 294, "height": 387},
+        capture_ready=False,
+        content_health_score=23,
+    )
+    selected = window_action_planning.select_best_visible_window_candidate([larger_blank, readable_login])
+    assert_true(
+        int((selected or {}).get("hwnd") or 0) == 1002,
+        f"readable small recovery/login window should win over capture-ready blank render: {selected}",
+    )
+    assert_true(int((selected or {}).get("content_health_score") or 0) == 23, f"content score mismatch: {selected}")
+
+
 def test_selection_returns_none_for_empty_or_invalid_candidates() -> None:
     assert_true(window_action_planning.select_best_visible_window_candidate([]) is None, "empty candidate list should return None")
     assert_true(window_action_planning.select_best_visible_window_candidate([{"score": (1, 0, 0, 0, 0)}]) is None, "missing item should return None")
@@ -96,6 +119,7 @@ def main() -> int:
         test_window_selection_planning_exports_expected_helpers,
         test_candidate_score_prefers_capture_ready_safe_large_window,
         test_candidate_score_prefers_readable_window_over_larger_blank_window,
+        test_candidate_score_prefers_readable_small_window_over_blank_capture_ready_window,
         test_selection_returns_none_for_empty_or_invalid_candidates,
     ]
     passed = 0

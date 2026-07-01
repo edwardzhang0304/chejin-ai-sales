@@ -3,13 +3,14 @@ import re
 from typing import Any
 
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, object_session, selectinload
 
 from app.core.request_context import ActorContext
 from app.enums import ContactType, TaskBlockCode, TaskEventType, TaskResultCode, TaskStatus, TaskType
 from app.errors import AppError
 from app.models.lead import Lead, LeadContact
 from app.models.sales import Sales
+from app.models.c3 import HandoffEvent, MessageBatch, ReplyAction, SentAck
 from app.models.task import Task, TaskEvent, TaskEvidence, TaskNote
 from app.models.worker import Worker
 from app.schemas.task import TERMINAL_TASK_STATUSES
@@ -20,7 +21,6 @@ from app.services import contact_utils
 
 ACTIVE_TASK_STATUSES = {TaskStatus.blocked.value, TaskStatus.pending.value, TaskStatus.running.value}
 CANCELLABLE_TASK_STATUSES = {TaskStatus.blocked.value, TaskStatus.pending.value, TaskStatus.running.value}
-RETRYABLE_TASK_STATUSES = {TaskStatus.failed.value, TaskStatus.cancelled.value}
 
 
 def _parse_datetime(value: str | None, field_name: str) -> datetime | None:
@@ -155,12 +155,122 @@ def _worker_summary(task: Task) -> dict[str, Any] | None:
     }
 
 
+def _message_batch_summary(batch: MessageBatch | None) -> dict[str, Any] | None:
+    if not batch:
+        return None
+    return {
+        "id": batch.id,
+        "conversation_id": batch.conversation_id,
+        "status": batch.status,
+        "active": batch.active,
+        "message_count": batch.message_count,
+        "generation_no": batch.generation_no,
+        "decision": batch.decision,
+        "error_code": batch.error_code,
+        "suggested_action": batch.suggested_action,
+        "superseded_by_batch_id": batch.superseded_by_batch_id,
+        "generated_at": batch.generated_at,
+        "created_at": batch.created_at,
+        "updated_at": batch.updated_at,
+    }
+
+
+def _reply_action_summary(action: ReplyAction | None) -> dict[str, Any] | None:
+    if not action:
+        return None
+    return {
+        "id": action.id,
+        "batch_id": action.batch_id,
+        "conversation_id": action.conversation_id,
+        "status": action.status,
+        "current": action.current,
+        "generation_no": action.generation_no,
+        "decision": action.decision,
+        "reply_text_hash": action.reply_text_hash,
+        "confidence": action.confidence,
+        "risk_flags": action.risk_flags,
+        "guard_result": action.guard_result,
+        "handoff_reason_code": action.handoff_reason_code,
+        "error_code": action.error_code,
+        "suggested_action": action.suggested_action,
+        "expire_at": action.expire_at,
+        "claimed_by_worker_id": action.claimed_by_worker_id,
+        "claimed_task_id": action.claimed_task_id,
+        "sending_claimed_at": action.sending_claimed_at,
+        "sent_at": action.sent_at,
+        "created_at": action.created_at,
+        "updated_at": action.updated_at,
+    }
+
+
+def _sent_ack_summary(ack: SentAck | None) -> dict[str, Any] | None:
+    if not ack:
+        return None
+    return {
+        "id": ack.id,
+        "reply_action_id": ack.reply_action_id,
+        "task_id": ack.task_id,
+        "worker_id": ack.worker_id,
+        "client_instance_id": ack.client_instance_id,
+        "send_result": ack.send_result,
+        "reply_text_hash": ack.reply_text_hash,
+        "sidecar_run_id": ack.sidecar_run_id,
+        "error_code": ack.error_code,
+        "remark": ack.remark,
+        "sent_at": ack.sent_at,
+        "created_at": ack.created_at,
+    }
+
+
+def _handoff_event_summary(event: HandoffEvent | None) -> dict[str, Any] | None:
+    if not event:
+        return None
+    return {
+        "id": event.id,
+        "conversation_id": event.conversation_id,
+        "batch_id": event.batch_id,
+        "status": event.status,
+        "handoff_reason_code": event.handoff_reason_code,
+        "reason_detail": event.reason_detail,
+        "risk_flags": event.risk_flags,
+        "evidence_refs": event.evidence_refs,
+        "notify_error_code": event.notify_error_code,
+        "closed_at": event.closed_at,
+        "created_at": event.created_at,
+        "updated_at": event.updated_at,
+    }
+
+
+def _c3_summary(task: Task) -> dict[str, Any] | None:
+    if not task.reply_action_id:
+        return None
+    db = object_session(task)
+    if db is None:
+        return None
+    action = db.get(ReplyAction, task.reply_action_id)
+    batch = db.get(MessageBatch, action.batch_id) if action else None
+    ack = db.scalar(select(SentAck).where(SentAck.reply_action_id == task.reply_action_id))
+    handoff = None
+    if batch:
+        handoff = db.scalar(
+            select(HandoffEvent)
+            .where(HandoffEvent.batch_id == batch.id, HandoffEvent.deleted_at.is_(None))
+            .order_by(HandoffEvent.created_at.desc())
+        )
+    return {
+        "message_batch": _message_batch_summary(batch),
+        "reply_action": _reply_action_summary(action),
+        "sent_ack": _sent_ack_summary(ack),
+        "handoff_event": _handoff_event_summary(handoff),
+    }
+
+
 def available_actions(task: Task) -> list[dict[str, Any]]:
+    if task.error_code == "SEND_RESULT_UNKNOWN":
+        return []
     actions: list[dict[str, Any]] = [{"code": "comment", "label": "补充备注", "enabled": True}]
     if task.status in CANCELLABLE_TASK_STATUSES:
         actions.append({"code": "cancel", "label": "取消任务", "enabled": True})
-    if task.status in RETRYABLE_TASK_STATUSES:
-        actions.append({"code": "retry", "label": "重新处理", "enabled": True})
     if task.status == TaskStatus.pending.value:
         actions.append({"code": "claim", "label": "领取任务", "enabled": True})
     if task.status == TaskStatus.running.value:
@@ -246,20 +356,26 @@ def task_to_list_item(task: Task) -> dict[str, Any]:
         "block_code": task.block_code,
         "current_step": task.current_step,
         "lead_id": task.lead_id,
-        "customer_name": lead["customer_name"] if lead else None,
-        "primary_phone_masked": lead["primary_phone_masked"] if lead else None,
-        "phone_suffix": lead["phone_suffix"] if lead else None,
         "sales_id": task.sales_id,
-        "sales_name": task.sales.sales_name if task.sales else None,
         "worker_id": task.worker_id,
-        "worker_name": task.worker.worker_name if task.worker else None,
         "original_task_id": task.original_task_id,
+        "reply_action_id": task.reply_action_id,
         "created_at": task.created_at,
         "updated_at": task.updated_at,
         "claimed_at": task.claimed_at,
         "completed_at": task.completed_at,
         "failed_at": task.failed_at,
         "cancelled_at": task.cancelled_at,
+        "business_object": {"type": "lead", "lead": lead} if task.lead_id else None,
+        "execution": {
+            "sales": _sales_summary(task),
+            "worker": _worker_summary(task),
+            "current_step": task.current_step,
+            "claimed_at": task.claimed_at,
+            "completed_at": task.completed_at,
+            "failed_at": task.failed_at,
+            "cancelled_at": task.cancelled_at,
+        },
         "available_actions": available_actions(task),
     }
 
@@ -286,10 +402,10 @@ def task_to_detail(task: Task) -> dict[str, Any]:
             "failed_at": task.failed_at,
             "cancelled_at": task.cancelled_at,
         },
-        "status_flow": [task_event_to_dict(event) for event in events],
         "events": [task_event_to_dict(event) for event in events],
         "notes": [task_note_to_dict(note) for note in notes],
         "evidences": [task_evidence_to_dict(evidence) for evidence in evidences],
+        "c3": _c3_summary(task),
         "available_actions": available_actions(task),
     }
 
@@ -316,6 +432,14 @@ def _task_load_options():
         selectinload(Task.notes),
         selectinload(Task.evidences),
     ]
+
+
+def finish_task_and_release_worker(task: Task) -> None:
+    if task.worker:
+        task.worker.running_status = "idle"
+        if task.worker.current_task == task.id:
+            task.worker.current_task = None
+        task.worker.current_step = None
 
 
 def get_task_or_404(db: Session, task_id: str) -> Task:
@@ -381,8 +505,30 @@ def list_tasks(
         )
     query = query.distinct().order_by(Task.created_at.desc(), Task.id.desc())
     total = db.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0
+    metrics = _task_metrics(db, query)
     items = db.scalars(query.offset((page - 1) * page_size).limit(page_size)).all()
-    return {"items": [task_to_list_item(task) for task in items], "page": page, "page_size": page_size, "total": total}
+    return {"items": [task_to_list_item(task) for task in items], "page": page, "page_size": page_size, "total": total, "metrics": metrics}
+
+
+def _task_metrics(db: Session, filtered_query) -> dict[str, int]:
+    subquery = filtered_query.order_by(None).subquery()
+    today = utcnow().date()
+    rows = db.execute(select(subquery.c.status, subquery.c.completed_at, subquery.c.failed_at)).all()
+    return {
+        "blocked": sum(1 for status, _completed_at, _failed_at in rows if status == TaskStatus.blocked.value),
+        "pending": sum(1 for status, _completed_at, _failed_at in rows if status == TaskStatus.pending.value),
+        "running": sum(1 for status, _completed_at, _failed_at in rows if status == TaskStatus.running.value),
+        "completed_today": sum(
+            1
+            for status, completed_at, _failed_at in rows
+            if status == TaskStatus.completed.value and completed_at is not None and completed_at.date() == today
+        ),
+        "failed_today": sum(
+            1
+            for status, _completed_at, failed_at in rows
+            if status == TaskStatus.failed.value and failed_at is not None and failed_at.date() == today
+        ),
+    }
 
 
 def _write_event(
@@ -589,48 +735,11 @@ def cancel_task(db: Session, task_id: str, reason: str | None, actor: ActorConte
     task.cancel_reason = reason
     task.cancelled_at = utcnow()
     task.updated_by = str(actor.operator_id)
+    finish_task_and_release_worker(task)
     _write_event(db, task, TaskEventType.cancelled, actor=actor, from_status=before, to_status=task.status, remark=reason)
     _write_task_log(db, actor, "task_cancelled", task, before_data={"status": before}, after_data={"status": task.status})
     db.flush()
     return task_to_detail(get_task_or_404(db, task.id))
-
-
-def retry_task(db: Session, task_id: str, remark: str | None, actor: ActorContext) -> dict[str, Any]:
-    original = get_task_or_404(db, task_id)
-    if original.status not in RETRYABLE_TASK_STATUSES:
-        raise AppError("TASK_RETRY_NOT_ALLOWED", "仅 failed、cancelled 任务可重新处理", 409)
-    if original.task_type != TaskType.add_friend.value:
-        raise AppError("TASK_TYPE_NOT_SUPPORTED", "当前阶段仅支持 add_friend 任务重试", 400)
-    sales, worker = _resolve_sales_and_worker(db, original.lead, original.sales_id, None)
-    status = TaskStatus.pending.value if worker else TaskStatus.blocked.value
-    block_code = None if worker else TaskBlockCode.SALES_WORKER_NOT_BOUND.value
-    new_task = Task(
-        task_type=original.task_type,
-        status=status,
-        block_code=block_code,
-        lead_id=original.lead_id,
-        sales_id=sales.id if sales else original.sales_id,
-        worker_id=worker.id if worker else None,
-        original_task_id=original.id,
-        remark=remark,
-        created_by=str(actor.operator_id),
-        updated_by=str(actor.operator_id),
-    )
-    db.add(new_task)
-    db.flush()
-    _write_event(db, original, TaskEventType.retried, actor=actor, remark=remark, metadata={"new_task_id": new_task.id})
-    _write_event(db, new_task, TaskEventType.created, actor=actor, to_status=new_task.status, remark=remark, metadata={"original_task_id": original.id})
-    if new_task.status == TaskStatus.blocked.value:
-        _write_event(db, new_task, TaskEventType.blocked, actor=actor, to_status=new_task.status, remark="销售未绑定可用 Worker")
-    _write_task_log(
-        db,
-        actor,
-        "task_retried",
-        original,
-        metadata={"new_task_id": new_task.id, "original_task_id": original.id},
-    )
-    db.flush()
-    return {"original_task": task_to_detail(get_task_or_404(db, original.id)), "new_task": task_to_detail(get_task_or_404(db, new_task.id))}
 
 
 def claim_task(
@@ -653,6 +762,10 @@ def claim_task(
         raise AppError("WORKER_DISABLED_CANNOT_CLAIM", "已停用 Worker 不可领取任务", 400)
     if task.worker_id and task.worker_id != worker.id:
         raise AppError("TASK_WORKER_MISMATCH", "该任务已指定其他 Worker", 409)
+    if task.task_type == TaskType.chat_reply.value:
+        from app.services.c3_service import validate_chat_reply_task_claim
+
+        validate_chat_reply_task_claim(db, task, worker)
     if require_worker_ready:
         from app.services.worker_service import worker_can_claim
 
@@ -733,10 +846,7 @@ def complete_task(db: Session, task_id: str, result_code: TaskResultCode, remark
     task.block_code = None
     task.completed_at = utcnow()
     task.updated_by = str(actor.operator_id)
-    if task.worker:
-        task.worker.running_status = "idle"
-        if task.worker.current_task == task.id:
-            task.worker.current_task = None
+    finish_task_and_release_worker(task)
     _write_event(db, task, TaskEventType.completed, actor=actor, from_status=before, to_status=task.status, remark=remark)
     db.flush()
     return task_to_detail(get_task_or_404(db, task.id))
@@ -753,10 +863,7 @@ def fail_task(db: Session, task_id: str, error_code: str, failure_step: str | No
     task.failure_remark = failure_remark
     task.failed_at = utcnow()
     task.updated_by = str(actor.operator_id)
-    if task.worker:
-        task.worker.running_status = "idle"
-        if task.worker.current_task == task.id:
-            task.worker.current_task = None
+    finish_task_and_release_worker(task)
     _write_event(db, task, TaskEventType.failed, actor=actor, from_status=before, to_status=task.status, remark=failure_remark)
     db.flush()
     return task_to_detail(get_task_or_404(db, task.id))

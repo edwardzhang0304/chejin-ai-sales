@@ -15,7 +15,6 @@ from app.schemas.task import (
     TaskCreate,
     TaskEvidenceRequest,
     TaskFailRequest,
-    TaskRetryRequest,
     TaskStepRequest,
 )
 from app.services import task_service, worker_service
@@ -130,23 +129,6 @@ def cancel_task(
 ):
     try:
         data = task_service.cancel_task(db, task_id, payload.reason, actor)
-        db.commit()
-        return ok(data)
-    except Exception:
-        db.rollback()
-        raise
-
-
-@router.post("/tasks/{task_id}/retry")
-def retry_task(
-    task_id: str,
-    payload: TaskRetryRequest,
-    db: Session = Depends(get_db),
-    actor: ActorContext = Depends(get_actor_context),
-    _admin_auth: None = Depends(require_admin_auth),
-):
-    try:
-        data = task_service.retry_task(db, task_id, payload.remark, actor)
         db.commit()
         return ok(data)
     except Exception:

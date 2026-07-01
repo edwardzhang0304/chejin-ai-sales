@@ -86,12 +86,34 @@ def test_profile_summary_and_change_detection() -> None:
     assert_true(device_profile.profile_changed(old, changed) is True, "dpi profile change should be detected")
 
 
+def test_device_profile_records_multi_monitor_negative_virtual_screen() -> None:
+    profile = device_profile.build_device_profile(
+        route="add-friend-entry-click-plan-windows",
+        geometry={"left": -1200, "top": 30, "width": 1225, "height": 1032},
+        screenshot_size=(1225, 1032),
+        client_rect={"width": 1200, "height": 980},
+        dpi_scale=1.5,
+        screen={"width": 1920, "height": 1080},
+        virtual_screen={"left": -1920, "top": 0, "width": 3840, "height": 1440},
+        monitors=[
+            {"left": -1920, "top": 0, "right": 0, "bottom": 1080, "width": 1920, "height": 1080},
+            {"left": 0, "top": 0, "right": 2560, "bottom": 1440, "width": 2560, "height": 1440},
+        ],
+    )
+    summary = device_profile.profile_summary(profile)
+    assert_true(profile.get("virtual_screen", {}).get("left") == -1920, f"profile should preserve negative virtual screen: {profile}")
+    assert_true(profile.get("monitor_count") == 2, f"profile monitor count mismatch: {profile}")
+    assert_true(profile.get("dpi") == 144, f"profile dpi mismatch: {profile}")
+    assert_true(summary.get("monitor_count") == 2 and summary.get("dpi_scale") == 1.5, f"profile summary mismatch: {summary}")
+
+
 def main() -> int:
     tests = [
         test_device_profile_module_exports_expected_helpers,
         test_capture_geometry_guard_matches_sidecar,
         test_build_device_profile_shape,
         test_profile_summary_and_change_detection,
+        test_device_profile_records_multi_monitor_negative_virtual_screen,
     ]
     passed = 0
     for test in tests:

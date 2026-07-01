@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     docs_enabled: bool = True
     auth_enforcement: bool = False
     admin_api_token: str | None = None
+    c3_ai_adapter_mode: str = "mock"
+    c3_reply_action_ttl_seconds: int = 300
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

@@ -22,7 +22,6 @@ class WechatSessionBinding(Base, TimestampMixin):
     bind_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unbound")
     listen_status: Mapped[str] = mapped_column(String(32), nullable=False, default="not_started")
     allow_listening: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     unread_hint: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     last_message_preview: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -69,15 +68,35 @@ class MessageEvent(Base):
     ocr_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
-    ingest_status: Mapped[str] = mapped_column(String(32), nullable=False, default="ingested")
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     binding: Mapped["WechatSessionBinding | None"] = relationship()
     worker: Mapped["Worker"] = relationship()
 
-    __table_args__ = (UniqueConstraint("worker_id", "conversation_id", "dedupe_key", name="uq_message_events_worker_conversation_dedupe"),)
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "dedupe_key", name="uq_message_events_conversation_dedupe"),
+        UniqueConstraint("worker_id", "conversation_id", "dedupe_key", name="uq_message_events_worker_conversation_dedupe"),
+    )
 
 
 Index("idx_message_events_conversation_ingested", MessageEvent.conversation_id, MessageEvent.ingested_at.desc())
 Index("idx_message_events_worker_ingested", MessageEvent.worker_id, MessageEvent.ingested_at.desc())
 Index("idx_message_events_lead_ingested", MessageEvent.lead_id, MessageEvent.ingested_at.desc())
+
+
+class WechatScanRun(Base):
+    __tablename__ = "wechat_scan_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    worker_id: Mapped[str] = mapped_column(String(36), ForeignKey("workers.id"), nullable=False)
+    scan_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="processed")
+    response_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+    worker: Mapped["Worker"] = relationship()
+
+    __table_args__ = (UniqueConstraint("scan_id", name="uq_wechat_scan_runs_scan_id"),)
+
+
+Index("idx_wechat_scan_runs_worker_created", WechatScanRun.worker_id, WechatScanRun.created_at.desc())

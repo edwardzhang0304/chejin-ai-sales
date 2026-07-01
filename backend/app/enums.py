@@ -86,7 +86,6 @@ class TaskEventType(StrEnum):
     completed = "completed"
     failed = "failed"
     cancelled = "cancelled"
-    retried = "retried"
     comment_added = "comment_added"
 
 

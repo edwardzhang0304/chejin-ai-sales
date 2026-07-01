@@ -57,6 +57,25 @@ def test_session_row_candidate_points_match_sidecar_with_seed() -> None:
         assert_true(extracted == facade, f"candidate points mismatch: {session}: {extracted} vs {facade}")
 
 
+def test_short_title_session_points_stay_out_of_preview_zone() -> None:
+    geometry = {"left": 0, "top": 0, "width": 980, "height": 860}
+    session = {"name": "许聪", "left": 153, "right": 197, "center_y": 128}
+    points = session_targeting.session_row_click_candidate_points(
+        session,
+        geometry,
+        default_x=sidecar.session_click_x_for_geometry(geometry),
+        min_points=10,
+    )
+    assert_true(len(points) >= 10, f"expected enough candidate points: {points}")
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    assert_true(max(xs) <= 150, f"short-title row clicks should avoid title-preview/time zone: {points}")
+    assert_true(min(xs) >= 92, f"short-title row clicks should stay inside avatar/left-title zone: {points}")
+    assert_true(len(set(points)) >= 10, f"candidate points should stay distinct without entering preview zone: {points}")
+    assert_true(max(xs) - min(xs) >= 34, f"candidate x spread should still avoid fixed-pixel clicks: {points}")
+    assert_true(max(ys) - min(ys) >= 18, f"candidate y spread should still avoid fixed-line clicks: {points}")
+
+
 def test_choose_session_row_click_point_matches_sidecar_with_seed() -> None:
     for session in (SESSION_WITH_TEXT, SESSION_WITHOUT_TEXT, {"name": "missing center"}):
         random.seed(20260619)
@@ -76,9 +95,11 @@ def test_target_switch_hard_stop_matches_sidecar_contract() -> None:
         {"state": "blank_render_detected"},
         {"state": "login_window_detected"},
         {"state": "auxiliary_shell_window_detected"},
+        {"state": "wrong_target_service_container_detected"},
         {"reason": "blank_render"},
         {"reason": "login_or_qr"},
         {"reason": "auxiliary_shell_window"},
+        {"reason": "service_container_wrong_target"},
         {"state": "target_not_confirmed"},
         None,
     ]
@@ -93,6 +114,7 @@ def main() -> int:
         test_session_targeting_module_exports_expected_helpers,
         test_session_row_click_x_matches_sidecar,
         test_session_row_candidate_points_match_sidecar_with_seed,
+        test_short_title_session_points_stay_out_of_preview_zone,
         test_choose_session_row_click_point_matches_sidecar_with_seed,
         test_target_switch_hard_stop_matches_sidecar_contract,
     ]

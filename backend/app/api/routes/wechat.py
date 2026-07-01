@@ -38,7 +38,13 @@ def read_targets(
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
 ):
     worker = worker_service.authenticate_worker_client(db, worker_id, x_worker_token, x_client_instance_id)
-    return ok(wechat_service.read_targets(db, worker, limit))
+    try:
+        data = wechat_service.read_targets(db, worker, limit)
+        db.commit()
+        return ok(data)
+    except Exception:
+        db.rollback()
+        raise
 
 
 @router.post("/workers/{worker_id}/wechat/messages/ingest")

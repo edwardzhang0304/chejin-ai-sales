@@ -83,9 +83,13 @@ def test_worker_client_bind_is_single_instance_and_reset_invalidates_old_client(
     worker = _create_worker()
 
     bound = _bind_worker(worker, "client-a")
-    assert bound["client_bind_status"] == "bound"
+    assert bound["client_binding_state"] == "bound"
     assert bound["client_instance_id"] == "client-a"
     assert bound["run_status"] == "paused"
+    assert bound["platform"] == "windows"
+    assert "runtime_status" not in bound
+    assert "current_task_id" not in bound
+    assert "client_bind_status" not in bound
 
     duplicate = client.post(
         f"/api/workers/{worker['id']}/client-bind",
@@ -236,3 +240,17 @@ def test_worker_claim_requires_online_running_and_rpa_ready_and_rejects_second_r
     )
     assert second_claim.status_code == 409
     assert second_claim.json()["code"] == "WORKER_HAS_RUNNING_TASK"
+
+
+def test_worker_heartbeat_rejects_legacy_running_status_values():
+    worker = _create_worker()
+    _bind_worker(worker)
+    response = _heartbeat(worker, run_status="running")
+    assert response.status_code == 200
+    invalid = client.post(
+        f"/api/workers/{worker['id']}/heartbeat",
+        json={"client_instance_id": "client-a", "run_status": "running", "running_status": "busy"},
+        headers={"X-Worker-Token": worker["worker_token"]},
+    )
+    assert invalid.status_code == 400
+    assert invalid.json()["code"] == "WORKER_RUNNING_STATUS_INVALID"

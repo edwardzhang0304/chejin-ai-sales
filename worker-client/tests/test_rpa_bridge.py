@@ -116,6 +116,64 @@ class RpaBridgeTest(unittest.TestCase):
         self.assertIn("remark_code is required", result.message)
         call_omniauto.assert_not_called()
 
+    def test_real_bridge_send_reply_calls_omniauto_send_action(self):
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        bridge.mode = "real"
+        captured = {"args": [], "timeout": None}
+
+        def fake_call_omniauto(args, timeout=30):
+            captured["args"] = args
+            captured["timeout"] = timeout
+            return {"ok": True, "adapter": "win32_ocr", "state": "send_win32_rpa", "send_result": {"ok": True}}
+
+        with patch.object(bridge, "_call_omniauto", side_effect=fake_call_omniauto):
+            result = bridge.send_reply(target="CJTEST01许聪", rpa_session_key="wx:rpa:v1:a", text="服务端批准文本", task_id="task-chat")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(captured["args"][0], "send")
+        self.assertIn("--target", captured["args"])
+        self.assertIn("CJTEST01许聪", captured["args"])
+        self.assertIn("--session-key", captured["args"])
+        self.assertIn("wx:rpa:v1:a", captured["args"])
+        self.assertIn("--text", captured["args"])
+        self.assertIn("服务端批准文本", captured["args"])
+        self.assertEqual(captured["timeout"], 180)
+
+    def test_real_bridge_get_messages_can_search_by_remark_code(self):
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        bridge.mode = "real"
+        captured = {"args": [], "timeout": None}
+
+        def fake_call_omniauto(args, timeout=30):
+            captured["args"] = args
+            captured["timeout"] = timeout
+            return {"ok": True, "adapter": "win32_ocr", "state": "messages_ocr", "messages": []}
+
+        with patch.object(bridge, "_call_omniauto", side_effect=fake_call_omniauto):
+            result = bridge.get_messages(
+                display_name="CJTEST01 许聪",
+                rpa_session_key="",
+                remark_code="CJTEST01",
+                target_mode="search_by_remark_code",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(captured["args"][0], "messages")
+        self.assertIn("--target", captured["args"])
+        self.assertIn("CJTEST01 许聪", captured["args"])
+        self.assertIn("--target-mode", captured["args"])
+        self.assertIn("search_by_remark_code", captured["args"])
+        self.assertIn("--remark-code", captured["args"])
+        self.assertIn("CJTEST01", captured["args"])
+        self.assertIn("--sidecar-run-id", captured["args"])
+        self.assertNotIn("--session-key", captured["args"])
+        self.assertIn("--max-duration-seconds", captured["args"])
+        max_duration_index = captured["args"].index("--max-duration-seconds") + 1
+        self.assertGreaterEqual(int(captured["args"][max_duration_index]), 75)
+        self.assertGreaterEqual(int(captured["timeout"]), 150)
+        self.assertIn("sidecar_run_id", result)
+        self.assertIn(str(result["sidecar_run_id"]), str(result["artifact_dir"]))
+
     def test_real_bridge_emits_preflight_steps_before_sidecar_call(self):
         bridge = RpaBridge(sidecar_script=Path(__file__))
         bridge.mode = "real"

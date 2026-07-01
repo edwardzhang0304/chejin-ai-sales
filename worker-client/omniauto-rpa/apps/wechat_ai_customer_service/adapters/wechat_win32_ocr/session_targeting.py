@@ -45,8 +45,15 @@ def session_row_click_candidate_points(
     text_left = int(float(session.get("left") or 0))
     text_right = int(float(session.get("right") or 0))
     if text_right > text_left:
-        row_left = max(74, min(text_left - 56, split_x - 230))
-        row_right = min(split_x - 52, max(text_right + 26, row_left + 132))
+        # Prefer the avatar/left-title zone. On current Windows WeChat builds,
+        # clicking the right preview/time side can select/highlight a row
+        # without opening its conversation, and re-clicking an already active row
+        # can collapse the right pane.
+        row_left = max(92, min(text_left - 58, split_x - 236))
+        row_right = min(
+            split_x - 108,
+            max(row_left + 44, min(text_left - 8, row_left + 62)),
+        )
     else:
         base_x = session_row_click_x(session, geometry, default_x=default_x)
         row_left = max(74, base_x - 82)
@@ -110,6 +117,11 @@ def target_switch_validation_is_hard_stop(validation: dict[str, Any] | None) -> 
         return False
     state = str(validation.get("state") or "")
     reason = str(validation.get("reason") or "")
-    if state in {"blank_render_detected", "login_window_detected", "auxiliary_shell_window_detected"}:
+    if state in {
+        "blank_render_detected",
+        "login_window_detected",
+        "auxiliary_shell_window_detected",
+        "wrong_target_service_container_detected",
+    }:
         return True
-    return reason in {"blank_render", "login_or_qr", "auxiliary_shell_window"}
+    return reason in {"blank_render", "login_or_qr", "auxiliary_shell_window", "service_container_wrong_target"}

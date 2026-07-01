@@ -16,6 +16,7 @@ every operation when that reserve path is enabled.
 from __future__ import annotations
 
 import difflib
+import builtins
 import json
 import os
 import queue
@@ -26,6 +27,7 @@ import sys
 import threading
 import time
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -53,6 +55,25 @@ _simulated_inbound_lock = threading.Lock()
 _simulated_inbound_cache: dict[str, list[dict[str, Any]]] = {}
 
 
+def _shared_context_var(name: str, *, default: bool = False) -> ContextVar[bool]:
+    store = getattr(builtins, "_omniauto_wechat_connector_contextvars", None)
+    if not isinstance(store, dict):
+        store = {}
+        setattr(builtins, "_omniauto_wechat_connector_contextvars", store)
+    existing = store.get(name)
+    if isinstance(existing, ContextVar):
+        return existing
+    created: ContextVar[bool] = ContextVar(name, default=default)
+    store[name] = created
+    return created
+
+
+_same_target_continuation_send_fast_path = _shared_context_var(
+    "same_target_continuation_send_fast_path",
+    default=False,
+)
+
+
 class WeChatConnectorError(RuntimeError):
     """Raised when the connector cannot complete a guarded operation."""
 
@@ -63,6 +84,25 @@ class RPALockTimeoutError(TimeoutError):
     def __init__(self, message: str, *, meta: dict[str, Any]) -> None:
         super().__init__(message)
         self.meta = dict(meta)
+
+
+def same_target_continuation_send_active() -> bool:
+    return bool(_same_target_continuation_send_fast_path.get(False))
+
+
+@contextmanager
+def same_target_continuation_send_context(enabled: bool = True):
+    token = _same_target_continuation_send_fast_path.set(bool(enabled))
+    try:
+        yield
+    finally:
+        _same_target_continuation_send_fast_path.reset(token)
+
+
+def same_target_continuation_send_env() -> dict[str, str]:
+    if not same_target_continuation_send_active():
+        return {}
+    return {"WECHAT_WIN32_OCR_CONTINUATION_SEND_FAST_PATH": "1"}
 
 
 @dataclass(frozen=True)
@@ -418,6 +458,114 @@ class WeChatConnector:
                 "rpa_lock": rpa_lock_timeout_payload(exc, action="messages", timeout_seconds=lock_timeout),
             }
 
+    def transcribe_voice_messages(
+        self,
+        target: str,
+        exact: bool = True,
+        *,
+        session_key: str = "",
+        max_attempts: int = 4,
+        artifact_dir: str | None = None,
+    ) -> dict[str, Any]:
+        """Convert visible WeChat voice bubbles before the normal message read."""
+        if not target:
+            return {"ok": False, "adapter": "win32_ocr", "state": "voice_transcribe_target_missing"}
+        try:
+            attempts_limit = max(1, min(int(max_attempts or 1), 8))
+        except (TypeError, ValueError):
+            attempts_limit = 4
+        args = ["voice-transcribe", "--target", target]
+        clean_session_key = str(session_key or "").strip()
+        if clean_session_key:
+            args.extend(["--session-key", clean_session_key])
+        if exact:
+            args.append("--exact")
+        if artifact_dir:
+            args.extend(["--artifact-dir", str(artifact_dir)])
+        lock_timeout = rpa_lock_timeout_seconds("voice_transcribe", default=45.0)
+        attempts: list[dict[str, Any]] = []
+        transcribed_messages: list[dict[str, Any]] = []
+        new_messages: list[dict[str, Any]] = []
+        try:
+            with wechat_rpa_lock("voice_transcribe", timeout_seconds=lock_timeout) as lock_meta:
+                for attempt_index in range(attempts_limit):
+                    primary = self.call_compat_sidecar(args, allow_failure=True)
+                    primary.setdefault("adapter", "win32_ocr")
+                    primary.setdefault("transport_priority", "rpa_first")
+                    attach_rpa_lock_meta(primary, lock_meta)
+                    click_target = primary.get("click_target") if isinstance(primary.get("click_target"), dict) else {}
+                    attempts.append(
+                        {
+                            "ok": bool(primary.get("ok")),
+                            "state": primary.get("state"),
+                            "click_source": click_target.get("source"),
+                            "new_messages_count": len(primary.get("new_messages") or []),
+                            "transcribed_messages_count": len(primary.get("transcribed_messages") or []),
+                        }
+                    )
+                    state = str(primary.get("state") or "")
+                    if state == "voice_transcribe_target_not_found":
+                        final_state = "voice_transcribe_completed" if transcribed_messages else "voice_transcribe_no_visible_voice"
+                        return attach_rpa_lock_meta(
+                            {
+                                "ok": True,
+                                "online": True,
+                                "adapter": "win32_ocr",
+                                "state": final_state,
+                                "target": target,
+                                "exact": exact,
+                                "attempts": attempts,
+                                "attempt_count": len(attempts),
+                                "transcribed_messages": transcribed_messages,
+                                "new_messages": new_messages,
+                                "transcribed_messages_count": len(transcribed_messages),
+                            },
+                            lock_meta,
+                        )
+                    if not primary.get("ok"):
+                        primary["attempts"] = attempts
+                        primary["attempt_count"] = len(attempts)
+                        return primary
+                    current_transcribed = [item for item in primary.get("transcribed_messages") or [] if isinstance(item, dict)]
+                    current_new = [item for item in primary.get("new_messages") or [] if isinstance(item, dict)]
+                    transcribed_messages.extend(current_transcribed)
+                    new_messages.extend(current_new)
+                    if not current_transcribed:
+                        break
+                    if attempt_index + 1 < attempts_limit:
+                        time.sleep(0.25)
+                return attach_rpa_lock_meta(
+                    {
+                        "ok": True,
+                        "online": True,
+                        "adapter": "win32_ocr",
+                        "state": "voice_transcribe_completed" if transcribed_messages else "voice_transcribe_no_new_text",
+                        "target": target,
+                        "exact": exact,
+                        "attempts": attempts,
+                        "attempt_count": len(attempts),
+                        "max_attempts": attempts_limit,
+                        "transcribed_messages": transcribed_messages,
+                        "new_messages": new_messages,
+                        "transcribed_messages_count": len(transcribed_messages),
+                    },
+                    lock_meta,
+                )
+        except TimeoutError as exc:
+            return {
+                "ok": False,
+                "online": bool(any_weixin_process()),
+                "adapter": "win32_ocr",
+                "state": "voice_transcribe_lock_timeout",
+                "target": target,
+                "exact": exact,
+                "attempts": attempts,
+                "attempt_count": len(attempts),
+                "error": repr(exc),
+                "transport_priority": "rpa_first",
+                "rpa_lock": rpa_lock_timeout_payload(exc, action="voice_transcribe", timeout_seconds=lock_timeout),
+            }
+
     def send_text(
         self,
         target: str,
@@ -462,7 +610,9 @@ class WeChatConnector:
         lock_timeout = rpa_lock_timeout_seconds("send", default=18.0)
         try:
             with wechat_rpa_lock("send", timeout_seconds=lock_timeout) as lock_meta:
-                primary = self.call_compat_sidecar(compat_args_list, allow_failure=True, env_overrides=send_rpa_env())
+                env_overrides = send_rpa_env()
+                env_overrides.update(same_target_continuation_send_env())
+                primary = self.call_compat_sidecar(compat_args_list, allow_failure=True, env_overrides=env_overrides)
                 if primary.get("ok"):
                     primary.setdefault("adapter", "win32_ocr")
                     primary.setdefault("transport_priority", "rpa_first")
@@ -1037,10 +1187,16 @@ def wechat_rpa_lock(action: str, *, timeout_seconds: float = 90.0, stale_seconds
         except Exception:
             current = {}
         if int(current.get("pid") or 0) == os.getpid():
-            try:
-                lock_path.unlink()
-            except FileNotFoundError:
-                pass
+            for attempt in range(6):
+                try:
+                    lock_path.unlink()
+                    break
+                except FileNotFoundError:
+                    break
+                except PermissionError:
+                    if attempt >= 5:
+                        break
+                    time.sleep(0.08)
 
 
 def should_break_wechat_rpa_lock(path: Path, *, stale_seconds: float) -> bool:
@@ -1404,6 +1560,17 @@ def _args_to_request(args: list[str]) -> dict[str, Any]:
                 request["restore_to_latest"] = True
             elif arg == "--no-restore-to-latest":
                 request["restore_to_latest"] = False
+            elif arg == "--artifact-dir" and i + 1 < len(args):
+                request["artifact_dir"] = args[i + 1]
+    elif args[0] == "voice-transcribe":
+        request["action"] = "voice-transcribe"
+        for i, arg in enumerate(args):
+            if arg == "--target" and i + 1 < len(args):
+                request["target"] = args[i + 1]
+            elif arg == "--session-key" and i + 1 < len(args):
+                request["session_key"] = args[i + 1]
+            elif arg == "--exact":
+                request["exact"] = True
             elif arg == "--artifact-dir" and i + 1 < len(args):
                 request["artifact_dir"] = args[i + 1]
     elif args[0] == "send":

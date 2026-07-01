@@ -61,7 +61,7 @@ function onlineClass(status: string) {
 }
 
 function runningMeta(status: string, currentTask?: string | null) {
-  if (currentTask || ["running", "busy", "executing"].includes(status)) {
+  if (currentTask || status === "running") {
     return { label: "忙碌", className: "unassigned" };
   }
   return { label: "空闲", className: "assigned" };
@@ -69,7 +69,7 @@ function runningMeta(status: string, currentTask?: string | null) {
 
 function bindingMeta(worker: WorkerItem) {
   if (worker.client_binding_state === "reset_required") return { label: "待重绑", className: "unassigned" };
-  if (worker.client_binding_state || worker.last_heartbeat_at) return { label: "已绑定", className: "assigned" };
+  if (worker.client_binding_state === "bound") return { label: "已绑定", className: "assigned" };
   return { label: "未绑定", className: "unassigned" };
 }
 
@@ -102,7 +102,7 @@ function CreateWorkerModal({
     event.preventDefault();
     const saved = await onSubmit({
       worker_name: workerName.trim(),
-      platform: "mac",
+      platform: "windows",
       enabled,
       device_name: null,
       remark: null,
@@ -427,7 +427,7 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
                           if (event.key === "Enter" || event.key === " ") selectRow(item);
                         }}
                       >
-                        <td className="lead-cell"><strong>{item.worker_name}</strong><small>{display(item.device_name, "Mac 客户端")}</small></td>
+                        <td className="lead-cell"><strong>{item.worker_name}</strong><small>{display(item.device_name, "Windows 客户端")}</small></td>
                         <td>{item.id}</td>
                         <td className="status-cell"><span className={`status ${statusClass(item.enabled)}`}>{item.enabled ? "启用" : "停用"}</span></td>
                         <td className="status-cell"><span className={`status ${binding.className}`}>{binding.label}</span></td>
