@@ -20,6 +20,7 @@ class Task(Base, TimestampMixin):
     sales_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("sales.id"), nullable=True)
     worker_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("workers.id"), nullable=True)
     original_task_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("tasks.id"), nullable=True)
+    reply_action_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     current_step: Mapped[str | None] = mapped_column(String(64), nullable=True)
     failure_step: Mapped[str | None] = mapped_column(String(64), nullable=True)
     failure_remark: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -51,6 +52,13 @@ Index("idx_tasks_result_code", Task.result_code)
 Index("idx_tasks_error_code", Task.error_code)
 Index("idx_tasks_block_code", Task.block_code)
 Index("idx_tasks_original_task_id", Task.original_task_id)
+Index(
+    "uq_tasks_reply_action_id",
+    Task.reply_action_id,
+    unique=True,
+    sqlite_where=Task.reply_action_id.is_not(None),
+    postgresql_where=Task.reply_action_id.is_not(None),
+)
 
 
 class TaskEvent(Base):

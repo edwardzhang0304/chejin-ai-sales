@@ -33,6 +33,9 @@ class ClientConfig:
     c2_session_scan_interval_seconds: float
     c2_message_read_interval_seconds: float
     c2_read_targets_limit: int
+    c2_low_priority_lock_timeout_seconds: float
+    c2_message_min_ocr_confidence: float
+    c2_message_failure_cooldown_seconds: float
 
     @classmethod
     def from_env(cls) -> "ClientConfig":
@@ -58,6 +61,9 @@ class ClientConfig:
             c2_session_scan_interval_seconds=float(os.environ.get("CHEJIN_C2_SESSION_SCAN_INTERVAL_SECONDS", "30")),
             c2_message_read_interval_seconds=float(os.environ.get("CHEJIN_C2_MESSAGE_READ_INTERVAL_SECONDS", "10")),
             c2_read_targets_limit=int(os.environ.get("CHEJIN_C2_READ_TARGETS_LIMIT", "20")),
+            c2_low_priority_lock_timeout_seconds=float(os.environ.get("CHEJIN_C2_LOW_PRIORITY_LOCK_TIMEOUT_SECONDS", "0.2")),
+            c2_message_min_ocr_confidence=float(os.environ.get("CHEJIN_C2_MESSAGE_MIN_OCR_CONFIDENCE", "0.45")),
+            c2_message_failure_cooldown_seconds=float(os.environ.get("CHEJIN_C2_MESSAGE_FAILURE_COOLDOWN_SECONDS", "45")),
         )
 
 

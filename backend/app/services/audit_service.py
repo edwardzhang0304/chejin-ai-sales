@@ -35,7 +35,6 @@ EVENT_NAMES: dict[str, str] = {
     "task_created": "创建任务",
     "task_unblocked": "解除任务阻塞",
     "task_cancelled": "取消任务",
-    "task_retried": "重新处理任务",
     "task_comment_added": "补充任务备注",
 }
 
@@ -92,8 +91,6 @@ def _summary_for(log: OperationLog, lead_name: str | None) -> str:
         return f"导出 {count} 条线索" if count is not None else "导出选中线索"
     if log.event_type == "task_unblocked":
         return "销售已绑定 Worker，任务恢复为 pending"
-    if log.event_type == "task_retried":
-        return f"创建新任务 {metadata.get('new_task_id')}" if metadata.get("new_task_id") else "重新处理任务"
     if lead_name:
         return f"操作对象：{lead_name}"
     return EVENT_NAMES.get(log.event_type, log.event_type)

@@ -27,10 +27,6 @@ class TaskCancelRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=1000)
 
 
-class TaskRetryRequest(BaseModel):
-    remark: str | None = Field(default=None, max_length=1000)
-
-
 class TaskClaimRequest(BaseModel):
     worker_id: str = Field(min_length=1, max_length=36)
     current_step: str | None = Field(default=None, max_length=64)

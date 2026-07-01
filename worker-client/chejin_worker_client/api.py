@@ -6,7 +6,7 @@ from typing import Any
 import requests
 
 from .config import CONFIG
-from .models import Binding, Task, WechatReadTarget, WorkerProfile
+from .models import Binding, ReplySendClaim, Task, WechatReadTarget, WorkerProfile
 
 
 class ApiError(RuntimeError):
@@ -91,6 +91,49 @@ class WorkerApiClient:
             json={"current_step": current_step, "remark": remark},
         )
         return Task.from_api(payload)
+
+    def claim_send(self, binding: Binding, task: Task) -> ReplySendClaim:
+        if not task.reply_action_id:
+            raise ApiError("REPLY_ACTION_NOT_FOUND", "chat_reply 任务缺少 reply_action_id", 409)
+        payload = self._request(
+            "POST",
+            f"/reply-actions/{task.reply_action_id}/claim-send",
+            binding=binding,
+            json={"task_id": task.id, "worker_id": binding.worker_id},
+        )
+        return ReplySendClaim.from_api(payload)
+
+    def sent_ack(
+        self,
+        binding: Binding,
+        claim: ReplySendClaim,
+        *,
+        send_result: str,
+        reply_text_hash: str | None,
+        sidecar_run_id: str | None = None,
+        evidence: dict[str, Any] | None = None,
+        error_code: str | None = None,
+        remark: str | None = None,
+        sent_at: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/reply-actions/{claim.reply_action_id}/sent-ack",
+            binding=binding,
+            json={
+                "send_token": claim.send_token,
+                "task_id": claim.task_id,
+                "worker_id": binding.worker_id,
+                "client_instance_id": binding.client_instance_id,
+                "send_result": send_result,
+                "sent_at": sent_at,
+                "reply_text_hash": reply_text_hash,
+                "sidecar_run_id": sidecar_run_id,
+                "evidence": evidence or {},
+                "error_code": error_code,
+                "remark": remark,
+            },
+        )
 
     def complete_invite_sent(self, binding: Binding, task_id: str) -> Task:
         payload = self._request("POST", f"/tasks/{task_id}/invite-sent", binding=binding, json={"remark": "已发送添加通讯录邀请"})

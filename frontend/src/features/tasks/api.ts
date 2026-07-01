@@ -4,14 +4,16 @@ import type { TaskCancelPayload, TaskCommentPayload, TaskDetail, TaskEvent, Task
 const blockReasonCodes = new Set(["SALES_WORKER_NOT_BOUND"]);
 
 function queryParams(query: TaskQuery) {
-  const reasonCode = query.reason_code === "all" ? "" : query.reason_code;
+  const exceptionCode = query.exception_code === "all" ? "" : query.exception_code;
+  const resultCode = query.result_code === "all" || query.result_code === "send_unknown" ? "" : query.result_code;
+  const resultErrorCode = query.result_code === "send_unknown" ? "SEND_RESULT_UNKNOWN" : "";
   return {
     keyword: query.keyword,
     task_type: query.task_type === "all" ? "" : query.task_type,
     status: query.status === "all" ? "" : query.status,
-    result_code: query.result_code === "all" ? "" : query.result_code,
-    error_code: reasonCode && !blockReasonCodes.has(reasonCode) ? reasonCode : "",
-    block_code: reasonCode && blockReasonCodes.has(reasonCode) ? reasonCode : "",
+    result_code: resultCode,
+    error_code: resultErrorCode || (exceptionCode && !blockReasonCodes.has(exceptionCode) ? exceptionCode : ""),
+    block_code: exceptionCode && blockReasonCodes.has(exceptionCode) ? exceptionCode : "",
     sales_id: query.sales_id === "all" ? "" : query.sales_id,
     worker_id: query.worker_id === "all" ? "" : query.worker_id,
     page: query.page,
@@ -33,10 +35,6 @@ export function listTaskEvents(taskId: string, signal?: AbortSignal) {
 
 export function cancelTask(taskId: string, payload: TaskCancelPayload) {
   return request<TaskDetail>(`/tasks/${taskId}/cancel`, { method: "POST", body: payload });
-}
-
-export function retryTask(taskId: string, remark?: string) {
-  return request<TaskDetail>(`/tasks/${taskId}/retry`, { method: "POST", body: { remark } });
 }
 
 export function addTaskComment(taskId: string, payload: TaskCommentPayload) {

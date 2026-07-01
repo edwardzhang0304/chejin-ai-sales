@@ -72,11 +72,11 @@ def test_scalar_geometry_helpers_match_sidecar() -> None:
 
 
 def test_window_geometry_helpers_match_sidecar() -> None:
-    for width in (320, 641, 981, 1280, 1920):
+    for width in (320, 641, 981, 1280, 1366, 1440, 1536, 1920, 2560, 3840):
         assert_true(geometry.session_split_x(width) == sidecar.session_split_x(width), f"split mismatch: {width}")
         assert_true(geometry.active_chat_title_left_x(width) == sidecar.active_chat_title_left_x(width), f"title left mismatch: {width}")
         assert_true(geometry.active_chat_title_right_x(width) == sidecar.active_chat_title_right_x(width), f"title right mismatch: {width}")
-    for height in (260, 720, 860, 1080, 1200):
+    for height in (260, 720, 768, 860, 864, 900, 1080, 1200, 1440, 2160):
         assert_true(geometry.chat_header_cutoff_y(height) == sidecar.chat_header_cutoff_y(height), f"header mismatch: {height}")
         assert_true(geometry.active_chat_title_cutoff_y(height) == sidecar.active_chat_title_cutoff_y(height), f"title cutoff mismatch: {height}")
         assert_true(geometry.active_chat_title_top_cutoff_y(height) == sidecar.active_chat_title_top_cutoff_y(height), f"title top cutoff mismatch: {height}")
@@ -126,6 +126,30 @@ def test_candidate_points_and_send_points_match_sidecar_with_seed() -> None:
         assert_true(extracted_points == sidecar_points, f"send points mismatch: {item}")
 
 
+def test_candidate_points_stay_inside_safe_regions_for_resolution_matrix() -> None:
+    matrix = [
+        {"left": 0, "top": 0, "width": 980, "height": 720},
+        {"left": 0, "top": 0, "width": 980, "height": 860},
+        {"left": 0, "top": 0, "width": 1225, "height": 816},
+        {"left": 0, "top": 0, "width": 1225, "height": 1032},
+        {"left": 0, "top": 0, "width": 1470, "height": 1032},
+        {"left": 0, "top": 0, "width": 1470, "height": 1290},
+        {"left": 0, "top": 0, "width": 2560, "height": 1440},
+    ]
+    for item in matrix:
+        split_x = geometry.session_split_x(int(item["width"]))
+        for point in geometry.input_click_candidate_points(item, min_points=14):
+            assert_true(0 <= point[0] <= item["width"] and 0 <= point[1] <= item["height"], f"input candidate outside window: {(item, point)}")
+            assert_true(point[0] > split_x, f"input candidate overlaps session list: {(item, point, split_x)}")
+            assert_true(point[1] >= int(item["height"] * 0.80), f"input candidate too high for input area: {(item, point)}")
+        for point in geometry.send_click_candidate_points(item, min_points=14):
+            assert_true(0 <= point[0] <= item["width"] and 0 <= point[1] <= item["height"], f"send candidate outside window: {(item, point)}")
+            assert_true(point[0] > split_x, f"send candidate overlaps session list: {(item, point, split_x)}")
+            assert_true(point[1] >= int(item["height"] * 0.80), f"send candidate too high for send area: {(item, point)}")
+        send_points = geometry.calculate_send_points(item)
+        assert_true(send_points.get("ok") is True, f"resolution matrix send point planning should be safe: {(item, send_points)}")
+
+
 def main() -> int:
     tests = [
         test_geometry_module_exports_expected_helpers,
@@ -133,6 +157,7 @@ def main() -> int:
         test_window_geometry_helpers_match_sidecar,
         test_rect_helpers_match_sidecar,
         test_candidate_points_and_send_points_match_sidecar_with_seed,
+        test_candidate_points_stay_inside_safe_regions_for_resolution_matrix,
     ]
     passed = 0
     for test in tests:

@@ -698,6 +698,10 @@
 .cw-bind-error {
   margin-top: -4px;
   color: var(--cw-danger);
+  max-height: 58px;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .cw-form-panel label {
