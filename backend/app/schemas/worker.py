@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, field_validator
 class WorkerCreate(BaseModel):
     worker_name: str = Field(min_length=1, max_length=64)
     device_name: str | None = Field(default=None, max_length=128)
-    platform: str = Field(default="mac", max_length=32)
+    platform: str = Field(default="windows", max_length=32)
     enabled: bool = True
     remark: str | None = Field(default=None, max_length=1000)
 

@@ -222,6 +222,15 @@ def load_c2_state(key: str) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def clear_c2_state(key: str) -> None:
+    clean_key = str(key or "").strip()
+    if not clean_key:
+        return
+    with db_connection() as conn:
+        conn.execute("DELETE FROM c2_runtime_state WHERE key = ?", (clean_key,))
+        conn.commit()
+
+
 def is_accept_schedule_active(schedule: dict[str, Any] | None, now: datetime | None = None) -> bool:
     schedule = _normalize_schedule(schedule)
     if not schedule["enabled"]:

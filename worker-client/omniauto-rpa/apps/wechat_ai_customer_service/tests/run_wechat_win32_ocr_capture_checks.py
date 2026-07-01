@@ -179,6 +179,17 @@ def test_capture_rect_candidates_preserve_scaled_order() -> None:
     assert_true(rects == expected, f"scaled rect candidates mismatch: {rects}")
 
 
+def test_capture_rect_candidates_cover_common_dpi_matrix() -> None:
+    cases = [
+        (1.25, [(100, 50, 1081, 910), (80, 40, 865, 728), (125, 62, 1351, 1138)]),
+        (1.5, [(100, 50, 1081, 910), (67, 33, 721, 607), (150, 75, 1622, 1365)]),
+        (2.0, [(100, 50, 1081, 910), (50, 25, 540, 455), (200, 100, 2162, 1820)]),
+    ]
+    for dpi_scale, expected in cases:
+        rects = capture.capture_rect_candidates((100, 50, 1081, 910), dpi_scale=dpi_scale)
+        assert_true(rects == expected, f"scaled rect candidates mismatch for dpi={dpi_scale}: {rects}")
+
+
 def test_collect_capture_candidates_matches_sidecar_order_with_fake_grabber() -> None:
     original_win32gui = sidecar.win32gui
     original_dpi = sidecar.window_dpi_scale
@@ -389,6 +400,7 @@ def main() -> int:
         test_capture_module_exports_expected_helpers,
         test_capture_rect_candidates_preserve_base_only_when_scale_is_normal,
         test_capture_rect_candidates_preserve_scaled_order,
+        test_capture_rect_candidates_cover_common_dpi_matrix,
         test_collect_capture_candidates_matches_sidecar_order_with_fake_grabber,
         test_capture_window_by_rect_wrapper_matches_sidecar_with_fake_dependencies,
         test_try_image_grab_matches_sidecar_for_small_rect_success_and_failure,

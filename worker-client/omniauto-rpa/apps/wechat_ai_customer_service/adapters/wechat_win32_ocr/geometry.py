@@ -271,7 +271,7 @@ def input_click_candidate_points(geometry: dict[str, Any], *, min_points: int = 
     left = max(split_x + 64, int(width * 0.55) + 1)
     right = min(width - 96, max(left + 120, int(width * 0.88)))
     top = max(int(height * 0.84), height - 126)
-    bottom = min(height - 76, max(top + 30, height - 86))
+    bottom = min(height - 96, max(top + 30, height - 106))
     return _spread_points_in_rect(left, top, right, bottom, min_points=min_points)
 
 

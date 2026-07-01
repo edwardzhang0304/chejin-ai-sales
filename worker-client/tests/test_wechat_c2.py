@@ -33,9 +33,12 @@ class WechatC2Test(unittest.TestCase):
         self.assertTrue(payload["sessions"][0]["unread_hint"])
 
     def test_message_payload_uses_stable_dedupe_key(self):
-        target = WechatReadTarget(conversation_id="conv-1", rpa_session_key="wx:rpa:v1:a", display_name="王先生")
+        target = WechatReadTarget(conversation_id="conv-1", rpa_session_key="wx:rpa:v1:a", display_name="王先生", remark_code="CJ8K2P")
         sidecar = {
             "ok": True,
+            "sidecar_run_id": "message-20260630-abc123ef",
+            "artifact_dir": "C:/artifacts/message-20260630-abc123ef",
+            "review_path": "C:/artifacts/message-20260630-abc123ef/wechat_messages_targeting_review.html",
             "screenshot_path": "C:/message.png",
             "messages": [
                 {"id": "win32_ocr:abc", "sender_role": "unknown", "type": "text", "content": "你好", "ocr_confidence": 0.91}
@@ -49,19 +52,88 @@ class WechatC2Test(unittest.TestCase):
         self.assertEqual(payload["messages"][0]["dedupe_key"], "conv-1:win32_ocr:abc")
         self.assertEqual(payload["messages"][0]["sender_role_hint"], "unknown")
         self.assertEqual(payload["messages"][0]["message_type"], "text")
+        self.assertEqual(payload["messages"][0]["raw_payload"]["dedupe_basis"]["remark_code"], "CJ8K2P")
+        self.assertEqual(payload["evidence"]["remark_code"], "CJ8K2P")
+        self.assertEqual(payload["sidecar_run_id"], "message-20260630-abc123ef")
+        self.assertEqual(payload["evidence"]["sidecar_run_id"], "message-20260630-abc123ef")
+        self.assertIn("message-20260630-abc123ef", payload["evidence"]["artifact_dir"])
+        self.assertIn("wechat_messages_targeting_review.html", payload["evidence"]["review_path"])
 
     def test_message_dedupe_key_ignores_rpa_session_key_changes(self):
-        message = {"id": "win32_ocr:abc", "sender_role": "customer", "type": "text", "content": "你好"}
+        message = {
+            "sender_role": "customer",
+            "type": "text",
+            "content": "你好",
+            "occurred_at": "2026-06-23T09:01:20+00:00",
+            "bubble_rect": {"left": 400, "top": 160, "right": 620, "bottom": 210},
+        }
         payload_a = build_message_ingest_payload(
-            WechatReadTarget(conversation_id="conv-1", rpa_session_key="wx:rpa:v1:a", display_name="CJTEST01 许聪"),
+            WechatReadTarget(conversation_id="conv-1", rpa_session_key="wx:rpa:v1:a", display_name="CJTEST01 许聪", remark_code="CJTEST01"),
             {"ok": True, "messages": [message]},
         )
         payload_b = build_message_ingest_payload(
-            WechatReadTarget(conversation_id="conv-1", rpa_session_key="wx:rpa:v1:b", display_name="CJTEST01许聪"),
+            WechatReadTarget(conversation_id="conv-1", rpa_session_key="wx:rpa:v1:b", display_name="CJTEST01许聪", remark_code="CJTEST01"),
             {"ok": True, "messages": [message]},
         )
 
         self.assertEqual(payload_a["messages"][0]["dedupe_key"], payload_b["messages"][0]["dedupe_key"])
+        self.assertEqual(payload_a["messages"][0]["raw_payload"]["dedupe_confidence"], "medium")
+        self.assertEqual(payload_a["messages"][0]["raw_payload"]["dedupe_basis"]["source"], "content_visual_bucket")
+
+    def test_image_message_dedupe_uses_image_hash(self):
+        target = WechatReadTarget(conversation_id="conv-1", rpa_session_key="wx:rpa:v1:a", display_name="CJTEST01 许聪", remark_code="CJTEST01")
+        payload = build_message_ingest_payload(
+            target,
+            {
+                "ok": True,
+                "messages": [
+                    {
+                        "type": "image",
+                        "sender_role": "customer",
+                        "image_local_path": "C:/tmp/image.png",
+                        "image_hash": "image-hash-001",
+                        "occurred_at": "2026-06-23T09:01:20+00:00",
+                    }
+                ],
+            },
+        )
+
+        self.assertTrue(payload["messages"][0]["dedupe_key"].startswith("conv-1:"))
+        self.assertEqual(payload["messages"][0]["raw_payload"]["dedupe_confidence"], "medium")
+        self.assertEqual(payload["messages"][0]["raw_payload"]["dedupe_basis"]["source"], "image_hash")
+
+    def test_voice_message_without_text_is_not_dropped(self):
+        target = WechatReadTarget(conversation_id="conv-1", rpa_session_key="wx:rpa:v1:a", display_name="CJTEST01 许聪", remark_code="CJTEST01")
+        payload = build_message_ingest_payload(
+            target,
+            {
+                "ok": True,
+                "messages": [
+                    {
+                        "type": "voice",
+                        "sender_role": "customer",
+                        "voice_duration": 3,
+                        "bubble_rect": {"left": 410, "top": 180, "right": 520, "bottom": 220},
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(len(payload["messages"]), 1)
+        self.assertEqual(payload["messages"][0]["sender_role_hint"], "customer")
+        self.assertEqual(payload["messages"][0]["message_type"], "voice")
+        self.assertIsNone(payload["messages"][0]["content"])
+        self.assertEqual(payload["messages"][0]["raw_payload"]["dedupe_confidence"], "low")
+
+    def test_raw_payload_dedupe_is_marked_low_confidence(self):
+        target = WechatReadTarget(conversation_id="conv-1", rpa_session_key="wx:rpa:v1:a", display_name="CJTEST01 许聪", remark_code="CJTEST01")
+        payload = build_message_ingest_payload(
+            target,
+            {"ok": True, "messages": [{"type": "system", "image_local_path": "C:/tmp/missing.png"}]},
+        )
+
+        self.assertEqual(payload["messages"][0]["raw_payload"]["dedupe_confidence"], "low")
+        self.assertEqual(payload["messages"][0]["raw_payload"]["dedupe_basis"]["source"], "raw_payload_hash")
 
     def test_extract_remark_codes_supports_manual_suffix(self):
         self.assertEqual(extract_remark_codes("CJ8K2P 王先生想看轩逸"), ["CJ8K2P"])

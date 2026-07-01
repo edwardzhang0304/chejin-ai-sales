@@ -67,9 +67,17 @@ class RpaBridge:
             }
         artifact_dir = CONFIG.app_dir / "artifacts" / "wechat_c2" / "sessions" / time.strftime("%Y%m%d_%H%M%S")
         artifact_dir.mkdir(parents=True, exist_ok=True)
-        return self._call_omniauto(["sessions", "--artifact-dir", str(artifact_dir)], timeout=120)
+        return self._call_omniauto(["sessions", "--artifact-dir", str(artifact_dir)], timeout=60)
 
-    def get_messages(self, *, display_name: str, rpa_session_key: str) -> dict[str, Any]:
+    def get_messages(
+        self,
+        *,
+        display_name: str,
+        rpa_session_key: str,
+        remark_code: str = "",
+        target_mode: str = "",
+        max_duration_seconds: int = 12,
+    ) -> dict[str, Any]:
         if self.mode == "mock":
             return {
                 "ok": True,
@@ -77,12 +85,77 @@ class RpaBridge:
                 "adapter": "mock",
                 "state": "messages_mock",
                 "sidecar_run_id": f"mock-message-{uuid.uuid4()}",
+                "target_mode": target_mode or "visible",
+                "remark_code": remark_code,
                 "messages": [],
             }
-        artifact_dir = CONFIG.app_dir / "artifacts" / "wechat_c2" / "messages" / time.strftime("%Y%m%d_%H%M%S")
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        sidecar_run_id = f"message-{timestamp}-{uuid.uuid4().hex[:8]}"
+        artifact_dir = CONFIG.app_dir / "artifacts" / "wechat_c2" / "messages" / f"{timestamp}_{sidecar_run_id}"
         artifact_dir.mkdir(parents=True, exist_ok=True)
-        args = ["messages", "--target", display_name, "--session-key", rpa_session_key, "--history-load-times", "0", "--artifact-dir", str(artifact_dir)]
-        return self._call_omniauto(args, timeout=120)
+        normalized_target_mode = str(target_mode or "").strip()
+        effective_max_duration_seconds = max(1, int(max_duration_seconds))
+        if normalized_target_mode == "search_by_remark_code":
+            # Windows OCR on full WeChat screenshots can take 9-13s per pass on
+            # test machines.  Search-by-remark-code needs several passes before
+            # messages are read, so the default visible-read budget is too short.
+            effective_max_duration_seconds = max(effective_max_duration_seconds, 75)
+        args = [
+            "messages",
+            "--sidecar-run-id",
+            sidecar_run_id,
+            "--target",
+            display_name,
+            "--history-load-times",
+            "0",
+            "--max-scroll-steps",
+            "0",
+            "--max-duration-seconds",
+            str(effective_max_duration_seconds),
+            "--max-snapshots",
+            "1",
+            "--artifact-dir",
+            str(artifact_dir),
+        ]
+        if str(rpa_session_key or "").strip():
+            args[3:3] = ["--session-key", rpa_session_key]
+        if str(remark_code or "").strip():
+            args[3:3] = ["--remark-code", remark_code]
+        if normalized_target_mode:
+            args[3:3] = ["--target-mode", normalized_target_mode]
+        sidecar_timeout = max(30, min(240, effective_max_duration_seconds + 75))
+        payload = self._call_omniauto(args, timeout=sidecar_timeout)
+        payload.setdefault("sidecar_run_id", sidecar_run_id)
+        payload.setdefault("artifact_dir", str(artifact_dir))
+        return payload
+
+    def send_reply(self, *, target: str, rpa_session_key: str, text: str, task_id: str) -> dict[str, Any]:
+        if self.mode == "mock":
+            return {
+                "ok": True,
+                "online": True,
+                "adapter": "mock",
+                "state": "send_mock",
+                "sidecar_run_id": f"mock-send-{uuid.uuid4()}",
+                "target": target,
+                "send_result": {"ok": True, "method": "mock"},
+            }
+        artifact_dir = CONFIG.app_dir / "artifacts" / "tasks" / task_id / "chat_reply" / time.strftime("%Y%m%d_%H%M%S")
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        return self._call_omniauto(
+            [
+                "send",
+                "--target",
+                target,
+                "--session-key",
+                rpa_session_key,
+                "--text",
+                text,
+                "--artifact-dir",
+                str(artifact_dir),
+            ],
+            timeout=180,
+        )
 
     def run_add_friend(self, task: Task, emit_step: Callable[[RpaStep], None]) -> RpaResult:
         if self.mode == "mock":

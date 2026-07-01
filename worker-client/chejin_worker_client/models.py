@@ -33,6 +33,7 @@ class WorkerProfile:
     running_status: str | None = None
     rpa_component_status: str | None = None
     wechat_status: str | None = None
+    client_binding_state: str | None = None
     current_task: str | None = None
     current_step: str | None = None
     local_lock_summary: dict[str, Any] = field(default_factory=dict)
@@ -46,10 +47,11 @@ class WorkerProfile:
             worker_name=str(payload.get("worker_name") or "车金 Worker"),
             run_status=str(payload.get("run_status") or "paused"),  # type: ignore[arg-type]
             online_status=payload.get("online_status"),
-            running_status=payload.get("running_status") or payload.get("runtime_status"),
+            running_status=payload.get("running_status"),
             rpa_component_status=payload.get("rpa_component_status"),
             wechat_status=payload.get("wechat_status"),
-            current_task=payload.get("current_task") or payload.get("current_task_id"),
+            client_binding_state=payload.get("client_binding_state"),
+            current_task=payload.get("current_task"),
             current_step=payload.get("current_step"),
             local_lock_summary=payload.get("local_lock_summary") if isinstance(payload.get("local_lock_summary"), dict) else {},
             last_heartbeat_at=payload.get("last_heartbeat_at"),
@@ -74,6 +76,7 @@ class Task:
     remark_code_valid: bool | None = None
     result_code: str | None = None
     error_code: str | None = None
+    reply_action_id: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -115,6 +118,34 @@ class Task:
             remark_code_valid=payload.get("remark_code_valid"),
             result_code=payload.get("result_code"),
             error_code=payload.get("error_code"),
+            reply_action_id=payload.get("reply_action_id"),
+            raw=payload,
+        )
+
+
+@dataclass
+class ReplySendClaim:
+    reply_action_id: str
+    task_id: str
+    send_token: str
+    reply_text: str
+    reply_text_hash: str | None
+    conversation_id: str
+    rpa_session_key: str
+    expire_at: str | None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_api(cls, payload: dict[str, Any]) -> "ReplySendClaim":
+        return cls(
+            reply_action_id=str(payload.get("reply_action_id") or ""),
+            task_id=str(payload.get("task_id") or ""),
+            send_token=str(payload.get("send_token") or ""),
+            reply_text=str(payload.get("reply_text") or ""),
+            reply_text_hash=payload.get("reply_text_hash"),
+            conversation_id=str(payload.get("conversation_id") or ""),
+            rpa_session_key=str(payload.get("rpa_session_key") or ""),
+            expire_at=payload.get("expire_at"),
             raw=payload,
         )
 
@@ -143,6 +174,9 @@ class WechatReadTarget:
     conversation_id: str
     rpa_session_key: str
     display_name: str
+    remark_code: str | None = None
+    row_fingerprint: dict[str, Any] = field(default_factory=dict)
+    ocr_confidence: float | None = None
     lead_id: str | None = None
     sales_id: str | None = None
     read_reason: str | None = None
@@ -150,10 +184,20 @@ class WechatReadTarget:
 
     @classmethod
     def from_api(cls, payload: dict[str, Any]) -> "WechatReadTarget":
+        raw_confidence = payload.get("ocr_confidence")
+        try:
+            ocr_confidence = float(raw_confidence) if raw_confidence is not None else None
+        except (TypeError, ValueError):
+            ocr_confidence = None
+        raw_fingerprint = payload.get("row_fingerprint")
+        row_fingerprint = raw_fingerprint if isinstance(raw_fingerprint, dict) else {"value": str(raw_fingerprint or "")} if raw_fingerprint else {}
         return cls(
             conversation_id=str(payload.get("conversation_id") or ""),
             rpa_session_key=str(payload.get("rpa_session_key") or ""),
             display_name=str(payload.get("display_name") or ""),
+            remark_code=str(payload.get("remark_code") or "").strip() or None,
+            row_fingerprint=row_fingerprint,
+            ocr_confidence=ocr_confidence,
             lead_id=payload.get("lead_id"),
             sales_id=payload.get("sales_id"),
             read_reason=payload.get("read_reason"),

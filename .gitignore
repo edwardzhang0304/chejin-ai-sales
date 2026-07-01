@@ -33,3 +33,20 @@ yxk_chat_by_sales/
 
 # Generated render temp files
 contracts/rendered_contract/
+
+# Local delivery/build artifacts
+deliverables/*.zip
+deliverables/*.sha256
+deliverables/*.manifest.json
+deliverables/test_runs/
+deliverables/AI智能客服售前跟进系统_会话状态机图_v0.6.png
+
+# Local cloned upstream repositories used for review/sync only
+omniauto/
+
+# Worker local runtimes and packaged app caches
+worker-client/.visual-venv312/
+worker-client/.visual-venv/
+worker-client/omniauto-rpa/runtime/
+worker-client/omniauto-rpa/apps/wechat_ai_customer_service/runtime/
+worker-client/omniauto-rpa/apps/wechat_ai_customer_service/deploy/recorder_seed/**/*.zip
