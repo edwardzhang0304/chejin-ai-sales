@@ -63,9 +63,10 @@ except Exception as exc:  # pragma: no cover - allows pure parser tests without 
         MOUSEEVENTF_RIGHTUP = 0x0010
         MOUSEEVENTF_WHEEL = 0x0800
         WM_MOUSEWHEEL = 0x020A
+        SW_MINIMIZE = 6
 
     win32con = _Win32ConFallback()  # type: ignore[assignment]
-from PIL import Image, ImageDraw, ImageFont, ImageGrab, ImageStat
+from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageGrab, ImageStat
 
 from apps.wechat_ai_customer_service.adapters.add_friend_actions import (
     ACTION_COMPOSITE_INPUT,
@@ -174,13 +175,9 @@ except Exception as exc:  # pragma: no cover - OCR is only needed for live sidec
     _OCR_IMPORT_ERROR = repr(exc)
 
 
-SEARCH_BOX_REL = (110, 70)
-SESSION_CLICK_X = 260
-CHAT_HEADER_MAX_Y = 90
-CHAT_INPUT_BOTTOM_OFFSET = 52
 DEFAULT_MESSAGE_BOTTOM_EXCLUDE_PX = 95
 OCR_MIN_CONFIDENCE = 0.45
-SIDECAR_BASE_ACTIONS = ("status", "capabilities", "sessions", "messages", "send", "recover-render", "voice-transcribe")
+SIDECAR_BASE_ACTIONS = ("status", "capabilities", "sessions", "open-chat", "messages", "send", "recover-render", "voice-transcribe")
 SIDECAR_ACTION_CHOICES = (*SIDECAR_BASE_ACTIONS, *ADD_FRIEND_ROUTES)
 SEND_GUARD_PATH = PROJECT_ROOT / "runtime" / "wechat_win32_ocr_send_guard.json"
 UI_ACTION_GUARD_PATH = PROJECT_ROOT / "runtime" / "wechat_win32_ocr_ui_action_guard.json"
@@ -218,6 +215,11 @@ DEFAULT_UI_ACTION_NEAR_POINT_RADIUS_PX = 7
 DEFAULT_UI_ACTION_NEAR_POINT_GAP_MS = 720
 DEFAULT_UI_ACTION_NEAR_POINT_SOFT_LIMIT = 2
 VOICE_TRANSCRIBE_TEXT_TOKENS = ("转文字", "语音转文字", "转为文字", "转写")
+VOICE_TRANSCRIBE_COLLAPSE_TEXT_TOKENS = ("收起文字", "收起")
+CHAT_INFO_PANEL_TEXT_TOKENS = ("查找聊天内容", "消息免打扰", "置顶聊天", "清空聊天记录")
+TEXT_MESSAGE_CONTEXT_MENU_TOKENS = ("复制", "放大阅读", "翻译", "搜一搜", "转发")
+AVATAR_CONTEXT_MENU_TOKENS = ("拍一拍",)
+MESSAGE_OBSERVATION_SENDER_ROLES = frozenset({"customer", "self", "system", "unknown"})
 DEFAULT_RENDER_RECOVERY_MIN_INTERVAL_SECONDS = 180
 DEFAULT_QUICK_LOGIN_AUTO_ENTER = False
 DEFAULT_TARGET_READY_MAX_ATTEMPTS = 1
@@ -461,6 +463,7 @@ def main() -> int:
     parser.add_argument("--target", help="Chat name for messages/send.")
     parser.add_argument("--session-key", default="", help="Internal session key for row-level RPA targeting.")
     parser.add_argument("--target-mode", default="", help="Targeting mode for messages, e.g. search_by_remark_code.")
+    parser.add_argument("--visible-session-candidate", default="", help="JSON row candidate from the same Worker visible-session scan.")
     parser.add_argument("--text", help="Message text for send.")
     parser.add_argument("--phone", default="", help="Phone number for add-friend.")
     parser.add_argument("--wechat", default="", help="WeChat ID for add-friend fallback.")
@@ -502,6 +505,257 @@ def main() -> int:
     # Keep it ASCII-safe so Chinese OCR/window text round-trips after json.loads.
     print(json.dumps(payload, ensure_ascii=True, indent=2))
     return 0 if payload.get("ok") else 1
+
+
+def locate_chat_target_for_c2(
+    hwnd: int,
+    *,
+    target: str,
+    session_key: str,
+    remark_code: str,
+    target_mode: str,
+    visible_session_candidate: dict[str, Any] | None = None,
+    exact: bool,
+    artifact_dir: str | None,
+    sidecar_run_id: str,
+    failure_state: str,
+    failure_error_code: str,
+) -> dict[str, Any]:
+    clean_target = str(target or "").strip()
+    clean_session_key = str(session_key or "").strip()
+    clean_remark_code = str(remark_code or "").strip()
+    normalized_mode = str(target_mode or "").strip().lower() or "visible"
+    visible_candidate = visible_session_candidate if isinstance(visible_session_candidate, dict) else {}
+    targeting: dict[str, Any] = {}
+    if visible_candidate.get("_parse_error"):
+        targeting["visible_session_candidate_parse_error"] = visible_candidate.get("_parse_error")
+        visible_candidate = {}
+    opened = False
+
+    def finish(
+        *,
+        ok: bool,
+        validation: dict[str, Any] | None = None,
+        state: str | None = None,
+        error_code: str | None = None,
+        error: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "ok": bool(ok),
+            "online": bool((validation or {}).get("online", True)),
+            "state": "chat_target_confirmed" if ok else (state or failure_state),
+            "target": clean_target,
+            "remark_code": clean_remark_code,
+            "target_mode": normalized_mode,
+            "opened": bool(opened),
+            "guard": validation or {},
+            "targeting": targeting,
+            "step_events": targeting.get("step_events") if isinstance(targeting, dict) else None,
+            "review_path": targeting.get("review_path") if isinstance(targeting, dict) else None,
+            "evidence_path": targeting.get("evidence_path") if isinstance(targeting, dict) else None,
+            "open_chat_timing": dict(_LAST_OPEN_CHAT_TIMING),
+        }
+        if not ok:
+            payload["error_code"] = error_code or failure_error_code
+            payload["error"] = error or "The target chat was not confirmed."
+        if artifact_dir and not payload.get("review_path"):
+            try:
+                review_payload = {
+                    "ok": bool(ok),
+                    "reason": payload.get("state"),
+                    "partial": False,
+                    "sidecar_run_id": sidecar_run_id,
+                    "target_mode": normalized_mode,
+                    "target": clean_target,
+                    "remark_code": clean_remark_code,
+                    "targeting": targeting,
+                    "guard": validation or {},
+                    "open_chat_timing": dict(_LAST_OPEN_CHAT_TIMING),
+                }
+                review_path = write_messages_targeting_review(Path(artifact_dir), review_payload)
+                payload["review_path"] = review_path
+                payload["evidence_path"] = review_path
+            except Exception as exc:
+                payload["review_error"] = repr(exc)
+        return payload
+
+    if not clean_target and not clean_remark_code:
+        return finish(
+            ok=False,
+            state=failure_state,
+            error_code="C2_TARGET_LOCATOR_MISSING",
+            error="Missing display_name and remark_code for target confirmation.",
+        )
+
+    if normalized_mode == "search_by_remark_code":
+        targeting = open_chat_by_remark_code_search(
+            hwnd,
+            target=clean_target or clean_remark_code,
+            remark_code=clean_remark_code,
+            artifact_dir=artifact_dir,
+            sidecar_run_id=sidecar_run_id,
+        )
+        opened = bool(targeting.get("ok"))
+        validation = targeting.get("validation") if isinstance(targeting.get("validation"), dict) else None
+        if validation is None and opened:
+            validation = validate_active_send_target(
+                hwnd,
+                clean_remark_code or clean_target,
+                exact=False,
+                artifact_dir=artifact_dir,
+            )
+        if not opened or not (validation or {}).get("ok"):
+            return finish(
+                ok=False,
+                validation=validation,
+                state=failure_state,
+                error_code=str(targeting.get("error_code") or failure_error_code),
+                error=str(targeting.get("reason") or "Search result did not confirm the target chat."),
+            )
+        return finish(ok=True, validation=validation)
+
+    if normalized_mode == "current":
+        validation_target = clean_remark_code or clean_target
+        validation = validate_active_send_target(
+            hwnd,
+            validation_target,
+            exact=False if clean_remark_code else bool(exact),
+            artifact_dir=artifact_dir,
+        )
+        if not validation.get("ok"):
+            return finish(
+                ok=False,
+                validation=validation,
+                state=failure_state,
+                error_code=failure_error_code,
+                error="Current chat is not the requested target.",
+            )
+        return finish(ok=True, validation=validation)
+
+    validation_target = clean_remark_code or clean_target
+    validation_exact = False if clean_remark_code else bool(exact)
+    # open_chat starts from a fresh screenshot and checks both the active chat
+    # and the visible session list. A separate full OCR here duplicates the
+    # same evidence without making a later click safer.
+    targeting["visible_precheck"] = {
+        "skipped": True,
+        "reason": "merged_into_open_chat_fresh_rescan",
+    }
+    if normalized_mode == "visible" and visible_candidate:
+        # Worker observations may be several screenshots old and window
+        # normalization can move every row. Keep them as semantic hints only;
+        # open_chat captures a fresh frame and reacquires the session_key before
+        # any physical click.
+        targeting["visible_session_candidate_seed"] = {
+            "name": visible_candidate.get("name") or clean_target or clean_remark_code,
+            "session_key": visible_candidate.get("session_key") or clean_session_key,
+            "row_fingerprint": visible_candidate.get("row_fingerprint"),
+            "source": visible_candidate.get("source") or "worker_visible_scan",
+        }
+        targeting["visible_session_candidate_activation"] = {
+            "ok": False,
+            "skipped": True,
+            "reason": "fresh_semantic_reacquire_required",
+        }
+        targeting["visible_session_candidate_fallback"] = "open_chat_fresh_rescan"
+    open_chat_started_at = time.monotonic()
+    opened = open_chat(
+        hwnd,
+        clean_target or clean_remark_code,
+        exact=bool(exact),
+        artifact_dir=artifact_dir,
+        session_key=clean_session_key,
+        semantic_target=clean_remark_code,
+    )
+    validation = None
+    reused_session_key = str(_LAST_RPA_ACTION_STATE.get("active_session_key") or clean_session_key).strip()
+    if opened:
+        validation = consume_recent_target_switch_validation(
+            hwnd=hwnd,
+            target=validation_target,
+            exact=validation_exact,
+            session_key=reused_session_key,
+            minimum_cached_at=open_chat_started_at,
+            require_session_key_match=bool(clean_session_key),
+        )
+    targeting["visible_postcheck"] = {
+        "reused": isinstance(validation, dict),
+        "reason": (
+            "strict_open_chat_switch_validation_reused"
+            if isinstance(validation, dict)
+            else "strict_open_chat_switch_validation_unavailable"
+        ),
+        "session_key": reused_session_key,
+    }
+    if validation is None:
+        if opened:
+            humanized_action_sleep(260, 420)
+        validation = validate_active_send_target(
+            hwnd,
+            validation_target,
+            exact=validation_exact,
+            artifact_dir=artifact_dir,
+        )
+        targeting["visible_postcheck"]["fallback_full_ocr"] = True
+    else:
+        targeting["visible_postcheck"]["fallback_full_ocr"] = False
+    if not opened or not validation.get("ok"):
+        open_reason = str(_LAST_OPEN_CHAT_TIMING.get("reason") or "")
+        ambiguous_visible_target = open_reason in {
+            "active_visible_ambiguous",
+            "semantic_candidate_ambiguous",
+            "session_key_drift_semantic_candidate_ambiguous",
+        }
+        return finish(
+            ok=False,
+            validation=validation,
+            state=failure_state,
+            error_code="C2_VISIBLE_TARGET_AMBIGUOUS" if ambiguous_visible_target else failure_error_code,
+            error=(
+                "Visible session target was ambiguous; stop before search fallback."
+                if ambiguous_visible_target
+                else "Visible session target was not confirmed."
+            ),
+        )
+    return finish(ok=True, validation=validation)
+
+
+def parse_visible_session_candidate_arg(raw: Any) -> dict[str, Any] | None:
+    clean = str(raw or "").strip()
+    if not clean:
+        return None
+    try:
+        parsed = json.loads(clean)
+    except json.JSONDecodeError as exc:
+        return {"_parse_error": f"invalid_json: {exc}", "_raw": clean[:1000]}
+    if not isinstance(parsed, dict):
+        return {"_parse_error": f"candidate_must_be_object: {type(parsed).__name__}", "_raw": clean[:1000]}
+    return parsed
+
+
+def ensure_session_candidate_click_geometry(candidate: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(candidate, dict):
+        return {}
+    enriched = dict(candidate)
+    if enriched.get("center_y") is not None:
+        enriched.setdefault("click_geometry_source", "session_fields")
+        return enriched
+    fingerprint = enriched.get("row_fingerprint")
+    if isinstance(fingerprint, dict):
+        bbox = fingerprint.get("title_bbox")
+        if isinstance(bbox, list) and len(bbox) >= 4:
+            try:
+                left, top, right, bottom = [float(value) for value in bbox[:4]]
+                enriched.setdefault("left", left)
+                enriched.setdefault("right", right)
+                enriched.setdefault("top", top)
+                enriched.setdefault("bottom", bottom)
+                enriched["center_y"] = (top + bottom) / 2.0
+                enriched["click_geometry_source"] = "row_fingerprint.title_bbox"
+                return enriched
+            except (TypeError, ValueError):
+                pass
+    return enriched
 
 
 def run_action(args: argparse.Namespace) -> dict[str, Any]:
@@ -589,11 +843,28 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
         probe["window_normalization"] = normalized_window
         if normalized_window.get("applied"):
             humanized_action_sleep(210, 330)
-        quick_login = ensure_quick_login_if_available(
-            hwnd,
-            artifact_dir=args.artifact_dir,
-            auto_enter=env_flag("WECHAT_WIN32_OCR_QUICK_LOGIN_AUTO_ENTER", default=DEFAULT_QUICK_LOGIN_AUTO_ENTER),
+        quick_login_auto_enter = env_flag(
+            "WECHAT_WIN32_OCR_QUICK_LOGIN_AUTO_ENTER",
+            default=DEFAULT_QUICK_LOGIN_AUTO_ENTER,
         )
+        first_business_frame_has_full_health_gate = action == "open-chat" or (
+            action in {"messages", "voice-transcribe"} and bool(getattr(args, "target", ""))
+        )
+        if first_business_frame_has_full_health_gate and not quick_login_auto_enter:
+            # These actions all begin with a fresh full-frame OCR gate before
+            # any click. Reuse that business frame for login/blank/shell checks
+            # instead of taking an unchanged quick-login frame first.
+            quick_login = {
+                "attempted": False,
+                "detected": False,
+                "reason": "merged_into_first_business_frame",
+            }
+        else:
+            quick_login = ensure_quick_login_if_available(
+                hwnd,
+                artifact_dir=args.artifact_dir,
+                auto_enter=quick_login_auto_enter,
+            )
         probe["quick_login"] = quick_login
         if quick_login.get("attempted"):
             humanized_action_sleep(380, 560)
@@ -619,94 +890,94 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
         return recover_blank_render_payload(hwnd, probe, artifact_dir=args.artifact_dir)
     if action == "sessions":
         return sessions_payload(hwnd, probe, artifact_dir=args.artifact_dir)
+    if action == "open-chat":
+        clean_sidecar_run_id = str(getattr(args, "sidecar_run_id", "") or "").strip()
+        if not args.target:
+            return {
+                "ok": False,
+                "online": True,
+                "adapter": "win32_ocr",
+                "state": "target_not_confirmed",
+                "sidecar_run_id": clean_sidecar_run_id,
+                "error_code": "C2_TARGET_LOCATOR_MISSING",
+                "window_probe": probe,
+                "target_mode": str(args.target_mode or "").strip().lower() or "visible",
+                "remark_code": str(args.remark_code or "").strip(),
+                "error": "open-chat requires target.",
+            }
+        locate = locate_chat_target_for_c2(
+            hwnd,
+            target=args.target,
+            session_key=str(args.session_key or ""),
+            remark_code=str(args.remark_code or ""),
+            target_mode=str(args.target_mode or "").strip().lower(),
+            visible_session_candidate=parse_visible_session_candidate_arg(getattr(args, "visible_session_candidate", "")),
+            exact=bool(args.exact),
+            artifact_dir=args.artifact_dir,
+            sidecar_run_id=clean_sidecar_run_id,
+            failure_state="target_not_confirmed",
+            failure_error_code="TARGET_NOT_CONFIRMED",
+        )
+        return {
+            **locate,
+            "adapter": "win32_ocr",
+            "state": "chat_target_confirmed" if locate.get("ok") else str(locate.get("state") or "target_not_confirmed"),
+            "sidecar_run_id": clean_sidecar_run_id,
+            "window_probe": probe,
+        }
     if action == "messages":
         clean_sidecar_run_id = str(getattr(args, "sidecar_run_id", "") or "").strip()
-        if args.target:
-            targeting: dict[str, Any] = {}
-            clean_session_key = str(args.session_key or "").strip()
-            clean_remark_code = str(args.remark_code or "").strip()
-            target_mode = str(args.target_mode or "").strip().lower()
-            opened = False
-            if target_mode == "search_by_remark_code":
-                targeting = open_chat_by_remark_code_search(
-                    hwnd,
-                    target=args.target,
-                    remark_code=clean_remark_code,
-                    artifact_dir=args.artifact_dir,
-                    sidecar_run_id=clean_sidecar_run_id,
-                )
-                opened = bool(targeting.get("ok"))
-                validation = targeting.get("validation") if isinstance(targeting.get("validation"), dict) else {
-                    "ok": bool(opened),
-                    "reason": str(targeting.get("reason") or ""),
-                }
-            else:
-                validation = (
-                    {"ok": False, "reason": "session_key_requires_row_activation"}
-                    if clean_session_key
-                    else validate_active_send_target(
-                        hwnd,
-                        args.target,
-                        exact=bool(args.exact),
-                        artifact_dir=args.artifact_dir,
-                    )
-                )
-                if not validation.get("ok"):
-                    opened = open_chat(
-                        hwnd,
-                        args.target,
-                        exact=bool(args.exact),
-                        artifact_dir=args.artifact_dir,
-                        session_key=clean_session_key,
-                    )
-                    humanized_action_sleep(380, 620)
-                    validation = validate_active_send_target(
-                        hwnd,
-                        args.target,
-                        exact=bool(args.exact),
-                        artifact_dir=args.artifact_dir,
-                    )
-                if validation.get("ok") and clean_remark_code:
-                    remark_validation = validate_active_send_target(
-                        hwnd,
-                        clean_remark_code,
-                        exact=False,
-                        artifact_dir=args.artifact_dir,
-                    )
-                    targeting = {
-                        "ok": bool(remark_validation.get("ok")),
-                        "target_mode": "visible",
-                        "remark_code": clean_remark_code,
-                        "display_name_validation": validation,
-                        "validation": remark_validation,
-                    }
-                    validation = remark_validation
-            if not validation.get("ok"):
-                targeting_review_path = targeting.get("review_path") if isinstance(targeting, dict) else None
-                targeting_evidence_path = targeting.get("evidence_path") if isinstance(targeting, dict) else None
+        c2_targeted_action = bool(args.target and (clean_sidecar_run_id or str(args.remark_code or "").strip()))
+        target_mode = str(args.target_mode or "").strip().lower() or "visible"
+        single_frame_confirmation = bool(args.target and target_mode == "current")
+        targeting: dict[str, Any] = {}
+        locate: dict[str, Any] = {}
+        if args.target and not single_frame_confirmation:
+            locate = locate_chat_target_for_c2(
+                hwnd,
+                target=args.target,
+                session_key=str(args.session_key or ""),
+                remark_code=str(args.remark_code or ""),
+                target_mode=str(args.target_mode or "").strip().lower(),
+                exact=bool(args.exact),
+                artifact_dir=args.artifact_dir,
+                sidecar_run_id=clean_sidecar_run_id,
+                failure_state="target_not_confirmed_for_messages",
+                failure_error_code="TARGET_NOT_CONFIRMED_FOR_MESSAGES",
+            )
+            targeting = locate.get("targeting") if isinstance(locate.get("targeting"), dict) else {}
+            if not locate.get("ok"):
                 return {
                     "ok": False,
-                    "online": bool(validation.get("online", True)),
+                    "online": bool(locate.get("online", True)),
                     "adapter": "win32_ocr",
                     "state": "target_not_confirmed_for_messages",
                     "sidecar_run_id": clean_sidecar_run_id,
-                    "error_code": str(targeting.get("error_code") or validation.get("error_code") or "TARGET_NOT_CONFIRMED_FOR_MESSAGES"),
+                    "error_code": str(locate.get("error_code") or "TARGET_NOT_CONFIRMED_FOR_MESSAGES"),
                     "window_probe": probe,
                     "target": args.target,
-                    "remark_code": clean_remark_code,
-                    "target_mode": target_mode or "visible",
-                    "opened": bool(opened),
-                    "guard": validation,
+                    "remark_code": str(args.remark_code or "").strip(),
+                    "target_mode": str(args.target_mode or "").strip().lower() or "visible",
+                    "opened": bool(locate.get("opened")),
+                    "guard": locate.get("guard") if isinstance(locate.get("guard"), dict) else {},
                     "targeting": targeting,
                     "step_events": targeting.get("step_events") if isinstance(targeting, dict) else None,
-                    "review_path": targeting_review_path,
-                    "evidence_path": targeting_evidence_path,
-                    "open_chat_timing": dict(_LAST_OPEN_CHAT_TIMING),
+                    "review_path": locate.get("review_path"),
+                    "evidence_path": locate.get("evidence_path"),
+                    "open_chat_timing": locate.get("open_chat_timing") or dict(_LAST_OPEN_CHAT_TIMING),
                     "error": "The target chat was not confirmed before reading messages.",
                 }
-            if scroll_to_latest_before_read_enabled():
+            if not c2_targeted_action and scroll_to_latest_before_read_enabled():
                 scroll_chat_to_latest(hwnd)
-        load_times = bounded_int(args.history_load_times, default=0, minimum=0, maximum=16)
+        elif single_frame_confirmation:
+            targeting = {
+                "current_frame_confirmation": {
+                    "merged": True,
+                    "reason": "messages_frame_confirms_target_before_parse",
+                }
+            }
+        load_times = 0 if c2_targeted_action else bounded_int(args.history_load_times, default=0, minimum=0, maximum=16)
+        confirmation_target = str(args.remark_code or "").strip() or str(args.target or "").strip()
         payload = messages_payload(
             hwnd,
             probe,
@@ -716,19 +987,36 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
             anchor_ids=[str(item) for item in args.anchor_id or []],
             anchor_content_keys=[str(item) for item in args.anchor_content_key or []],
             reply_content_keys=[str(item) for item in args.reply_content_key or []],
-            max_scroll_steps=bounded_int(args.max_scroll_steps, default=6, minimum=0, maximum=16),
+            max_scroll_steps=0 if c2_targeted_action else bounded_int(args.max_scroll_steps, default=6, minimum=0, maximum=16),
             max_duration_seconds=bounded_int(args.max_duration_seconds, default=12, minimum=1, maximum=60),
-            max_snapshots=bounded_int(args.max_snapshots, default=8, minimum=1, maximum=24),
+            max_snapshots=1 if c2_targeted_action else bounded_int(args.max_snapshots, default=8, minimum=1, maximum=24),
             min_delay_ms=bounded_int(args.min_delay_ms, default=180, minimum=0, maximum=5000),
             max_delay_ms=bounded_int(args.max_delay_ms, default=650, minimum=0, maximum=10000),
             restore_to_latest=True if args.restore_to_latest is None else bool(args.restore_to_latest),
             artifact_dir=args.artifact_dir,
+            confirm_target=confirmation_target if single_frame_confirmation else "",
+            confirm_exact=False if str(args.remark_code or "").strip() else bool(args.exact),
         )
         if args.target:
+            if single_frame_confirmation:
+                guard = payload.get("target_confirmation") if isinstance(payload.get("target_confirmation"), dict) else {}
+                locate = {
+                    "ok": bool(guard.get("ok")),
+                    "online": bool(guard.get("online", True)),
+                    "state": "chat_target_confirmed" if guard.get("ok") else "target_not_confirmed_for_messages",
+                    "error_code": None if guard.get("ok") else "TARGET_NOT_CONFIRMED_FOR_MESSAGES",
+                    "target": str(args.target or ""),
+                    "remark_code": str(args.remark_code or "").strip(),
+                    "target_mode": target_mode,
+                    "opened": False,
+                    "guard": guard,
+                    "targeting": targeting,
+                }
             payload["sidecar_run_id"] = clean_sidecar_run_id
-            payload["target_mode"] = str(args.target_mode or "").strip().lower() or "visible"
+            payload["target_mode"] = target_mode
             payload["remark_code"] = str(args.remark_code or "").strip()
             payload["targeting"] = targeting if isinstance(targeting, dict) else {}
+            payload["target_confirmation"] = locate
             if isinstance(targeting, dict) and targeting.get("step_events"):
                 payload["step_events"] = targeting.get("step_events")
             if isinstance(targeting, dict) and targeting.get("review_path"):
@@ -736,55 +1024,93 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
                 payload["evidence_path"] = targeting.get("evidence_path") or targeting.get("review_path")
         return payload
     if action == "voice-transcribe":
-        if args.target:
-            clean_session_key = str(args.session_key or "").strip()
-            validation = (
-                {"ok": False, "reason": "session_key_requires_row_activation"}
-                if clean_session_key
-                else validate_active_send_target(
-                    hwnd,
-                    args.target,
-                    exact=bool(args.exact),
-                    artifact_dir=args.artifact_dir,
-                )
+        clean_sidecar_run_id = str(getattr(args, "sidecar_run_id", "") or "").strip()
+        c2_targeted_action = bool(args.target and (clean_sidecar_run_id or str(args.remark_code or "").strip()))
+        clean_remark_code = str(args.remark_code or "").strip()
+        target_mode = str(args.target_mode or "").strip().lower() or "visible"
+        single_frame_confirmation = bool(args.target and target_mode == "current")
+        targeting: dict[str, Any] = {}
+        locate: dict[str, Any] = {}
+        if args.target and not single_frame_confirmation:
+            locate = locate_chat_target_for_c2(
+                hwnd,
+                target=args.target,
+                session_key=str(args.session_key or ""),
+                remark_code=clean_remark_code,
+                target_mode=target_mode,
+                exact=bool(args.exact),
+                artifact_dir=args.artifact_dir,
+                sidecar_run_id=clean_sidecar_run_id,
+                failure_state="target_not_confirmed_for_voice_transcribe",
+                failure_error_code="TARGET_NOT_CONFIRMED_FOR_VOICE_TRANSCRIBE",
             )
-            opened = False
-            if not validation.get("ok"):
-                opened = open_chat(
-                    hwnd,
-                    args.target,
-                    exact=bool(args.exact),
-                    artifact_dir=args.artifact_dir,
-                    session_key=clean_session_key,
-                )
-                humanized_action_sleep(380, 620)
-                validation = validate_active_send_target(
-                    hwnd,
-                    args.target,
-                    exact=bool(args.exact),
-                    artifact_dir=args.artifact_dir,
-                )
-            if not validation.get("ok"):
+            targeting = locate.get("targeting") if isinstance(locate.get("targeting"), dict) else {}
+            if not locate.get("ok"):
                 return {
                     "ok": False,
-                    "online": bool(validation.get("online", True)),
+                    "online": bool(locate.get("online", True)),
                     "adapter": "win32_ocr",
                     "state": "target_not_confirmed_for_voice_transcribe",
+                    "sidecar_run_id": clean_sidecar_run_id,
+                    "error_code": str(locate.get("error_code") or "TARGET_NOT_CONFIRMED_FOR_VOICE_TRANSCRIBE"),
                     "window_probe": probe,
                     "target": args.target,
-                    "opened": bool(opened),
-                    "guard": validation,
-                    "open_chat_timing": dict(_LAST_OPEN_CHAT_TIMING),
+                    "remark_code": clean_remark_code,
+                    "target_mode": target_mode or "visible",
+                    "opened": bool(locate.get("opened")),
+                    "guard": locate.get("guard") if isinstance(locate.get("guard"), dict) else {},
+                    "targeting": targeting,
+                    "step_events": targeting.get("step_events") if isinstance(targeting, dict) else None,
+                    "review_path": locate.get("review_path"),
+                    "evidence_path": locate.get("evidence_path"),
+                    "open_chat_timing": locate.get("open_chat_timing") or dict(_LAST_OPEN_CHAT_TIMING),
                     "error": "The target chat was not confirmed before clicking voice transcription.",
                 }
-            if scroll_to_latest_before_read_enabled():
+            if not c2_targeted_action and scroll_to_latest_before_read_enabled():
                 scroll_chat_to_latest(hwnd)
-        return voice_transcribe_payload(
+        elif single_frame_confirmation:
+            targeting = {
+                "current_frame_confirmation": {
+                    "merged": True,
+                    "reason": "voice_before_frame_confirms_target_before_click",
+                }
+            }
+        confirmation_target = clean_remark_code or str(args.target or "").strip()
+        payload = voice_transcribe_payload(
             hwnd,
             probe,
             target=args.target or "",
             artifact_dir=args.artifact_dir,
+            max_duration_seconds=bounded_int(args.max_duration_seconds, default=240, minimum=15, maximum=900),
+            confirm_target=confirmation_target if single_frame_confirmation else "",
+            confirm_exact=False if clean_remark_code else bool(args.exact),
         )
+        payload["sidecar_run_id"] = clean_sidecar_run_id
+        payload["target_mode"] = target_mode or "visible"
+        payload["remark_code"] = clean_remark_code
+        payload["targeting"] = targeting if isinstance(targeting, dict) else {}
+        if args.target:
+            if single_frame_confirmation:
+                guard = payload.get("target_confirmation") if isinstance(payload.get("target_confirmation"), dict) else {}
+                locate = {
+                    "ok": bool(guard.get("ok")),
+                    "online": bool(guard.get("online", True)),
+                    "state": "chat_target_confirmed" if guard.get("ok") else "target_not_confirmed_for_voice_transcribe",
+                    "error_code": None if guard.get("ok") else "TARGET_NOT_CONFIRMED_FOR_VOICE_TRANSCRIBE",
+                    "target": str(args.target or ""),
+                    "remark_code": clean_remark_code,
+                    "target_mode": target_mode,
+                    "opened": False,
+                    "guard": guard,
+                    "targeting": targeting,
+                }
+            payload["target_confirmation"] = locate
+        if isinstance(targeting, dict) and targeting.get("step_events"):
+            payload["step_events"] = targeting.get("step_events")
+        if isinstance(targeting, dict) and targeting.get("review_path"):
+            payload["review_path"] = targeting.get("review_path")
+            payload["evidence_path"] = targeting.get("evidence_path") or targeting.get("review_path")
+        return payload
     if action == "send":
         if not args.target:
             raise ValueError("--target is required for send")
@@ -1489,7 +1815,7 @@ def capabilities_payload(hwnd: int, probe: dict[str, Any], *, artifact_dir: str 
     }
 def sessions_payload(hwnd: int, probe: dict[str, Any], *, artifact_dir: str | None = None) -> dict[str, Any]:
     screenshot, path = capture_wechat(hwnd, artifact_dir=artifact_dir, label="sessions")
-    items = run_ocr(screenshot)
+    items, enhanced_count = session_list_ocr_items(screenshot, run_ocr(screenshot))
     geometry = get_window_geometry(hwnd)
     page_fingerprint = ocr_page_fingerprint(items, geometry=geometry)
     if quick_login_like(items, geometry=geometry):
@@ -1501,6 +1827,8 @@ def sessions_payload(hwnd: int, probe: dict[str, Any], *, artifact_dir: str | No
             "window_probe": probe,
             "screenshot_path": path,
             "ocr_items_count": len(items),
+            "ocr_items_enhanced_count": enhanced_count,
+            "ocr_items": compact_ocr_items_for_report(items),
             "error": "WeChat quick-login view detected; enter WeChat before reading sessions.",
         }
     blocking_reason = blocking_screen_reason(items)
@@ -1513,6 +1841,8 @@ def sessions_payload(hwnd: int, probe: dict[str, Any], *, artifact_dir: str | No
             "window_probe": probe,
             "screenshot_path": path,
             "ocr_items_count": len(items),
+            "ocr_items_enhanced_count": enhanced_count,
+            "ocr_items": compact_ocr_items_for_report(items),
             "reason": blocking_reason,
             "error": f"WeChat session list is blocked by: {blocking_reason}",
         }
@@ -1541,11 +1871,13 @@ def sessions_payload(hwnd: int, probe: dict[str, Any], *, artifact_dir: str | No
                 "unread_signal": bool(item.get("unread_badge")),
                 "conversation_type": item.get("conversation_type") or infer_conversation_type(item["name"]),
                 "source_adapter": "win32_ocr",
-                "ocr_confidence": item.get("confidence"),
+            "ocr_confidence": item.get("confidence"),
             }
             for item in sessions
         ],
         "ocr_items_count": len(items),
+        "ocr_items_enhanced_count": enhanced_count,
+        "ocr_items": compact_ocr_items_for_report(items),
     }
 
 
@@ -1566,6 +1898,8 @@ def messages_payload(
     max_delay_ms: int = 650,
     restore_to_latest: bool = True,
     artifact_dir: str | None = None,
+    confirm_target: str = "",
+    confirm_exact: bool = False,
 ) -> dict[str, Any]:
     mode = str(history_mode or "").strip().lower()
     if mode == "anchor_until_found":
@@ -1599,8 +1933,34 @@ def messages_payload(
         }
     latest = snapshots[-1] if snapshots else {}
     ocr_items = latest.get("ocr_items", []) if isinstance(latest.get("ocr_items"), list) else []
+    screenshot = latest.get("screenshot")
     geometry = get_window_geometry(hwnd)
     page_fingerprint = ocr_page_fingerprint(ocr_items, geometry=geometry)
+    target_confirmation: dict[str, Any] = {}
+    if confirm_target:
+        target_confirmation = validate_active_send_target(
+            hwnd,
+            confirm_target,
+            exact=confirm_exact,
+            artifact_dir=artifact_dir,
+            screenshot=screenshot,
+            ocr_items=ocr_items,
+            screenshot_path=str(latest.get("screenshot_path") or ""),
+        )
+        if not target_confirmation.get("ok"):
+            return {
+                "ok": False,
+                "online": bool(target_confirmation.get("online", True)),
+                "adapter": "win32_ocr",
+                "state": "target_not_confirmed_for_messages",
+                "error_code": "TARGET_NOT_CONFIRMED_FOR_MESSAGES",
+                "window_probe": probe,
+                "screenshot_path": str(latest.get("screenshot_path") or ""),
+                "chat_info": {"chat_name": target, "source_adapter": "win32_ocr"},
+                "ocr_items_count": len(ocr_items),
+                "target_confirmation": target_confirmation,
+                "error": "The messages frame did not confirm the requested target chat.",
+            }
     if quick_login_like(ocr_items, geometry=geometry):
         return {
             "ok": False,
@@ -1628,6 +1988,7 @@ def messages_payload(
             "error": f"WeChat messages view is blocked by: {blocking_reason}",
         }
     messages = merge_message_history_snapshots(snapshots)
+    visible_voice_hint = latest.get("visible_untranscribed_voice") if isinstance(latest.get("visible_untranscribed_voice"), dict) else {"detected": False}
     return {
         "ok": True,
         "online": True,
@@ -1640,7 +2001,11 @@ def messages_payload(
         "chat_info": {"chat_name": target, "source_adapter": "win32_ocr"},
         "history_load": history_load,
         "messages": messages,
+        "observations": build_message_observations_v3(messages, visible_voice_hint),
+        "observation_schema_version": 3,
+        "visible_untranscribed_voice": visible_voice_hint,
         "ocr_items_count": len(ocr_items),
+        "target_confirmation": target_confirmation,
     }
 
 
@@ -1650,94 +2015,942 @@ def voice_transcribe_payload(
     *,
     target: str,
     artifact_dir: str | None = None,
+    max_duration_seconds: int = 240,
+    confirm_target: str = "",
+    confirm_exact: bool = False,
 ) -> dict[str, Any]:
-    before_screenshot, before_path = capture_wechat(hwnd, artifact_dir=artifact_dir, label="voice_transcribe_before")
-    before_items = run_ocr(before_screenshot)
+    flow_started_at = time.monotonic()
+    last_progress_at = flow_started_at
+    no_progress_timeout_seconds = max(15, int(max_duration_seconds))
+    hard_safety_timeout_seconds = max(900, no_progress_timeout_seconds * 4)
+    performance_started_at = time.perf_counter()
+    performance_timing: dict[str, Any] = {
+        "schema_version": 1,
+        "flow": "voice_transcribe_current_chat",
+        "watchdog_mode": "no_progress",
+        "no_progress_timeout_seconds": no_progress_timeout_seconds,
+        "hard_safety_timeout_seconds": hard_safety_timeout_seconds,
+        "started_at": _sidecar_timing_now_iso(),
+        "operations": [],
+    }
+
+    def timed_call(kind: str, purpose: str, callback: Callable[[], Any]) -> Any:
+        started = time.perf_counter()
+        operation: dict[str, Any] = {
+            "kind": kind,
+            "purpose": purpose,
+            "started_at": _sidecar_timing_now_iso(),
+        }
+        try:
+            result = callback()
+        except Exception as exc:
+            operation["error"] = type(exc).__name__
+            raise
+        finally:
+            operation["finished_at"] = _sidecar_timing_now_iso()
+            operation["duration_seconds"] = round(max(0.0, time.perf_counter() - started), 4)
+            performance_timing["operations"].append(operation)
+        if kind == "ocr" and isinstance(result, list):
+            operation["item_count"] = len(result)
+        return result
+
+    def finalize_performance_timing() -> dict[str, Any]:
+        operations = performance_timing.get("operations") if isinstance(performance_timing.get("operations"), list) else []
+        performance_timing["finished_at"] = _sidecar_timing_now_iso()
+        performance_timing["total_duration_seconds"] = round(
+            max(0.0, time.perf_counter() - performance_started_at),
+            4,
+        )
+        performance_timing["operation_count"] = len(operations)
+        performance_timing["ocr_call_count"] = sum(1 for item in operations if item.get("kind") == "ocr")
+        performance_timing["ocr_total_duration_seconds"] = round(
+            sum(float(item.get("duration_seconds") or 0.0) for item in operations if item.get("kind") == "ocr"),
+            4,
+        )
+        performance_timing["capture_call_count"] = sum(1 for item in operations if item.get("kind") == "capture")
+        performance_timing["capture_total_duration_seconds"] = round(
+            sum(float(item.get("duration_seconds") or 0.0) for item in operations if item.get("kind") == "capture"),
+            4,
+        )
+        performance_timing["wait_call_count"] = sum(1 for item in operations if item.get("kind") == "wait")
+        performance_timing["wait_total_duration_seconds"] = round(
+            sum(float(item.get("duration_seconds") or 0.0) for item in operations if item.get("kind") == "wait"),
+            4,
+        )
+        return performance_timing
+
+    watchdog_stopped_reason = ""
+    before_screenshot, before_path = timed_call(
+        "capture",
+        "voice_transcribe_before",
+        lambda: capture_wechat(hwnd, artifact_dir=artifact_dir, label="voice_transcribe_before"),
+    )
+    before_items = timed_call("ocr", "voice_transcribe_before", lambda: run_ocr(before_screenshot))
     geometry = get_window_geometry(hwnd)
     image_size = getattr(before_screenshot, "size", (int(geometry.get("width") or 0), int(geometry.get("height") or 0)))
-    before_messages = parse_messages_from_ocr(before_items, image_size, target=target)
-    click_target = find_voice_transcribe_target(before_items, image_size)
-    hover_attempt: dict[str, Any] | None = None
+    target_confirmation: dict[str, Any] = {}
+    if confirm_target:
+        target_confirmation = validate_active_send_target(
+            hwnd,
+            confirm_target,
+            exact=confirm_exact,
+            artifact_dir=artifact_dir,
+            screenshot=before_screenshot,
+            ocr_items=before_items,
+            screenshot_path=before_path,
+        )
+        if not target_confirmation.get("ok"):
+            return {
+                "ok": False,
+                "online": bool(target_confirmation.get("online", True)),
+                "adapter": "win32_ocr",
+                "state": "target_not_confirmed_for_voice_transcribe",
+                "error_code": "TARGET_NOT_CONFIRMED_FOR_VOICE_TRANSCRIBE",
+                "window_probe": probe,
+                "target": target,
+                "before_screenshot_path": before_path,
+                "target_confirmation": target_confirmation,
+                "ocr_items_count": len(before_items),
+                "timing": finalize_performance_timing(),
+                "error": "The voice-transcribe frame did not confirm the requested target chat.",
+            }
+    before_messages = timed_call(
+        "parse",
+        "voice_transcribe_before",
+        lambda: parse_messages_from_ocr(before_items, image_size, target=target, screenshot=before_screenshot),
+    )
+    visible_button_attempt: dict[str, Any] | None = None
     context_menu_attempt: dict[str, Any] | None = None
-    if not click_target:
-        return {
-            "ok": False,
+    voice_attempts: list[dict[str, Any]] = []
+
+    def transcribed_messages_from_after(
+        after_messages: list[dict[str, Any]],
+        baseline_messages: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        new_items = sidecar_new_message_occurrences(after_messages, baseline_messages)
+        transcribed_items = [
+            message
+            for message in new_items
+            if not voice_duration_text_like(str(message.get("content_clean") or message.get("content") or ""))
+        ]
+        return new_items, transcribed_items
+
+    def build_voice_transcribe_result(
+        *,
+        state: str,
+        error_code: str | None,
+        click_result: dict[str, Any],
+        final_click_target: dict[str, Any] | None,
+        planned_click_point: list[int] | None,
+        click_jitter: dict[str, Any] | None,
+        after_screenshot_path: str,
+        after_messages: list[dict[str, Any]],
+        after_ocr_items_count: int,
+        new_messages: list[dict[str, Any]],
+        transcribed_messages: list[dict[str, Any]],
+        quality_flags: list[str],
+        attempt_count: int,
+    ) -> dict[str, Any]:
+        timing_payload = finalize_performance_timing()
+        payload = {
+            "ok": bool(transcribed_messages) or (bool(click_result.get("ok")) if click_result else False),
             "online": True,
             "adapter": "win32_ocr",
-            "state": "voice_transcribe_target_not_found",
+            "state": state,
+            "error_code": error_code,
             "window_probe": probe,
             "target": target,
-            "screenshot_path": before_path,
-            "ocr_items_count": len(before_items),
-            "messages": before_messages,
-            "error": "No visible WeChat voice-to-text affordance was found.",
+            "before_screenshot_path": before_path,
+            "after_screenshot_path": after_screenshot_path,
+            "voice_context_anchor": context_anchor or {},
+            "click_target": final_click_target or {},
+            "visible_button_attempt": visible_button_attempt or {},
+            "hover_attempt": {},
+            "context_menu_attempt": context_menu_attempt or {},
+            "click": click_result,
+            "attempts": voice_attempts,
+            "planned_click_point": planned_click_point or [],
+            "click_jitter": click_jitter or {},
+            "wait_ms": wait_ms,
+            "candidate_order": "bottom_to_top",
+            "skipped_already_transcribed_count": len(skipped_transcribed_anchor_keys),
+            "skipped_already_transcribed_anchor_keys": sorted(skipped_transcribed_anchor_keys),
+            "skipped_wrong_context_menu_count": len(skipped_wrong_context_menu_anchor_keys),
+            "skipped_wrong_context_menu_anchor_keys": sorted(skipped_wrong_context_menu_anchor_keys),
+            "skipped_unknown_context_menu_count": len(skipped_unknown_context_menu_anchor_keys),
+            "skipped_unknown_context_menu_anchor_keys": sorted(skipped_unknown_context_menu_anchor_keys),
+            "failed_voice_anchor_count": len(failed_voice_anchor_keys),
+            "failed_voice_anchor_keys": sorted(failed_voice_anchor_keys),
+            "processed_voice_anchor_count": len(processed_voice_anchor_keys),
+            "processed_voice_anchor_keys": sorted(processed_voice_anchor_keys),
+            "before_messages": before_messages,
+            "messages": after_messages,
+            "new_messages": new_messages,
+            "transcribed_messages": transcribed_messages,
+            "attempt_count": attempt_count,
+            "quality_flags": quality_flags,
+            "ocr_items_count": after_ocr_items_count,
+            "target_confirmation": target_confirmation,
+            "timing": timing_payload,
         }
+        if artifact_dir:
+            try:
+                review_path = Path(artifact_dir) / "voice_transcribe_review.json"
+                payload["review_path"] = str(review_path)
+                review_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+            except Exception as exc:
+                payload["review_write_error"] = repr(exc)
+        return payload
 
-    if str(click_target.get("source") or "") == "inferred_from_voice_duration":
-        hover_attempt = hover_voice_transcribe_button(
-            hwnd,
-            click_target,
-            image_size=image_size,
-            artifact_dir=artifact_dir,
-        )
-        hover_target = hover_attempt.get("click_target") if isinstance(hover_attempt, dict) else None
-        if isinstance(hover_target, dict):
-            click_target = hover_target
-
-    click_x, click_y, jitter_meta = jitter_voice_transcribe_click_point(click_target, geometry)
-    click_bounds = [int(value) for value in click_target.get("click_bounds") or []]
-    click_result = human_window_image_click_in_bounds(
-        hwnd,
-        click_x,
-        click_y,
-        bounds=click_bounds,
-        action_name="voice_transcribe_click",
-    )
     wait_ms = bounded_int(
         os.getenv("WECHAT_WIN32_OCR_VOICE_TRANSCRIBE_WAIT_MS"),
         default=2600,
         minimum=500,
         maximum=15000,
     )
-    humanized_action_sleep(max(200, wait_ms - 500), wait_ms + 900)
 
-    after_screenshot, after_path = capture_wechat(hwnd, artifact_dir=artifact_dir, label="voice_transcribe_after")
-    after_items = run_ocr(after_screenshot)
-    after_size = getattr(after_screenshot, "size", image_size)
-    after_messages = parse_messages_from_ocr(after_items, after_size, target=target)
-    before_keys = {sidecar_message_content_key(message) for message in before_messages}
-    new_messages = [
-        message
-        for message in after_messages
-        if sidecar_message_content_key(message) not in before_keys
-    ]
-    transcribed_messages = [
-        message
-        for message in new_messages
-        if not voice_duration_text_like(str(message.get("content_clean") or message.get("content") or ""))
-    ]
-    return {
-        "ok": bool(click_result.get("ok")),
-        "online": True,
-        "adapter": "win32_ocr",
-        "state": "voice_transcribe_clicked" if click_result.get("ok") else "voice_transcribe_click_failed",
-        "window_probe": probe,
-        "target": target,
-        "before_screenshot_path": before_path,
-        "after_screenshot_path": after_path,
-        "click_target": click_target,
-        "hover_attempt": hover_attempt or {},
-        "context_menu_attempt": context_menu_attempt or {},
-        "click": click_result,
-        "planned_click_point": [click_x, click_y],
-        "click_jitter": jitter_meta,
-        "wait_ms": wait_ms,
-        "before_messages": before_messages,
-        "messages": after_messages,
-        "new_messages": new_messages,
-        "transcribed_messages": transcribed_messages,
-        "ocr_items_count": len(after_items),
-    }
+    def has_untranscribed_voice(
+        screenshot_for_messages: Image.Image,
+        ocr_items_for_messages: list[dict[str, Any]],
+        messages: list[dict[str, Any]],
+        image_size_for_messages: tuple[int, int],
+    ) -> bool:
+        return any(
+            observation.get("voice_state") == "untranscribed"
+            and isinstance(observation.get("action_target"), dict)
+            for observation in build_unified_voice_observations_v3(
+                screenshot_for_messages,
+                ocr_items_for_messages,
+                image_size_for_messages,
+                parsed_messages=messages,
+            )
+        )
+
+    def bind_transcribed_messages_to_anchor(
+        messages: list[dict[str, Any]],
+        anchor: dict[str, Any] | None,
+        image_size_for_anchor: tuple[int, int],
+        *,
+        after_messages_for_layout: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        if not isinstance(anchor, dict) or not anchor:
+            return messages
+        anchor_keys = sorted(voice_context_anchor_exclusion_keys(anchor, image_size_for_anchor))
+        anchor_item = anchor.get("item") if isinstance(anchor.get("item"), dict) else {}
+        anchor_meta = {
+            "source": anchor.get("source"),
+            "anchor_key": str(anchor.get("anchor_key") or ""),
+            "anchor_stable_key": str(anchor.get("anchor_stable_key") or ""),
+            "anchor_structural_key": str(anchor.get("anchor_structural_key") or ""),
+            "exclusion_keys": anchor_keys,
+            "item": anchor_item,
+            "click_bounds": anchor.get("click_bounds") if isinstance(anchor.get("click_bounds"), list) else [],
+            "avatar_alignment": anchor.get("avatar_alignment") if isinstance(anchor.get("avatar_alignment"), dict) else {},
+        }
+        duration_text = str(anchor_item.get("voice_duration_text") or anchor_item.get("text") or "")
+        anchor_role = voice_anchor_sender_role(anchor, image_size_for_anchor)
+        bound: list[dict[str, Any]] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            if not message_is_plausible_voice_transcript_for_anchor(
+                message,
+                anchor,
+                image_size_for_anchor,
+                after_messages=after_messages_for_layout,
+            ):
+                continue
+            item = {
+                **message,
+                "type": "voice",
+                "voice_anchor": anchor_meta,
+                "voice_anchor_key": anchor_meta["anchor_key"],
+                "voice_anchor_stable_key": anchor_meta["anchor_stable_key"],
+                "voice_anchor_structural_key": anchor_meta["anchor_structural_key"],
+                "parent_voice_anchor_key": anchor_meta["anchor_stable_key"] or anchor_meta["anchor_key"],
+                "observation_schema_version": 3,
+                "row_kind": "voice_transcript",
+                "voice_state": "transcribed",
+            }
+            if message_is_combined_voice_transcript_record(message):
+                item["voice_anchor_binding_evidence"] = combined_voice_transcript_anchor_match_evidence(
+                    message,
+                    anchor,
+                    image_size_for_anchor,
+                    after_messages=after_messages_for_layout,
+                )
+            if anchor_role == "customer":
+                item["sender"] = "customer"
+                item["sender_role"] = "customer"
+            elif anchor_role == "self":
+                item["sender"] = "self"
+                item["sender_role"] = "self"
+            if anchor_role in {"self", "customer"}:
+                envelope = dict(item.get("message_envelope") or {})
+                if envelope:
+                    envelope["sender"] = anchor_role
+                    envelope["sender_role"] = anchor_role
+                    item["message_envelope"] = envelope
+            if duration_text and voice_duration_text_like(duration_text):
+                item.setdefault("voice_duration_text", duration_text)
+                seconds = voice_duration_seconds_from_text(duration_text)
+                if seconds is not None:
+                    item.setdefault("voice_duration", seconds)
+            bound.append(item)
+        combined = [item for item in bound if message_is_combined_voice_transcript_record(item)]
+        return combined or bound
+
+    initial_voice_observation = find_unified_untranscribed_voice_observation(
+        before_screenshot,
+        before_items,
+        image_size,
+        parsed_messages=before_messages,
+    )
+    context_anchor = initial_voice_observation.get("action_target") if isinstance(initial_voice_observation, dict) else None
+    click_target = initial_voice_observation.get("visible_button_target") if isinstance(initial_voice_observation, dict) else None
+    if not context_anchor:
+        timing_payload = finalize_performance_timing()
+        return {
+            "ok": False,
+            "online": True,
+            "adapter": "win32_ocr",
+            "state": "voice_transcribe_no_visible_voice",
+            "error_code": "VOICE_TRANSCRIBE_NO_VISIBLE_VOICE",
+            "window_probe": probe,
+            "target": target,
+            "screenshot_path": before_path,
+            "before_screenshot_path": before_path,
+            "ocr_items_count": len(before_items),
+            "messages": before_messages,
+            "voice_context_anchor": {},
+            "timing": timing_payload,
+            "error": "No visible WeChat voice-to-text affordance or voice bubble context-menu anchor was found.",
+        }
+
+    initial_pending_voice_count = sum(
+        1
+        for message in before_messages
+        if isinstance(message, dict) and message_is_untranscribed_voice_record(message)
+    )
+    default_max_attempts = max(8, min(16, initial_pending_voice_count * 3 + 2))
+    max_attempts = bounded_int(
+        os.getenv("WECHAT_WIN32_OCR_VOICE_TRANSCRIBE_MAX_ATTEMPTS"),
+        default=default_max_attempts,
+        minimum=1,
+        maximum=16,
+    )
+    current_screenshot = before_screenshot
+    current_items = before_items
+    current_size = image_size
+    current_messages = before_messages
+    all_new_messages: list[dict[str, Any]] = []
+    all_transcribed_messages: list[dict[str, Any]] = []
+    seen_new_keys: set[str] = set()
+    seen_transcribed_keys: set[str] = set()
+    last_click_result: dict[str, Any] = {}
+    last_click_target: dict[str, Any] | None = None
+    last_click_point: list[int] | None = None
+    last_click_jitter: dict[str, Any] | None = None
+    last_after_path = before_path
+    last_ocr_count = len(before_items)
+    skipped_transcribed_anchor_keys: set[str] = set()
+    processed_voice_anchor_keys: set[str] = set()
+    skipped_wrong_context_menu_anchor_keys: set[str] = set()
+    skipped_unknown_context_menu_anchor_keys: set[str] = set()
+    failed_voice_anchor_keys: set[str] = set()
+
+    for attempt_index in range(1, max_attempts + 1):
+        now_monotonic = time.monotonic()
+        if now_monotonic - flow_started_at >= hard_safety_timeout_seconds:
+            watchdog_stopped_reason = "hard_safety_timeout_reached"
+            break
+        if now_monotonic - last_progress_at >= no_progress_timeout_seconds:
+            watchdog_stopped_reason = "no_progress_timeout_reached"
+            break
+        attempt_baseline_messages = current_messages
+        excluded_anchor_keys = (
+            skipped_transcribed_anchor_keys
+            | processed_voice_anchor_keys
+            | skipped_wrong_context_menu_anchor_keys
+            | skipped_unknown_context_menu_anchor_keys
+            | failed_voice_anchor_keys
+        )
+        voice_observation = find_unified_untranscribed_voice_observation(
+            current_screenshot,
+            current_items,
+            current_size,
+            excluded_anchor_keys=excluded_anchor_keys,
+            parsed_messages=current_messages,
+        )
+        context_anchor = voice_observation.get("action_target") if isinstance(voice_observation, dict) else None
+        click_target = voice_observation.get("visible_button_target") if isinstance(voice_observation, dict) else None
+        if not context_anchor:
+            break
+        use_visible_button = bool(click_target)
+        attempt_record: dict[str, Any] = {
+            "attempt_index": attempt_index,
+            "candidate_order": "bottom_to_top",
+            "context_anchor": context_anchor or {},
+            "visible_button_target": click_target or {},
+            "unified_voice_observation": {
+                key: value
+                for key, value in (voice_observation or {}).items()
+                if key not in {"action_target", "visible_button_target", "source_message"}
+            },
+            "selected_method": "visible_button" if use_visible_button else "context_menu",
+        }
+        click_result: dict[str, Any] = {}
+        final_target: dict[str, Any] | None = None
+        planned_point: list[int] | None = None
+        click_jitter: dict[str, Any] | None = None
+        clicked_context_anchor: dict[str, Any] | None = None
+        explicitly_completed_without_text = False
+        if use_visible_button and click_target:
+            visible_item = click_target.get("item") if isinstance(click_target.get("item"), dict) else {}
+            click_bounds = [
+                int(float(visible_item.get("left") or 0)),
+                int(float(visible_item.get("top") or 0)),
+                int(float(visible_item.get("right") or 0)),
+                int(float(visible_item.get("bottom") or 0)),
+            ]
+            if len(click_bounds) < 4 or click_bounds[2] <= click_bounds[0] or click_bounds[3] <= click_bounds[1]:
+                click_bounds = [int(value) for value in click_target.get("click_bounds") or []]
+            click_x = int((click_bounds[0] + click_bounds[2]) / 2)
+            click_y = int((click_bounds[1] + click_bounds[3]) / 2)
+            jitter_meta = {
+                "enabled": False,
+                "source": "ocr_visible_button_center",
+                "bounds": click_bounds,
+                "reason": "click_exact_ocr_button_center",
+            }
+            click_result = timed_call(
+                "click",
+                f"click_visible_transcribe_{attempt_index}",
+                lambda: human_window_image_click_in_bounds(
+                    hwnd,
+                    click_x,
+                    click_y,
+                    bounds=click_bounds,
+                    action_name="voice_transcribe_visible_button_click",
+                ),
+            )
+            final_target = click_target
+            planned_point = [click_x, click_y]
+            click_jitter = jitter_meta
+            if context_anchor and abs(voice_target_center_y(click_target) - voice_target_center_y(context_anchor)) <= 96:
+                clicked_context_anchor = context_anchor
+            visible_button_attempt = {
+                "click_target": click_target,
+                "click": click_result,
+                "planned_click_point": planned_point,
+                "click_jitter": click_jitter,
+            }
+            attempt_record.update({"method": "visible_button", "visible_button_attempt": visible_button_attempt})
+        if (not use_visible_button or not click_result.get("ok")) and context_anchor:
+            context_menu_attempt = timed_call(
+                "menu",
+                f"open_context_menu_{attempt_index}",
+                lambda: open_voice_transcribe_context_menu(
+                    hwnd,
+                    context_anchor,
+                    image_size=current_size,
+                    artifact_dir=artifact_dir,
+                ),
+            )
+            menu_target = context_menu_attempt.get("click_target") if isinstance(context_menu_attempt, dict) else None
+            collapse_target = context_menu_attempt.get("already_transcribed_target") if isinstance(context_menu_attempt, dict) else None
+            menu_state = str((context_menu_attempt or {}).get("menu_state") or "")
+            if menu_state == "already_transcribed":
+                skipped_keys = sorted(voice_context_anchor_exclusion_keys(context_anchor, current_size))
+                skipped_key = skipped_keys[0] if skipped_keys else ""
+                skipped_transcribed_anchor_keys.update(skipped_keys)
+                dismissal = timed_call(
+                    "menu",
+                    f"dismiss_already_transcribed_menu_{attempt_index}",
+                    lambda: dismiss_voice_transcribe_context_menu(
+                        hwnd,
+                        artifact_dir=artifact_dir,
+                        label=f"voice_transcribe_context_menu_dismissed_{attempt_index}",
+                        menu_bounds=(collapse_target or {}).get("click_bounds"),
+                    ),
+                )
+                click_result = {"ok": bool(dismissal.get("ok")), "reason": "already_transcribed_voice_skipped", "dismissal": dismissal}
+                last_click_result = click_result
+                last_click_target = context_anchor
+                last_click_point = None
+                last_click_jitter = None
+                attempt_record.update({
+                    "method": "context_menu",
+                    "context_menu_attempt": context_menu_attempt or {},
+                    "menu_dismissal": dismissal,
+                    "result": "already_transcribed_skipped",
+                    "skipped_anchor_key": skipped_key,
+                    "skipped_anchor_keys": skipped_keys,
+                })
+                voice_attempts.append(attempt_record)
+                if not dismissal.get("ok"):
+                    break
+                continue
+            if menu_state in {"text_message_context_menu", "avatar_context_menu"}:
+                skipped_keys = sorted(voice_context_anchor_exclusion_keys(context_anchor, current_size))
+                skipped_key = skipped_keys[0] if skipped_keys else ""
+                skipped_wrong_context_menu_anchor_keys.update(skipped_keys)
+                dismissal = timed_call(
+                    "menu",
+                    f"dismiss_wrong_context_menu_{attempt_index}",
+                    lambda: dismiss_voice_transcribe_context_menu(
+                        hwnd,
+                        artifact_dir=artifact_dir,
+                        label=f"voice_transcribe_context_menu_dismissed_{attempt_index}",
+                    ),
+                )
+                click_result = {"ok": bool(dismissal.get("ok")), "reason": f"{menu_state}_skipped", "dismissal": dismissal}
+                last_click_result = click_result
+                last_click_target = context_anchor
+                last_click_point = None
+                last_click_jitter = None
+                attempt_record.update({
+                    "method": "context_menu",
+                    "context_menu_attempt": context_menu_attempt or {},
+                    "menu_dismissal": dismissal,
+                    "result": f"{menu_state}_skipped",
+                    "skipped_anchor_key": skipped_key,
+                    "skipped_anchor_keys": skipped_keys,
+                })
+                voice_attempts.append(attempt_record)
+                if not dismissal.get("ok"):
+                    break
+                continue
+            if not isinstance(menu_target, dict) or not menu_target:
+                skipped_keys = sorted(voice_context_anchor_exclusion_keys(context_anchor, current_size))
+                skipped_key = skipped_keys[0] if skipped_keys else ""
+                skipped_unknown_context_menu_anchor_keys.update(skipped_keys)
+                dismissal = timed_call(
+                    "menu",
+                    f"dismiss_unknown_context_menu_{attempt_index}",
+                    lambda: dismiss_voice_transcribe_context_menu(
+                        hwnd,
+                        artifact_dir=artifact_dir,
+                        label=f"voice_transcribe_context_menu_dismissed_{attempt_index}",
+                    ),
+                )
+                attempt_record.update({
+                    "method": "context_menu",
+                    "context_menu_attempt": context_menu_attempt or {},
+                    "menu_dismissal": dismissal,
+                    "result": "context_menu_target_not_found",
+                    "skipped_anchor_key": skipped_key,
+                    "skipped_anchor_keys": skipped_keys,
+                })
+                voice_attempts.append(attempt_record)
+                if not dismissal.get("ok"):
+                    break
+                continue
+            click_result = timed_call(
+                "click",
+                f"click_context_menu_transcribe_{attempt_index}",
+                lambda: click_voice_transcribe_context_menu_target(
+                    hwnd,
+                    menu_target,
+                    geometry=geometry,
+                    artifact_dir=artifact_dir,
+                    attempt_index=attempt_index,
+                ),
+            )
+            final_target = menu_target
+            clicked_context_anchor = context_anchor
+            planned_point = list(click_result.get("planned_click_point") or [])
+            click_jitter = click_result.get("click_jitter") if isinstance(click_result.get("click_jitter"), dict) else {}
+            attempt_record.update({
+                "method": "context_menu",
+                "context_menu_attempt": context_menu_attempt or {},
+            })
+        timed_call(
+            "wait",
+            f"wait_after_action_{attempt_index}",
+            lambda: humanized_action_sleep(max(200, wait_ms - 500), wait_ms + 900),
+        )
+        after_screenshot, after_path = timed_call(
+            "capture",
+            f"voice_transcribe_after_{attempt_index}",
+            lambda: capture_wechat(hwnd, artifact_dir=artifact_dir, label=f"voice_transcribe_after_{attempt_index}"),
+        )
+        after_items = timed_call("ocr", f"voice_transcribe_after_{attempt_index}", lambda: run_ocr(after_screenshot))
+        after_size = getattr(after_screenshot, "size", current_size)
+        after_messages = timed_call(
+            "parse",
+            f"voice_transcribe_after_{attempt_index}",
+            lambda: parse_messages_from_ocr(after_items, after_size, target=target, screenshot=after_screenshot),
+        )
+        new_messages, transcribed_messages = transcribed_messages_from_after(after_messages, attempt_baseline_messages)
+        if click_result.get("ok") and clicked_context_anchor:
+            transcribed_messages = bind_transcribed_messages_to_anchor(
+                transcribed_messages,
+                clicked_context_anchor,
+                current_size,
+                after_messages_for_layout=after_messages,
+            )
+        reanchor_attempts: list[dict[str, Any]] = []
+        if click_result.get("ok") and clicked_context_anchor and not transcribed_messages:
+            passive_confirm_attempts = bounded_int(
+                os.getenv("WECHAT_WIN32_OCR_VOICE_PASSIVE_CONFIRM_ATTEMPTS"),
+                default=3,
+                minimum=2,
+                maximum=6,
+            )
+            for reanchor_index in range(1, passive_confirm_attempts + 1):
+                scrolled_up = False
+                timed_call(
+                    "wait",
+                    f"passive_confirm_wait_{attempt_index}_{reanchor_index}",
+                    lambda: humanized_action_sleep(650, 1200),
+                )
+                recovered_screenshot, recovered_path = timed_call(
+                    "capture",
+                    f"voice_transcribe_reanchor_{attempt_index}_{reanchor_index}",
+                    lambda: capture_wechat(
+                        hwnd,
+                        artifact_dir=artifact_dir,
+                        label=f"voice_transcribe_reanchor_{attempt_index}_{reanchor_index}",
+                    ),
+                )
+                recovered_items = timed_call(
+                    "ocr",
+                    f"voice_transcribe_reanchor_{attempt_index}_{reanchor_index}",
+                    lambda: run_ocr(recovered_screenshot),
+                )
+                recovered_size = getattr(recovered_screenshot, "size", after_size)
+                recovered_messages = timed_call(
+                    "parse",
+                    f"voice_transcribe_reanchor_{attempt_index}_{reanchor_index}",
+                    lambda: parse_messages_from_ocr(
+                        recovered_items,
+                        recovered_size,
+                        target=target,
+                        screenshot=recovered_screenshot,
+                    ),
+                )
+                recovered_new, recovered_candidates = transcribed_messages_from_after(
+                    recovered_messages,
+                    attempt_baseline_messages,
+                )
+                recovered_transcribed = bind_transcribed_messages_to_anchor(
+                    recovered_candidates,
+                    clicked_context_anchor,
+                    current_size,
+                    after_messages_for_layout=recovered_messages,
+                )
+                reanchor_attempts.append(
+                    {
+                        "attempt_index": reanchor_index,
+                        "scrolled_up": scrolled_up,
+                        "screenshot_path": recovered_path,
+                        "message_count": len(recovered_messages),
+                        "candidate_count": len(recovered_candidates),
+                        "transcribed_count": len(recovered_transcribed),
+                    }
+                )
+                after_screenshot = recovered_screenshot
+                after_path = recovered_path
+                after_items = recovered_items
+                after_size = recovered_size
+                after_messages = recovered_messages
+                new_messages = recovered_new
+                transcribed_messages = recovered_transcribed
+                if recovered_transcribed:
+                    break
+        # A successful physical action is never followed by a second action on
+        # the same bubble. Slow transcription is handled by passive captures
+        # above; another context-menu click would risk duplicate interaction.
+        if use_visible_button and clicked_context_anchor and not transcribed_messages and not click_result.get("ok"):
+            fallback_menu = open_voice_transcribe_context_menu(
+                hwnd,
+                clicked_context_anchor,
+                image_size=after_size,
+                artifact_dir=artifact_dir,
+            )
+            attempt_record["visible_button_fallback_context_menu"] = fallback_menu or {}
+            fallback_state = str((fallback_menu or {}).get("menu_state") or "")
+            fallback_target = fallback_menu.get("click_target") if isinstance(fallback_menu, dict) else None
+            if fallback_state == "already_transcribed":
+                skipped_keys = sorted(voice_context_anchor_exclusion_keys(clicked_context_anchor, after_size))
+                skipped_transcribed_anchor_keys.update(skipped_keys)
+                dismissal = dismiss_voice_transcribe_context_menu(
+                    hwnd,
+                    artifact_dir=artifact_dir,
+                    label=f"voice_transcribe_visible_fallback_dismissed_{attempt_index}",
+                    menu_bounds=((fallback_menu or {}).get("already_transcribed_target") or {}).get("click_bounds"),
+                )
+                click_result = {
+                    "ok": bool(dismissal.get("ok")),
+                    "reason": "visible_button_fallback_already_transcribed",
+                    "dismissal": dismissal,
+                }
+                attempt_record["visible_button_fallback_dismissal"] = dismissal
+                if dismissal.get("ok"):
+                    completed_screenshot, completed_path = capture_wechat(
+                        hwnd,
+                        artifact_dir=artifact_dir,
+                        label=f"voice_transcribe_visible_fallback_completed_{attempt_index}",
+                    )
+                    completed_items = run_ocr(completed_screenshot)
+                    completed_size = getattr(completed_screenshot, "size", after_size)
+                    completed_messages = parse_messages_from_ocr(
+                        completed_items,
+                        completed_size,
+                        target=target,
+                        screenshot=completed_screenshot,
+                    )
+                    completed_new, completed_candidates = transcribed_messages_from_after(
+                        completed_messages,
+                        attempt_baseline_messages,
+                    )
+                    completed_transcribed = bind_transcribed_messages_to_anchor(
+                        completed_candidates,
+                        clicked_context_anchor,
+                        current_size,
+                        after_messages_for_layout=completed_messages,
+                    )
+                    after_screenshot = completed_screenshot
+                    after_path = completed_path
+                    after_items = completed_items
+                    after_size = completed_size
+                    after_messages = completed_messages
+                    new_messages = completed_new
+                    transcribed_messages = completed_transcribed
+                explicitly_completed_without_text = not bool(transcribed_messages)
+            elif isinstance(fallback_target, dict) and fallback_target:
+                fallback_click = click_voice_transcribe_context_menu_target(
+                    hwnd,
+                    fallback_target,
+                    geometry=geometry,
+                    artifact_dir=artifact_dir,
+                    attempt_index=attempt_index,
+                )
+                click_result = fallback_click
+                final_target = fallback_target
+                planned_point = list(fallback_click.get("planned_click_point") or [])
+                click_jitter = fallback_click.get("click_jitter") if isinstance(fallback_click.get("click_jitter"), dict) else {}
+                attempt_record["visible_button_fallback_click"] = fallback_click
+                if fallback_click.get("ok"):
+                    humanized_action_sleep(max(200, wait_ms - 500), wait_ms + 900)
+                    fallback_screenshot, fallback_path = capture_wechat(
+                        hwnd,
+                        artifact_dir=artifact_dir,
+                        label=f"voice_transcribe_after_fallback_{attempt_index}",
+                    )
+                    fallback_items = run_ocr(fallback_screenshot)
+                    fallback_size = getattr(fallback_screenshot, "size", after_size)
+                    fallback_messages = parse_messages_from_ocr(
+                        fallback_items,
+                        fallback_size,
+                        target=target,
+                        screenshot=fallback_screenshot,
+                    )
+                    fallback_new, fallback_candidates = transcribed_messages_from_after(
+                        fallback_messages,
+                        attempt_baseline_messages,
+                    )
+                    fallback_transcribed = bind_transcribed_messages_to_anchor(
+                        fallback_candidates,
+                        clicked_context_anchor,
+                        current_size,
+                        after_messages_for_layout=fallback_messages,
+                    )
+                    if not fallback_transcribed:
+                        for fallback_retry_index in range(1, 2):
+                            humanized_action_sleep(650, 1200)
+                            retry_screenshot, retry_path = capture_wechat(
+                                hwnd,
+                                artifact_dir=artifact_dir,
+                                label=f"voice_transcribe_fallback_reanchor_{attempt_index}_{fallback_retry_index}",
+                            )
+                            retry_items = run_ocr(retry_screenshot)
+                            retry_size = getattr(retry_screenshot, "size", fallback_size)
+                            retry_messages = parse_messages_from_ocr(
+                                retry_items,
+                                retry_size,
+                                target=target,
+                                screenshot=retry_screenshot,
+                            )
+                            retry_new, retry_candidates = transcribed_messages_from_after(
+                                retry_messages,
+                                attempt_baseline_messages,
+                            )
+                            retry_transcribed = bind_transcribed_messages_to_anchor(
+                                retry_candidates,
+                                clicked_context_anchor,
+                                current_size,
+                                after_messages_for_layout=retry_messages,
+                            )
+                            reanchor_attempts.append(
+                                {
+                                    "attempt_index": fallback_retry_index,
+                                    "phase": "visible_button_fallback",
+                                    "scrolled_up": False,
+                                    "screenshot_path": retry_path,
+                                    "message_count": len(retry_messages),
+                                    "candidate_count": len(retry_candidates),
+                                    "transcribed_count": len(retry_transcribed),
+                                }
+                            )
+                            fallback_screenshot = retry_screenshot
+                            fallback_path = retry_path
+                            fallback_items = retry_items
+                            fallback_size = retry_size
+                            fallback_messages = retry_messages
+                            fallback_new = retry_new
+                            fallback_transcribed = retry_transcribed
+                            if fallback_transcribed:
+                                break
+                    after_screenshot = fallback_screenshot
+                    after_path = fallback_path
+                    after_items = fallback_items
+                    after_size = fallback_size
+                    after_messages = fallback_messages
+                    new_messages = fallback_new
+                    transcribed_messages = fallback_transcribed
+            else:
+                dismissal = dismiss_voice_transcribe_context_menu(
+                    hwnd,
+                    artifact_dir=artifact_dir,
+                    label=f"voice_transcribe_visible_fallback_unknown_{attempt_index}",
+                )
+                click_result = {
+                    "ok": False,
+                    "reason": f"visible_button_fallback_{fallback_state or 'unknown'}",
+                    "dismissal": dismissal,
+                }
+                attempt_record["visible_button_fallback_dismissal"] = dismissal
+        unique_new: list[dict[str, Any]] = []
+        for message in new_messages:
+            key = sidecar_message_content_key(message)
+            if key in seen_new_keys:
+                continue
+            seen_new_keys.add(key)
+            unique_new.append(message)
+            all_new_messages.append(message)
+        unique_transcribed: list[dict[str, Any]] = []
+        for message in transcribed_messages:
+            key = sidecar_message_content_key(message)
+            if key in seen_transcribed_keys:
+                continue
+            seen_transcribed_keys.add(key)
+            unique_transcribed.append(message)
+            all_transcribed_messages.append(message)
+        processed_anchor_key = ""
+        if unique_transcribed and clicked_context_anchor:
+            processed_keys = sorted(voice_context_anchor_exclusion_keys(clicked_context_anchor, current_size))
+            processed_anchor_key = processed_keys[0] if processed_keys else ""
+            processed_voice_anchor_keys.update(processed_keys)
+        else:
+            processed_keys = []
+        failed_anchor_keys: list[str] = []
+        if clicked_context_anchor and not unique_transcribed and not explicitly_completed_without_text:
+            failed_anchor_keys = sorted(voice_context_anchor_exclusion_keys(clicked_context_anchor, current_size))
+            failed_voice_anchor_keys.update(failed_anchor_keys)
+        if unique_transcribed or explicitly_completed_without_text or failed_anchor_keys:
+            last_progress_at = time.monotonic()
+        attempt_record.update({
+            "click_target": final_target or {},
+            "click": click_result,
+            "planned_click_point": planned_point or [],
+            "click_jitter": click_jitter or {},
+            "processed_anchor_key": processed_anchor_key,
+            "processed_anchor_keys": processed_keys,
+            "failed_anchor_keys": failed_anchor_keys,
+            "after_screenshot_path": after_path,
+            "reanchor_attempts": reanchor_attempts,
+            "new_messages_count": len(unique_new),
+            "transcribed_messages_count": len(unique_transcribed),
+            "effective_success": bool(unique_transcribed or explicitly_completed_without_text),
+            "explicitly_completed_without_text": explicitly_completed_without_text,
+            "remaining_untranscribed_voice": has_untranscribed_voice(
+                after_screenshot,
+                after_items,
+                after_messages,
+                after_size,
+            ),
+        })
+        voice_attempts.append(attempt_record)
+        last_click_result = click_result
+        last_click_target = final_target
+        last_click_point = planned_point
+        last_click_jitter = click_jitter
+        last_after_path = after_path
+        last_ocr_count = len(after_items)
+        current_screenshot = after_screenshot
+        current_items = after_items
+        current_size = after_size
+        current_messages = after_messages
+        if not click_result.get("ok") and not unique_transcribed and not clicked_context_anchor:
+            break
+        if not has_untranscribed_voice(after_screenshot, after_items, after_messages, after_size) and not has_remaining_voice_transcribe_candidate(
+            after_screenshot,
+            after_items,
+            after_size,
+            excluded_anchor_keys=(
+                skipped_transcribed_anchor_keys
+                | processed_voice_anchor_keys
+                | skipped_wrong_context_menu_anchor_keys
+                | skipped_unknown_context_menu_anchor_keys
+                | failed_voice_anchor_keys
+            ),
+            parsed_messages=after_messages,
+        ):
+            break
+
+    state = "voice_transcribe_click_failed"
+    error_code = "VOICE_TRANSCRIBE_CLICK_FAILED"
+    quality_flags: list[str] = []
+    remaining_untranscribed_voice = has_untranscribed_voice(
+        current_screenshot,
+        current_items,
+        current_messages,
+        current_size,
+    )
+    if all_transcribed_messages:
+        state = (
+            "voice_transcribe_partial"
+            if remaining_untranscribed_voice or failed_voice_anchor_keys
+            else "voice_transcribe_completed"
+        )
+        error_code = ""
+    elif last_click_result.get("ok"):
+        state = "voice_transcribe_no_new_text"
+        error_code = ""
+        quality_flags.append("no_new_transcribed_text")
+    else:
+        quality_flags.append("voice_transcribe_click_failed")
+    if remaining_untranscribed_voice:
+        quality_flags.append("untranscribed_voice_remaining")
+    if skipped_transcribed_anchor_keys:
+        quality_flags.append("already_transcribed_voice_skipped")
+    if processed_voice_anchor_keys:
+        quality_flags.append("processed_voice_anchor_skipped")
+    if skipped_wrong_context_menu_anchor_keys:
+        quality_flags.append("wrong_context_menu_anchor_skipped")
+    if skipped_unknown_context_menu_anchor_keys:
+        quality_flags.append("unknown_context_menu_anchor_skipped")
+    if failed_voice_anchor_keys:
+        quality_flags.append("voice_transcribe_anchor_failed")
+    if watchdog_stopped_reason:
+        quality_flags.append(f"voice_transcribe_{watchdog_stopped_reason}")
+    return build_voice_transcribe_result(
+        state=state,
+        error_code=error_code or None,
+        click_result=last_click_result,
+        final_click_target=last_click_target,
+        planned_click_point=last_click_point,
+        click_jitter=last_click_jitter,
+        after_screenshot_path=last_after_path,
+        after_messages=current_messages,
+        after_ocr_items_count=last_ocr_count,
+        new_messages=all_new_messages,
+        transcribed_messages=all_transcribed_messages,
+        quality_flags=quality_flags,
+        attempt_count=len(voice_attempts),
+    )
 
 
 def voice_transcribe_compact_text(text: str) -> str:
@@ -1749,11 +2962,32 @@ def voice_transcribe_button_text_like(text: str) -> bool:
     return bool(compact) and any(voice_transcribe_compact_text(token) in compact for token in VOICE_TRANSCRIBE_TEXT_TOKENS)
 
 
+def voice_transcribe_collapse_text_like(text: str) -> bool:
+    compact = voice_transcribe_compact_text(text)
+    return bool(compact) and any(voice_transcribe_compact_text(token) in compact for token in VOICE_TRANSCRIBE_COLLAPSE_TEXT_TOKENS)
+
+
+def text_message_context_menu_text_like(text: str) -> bool:
+    compact = voice_transcribe_compact_text(text)
+    return bool(compact) and any(voice_transcribe_compact_text(token) in compact for token in TEXT_MESSAGE_CONTEXT_MENU_TOKENS)
+
+
+def avatar_context_menu_text_like(text: str) -> bool:
+    compact = voice_transcribe_compact_text(text)
+    return bool(compact) and any(voice_transcribe_compact_text(token) in compact for token in AVATAR_CONTEXT_MENU_TOKENS)
+
+
 def voice_duration_text_like(text: str) -> bool:
     compact = voice_transcribe_compact_text(text).replace("“", '"').replace("”", '"').replace("″", '"')
     if not compact:
         return False
     if re.fullmatch(r"\d{1,3}\"", compact):
+        return True
+    if re.fullmatch(r"\d{1,3}[\"']?[\(\[（]?[A-Za-z]{1,2}", compact):
+        return True
+    if re.fullmatch(r"[^0-9A-Za-z\u4e00-\u9fff]{1,3}\d{1,3}[\"']?", compact):
+        return True
+    if re.fullmatch(r"\d{1,3}[\"']?[\(\[（]{1,2}", compact):
         return True
     if re.fullmatch(r"0\d{1,2}", compact):
         return True
@@ -1802,6 +3036,8 @@ def voice_duration_has_transcribed_text_below(
     duration_bottom = float(duration_item.get("bottom") or 0)
     duration_left = float(duration_item.get("left") or 0)
     duration_right = float(duration_item.get("right") or 0)
+    width, _height = image_size
+    is_self_side_voice = float(duration_item.get("center_x") or 0) > width * 0.62
     for item in ocr_items:
         if item is duration_item:
             continue
@@ -1817,8 +3053,17 @@ def voice_duration_has_transcribed_text_below(
             continue
         left = float(item.get("left") or 0)
         right = float(item.get("right") or 0)
-        starts_near_voice = duration_left - 42 <= left <= duration_right + 42
-        extends_like_transcript = right >= duration_right + 40 or len(voice_transcribe_compact_text(text)) >= 4
+        if is_self_side_voice:
+            # Expanded self transcripts are right-aligned with the green voice
+            # bubble and may extend hundreds of pixels to the left.  Their left
+            # edge is therefore not a stable ownership signal.
+            starts_near_voice = abs(right - duration_right) <= 96 or (
+                right >= duration_left - 80 and right <= duration_right + 96
+            )
+            extends_like_transcript = left <= duration_left - 40 or len(voice_transcribe_compact_text(text)) >= 4
+        else:
+            starts_near_voice = duration_left - 42 <= left <= duration_right + 42
+            extends_like_transcript = right >= duration_right + 40 or len(voice_transcribe_compact_text(text)) >= 4
         if starts_near_voice and extends_like_transcript:
             return True
     return False
@@ -1844,21 +3089,154 @@ def voice_transcribe_click_target_from_bounds(
     }
 
 
+def voice_context_anchor_key(target: dict[str, Any] | None) -> str:
+    if not isinstance(target, dict):
+        return ""
+    item = target.get("item") if isinstance(target.get("item"), dict) else {}
+    seed = {
+        "source": str(target.get("source") or ""),
+        "left": round(float(item.get("left") or 0), 1),
+        "top": round(float(item.get("top") or 0), 1),
+        "right": round(float(item.get("right") or 0), 1),
+        "bottom": round(float(item.get("bottom") or 0), 1),
+        "center_y": round(float(item.get("center_y") or 0), 1),
+        "text": str(item.get("text") or ""),
+    }
+    return hashlib.sha1(json.dumps(seed, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:20]
+
+
+def voice_context_anchor_stable_parts(target: dict[str, Any] | None, image_size: tuple[int, int] | None = None) -> dict[str, Any] | None:
+    if not isinstance(target, dict):
+        return None
+    item = target.get("item") if isinstance(target.get("item"), dict) else {}
+    rect = voice_context_anchor_rect_bounds(target)
+    if not rect:
+        return None
+    left, top, right, bottom = rect
+    center_x = float(item.get("center_x") or 0) or (left + right) / 2.0
+    center_y = float(item.get("center_y") or 0) or (top + bottom) / 2.0
+    width = float((image_size or (0, 0))[0] or 0)
+    side = voice_anchor_sender_role(target, image_size)
+    if not side:
+        side = "self" if width > 0 and center_x > width * 0.62 else "unknown"
+    duration_text = str(item.get("voice_duration_text") or item.get("text") or "")
+    duration_match = re.search(r"\d{1,3}", voice_transcribe_compact_text(duration_text))
+    return {
+        "side": side,
+        "y_bucket": round(center_y / 18.0),
+        "x_bucket": round(center_x / 72.0),
+        "duration": duration_match.group(0) if duration_match else "",
+    }
+
+
+def voice_context_anchor_stable_key_from_parts(parts: dict[str, Any], *, y_bucket: int | None = None) -> str:
+    seed = {
+        "side": str(parts.get("side") or ""),
+        "y_bucket": int(parts.get("y_bucket") if y_bucket is None else y_bucket),
+        "x_bucket": int(parts.get("x_bucket") or 0),
+        "duration": str(parts.get("duration") or ""),
+    }
+    return "voice-stable:" + hashlib.sha1(json.dumps(seed, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:20]
+
+
+def voice_context_anchor_stable_key(target: dict[str, Any] | None, image_size: tuple[int, int] | None = None) -> str:
+    parts = voice_context_anchor_stable_parts(target, image_size)
+    if not parts:
+        return ""
+    return voice_context_anchor_stable_key_from_parts(parts)
+
+
+def voice_context_anchor_stable_keys(
+    target: dict[str, Any] | None,
+    image_size: tuple[int, int] | None = None,
+    *,
+    y_bucket_radius: int = 1,
+) -> set[str]:
+    parts = voice_context_anchor_stable_parts(target, image_size)
+    if not parts:
+        return set()
+    center_bucket = int(parts.get("y_bucket") or 0)
+    return {
+        voice_context_anchor_stable_key_from_parts(parts, y_bucket=bucket)
+        for bucket in range(center_bucket - y_bucket_radius, center_bucket + y_bucket_radius + 1)
+    }
+
+
+def voice_context_anchor_exclusion_keys(target: dict[str, Any] | None, image_size: tuple[int, int] | None = None) -> set[str]:
+    keys = {voice_context_anchor_key(target), voice_context_anchor_stable_key(target, image_size)}
+    keys.update(voice_context_anchor_stable_keys(target, image_size))
+    if isinstance(target, dict):
+        for key_name in ("anchor_key", "anchor_stable_key", "anchor_structural_key"):
+            value = str(target.get(key_name) or "").strip()
+            if value:
+                keys.add(value)
+    return {key for key in keys if key}
+
+
+def mark_voice_context_anchor_keys(target: dict[str, Any], image_size: tuple[int, int]) -> dict[str, Any]:
+    target["anchor_key"] = voice_context_anchor_key(target)
+    target["anchor_stable_key"] = voice_context_anchor_stable_key(target, image_size)
+    return target
+
+
+def voice_context_anchor_is_excluded(
+    target: dict[str, Any],
+    image_size: tuple[int, int],
+    excluded_anchor_keys: set[str] | None,
+) -> bool:
+    excluded = excluded_anchor_keys or set()
+    return bool(excluded and voice_context_anchor_exclusion_keys(target, image_size) & excluded)
+
+
+def voice_target_center_y(target: dict[str, Any] | None) -> float:
+    if not isinstance(target, dict):
+        return 0.0
+    item = target.get("item") if isinstance(target.get("item"), dict) else {}
+    if item.get("center_y") is not None:
+        return float(item.get("center_y") or 0)
+    bounds = target.get("click_bounds")
+    if isinstance(bounds, list) and len(bounds) >= 4:
+        return (float(bounds[1]) + float(bounds[3])) / 2.0
+    return 0.0
+
+
 def voice_duration_context_click_bounds(item: dict[str, Any], image_size: tuple[int, int]) -> list[int]:
     width, height = image_size
     split_x = session_split_x(width)
-    left = max(split_x + 16, int(float(item.get("left") or 0)) - 18)
+    item_left = int(float(item.get("left") or 0))
+    item_right = int(float(item.get("right") or 0))
+    item_center_x = float(item.get("center_x") or 0)
+    is_self_side_voice = item_center_x > width * 0.62
+    left = max(split_x + 16, item_left - (42 if is_self_side_voice else 18))
     top = max(chat_header_cutoff_y(height), int(float(item.get("top") or 0)) - 16)
-    right = min(width - 18, int(float(item.get("right") or 0)) + 78)
+    # Right-side/self voice bubbles sit immediately beside the avatar. Keep the
+    # context-menu click inside the green bubble so jitter cannot land on avatar.
+    right_padding = 18 if is_self_side_voice else 78
+    right_limit = width - 104 if is_self_side_voice else width - 18
+    right = min(right_limit, item_right + right_padding)
     bottom = min(height - DEFAULT_MESSAGE_BOTTOM_EXCLUDE_PX, int(float(item.get("bottom") or 0)) + 16)
     if right <= left:
-        right = min(width - 18, left + 64)
+        right = min(right_limit, left + 64)
     if bottom <= top:
         bottom = min(height - DEFAULT_MESSAGE_BOTTOM_EXCLUDE_PX, top + 28)
     return [left, top, right, bottom]
 
 
 def voice_duration_context_click_target(duration_target: dict[str, Any], image_size: tuple[int, int]) -> dict[str, Any] | None:
+    source = str(duration_target.get("source") or "")
+    if source in {
+        "visual_self_voice_bubble_context_menu_anchor",
+        "visual_customer_voice_bubble_context_menu_anchor",
+        "parser_voice_message_context_menu_anchor",
+    }:
+        bounds = [int(value) for value in duration_target.get("click_bounds") or []]
+        if len(bounds) >= 4:
+            return voice_transcribe_click_target_from_bounds(
+                source=source,
+                label=str(duration_target.get("label") or "WeChat voice bubble context-menu anchor"),
+                bounds=bounds[:4],
+                item=duration_target.get("item") if isinstance(duration_target.get("item"), dict) else None,
+            )
     item = duration_target.get("item") if isinstance(duration_target, dict) else None
     if not isinstance(item, dict) or not item:
         return None
@@ -1868,6 +3246,1494 @@ def voice_duration_context_click_target(duration_target: dict[str, Any], image_s
         label="Right-click anchor for WeChat voice bubble context menu",
         bounds=bounds,
         item=item,
+    )
+
+
+def message_rect_bounds(message: dict[str, Any]) -> list[float] | None:
+    rect = message.get("bubble_rect") if isinstance(message, dict) else None
+    if isinstance(rect, dict):
+        values = [rect.get("left"), rect.get("top"), rect.get("right"), rect.get("bottom")]
+    elif isinstance(rect, (list, tuple)) and len(rect) >= 4:
+        values = list(rect[:4])
+    else:
+        return None
+    try:
+        left, top, right, bottom = [float(value) for value in values]
+    except (TypeError, ValueError):
+        return None
+    if right <= left or bottom <= top:
+        return None
+    return [left, top, right, bottom]
+
+
+def voice_context_anchor_rect_bounds(anchor: dict[str, Any] | None) -> list[float] | None:
+    if not isinstance(anchor, dict):
+        return None
+    item = anchor.get("item") if isinstance(anchor.get("item"), dict) else {}
+    rect = item.get("parser_bubble_rect")
+    if isinstance(rect, (list, tuple)) and len(rect) >= 4:
+        try:
+            left, top, right, bottom = [float(value) for value in rect[:4]]
+        except (TypeError, ValueError):
+            left = top = right = bottom = 0.0
+    else:
+        try:
+            left = float(item.get("left") or 0)
+            top = float(item.get("top") or 0)
+            right = float(item.get("right") or 0)
+            bottom = float(item.get("bottom") or 0)
+        except (TypeError, ValueError):
+            left = top = right = bottom = 0.0
+    if right <= left or bottom <= top:
+        bounds = anchor.get("click_bounds")
+        if isinstance(bounds, list) and len(bounds) >= 4:
+            try:
+                left, top, right, bottom = [float(value) for value in bounds[:4]]
+            except (TypeError, ValueError):
+                return None
+    if right <= left or bottom <= top:
+        return None
+    return [left, top, right, bottom]
+
+
+def voice_anchor_sender_role(anchor: dict[str, Any] | None, image_size: tuple[int, int] | None = None) -> str:
+    if not isinstance(anchor, dict):
+        return ""
+    item = anchor.get("item") if isinstance(anchor.get("item"), dict) else {}
+    role = str(item.get("sender_role") or "").strip().lower()
+    if role in {"self", "sales", "sales_candidate"}:
+        return "self"
+    if role in {"customer", "contact"}:
+        return "customer"
+    rect = voice_context_anchor_rect_bounds(anchor)
+    width = float((image_size or (0, 0))[0] or 0)
+    if rect and width > 0:
+        center_x = (rect[0] + rect[2]) / 2.0
+        return "self" if center_x > width * 0.62 else "customer"
+    return ""
+
+
+def voice_anchor_duration_number(anchor: dict[str, Any] | None) -> str:
+    if not isinstance(anchor, dict):
+        return ""
+    item = anchor.get("item") if isinstance(anchor.get("item"), dict) else {}
+    text = str(item.get("voice_duration_text") or item.get("text") or "")
+    match = re.search(r"\d{1,3}", voice_transcribe_compact_text(text))
+    return match.group(0) if match else ""
+
+
+def message_voice_duration_number(message: dict[str, Any]) -> str:
+    value = message.get("voice_duration")
+    if isinstance(value, (int, float)) and value > 0:
+        return str(int(value))
+    for key in ("voice_duration_text", "content", "content_raw_ocr"):
+        text = str(message.get(key) or "")
+        match = re.search(r"\d{1,3}", voice_transcribe_compact_text(text))
+        if match:
+            return match.group(0)
+    ocr_items = message.get("ocr_items")
+    if isinstance(ocr_items, list):
+        for item in ocr_items:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or "")
+            match = re.search(r"\d{1,3}", voice_transcribe_compact_text(text))
+            if match:
+                return match.group(0)
+    return ""
+
+
+def voice_transcript_layout_matches_rect(
+    message: dict[str, Any],
+    voice_rect: list[float],
+    *,
+    role: str,
+    allow_pre_click_shift: bool = False,
+) -> bool:
+    message_rect = message_rect_bounds(message)
+    if not message_rect:
+        return False
+    voice_left, voice_top, voice_right, voice_bottom = voice_rect
+    msg_left, msg_top, msg_right, msg_bottom = message_rect
+    voice_width = max(1.0, voice_right - voice_left)
+    voice_height = max(1.0, voice_bottom - voice_top)
+    gap = msg_top - voice_bottom
+    min_gap = -max(10.0, voice_height * 0.35)
+    max_gap = max(96.0, voice_height * 2.8)
+    if allow_pre_click_shift:
+        min_gap = -max(72.0, voice_height * 2.2)
+        max_gap = max(128.0, voice_height * 3.4)
+    if gap < min_gap or gap > max_gap:
+        return False
+    if msg_bottom <= voice_top:
+        return False
+    align_tolerance = max(28.0, min(64.0, voice_width * 0.45))
+    if role == "self":
+        right_aligned = abs(msg_right - voice_right) <= max(42.0, align_tolerance)
+        same_column = msg_left <= voice_right and msg_right >= voice_left - max(220.0, voice_width * 1.8)
+        return bool(right_aligned and same_column)
+    left_aligned = abs(msg_left - voice_left) <= max(42.0, align_tolerance)
+    same_column = msg_right >= voice_left + min(48.0, voice_width * 0.5) and msg_left <= voice_right + max(90.0, voice_width * 0.8)
+    return bool(left_aligned and same_column)
+
+
+def voice_message_matches_clicked_anchor(
+    message: dict[str, Any],
+    anchor: dict[str, Any] | None,
+    image_size: tuple[int, int],
+) -> bool:
+    if not voice_message_role_matches_clicked_anchor(message, anchor, image_size):
+        return False
+    anchor_duration = voice_anchor_duration_number(anchor)
+    message_duration = message_voice_duration_number(message)
+    return not (anchor_duration and message_duration and anchor_duration != message_duration)
+
+
+def voice_message_role_matches_clicked_anchor(
+    message: dict[str, Any],
+    anchor: dict[str, Any] | None,
+    image_size: tuple[int, int],
+) -> bool:
+    if not isinstance(message, dict) or not isinstance(anchor, dict):
+        return False
+    if not message_is_voice_record(message):
+        return False
+    anchor_role = voice_anchor_sender_role(anchor, image_size)
+    message_role = str(message.get("sender_role") or message.get("sender") or "").strip().lower()
+    if anchor_role == "self" and message_role not in {"self", "sales", "sales_candidate"}:
+        return False
+    if anchor_role == "customer" and message_role not in {"customer", "contact"}:
+        return False
+    return True
+
+
+def message_has_same_row_avatar_structure(message: dict[str, Any]) -> bool:
+    alignment = message.get("avatar_alignment")
+    if not isinstance(alignment, dict):
+        return False
+    if str(alignment.get("role") or "").strip().lower() in {"self", "customer"}:
+        return True
+    for side in ("customer", "self"):
+        details = alignment.get(side)
+        if isinstance(details, dict) and bool(details.get("present")):
+            return True
+    return False
+
+
+def message_is_combined_voice_transcript_record(message: dict[str, Any]) -> bool:
+    if not message_is_voice_record(message) or message_is_untranscribed_voice_record(message):
+        return False
+    flags = message.get("quality_flags")
+    if not isinstance(flags, list) or "voice_duration_prefix_removed" not in flags:
+        return False
+    raw = str(message.get("content_raw_ocr") or "").strip()
+    content = str(message.get("content_clean") or message.get("content") or "").strip()
+    return bool(raw and content and raw != content)
+
+
+def combined_voice_transcript_matches_clicked_anchor(
+    message: dict[str, Any],
+    anchor: dict[str, Any] | None,
+    image_size: tuple[int, int],
+    *,
+    after_messages: list[dict[str, Any]] | None = None,
+) -> bool:
+    return bool(
+        combined_voice_transcript_anchor_match_evidence(
+            message,
+            anchor,
+            image_size,
+            after_messages=after_messages,
+        ).get("accepted")
+    )
+
+
+def combined_voice_transcript_anchor_match_evidence(
+    message: dict[str, Any],
+    anchor: dict[str, Any] | None,
+    image_size: tuple[int, int],
+    *,
+    after_messages: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    anchor_duration = voice_anchor_duration_number(anchor)
+    message_duration = message_voice_duration_number(message)
+    evidence: dict[str, Any] = {
+        "accepted": False,
+        "strategy": "rejected",
+        "anchor_duration": anchor_duration,
+        "message_duration": message_duration,
+        "duration_conflict": bool(
+            anchor_duration and message_duration and anchor_duration != message_duration
+        ),
+        "structural_candidate_count": 0,
+    }
+    if not voice_message_role_matches_clicked_anchor(message, anchor, image_size):
+        evidence["reason"] = "role_or_voice_structure_mismatch"
+        return evidence
+    message_rect = message_rect_bounds(message)
+    anchor_rect = voice_context_anchor_rect_bounds(anchor)
+    if not message_rect or not anchor_rect:
+        evidence["reason"] = "missing_layout_bounds"
+        return evidence
+    role = voice_anchor_sender_role(anchor, image_size)
+    anchor_left, anchor_top, anchor_right, anchor_bottom = anchor_rect
+    message_left, message_top, message_right, _message_bottom = message_rect
+    row_height = max(1.0, anchor_bottom - anchor_top)
+    max_row_shift = max(84.0, row_height * 4.0)
+    if abs(message_top - anchor_top) > max_row_shift:
+        evidence["reason"] = "clicked_row_too_far"
+        return evidence
+    if role == "self":
+        if abs(message_right - anchor_right) > max(48.0, row_height * 2.0):
+            evidence["reason"] = "self_lane_mismatch"
+            return evidence
+    elif abs(message_left - anchor_left) > max(48.0, row_height * 2.0):
+        evidence["reason"] = "customer_lane_mismatch"
+        return evidence
+
+    # Duration OCR is supporting evidence, not identity. It may briefly change
+    # after WeChat expands a transcript. A conflicting duration is accepted only
+    # when role, lane and local row leave exactly one structural candidate.
+    comparable: list[tuple[float, dict[str, Any]]] = []
+    for candidate in after_messages or [message]:
+        if not isinstance(candidate, dict) or not message_is_combined_voice_transcript_record(candidate):
+            continue
+        if not voice_message_role_matches_clicked_anchor(candidate, anchor, image_size):
+            continue
+        candidate_rect = message_rect_bounds(candidate)
+        if not candidate_rect:
+            continue
+        candidate_left, candidate_top, candidate_right, _candidate_bottom = candidate_rect
+        lane_delta = abs(candidate_right - anchor_right) if role == "self" else abs(candidate_left - anchor_left)
+        row_delta = abs(candidate_top - anchor_top)
+        if row_delta <= max_row_shift:
+            comparable.append((row_delta * 4.0 + lane_delta, candidate))
+    evidence["structural_candidate_count"] = len(comparable)
+    if not comparable:
+        evidence["reason"] = "no_structural_candidate"
+        return evidence
+    comparable.sort(key=lambda entry: entry[0])
+    if evidence["duration_conflict"]:
+        accepted = len(comparable) == 1 and comparable[0][1] is message
+        evidence.update(
+            {
+                "accepted": accepted,
+                "strategy": "unique_structure_with_duration_conflict",
+                "reason": "unique_structural_match" if accepted else "ambiguous_duration_conflict",
+            }
+        )
+        return evidence
+    accepted = comparable[0][1] is message
+    evidence.update(
+        {
+            "accepted": accepted,
+            "strategy": "nearest_structure_with_duration_support",
+            "reason": "nearest_structural_match" if accepted else "another_candidate_is_nearer",
+        }
+    )
+    return evidence
+
+
+def message_is_plausible_voice_transcript_for_anchor(
+    message: dict[str, Any],
+    anchor: dict[str, Any] | None,
+    image_size: tuple[int, int],
+    *,
+    after_messages: list[dict[str, Any]] | None = None,
+) -> bool:
+    if not isinstance(message, dict):
+        return False
+    content = str(message.get("content_clean") or message.get("content") or "").strip()
+    if not content:
+        return False
+    if voice_duration_text_like(content):
+        return False
+    if voice_transcribe_button_text_like(content) or voice_transcribe_collapse_text_like(content):
+        return False
+    if text_message_context_menu_text_like(content) or avatar_context_menu_text_like(content):
+        return False
+    # The parser intentionally merges a duration row and its expanded transcript
+    # into one voice record. That record owns the original voice-row avatar, so it
+    # must be matched before applying the no-avatar rule for split text records.
+    if message_is_combined_voice_transcript_record(message):
+        return combined_voice_transcript_matches_clicked_anchor(
+            message,
+            anchor,
+            image_size,
+            after_messages=after_messages,
+        )
+    # A normal message owns an avatar on its row. WeChat's expanded voice text
+    # sits below the voice bubble and does not own a second row-level avatar.
+    if message_has_same_row_avatar_structure(message):
+        return False
+    message_rect = message_rect_bounds(message)
+    anchor_rect = voice_context_anchor_rect_bounds(anchor)
+    if not message_rect or not anchor_rect:
+        return False
+    role = voice_anchor_sender_role(anchor, image_size)
+    matching_voice_rects: list[list[float]] = []
+    for candidate in after_messages or []:
+        if not isinstance(candidate, dict) or candidate is message:
+            continue
+        if not voice_message_matches_clicked_anchor(candidate, anchor, image_size):
+            continue
+        candidate_rect = message_rect_bounds(candidate)
+        if not candidate_rect:
+            continue
+        if voice_transcript_layout_matches_rect(message, candidate_rect, role=role):
+            matching_voice_rects.append(candidate_rect)
+    # Do not bind against the pre-click coordinates. Expanding text can move the
+    # viewport; without exactly one post-click voice/text pair, ownership is unknown.
+    return len(matching_voice_rects) == 1
+
+
+def rects_overlap_or_near(first: list[float], second: list[float], *, pad: float = 8.0) -> bool:
+    return not (
+        first[2] < second[0] - pad
+        or first[0] > second[2] + pad
+        or first[3] < second[1] - pad
+        or first[1] > second[3] + pad
+    )
+
+
+def message_is_voice_record(message: dict[str, Any]) -> bool:
+    message_type = str(message.get("type") or message.get("message_type") or message.get("content_type") or "").lower()
+    if message_type in {"voice", "audio"}:
+        return True
+    if message.get("voice_duration") is not None or message.get("voice_duration_text"):
+        return True
+    flags = message.get("quality_flags")
+    return isinstance(flags, list) and "untranscribed_voice_placeholder" in flags
+
+
+def message_is_untranscribed_voice_record(message: dict[str, Any]) -> bool:
+    flags = message.get("quality_flags")
+    if isinstance(flags, list) and "untranscribed_voice_placeholder" in flags:
+        return True
+    content = str(message.get("content_clean") or message.get("content") or "")
+    compact = voice_transcribe_compact_text(content)
+    return bool("语音" in compact and voice_duration_text_like(compact))
+
+
+def message_is_text_record(message: dict[str, Any]) -> bool:
+    message_type = str(message.get("type") or message.get("message_type") or message.get("content_type") or "").lower()
+    return message_type == "text"
+
+
+def message_voice_has_transcribed_text_below(
+    message: dict[str, Any],
+    parsed_messages: list[dict[str, Any]] | None,
+    image_size: tuple[int, int],
+) -> bool:
+    if not parsed_messages or not message_is_voice_record(message):
+        return False
+    voice_rect = message_rect_bounds(message)
+    if not voice_rect:
+        return False
+    role = str(message.get("sender_role") or message.get("sender") or "").strip().lower()
+    if role in {"sales", "sales_candidate"}:
+        role = "self"
+    if role not in {"self", "customer"}:
+        width = float(image_size[0] if image_size else 0)
+        center_x = (voice_rect[0] + voice_rect[2]) / 2.0
+        role = "self" if width > 0 and center_x > width * 0.62 else "customer"
+    for candidate in parsed_messages:
+        if not isinstance(candidate, dict) or candidate is message:
+            continue
+        if message_is_voice_record(candidate):
+            continue
+        content = str(candidate.get("content_clean") or candidate.get("content") or "").strip()
+        if not content or message_is_untranscribed_voice_record(candidate) or is_message_noise(content):
+            continue
+        if not message_is_text_record(candidate):
+            candidate_type = str(candidate.get("type") or candidate.get("message_type") or "").lower()
+            if candidate_type not in {"", "unknown"}:
+                continue
+        if voice_transcript_layout_matches_rect(candidate, voice_rect, role=role):
+            return True
+    return False
+
+
+def component_bounds(component: dict[str, Any]) -> list[float] | None:
+    try:
+        left = float(component.get("left") or 0)
+        top = float(component.get("top") or 0)
+        right = float(component.get("right") or 0)
+        bottom = float(component.get("bottom") or 0)
+    except (TypeError, ValueError):
+        return None
+    if right <= left or bottom <= top:
+        return None
+    return [left, top, right, bottom]
+
+
+def parsed_message_overlapping_bounds(
+    bounds: list[float],
+    parsed_messages: list[dict[str, Any]] | None,
+    *,
+    pad: float = 8.0,
+) -> dict[str, Any] | None:
+    if not parsed_messages:
+        return None
+    best_message: dict[str, Any] | None = None
+    best_area = -1.0
+    for message in parsed_messages:
+        if not isinstance(message, dict):
+            continue
+        rect = message_rect_bounds(message)
+        if not rect or not rects_overlap_or_near(bounds, rect, pad=pad):
+            continue
+        overlap_left = max(bounds[0], rect[0])
+        overlap_top = max(bounds[1], rect[1])
+        overlap_right = min(bounds[2], rect[2])
+        overlap_bottom = min(bounds[3], rect[3])
+        area = max(0.0, overlap_right - overlap_left) * max(0.0, overlap_bottom - overlap_top)
+        if area > best_area:
+            best_area = area
+            best_message = message
+    return best_message
+
+
+def visual_component_rejected_by_parsed_text(
+    component: dict[str, Any],
+    parsed_messages: list[dict[str, Any]] | None,
+) -> bool:
+    bounds = component_bounds(component)
+    if not bounds:
+        return False
+    message = parsed_message_overlapping_bounds(bounds, parsed_messages, pad=10.0)
+    return bool(message and message_is_text_record(message) and not message_is_voice_record(message))
+
+
+def visual_component_overlaps_transcribed_parser_voice(
+    component: dict[str, Any],
+    parsed_messages: list[dict[str, Any]] | None,
+    image_size: tuple[int, int],
+) -> bool:
+    bounds = component_bounds(component)
+    if not bounds or not parsed_messages:
+        return False
+    for message in parsed_messages:
+        if not isinstance(message, dict) or not message_is_voice_record(message):
+            continue
+        rect = message_rect_bounds(message)
+        if not rect or not rects_overlap_or_near(bounds, rect, pad=18.0):
+            continue
+        if not message_is_untranscribed_voice_record(message):
+            return True
+        if message_voice_has_transcribed_text_below(message, parsed_messages, image_size):
+            return True
+    return False
+
+
+def message_voice_context_anchor_targets(
+    parsed_messages: list[dict[str, Any]] | None,
+    image_size: tuple[int, int],
+    *,
+    excluded_anchor_keys: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    if not parsed_messages:
+        return []
+    width, height = image_size
+    split_x = session_split_x(width)
+    top_limit = chat_header_cutoff_y(height)
+    bottom_limit = height - max(DEFAULT_MESSAGE_BOTTOM_EXCLUDE_PX, int(height * 0.10))
+    excluded = excluded_anchor_keys or set()
+    targets: list[dict[str, Any]] = []
+    for message in parsed_messages:
+        if not isinstance(message, dict) or not message_is_untranscribed_voice_record(message):
+            continue
+        if message_voice_has_transcribed_text_below(message, parsed_messages, image_size):
+            continue
+        rect = message_rect_bounds(message)
+        if not rect:
+            continue
+        left, top, right, bottom = rect
+        center_x = (left + right) / 2.0
+        center_y = (top + bottom) / 2.0
+        if center_y < top_limit or center_y > bottom_limit:
+            continue
+        if right < split_x + 20:
+            continue
+        ocr_items = message.get("ocr_items")
+        duration_item = None
+        if isinstance(ocr_items, list):
+            duration_item = next((item for item in ocr_items if isinstance(item, dict) and voice_duration_item_like(item)), None)
+        if isinstance(duration_item, dict):
+            item = dict(duration_item)
+        else:
+            item = {
+                "text": str(message.get("voice_duration_text") or "[语音]"),
+                "left": left,
+                "top": top,
+                "right": right,
+                "bottom": bottom,
+                "center_x": center_x,
+                "center_y": center_y,
+                "confidence": float(message.get("ocr_confidence") or 0.0),
+            }
+        is_self_side = str(message.get("sender_role") or "").lower() in {"self", "sales"} or center_x > width * 0.62
+        if is_self_side:
+            safe_left = max(split_x + 16, int(left) + 8)
+            safe_right = min(width - 104, int(left) + min(112, max(44, int((right - left) * 0.72))))
+        else:
+            safe_left = max(split_x + 16, int(left) + 8)
+            safe_right = min(width - 18, int(right) - 8)
+        safe_top = max(top_limit, int(top) + 5)
+        safe_bottom = min(bottom_limit, int(bottom) - 5)
+        if safe_right <= safe_left:
+            safe_right = min(width - (104 if is_self_side else 18), safe_left + 44)
+        if safe_bottom <= safe_top:
+            safe_bottom = min(bottom_limit, safe_top + 20)
+        target = voice_transcribe_click_target_from_bounds(
+            source="parser_voice_message_context_menu_anchor",
+            label="Parser-confirmed WeChat voice message context-menu anchor",
+            bounds=[safe_left, safe_top, safe_right, safe_bottom],
+            item={
+                **item,
+                "message_id": str(message.get("id") or ""),
+                "message_type": str(message.get("type") or ""),
+                "sender_role": str(message.get("sender_role") or ""),
+                "avatar_alignment": message.get("avatar_alignment") if isinstance(message.get("avatar_alignment"), dict) else {},
+                "parser_bubble_rect": [left, top, right, bottom],
+            },
+        )
+        mark_voice_context_anchor_keys(target, image_size)
+        if voice_context_anchor_is_excluded(target, image_size, excluded):
+            continue
+        targets.append(target)
+    return targets
+
+
+def voice_duration_context_anchor_targets(
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    excluded_anchor_keys: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    anchors: list[dict[str, Any]] = []
+    excluded = excluded_anchor_keys or set()
+    for item in ocr_items:
+        if not voice_duration_item_like(item):
+            continue
+        if not voice_transcribe_item_is_in_chat_surface(item, image_size):
+            continue
+        anchor = voice_duration_context_click_target({"item": item}, image_size)
+        if anchor:
+            mark_voice_context_anchor_keys(anchor, image_size)
+            if voice_context_anchor_is_excluded(anchor, image_size, excluded):
+                continue
+            anchors.append(anchor)
+    return anchors
+
+
+def find_voice_duration_context_anchor_target(
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    excluded_anchor_keys: set[str] | None = None,
+) -> dict[str, Any] | None:
+    anchors = [
+        anchor
+        for anchor in voice_duration_context_anchor_targets(
+            ocr_items,
+            image_size,
+            excluded_anchor_keys=excluded_anchor_keys,
+        )
+        if not voice_duration_has_transcribed_text_below(
+            anchor.get("item") if isinstance(anchor.get("item"), dict) else {},
+            ocr_items,
+            image_size,
+        )
+    ]
+    if not anchors:
+        return None
+    return max(anchors, key=lambda target: float(((target.get("item") or {}).get("center_y") or 0)))
+
+
+def green_voice_bubble_pixel(red: int, green: int, blue: int) -> bool:
+    return bool(
+        green >= 135
+        and 70 <= red <= 190
+        and 70 <= blue <= 190
+        and green - red >= 35
+        and green - blue >= 20
+    )
+
+
+def customer_voice_bubble_pixel(red: int, green: int, blue: int) -> bool:
+    avg = (red + green + blue) / 3.0
+    spread = max(red, green, blue) - min(red, green, blue)
+    return bool(210.0 <= avg <= 245.0 and spread <= 18)
+
+
+def find_visual_customer_voice_context_anchor_targets(
+    image: Image.Image,
+    image_size: tuple[int, int],
+    ocr_items: list[dict[str, Any]] | None = None,
+    excluded_anchor_keys: set[str] | None = None,
+    parsed_messages: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    if image is None:
+        return []
+    try:
+        rgb = image.convert("RGB")
+    except Exception:
+        return []
+    width, height = image_size
+    split_x = session_split_x(width)
+    top_limit = chat_header_cutoff_y(height)
+    bottom_limit = height - max(DEFAULT_MESSAGE_BOTTOM_EXCLUDE_PX, int(height * 0.10))
+    left_limit = max(split_x + 48, int(width * 0.40))
+    right_limit = min(width - 18, max(split_x + 360, int(width * 0.74)))
+    row_runs: list[tuple[int, int, int, int]] = []
+    for y in range(max(0, top_limit), min(height, bottom_limit)):
+        xs: list[int] = []
+        for x in range(left_limit, max(left_limit, right_limit)):
+            red, green, blue = rgb.getpixel((x, y))
+            if customer_voice_bubble_pixel(red, green, blue):
+                xs.append(x)
+        if xs:
+            row_runs.append((y, min(xs), max(xs), len(xs)))
+    if not row_runs:
+        return []
+
+    components: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for y, row_left, row_right, count in row_runs:
+        if current is None or y > int(current["bottom"]) + 2:
+            if current is not None:
+                components.append(current)
+            current = {"top": y, "bottom": y, "left": row_left, "right": row_right, "gray_count": count}
+            continue
+        current["bottom"] = y
+        current["left"] = min(int(current["left"]), row_left)
+        current["right"] = max(int(current["right"]), row_right)
+        current["gray_count"] = int(current["gray_count"]) + count
+    if current is not None:
+        components.append(current)
+
+    candidates: list[dict[str, Any]] = []
+    excluded = excluded_anchor_keys or set()
+    for component in components:
+        left = int(component["left"])
+        right = int(component["right"])
+        top = int(component["top"])
+        bottom = int(component["bottom"])
+        bubble_width = right - left + 1
+        bubble_height = bottom - top + 1
+        center_x = (left + right) / 2.0
+        center_y = (top + bottom) / 2.0
+        gray_count = int(component.get("gray_count") or 0)
+        if bubble_width < 92 or bubble_width > 260:
+            continue
+        if bubble_height < 28 or bubble_height > 72:
+            continue
+        if left < split_x + 42 or left > split_x + 170:
+            continue
+        if center_x > split_x + 320 or center_x > width * 0.70:
+            continue
+        if gray_count < 850:
+            continue
+        if visual_component_rejected_by_parsed_text(component, parsed_messages):
+            continue
+        if visual_component_overlaps_transcribed_parser_voice(component, parsed_messages, image_size):
+            continue
+        if visual_customer_voice_component_overlaps_text(component, ocr_items or [], image_size):
+            continue
+        if visual_customer_voice_component_has_transcribed_text_below(component, ocr_items or [], image_size):
+            continue
+        safe_left = max(split_x + 16, left + 8)
+        safe_right = min(width - 18, right - 8)
+        safe_top = max(top_limit, top + 5)
+        safe_bottom = min(bottom_limit, bottom - 5)
+        if safe_right <= safe_left:
+            safe_right = min(width - 18, safe_left + 44)
+        if safe_bottom <= safe_top:
+            safe_bottom = min(bottom_limit, safe_top + 20)
+        bounds = [safe_left, safe_top, safe_right, safe_bottom]
+        target = voice_transcribe_click_target_from_bounds(
+            source="visual_customer_voice_bubble_context_menu_anchor",
+            label="Visually detected left-side WeChat customer voice bubble context-menu anchor",
+            bounds=bounds,
+            item={
+                "text": "",
+                "left": float(left),
+                "top": float(top),
+                "right": float(right),
+                "bottom": float(bottom),
+                "center_x": center_x,
+                "center_y": center_y,
+                "confidence": 0.0,
+                "visual_gray_count": gray_count,
+                "visual_bubble_size": [bubble_width, bubble_height],
+            },
+        )
+        mark_voice_context_anchor_keys(target, image_size)
+        if voice_context_anchor_is_excluded(target, image_size, excluded):
+            continue
+        candidates.append(target)
+    return sorted(candidates, key=lambda target: float(((target.get("item") or {}).get("center_y") or 0)))
+
+
+def find_visual_customer_voice_context_anchor_target(
+    image: Image.Image,
+    image_size: tuple[int, int],
+    ocr_items: list[dict[str, Any]] | None = None,
+    excluded_anchor_keys: set[str] | None = None,
+    parsed_messages: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    targets = find_visual_customer_voice_context_anchor_targets(
+        image,
+        image_size,
+        ocr_items,
+        excluded_anchor_keys,
+        parsed_messages,
+    )
+    return targets[-1] if targets else None
+
+
+def visual_customer_voice_component_has_transcribed_text_below(
+    component: dict[str, Any],
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+) -> bool:
+    return visual_voice_component_has_transcribed_layout_below(component, ocr_items, image_size, role="customer")
+
+
+def visual_voice_component_has_transcribed_layout_below(
+    component: dict[str, Any],
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    role: str,
+) -> bool:
+    voice_rect = component_bounds(component)
+    if not voice_rect:
+        return False
+    for item in ocr_items:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        if voice_duration_item_like(item) or voice_transcribe_button_text_like(text):
+            continue
+        if voice_transcribe_collapse_text_like(text) or text_message_context_menu_text_like(text):
+            continue
+        if is_message_noise(text):
+            continue
+        if not voice_transcribe_item_is_in_chat_surface(item, image_size):
+            continue
+        message = {
+            "type": "text",
+            "content": text,
+            "bubble_rect": [
+                float(item.get("left") or 0),
+                float(item.get("top") or 0),
+                float(item.get("right") or 0),
+                float(item.get("bottom") or 0),
+            ],
+        }
+        if voice_transcript_layout_matches_rect(message, voice_rect, role=role):
+            return True
+    return False
+
+
+def visual_customer_voice_component_overlaps_text(
+    component: dict[str, Any],
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+) -> bool:
+    left = float(component.get("left") or 0)
+    top = float(component.get("top") or 0)
+    right = float(component.get("right") or 0)
+    bottom = float(component.get("bottom") or 0)
+    if right <= left or bottom <= top:
+        return False
+    expanded_left = left - 8
+    expanded_top = top - 8
+    expanded_right = right + 8
+    expanded_bottom = bottom + 8
+    for item in ocr_items:
+        text = str(item.get("text") or "").strip()
+        if not text or voice_duration_item_like(item) or voice_transcribe_button_text_like(text) or is_message_noise(text):
+            continue
+        if not voice_transcribe_item_is_in_chat_surface(item, image_size):
+            continue
+        center_x = float(item.get("center_x") or 0)
+        center_y = float(item.get("center_y") or 0)
+        if expanded_left <= center_x <= expanded_right and expanded_top <= center_y <= expanded_bottom:
+            return True
+    return False
+
+
+def find_visual_self_voice_context_anchor_targets(
+    image: Image.Image,
+    image_size: tuple[int, int],
+    ocr_items: list[dict[str, Any]] | None = None,
+    excluded_anchor_keys: set[str] | None = None,
+    parsed_messages: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    if image is None:
+        return []
+    try:
+        rgb = image.convert("RGB")
+    except Exception:
+        return []
+    width, height = image_size
+    split_x = session_split_x(width)
+    top_limit = chat_header_cutoff_y(height)
+    bottom_limit = height - max(DEFAULT_MESSAGE_BOTTOM_EXCLUDE_PX, int(height * 0.10))
+    left_limit = max(split_x + 120, int(width * 0.58))
+    right_limit = max(left_limit + 1, width - 18)
+    row_runs: list[tuple[int, int, int, int]] = []
+    for y in range(max(0, top_limit), min(height, bottom_limit)):
+        xs: list[int] = []
+        for x in range(left_limit, min(width, right_limit)):
+            red, green, blue = rgb.getpixel((x, y))
+            if green_voice_bubble_pixel(red, green, blue):
+                xs.append(x)
+        if not xs:
+            continue
+        row_runs.append((y, min(xs), max(xs), len(xs)))
+    if not row_runs:
+        return []
+
+    components: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for y, row_left, row_right, count in row_runs:
+        if current is None or y > int(current["bottom"]) + 2:
+            if current is not None:
+                components.append(current)
+            current = {"top": y, "bottom": y, "left": row_left, "right": row_right, "green_count": count}
+            continue
+        current["bottom"] = y
+        current["left"] = min(int(current["left"]), row_left)
+        current["right"] = max(int(current["right"]), row_right)
+        current["green_count"] = int(current["green_count"]) + count
+    if current is not None:
+        components.append(current)
+
+    candidates: list[dict[str, Any]] = []
+    excluded = excluded_anchor_keys or set()
+    for component in components:
+        left = int(component["left"])
+        right = int(component["right"])
+        top = int(component["top"])
+        bottom = int(component["bottom"])
+        bubble_width = right - left + 1
+        bubble_height = bottom - top + 1
+        center_x = (left + right) / 2.0
+        center_y = (top + bottom) / 2.0
+        green_count = int(component.get("green_count") or 0)
+        if bubble_width < 42 or bubble_width > 220:
+            continue
+        if bubble_height < 22 or bubble_height > 76:
+            continue
+        if center_x < width * 0.62 or right < width * 0.70:
+            continue
+        if green_count < 220:
+            continue
+        if visual_component_rejected_by_parsed_text(component, parsed_messages):
+            continue
+        if visual_component_overlaps_transcribed_parser_voice(component, parsed_messages, image_size):
+            continue
+        if visual_self_voice_component_overlaps_text(component, ocr_items or [], image_size):
+            continue
+        if visual_voice_component_has_transcribed_layout_below(component, ocr_items or [], image_size, role="self"):
+            continue
+        safe_left = max(split_x + 16, left + 8)
+        safe_right = min(width - 104, left + min(110, max(44, int(bubble_width * 0.72))))
+        safe_top = max(top_limit, top + 5)
+        safe_bottom = min(bottom_limit, bottom - 5)
+        if safe_right <= safe_left:
+            safe_right = min(width - 104, safe_left + 44)
+        if safe_bottom <= safe_top:
+            safe_bottom = min(bottom_limit, safe_top + 20)
+        bounds = [safe_left, safe_top, safe_right, safe_bottom]
+        target = voice_transcribe_click_target_from_bounds(
+            source="visual_self_voice_bubble_context_menu_anchor",
+            label="Visually detected right-side WeChat voice bubble context-menu anchor",
+            bounds=bounds,
+            item={
+                "text": "",
+                "left": float(left),
+                "top": float(top),
+                "right": float(right),
+                "bottom": float(bottom),
+                "center_x": center_x,
+                "center_y": center_y,
+                "confidence": 0.0,
+                "visual_green_count": green_count,
+                "visual_bubble_size": [bubble_width, bubble_height],
+            },
+        )
+        mark_voice_context_anchor_keys(target, image_size)
+        if voice_context_anchor_is_excluded(target, image_size, excluded):
+            continue
+        candidates.append(target)
+    return sorted(candidates, key=lambda target: float(((target.get("item") or {}).get("center_y") or 0)))
+
+
+def find_visual_self_voice_context_anchor_target(
+    image: Image.Image,
+    image_size: tuple[int, int],
+    ocr_items: list[dict[str, Any]] | None = None,
+    excluded_anchor_keys: set[str] | None = None,
+    parsed_messages: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    targets = find_visual_self_voice_context_anchor_targets(
+        image,
+        image_size,
+        ocr_items,
+        excluded_anchor_keys,
+        parsed_messages,
+    )
+    return targets[-1] if targets else None
+
+
+def visual_self_voice_component_overlaps_text(
+    component: dict[str, Any],
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+) -> bool:
+    left = float(component.get("left") or 0)
+    top = float(component.get("top") or 0)
+    right = float(component.get("right") or 0)
+    bottom = float(component.get("bottom") or 0)
+    if right <= left or bottom <= top:
+        return False
+    expanded_left = left - 8
+    expanded_top = top - 8
+    expanded_right = right + 8
+    expanded_bottom = bottom + 8
+    for item in ocr_items:
+        text = str(item.get("text") or "").strip()
+        if not text or voice_duration_item_like(item) or voice_transcribe_button_text_like(text) or is_message_noise(text):
+            continue
+        if not voice_transcribe_item_is_in_chat_surface(item, image_size):
+            continue
+        center_x = float(item.get("center_x") or 0)
+        center_y = float(item.get("center_y") or 0)
+        if expanded_left <= center_x <= expanded_right and expanded_top <= center_y <= expanded_bottom:
+            return True
+    return False
+
+
+def voice_target_matches_parsed_message(
+    target: dict[str, Any],
+    message: dict[str, Any],
+    image_size: tuple[int, int],
+) -> bool:
+    target_rect = voice_context_anchor_rect_bounds(target)
+    message_rect = message_rect_bounds(message)
+    if not target_rect or not message_rect or not rects_overlap_or_near(target_rect, message_rect, pad=18.0):
+        return False
+    target_role = voice_anchor_sender_role(target, image_size)
+    message_role = str(message.get("sender_role") or message.get("sender") or "").strip().lower()
+    if message_role in {"sales", "sales_candidate"}:
+        message_role = "self"
+    if message_role == "contact":
+        message_role = "customer"
+    if target_role in {"self", "customer"} and message_role in {"self", "customer"} and target_role != message_role:
+        return False
+    target_duration = voice_anchor_duration_number(target)
+    message_duration = message_voice_duration_number(message)
+    return not (target_duration and message_duration and target_duration != message_duration)
+
+
+def normalized_voice_sender_role(value: Any) -> str:
+    role = str(value or "").strip().lower()
+    if role in {"self", "sales", "sales_candidate"}:
+        return "self"
+    if role in {"customer", "contact"}:
+        return "customer"
+    return "unknown"
+
+
+def unified_voice_observation_rect(observation: dict[str, Any]) -> list[float] | None:
+    rect = observation.get("bubble_rect")
+    if isinstance(rect, dict):
+        values = [rect.get("left"), rect.get("top"), rect.get("right"), rect.get("bottom")]
+    elif isinstance(rect, (list, tuple)) and len(rect) >= 4:
+        values = list(rect[:4])
+    else:
+        return None
+    try:
+        left, top, right, bottom = [float(value) for value in values]
+    except (TypeError, ValueError):
+        return None
+    return [left, top, right, bottom] if right > left and bottom > top else None
+
+
+def voice_target_matches_unified_observation(
+    target: dict[str, Any],
+    observation: dict[str, Any],
+    image_size: tuple[int, int],
+) -> bool:
+    source_message = observation.get("source_message")
+    if isinstance(source_message, dict) and source_message:
+        return voice_target_matches_parsed_message(target, source_message, image_size)
+
+    target_rect = voice_context_anchor_rect_bounds(target)
+    observation_rect = unified_voice_observation_rect(observation)
+    if not target_rect or not observation_rect or not rects_overlap_or_near(target_rect, observation_rect, pad=18.0):
+        return False
+    target_role = normalized_voice_sender_role(voice_anchor_sender_role(target, image_size))
+    observation_role = normalized_voice_sender_role(observation.get("sender_role"))
+    if target_role != "unknown" and observation_role != "unknown" and target_role != observation_role:
+        return False
+    target_duration = voice_anchor_duration_number(target)
+    observation_duration = str(observation.get("voice_duration") or "")
+    if not observation_duration:
+        match = re.search(r"\d{1,3}", voice_transcribe_compact_text(observation.get("voice_duration_text")))
+        observation_duration = match.group(0) if match else ""
+    return not (target_duration and observation_duration and target_duration != observation_duration)
+
+
+def normalize_voice_evidence_target(
+    image: Image.Image,
+    target: dict[str, Any],
+    image_size: tuple[int, int],
+) -> dict[str, Any]:
+    normalized = dict(target)
+    anchor_rect = voice_context_anchor_rect_bounds(normalized)
+    source = str(normalized.get("source") or "")
+    click_bounds = normalized.get("click_bounds")
+    if source.startswith("visual_") and isinstance(click_bounds, list) and len(click_bounds) >= 4:
+        anchor_rect = [float(value) for value in click_bounds[:4]]
+    avatar_alignment = message_row_avatar_role_details(image, anchor_rect or [], image_size)
+    avatar_role = str(avatar_alignment.get("role") or "")
+    item = dict(normalized.get("item") or {})
+    expected_role = "self" if "self_voice" in source else ("customer" if "customer_voice" in source else "")
+    if avatar_role in {"self", "customer"} and (not expected_role or expected_role == avatar_role):
+        item["sender_role"] = avatar_role
+        item["avatar_alignment"] = avatar_alignment
+    normalized["item"] = item
+    normalized["avatar_alignment"] = avatar_alignment
+    mark_voice_context_anchor_keys(normalized, image_size)
+    return normalized
+
+
+def build_unified_voice_observations_v3(
+    image: Image.Image,
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    excluded_anchor_keys: set[str] | None = None,
+    parsed_messages: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Fuse parser, OCR, pixels, avatar and button evidence into one voice truth."""
+    messages = [message for message in parsed_messages or [] if isinstance(message, dict)]
+    excluded = excluded_anchor_keys or set()
+    parser_targets = {
+        str((target.get("item") or {}).get("message_id") or ""): normalize_voice_evidence_target(image, target, image_size)
+        for target in message_voice_context_anchor_targets(messages, image_size)
+    }
+    observations: list[dict[str, Any]] = []
+    for message in messages:
+        if not message_is_voice_record(message):
+            continue
+        message_id = str(message.get("id") or message.get("message_id") or "")
+        has_transcript = message_is_combined_voice_transcript_record(message) or message_voice_has_transcribed_text_below(
+            message,
+            messages,
+            image_size,
+        )
+        untranscribed = message_is_untranscribed_voice_record(message) and not has_transcript
+        target = parser_targets.get(message_id) if untranscribed else None
+        target_avatar_role = str(((target or {}).get("avatar_alignment") or {}).get("role") or "")
+        message_role = normalized_voice_sender_role(message.get("sender_role") or message.get("sender"))
+        if isinstance(target, dict) and target_avatar_role != message_role:
+            target = None
+        observations.append(
+            {
+                "schema_version": 3,
+                "row_kind": "voice_bubble",
+                "voice_state": "untranscribed" if untranscribed else "transcribed",
+                "sender_role": normalized_voice_sender_role(message.get("sender_role") or message.get("sender")),
+                "sender_role_source": "same_row_avatar" if message_has_same_row_avatar_structure(message) else "parser_structure",
+                "bubble_rect": message.get("bubble_rect"),
+                "voice_duration": message.get("voice_duration"),
+                "voice_duration_text": message.get("voice_duration_text"),
+                "source_message_id": message_id,
+                "source_message_key": str(message.get("source_message_key") or ""),
+                "action_target": target,
+                "visible_button_target": None,
+                "evidence_sources": ["parser"],
+                "source_message": message,
+            }
+        )
+
+    def matching_observation(target: dict[str, Any]) -> dict[str, Any] | None:
+        matches = [
+            observation
+            for observation in observations
+            if voice_target_matches_unified_observation(target, observation, image_size)
+        ]
+        if not matches:
+            return None
+        target_y = voice_target_center_y(target)
+        return min(
+            matches,
+            key=lambda observation: abs(
+                target_y
+                - (
+                    (float((observation.get("bubble_rect") or {}).get("top") or 0) + float((observation.get("bubble_rect") or {}).get("bottom") or 0)) / 2.0
+                    if isinstance(observation.get("bubble_rect"), dict)
+                    else target_y
+                )
+            ),
+        )
+
+    def merge_evidence(target: dict[str, Any] | None, source: str, *, inferred_state: str = "untranscribed") -> None:
+        if not isinstance(target, dict):
+            return
+        normalized = normalize_voice_evidence_target(image, target, image_size)
+        expected_role = "self" if "self_voice" in source else ("customer" if "customer_voice" in source else "")
+        actual_role = voice_anchor_sender_role(normalized, image_size)
+        avatar_role = str((normalized.get("avatar_alignment") or {}).get("role") or "")
+        if avatar_role not in {"self", "customer"}:
+            return
+        actual_role = avatar_role
+        if expected_role and actual_role and expected_role != actual_role:
+            return
+        matched = matching_observation(normalized)
+        if matched is not None:
+            if source not in matched["evidence_sources"]:
+                matched["evidence_sources"].append(source)
+            if matched.get("voice_state") == "untranscribed" and not matched.get("action_target"):
+                matched["action_target"] = normalized
+            return
+        rect = voice_context_anchor_rect_bounds(normalized)
+        if not rect:
+            return
+        item = normalized.get("item") if isinstance(normalized.get("item"), dict) else {}
+        observations.append(
+            {
+                "schema_version": 3,
+                "row_kind": "voice_bubble",
+                "voice_state": inferred_state,
+                "sender_role": normalized_voice_sender_role(actual_role),
+                "sender_role_source": "same_row_avatar" if actual_role in {"self", "customer"} else "unknown",
+                "bubble_rect": {"left": rect[0], "top": rect[1], "right": rect[2], "bottom": rect[3]},
+                "voice_duration": None,
+                "voice_duration_text": str(item.get("text") or ""),
+                "source_message_id": "",
+                "source_message_key": "",
+                "action_target": normalized if inferred_state == "untranscribed" else None,
+                "visible_button_target": None,
+                "evidence_sources": [source],
+                "source_message": {},
+            }
+        )
+
+    for raw_target in voice_duration_context_anchor_targets(ocr_items, image_size):
+        raw_item = raw_target.get("item") if isinstance(raw_target.get("item"), dict) else {}
+        raw_state = "transcribed" if voice_duration_has_transcribed_text_below(raw_item, ocr_items, image_size) else "untranscribed"
+        merge_evidence(raw_target, "ocr_duration", inferred_state=raw_state)
+
+    for visual_target in find_visual_customer_voice_context_anchor_targets(
+        image,
+        image_size,
+        ocr_items,
+        parsed_messages=messages,
+    ):
+        merge_evidence(visual_target, "visual_customer_bubble")
+    for visual_target in find_visual_self_voice_context_anchor_targets(
+        image,
+        image_size,
+        ocr_items,
+        parsed_messages=messages,
+    ):
+        merge_evidence(visual_target, "visual_self_bubble")
+
+    pending = [
+        observation
+        for observation in observations
+        if observation.get("voice_state") == "untranscribed" and isinstance(observation.get("action_target"), dict)
+    ]
+    for button in find_voice_transcribe_targets(ocr_items, image_size, allow_inferred=False):
+        if not pending:
+            break
+        button_y = voice_target_center_y(button)
+        nearest = min(pending, key=lambda observation: abs(button_y - voice_target_center_y(observation.get("action_target"))))
+        if abs(button_y - voice_target_center_y(nearest.get("action_target"))) <= 96.0:
+            nearest["visible_button_target"] = button
+            if "visible_transcribe_button" not in nearest["evidence_sources"]:
+                nearest["evidence_sources"].append("visible_transcribe_button")
+
+    def observation_center_y(observation: dict[str, Any]) -> float:
+        target = observation.get("action_target")
+        if isinstance(target, dict):
+            return voice_target_center_y(target)
+        rect = observation.get("bubble_rect")
+        if isinstance(rect, dict):
+            return (float(rect.get("top") or 0) + float(rect.get("bottom") or 0)) / 2.0
+        if isinstance(rect, (list, tuple)) and len(rect) >= 4:
+            return (float(rect[1]) + float(rect[3])) / 2.0
+        return 0.0
+
+    structural_groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for observation in observations:
+        role = normalized_voice_sender_role(observation.get("sender_role"))
+        duration = str(observation.get("voice_duration") or "")
+        if not duration:
+            duration_match = re.search(r"\d{1,3}", voice_transcribe_compact_text(observation.get("voice_duration_text")))
+            duration = duration_match.group(0) if duration_match else ""
+        structural_groups.setdefault((role, duration), []).append(observation)
+    for (role, duration), group in structural_groups.items():
+        for ordinal_from_bottom, observation in enumerate(
+            sorted(group, key=observation_center_y, reverse=True),
+            start=1,
+        ):
+            structural_seed = {"side": role, "duration": duration, "ordinal_from_bottom": ordinal_from_bottom}
+            structural_key = "voice-structural:" + hashlib.sha1(
+                json.dumps(structural_seed, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest()[:20]
+            observation["voice_anchor_structural_key"] = structural_key
+            target = observation.get("action_target")
+            if isinstance(target, dict):
+                target["anchor_structural_key"] = structural_key
+
+    for observation in observations:
+        target = observation.get("action_target")
+        if isinstance(target, dict):
+            observation["voice_anchor_key"] = str(target.get("anchor_structural_key") or target.get("anchor_stable_key") or target.get("anchor_key") or "")
+            observation["excluded"] = voice_context_anchor_is_excluded(target, image_size, excluded)
+        else:
+            observation["voice_anchor_key"] = None
+            observation["excluded"] = False
+    return observations
+
+
+def find_unified_untranscribed_voice_observation(
+    image: Image.Image,
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    excluded_anchor_keys: set[str] | None = None,
+    parsed_messages: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    observations = [
+        observation
+        for observation in build_unified_voice_observations_v3(
+            image,
+            ocr_items,
+            image_size,
+            excluded_anchor_keys=excluded_anchor_keys,
+            parsed_messages=parsed_messages,
+        )
+        if observation.get("voice_state") == "untranscribed"
+        and not observation.get("excluded")
+        and isinstance(observation.get("action_target"), dict)
+    ]
+    if not observations:
+        return None
+    return max(observations, key=lambda observation: voice_target_center_y(observation.get("action_target")))
+
+
+def find_voice_context_menu_anchor_target(
+    image: Image.Image,
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    excluded_anchor_keys: set[str] | None = None,
+    parsed_messages: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    observation = find_unified_untranscribed_voice_observation(
+        image,
+        ocr_items,
+        image_size,
+        excluded_anchor_keys=excluded_anchor_keys,
+        parsed_messages=parsed_messages,
+    )
+    if not observation:
+        return None
+    target = dict(observation["action_target"])
+    target["unified_voice_observation"] = {
+        key: value
+        for key, value in observation.items()
+        if key not in {"action_target", "visible_button_target", "source_message"}
+    }
+    return target
+
+
+def visible_untranscribed_voice_hint(
+    image: Image.Image,
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    parsed_messages: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Return a read-only visual hint; this function never clicks the UI."""
+    observation = find_unified_untranscribed_voice_observation(
+        image,
+        ocr_items,
+        image_size,
+        parsed_messages=parsed_messages,
+    )
+    if not isinstance(observation, dict):
+        return {"detected": False}
+    anchor = observation.get("action_target") if isinstance(observation.get("action_target"), dict) else {}
+    source = str(anchor.get("source") or "")
+    avatar_alignment = anchor.get("avatar_alignment") if isinstance(anchor.get("avatar_alignment"), dict) else {}
+    item = anchor.get("item") if isinstance(anchor.get("item"), dict) else {}
+    sender_role = str(observation.get("sender_role") or avatar_alignment.get("role") or item.get("sender_role") or item.get("sender") or "")
+    if sender_role == "contact":
+        sender_role = "customer"
+    if sender_role not in {"customer", "self"}:
+        return {"detected": False}
+    bounds = voice_context_anchor_rect_bounds(anchor) or anchor.get("click_bounds") or []
+    return {
+        "detected": True,
+        "detection_mode": "unified_voice_observation_v3",
+        "source": source,
+        "sender_role": sender_role,
+        "anchor_key": str(anchor.get("anchor_key") or ""),
+        "anchor_stable_key": str(anchor.get("anchor_stable_key") or ""),
+        "anchor_structural_key": str(anchor.get("anchor_structural_key") or ""),
+        "bubble_rect": [int(round(float(value))) for value in bounds[:4]],
+        "center_y": float(item.get("center_y") or 0),
+        "avatar_alignment": avatar_alignment,
+        "evidence_sources": list(observation.get("evidence_sources") or []),
+    }
+
+
+def build_message_observations_v3(
+    messages: list[dict[str, Any]],
+    visible_voice_hint: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Convert OCR output into the only message/voice observation contract."""
+    observations: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("sender_role") or message.get("sender") or "unknown").lower()
+        if role == "contact":
+            role = "customer"
+        if role not in MESSAGE_OBSERVATION_SENDER_ROLES:
+            role = "unknown"
+        avatar = message.get("avatar_alignment") if isinstance(message.get("avatar_alignment"), dict) else {}
+        evidence = message.get("sender_role_evidence") if isinstance(message.get("sender_role_evidence"), list) else []
+        if str(avatar.get("role") or "") == role and role in {"customer", "self"}:
+            role_source = "same_row_avatar"
+        elif "voice_transcript_inherits_parent_role" in evidence:
+            role_source = "parent_voice"
+        elif role in {"customer", "self"}:
+            role_source = "lane_geometry"
+        elif role == "system":
+            role_source = "system"
+        else:
+            role_source = "unknown"
+        msg_type = str(message.get("type") or message.get("message_type") or "unknown").lower()
+        quality_flags = message.get("quality_flags") if isinstance(message.get("quality_flags"), list) else []
+        untranscribed = msg_type == "voice" and "untranscribed_voice_placeholder" in quality_flags
+        if "non_chat_call_event" in quality_flags:
+            row_kind = "call_event"
+            voice_state = "not_voice"
+        elif msg_type == "voice":
+            row_kind = "voice_bubble" if untranscribed else "voice_transcript"
+            voice_state = "untranscribed" if untranscribed else "transcribed"
+        elif msg_type == "text":
+            row_kind = "text_bubble"
+            voice_state = "not_voice"
+        elif msg_type == "image":
+            row_kind = "image_bubble"
+            voice_state = "not_voice"
+        elif msg_type == "system":
+            row_kind = "system_message"
+            voice_state = "not_voice"
+        else:
+            row_kind = "unknown"
+            voice_state = "not_voice"
+        anchor_key = str(
+            message.get("voice_anchor_stable_key")
+            or message.get("voice_anchor_key")
+            or ((message.get("voice_anchor") or {}).get("anchor_stable_key") if isinstance(message.get("voice_anchor"), dict) else "")
+            or ""
+        )
+        observation_id = str(message.get("id") or "").strip() or f"ocr-observation-{index}"
+        if observation_id in seen_ids:
+            observation_id = f"{observation_id}:{index}"
+        seen_ids.add(observation_id)
+        observations.append(
+            {
+                "schema_version": 3,
+                "observation_id": observation_id,
+                "row_kind": row_kind,
+                "sender_role": role,
+                "sender_role_source": role_source,
+                "message_type": "voice" if msg_type == "voice" else msg_type,
+                "voice_state": voice_state,
+                "voice_anchor_key": anchor_key or None,
+                "parent_voice_anchor_key": anchor_key or None if row_kind == "voice_transcript" else None,
+                "content_clean": "" if untranscribed else str(message.get("content") or "").strip(),
+                "content_raw": str(message.get("content_raw_ocr") or message.get("content") or ""),
+                "bubble_rect": message.get("bubble_rect"),
+                "voice_duration": message.get("voice_duration"),
+                "voice_duration_text": message.get("voice_duration_text"),
+                "ocr_confidence": message.get("ocr_confidence"),
+                "quality_flags": quality_flags,
+                "source_message": message,
+            }
+        )
+    hint = visible_voice_hint if isinstance(visible_voice_hint, dict) else {}
+    if hint.get("detected"):
+        hint_key = str(hint.get("anchor_stable_key") or hint.get("anchor_key") or "")
+        already_seen = any(
+            item.get("row_kind") == "voice_bubble"
+            and item.get("voice_state") == "untranscribed"
+            and (not hint_key or item.get("voice_anchor_key") == hint_key)
+            for item in observations
+        )
+        if not already_seen:
+            observations.append(
+                {
+                    "schema_version": 3,
+                    "observation_id": f"voice-hint:{hint_key or len(observations)}",
+                    "row_kind": "voice_bubble",
+                    "sender_role": str(hint.get("sender_role") or "unknown"),
+                    "sender_role_source": "same_row_avatar",
+                    "message_type": "voice",
+                    "voice_state": "untranscribed",
+                    "voice_anchor_key": hint_key or None,
+                    "parent_voice_anchor_key": None,
+                    "content_clean": "",
+                    "content_raw": "",
+                    "bubble_rect": hint.get("bubble_rect"),
+                    "voice_duration": None,
+                    "voice_duration_text": None,
+                    "ocr_confidence": None,
+                    "quality_flags": ["visual_voice_hint"],
+                    "source_message": {},
+                }
+            )
+    return observations
+
+
+# Compatibility alias for downstream integrations that used the original name.
+build_c2_observations_v3 = build_message_observations_v3
+
+
+def has_remaining_voice_transcribe_candidate(
+    image: Image.Image,
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    excluded_anchor_keys: set[str] | None = None,
+    parsed_messages: list[dict[str, Any]] | None = None,
+) -> bool:
+    return bool(
+        find_unified_untranscribed_voice_observation(
+            image,
+            ocr_items,
+            image_size,
+            excluded_anchor_keys=excluded_anchor_keys,
+            parsed_messages=parsed_messages,
+        )
     )
 
 
@@ -1981,10 +4847,17 @@ def find_visual_voice_transcribe_hover_target(
         if voice_duration_has_transcribed_text_below(item, ocr_items, image_size):
             continue
         center_y = int(float(item.get("center_y") or 0))
+        voice_left = int(float(item.get("left") or 0))
         voice_right = int(float(item.get("right") or 0))
         width, height = image_size
-        left = max(session_split_x(width) + 86, voice_right + 70)
-        right = min(width - 24, voice_right + 154)
+        split_x = session_split_x(width)
+        is_self_side_voice = float(item.get("center_x") or 0) > width * 0.62
+        if is_self_side_voice:
+            left = max(split_x + 24, voice_left - 154)
+            right = max(split_x + 34, voice_left - 70)
+        else:
+            left = max(split_x + 86, voice_right + 70)
+            right = min(width - 24, voice_right + 154)
         top = max(chat_header_cutoff_y(height), center_y - 18)
         bottom = min(height - DEFAULT_MESSAGE_BOTTOM_EXCLUDE_PX, center_y + 18)
         if right <= left or bottom <= top:
@@ -2024,40 +4897,454 @@ def open_voice_transcribe_context_menu(
         bounds=[int(value) for value in anchor.get("click_bounds") or []],
         action_name="voice_transcribe_context_right_click",
     )
-    humanized_action_sleep(260, 520)
-    menu_screenshot, menu_path = capture_wechat(hwnd, artifact_dir=artifact_dir, label="voice_transcribe_context_menu")
+    menu_wait_ms = bounded_int(
+        os.getenv("WECHAT_WIN32_OCR_VOICE_CONTEXT_MENU_WAIT_MS"),
+        default=1200,
+        minimum=400,
+        maximum=4000,
+    )
+    humanized_action_sleep(max(350, menu_wait_ms - 250), menu_wait_ms + 450)
+    # The WeChat context menu is a desktop popup. On right-side/self voice
+    # bubbles it can extend outside the WeChat window rectangle, so capture the
+    # visible screen and click in screen coordinates instead of window coords.
+    menu_screenshot, menu_path = capture_visible_screen(artifact_dir=artifact_dir, label="voice_transcribe_context_menu")
     menu_items = run_ocr(menu_screenshot)
     menu_size = getattr(menu_screenshot, "size", image_size)
-    menu_target = find_voice_transcribe_target(menu_items, menu_size, allow_inferred=False)
+    anchor_screen_y = int((right_click or {}).get("screen_y") or 0)
+    menu_target = find_voice_transcribe_menu_item_target(menu_items, menu_size, anchor=anchor, anchor_screen_y=anchor_screen_y)
+    collapse_target = find_voice_transcribe_menu_collapse_item_target(menu_items, menu_size, anchor=anchor, anchor_screen_y=anchor_screen_y)
+    local_radius = max(96.0, min(180.0, float(menu_size[1] if menu_size else 0) * 0.18))
+    if menu_target and float(menu_target.get("menu_distance_to_anchor") or 0.0) > local_radius:
+        menu_target = None
+    if collapse_target and float(collapse_target.get("menu_distance_to_anchor") or 0.0) > local_radius:
+        collapse_target = None
+    if menu_target and collapse_target:
+        menu_distance = float(menu_target.get("menu_distance_to_anchor") or 0.0)
+        collapse_distance = float(collapse_target.get("menu_distance_to_anchor") or 0.0)
+        if collapse_distance <= menu_distance:
+            menu_target = None
+        else:
+            collapse_target = None
+    menu_texts = [
+        str(item.get("text") or "")
+        for item in menu_items
+        if voice_transcribe_button_text_like(str(item.get("text") or "")) or voice_transcribe_collapse_text_like(str(item.get("text") or ""))
+    ][:12]
+    text_menu_texts = [
+        str(item.get("text") or "")
+        for item in menu_items
+        if text_message_context_menu_text_like(str(item.get("text") or ""))
+    ][:12]
+    avatar_menu_texts = [
+        str(item.get("text") or "")
+        for item in menu_items
+        if avatar_context_menu_text_like(str(item.get("text") or ""))
+    ][:12]
+    wrong_text_menu = bool(text_menu_texts) and not menu_target and not collapse_target
+    wrong_avatar_menu = bool(avatar_menu_texts) and not menu_target and not collapse_target
+    menu_state = (
+        "transcribe_available"
+        if menu_target
+        else (
+            "already_transcribed"
+            if collapse_target
+            else ("avatar_context_menu" if wrong_avatar_menu else ("text_message_context_menu" if wrong_text_menu else "unknown"))
+        )
+    )
     return {
-        "ok": bool(right_click.get("ok") and menu_target),
+        "ok": bool(right_click.get("ok") and (menu_target or collapse_target)),
         "right_click": right_click,
         "anchor": anchor,
         "anchor_point": [anchor_x, anchor_y],
         "anchor_jitter": anchor_jitter,
+        "menu_wait_ms": menu_wait_ms,
         "menu_screenshot_path": menu_path,
+        "menu_capture_mode": "visible_screen",
+        "menu_local_radius": local_radius,
         "menu_ocr_items_count": len(menu_items),
+        "menu_state": menu_state,
+        "menu_texts": menu_texts,
+        "wrong_context_menu_texts": text_menu_texts,
+        "wrong_avatar_menu_texts": avatar_menu_texts,
         "click_target": menu_target,
-        "reason": "menu_target_found" if menu_target else "menu_target_not_found",
+        "already_transcribed_target": collapse_target,
+        "reason": "menu_target_found"
+        if menu_target
+        else (
+            "already_transcribed_menu_found"
+            if collapse_target
+            else (
+                "wrong_context_menu_avatar"
+                if wrong_avatar_menu
+                else ("wrong_context_menu_text_message" if wrong_text_menu else "menu_target_not_found")
+            )
+        ),
     }
 
 
-def dismiss_voice_transcribe_context_menu(hwnd: int) -> dict[str, Any]:
+def find_voice_transcribe_menu_item_target(
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    anchor: dict[str, Any] | None = None,
+    anchor_screen_y: int | None = None,
+) -> dict[str, Any] | None:
+    width, height = image_size
+    anchor_item = (anchor or {}).get("item") if isinstance(anchor, dict) else None
+    anchor_y = float(anchor_screen_y or 0) or (float(anchor_item.get("center_y") or 0) if isinstance(anchor_item, dict) else 0.0)
+    targets: list[dict[str, Any]] = []
+    for item in ocr_items:
+        text = str(item.get("text") or "")
+        if not voice_transcribe_button_text_like(text):
+            continue
+        left = max(0, int(float(item.get("left") or 0)) + 3)
+        top = max(0, int(float(item.get("top") or 0)) + 2)
+        right = min(width, int(float(item.get("right") or 0)) - 3)
+        bottom = min(height, int(float(item.get("bottom") or 0)) - 2)
+        if right <= left or bottom <= top:
+            continue
+        target = voice_transcribe_click_target_from_bounds(
+            source="ocr_context_menu_transcribe_item",
+            label="OCR matched WeChat context-menu voice-to-text item",
+            bounds=[left, top, right, bottom],
+            item=item,
+        )
+        target["coordinate_space"] = "screen"
+        target["menu_distance_to_anchor"] = abs(float(item.get("center_y") or 0) - anchor_y) if anchor_y else 0.0
+        targets.append(target)
+    if not targets:
+        return None
+    if anchor_y:
+        return min(targets, key=lambda target: float(target.get("menu_distance_to_anchor") or 0.0))
+    return max(targets, key=lambda target: float((target.get("item") or {}).get("center_y") or 0))
+
+
+def find_voice_transcribe_menu_collapse_item_target(
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    anchor: dict[str, Any] | None = None,
+    anchor_screen_y: int | None = None,
+) -> dict[str, Any] | None:
+    width, height = image_size
+    anchor_item = (anchor or {}).get("item") if isinstance(anchor, dict) else None
+    anchor_y = float(anchor_screen_y or 0) or (float(anchor_item.get("center_y") or 0) if isinstance(anchor_item, dict) else 0.0)
+    targets: list[dict[str, Any]] = []
+    for item in ocr_items:
+        text = str(item.get("text") or "")
+        if not voice_transcribe_collapse_text_like(text):
+            continue
+        left = max(0, int(float(item.get("left") or 0)) + 3)
+        top = max(0, int(float(item.get("top") or 0)) + 2)
+        right = min(width, int(float(item.get("right") or 0)) - 3)
+        bottom = min(height, int(float(item.get("bottom") or 0)) - 2)
+        if right <= left or bottom <= top:
+            continue
+        target = voice_transcribe_click_target_from_bounds(
+            source="ocr_context_menu_collapse_text_item",
+            label="OCR matched WeChat context-menu collapse-transcript item",
+            bounds=[left, top, right, bottom],
+            item=item,
+        )
+        target["coordinate_space"] = "screen"
+        target["menu_distance_to_anchor"] = abs(float(item.get("center_y") or 0) - anchor_y) if anchor_y else 0.0
+        targets.append(target)
+    if not targets:
+        return None
+    if anchor_y:
+        return min(targets, key=lambda target: float(target.get("menu_distance_to_anchor") or 0.0))
+    return max(targets, key=lambda target: float((target.get("item") or {}).get("center_y") or 0))
+
+
+def dismiss_voice_transcribe_context_menu(
+    hwnd: int,
+    *,
+    artifact_dir: str | None = None,
+    label: str = "voice_transcribe_context_menu_dismissed",
+    menu_bounds: list[int] | None = None,
+) -> dict[str, Any]:
     try:
         activate_window(hwnd)
-        key_press(win32con.VK_ESCAPE)
+        geometry = get_window_geometry(hwnd)
+        before_shot, before_path = capture_wechat(hwnd, artifact_dir=artifact_dir, label=f"{label}_before")
+        before_items = run_ocr(before_shot)
+        safe_target = safe_window_header_blank_click_target(before_items, before_shot.size, geometry=geometry)
+        if not safe_target:
+            return {
+                "ok": False,
+                "method": "fresh_header_blank_click",
+                "reason": "safe_header_blank_target_not_found",
+                "screenshot_path": before_path,
+            }
+        click_x, click_y = safe_target["point"]
+        click_result = human_window_image_click_in_bounds(
+            hwnd,
+            click_x,
+            click_y,
+            bounds=safe_target["bounds"],
+            action_name="voice_transcribe_context_menu_title_bar_dismiss_click",
+        )
         humanized_action_sleep(120, 260)
-        return {"ok": True, "method": "escape"}
+        window_probe = probe_wechat_windows()
+        window_visible = probe_has_usable_visible_main_window(window_probe) if window_probe.get("visible_main_windows") else False
+        result: dict[str, Any] = {
+            "ok": bool(click_result.get("ok")) and bool(window_visible),
+            "method": "fresh_header_blank_click",
+            "verified": False,
+            "click": click_result,
+            "safe_target": safe_target,
+            "window_visible_after_dismiss": bool(window_visible),
+            "window_probe_after_dismiss": window_probe,
+        }
+        if not window_visible:
+            result["reason"] = "window_not_visible_after_dismiss"
+            return result
+        try:
+            screenshot, screenshot_path = capture_visible_screen(artifact_dir=artifact_dir, label=label)
+            items = run_ocr(screenshot)
+            visible_menu_texts = voice_transcribe_menu_texts_from_items(items, menu_bounds=menu_bounds)
+            visible_panel_texts = chat_info_panel_texts_from_items(items)
+            result.update({
+                "verified": True,
+                "screenshot_path": screenshot_path,
+                "ocr_items_count": len(items),
+                "visible_menu_texts": visible_menu_texts,
+                "visible_panel_texts": visible_panel_texts,
+                "menu_bounds": menu_bounds or [],
+                "ok": bool(click_result.get("ok")) and not bool(visible_menu_texts) and not bool(visible_panel_texts),
+                "reason": "menu_closed" if not visible_menu_texts and not visible_panel_texts else "menu_or_panel_still_visible",
+            })
+        except Exception as verify_exc:
+            result.update({"verify_error": repr(verify_exc), "reason": "dismiss_sent_without_verification"})
+        return result
     except Exception as exc:
-        return {"ok": False, "method": "escape", "error": repr(exc)}
+        return {"ok": False, "method": "safe_chat_surface_click", "error": repr(exc)}
 
 
-def find_voice_transcribe_target(
+def safe_window_header_blank_click_target(
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    geometry: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Find a fresh blank title-bar segment away from chat content and controls."""
+    width, height = image_size
+    if width < 700 or height < 260:
+        return None
+    active_geometry = geometry if isinstance(geometry, dict) else {"width": width, "height": height}
+    split_x = session_split_x(int(active_geometry.get("width") or width))
+    zone_left = max(split_x + 28, int(width * 0.42))
+    zone_right = min(width - 230, int(width * 0.76))
+    zone_top = 8
+    zone_bottom = min(42, max(26, chat_header_cutoff_y(height) - 46))
+    if zone_right - zone_left < 56 or zone_bottom - zone_top < 14:
+        return None
+    blocked: list[tuple[int, int]] = []
+    for item in ocr_items or []:
+        top = int(float(item.get("top") or 0))
+        bottom = int(float(item.get("bottom") or 0))
+        if bottom < zone_top - 8 or top > zone_bottom + 8:
+            continue
+        left = max(zone_left, int(float(item.get("left") or 0)) - 18)
+        right = min(zone_right, int(float(item.get("right") or 0)) + 18)
+        if right > left:
+            blocked.append((left, right))
+    segments = [(zone_left, zone_right)]
+    for blocked_left, blocked_right in sorted(blocked):
+        next_segments: list[tuple[int, int]] = []
+        for left, right in segments:
+            if blocked_right <= left or blocked_left >= right:
+                next_segments.append((left, right))
+                continue
+            if blocked_left - left >= 48:
+                next_segments.append((left, blocked_left))
+            if right - blocked_right >= 48:
+                next_segments.append((blocked_right, right))
+        segments = next_segments
+    if not segments:
+        return None
+    left, right = max(segments, key=lambda segment: segment[1] - segment[0])
+    if right - left < 48:
+        return None
+    bounds = [left + 6, zone_top, right - 6, zone_bottom]
+    return {
+        "point": [(bounds[0] + bounds[2]) // 2, (bounds[1] + bounds[3]) // 2],
+        "bounds": bounds,
+        "source": "fresh_ocr_header_blank_segment",
+        "blocked_intervals": [list(interval) for interval in blocked],
+    }
+
+
+def chat_info_panel_text_like(text: str) -> bool:
+    compact = voice_transcribe_compact_text(text)
+    return bool(compact) and any(voice_transcribe_compact_text(token) in compact for token in CHAT_INFO_PANEL_TEXT_TOKENS)
+
+
+def chat_info_panel_texts_from_items(ocr_items: list[dict[str, Any]]) -> list[str]:
+    return [
+        str(item.get("text") or "")
+        for item in ocr_items or []
+        if chat_info_panel_text_like(str(item.get("text") or ""))
+    ][:12]
+
+
+def ocr_item_center_in_bounds(item: dict[str, Any], bounds: list[int] | None, *, padding: int = 0) -> bool:
+    if not bounds or len(bounds) < 4:
+        return True
+    center_x = float(item.get("center_x") or 0)
+    center_y = float(item.get("center_y") or 0)
+    return (
+        float(bounds[0]) - padding <= center_x <= float(bounds[2]) + padding
+        and float(bounds[1]) - padding <= center_y <= float(bounds[3]) + padding
+    )
+
+
+def voice_transcribe_menu_texts_from_items(
+    ocr_items: list[dict[str, Any]],
+    *,
+    menu_bounds: list[int] | None = None,
+) -> list[str]:
+    return [
+        str(item.get("text") or "")
+        for item in ocr_items or []
+        if ocr_item_center_in_bounds(item, menu_bounds, padding=8)
+        and (
+            voice_transcribe_button_text_like(str(item.get("text") or ""))
+            or voice_transcribe_collapse_text_like(str(item.get("text") or ""))
+        )
+    ][:12]
+
+
+def verify_voice_transcribe_context_menu_closed(
+    *,
+    artifact_dir: str | None = None,
+    label: str = "voice_transcribe_context_menu_after_click",
+    menu_bounds: list[int] | None = None,
+) -> dict[str, Any]:
+    try:
+        screenshot, screenshot_path = capture_visible_screen(artifact_dir=artifact_dir, label=label)
+        items = run_ocr(screenshot)
+        visible_menu_texts = voice_transcribe_menu_texts_from_items(items, menu_bounds=menu_bounds)
+        visible_panel_texts = chat_info_panel_texts_from_items(items)
+        return {
+            "ok": not bool(visible_menu_texts) and not bool(visible_panel_texts),
+            "screenshot_path": screenshot_path,
+            "ocr_items_count": len(items),
+            "visible_menu_texts": visible_menu_texts,
+            "visible_panel_texts": visible_panel_texts,
+            "reason": "menu_closed" if not visible_menu_texts and not visible_panel_texts else "menu_or_panel_still_visible",
+        }
+    except Exception as exc:
+        return {"ok": False, "reason": "menu_close_verification_failed", "error": repr(exc)}
+
+
+def click_voice_transcribe_context_menu_target(
+    hwnd: int,
+    menu_target: dict[str, Any],
+    *,
+    geometry: dict[str, Any],
+    artifact_dir: str | None = None,
+    attempt_index: int = 1,
+) -> dict[str, Any]:
+    menu_bounds = [int(value) for value in menu_target.get("click_bounds") or []]
+    if len(menu_bounds) < 4:
+        return {"ok": False, "reason": "context_menu_click_bounds_missing", "click_target": menu_target}
+
+    click_attempts: list[dict[str, Any]] = []
+
+    def click_once(click_x: int, click_y: int, *, retry_index: int, jitter_meta: dict[str, Any]) -> dict[str, Any]:
+        if str(menu_target.get("coordinate_space") or "") == "screen":
+            click = human_screen_click_in_bounds(
+                click_x,
+                click_y,
+                bounds=menu_bounds,
+                action_name="voice_transcribe_context_menu_click",
+            )
+        else:
+            click = human_window_image_click_in_bounds(
+                hwnd,
+                click_x,
+                click_y,
+                bounds=menu_bounds,
+                action_name="voice_transcribe_context_menu_click",
+            )
+        humanized_action_sleep(260, 620)
+        verification = verify_voice_transcribe_context_menu_closed(
+            artifact_dir=artifact_dir,
+            label=f"voice_transcribe_context_menu_after_click_{attempt_index}_{retry_index}",
+            menu_bounds=menu_bounds,
+        )
+        return {
+            "retry_index": retry_index,
+            "click": click,
+            "planned_click_point": [click_x, click_y],
+            "click_jitter": jitter_meta,
+            "menu_close_verification": verification,
+        }
+
+    menu_item = menu_target.get("item") if isinstance(menu_target.get("item"), dict) else {}
+    menu_x = int(float(menu_item.get("center_x") or (menu_bounds[0] + menu_bounds[2]) / 2))
+    menu_y = int(float(menu_item.get("center_y") or (menu_bounds[1] + menu_bounds[3]) / 2))
+    menu_jitter = {
+        "enabled": False,
+        "source": "ocr_context_menu_text_center",
+        "bounds": menu_bounds,
+        "reason": "click_exact_ocr_menu_text_center",
+    }
+    first_attempt = click_once(menu_x, menu_y, retry_index=1, jitter_meta=menu_jitter)
+    click_attempts.append(first_attempt)
+    if first_attempt.get("click", {}).get("ok") and first_attempt.get("menu_close_verification", {}).get("ok"):
+        return {
+            **first_attempt["click"],
+            "ok": True,
+            "reason": "context_menu_click_closed_menu",
+            "planned_click_point": first_attempt["planned_click_point"],
+            "click_jitter": first_attempt["click_jitter"],
+            "menu_close_verification": first_attempt["menu_close_verification"],
+            "click_attempts": click_attempts,
+        }
+
+    center_x = int((menu_bounds[0] + menu_bounds[2]) / 2)
+    center_y = int((menu_bounds[1] + menu_bounds[3]) / 2)
+    center_jitter = {"enabled": False, "source": str(menu_target.get("source") or ""), "bounds": menu_bounds, "reason": "retry_center_point"}
+    second_attempt = click_once(center_x, center_y, retry_index=2, jitter_meta=center_jitter)
+    click_attempts.append(second_attempt)
+    if second_attempt.get("click", {}).get("ok") and second_attempt.get("menu_close_verification", {}).get("ok"):
+        return {
+            **second_attempt["click"],
+            "ok": True,
+            "reason": "context_menu_retry_closed_menu",
+            "planned_click_point": second_attempt["planned_click_point"],
+            "click_jitter": second_attempt["click_jitter"],
+            "menu_close_verification": second_attempt["menu_close_verification"],
+            "click_attempts": click_attempts,
+        }
+
+    dismissal = dismiss_voice_transcribe_context_menu(
+        hwnd,
+        artifact_dir=artifact_dir,
+        label=f"voice_transcribe_context_menu_dismissed_after_failed_click_{attempt_index}",
+        menu_bounds=menu_bounds,
+    )
+    last_attempt = click_attempts[-1]
+    return {
+        **(last_attempt.get("click") if isinstance(last_attempt.get("click"), dict) else {}),
+        "ok": False,
+        "reason": "context_menu_click_did_not_close_menu",
+        "planned_click_point": last_attempt.get("planned_click_point") or [],
+        "click_jitter": last_attempt.get("click_jitter") or {},
+        "menu_close_verification": last_attempt.get("menu_close_verification") or {},
+        "click_attempts": click_attempts,
+        "menu_dismissal": dismissal,
+    }
+
+
+def find_voice_transcribe_targets(
     ocr_items: list[dict[str, Any]],
     image_size: tuple[int, int],
     *,
     allow_inferred: bool = True,
-) -> dict[str, Any] | None:
+) -> list[dict[str, Any]]:
     width, height = image_size
     direct_targets: list[dict[str, Any]] = []
     for item in ocr_items:
@@ -2081,10 +5368,10 @@ def find_voice_transcribe_target(
             )
         )
     if direct_targets:
-        return max(direct_targets, key=lambda target: float((target.get("item") or {}).get("center_y") or 0))
+        return sorted(direct_targets, key=lambda target: float((target.get("item") or {}).get("center_y") or 0))
 
     if not allow_inferred:
-        return None
+        return []
 
     inferred_targets: list[dict[str, Any]] = []
     for item in ocr_items:
@@ -2096,9 +5383,16 @@ def find_voice_transcribe_target(
         if voice_duration_has_transcribed_text_below(item, ocr_items, image_size):
             continue
         center_y = int(float(item.get("center_y") or 0))
+        voice_left = int(float(item.get("left") or 0))
         voice_right = int(float(item.get("right") or 0))
-        left = max(session_split_x(width) + 86, voice_right + 70)
-        right = min(width - 24, voice_right + 154)
+        split_x = session_split_x(width)
+        is_self_side_voice = float(item.get("center_x") or 0) > width * 0.62
+        if is_self_side_voice:
+            left = max(split_x + 24, voice_left - 154)
+            right = max(split_x + 34, voice_left - 70)
+        else:
+            left = max(split_x + 86, voice_right + 70)
+            right = min(width - 24, voice_right + 154)
         top = max(chat_header_cutoff_y(height), center_y - 18)
         bottom = min(height - DEFAULT_MESSAGE_BOTTOM_EXCLUDE_PX, center_y + 18)
         if right <= left or bottom <= top:
@@ -2111,9 +5405,17 @@ def find_voice_transcribe_target(
                 item=item,
             )
         )
-    if inferred_targets:
-        return max(inferred_targets, key=lambda target: float((target.get("item") or {}).get("center_y") or 0))
-    return None
+    return sorted(inferred_targets, key=lambda target: float((target.get("item") or {}).get("center_y") or 0))
+
+
+def find_voice_transcribe_target(
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    allow_inferred: bool = True,
+) -> dict[str, Any] | None:
+    targets = find_voice_transcribe_targets(ocr_items, image_size, allow_inferred=allow_inferred)
+    return targets[-1] if targets else None
 
 
 def voice_transcribe_click_candidate_points(target: dict[str, Any], *, min_points: int = 10) -> list[tuple[int, int]]:
@@ -2199,11 +5501,48 @@ def message_group_starts_with_voice_duration(group: list[dict[str, Any]]) -> boo
 
 def strip_voice_duration_prefix_from_message_content(content: str, group: list[dict[str, Any]]) -> tuple[str, bool]:
     if not message_group_starts_with_voice_duration(group):
+        compact_lines = [line.strip() for line in str(content or "").splitlines() if line.strip()]
+        if len(compact_lines) >= 2 and voice_duration_text_like(compact_lines[0]):
+            return "\n".join(compact_lines[1:]).strip(), True
         return content, False
     lines = [line.strip() for line in str(content or "").splitlines() if line.strip()]
     if len(lines) < 2:
         return content, False
     return "\n".join(lines[1:]).strip(), True
+
+
+def message_group_voice_duration_text(group: list[dict[str, Any]]) -> str:
+    for item in group or []:
+        text = normalize_ocr_text(item.get("text"))
+        if voice_duration_item_like(item):
+            return text
+    return ""
+
+
+def message_group_is_untranscribed_voice_placeholder(group: list[dict[str, Any]]) -> bool:
+    if not group:
+        return False
+    has_duration = any(voice_duration_item_like(item) for item in group)
+    if not has_duration:
+        return False
+    non_duration = [
+        normalize_ocr_text(item.get("text"))
+        for item in group
+        if not voice_duration_item_like(item) and normalize_ocr_text(item.get("text"))
+    ]
+    if not non_duration:
+        return True
+    return all(voice_transcribe_button_text_like(text) for text in non_duration)
+
+
+def voice_duration_seconds_from_text(text: str) -> int | None:
+    match = re.search(r"(\d{1,3})", voice_transcribe_compact_text(text))
+    if not match:
+        return None
+    value = int(match.group(1))
+    if value <= 0 or value > 300:
+        return None
+    return value
 
 
 FILE_CARD_FOOTER_TEXTS = {
@@ -2244,6 +5583,144 @@ def sender_fields_for_message_side(side: str, *, target: str) -> tuple[str, str]
     return "unknown", "unknown"
 
 
+def avatar_lane_visual_score(
+    screenshot: Any | None,
+    *,
+    bounds: list[float],
+    role: str,
+    image_size: tuple[int, int],
+) -> dict[str, Any]:
+    if screenshot is None or len(bounds) < 4:
+        return {"present": False, "score": 0.0, "reason": "screenshot_unavailable"}
+    try:
+        image = screenshot.convert("RGB")
+    except Exception:
+        return {"present": False, "score": 0.0, "reason": "screenshot_unavailable"}
+    width, height = image_size
+    if width <= 0 or height <= 0:
+        return {"present": False, "score": 0.0, "reason": "image_size_invalid"}
+    split_x = session_split_x(width)
+    bubble_left, bubble_top, bubble_right, bubble_bottom = [float(value) for value in bounds[:4]]
+    if role == "customer":
+        lane_left = max(split_x + 4, int(round(bubble_left - 140.0)))
+        lane_right = min(int(round(bubble_left - 4.0)), split_x + 150)
+    else:
+        lane_left = max(int(round(bubble_right + 4.0)), width - 150, split_x + 1)
+        lane_right = width - 6
+    row_top, row_bottom = bubble_top, bubble_bottom
+    row_center = min((row_top + row_bottom) / 2.0, row_top + 24.0)
+    crop_top = max(chat_header_cutoff_y(height), int(round(row_center - 24.0)))
+    crop_bottom = min(height - DEFAULT_MESSAGE_BOTTOM_EXCLUDE_PX, crop_top + 48)
+    lane_left = max(0, int(lane_left))
+    lane_right = min(width, int(lane_right))
+    if lane_right - lane_left < 20 or crop_bottom - crop_top < 20:
+        return {"present": False, "score": 0.0, "reason": "avatar_lane_empty"}
+    crop = image.crop((lane_left, crop_top, lane_right, crop_bottom))
+    stat = ImageStat.Stat(crop)
+    color_stddev = sum(float(value) for value in stat.stddev[:3]) / 3.0
+    pixels = crop.load()
+    border_pixels: list[tuple[int, int, int]] = []
+    for y in range(crop.height):
+        for x in range(crop.width):
+            if x < 4 or x >= crop.width - 4 or y < 3 or y >= crop.height - 3:
+                border_pixels.append(pixels[x, y])
+    background = tuple(
+        sorted(int(pixel[channel]) for pixel in border_pixels)[len(border_pixels) // 2]
+        for channel in range(3)
+    ) if border_pixels else (247, 247, 247)
+    foreground_points: list[tuple[int, int]] = []
+    edge_hits = 0
+    edge_checks = 0
+    for y in range(crop.height):
+        for x in range(crop.width):
+            current = pixels[x, y]
+            if sum(abs(int(current[index]) - int(background[index])) for index in range(3)) / 3.0 >= 18.0:
+                foreground_points.append((x, y))
+            if x + 1 < crop.width:
+                adjacent = pixels[x + 1, y]
+                edge_hits += int(sum(abs(int(current[index]) - int(adjacent[index])) for index in range(3)) / 3.0 >= 18.0)
+                edge_checks += 1
+            if y + 1 < crop.height:
+                adjacent = pixels[x, y + 1]
+                edge_hits += int(sum(abs(int(current[index]) - int(adjacent[index])) for index in range(3)) / 3.0 >= 18.0)
+                edge_checks += 1
+    edge_ratio = edge_hits / max(1, edge_checks)
+    if foreground_points:
+        foreground_left = min(point[0] for point in foreground_points)
+        foreground_top = min(point[1] for point in foreground_points)
+        foreground_right = max(point[0] for point in foreground_points)
+        foreground_bottom = max(point[1] for point in foreground_points)
+        foreground_width = foreground_right - foreground_left + 1
+        foreground_height = foreground_bottom - foreground_top + 1
+    else:
+        foreground_left = foreground_top = foreground_right = foreground_bottom = 0
+        foreground_width = 0
+        foreground_height = 0
+    foreground_ratio = len(foreground_points) / max(1, crop.width * crop.height)
+    avatar_sized_component = bool(
+        30 <= foreground_width <= crop.width
+        and 30 <= foreground_height <= 48
+        and foreground_ratio >= 0.16
+    )
+    component_bounds = [
+        lane_left + foreground_left,
+        crop_top + foreground_top,
+        lane_left + foreground_right,
+        crop_top + foreground_bottom,
+    ]
+    component_center_y = (component_bounds[1] + component_bounds[3]) / 2.0
+    bubble_center_y = min((bubble_top + bubble_bottom) / 2.0, bubble_top + 24.0)
+    horizontal_gap = (
+        bubble_left - component_bounds[2]
+        if role == "customer"
+        else component_bounds[0] - bubble_right
+    )
+    max_gap = 150.0 if role == "customer" else 320.0
+    relative_alignment = bool(-20.0 <= horizontal_gap <= max_gap and abs(component_center_y - bubble_center_y) <= 30.0)
+    score = color_stddev + edge_ratio * 180.0
+    present = bool(
+        avatar_sized_component
+        and relative_alignment
+        and color_stddev >= 14.0
+        and edge_ratio >= 0.018
+        and score >= 22.0
+    )
+    return {
+        "present": present,
+        "score": round(score, 4),
+        "color_stddev": round(color_stddev, 4),
+        "edge_ratio": round(edge_ratio, 6),
+        "foreground_ratio": round(foreground_ratio, 6),
+        "foreground_bounds_size": [foreground_width, foreground_height],
+        "foreground_bounds": component_bounds,
+        "horizontal_gap": round(horizontal_gap, 2),
+        "relative_alignment": relative_alignment,
+        "avatar_sized_component": avatar_sized_component,
+        "bounds": [lane_left, crop_top, lane_right, crop_bottom],
+        "position_source": "bubble_relative_avatar_adjacency",
+        "reason": "avatar_relative_structure" if present else "avatar_relative_structure_not_found",
+    }
+
+
+def message_row_avatar_role_details(
+    screenshot: Any | None,
+    bounds: list[float],
+    image_size: tuple[int, int],
+) -> dict[str, Any]:
+    customer = avatar_lane_visual_score(screenshot, bounds=bounds, role="customer", image_size=image_size)
+    self_side = avatar_lane_visual_score(screenshot, bounds=bounds, role="self", image_size=image_size)
+    customer_present = bool(customer.get("present"))
+    self_present = bool(self_side.get("present"))
+    role = "customer" if customer_present and not self_present else ("self" if self_present and not customer_present else "")
+    return {
+        "role": role,
+        "source": "wechat_avatar_row_structure_v2" if role else "",
+        "customer": customer,
+        "self": self_side,
+        "ambiguous": bool(customer_present and self_present),
+    }
+
+
 def ocr_page_fingerprint(ocr_items: list[dict[str, Any]], *, geometry: dict[str, Any]) -> dict[str, Any]:
     normalized: list[str] = []
     for item in ocr_items or []:
@@ -2281,12 +5758,20 @@ def capture_message_history_snapshots(
     def capture(label: str) -> None:
         screenshot, path = capture_wechat(hwnd, artifact_dir=artifact_dir, label=label)
         ocr_items = run_ocr(screenshot)
+        parsed_messages = parse_messages_from_ocr(ocr_items, screenshot.size, target=target, screenshot=screenshot)
         snapshots.append(
             {
                 "label": label,
                 "screenshot_path": path,
+                "screenshot": screenshot,
                 "ocr_items": ocr_items,
-                "messages": parse_messages_from_ocr(ocr_items, screenshot.size, target=target),
+                "messages": parsed_messages,
+                "visible_untranscribed_voice": visible_untranscribed_voice_hint(
+                    screenshot,
+                    ocr_items,
+                    screenshot.size,
+                    parsed_messages=parsed_messages,
+                ),
             }
         )
 
@@ -2340,12 +5825,19 @@ def capture_message_history_snapshots_until_anchor(
     def capture(label: str) -> None:
         screenshot, path = capture_wechat(hwnd, artifact_dir=artifact_dir, label=label)
         ocr_items = run_ocr(screenshot)
+        parsed_messages = parse_messages_from_ocr(ocr_items, screenshot.size, target=target, screenshot=screenshot)
         snapshots.append(
             {
                 "label": label,
                 "screenshot_path": path,
                 "ocr_items": ocr_items,
-                "messages": parse_messages_from_ocr(ocr_items, screenshot.size, target=target),
+                "messages": parsed_messages,
+                "visible_untranscribed_voice": visible_untranscribed_voice_hint(
+                    screenshot,
+                    ocr_items,
+                    screenshot.size,
+                    parsed_messages=parsed_messages,
+                ),
             }
         )
         history_load["snapshot_count"] = len(snapshots)
@@ -2464,8 +5956,10 @@ def message_history_requires_occurrence_hint(
     key = str(base_key or message_history_dedupe_base_key(message))
     if not key:
         return False
-    compact = key.split(":", 1)[1] if ":" in key else key
-    return len(compact) <= max(1, int(short_len_threshold or 1))
+    # Repeated long messages are just as legitimate as repeated short replies.
+    # The per-snapshot occurrence number keeps both bubbles while still aligning
+    # the same occurrence across history snapshots.
+    return True
 
 
 def message_history_dedupe_key(
@@ -2494,13 +5988,40 @@ def sidecar_message_content_key(message: dict[str, Any]) -> str:
     content = normalize_anchor_message_content(message.get("content"))
     if not content:
         return ""
-    return "\x1f".join(
-        [
-            str(message.get("sender") or "").strip(),
-            str(message.get("type") or "").strip(),
-            content,
-        ]
-    )
+    parts = [
+        str(message.get("sender") or "").strip(),
+        str(message.get("type") or "").strip(),
+        content,
+    ]
+    anchor_key = str(
+        message.get("voice_anchor_stable_key")
+        or message.get("voice_anchor_key")
+        or ""
+    ).strip()
+    if anchor_key:
+        parts.append(anchor_key)
+    return "\x1f".join(parts)
+
+
+def sidecar_new_message_occurrences(
+    after_messages: list[dict[str, Any]],
+    baseline_messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return only surplus occurrences visible after an action."""
+    before_key_counts: dict[str, int] = {}
+    for message in baseline_messages:
+        key = sidecar_message_content_key(message)
+        if key:
+            before_key_counts[key] = before_key_counts.get(key, 0) + 1
+    new_items: list[dict[str, Any]] = []
+    for message in after_messages:
+        key = sidecar_message_content_key(message)
+        remaining = before_key_counts.get(key, 0)
+        if key and remaining > 0:
+            before_key_counts[key] = remaining - 1
+            continue
+        new_items.append(message)
+    return new_items
 
 
 ADD_FRIEND_STEP_SEQUENCE = [
@@ -5348,6 +8869,8 @@ def activate_session_candidate(
     )
     _sidecar_timing_finish(timing, "activation_choose_click", choose_started)
     timing["activation_candidate_name"] = str(session.get("name") or "")
+    timing["activation_click_point"] = [int(click_x), int(click_y)]
+    timing["activation_click_method"] = "human_window_image_click"
     if session_candidate_is_service_container_wrong_target(session, target):
         timing["reason"] = "service_container_candidate_wrong_target"
         timing["hard_stop"] = True
@@ -5359,7 +8882,10 @@ def activate_session_candidate(
     humanized_action_sleep(260, 720)
     _sidecar_timing_finish(timing, "activation_pre_click_wait", pre_click_wait_started)
     click_started = _sidecar_timing_start(timing, "activation_click")
-    human_client_click(hwnd, click_x, click_y)
+    # Session rows are parsed from screenshot/OCR coordinates. Use the same
+    # window-image click path as search-result activation to avoid client
+    # coordinate drift on Windows DPI / scaled WeChat windows.
+    human_window_image_click(hwnd, click_x, click_y)
     _sidecar_timing_finish(timing, "activation_click", click_started)
     for attempt in range(target_switch_passive_confirm_attempts()):
         timing["activation_confirm_attempts_observed"] = attempt + 1
@@ -5388,6 +8914,25 @@ def activate_session_candidate(
                 geometry=geometry,
             )
             return finish(True)
+        if not target_switch_validation_is_hard_stop(validation):
+            selected_confirm_started = _sidecar_timing_start(timing, f"activation_confirm_{attempt + 1}_selected_session_validation")
+            selected_validation = validate_active_selected_session_target(
+                hwnd,
+                target,
+                exact=exact,
+                artifact_dir=artifact_dir,
+            )
+            _sidecar_timing_finish(timing, f"activation_confirm_{attempt + 1}_selected_session_validation", selected_confirm_started)
+            _sidecar_timing_merge_prefixed(
+                timing,
+                f"activation_confirm_{attempt + 1}_selected_session_validation",
+                selected_validation,
+            )
+            if selected_validation.get("ok"):
+                timing["activation_confirmed_by_attempt"] = attempt + 1
+                timing["activation_confirmation_confidence"] = "selected_session_list"
+                timing[f"activation_confirm_{attempt + 1}_selected_session_ok"] = True
+                return finish(True)
         if target_switch_validation_is_hard_stop(validation):
             timing["reason"] = "hard_stop"
             return finish(False)
@@ -5411,6 +8956,55 @@ def find_session_candidate_by_key(sessions: list[dict[str, Any]], session_key: s
         if isinstance(item, dict) and session_matches_key(item, expected):
             return item
     return None
+
+
+def find_unique_session_candidate_by_semantics(
+    sessions: list[dict[str, Any]],
+    *,
+    target: str,
+    semantic_target: str = "",
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    clean_target = str(target or "").strip()
+    clean_semantic_target = str(semantic_target or "").strip()
+    hints: list[tuple[str, str]] = []
+    if clean_semantic_target:
+        hints.append(("remark_code", clean_semantic_target))
+    if clean_target and clean_target != clean_semantic_target:
+        hints.append(("display_name", clean_target))
+
+    attempts: list[dict[str, Any]] = []
+    for source, hint in hints:
+        matches: list[dict[str, Any]] = []
+        for item in sessions:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "")
+            if source == "remark_code":
+                matched = remark_code_matches_text(name, hint)
+            else:
+                matched = session_name_matches(name, hint, exact=False)
+            if matched:
+                matches.append(item)
+        attempts.append(
+            {
+                "source": source,
+                "hint": hint,
+                "match_count": len(matches),
+                "matches": [
+                    {
+                        "name": str(item.get("name") or ""),
+                        "session_key": str(item.get("session_key") or ""),
+                        "center_y": item.get("center_y"),
+                    }
+                    for item in matches[:5]
+                ],
+            }
+        )
+        if len(matches) == 1:
+            return matches[0], {"matched_by": source, "attempts": attempts}
+        if len(matches) > 1:
+            return None, {"matched_by": "", "ambiguous": True, "attempts": attempts}
+    return None, {"matched_by": "", "ambiguous": False, "attempts": attempts}
 
 
 def visible_session_name_is_unambiguous(
@@ -5462,7 +9056,10 @@ def ensure_main_session_list(
     max_hops: int = 2,
 ) -> tuple[Any, list[dict[str, Any]]]:
     screenshot, _path = capture_wechat(hwnd, artifact_dir=artifact_dir, label="open_chat")
-    ocr_items = run_ocr_traced(screenshot, "open_chat_main_list", source="ensure_main_session_list")
+    ocr_items, _enhanced_count = session_list_ocr_items(
+        screenshot,
+        run_ocr_traced(screenshot, "open_chat_main_list", source="ensure_main_session_list"),
+    )
     hops = max(0, int(max_hops))
     for _ in range(hops):
         back_target = detect_session_subview_back_target(ocr_items, screenshot.size)
@@ -5471,7 +9068,10 @@ def ensure_main_session_list(
         client_click(hwnd, int(back_target["x"]), int(back_target["y"]))
         humanized_action_sleep(280, 480)
         screenshot, _path = capture_wechat(hwnd, artifact_dir=artifact_dir, label="open_chat_main_list")
-        ocr_items = run_ocr_traced(screenshot, "open_chat_main_list_after_back", source="ensure_main_session_list")
+        ocr_items, _enhanced_count = session_list_ocr_items(
+            screenshot,
+            run_ocr_traced(screenshot, "open_chat_main_list_after_back", source="ensure_main_session_list"),
+        )
     return screenshot, ocr_items
 
 
@@ -5572,6 +9172,17 @@ def target_switch_validation_is_hard_stop(validation: dict[str, Any] | None) -> 
     return win32_ocr_session_targeting.target_switch_validation_is_hard_stop(validation)
 
 
+def target_switch_validation_blocks_visible_activation(validation: dict[str, Any] | None) -> bool:
+    if not target_switch_validation_is_hard_stop(validation):
+        return False
+    data = validation if isinstance(validation, dict) else {}
+    reason = str(data.get("reason") or "")
+    state = str(data.get("state") or "")
+    # A service/official-account page is a wrong current target, but it is not
+    # a reason to block switching to a uniquely matched visible customer row.
+    return reason != "service_container_wrong_target" and state != "wrong_target_service_container_detected"
+
+
 def target_ready_attempt_count(max_attempts: int | None) -> int:
     if max_attempts is not None:
         return max(1, int(max_attempts))
@@ -5645,6 +9256,8 @@ def consume_recent_target_switch_validation(
     exact: bool,
     session_key: str,
     ttl_seconds: float | None = None,
+    minimum_cached_at: float | None = None,
+    require_session_key_match: bool = False,
 ) -> dict[str, Any] | None:
     cached = _LAST_RPA_ACTION_STATE.get("target_ready_last_switch_validation")
     if not isinstance(cached, dict):
@@ -5652,7 +9265,10 @@ def consume_recent_target_switch_validation(
     ttl = target_ready_switch_validation_cache_seconds() if ttl_seconds is None else max(0.0, float(ttl_seconds))
     if ttl <= 0:
         return None
-    age = max(0.0, time.monotonic() - float(cached.get("ts") or 0.0))
+    cached_at = float(cached.get("ts") or 0.0)
+    if minimum_cached_at is not None and cached_at < float(minimum_cached_at):
+        return None
+    age = max(0.0, time.monotonic() - cached_at)
     if age > ttl:
         return None
     if int(cached.get("hwnd") or 0) != int(hwnd or 0):
@@ -5663,6 +9279,8 @@ def consume_recent_target_switch_validation(
         return None
     clean_session_key = str(session_key or "").strip()
     cached_session_key = str(cached.get("session_key") or "").strip()
+    if require_session_key_match and (not clean_session_key or cached_session_key != clean_session_key):
+        return None
     if clean_session_key and cached_session_key and cached_session_key != clean_session_key:
         return None
     validation = cached.get("validation")
@@ -5846,6 +9464,87 @@ def sidebar_search_query_matches(query_text: str, expected: str) -> bool:
     return bool(query and target and query == target)
 
 
+def bounded_edit_distance(left: str, right: str, *, max_distance: int = 2) -> int:
+    a = str(left or "")
+    b = str(right or "")
+    if abs(len(a) - len(b)) > max_distance:
+        return max_distance + 1
+    previous = list(range(len(b) + 1))
+    for i, ca in enumerate(a, start=1):
+        current = [i]
+        row_min = current[0]
+        for j, cb in enumerate(b, start=1):
+            cost = 0 if ca == cb else 1
+            value = min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost)
+            current.append(value)
+            row_min = min(row_min, value)
+        if row_min > max_distance:
+            return max_distance + 1
+        previous = current
+    return previous[-1]
+
+
+def sidebar_search_query_mismatch_allows_candidate_probe(query_text: str, expected: str) -> bool:
+    query = re.sub(r"\s+", "", normalize_session_name(str(query_text or ""))).strip().lower()
+    target = re.sub(r"\s+", "", normalize_session_name(str(expected or ""))).strip().lower()
+    if not query or not target:
+        return False
+    if query == target:
+        return True
+    if len(query) > len(target) + 2:
+        return False
+    return bounded_edit_distance(query, target, max_distance=2) <= 2
+
+
+def sidebar_search_clear_residue_allows_candidate_probe(query_text: str) -> bool:
+    query = re.sub(r"\s+", "", normalize_session_name(str(query_text or ""))).strip().lower()
+    if not query:
+        return True
+    return query in {"q", "o", "0", "搜索", "q搜索"}
+
+
+def sidebar_search_input_target_from_ocr(
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    geometry: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    width, height = image_size
+    if width <= 0 or height <= 0:
+        return None
+    active_geometry = geometry if isinstance(geometry, dict) else {"width": width, "height": height}
+    split_x = session_split_x(int(active_geometry.get("width") or width))
+    expected_x, expected_y = sidebar_search_input_focus_point_for_geometry(active_geometry)
+    candidates = []
+    for item in ocr_items or []:
+        center_x = float(item.get("center_x") or 0)
+        center_y = float(item.get("center_y") or 0)
+        text = voice_transcribe_compact_text(item.get("text"))
+        if not (48 <= center_x <= split_x - 44 and 38 <= center_y <= min(138, height * 0.18)):
+            continue
+        if text in {"+", "＋"}:
+            continue
+        candidates.append((abs(center_x - expected_x) + abs(center_y - expected_y) * 2.0, item))
+    if not candidates:
+        return None
+    _, item = min(candidates, key=lambda entry: entry[0])
+    center_y = int(float(item.get("center_y") or expected_y))
+    bounds = [
+        max(44, int(float(item.get("left") or expected_x)) - 34),
+        max(38, int(float(item.get("top") or center_y)) - 12),
+        min(split_x - 48, max(int(float(item.get("right") or expected_x)) + 58, expected_x + 46)),
+        min(138, int(float(item.get("bottom") or center_y)) + 12),
+    ]
+    if bounds[2] - bounds[0] < 54 or bounds[3] - bounds[1] < 18:
+        return None
+    return {
+        "point": [min(max(expected_x, bounds[0] + 8), bounds[2] - 8), (bounds[1] + bounds[3]) // 2],
+        "bounds": bounds,
+        "source": "fresh_ocr_sidebar_search_input",
+        "ocr_text": str(item.get("text") or ""),
+    }
+
+
 def dismiss_sidebar_search_state(
     hwnd: int,
     *,
@@ -5858,22 +9557,54 @@ def dismiss_sidebar_search_state(
     if not guard.get("ok"):
         return {"ok": False, "reason": "window_guard_failed_before_search_dismiss", "window_guard": guard}
     active_geometry = geometry if isinstance(geometry, dict) else get_window_geometry(hwnd)
-    result: dict[str, Any] = {"ok": True, "method": "guarded_escape_search_dismiss", "attempts": 0}
+    result: dict[str, Any] = {"ok": True, "method": "fresh_search_clear_and_header_blank_click", "attempts": 0}
     max_attempts = 2 if artifact_dir else 1
     last_search_state: dict[str, Any] = {"detected": False, "reason": ""}
     for attempt in range(1, max_attempts + 1):
         result["attempts"] = attempt
-        humanized_action_sleep(360, 920)
-        key_press(win32con.VK_ESCAPE)
+        before_shot, before_path = capture_wechat(hwnd, artifact_dir=artifact_dir, label="open_chat_search_dismiss_before")
+        before_items = run_ocr_traced(before_shot, "open_chat_search_dismiss_before", source="open_chat")
+        search_target = sidebar_search_input_target_from_ocr(before_items, before_shot.size, geometry=active_geometry)
+        if not search_target:
+            fallback_x, fallback_y = sidebar_search_input_focus_point_for_geometry(active_geometry)
+            search_target = {
+                "point": [fallback_x, fallback_y],
+                "bounds": [max(44, fallback_x - 54), max(38, fallback_y - 22), min(session_split_x(before_shot.size[0]) - 48, fallback_x + 88), min(138, fallback_y + 24)],
+                "source": "geometry_fallback_with_post_verification",
+            }
+        human_window_image_click_in_bounds(
+            hwnd,
+            int(search_target["point"][0]),
+            int(search_target["point"][1]),
+            bounds=search_target["bounds"],
+            action_name="sidebar_search_dismiss_focus_fresh_target",
+        )
+        humanized_action_sleep(180, 420)
+        hotkey(win32con.VK_CONTROL, ord("A"))
+        humanized_action_sleep(100, 260)
+        key_press(win32con.VK_BACK)
+        humanized_action_sleep(260, 620)
+        cleared_shot, _ = capture_wechat(hwnd, artifact_dir=artifact_dir, label="open_chat_search_dismiss_cleared")
+        cleared_items = run_ocr_traced(cleared_shot, "open_chat_search_dismiss_cleared", source="open_chat")
+        blank_target = safe_window_header_blank_click_target(cleared_items, cleared_shot.size, geometry=active_geometry)
+        if not blank_target:
+            return {**result, "ok": False, "reason": "safe_header_blank_target_not_found", "search_target": search_target}
+        human_window_image_click_in_bounds(
+            hwnd,
+            int(blank_target["point"][0]),
+            int(blank_target["point"][1]),
+            bounds=blank_target["bounds"],
+            action_name="sidebar_search_dismiss_header_blank_click",
+        )
+        result["search_target"] = search_target
+        result["blank_target"] = blank_target
         humanized_action_sleep(620, 1400)
         after_guard = basic_send_window_guard(hwnd)
         result["window_guard"] = after_guard
         if not after_guard.get("ok"):
             return {"ok": False, "reason": "window_guard_failed_after_search_dismiss", "window_guard": after_guard}
-        if not artifact_dir:
-            return result
-        shot, shot_path = capture_wechat(hwnd, artifact_dir=artifact_dir, label="open_chat_search_dismiss_after_escape")
-        items = run_ocr_traced(shot, "open_chat_search_dismiss_after_escape", source="open_chat")
+        shot, shot_path = capture_wechat(hwnd, artifact_dir=artifact_dir, label="open_chat_search_dismiss_after_click")
+        items = run_ocr_traced(shot, "open_chat_search_dismiss_after_click", source="open_chat")
         surface = target_switch_surface_state(
             shot,
             items,
@@ -5923,14 +9654,6 @@ def clear_sidebar_search_box_without_select_all(
     guard = recover_send_window_guard(hwnd, max_attempts=2) if recover_foreground else basic_send_window_guard(hwnd)
     if not guard.get("ok"):
         return {"ok": False, "reason": "window_guard_failed_before_search_clear", "window_guard": guard}
-    # ESC + search-box click can stall rendering on some WeChat builds. Keep
-    # it opt-in for diagnostics instead of making it part of the normal search
-    # preparation path.
-    escape_enabled = env_flag("WECHAT_WIN32_OCR_TARGET_SEARCH_CLEAR_ESCAPE", default=False)
-    if escape_enabled:
-        humanized_action_sleep(520, 1200)
-        key_press(win32con.VK_ESCAPE)
-        humanized_action_sleep(650, 1400)
     click_result: dict[str, Any] = {"ok": True, "bounds": None}
     active_geometry = geometry if isinstance(geometry, dict) else get_window_geometry(hwnd)
     split_x = session_split_x(int(active_geometry.get("width") or 0))
@@ -6022,7 +9745,7 @@ def clear_sidebar_search_box_without_select_all(
         probe_items,
         geometry=active_geometry,
         screenshot_path=probe_path,
-        target=target_hint,
+        target="",
     )
     if not surface.get("ok"):
         return {
@@ -6062,7 +9785,7 @@ def clear_sidebar_search_box_without_select_all(
         clear_items,
         geometry=active_geometry,
         screenshot_path=clear_path,
-        target=target_hint,
+        target="",
     )
     clear_state = sidebar_search_state_detected(clear_shot, clear_items, geometry=active_geometry)
     clear_query_text = sidebar_search_query_text(clear_items, clear_shot.size, geometry=active_geometry)
@@ -6095,7 +9818,7 @@ def clear_sidebar_search_box_without_select_all(
             refocus_items,
             geometry=active_geometry,
             screenshot_path=refocus_path,
-            target=target_hint,
+            target="",
         )
         refocus_state = sidebar_search_state_detected(refocus_shot, refocus_items, geometry=active_geometry)
         refocus_query_text = sidebar_search_query_text(refocus_items, refocus_shot.size, geometry=active_geometry)
@@ -6120,6 +9843,21 @@ def clear_sidebar_search_box_without_select_all(
             "refocus": refocus_result,
         }
     if clear_query_text:
+        if sidebar_search_clear_residue_allows_candidate_probe(clear_query_text):
+            return {
+                "ok": True,
+                "method": "verified_sidebar_search_select_all_clear",
+                "key_count": 2,
+                "query_text": clear_query_text,
+                "surface": clear_surface,
+                "search_state": clear_state,
+                "click": click_result,
+                "window_guard": guard,
+                "refocused_after_clear": bool(refocus_result),
+                "refocus": refocus_result,
+                "warning": "search_clear_ocr_residue_ignored",
+                "continued_after_clear_ocr_residue": True,
+            }
         return {
             "ok": False,
             "reason": "search_box_not_empty_after_clear",
@@ -6162,7 +9900,7 @@ def type_sidebar_search_query(
         humanized_action_sleep(220, 720)
         hotkey(win32con.VK_CONTROL, ord("V"))
         humanized_action_sleep(850, 1700)
-        if not artifact_dir and not verify_after_paste:
+        if not verify_after_paste:
             return {"ok": True, "method": "clipboard", "window_guard": guard}
         active_geometry = geometry if isinstance(geometry, dict) else get_window_geometry(hwnd)
         verify_shot, verify_path = capture_wechat(hwnd, artifact_dir=artifact_dir, label="open_chat_search_box_after_paste")
@@ -6172,7 +9910,7 @@ def type_sidebar_search_query(
             verify_items,
             geometry=active_geometry,
             screenshot_path=verify_path,
-            target=target,
+            target="",
         )
         search_state = sidebar_search_state_detected(verify_shot, verify_items, geometry=active_geometry)
         query_text = sidebar_search_query_text(verify_items, verify_shot.size, geometry=active_geometry)
@@ -6260,7 +9998,7 @@ def nudge_sidebar_search_query_for_results(
         items,
         geometry=active_geometry,
         screenshot_path=shot_path,
-        target=clean_target,
+        target="",
     )
     search_state = sidebar_search_state_detected(shot, items, geometry=active_geometry)
     query_text = sidebar_search_query_text(items, shot.size, geometry=active_geometry)
@@ -6391,7 +10129,7 @@ def write_messages_targeting_review(output_dir: Path, payload: dict[str, Any]) -
         _targeting_review_row(
             title="03 清空搜索框后复核",
             purpose="检查搜索框是否先被点击并激活，然后 Ctrl+A + Backspace 清空。",
-            expected="result.ok=true，search_state.detected=true，query_text 为空；否则禁止粘贴短码。",
+            expected="result.ok=true，search_state.detected=true；若 query_text 仅为 Q/搜索图标残影可继续，真实旧查询串必须失败。",
             source=clear_result.get("surface") if isinstance(clear_result.get("surface"), dict) else {},
             detection=clear_step,
         )
@@ -6401,8 +10139,8 @@ def write_messages_targeting_review(output_dir: Path, payload: dict[str, Any]) -
     rows.append(
         _targeting_review_row(
             title="04 粘贴短码后复核",
-            purpose="检查粘贴后搜索框里的查询词是否与 remark_code 完全一致。",
-            expected="query_text 必须等于 remark_code；例如 CJWCJWIN01WIN01 必须失败，不允许点击候选。",
+            purpose="粘贴短码；默认不再强制 OCR 复核搜索框文本，避免 J/I/图标误识别拖慢流程。",
+            expected="安全判断以后续唯一候选和点击后标题/备注短码确认为准；如启用粘贴复核，真实拼接旧查询串仍必须失败。",
             source=paste_result.get("surface") if isinstance(paste_result.get("surface"), dict) else {},
             detection=paste_step,
         )
@@ -6487,7 +10225,7 @@ def search_result_contact_candidates_matching_remark_code(
         if not text or not in_search_panel(item):
             continue
         compact = re.sub(r"\s+", "", text)
-        if compact in {"联系人", "群聊", "更多"} or "搜索网络结果" in compact or "网络查找" in compact or compact.startswith("查看全部"):
+        if compact in {"联系人", "群聊", "更多", "收藏"} or "搜索网络结果" in compact or "网络查找" in compact or compact.startswith("查看全部"):
             headings.append((compact, float(item.get("center_y") or 0)))
 
     contact_heading_y = min((y for text, y in headings if text == "联系人"), default=86.0)
@@ -6495,7 +10233,7 @@ def search_result_contact_candidates_matching_remark_code(
         (
             y
             for text, y in headings
-            if y > contact_heading_y and (text in {"群聊", "更多"} or "搜索网络结果" in text or "网络查找" in text)
+            if y > contact_heading_y and (text in {"群聊", "更多", "收藏"} or "搜索网络结果" in text or "网络查找" in text)
         ),
         default=float(height),
     )
@@ -6566,6 +10304,162 @@ def search_result_contact_candidates_matching_remark_code(
     return matches
 
 
+def fallback_first_search_contact_candidate(
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    remark_code: str,
+) -> dict[str, Any] | None:
+    width, height = image_size
+    split_x = session_split_x(width)
+    left_panel_right = min(max(split_x + 170, 470), width - 40)
+
+    def in_search_panel(item: dict[str, Any]) -> bool:
+        return float(item.get("left") or 0) < left_panel_right and float(item.get("center_y") or 0) >= 80
+
+    headings: list[tuple[str, float]] = []
+    for item in ocr_items or []:
+        text = normalize_ocr_text(item.get("text"))
+        if not text or not in_search_panel(item):
+            continue
+        compact = re.sub(r"\s+", "", text)
+        if compact in {"联系人", "群聊", "更多", "收藏"} or "搜索网络结果" in compact or "网络查找" in compact or compact.startswith("查看全部"):
+            headings.append((compact, float(item.get("center_y") or 0)))
+
+    contact_heading_y = min((y for text, y in headings if text == "联系人"), default=88.0)
+    section_bottom = min(
+        (
+            y
+            for text, y in headings
+            if y > contact_heading_y and (text in {"群聊", "更多", "收藏"} or "搜索网络结果" in text or "网络查找" in text)
+        ),
+        default=min(float(height), contact_heading_y + 150.0),
+    )
+    row_items = [
+        item
+        for item in ocr_items or []
+        if in_search_panel(item)
+        and contact_heading_y < float(item.get("center_y") or 0) < section_bottom
+        and normalize_ocr_text(item.get("text"))
+    ]
+    if not row_items:
+        return None
+    first_y = min(float(item.get("center_y") or 0) for item in row_items)
+    row_items = [
+        item
+        for item in row_items
+        if abs(float(item.get("center_y") or 0) - first_y) <= 28
+    ]
+    if not row_items:
+        return None
+    row_items = sorted(row_items, key=lambda row: float(row.get("left") or 0))
+    row_texts = [str(item.get("text") or "").strip() for item in row_items if str(item.get("text") or "").strip()]
+    name = normalize_session_name(" ".join(row_texts)) or str(remark_code or "").strip()
+    left = min(float(item.get("left") or 0) for item in row_items)
+    right = max(float(item.get("right") or 0) for item in row_items)
+    top = min(float(item.get("top") or 0) for item in row_items)
+    bottom = max(float(item.get("bottom") or 0) for item in row_items)
+    bounds = [
+        max(88, int(left) - 74),
+        max(88, int(top) - 20),
+        min(left_panel_right, max(int(right) + 150, int(left) + 240)),
+        min(height - 12, max(int(bottom) + 24, int(top) + 68)),
+    ]
+    center_y = int((bounds[1] + bounds[3]) / 2)
+    text_center_x = int((left + right) / 2)
+    click_points = [
+        [bounded_int(text_center_x, default=190, minimum=bounds[0] + 12, maximum=bounds[2] - 12), center_y],
+        [bounded_int(int(left) + 58, default=text_center_x, minimum=bounds[0] + 12, maximum=bounds[2] - 12), center_y],
+        [bounded_int(int(right) + 24, default=text_center_x, minimum=bounds[0] + 12, maximum=bounds[2] - 12), center_y],
+    ]
+    return {
+        "name": name,
+        "session_key": rpa_session_key(name, conversation_type="contact", row_fingerprint=session_row_fingerprint(row_items[0], duplicate_index=0)),
+        "conversation_type": "contact",
+        "row_fingerprint": session_row_fingerprint(row_items[0], duplicate_index=0),
+        "duplicate_name_index": 0,
+        "ambiguous_display_name": True,
+        "confidence": None,
+        "center_y": center_y,
+        "left": left,
+        "right": right,
+        "top": top,
+        "bottom": bottom,
+        "source_adapter": "win32_ocr",
+        "source": "search_contact_result",
+        "fallback_source": "first_contact_row_after_search",
+        "search_result_bounds": bounds,
+        "search_result_click_points": click_points,
+        "section": "contacts",
+    }
+
+
+def active_selected_session_matches(
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    target: str,
+    exact: bool,
+) -> bool:
+    if not target:
+        return False
+    normalized_target = normalize_session_name(target)
+    if not normalized_target:
+        return False
+    width, height = image_size
+    split_x = session_split_x(width)
+    top_limit = 88
+    bottom_limit = min(height, 238)
+    for item in ocr_items or []:
+        text = normalize_ocr_text(item.get("text"))
+        if not text:
+            continue
+        if float(item.get("center_x") or 0) >= split_x + 16:
+            continue
+        center_y = float(item.get("center_y") or 0)
+        if center_y < top_limit or center_y > bottom_limit:
+            continue
+        candidates = {
+            text,
+            strip_chat_unread_suffix(text),
+            re.sub(r"^[：:.\s]+", "", text).strip(),
+            normalize_chat_title_for_match(text),
+        }
+        for candidate in candidates:
+            if session_name_matches(candidate, normalized_target, exact=exact):
+                return True
+    return False
+
+
+def validate_active_selected_session_target(
+    hwnd: int,
+    target: str,
+    *,
+    exact: bool,
+    artifact_dir: str | None = None,
+) -> dict[str, Any]:
+    screenshot, path = capture_wechat(hwnd, artifact_dir=artifact_dir, label="selected_session_guard")
+    items = run_ocr_traced(screenshot, "selected_session_guard", source="validate_selected_session")
+    matched = active_selected_session_matches(items, screenshot.size, target=target, exact=exact)
+    return {
+        "ok": bool(matched),
+        "online": True,
+        "reason": "selected_session_confirmed" if matched else "selected_session_not_confirmed",
+        "requested_target": target,
+        "confirmed_target": target if matched else "",
+        "confirmation_confidence": "selected_session_list" if matched else "failed_selected_session_list",
+        "screenshot_path": path,
+        "ocr_count": len(items),
+    }
+
+
+def c2_target_activation_confirmed(validation: dict[str, Any] | None) -> bool:
+    if active_send_guard_is_strong(validation):
+        return True
+    if not isinstance(validation, dict):
+        return False
+    return bool(validation.get("ok") and validation.get("confirmation_confidence") == "selected_session_list")
+
+
 def activate_search_result_candidate(
     hwnd: int,
     candidate: dict[str, Any],
@@ -6589,27 +10483,36 @@ def activate_search_result_candidate(
         timing["reason"] = reason
         return {"ok": bool(ok), "reason": reason, "attempts": attempts, "timing": dict(timing), **payload}
 
-    for index, point in enumerate(points[:3]):
-        try:
-            x, y = int(point[0]), int(point[1])
-        except Exception:
-            continue
-        pre_click_wait_started = _sidecar_timing_start(timing, f"search_result_click_{index + 1}_wait")
-        humanized_action_sleep(260, 760)
-        _sidecar_timing_finish(timing, f"search_result_click_{index + 1}_wait", pre_click_wait_started)
-        click_started = _sidecar_timing_start(timing, f"search_result_click_{index + 1}")
-        # Search-result candidates are derived from OCR screenshot coordinates,
-        # so click in the same window-image coordinate space as add_friend.
-        human_window_image_click(hwnd, x, y)
-        _sidecar_timing_finish(timing, f"search_result_click_{index + 1}", click_started)
+    point = next((item for item in points if isinstance(item, (list, tuple)) and len(item) >= 2), None)
+    if point is None:
+        return finish(False, "search_result_candidate_click_point_missing", validation={})
+    x, y = int(point[0]), int(point[1])
+    pre_click_wait_started = _sidecar_timing_start(timing, "search_result_click_wait")
+    humanized_action_sleep(260, 760)
+    _sidecar_timing_finish(timing, "search_result_click_wait", pre_click_wait_started)
+    click_started = _sidecar_timing_start(timing, "search_result_click")
+    # One fresh OCR row produces exactly one physical click. Slow UI updates
+    # are handled by passive verification, never by probing more row points.
+    human_window_image_click(hwnd, x, y)
+    _sidecar_timing_finish(timing, "search_result_click", click_started)
+    last_validation: dict[str, Any] = {}
+    for verification_index in range(2):
         humanized_action_sleep(520, 1050)
         validation = validate_active_send_target(hwnd, remark_code, exact=False, artifact_dir=artifact_dir)
-        attempts.append({"point": [x, y], "click_method": "human_window_image_click", "validation": validation})
-        if active_send_guard_is_strong(validation):
+        if not active_send_guard_is_strong(validation) and not target_switch_validation_is_hard_stop(validation):
+            selected_validation = validate_active_selected_session_target(hwnd, remark_code, exact=False, artifact_dir=artifact_dir)
+            if selected_validation.get("ok"):
+                validation = {**validation, "selected_session_validation": selected_validation, "ok": True, "confirmation_confidence": "selected_session_list"}
+        last_validation = validation
+        attempts.append({
+            "point": [x, y],
+            "click_method": "human_window_image_click" if verification_index == 0 else "passive_recheck",
+            "validation": validation,
+        })
+        if c2_target_activation_confirmed(validation):
             return finish(True, "search_result_candidate_confirmed", validation=validation, confirmed_point=[x, y])
         if target_switch_validation_is_hard_stop(validation):
             return finish(False, "search_result_candidate_hard_stop", validation=validation)
-    last_validation = attempts[-1]["validation"] if attempts else {}
     return finish(False, "search_result_candidate_not_confirmed", validation=last_validation)
 
 
@@ -6725,7 +10628,23 @@ def open_chat_by_remark_code_search(
     baseline_shot, baseline_items = ensure_main_session_list(hwnd, artifact_dir=artifact_dir)
     _sidecar_timing_finish(timing, "search_by_remark_code_baseline", baseline_started)
     geometry = get_window_geometry(hwnd)
+    baseline_surface = target_switch_surface_state(
+        baseline_shot,
+        baseline_items,
+        geometry=geometry,
+        target=clean_remark,
+    )
+    event("baseline_surface_check", "completed" if baseline_surface.get("ok") else "failed", surface=baseline_surface)
+    if not baseline_surface.get("ok"):
+        return finish(
+            False,
+            str(baseline_surface.get("reason") or "search_baseline_surface_not_ok"),
+            surface=baseline_surface,
+        )
     search_x, search_y = sidebar_search_input_focus_point_for_geometry(geometry)
+    search_target = sidebar_search_input_target_from_ocr(baseline_items, baseline_shot.size, geometry=geometry)
+    if search_target:
+        search_x, search_y = [int(value) for value in search_target["point"]]
     session_click_x = session_click_x_for_geometry(geometry)
     baseline_event: dict[str, Any] = {"ocr_count": len(baseline_items)}
     if artifact_dir:
@@ -6767,11 +10686,21 @@ def open_chat_by_remark_code_search(
         geometry=geometry,
         artifact_dir=artifact_dir,
         recover_foreground=True,
-        verify_after_paste=True,
+        verify_after_paste=env_flag("WECHAT_WIN32_OCR_MESSAGES_VERIFY_SEARCH_QUERY_AFTER_PASTE", default=False),
     )
     _sidecar_timing_finish(timing, "search_by_remark_code_input", input_started)
-    event("paste_remark_code", "completed" if input_result.get("ok") else "failed", result=input_result)
-    if not input_result.get("ok"):
+    input_ocr_soft_mismatch = (
+        not input_result.get("ok")
+        and str(input_result.get("reason") or "") == "search_query_text_mismatch_after_paste"
+        and sidebar_search_query_mismatch_allows_candidate_probe(str(input_result.get("query_text") or ""), clean_remark)
+    )
+    event(
+        "paste_remark_code",
+        "completed" if input_result.get("ok") else ("warning" if input_ocr_soft_mismatch else "failed"),
+        result=input_result,
+        continued_after_ocr_query_mismatch=bool(input_ocr_soft_mismatch),
+    )
+    if not input_result.get("ok") and not input_ocr_soft_mismatch:
         return finish(False, str(input_result.get("reason") or "search_input_failed"), input_result=input_result)
 
     wait_started = _sidecar_timing_start(timing, "search_by_remark_code_wait_results")
@@ -6795,7 +10724,7 @@ def open_chat_by_remark_code_search(
         search_items,
         geometry=geometry,
         screenshot_path=search_path,
-        target=clean_remark,
+        target="",
     )
     if not surface.get("ok"):
         event("search_surface_check", "failed", surface=surface)
@@ -6806,6 +10735,7 @@ def open_chat_by_remark_code_search(
     sessions = parse_sessions_from_ocr(search_items, search_shot.size, screenshot=search_shot)
     session_matches = search_result_sessions_matching_remark_code(sessions, clean_remark)
     matches = contact_matches or session_matches
+    fallback_candidate: dict[str, Any] | None = None
     nudge_result: dict[str, Any] = {}
     if not matches:
         nudge_started = _sidecar_timing_start(timing, "search_by_remark_code_nudge_results")
@@ -6845,7 +10775,7 @@ def open_chat_by_remark_code_search(
                 search_items,
                 geometry=geometry,
                 screenshot_path=search_path,
-                target=clean_remark,
+                target="",
             )
             if not surface.get("ok"):
                 event("search_surface_check_after_nudge", "failed", surface=surface)
@@ -6855,6 +10785,10 @@ def open_chat_by_remark_code_search(
             sessions = parse_sessions_from_ocr(search_items, search_shot.size, screenshot=search_shot)
             session_matches = search_result_sessions_matching_remark_code(sessions, clean_remark)
             matches = contact_matches or session_matches
+    if not matches:
+        fallback_candidate = fallback_first_search_contact_candidate(search_items, search_shot.size, clean_remark)
+        if fallback_candidate:
+            matches = [fallback_candidate]
     match_targets = [
         {
             "label": item.get("name"),
@@ -6887,6 +10821,7 @@ def open_chat_by_remark_code_search(
         contact_match_count=len(contact_matches),
         session_count=len(sessions),
         session_match_count=len(session_matches),
+        fallback_candidate={"name": fallback_candidate.get("name"), "bounds": fallback_candidate.get("search_result_bounds")} if fallback_candidate else None,
         match_count=len(matches),
         matches=[{"name": item.get("name"), "session_key": item.get("session_key")} for item in matches[:5]],
         nudge=nudge_result,
@@ -6930,8 +10865,12 @@ def open_chat_by_remark_code_search(
         return finish(False, "remark_code_candidate_not_confirmed", screenshot_path=search_path, selected_candidate=selected, activation=activation_result)
 
     validation = validate_active_send_target(hwnd, clean_remark, exact=False, artifact_dir=artifact_dir)
-    event("confirm_active_title_remark_code", "completed" if validation.get("ok") else "failed", validation=validation)
-    if not validation.get("ok"):
+    if not active_send_guard_is_strong(validation) and not target_switch_validation_is_hard_stop(validation):
+        selected_validation = validate_active_selected_session_target(hwnd, clean_remark, exact=False, artifact_dir=artifact_dir)
+        if selected_validation.get("ok"):
+            validation = {**validation, "selected_session_validation": selected_validation, "ok": True, "confirmation_confidence": "selected_session_list"}
+    event("confirm_active_title_remark_code", "completed" if c2_target_activation_confirmed(validation) else "failed", validation=validation)
+    if not c2_target_activation_confirmed(validation):
         return finish(False, "active_title_remark_code_not_confirmed", screenshot_path=search_path, selected_candidate=selected, validation=validation)
 
     _LAST_RPA_ACTION_STATE["active_session_key"] = str(selected.get("session_key") or "")
@@ -6952,6 +10891,7 @@ def open_chat(
     exact: bool,
     artifact_dir: str | None = None,
     session_key: str = "",
+    semantic_target: str = "",
 ) -> bool:
     timing: dict[str, Any] = {}
     ocr_trace_token = _ocr_trace_start()
@@ -6977,23 +10917,37 @@ def open_chat(
     )
     if isinstance(seed, dict):
         screenshot = seed["screenshot"]
-        ocr_items = list(seed.get("ocr_items") or [])
+        ocr_items, enhanced_count = session_list_ocr_items(screenshot, list(seed.get("ocr_items") or []))
         if detect_session_subview_back_target(ocr_items, screenshot.size):
             timing["open_chat_main_list_prevalidation_ocr_seed_reused"] = False
             timing["open_chat_main_list_prevalidation_ocr_seed_discarded"] = "session_subview"
             screenshot, ocr_items = ensure_main_session_list(hwnd, artifact_dir=artifact_dir)
+            enhanced_count = sum(
+                1
+                for item in ocr_items
+                if str(item.get("ocr_source") or "") == "sidebar_visible_list_enhanced"
+            )
         else:
             timing["open_chat_main_list_prevalidation_ocr_seed_reused"] = True
             timing["open_chat_main_list_prevalidation_ocr_seed_age_seconds"] = seed.get("age_seconds")
             timing["open_chat_main_list_prevalidation_ocr_seed_count"] = len(ocr_items)
     else:
         screenshot, ocr_items = ensure_main_session_list(hwnd, artifact_dir=artifact_dir)
+        enhanced_count = sum(
+            1
+            for item in ocr_items
+            if str(item.get("ocr_source") or "") == "sidebar_visible_list_enhanced"
+        )
         timing["open_chat_main_list_prevalidation_ocr_seed_reused"] = False
+    timing["open_chat_main_list_enhanced_ocr_count"] = enhanced_count
     _sidecar_timing_finish(timing, "open_chat_main_list", main_list_started)
     geometry_started = _sidecar_timing_start(timing, "open_chat_geometry")
     geometry = geometry_for_seed if isinstance(geometry_for_seed, dict) else get_window_geometry(hwnd)
     session_click_x = session_click_x_for_geometry(geometry)
     search_x, search_y = sidebar_search_input_focus_point_for_geometry(geometry)
+    search_target = sidebar_search_input_target_from_ocr(ocr_items, screenshot.size, geometry=geometry)
+    if search_target:
+        search_x, search_y = [int(value) for value in search_target["point"]]
     _sidecar_timing_finish(timing, "open_chat_geometry", geometry_started)
     surface_started = _sidecar_timing_start(timing, "open_chat_surface")
     surface = target_switch_surface_state(screenshot, ocr_items, geometry=geometry, target=target)
@@ -7032,13 +10986,35 @@ def open_chat(
         keyed = find_session_candidate_by_key(sessions, clean_session_key)
         _sidecar_timing_finish(timing, "open_chat_find_session_key", find_started)
         if keyed is None:
-            return finish(False, "session_key_candidate_not_found")
+            semantic_started = _sidecar_timing_start(timing, "open_chat_find_semantic_candidate")
+            keyed, semantic_match = find_unique_session_candidate_by_semantics(
+                sessions,
+                target=target,
+                semantic_target=semantic_target,
+            )
+            _sidecar_timing_finish(timing, "open_chat_find_semantic_candidate", semantic_started)
+            timing["open_chat_session_key_drift_detected"] = True
+            timing["open_chat_semantic_candidate"] = semantic_match
+            if keyed is None:
+                reason = (
+                    "session_key_drift_semantic_candidate_ambiguous"
+                    if semantic_match.get("ambiguous")
+                    else "session_key_drift_semantic_candidate_not_found"
+                )
+                return finish(False, reason)
+            timing["open_chat_session_key_reacquired"] = {
+                "old_session_key": clean_session_key,
+                "new_session_key": str(keyed.get("session_key") or ""),
+                "name": str(keyed.get("name") or ""),
+                "matched_by": semantic_match.get("matched_by"),
+            }
         activation_started = _sidecar_timing_start(timing, "open_chat_activate_session")
+        activation_target = str(semantic_target or target).strip()
         opened = activate_session_candidate(
             hwnd,
             keyed,
-            target=target,
-            exact=exact,
+            target=activation_target,
+            exact=False if semantic_target else exact,
             geometry=geometry,
             default_click_x=session_click_x,
             artifact_dir=artifact_dir,
@@ -7046,9 +11022,40 @@ def open_chat(
         _sidecar_timing_finish(timing, "open_chat_activate_session", activation_started)
         _sidecar_timing_merge_prefixed(timing, "open_chat", _LAST_SESSION_ACTIVATION_TIMING)
         if opened:
-            _LAST_RPA_ACTION_STATE["active_session_key"] = clean_session_key
+            _LAST_RPA_ACTION_STATE["active_session_key"] = str(keyed.get("session_key") or clean_session_key)
             _LAST_RPA_ACTION_STATE["active_target"] = target
-        return finish(opened, "session_key_candidate_activated" if opened else "session_key_candidate_not_confirmed")
+        if timing.get("open_chat_session_key_drift_detected"):
+            reason = "semantic_candidate_reacquired" if opened else "semantic_candidate_not_confirmed"
+        else:
+            reason = "session_key_candidate_activated" if opened else "session_key_candidate_not_confirmed"
+        return finish(opened, reason)
+    clean_semantic_target = str(semantic_target or "").strip()
+    if clean_semantic_target:
+        semantic_candidate, semantic_match = find_unique_session_candidate_by_semantics(
+            sessions,
+            target=target,
+            semantic_target=clean_semantic_target,
+        )
+        timing["open_chat_semantic_candidate"] = semantic_match
+        if semantic_match.get("ambiguous"):
+            return finish(False, "semantic_candidate_ambiguous")
+        if semantic_candidate is not None:
+            activation_started = _sidecar_timing_start(timing, "open_chat_activate_semantic_session")
+            opened = activate_session_candidate(
+                hwnd,
+                semantic_candidate,
+                target=clean_semantic_target,
+                exact=False,
+                geometry=geometry,
+                default_click_x=session_click_x,
+                artifact_dir=artifact_dir,
+            )
+            _sidecar_timing_finish(timing, "open_chat_activate_semantic_session", activation_started)
+            _sidecar_timing_merge_prefixed(timing, "open_chat_semantic", _LAST_SESSION_ACTIVATION_TIMING)
+            if opened:
+                _LAST_RPA_ACTION_STATE["active_session_key"] = str(semantic_candidate.get("session_key") or "")
+                _LAST_RPA_ACTION_STATE["active_target"] = target
+            return finish(opened, "semantic_candidate_activated" if opened else "semantic_candidate_not_confirmed")
     for item in sessions:
         if not session_name_matches(str(item.get("name") or ""), target, exact=exact):
             continue
@@ -7384,6 +11391,9 @@ def validate_active_send_target(
     *,
     exact: bool,
     artifact_dir: str | None = None,
+    screenshot: Any | None = None,
+    ocr_items: list[dict[str, Any]] | None = None,
+    screenshot_path: str = "",
 ) -> dict[str, Any]:
     timing: dict[str, Any] = {}
     ocr_trace_token = _ocr_trace_start()
@@ -7402,20 +11412,31 @@ def validate_active_send_target(
     timing["validate_active_send_target_geometry_ok"] = bool(geometry_check.get("ok"))
     if not geometry_check.get("ok"):
         return finish({**geometry_check, "online": True, "geometry": geometry})
-    capture_started = _sidecar_timing_start(timing, "validate_active_send_target_capture")
-    screenshot, path = capture_wechat(hwnd, artifact_dir=artifact_dir, label="send_guard")
-    _sidecar_timing_finish(timing, "validate_active_send_target_capture", capture_started)
+    supplied_frame = screenshot is not None and ocr_items is not None
+    if supplied_frame:
+        path = str(screenshot_path or "")
+        timing["validate_active_send_target_frame_reused"] = True
+    else:
+        capture_started = _sidecar_timing_start(timing, "validate_active_send_target_capture")
+        screenshot, path = capture_wechat(hwnd, artifact_dir=artifact_dir, label="send_guard")
+        _sidecar_timing_finish(timing, "validate_active_send_target_capture", capture_started)
+        timing["validate_active_send_target_frame_reused"] = False
     timing["validate_active_send_target_screenshot_width"] = int(getattr(screenshot, "size", (0, 0))[0] or 0)
     timing["validate_active_send_target_screenshot_height"] = int(getattr(screenshot, "size", (0, 0))[1] or 0)
-    ocr_started = _sidecar_timing_start(timing, "validate_active_send_target_ocr")
-    ocr_items, ocr_source, roi_blank_render = run_ocr_for_active_send_target(
-        screenshot,
-        target=target,
-        exact=exact,
-        geometry=geometry,
-        timing=timing,
-    )
-    _sidecar_timing_finish(timing, "validate_active_send_target_ocr", ocr_started)
+    if supplied_frame:
+        ocr_items = list(ocr_items or [])
+        ocr_source = "supplied_full_frame"
+        roi_blank_render = None
+    else:
+        ocr_started = _sidecar_timing_start(timing, "validate_active_send_target_ocr")
+        ocr_items, ocr_source, roi_blank_render = run_ocr_for_active_send_target(
+            screenshot,
+            target=target,
+            exact=exact,
+            geometry=geometry,
+            timing=timing,
+        )
+        _sidecar_timing_finish(timing, "validate_active_send_target_ocr", ocr_started)
     timing["validate_active_send_target_ocr_count"] = len(ocr_items)
     timing["validate_active_send_target_ocr_source"] = ocr_source
     if not ocr_items:
@@ -7521,7 +11542,7 @@ def validate_active_send_target(
             "service_container_probe": service_container,
             "error": "The active WeChat page is a service-account container/page, not the requested chat.",
         })
-    if ocr_source in {"full", "full_fallback"}:
+    if ocr_source in {"full", "full_fallback", "supplied_full_frame"}:
         remember_target_ready_prevalidation_ocr_seed(
             hwnd=hwnd,
             target=target,
@@ -7534,6 +11555,35 @@ def validate_active_send_target(
     active_match_started = _sidecar_timing_start(timing, "validate_active_send_target_active_match")
     active_match = active_chat_matches(ocr_items, screenshot.size, target=target, exact=exact)
     _sidecar_timing_finish(timing, "validate_active_send_target_active_match", active_match_started)
+    if supplied_frame and not active_match:
+        # Reuse the business screenshot, not its potentially incomplete
+        # full-frame OCR result. A small right-panel ROI preserves the strict
+        # title guard without paying for another window capture.
+        title_roi_bounds = active_send_target_roi_bounds(getattr(screenshot, "size", (0, 0)))
+        timing["validate_active_send_target_supplied_frame_title_roi_bounds"] = list(title_roi_bounds)
+        title_roi_started = _sidecar_timing_start(
+            timing,
+            "validate_active_send_target_supplied_frame_title_roi_ocr",
+        )
+        title_roi_items = run_ocr_on_screen_region(
+            screenshot,
+            title_roi_bounds,
+            purpose="active_send_target_supplied_frame_title_roi",
+            source="validate_active_send_target",
+        )
+        _sidecar_timing_finish(
+            timing,
+            "validate_active_send_target_supplied_frame_title_roi_ocr",
+            title_roi_started,
+        )
+        timing["validate_active_send_target_supplied_frame_title_roi_ocr_count"] = len(title_roi_items)
+        active_match = active_chat_matches(
+            title_roi_items,
+            screenshot.size,
+            target=target,
+            exact=exact,
+        )
+        timing["validate_active_send_target_supplied_frame_title_roi_match"] = bool(active_match)
     timing["validate_active_send_target_active_match"] = bool(active_match)
     if not active_match:
         blind_guard_started = _sidecar_timing_start(timing, "validate_active_send_target_blind_guard")
@@ -8469,6 +12519,98 @@ def run_ocr(image: Any) -> list[dict[str, Any]]:
     return items
 
 
+def compact_ocr_items_for_report(ocr_items: list[dict[str, Any]], *, limit: int = 120) -> list[dict[str, Any]]:
+    compacted: list[dict[str, Any]] = []
+    for item in ocr_items[: max(0, int(limit))]:
+        if not isinstance(item, dict):
+            continue
+        row: dict[str, Any] = {"text": str(item.get("text") or "")}
+        for key in ("left", "top", "right", "bottom", "center_x", "center_y", "confidence"):
+            if key in item:
+                try:
+                    row[key] = round(float(item.get(key) or 0), 3)
+                except Exception:
+                    row[key] = item.get(key)
+        if item.get("ocr_source"):
+            row["ocr_source"] = item.get("ocr_source")
+        compacted.append(row)
+    return compacted
+
+
+def sidebar_visible_list_enhanced_ocr_items(
+    screenshot: Any,
+    image_size: tuple[int, int],
+    *,
+    ocr_runner: Callable[[Any], list[dict[str, Any]]] | None = None,
+) -> list[dict[str, Any]]:
+    if screenshot is None or not hasattr(screenshot, "crop"):
+        return []
+    width, height = image_size
+    if width <= 0 or height <= 0:
+        return []
+    split_x = session_split_x(width)
+    min_header_y = chat_header_cutoff_y(height)
+    crop_left = 0
+    crop_top = max(0, min_header_y - 14)
+    crop_right = min(width, split_x + max(4, int(width * 0.02)))
+    crop_bottom = max(crop_top + 1, height - 20)
+    if crop_right <= crop_left or crop_bottom <= crop_top:
+        return []
+    try:
+        crop = screenshot.crop((crop_left, crop_top, crop_right, crop_bottom)).convert("RGB")
+        crop = ImageEnhance.Contrast(crop).enhance(1.65)
+        crop = ImageEnhance.Sharpness(crop).enhance(1.4)
+        scale = 2.0
+        resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS", 1)
+        enhanced = crop.resize((int(crop.width * scale), int(crop.height * scale)), resampling)
+        runner = ocr_runner or run_ocr
+        crop_items = runner(enhanced)
+    except Exception:
+        return []
+    mapped: list[dict[str, Any]] = []
+    for item in crop_items or []:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text or not is_session_name_candidate(text):
+            continue
+        row = dict(item)
+        for key in ("left", "right", "center_x"):
+            if key in row:
+                try:
+                    row[key] = float(row[key]) / scale + crop_left
+                except Exception:
+                    pass
+        for key in ("top", "bottom", "center_y"):
+            if key in row:
+                try:
+                    row[key] = float(row[key]) / scale + crop_top
+                except Exception:
+                    pass
+        row.setdefault("center_x", (float(row.get("left") or 0) + float(row.get("right") or 0)) / 2)
+        row.setdefault("center_y", (float(row.get("top") or 0) + float(row.get("bottom") or 0)) / 2)
+        row["ocr_source"] = "sidebar_visible_list_enhanced"
+        mapped.append(row)
+    return mapped
+
+
+def session_list_ocr_items(
+    screenshot: Any,
+    base_items: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    items = [dict(item) for item in base_items if isinstance(item, dict)]
+    existing_enhanced = [
+        item for item in items if str(item.get("ocr_source") or "") == "sidebar_visible_list_enhanced"
+    ]
+    if existing_enhanced:
+        return items, len(existing_enhanced)
+    image_size = getattr(screenshot, "size", (0, 0))
+    enhanced_items = sidebar_visible_list_enhanced_ocr_items(screenshot, image_size)
+    if enhanced_items:
+        items.extend(enhanced_items)
+    return items, len(enhanced_items)
+
+
 def likely_foreign_overlay_capture(ocr_items: list[dict[str, Any]]) -> bool:
     return win32_ocr_render.likely_foreign_overlay_capture(ocr_items)
 
@@ -8743,7 +12885,23 @@ def detect_visual_session_unread_badge(
     }
 
 
-def parse_messages_from_ocr(ocr_items: list[dict[str, Any]], image_size: tuple[int, int], *, target: str) -> list[dict[str, Any]]:
+def call_event_text_like(text: str) -> bool:
+    compact = re.sub(r"\s+", "", normalize_ocr_text(text))
+    return bool(
+        re.fullmatch(
+            r"(?:语音|视频)?通话时长[:：]?\d{1,3}:\d{2}(?:口|□|▢|▣|[^0-9一-鿿]{0,3})?",
+            compact,
+        )
+    )
+
+
+def parse_messages_from_ocr(
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    target: str,
+    screenshot: Any | None = None,
+) -> list[dict[str, Any]]:
     width, height = image_size
     split_x = session_split_x(width)
     header_cutoff = chat_header_cutoff_y(height)
@@ -8769,13 +12927,34 @@ def parse_messages_from_ocr(ocr_items: list[dict[str, Any]], image_size: tuple[i
         if is_message_noise(text):
             continue
         side_details = classify_message_side_details(item, width=width)
-        side = str(side_details.get("side") or "unknown")
         rect = {
             "left": int(float(item.get("left") or 0)),
             "top": int(float(item.get("top") or 0)),
             "right": int(float(item.get("right") or 0)),
             "bottom": int(float(item.get("bottom") or 0)),
         }
+        avatar_alignment = message_row_avatar_role_details(
+            screenshot,
+            [rect["left"], rect["top"], rect["right"], rect["bottom"]],
+            image_size,
+        )
+        avatar_role = str(avatar_alignment.get("role") or "")
+        top_edge_guard = header_cutoff + max(4, int(height * 0.008))
+        if rect["top"] <= top_edge_guard and not avatar_role and not voice_duration_item_like(item):
+            continue
+        if avatar_role in {"self", "customer"}:
+            geometry_evidence = list(side_details.get("evidence") or [])
+            side_details = {
+                "side": avatar_role,
+                "confidence": 0.98,
+                "algorithm": "wechat_avatar_row_structure_v2",
+                "evidence": [
+                    *geometry_evidence,
+                    f"avatar_row_role={avatar_role}",
+                    "avatar_row_structure_confirmed",
+                ],
+            }
+        side = str(side_details.get("side") or "unknown")
         # The composer draft box lives above the send button, not only in the
         # final bottom strip.  Exclude left/unknown-side OCR there so failed or
         # partial drafts cannot be fed back to the LLM as customer messages.
@@ -8788,8 +12967,26 @@ def parse_messages_from_ocr(ocr_items: list[dict[str, Any]], image_size: tuple[i
                 "sender_role_algorithm": side_details.get("algorithm"),
                 "sender_role_confidence": side_details.get("confidence"),
                 "sender_role_evidence": side_details.get("evidence") or [],
+                "avatar_alignment": avatar_alignment,
             }
         )
+
+    file_card_footers = [
+        row
+        for row in rows
+        if str(row.get("text") or "").strip() in FILE_CARD_FOOTER_TEXTS
+    ]
+    if file_card_footers:
+        rows = [
+            row
+            for row in rows
+            if not any(
+                str(row.get("side") or "unknown") == str(footer.get("side") or "unknown")
+                and -8.0 <= float(footer.get("top") or 0) - float(row.get("bottom") or 0) <= 140.0
+                and abs(float(row.get("left") or 0) - float(footer.get("left") or 0)) <= 56.0
+                for footer in file_card_footers
+            )
+        ]
 
     grouped: list[list[dict[str, Any]]] = []
     for item in sorted(rows, key=lambda row: (float(row["center_y"]), float(row["left"]))):
@@ -8800,22 +12997,53 @@ def parse_messages_from_ocr(ocr_items: list[dict[str, Any]], image_size: tuple[i
         previous = grouped[-1][-1]
         previous_side = str(previous.get("side") or "unknown")
         vertical_gap = float(item["top"]) - float(previous["bottom"])
+        if message_line_continues_voice_transcript_group(item, grouped[-1], vertical_gap):
+            evidence = list(item.get("sender_role_evidence") or [])
+            evidence.append("voice_transcript_inherits_parent_role")
+            parent_side = str(grouped[-1][0].get("side") or previous_side)
+            grouped[-1].append({**item, "side": parent_side, "sender_role_evidence": evidence})
+            continue
         if side != "self" and previous_side == "self" and message_line_continues_previous_self_bubble(item, previous, vertical_gap):
             evidence = list(item.get("sender_role_evidence") or [])
             evidence.append("self_continuation_from_previous_line")
             grouped[-1].append({**item, "side": "self", "sender_role_evidence": evidence})
             continue
-        if previous_side == side and vertical_gap <= merge_vertical_gap:
+        previous_height = max(1.0, float(previous.get("bottom") or 0) - float(previous.get("top") or 0))
+        item_height = max(1.0, float(item.get("bottom") or 0) - float(item.get("top") or 0))
+        same_bubble_line_gap = min(merge_vertical_gap, max(7.0, min(previous_height, item_height) * 0.45))
+        previous_avatar_role = str((previous.get("avatar_alignment") or {}).get("role") or "")
+        current_avatar_role = str((item.get("avatar_alignment") or {}).get("role") or "")
+        voice_transcript_continuation = bool(
+            voice_duration_item_like(previous)
+            and not voice_duration_item_like(item)
+            and not current_avatar_role
+            and vertical_gap <= max(42.0, height * 0.055)
+        )
+        starts_new_avatar_row = bool(
+            previous_avatar_role
+            and current_avatar_role
+            and vertical_gap > 3.0
+        )
+        if voice_transcript_continuation and not starts_new_avatar_row:
+            evidence = list(item.get("sender_role_evidence") or [])
+            evidence.append("voice_transcript_inherits_parent_role")
+            grouped[-1].append({**item, "side": previous_side, "sender_role_evidence": evidence})
+        elif previous_side == side and vertical_gap <= same_bubble_line_gap and not starts_new_avatar_row:
             grouped[-1].append({**item, "side": side})
         else:
             grouped.append([{**item, "side": side}])
 
     messages: list[dict[str, Any]] = []
     for group in grouped:
-        if message_group_is_voice_duration_only(group):
+        is_untranscribed_voice = message_group_is_untranscribed_voice_placeholder(group)
+        is_voice_transcript = False
+        if message_group_is_voice_duration_only(group) and not is_untranscribed_voice:
             continue
         raw_content = "\n".join(str(item.get("text") or "").strip() for item in group if str(item.get("text") or "").strip())
         content = normalize_message_content(raw_content)
+        voice_duration_text = message_group_voice_duration_text(group)
+        if is_untranscribed_voice:
+            content = f"[语音] {voice_duration_text or ''}".strip()
         if not content:
             continue
         if message_group_is_file_card_noise(group, content):
@@ -8830,10 +13058,18 @@ def parse_messages_from_ocr(ocr_items: list[dict[str, Any]], image_size: tuple[i
         }
         quality_flags: list[str] = []
         content, voice_duration_prefix_removed = strip_voice_duration_prefix_from_message_content(content, group)
+        if is_untranscribed_voice:
+            content = f"[语音] {voice_duration_text or ''}".strip()
         if not content:
             continue
         if voice_duration_prefix_removed:
             quality_flags.append("voice_duration_prefix_removed")
+            is_voice_transcript = True
+        if is_untranscribed_voice:
+            quality_flags.append("untranscribed_voice_placeholder")
+        is_call_event = call_event_text_like(content)
+        if is_call_event:
+            quality_flags.append("non_chat_call_event")
         if len(group) > 1:
             gaps = [
                 max(0.0, float(group[index].get("top") or 0) - float(group[index - 1].get("bottom") or 0))
@@ -8845,9 +13081,19 @@ def parse_messages_from_ocr(ocr_items: list[dict[str, Any]], image_size: tuple[i
         ocr_confidence = min(float(item.get("confidence") or 0) for item in group)
         digest = hashlib.sha1(f"{target}|{side}|{round(y)}|{content}".encode("utf-8")).hexdigest()[:16]
         sender, sender_role = sender_fields_for_message_side(side, target=target)
+        avatar_alignment = next(
+            (
+                item.get("avatar_alignment")
+                for item in group
+                if isinstance(item.get("avatar_alignment"), dict) and item.get("avatar_alignment", {}).get("role")
+            ),
+            group[0].get("avatar_alignment") if isinstance(group[0].get("avatar_alignment"), dict) else {},
+        )
+        if screenshot is not None and str(avatar_alignment.get("role") or "") not in {"self", "customer"}:
+            continue
         record = {
             "id": f"win32_ocr:{digest}",
-            "type": "text",
+            "type": "voice" if (is_untranscribed_voice or is_voice_transcript) else ("system" if is_call_event else "text"),
             "sender": sender,
             "sender_role": sender_role,
             "sender_role_algorithm": str(group[0].get("sender_role_algorithm") or "wechat_win32_bubble_role_v2"),
@@ -8861,7 +13107,13 @@ def parse_messages_from_ocr(ocr_items: list[dict[str, Any]], image_size: tuple[i
             "bubble_rect": rect,
             "ocr_items": group,
             "quality_flags": quality_flags,
+            "avatar_alignment": avatar_alignment,
         }
+        if is_untranscribed_voice or is_voice_transcript:
+            record["voice_duration_text"] = voice_duration_text
+            voice_seconds = voice_duration_seconds_from_text(voice_duration_text)
+            if voice_seconds is not None:
+                record["voice_duration"] = voice_seconds
         envelope = build_message_envelope(
             record,
             source_adapter="win32_ocr",
@@ -8880,7 +13132,7 @@ def classify_message_side(item: dict[str, Any], *, width: int) -> str:
 
 
 def message_line_continues_previous_self_bubble(item: dict[str, Any], previous: dict[str, Any], vertical_gap: float) -> bool:
-    if vertical_gap < 0:
+    if vertical_gap < -4.0:
         return False
     previous_height = max(1.0, float(previous.get("bottom") or 0) - float(previous.get("top") or 0))
     current_height = max(1.0, float(item.get("bottom") or 0) - float(item.get("top") or 0))
@@ -8890,6 +13142,33 @@ def message_line_continues_previous_self_bubble(item: dict[str, Any], previous: 
     previous_left = float(previous.get("left") or 0)
     current_left = float(item.get("left") or 0)
     return abs(current_left - previous_left) <= 32.0
+
+
+def message_line_continues_voice_transcript_group(
+    item: dict[str, Any],
+    group: list[dict[str, Any]],
+    vertical_gap: float,
+) -> bool:
+    if len(group) < 2 or vertical_gap < -4.0 or vertical_gap > 16.0:
+        return False
+    if voice_duration_item_like(item):
+        return False
+    if not any(voice_duration_item_like(candidate) for candidate in group):
+        return False
+    if not any(not voice_duration_item_like(candidate) for candidate in group):
+        return False
+    avatar_role = str((item.get("avatar_alignment") or {}).get("role") or "")
+    if avatar_role in {"self", "customer"}:
+        return False
+    previous_text_line = next(
+        (candidate for candidate in reversed(group) if not voice_duration_item_like(candidate)),
+        None,
+    )
+    if not isinstance(previous_text_line, dict):
+        return False
+    previous_left = float(previous_text_line.get("left") or 0)
+    current_left = float(item.get("left") or 0)
+    return abs(current_left - previous_left) <= 36.0
 
 
 def classify_message_side_details(item: dict[str, Any], *, width: int) -> dict[str, Any]:
@@ -9842,7 +14121,7 @@ def normalize_wechat_window(hwnd: int) -> dict[str, Any]:
         return {"ok": True, "enabled": False, "applied": False, "before": before}
 
     enforce_recommended = env_flag("WECHAT_WIN32_OCR_ENFORCE_RECOMMENDED_WINDOW", default=True)
-    fixed_origin = env_flag("WECHAT_WIN32_OCR_WINDOW_FIXED_ORIGIN", default=True)
+    fixed_origin = env_flag("WECHAT_WIN32_OCR_WINDOW_FIXED_ORIGIN", default=False)
     try:
         user32 = ctypes.windll.user32
         screen_width = int(user32.GetSystemMetrics(0) or 0)
@@ -10103,6 +14382,7 @@ def run_sidecar_cli(argv: list[str] | None = None) -> dict[str, Any]:
     parser.add_argument("--target", help="Chat name for messages/send.")
     parser.add_argument("--session-key", default="", help="Internal session key for row-level RPA targeting.")
     parser.add_argument("--target-mode", default="", help="Targeting mode for messages, e.g. search_by_remark_code.")
+    parser.add_argument("--visible-session-candidate", default="", help="JSON row candidate from the same Worker visible-session scan.")
     parser.add_argument("--text", help="Message text for send.")
     parser.add_argument("--phone", default="", help="Phone number for add-friend.")
     parser.add_argument("--wechat", default="", help="WeChat ID for add-friend fallback.")
@@ -10144,6 +14424,9 @@ def run_sidecar_cli(argv: list[str] | None = None) -> dict[str, Any]:
 if __name__ == "__main__":
     if "--daemon" in sys.argv:
         raise SystemExit(run_daemon_loop())
-    payload = run_sidecar_cli()
+    try:
+        payload = run_sidecar_cli()
+    except Exception as exc:
+        payload = exception_payload_for_sidecar(exc, state="win32_ocr_failed")
     print(json.dumps(payload, ensure_ascii=True))
     raise SystemExit(0 if bool(payload.get("ok")) else 1)

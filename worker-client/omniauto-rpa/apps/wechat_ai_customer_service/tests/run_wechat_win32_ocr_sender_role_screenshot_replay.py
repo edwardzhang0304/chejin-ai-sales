@@ -58,7 +58,7 @@ def replay_screenshot(name: str, path: Path, *, target: str, require_legacy_left
         if "rapidocr_onnxruntime_unavailable" in str(exc) and not env_flag("WECHAT_WIN32_OCR_SENDER_ROLE_REPLAY_REQUIRE_OCR"):
             return {"name": name, "status": "skipped", "reason": "rapidocr_unavailable"}
         raise
-    messages = parse_messages_from_ocr(ocr_items, image.size, target=target)
+    messages = parse_messages_from_ocr(ocr_items, image.size, target=target, screenshot=image)
     assert_true(ocr_items, f"{name}: OCR should produce items")
     assert_true(messages, f"{name}: OCR replay should produce messages")
 

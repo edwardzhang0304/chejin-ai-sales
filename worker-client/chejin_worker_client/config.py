@@ -36,6 +36,8 @@ class ClientConfig:
     c2_low_priority_lock_timeout_seconds: float
     c2_message_min_ocr_confidence: float
     c2_message_failure_cooldown_seconds: float
+    c2_voice_transcribe_max_duration_seconds: int
+    c2_stop_guard_before_voice_seconds: float
 
     @classmethod
     def from_env(cls) -> "ClientConfig":
@@ -64,6 +66,8 @@ class ClientConfig:
             c2_low_priority_lock_timeout_seconds=float(os.environ.get("CHEJIN_C2_LOW_PRIORITY_LOCK_TIMEOUT_SECONDS", "0.2")),
             c2_message_min_ocr_confidence=float(os.environ.get("CHEJIN_C2_MESSAGE_MIN_OCR_CONFIDENCE", "0.45")),
             c2_message_failure_cooldown_seconds=float(os.environ.get("CHEJIN_C2_MESSAGE_FAILURE_COOLDOWN_SECONDS", "45")),
+            c2_voice_transcribe_max_duration_seconds=int(os.environ.get("CHEJIN_C2_VOICE_TRANSCRIBE_MAX_DURATION_SECONDS", "240")),
+            c2_stop_guard_before_voice_seconds=float(os.environ.get("CHEJIN_C2_STOP_GUARD_BEFORE_VOICE_SECONDS", "1.5")),
         )
 
 

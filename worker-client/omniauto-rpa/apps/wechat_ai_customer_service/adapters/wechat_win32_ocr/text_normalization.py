@@ -89,7 +89,7 @@ def is_file_transfer_session_alias(text: str, *, collapsed: str | None = None) -
         return True
     if compact.startswith("文件传输") and re.search(r"(\.{1,3}|…|今天|昨天|前天|\d{1,2}:\d{2})", compact):
         return True
-    if compact in {"文件传输助手", "仅传输文件"}:
+    if compact in {"文件传输", "文件传输助手", "仅传输文件"}:
         return True
     english = collapsed
     if english is None:
@@ -152,7 +152,7 @@ def strip_session_time_suffix(name: str) -> str:
     if not normalized:
         return ""
     patterns = (
-        r"(?:今天|昨天|前天)?\d{1,2}:\d{2}$",
+        r"(?:[.．…]{1,}|…)?(?:今天|昨天|前天)?\d{1,2}:\d{2}$",
         r"(?:今天|昨天|前天)$",
         r"(?:星期|周)[一二三四五六日天]$",
         r"\d{4}[/-]\d{1,2}[/-]\d{1,2}$",
@@ -173,17 +173,20 @@ def strip_session_time_suffix(name: str) -> str:
 def is_session_name_candidate(text: str) -> bool:
     if not text:
         return False
-    if is_file_transfer_session_alias(text):
+    candidate = strip_session_time_suffix(text)
+    if not candidate:
+        return False
+    if is_file_transfer_session_alias(candidate):
         return True
-    if len(text) > 28:
+    if len(candidate) > 28:
         return False
-    if text.startswith("["):
+    if candidate.startswith("["):
         return False
-    if "搜索" in text or text in {"?", "？", "+", "..."}:
+    if "搜索" in candidate or candidate in {"?", "？", "+", "..."}:
         return False
-    if re.fullmatch(r"(\d{1,2}:\d{2}|\d{1,2}/\d{1,2}|星期.|(今天|昨天|前天)\s*\d{1,2}:\d{2})", text):
+    if re.fullmatch(r"(\d{1,2}:\d{2}|\d{1,2}/\d{1,2}|星期.|(今天|昨天|前天)\s*\d{1,2}:\d{2})", candidate):
         return False
-    if "..." in text or "…" in text:
+    if "..." in candidate or "…" in candidate:
         return False
     return True
 

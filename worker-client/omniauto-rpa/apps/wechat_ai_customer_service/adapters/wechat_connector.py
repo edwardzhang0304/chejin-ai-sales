@@ -530,6 +530,14 @@ class WeChatConnector:
                     current_new = [item for item in primary.get("new_messages") or [] if isinstance(item, dict)]
                     transcribed_messages.extend(current_transcribed)
                     new_messages.extend(current_new)
+                    if state in {
+                        "voice_transcribe_completed",
+                        "voice_transcribe_partial",
+                        "voice_transcribe_no_new_text",
+                        "voice_transcribe_no_visible_voice",
+                    }:
+                        primary["connector_attempts"] = attempts
+                        return primary
                     if not current_transcribed:
                         break
                     if attempt_index + 1 < attempts_limit:
