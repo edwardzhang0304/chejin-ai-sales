@@ -27,18 +27,24 @@ class WechatSessionScanResultRequest(BaseModel):
 
 class WechatMessageItem(BaseModel):
     dedupe_key: str | None = Field(default=None, max_length=255)
+    source_message_key: str | None = Field(default=None, max_length=255)
     sender_role_hint: str = Field(min_length=1, max_length=32)
     message_type: str = Field(min_length=1, max_length=32)
     content: str | None = None
     image_local_path: str | None = None
     occurred_at: datetime | None = None
     ocr_confidence: float | None = None
+    item_state: str | None = Field(default=None, max_length=32)
+    flow_state: str | None = Field(default=None, max_length=32)
     raw_payload: dict | None = None
 
 
 class WechatMessageIngestRequest(BaseModel):
+    contract_version: int = Field(default=1, ge=1, le=3)
     read_run_id: str = Field(min_length=1, max_length=128)
     conversation_id: str = Field(min_length=1, max_length=36)
+    remark_code: str | None = Field(default=None, max_length=64)
     rpa_session_key: str | None = Field(default=None, max_length=255)
+    authorization_revision: str | None = Field(default=None, max_length=128)
     messages: list[WechatMessageItem] = Field(default_factory=list, max_length=500)
     evidence: dict | None = None

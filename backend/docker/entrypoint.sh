@@ -27,5 +27,8 @@ if host and port:
 PY
 fi
 
-exec "$@"
+if [ "${RUN_MIGRATIONS:-1}" = "1" ]; then
+  alembic upgrade head
+fi
 
+exec "$@"

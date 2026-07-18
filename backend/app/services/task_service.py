@@ -1,4 +1,5 @@
 from datetime import datetime
+import hashlib
 import re
 from typing import Any
 
@@ -21,6 +22,8 @@ from app.services import contact_utils
 
 ACTIVE_TASK_STATUSES = {TaskStatus.blocked.value, TaskStatus.pending.value, TaskStatus.running.value}
 CANCELLABLE_TASK_STATUSES = {TaskStatus.blocked.value, TaskStatus.pending.value, TaskStatus.running.value}
+REMARK_CODE_PREFIX = "CJ"
+REMARK_CODE_ALPHABET = "ABCDEFGHKMNPRSTUVWXYZ23456789"
 
 
 def _parse_datetime(value: str | None, field_name: str) -> datetime | None:
@@ -97,8 +100,13 @@ def _task_remark_code(task: Task) -> str:
     existing = str(custom_fields.get("remark_code") or "").strip()
     if existing:
         return existing
-    compact_id = re.sub(r"[^0-9A-Za-z]+", "", task.id).upper()
-    return f"CJ{compact_id[:6]}"
+    digest = hashlib.sha256(str(task.id).encode("utf-8")).digest()
+    value = int.from_bytes(digest[:8], "big")
+    chars: list[str] = []
+    for _ in range(6):
+        value, index = divmod(value, len(REMARK_CODE_ALPHABET))
+        chars.append(REMARK_CODE_ALPHABET[index])
+    return f"{REMARK_CODE_PREFIX}{''.join(chars)}"
 
 
 def _worker_add_friend_formal_fields(task: Task) -> dict[str, Any]:
