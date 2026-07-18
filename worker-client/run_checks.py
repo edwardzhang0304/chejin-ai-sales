@@ -23,6 +23,23 @@ def main() -> int:
     )
     if test.returncode:
         return test.returncode
+    compat = subprocess.run(
+        [
+            sys.executable,
+            str(
+                ROOT
+                / "omniauto-rpa"
+                / "apps"
+                / "wechat_ai_customer_service"
+                / "tests"
+                / "run_wechat_win32_ocr_compat_checks.py"
+            ),
+        ],
+        cwd=ROOT / "omniauto-rpa",
+        env=env,
+    )
+    if compat.returncode:
+        return compat.returncode
     smoke = subprocess.run([sys.executable, "smoke_e2e.py"], cwd=ROOT, env=env)
     if smoke.returncode:
         return smoke.returncode

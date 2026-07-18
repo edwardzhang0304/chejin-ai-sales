@@ -312,6 +312,26 @@ def test_sidebar_search_query_must_match_exact_remark_code() -> None:
         not sidecar.sidebar_search_query_matches("", "CJWIN01"),
         "empty OCR query must be rejected before clicking a search result",
     )
+    assert_true(
+        sidecar.sidebar_search_query_mismatch_allows_candidate_probe("CVOICE01", "CJVOICE01"),
+        "single-character OCR omission should continue to candidate/title confirmation",
+    )
+    assert_true(
+        sidecar.sidebar_search_query_mismatch_allows_candidate_probe("CIVOICE01", "CJVOICE01"),
+        "single-character OCR substitution should continue to candidate/title confirmation",
+    )
+    assert_true(
+        not sidecar.sidebar_search_query_mismatch_allows_candidate_probe("CJWCJWIN01WIN01", "CJWIN01"),
+        "stale concatenated query must still be rejected",
+    )
+    assert_true(
+        sidecar.sidebar_search_clear_residue_allows_candidate_probe("Q"),
+        "search icon OCR residue after clear should not block candidate/title confirmation",
+    )
+    assert_true(
+        not sidecar.sidebar_search_clear_residue_allows_candidate_probe("CJWCJWIN01WIN01"),
+        "real stale query residue after clear must still be rejected",
+    )
 
 
 def test_sidebar_search_query_ignores_empty_placeholder_icon_text() -> None:
@@ -367,6 +387,71 @@ def test_search_result_candidate_uses_window_image_click_coordinates() -> None:
     assert_true(calls == [("window_image", 169, 170)], f"search result OCR point must use window-image click, calls={calls}")
     attempt = (result.get("attempts") or [{}])[0]
     assert_true(attempt.get("click_method") == "human_window_image_click", f"click method should be reported: {result}")
+
+
+def test_search_contact_candidates_stop_before_favorites_section() -> None:
+    def item(text: str, left: int, top: int, right: int, bottom: int) -> dict:
+        return {
+            "text": text,
+            "left": left,
+            "top": top,
+            "right": right,
+            "bottom": bottom,
+            "center_x": int((left + right) / 2),
+            "center_y": int((top + bottom) / 2),
+            "confidence": 0.98,
+        }
+
+    ocr_items = [
+        item("联系人", 106, 100, 156, 124),
+        item("CJVOICE01", 162, 158, 246, 184),
+        item("虾丸子大人", 252, 158, 360, 184),
+        item("收藏", 106, 548, 154, 572),
+        item("语音", 114, 594, 154, 622),
+        item("来自:CJVOICE01 虾丸子大人", 162, 622, 360, 648),
+        item("更多", 106, 720, 154, 744),
+    ]
+
+    matches = sidecar.search_result_contact_candidates_matching_remark_code(ocr_items, (980, 860), "CJVOICE01")
+
+    assert_true(len(matches) == 1, f"favorites section should not create extra contact candidates: {matches}")
+    assert_true(matches[0].get("section") == "contacts", f"candidate should stay in contacts section: {matches}")
+    assert_true("虾丸子大人" in str(matches[0].get("name") or ""), f"should keep real contact row: {matches}")
+
+
+def test_search_result_can_fallback_to_first_contact_row_then_confirm_later() -> None:
+    def item(text: str, left: int, top: int, right: int, bottom: int) -> dict:
+        return {
+            "text": text,
+            "left": left,
+            "top": top,
+            "right": right,
+            "bottom": bottom,
+            "center_x": int((left + right) / 2),
+            "center_y": int((top + bottom) / 2),
+            "confidence": 0.81,
+        }
+
+    ocr_items = [
+        item("联系人", 106, 100, 156, 124),
+        item("虾丸子大人", 168, 158, 296, 184),
+        item("群聊", 106, 232, 154, 256),
+    ]
+    candidate = sidecar.fallback_first_search_contact_candidate(ocr_items, (980, 860), "CJVOICE01")
+    assert_true(candidate is not None, f"fallback candidate should be built from the first contact row: {candidate}")
+    assert_true(candidate.get("fallback_source") == "first_contact_row_after_search", f"fallback source missing: {candidate}")
+    assert_true(candidate.get("search_result_click_points"), f"fallback candidate needs click points: {candidate}")
+
+
+def test_active_selected_session_can_confirm_clicked_chat_for_c2() -> None:
+    ocr_items = [
+        {"text": "CJVOICE01 虾丸子大人", "left": 148, "right": 336, "top": 120, "bottom": 148, "center_x": 242, "center_y": 134},
+        {"text": "腾讯新闻", "left": 404, "right": 480, "top": 62, "bottom": 90, "center_x": 442, "center_y": 76},
+    ]
+    assert_true(
+        sidecar.active_selected_session_matches(ocr_items, (980, 860), target="CJVOICE01", exact=False),
+        "left selected session row should be usable as C2 read confirmation",
+    )
 
 
 def test_search_by_remark_code_precheck_recovers_foreground_before_failing() -> None:
@@ -831,6 +916,9 @@ def main() -> int:
         test_sidebar_search_query_must_match_exact_remark_code,
         test_sidebar_search_query_ignores_empty_placeholder_icon_text,
         test_search_result_candidate_uses_window_image_click_coordinates,
+        test_search_contact_candidates_stop_before_favorites_section,
+        test_search_result_can_fallback_to_first_contact_row_then_confirm_later,
+        test_active_selected_session_can_confirm_clicked_chat_for_c2,
         test_search_by_remark_code_precheck_recovers_foreground_before_failing,
         test_recover_send_window_guard_restores_minimized_geometry,
         test_search_by_remark_code_precheck_does_not_bypass_failed_foreground_recovery,

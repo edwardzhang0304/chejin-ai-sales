@@ -35,6 +35,7 @@ class PackagingScriptsTest(unittest.TestCase):
 
         self.assertIn("*.local.env", text)
         self.assertIn('".env"', text)
+        self.assertNotIn("endswith(\".example.env\")", text)
         self.assertIn('"runtime"', text)
         self.assertIn('"cache"', text)
         self.assertIn('"forbidden_entries"', text)
