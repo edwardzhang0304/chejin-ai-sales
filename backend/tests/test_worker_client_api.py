@@ -139,6 +139,7 @@ def test_worker_can_pull_claim_report_steps_complete_and_upload_evidence():
     formal = pull.json()["data"]["task"]
     assert formal["verify_message"].startswith("您好，我是车金二手车的张伟")
     assert formal["remark_code"].startswith("CJ")
+    assert not set(formal["remark_code"][2:]) & set("IJLOQ01")
     assert formal["remark_name"] == formal["remark_code"]
     assert formal["remark_code"] in formal["remark_name"]
     assert formal["remark_code_valid"] is True

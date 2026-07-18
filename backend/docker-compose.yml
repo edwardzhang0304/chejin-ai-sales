@@ -1,8 +1,8 @@
 services:
   api:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: backend/Dockerfile
     container_name: chejin-leads-api
     env_file:
       - path: .env
@@ -16,6 +16,7 @@ services:
       DOCS_ENABLED: ${DOCS_ENABLED:-true}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,null}
       WAIT_FOR_DB: "1"
+      RUN_MIGRATIONS: "1"
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:

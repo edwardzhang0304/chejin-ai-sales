@@ -1,0 +1,51 @@
+{
+  "contract_version": 3,
+  "observation_schema_version": 3,
+  "control_schema_version": 1,
+  "sender_roles": ["customer", "self", "system", "unknown"],
+  "message_types": ["text", "image", "voice", "system", "file", "unknown"],
+  "row_kinds": [
+    "text_bubble",
+    "voice_bubble",
+    "voice_transcript",
+    "image_bubble",
+    "system_message",
+    "call_event",
+    "system_banner",
+    "unknown"
+  ],
+  "ingestible_row_kinds": [
+    "text_bubble",
+    "image_bubble",
+    "system_message"
+  ],
+  "chat_message_row_kinds": ["text_bubble", "image_bubble"],
+  "chat_message_role_sources": ["same_row_avatar"],
+  "voice_states": ["not_voice", "untranscribed", "transcribed"],
+  "sender_role_sources": [
+    "same_row_avatar",
+    "parent_voice",
+    "lane_geometry",
+    "system",
+    "unknown"
+  ],
+  "item_states": ["completed"],
+  "flow_states": ["completed", "partial", "failed", "cancelled"],
+  "role_priority": ["same_row_avatar", "parent_voice", "lane_geometry"],
+  "required_observation_fields": [
+    "observation_id",
+    "row_kind",
+    "sender_role",
+    "sender_role_source",
+    "message_type",
+    "voice_state"
+  ],
+  "required_canonical_message_fields": [
+    "source_message_key",
+    "dedupe_key",
+    "sender_role_hint",
+    "message_type",
+    "item_state",
+    "flow_state"
+  ]
+}

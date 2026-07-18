@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+from datetime import datetime
+import hashlib
+import logging
+import re
+
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.request_id import get_request_id
+from app.contracts.c2 import contract_values
 from app.errors import AppError
 from app.models.base import utcnow
 from app.models.c3 import Conversation
@@ -22,6 +29,7 @@ BIND_STATUS_CANDIDATE = "binding_candidate"
 BIND_STATUS_NEEDS_REVIEW = "needs_review"
 BIND_STATUS_FAILED = "binding_failed"
 BIND_STATUS_DISABLED = "disabled"
+EFFECTIVE_BIND_STATUSES = {BIND_STATUS_BOUND, BIND_STATUS_CANDIDATE, BIND_STATUS_NEEDS_REVIEW}
 
 LISTEN_STATUS_NOT_STARTED = "not_started"
 LISTEN_STATUS_LISTENING = "listening"
@@ -33,6 +41,25 @@ NEXT_ACTION_NONE = "none"
 LOW_CONFIDENCE_THRESHOLD = 0.7
 CONVERSATION_CLOSED_STATUSES = {"closed", "rejected"}
 SALES_SIDE_SENDER_ROLES = {"self", "sales", "sales_candidate"}
+MESSAGE_TYPES = {"text", "image", "voice", "audio", "system", "file", "unknown"}
+MESSAGE_TYPES_V2 = {"text", "image", "voice", "system", "file", "unknown"}
+SENDER_ROLES_V2 = {"customer", "self", "system", "unknown"}
+VOICE_FLOW_STATES_V2 = {"completed", "partial", "failed", "cancelled"}
+MESSAGE_TYPES_V3 = contract_values("message_types")
+SENDER_ROLES_V3 = contract_values("sender_roles")
+FLOW_STATES_V3 = contract_values("flow_states")
+ROW_KINDS_V3 = contract_values("row_kinds")
+INGESTIBLE_ROW_KINDS_V3 = contract_values("ingestible_row_kinds")
+CHAT_MESSAGE_ROW_KINDS_V3 = contract_values("chat_message_row_kinds")
+CHAT_MESSAGE_ROLE_SOURCES_V3 = contract_values("chat_message_role_sources")
+VOICE_FAILURE_ERROR_CODES = {
+    "VOICE_TRANSCRIBE_FAILED",
+    "VOICE_TRANSCRIBE_CLICK_FAILED",
+    "VOICE_TRANSCRIBE_LOCK_TIMEOUT",
+    "VOICE_TRANSCRIBE_EMPTY",
+    "VOICE_MESSAGE_UNCONFIRMED",
+    "TARGET_NOT_CONFIRMED_FOR_VOICE_TRANSCRIBE",
+}
 READ_TARGET_FAILURE_RESULTS = {"target_not_confirmed", "search_not_found", "search_ambiguous"}
 READ_REASON_PRIORITY = {
     "recall_precheck": 0,
@@ -40,6 +67,13 @@ READ_REASON_PRIORITY = {
     "waiting_user_reply": 2,
     "waiting_sales_reply": 3,
 }
+VOICE_DURATION_RE = re.compile(
+    r"^\s*(?:\[?语音\]?\s*)?\d{1,3}(?:\.\d+)?\s*(?:\"|”|″|秒|s|S)\s*$"
+)
+VOICE_DURATION_TOKEN_RE = re.compile(
+    r"(?<!\w)(?:\[?语音\]?\s*)?\d{1,3}(?:\.\d+)?\s*(?:\"|”|″|秒|s|S)(?!\w)"
+)
+logger = logging.getLogger(__name__)
 
 
 def _clean_candidates(candidates: list[str]) -> list[str]:
@@ -139,15 +173,70 @@ def _session_binding(db: Session, worker: Worker, rpa_session_key: str) -> Wecha
     )
 
 
+def _binding_has_messages(db: Session, binding: WechatSessionBinding) -> bool:
+    if binding.last_ingested_at:
+        return True
+    return (
+        db.scalar(
+            select(MessageEvent.id).where(MessageEvent.binding_id == binding.id).limit(1)
+        )
+        is not None
+    )
+
+
 def _remark_code_binding(db: Session, worker: Worker, remark_code: str) -> WechatSessionBinding | None:
-    return db.scalar(
-        select(WechatSessionBinding).where(
-            WechatSessionBinding.worker_id == worker.id,
-            WechatSessionBinding.remark_code == remark_code,
-            WechatSessionBinding.bind_status != BIND_STATUS_DISABLED,
-            WechatSessionBinding.deleted_at.is_(None),
+    rows = list(
+        db.scalars(
+            select(WechatSessionBinding).where(
+                WechatSessionBinding.remark_code == remark_code,
+                WechatSessionBinding.deleted_at.is_(None),
+            )
         )
     )
+    if not rows:
+        return None
+    message_binding_ids = {
+        row.id
+        for row in rows
+        if row.last_ingested_at or _binding_has_messages(db, row)
+    }
+
+    # remark_code is the business identity anchor. Prefer the canonical row that
+    # already owns message history, so a new empty duplicate cannot steal future
+    # reads into a fresh conversation_id.
+    rows.sort(
+        key=lambda item: (
+            item.id in message_binding_ids,
+            item.deleted_at is None,
+            item.bind_status == BIND_STATUS_BOUND,
+            item.allow_listening,
+            item.first_seen_at or item.created_at,
+        ),
+        reverse=True,
+    )
+    return rows[0]
+
+
+def _retire_duplicate_effective_remark_bindings(
+    db: Session,
+    *,
+    canonical: WechatSessionBinding,
+    remark_code: str,
+) -> None:
+    rows = list(
+        db.scalars(
+            select(WechatSessionBinding).where(
+                WechatSessionBinding.remark_code == remark_code,
+                WechatSessionBinding.id != canonical.id,
+                WechatSessionBinding.deleted_at.is_(None),
+                WechatSessionBinding.bind_status.in_(EFFECTIVE_BIND_STATUSES),
+            )
+        )
+    )
+    for duplicate in rows:
+        _retire_stale_session_binding(duplicate, replacement_binding_id=canonical.id)
+    if rows:
+        db.flush()
 
 
 def _apply_scan_fields(binding: WechatSessionBinding, payload: WechatSessionScanResultRequest, item: WechatSessionScanItem) -> None:
@@ -165,10 +254,15 @@ def _apply_scan_fields(binding: WechatSessionBinding, payload: WechatSessionScan
 def _retire_stale_session_binding(binding: WechatSessionBinding, *, replacement_binding_id: str) -> None:
     now = utcnow()
     original_session_key = str(binding.rpa_session_key or "").strip()
-    binding.bind_status = BIND_STATUS_DISABLED
-    binding.listen_status = LISTEN_STATUS_DISABLED
-    binding.allow_listening = False
-    binding.error_code = "SESSION_BINDING_REPLACED_BY_REMARK_CODE"
+    _set_binding_state(
+        binding,
+        status=BIND_STATUS_DISABLED,
+        listen_status=LISTEN_STATUS_DISABLED,
+        allow_listening=False,
+        error_code="SESSION_BINDING_REPLACED_BY_REMARK_CODE",
+        remark_code=binding.remark_code,
+        preserve_lead=True,
+    )
     binding.deleted_at = now
     if original_session_key:
         binding.rpa_session_key = f"{original_session_key}#retired#{binding.id}"
@@ -230,20 +324,73 @@ def _set_binding_state(
     error_code: str | None = None,
     lead: Lead | None = None,
     remark_code: str | None = None,
+    preserve_lead: bool = False,
 ) -> None:
+    previous_authorization = (
+        binding.bind_status,
+        binding.listen_status,
+        bool(binding.allow_listening),
+        binding.lead_id,
+        binding.sales_id,
+        binding.remark_code,
+    )
     binding.bind_status = status
     binding.listen_status = listen_status
     binding.allow_listening = allow_listening
     binding.error_code = error_code
-    binding.lead_id = lead.id if lead else None
-    binding.sales_id = lead.sales_id if lead else None
+    if not preserve_lead:
+        binding.lead_id = lead.id if lead else None
+        binding.sales_id = lead.sales_id if lead else None
     binding.remark_code = remark_code
+    current_authorization = (
+        binding.bind_status,
+        binding.listen_status,
+        bool(binding.allow_listening),
+        binding.lead_id,
+        binding.sales_id,
+        binding.remark_code,
+    )
+    if current_authorization != previous_authorization:
+        binding.authorization_revision = int(binding.authorization_revision or 1) + 1
 
 
-def _bind_one_session(db: Session, worker: Worker, payload: WechatSessionScanResultRequest, item: WechatSessionScanItem) -> dict:
+def _ambiguous_scan_remark_codes(sessions: list[WechatSessionScanItem]) -> set[str]:
+    session_keys_by_code: dict[str, set[str]] = {}
+    for item in sessions:
+        for candidate in _clean_candidates(item.remark_code_candidates):
+            session_keys_by_code.setdefault(candidate, set()).add(item.rpa_session_key)
+    return {code for code, session_keys in session_keys_by_code.items() if len(session_keys) > 1}
+
+
+def _bind_one_session(
+    db: Session,
+    worker: Worker,
+    payload: WechatSessionScanResultRequest,
+    item: WechatSessionScanItem,
+    *,
+    ambiguous_remark_codes: set[str] | None = None,
+) -> dict:
     candidates = _clean_candidates(item.remark_code_candidates)
+    ambiguous_candidates = [code for code in candidates if code in (ambiguous_remark_codes or set())]
+    if ambiguous_candidates:
+        # Resolve by the physical session row only. Reusing the canonical remark
+        # binding here would let two different chats overwrite the same record.
+        binding = _upsert_binding_base(db, worker, payload, item)
+        _set_binding_state(
+            binding,
+            status=BIND_STATUS_NEEDS_REVIEW,
+            listen_status=LISTEN_STATUS_NOT_STARTED,
+            allow_listening=False,
+            error_code="SESSION_REMARK_CODE_MULTIPLE_SESSIONS",
+            remark_code=",".join(candidates),
+            preserve_lead=True,
+        )
+        return {**_binding_to_dict(binding), "can_ingest_messages": False}
+
     remark_code_anchor = candidates[0] if len(candidates) == 1 else None
     binding = _upsert_binding_base(db, worker, payload, item, remark_code=remark_code_anchor)
+    if remark_code_anchor:
+        _retire_duplicate_effective_remark_bindings(db, canonical=binding, remark_code=remark_code_anchor)
     if binding.bind_status == BIND_STATUS_DISABLED:
         return {
             **_binding_to_dict(binding),
@@ -263,7 +410,6 @@ def _bind_one_session(db: Session, worker: Worker, payload: WechatSessionScanRes
         return {**_binding_to_dict(binding), "can_ingest_messages": False}
 
     was_bound_to_lead_id = binding.lead_id if binding.bind_status == BIND_STATUS_BOUND else None
-    binding.bind_status = BIND_STATUS_CANDIDATE
     if len(candidates) > 1:
         _set_binding_state(
             binding,
@@ -317,6 +463,7 @@ def _bind_one_session(db: Session, worker: Worker, payload: WechatSessionScanRes
             WechatSessionBinding.id != binding.id,
             WechatSessionBinding.bind_status == BIND_STATUS_BOUND,
             WechatSessionBinding.deleted_at.is_(None),
+            WechatSessionBinding.remark_code != remark_code,
         )
     )
     if other:
@@ -331,6 +478,7 @@ def _bind_one_session(db: Session, worker: Worker, payload: WechatSessionScanRes
         return {**_binding_to_dict(binding), "can_ingest_messages": False}
 
     already_bound = was_bound_to_lead_id == lead.id
+    binding.worker_id = worker.id
     _set_binding_state(
         binding,
         status=BIND_STATUS_BOUND,
@@ -364,7 +512,17 @@ def ingest_scan_result(db: Session, worker: Worker, payload: WechatSessionScanRe
         db.flush()
         return response
 
-    bindings = [_bind_one_session(db, worker, payload, item) for item in payload.sessions]
+    ambiguous_remark_codes = _ambiguous_scan_remark_codes(payload.sessions)
+    bindings = [
+        _bind_one_session(
+            db,
+            worker,
+            payload,
+            item,
+            ambiguous_remark_codes=ambiguous_remark_codes,
+        )
+        for item in payload.sessions
+    ]
     db.flush()
     response = {
         "accepted_count": len(payload.sessions),
@@ -414,6 +572,7 @@ def read_targets(db: Session, worker: Worker, limit: int = 20) -> dict:
             "display_name": item.display_name,
             "last_ingested_at": item.last_ingested_at,
             "read_reason": read_reason,
+            "authorization_revision": _authorization_revision(item),
         }
         if _clean_locator(item.row_fingerprint):
             target["row_fingerprint"] = item.row_fingerprint
@@ -426,6 +585,11 @@ def read_targets(db: Session, worker: Worker, limit: int = 20) -> dict:
         "poll_after_seconds": 10,
         "next_action": NEXT_ACTION_NONE,
     }
+
+
+def _authorization_revision(binding: WechatSessionBinding) -> str:
+    seed = f"{binding.id}|{int(binding.authorization_revision or 1)}"
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
 
 
 def _degrade_invalid_bound_targets(db: Session, worker: Worker) -> None:
@@ -447,10 +611,15 @@ def _degrade_invalid_bound_targets(db: Session, worker: Worker) -> None:
         elif not _clean_locator(item.remark_code):
             error_code = "C2_TARGET_REMARK_CODE_MISSING"
         if error_code:
-            item.bind_status = BIND_STATUS_NEEDS_REVIEW
-            item.listen_status = LISTEN_STATUS_DEGRADED
-            item.allow_listening = False
-            item.error_code = error_code
+            _set_binding_state(
+                item,
+                status=BIND_STATUS_NEEDS_REVIEW,
+                listen_status=LISTEN_STATUS_DEGRADED,
+                allow_listening=False,
+                error_code=error_code,
+                remark_code=item.remark_code,
+                preserve_lead=True,
+            )
             changed = True
     if changed:
         db.flush()
@@ -473,6 +642,121 @@ def _sender_role(value: str) -> str:
     if normalized in {"customer", "self", "sales", "sales_candidate", "unknown"}:
         return normalized
     return "unknown"
+
+
+def _message_type(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized == "audio":
+        return "voice"
+    if normalized in MESSAGE_TYPES:
+        return normalized
+    return "unknown"
+
+
+def _voice_transcription_text(item) -> str:
+    raw_payload = item.raw_payload if isinstance(item.raw_payload, dict) else {}
+    text = _voice_transcription_value(raw_payload.get("voice_transcription"))
+    if not text:
+        text = _voice_transcription_value(item.content)
+    if not text or VOICE_DURATION_RE.match(text):
+        return ""
+    if _looks_like_voice_payload_text(text):
+        return ""
+    text = VOICE_DURATION_TOKEN_RE.sub(" ", text)
+    return " ".join(text.split()).strip()
+
+
+def _voice_transcription_value(value) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        for key in ("content_clean", "text", "transcript", "transcribed_text", "content"):
+            text = value.get(key)
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+            if isinstance(text, dict):
+                nested = _voice_transcription_value(text)
+                if nested:
+                    return nested
+    return ""
+
+
+def _looks_like_voice_payload_text(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if text.startswith("{'") or text.startswith('{"') or text.startswith("[{"):
+        return True
+    sample = text[:4000]
+    payload_tokens = (
+        "voice_transcribe_completed",
+        "voice_transcribe_review",
+        "before_screenshot_path",
+        "after_screenshot_path",
+        "transcribed_messages",
+        "context_menu_attempt",
+    )
+    return len(text) > 1000 and any(token in sample for token in payload_tokens)
+
+
+def _voice_failure_code(raw_payload: dict | None) -> str | None:
+    if not isinstance(raw_payload, dict):
+        return None
+    for key in (
+        "voice_error_code",
+        "transcribe_error_code",
+        "voice_transcription_error_code",
+        "error_code",
+        "read_result",
+        "read_status",
+        "result",
+        "status",
+    ):
+        code = str(raw_payload.get(key) or "").strip().upper()
+        if code in VOICE_FAILURE_ERROR_CODES:
+            return code
+    return None
+
+
+def _occurred_at_bucket(value: datetime | None) -> str:
+    if not value:
+        return "unknown"
+    return value.replace(second=0, microsecond=0).isoformat()
+
+
+def _visual_position_fingerprint(raw_payload: dict | None) -> str:
+    if not isinstance(raw_payload, dict):
+        return ""
+    for key in (
+        "visual_position_fingerprint",
+        "visual_fingerprint",
+        "bubble_fingerprint",
+        "message_fingerprint",
+        "row_fingerprint",
+    ):
+        value = str(raw_payload.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _voice_dedupe_key(
+    conversation_id: str,
+    sender_role: str,
+    transcript: str,
+    occurred_at: datetime | None,
+    raw_payload: dict | None,
+) -> str:
+    normalized = " ".join(str(transcript or "").split()).lower()
+    transcript_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    visual_fingerprint = _visual_position_fingerprint(raw_payload)
+    visual_hash = (
+        hashlib.sha256(visual_fingerprint.encode("utf-8")).hexdigest()
+        if visual_fingerprint
+        else "no_visual"
+    )
+    bucket = _occurred_at_bucket(occurred_at)
+    return f"voice:{conversation_id}:{sender_role}:{transcript_hash}:{bucket}:{visual_hash}"
 
 
 def _read_failure_result(*payloads: dict | None) -> str | None:
@@ -507,6 +791,35 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
     )
     if not binding or binding.bind_status != BIND_STATUS_BOUND or not binding.allow_listening or not _clean_locator(binding.remark_code):
         raise AppError("MESSAGE_CONVERSATION_NOT_BOUND", "会话未绑定，不能入库消息", 409)
+    observed_remark_code = _clean_locator(payload.remark_code)
+    is_v2 = payload.contract_version >= 2
+    is_v3 = payload.contract_version >= 3
+    if is_v2 and not observed_remark_code:
+        raise AppError("MESSAGE_TARGET_IDENTITY_MISSING", "V2 消息缺少读取目标短码", 409)
+    if observed_remark_code and observed_remark_code != _clean_locator(binding.remark_code):
+        raise AppError("MESSAGE_TARGET_IDENTITY_MISMATCH", "读取目标与绑定会话不一致，已拒绝入库", 409)
+    if is_v3 and str(payload.authorization_revision or "") != _authorization_revision(binding):
+        raise AppError("MESSAGE_AUTHORIZATION_REVISION_EXPIRED", "读取授权已过期，已拒绝旧任务入库", 409)
+    if is_v2:
+        seen_source_keys: set[str] = set()
+        for item in payload.messages:
+            source_key = str(item.source_message_key or "").strip()
+            if not source_key:
+                raise AppError("MESSAGE_SOURCE_IDENTITY_MISSING", "V2 消息缺少 source_message_key", 409)
+            if source_key in seen_source_keys:
+                raise AppError("MESSAGE_SOURCE_CONFLICT", "同一来源消息出现多个最终解释", 409)
+            seen_source_keys.add(source_key)
+            allowed_roles = SENDER_ROLES_V3 if is_v3 else SENDER_ROLES_V2
+            allowed_types = MESSAGE_TYPES_V3 if is_v3 else MESSAGE_TYPES_V2
+            allowed_flows = FLOW_STATES_V3 if is_v3 else VOICE_FLOW_STATES_V2
+            if str(item.sender_role_hint or "").strip().lower() not in allowed_roles:
+                raise AppError("MESSAGE_SENDER_ROLE_INVALID", "V2 消息发送方角色不合法", 409)
+            if str(item.message_type or "").strip().lower() not in allowed_types:
+                raise AppError("MESSAGE_TYPE_INVALID", "V2 消息类型不合法", 409)
+            if str(item.item_state or "").strip().lower() != "completed":
+                raise AppError("MESSAGE_ITEM_STATE_INVALID", "只有已完成的消息项可以入库", 409)
+            if str(item.flow_state or "").strip().lower() not in allowed_flows:
+                raise AppError("MESSAGE_FLOW_STATE_INVALID", "V2 消息流程状态不合法", 409)
     conversation = _upsert_conversation_for_binding(db, binding)
     conversation_allowed = conversation.status not in CONVERSATION_CLOSED_STATUSES
     observed_rpa_session_key = payload.rpa_session_key or ""
@@ -516,15 +829,95 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
     ignored_count = 0
     results: list[dict] = []
     for item in payload.messages:
-        if not item.dedupe_key or not item.dedupe_key.strip():
-            raise AppError("MESSAGE_DEDUPE_KEY_MISSING", "消息缺少 dedupe_key", 400)
-        dedupe_key = item.dedupe_key.strip()
+        message_type = str(item.message_type or "").strip().lower() if is_v2 else _message_type(item.message_type)
+        source_dedupe_key = item.dedupe_key.strip() if item.dedupe_key else ""
+        raw_payload = item.raw_payload or {}
+        content = item.content
+        observation = raw_payload.get("observation") if isinstance(raw_payload.get("observation"), dict) else {}
+        if is_v3 and observation:
+            row_kind = str(observation.get("row_kind") or "").strip().lower()
+            role_source = str(observation.get("sender_role_source") or "").strip().lower()
+            expected_type = {
+                "text_bubble": "text",
+                "image_bubble": "image",
+                "system_message": "system",
+            }.get(row_kind)
+            if row_kind not in ROW_KINDS_V3 or row_kind not in INGESTIBLE_ROW_KINDS_V3:
+                ignored_count += 1
+                results.append(
+                    {
+                        "dedupe_key": source_dedupe_key,
+                        "ingest_result": "ignored",
+                        "error_code": "MESSAGE_ROW_KIND_NOT_INGESTIBLE",
+                    }
+                )
+                continue
+            if row_kind in CHAT_MESSAGE_ROW_KINDS_V3 and role_source not in CHAT_MESSAGE_ROLE_SOURCES_V3:
+                ignored_count += 1
+                results.append(
+                    {
+                        "dedupe_key": source_dedupe_key,
+                        "ingest_result": "ignored",
+                        "error_code": "MESSAGE_ROW_ROLE_SOURCE_UNTRUSTED",
+                    }
+                )
+                continue
+            if expected_type and expected_type != message_type:
+                ignored_count += 1
+                results.append(
+                    {
+                        "dedupe_key": source_dedupe_key,
+                        "ingest_result": "ignored",
+                        "error_code": "MESSAGE_ROW_TYPE_MISMATCH",
+                    }
+                )
+                continue
         read_failure = _read_failure_result(item.raw_payload, payload.evidence)
         if read_failure:
             ignored_count += 1
-            results.append({"dedupe_key": dedupe_key, "ingest_result": "ignored", "error_code": read_failure.upper()})
+            results.append({"dedupe_key": source_dedupe_key, "ingest_result": "ignored", "error_code": read_failure.upper()})
             continue
-        sender_role = _sender_role(item.sender_role_hint)
+        sender_role = str(item.sender_role_hint or "").strip().lower() if is_v2 else _sender_role(item.sender_role_hint)
+        if message_type == "voice":
+            voice_error_code = _voice_failure_code(raw_payload)
+            transcript = str(item.content or "").strip() if is_v3 else _voice_transcription_text(item)
+            if not voice_error_code and not transcript:
+                voice_error_code = "VOICE_TRANSCRIBE_EMPTY"
+            if is_v3 and (VOICE_DURATION_RE.match(transcript) or _looks_like_voice_payload_text(transcript)):
+                voice_error_code = "VOICE_TRANSCRIBE_INVALID_CONTENT"
+            if voice_error_code:
+                trace_id = get_request_id()
+                ignored_count += 1
+                logger.warning(
+                    "voice message ignored during ingest",
+                    extra={
+                        "trace_id": trace_id,
+                        "conversation_id": payload.conversation_id,
+                        "read_run_id": payload.read_run_id,
+                        "dedupe_key": source_dedupe_key,
+                        "error_code": voice_error_code,
+                    },
+                )
+                results.append(
+                    {
+                        "dedupe_key": source_dedupe_key,
+                        "ingest_result": "ignored",
+                        "error_code": voice_error_code,
+                        "trace_id": trace_id,
+                    }
+                )
+                continue
+            content = transcript
+            dedupe_basis = raw_payload.get("dedupe_basis") if isinstance(raw_payload.get("dedupe_basis"), dict) else {}
+            trusted_source_identity = str(dedupe_basis.get("source") or "") in {
+                "voice_anchor_identity",
+                "ocr_structural_identity",
+            }
+            dedupe_key = source_dedupe_key if is_v2 or (source_dedupe_key and trusted_source_identity) else _voice_dedupe_key(payload.conversation_id, sender_role, transcript, item.occurred_at, raw_payload)
+        else:
+            if not source_dedupe_key:
+                raise AppError("MESSAGE_DEDUPE_KEY_MISSING", "消息缺少 dedupe_key", 400)
+            dedupe_key = source_dedupe_key
         if not conversation_allowed:
             ignored_count += 1
             results.append({"dedupe_key": dedupe_key, "ingest_result": "ignored", "error_code": "CONVERSATION_STATUS_NOT_LISTENABLE"})
@@ -543,6 +936,16 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             duplicated_count += 1
             results.append({"dedupe_key": dedupe_key, "ingest_result": "duplicated", "error_code": "MESSAGE_INGEST_DUPLICATED"})
             continue
+        if is_v2:
+            source_exists = db.scalar(
+                select(MessageEvent).where(
+                    MessageEvent.conversation_id == payload.conversation_id,
+                    MessageEvent.read_run_id == payload.read_run_id,
+                    MessageEvent.source_message_key == item.source_message_key,
+                )
+            )
+            if source_exists:
+                raise AppError("MESSAGE_SOURCE_CONFLICT", "同一读取批次的来源消息已存在", 409)
 
         message = MessageEvent(
             conversation_id=payload.conversation_id,
@@ -552,14 +955,18 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             worker_id=worker.id,
             rpa_session_key=observed_rpa_session_key,
             read_run_id=payload.read_run_id,
+            contract_version=payload.contract_version,
+            source_message_key=item.source_message_key,
             dedupe_key=dedupe_key,
             sender_role=sender_role,
-            message_type=item.message_type,
-            content=item.content,
+            message_type=message_type,
+            content=content,
             image_local_path=item.image_local_path,
-            raw_payload=item.raw_payload or {},
+            raw_payload=raw_payload,
             evidence=payload.evidence or {},
             ocr_confidence=item.ocr_confidence,
+            item_state=item.item_state,
+            flow_state=item.flow_state,
             occurred_at=item.occurred_at,
             ingested_at=utcnow(),
         )
@@ -588,7 +995,10 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
 
             cancel_open_reply_actions_for_conversation_change(db, binding.conversation_id, reason="销售已人工回复，取消未发送 AI 回复")
         ingested_count += 1
-        results.append({"dedupe_key": dedupe_key, "ingest_result": "ingested", "message_id": message.id, "message_event_id": message.id})
+        result = {"dedupe_key": dedupe_key, "ingest_result": "ingested", "message_id": message.id, "message_event_id": message.id}
+        if source_dedupe_key and source_dedupe_key != dedupe_key:
+            result["source_dedupe_key"] = source_dedupe_key
+        results.append(result)
 
     db.flush()
     return {
