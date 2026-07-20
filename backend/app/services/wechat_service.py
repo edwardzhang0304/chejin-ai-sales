@@ -60,6 +60,7 @@ VOICE_FAILURE_ERROR_CODES = {
     "VOICE_MESSAGE_UNCONFIRMED",
     "TARGET_NOT_CONFIRMED_FOR_VOICE_TRANSCRIBE",
 }
+IMAGE_RECOGNITION_STATUSES = {"succeeded", "failed"}
 READ_TARGET_FAILURE_RESULTS = {"target_not_confirmed", "search_not_found", "search_ambiguous"}
 READ_REASON_PRIORITY = {
     "recall_precheck": 0,
@@ -718,6 +719,29 @@ def _voice_failure_code(raw_payload: dict | None) -> str | None:
     return None
 
 
+def _image_recognition_warning_code(raw_payload: dict | None) -> str | None:
+    if not isinstance(raw_payload, dict) or "image_recognition" not in raw_payload:
+        return "IMAGE_RECOGNITION_RESULT_INVALID"
+    recognition = raw_payload.get("image_recognition")
+    if not isinstance(recognition, dict):
+        return "IMAGE_RECOGNITION_RESULT_INVALID"
+    status = str(recognition.get("status") or "").strip().lower()
+    if status not in IMAGE_RECOGNITION_STATUSES:
+        return "IMAGE_RECOGNITION_RESULT_INVALID"
+    success = recognition.get("success")
+    if "success" in recognition and not isinstance(success, bool):
+        return "IMAGE_RECOGNITION_RESULT_INVALID"
+    supplied_code = str(recognition.get("error_code") or "").strip().upper()
+    if status == "succeeded":
+        if success is False or supplied_code:
+            return "IMAGE_RECOGNITION_RESULT_INVALID"
+        return None
+    if success is True:
+        return "IMAGE_RECOGNITION_RESULT_INVALID"
+    normalized_code = re.sub(r"[^A-Z0-9_]+", "_", supplied_code).strip("_")
+    return normalized_code[:64] or "IMAGE_RECOGNITION_FAILED"
+
+
 def _occurred_at_bucket(value: datetime | None) -> str:
     if not value:
         return "unknown"
@@ -831,8 +855,19 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
     for item in payload.messages:
         message_type = str(item.message_type or "").strip().lower() if is_v2 else _message_type(item.message_type)
         source_dedupe_key = item.dedupe_key.strip() if item.dedupe_key else ""
-        raw_payload = item.raw_payload or {}
+        raw_payload = dict(item.raw_payload or {})
+        if item.message_position:
+            raw_payload["message_position"] = item.message_position.model_dump(exclude_none=True)
         content = item.content
+        image_warning_codes: list[str] = []
+        stored_image_local_path = item.image_local_path
+        if message_type == "image":
+            image_warning_code = _image_recognition_warning_code(raw_payload)
+            if image_warning_code:
+                image_warning_codes.append(image_warning_code)
+            if is_v3 and str(item.image_local_path or "").strip():
+                stored_image_local_path = None
+                image_warning_codes.append("IMAGE_LOCAL_PATH_IGNORED")
         observation = raw_payload.get("observation") if isinstance(raw_payload.get("observation"), dict) else {}
         if is_v3 and observation:
             row_kind = str(observation.get("row_kind") or "").strip().lower()
@@ -961,7 +996,7 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             sender_role=sender_role,
             message_type=message_type,
             content=content,
-            image_local_path=item.image_local_path,
+            image_local_path=stored_image_local_path,
             raw_payload=raw_payload,
             evidence=payload.evidence or {},
             ocr_confidence=item.ocr_confidence,
@@ -969,6 +1004,7 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             flow_state=item.flow_state,
             occurred_at=item.occurred_at,
             ingested_at=utcnow(),
+            error_code=image_warning_codes[0] if image_warning_codes else None,
         )
         try:
             with db.begin_nested():
@@ -996,6 +1032,22 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             cancel_open_reply_actions_for_conversation_change(db, binding.conversation_id, reason="销售已人工回复，取消未发送 AI 回复")
         ingested_count += 1
         result = {"dedupe_key": dedupe_key, "ingest_result": "ingested", "message_id": message.id, "message_event_id": message.id}
+        if image_warning_codes:
+            trace_id = get_request_id()
+            logger.warning(
+                "image message ingested with warnings",
+                extra={
+                    "trace_id": trace_id,
+                    "conversation_id": payload.conversation_id,
+                    "read_run_id": payload.read_run_id,
+                    "message_event_id": message.id,
+                    "dedupe_key": dedupe_key,
+                    "warning_codes": image_warning_codes,
+                },
+            )
+            result["warning_code"] = image_warning_codes[0]
+            result["warning_codes"] = image_warning_codes
+            result["trace_id"] = trace_id
         if source_dedupe_key and source_dedupe_key != dedupe_key:
             result["source_dedupe_key"] = source_dedupe_key
         results.append(result)

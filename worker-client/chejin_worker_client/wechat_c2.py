@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,7 +14,15 @@ from .c2_contract import contract_values
 from .storage import save_c2_state
 
 
-REMARK_CODE_RE = re.compile(r"(?<![A-Za-z0-9])CJ[-A-Z0-9]{4,24}(?![A-Za-z0-9])", re.IGNORECASE)
+OMNIAUTO_ROOT = Path(__file__).resolve().parents[1] / "omniauto-rpa"
+if str(OMNIAUTO_ROOT) not in sys.path:
+    sys.path.insert(0, str(OMNIAUTO_ROOT))
+
+from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.text_normalization import (  # noqa: E402
+    classify_c2_conversation_title,
+    extract_c2_remark_codes,
+)
+
 
 
 def now_iso() -> str:
@@ -69,13 +78,7 @@ def visual_position_fingerprint(message: dict[str, Any], index: int) -> str:
 
 
 def extract_remark_codes(*values: Any) -> list[str]:
-    found: list[str] = []
-    for value in values:
-        for match in REMARK_CODE_RE.findall(str(value or "")):
-            code = match.upper()
-            if code not in found:
-                found.append(code)
-    return found[:10]
+    return extract_c2_remark_codes(*values)
 
 
 def row_fingerprint(value: Any, fallback: str) -> str:
@@ -102,12 +105,23 @@ def build_scan_result_payload(
     started_at = now_iso()
     sessions = sidecar_payload.get("sessions") if isinstance(sidecar_payload.get("sessions"), list) else []
     mapped: list[dict[str, Any]] = []
+    admission_counts = {"private": 0, "group": 0, "unknown": 0}
     for index, item in enumerate(sessions):
         if not isinstance(item, dict):
             continue
         display_name = str(item.get("name") or item.get("title") or item.get("display_name") or "").strip()
         if not display_name:
             continue
+        raw_title = str(item.get("raw_title") or display_name).strip()
+        detected_codes = extract_remark_codes(raw_title)
+        admitted_codes: list[str] = []
+        admission_type = "unknown"
+        if len(detected_codes) == 1:
+            admission = classify_c2_conversation_title(raw_title, detected_codes[0])
+            admission_type = str(admission.get("conversation_type") or "unknown")
+            if admission.get("admission_allowed"):
+                admitted_codes = detected_codes
+        admission_counts[admission_type if admission_type in admission_counts else "unknown"] += 1
         rpa_session_key = str(item.get("session_key") or "").strip() or f"session:{stable_digest([display_name, index], length=20)}"
         preview = str(item.get("content") or item.get("preview") or item.get("last_message_preview") or "")
         fingerprint = row_fingerprint(item.get("row_fingerprint"), fallback=f"{display_name}:{rpa_session_key}:{index}")
@@ -117,7 +131,7 @@ def build_scan_result_payload(
                 "display_name": display_name[:255],
                 # A preview may quote another contact or group member name. Only
                 # the session title is authoritative enough for automatic binding.
-                "remark_code_candidates": extract_remark_codes(display_name),
+                "remark_code_candidates": admitted_codes,
                 "row_fingerprint": fingerprint,
                 "unread_hint": bool(item.get("unread_signal") or item.get("unread") or item.get("unread_badge")),
                 "last_message_preview": preview[:1000] or None,
@@ -137,6 +151,13 @@ def build_scan_result_payload(
             "adapter": sidecar_payload.get("adapter"),
             "state": sidecar_payload.get("state"),
             "ocr_items_count": sidecar_payload.get("ocr_items_count"),
+            "c2_conversation_admission": {
+                "rule_owner": "omniauto.win32_ocr.text_normalization",
+                "private_candidate_count": admission_counts["private"],
+                "group_excluded_count": admission_counts["group"],
+                "unknown_excluded_count": admission_counts["unknown"],
+                "rule": "valid_remark_code_and_private_title_only",
+            },
         },
         "scan_failed": not bool(sidecar_payload.get("ok")),
         "error_code": error_code or (None if sidecar_payload.get("ok") else str(sidecar_payload.get("error_code") or sidecar_payload.get("state") or "SESSION_SCAN_FAILED")),
@@ -649,7 +670,11 @@ def _build_message_ingest_payload_v3(
     message_sidecar_id = sidecar_run_id(sidecar_payload, "messages")
     mapped: list[dict[str, Any]] = []
     source_keys: set[str] = set()
-    candidates: list[dict[str, Any]] = []
+    slots: list[dict[str, Any]] = []
+    voice_entries = voice_transcription_entries(sidecar_payload)
+    authoritative_frame_source = str(sidecar_payload.get("authoritative_frame_source") or "").strip()
+    if authoritative_frame_source not in {"initial_read", "final_read"}:
+        authoritative_frame_source = "final_read" if voice_summary else "initial_read"
 
     def append_item(
         source: dict[str, Any],
@@ -660,6 +685,7 @@ def _build_message_ingest_payload_v3(
         source_index: int,
         identity_index: int,
         identity_sources: list[dict[str, Any]],
+        message_position: dict[str, Any],
         voice_meta: dict[str, Any] | None = None,
     ) -> None:
         if role not in allowed_roles or role == "unknown" or msg_type not in allowed_types:
@@ -688,6 +714,9 @@ def _build_message_ingest_payload_v3(
             "source_message_key": canonical_source_key,
             "dedupe_confidence": confidence,
             "dedupe_basis": basis,
+            # Position is attached only after identity generation. Screen
+            # coordinates must never change dedupe or source identity.
+            "message_position": message_position,
         }
         if voice_meta:
             raw_payload["voice_transcription"] = content
@@ -704,6 +733,7 @@ def _build_message_ingest_payload_v3(
                 "ocr_confidence": normalized_source.get("ocr_confidence"),
                 "item_state": "completed",
                 "flow_state": flow_state if msg_type == "voice" else "completed",
+                "message_position": message_position,
                 "raw_payload": raw_payload,
             }
         )
@@ -713,28 +743,117 @@ def _build_message_ingest_payload_v3(
             continue
         row_kind = str(observation.get("row_kind") or "")
         voice_state = str(observation.get("voice_state") or "")
-        # Voice rows are emitted only from the sidecar's anchor-bound results.
-        if row_kind in {"voice_bubble", "voice_transcript"} or voice_state != "not_voice":
-            continue
-        if row_kind not in ingestible_row_kinds:
-            continue
-        role_source = str(observation.get("sender_role_source") or "")
-        if row_kind in chat_message_row_kinds and role_source not in chat_message_role_sources:
-            continue
         source = observation.get("source_message") if isinstance(observation.get("source_message"), dict) else {}
         source = {**source, "observation": {key: value for key, value in observation.items() if key != "source_message"}}
-        candidates.append(
+        rect = message_rect({"bubble_rect": observation.get("bubble_rect") or source.get("bubble_rect")})
+        candidate: dict[str, Any] | None = None
+        if row_kind not in {"voice_bubble", "voice_transcript", "image_bubble"} and voice_state == "not_voice":
+            role_source = str(observation.get("sender_role_source") or "")
+            if row_kind in ingestible_row_kinds and not (
+                row_kind in chat_message_row_kinds and role_source not in chat_message_role_sources
+            ):
+                candidate = {
+                    "source": source,
+                    "role": str(observation.get("sender_role") or "unknown"),
+                    "msg_type": str(observation.get("message_type") or "unknown"),
+                    "content": str(observation.get("content_clean") or "").strip() or None,
+                    "source_index": index,
+                    "voice_meta": None,
+                }
+        slots.append(
             {
+                "authority_index": index,
+                "rect": rect,
+                "row_kind": row_kind,
+                "voice_state": voice_state,
+                "observation": observation,
                 "source": source,
-                "role": str(observation.get("sender_role") or "unknown"),
-                "msg_type": str(observation.get("message_type") or "unknown"),
-                "content": str(observation.get("content_clean") or "").strip() or None,
-                "source_index": index,
-                "voice_meta": None,
+                "candidate": candidate,
+                "order_source": "visual_top" if rect else "observation_index_fallback",
             }
         )
 
-    for entry_index, entry in enumerate(voice_transcription_entries(sidecar_payload), start=len(observations)):
+    def match_voice_entry(slot: dict[str, Any]) -> dict[str, Any] | None:
+        observation = slot["observation"]
+        source = slot["source"]
+        slot_aliases = source_identity_aliases(source)
+        for key in ("voice_anchor_key", "parent_voice_anchor_key"):
+            value = str(observation.get(key) or "").strip().lower()
+            if value:
+                slot_aliases.add(f"voice_anchor:{value}")
+        exact = [
+            entry
+            for entry in voice_entries
+            if not entry.get("matched") and slot_aliases & set(entry.get("source_aliases") or set())
+        ]
+        if exact:
+            return exact[0]
+        content_hash = normalized_content_hash(observation.get("content_clean") or "")
+        role = str(observation.get("sender_role") or "unknown")
+        duration = voice_duration_seconds(observation)
+        semantic = [
+            entry
+            for entry in voice_entries
+            if not entry.get("matched")
+            and entry.get("content_hash") == content_hash
+            and entry.get("sender_role") in {role, "unknown"}
+            and (duration is None or entry.get("voice_duration") in {None, duration})
+        ]
+        if not semantic:
+            return None
+        slot_rect = slot.get("rect")
+        if slot_rect:
+            return min(
+                semantic,
+                key=lambda entry: abs(
+                    float((message_rect(entry.get("message") or {}) or {}).get("center_y") or slot_rect["center_y"])
+                    - float(slot_rect["center_y"])
+                ),
+            )
+        return semantic[0]
+
+    # Final-frame voice observations reserve their original visual slots. The
+    # completed result keeps its stable anchor identity but adopts the final
+    # frame geometry, so bottom-up UI actions cannot reorder the V3 messages.
+    for slot in slots:
+        if slot["row_kind"] != "voice_transcript" or slot["voice_state"] != "transcribed":
+            continue
+        entry = match_voice_entry(slot)
+        if not entry:
+            continue
+        entry["matched"] = True
+        entry_source = entry.get("message")
+        content = str(entry.get("content") or "").strip()
+        if not isinstance(entry_source, dict) or not content or not voice_anchor_identity(entry_source):
+            continue
+        final_rect = slot.get("rect")
+        voice_source = {
+            **entry_source,
+            "type": "voice",
+            "content": content,
+            "voice_anchor_stable_key": voice_anchor_identity(entry_source),
+            "_voice_occurrence_index": int(entry.get("occurrence_index") or 0),
+            "observation": {key: value for key, value in slot["observation"].items() if key != "source_message"},
+        }
+        if final_rect:
+            voice_source["bubble_rect"] = {
+                key: int(final_rect[key]) for key in ("left", "top", "right", "bottom")
+            }
+        slot["candidate"] = {
+            "source": voice_source,
+            "role": str(entry.get("sender_role") or "unknown"),
+            "msg_type": "voice",
+            "content": content,
+            "source_index": int(slot["authority_index"]),
+            "voice_meta": voice_transcription_meta(voice_summary, message=entry_source),
+        }
+
+    # A completed, anchor-bound voice should not be lost merely because the
+    # final OCR omitted its transcript observation. Its bound bubble geometry
+    # is used only as an ordering fallback and never as message identity.
+    for entry_index, entry in enumerate(voice_entries, start=len(observations)):
+        if entry.get("matched"):
+            continue
         source = entry.get("message")
         content = str(entry.get("content") or "").strip()
         if not isinstance(source, dict) or not content or not voice_anchor_identity(source):
@@ -747,17 +866,43 @@ def _build_message_ingest_payload_v3(
             "voice_anchor_stable_key": voice_anchor_identity(source),
             "_voice_occurrence_index": int(entry.get("occurrence_index") or 0),
         }
-        candidates.append(
+        rect = message_rect(voice_source)
+        slots.append(
             {
+                "authority_index": entry_index,
+                "rect": rect,
+                "row_kind": "voice_transcript",
+                "voice_state": "transcribed",
+                "observation": {},
                 "source": voice_source,
-                "role": role,
-                "msg_type": "voice",
-                "content": content,
-                "source_index": entry_index,
-                "voice_meta": voice_transcription_meta(voice_summary, message=source),
+                "order_source": "voice_anchor_geometry_fallback" if rect else "observation_index_fallback",
+                "candidate": {
+                    "source": voice_source,
+                    "role": role,
+                    "msg_type": "voice",
+                    "content": content,
+                    "source_index": entry_index,
+                    "voice_meta": voice_transcription_meta(voice_summary, message=source),
+                },
             }
         )
 
+    if slots and all(slot.get("rect") for slot in slots):
+        ordered_slots = sorted(
+            slots,
+            key=lambda slot: (
+                float(slot["rect"]["top"]),
+                float(slot["rect"]["bottom"]),
+                int(slot["authority_index"]),
+            ),
+        )
+    else:
+        # Observations are already emitted top-to-bottom. If any slot has no
+        # usable geometry, keeping that authoritative sequence is safer than
+        # pushing the unknown slot to either end.
+        ordered_slots = sorted(slots, key=lambda slot: int(slot["authority_index"]))
+
+    candidates = [slot["candidate"] for slot in ordered_slots if isinstance(slot.get("candidate"), dict)]
     identity_sources = [
         {
             **candidate["source"],
@@ -768,7 +913,25 @@ def _build_message_ingest_payload_v3(
         }
         for candidate in candidates
     ]
-    for identity_index, candidate in enumerate(candidates):
+    identity_index = 0
+    for screen_order, slot in enumerate(ordered_slots, start=1):
+        candidate = slot.get("candidate")
+        if not isinstance(candidate, dict):
+            continue
+        rect = slot.get("rect")
+        message_position: dict[str, Any] = {
+            "screen_order": screen_order,
+            "frame_source": authoritative_frame_source,
+        }
+        if rect:
+            message_position.update(
+                {
+                    "visual_top": int(rect["top"]),
+                    "visual_bottom": int(rect["bottom"]),
+                }
+            )
+        if slot.get("order_source") != "visual_top":
+            message_position["order_source"] = slot.get("order_source")
         append_item(
             candidate["source"],
             role=candidate["role"],
@@ -777,8 +940,10 @@ def _build_message_ingest_payload_v3(
             source_index=candidate["source_index"],
             identity_index=identity_index,
             identity_sources=identity_sources,
+            message_position=message_position,
             voice_meta=candidate["voice_meta"],
         )
+        identity_index += 1
 
     finished_at = now_iso()
     return {

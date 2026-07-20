@@ -5422,7 +5422,7 @@ def test_validate_active_send_target_exposes_internal_timing() -> None:
     image = Image.new("RGB", (981, 860), "white")
     ocr_items = [
         {
-            "text": "新数据测试",
+            "text": "新数据测试-CJTEST01",
             "left": 502,
             "top": 32,
             "right": 590,
@@ -5441,6 +5441,7 @@ def test_validate_active_send_target_exposes_internal_timing() -> None:
         "auxiliary_wechat_shell_like": sidecar_mod.auxiliary_wechat_shell_like,
         "blocking_screen_reason": sidecar_mod.blocking_screen_reason,
         "active_chat_matches": sidecar_mod.active_chat_matches,
+        "active_chat_title_evidence": sidecar_mod.active_chat_title_evidence,
     }
     try:
         os.environ["WECHAT_WIN32_OCR_ACTIVE_SEND_TARGET_ROI_OCR"] = "0"
@@ -5452,7 +5453,15 @@ def test_validate_active_send_target_exposes_internal_timing() -> None:
         sidecar_mod.auxiliary_wechat_shell_like = lambda _items, geometry=None: {"detected": False}
         sidecar_mod.blocking_screen_reason = lambda _items: ""
         sidecar_mod.active_chat_matches = lambda _items, _size, *, target, exact: True
-        result = sidecar_mod.validate_active_send_target(1001, "新数据测试", exact=True)
+        sidecar_mod.active_chat_title_evidence = lambda _items, _size, *, target, exact: {
+            "matched": True,
+            "conversation_type": "private",
+            "reason": "private_title_confirmed",
+            "raw_title": target,
+            "short_code_confirmed": True,
+            "admission_allowed": True,
+        }
+        result = sidecar_mod.validate_active_send_target(1001, "新数据测试-CJTEST01", exact=True)
         assert_true(result.get("ok") is True, f"target should be confirmed: {result}")
         timing = result.get("timing") if isinstance(result.get("timing"), dict) else {}
         assert_true("validate_active_send_target_duration_seconds" in timing, f"overall validation timing missing: {timing}")
@@ -6584,7 +6593,19 @@ def test_c2_visible_locate_can_switch_away_from_service_container_page() -> None
 
         def fake_validate(*_args, **_kwargs):
             calls["validate"] += 1
-            return {"ok": True, "online": True, "reason": "target_confirmed"}
+            return {
+                "ok": True,
+                "online": True,
+                "reason": "target_confirmed",
+                "confirmation_confidence": "active_title_strict",
+                "conversation_type": "private",
+                "conversation_type_evidence": {
+                    "matched": True,
+                    "conversation_type": "private",
+                    "short_code_confirmed": True,
+                    "admission_allowed": True,
+                },
+            }
 
         sidecar_mod.validate_active_send_target = fake_validate
         sidecar_mod.open_chat = (
@@ -6726,6 +6747,13 @@ def test_c2_open_chat_with_session_key_short_circuits_when_current_target_confir
             "online": True,
             "reason": "active_title_confirmed",
             "confirmation_confidence": "active_title_strict",
+            "conversation_type": "private",
+            "conversation_type_evidence": {
+                "matched": True,
+                "conversation_type": "private",
+                "short_code_confirmed": True,
+                "admission_allowed": True,
+            },
         }
         sidecar_mod.open_chat = lambda *_args, **_kwargs: calls.__setitem__("open_chat", calls["open_chat"] + 1) or True
         sidecar_mod.target_switch_validation_is_hard_stop = lambda _validation: False

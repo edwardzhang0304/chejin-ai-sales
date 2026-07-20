@@ -10,6 +10,7 @@ from app.models.sales import Sales
 from app.models.task import Task
 from app.models.wechat import MessageEvent, WechatSessionBinding
 from app.core.database import SessionLocal
+from app.services import wechat_service
 
 
 client = TestClient(app)
@@ -241,6 +242,43 @@ def test_scan_result_blocks_same_remark_code_claimed_by_multiple_sessions():
     assert targets.json()["data"]["targets"] == []
 
 
+def test_scan_result_ignores_group_excluded_remark_candidate_when_private_chat_matches():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("虾丸子大", "13896676678", {"remark_code": "CJR8S5K3"})
+    payload = _scan_payload("CJR8S5K3", rpa_session_key="wx-private-chat")
+    payload["sessions"][0]["display_name"] = "虾丸子大-CJR8S5K3"
+    payload["sessions"].append(
+        {
+            "rpa_session_key": "wx-group-chat",
+            "display_name": "销售讨论-CJR8S5K3(5)",
+            # OmniAuto/Worker already classified this title as group, so it is
+            # intentionally excluded from the backend's short-code candidates.
+            "remark_code_candidates": [],
+            "row_fingerprint": "fingerprint-group-chat",
+            "unread_hint": True,
+            "last_message_preview": "群聊消息",
+            "ocr_confidence": 0.99,
+        }
+    )
+
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=payload,
+        headers=_worker_headers(worker),
+    )
+
+    assert scan.status_code == 200
+    data = scan.json()["data"]
+    assert data["bound_count"] == 1
+    private_binding = next(item for item in data["bindings"] if item["rpa_session_key"] == "wx-private-chat")
+    group_binding = next(item for item in data["bindings"] if item["rpa_session_key"] == "wx-group-chat")
+    assert private_binding["bind_status"] == "bound"
+    assert private_binding["remark_code"] == "CJR8S5K3"
+    assert group_binding["bind_status"] != "bound"
+    assert group_binding["can_ingest_messages"] is False
+
+
 def test_scan_result_does_not_reuse_soft_deleted_remark_binding():
     worker = _create_worker()
     _create_sales(worker["id"])
@@ -367,6 +405,193 @@ def test_message_ingest_is_idempotent_by_dedupe_key_and_returns_next_action_none
         assert db.query(MessageBatch).count() == 0
 
 
+def test_image_ingest_keeps_recognition_result_without_local_path_and_isolates_failure():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("图片客户", "13896676681")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    conversation_id = binding["conversation_id"]
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, conversation_id)
+        conversation.status = "waiting_user_reply"
+        db.commit()
+    targets = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+    authorization_revision = targets.json()["data"]["targets"][0]["authorization_revision"]
+
+    def observation(observation_id: str, row_kind: str, message_type: str) -> dict:
+        return {
+            "observation_id": observation_id,
+            "row_kind": row_kind,
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": message_type,
+            "voice_state": "not_voice",
+        }
+
+    payload = {
+        "contract_version": 3,
+        "read_run_id": "read-image-recognition",
+        "conversation_id": conversation_id,
+        "remark_code": remark_code,
+        "rpa_session_key": binding["rpa_session_key"],
+        "authorization_revision": authorization_revision,
+        "messages": [
+            {
+                "dedupe_key": "image-success-001",
+                "source_message_key": "image-success-source-001",
+                "sender_role_hint": "customer",
+                "message_type": "image",
+                "content": "车辆外观图片",
+                "item_state": "completed",
+                "flow_state": "completed",
+                "raw_payload": {
+                    "observation": observation("image-success-observation", "image_bubble", "image"),
+                    "image_recognition": {
+                        "status": "succeeded",
+                        "summary": "白色 SUV",
+                        "confidence": 0.93,
+                    }
+                },
+            },
+            {
+                "dedupe_key": "image-failed-001",
+                "source_message_key": "image-failed-source-001",
+                "sender_role_hint": "customer",
+                "message_type": "image",
+                "item_state": "completed",
+                "flow_state": "completed",
+                "raw_payload": {
+                    "observation": observation("image-failed-observation", "image_bubble", "image"),
+                    "image_recognition": {
+                        "status": "failed",
+                        "error_code": "IMAGE_MODEL_TIMEOUT",
+                        "error_message": "视觉模型调用超时",
+                    }
+                },
+            },
+            {
+                "dedupe_key": "image-legacy-path-001",
+                "source_message_key": "image-legacy-path-source-001",
+                "sender_role_hint": "customer",
+                "message_type": "image",
+                "image_local_path": "C:/legacy/image.png",
+                "item_state": "completed",
+                "flow_state": "completed",
+                "raw_payload": {
+                    "observation": observation("image-legacy-path-observation", "image_bubble", "image"),
+                    "image_recognition": {
+                        "status": "succeeded",
+                        "summary": "车辆内饰图片",
+                    },
+                },
+            },
+            {
+                "dedupe_key": "image-invalid-result-001",
+                "source_message_key": "image-invalid-result-source-001",
+                "sender_role_hint": "customer",
+                "message_type": "image",
+                "item_state": "completed",
+                "flow_state": "completed",
+                "raw_payload": {
+                    "observation": observation("image-invalid-result-observation", "image_bubble", "image"),
+                    "image_recognition": {},
+                },
+            },
+            {
+                "dedupe_key": "text-after-image-failure",
+                "source_message_key": "text-after-image-failure-source",
+                "sender_role_hint": "customer",
+                "message_type": "text",
+                "content": "这辆车还有吗？",
+                "item_state": "completed",
+                "flow_state": "completed",
+                "raw_payload": {
+                    "observation": observation("text-after-image-observation", "text_bubble", "text"),
+                },
+            },
+        ],
+    }
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers=_worker_headers(worker),
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["ingested_count"] == 5
+    failed_result = next(item for item in data["results"] if item["dedupe_key"] == "image-failed-001")
+    assert failed_result["ingest_result"] == "ingested"
+    assert failed_result["warning_code"] == "IMAGE_MODEL_TIMEOUT"
+    assert failed_result["warning_codes"] == ["IMAGE_MODEL_TIMEOUT"]
+    assert failed_result["trace_id"]
+    legacy_result = next(item for item in data["results"] if item["dedupe_key"] == "image-legacy-path-001")
+    assert legacy_result["ingest_result"] == "ingested"
+    assert legacy_result["warning_codes"] == ["IMAGE_LOCAL_PATH_IGNORED"]
+    invalid_result = next(item for item in data["results"] if item["dedupe_key"] == "image-invalid-result-001")
+    assert invalid_result["ingest_result"] == "ingested"
+    assert invalid_result["warning_codes"] == ["IMAGE_RECOGNITION_RESULT_INVALID"]
+
+    duplicated = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json={**payload, "read_run_id": "read-image-recognition-retry", "messages": [payload["messages"][0]]},
+        headers=_worker_headers(worker),
+    )
+    assert duplicated.status_code == 200
+    assert duplicated.json()["data"]["duplicated_count"] == 1
+
+    with SessionLocal() as db:
+        messages = db.query(MessageEvent).filter(MessageEvent.conversation_id == conversation_id).all()
+        assert len(messages) == 5
+        success = next(item for item in messages if item.dedupe_key == "image-success-001")
+        failed = next(item for item in messages if item.dedupe_key == "image-failed-001")
+        legacy = next(item for item in messages if item.dedupe_key == "image-legacy-path-001")
+        invalid = next(item for item in messages if item.dedupe_key == "image-invalid-result-001")
+        assert success.message_type == "image"
+        assert success.image_local_path is None
+        assert success.item_state == "completed"
+        assert success.flow_state == "completed"
+        assert success.raw_payload["image_recognition"]["summary"] == "白色 SUV"
+        assert success.error_code is None
+        assert failed.image_local_path is None
+        assert failed.item_state == "completed"
+        assert failed.flow_state == "completed"
+        assert failed.raw_payload["image_recognition"]["error_message"] == "视觉模型调用超时"
+        assert failed.error_code == "IMAGE_MODEL_TIMEOUT"
+        assert legacy.image_local_path is None
+        assert legacy.error_code == "IMAGE_LOCAL_PATH_IGNORED"
+        assert invalid.error_code == "IMAGE_RECOGNITION_RESULT_INVALID"
+
+
+@pytest.mark.parametrize(
+    ("recognition", "expected_warning"),
+    [
+        (None, "IMAGE_RECOGNITION_RESULT_INVALID"),
+        ("failed", "IMAGE_RECOGNITION_RESULT_INVALID"),
+        ({}, "IMAGE_RECOGNITION_RESULT_INVALID"),
+        ({"status": "随便写"}, "IMAGE_RECOGNITION_RESULT_INVALID"),
+        ({"status": "succeeded", "success": False}, "IMAGE_RECOGNITION_RESULT_INVALID"),
+        ({"status": "succeeded", "error_code": "IMAGE_MODEL_TIMEOUT"}, "IMAGE_RECOGNITION_RESULT_INVALID"),
+        ({"status": "succeeded", "error_code": ""}, None),
+        ({"status": "failed"}, "IMAGE_RECOGNITION_FAILED"),
+        ({"status": "failed", "error_code": "provider timeout"}, "PROVIDER_TIMEOUT"),
+        ({"status": "failed", "success": True}, "IMAGE_RECOGNITION_RESULT_INVALID"),
+    ],
+)
+def test_image_recognition_result_validation(recognition, expected_warning):
+    assert wechat_service._image_recognition_warning_code({"image_recognition": recognition}) == expected_warning
+    assert wechat_service._image_recognition_warning_code({}) == "IMAGE_RECOGNITION_RESULT_INVALID"
+
+
 def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revision():
     worker = _create_worker()
     _create_sales(worker["id"])
@@ -404,6 +629,12 @@ def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revi
                 "content": "我马上回去。",
                 "item_state": "completed",
                 "flow_state": "completed",
+                "message_position": {
+                    "screen_order": 2,
+                    "visual_top": 240,
+                    "visual_bottom": 308,
+                    "frame_source": "final_read",
+                },
                 "raw_payload": {"voice_transcription": "后端不应改用这里的旧值"},
             },
             {
@@ -458,6 +689,12 @@ def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revi
     with SessionLocal() as db:
         event = db.query(MessageEvent).filter(MessageEvent.dedupe_key == "v3-voice-key").one()
         assert event.content == "我马上回去。"
+        assert event.raw_payload["message_position"] == {
+            "screen_order": 2,
+            "visual_top": 240,
+            "visual_bottom": 308,
+            "frame_source": "final_read",
+        }
         binding_row = db.get(WechatSessionBinding, binding["id"])
         binding_row.allow_listening = False
         binding_row.listen_status = "disabled"

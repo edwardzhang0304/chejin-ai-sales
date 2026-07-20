@@ -45,6 +45,7 @@
     "dedupe_key",
     "sender_role_hint",
     "message_type",
+    "message_position",
     "item_state",
     "flow_state"
   ]

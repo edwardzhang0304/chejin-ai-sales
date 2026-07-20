@@ -579,12 +579,19 @@ def locate_chat_target_for_c2(
                 payload["review_error"] = repr(exc)
         return payload
 
-    if not clean_target and not clean_remark_code:
+    if not clean_remark_code:
         return finish(
             ok=False,
             state=failure_state,
-            error_code="C2_TARGET_LOCATOR_MISSING",
-            error="Missing display_name and remark_code for target confirmation.",
+            error_code="C2_TARGET_REMARK_CODE_MISSING",
+            error="C2 requires a valid remark_code before any chat can be opened.",
+        )
+    if clean_remark_code.upper() not in extract_c2_remark_codes(clean_remark_code):
+        return finish(
+            ok=False,
+            state=failure_state,
+            error_code="C2_TARGET_REMARK_CODE_INVALID",
+            error="C2 remark_code does not match the supported short-code contract.",
         )
 
     if normalized_mode == "search_by_remark_code":
@@ -604,13 +611,14 @@ def locate_chat_target_for_c2(
                 exact=False,
                 artifact_dir=artifact_dir,
             )
-        if not opened or not (validation or {}).get("ok"):
+        if not opened or not c2_target_activation_confirmed(validation):
+            admission_code, admission_error = c2_target_admission_error(validation, str(targeting.get("error_code") or failure_error_code))
             return finish(
                 ok=False,
                 validation=validation,
                 state=failure_state,
-                error_code=str(targeting.get("error_code") or failure_error_code),
-                error=str(targeting.get("reason") or "Search result did not confirm the target chat."),
+                error_code=admission_code,
+                error=admission_error,
             )
         return finish(ok=True, validation=validation)
 
@@ -622,13 +630,14 @@ def locate_chat_target_for_c2(
             exact=False if clean_remark_code else bool(exact),
             artifact_dir=artifact_dir,
         )
-        if not validation.get("ok"):
+        if not c2_target_activation_confirmed(validation):
+            admission_code, admission_error = c2_target_admission_error(validation, failure_error_code)
             return finish(
                 ok=False,
                 validation=validation,
                 state=failure_state,
-                error_code=failure_error_code,
-                error="Current chat is not the requested target.",
+                error_code=admission_code,
+                error=admission_error,
             )
         return finish(ok=True, validation=validation)
 
@@ -699,22 +708,23 @@ def locate_chat_target_for_c2(
         targeting["visible_postcheck"]["fallback_full_ocr"] = True
     else:
         targeting["visible_postcheck"]["fallback_full_ocr"] = False
-    if not opened or not validation.get("ok"):
+    if not opened or not c2_target_activation_confirmed(validation):
         open_reason = str(_LAST_OPEN_CHAT_TIMING.get("reason") or "")
         ambiguous_visible_target = open_reason in {
             "active_visible_ambiguous",
             "semantic_candidate_ambiguous",
             "session_key_drift_semantic_candidate_ambiguous",
         }
+        admission_code, admission_error = c2_target_admission_error(validation, failure_error_code)
         return finish(
             ok=False,
             validation=validation,
             state=failure_state,
-            error_code="C2_VISIBLE_TARGET_AMBIGUOUS" if ambiguous_visible_target else failure_error_code,
+            error_code="C2_VISIBLE_TARGET_AMBIGUOUS" if ambiguous_visible_target else admission_code,
             error=(
                 "Visible session target was ambiguous; stop before search fallback."
                 if ambiguous_visible_target
-                else "Visible session target was not confirmed."
+                else admission_error
             ),
         )
     return finish(ok=True, validation=validation)
@@ -1001,10 +1011,10 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
             if single_frame_confirmation:
                 guard = payload.get("target_confirmation") if isinstance(payload.get("target_confirmation"), dict) else {}
                 locate = {
-                    "ok": bool(guard.get("ok")),
+                    "ok": c2_target_activation_confirmed(guard),
                     "online": bool(guard.get("online", True)),
-                    "state": "chat_target_confirmed" if guard.get("ok") else "target_not_confirmed_for_messages",
-                    "error_code": None if guard.get("ok") else "TARGET_NOT_CONFIRMED_FOR_MESSAGES",
+                    "state": "chat_target_confirmed" if c2_target_activation_confirmed(guard) else "target_not_confirmed_for_messages",
+                    "error_code": None if c2_target_activation_confirmed(guard) else c2_target_admission_error(guard, "TARGET_NOT_CONFIRMED_FOR_MESSAGES")[0],
                     "target": str(args.target or ""),
                     "remark_code": str(args.remark_code or "").strip(),
                     "target_mode": target_mode,
@@ -1093,10 +1103,10 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
             if single_frame_confirmation:
                 guard = payload.get("target_confirmation") if isinstance(payload.get("target_confirmation"), dict) else {}
                 locate = {
-                    "ok": bool(guard.get("ok")),
+                    "ok": c2_target_activation_confirmed(guard),
                     "online": bool(guard.get("online", True)),
-                    "state": "chat_target_confirmed" if guard.get("ok") else "target_not_confirmed_for_voice_transcribe",
-                    "error_code": None if guard.get("ok") else "TARGET_NOT_CONFIRMED_FOR_VOICE_TRANSCRIBE",
+                    "state": "chat_target_confirmed" if c2_target_activation_confirmed(guard) else "target_not_confirmed_for_voice_transcribe",
+                    "error_code": None if c2_target_activation_confirmed(guard) else c2_target_admission_error(guard, "TARGET_NOT_CONFIRMED_FOR_VOICE_TRANSCRIBE")[0],
                     "target": str(args.target or ""),
                     "remark_code": clean_remark_code,
                     "target_mode": target_mode,
@@ -1860,6 +1870,7 @@ def sessions_payload(hwnd: int, probe: dict[str, Any], *, artifact_dir: str | No
             {
                 "name": item["name"],
                 "title": item["name"],
+                "raw_title": item.get("raw_title") or item["name"],
                 "session_key": item.get("session_key", ""),
                 "row_fingerprint": item.get("row_fingerprint", {}),
                 "duplicate_name_index": item.get("duplicate_name_index", 0),
@@ -1870,6 +1881,9 @@ def sessions_payload(hwnd: int, probe: dict[str, Any], *, artifact_dir: str | No
                 "unread": item.get("unread_badge", ""),
                 "unread_signal": bool(item.get("unread_badge")),
                 "conversation_type": item.get("conversation_type") or infer_conversation_type(item["name"]),
+                "c2_conversation_type": item.get("c2_conversation_type") or "unknown",
+                "c2_conversation_admission": item.get("c2_conversation_admission") or {},
+                "c2_remark_code_candidates": item.get("c2_remark_code_candidates") or [],
                 "source_adapter": "win32_ocr",
             "ocr_confidence": item.get("confidence"),
             }
@@ -1947,19 +1961,23 @@ def messages_payload(
             ocr_items=ocr_items,
             screenshot_path=str(latest.get("screenshot_path") or ""),
         )
-        if not target_confirmation.get("ok"):
+        if not c2_target_activation_confirmed(target_confirmation):
+            admission_code, admission_error = c2_target_admission_error(
+                target_confirmation,
+                "TARGET_NOT_CONFIRMED_FOR_MESSAGES",
+            )
             return {
                 "ok": False,
                 "online": bool(target_confirmation.get("online", True)),
                 "adapter": "win32_ocr",
                 "state": "target_not_confirmed_for_messages",
-                "error_code": "TARGET_NOT_CONFIRMED_FOR_MESSAGES",
+                "error_code": admission_code,
                 "window_probe": probe,
                 "screenshot_path": str(latest.get("screenshot_path") or ""),
                 "chat_info": {"chat_name": target, "source_adapter": "win32_ocr"},
                 "ocr_items_count": len(ocr_items),
                 "target_confirmation": target_confirmation,
-                "error": "The messages frame did not confirm the requested target chat.",
+                "error": admission_error,
             }
     if quick_login_like(ocr_items, geometry=geometry):
         return {
@@ -2099,20 +2117,24 @@ def voice_transcribe_payload(
             ocr_items=before_items,
             screenshot_path=before_path,
         )
-        if not target_confirmation.get("ok"):
+        if not c2_target_activation_confirmed(target_confirmation):
+            admission_code, admission_error = c2_target_admission_error(
+                target_confirmation,
+                "TARGET_NOT_CONFIRMED_FOR_VOICE_TRANSCRIBE",
+            )
             return {
                 "ok": False,
                 "online": bool(target_confirmation.get("online", True)),
                 "adapter": "win32_ocr",
                 "state": "target_not_confirmed_for_voice_transcribe",
-                "error_code": "TARGET_NOT_CONFIRMED_FOR_VOICE_TRANSCRIBE",
+                "error_code": admission_code,
                 "window_probe": probe,
                 "target": target,
                 "before_screenshot_path": before_path,
                 "target_confirmation": target_confirmation,
                 "ocr_items_count": len(before_items),
                 "timing": finalize_performance_timing(),
-                "error": "The voice-transcribe frame did not confirm the requested target chat.",
+                "error": admission_error,
             }
     before_messages = timed_call(
         "parse",
@@ -8969,18 +8991,30 @@ def find_unique_session_candidate_by_semantics(
     hints: list[tuple[str, str]] = []
     if clean_semantic_target:
         hints.append(("remark_code", clean_semantic_target))
-    if clean_target and clean_target != clean_semantic_target:
+    elif clean_target:
         hints.append(("display_name", clean_target))
 
     attempts: list[dict[str, Any]] = []
     for source, hint in hints:
         matches: list[dict[str, Any]] = []
+        excluded: list[dict[str, Any]] = []
         for item in sessions:
             if not isinstance(item, dict):
                 continue
             name = str(item.get("name") or "")
             if source == "remark_code":
                 matched = remark_code_matches_text(name, hint)
+                admission = classify_c2_conversation_title(item.get("raw_title") or name, hint)
+                if matched and not admission.get("admission_allowed"):
+                    excluded.append(
+                        {
+                            "name": name,
+                            "raw_title": str(item.get("raw_title") or name),
+                            "conversation_type": admission.get("conversation_type"),
+                            "reason": admission.get("reason"),
+                        }
+                    )
+                    matched = False
             else:
                 matched = session_name_matches(name, hint, exact=False)
             if matched:
@@ -8998,6 +9032,7 @@ def find_unique_session_candidate_by_semantics(
                     }
                     for item in matches[:5]
                 ],
+                "excluded_by_c2_admission": excluded[:5],
             }
         )
         if len(matches) == 1:
@@ -9012,12 +9047,16 @@ def visible_session_name_is_unambiguous(
     target: str,
     *,
     exact: bool,
+    semantic_target: str = "",
 ) -> bool:
-    matches = [
-        item
-        for item in sessions
-        if isinstance(item, dict) and session_name_matches(str(item.get("name") or ""), target, exact=exact)
-    ]
+    if semantic_target:
+        matches = search_result_sessions_matching_remark_code(sessions, semantic_target)
+    else:
+        matches = [
+            item
+            for item in sessions
+            if isinstance(item, dict) and session_name_matches(str(item.get("name") or ""), target, exact=exact)
+        ]
     return len(matches) == 1
 
 
@@ -10048,11 +10087,17 @@ def search_result_sessions_matching_remark_code(
     sessions: list[dict[str, Any]],
     remark_code: str,
 ) -> list[dict[str, Any]]:
-    return [
-        item
-        for item in sessions
-        if isinstance(item, dict) and remark_code_matches_text(str(item.get("name") or ""), remark_code)
-    ]
+    matches: list[dict[str, Any]] = []
+    for item in sessions:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "")
+        if not remark_code_matches_text(name, remark_code):
+            continue
+        admission = classify_c2_conversation_title(item.get("raw_title") or name, remark_code)
+        if admission.get("admission_allowed"):
+            matches.append({**item, "c2_conversation_admission": admission})
+    return matches
 
 
 def _targeting_review_value(payload: dict[str, Any], keys: tuple[str, ...]) -> Any:
@@ -10260,9 +10305,14 @@ def search_result_contact_candidates_matching_remark_code(
         ]
         row_items = sorted(row_items, key=lambda row: float(row.get("left") or 0))
         row_texts = [str(other.get("text") or "").strip() for other in row_items if str(other.get("text") or "").strip()]
-        name = normalize_session_name(" ".join(row_texts)) or normalize_session_name(text)
+        raw_title = normalize_ocr_text(" ".join(row_texts)) or normalize_ocr_text(text)
+        name = normalize_session_name(raw_title) or normalize_session_name(text)
         if not remark_code_matches_text(name, remark_code):
             name = normalize_session_name(text)
+            raw_title = normalize_ocr_text(text)
+        admission = classify_c2_conversation_title(raw_title, remark_code)
+        if not admission.get("admission_allowed"):
+            continue
         left = min(float(other.get("left") or item.get("left") or 0) for other in row_items)
         right = max(float(other.get("right") or item.get("right") or 0) for other in row_items)
         top = min(float(other.get("top") or item.get("top") or 0) for other in row_items)
@@ -10282,8 +10332,10 @@ def search_result_contact_candidates_matching_remark_code(
         matches.append(
             {
                 "name": name,
-                "session_key": rpa_session_key(name, conversation_type="contact", row_fingerprint=session_row_fingerprint(item, duplicate_index=0)),
-                "conversation_type": "contact",
+                "raw_title": raw_title,
+                "session_key": rpa_session_key(name, row_fingerprint=session_row_fingerprint(item, duplicate_index=0)),
+                "conversation_type": str(admission.get("conversation_type") or "unknown"),
+                "candidate_kind": "contact",
                 "row_fingerprint": session_row_fingerprint(item, duplicate_index=0),
                 "duplicate_name_index": 0,
                 "ambiguous_display_name": False,
@@ -10298,6 +10350,7 @@ def search_result_contact_candidates_matching_remark_code(
                 "search_result_bounds": bounds,
                 "search_result_click_points": click_points,
                 "section": "contacts",
+                "c2_conversation_admission": admission,
             }
         )
         consumed_rows.append(center_y)
@@ -10353,7 +10406,11 @@ def fallback_first_search_contact_candidate(
         return None
     row_items = sorted(row_items, key=lambda row: float(row.get("left") or 0))
     row_texts = [str(item.get("text") or "").strip() for item in row_items if str(item.get("text") or "").strip()]
-    name = normalize_session_name(" ".join(row_texts)) or str(remark_code or "").strip()
+    raw_title = normalize_ocr_text(" ".join(row_texts))
+    name = normalize_session_name(raw_title)
+    admission = classify_c2_conversation_title(raw_title, remark_code)
+    if not name or not remark_code_matches_text(name, remark_code) or not admission.get("admission_allowed"):
+        return None
     left = min(float(item.get("left") or 0) for item in row_items)
     right = max(float(item.get("right") or 0) for item in row_items)
     top = min(float(item.get("top") or 0) for item in row_items)
@@ -10373,8 +10430,10 @@ def fallback_first_search_contact_candidate(
     ]
     return {
         "name": name,
-        "session_key": rpa_session_key(name, conversation_type="contact", row_fingerprint=session_row_fingerprint(row_items[0], duplicate_index=0)),
-        "conversation_type": "contact",
+        "raw_title": raw_title,
+        "session_key": rpa_session_key(name, row_fingerprint=session_row_fingerprint(row_items[0], duplicate_index=0)),
+        "conversation_type": str(admission.get("conversation_type") or "unknown"),
+        "candidate_kind": "contact",
         "row_fingerprint": session_row_fingerprint(row_items[0], duplicate_index=0),
         "duplicate_name_index": 0,
         "ambiguous_display_name": True,
@@ -10390,6 +10449,7 @@ def fallback_first_search_contact_candidate(
         "search_result_bounds": bounds,
         "search_result_click_points": click_points,
         "section": "contacts",
+        "c2_conversation_admission": admission,
     }
 
 
@@ -10453,11 +10513,26 @@ def validate_active_selected_session_target(
 
 
 def c2_target_activation_confirmed(validation: dict[str, Any] | None) -> bool:
-    if active_send_guard_is_strong(validation):
-        return True
     if not isinstance(validation, dict):
         return False
-    return bool(validation.get("ok") and validation.get("confirmation_confidence") == "selected_session_list")
+    return bool(
+        active_send_guard_is_strong(validation)
+        and validation.get("conversation_type") == "private"
+        and (validation.get("conversation_type_evidence") or {}).get("short_code_confirmed") is True
+    )
+
+
+def c2_target_admission_error(validation: dict[str, Any] | None, fallback: str) -> tuple[str, str]:
+    evidence = validation if isinstance(validation, dict) else {}
+    if "conversation_type" not in evidence:
+        return fallback, "The target chat title and private-chat admission were not both confirmed."
+    conversation_type = str(evidence.get("conversation_type") or "unknown")
+    raw_title = str(evidence.get("raw_title") or "")
+    if conversation_type == "group":
+        return "C2_GROUP_CHAT_NOT_ALLOWED", f"C2 excludes group chat title: {raw_title or '<unknown>'}."
+    if conversation_type == "unknown":
+        return "C2_CONVERSATION_TYPE_UNKNOWN", "C2 could not safely confirm a private chat from the existing title OCR."
+    return fallback, "The target chat title and private-chat admission were not both confirmed."
 
 
 def activate_search_result_candidate(
@@ -10976,7 +11051,12 @@ def open_chat(
     _sidecar_timing_finish(timing, "open_chat_parse_sessions", parse_started)
     timing["open_chat_session_count"] = len(sessions)
     if clean_session_key and active_matches:
-        if visible_session_name_is_unambiguous(sessions, target, exact=exact):
+        if visible_session_name_is_unambiguous(
+            sessions,
+            target,
+            exact=exact,
+            semantic_target=str(semantic_target or ""),
+        ):
             _LAST_RPA_ACTION_STATE["active_session_key"] = clean_session_key
             _LAST_RPA_ACTION_STATE["active_target"] = target
             return finish(True, "active_visible_unambiguous")
@@ -10985,6 +11065,15 @@ def open_chat(
         find_started = _sidecar_timing_start(timing, "open_chat_find_session_key")
         keyed = find_session_candidate_by_key(sessions, clean_session_key)
         _sidecar_timing_finish(timing, "open_chat_find_session_key", find_started)
+        if keyed is not None and semantic_target:
+            keyed_admission = classify_c2_conversation_title(
+                keyed.get("raw_title") or keyed.get("name") or "",
+                semantic_target,
+            )
+            timing["open_chat_session_key_c2_admission"] = keyed_admission
+            if not keyed_admission.get("admission_allowed"):
+                keyed = None
+                timing["open_chat_session_key_rejected_by_c2_admission"] = True
         if keyed is None:
             semantic_started = _sidecar_timing_start(timing, "open_chat_find_semantic_candidate")
             keyed, semantic_match = find_unique_session_candidate_by_semantics(
@@ -11056,6 +11145,7 @@ def open_chat(
                 _LAST_RPA_ACTION_STATE["active_session_key"] = str(semantic_candidate.get("session_key") or "")
                 _LAST_RPA_ACTION_STATE["active_target"] = target
             return finish(opened, "semantic_candidate_activated" if opened else "semantic_candidate_not_confirmed")
+        return finish(False, "semantic_private_candidate_not_found")
     for item in sessions:
         if not session_name_matches(str(item.get("name") or ""), target, exact=exact):
             continue
@@ -11553,7 +11643,8 @@ def validate_active_send_target(
             screenshot_path=path,
         )
     active_match_started = _sidecar_timing_start(timing, "validate_active_send_target_active_match")
-    active_match = active_chat_matches(ocr_items, screenshot.size, target=target, exact=exact)
+    title_evidence = active_chat_title_evidence(ocr_items, screenshot.size, target=target, exact=exact)
+    active_match = bool(title_evidence.get("matched"))
     _sidecar_timing_finish(timing, "validate_active_send_target_active_match", active_match_started)
     if supplied_frame and not active_match:
         # Reuse the business screenshot, not its potentially incomplete
@@ -11577,12 +11668,13 @@ def validate_active_send_target(
             title_roi_started,
         )
         timing["validate_active_send_target_supplied_frame_title_roi_ocr_count"] = len(title_roi_items)
-        active_match = active_chat_matches(
+        title_evidence = active_chat_title_evidence(
             title_roi_items,
             screenshot.size,
             target=target,
             exact=exact,
         )
+        active_match = bool(title_evidence.get("matched"))
         timing["validate_active_send_target_supplied_frame_title_roi_match"] = bool(active_match)
     timing["validate_active_send_target_active_match"] = bool(active_match)
     if not active_match:
@@ -11606,6 +11698,10 @@ def validate_active_send_target(
             "requested_target": target,
             "confirmed_target": "",
             "confirmation_confidence": "failed",
+            "conversation_type": str(title_evidence.get("conversation_type") or "unknown"),
+            "conversation_type_reason": str(title_evidence.get("reason") or "target_title_not_confirmed"),
+            "raw_title": str(title_evidence.get("raw_title") or ""),
+            "conversation_type_evidence": title_evidence,
             "geometry": geometry,
             "screenshot_path": path,
             "error": "The active chat title did not match the requested target.",
@@ -11626,6 +11722,10 @@ def validate_active_send_target(
         "requested_target": target,
         "confirmed_target": target,
         "confirmation_confidence": "active_title_strict",
+        "conversation_type": str(title_evidence.get("conversation_type") or "unknown"),
+        "conversation_type_reason": str(title_evidence.get("reason") or ""),
+        "raw_title": str(title_evidence.get("raw_title") or ""),
+        "conversation_type_evidence": title_evidence,
         "geometry": geometry,
         "screenshot_path": path,
     })
@@ -12329,12 +12429,24 @@ def require_active_ui_action_budget(action: str, *, metadata: dict[str, Any] | N
     return decision
 
 
-def active_chat_matches(ocr_items: list[dict[str, Any]], image_size: tuple[int, int], *, target: str, exact: bool) -> bool:
-    if not target:
-        return False
+def active_chat_title_evidence(
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    target: str,
+    exact: bool,
+) -> dict[str, Any]:
     normalized_target = normalize_session_name(target)
     if not normalized_target:
-        return False
+        return {
+            "matched": False,
+            "conversation_type": "unknown",
+            "reason": "target_empty",
+            "raw_title": "",
+            "title_candidates": [],
+            "short_code_confirmed": False,
+            "admission_allowed": False,
+        }
     width, height = image_size
     split_x = session_split_x(width)
     title_left = active_chat_title_left_x(width)
@@ -12343,6 +12455,7 @@ def active_chat_matches(ocr_items: list[dict[str, Any]], image_size: tuple[int, 
     title_bottom = active_chat_title_bottom_y(height)
     x_tolerance = 24
     y_tolerance = 8
+    title_items: list[dict[str, Any]] = []
     for item in ocr_items:
         text = normalize_ocr_text(item.get("text"))
         if not text:
@@ -12355,16 +12468,93 @@ def active_chat_matches(ocr_items: list[dict[str, Any]], image_size: tuple[int, 
             continue
         if item["top"] < title_top - 16 or item["bottom"] > title_bottom + 18:
             continue
-        candidates = {
+        title_items.append({**item, "text": text})
+
+    raw_candidates = [str(item.get("text") or "") for item in title_items]
+    ordered = sorted(title_items, key=lambda item: (float(item.get("center_y") or 0), float(item.get("left") or 0)))
+    combined_parts: list[str] = []
+    combined_right = -1.0
+    combined_y = -999.0
+    for item in ordered:
+        left = float(item.get("left") or 0)
+        right = float(item.get("right") or 0)
+        center_y = float(item.get("center_y") or 0)
+        text = str(item.get("text") or "")
+        if combined_parts and abs(center_y - combined_y) <= 12 and left >= combined_right - 4 and left - combined_right <= 64:
+            combined_parts.append(text)
+            combined_right = max(combined_right, right)
+            continue
+        if len(combined_parts) > 1:
+            raw_candidates.append("".join(combined_parts))
+        combined_parts = [text]
+        combined_right = right
+        combined_y = center_y
+    if len(combined_parts) > 1:
+        raw_candidates.append("".join(combined_parts))
+
+    unique_candidates: list[str] = []
+    for text in raw_candidates:
+        if text and text not in unique_candidates:
+            unique_candidates.append(text)
+    matched_candidates: list[dict[str, Any]] = []
+    for text in unique_candidates:
+        variants = {
             text,
             strip_chat_unread_suffix(text),
             re.sub(r"^[：:.\s]+", "", text).strip(),
             normalize_chat_title_for_match(text),
         }
-        for candidate in candidates:
+        matched = False
+        for candidate in variants:
             if session_name_matches(candidate, normalized_target, exact=exact):
-                return True
-    return False
+                matched = True
+                break
+        admission = classify_c2_conversation_title(text, normalized_target)
+        if matched or admission.get("short_code_confirmed"):
+            matched_candidates.append({"raw_title": text, "matched": matched, "admission": admission})
+    if not matched_candidates:
+        return {
+            "matched": False,
+            "conversation_type": "unknown",
+            "reason": "target_title_not_confirmed",
+            "raw_title": "",
+            "title_candidates": unique_candidates,
+            "short_code_confirmed": False,
+            "admission_allowed": False,
+        }
+
+    matched_candidates.sort(key=lambda item: len(re.sub(r"\s+", "", str(item.get("raw_title") or ""))), reverse=True)
+    strongest: list[dict[str, Any]] = []
+    for item in matched_candidates:
+        compact = re.sub(r"\s+", "", str(item.get("raw_title") or ""))
+        if any(compact and compact in re.sub(r"\s+", "", str(other.get("raw_title") or "")) for other in strongest):
+            continue
+        strongest.append(item)
+    types = {str((item.get("admission") or {}).get("conversation_type") or "unknown") for item in strongest}
+    selected = strongest[0]
+    result = dict(selected.get("admission") or {})
+    if len(types) > 1:
+        result.update(
+            {
+                "conversation_type": "unknown",
+                "reason": "title_ocr_evidence_conflict",
+                "admission_allowed": False,
+            }
+        )
+    result.update(
+        {
+            "matched": bool(any(bool(item.get("matched")) for item in matched_candidates)),
+            "raw_title": str(selected.get("raw_title") or ""),
+            "title_candidates": unique_candidates,
+            "matched_title_candidates": [str(item.get("raw_title") or "") for item in matched_candidates],
+        }
+    )
+    return result
+
+
+def active_chat_matches(ocr_items: list[dict[str, Any]], image_size: tuple[int, int], *, target: str, exact: bool) -> bool:
+    evidence = active_chat_title_evidence(ocr_items, image_size, target=target, exact=exact)
+    return bool(evidence.get("matched"))
 
 
 def target_switch_passive_confirm_attempts() -> int:
@@ -12678,15 +12868,22 @@ def parse_sessions_from_ocr(
             continue
         candidates.append(item)
 
-    sessions: list[dict[str, Any]] = []
-    last_y = -999.0
     min_session_row_gap = max(34, int(height * 0.048))
-    name_counts: dict[str, int] = {}
+    candidate_rows: list[list[dict[str, Any]]] = []
     for item in sorted(candidates, key=lambda row: float(row["center_y"])):
         center_y = float(item["center_y"])
-        if center_y - last_y < min_session_row_gap:
-            continue
-        name = normalize_session_name(str(item.get("text") or ""))
+        if not candidate_rows or center_y - float(candidate_rows[-1][0]["center_y"]) >= min_session_row_gap:
+            candidate_rows.append([item])
+        else:
+            candidate_rows[-1].append(item)
+
+    sessions: list[dict[str, Any]] = []
+    name_counts: dict[str, int] = {}
+    for row_candidates in candidate_rows:
+        item, remark_codes, c2_admission = select_session_row_title_candidate(row_candidates)
+        center_y = float(item["center_y"])
+        raw_title = normalize_ocr_text(item.get("text"))
+        name = normalize_session_name(raw_title)
         # OCR occasionally glues sidebar timestamps into the session title
         # (e.g. "新数据测试昨天" or "新数据测试昨天19:23"),
         # which breaks session-target matching.
@@ -12697,13 +12894,16 @@ def parse_sessions_from_ocr(
             continue
         duplicate_index = int(name_counts.get(name, 0))
         name_counts[name] = duplicate_index + 1
-        conversation_type = infer_conversation_type(name)
         row_fingerprint = session_row_fingerprint(item, duplicate_index=duplicate_index)
         sessions.append(
             {
                 "name": name,
-                "session_key": rpa_session_key(name, conversation_type=conversation_type, row_fingerprint=row_fingerprint),
-                "conversation_type": conversation_type,
+                "raw_title": raw_title,
+                "session_key": rpa_session_key(name, row_fingerprint=row_fingerprint),
+                "conversation_type": c2_admission.get("conversation_type"),
+                "c2_conversation_type": c2_admission.get("conversation_type"),
+                "c2_conversation_admission": c2_admission,
+                "c2_remark_code_candidates": remark_codes if c2_admission.get("admission_allowed") else [],
                 "row_fingerprint": row_fingerprint,
                 "duplicate_name_index": duplicate_index,
                 "ambiguous_display_name": duplicate_index > 0,
@@ -12716,7 +12916,6 @@ def parse_sessions_from_ocr(
                 "source_adapter": "win32_ocr",
             }
         )
-        last_y = center_y
     enrich_sessions_with_sidebar_signals(
         sessions,
         ocr_items,
@@ -12728,10 +12927,83 @@ def parse_sessions_from_ocr(
     return sessions
 
 
-def rpa_session_key(name: str, *, conversation_type: str = "unknown", row_fingerprint: dict[str, Any] | None = None) -> str:
+def select_session_row_title_candidate(
+    row_candidates: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
+    details: list[dict[str, Any]] = []
+    distinct_codes: list[str] = []
+    for item in row_candidates:
+        raw_title = normalize_ocr_text(item.get("text"))
+        codes = extract_c2_remark_codes(raw_title)
+        for code in codes:
+            if code not in distinct_codes:
+                distinct_codes.append(code)
+        details.append(
+            {
+                "item": item,
+                "raw_title": raw_title,
+                "codes": codes,
+                "enhanced": str(item.get("ocr_source") or "") == "sidebar_visible_list_enhanced",
+                "confidence": float(item.get("confidence") or 0),
+            }
+        )
+
+    if len(distinct_codes) > 1:
+        selected = max(
+            (detail for detail in details if detail["codes"]),
+            key=lambda detail: (
+                not detail["enhanced"],
+                detail["confidence"],
+                len(detail["raw_title"]),
+            ),
+        )
+        return selected["item"], [], {
+            "conversation_type": "unknown",
+            "reason": "multiple_remark_codes_in_visual_row",
+            "raw_title": selected["raw_title"],
+            "remark_code": "",
+            "short_code_confirmed": False,
+            "member_count_suffix": "",
+            "admission_allowed": False,
+            "detected_remark_codes": distinct_codes,
+        }
+
+    if len(distinct_codes) == 1:
+        code = distinct_codes[0]
+        code_details = [detail for detail in details if code in detail["codes"]]
+
+        def code_candidate_priority(detail: dict[str, Any]) -> tuple[int, bool, float, int]:
+            admission = classify_c2_conversation_title(detail["raw_title"], code)
+            conversation_type = str(admission.get("conversation_type") or "unknown")
+            type_priority = {"group": 3, "private": 2, "unknown": 1}.get(conversation_type, 0)
+            return (
+                type_priority,
+                not detail["enhanced"],
+                detail["confidence"],
+                len(detail["raw_title"]),
+            )
+
+        selected = max(code_details, key=code_candidate_priority)
+        admission = classify_c2_conversation_title(selected["raw_title"], code)
+        return selected["item"], [code] if admission.get("admission_allowed") else [], admission
+
+    selected = min(
+        details,
+        key=lambda detail: (
+            float(detail["item"].get("center_y") or 0),
+            detail["enhanced"],
+            -detail["confidence"],
+        ),
+    )
+    return selected["item"], [], classify_c2_conversation_title(selected["raw_title"], "")
+
+
+def rpa_session_key(name: str, *, row_fingerprint: dict[str, Any] | None = None) -> str:
     fingerprint = row_fingerprint if isinstance(row_fingerprint, dict) else {}
     duplicate = str(fingerprint.get("duplicate_discriminator") or "").strip()
-    seed = json.dumps([str(conversation_type or "unknown"), str(name or ""), duplicate], ensure_ascii=False, sort_keys=True)
+    # Keep the historical private-chat namespace so existing C2 keys remain stable.
+    # C2 conversation_type is admission evidence only and must never change identity.
+    seed = json.dumps(["private", str(name or ""), duplicate], ensure_ascii=False, sort_keys=True)
     return "wx:rpa:v1:" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:20]
 
 
@@ -13986,6 +14258,14 @@ def normalize_session_name(text: str) -> str:
 
 def strip_chat_unread_suffix(text: str) -> str:
     return win32_ocr_text.strip_chat_unread_suffix(text)
+
+
+def extract_c2_remark_codes(*values: Any) -> list[str]:
+    return win32_ocr_text.extract_c2_remark_codes(*values)
+
+
+def classify_c2_conversation_title(raw_title: Any, remark_code: Any) -> dict[str, Any]:
+    return win32_ocr_text.classify_c2_conversation_title(raw_title, remark_code)
 
 
 def normalize_chat_title_for_match(text: str) -> str:

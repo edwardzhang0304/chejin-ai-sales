@@ -554,6 +554,27 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertNotIn("ingest:1", api.events)
         self.assertEqual(runner.c2_stats["last_error"], "C2_TARGET_REMARK_CODE_MISSING")
 
+    def test_c2_message_read_skips_target_with_invalid_remark_code(self):
+        api = FakeApi(None)
+        api.read_targets = [
+            WechatReadTarget(
+                conversation_id="conv-1",
+                rpa_session_key="wx:rpa:v1:a",
+                display_name="张三",
+                remark_code="NOT-A-C2-CODE",
+                ocr_confidence=0.98,
+            )
+        ]
+        bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"))
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(worker_id="worker-1", worker_token="token", client_instance_id="client-1", run_status="paused")
+
+        runner._read_bound_wechat_messages(binding)
+
+        self.assertEqual(bridge.locate_chats, [])
+        self.assertEqual(bridge.message_reads, [])
+        self.assertEqual(runner.c2_stats["last_error"], "C2_TARGET_REMARK_CODE_INVALID")
+
     def test_c2_message_read_skips_target_without_conversation_id(self):
         api = FakeApi(None)
         api.read_targets = [
@@ -1755,6 +1776,39 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(bridge.locate_chats[0]["target_mode"], "visible")
         self.assertEqual(bridge.message_reads, [])
         self.assertEqual(runner.c2_stats["last_error"], "C2_VISIBLE_TARGET_AMBIGUOUS")
+
+    def test_c2_state_target_does_not_search_after_conversation_admission_rejection(self):
+        for error_code in ("C2_GROUP_CHAT_NOT_ALLOWED", "C2_CONVERSATION_TYPE_UNKNOWN"):
+            with self.subTest(error_code=error_code):
+                api = FakeApi(None)
+                api.read_targets = [
+                    WechatReadTarget(
+                        conversation_id="conv-group-guard",
+                        rpa_session_key="wx:rpa:v1:group-guard",
+                        display_name="CJTEST01",
+                        remark_code="CJTEST01",
+                        row_fingerprint={"title_text": "CJTEST01"},
+                        ocr_confidence=0.98,
+                        read_reason="waiting_user_reply",
+                    )
+                ]
+                bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"))
+                bridge.locate_payloads = [
+                    {"ok": False, "state": "target_not_confirmed", "error_code": error_code},
+                ]
+                runner, _ = self.make_runner(api, bridge)
+                binding = Binding(
+                    worker_id="worker-1",
+                    worker_token="token",
+                    client_instance_id="client-1",
+                    run_status="paused",
+                )
+
+                runner._read_bound_wechat_messages(binding)
+
+                self.assertEqual([item["target_mode"] for item in bridge.locate_chats], ["visible"])
+                self.assertEqual(bridge.message_reads, [])
+                self.assertEqual(runner.c2_stats["last_error"], error_code)
 
     def test_c2_visible_hit_attempt_skips_state_target_search_in_same_round_even_when_visible_read_fails(self):
         api = FakeApi(None)

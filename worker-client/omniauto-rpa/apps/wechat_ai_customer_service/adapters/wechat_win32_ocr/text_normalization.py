@@ -8,6 +8,11 @@ from typing import Any
 
 LOGIN_WINDOW_MAX_WIDTH = 560
 LOGIN_WINDOW_MAX_HEIGHT = 680
+C2_REMARK_CODE_RE = re.compile(r"(?<![A-Za-z0-9])CJ[-A-Z0-9]{4,24}(?![A-Za-z0-9])", re.IGNORECASE)
+C2_GROUP_MEMBER_SUFFIX_RE = re.compile(r"[\(（]\s*\d{1,4}\s*[\)）]\s*$")
+C2_FUZZY_MEMBER_SUFFIX_RE = re.compile(
+    r"(?:[\(（]\s*[0-9OoIlSs|]{1,4}\s*[\)）]?|[0-9OoIlSs|]{1,4}\s*[\)）])\s*$"
+)
 
 
 def normalize_ocr_text(text: Any) -> str:
@@ -27,6 +32,63 @@ def strip_chat_unread_suffix(text: str) -> str:
     if not clean:
         return ""
     return re.sub(r"\s*[\(（]\s*\d{1,4}\s*[\)）]\s*$", "", clean).strip()
+
+
+def extract_c2_remark_codes(*values: Any) -> list[str]:
+    found: list[str] = []
+    for value in values:
+        for match in C2_REMARK_CODE_RE.findall(str(value or "")):
+            code = match.upper()
+            if code not in found:
+                found.append(code)
+    return found[:10]
+
+
+def classify_c2_conversation_title(raw_title: Any, remark_code: Any) -> dict[str, Any]:
+    raw = normalize_ocr_text(raw_title)
+    code = normalize_ocr_text(remark_code).upper()
+    compact_raw = re.sub(r"[^A-Z0-9]", "", raw.upper())
+    compact_code = re.sub(r"[^A-Z0-9]", "", code)
+    short_code_confirmed = bool(compact_code and compact_code in compact_raw)
+    exact_member_suffix = C2_GROUP_MEMBER_SUFFIX_RE.search(raw)
+
+    if exact_member_suffix:
+        return {
+            "conversation_type": "group",
+            "reason": "member_count_suffix_confirmed",
+            "raw_title": raw,
+            "remark_code": code,
+            "short_code_confirmed": short_code_confirmed,
+            "member_count_suffix": exact_member_suffix.group(0).strip(),
+            "admission_allowed": False,
+        }
+    if not raw:
+        reason = "title_ocr_empty"
+    elif not short_code_confirmed:
+        reason = "remark_code_not_confirmed_in_raw_title"
+    elif "..." in raw or "…" in raw:
+        reason = "title_ocr_incomplete_ellipsis"
+    elif C2_FUZZY_MEMBER_SUFFIX_RE.search(raw):
+        reason = "member_count_suffix_ambiguous"
+    else:
+        return {
+            "conversation_type": "private",
+            "reason": "remark_code_confirmed_without_member_count_suffix",
+            "raw_title": raw,
+            "remark_code": code,
+            "short_code_confirmed": True,
+            "member_count_suffix": "",
+            "admission_allowed": True,
+        }
+    return {
+        "conversation_type": "unknown",
+        "reason": reason,
+        "raw_title": raw,
+        "remark_code": code,
+        "short_code_confirmed": short_code_confirmed,
+        "member_count_suffix": "",
+        "admission_allowed": False,
+    }
 
 
 def normalize_chat_title_for_match(text: str) -> str:
