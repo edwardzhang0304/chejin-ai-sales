@@ -1040,6 +1040,76 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(bridge.voice_transcribes, [])
         self.assertEqual(api.message_payloads[0]["messages"], [])
 
+    def test_c2_unbound_visible_transcript_blocks_later_partial_ingest(self):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-1",
+            rpa_session_key="wx:rpa:v1:a",
+            display_name="CJTEST01 许聪",
+            remark_code="CJTEST01",
+            row_fingerprint={"title_text": "CJTEST01 许聪"},
+            ocr_confidence=0.98,
+        )
+        api.read_targets = [target]
+        bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"))
+        initial_voice = {
+            "ok": True,
+            "messages": [
+                {
+                    "id": "voice-23-before",
+                    "type": "voice",
+                    "sender_role": "customer",
+                    "voice_duration": 23,
+                    "content": '[语音] 23"',
+                    "quality_flags": ["untranscribed_voice_placeholder"],
+                }
+            ],
+        }
+        bridge.get_messages_payloads = [initial_voice]
+        bridge.voice_payload = {
+            "ok": True,
+            "adapter": "mock",
+            "state": "voice_transcribe_no_new_text",
+            "sidecar_run_id": "voice-run-unbound",
+            "attempt_count": 1,
+            "quality_flags": ["no_new_transcribed_text", "voice_transcribe_anchor_failed"],
+            "transcribed_messages": [],
+            "new_messages": [
+                {
+                    "id": "voice-23-expanded",
+                    "type": "voice",
+                    "sender_role": "customer",
+                    "content": "然后，你看那个数字人直播这块儿。",
+                    "quality_flags": ["voice_duration_prefix_removed"],
+                }
+            ],
+        }
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(worker_id="worker-1", worker_token="token", client_instance_id="client-1", run_status="paused")
+
+        runner._read_bound_wechat_messages(binding)
+
+        self.assertEqual(runner.c2_stats["last_error"], "VOICE_TRANSCRIPT_BINDING_INCONSISTENT")
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(bridge.c2_operation_order, ["locate_chat", "messages", "voice_transcribe"])
+        self.assertEqual(len(runner.c2_voice_binding_blocked_authorizations), 1)
+
+        runner.c2_read_failure_cooldowns.clear()
+        bridge.c2_operation_order.clear()
+        bridge.get_messages_payloads = [
+            {
+                "ok": True,
+                "messages": [
+                    {"id": "text-after-failure", "type": "text", "sender_role": "self", "content": "ok"}
+                ],
+            }
+        ]
+        runner._read_bound_wechat_messages(binding)
+
+        self.assertEqual(runner.c2_stats["last_error"], "C2_VOICE_TRANSCRIPT_BINDING_PENDING")
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(bridge.c2_operation_order, ["locate_chat", "messages"])
+
     def test_c2_voice_click_failed_stops_before_current_chat_reconfirm(self):
         api = FakeApi(None)
         api.read_targets = [

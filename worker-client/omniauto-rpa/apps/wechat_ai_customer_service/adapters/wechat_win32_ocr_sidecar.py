@@ -3499,24 +3499,22 @@ def combined_voice_transcript_anchor_match_evidence(
         return evidence
     role = voice_anchor_sender_role(anchor, image_size)
     anchor_left, anchor_top, anchor_right, anchor_bottom = anchor_rect
-    message_left, message_top, message_right, _message_bottom = message_rect
+    message_left, message_top, message_right, message_bottom = message_rect
     row_height = max(1.0, anchor_bottom - anchor_top)
-    max_row_shift = max(84.0, row_height * 4.0)
-    if abs(message_top - anchor_top) > max_row_shift:
-        evidence["reason"] = "clicked_row_too_far"
-        return evidence
+    lane_limit = max(48.0, row_height * 2.0)
     if role == "self":
-        if abs(message_right - anchor_right) > max(48.0, row_height * 2.0):
+        if abs(message_right - anchor_right) > lane_limit:
             evidence["reason"] = "self_lane_mismatch"
             return evidence
-    elif abs(message_left - anchor_left) > max(48.0, row_height * 2.0):
+    elif abs(message_left - anchor_left) > lane_limit:
         evidence["reason"] = "customer_lane_mismatch"
         return evidence
 
-    # Duration OCR is supporting evidence, not identity. It may briefly change
-    # after WeChat expands a transcript. A conflicting duration is accepted only
-    # when role, lane and local row leave exactly one structural candidate.
-    comparable: list[tuple[float, dict[str, Any]]] = []
+    # Expanded text can make a voice record grow far above or below its original
+    # row. Match the structural region and lane instead of comparing pre/post
+    # top coordinates. Exact duration may recover a unique candidate after a
+    # whole-viewport shift; ambiguous same-duration candidates remain blocked.
+    comparable: list[dict[str, Any]] = []
     for candidate in after_messages or [message]:
         if not isinstance(candidate, dict) or not message_is_combined_voice_transcript_record(candidate):
             continue
@@ -3525,32 +3523,81 @@ def combined_voice_transcript_anchor_match_evidence(
         candidate_rect = message_rect_bounds(candidate)
         if not candidate_rect:
             continue
-        candidate_left, candidate_top, candidate_right, _candidate_bottom = candidate_rect
+        candidate_left, candidate_top, candidate_right, candidate_bottom = candidate_rect
         lane_delta = abs(candidate_right - anchor_right) if role == "self" else abs(candidate_left - anchor_left)
-        row_delta = abs(candidate_top - anchor_top)
-        if row_delta <= max_row_shift:
-            comparable.append((row_delta * 4.0 + lane_delta, candidate))
+        if lane_delta > lane_limit:
+            continue
+        vertical_overlap = max(0.0, min(anchor_bottom, candidate_bottom) - max(anchor_top, candidate_top))
+        vertical_gap = 0.0
+        if vertical_overlap <= 0:
+            vertical_gap = min(abs(anchor_top - candidate_bottom), abs(candidate_top - anchor_bottom))
+        local_relation = vertical_overlap > 0 or vertical_gap <= max(16.0, row_height * 0.75)
+        candidate_duration = message_voice_duration_number(candidate)
+        duration_exact = bool(anchor_duration and candidate_duration and anchor_duration == candidate_duration)
+        comparable.append(
+            {
+                "message": candidate,
+                "duration": candidate_duration,
+                "duration_exact": duration_exact,
+                "local_relation": local_relation,
+                "vertical_overlap": vertical_overlap,
+                "vertical_gap": vertical_gap,
+                "lane_delta": lane_delta,
+            }
+        )
     evidence["structural_candidate_count"] = len(comparable)
+    evidence["vertical_overlap"] = max(
+        0.0,
+        min(anchor_bottom, message_bottom) - max(anchor_top, message_top),
+    )
+    if evidence["vertical_overlap"] <= 0:
+        evidence["vertical_gap"] = min(
+            abs(anchor_top - message_bottom),
+            abs(message_top - anchor_bottom),
+        )
+    else:
+        evidence["vertical_gap"] = 0.0
     if not comparable:
         evidence["reason"] = "no_structural_candidate"
         return evidence
-    comparable.sort(key=lambda entry: entry[0])
-    if evidence["duration_conflict"]:
-        accepted = len(comparable) == 1 and comparable[0][1] is message
-        evidence.update(
-            {
-                "accepted": accepted,
-                "strategy": "unique_structure_with_duration_conflict",
-                "reason": "unique_structural_match" if accepted else "ambiguous_duration_conflict",
-            }
+
+    exact_duration_candidates = [candidate for candidate in comparable if candidate["duration_exact"]]
+    local_candidates = [candidate for candidate in comparable if candidate["local_relation"]]
+    local_exact_candidates = [candidate for candidate in exact_duration_candidates if candidate["local_relation"]]
+    if local_exact_candidates:
+        selected_pool = local_exact_candidates
+        strategy = "unique_duration_and_region"
+    elif len(exact_duration_candidates) == 1:
+        selected_pool = exact_duration_candidates
+        strategy = "unique_duration_after_viewport_shift"
+    else:
+        selected_pool = local_candidates
+        strategy = (
+            "unique_structure_with_duration_conflict"
+            if evidence["duration_conflict"]
+            else "unique_structural_region"
         )
-        return evidence
-    accepted = comparable[0][1] is message
+
+    accepted = len(selected_pool) == 1 and (
+        selected_pool[0]["message"] is message
+        or selected_pool[0]["message"] == message
+    )
+    if accepted:
+        reason = "unique_structural_match"
+    elif len(selected_pool) > 1:
+        reason = "ambiguous_duration_conflict" if evidence["duration_conflict"] else "ambiguous_structural_match"
+    elif exact_duration_candidates:
+        reason = "ambiguous_duration_match"
+    else:
+        reason = "no_local_structural_match"
     evidence.update(
         {
             "accepted": accepted,
-            "strategy": "nearest_structure_with_duration_support",
-            "reason": "nearest_structural_match" if accepted else "another_candidate_is_nearer",
+            "strategy": strategy if selected_pool else "rejected",
+            "reason": reason,
+            "exact_duration_candidate_count": len(exact_duration_candidates),
+            "local_candidate_count": len(local_candidates),
+            "selected_candidate_count": len(selected_pool),
         }
     )
     return evidence

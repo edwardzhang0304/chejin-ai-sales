@@ -72,6 +72,20 @@ def _messages_need_voice_transcribe(sidecar_payload: dict[str, Any]) -> bool:
     )
 
 
+def _voice_payload_has_unbound_transcript(sidecar_payload: dict[str, Any]) -> bool:
+    transcribed = sidecar_payload.get("transcribed_messages")
+    if isinstance(transcribed, list) and any(isinstance(item, dict) for item in transcribed):
+        return False
+    new_messages = sidecar_payload.get("new_messages")
+    return isinstance(new_messages, list) and any(
+        isinstance(item, dict)
+        and str(item.get("type") or item.get("message_type") or "").lower() in {"voice", "audio"}
+        and "voice_duration_prefix_removed" in (item.get("quality_flags") or [])
+        and bool(str(item.get("content_clean") or item.get("content") or "").strip())
+        for item in new_messages
+    )
+
+
 class TaskRunner:
     def __init__(
         self,
@@ -130,6 +144,7 @@ class TaskRunner:
         self.c2_last_visible_sessions: list[dict[str, Any]] = []
         self.c2_last_visible_sessions_monotonic = 0.0
         self.c2_recent_visible_hits_by_remark_code: dict[str, dict[str, Any]] = {}
+        self.c2_voice_binding_blocked_authorizations: set[str] = set()
         self.c2_stop_guard_before_voice_seconds = max(0.0, float(CONFIG.c2_stop_guard_before_voice_seconds))
 
     def start(self, binding: Binding) -> None:
@@ -1762,6 +1777,29 @@ class TaskRunner:
                 return {"ok": False, "error_code": code}
             if enforce_read_targets and not self._backend_still_allows_read_target(binding, target):
                 return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS", "target_confirmation": locate_payload, "initial_messages": sidecar_payload}
+            voice_binding_guard_key = (
+                f"{target_cache_key}:{str(target.authorization_revision or 'legacy').strip()}"
+            )
+            if voice_binding_guard_key in self.c2_voice_binding_blocked_authorizations:
+                code = "C2_VOICE_TRANSCRIPT_BINDING_PENDING"
+                self.c2_stats["last_error"] = code
+                append_log(
+                    "WARN",
+                    "c2_messages_ingest_blocked_by_voice_binding",
+                    "此前已出现可见语音正文与稳定锚点绑定矛盾，本授权轮次禁止部分上报。",
+                    error_code=code,
+                    metadata={
+                        "conversation_id": target.conversation_id,
+                        "remark_code": target.remark_code,
+                        "authorization_revision": target.authorization_revision,
+                    },
+                )
+                return {
+                    "ok": False,
+                    "error_code": code,
+                    "target_confirmation": locate_payload,
+                    "initial_messages": sidecar_payload,
+                }
             if _messages_need_voice_transcribe(sidecar_payload):
                 if enforce_read_targets and not self._backend_still_allows_read_target_for_voice(binding, target):
                     return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS", "target_confirmation": locate_payload, "initial_messages": sidecar_payload}
@@ -1822,6 +1860,34 @@ class TaskRunner:
                         "timing": voice_payload.get("timing") if isinstance(voice_payload.get("timing"), dict) else None,
                     },
                 )
+                if _voice_payload_has_unbound_transcript(voice_payload):
+                    code = "VOICE_TRANSCRIPT_BINDING_INCONSISTENT"
+                    self.c2_voice_binding_blocked_authorizations.add(voice_binding_guard_key)
+                    if len(self.c2_voice_binding_blocked_authorizations) > 128:
+                        self.c2_voice_binding_blocked_authorizations = {voice_binding_guard_key}
+                    self.c2_stats["last_error"] = code
+                    append_log(
+                        "WARN",
+                        "c2_voice_transcript_binding_inconsistent",
+                        "OCR 已识别完整语音正文，但 sidecar 未绑定到稳定语音锚点。",
+                        error_code=code,
+                        metadata={
+                            "conversation_id": target.conversation_id,
+                            "remark_code": target.remark_code,
+                            "authorization_revision": target.authorization_revision,
+                            "state": voice_state,
+                            "sidecar_run_id": voice_payload.get("sidecar_run_id"),
+                            "new_message_count": len(voice_payload.get("new_messages") or []),
+                            "transcribed_count": len(voice_payload.get("transcribed_messages") or []),
+                        },
+                    )
+                    return {
+                        "ok": False,
+                        "error_code": code,
+                        "target_confirmation": locate_payload,
+                        "initial_messages": sidecar_payload,
+                        "voice_transcription": voice_payload,
+                    }
                 if voice_state in voice_blocking_states or voice_state not in voice_success_states:
                     code = str(voice_payload.get("error_code") or voice_state or "TARGET_NOT_CONFIRMED_FOR_VOICE_TRANSCRIBE")
                     self.c2_stats["last_error"] = code

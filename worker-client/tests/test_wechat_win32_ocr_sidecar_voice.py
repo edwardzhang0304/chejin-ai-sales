@@ -856,6 +856,52 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             )
         )
 
+    def test_long_combined_voice_expansion_binds_when_original_row_is_covered(self) -> None:
+        anchor = {
+            "source": "parser_voice_message_context_menu_anchor",
+            "click_bounds": [494, 357, 537, 375],
+            "item": {
+                "text": '23"',
+                "voice_duration_text": '23"',
+                "sender_role": "customer",
+                "parser_bubble_rect": [486, 352, 545, 380],
+            },
+        }
+        expanded_voice = {
+            "type": "voice",
+            "sender": "customer",
+            "sender_role": "customer",
+            "content": "然后，你看那个数字人直播这块儿，如果真要聊，有\n"
+            "没有什么案例能展示的？就我们毕竟之前没做过。",
+            "content_raw_ocr": '23"\n然后，你看那个数字人直播这块儿，如果真要聊，有\n'
+            "没有什么案例能展示的？就我们毕竟之前没做过。",
+            "content_clean": "然后，你看那个数字人直播这块儿，如果真要聊，有\n"
+            "没有什么案例能展示的？就我们毕竟之前没做过。",
+            "voice_duration_text": '23"',
+            "bubble_rect": [484, 188, 891, 384],
+            "quality_flags": ["voice_duration_prefix_removed"],
+            "avatar_alignment": {"role": "customer", "customer": {"present": True}},
+        }
+
+        evidence = sidecar.combined_voice_transcript_anchor_match_evidence(
+            dict(expanded_voice),
+            anchor,
+            (981, 860),
+            after_messages=[expanded_voice],
+        )
+
+        self.assertTrue(evidence["accepted"])
+        self.assertEqual(evidence["strategy"], "unique_duration_and_region")
+        self.assertEqual(evidence["vertical_overlap"], 28.0)
+        self.assertTrue(
+            sidecar.message_is_plausible_voice_transcript_for_anchor(
+                expanded_voice,
+                anchor,
+                (981, 860),
+                after_messages=[expanded_voice],
+            )
+        )
+
     def test_duration_ocr_conflict_binds_only_unique_structural_voice(self) -> None:
         anchor = {
             "source": "parser_voice_message_context_menu_anchor",
