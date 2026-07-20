@@ -109,6 +109,96 @@ def test_target_switch_hard_stop_matches_sidecar_contract() -> None:
         assert_true(extracted == facade, f"hard-stop mismatch: {validation}: {extracted} vs {facade}")
 
 
+def title_item(text: str, left: float, right: float) -> dict[str, float | str]:
+    return {
+        "text": text,
+        "left": left,
+        "right": right,
+        "top": 76.0,
+        "bottom": 102.0,
+        "center_x": (left + right) / 2.0,
+        "center_y": 89.0,
+    }
+
+
+def test_active_title_reuses_raw_ocr_for_private_group_admission() -> None:
+    private = sidecar.active_chat_title_evidence(
+        [title_item("张三-CJ123", 402, 556)],
+        (981, 860),
+        target="CJ123",
+        exact=False,
+    )
+    group = sidecar.active_chat_title_evidence(
+        [title_item("销售讨论-CJ123", 402, 592), title_item("（5）", 598, 642)],
+        (981, 860),
+        target="CJ123",
+        exact=False,
+    )
+
+    assert_true(private["matched"] and private["conversation_type"] == "private", f"private title rejected: {private}")
+    assert_true(private["admission_allowed"], f"private title not admitted: {private}")
+    assert_true(group["matched"] and group["conversation_type"] == "group", f"split group suffix missed: {group}")
+    assert_true(not group["admission_allowed"], f"group title admitted: {group}")
+
+
+def test_private_and_group_same_code_only_private_is_unique_candidate() -> None:
+    private = {"name": "张三-CJ123", "raw_title": "张三-CJ123", "session_key": "private"}
+    group = {"name": "销售讨论-CJ123(5)", "raw_title": "销售讨论-CJ123(5)", "session_key": "group"}
+
+    selected, evidence = sidecar.find_unique_session_candidate_by_semantics(
+        [group, private],
+        target="张三-CJ123",
+        semantic_target="CJ123",
+    )
+
+    assert_true(selected is private, f"private candidate was not selected: {selected}, {evidence}")
+    assert_true(not evidence.get("ambiguous"), f"group should not create a short-code conflict: {evidence}")
+    excluded = evidence["attempts"][0]["excluded_by_c2_admission"]
+    assert_true(excluded and excluded[0]["conversation_type"] == "group", f"group exclusion evidence missing: {evidence}")
+
+
+def test_two_private_sessions_with_same_code_are_ambiguous() -> None:
+    sessions = [
+        {"name": "张三-CJ123", "raw_title": "张三-CJ123", "session_key": "private-a"},
+        {"name": "李四-CJ123", "raw_title": "李四-CJ123", "session_key": "private-b"},
+    ]
+    selected, evidence = sidecar.find_unique_session_candidate_by_semantics(
+        sessions,
+        target="CJ123",
+        semantic_target="CJ123",
+    )
+    assert_true(selected is None and evidence.get("ambiguous"), f"two private candidates must conflict: {evidence}")
+
+
+def test_c2_activation_requires_strict_private_title_evidence() -> None:
+    base = {
+        "ok": True,
+        "confirmation_confidence": "active_title_strict",
+        "conversation_type_evidence": {"short_code_confirmed": True},
+    }
+    assert_true(sidecar.c2_target_activation_confirmed({**base, "conversation_type": "private"}), "private title should pass")
+    assert_true(not sidecar.c2_target_activation_confirmed({**base, "conversation_type": "group"}), "group title must fail")
+    assert_true(not sidecar.c2_target_activation_confirmed({**base, "conversation_type": "unknown"}), "unknown title must fail")
+
+
+def test_c2_locate_rejects_missing_short_code_before_ui() -> None:
+    result = sidecar.locate_chat_target_for_c2(
+        1,
+        target="张三",
+        session_key="wx:rpa:v1:any",
+        remark_code="",
+        target_mode="visible",
+        exact=False,
+        artifact_dir=None,
+        sidecar_run_id="missing-code",
+        failure_state="target_not_confirmed",
+        failure_error_code="TARGET_NOT_CONFIRMED",
+    )
+    assert_true(not result["ok"], f"missing short code should fail: {result}")
+    assert_true(result["error_code"] == "C2_TARGET_REMARK_CODE_MISSING", f"wrong missing-code error: {result}")
+    assert_true(not result["opened"], f"missing short code must not click a conversation: {result}")
+
+
 def main() -> int:
     tests = [
         test_session_targeting_module_exports_expected_helpers,
@@ -117,6 +207,11 @@ def main() -> int:
         test_short_title_session_points_stay_out_of_preview_zone,
         test_choose_session_row_click_point_matches_sidecar_with_seed,
         test_target_switch_hard_stop_matches_sidecar_contract,
+        test_active_title_reuses_raw_ocr_for_private_group_admission,
+        test_private_and_group_same_code_only_private_is_unique_candidate,
+        test_two_private_sessions_with_same_code_are_ambiguous,
+        test_c2_activation_requires_strict_private_title_evidence,
+        test_c2_locate_rejects_missing_short_code_before_ui,
     ]
     passed = 0
     for test in tests:

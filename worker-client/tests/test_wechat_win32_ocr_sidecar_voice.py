@@ -1949,7 +1949,17 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             "bottom": 634,
         }
         with (
-            patch.object(sidecar, "validate_active_send_target", return_value={"ok": True, "online": True}) as validate,
+            patch.object(
+                sidecar,
+                "validate_active_send_target",
+                return_value={
+                    "ok": True,
+                    "online": True,
+                    "confirmation_confidence": "active_title_strict",
+                    "conversation_type": "private",
+                    "conversation_type_evidence": {"short_code_confirmed": True},
+                },
+            ) as validate,
             patch.object(sidecar, "consume_recent_target_switch_validation", return_value=None),
             patch.object(sidecar, "activate_session_candidate") as activate_candidate,
             patch.object(sidecar, "open_chat", return_value=True) as open_chat,
@@ -1997,6 +2007,8 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             "reason": "target_confirmed",
             "active_title_match": True,
             "confirmation_confidence": "active_title_strict",
+            "conversation_type": "private",
+            "conversation_type_evidence": {"short_code_confirmed": True},
             "geometry": {"left": 10, "top": 20, "width": 965, "height": 852},
         }
         previous_state = dict(sidecar._LAST_RPA_ACTION_STATE)

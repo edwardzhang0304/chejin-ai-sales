@@ -50,6 +50,40 @@ class WechatC2Test(unittest.TestCase):
         self.assertEqual(payload["sessions"][0]["last_message_preview"], "CJR8S5K3虾丸子大人：蛹者")
         self.assertEqual(payload["sessions"][0]["remark_code_candidates"], [])
 
+    def test_scan_payload_excludes_group_from_same_short_code_conflict(self):
+        payload = build_scan_result_payload(
+            {
+                "ok": True,
+                "sessions": [
+                    {"name": "张三-CJR8S5K3", "raw_title": "张三-CJR8S5K3", "session_key": "private"},
+                    {
+                        "name": "销售讨论-CJR8S5K3(5)",
+                        "raw_title": "销售讨论-CJR8S5K3(5)",
+                        "session_key": "group",
+                    },
+                ],
+            }
+        )
+
+        self.assertEqual(payload["sessions"][0]["remark_code_candidates"], ["CJR8S5K3"])
+        self.assertEqual(payload["sessions"][1]["remark_code_candidates"], [])
+        self.assertEqual(payload["evidence"]["c2_conversation_admission"]["group_excluded_count"], 1)
+
+    def test_scan_payload_rejects_incomplete_or_fuzzy_title(self):
+        payload = build_scan_result_payload(
+            {
+                "ok": True,
+                "sessions": [
+                    {"name": "张三-CJR8S5K3…", "raw_title": "张三-CJR8S5K3…", "session_key": "ellipsis"},
+                    {"name": "李四-CJR8S5K3(5", "raw_title": "李四-CJR8S5K3(5", "session_key": "fuzzy"},
+                ],
+            }
+        )
+
+        self.assertEqual(payload["sessions"][0]["remark_code_candidates"], [])
+        self.assertEqual(payload["sessions"][1]["remark_code_candidates"], [])
+        self.assertEqual(payload["evidence"]["c2_conversation_admission"]["unknown_excluded_count"], 2)
+
     def test_ocr_message_payload_uses_structural_dedupe_key(self):
         target = WechatReadTarget(conversation_id="conv-1", rpa_session_key="wx:rpa:v1:a", display_name="王先生", remark_code="CJ8K2P")
         sidecar = {
@@ -1057,8 +1091,207 @@ class WechatC2Test(unittest.TestCase):
         first_item = next(item for item in first["messages"] if item["content"] == "哦")
         shifted_item = next(item for item in shifted["messages"] if item["content"] == "哦")
         self.assertEqual(first_item["dedupe_key"], shifted_item["dedupe_key"])
+        self.assertNotEqual(
+            first_item["message_position"].get("visual_top"),
+            shifted_item["message_position"].get("visual_top"),
+        )
         self.assertEqual(first_item["raw_payload"]["dedupe_basis"]["occurrence_index"], 0)
         self.assertEqual(shifted_item["raw_payload"]["dedupe_basis"]["occurrence_index"], 0)
+
+    def test_v3_mixed_text_and_bottom_up_voice_results_are_emitted_top_to_bottom(self):
+        target = WechatReadTarget(
+            conversation_id="conv-1",
+            rpa_session_key="wx:rpa:v1:a",
+            display_name="CJR8S5K3 虾丸子大人",
+            remark_code="CJR8S5K3",
+            authorization_revision="rev-1",
+        )
+
+        def observation(
+            observation_id: str,
+            *,
+            top: int,
+            role: str,
+            row_kind: str,
+            content: str,
+            duration: int | None = None,
+        ) -> dict:
+            msg_type = "voice" if row_kind == "voice_transcript" else "text"
+            return {
+                "schema_version": 3,
+                "observation_id": observation_id,
+                "row_kind": row_kind,
+                "sender_role": role,
+                "sender_role_source": "parent_voice" if msg_type == "voice" else "same_row_avatar",
+                "message_type": msg_type,
+                "voice_state": "transcribed" if msg_type == "voice" else "not_voice",
+                "content_clean": content,
+                "bubble_rect": [420, top, 760, top + 44],
+                "voice_duration": duration,
+                "source_message": {
+                    "id": observation_id,
+                    "source_adapter": "win32_ocr",
+                    "type": msg_type,
+                    "sender_role": role,
+                    "content": content,
+                    "bubble_rect": [420, top, 760, top + 44],
+                    "voice_duration": duration,
+                },
+            }
+
+        payload = build_message_ingest_payload(
+            target,
+            {
+                "ok": True,
+                "observation_schema_version": 3,
+                "authoritative_frame_source": "final_read",
+                "observations": [
+                    observation("text-1", top=120, role="customer", row_kind="text_bubble", content="第一条文字"),
+                    observation("voice-top", top=220, role="customer", row_kind="voice_transcript", content="上面的语音", duration=3),
+                    observation("text-2", top=340, role="self", row_kind="text_bubble", content="中间文字"),
+                    observation("voice-bottom", top=460, role="self", row_kind="voice_transcript", content="下面的语音", duration=4),
+                    observation("text-3", top=580, role="customer", row_kind="text_bubble", content="最后文字"),
+                ],
+                "voice_transcription": {
+                    "state": "voice_transcribe_completed",
+                    "quality_flags": [],
+                    # Physical operation order is deliberately bottom-to-top.
+                    "transcribed_messages": [
+                        {
+                            "id": "physical-bottom-first",
+                            "type": "voice",
+                            "sender_role": "self",
+                            "content": "下面的语音",
+                            "voice_duration": 4,
+                            "bubble_rect": [620, 420, 890, 464],
+                            "voice_anchor_stable_key": "voice:self:4:bottom",
+                        },
+                        {
+                            "id": "physical-top-second",
+                            "type": "voice",
+                            "sender_role": "customer",
+                            "content": "上面的语音",
+                            "voice_duration": 3,
+                            "bubble_rect": [420, 220, 700, 264],
+                            "voice_anchor_stable_key": "voice:customer:3:top",
+                        },
+                    ],
+                },
+            },
+        )
+
+        self.assertEqual(
+            [item["content"] for item in payload["messages"]],
+            ["第一条文字", "上面的语音", "中间文字", "下面的语音", "最后文字"],
+        )
+        self.assertEqual(
+            [item["message_position"]["screen_order"] for item in payload["messages"]],
+            [1, 2, 3, 4, 5],
+        )
+        self.assertTrue(all(item["message_position"]["frame_source"] == "final_read" for item in payload["messages"]))
+        self.assertEqual(payload["messages"][1]["raw_payload"]["voice_anchor_stable_key"], "voice:customer:3:top")
+        self.assertEqual(payload["messages"][3]["raw_payload"]["voice_anchor_stable_key"], "voice:self:4:bottom")
+
+    def test_v3_missing_geometry_keeps_authoritative_observation_order(self):
+        target = WechatReadTarget(
+            conversation_id="conv-1",
+            rpa_session_key="wx:rpa:v1:a",
+            display_name="CJR8S5K3 虾丸子大人",
+            remark_code="CJR8S5K3",
+            authorization_revision="rev-1",
+        )
+        payload = build_message_ingest_payload(
+            target,
+            {
+                "ok": True,
+                "observation_schema_version": 3,
+                "observations": [
+                    {
+                        "schema_version": 3,
+                        "observation_id": "first",
+                        "row_kind": "text_bubble",
+                        "sender_role": "customer",
+                        "sender_role_source": "same_row_avatar",
+                        "message_type": "text",
+                        "voice_state": "not_voice",
+                        "content_clean": "没有坐标",
+                        "source_message": {"id": "first", "source_adapter": "win32_ocr"},
+                    },
+                    {
+                        "schema_version": 3,
+                        "observation_id": "second",
+                        "row_kind": "text_bubble",
+                        "sender_role": "self",
+                        "sender_role_source": "same_row_avatar",
+                        "message_type": "text",
+                        "voice_state": "not_voice",
+                        "content_clean": "有坐标",
+                        "bubble_rect": [700, 100, 850, 140],
+                        "source_message": {"id": "second", "source_adapter": "win32_ocr"},
+                    },
+                ],
+            },
+        )
+
+        self.assertEqual([item["content"] for item in payload["messages"]], ["没有坐标", "有坐标"])
+        self.assertEqual(payload["messages"][0]["message_position"]["order_source"], "observation_index_fallback")
+
+    def test_v3_image_slot_is_not_ingested_but_preserves_surrounding_order(self):
+        target = WechatReadTarget(
+            conversation_id="conv-1",
+            rpa_session_key="wx:rpa:v1:a",
+            display_name="CJR8S5K3 虾丸子大人",
+            remark_code="CJR8S5K3",
+            authorization_revision="rev-1",
+        )
+        payload = build_message_ingest_payload(
+            target,
+            {
+                "ok": True,
+                "observation_schema_version": 3,
+                "observations": [
+                    {
+                        "schema_version": 3,
+                        "observation_id": "text-before",
+                        "row_kind": "text_bubble",
+                        "sender_role": "customer",
+                        "sender_role_source": "same_row_avatar",
+                        "message_type": "text",
+                        "voice_state": "not_voice",
+                        "content_clean": "图片前",
+                        "bubble_rect": [420, 100, 600, 140],
+                        "source_message": {"id": "text-before", "source_adapter": "win32_ocr"},
+                    },
+                    {
+                        "schema_version": 3,
+                        "observation_id": "image",
+                        "row_kind": "image_bubble",
+                        "sender_role": "customer",
+                        "sender_role_source": "same_row_avatar",
+                        "message_type": "image",
+                        "voice_state": "not_voice",
+                        "content_clean": "",
+                        "bubble_rect": [420, 180, 650, 320],
+                        "source_message": {"id": "image", "type": "image"},
+                    },
+                    {
+                        "schema_version": 3,
+                        "observation_id": "text-after",
+                        "row_kind": "text_bubble",
+                        "sender_role": "self",
+                        "sender_role_source": "same_row_avatar",
+                        "message_type": "text",
+                        "voice_state": "not_voice",
+                        "content_clean": "图片后",
+                        "bubble_rect": [700, 360, 860, 400],
+                        "source_message": {"id": "text-after", "source_adapter": "win32_ocr"},
+                    },
+                ],
+            },
+        )
+
+        self.assertEqual([item["message_type"] for item in payload["messages"]], ["text", "text"])
+        self.assertEqual([item["message_position"]["screen_order"] for item in payload["messages"]], [1, 3])
 
     def test_v3_skips_non_ingestible_call_event_observation(self):
         target = WechatReadTarget(

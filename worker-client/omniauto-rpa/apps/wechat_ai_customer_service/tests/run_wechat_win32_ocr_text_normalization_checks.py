@@ -43,6 +43,8 @@ def test_text_module_exports_expected_helpers() -> None:
         "normalize_ocr_text",
         "normalize_session_name",
         "strip_chat_unread_suffix",
+        "extract_c2_remark_codes",
+        "classify_c2_conversation_title",
         "normalize_chat_title_for_match",
         "canonical_session_name",
         "is_file_transfer_session_alias",
@@ -136,6 +138,32 @@ def test_quick_login_like_matches_sidecar() -> None:
         )
 
 
+def test_c2_conversation_title_admission_contract() -> None:
+    cases = [
+        ("张三-CJ123", "CJ123", "private", True),
+        ("群英客户-CJ123", "CJ123", "private", True),
+        ("销售讨论-CJ123(5)", "CJ123", "group", False),
+        ("销售讨论-CJ123（ 25 ）", "CJ123", "group", False),
+        ("张三-CJ123(5", "CJ123", "unknown", False),
+        ("张三-CJ123…", "CJ123", "unknown", False),
+        ("张三-CJ12", "CJ123", "unknown", False),
+    ]
+    for raw_title, remark_code, expected_type, expected_allowed in cases:
+        extracted = text_normalization.classify_c2_conversation_title(raw_title, remark_code)
+        facade = sidecar.classify_c2_conversation_title(raw_title, remark_code)
+        assert_true(extracted == facade, f"C2 title facade mismatch: {(raw_title, remark_code)}")
+        assert_true(extracted["conversation_type"] == expected_type, f"C2 title type mismatch: {extracted}")
+        assert_true(extracted["admission_allowed"] is expected_allowed, f"C2 title admission mismatch: {extracted}")
+
+
+def test_c2_remark_code_extraction_contract() -> None:
+    assert_true(
+        text_normalization.extract_c2_remark_codes("张三-CJR8S5K3", "CJR8S5K3") == ["CJR8S5K3"],
+        "C2 remark code extraction should be stable and deduplicated",
+    )
+    assert_true(text_normalization.extract_c2_remark_codes("张三") == [], "non-code title must stay empty")
+
+
 def main() -> int:
     tests = [
         test_text_module_exports_expected_helpers,
@@ -143,6 +171,8 @@ def main() -> int:
         test_file_transfer_aliases_match_sidecar,
         test_session_name_matching_matches_sidecar,
         test_quick_login_like_matches_sidecar,
+        test_c2_conversation_title_admission_contract,
+        test_c2_remark_code_extraction_contract,
     ]
     passed = 0
     for test in tests:

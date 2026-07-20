@@ -25,6 +25,14 @@ class WechatSessionScanResultRequest(BaseModel):
     error_code: str | None = Field(default=None, max_length=64)
 
 
+class WechatMessagePosition(BaseModel):
+    screen_order: int = Field(ge=1)
+    visual_top: int | None = Field(default=None, ge=0)
+    visual_bottom: int | None = Field(default=None, ge=0)
+    frame_source: str = Field(min_length=1, max_length=32)
+    order_source: str | None = Field(default=None, max_length=64)
+
+
 class WechatMessageItem(BaseModel):
     dedupe_key: str | None = Field(default=None, max_length=255)
     source_message_key: str | None = Field(default=None, max_length=255)
@@ -36,6 +44,7 @@ class WechatMessageItem(BaseModel):
     ocr_confidence: float | None = None
     item_state: str | None = Field(default=None, max_length=32)
     flow_state: str | None = Field(default=None, max_length=32)
+    message_position: WechatMessagePosition | None = None
     raw_payload: dict | None = None
 
 

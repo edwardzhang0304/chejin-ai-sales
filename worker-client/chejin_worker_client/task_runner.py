@@ -15,7 +15,7 @@ from .models import Binding, ReplySendClaim, RpaResult, RpaStep, Task, WechatRea
 from .rpa_bridge import RpaBridge
 from .storage import append_log, clear_c2_state, save_binding, save_c2_state
 from .ui_lock import UiLockError, UiLockLease, acquire_ui_lock, force_recover_stale_lock, lock_summary
-from .wechat_c2 import build_message_ingest_payload, build_scan_result_payload
+from .wechat_c2 import build_message_ingest_payload, build_scan_result_payload, extract_remark_codes
 
 
 ENV_STOP_ERRORS = {
@@ -32,6 +32,12 @@ ENV_STOP_ERRORS = {
 }
 
 C2_RECENT_VISIBLE_CACHE_TTL_SECONDS = 90.0
+
+C2_LOCATE_TERMINAL_ERROR_CODES = {
+    "C2_VISIBLE_TARGET_AMBIGUOUS",
+    "C2_GROUP_CHAT_NOT_ALLOWED",
+    "C2_CONVERSATION_TYPE_UNKNOWN",
+}
 
 
 def _messages_need_voice_transcribe(sidecar_payload: dict[str, Any]) -> bool:
@@ -1481,6 +1487,8 @@ class TaskRunner:
             return "C2_TARGET_CONVERSATION_ID_MISSING"
         if not target.remark_code:
             return "C2_TARGET_REMARK_CODE_MISSING"
+        if str(target.remark_code).strip().upper() not in extract_remark_codes(target.remark_code):
+            return "C2_TARGET_REMARK_CODE_INVALID"
         if not target.rpa_session_key and not target.display_name:
             return "C2_TARGET_LOCATOR_MISSING"
         if target.ocr_confidence is not None and target.ocr_confidence < CONFIG.c2_message_min_ocr_confidence:
@@ -1675,7 +1683,7 @@ class TaskRunner:
                 )
                 if locate_payload.get("ok"):
                     break
-                if str(locate_payload.get("error_code") or "") == "C2_VISIBLE_TARGET_AMBIGUOUS":
+                if str(locate_payload.get("error_code") or "") in C2_LOCATE_TERMINAL_ERROR_CODES:
                     break
             locate_payload["visible_scan"] = real_time_visible_metadata
             append_log(
@@ -1729,6 +1737,7 @@ class TaskRunner:
                 sidecar_run_id=sidecar_payload.get("sidecar_run_id"),
             )
             sidecar_payload["target_confirmation"] = locate_payload
+            sidecar_payload["authoritative_frame_source"] = "initial_read"
             if not sidecar_payload.get("ok"):
                 code = str(sidecar_payload.get("error_code") or sidecar_payload.get("state") or "MESSAGE_READ_FAILED")
                 self.c2_stats["last_error"] = code
@@ -1874,6 +1883,7 @@ class TaskRunner:
                 transcribed_payload["target_reconfirmation"] = target_reconfirmation
                 transcribed_payload["voice_transcription"] = voice_payload
                 transcribed_payload["initial_messages"] = sidecar_payload
+                transcribed_payload["authoritative_frame_source"] = "final_read"
                 sidecar_payload = transcribed_payload
             phase_started_at = time.perf_counter()
             try:
