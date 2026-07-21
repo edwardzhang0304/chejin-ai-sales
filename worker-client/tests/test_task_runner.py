@@ -10,6 +10,7 @@ os.environ.setdefault("CHEJIN_WORKER_HOME", tempfile.mkdtemp(prefix="chejin-work
 os.environ.setdefault("CHEJIN_RPA_MODE", "mock")
 
 from chejin_worker_client.api import ApiError
+from chejin_worker_client.c2_contract import contract_revision, contract_sha256
 from chejin_worker_client.models import Binding, RpaResult, RpaStep, Task, WechatReadTarget, WorkerProfile
 from chejin_worker_client.task_runner import C2_RECENT_VISIBLE_CACHE_TTL_SECONDS, TaskRunner
 from chejin_worker_client.ui_lock import LOCK_FILE
@@ -60,7 +61,11 @@ class FakeApi:
             conversation_id="conv-1",
             rpa_session_key="wx:rpa:v1:a",
             expire_at=None,
-            raw={"remark_code": "CJTEST01", "display_name": "CJTEST01 许聪"},
+            raw={
+                "remark_code": "CJTEST01",
+                "display_name": "CJTEST01 许聪",
+                "authorization_revision": "revision-conv-1",
+            },
         )
 
     def sent_ack(self, binding: Binding, claim, **kwargs):
@@ -123,8 +128,17 @@ class FakeApi:
         messages = payload.get("messages") or []
         return {
             "ingested_count": len(messages) if self.message_ingest_result == "ingested" else 0,
+            "ignored_count": len(messages) if self.message_ingest_result == "ignored" else 0,
             "results": [
-                {"dedupe_key": item.get("dedupe_key"), "ingest_result": self.message_ingest_result}
+                {
+                    "dedupe_key": item.get("dedupe_key"),
+                    "ingest_result": self.message_ingest_result,
+                    **(
+                        {"error_code": "MESSAGE_ROW_ROLE_SOURCE_UNTRUSTED"}
+                        if self.message_ingest_result == "ignored"
+                        else {}
+                    ),
+                }
                 for item in messages
                 if isinstance(item, dict)
             ],
@@ -132,7 +146,7 @@ class FakeApi:
 
 
 class FakeBridge:
-    def __init__(self, result: RpaResult, send_payload: dict | None = None, message_sender_role: str = "unknown") -> None:
+    def __init__(self, result: RpaResult, send_payload: dict | None = None, message_sender_role: str = "customer") -> None:
         self.result = result
         self.message_sender_role = message_sender_role
         self.tasks: list[Task] = []
@@ -148,6 +162,10 @@ class FakeBridge:
         self.send_payload = send_payload or {"ok": True, "adapter": "mock", "state": "send_mock", "sidecar_run_id": "send-run-1", "send_result": {"ok": True}}
         self.voice_payload: dict = {
             "ok": False,
+            "contract_version": 3,
+            "contract_revision": contract_revision(),
+            "contract_sha256": contract_sha256(),
+            "observation_schema_version": 3,
             "adapter": "mock",
             "state": "voice_transcribe_no_visible_voice",
             "sidecar_run_id": "voice-run-1",
@@ -199,8 +217,8 @@ class FakeBridge:
             payload.setdefault("adapter", "mock")
             payload.setdefault("state", "messages_mock")
             payload.setdefault("sidecar_run_id", f"message-run-{len(self.message_reads)}")
-            return payload
-        return {
+            return self._contractual_message_payload(payload)
+        return self._contractual_message_payload({
             "ok": True,
             "adapter": "mock",
             "state": "messages_mock",
@@ -208,7 +226,65 @@ class FakeBridge:
             "messages": [
                 {"id": "wx-msg-1", "sender_role": self.message_sender_role, "type": "text", "content": "你好", "ocr_confidence": 0.98}
             ],
-        }
+        })
+
+    def _contractual_message_payload(self, payload: dict) -> dict:
+        payload.setdefault("contract_version", 3)
+        payload.setdefault("contract_revision", contract_revision())
+        payload.setdefault("contract_sha256", contract_sha256())
+        payload.setdefault("observation_schema_version", 3)
+        payload.setdefault(
+            "authoritative_frame_source",
+            "final_read" if len(self.message_reads) > 1 else "initial_read",
+        )
+        if "observations" in payload:
+            return payload
+
+        observations: list[dict] = []
+        for index, message in enumerate(payload.get("messages") or []):
+            if not isinstance(message, dict):
+                continue
+            message_type = str(message.get("type") or "text").lower()
+            role = str(message.get("sender_role") or "unknown").lower()
+            content = str(message.get("content") or "").strip()
+            is_voice_placeholder = message_type in {"voice", "audio"} and (
+                "[语音]" in content or not content or '"' in content
+            )
+            if message_type in {"voice", "audio"}:
+                row_kind = "voice_bubble" if is_voice_placeholder else "voice_transcript"
+                role_source = "same_row_avatar" if is_voice_placeholder else "parent_voice"
+                voice_state = "untranscribed" if is_voice_placeholder else "transcribed"
+                canonical_type = "voice"
+            elif message_type == "system":
+                row_kind = "system_message"
+                role = "system"
+                role_source = "system"
+                voice_state = "not_voice"
+                canonical_type = "system"
+            else:
+                row_kind = "text_bubble"
+                role_source = "same_row_avatar" if role in {"customer", "self"} else "unknown"
+                voice_state = "not_voice"
+                canonical_type = "text"
+            anchor = str(message.get("voice_anchor_stable_key") or message.get("id") or f"voice-{index}")
+            observation = {
+                "schema_version": 3,
+                "observation_id": str(message.get("id") or f"message-{index}"),
+                "row_kind": row_kind,
+                "sender_role": role,
+                "sender_role_source": role_source,
+                "message_type": canonical_type,
+                "voice_state": voice_state,
+                "source_message": dict(message),
+            }
+            if content and not is_voice_placeholder:
+                observation["content_clean"] = content
+            if row_kind == "voice_transcript":
+                observation["parent_voice_anchor_key"] = anchor
+                observation["source_message"]["voice_anchor_stable_key"] = anchor
+            observations.append(observation)
+        payload["observations"] = observations
+        return payload
 
     def locate_chat(self, *, display_name: str, rpa_session_key: str, **kwargs):
         self.c2_operation_order.append("locate_chat")
@@ -233,7 +309,12 @@ class FakeBridge:
     def voice_transcribe(self, *, display_name: str, rpa_session_key: str, **kwargs):
         self.c2_operation_order.append("voice_transcribe")
         self.voice_transcribes.append({"display_name": display_name, "rpa_session_key": rpa_session_key, **kwargs})
-        return dict(self.voice_payload)
+        payload = dict(self.voice_payload)
+        payload.setdefault("contract_version", 3)
+        payload.setdefault("contract_revision", contract_revision())
+        payload.setdefault("contract_sha256", contract_sha256())
+        payload.setdefault("observation_schema_version", 3)
+        return payload
 
 
 class TaskRunnerTest(unittest.TestCase):
@@ -690,7 +771,7 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(bridge.voice_transcribes, [])
         self.assertIsNone(api.message_payloads[0]["evidence"]["voice_transcription"])
 
-    def test_c2_message_read_uses_visual_voice_hint_when_ocr_misses_duration(self):
+    def test_c2_message_read_does_not_bypass_v3_observations_with_legacy_visual_hint(self):
         api = FakeApi(None)
         api.read_targets = [
             WechatReadTarget(
@@ -720,8 +801,8 @@ class TaskRunnerTest(unittest.TestCase):
 
         runner._read_bound_wechat_messages(binding)
 
-        self.assertEqual(len(bridge.voice_transcribes), 1)
-        self.assertIn("voice_transcribe", bridge.c2_operation_order)
+        self.assertEqual(bridge.voice_transcribes, [])
+        self.assertNotIn("voice_transcribe", bridge.c2_operation_order)
 
     def test_c2_message_read_rejects_visual_voice_hint_without_avatar_role(self):
         api = FakeApi(None)
@@ -925,6 +1006,47 @@ class TaskRunnerTest(unittest.TestCase):
             ],
         )
 
+    def test_c2_blocks_voice_result_with_different_contract_fingerprint(self):
+        api = FakeApi(None)
+        api.read_targets = [
+            WechatReadTarget(
+                conversation_id="conv-1",
+                rpa_session_key="wx:rpa:v1:a",
+                display_name="CJTEST01 许聪",
+                remark_code="CJTEST01",
+                row_fingerprint={"title_text": "CJTEST01 许聪"},
+                ocr_confidence=0.98,
+            )
+        ]
+        bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"))
+        bridge.get_messages_payloads = [
+            {
+                "ok": True,
+                "messages": [
+                    {
+                        "id": "wx-msg-voice-raw",
+                        "type": "voice",
+                        "sender_role": "customer",
+                        "content": '[语音] 2"',
+                    }
+                ],
+            }
+        ]
+        bridge.voice_payload = {
+            "ok": True,
+            "contract_sha256": "0" * 64,
+            "state": "voice_transcribe_completed",
+            "transcribed_messages": [{"content": "你好", "sender_role": "customer"}],
+        }
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(worker_id="worker-1", worker_token="token", client_instance_id="client-1", run_status="paused")
+
+        runner._read_bound_wechat_messages(binding)
+
+        self.assertEqual(bridge.c2_operation_order, ["locate_chat", "messages", "voice_transcribe"])
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(runner.c2_stats["last_error"], "C2_CONTRACT_SHA256_MISMATCH")
+
     def test_c2_partial_voice_transcription_ingests_confirmed_message(self):
         api = FakeApi(None)
         api.read_targets = [
@@ -1038,7 +1160,8 @@ class TaskRunnerTest(unittest.TestCase):
 
         self.assertEqual(bridge.c2_operation_order, ["locate_chat", "messages"])
         self.assertEqual(bridge.voice_transcribes, [])
-        self.assertEqual(api.message_payloads[0]["messages"], [])
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(runner.c2_stats["last_error"], "MESSAGE_ROW_SENDER_ROLE_INVALID")
 
     def test_c2_unbound_visible_transcript_blocks_later_partial_ingest(self):
         api = FakeApi(None)
@@ -1268,6 +1391,7 @@ class TaskRunnerTest(unittest.TestCase):
             row_fingerprint={"title_text": "CJTEST01 许聪"},
             ocr_confidence=0.98,
             read_reason="waiting_user_reply",
+            authorization_revision="revision-conv-1",
         )
         bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"), message_sender_role="customer")
         runner, _ = self.make_runner(api, bridge)
@@ -1291,6 +1415,7 @@ class TaskRunnerTest(unittest.TestCase):
                 row_fingerprint={"title_text": "CJR8S5K3 虾丸子大人"},
                 ocr_confidence=0.98,
                 read_reason="waiting_user_reply",
+                authorization_revision="revision-conv-1",
             )
         ]
         bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"), message_sender_role="customer")
@@ -1325,6 +1450,7 @@ class TaskRunnerTest(unittest.TestCase):
                 row_fingerprint={"title_text": "CJR8S5K3 虾丸子大人"},
                 ocr_confidence=0.98,
                 read_reason="waiting_user_reply",
+                authorization_revision="revision-conv-1",
             )
         ]
         bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"), message_sender_role="customer")
@@ -1656,6 +1782,7 @@ class TaskRunnerTest(unittest.TestCase):
             row_fingerprint={"title_text": "CJR8S5K3 虾丸子大人"},
             ocr_confidence=0.98,
             read_reason="waiting_user_reply",
+            authorization_revision="revision-conv-1",
         )
         bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"))
 
@@ -2061,6 +2188,47 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(api.message_payloads[0]["contract_version"], 3)
         self.assertEqual(api.message_payloads[0]["authorization_revision"], "revision-current")
 
+    def test_c2_backend_ignored_message_is_not_reported_as_success(self):
+        api = FakeApi(None)
+        api.message_ingest_result = "ignored"
+        api.read_targets = [
+            WechatReadTarget(
+                conversation_id="conv-1",
+                rpa_session_key="wx:rpa:v1:backend",
+                display_name="CJTEST01 许聪",
+                remark_code="CJTEST01",
+                read_reason="waiting_user_reply",
+                authorization_revision="revision-current",
+            )
+        ]
+        bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"))
+        bridge.get_messages_payloads = [
+            {
+                "ok": True,
+                "observation_schema_version": 3,
+                "observations": [
+                    {
+                        "schema_version": 3,
+                        "observation_id": "text-ignored",
+                        "row_kind": "text_bubble",
+                        "sender_role": "customer",
+                        "sender_role_source": "same_row_avatar",
+                        "message_type": "text",
+                        "voice_state": "not_voice",
+                        "content_clean": "后端忽略不能算成功",
+                        "source_message": {"id": "text-ignored", "type": "text"},
+                    }
+                ],
+            }
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(worker_id="worker-1", worker_token="token", client_instance_id="client-1", run_status="paused")
+
+        runner._run_c2_scan_round(binding, reason="unit")
+
+        self.assertEqual(runner.c2_stats["last_error"], "MESSAGE_ROW_ROLE_SOURCE_UNTRUSTED")
+        self.assertEqual(len(api.message_payloads), 1)
+
     def test_c2_visible_hit_without_current_authorization_is_dropped_before_ui_action(self):
         api = FakeApi(None)
         bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"))
@@ -2255,6 +2423,7 @@ class TaskRunnerTest(unittest.TestCase):
             row_fingerprint={"title_text": "CJTEST01 许聪"},
             ocr_confidence=0.98,
             read_reason="waiting_user_reply",
+            authorization_revision="revision-conv-1",
         )
         runner, _ = self.make_runner(api, bridge)
         binding = Binding(worker_id="worker-1", worker_token="token", client_instance_id="client-1", run_status="paused")

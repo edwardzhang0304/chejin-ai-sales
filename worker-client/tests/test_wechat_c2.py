@@ -2,8 +2,31 @@ from __future__ import annotations
 
 import unittest
 
+from chejin_worker_client.c2_contract import contract_revision, contract_sha256
 from chejin_worker_client.models import WechatReadTarget
-from chejin_worker_client.wechat_c2 import build_message_ingest_payload, build_scan_result_payload, extract_remark_codes
+from chejin_worker_client.wechat_c2 import (
+    build_message_ingest_payload as _build_message_ingest_payload_v3,
+    build_scan_result_payload,
+    extract_remark_codes,
+)
+
+
+def build_message_ingest_payload(*_args, **_kwargs):
+    raise unittest.SkipTest("V1/V2 message assembly was removed from the runtime package; V3 is mandatory")
+
+
+def build_v3_message_ingest_payload(target: WechatReadTarget, sidecar_payload: dict) -> dict:
+    return _build_message_ingest_payload_v3(
+        target,
+        {
+            "contract_version": 3,
+            "contract_revision": contract_revision(),
+            "contract_sha256": contract_sha256(),
+            "observation_schema_version": 3,
+            "authoritative_frame_source": "final_read",
+            **sidecar_payload,
+        },
+    )
 
 
 class WechatC2Test(unittest.TestCase):
@@ -978,7 +1001,7 @@ class WechatC2Test(unittest.TestCase):
         self.assertEqual(extract_remark_codes("CJ8K2P 王先生想看轩逸"), ["CJ8K2P"])
         self.assertEqual(extract_remark_codes("CJTEST01 许聪", "CJTEST01许聪"), ["CJTEST01"])
 
-    def test_v3_uses_observations_and_anchor_bound_voice_without_text_reinterpretation(self):
+    def test_v3_uses_final_observations_as_the_only_voice_message_source(self):
         target = WechatReadTarget(
             conversation_id="conv-1",
             rpa_session_key="wx:rpa:v1:a",
@@ -986,7 +1009,7 @@ class WechatC2Test(unittest.TestCase):
             remark_code="CJR8S5K3",
             authorization_revision="rev-1",
         )
-        payload = build_message_ingest_payload(
+        payload = build_v3_message_ingest_payload(
             target,
             {
                 "ok": True,
@@ -994,14 +1017,21 @@ class WechatC2Test(unittest.TestCase):
                 "observations": [
                     {
                         "schema_version": 3,
-                        "observation_id": "voice-placeholder",
-                        "row_kind": "voice_bubble",
+                        "observation_id": "voice-transcript",
+                        "row_kind": "voice_transcript",
                         "sender_role": "self",
-                        "sender_role_source": "same_row_avatar",
+                        "sender_role_source": "parent_voice",
                         "message_type": "voice",
-                        "voice_state": "untranscribed",
-                        "content_clean": "",
-                        "source_message": {"id": "placeholder", "content": '[语音] 4" (c'},
+                        "voice_state": "transcribed",
+                        "content_clean": "我马上回去。",
+                        "parent_voice_anchor_key": "self:4s:row-1",
+                        "source_message": {
+                            "id": "voice-transcript",
+                            "type": "voice",
+                            "content": "我马上回去。",
+                            "voice_duration": 4,
+                            "voice_anchor_stable_key": "self:4s:row-1",
+                        },
                     },
                     {
                         "schema_version": 3,
@@ -1035,10 +1065,10 @@ class WechatC2Test(unittest.TestCase):
 
         self.assertEqual(payload["contract_version"], 3)
         self.assertEqual(payload["authorization_revision"], "rev-1")
-        self.assertEqual([(item["message_type"], item["sender_role_hint"], item["content"]) for item in payload["messages"]], [
-            ("text", "customer", "普通文字"),
-            ("voice", "self", "我马上回去。"),
-        ])
+        self.assertEqual(
+            [(item["message_type"], item["sender_role_hint"], item["content"]) for item in payload["messages"]],
+            [("voice", "self", "我马上回去。"), ("text", "customer", "普通文字")],
+        )
 
     def test_v3_text_dedupe_key_is_stable_when_the_page_shifts(self):
         target = WechatReadTarget(
@@ -1085,8 +1115,8 @@ class WechatC2Test(unittest.TestCase):
             )
             return {"ok": True, "observation_schema_version": 3, "observations": observations}
 
-        first = build_message_ingest_payload(target, sidecar_payload(top=293, prefix=True))
-        shifted = build_message_ingest_payload(target, sidecar_payload(top=173, prefix=False))
+        first = build_v3_message_ingest_payload(target, sidecar_payload(top=293, prefix=True))
+        shifted = build_v3_message_ingest_payload(target, sidecar_payload(top=173, prefix=False))
 
         first_item = next(item for item in first["messages"] if item["content"] == "哦")
         shifted_item = next(item for item in shifted["messages"] if item["content"] == "哦")
@@ -1128,6 +1158,11 @@ class WechatC2Test(unittest.TestCase):
                 "content_clean": content,
                 "bubble_rect": [420, top, 760, top + 44],
                 "voice_duration": duration,
+                "parent_voice_anchor_key": (
+                    f"voice:{role}:{duration}:{'top' if observation_id == 'voice-top' else 'bottom'}"
+                    if msg_type == "voice"
+                    else None
+                ),
                 "source_message": {
                     "id": observation_id,
                     "source_adapter": "win32_ocr",
@@ -1139,7 +1174,7 @@ class WechatC2Test(unittest.TestCase):
                 },
             }
 
-        payload = build_message_ingest_payload(
+        payload = build_v3_message_ingest_payload(
             target,
             {
                 "ok": True,
@@ -1192,6 +1227,37 @@ class WechatC2Test(unittest.TestCase):
         self.assertEqual(payload["messages"][1]["raw_payload"]["voice_anchor_stable_key"], "voice:customer:3:top")
         self.assertEqual(payload["messages"][3]["raw_payload"]["voice_anchor_stable_key"], "voice:self:4:bottom")
 
+    def test_v3_does_not_recreate_voice_from_diagnostic_transcription_without_final_observation(self):
+        target = WechatReadTarget(
+            conversation_id="conv-1",
+            rpa_session_key="wx:rpa:v1:a",
+            display_name="CJR8S5K3 虾丸子大人",
+            remark_code="CJR8S5K3",
+            authorization_revision="rev-1",
+        )
+        payload = build_v3_message_ingest_payload(
+            target,
+            {
+                "ok": True,
+                "observation_schema_version": 3,
+                "authoritative_frame_source": "final_read",
+                "observations": [],
+                "voice_transcription": {
+                    "state": "voice_transcribe_completed",
+                    "transcribed_messages": [
+                        {
+                            "type": "voice",
+                            "sender_role": "customer",
+                            "content": "已经被最终画面顶出屏幕",
+                            "voice_anchor_stable_key": "voice:customer:23:offscreen",
+                        }
+                    ],
+                },
+            },
+        )
+
+        self.assertEqual(payload["messages"], [])
+
     def test_v3_missing_geometry_keeps_authoritative_observation_order(self):
         target = WechatReadTarget(
             conversation_id="conv-1",
@@ -1200,7 +1266,7 @@ class WechatC2Test(unittest.TestCase):
             remark_code="CJR8S5K3",
             authorization_revision="rev-1",
         )
-        payload = build_message_ingest_payload(
+        payload = build_v3_message_ingest_payload(
             target,
             {
                 "ok": True,
@@ -1244,7 +1310,7 @@ class WechatC2Test(unittest.TestCase):
             remark_code="CJR8S5K3",
             authorization_revision="rev-1",
         )
-        payload = build_message_ingest_payload(
+        payload = build_v3_message_ingest_payload(
             target,
             {
                 "ok": True,
@@ -1301,7 +1367,7 @@ class WechatC2Test(unittest.TestCase):
             remark_code="CJR8S5K3",
             authorization_revision="rev-1",
         )
-        payload = build_message_ingest_payload(
+        payload = build_v3_message_ingest_payload(
             target,
             {
                 "ok": True,
@@ -1332,7 +1398,7 @@ class WechatC2Test(unittest.TestCase):
             remark_code="CJR8S5K3",
             authorization_revision="rev-1",
         )
-        payload = build_message_ingest_payload(
+        payload = build_v3_message_ingest_payload(
             target,
             {
                 "ok": True,
@@ -1355,6 +1421,42 @@ class WechatC2Test(unittest.TestCase):
 
         self.assertEqual(payload["messages"], [])
 
+    def test_v3_records_invalid_voice_role_source_without_reclassifying_it(self):
+        target = WechatReadTarget(
+            conversation_id="conv-1",
+            rpa_session_key="wx:rpa:v1:a",
+            display_name="CJR8S5K3 虾丸子大人",
+            remark_code="CJR8S5K3",
+            authorization_revision="rev-1",
+        )
+        payload = build_v3_message_ingest_payload(
+            target,
+            {
+                "ok": True,
+                "observation_schema_version": 3,
+                "observations": [
+                    {
+                        "schema_version": 3,
+                        "observation_id": "invalid-voice-role-source",
+                        "row_kind": "voice_transcript",
+                        "sender_role": "customer",
+                        "sender_role_source": "same_row_avatar",
+                        "message_type": "voice",
+                        "voice_state": "transcribed",
+                        "content_clean": "不能偷偷改角色来源",
+                        "parent_voice_anchor_key": "voice:customer:5",
+                        "source_message": {"id": "invalid-voice-role-source", "type": "voice"},
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(payload["messages"], [])
+        self.assertEqual(
+            payload["evidence"]["observation_validation_errors"][0]["error_code"],
+            "MESSAGE_ROW_ROLE_SOURCE_UNTRUSTED",
+        )
+
     def test_v3_rejects_payload_build_without_authorization_revision(self):
         target = WechatReadTarget(
             conversation_id="conv-1",
@@ -1364,11 +1466,29 @@ class WechatC2Test(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(ValueError, "C2_TARGET_AUTHORIZATION_REVISION_MISSING"):
-            build_message_ingest_payload(
+            build_v3_message_ingest_payload(
                 target,
                 {
                     "ok": True,
                     "observation_schema_version": 3,
+                    "observations": [],
+                },
+            )
+
+    def test_v3_rejects_sidecar_with_different_contract_fingerprint(self):
+        target = WechatReadTarget(
+            conversation_id="conv-1",
+            rpa_session_key="wx:rpa:v1:a",
+            display_name="CJR8S5K3 虾丸子大人",
+            remark_code="CJR8S5K3",
+            authorization_revision="rev-1",
+        )
+
+        with self.assertRaisesRegex(ValueError, "C2_CONTRACT_SHA256_MISMATCH"):
+            build_v3_message_ingest_payload(
+                target,
+                {
+                    "contract_sha256": "0" * 64,
                     "observations": [],
                 },
             )

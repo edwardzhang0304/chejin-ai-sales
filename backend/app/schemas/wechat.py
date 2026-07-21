@@ -50,6 +50,9 @@ class WechatMessageItem(BaseModel):
 
 class WechatMessageIngestRequest(BaseModel):
     contract_version: int = Field(default=1, ge=1, le=3)
+    contract_revision: str | None = Field(default=None, max_length=32)
+    contract_sha256: str | None = Field(default=None, min_length=64, max_length=64)
+    observation_schema_version: int | None = Field(default=None, ge=1)
     read_run_id: str = Field(min_length=1, max_length=128)
     conversation_id: str = Field(min_length=1, max_length=36)
     remark_code: str | None = Field(default=None, max_length=64)

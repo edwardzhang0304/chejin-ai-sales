@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.request_id import get_request_id
-from app.contracts.c2 import contract_values
+from app.contracts.c2 import c2_contract_v3, contract_revision, contract_row_rules, contract_sha256, contract_values
 from app.errors import AppError
 from app.models.base import utcnow
 from app.models.c3 import Conversation
@@ -41,17 +41,13 @@ NEXT_ACTION_NONE = "none"
 LOW_CONFIDENCE_THRESHOLD = 0.7
 CONVERSATION_CLOSED_STATUSES = {"closed", "rejected"}
 SALES_SIDE_SENDER_ROLES = {"self", "sales", "sales_candidate"}
-MESSAGE_TYPES = {"text", "image", "voice", "audio", "system", "file", "unknown"}
-MESSAGE_TYPES_V2 = {"text", "image", "voice", "system", "file", "unknown"}
-SENDER_ROLES_V2 = {"customer", "self", "system", "unknown"}
-VOICE_FLOW_STATES_V2 = {"completed", "partial", "failed", "cancelled"}
 MESSAGE_TYPES_V3 = contract_values("message_types")
 SENDER_ROLES_V3 = contract_values("sender_roles")
 FLOW_STATES_V3 = contract_values("flow_states")
-ROW_KINDS_V3 = contract_values("row_kinds")
-INGESTIBLE_ROW_KINDS_V3 = contract_values("ingestible_row_kinds")
-CHAT_MESSAGE_ROW_KINDS_V3 = contract_values("chat_message_row_kinds")
-CHAT_MESSAGE_ROLE_SOURCES_V3 = contract_values("chat_message_role_sources")
+ROW_RULES_V3 = contract_row_rules()
+CONTRACT_REVISION_V3 = contract_revision()
+CONTRACT_SHA256_V3 = contract_sha256()
+OBSERVATION_SCHEMA_VERSION_V3 = int(c2_contract_v3()["observation_schema_version"])
 VOICE_FAILURE_ERROR_CODES = {
     "VOICE_TRANSCRIBE_FAILED",
     "VOICE_TRANSCRIBE_CLICK_FAILED",
@@ -70,9 +66,6 @@ READ_REASON_PRIORITY = {
 }
 VOICE_DURATION_RE = re.compile(
     r"^\s*(?:\[?语音\]?\s*)?\d{1,3}(?:\.\d+)?\s*(?:\"|”|″|秒|s|S)\s*$"
-)
-VOICE_DURATION_TOKEN_RE = re.compile(
-    r"(?<!\w)(?:\[?语音\]?\s*)?\d{1,3}(?:\.\d+)?\s*(?:\"|”|″|秒|s|S)(?!\w)"
 )
 logger = logging.getLogger(__name__)
 
@@ -638,50 +631,6 @@ def _read_reason(binding: WechatSessionBinding, conversation: Conversation) -> s
     return None
 
 
-def _sender_role(value: str) -> str:
-    normalized = str(value or "").strip().lower()
-    if normalized in {"customer", "self", "sales", "sales_candidate", "unknown"}:
-        return normalized
-    return "unknown"
-
-
-def _message_type(value: str) -> str:
-    normalized = str(value or "").strip().lower()
-    if normalized == "audio":
-        return "voice"
-    if normalized in MESSAGE_TYPES:
-        return normalized
-    return "unknown"
-
-
-def _voice_transcription_text(item) -> str:
-    raw_payload = item.raw_payload if isinstance(item.raw_payload, dict) else {}
-    text = _voice_transcription_value(raw_payload.get("voice_transcription"))
-    if not text:
-        text = _voice_transcription_value(item.content)
-    if not text or VOICE_DURATION_RE.match(text):
-        return ""
-    if _looks_like_voice_payload_text(text):
-        return ""
-    text = VOICE_DURATION_TOKEN_RE.sub(" ", text)
-    return " ".join(text.split()).strip()
-
-
-def _voice_transcription_value(value) -> str:
-    if isinstance(value, str):
-        return value.strip()
-    if isinstance(value, dict):
-        for key in ("content_clean", "text", "transcript", "transcribed_text", "content"):
-            text = value.get(key)
-            if isinstance(text, str) and text.strip():
-                return text.strip()
-            if isinstance(text, dict):
-                nested = _voice_transcription_value(text)
-                if nested:
-                    return nested
-    return ""
-
-
 def _looks_like_voice_payload_text(value: str) -> bool:
     text = str(value or "").strip()
     if not text:
@@ -742,47 +691,6 @@ def _image_recognition_warning_code(raw_payload: dict | None) -> str | None:
     return normalized_code[:64] or "IMAGE_RECOGNITION_FAILED"
 
 
-def _occurred_at_bucket(value: datetime | None) -> str:
-    if not value:
-        return "unknown"
-    return value.replace(second=0, microsecond=0).isoformat()
-
-
-def _visual_position_fingerprint(raw_payload: dict | None) -> str:
-    if not isinstance(raw_payload, dict):
-        return ""
-    for key in (
-        "visual_position_fingerprint",
-        "visual_fingerprint",
-        "bubble_fingerprint",
-        "message_fingerprint",
-        "row_fingerprint",
-    ):
-        value = str(raw_payload.get(key) or "").strip()
-        if value:
-            return value
-    return ""
-
-
-def _voice_dedupe_key(
-    conversation_id: str,
-    sender_role: str,
-    transcript: str,
-    occurred_at: datetime | None,
-    raw_payload: dict | None,
-) -> str:
-    normalized = " ".join(str(transcript or "").split()).lower()
-    transcript_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-    visual_fingerprint = _visual_position_fingerprint(raw_payload)
-    visual_hash = (
-        hashlib.sha256(visual_fingerprint.encode("utf-8")).hexdigest()
-        if visual_fingerprint
-        else "no_visual"
-    )
-    bucket = _occurred_at_bucket(occurred_at)
-    return f"voice:{conversation_id}:{sender_role}:{transcript_hash}:{bucket}:{visual_hash}"
-
-
 def _read_failure_result(*payloads: dict | None) -> str | None:
     for payload in payloads:
         if not isinstance(payload, dict):
@@ -805,6 +713,151 @@ def _upsert_conversation_for_binding(db: Session, binding: WechatSessionBinding)
     return conversation
 
 
+def _normalized_contract_text(value: object) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _validate_v3_observation(observation: object, *, require_ingestible: bool | None = None) -> tuple[str, dict]:
+    if not isinstance(observation, dict):
+        raise AppError("MESSAGE_OBSERVATION_MISSING", "V3 消息缺少 OmniAuto observation", 409)
+    if int(observation.get("schema_version") or 0) != OBSERVATION_SCHEMA_VERSION_V3:
+        raise AppError("MESSAGE_OBSERVATION_SCHEMA_VERSION_MISMATCH", "V3 observation schema 版本不一致", 409)
+    if observation.get("contract_errors"):
+        raise AppError("MESSAGE_OBSERVATION_CONTRACT_INVALID", "OmniAuto observation 未通过统一合同", 409)
+
+    observation_id = str(observation.get("observation_id") or "").strip()
+    if not observation_id:
+        raise AppError("MESSAGE_OBSERVATION_ID_MISSING", "V3 observation 缺少唯一标识", 409)
+    row_kind = str(observation.get("row_kind") or "").strip().lower()
+    rule = ROW_RULES_V3.get(row_kind)
+    if not isinstance(rule, dict):
+        raise AppError("MESSAGE_ROW_KIND_INVALID", "V3 消息 row_kind 不合法", 409)
+    if require_ingestible is True and not bool(rule.get("ingestible")):
+        raise AppError("MESSAGE_ROW_KIND_NOT_INGESTIBLE", "V3 非可入库行被组装成最终消息", 409)
+    for field in rule.get("required_fields") or []:
+        value = observation.get(str(field))
+        if value is None or (isinstance(value, str) and not value.strip()):
+            raise AppError("MESSAGE_OBSERVATION_REQUIRED_FIELD_MISSING", f"V3 observation 缺少字段: {field}", 409)
+
+    observed_type = str(observation.get("message_type") or "").strip().lower()
+    if observed_type != str(rule.get("message_type") or ""):
+        raise AppError("MESSAGE_ROW_TYPE_MISMATCH", "OmniAuto observation 与合同的消息类型不一致", 409)
+    observed_role = str(observation.get("sender_role") or "").strip().lower()
+    if observed_role not in {str(value) for value in rule.get("allowed_sender_roles") or []}:
+        raise AppError("MESSAGE_ROW_SENDER_ROLE_MISMATCH", "OmniAuto observation 与合同的发送方角色不一致", 409)
+    role_source = str(observation.get("sender_role_source") or "").strip().lower()
+    if role_source not in {str(value) for value in rule.get("allowed_sender_role_sources") or []}:
+        raise AppError("MESSAGE_ROW_ROLE_SOURCE_UNTRUSTED", "V3 消息角色不是由合同允许的唯一证据生成", 409)
+    voice_state = str(observation.get("voice_state") or "").strip().lower()
+    if voice_state not in {str(value) for value in rule.get("allowed_voice_states") or []}:
+        raise AppError("MESSAGE_ROW_VOICE_STATE_INVALID", "V3 消息语音状态不合法", 409)
+    return observation_id, rule
+
+
+def _validate_v3_request_contract(payload: WechatMessageIngestRequest) -> None:
+    if str(payload.contract_revision or "").strip() != CONTRACT_REVISION_V3:
+        raise AppError("MESSAGE_CONTRACT_REVISION_MISMATCH", "V3 消息合同修订号不一致", 409)
+    if str(payload.contract_sha256 or "").strip().lower() != CONTRACT_SHA256_V3:
+        raise AppError("MESSAGE_CONTRACT_SHA256_MISMATCH", "V3 消息合同指纹不一致", 409)
+    if int(payload.observation_schema_version or 0) != OBSERVATION_SCHEMA_VERSION_V3:
+        raise AppError("MESSAGE_OBSERVATION_SCHEMA_VERSION_MISMATCH", "V3 observation schema 版本不一致", 409)
+
+    evidence = payload.evidence
+    if not isinstance(evidence, dict):
+        raise AppError("MESSAGE_BATCH_EVIDENCE_MISSING", "V3 批次缺少完整 OmniAuto 证据", 409)
+    if str(evidence.get("contract_revision") or "").strip() != CONTRACT_REVISION_V3:
+        raise AppError("MESSAGE_EVIDENCE_CONTRACT_REVISION_MISMATCH", "V3 批次证据合同修订号不一致", 409)
+    if str(evidence.get("contract_sha256") or "").strip().lower() != CONTRACT_SHA256_V3:
+        raise AppError("MESSAGE_EVIDENCE_CONTRACT_SHA256_MISMATCH", "V3 批次证据合同指纹不一致", 409)
+    if int(evidence.get("observation_schema_version") or 0) != OBSERVATION_SCHEMA_VERSION_V3:
+        raise AppError("MESSAGE_EVIDENCE_OBSERVATION_SCHEMA_MISMATCH", "V3 批次证据 schema 版本不一致", 409)
+    observations = evidence.get("observations")
+    if not isinstance(observations, list):
+        raise AppError("MESSAGE_BATCH_OBSERVATIONS_MISSING", "V3 批次缺少完整 observation 清单", 409)
+    evidence_observations: dict[str, dict] = {}
+    ingestible_observation_ids: set[str] = set()
+    for observation in observations:
+        observation_id, rule = _validate_v3_observation(observation)
+        if observation_id in evidence_observations:
+            raise AppError("MESSAGE_OBSERVATION_ID_CONFLICT", "V3 批次存在重复 observation 标识", 409)
+        evidence_observations[observation_id] = observation
+        if bool(rule.get("ingestible")):
+            ingestible_observation_ids.add(observation_id)
+
+    seen_source_keys: set[str] = set()
+    mapped_observation_ids: set[str] = set()
+    for item in payload.messages:
+        source_key = str(item.source_message_key or "").strip()
+        if not source_key:
+            raise AppError("MESSAGE_SOURCE_IDENTITY_MISSING", "V3 消息缺少 source_message_key", 409)
+        if source_key in seen_source_keys:
+            raise AppError("MESSAGE_SOURCE_CONFLICT", "同一来源消息出现多个最终解释", 409)
+        seen_source_keys.add(source_key)
+
+        if item.message_position is None:
+            raise AppError("MESSAGE_POSITION_MISSING", "V3 消息缺少权威画面位置", 409)
+        if item.message_position.frame_source not in {"initial_read", "final_read"}:
+            raise AppError("MESSAGE_FRAME_SOURCE_INVALID", "V3 消息权威画面来源不合法", 409)
+
+        raw_payload = item.raw_payload
+        if not isinstance(raw_payload, dict):
+            raise AppError("MESSAGE_RAW_PAYLOAD_MISSING", "V3 消息缺少原始识别证据", 409)
+        if int(raw_payload.get("contract_version") or 0) != 3:
+            raise AppError("MESSAGE_RAW_CONTRACT_VERSION_MISMATCH", "V3 原始证据合同版本不一致", 409)
+        if str(raw_payload.get("contract_revision") or "").strip() != CONTRACT_REVISION_V3:
+            raise AppError("MESSAGE_RAW_CONTRACT_REVISION_MISMATCH", "V3 原始证据合同修订号不一致", 409)
+        if str(raw_payload.get("contract_sha256") or "").strip().lower() != CONTRACT_SHA256_V3:
+            raise AppError("MESSAGE_RAW_CONTRACT_SHA256_MISMATCH", "V3 原始证据合同指纹不一致", 409)
+        if int(raw_payload.get("observation_schema_version") or 0) != OBSERVATION_SCHEMA_VERSION_V3:
+            raise AppError("MESSAGE_RAW_OBSERVATION_SCHEMA_MISMATCH", "V3 原始证据 schema 版本不一致", 409)
+        if str(raw_payload.get("source_message_key") or "").strip() != source_key:
+            raise AppError("MESSAGE_RAW_SOURCE_IDENTITY_MISMATCH", "V3 原始证据与最终消息身份不一致", 409)
+
+        observation = raw_payload.get("observation")
+        observation_id, rule = _validate_v3_observation(observation, require_ingestible=True)
+        if observation_id in mapped_observation_ids:
+            raise AppError("MESSAGE_OBSERVATION_MAPPING_CONFLICT", "同一 observation 被组装成多条最终消息", 409)
+        if evidence_observations.get(observation_id) != observation:
+            raise AppError("MESSAGE_OBSERVATION_EVIDENCE_MISMATCH", "最终消息 observation 与批次原始证据不一致", 409)
+        mapped_observation_ids.add(observation_id)
+
+        observed_type = str(observation.get("message_type") or "").strip().lower()
+        canonical_type = str(item.message_type or "").strip().lower()
+        if observed_type != str(rule.get("message_type") or "") or canonical_type != observed_type:
+            raise AppError("MESSAGE_ROW_TYPE_MISMATCH", "OmniAuto、Worker 与合同的消息类型不一致", 409)
+
+        observed_role = str(observation.get("sender_role") or "").strip().lower()
+        canonical_role = str(item.sender_role_hint or "").strip().lower()
+        allowed_roles = {str(value) for value in rule.get("allowed_sender_roles") or []}
+        if observed_role not in allowed_roles or canonical_role != observed_role:
+            raise AppError("MESSAGE_ROW_SENDER_ROLE_MISMATCH", "OmniAuto、Worker 与合同的发送方角色不一致", 409)
+
+        role_source = str(observation.get("sender_role_source") or "").strip().lower()
+        allowed_sources = {str(value) for value in rule.get("allowed_sender_role_sources") or []}
+        if role_source not in allowed_sources:
+            raise AppError("MESSAGE_ROW_ROLE_SOURCE_UNTRUSTED", "V3 消息角色不是由合同允许的唯一证据生成", 409)
+
+        voice_state = str(observation.get("voice_state") or "").strip().lower()
+        allowed_voice_states = {str(value) for value in rule.get("allowed_voice_states") or []}
+        if voice_state not in allowed_voice_states:
+            raise AppError("MESSAGE_ROW_VOICE_STATE_INVALID", "V3 消息语音状态不合法", 409)
+
+        if canonical_type in {"text", "voice", "system"}:
+            observed_content = _normalized_contract_text(observation.get("content_clean"))
+            canonical_content = _normalized_contract_text(item.content)
+            if not observed_content or canonical_content != observed_content:
+                raise AppError("MESSAGE_ROW_CONTENT_MISMATCH", "OmniAuto observation 与 Worker 正文不一致", 409)
+
+    if mapped_observation_ids != ingestible_observation_ids:
+        missing = sorted(ingestible_observation_ids - mapped_observation_ids)
+        unexpected = sorted(mapped_observation_ids - ingestible_observation_ids)
+        raise AppError(
+            "MESSAGE_OBSERVATION_MAPPING_INCOMPLETE",
+            f"V3 observation 与最终消息不是一一对应: missing={missing}, unexpected={unexpected}",
+            409,
+        )
+
+
 def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestRequest) -> dict:
     binding = db.scalar(
         select(WechatSessionBinding).where(
@@ -815,35 +868,25 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
     )
     if not binding or binding.bind_status != BIND_STATUS_BOUND or not binding.allow_listening or not _clean_locator(binding.remark_code):
         raise AppError("MESSAGE_CONVERSATION_NOT_BOUND", "会话未绑定，不能入库消息", 409)
+    if payload.contract_version != 3:
+        raise AppError("MESSAGE_CONTRACT_V3_REQUIRED", "C2 消息入库只接受统一 V3 合同", 409)
     observed_remark_code = _clean_locator(payload.remark_code)
-    is_v2 = payload.contract_version >= 2
-    is_v3 = payload.contract_version >= 3
-    if is_v2 and not observed_remark_code:
-        raise AppError("MESSAGE_TARGET_IDENTITY_MISSING", "V2 消息缺少读取目标短码", 409)
+    if not observed_remark_code:
+        raise AppError("MESSAGE_TARGET_IDENTITY_MISSING", "V3 消息缺少读取目标短码", 409)
     if observed_remark_code and observed_remark_code != _clean_locator(binding.remark_code):
         raise AppError("MESSAGE_TARGET_IDENTITY_MISMATCH", "读取目标与绑定会话不一致，已拒绝入库", 409)
-    if is_v3 and str(payload.authorization_revision or "") != _authorization_revision(binding):
+    if str(payload.authorization_revision or "") != _authorization_revision(binding):
         raise AppError("MESSAGE_AUTHORIZATION_REVISION_EXPIRED", "读取授权已过期，已拒绝旧任务入库", 409)
-    if is_v2:
-        seen_source_keys: set[str] = set()
-        for item in payload.messages:
-            source_key = str(item.source_message_key or "").strip()
-            if not source_key:
-                raise AppError("MESSAGE_SOURCE_IDENTITY_MISSING", "V2 消息缺少 source_message_key", 409)
-            if source_key in seen_source_keys:
-                raise AppError("MESSAGE_SOURCE_CONFLICT", "同一来源消息出现多个最终解释", 409)
-            seen_source_keys.add(source_key)
-            allowed_roles = SENDER_ROLES_V3 if is_v3 else SENDER_ROLES_V2
-            allowed_types = MESSAGE_TYPES_V3 if is_v3 else MESSAGE_TYPES_V2
-            allowed_flows = FLOW_STATES_V3 if is_v3 else VOICE_FLOW_STATES_V2
-            if str(item.sender_role_hint or "").strip().lower() not in allowed_roles:
-                raise AppError("MESSAGE_SENDER_ROLE_INVALID", "V2 消息发送方角色不合法", 409)
-            if str(item.message_type or "").strip().lower() not in allowed_types:
-                raise AppError("MESSAGE_TYPE_INVALID", "V2 消息类型不合法", 409)
-            if str(item.item_state or "").strip().lower() != "completed":
-                raise AppError("MESSAGE_ITEM_STATE_INVALID", "只有已完成的消息项可以入库", 409)
-            if str(item.flow_state or "").strip().lower() not in allowed_flows:
-                raise AppError("MESSAGE_FLOW_STATE_INVALID", "V2 消息流程状态不合法", 409)
+    _validate_v3_request_contract(payload)
+    for item in payload.messages:
+        if str(item.sender_role_hint or "").strip().lower() not in SENDER_ROLES_V3:
+            raise AppError("MESSAGE_SENDER_ROLE_INVALID", "V3 消息发送方角色不合法", 409)
+        if str(item.message_type or "").strip().lower() not in MESSAGE_TYPES_V3:
+            raise AppError("MESSAGE_TYPE_INVALID", "V3 消息类型不合法", 409)
+        if str(item.item_state or "").strip().lower() != "completed":
+            raise AppError("MESSAGE_ITEM_STATE_INVALID", "只有已完成的消息项可以入库", 409)
+        if str(item.flow_state or "").strip().lower() not in FLOW_STATES_V3:
+            raise AppError("MESSAGE_FLOW_STATE_INVALID", "V3 消息流程状态不合法", 409)
     conversation = _upsert_conversation_for_binding(db, binding)
     conversation_allowed = conversation.status not in CONVERSATION_CLOSED_STATUSES
     observed_rpa_session_key = payload.rpa_session_key or ""
@@ -853,7 +896,7 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
     ignored_count = 0
     results: list[dict] = []
     for item in payload.messages:
-        message_type = str(item.message_type or "").strip().lower() if is_v2 else _message_type(item.message_type)
+        message_type = str(item.message_type or "").strip().lower()
         source_dedupe_key = item.dedupe_key.strip() if item.dedupe_key else ""
         raw_payload = dict(item.raw_payload or {})
         if item.message_position:
@@ -865,102 +908,32 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             image_warning_code = _image_recognition_warning_code(raw_payload)
             if image_warning_code:
                 image_warning_codes.append(image_warning_code)
-            if is_v3 and str(item.image_local_path or "").strip():
+            if str(item.image_local_path or "").strip():
                 stored_image_local_path = None
                 image_warning_codes.append("IMAGE_LOCAL_PATH_IGNORED")
-        observation = raw_payload.get("observation") if isinstance(raw_payload.get("observation"), dict) else {}
-        if is_v3 and observation:
-            row_kind = str(observation.get("row_kind") or "").strip().lower()
-            role_source = str(observation.get("sender_role_source") or "").strip().lower()
-            expected_type = {
-                "text_bubble": "text",
-                "image_bubble": "image",
-                "system_message": "system",
-            }.get(row_kind)
-            if row_kind not in ROW_KINDS_V3 or row_kind not in INGESTIBLE_ROW_KINDS_V3:
-                ignored_count += 1
-                results.append(
-                    {
-                        "dedupe_key": source_dedupe_key,
-                        "ingest_result": "ignored",
-                        "error_code": "MESSAGE_ROW_KIND_NOT_INGESTIBLE",
-                    }
-                )
-                continue
-            if row_kind in CHAT_MESSAGE_ROW_KINDS_V3 and role_source not in CHAT_MESSAGE_ROLE_SOURCES_V3:
-                ignored_count += 1
-                results.append(
-                    {
-                        "dedupe_key": source_dedupe_key,
-                        "ingest_result": "ignored",
-                        "error_code": "MESSAGE_ROW_ROLE_SOURCE_UNTRUSTED",
-                    }
-                )
-                continue
-            if expected_type and expected_type != message_type:
-                ignored_count += 1
-                results.append(
-                    {
-                        "dedupe_key": source_dedupe_key,
-                        "ingest_result": "ignored",
-                        "error_code": "MESSAGE_ROW_TYPE_MISMATCH",
-                    }
-                )
-                continue
         read_failure = _read_failure_result(item.raw_payload, payload.evidence)
         if read_failure:
-            ignored_count += 1
-            results.append({"dedupe_key": source_dedupe_key, "ingest_result": "ignored", "error_code": read_failure.upper()})
-            continue
-        sender_role = str(item.sender_role_hint or "").strip().lower() if is_v2 else _sender_role(item.sender_role_hint)
+            raise AppError(read_failure.upper(), "V3 读取失败证据不能伪装成可入库消息", 409)
+        sender_role = str(item.sender_role_hint or "").strip().lower()
         if message_type == "voice":
             voice_error_code = _voice_failure_code(raw_payload)
-            transcript = str(item.content or "").strip() if is_v3 else _voice_transcription_text(item)
+            transcript = str(item.content or "").strip()
             if not voice_error_code and not transcript:
                 voice_error_code = "VOICE_TRANSCRIBE_EMPTY"
-            if is_v3 and (VOICE_DURATION_RE.match(transcript) or _looks_like_voice_payload_text(transcript)):
+            if VOICE_DURATION_RE.match(transcript) or _looks_like_voice_payload_text(transcript):
                 voice_error_code = "VOICE_TRANSCRIBE_INVALID_CONTENT"
             if voice_error_code:
-                trace_id = get_request_id()
-                ignored_count += 1
-                logger.warning(
-                    "voice message ignored during ingest",
-                    extra={
-                        "trace_id": trace_id,
-                        "conversation_id": payload.conversation_id,
-                        "read_run_id": payload.read_run_id,
-                        "dedupe_key": source_dedupe_key,
-                        "error_code": voice_error_code,
-                    },
-                )
-                results.append(
-                    {
-                        "dedupe_key": source_dedupe_key,
-                        "ingest_result": "ignored",
-                        "error_code": voice_error_code,
-                        "trace_id": trace_id,
-                    }
-                )
-                continue
+                raise AppError(voice_error_code, "V3 未完成或无效的语音不能入库", 409)
             content = transcript
-            dedupe_basis = raw_payload.get("dedupe_basis") if isinstance(raw_payload.get("dedupe_basis"), dict) else {}
-            trusted_source_identity = str(dedupe_basis.get("source") or "") in {
-                "voice_anchor_identity",
-                "ocr_structural_identity",
-            }
-            dedupe_key = source_dedupe_key if is_v2 or (source_dedupe_key and trusted_source_identity) else _voice_dedupe_key(payload.conversation_id, sender_role, transcript, item.occurred_at, raw_payload)
+            dedupe_key = source_dedupe_key
         else:
             if not source_dedupe_key:
                 raise AppError("MESSAGE_DEDUPE_KEY_MISSING", "消息缺少 dedupe_key", 400)
             dedupe_key = source_dedupe_key
         if not conversation_allowed:
-            ignored_count += 1
-            results.append({"dedupe_key": dedupe_key, "ingest_result": "ignored", "error_code": "CONVERSATION_STATUS_NOT_LISTENABLE"})
-            continue
+            raise AppError("CONVERSATION_STATUS_NOT_LISTENABLE", "会话状态不允许入库", 409)
         if sender_role == "unknown":
-            ignored_count += 1
-            results.append({"dedupe_key": dedupe_key, "ingest_result": "ignored", "error_code": "MESSAGE_SENDER_ROLE_UNCLEAR"})
-            continue
+            raise AppError("MESSAGE_SENDER_ROLE_UNCLEAR", "V3 消息发送方不明确", 409)
         exists = db.scalar(
             select(MessageEvent).where(
                 MessageEvent.conversation_id == payload.conversation_id,
@@ -971,16 +944,15 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             duplicated_count += 1
             results.append({"dedupe_key": dedupe_key, "ingest_result": "duplicated", "error_code": "MESSAGE_INGEST_DUPLICATED"})
             continue
-        if is_v2:
-            source_exists = db.scalar(
-                select(MessageEvent).where(
-                    MessageEvent.conversation_id == payload.conversation_id,
-                    MessageEvent.read_run_id == payload.read_run_id,
-                    MessageEvent.source_message_key == item.source_message_key,
-                )
+        source_exists = db.scalar(
+            select(MessageEvent).where(
+                MessageEvent.conversation_id == payload.conversation_id,
+                MessageEvent.read_run_id == payload.read_run_id,
+                MessageEvent.source_message_key == item.source_message_key,
             )
-            if source_exists:
-                raise AppError("MESSAGE_SOURCE_CONFLICT", "同一读取批次的来源消息已存在", 409)
+        )
+        if source_exists:
+            raise AppError("MESSAGE_SOURCE_CONFLICT", "同一读取批次的来源消息已存在", 409)
 
         message = MessageEvent(
             conversation_id=payload.conversation_id,
