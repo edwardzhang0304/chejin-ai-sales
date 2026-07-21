@@ -63,37 +63,43 @@ group C1 add_friend：搜索手机号、申请好友、写客户短码
   end
 end
 
-group C2 会话绑定/微信监听：第一屏扫描、定向读取、入库、去重；不进入任务中心
+group C2 V16.98：首屏扫描、授权准入、文字/语音入库；不进入任务中心
   loop Worker 运行中
     W -> OA: sessions 扫描微信当前第一屏
-    OA -> WX: 读取第一屏会话/备注/短码/未读提示
-    OA --> W: rpa_session_key、display_name、remark_code_candidates、unread_hint
+    OA -> WX: 普通/增强OCR按视觉行聚合\n识别短码和群聊人数证据
+    OA --> W: remark_code_candidates / conversation_type evidence
     W -> CP: 上报 session_scan_result
-    alt 第一屏短码唯一匹配或已有绑定
-      CP -> CP: wechat_binding.status=bound
-listen_status=listening
-      W -> W: 第一屏命中进入 visible_hit_queue
-      W -> OA: messages 优先读取第一屏命中会话
-      OA -> WX: 定位/打开指定会话，读取近期消息
-      OA --> W: message_type/content/dedupe_key
-      W -> CP: 上报 message_event
-      CP -> CP: dedupe_key 去重入库
-更新 last_inbound_at
-next_action=none
-    else 未识别短码/短码冲突/绑定冲突
+    alt 短码唯一绑定
+      CP -> CP: wechat_binding.status=bound\nlisten_status=listening
+    else 未识别/短码冲突/绑定冲突
       CP -> CP: bind_status=unbound/needs_review/binding_failed
       CP --> W: next_action=none
     end
 
     W -> CP: 拉取 read-targets
-    CP --> W: 状态机定向读取目标
-recent_ai_sent / waiting_user_reply / waiting_sales_reply / recall_precheck
-    W -> W: 去重掉本轮第一屏已处理对象
-    W -> OA: messages 定向读取剩余目标
-    OA -> WX: 搜索/定位指定会话并读取消息
-    OA --> W: message_type/content/dedupe_key
-    W -> CP: 上报 message_event
-    CP -> CP: 去重入库；新客户消息进入C3判断
+    CP --> W: conversation_id + remark_code + authorization_revision
+    alt read-targets为空
+      W -> W: 清空visible_hit_queue\n不读/不转写/不入库
+    else 当前授权目标
+      W -> OA: 首屏唯一命中则visible\n未命中才search_by_remark_code
+      OA -> WX: 点击目标并读取顶部标题
+      OA --> W: remark_code + conversation_type
+      alt group / unknown / 歧义
+        W -> W: 本轮终止\n不再搜索/读取/转写/入库
+      else 有效短码 + private
+        W -> OA: 首次messages读取当前屏
+        OA --> W: V3 observations
+        alt 发现未转写语音
+          W -> OA: 同一flow执行voice-transcribe
+          OA -> WX: 逐条调用微信自带转文字\n页面变化后重新截图
+          W -> OA: 最终messages新截图\n同时复核目标和读取消息
+          OA --> W: 文字 + 已绑定父语音的转写结果
+        end
+        W -> CP: messages/ingest\ncontract_version=3 + authorization_revision\nsource_message_key + dedupe_key
+        CP -> CP: 复核授权版本\nunique(conversation_id,dedupe_key)去重
+        CP -> CP: 新customer消息才进入C3判断\nnext_action=none
+      end
+    end
   end
 end
 
@@ -108,7 +114,7 @@ group C3 AI文字回复：服务端生成 reply_action，Worker 只执行已批�
       CP -> TS: 创建 chat_reply 任务和 reply_action
       W -> TS: claim reply_action
       W -> OA: pre_send_refresh 定向读取目标会话
-      OA -> WX: 读取最新消息确认上下文未变化
+      OA -> WX: 第一屏可见快速读取；否则搜索框粘贴remark_code并二次确认
       W -> CP: 上报 refresh message_event 或无新增
       alt 没有新客户消息
         W -> OA: send 已批准回复

@@ -1,15 +1,15 @@
 # AI智能客服售前跟进系统 UML图（正式工程版）
 
-版本：v0.6
+版本：v0.7
 
-日期：2026-06-24
+日期：2026-07-20
 
-最近修订：2026-06-30，按技术方案 v0.6 内部修订调整 C2 定向读取：废弃旧滚动兜底方案，改为第一屏主动扫描、第一屏命中优先读取、基于 remark_code 的微信搜索框定向读取、召回前 recall_precheck 和去重入库；会话状态机新增 recall_precheck。
+最近修订：2026-07-20，按技术方案 v0.8 和 Worker V16.98 调整 C2：首屏事实扫描与 read-target 授权分离；只准入有效短码 private 单聊；群聊/unknown 终止；消息使用 V3 合同和 authorization_revision；语音在同一读取 flow 内条件性转写；图片识别待定。
 
-口径：正式工程完整合并版。取消 AI 固定轮次限制，采用长期跟进状态机；备注短码作为系统托管开关；销售未绑定Worker时，add_friend任务进入blocked并在后续绑定Worker后恢复pending；统一任务中心采用 `task.status + task.result_code`，任务状态只表达执行生命周期，业务结果由 result_code 映射到会话状态。2026-06-11 补充 OmniAuto 接入口径：对商家交付一个 Windows Worker 应用，工程内部采用 Worker 主进程 + OmniAuto RPA Sidecar 子进程；Worker 与微信桌面客户端部署在同一台商家侧 Windows 电脑上。2026-06-30 补充 C2 分段：C2 是 Worker 运行时事实采集和消息入库能力，不进入统一任务中心，不定义为 task_type；C2 主链路采用“第一屏可见快速读取 + 短码搜索定向读取”，`rpa_session_key` 只作第一屏辅助证据，非第一屏必须搜索 `remark_code` 并二次确认。
+口径：正式工程完整合并版。取消 AI 固定轮次限制，采用长期跟进状态机；备注短码作为系统托管开关；销售未绑定Worker时，add_friend任务进入blocked并在后续绑定Worker后恢复pending；统一任务中心采用 `task.status + task.result_code`。C2 是 Worker 运行时事实采集和消息入库能力，不进入统一任务中心；短码只是候选入口，读取还必须满足 private、当前 read-target 和 authorization_revision。图片 Vision 尚未进入本版架构。
 
 独立图文件：
-- 主业务时序图：`AI智能客服售前跟进系统_主业务时序图_C0-C4_v0.6.puml`
+- 主业务时序图：`AI智能客服售前跟进系统_主业务时序图_C0-C4_v0.7.puml`
 - 会话状态机图：`AI智能客服售前跟进系统_会话状态机图_v0.6.puml`
 
 说明：状态机以本文档和 PUML 源文件为准。PNG 仅作为本地临时预览图，不作为当前有效文档或开发验收依据。
@@ -48,7 +48,6 @@ flowchart LR
         SessionMsg["sessions/messages<br/>会话扫描与消息读取"]
         Lock["Local WeChat UI Lock"]
         WeChatPC["微信桌面客户端"]
-        ImageStore["图片缓存目录"]
     end
 
     subgraph SalesSide["销售侧"]
@@ -65,7 +64,6 @@ flowchart LR
     Sidecar --> WeChatPC
     SessionMsg -. "读取消息如需切换/点击微信窗口也必须拿锁" .-> Lock
     WeChatPC <--> SalesMobile
-    Worker --> ImageStore
 
     Worker -- "session_scan_result / message_event / sales_reply_event / sent_ack / wechat_error" --> ConvSvc
     TaskSvc -- "add_friend / chat_reply / follow_up" --> Worker
@@ -98,25 +96,33 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    A["Worker调用OmniAuto sessions<br/>只扫描微信当前第一屏"] --> B["上报session_scan_result<br/>rpa_session_key / display_name / remark_code_candidates / unread_hint"]
+    A["Worker调用OmniAuto sessions<br/>只扫描微信当前第一屏"] --> Row["普通/增强OCR按视觉行聚合<br/>唯一合法短码优先"]
+    Row --> B["上报session_scan_result<br/>短码候选 / conversation_type证据"]
     B --> C{服务端短码绑定结果}
     C -- 短码唯一匹配 --> D["wechat_binding.status=bound<br/>listen_status=listening"]
     C -- 未识别/冲突/低置信 --> E["unbound / needs_review / binding_failed<br/>next_action=none"]
 
-    B --> VH["Worker本地visible_hit_queue<br/>第一屏未读/红点/预览变化/短码命中"]
-    VH --> VM["OmniAuto messages<br/>优先读取第一屏命中会话"]
-    VM --> H["上报message_event<br/>dedupe_key / rpa_session_key / raw_payload"]
-
-    D --> RT["服务端read-targets<br/>状态机定向读取目标"]
-    RT --> Filter["Worker去重<br/>移除本轮第一屏已处理对象"]
+    D --> RT["服务端read-targets<br/>conversation_id + remark_code<br/>authorization_revision"]
+    RT --> HasAuth{targets是否为空?}
+    HasAuth -- 是 --> Clear["清空visible_hit_queue<br/>不读/不转写/不入库<br/>首屏事实扫描仍可继续"]
+    HasAuth -- 否 --> Filter["Worker按当前授权过滤并去重<br/>第一屏命中优先"]
     Filter --> ST["state_target_queue<br/>recent_ai_sent / waiting_user_reply / waiting_sales_reply / recall_precheck"]
     ST --> ChooseRead{目标是否仍在第一屏可见?}
-    ChooseRead -- 是 --> SM1["OmniAuto messages target-mode=visible<br/>用rpa_session_key/display_name快速读取<br/>仍需确认remark_code"]
-    ChooseRead -- 否 --> SM2["OmniAuto messages target-mode=search_by_remark_code<br/>搜索框粘贴remark_code<br/>唯一命中并二次确认后读取"]
-    SM1 --> H
-    SM2 --> H
+    ChooseRead -- 是 --> SM1["点击首屏唯一短码会话"]
+    ChooseRead -- 否 --> SM2["search_by_remark_code<br/>唯一命中才点击"]
+    SM1 --> Gate{"顶部标题同步确认<br/>有效短码 + private?"}
+    SM2 --> Gate
+    Gate -- group/unknown/歧义 --> Stop["本轮终止<br/>不再搜索/读取/转写/入库"]
+    Gate -- private --> Initial["首次messages<br/>当前屏文字/语音观察"]
+    Initial --> Voice{存在未转写语音?}
+    Voice -- 否 --> Build["构建V3消息合同"]
+    Voice -- 是 --> VT["同一flow执行voice-transcribe<br/>每次页面变化后重新截图"]
+    VT --> Final["最终messages新截图<br/>同时复核目标和读取消息"]
+    Final --> Build
+    Build --> H["上报messages/ingest<br/>V3 + authorization_revision<br/>source_message_key + dedupe_key"]
 
-    H --> I["服务端去重入库<br/>unique(conversation_id,dedupe_key)"]
+    H --> Auth["服务端复核当前授权版本<br/>旧revision返回409"]
+    Auth --> I["数据库最终去重<br/>unique(conversation_id,dedupe_key)"]
     I --> J{ingest_result}
     J -- ingested且customer消息 --> MB["收集message_batch<br/>进入C3 AI/转人工判断"]
     J -- duplicated/ignored --> N["不触发AI<br/>不创建发送任务"]
@@ -145,7 +151,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     Q["Worker本地任务队列"] --> P{任务是否需要操作微信UI?}
-    P -- 否 --> N["非UI逻辑可并行<br/>等待AI/上传图片/写日志/上报状态"]
+    P -- 否 --> N["非UI逻辑可并行<br/>等待AI/写日志/上报状态"]
     P -- 是 --> L["申请Local WeChat UI Lock<br/>本地锁，不是服务端任务租约"]
     L --> Lease["写入ui_lock.json<br/>lock_id / fencing_token / lease_expires_at"]
     Lease --> Renew["持锁期间定时续租<br/>renew_ui_lock"]
@@ -153,7 +159,7 @@ flowchart TD
     Renew --> C["chat_reply<br/>打开会话/输入/发送"]
     Renew --> S["session_scan/message_ingest<br/>C2扫描/读取消息"]
     Renew --> F["follow_up<br/>发送召回"]
-    Renew --> I["save_image<br/>点开图片/另存"]
+    Renew -. "图片方案确认前禁用" .-> I["save_image历史预留"]
     Renew --> R["remark_code<br/>确认短码新增/移除"]
     A --> U["释放UI锁"]
     C --> U
@@ -169,7 +175,7 @@ flowchart TD
 
 ## 3. 主业务时序图（线索进入到结束，按C0/C1/C2/C3/C4分段）
 
-说明：本图采用 PlantUML/PUML 维护，源文件为 `AI智能客服售前跟进系统_主业务时序图_C0-C4_v0.6.puml`。C2 是 Worker 运行时事实采集和消息入库能力，不进入统一任务中心。
+说明：本图采用 PlantUML/PUML 维护，源文件为 `AI智能客服售前跟进系统_主业务时序图_C0-C4_v0.7.puml`。C2 是 Worker 运行时事实采集和消息入库能力，不进入统一任务中心。
 
 ```plantuml
 @startuml
@@ -237,39 +243,43 @@ group C1 add_friend：搜索手机号、申请好友、写客户短码
   end
 end
 
-group C2 会话绑定/微信监听：第一屏扫描、定向读取、入库、去重；不进入任务中心
+group C2 V16.98：首屏扫描、授权准入、文字/语音入库；不进入任务中心
   loop Worker 运行中
     W -> OA: sessions 扫描微信当前第一屏
-    OA -> WX: 读取第一屏会话/备注/短码/未读提示
-    OA --> W: rpa_session_key、display_name、remark_code_candidates、unread_hint
+    OA -> WX: 普通/增强OCR按视觉行聚合\n识别短码和群聊人数证据
+    OA --> W: remark_code_candidates / conversation_type evidence
     W -> CP: 上报 session_scan_result
-    alt 第一屏短码唯一匹配或已有绑定
-      CP -> CP: wechat_binding.status=bound
-listen_status=listening
-      W -> W: 第一屏命中进入 visible_hit_queue
-      W -> OA: messages 优先读取第一屏命中会话
-      OA -> WX: 定位/打开指定会话，读取近期消息
-      OA --> W: message_type/content/dedupe_key
-      W -> CP: 上报 message_event
-      CP -> CP: dedupe_key 去重入库
-更新 last_inbound_at
-next_action=none
-    else 未识别短码/短码冲突/绑定冲突
+    alt 短码唯一绑定
+      CP -> CP: wechat_binding.status=bound\nlisten_status=listening
+    else 未识别/短码冲突/绑定冲突
       CP -> CP: bind_status=unbound/needs_review/binding_failed
       CP --> W: next_action=none
     end
 
     W -> CP: 拉取 read-targets
-    CP --> W: 状态机定向读取目标
-recent_ai_sent / waiting_user_reply / waiting_sales_reply / recall_precheck
-    W -> W: 去重掉本轮第一屏已处理对象
-    W -> OA: messages 定向读取剩余目标
-target_mode=visible或search_by_remark_code
-    OA -> WX: 第一屏可见则快速读取；否则搜索框粘贴remark_code
-唯一命中并二次确认短码后读取消息
-    OA --> W: message_type/content/dedupe_key
-    W -> CP: 上报 message_event
-    CP -> CP: 去重入库；新客户消息进入C3判断
+    CP --> W: conversation_id + remark_code + authorization_revision
+    alt read-targets为空
+      W -> W: 清空visible_hit_queue\n不读/不转写/不入库
+    else 当前授权目标
+      W -> OA: 首屏唯一命中则visible\n未命中才search_by_remark_code
+      OA -> WX: 点击目标并读取顶部标题
+      OA --> W: remark_code + conversation_type
+      alt group / unknown / 歧义
+        W -> W: 本轮终止\n不再搜索/读取/转写/入库
+      else 有效短码 + private
+        W -> OA: 首次messages读取当前屏
+        OA --> W: V3 observations
+        alt 发现未转写语音
+          W -> OA: 同一flow执行voice-transcribe
+          OA -> WX: 逐条调用微信自带转文字\n页面变化后重新截图
+          W -> OA: 最终messages新截图\n同时复核目标和读取消息
+          OA --> W: 文字 + 已绑定父语音的转写结果
+        end
+        W -> CP: messages/ingest\ncontract_version=3 + authorization_revision\nsource_message_key + dedupe_key
+        CP -> CP: 复核授权版本\nunique(conversation_id,dedupe_key)去重
+        CP -> CP: 新customer消息才进入C3判断\nnext_action=none
+      end
+    end
   end
 end
 
@@ -613,13 +623,17 @@ classDiagram
         +string conversation_id
         +string worker_id
         +string rpa_session_key
+        +int contract_version
+        +string read_run_id
+        +string source_message_key
         +string dedupe_key
         +string sender_role
         +string message_type
         +string content
-        +string image_local_path
+        +string item_state
+        +string flow_state
         +float ocr_confidence
-        +json raw_payload
+        +json raw_payload_V3
         +datetime occurred_at
         +datetime ingested_at
     }
