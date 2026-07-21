@@ -1,5 +1,6 @@
 {
   "contract_version": 3,
+  "contract_revision": "3.1.0",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "sender_roles": ["customer", "self", "system", "unknown"],
@@ -16,23 +17,94 @@
   ],
   "ingestible_row_kinds": [
     "text_bubble",
-    "image_bubble",
+    "voice_transcript",
     "system_message"
   ],
-  "chat_message_row_kinds": ["text_bubble", "image_bubble"],
-  "chat_message_role_sources": ["same_row_avatar"],
+  "chat_message_row_kinds": ["text_bubble", "voice_transcript", "image_bubble"],
   "voice_states": ["not_voice", "untranscribed", "transcribed"],
   "sender_role_sources": [
     "same_row_avatar",
     "parent_voice",
-    "lane_geometry",
     "system",
     "unknown"
   ],
   "item_states": ["completed"],
   "flow_states": ["completed", "partial", "failed", "cancelled"],
-  "role_priority": ["same_row_avatar", "parent_voice", "lane_geometry"],
+  "row_rules": {
+    "text_bubble": {
+      "ingestible": true,
+      "message_type": "text",
+      "allowed_sender_roles": ["customer", "self"],
+      "allowed_sender_role_sources": ["same_row_avatar"],
+      "allowed_voice_states": ["not_voice"],
+      "required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state", "content_clean", "source_message"]
+    },
+    "voice_bubble": {
+      "ingestible": false,
+      "message_type": "voice",
+      "allowed_sender_roles": ["customer", "self"],
+      "allowed_sender_role_sources": ["same_row_avatar"],
+      "allowed_voice_states": ["untranscribed", "transcribed"],
+      "required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state"]
+    },
+    "voice_transcript": {
+      "ingestible": true,
+      "message_type": "voice",
+      "allowed_sender_roles": ["customer", "self"],
+      "allowed_sender_role_sources": ["parent_voice"],
+      "allowed_voice_states": ["transcribed"],
+      "required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state", "content_clean", "parent_voice_anchor_key", "source_message"]
+    },
+    "image_bubble": {
+      "ingestible": false,
+      "message_type": "image",
+      "allowed_sender_roles": ["customer", "self"],
+      "allowed_sender_role_sources": ["same_row_avatar"],
+      "allowed_voice_states": ["not_voice"],
+      "required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state", "source_message"]
+    },
+    "system_message": {
+      "ingestible": true,
+      "message_type": "system",
+      "allowed_sender_roles": ["system"],
+      "allowed_sender_role_sources": ["system"],
+      "allowed_voice_states": ["not_voice"],
+      "required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state", "content_clean", "source_message"]
+    },
+    "call_event": {
+      "ingestible": false,
+      "message_type": "system",
+      "allowed_sender_roles": ["system"],
+      "allowed_sender_role_sources": ["system"],
+      "allowed_voice_states": ["not_voice"],
+      "required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state"]
+    },
+    "system_banner": {
+      "ingestible": false,
+      "message_type": "system",
+      "allowed_sender_roles": ["system"],
+      "allowed_sender_role_sources": ["system"],
+      "allowed_voice_states": ["not_voice"],
+      "required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state"]
+    },
+    "unknown": {
+      "ingestible": false,
+      "message_type": "unknown",
+      "allowed_sender_roles": ["unknown"],
+      "allowed_sender_role_sources": ["unknown"],
+      "allowed_voice_states": ["not_voice"],
+      "required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state"]
+    }
+  },
+  "required_request_fields": [
+    "contract_version",
+    "contract_revision",
+    "contract_sha256",
+    "observation_schema_version",
+    "authorization_revision"
+  ],
   "required_observation_fields": [
+    "schema_version",
     "observation_id",
     "row_kind",
     "sender_role",

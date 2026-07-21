@@ -1,8 +1,11 @@
 from fastapi.testclient import TestClient
 
+from app.contracts.c2 import c2_contract_v3, contract_revision, contract_sha256
 from app.core.database import Base, SessionLocal, engine
 from app.main import app
 from app.models.c3 import Conversation, MessageBatch, ReplyAction
+from app.models.wechat import WechatSessionBinding
+from app.services.wechat_service import _authorization_revision
 
 
 client = TestClient(app)
@@ -127,13 +130,64 @@ def _setup_bound_conversation() -> tuple[dict, dict]:
 
 
 def _ingest(worker: dict, conversation_id: str, dedupe_key: str, content: str) -> str:
+    return _ingest_with_role(worker, conversation_id, dedupe_key, content, "customer")
+
+
+def _ingest_with_role(worker: dict, conversation_id: str, dedupe_key: str, content: str, role: str) -> str:
+    with SessionLocal() as db:
+        binding = db.query(WechatSessionBinding).filter(WechatSessionBinding.conversation_id == conversation_id).one()
+        remark_code = binding.remark_code
+        authorization_revision = _authorization_revision(binding)
+    raw_payload = {
+        "contract_version": 3,
+        "contract_revision": contract_revision(),
+        "contract_sha256": contract_sha256(),
+        "observation_schema_version": int(c2_contract_v3()["observation_schema_version"]),
+        "source_message_key": dedupe_key,
+        "observation": {
+            "schema_version": 3,
+            "observation_id": f"observation:{dedupe_key}",
+            "row_kind": "text_bubble",
+            "sender_role": role,
+            "sender_role_source": "same_row_avatar",
+            "message_type": "text",
+            "voice_state": "not_voice",
+            "content_clean": content,
+            "source_message": {"id": dedupe_key, "type": "text", "sender_role": role, "content": content},
+        },
+    }
     response = client.post(
         f"/api/workers/{worker['id']}/wechat/messages/ingest",
         json={
+            "contract_version": 3,
+            "contract_revision": contract_revision(),
+            "contract_sha256": contract_sha256(),
+            "observation_schema_version": int(c2_contract_v3()["observation_schema_version"]),
             "read_run_id": f"read-{dedupe_key}",
             "conversation_id": conversation_id,
+            "remark_code": remark_code,
             "rpa_session_key": "wx-c3-row-001",
-            "messages": [{"dedupe_key": dedupe_key, "sender_role_hint": "customer", "message_type": "text", "content": content}],
+            "authorization_revision": authorization_revision,
+            "messages": [
+                {
+                    "dedupe_key": dedupe_key,
+                    "source_message_key": dedupe_key,
+                    "sender_role_hint": role,
+                    "message_type": "text",
+                    "content": content,
+                    "item_state": "completed",
+                    "flow_state": "completed",
+                    "message_position": {"screen_order": 1, "frame_source": "final_read"},
+                    "raw_payload": raw_payload,
+                }
+            ],
+            "evidence": {
+                "contract_revision": contract_revision(),
+                "contract_sha256": contract_sha256(),
+                "observation_schema_version": int(c2_contract_v3()["observation_schema_version"]),
+                "authoritative_frame_source": "final_read",
+                "observations": [raw_payload["observation"]],
+            },
         },
         headers=_worker_headers(worker),
     )
@@ -141,23 +195,6 @@ def _ingest(worker: dict, conversation_id: str, dedupe_key: str, content: str) -
     result = response.json()["data"]["results"][0]
     assert result["ingest_result"] == "ingested"
     assert "ingest_status" not in result
-    return result["message_event_id"]
-
-
-def _ingest_with_role(worker: dict, conversation_id: str, dedupe_key: str, content: str, role: str) -> str:
-    response = client.post(
-        f"/api/workers/{worker['id']}/wechat/messages/ingest",
-        json={
-            "read_run_id": f"read-{dedupe_key}",
-            "conversation_id": conversation_id,
-            "rpa_session_key": "wx-c3-row-001",
-            "messages": [{"dedupe_key": dedupe_key, "sender_role_hint": role, "message_type": "text", "content": content}],
-        },
-        headers=_worker_headers(worker),
-    )
-    assert response.status_code == 200
-    result = response.json()["data"]["results"][0]
-    assert result["ingest_result"] == "ingested"
     return result["message_event_id"]
 
 

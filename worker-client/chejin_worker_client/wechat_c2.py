@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from .models import WechatReadTarget
-from .c2_contract import contract_values
+from .c2_contract import (
+    contract_revision,
+    contract_row_rules,
+    contract_sha256,
+    contract_values,
+)
 from .storage import save_c2_state
 
 
@@ -657,24 +662,30 @@ def _build_message_ingest_payload_v3(
 ) -> dict[str, Any]:
     if not target.authorization_revision:
         raise ValueError("C2_TARGET_AUTHORIZATION_REVISION_MISSING")
+    if int(sidecar_payload.get("contract_version") or 0) != 3:
+        raise ValueError("C2_CONTRACT_VERSION_REQUIRED")
+    if str(sidecar_payload.get("contract_revision") or "") != contract_revision():
+        raise ValueError("C2_CONTRACT_REVISION_MISMATCH")
+    if str(sidecar_payload.get("contract_sha256") or "") != contract_sha256():
+        raise ValueError("C2_CONTRACT_SHA256_MISMATCH")
+    if int(sidecar_payload.get("observation_schema_version") or 0) != 3:
+        raise ValueError("C2_OBSERVATION_SCHEMA_VERSION_REQUIRED")
     observations = sidecar_payload.get("observations")
     if not isinstance(observations, list):
         raise ValueError("C2 V3 payload is missing observations")
     allowed_roles = contract_values("sender_roles")
     allowed_types = contract_values("message_types")
-    ingestible_row_kinds = contract_values("ingestible_row_kinds")
-    chat_message_row_kinds = contract_values("chat_message_row_kinds")
-    chat_message_role_sources = contract_values("chat_message_role_sources")
+    row_rules = contract_row_rules()
     voice_summary = sidecar_payload.get("voice_transcription") if isinstance(sidecar_payload.get("voice_transcription"), dict) else {}
     flow_state = normalized_voice_flow_state(voice_summary.get("state")) if voice_summary else "completed"
     message_sidecar_id = sidecar_run_id(sidecar_payload, "messages")
     mapped: list[dict[str, Any]] = []
     source_keys: set[str] = set()
     slots: list[dict[str, Any]] = []
-    voice_entries = voice_transcription_entries(sidecar_payload)
+    observation_validation_errors: list[dict[str, Any]] = []
     authoritative_frame_source = str(sidecar_payload.get("authoritative_frame_source") or "").strip()
     if authoritative_frame_source not in {"initial_read", "final_read"}:
-        authoritative_frame_source = "final_read" if voice_summary else "initial_read"
+        raise ValueError("C2_AUTHORITATIVE_FRAME_SOURCE_INVALID")
 
     def append_item(
         source: dict[str, Any],
@@ -689,9 +700,9 @@ def _build_message_ingest_payload_v3(
         voice_meta: dict[str, Any] | None = None,
     ) -> None:
         if role not in allowed_roles or role == "unknown" or msg_type not in allowed_types:
-            return
+            raise RuntimeError("validated C2 observation became invalid during canonical assembly")
         if msg_type in {"text", "system", "voice"} and not str(content or "").strip():
-            return
+            raise RuntimeError("validated C2 observation lost content during canonical assembly")
         normalized_source = {**source, "sender_role": role, "sender": role, "type": msg_type, "content": content}
         dedupe_key, confidence, basis = message_dedupe_metadata(
             target,
@@ -706,11 +717,23 @@ def _build_message_ingest_payload_v3(
             fallback_index=source_index,
         )
         if canonical_source_key in source_keys:
+            observation_validation_errors.append(
+                {
+                    "observation_id": str((source.get("observation") or {}).get("observation_id") or f"observation-{source_index}"),
+                    "row_kind": str((source.get("observation") or {}).get("row_kind") or ""),
+                    "sender_role_source": str((source.get("observation") or {}).get("sender_role_source") or ""),
+                    "error_code": "MESSAGE_SOURCE_CONFLICT",
+                    "source_message_key": canonical_source_key,
+                }
+            )
             return
         source_keys.add(canonical_source_key)
         raw_payload = {
             **normalized_source,
             "contract_version": 3,
+            "contract_revision": contract_revision(),
+            "contract_sha256": contract_sha256(),
+            "observation_schema_version": 3,
             "source_message_key": canonical_source_key,
             "dedupe_confidence": confidence,
             "dedupe_basis": basis,
@@ -740,23 +763,90 @@ def _build_message_ingest_payload_v3(
 
     for index, observation in enumerate(observations):
         if not isinstance(observation, dict):
+            observation_validation_errors.append(
+                {
+                    "observation_id": f"observation-{index}",
+                    "row_kind": "",
+                    "sender_role_source": "",
+                    "error_code": "OBSERVATION_NOT_OBJECT",
+                }
+            )
             continue
-        row_kind = str(observation.get("row_kind") or "")
-        voice_state = str(observation.get("voice_state") or "")
+        row_kind = str(observation.get("row_kind") or "").strip().lower()
+        voice_state = str(observation.get("voice_state") or "").strip().lower()
+        role_source = str(observation.get("sender_role_source") or "").strip().lower()
+        role = str(observation.get("sender_role") or "unknown").strip().lower()
+        msg_type = str(observation.get("message_type") or "unknown").strip().lower()
+        content = str(observation.get("content_clean") or "").strip()
         source = observation.get("source_message") if isinstance(observation.get("source_message"), dict) else {}
-        source = {**source, "observation": {key: value for key, value in observation.items() if key != "source_message"}}
+        # Keep the complete OmniAuto observation as the immutable evidence.
+        # The backend must be able to re-run the same contract checks instead
+        # of trusting only Worker's canonical interpretation.
+        source = {**source, "observation": dict(observation)}
         rect = message_rect({"bubble_rect": observation.get("bubble_rect") or source.get("bubble_rect")})
         candidate: dict[str, Any] | None = None
-        if row_kind not in {"voice_bubble", "voice_transcript", "image_bubble"} and voice_state == "not_voice":
-            role_source = str(observation.get("sender_role_source") or "")
-            if row_kind in ingestible_row_kinds and not (
-                row_kind in chat_message_row_kinds and role_source not in chat_message_role_sources
-            ):
+        rule = row_rules.get(row_kind)
+        validation_code = ""
+        if int(observation.get("schema_version") or 0) != 3:
+            validation_code = "OBSERVATION_SCHEMA_VERSION_MISMATCH"
+        elif not isinstance(rule, dict):
+            validation_code = "OBSERVATION_ROW_KIND_UNKNOWN"
+        else:
+            for field in rule.get("required_fields") or []:
+                value = observation.get(str(field))
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    validation_code = f"OBSERVATION_REQUIRED_FIELD_MISSING:{field}"
+                    break
+            if not validation_code and msg_type != str(rule.get("message_type") or ""):
+                validation_code = "MESSAGE_ROW_TYPE_MISMATCH"
+            elif not validation_code and role not in {
+                str(value) for value in rule.get("allowed_sender_roles") or []
+            }:
+                validation_code = "MESSAGE_ROW_SENDER_ROLE_INVALID"
+            elif not validation_code and role_source not in {
+                str(value) for value in rule.get("allowed_sender_role_sources") or []
+            }:
+                validation_code = "MESSAGE_ROW_ROLE_SOURCE_UNTRUSTED"
+            elif not validation_code and voice_state not in {
+                str(value) for value in rule.get("allowed_voice_states") or []
+            }:
+                validation_code = "MESSAGE_ROW_VOICE_STATE_INVALID"
+            elif not validation_code and observation.get("contract_errors"):
+                validation_code = "OMNIAUTO_OBSERVATION_CONTRACT_INVALID"
+        if validation_code:
+            observation_validation_errors.append(
+                {
+                    "observation_id": str(observation.get("observation_id") or f"observation-{index}"),
+                    "row_kind": row_kind,
+                    "sender_role_source": role_source,
+                    "error_code": validation_code,
+                }
+            )
+        elif isinstance(rule, dict) and bool(rule.get("ingestible")):
+            if row_kind == "voice_transcript":
+                parent_anchor_key = str(
+                    observation.get("parent_voice_anchor_key") or observation.get("voice_anchor_key") or ""
+                ).strip()
+                voice_source = {
+                    **source,
+                    "type": "voice",
+                    "content": content,
+                    "voice_anchor_stable_key": parent_anchor_key,
+                }
+                candidate = {
+                    "source": voice_source,
+                    "role": role,
+                    "msg_type": "voice",
+                    "content": content,
+                    "source_index": index,
+                    "voice_meta": voice_transcription_meta(voice_summary, message=source),
+                }
+            elif row_kind != "image_bubble":
                 candidate = {
                     "source": source,
-                    "role": str(observation.get("sender_role") or "unknown"),
-                    "msg_type": str(observation.get("message_type") or "unknown"),
-                    "content": str(observation.get("content_clean") or "").strip() or None,
+                    "role": role,
+                    "msg_type": msg_type,
+                    "content": content or None,
                     "source_index": index,
                     "voice_meta": None,
                 }
@@ -770,120 +860,6 @@ def _build_message_ingest_payload_v3(
                 "source": source,
                 "candidate": candidate,
                 "order_source": "visual_top" if rect else "observation_index_fallback",
-            }
-        )
-
-    def match_voice_entry(slot: dict[str, Any]) -> dict[str, Any] | None:
-        observation = slot["observation"]
-        source = slot["source"]
-        slot_aliases = source_identity_aliases(source)
-        for key in ("voice_anchor_key", "parent_voice_anchor_key"):
-            value = str(observation.get(key) or "").strip().lower()
-            if value:
-                slot_aliases.add(f"voice_anchor:{value}")
-        exact = [
-            entry
-            for entry in voice_entries
-            if not entry.get("matched") and slot_aliases & set(entry.get("source_aliases") or set())
-        ]
-        if exact:
-            return exact[0]
-        content_hash = normalized_content_hash(observation.get("content_clean") or "")
-        role = str(observation.get("sender_role") or "unknown")
-        duration = voice_duration_seconds(observation)
-        semantic = [
-            entry
-            for entry in voice_entries
-            if not entry.get("matched")
-            and entry.get("content_hash") == content_hash
-            and entry.get("sender_role") in {role, "unknown"}
-            and (duration is None or entry.get("voice_duration") in {None, duration})
-        ]
-        if not semantic:
-            return None
-        slot_rect = slot.get("rect")
-        if slot_rect:
-            return min(
-                semantic,
-                key=lambda entry: abs(
-                    float((message_rect(entry.get("message") or {}) or {}).get("center_y") or slot_rect["center_y"])
-                    - float(slot_rect["center_y"])
-                ),
-            )
-        return semantic[0]
-
-    # Final-frame voice observations reserve their original visual slots. The
-    # completed result keeps its stable anchor identity but adopts the final
-    # frame geometry, so bottom-up UI actions cannot reorder the V3 messages.
-    for slot in slots:
-        if slot["row_kind"] != "voice_transcript" or slot["voice_state"] != "transcribed":
-            continue
-        entry = match_voice_entry(slot)
-        if not entry:
-            continue
-        entry["matched"] = True
-        entry_source = entry.get("message")
-        content = str(entry.get("content") or "").strip()
-        if not isinstance(entry_source, dict) or not content or not voice_anchor_identity(entry_source):
-            continue
-        final_rect = slot.get("rect")
-        voice_source = {
-            **entry_source,
-            "type": "voice",
-            "content": content,
-            "voice_anchor_stable_key": voice_anchor_identity(entry_source),
-            "_voice_occurrence_index": int(entry.get("occurrence_index") or 0),
-            "observation": {key: value for key, value in slot["observation"].items() if key != "source_message"},
-        }
-        if final_rect:
-            voice_source["bubble_rect"] = {
-                key: int(final_rect[key]) for key in ("left", "top", "right", "bottom")
-            }
-        slot["candidate"] = {
-            "source": voice_source,
-            "role": str(entry.get("sender_role") or "unknown"),
-            "msg_type": "voice",
-            "content": content,
-            "source_index": int(slot["authority_index"]),
-            "voice_meta": voice_transcription_meta(voice_summary, message=entry_source),
-        }
-
-    # A completed, anchor-bound voice should not be lost merely because the
-    # final OCR omitted its transcript observation. Its bound bubble geometry
-    # is used only as an ordering fallback and never as message identity.
-    for entry_index, entry in enumerate(voice_entries, start=len(observations)):
-        if entry.get("matched"):
-            continue
-        source = entry.get("message")
-        content = str(entry.get("content") or "").strip()
-        if not isinstance(source, dict) or not content or not voice_anchor_identity(source):
-            continue
-        role = str(entry.get("sender_role") or "unknown")
-        voice_source = {
-            **source,
-            "type": "voice",
-            "content": content,
-            "voice_anchor_stable_key": voice_anchor_identity(source),
-            "_voice_occurrence_index": int(entry.get("occurrence_index") or 0),
-        }
-        rect = message_rect(voice_source)
-        slots.append(
-            {
-                "authority_index": entry_index,
-                "rect": rect,
-                "row_kind": "voice_transcript",
-                "voice_state": "transcribed",
-                "observation": {},
-                "source": voice_source,
-                "order_source": "voice_anchor_geometry_fallback" if rect else "observation_index_fallback",
-                "candidate": {
-                    "source": voice_source,
-                    "role": role,
-                    "msg_type": "voice",
-                    "content": content,
-                    "source_index": entry_index,
-                    "voice_meta": voice_transcription_meta(voice_summary, message=source),
-                },
             }
         )
 
@@ -948,6 +924,9 @@ def _build_message_ingest_payload_v3(
     finished_at = now_iso()
     return {
         "contract_version": 3,
+        "contract_revision": contract_revision(),
+        "contract_sha256": contract_sha256(),
+        "observation_schema_version": 3,
         "read_run_id": f"read-{uuid.uuid4()}",
         "sidecar_run_id": message_sidecar_id,
         "conversation_id": target.conversation_id,
@@ -957,7 +936,11 @@ def _build_message_ingest_payload_v3(
         "messages": mapped,
         "evidence": {
             "contract_version": 3,
+            "contract_revision": contract_revision(),
+            "contract_sha256": contract_sha256(),
             "observation_schema_version": 3,
+            "authoritative_frame_source": authoritative_frame_source,
+            "observations": [dict(item) if isinstance(item, dict) else item for item in observations],
             "sidecar_run_id": message_sidecar_id,
             "artifact_dir": sidecar_payload.get("artifact_dir"),
             "review_path": sidecar_payload.get("review_path"),
@@ -965,216 +948,17 @@ def _build_message_ingest_payload_v3(
             "adapter": sidecar_payload.get("adapter"),
             "state": sidecar_payload.get("state"),
             "remark_code": target.remark_code,
+            "target_display_name": target.display_name,
+            "target_row_fingerprint": target.row_fingerprint,
             "read_reason": target.read_reason,
             "finished_at": finished_at,
             "voice_transcription": voice_transcription_meta(voice_summary) if voice_summary else None,
+            "observation_validation_errors": observation_validation_errors,
         },
     }
 
 
 def build_message_ingest_payload(target: WechatReadTarget, sidecar_payload: dict[str, Any]) -> dict[str, Any]:
-    if int(sidecar_payload.get("observation_schema_version") or 0) == 3:
-        return _build_message_ingest_payload_v3(target, sidecar_payload)
-    messages = sidecar_payload.get("messages") if isinstance(sidecar_payload.get("messages"), list) else []
-    voice_transcription_summary = sidecar_payload.get("voice_transcription") if isinstance(sidecar_payload.get("voice_transcription"), dict) else {}
-    voice_entries = voice_transcription_entries(sidecar_payload)
-    mapped: list[dict[str, Any]] = []
-    mapped_source_indexes: dict[str, int] = {}
-    message_sidecar_id = sidecar_run_id(sidecar_payload, "messages")
-    flow_state = normalized_voice_flow_state(voice_transcription_summary.get("state")) if voice_transcription_summary else "completed"
-
-    def append_canonical(item: dict[str, Any]) -> None:
-        key = str(item.get("source_message_key") or "")
-        existing_index = mapped_source_indexes.get(key)
-        if existing_index is None:
-            mapped_source_indexes[key] = len(mapped)
-            mapped.append(item)
-            return
-        existing = mapped[existing_index]
-        if existing.get("message_type") != "voice" and item.get("message_type") == "voice":
-            mapped[existing_index] = item
-    for index, item in enumerate(messages):
-        if not isinstance(item, dict):
-            continue
-        content = str(item.get("content") or "").strip()
-        image_local_path = str(item.get("image_local_path") or "").strip() or None
-        msg_type = message_type(item)
-        voice_prefix_removed = False
-        quality_flags = item.get("quality_flags") if isinstance(item.get("quality_flags"), list) else []
-        if "untranscribed_voice_placeholder" in quality_flags:
-            continue
-        raw_ocr_voice_like = raw_ocr_looks_like_voice_transcript(item)
-        if raw_ocr_voice_like:
-            cleaned_content, voice_prefix_removed = strip_voice_ocr_duration_prefix(content)
-            if not cleaned_content:
-                continue
-            content = cleaned_content
-            msg_type = "voice"
-        payload_item = item
-        # A plain text bubble is never promoted to voice only because its text
-        # happens to equal a transcript. The sidecar must first provide voice
-        # structure (duration/icon + transcript layout), then the anchor binds it.
-        matched_voice_transcription = matching_voice_transcription(voice_entries, item, content) if content else None
-        if matched_voice_transcription and msg_type not in {"voice", "text"}:
-            matched_voice_transcription = None
-        if matched_voice_transcription:
-            matched_voice_transcription["matched"] = True
-            matched_message = matched_voice_transcription.get("message")
-            if isinstance(matched_message, dict):
-                content = str(matched_voice_transcription.get("content") or content).strip()
-                msg_type = "voice"
-                role = sender_role_hint(matched_message)
-                if role:
-                    payload_item = {
-                        **item,
-                        **{
-                            key: matched_message.get(key)
-                            for key in ("voice_anchor", "voice_anchor_key", "voice_anchor_stable_key")
-                            if matched_message.get(key)
-                        },
-                        "sender_role": role,
-                        "sender": role,
-                    }
-                    envelope = payload_item.get("message_envelope")
-                    if isinstance(envelope, dict):
-                        payload_item["message_envelope"] = {
-                            **envelope,
-                            "sender_role": role,
-                            "sender": role,
-                        }
-        if raw_ocr_voice_like and not matched_voice_transcription:
-            continue
-        if content_looks_like_untranscribed_voice_placeholder(content) and not matched_voice_transcription:
-            continue
-        if msg_type == "voice" and not matched_voice_transcription and content_looks_like_untranscribed_voice_placeholder(content):
-            continue
-        if not content and not image_local_path and msg_type in {"text", "system"}:
-            continue
-        dedupe_key, dedupe_confidence, dedupe_basis = message_dedupe_metadata(
-            target,
-            payload_item,
-            index,
-            messages=messages,
-        )
-        raw_payload = {**payload_item, "dedupe_confidence": dedupe_confidence, "dedupe_basis": dedupe_basis}
-        canonical_source_key = source_message_key(
-            target,
-            payload_item,
-            sidecar_id=message_sidecar_id,
-            fallback_index=index,
-        )
-        raw_payload["source_message_key"] = canonical_source_key
-        if voice_prefix_removed:
-            raw_payload["voice_duration_prefix_removed"] = True
-        if matched_voice_transcription:
-            raw_payload["voice_transcription"] = content
-            raw_payload["voice_transcription_meta"] = voice_transcription_meta(
-                voice_transcription_summary,
-                message=matched_voice_transcription.get("message") if isinstance(matched_voice_transcription.get("message"), dict) else None,
-            )
-        append_canonical(
-            {
-                "dedupe_key": dedupe_key,
-                "source_message_key": canonical_source_key,
-                "sender_role_hint": sender_role_hint(payload_item),
-                "message_type": msg_type,
-                "content": content or None,
-                "image_local_path": image_local_path,
-                "occurred_at": payload_item.get("occurred_at") or None,
-                "ocr_confidence": payload_item.get("ocr_confidence"),
-                "item_state": "completed",
-                "flow_state": flow_state if msg_type == "voice" else "completed",
-                "raw_payload": raw_payload,
-            }
-        )
-    if str(voice_transcription_summary.get("state") or "") in {"voice_transcribe_completed", "voice_transcribe_partial"}:
-        for entry in voice_entries:
-            if entry.get("matched"):
-                continue
-            item = entry.get("message")
-            content = str(entry.get("content") or "").strip()
-            if not isinstance(item, dict) or not content:
-                continue
-            voice_item = {
-                **item,
-                "type": "voice",
-                "content": content,
-                "_voice_occurrence_index": int(entry.get("occurrence_index") or 0),
-            }
-            dedupe_key, dedupe_confidence, dedupe_basis = message_dedupe_metadata(target, voice_item, len(mapped))
-            canonical_source_key = source_message_key(
-                target,
-                voice_item,
-                sidecar_id=str(voice_transcription_summary.get("sidecar_run_id") or message_sidecar_id),
-                fallback_index=len(mapped),
-            )
-            append_canonical(
-                {
-                    "dedupe_key": dedupe_key,
-                    "source_message_key": canonical_source_key,
-                    "sender_role_hint": sender_role_hint(voice_item),
-                    "message_type": "voice",
-                    "content": content,
-                    "image_local_path": None,
-                    "occurred_at": voice_item.get("occurred_at") or None,
-                    "ocr_confidence": voice_item.get("ocr_confidence"),
-                    "item_state": "completed",
-                    "flow_state": flow_state,
-                    "raw_payload": {
-                        **voice_item,
-                        "source_message_key": canonical_source_key,
-                        "voice_transcription": content,
-                        "voice_transcription_meta": voice_transcription_meta(voice_transcription_summary, message=item),
-                        "dedupe_confidence": dedupe_confidence,
-                        "dedupe_basis": dedupe_basis,
-                    },
-                }
-            )
-    finished_at = now_iso()
-    payload = {
-        "contract_version": 2,
-        "read_run_id": f"read-{uuid.uuid4()}",
-        "sidecar_run_id": sidecar_run_id(sidecar_payload, "messages"),
-        "conversation_id": target.conversation_id,
-        "remark_code": target.remark_code,
-        "rpa_session_key": target.rpa_session_key,
-        "messages": mapped,
-        "evidence": {
-            "sidecar_run_id": sidecar_run_id(sidecar_payload, "messages"),
-            "artifact_dir": sidecar_payload.get("artifact_dir"),
-            "review_path": sidecar_payload.get("review_path"),
-            "screenshot": sidecar_payload.get("screenshot_path"),
-            "adapter": sidecar_payload.get("adapter"),
-            "state": sidecar_payload.get("state"),
-            "ocr_items_count": sidecar_payload.get("ocr_items_count"),
-            "remark_code": target.remark_code,
-            "target_display_name": target.display_name,
-            "target_row_fingerprint": target.row_fingerprint,
-            "read_reason": target.read_reason,
-            "finished_at": finished_at,
-            "voice_transcription": {
-                "state": voice_transcription_summary.get("state"),
-                "sidecar_run_id": voice_transcription_summary.get("sidecar_run_id"),
-                "attempt_count": voice_transcription_summary.get("attempt_count"),
-                "quality_flags": voice_transcription_summary.get("quality_flags"),
-                "artifact_dir": voice_transcription_summary.get("artifact_dir"),
-                "before_screenshot_path": voice_transcription_summary.get("before_screenshot_path"),
-                "after_screenshot_path": voice_transcription_summary.get("after_screenshot_path"),
-                "screenshot_path": voice_transcription_summary.get("screenshot_path"),
-                "review_path": voice_transcription_summary.get("review_path"),
-            } if voice_transcription_summary else None,
-        },
-    }
-    save_c2_state(
-        "last_message_read",
-        {
-            "read_run_id": payload["read_run_id"],
-            "sidecar_run_id": payload["sidecar_run_id"],
-            "conversation_id": target.conversation_id,
-            "rpa_session_key": target.rpa_session_key,
-            "remark_code": target.remark_code,
-            "message_count": len(mapped),
-            "finished_at": finished_at,
-        },
-    )
-    return payload
+    if int(sidecar_payload.get("observation_schema_version") or 0) != 3:
+        raise ValueError("C2_OBSERVATION_SCHEMA_VERSION_REQUIRED")
+    return _build_message_ingest_payload_v3(target, sidecar_payload)

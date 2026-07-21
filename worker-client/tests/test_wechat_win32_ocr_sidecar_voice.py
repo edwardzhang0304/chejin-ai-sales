@@ -67,6 +67,100 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         draw.rectangle((left + 7, top + 6, right - 5, bottom - 18), fill=(218, 173, 91))
         draw.ellipse((left + 12, top + 12, right - 12, bottom - 6), fill=(90, 178, 135))
 
+    def test_voice_transcript_role_always_inherits_bound_parent_voice(self) -> None:
+        observations = sidecar.build_message_observations_v3(
+            [
+                {
+                    "id": "voice-transcript-5s",
+                    "type": "voice",
+                    "sender_role": "customer",
+                    "content": "可以呀，没问题。",
+                    "voice_duration": 5,
+                    "voice_anchor_stable_key": "voice-stable:customer-5s",
+                    # This belongs to the original voice row. It must not make
+                    # the transcript itself claim a same-row avatar.
+                    "avatar_alignment": {"role": "customer"},
+                    "sender_role_evidence": ["avatar_row_structure_confirmed"],
+                }
+            ]
+        )
+
+        self.assertEqual(len(observations), 1)
+        observation = observations[0]
+        self.assertEqual(observation["row_kind"], "voice_transcript")
+        self.assertEqual(observation["sender_role"], "customer")
+        self.assertEqual(observation["sender_role_source"], "parent_voice")
+        self.assertEqual(observation["parent_voice_anchor_key"], "voice-stable:customer-5s")
+
+    def test_voice_transcript_without_parent_anchor_is_not_trusted(self) -> None:
+        observation = sidecar.build_message_observations_v3(
+            [
+                {
+                    "id": "unbound-transcript",
+                    "type": "voice",
+                    "sender_role": "self",
+                    "content": "没有父语音",
+                    "avatar_alignment": {"role": "self"},
+                }
+            ]
+        )[0]
+
+        self.assertEqual(observation["row_kind"], "voice_transcript")
+        self.assertEqual(observation["sender_role_source"], "unknown")
+        self.assertIsNone(observation["parent_voice_anchor_key"])
+
+    def test_final_message_parse_attaches_parent_anchor_to_every_visible_transcript(self) -> None:
+        image = Image.new("RGB", (981, 860), (247, 247, 247))
+        items = [
+            ocr_item('23"', 486, 172, 545, 200),
+            ocr_item("然后，你看那个数字人直播这块儿，如果真要聊，有", 485, 225, 889, 248),
+            ocr_item("没有什么案例能展示的？", 486, 251, 690, 271),
+            ocr_item('5"', 487, 458, 534, 484),
+            ocr_item("可以呀，没问题。回头我把我那个中转站怎么操作告", 486, 512, 888, 532),
+            ocr_item("诉你，可以批量生成的，很简单。", 484, 534, 740, 556),
+        ]
+
+        def avatar_role(_image, bounds, _image_size):
+            top = int(bounds[1])
+            if top in {172, 458}:
+                return {"role": "customer", "side": "left", "confidence": 0.99}
+            return {"role": "", "side": "", "confidence": 0.0}
+
+        with patch.object(sidecar, "message_row_avatar_role_details", side_effect=avatar_role):
+            messages = sidecar.parse_messages_from_ocr(
+                items,
+                image.size,
+                target="CJONE001许聪",
+                screenshot=image,
+            )
+
+        self.assertEqual([message["voice_duration"] for message in messages], [23, 5])
+        parent_keys = [str(message.get("parent_voice_anchor_key") or "") for message in messages]
+        self.assertTrue(all(key.startswith("voice-structural:") for key in parent_keys))
+        self.assertEqual(len(set(parent_keys)), 2)
+        observations = sidecar.build_message_observations_v3(messages)
+        self.assertEqual([item["sender_role_source"] for item in observations], ["parent_voice", "parent_voice"])
+        self.assertTrue(all(not item.get("contract_errors") for item in observations))
+
+    def test_equal_duration_transcripts_use_relative_order_not_absolute_y(self) -> None:
+        first_frame = [
+            {"type": "voice", "sender_role": "customer", "voice_duration": 5, "bubble_rect": {"top": 180, "bottom": 240}, "quality_flags": []},
+            {"type": "voice", "sender_role": "customer", "voice_duration": 5, "bubble_rect": {"top": 420, "bottom": 480}, "quality_flags": []},
+        ]
+        shifted_frame = [
+            {"type": "voice", "sender_role": "customer", "voice_duration": 5, "bubble_rect": {"top": 80, "bottom": 140}, "quality_flags": []},
+            {"type": "voice", "sender_role": "customer", "voice_duration": 5, "bubble_rect": {"top": 320, "bottom": 380}, "quality_flags": []},
+        ]
+
+        sidecar.attach_structural_voice_anchor_keys(first_frame)
+        sidecar.attach_structural_voice_anchor_keys(shifted_frame)
+
+        self.assertEqual(
+            [item["parent_voice_anchor_key"] for item in first_frame],
+            [item["parent_voice_anchor_key"] for item in shifted_frame],
+        )
+        self.assertNotEqual(first_frame[0]["parent_voice_anchor_key"], first_frame[1]["parent_voice_anchor_key"])
+
     def test_messages_frame_reuses_screenshot_and_falls_back_to_same_frame_title_roi(self) -> None:
         image = Image.new("RGB", (965, 852), (247, 247, 247))
         items = [ocr_item("发送", 870, 790, 930, 820)]

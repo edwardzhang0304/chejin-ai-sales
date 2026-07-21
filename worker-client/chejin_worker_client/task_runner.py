@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .api import ApiError, WorkerApiClient
+from .c2_contract import sidecar_contract_error
 from .config import CONFIG
 from .models import Binding, ReplySendClaim, RpaResult, RpaStep, Task, WechatReadTarget, WorkerProfile
 from .rpa_bridge import RpaBridge
@@ -41,34 +42,16 @@ C2_LOCATE_TERMINAL_ERROR_CODES = {
 
 
 def _messages_need_voice_transcribe(sidecar_payload: dict[str, Any]) -> bool:
-    if int(sidecar_payload.get("observation_schema_version") or 0) == 3:
-        observations = sidecar_payload.get("observations")
-        return isinstance(observations, list) and any(
-            isinstance(item, dict)
-            and item.get("row_kind") == "voice_bubble"
-            and item.get("message_type") == "voice"
-            and item.get("voice_state") == "untranscribed"
-            and item.get("sender_role") in {"customer", "self"}
-            for item in observations
-        )
-    # V2 compatibility accepts only explicit structure, never OCR content regexes.
-    visual_hint = sidecar_payload.get("visible_untranscribed_voice")
-    if (
-        isinstance(visual_hint, dict)
-        and visual_hint.get("detected") is True
-        and visual_hint.get("sender_role") in {"customer", "self"}
-    ):
-        return True
-    messages = sidecar_payload.get("messages")
-    return isinstance(messages, list) and any(
+    observations = sidecar_payload.get("observations")
+    return isinstance(observations, list) and any(
         isinstance(item, dict)
-        and str(item.get("type") or item.get("message_type") or "").lower() in {"voice", "audio"}
-        and str(item.get("sender_role") or item.get("sender") or "").lower() in {"customer", "self", "contact", "sales", "sales_candidate"}
-        and (
-            any(item.get(key) is not None for key in ("voice_duration", "audio_duration", "voice_seconds", "audio_seconds"))
-            or "untranscribed_voice_placeholder" in (item.get("quality_flags") or [])
-        )
-        for item in messages
+        and item.get("row_kind") == "voice_bubble"
+        and item.get("message_type") == "voice"
+        and item.get("voice_state") == "untranscribed"
+        and item.get("sender_role") in {"customer", "self"}
+        and item.get("sender_role_source") == "same_row_avatar"
+        and not item.get("contract_errors")
+        for item in observations
     )
 
 
@@ -492,7 +475,13 @@ class TaskRunner:
             remark_code=remark_code,
             row_fingerprint={"value": f"{read_reason}:{claim.conversation_id}:{claim.rpa_session_key}"},
             read_reason=read_reason,
-            raw={"source": "reply_send_claim", "reply_action_id": claim.reply_action_id, "remark_code": remark_code},
+            authorization_revision=str(claim.raw.get("authorization_revision") or "").strip() or None,
+            raw={
+                "source": "reply_send_claim",
+                "reply_action_id": claim.reply_action_id,
+                "remark_code": remark_code,
+                "authorization_revision": claim.raw.get("authorization_revision"),
+            },
         )
 
     def _pre_send_refresh(self, binding: Binding, task: Task, claim: ReplySendClaim, actual_hash: str) -> dict[str, Any]:
@@ -536,6 +525,7 @@ class TaskRunner:
             remark_code=str(task.raw.get("remark_code") or task.remark_code or "").strip() or None,
             row_fingerprint={"value": f"recall_precheck:{conversation_id}:{rpa_session_key}"},
             read_reason="recall_precheck",
+            authorization_revision=str(task.raw.get("authorization_revision") or "").strip() or None,
             raw={"source": "follow_up_task"},
         )
         read_result = self._read_one_wechat_target(
@@ -1581,6 +1571,16 @@ class TaskRunner:
             return not self._backend_still_allows_read_target(binding, target)
 
         try:
+            if not str(target.authorization_revision or "").strip():
+                self.c2_stats["last_error"] = "C2_TARGET_AUTHORIZATION_REVISION_MISSING"
+                append_log(
+                    "WARN",
+                    "c2_message_read_blocked_by_missing_authorization",
+                    "C2 目标缺少后端签发的当前授权票据，未执行任何微信操作。",
+                    error_code="C2_TARGET_AUTHORIZATION_REVISION_MISSING",
+                    metadata={"conversation_id": target.conversation_id, "remark_code": target.remark_code},
+                )
+                return {"ok": False, "error_code": "C2_TARGET_AUTHORIZATION_REVISION_MISSING"}
             if not allow_during_current_task and self._high_priority_active():
                 self.c2_stats["last_error"] = "SCAN_INTERRUPTED_BY_HIGH_PRIORITY_ACTION"
                 append_log("INFO", "c2_message_read_interrupted", "C2 消息读取被高优先级微信动作中断。", error_code="SCAN_INTERRUPTED_BY_HIGH_PRIORITY_ACTION", metadata={"conversation_id": target.conversation_id})
@@ -1775,10 +1775,32 @@ class TaskRunner:
                     },
                 )
                 return {"ok": False, "error_code": code}
+            initial_contract_error = sidecar_contract_error(sidecar_payload)
+            if initial_contract_error:
+                self.c2_stats["last_error"] = initial_contract_error
+                append_log(
+                    "WARN",
+                    "c2_sidecar_contract_invalid",
+                    "OmniAuto 消息观察不符合当前唯一 C2 合同，已在任何语音操作和入库前阻断。",
+                    error_code=initial_contract_error,
+                    metadata={
+                        "conversation_id": target.conversation_id,
+                        "remark_code": target.remark_code,
+                        "contract_revision": sidecar_payload.get("contract_revision"),
+                        "contract_sha256": sidecar_payload.get("contract_sha256"),
+                        "observation_validation_errors": sidecar_payload.get("observation_validation_errors"),
+                    },
+                )
+                return {
+                    "ok": False,
+                    "error_code": initial_contract_error,
+                    "target_confirmation": locate_payload,
+                    "initial_messages": sidecar_payload,
+                }
             if enforce_read_targets and not self._backend_still_allows_read_target(binding, target):
                 return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS", "target_confirmation": locate_payload, "initial_messages": sidecar_payload}
             voice_binding_guard_key = (
-                f"{target_cache_key}:{str(target.authorization_revision or 'legacy').strip()}"
+                f"{target_cache_key}:{str(target.authorization_revision).strip()}"
             )
             if voice_binding_guard_key in self.c2_voice_binding_blocked_authorizations:
                 code = "C2_VOICE_TRANSCRIPT_BINDING_PENDING"
@@ -1821,6 +1843,28 @@ class TaskRunner:
                     sidecar_run_id=voice_payload.get("sidecar_run_id"),
                     timing=voice_payload.get("timing") if isinstance(voice_payload.get("timing"), dict) else None,
                 )
+                voice_contract_error = sidecar_contract_error(voice_payload, require_observations=False)
+                if voice_contract_error:
+                    self.c2_stats["last_error"] = voice_contract_error
+                    append_log(
+                        "WARN",
+                        "c2_voice_sidecar_contract_invalid",
+                        "OmniAuto 语音动作返回的合同指纹不一致，已阻断后续读取和入库。",
+                        error_code=voice_contract_error,
+                        metadata={
+                            "conversation_id": target.conversation_id,
+                            "remark_code": target.remark_code,
+                            "contract_revision": voice_payload.get("contract_revision"),
+                            "contract_sha256": voice_payload.get("contract_sha256"),
+                        },
+                    )
+                    return {
+                        "ok": False,
+                        "error_code": voice_contract_error,
+                        "target_confirmation": locate_payload,
+                        "initial_messages": sidecar_payload,
+                        "voice_transcription": voice_payload,
+                    }
                 voice_state = str(voice_payload.get("state") or voice_payload.get("error_code") or "").strip()
                 voice_fatal_states = {
                     "target_not_confirmed_for_voice_transcribe",
@@ -1940,6 +1984,30 @@ class TaskRunner:
                         "voice_transcription": voice_payload,
                         "target_reconfirmation": transcribed_payload.get("target_confirmation"),
                     }
+                final_contract_error = sidecar_contract_error(transcribed_payload)
+                if final_contract_error:
+                    self.c2_stats["last_error"] = final_contract_error
+                    append_log(
+                        "WARN",
+                        "c2_final_sidecar_contract_invalid",
+                        "OmniAuto 最终权威画面不符合当前唯一 C2 合同，已阻断入库。",
+                        error_code=final_contract_error,
+                        metadata={
+                            "conversation_id": target.conversation_id,
+                            "remark_code": target.remark_code,
+                            "contract_revision": transcribed_payload.get("contract_revision"),
+                            "contract_sha256": transcribed_payload.get("contract_sha256"),
+                            "observation_validation_errors": transcribed_payload.get("observation_validation_errors"),
+                        },
+                    )
+                    return {
+                        "ok": False,
+                        "error_code": final_contract_error,
+                        "target_confirmation": locate_payload,
+                        "initial_messages": sidecar_payload,
+                        "voice_transcription": voice_payload,
+                        "final_messages": transcribed_payload,
+                    }
                 if enforce_read_targets and not self._backend_still_allows_read_target(binding, target):
                     return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS", "target_confirmation": locate_payload, "initial_messages": sidecar_payload, "voice_transcription": voice_payload, "target_reconfirmation": transcribed_payload.get("target_confirmation")}
                 target_reconfirmation = transcribed_payload.get("target_confirmation") if isinstance(transcribed_payload.get("target_confirmation"), dict) else {}
@@ -1956,13 +2024,11 @@ class TaskRunner:
                 payload = build_message_ingest_payload(target, sidecar_payload)
             except ValueError as exc:
                 code = str(exc)
-                if code != "C2_TARGET_AUTHORIZATION_REVISION_MISSING":
-                    raise
                 self.c2_stats["last_error"] = code
                 append_log(
                     "WARN",
                     "c2_messages_ingest_blocked_by_missing_authorization",
-                    "C2 V3 入库请求缺少授权版本，已在发送前阻断。",
+                    "C2 V3 入库请求不符合唯一合同，已在发送前阻断。",
                     error_code=code,
                     metadata={
                         "conversation_id": target.conversation_id,
@@ -1977,6 +2043,33 @@ class TaskRunner:
                     "initial_messages": sidecar_payload,
                 }
             record_phase("build_ingest_payload", phase_started_at, message_count=len(payload.get("messages") or []))
+            local_validation_errors = (
+                (payload.get("evidence") or {}).get("observation_validation_errors")
+                if isinstance(payload.get("evidence"), dict)
+                else []
+            )
+            if not isinstance(local_validation_errors, list):
+                local_validation_errors = []
+            if local_validation_errors:
+                code = str(local_validation_errors[0].get("error_code") or "C2_OBSERVATION_CONTRACT_INVALID")
+                self.c2_stats["last_error"] = code
+                append_log(
+                    "WARN",
+                    "c2_messages_ingest_blocked_by_contract",
+                    "C2 observation 存在合同冲突，整批已在调用后端前阻断。",
+                    error_code=code,
+                    metadata={
+                        "conversation_id": target.conversation_id,
+                        "remark_code": target.remark_code,
+                        "local_validation_errors": local_validation_errors,
+                    },
+                )
+                return {
+                    "ok": False,
+                    "error_code": code,
+                    "payload": payload,
+                    "local_validation_errors": local_validation_errors,
+                }
             if isinstance(payload.get("evidence"), dict):
                 evidence_timing = {
                     **flow_timing,
@@ -1989,6 +2082,7 @@ class TaskRunner:
                 "messages_ingest_api",
                 phase_started_at,
                 ingested_count=result.get("ingested_count") if isinstance(result, dict) else None,
+                ignored_count=result.get("ignored_count") if isinstance(result, dict) else None,
             )
             customer_keys = {
                 item.get("dedupe_key")
@@ -2002,15 +2096,47 @@ class TaskRunner:
             )
             if not result.get("results") and customer_keys and int(result.get("ingested_count") or 0) > 0:
                 new_customer_message_count = int(result.get("ingested_count") or 0)
+            ignored_results = [
+                item
+                for item in (result.get("results") or [])
+                if isinstance(item, dict) and item.get("ingest_result") == "ignored"
+            ]
+            ingest_error_code = ""
+            if local_validation_errors:
+                ingest_error_code = str(local_validation_errors[0].get("error_code") or "C2_OBSERVATION_CONTRACT_INVALID")
+            elif ignored_results:
+                ingest_error_code = str(ignored_results[0].get("error_code") or "C2_MESSAGE_INGEST_IGNORED")
+            elif int(result.get("ignored_count") or 0) > 0:
+                ingest_error_code = "C2_MESSAGE_INGEST_IGNORED"
             self.c2_stats.update(
                 {
                     "last_message_read_at": (payload.get("evidence") or {}).get("finished_at") if isinstance(payload.get("evidence"), dict) else None,
                     "last_ingested_count": result.get("ingested_count") if isinstance(result, dict) else 0,
-                    "last_error": None,
+                    "last_error": ingest_error_code or None,
                 }
             )
-            append_log("INFO", "c2_messages_ingested", "微信消息读取结果已上报。", metadata={"conversation_id": target.conversation_id, "remark_code": target.remark_code, "message_count": len(payload.get("messages") or []), "ingested_count": self.c2_stats["last_ingested_count"]})
-            return {"ok": True, "result": result, "payload": payload, "new_customer_message_count": new_customer_message_count}
+            append_log(
+                "WARN" if ingest_error_code else "INFO",
+                "c2_messages_ingest_partial_failure" if ingest_error_code else "c2_messages_ingested",
+                "微信消息存在合同校验失败或被后端忽略。" if ingest_error_code else "微信消息读取结果已上报。",
+                error_code=ingest_error_code or None,
+                metadata={
+                    "conversation_id": target.conversation_id,
+                    "remark_code": target.remark_code,
+                    "message_count": len(payload.get("messages") or []),
+                    "ingested_count": self.c2_stats["last_ingested_count"],
+                    "ignored_count": int(result.get("ignored_count") or 0),
+                    "local_validation_errors": local_validation_errors,
+                    "ignored_results": ignored_results,
+                },
+            )
+            return {
+                "ok": not bool(ingest_error_code),
+                "error_code": ingest_error_code or None,
+                "result": result,
+                "payload": payload,
+                "new_customer_message_count": new_customer_message_count,
+            }
         except UiLockError as exc:
             code = "voice_transcribe_lock_timeout" if exc.code in {"UI_LOCK_BUSY", "UI_LOCK_ACQUIRE_TIMEOUT"} else exc.code
             self.c2_stats["last_error"] = code

@@ -219,7 +219,6 @@ VOICE_TRANSCRIBE_COLLAPSE_TEXT_TOKENS = ("收起文字", "收起")
 CHAT_INFO_PANEL_TEXT_TOKENS = ("查找聊天内容", "消息免打扰", "置顶聊天", "清空聊天记录")
 TEXT_MESSAGE_CONTEXT_MENU_TOKENS = ("复制", "放大阅读", "翻译", "搜一搜", "转发")
 AVATAR_CONTEXT_MENU_TOKENS = ("拍一拍",)
-MESSAGE_OBSERVATION_SENDER_ROLES = frozenset({"customer", "self", "system", "unknown"})
 DEFAULT_RENDER_RECOVERY_MIN_INTERVAL_SECONDS = 180
 DEFAULT_QUICK_LOGIN_AUTO_ENTER = False
 DEFAULT_TARGET_READY_MAX_ATTEMPTS = 1
@@ -233,6 +232,65 @@ BLANK_RENDER_STDDEV_MAX = 8.0
 BLANK_RENDER_DENSE_RATIO_MIN = 0.93
 BLANK_RENDER_BORDERED_BRIGHT_MIN = 245.0
 BLANK_RENDER_BORDERED_DENSE_RATIO_MIN = 0.965
+
+C2_CONTRACT_FILENAME = "c2_contract_v3.json"
+_C2_CONTRACT_CACHE: dict[str, Any] | None = None
+
+
+def c2_contract_v3() -> dict[str, Any]:
+    global _C2_CONTRACT_CACHE
+    if _C2_CONTRACT_CACHE is not None:
+        return _C2_CONTRACT_CACHE
+    candidates = [
+        PROJECT_ROOT.parent / "contracts" / C2_CONTRACT_FILENAME,
+        PROJECT_ROOT.parent.parent / "contracts" / C2_CONTRACT_FILENAME,
+    ]
+    for path in candidates:
+        if path.is_file():
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if int(payload.get("contract_version") or 0) != 3:
+                raise RuntimeError(f"Invalid C2 contract version in {path}")
+            if not str(payload.get("contract_revision") or "").strip():
+                raise RuntimeError(f"Invalid C2 contract revision in {path}")
+            _C2_CONTRACT_CACHE = payload
+            return payload
+    raise RuntimeError(f"Missing {C2_CONTRACT_FILENAME}")
+
+
+def c2_contract_sha256() -> str:
+    canonical = json.dumps(
+        c2_contract_v3(),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def c2_contract_row_rules() -> dict[str, dict[str, Any]]:
+    values = c2_contract_v3().get("row_rules")
+    if not isinstance(values, dict):
+        raise RuntimeError("Invalid C2 contract row_rules")
+    rules = {
+        str(row_kind): dict(rule)
+        for row_kind, rule in values.items()
+        if isinstance(rule, dict)
+    }
+    row_kinds = {str(value) for value in c2_contract_v3().get("row_kinds") or []}
+    if set(rules) != row_kinds:
+        raise RuntimeError("C2 row_rules and row_kinds are inconsistent")
+    declared_ingestible = {str(value) for value in c2_contract_v3().get("ingestible_row_kinds") or []}
+    derived_ingestible = {row_kind for row_kind, rule in rules.items() if bool(rule.get("ingestible"))}
+    if declared_ingestible != derived_ingestible:
+        raise RuntimeError("C2 ingestible_row_kinds and row_rules are inconsistent")
+    return rules
+
+
+C2_CONTRACT_REVISION = str(c2_contract_v3()["contract_revision"])
+C2_CONTRACT_SHA256 = c2_contract_sha256()
+C2_OBSERVATION_SCHEMA_VERSION = int(c2_contract_v3()["observation_schema_version"])
+C2_ROW_RULES = c2_contract_row_rules()
+MESSAGE_OBSERVATION_SENDER_ROLES = frozenset(str(value) for value in c2_contract_v3()["sender_roles"])
 DEFAULT_HUMANIZED_INPUT_ENABLED = True
 DEFAULT_HUMANIZED_INPUT_METHOD = "sendinput_unicode"
 DEFAULT_HUMANIZED_INPUT_ENFORCE_INTERMITTENT = True
@@ -2007,6 +2065,16 @@ def messages_payload(
         }
     messages = merge_message_history_snapshots(snapshots)
     visible_voice_hint = latest.get("visible_untranscribed_voice") if isinstance(latest.get("visible_untranscribed_voice"), dict) else {"detected": False}
+    observations = build_message_observations_v3(messages, visible_voice_hint)
+    observation_validation_errors = [
+        {
+            "observation_id": str(observation.get("observation_id") or ""),
+            "row_kind": str(observation.get("row_kind") or ""),
+            "error_codes": list(observation.get("contract_errors") or []),
+        }
+        for observation in observations
+        if isinstance(observation, dict) and observation.get("contract_errors")
+    ]
     return {
         "ok": True,
         "online": True,
@@ -2019,8 +2087,12 @@ def messages_payload(
         "chat_info": {"chat_name": target, "source_adapter": "win32_ocr"},
         "history_load": history_load,
         "messages": messages,
-        "observations": build_message_observations_v3(messages, visible_voice_hint),
-        "observation_schema_version": 3,
+        "observations": observations,
+        "observation_validation_errors": observation_validation_errors,
+        "contract_version": 3,
+        "contract_revision": C2_CONTRACT_REVISION,
+        "contract_sha256": C2_CONTRACT_SHA256,
+        "observation_schema_version": C2_OBSERVATION_SCHEMA_VERSION,
         "visible_untranscribed_voice": visible_voice_hint,
         "ocr_items_count": len(ocr_items),
         "target_confirmation": target_confirmation,
@@ -2176,6 +2248,10 @@ def voice_transcribe_payload(
         timing_payload = finalize_performance_timing()
         payload = {
             "ok": bool(transcribed_messages) or (bool(click_result.get("ok")) if click_result else False),
+            "contract_version": 3,
+            "contract_revision": C2_CONTRACT_REVISION,
+            "contract_sha256": C2_CONTRACT_SHA256,
+            "observation_schema_version": C2_OBSERVATION_SCHEMA_VERSION,
             "online": True,
             "adapter": "win32_ocr",
             "state": state,
@@ -4321,6 +4397,68 @@ def normalized_voice_sender_role(value: Any) -> str:
     return "unknown"
 
 
+def voice_structural_anchor_key(
+    *,
+    role: str,
+    duration: str,
+    ordinal_from_bottom: int,
+) -> str:
+    seed = {
+        "side": normalized_voice_sender_role(role),
+        "duration": str(duration or "").strip(),
+        "ordinal_from_bottom": max(1, int(ordinal_from_bottom or 1)),
+    }
+    return "voice-structural:" + hashlib.sha1(
+        json.dumps(seed, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:20]
+
+
+def attach_structural_voice_anchor_keys(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach one relative voice identity in every parsed message frame."""
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if str(message.get("type") or message.get("message_type") or "").lower() not in {"voice", "audio"}:
+            continue
+        role = normalized_voice_sender_role(message.get("sender_role") or message.get("sender"))
+        duration = str(message.get("voice_duration") or "").strip()
+        if not duration:
+            duration_match = re.search(
+                r"\d{1,3}",
+                voice_transcribe_compact_text(message.get("voice_duration_text")),
+            )
+            duration = duration_match.group(0) if duration_match else ""
+        if role not in {"customer", "self"} or not duration:
+            continue
+        groups.setdefault((role, duration), []).append(message)
+
+    def message_center_y(message: dict[str, Any]) -> float:
+        rect = message.get("bubble_rect")
+        if isinstance(rect, dict):
+            return (float(rect.get("top") or 0) + float(rect.get("bottom") or 0)) / 2.0
+        if isinstance(rect, (list, tuple)) and len(rect) >= 4:
+            return (float(rect[1]) + float(rect[3])) / 2.0
+        return 0.0
+
+    for (role, duration), group in groups.items():
+        for ordinal_from_bottom, message in enumerate(
+            sorted(group, key=message_center_y, reverse=True),
+            start=1,
+        ):
+            structural_key = voice_structural_anchor_key(
+                role=role,
+                duration=duration,
+                ordinal_from_bottom=ordinal_from_bottom,
+            )
+            message["voice_anchor_structural_key"] = structural_key
+            message["voice_anchor_key"] = structural_key
+            flags = set(message.get("quality_flags") or [])
+            if "untranscribed_voice_placeholder" not in flags:
+                message["parent_voice_anchor_key"] = structural_key
+    return messages
+
+
 def unified_voice_observation_rect(observation: dict[str, Any]) -> list[float] | None:
     rect = observation.get("bubble_rect")
     if isinstance(rect, dict):
@@ -4418,11 +4556,16 @@ def build_unified_voice_observations_v3(
             target = None
         observations.append(
             {
-                "schema_version": 3,
+                "schema_version": C2_OBSERVATION_SCHEMA_VERSION,
                 "row_kind": "voice_bubble",
                 "voice_state": "untranscribed" if untranscribed else "transcribed",
                 "sender_role": normalized_voice_sender_role(message.get("sender_role") or message.get("sender")),
-                "sender_role_source": "same_row_avatar" if message_has_same_row_avatar_structure(message) else "parser_structure",
+                "sender_role_source": "same_row_avatar"
+                if (
+                    message_has_same_row_avatar_structure(message)
+                    or (target_avatar_role in {"customer", "self"} and target_avatar_role == message_role)
+                )
+                else "unknown",
                 "bubble_rect": message.get("bubble_rect"),
                 "voice_duration": message.get("voice_duration"),
                 "voice_duration_text": message.get("voice_duration_text"),
@@ -4470,6 +4613,8 @@ def build_unified_voice_observations_v3(
             return
         matched = matching_observation(normalized)
         if matched is not None:
+            matched["sender_role"] = normalized_voice_sender_role(actual_role)
+            matched["sender_role_source"] = "same_row_avatar"
             if source not in matched["evidence_sources"]:
                 matched["evidence_sources"].append(source)
             if matched.get("voice_state") == "untranscribed" and not matched.get("action_target"):
@@ -4481,7 +4626,7 @@ def build_unified_voice_observations_v3(
         item = normalized.get("item") if isinstance(normalized.get("item"), dict) else {}
         observations.append(
             {
-                "schema_version": 3,
+                "schema_version": C2_OBSERVATION_SCHEMA_VERSION,
                 "row_kind": "voice_bubble",
                 "voice_state": inferred_state,
                 "sender_role": normalized_voice_sender_role(actual_role),
@@ -4518,10 +4663,36 @@ def build_unified_voice_observations_v3(
     ):
         merge_evidence(visual_target, "visual_self_bubble")
 
+    for index, observation in enumerate(observations):
+        rect = observation.get("bubble_rect")
+        source_message = observation.get("source_message")
+        if not isinstance(source_message, dict) or not source_message:
+            source_message = {
+                "id": str(observation.get("source_message_id") or f"visual-voice-{index}"),
+                "type": "voice",
+                "sender_role": observation.get("sender_role"),
+                "bubble_rect": rect,
+            }
+            observation["source_message"] = source_message
+        observation["observation_id"] = str(
+            observation.get("observation_id")
+            or observation.get("source_message_id")
+            or source_message.get("id")
+            or f"voice-observation-{index}"
+        )
+        observation["message_type"] = "voice"
+        errors = validate_message_observation_v3(observation)
+        if errors:
+            observation["contract_errors"] = errors
+        else:
+            observation.pop("contract_errors", None)
+
     pending = [
         observation
         for observation in observations
-        if observation.get("voice_state") == "untranscribed" and isinstance(observation.get("action_target"), dict)
+        if observation.get("voice_state") == "untranscribed"
+        and not observation.get("contract_errors")
+        and isinstance(observation.get("action_target"), dict)
     ]
     for button in find_voice_transcribe_targets(ocr_items, image_size, allow_inferred=False):
         if not pending:
@@ -4557,11 +4728,18 @@ def build_unified_voice_observations_v3(
             sorted(group, key=observation_center_y, reverse=True),
             start=1,
         ):
-            structural_seed = {"side": role, "duration": duration, "ordinal_from_bottom": ordinal_from_bottom}
-            structural_key = "voice-structural:" + hashlib.sha1(
-                json.dumps(structural_seed, ensure_ascii=False, sort_keys=True).encode("utf-8")
-            ).hexdigest()[:20]
+            structural_key = voice_structural_anchor_key(
+                role=role,
+                duration=duration,
+                ordinal_from_bottom=ordinal_from_bottom,
+            )
             observation["voice_anchor_structural_key"] = structural_key
+            source_message = observation.get("source_message")
+            if isinstance(source_message, dict):
+                source_message["voice_anchor_structural_key"] = structural_key
+                source_message["voice_anchor_key"] = structural_key
+                if observation.get("voice_state") == "transcribed":
+                    source_message["parent_voice_anchor_key"] = structural_key
             target = observation.get("action_target")
             if isinstance(target, dict):
                 target["anchor_structural_key"] = structural_key
@@ -4595,6 +4773,7 @@ def find_unified_untranscribed_voice_observation(
             parsed_messages=parsed_messages,
         )
         if observation.get("voice_state") == "untranscribed"
+        and not observation.get("contract_errors")
         and not observation.get("excluded")
         and isinstance(observation.get("action_target"), dict)
     ]
@@ -4670,6 +4849,35 @@ def visible_untranscribed_voice_hint(
     }
 
 
+def validate_message_observation_v3(observation: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    if int(observation.get("schema_version") or 0) != C2_OBSERVATION_SCHEMA_VERSION:
+        errors.append("OBSERVATION_SCHEMA_VERSION_MISMATCH")
+    row_kind = str(observation.get("row_kind") or "").strip()
+    rule = C2_ROW_RULES.get(row_kind)
+    if not isinstance(rule, dict):
+        return [*errors, "OBSERVATION_ROW_KIND_UNKNOWN"]
+    for field in rule.get("required_fields") or []:
+        value = observation.get(str(field))
+        if value is None or (isinstance(value, str) and not value.strip()):
+            errors.append(f"OBSERVATION_REQUIRED_FIELD_MISSING:{field}")
+    if str(observation.get("message_type") or "") != str(rule.get("message_type") or ""):
+        errors.append("OBSERVATION_MESSAGE_TYPE_MISMATCH")
+    if str(observation.get("sender_role") or "") not in {
+        str(value) for value in rule.get("allowed_sender_roles") or []
+    }:
+        errors.append("OBSERVATION_SENDER_ROLE_INVALID")
+    if str(observation.get("sender_role_source") or "") not in {
+        str(value) for value in rule.get("allowed_sender_role_sources") or []
+    }:
+        errors.append("OBSERVATION_ROLE_SOURCE_INVALID")
+    if str(observation.get("voice_state") or "") not in {
+        str(value) for value in rule.get("allowed_voice_states") or []
+    }:
+        errors.append("OBSERVATION_VOICE_STATE_INVALID")
+    return errors
+
+
 def build_message_observations_v3(
     messages: list[dict[str, Any]],
     visible_voice_hint: dict[str, Any] | None = None,
@@ -4685,18 +4893,6 @@ def build_message_observations_v3(
             role = "customer"
         if role not in MESSAGE_OBSERVATION_SENDER_ROLES:
             role = "unknown"
-        avatar = message.get("avatar_alignment") if isinstance(message.get("avatar_alignment"), dict) else {}
-        evidence = message.get("sender_role_evidence") if isinstance(message.get("sender_role_evidence"), list) else []
-        if str(avatar.get("role") or "") == role and role in {"customer", "self"}:
-            role_source = "same_row_avatar"
-        elif "voice_transcript_inherits_parent_role" in evidence:
-            role_source = "parent_voice"
-        elif role in {"customer", "self"}:
-            role_source = "lane_geometry"
-        elif role == "system":
-            role_source = "system"
-        else:
-            role_source = "unknown"
         msg_type = str(message.get("type") or message.get("message_type") or "unknown").lower()
         quality_flags = message.get("quality_flags") if isinstance(message.get("quality_flags"), list) else []
         untranscribed = msg_type == "voice" and "untranscribed_voice_placeholder" in quality_flags
@@ -4718,37 +4914,57 @@ def build_message_observations_v3(
         else:
             row_kind = "unknown"
             voice_state = "not_voice"
+        if row_kind in {"system_message", "call_event", "system_banner"}:
+            role = "system"
+        elif row_kind == "unknown":
+            role = "unknown"
         anchor_key = str(
-            message.get("voice_anchor_stable_key")
+            message.get("parent_voice_anchor_key")
+            or message.get("voice_anchor_structural_key")
+            or message.get("voice_anchor_stable_key")
             or message.get("voice_anchor_key")
             or ((message.get("voice_anchor") or {}).get("anchor_stable_key") if isinstance(message.get("voice_anchor"), dict) else "")
             or ""
         )
+        avatar = message.get("avatar_alignment") if isinstance(message.get("avatar_alignment"), dict) else {}
+        if row_kind == "voice_transcript":
+            # A transcript row has no same-row avatar. Any retained avatar
+            # metadata belongs to its parent voice bubble and is diagnostic
+            # evidence only; the role itself must come from the bound parent.
+            role_source = "parent_voice" if anchor_key and role in {"customer", "self"} else "unknown"
+        elif str(avatar.get("role") or "") == role and role in {"customer", "self"}:
+            role_source = "same_row_avatar"
+        elif role == "system":
+            role_source = "system"
+        else:
+            role_source = "unknown"
         observation_id = str(message.get("id") or "").strip() or f"ocr-observation-{index}"
         if observation_id in seen_ids:
             observation_id = f"{observation_id}:{index}"
         seen_ids.add(observation_id)
-        observations.append(
-            {
-                "schema_version": 3,
-                "observation_id": observation_id,
-                "row_kind": row_kind,
-                "sender_role": role,
-                "sender_role_source": role_source,
-                "message_type": "voice" if msg_type == "voice" else msg_type,
-                "voice_state": voice_state,
-                "voice_anchor_key": anchor_key or None,
-                "parent_voice_anchor_key": anchor_key or None if row_kind == "voice_transcript" else None,
-                "content_clean": "" if untranscribed else str(message.get("content") or "").strip(),
-                "content_raw": str(message.get("content_raw_ocr") or message.get("content") or ""),
-                "bubble_rect": message.get("bubble_rect"),
-                "voice_duration": message.get("voice_duration"),
-                "voice_duration_text": message.get("voice_duration_text"),
-                "ocr_confidence": message.get("ocr_confidence"),
-                "quality_flags": quality_flags,
-                "source_message": message,
-            }
-        )
+        observation = {
+            "schema_version": C2_OBSERVATION_SCHEMA_VERSION,
+            "observation_id": observation_id,
+            "row_kind": row_kind,
+            "sender_role": role,
+            "sender_role_source": role_source,
+            "message_type": "voice" if msg_type == "voice" else msg_type,
+            "voice_state": voice_state,
+            "voice_anchor_key": anchor_key or None,
+            "parent_voice_anchor_key": (anchor_key or None) if row_kind == "voice_transcript" else None,
+            "content_clean": "" if untranscribed else str(message.get("content") or "").strip(),
+            "content_raw": str(message.get("content_raw_ocr") or message.get("content") or ""),
+            "bubble_rect": message.get("bubble_rect"),
+            "voice_duration": message.get("voice_duration"),
+            "voice_duration_text": message.get("voice_duration_text"),
+            "ocr_confidence": message.get("ocr_confidence"),
+            "quality_flags": quality_flags,
+            "source_message": message,
+        }
+        contract_errors = validate_message_observation_v3(observation)
+        if contract_errors:
+            observation["contract_errors"] = contract_errors
+        observations.append(observation)
     hint = visible_voice_hint if isinstance(visible_voice_hint, dict) else {}
     if hint.get("detected"):
         hint_key = str(hint.get("anchor_stable_key") or hint.get("anchor_key") or "")
@@ -4759,9 +4975,8 @@ def build_message_observations_v3(
             for item in observations
         )
         if not already_seen:
-            observations.append(
-                {
-                    "schema_version": 3,
+            observation = {
+                    "schema_version": C2_OBSERVATION_SCHEMA_VERSION,
                     "observation_id": f"voice-hint:{hint_key or len(observations)}",
                     "row_kind": "voice_bubble",
                     "sender_role": str(hint.get("sender_role") or "unknown"),
@@ -4779,7 +4994,10 @@ def build_message_observations_v3(
                     "quality_flags": ["visual_voice_hint"],
                     "source_message": {},
                 }
-            )
+            contract_errors = validate_message_observation_v3(observation)
+            if contract_errors:
+                observation["contract_errors"] = contract_errors
+            observations.append(observation)
     return observations
 
 
@@ -13443,7 +13661,7 @@ def parse_messages_from_ocr(
         message = apply_message_envelope_to_record(record, envelope)
         if str(message.get("content") or "").strip():
             messages.append(message)
-    return messages
+    return attach_structural_voice_anchor_keys(messages)
 
 
 def classify_message_side(item: dict[str, Any], *, width: int) -> str:
