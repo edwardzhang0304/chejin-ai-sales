@@ -392,9 +392,9 @@ loop Worker运行中；每次循环最多完成一个会话事务
                 C3 --> W: opening batch_id\n进入回复AI
               end
             else recall_origin_status=sales_replied_waiting_user且发现新customer
-              Ingest -> C3: 取消recall_cycle_id\n客户已回复销售
-              C3 -> DB: conversation.status=waiting_sales_reply
-              C3 --> W: terminal no_action\n继续由销售处理，不调用Brain
+              Ingest -> C3: 取消recall_cycle_id\n客户已回复
+              C3 -> DB: conversation.status=ai_active
+              C3 --> W: 创建普通客户消息batch\n交回AI判断
             else recall_precheck=true且没有新customer/self消息
               W -> C3: 请求创建召回批次\ntrigger_type=recall + recall_cycle_id
               C3 -> DB: 再校验等待状态、AI开关、静默时段、次数/每日上限\nunique(conversation_id, recall_cycle_id)
@@ -409,7 +409,7 @@ loop Worker运行中；每次循环最多完成一个会话事务
               Ingest -> C3: 新消息事实已入库\n但历史顺序存在缺口
               C3 -> C3: 直接handoff\n不调用Brain、不自动回复
               C3 --> W: terminal handoff + C2_MESSAGE_HISTORY_GAP
-            else 会话ai_enabled=false/销售已接管/全局紧急暂停
+            else 会话ai_enabled=false/仍在waiting_sales_reply/全局紧急暂停
               Ingest -> C3: batch直接no_action或handoff
               C3 --> W: terminal no_action / handoff
             else 存在failed的customer语音或customer图片
@@ -439,17 +439,14 @@ loop Worker运行中；每次循环最多完成一个会话事务
                 Brain --> C3: send_reply + approved reply_text
                 C3 -> Reply: 创建当前batch唯一reply_action\nstatus=queued
                 C3 --> W: batch terminal=reply_action_created\nreply_action_id
-              else 无需回复
-                Brain --> C3: no_action
-                C3 --> W: batch terminal=no_action
               else 高风险/低置信/Guard阻断
-                Brain --> C3: handoff + reason_code
-                C3 -> DB: conversation.ai_enabled=false\n记录handoff_event
+                Brain --> C3: handoff / handoff_for_approval + reason
+                C3 -> DB: conversation.status=waiting_sales_reply\n记录handoff_event\nai_enabled保持原硬开关值
                 C3 --> W: batch terminal=handoff
-              else Brain超时/供应商异常/结果合同非法
+              else Brain无可见回复/超时/供应商异常/结果合同非法
                 Brain --> C3: technical_error
                 C3 -> C3: 按同一batch重试策略处理\n不得伪装为no_action
-                C3 --> W: batch terminal=technical_failed\nerror_code + retryable
+                C3 --> W: batch_status=failed\ndecision=retry_later\nerror_code + retryable
               end
             end
           end

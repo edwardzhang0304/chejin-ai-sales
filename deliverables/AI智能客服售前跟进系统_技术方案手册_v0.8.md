@@ -2,11 +2,11 @@
 
 版本：v0.8
 
-日期：2026-07-20
+日期：2026-07-21
 
-当前阶段：运营后台 + Windows Worker 客户端；C1 已形成稳定基线，C2 V16.98 已完成文字/语音、V3 授权、private 单聊准入、群聊阻断和侧栏 OCR 收口；图片识别方案待架构确认
+当前阶段：运营后台 + Windows Worker 客户端；C1 已形成稳定基线，C2 V16.104 已完成文字/语音、V3 授权、private 单聊准入、群聊阻断、统一顺序和语音锚点；图片与 C2-C3 串行接口已定义但尚未实现
 
-一句话结论：当前技术方案统一收口到本文档；C2 只允许“有效短码 + private 单聊 + 当前 read-target 授权”的会话进入消息读取，文字和语音按 V3 合同入库，群聊/unknown 终止本轮；图片识别仍为待定设计，不得恢复旧图片入口或据此宣称已接入。
+一句话结论：当前技术方案统一收口到本文档；C2 只允许“有效短码 + private 单聊 + 当前 read-target 授权”的会话进入消息读取，文字和语音按 V3 合同入库，群聊/unknown 终止本轮；图片与 C2-C3 串行链路按专项接口合同开发，完成代码和实机回归前不得恢复旧图片入口或宣称已接入。
 
 ---
 
@@ -33,6 +33,7 @@
 | 2026-07-01 | v0.7 | C2 已能处理文字读取和短码定向读取，但真实客户可能发送微信语音；若不识别语音，状态机会把“客户已回复”误判为“客户沉默” | 增补 C2 语音消息识别方案：Worker 先通过 OmniAuto `messages` 探测当前会话消息类型；只有发现未转写语音时才调用 `voice-transcribe` 点击微信自带语音转文字，再二次读取 `messages`；语音消息统一入 `message_events`，失败不得触发 AI 自动回复 |
 | 2026-07-20 | v0.8 | v0.7 仍停留在早期语音方案，未覆盖 V3 授权、稳定消息身份、角色门禁、private 单聊准入、群聊终止态、侧栏 OCR 同行聚合和长语音流程 | 以 V16.98 为 C2 当前冻结基线：首屏扫描与授权读取分离；只准入有效短码 private 单聊；群聊/unknown 不搜索、不读取、不转写、不入库；消息上报强制 V3 和 `authorization_revision`；语音转写使用同一 flow、同一 UI 锁和进展型 watchdog；图片识别留待下一版确认 |
 | 2026-07-21 | v0.8内部修订 | 自动召回仍写成 Worker 发送固定文案；销售人工回复与“等待销售回复”容易被混成同一状态 | 召回统一复用服务端 Brain，使用 `trigger_type=recall + recall_cycle_id`；Brain/Guard 产出批准文案后 Worker 才发送。销售已经发出人工回复时进入 `sales_replied_waiting_user`，停止当前AI回复但保留后续召回资格。 |
+| 2026-07-21 | v0.8内部修订 | OmniAuto RPA、Vision、Brain 与车金 Worker/后端存在同义接口和字段所有权不清风险 | 新增 `C2-C3_OmniAuto_Worker_后端接口合同_v0.1_2026-07-21.md`：固定 OmniAuto action/Brain/Vision 名称、三层字段所有权、C2-C3 单会话串行扩展和唯一映射；本手册只保留摘要，详细联调以接口合同为准。 |
 
 ---
 
@@ -74,7 +75,7 @@ Worker = 微信事实采集器 + 微信动作执行器
 Worker 上报事实：
 
 - 客户新文字消息。
-- 客户新图片消息（V16.98 仅识别为待处理观察，正式采集/入库待图片方案确认）。
+- 客户新图片消息（V16.104 仅识别为待处理观察；目标接口已预冻结，正式采集/入库尚未实现）。
 - 销售手机端同步到桌面端的人工回复。
 - AI/召回发送成功或失败。
 - 图片处理成功或失败（预留事实类型，V16.98 不产生该事实）。
@@ -189,7 +190,7 @@ Worker 上报事实：
 | `recall_precheck` | 召回前读取确认中。 | Worker读取微信事实 / 服务端复核 | 不发送召回；确认无新客户消息后才允许创建 `follow_up`。 |
 | `recalled_waiting_user` | AI已发过召回，继续等待客户回。 | 客户 | 到下一轮召回周期后可再次召回。 |
 | `waiting_sales_reply` | AI已转人工，等待销售回复客户。 | 销售 | 超过N天销售未回，服务端飞书通知销售。 |
-| `sales_replied_waiting_user` | 销售已回复，等待客户回。 | 客户 / 召回到期 | 客户回复后继续交给销售；长期未回复可进入 `recall_precheck`。 |
+| `sales_replied_waiting_user` | 销售已回复，等待客户回。 | 客户 / 召回到期 | 客户回复后重新进入 `ai_active`；长期未回复可进入 `recall_precheck`，由 Brain 生成召回。 |
 | `rejected` | 客户明确拒绝或黑名单。 | 无 | 不加好友、不回复、不召回。 |
 | `closed` | 系统停止自动跟进。常见原因包括销售移除备注短码、销售线下接手、人工确认结束。 | 无 | 不自动回复、不召回、不飞书提醒、不主动关注。 |
 
@@ -282,11 +283,12 @@ AI召回成功 -> recalled_waiting_user
 
 ```text
 未转人工会话 -> ai_active
-已转人工会话 -> waiting_sales_reply 或保持人工负责，由销售继续处理
+waiting_sales_reply 且销售尚未回复 -> 保持人工负责，由销售继续处理
+sales_replied_waiting_user -> ai_active
 AI召回已经成功的会话 -> ai_active；高意向/高风险时仍转 waiting_sales_reply
 ```
 
-`recall_origin_status` 只用于召回发送前的 precheck：如果召回尚未发送，且原来是 `sales_replied_waiting_user`，此时读到客户新消息仍交给销售。召回文案一旦发送成功，状态统一进入 `recalled_waiting_user`；客户后续正常回复重新进入 `ai_active`，不再沿用召回前的销售归属。
+`recall_origin_status` 只用于证明本次召回从哪个等待状态进入和避免重复召回，不改变客户新消息的归属：只要原状态为 `sales_replied_waiting_user`，无论召回发送前后，客户新消息都重新进入 `ai_active`。召回文案发送成功后状态统一进入 `recalled_waiting_user`。
 
 如果客户明确拒绝：
 
@@ -317,7 +319,7 @@ status in (waiting_user_reply, recalled_waiting_user, sales_replied_waiting_user
 ```text
 服务端生成 recall_precheck read-target，并保存 recall_origin_status
 Worker定向读取该会话最新消息
-若读到客户新消息，则取消本轮召回；原本由AI负责时进入AI回复/转人工链路，原本为 sales_replied_waiting_user 时进入 waiting_sales_reply 继续由销售处理
+若读到客户新消息，则取消本轮召回并进入AI回复/转人工判断；原本为 sales_replied_waiting_user 时同样重新进入 ai_active，不继续锁给销售
 若确认无客户新消息，服务端创建 trigger_type=recall 的召回批次
 同一个 Brain 结合历史会话生成召回候选，Guard 审核通过后创建follow_up任务
 Worker领取任务并发送服务端批准的召回内容
@@ -1029,7 +1031,7 @@ Worker 启动、心跳或每次获取锁前都必须执行本地锁恢复检查�
 | 65 | `recall_precheck_read` | 召回前确认读取；确认没有新客户消息后才允许 follow_up。 |
 | 60 | `follow_up` | 召回发送；必须经过 recall_precheck。 |
 | 40 | `diagnostic` | 人工排查、诊断截图；不作为主监听兜底。 |
-| 20 | `save_image` | 历史预留动作，V16.98 禁用；图片方案确认前不得恢复旧入口。 |
+| 20 | `save_image` | 历史预留动作，V16.104 禁用；目标方案明确不恢复旧入口。 |
 
 队列规则：
 
@@ -1159,6 +1161,27 @@ sent_ack用于确认Worker已发送。
 - C2 接口、状态、错误码和验收标准以本模块为准。
 
 ### 6.0 OmniAuto结合方式
+
+#### 6.0.0 接口名称与适配边界
+
+C2/C3 详细联调字段以 `C2-C3_OmniAuto_Worker_后端接口合同_v0.1_2026-07-21.md` 为唯一专项依据。本手册定义业务流程，专项合同定义可直接开发和测试的请求、响应、枚举、字段所有者及 OmniAuto 到车金后端的唯一映射。
+
+正式命名固定如下：
+
+```text
+OmniAuto RPA action：sessions / open-chat / messages / voice-transcribe / send
+OmniAuto Vision：customer_image_understanding / visual_bridge_input
+OmniAuto Brain：customer_service_brain / brain_plan / brain_plan.recommended_action / reply_segments
+车金后端流程对象：message_batch / batch_id / reply_action / handoff_event
+```
+
+三层边界：
+
+- OmniAuto 输出 UI 观察、Vision 文字化结果和 Brain 计划，不依赖车金 `contracts/c2_contract_v3.json`。
+- Worker 校验 `observation_schema_version`，生成车金 V3 合同指纹、稳定消息身份、统一顺序和后端请求。
+- 后端下发 `conversation_id/authorization_revision`，执行状态机、合同校验、最终去重和持久化，不重做 OCR 左右侧、消息类型或语音父子归属判断。
+- OmniAuto Brain 的 `brain_plan.recommended_action` 是业务语义；车金 `batch_status` 是持久化流程状态。二者只能按接口合同映射，不能互相替代。
+- V16.104 的 `messages/ingest` 仍只完成 C2 入库；后续单会话串行实现是在原响应中增加可选 `message_batch`，Worker 按 `batch_id` 保持原会话和 UI 锁等待 Brain 终态，不新建另一套“上报并问 Brain”接口。
 
 ```text
 Worker运行时扫描
@@ -1470,7 +1493,7 @@ Worker 负责生成稳定 `source_message_key` 和候选 `dedupe_key`，服务�
 | 2 | 语音消息 | 优先使用稳定 voice anchor；缺失时使用“角色 + 归一化正文 + 时长 + 同类序号”等稳定语义身份，不使用页面绝对位置和扫描时间桶。 |
 | 3 | 文本消息 | 使用稳定来源身份；缺失时使用“角色 + 归一化正文 + 同类序号”等当前屏内稳定语义身份。 |
 | 4 | 系统/文件等兼容消息 | 使用稳定来源 ID 或受约束的结构化内容摘要；无法形成可靠身份时不入库。 |
-| 5 | 图片消息 | V16.98 未接入图片识别和图片入库；其来源身份、图像哈希和生命周期在图片方案确认后定义，不沿用旧 `image_local_path` 方案。 |
+| 5 | 图片消息 | V16.104 未接入图片识别和图片入库；目标使用当前剪贴板内存事务、`customer_image_understanding/visual_bridge_input` 和 C2 统一来源身份，不沿用旧 `image_local_path` 方案。 |
 
 文本归一化规则：
 
@@ -1884,7 +1907,7 @@ Worker 上报语音消息时：
 目标客户已确认，且客户语音可见但转写失败
 -> 不进入 C3 自动回复
 -> conversation.status 进入 waiting_sales_reply
--> conversation.ai_enabled=false
+-> ai_enabled 保持原值，由 waiting_sales_reply 状态门禁阻断普通实时回复
 -> 记录 error_code
 -> 后台可展示“语音转写失败，需人工查看”
 ```
@@ -2222,6 +2245,8 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 | `results[]` | 每条消息的处理结果，包含 `dedupe_key`、`ingest_result=ingested/duplicated/ignored`、`message_event_id`、`error_code`。 |
 | `next_action` | C2 固定为 `none`；不返回 AI 发送动作。 |
 
+兼容说明：上表是 V16.104 已实现的 C2 响应。后续 C2-C3 单会话串行链路启用时，原字段保持兼容，并仅新增可选 `message_batch={batch_id,batch_status}`；具体等待和终态查询合同见 `C2-C3_OmniAuto_Worker_后端接口合同_v0.1_2026-07-21.md`，不得另建同义消息上报接口。
+
 ### 6.3 C2状态流转
 
 #### 6.3.1 微信绑定状态 `wechat_session_binding.bind_status`
@@ -2436,7 +2461,7 @@ message_event
 | `reply_action` | 服务端 AI 编排器 | 表示服务端批准的一次候选回复或转人工决策 | Worker 只能发送 `status=queued` 且 claim 成功的 action。 |
 | `chat_reply task` | 服务端任务中心 | 让 Worker 执行微信发送动作 | `task_type=chat_reply`，必须绑定唯一 `reply_action_id`。 |
 | `sent_ack` | Worker | 证明某个 `reply_action` 已发送或发送失败 | `reply_action_id` 唯一；重复上报只返回既有结果。 |
-| `handoff_event` | 服务端 | 记录转人工原因、触发消息、通知结果 | 转人工后 `conversation.ai_enabled=false`，不创建 `chat_reply` 发送任务。 |
+| `handoff_event` | 服务端 | 记录转人工原因、触发消息、通知结果 | 转人工后进入 `waiting_sales_reply`，由状态门禁阻断普通实时回复，不自动关闭 `ai_enabled` 硬开关，不创建当前批次的发送任务。 |
 
 #### 7.1.1 Conversation正式字段
 
@@ -2691,7 +2716,7 @@ OmniAuto AI Engine 在服务端通过 Adapter 接入，不允许运行 OmniAuto 
 | 失败处理 | 超时、异常、输出不合法、证据不足时默认 `handoff`，不使用本地兜底话术继续自动回复。 |
 | 审计 | 保存 prompt 版本、模型名、RAG命中、Evidence Pack 摘要、候选回复、Guard结果、最终 decision 和 trace_id。 |
 
-Adapter 输出合同：
+车金 Adapter 内部投影如下；它不是第二套模型输出合同，原始语义必须来自 OmniAuto `customer_service_brain.brain_plan`，唯一字段映射见 C2-C3 接口合同：
 
 ```json
 {
@@ -2711,7 +2736,7 @@ Adapter 输出合同：
 | decision | 处理 |
 |---|---|
 | `send_reply` | Guard 通过后创建 `reply_action` 和 `chat_reply task`。 |
-| `handoff` | 创建 `handoff_event`，`conversation.ai_enabled=false`，不创建发送任务。 |
+| `handoff` | 创建 `handoff_event`，状态进入 `waiting_sales_reply`，不自动关闭 `ai_enabled` 硬开关，不创建发送任务。 |
 | `no_action` | 本轮不回复，记录原因。 |
 | `pause` | 暂停会话自动回复，等待人工处理。 |
 | `retry_later` | 模型/依赖短暂异常，按配置短延迟重试；超过次数转人工。 |
@@ -2749,8 +2774,8 @@ Adapter 输出合同：
 - 同一 `reply_action_id` 不会被发送两次。
 - Worker 成功发送后，`sent_ack` 能把状态更新为 `reply_action.sent`、`task.completed`、`conversation.waiting_user_reply`。
 - Worker 失败或结果未知时，不自动补发同一内容。
-- 模型失败、RAG 证据不足、Guard 阻断时，系统转人工或 no_action，不编造回复。
-- 销售人工回复、客户拒绝、短码移除、会话关闭后，AI 不再创建发送任务。
+- Brain 技术失败必须进入 `failed/retry_later`，不得伪装成 `no_action`；RAG 证据不足或 Guard 阻断时可转人工或形成合法 `no_action`，不得编造回复。
+- 等待销售回复、客户拒绝、短码移除或会话关闭时，不创建普通实时 AI 发送任务；销售已回复只进入 `sales_replied_waiting_user`，客户再次回复时交回 AI，客户长期未回复时仍可进入 Brain 召回判断。
 - OmniAuto AI Engine 只在服务端生成候选回复；OmniAuto RPA Sidecar 只在 Worker 端发送已批准文本。
 
 | 主题 | 设计 |
@@ -2888,10 +2913,10 @@ Adapter 输出合同：
 |---|---|
 | 风控/关键词 | 高风险、高意向、投诉、金融、合同、底价等。 |
 | 模型失败 | DeepSeek 超时或失败、RAG 失败、图片视觉失败、低置信度、车源失败无法安全回复。 |
-| 销售主动回复 | 检测到销售手机端人工消息。 |
+| 销售主动回复 | 检测到销售手机端人工消息后直接进入 `sales_replied_waiting_user`，不再创建“等待销售回复”的 handoff。 |
 | 手动操作 | 控制面或 Worker 执行台点击停止 AI/手动接管。 |
 
-- 进入 `waiting_sales_reply` 时必须 `conversation.ai_enabled=false`。
+- 进入 `waiting_sales_reply` 时由会话状态阻断普通实时 AI 回复；只有人工明确关闭全部自动化时才设置 `conversation.ai_enabled=false`。
 - 飞书通知包含客户标识、线索短码、手机号后四位、销售、触发原因、最近消息、建议动作、时间。
 - 飞书通知失败时 AI 仍停止，控制面和 Worker 执行台展示错误日志，由项目方人工查看处理。
 - 同一 `handoff_event_id` 只触发一次飞书通知，避免重复提醒销售。

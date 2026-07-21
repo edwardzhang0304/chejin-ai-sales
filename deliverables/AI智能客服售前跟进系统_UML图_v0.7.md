@@ -151,22 +151,25 @@ flowchart TD
 ```mermaid
 flowchart TD
     Q["Worker本地任务队列"] --> P{任务是否需要操作微信UI?}
-    P -- 否 --> N["非UI逻辑可并行<br/>等待AI/写日志/上报状态"]
+    P -- 否 --> N["非UI逻辑<br/>写日志/上报状态"]
     P -- 是 --> L["申请Local WeChat UI Lock<br/>本地锁，不是服务端任务租约"]
     L --> Lease["写入ui_lock.json<br/>lock_id / fencing_token / lease_expires_at"]
     Lease --> Renew["持锁期间定时续租<br/>renew_ui_lock"]
     Renew --> A["add_friend<br/>手机号搜索/发送邀请/写备注"]
     Renew --> C["chat_reply<br/>打开会话/输入/发送"]
-    Renew --> S["session_scan/message_ingest<br/>C2扫描/读取消息"]
+    Renew --> S["session_scan/message_ingest<br/>C2扫描/读取文字语音<br/>图片启用后在同一会话事务内处理"]
     Renew --> F["follow_up<br/>发送召回"]
-    Renew -. "图片方案确认前禁用" .-> I["save_image历史预留"]
     Renew --> R["remark_code<br/>确认短码新增/移除"]
     A --> U["释放UI锁"]
     C --> U
-    S --> U
     F --> U
-    I --> U
     R --> U
+    S --> HasBatch{后端是否返回batch_id?}
+    HasBatch -- 否 --> U
+    HasBatch -- 是 --> B["保持原会话和UI锁<br/>只等待当前OmniAuto Brain终态"]
+    B --> BrainResult{batch终态}
+    BrainResult -- send_reply --> C
+    BrainResult -- handoff/no_action/failed --> U
     Renew --> T["锁过期/续租失败/步骤超时"]
     T --> E["截图取证<br/>释放或恢复stale lock<br/>上报错误码"]
     E --> U
@@ -310,7 +313,7 @@ last_outbound_at=now
       end
     else 高意向/高风险/模型失败/低置信
       CP -> CP: status=waiting_sales_reply
-ai_enabled=false
+普通实时AI由状态门禁阻断
       CP -> FS: 飞书通知销售接管
       FS -> S: 销售收到通知
     end
@@ -333,9 +336,11 @@ group C4 召回与人工跟进：召回前先precheck，Worker只执行已批准
         CP -> CP: 取消召回
 进入AI回复/转人工判断
       else precheck确认无新客户消息
+        CP -> AI: 创建trigger_type=recall批次
+Brain生成召回文案并通过Guard
         CP -> TS: 创建 follow_up 任务
         W -> TS: 领取 follow_up
-        W -> OA: 发送固定召回文案
+        W -> OA: 发送Brain批准的召回文案
         OA -> WX: 发送召回
         W -> CP: 上报 follow_up sent_ack
         CP -> CP: status=recalled_waiting_user
@@ -355,13 +360,13 @@ recall_count+1
   alt 客户再次回复
     C -> WX: 客户回复
     W -> CP: C2链路上报 message_event
-    CP -> CP: 回到 AI 判断或销售处理
+    CP -> CP: 回到 AI 判断；高风险时再转人工
   else 销售手机端人工回复
     S -> C: 销售在手机微信回复客户
     WX --> W: 桌面端同步我方消息
     W -> CP: 上报 sales_reply_event
     CP -> CP: status=sales_replied_waiting_user
-AI停止
+当前AI回复停止；客户再回复交回AI
   else 客户明确拒绝
     C -> WX: 明确拒绝/拉黑/不需要
     W -> CP: 上报拒绝消息事实
@@ -535,7 +540,7 @@ stateDiagram-v2
     recalled_waiting_user --> waiting_sales_reply: 召回后客户高意向/风险
     waiting_sales_reply --> sales_replied_waiting_user: 销售人工回复
     waiting_sales_reply --> waiting_sales_reply: 销售超时飞书通知
-    sales_replied_waiting_user --> waiting_sales_reply: 客户回复后继续由销售处理
+    sales_replied_waiting_user --> ai_active: 客户再次回复，交回AI判断
 ```
 
 说明：`recall_precheck` 是召回前确认状态，不代表已经发送召回。只有定向读取确认没有新客户消息后，才允许创建并发送 `follow_up`。
