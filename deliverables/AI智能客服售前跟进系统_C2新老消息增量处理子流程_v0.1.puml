@@ -1,0 +1,272 @@
+@startuml
+title AI智能客服售前跟进系统 C2 新老消息增量处理子流程（文字/语音/图片）
+
+skinparam monochrome true
+skinparam shadowing false
+skinparam activity {
+  BorderColor #222222
+  BackgroundColor #FFFFFF
+  DiamondBorderColor #222222
+  DiamondBackgroundColor #FFFFFF
+  ArrowColor #222222
+  StartColor #222222
+  EndColor #222222
+}
+
+start
+
+:Worker已持有当前单会话UI锁;
+:短码、private、read-target、authorization_revision已确认;
+
+partition "A. initial_read：只处理新的未转写语音" {
+  :首次截图并生成未转写语音anchor候选\n保存为current_valid_frame;
+
+  while (还有未转写语音候选?) is (是)
+    :取下一条语音anchor;
+    :生成voice_source_key\n优先稳定voice anchor;
+    :查询Worker SQLite已处理清单;
+
+    if (已存在terminal记录?) then (completed)
+      :旧语音已完成;
+      :不右键、不重复转写;
+    elseif (已存在terminal记录?) then (failed)
+      :旧语音已明确失败;
+      :不自动重试、不保留pending;
+    elseif (属于Outbox未确认批次?) then (是)
+      :复用Outbox中的转写结果;
+      :不重复操作微信;
+    else (全新语音)
+      :Worker编排OmniAuto RPA;
+      :重新定位anchor并右键;
+      :点击转文字入口;
+      :页面变化后废弃旧坐标并重新截图;
+      :将完整截图和OCR结果更新为current_valid_frame;
+      :OCR读取转写正文;
+
+      if (正文与父语音绑定成功?) then (是)
+        :本flow暂存voice completed\n正文 + parent anchor + sender_role;
+      else (否)
+        :本flow记录voice failed + error_code;
+        :该语音本轮终态为failed;
+      endif
+    endif
+  endwhile (否)
+
+  if (消息状态顺序为OLD*后接NEW*?) then (正常)
+    :history_gap=false;
+  else (NEW下面再次出现OLD)
+    :标记C2_MESSAGE_HISTORY_GAP;
+    :history_gap=true;
+    note right
+      逐条身份证核对仍然保留。
+      历史缺口不是正常增量顺序；
+      新事实可以入库，但禁止Brain自动回复。
+    end note
+  endif
+}
+
+partition "B. final_read：复用最后有效画面" {
+  if (本轮执行过语音且最后画面完整稳定?) then (是)
+    :复用最后一条语音确认后的current_valid_frame;
+  elseif (本轮没有执行语音?) then (是)
+    :复用initial_read的current_valid_frame;
+  else (最后画面无效)
+    :关闭残留菜单并等待稳定;
+    :仅在此异常分支补截一张完整新图;
+    :更新current_valid_frame;
+  endif
+  :current_valid_frame成为final_read唯一权威画面;
+  :再次确认顶部短码和private;
+  :同时识别文字行、语音转写行、图片bubble_rect;
+  :所有模态调用C2统一sender_role边界;
+  :按final_read visual_top建立全部slots和screen_order;
+  note right
+    被语音展开挤出最终屏幕的消息本轮不处理。
+    不主动上滚，不用initial_read坐标补位。
+  end note
+}
+
+partition "C. 为每个最终slot生成稳定身份" {
+  :遍历final_read全部slots;
+
+  while (还有slot?) is (是)
+    :读取row_kind / sender_role / bubble evidence;
+
+    if (sender_role可信?) then (是)
+      if (row_kind=text) then (文字)
+        :source key = 稳定输入ID优先;
+        :降级 = 角色 + 归一化正文 + 同类出现序号;
+      elseif (row_kind=voice) then (语音)
+        :source key = 父voice稳定anchor优先;
+        :降级 = 角色 + 正文 + 时长 + 同类出现序号;
+      elseif (row_kind=image) then (图片)
+        :source key = canonical_visual_id优先;
+        :降级 = 角色 + 同类出现序号 + 邻近稳定消息锚点;
+        note right
+          image_hash在复制图片后才能获得，
+          只能加强证据，不能作为复制前唯一去重条件。
+        end note
+      else (其他)
+        :按system/file等受控合同处理;
+      endif
+    else (否)
+      :slot标记identity_or_role_unconfirmed;
+      :不自动增强、不触发Brain;
+    endif
+  endwhile (否)
+
+  note right
+    screen_order、visual_top、绝对坐标、扫描时间、
+    authorization_revision均不得参与消息身份。
+    同一客户连续发送两条相同文字或相同图片，
+    由稳定来源ID/同类出现序号/邻近锚点区分为两条消息。
+  end note
+}
+
+partition "D. 查询本地已处理清单，判定新老消息" {
+  :按conversation_id + source_message_key\n批量查询Worker SQLite;
+
+  while (还有slot判定结果?) is (是)
+    :取一个slot及其ledger状态;
+
+    if (ledger=INGESTED_COMPLETED?) then (是)
+      :OLD_COMPLETED;
+      if (文字?) then (是)
+        :不重复上报文字;
+      elseif (语音?) then (是)
+        :不重复右键和转写;
+      elseif (图片?) then (是)
+        :不重复复制、上传或调用Vision;
+      endif
+      :仅保留为当前画面的顺序和证据;
+
+    elseif (ledger=INGESTED_FAILED?) then (是)
+      :OLD_FAILED;
+      :失败已经是终态;
+      :不自动重试语音或Vision;
+      :customer失败继续保持handoff/AI关闭口径;
+
+    elseif (ledger=OUTBOX_WAITING?) then (是)
+      :OLD_WAITING_INGEST;
+      :内容处理已经完成，只是服务端未确认;
+      :沿用原read_run_id和完整JSON重传;
+      :不重复执行OCR后续动作/语音RPA/Vision;
+
+    elseif (ledger不存在?) then (是)
+      :NEW_MESSAGE;
+
+      if (新文字?) then (是)
+        :保存OCR正文、角色和稳定身份;
+        :item_state=completed;
+      elseif (新语音且本flow转写成功?) then (是)
+        :将转写正文回填final slot;
+        :message_type=voice;
+        :item_state=completed;
+      elseif (新语音但转写失败?) then (是)
+        :保存voice failed事实和error_code;
+        :不得伪装成text;
+      elseif (新图片?) then (是)
+        :进入图片增强队列;
+      else (证据不足)
+        :ignored / handoff;
+      endif
+
+    else (身份冲突)
+      :MESSAGE_IDENTITY_UNCONFIRMED;
+      :不得只凭content或image hash猜成旧消息;
+      :不自动增强、不触发Brain;
+    endif
+  endwhile (否)
+}
+
+partition "E. 只对NEW_IMAGE执行一次Vision" {
+  while (还有NEW_IMAGE?) is (是)
+    :用final_read最新bubble_rect重新确认图片仍存在;
+    :C2同行头像规则再次确认customer/self;
+    :右键 -> OCR确认菜单 -> 点击复制;
+    :剪贴板位图读入内存;
+    :压缩/格式校验/image_hash;
+    :HTTPS上传车金后端Vision网关;
+    :等待单张图片Vision明确终态;
+
+    if (Vision成功?) then (是)
+      :回填vision_summary/OCR/entities/intent_hints;
+      :item_state=completed;
+    else (否)
+      :回填status=failed + error_code;
+      :item_state=failed;
+      :禁止终态pending;
+    endif
+
+    :释放该图片内存;
+  endwhile (否)
+}
+
+partition "F. 构建并上报增量批次" {
+  :OLD_COMPLETED/OLD_FAILED不进入新请求;
+  :OUTBOX_WAITING走原批次重传;
+  :只收集本轮NEW_MESSAGE结果;
+
+  if (存在NEW_MESSAGE?) then (是)
+    :按final_read screen_order排序新消息;
+    :一次POST messages/ingest;
+
+    if (后端返回ingested?) then (是)
+      :写入本地INGESTED_COMPLETED或INGESTED_FAILED;
+    elseif (后端返回duplicated?) then (是)
+      :不创建数据库新记录;
+      :仍回写本地已处理清单，避免下轮昂贵重复;
+    elseif (网络/服务端失败?) then (是)
+      :完整JSON写入本地Outbox;
+      :不调用Brain、不发送回复;
+    else (ignored/rejected)
+      :记录合同/授权/角色失败证据;
+      :不得触发Brain;
+    endif
+  else (否)
+    :不调用ingest;
+    :不创建message_batch;
+    :不触发Brain;
+  endif
+}
+
+partition "G. Brain上下文与等待期间新增消息" {
+  if (history_gap=true?) then (是)
+    :直接handoff;
+    :不调用Brain，不自动回复;
+  elseif (本轮有ingested的新customer消息且内容完整?) then (是)
+    :后端用数据库历史消息 + 本轮新增消息构建完整上下文;
+    note right
+      Worker不重传旧消息。
+      Brain读取message_events中的旧文字、旧语音、旧图片事实，
+      再叠加本轮新增消息。
+    end note
+    :生成当前batch_id并调用回复AI引擎;
+    :Worker保持当前会话和UI锁等待;
+
+    if (回复前出现新消息?) then (是)
+      :旧reply_action=superseded;
+      :重新final_read全屏观察;
+      :再次查询本地清单;
+      :旧消息全部跳过，只处理新增delta;
+      :增量入库后Brain基于完整1..N上下文重新生成;
+    else (否)
+      :执行send_reply/no_action/handoff终态;
+    endif
+  else (否)
+    :self-only、重复、ignored或customer模态失败;
+    :不调用Brain或直接handoff;
+  endif
+}
+
+stop
+
+legend right
+  |= Ledger状态 |= 含义 |= 是否重复昂贵处理 |
+  | INGESTED_COMPLETED | 已成功/重复确认入库 | 否 |
+  | INGESTED_FAILED | 失败事实已入库并终态收口 | 否 |
+  | OUTBOX_WAITING | 处理完成但服务端尚未确认 | 否，只重传JSON |
+  | NOT_FOUND | 本地从未处理过 | 是，仅本轮一次 |
+endlegend
+
+@enduml

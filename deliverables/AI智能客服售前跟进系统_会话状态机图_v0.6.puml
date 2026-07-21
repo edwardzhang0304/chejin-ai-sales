@@ -1,5 +1,6 @@
 @startuml
 title AI智能客服售前跟进系统 会话状态机 v0.6
+!pragma layout smetana
 
 skinparam monochrome true
 skinparam shadowing false
@@ -18,17 +19,21 @@ add_friend_pending --> add_friend_sent : 好友申请已发
 add_friend_pending --> friend_added : 已是好友
 add_friend_sent --> friend_added : 客户通过/会话绑定成功
 friend_added --> ai_active : AI开始负责
+friend_added --> sales_replied_waiting_user : 首次打开已存在销售人工消息\n取消AI主动开场
 
 ai_active --> waiting_user_reply : AI回复成功
 waiting_user_reply --> ai_active : 客户回复且AI仍负责
+recalled_waiting_user --> ai_active : AI召回后客户正常回复
 
-waiting_user_reply --> recall_precheck : N天未回复，召回前定向读取确认
-recalled_waiting_user --> recall_precheck : 下一召回周期到期
-sales_replied_waiting_user --> recall_precheck : 销售回复后客户N天未回
-recall_precheck --> ai_active : precheck读到客户新消息且AI仍负责
-recall_precheck --> waiting_sales_reply : precheck读到高意向/高风险/需人工
+waiting_user_reply --> recall_precheck : N天未回复\norigin=waiting_user_reply
+recalled_waiting_user --> recall_precheck : 下一召回周期到期\norigin=recalled_waiting_user
+sales_replied_waiting_user --> recall_precheck : 销售回复后客户N天未回\norigin=sales_replied_waiting_user
+recall_precheck --> ai_active : 读到客户新消息\n且origin不是销售负责
+recall_precheck --> waiting_sales_reply : 读到客户新消息且origin=销售负责\n或高意向/高风险/需人工
 recall_precheck --> recalled_waiting_user : precheck确认无新客户消息且follow_up发送成功
-recall_precheck --> waiting_user_reply : precheck读取失败/目标不确认，暂不召回
+recall_precheck --> waiting_user_reply : precheck失败且origin=waiting_user_reply
+recall_precheck --> recalled_waiting_user : precheck失败且origin=recalled_waiting_user
+recall_precheck --> sales_replied_waiting_user : precheck失败且origin=sales_replied_waiting_user
 
 ai_active --> waiting_sales_reply : 高意向/高风险/模型失败/低置信
 waiting_user_reply --> waiting_sales_reply : 客户回复后需人工处理
