@@ -28,8 +28,8 @@ recalled_waiting_user --> ai_active : AI召回后客户正常回复
 waiting_user_reply --> recall_precheck : N天未回复\norigin=waiting_user_reply
 recalled_waiting_user --> recall_precheck : 下一召回周期到期\norigin=recalled_waiting_user
 sales_replied_waiting_user --> recall_precheck : 销售回复后客户N天未回\norigin=sales_replied_waiting_user
-recall_precheck --> ai_active : 读到客户新消息\n且origin不是销售负责
-recall_precheck --> waiting_sales_reply : 读到客户新消息且origin=销售负责\n或高意向/高风险/需人工
+recall_precheck --> ai_active : 读到客户新消息\n包括origin=sales_replied_waiting_user
+recall_precheck --> waiting_sales_reply : 读到客户新消息且高意向/高风险/需人工
 recall_precheck --> recalled_waiting_user : precheck确认无新客户消息且follow_up发送成功
 recall_precheck --> waiting_user_reply : precheck失败且origin=waiting_user_reply
 recall_precheck --> recalled_waiting_user : precheck失败且origin=recalled_waiting_user
@@ -39,7 +39,7 @@ ai_active --> waiting_sales_reply : 高意向/高风险/模型失败/低置信
 waiting_user_reply --> waiting_sales_reply : 客户回复后需人工处理
 recalled_waiting_user --> waiting_sales_reply : 召回后客户高意向/高风险
 waiting_sales_reply --> sales_replied_waiting_user : 销售人工回复
-sales_replied_waiting_user --> waiting_sales_reply : 客户回复后继续由销售处理
+sales_replied_waiting_user --> ai_active : 客户再次回复，交回AI判断
 
 ai_active --> rejected : 客户拒绝
 waiting_user_reply --> rejected : 客户拒绝
