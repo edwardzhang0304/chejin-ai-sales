@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -22,6 +22,7 @@ class WechatSessionBinding(Base, TimestampMixin):
     bind_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unbound")
     listen_status: Mapped[str] = mapped_column(String(32), nullable=False, default="not_started")
     allow_listening: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    authorization_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     unread_hint: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     last_message_preview: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -45,6 +46,19 @@ class WechatSessionBinding(Base, TimestampMixin):
 Index("idx_wechat_bindings_lead_status", WechatSessionBinding.lead_id, WechatSessionBinding.bind_status)
 Index("idx_wechat_bindings_worker_status", WechatSessionBinding.worker_id, WechatSessionBinding.bind_status, WechatSessionBinding.listen_status)
 Index("idx_wechat_bindings_remark_code", WechatSessionBinding.remark_code)
+Index(
+    "uq_wechat_bindings_effective_remark_code",
+    WechatSessionBinding.remark_code,
+    unique=True,
+    sqlite_where=text(
+        "deleted_at IS NULL AND remark_code IS NOT NULL AND remark_code <> '' "
+        "AND bind_status = 'bound'"
+    ),
+    postgresql_where=text(
+        "deleted_at IS NULL AND remark_code IS NOT NULL AND remark_code <> '' "
+        "AND bind_status = 'bound'"
+    ),
+)
 
 
 class MessageEvent(Base):
@@ -58,6 +72,8 @@ class MessageEvent(Base):
     worker_id: Mapped[str] = mapped_column(String(36), ForeignKey("workers.id"), nullable=False)
     rpa_session_key: Mapped[str] = mapped_column(String(255), nullable=False)
     read_run_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    contract_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    source_message_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     dedupe_key: Mapped[str] = mapped_column(String(255), nullable=False)
     sender_role: Mapped[str] = mapped_column(String(32), nullable=False)
     message_type: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -66,6 +82,8 @@ class MessageEvent(Base):
     raw_payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     evidence: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     ocr_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    item_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    flow_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
     occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -76,6 +94,7 @@ class MessageEvent(Base):
     __table_args__ = (
         UniqueConstraint("conversation_id", "dedupe_key", name="uq_message_events_conversation_dedupe"),
         UniqueConstraint("worker_id", "conversation_id", "dedupe_key", name="uq_message_events_worker_conversation_dedupe"),
+        UniqueConstraint("conversation_id", "read_run_id", "source_message_key", name="uq_message_events_read_source"),
     )
 
 

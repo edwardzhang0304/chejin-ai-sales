@@ -629,6 +629,10 @@ def validate_chat_reply_task_claim(db: Session, task: Task, worker: Worker) -> N
 
 
 def claim_send(db: Session, *, reply_action_id: str, task_id: str, worker_id: str) -> dict[str, Any]:
+    # Local import avoids the c3 <-> wechat service module cycle while keeping
+    # the authorization algorithm owned by exactly one backend implementation.
+    from app.services.wechat_service import _authorization_revision
+
     action = db.scalar(select(ReplyAction).where(ReplyAction.id == reply_action_id, ReplyAction.deleted_at.is_(None)).with_for_update())
     if not action:
         raise AppError("REPLY_ACTION_NOT_FOUND", "reply_action 不存在", 404)
@@ -671,6 +675,9 @@ def claim_send(db: Session, *, reply_action_id: str, task_id: str, worker_id: st
         "reply_text_hash": action.reply_text_hash,
         "conversation_id": action.conversation_id,
         "rpa_session_key": binding.rpa_session_key,
+        "remark_code": binding.remark_code,
+        "display_name": binding.display_name,
+        "authorization_revision": _authorization_revision(binding),
         "expire_at": action.expire_at,
         "suggested_action": "send_via_worker",
     }

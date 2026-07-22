@@ -7,14 +7,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PYTHONPATH=/app
 
-COPY requirements.txt ./
+COPY backend/requirements.txt ./
 RUN pip install -r requirements.txt
 
-COPY app ./app
-COPY alembic.ini ./
-COPY alembic ./alembic
-COPY scripts ./scripts
-COPY docker/entrypoint.sh /entrypoint.sh
+COPY backend/app ./app
+COPY backend/alembic.ini ./
+COPY backend/alembic ./alembic
+COPY backend/scripts ./scripts
+COPY backend/docker/entrypoint.sh /entrypoint.sh
+COPY contracts/c2_contract_v3.json ./contracts/c2_contract_v3.json
 
 RUN chmod +x /entrypoint.sh
 

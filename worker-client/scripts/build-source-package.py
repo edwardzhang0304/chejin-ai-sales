@@ -28,7 +28,10 @@ EXCLUDE_DIRS = {
     "runtime",
 }
 EXCLUDE_SUFFIXES = {".pyc", ".pyo", ".zip"}
-EXCLUDE_NAMES = {".DS_Store"}
+EXCLUDE_NAMES = {
+    ".DS_Store",
+    "add_friend_menu_entry_after_click_window_annotated.png",
+}
 EXCLUDE_PATTERNS = {
     ".env",
     "*.local.env",
@@ -52,7 +55,7 @@ def _is_excluded(path: Path) -> bool:
         return True
     if any(fnmatch.fnmatch(path.name, pattern) for pattern in EXCLUDE_PATTERNS):
         return True
-    if path.suffix == ".env" and not path.name.endswith(".example.env"):
+    if path.suffix == ".env":
         return True
     return False
 
@@ -78,7 +81,7 @@ def _forbidden_entries(names: list[str]) -> list[str]:
         if Path(base).suffix in EXCLUDE_SUFFIXES:
             forbidden.append(name)
             continue
-        if Path(base).suffix == ".env" and not base.endswith(".example.env"):
+        if Path(base).suffix == ".env":
             forbidden.append(name)
             continue
     return forbidden
@@ -94,6 +97,10 @@ def build(*, version: str, date: str) -> dict[str, object]:
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for path in files:
             archive.write(path, "worker-client/" + path.relative_to(ROOT).as_posix())
+        archive.write(
+            PROJECT_ROOT / "contracts" / "c2_contract_v3.json",
+            "worker-client/contracts/c2_contract_v3.json",
+        )
     sha256 = hashlib.sha256(zip_path.read_bytes()).hexdigest()
     with zipfile.ZipFile(zip_path) as archive:
         names = archive.namelist()

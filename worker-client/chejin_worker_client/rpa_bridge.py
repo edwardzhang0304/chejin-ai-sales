@@ -55,7 +55,7 @@ class RpaBridge:
             return {"ok": True, "mode": "mock", "message": "mock RPA 模式不探测真实微信。"}
         return self._call_omniauto(["status"], timeout=60)
 
-    def list_sessions(self) -> dict[str, Any]:
+    def list_sessions(self, *, artifact_dir: Path | None = None) -> dict[str, Any]:
         if self.mode == "mock":
             return {
                 "ok": True,
@@ -63,11 +63,22 @@ class RpaBridge:
                 "adapter": "mock",
                 "state": "sessions_mock",
                 "sidecar_run_id": f"mock-session-{uuid.uuid4()}",
+                "artifact_dir": str(artifact_dir) if artifact_dir else "",
                 "sessions": [],
             }
-        artifact_dir = CONFIG.app_dir / "artifacts" / "wechat_c2" / "sessions" / time.strftime("%Y%m%d_%H%M%S")
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        return self._call_omniauto(["sessions", "--artifact-dir", str(artifact_dir)], timeout=60)
+        resolved_artifact_dir = artifact_dir or CONFIG.app_dir / "artifacts" / "wechat_c2" / "sessions" / time.strftime("%Y%m%d_%H%M%S")
+        resolved_artifact_dir.mkdir(parents=True, exist_ok=True)
+        payload = self._call_omniauto(["sessions", "--artifact-dir", str(resolved_artifact_dir)], timeout=60)
+        payload.setdefault("artifact_dir", str(resolved_artifact_dir))
+        if not payload.get("screenshot_path"):
+            screenshots = sorted(
+                resolved_artifact_dir.glob("*.png"),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+            if screenshots:
+                payload["screenshot_path"] = str(screenshots[0])
+        return payload
 
     def get_messages(
         self,
@@ -77,6 +88,7 @@ class RpaBridge:
         remark_code: str = "",
         target_mode: str = "",
         max_duration_seconds: int = 12,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         if self.mode == "mock":
             return {
@@ -104,8 +116,6 @@ class RpaBridge:
             "messages",
             "--sidecar-run-id",
             sidecar_run_id,
-            "--target",
-            display_name,
             "--history-load-times",
             "0",
             "--max-scroll-steps",
@@ -117,16 +127,138 @@ class RpaBridge:
             "--artifact-dir",
             str(artifact_dir),
         ]
+        if str(display_name or "").strip():
+            args[3:3] = ["--target", display_name]
         if str(rpa_session_key or "").strip():
             args[3:3] = ["--session-key", rpa_session_key]
         if str(remark_code or "").strip():
             args[3:3] = ["--remark-code", remark_code]
         if normalized_target_mode:
             args[3:3] = ["--target-mode", normalized_target_mode]
-        sidecar_timeout = max(30, min(240, effective_max_duration_seconds + 75))
-        payload = self._call_omniauto(args, timeout=sidecar_timeout)
+        sidecar_timeout = (
+            max(30, min(240, effective_max_duration_seconds + 75))
+            if normalized_target_mode == "search_by_remark_code"
+            else max(30, min(90, effective_max_duration_seconds + 30))
+        )
+        call_options: dict[str, Any] = {"timeout": sidecar_timeout}
+        if cancel_check is not None:
+            call_options["cancel_check"] = cancel_check
+        payload = self._call_omniauto(args, **call_options)
         payload.setdefault("sidecar_run_id", sidecar_run_id)
         payload.setdefault("artifact_dir", str(artifact_dir))
+        payload.setdefault("target_mode", normalized_target_mode or "visible")
+        payload.setdefault("remark_code", remark_code)
+        return payload
+
+    def locate_chat(
+        self,
+        *,
+        display_name: str,
+        rpa_session_key: str,
+        remark_code: str = "",
+        target_mode: str = "",
+        visible_session_candidate: dict[str, Any] | None = None,
+        max_duration_seconds: int = 75,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        if self.mode == "mock":
+            return {
+                "ok": True,
+                "online": True,
+                "adapter": "mock",
+                "state": "chat_target_confirmed",
+                "sidecar_run_id": f"mock-locate-{uuid.uuid4()}",
+                "target_mode": target_mode or "visible",
+                "remark_code": remark_code,
+                "targeting": {"ok": True, "mode": "mock"},
+            }
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        sidecar_run_id = f"locate-{timestamp}-{uuid.uuid4().hex[:8]}"
+        artifact_dir = CONFIG.app_dir / "artifacts" / "wechat_c2" / "messages" / f"{timestamp}_{sidecar_run_id}"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        normalized_target_mode = str(target_mode or "").strip()
+        args = [
+            "open-chat",
+            "--sidecar-run-id",
+            sidecar_run_id,
+            "--target",
+            display_name,
+            "--artifact-dir",
+            str(artifact_dir),
+        ]
+        if str(rpa_session_key or "").strip():
+            args[3:3] = ["--session-key", rpa_session_key]
+        if str(remark_code or "").strip():
+            args[3:3] = ["--remark-code", remark_code]
+        if normalized_target_mode:
+            args[3:3] = ["--target-mode", normalized_target_mode]
+        if normalized_target_mode == "visible" and isinstance(visible_session_candidate, dict) and visible_session_candidate:
+            args.extend(["--visible-session-candidate", json.dumps(visible_session_candidate, ensure_ascii=True, default=str)])
+        sidecar_timeout = max(30, min(240, int(max_duration_seconds) + 75))
+        call_options: dict[str, Any] = {"timeout": sidecar_timeout}
+        if cancel_check is not None:
+            call_options["cancel_check"] = cancel_check
+        payload = self._call_omniauto(args, **call_options)
+        payload.setdefault("sidecar_run_id", sidecar_run_id)
+        payload.setdefault("artifact_dir", str(artifact_dir))
+        payload.setdefault("target_mode", normalized_target_mode or "visible")
+        payload.setdefault("remark_code", remark_code)
+        return payload
+
+    def voice_transcribe(
+        self,
+        *,
+        display_name: str,
+        rpa_session_key: str,
+        remark_code: str = "",
+        target_mode: str = "",
+        max_duration_seconds: int = 90,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        if self.mode == "mock":
+            return {
+                "ok": True,
+                "online": True,
+                "adapter": "mock",
+                "state": "voice_transcribe_no_visible_voice",
+                "sidecar_run_id": f"mock-voice-{uuid.uuid4()}",
+                "target_mode": target_mode or "visible",
+                "remark_code": remark_code,
+                "transcribed_messages": [],
+                "attempt_count": 0,
+                "quality_flags": ["mock_no_visible_voice"],
+            }
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        sidecar_run_id = f"voice-{timestamp}-{uuid.uuid4().hex[:8]}"
+        artifact_dir = CONFIG.app_dir / "artifacts" / "wechat_c2" / "voice" / f"{timestamp}_{sidecar_run_id}"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        normalized_target_mode = str(target_mode or "").strip()
+        args = [
+            "voice-transcribe",
+            "--sidecar-run-id",
+            sidecar_run_id,
+            "--max-duration-seconds",
+            str(max(1, int(max_duration_seconds))),
+            "--artifact-dir",
+            str(artifact_dir),
+        ]
+        if str(display_name or "").strip():
+            args[3:3] = ["--target", display_name]
+        if str(rpa_session_key or "").strip():
+            args[3:3] = ["--session-key", rpa_session_key]
+        if str(remark_code or "").strip():
+            args[3:3] = ["--remark-code", remark_code]
+        if normalized_target_mode:
+            args[3:3] = ["--target-mode", normalized_target_mode]
+        payload = self._call_omniauto(
+            args,
+            timeout=max(900, min(1800, int(max_duration_seconds) * 4 + 120)),
+            cancel_check=cancel_check,
+        )
+        payload.setdefault("sidecar_run_id", sidecar_run_id)
+        payload.setdefault("artifact_dir", str(artifact_dir))
+        payload.setdefault("target_mode", normalized_target_mode or "visible")
+        payload.setdefault("remark_code", remark_code)
         return payload
 
     def send_reply(self, *, target: str, rpa_session_key: str, text: str, task_id: str) -> dict[str, Any]:
@@ -250,19 +382,63 @@ class RpaBridge:
         for current_step, title, remark in steps:
             emit_step(RpaStep(current_step=current_step, title=title, remark=remark))
 
-    def _call_omniauto(self, args: list[str], timeout: int = 30) -> dict[str, Any]:
+    def _call_omniauto(
+        self,
+        args: list[str],
+        timeout: int = 30,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
         if not self.sidecar_script.exists():
             return {"ok": False, "error_code": "RPA_COMPONENT_NOT_READY", "message": f"sidecar 不存在：{self.sidecar_script}"}
         try:
-            completed = subprocess.run(
-                [sys.executable, str(self.sidecar_script), *args],
-                cwd=str(self._omniauto_root()),
-                text=True,
-                capture_output=True,
-                timeout=timeout,
-                encoding="utf-8",
-                errors="replace",
-            )
+            if cancel_check is None:
+                completed = subprocess.run(
+                    [sys.executable, str(self.sidecar_script), *args],
+                    cwd=str(self._omniauto_root()),
+                    text=True,
+                    capture_output=True,
+                    timeout=timeout,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+            else:
+                process = subprocess.Popen(
+                    [sys.executable, str(self.sidecar_script), *args],
+                    cwd=str(self._omniauto_root()),
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                deadline = time.monotonic() + max(1, int(timeout))
+                while True:
+                    if cancel_check():
+                        process.terminate()
+                        try:
+                            stdout, stderr = process.communicate(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            stdout, stderr = process.communicate()
+                        return {
+                            "ok": False,
+                            "state": "c2_action_cancelled",
+                            "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
+                            "message": "C2 action was cancelled because the read target stopped.",
+                            "stdout": self._tail(stdout),
+                            "stderr": self._tail(stderr),
+                        }
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        process.kill()
+                        stdout, stderr = process.communicate()
+                        raise subprocess.TimeoutExpired(process.args, timeout, output=stdout, stderr=stderr)
+                    try:
+                        stdout, stderr = process.communicate(timeout=min(0.5, remaining))
+                        completed = subprocess.CompletedProcess(process.args, process.returncode, stdout, stderr)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
         except subprocess.TimeoutExpired as exc:
             return {
                 "ok": False,

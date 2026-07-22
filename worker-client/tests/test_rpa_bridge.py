@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -14,6 +16,24 @@ from chejin_worker_client.rpa_bridge import OMNIAUTO_ADD_FRIEND_ACTION, RpaBridg
 
 
 class RpaBridgeTest(unittest.TestCase):
+    def test_call_omniauto_terminates_running_sidecar_when_cancelled(self):
+        with tempfile.TemporaryDirectory(prefix="chejin-cancel-sidecar-") as tmp:
+            script = Path(tmp) / "slow_sidecar.py"
+            script.write_text("import time\ntime.sleep(30)\nprint('{}')\n", encoding="utf-8")
+            bridge = RpaBridge(sidecar_script=script)
+            started = time.monotonic()
+
+            result = bridge._call_omniauto(
+                [],
+                timeout=35,
+                cancel_check=lambda: time.monotonic() - started >= 0.1,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["state"], "c2_action_cancelled")
+        self.assertEqual(result["error_code"], "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS")
+        self.assertLess(time.monotonic() - started, 3)
+
     def test_default_sidecar_script_points_to_omniauto_sidecar(self):
         path = default_sidecar_script()
 
@@ -170,6 +190,127 @@ class RpaBridgeTest(unittest.TestCase):
         self.assertIn("--max-duration-seconds", captured["args"])
         max_duration_index = captured["args"].index("--max-duration-seconds") + 1
         self.assertGreaterEqual(int(captured["args"][max_duration_index]), 75)
+        self.assertGreaterEqual(int(captured["timeout"]), 150)
+        self.assertIn("sidecar_run_id", result)
+        self.assertIn(str(result["sidecar_run_id"]), str(result["artifact_dir"]))
+
+    def test_real_bridge_list_sessions_returns_artifact_evidence(self):
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        bridge.mode = "real"
+        captured = {"args": []}
+
+        def fake_call_omniauto(args, timeout=30):
+            captured["args"] = args
+            artifact_dir = Path(args[args.index("--artifact-dir") + 1])
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            screenshot_path = artifact_dir / "sessions.png"
+            screenshot_path.write_bytes(b"png")
+            return {"ok": True, "adapter": "win32_ocr", "state": "sessions_ocr", "sessions": []}
+
+        with patch.object(bridge, "_call_omniauto", side_effect=fake_call_omniauto):
+            result = bridge.list_sessions()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(captured["args"][0], "sessions")
+        self.assertIn("--artifact-dir", captured["args"])
+        self.assertIn("artifact_dir", result)
+        self.assertTrue(str(result["screenshot_path"]).endswith("sessions.png"))
+
+    def test_real_bridge_locate_chat_can_search_by_remark_code(self):
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        bridge.mode = "real"
+        captured = {"args": [], "timeout": None}
+
+        def fake_call_omniauto(args, timeout=30):
+            captured["args"] = args
+            captured["timeout"] = timeout
+            return {"ok": True, "adapter": "win32_ocr", "state": "chat_target_confirmed"}
+
+        with patch.object(bridge, "_call_omniauto", side_effect=fake_call_omniauto):
+            result = bridge.locate_chat(
+                display_name="CJTEST01 许聪",
+                rpa_session_key="",
+                remark_code="CJTEST01",
+                target_mode="search_by_remark_code",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(captured["args"][0], "open-chat")
+        self.assertIn("--target", captured["args"])
+        self.assertIn("CJTEST01 许聪", captured["args"])
+        self.assertIn("--target-mode", captured["args"])
+        self.assertIn("search_by_remark_code", captured["args"])
+        self.assertIn("--remark-code", captured["args"])
+        self.assertIn("CJTEST01", captured["args"])
+        self.assertIn("--sidecar-run-id", captured["args"])
+        self.assertNotIn("--session-key", captured["args"])
+        self.assertIn("sidecar_run_id", result)
+        self.assertIn(str(result["sidecar_run_id"]), str(result["artifact_dir"]))
+
+    def test_real_bridge_locate_chat_visible_passes_ascii_json_candidate(self):
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        bridge.mode = "real"
+        captured = {"args": [], "timeout": None}
+
+        def fake_call_omniauto(args, timeout=30):
+            captured["args"] = args
+            captured["timeout"] = timeout
+            return {"ok": True, "adapter": "win32_ocr", "state": "chat_target_confirmed"}
+
+        candidate = {
+            "name": "CJR8S5K3虾丸子大",
+            "session_key": "wx:rpa:v1:8182b6ce08421443a07c",
+            "center_y": 143.5,
+            "row_fingerprint": "3e77b7c1848effea458e29b1",
+            "preview": "[语音] 2\"",
+        }
+        with patch.object(bridge, "_call_omniauto", side_effect=fake_call_omniauto):
+            result = bridge.locate_chat(
+                display_name="CJR8S5K3虾丸子大",
+                rpa_session_key="wx:rpa:v1:old",
+                remark_code="CJR8S5K3",
+                target_mode="visible",
+                visible_session_candidate=candidate,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(captured["args"][0], "open-chat")
+        self.assertIn("--visible-session-candidate", captured["args"])
+        raw = captured["args"][captured["args"].index("--visible-session-candidate") + 1]
+        self.assertEqual(raw.encode("ascii", errors="ignore").decode("ascii"), raw)
+        parsed = json.loads(raw)
+        self.assertEqual(parsed["name"], candidate["name"])
+        self.assertEqual(parsed["session_key"], candidate["session_key"])
+        self.assertEqual(parsed["center_y"], candidate["center_y"])
+
+    def test_real_bridge_voice_transcribe_current_chat_validates_target_without_switching(self):
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        bridge.mode = "real"
+        captured = {"args": [], "timeout": None}
+
+        def fake_call_omniauto(args, timeout=30, cancel_check=None):
+            captured["args"] = args
+            captured["timeout"] = timeout
+            return {"ok": True, "adapter": "win32_ocr", "state": "voice_transcribe_no_new_text", "transcribed_messages": []}
+
+        with patch.object(bridge, "_call_omniauto", side_effect=fake_call_omniauto):
+            result = bridge.voice_transcribe(
+                display_name="CJTEST01 许聪",
+                rpa_session_key="",
+                remark_code="CJTEST01",
+                target_mode="current",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(captured["args"][0], "voice-transcribe")
+        self.assertIn("--target", captured["args"])
+        self.assertEqual(captured["args"][captured["args"].index("--target") + 1], "CJTEST01 许聪")
+        self.assertIn("--target-mode", captured["args"])
+        self.assertEqual(captured["args"][captured["args"].index("--target-mode") + 1], "current")
+        self.assertIn("--remark-code", captured["args"])
+        self.assertIn("--max-duration-seconds", captured["args"])
+        self.assertIn("--sidecar-run-id", captured["args"])
+        self.assertNotIn("--session-key", captured["args"])
         self.assertGreaterEqual(int(captured["timeout"]), 150)
         self.assertIn("sidecar_run_id", result)
         self.assertIn(str(result["sidecar_run_id"]), str(result["artifact_dir"]))

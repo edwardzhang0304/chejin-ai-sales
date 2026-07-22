@@ -14,10 +14,8 @@ $PackageDir = Join-Path $Root "dist\车金Worker客户端"
 $ExePath = Join-Path $PackageDir "车金Worker客户端.exe"
 $ManifestPath = Join-Path $ReportsDir "车金Worker客户端.manifest.json"
 $PreflightReportPath = Join-Path $ReportsDir "preflight-build-report.json"
-$WorkspaceRoot = Split-Path -Parent $Root
-$OmniAutoZipPath = Join-Path $WorkspaceRoot "deliverables\omniauto-add-friend-rpa-pr-candidate-20260618.zip"
-$OmniAutoExtractRoot = Join-Path $Root ".tmp-omniauto-rpa"
-$OmniAutoSourcePath = Join-Path $OmniAutoExtractRoot "omniauto-add-friend-rpa"
+$OmniAutoUpstreamCommit = "855c21881641cdb2f9fe69d3f2e1caa05e37d04d"
+$OmniAutoSourcePath = Join-Path $Root "omniauto-rpa"
 $OmniAutoSidecarPath = Join-Path $OmniAutoSourcePath "apps\wechat_ai_customer_service\adapters\wechat_win32_ocr_sidecar.py"
 
 if (-not (Test-Path ".venv")) {
@@ -42,17 +40,11 @@ if (-not $SkipPreflight) {
   .\.venv\Scripts\python.exe -m chejin_worker_client.main --preflight --skip-backend --skip-wechat --preflight-format json --write-report $PreflightReportPath
 }
 
-if (-not (Test-Path $OmniAutoZipPath)) {
-  throw "打包失败：未找到 OmniAuto RPA 候选包 $OmniAutoZipPath"
-}
-if (Test-Path $OmniAutoExtractRoot) {
-  Remove-Item -Recurse -Force $OmniAutoExtractRoot
-}
-Expand-Archive -Path $OmniAutoZipPath -DestinationPath $OmniAutoExtractRoot -Force
 if (-not (Test-Path $OmniAutoSidecarPath)) {
-  throw "打包失败：OmniAuto RPA 候选包中未找到 apps\wechat_ai_customer_service\adapters\wechat_win32_ocr_sidecar.py"
+  throw "打包失败：当前分支未找到 OmniAuto sidecar $OmniAutoSidecarPath"
 }
 $env:CHEJIN_OMNIAUTO_RPA_SOURCE = $OmniAutoSourcePath
+$OmniAutoSourceSidecarHash = Get-FileHash -Algorithm SHA256 $OmniAutoSidecarPath
 
 .\.venv\Scripts\pyinstaller.exe --clean --noconfirm packaging\chejin-worker-client.spec
 
@@ -68,6 +60,10 @@ $SidecarPath = $SidecarCandidates | Where-Object { Test-Path $_ } | Select-Objec
 if (-not $SidecarPath) {
   throw "打包失败：dist 产物中未找到 OmniAuto wechat_win32_ocr_sidecar.py"
 }
+$PackagedSidecarHash = Get-FileHash -Algorithm SHA256 $SidecarPath
+if ($PackagedSidecarHash.Hash -ne $OmniAutoSourceSidecarHash.Hash) {
+  throw "打包失败：dist 中 OmniAuto sidecar 与当前分支源码不一致"
+}
 
 $Hash = Get-FileHash -Algorithm SHA256 $ExePath
 $Files = Get-ChildItem $PackageDir -Recurse -File
@@ -81,7 +77,11 @@ $Manifest = [ordered]@{
   package_dir = $PackageDir
   exe_path = $ExePath
   exe_sha256 = $Hash.Hash
+  omniauto_upstream_commit = $OmniAutoUpstreamCommit
+  omniauto_source_path = $OmniAutoSourcePath
+  omniauto_source_sidecar_sha256 = $OmniAutoSourceSidecarHash.Hash
   sidecar_path = $SidecarPath
+  packaged_sidecar_sha256 = $PackagedSidecarHash.Hash
   file_count = $Files.Count
   package_bytes = $TotalBytes
   preflight_report = if (Test-Path $PreflightReportPath) { $PreflightReportPath } else { $null }
