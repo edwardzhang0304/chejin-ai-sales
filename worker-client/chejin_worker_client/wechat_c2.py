@@ -928,7 +928,6 @@ def _build_message_ingest_payload_v3(
         "contract_sha256": contract_sha256(),
         "observation_schema_version": 3,
         "read_run_id": f"read-{uuid.uuid4()}",
-        "sidecar_run_id": message_sidecar_id,
         "conversation_id": target.conversation_id,
         "remark_code": target.remark_code,
         "rpa_session_key": target.rpa_session_key,
