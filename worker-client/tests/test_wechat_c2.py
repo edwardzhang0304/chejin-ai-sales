@@ -130,7 +130,7 @@ class WechatC2Test(unittest.TestCase):
         self.assertEqual(payload["messages"][0]["message_type"], "text")
         self.assertEqual(payload["messages"][0]["raw_payload"]["dedupe_basis"]["remark_code"], "CJ8K2P")
         self.assertEqual(payload["evidence"]["remark_code"], "CJ8K2P")
-        self.assertEqual(payload["sidecar_run_id"], "message-20260630-abc123ef")
+        self.assertNotIn("sidecar_run_id", payload)
         self.assertEqual(payload["evidence"]["sidecar_run_id"], "message-20260630-abc123ef")
         self.assertIn("message-20260630-abc123ef", payload["evidence"]["artifact_dir"])
         self.assertIn("wechat_messages_targeting_review.html", payload["evidence"]["review_path"])
@@ -1065,6 +1065,8 @@ class WechatC2Test(unittest.TestCase):
 
         self.assertEqual(payload["contract_version"], 3)
         self.assertEqual(payload["authorization_revision"], "rev-1")
+        self.assertNotIn("sidecar_run_id", payload)
+        self.assertIn("sidecar_run_id", payload["evidence"])
         self.assertEqual(
             [(item["message_type"], item["sender_role_hint"], item["content"]) for item in payload["messages"]],
             [("voice", "self", "我马上回去。"), ("text", "customer", "普通文字")],
