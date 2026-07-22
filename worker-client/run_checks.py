@@ -23,23 +23,21 @@ def main() -> int:
     )
     if test.returncode:
         return test.returncode
-    compat = subprocess.run(
-        [
-            sys.executable,
-            str(
-                ROOT
-                / "omniauto-rpa"
-                / "apps"
-                / "wechat_ai_customer_service"
-                / "tests"
-                / "run_wechat_win32_ocr_compat_checks.py"
-            ),
-        ],
-        cwd=ROOT / "omniauto-rpa",
-        env=env,
+    omniauto_test_dir = ROOT / "omniauto-rpa" / "apps" / "wechat_ai_customer_service" / "tests"
+    omniauto_check_scripts = (
+        "run_wechat_win32_ocr_compat_checks.py",
+        "run_wechat_win32_ocr_interaction_evidence_checks.py",
+        "run_wechat_win32_ocr_humanized_input_checks.py",
+        "run_wechat_win32_ocr_window_action_planning_checks.py",
     )
-    if compat.returncode:
-        return compat.returncode
+    for script_name in omniauto_check_scripts:
+        check = subprocess.run(
+            [sys.executable, str(omniauto_test_dir / script_name)],
+            cwd=ROOT / "omniauto-rpa",
+            env=env,
+        )
+        if check.returncode:
+            return check.returncode
     smoke = subprocess.run([sys.executable, "smoke_e2e.py"], cwd=ROOT, env=env)
     if smoke.returncode:
         return smoke.returncode
