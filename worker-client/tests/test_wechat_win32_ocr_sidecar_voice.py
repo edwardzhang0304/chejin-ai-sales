@@ -2274,7 +2274,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         self.assertIsNone(old_proof)
         self.assertIsNone(wrong_session)
 
-    def test_open_chat_reacquires_unique_visible_session_when_ocr_key_drifts(self) -> None:
+    def test_open_chat_ignores_stale_key_and_uses_unique_remark_code_candidate(self) -> None:
         image = Image.new("RGB", (965, 852), (247, 247, 247))
         fresh_items = [ocr_item("CJR8S5K3虾丸..昨天12:02", 154, 112, 330, 136)]
         with (
@@ -2297,12 +2297,11 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         activated = activate_candidate.call_args.args[1]
         self.assertEqual(activated["name"], "CJR8S5K3虾丸")
         self.assertEqual(activate_candidate.call_args.kwargs["target"], "CJR8S5K3")
-        self.assertTrue(sidecar._LAST_OPEN_CHAT_TIMING["open_chat_session_key_drift_detected"])
         self.assertEqual(
-            sidecar._LAST_OPEN_CHAT_TIMING["open_chat_session_key_reacquired"]["matched_by"],
+            sidecar._LAST_OPEN_CHAT_TIMING["open_chat_semantic_candidate"]["matched_by"],
             "remark_code",
         )
-        self.assertEqual(sidecar._LAST_OPEN_CHAT_TIMING["reason"], "semantic_candidate_reacquired")
+        self.assertEqual(sidecar._LAST_OPEN_CHAT_TIMING["reason"], "semantic_candidate_activated")
 
     def test_open_chat_uses_unique_semantic_candidate_without_cached_session_key(self) -> None:
         image = Image.new("RGB", (965, 852), (247, 247, 247))
@@ -2367,8 +2366,100 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         activate_candidate.assert_not_called()
         self.assertEqual(
             sidecar._LAST_OPEN_CHAT_TIMING["reason"],
-            "session_key_drift_semantic_candidate_ambiguous",
+            "semantic_candidate_ambiguous",
         )
+
+    def test_open_chat_does_not_click_when_active_private_title_has_target_code(self) -> None:
+        image = Image.new("RGB", (965, 852), (247, 247, 247))
+        items = [
+            ocr_item("CJR8S5K3 虾丸子", 154, 112, 330, 136),
+            ocr_item("CJR8S5K3 虾丸子大人", 405, 52, 620, 80),
+        ]
+        with (
+            patch.object(sidecar, "consume_target_ready_prevalidation_ocr_seed", return_value=None),
+            patch.object(sidecar, "ensure_main_session_list", return_value=(image, items)),
+            patch.object(sidecar, "get_window_geometry", return_value={"width": 965, "height": 852}),
+            patch.object(sidecar, "target_switch_surface_state", return_value={"ok": True}),
+            patch.object(sidecar, "activate_session_candidate") as activate_candidate,
+        ):
+            opened = sidecar.open_chat(
+                1,
+                "旧显示名",
+                exact=False,
+                session_key="wx:rpa:v1:stale",
+                semantic_target="CJR8S5K3",
+            )
+
+        self.assertTrue(opened)
+        activate_candidate.assert_not_called()
+        self.assertEqual(sidecar._LAST_OPEN_CHAT_TIMING["reason"], "active_private_remark_code_match")
+
+    def test_open_chat_blocks_two_private_sessions_with_same_remark_code(self) -> None:
+        image = Image.new("RGB", (965, 852), (247, 247, 247))
+        items = [
+            ocr_item("CJR8S5K3 张三", 154, 112, 330, 136),
+            ocr_item("CJR8S5K3 李四", 154, 190, 330, 214),
+            ocr_item("CJR8S5K3 张三", 405, 52, 620, 80),
+        ]
+        with (
+            patch.object(sidecar, "consume_target_ready_prevalidation_ocr_seed", return_value=None),
+            patch.object(sidecar, "ensure_main_session_list", return_value=(image, items)),
+            patch.object(sidecar, "get_window_geometry", return_value={"width": 965, "height": 852}),
+            patch.object(sidecar, "target_switch_surface_state", return_value={"ok": True}),
+            patch.object(sidecar, "activate_session_candidate") as activate_candidate,
+        ):
+            opened = sidecar.open_chat(
+                1,
+                "CJR8S5K3 张三",
+                exact=False,
+                session_key="wx:rpa:v1:stale",
+                semantic_target="CJR8S5K3",
+            )
+
+        self.assertFalse(opened)
+        activate_candidate.assert_not_called()
+        self.assertEqual(sidecar._LAST_OPEN_CHAT_TIMING["reason"], "active_private_remark_code_ambiguous")
+
+    def test_wrong_active_title_is_lookup_failure_not_c2_unknown(self) -> None:
+        error_code, _message = sidecar.c2_target_admission_error(
+            {
+                "conversation_type": "unknown",
+                "conversation_type_evidence": {
+                    "short_code_confirmed": False,
+                    "conversation_type": "unknown",
+                    "raw_title": "OTHER01 其他会话",
+                },
+            },
+            "TARGET_NOT_CONFIRMED",
+        )
+
+        self.assertEqual(error_code, "TARGET_NOT_CONFIRMED")
+
+    def test_target_code_unknown_admission_remains_terminal(self) -> None:
+        error_code, _message = sidecar.c2_target_admission_error(
+            {
+                "conversation_type_evidence": {
+                    "short_code_confirmed": True,
+                    "conversation_type": "unknown",
+                    "raw_title": "CJR8S5K3 (...)",
+                },
+            },
+            "TARGET_NOT_CONFIRMED",
+        )
+
+        self.assertEqual(error_code, "C2_CONVERSATION_TYPE_UNKNOWN")
+
+    def test_physical_session_key_can_distinguish_same_code_rows(self) -> None:
+        first = sidecar.rpa_session_key(
+            "CJR8S5K3 张三",
+            row_fingerprint={"duplicate_discriminator": "0"},
+        )
+        second = sidecar.rpa_session_key(
+            "CJR8S5K3 李四",
+            row_fingerprint={"duplicate_discriminator": "1"},
+        )
+
+        self.assertNotEqual(first, second)
 
     def test_safe_header_target_avoids_ocr_title_bounds(self) -> None:
         target = sidecar.safe_window_header_blank_click_target(

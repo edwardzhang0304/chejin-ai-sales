@@ -10676,7 +10676,10 @@ def search_result_contact_candidates_matching_remark_code(
             {
                 "name": name,
                 "raw_title": raw_title,
-                "session_key": rpa_session_key(name, row_fingerprint=session_row_fingerprint(item, duplicate_index=0)),
+                "session_key": rpa_session_key(
+                    name,
+                    row_fingerprint=session_row_fingerprint(item, duplicate_index=0),
+                ),
                 "conversation_type": str(admission.get("conversation_type") or "unknown"),
                 "candidate_kind": "contact",
                 "row_fingerprint": session_row_fingerprint(item, duplicate_index=0),
@@ -10774,7 +10777,10 @@ def fallback_first_search_contact_candidate(
     return {
         "name": name,
         "raw_title": raw_title,
-        "session_key": rpa_session_key(name, row_fingerprint=session_row_fingerprint(row_items[0], duplicate_index=0)),
+        "session_key": rpa_session_key(
+            name,
+            row_fingerprint=session_row_fingerprint(row_items[0], duplicate_index=0),
+        ),
         "conversation_type": str(admission.get("conversation_type") or "unknown"),
         "candidate_kind": "contact",
         "row_fingerprint": session_row_fingerprint(row_items[0], duplicate_index=0),
@@ -10867,10 +10873,13 @@ def c2_target_activation_confirmed(validation: dict[str, Any] | None) -> bool:
 
 def c2_target_admission_error(validation: dict[str, Any] | None, fallback: str) -> tuple[str, str]:
     evidence = validation if isinstance(validation, dict) else {}
-    if "conversation_type" not in evidence:
+    title_evidence = evidence.get("conversation_type_evidence") if isinstance(evidence.get("conversation_type_evidence"), dict) else evidence
+    if title_evidence.get("short_code_confirmed") is not True:
+        return fallback, "The active title is not the requested short-code target; continue visible or short-code lookup."
+    if "conversation_type" not in title_evidence:
         return fallback, "The target chat title and private-chat admission were not both confirmed."
-    conversation_type = str(evidence.get("conversation_type") or "unknown")
-    raw_title = str(evidence.get("raw_title") or "")
+    conversation_type = str(title_evidence.get("conversation_type") or "unknown")
+    raw_title = str(title_evidence.get("raw_title") or "")
     if conversation_type == "group":
         return "C2_GROUP_CHAT_NOT_ALLOWED", f"C2 excludes group chat title: {raw_title or '<unknown>'}."
     if conversation_type == "unknown":
@@ -11377,14 +11386,27 @@ def open_chat(
         # blindly after an unreadable screenshot is a high-risk RPA pattern.
         return finish(False, "no_ocr_items")
     clean_session_key = str(session_key or "").strip()
+    clean_semantic_target = str(semantic_target or "").strip()
+    active_identity_target = clean_semantic_target or target
     active_match_started = _sidecar_timing_start(timing, "open_chat_active_match")
-    active_matches = active_chat_matches(ocr_items, screenshot.size, target=target, exact=exact)
+    active_evidence = active_chat_title_evidence(
+        ocr_items,
+        screenshot.size,
+        target=active_identity_target,
+        exact=False if clean_semantic_target else exact,
+    )
+    active_matches = bool(active_evidence.get("matched"))
     _sidecar_timing_finish(timing, "open_chat_active_match", active_match_started)
     timing["open_chat_initial_active_match"] = bool(active_matches)
-    if not clean_session_key and active_matches:
+    timing["open_chat_initial_active_evidence"] = active_evidence
+    active_semantic_private = bool(
+        clean_semantic_target and active_evidence.get("admission_allowed") is True
+    )
+    if not clean_semantic_target and not clean_session_key and active_matches:
         return finish(True, "active_target_match")
     if (
-        clean_session_key
+        not clean_semantic_target
+        and clean_session_key
         and str(_LAST_RPA_ACTION_STATE.get("active_session_key") or "") == clean_session_key
         and active_matches
     ):
@@ -11393,7 +11415,18 @@ def open_chat(
     sessions = parse_sessions_from_ocr(ocr_items, screenshot.size, screenshot=screenshot)
     _sidecar_timing_finish(timing, "open_chat_parse_sessions", parse_started)
     timing["open_chat_session_count"] = len(sessions)
-    if clean_session_key and active_matches:
+    if active_semantic_private:
+        _candidate, semantic_match = find_unique_session_candidate_by_semantics(
+            sessions,
+            target=target,
+            semantic_target=clean_semantic_target,
+        )
+        timing["open_chat_active_semantic_candidate"] = semantic_match
+        if semantic_match.get("ambiguous"):
+            return finish(False, "active_private_remark_code_ambiguous")
+        _LAST_RPA_ACTION_STATE["active_target"] = clean_semantic_target
+        return finish(True, "active_private_remark_code_match")
+    if not clean_semantic_target and clean_session_key and active_matches:
         if visible_session_name_is_unambiguous(
             sessions,
             target,
@@ -11404,6 +11437,33 @@ def open_chat(
             _LAST_RPA_ACTION_STATE["active_target"] = target
             return finish(True, "active_visible_unambiguous")
         return finish(False, "active_visible_ambiguous")
+    if clean_semantic_target:
+        semantic_candidate, semantic_match = find_unique_session_candidate_by_semantics(
+            sessions,
+            target=target,
+            semantic_target=clean_semantic_target,
+        )
+        timing["open_chat_semantic_candidate"] = semantic_match
+        if semantic_match.get("ambiguous"):
+            return finish(False, "semantic_candidate_ambiguous")
+        if semantic_candidate is None:
+            return finish(False, "semantic_private_candidate_not_found")
+        activation_started = _sidecar_timing_start(timing, "open_chat_activate_semantic_session")
+        opened = activate_session_candidate(
+            hwnd,
+            semantic_candidate,
+            target=clean_semantic_target,
+            exact=False,
+            geometry=geometry,
+            default_click_x=session_click_x,
+            artifact_dir=artifact_dir,
+        )
+        _sidecar_timing_finish(timing, "open_chat_activate_semantic_session", activation_started)
+        _sidecar_timing_merge_prefixed(timing, "open_chat_semantic", _LAST_SESSION_ACTIVATION_TIMING)
+        if opened:
+            _LAST_RPA_ACTION_STATE["active_session_key"] = str(semantic_candidate.get("session_key") or "")
+            _LAST_RPA_ACTION_STATE["active_target"] = clean_semantic_target
+        return finish(opened, "semantic_candidate_activated" if opened else "semantic_candidate_not_confirmed")
     if clean_session_key:
         find_started = _sidecar_timing_start(timing, "open_chat_find_session_key")
         keyed = find_session_candidate_by_key(sessions, clean_session_key)
@@ -11461,34 +11521,6 @@ def open_chat(
         else:
             reason = "session_key_candidate_activated" if opened else "session_key_candidate_not_confirmed"
         return finish(opened, reason)
-    clean_semantic_target = str(semantic_target or "").strip()
-    if clean_semantic_target:
-        semantic_candidate, semantic_match = find_unique_session_candidate_by_semantics(
-            sessions,
-            target=target,
-            semantic_target=clean_semantic_target,
-        )
-        timing["open_chat_semantic_candidate"] = semantic_match
-        if semantic_match.get("ambiguous"):
-            return finish(False, "semantic_candidate_ambiguous")
-        if semantic_candidate is not None:
-            activation_started = _sidecar_timing_start(timing, "open_chat_activate_semantic_session")
-            opened = activate_session_candidate(
-                hwnd,
-                semantic_candidate,
-                target=clean_semantic_target,
-                exact=False,
-                geometry=geometry,
-                default_click_x=session_click_x,
-                artifact_dir=artifact_dir,
-            )
-            _sidecar_timing_finish(timing, "open_chat_activate_semantic_session", activation_started)
-            _sidecar_timing_merge_prefixed(timing, "open_chat_semantic", _LAST_SESSION_ACTIVATION_TIMING)
-            if opened:
-                _LAST_RPA_ACTION_STATE["active_session_key"] = str(semantic_candidate.get("session_key") or "")
-                _LAST_RPA_ACTION_STATE["active_target"] = target
-            return finish(opened, "semantic_candidate_activated" if opened else "semantic_candidate_not_confirmed")
-        return finish(False, "semantic_private_candidate_not_found")
     for item in sessions:
         if not session_name_matches(str(item.get("name") or ""), target, exact=exact):
             continue
@@ -11702,7 +11734,8 @@ def ensure_target_ready_for_send(
 
     attempts = target_ready_attempt_count(max_attempts)
     last_validation: dict[str, Any] = {}
-    clean_session_key = str(session_key or "").strip()
+    semantic_target = exact_c2_remark_code_target(target)
+    clean_session_key = "" if semantic_target else str(session_key or "").strip()
     for attempt in range(1, attempts + 1):
         timing["target_ready_attempts_observed"] = attempt
         # Fast path: when we are already on the correct chat, avoid the extra
@@ -11720,7 +11753,14 @@ def ensure_target_ready_for_send(
                 timing["target_ready_session_cache_match"] = bool(cached_session_match)
                 if not cached_session_match:
                     session_open_started = _sidecar_timing_start(timing, "target_ready_session_open_chat")
-                    opened = open_chat(hwnd, target, exact=exact, artifact_dir=artifact_dir, session_key=clean_session_key)
+                    opened = open_chat(
+                        hwnd,
+                        target,
+                        exact=exact,
+                        artifact_dir=artifact_dir,
+                        session_key=clean_session_key,
+                        semantic_target=semantic_target,
+                    )
                     _sidecar_timing_finish(timing, "target_ready_session_open_chat", session_open_started)
                     _sidecar_timing_merge_prefixed(timing, "target_ready_session", _LAST_OPEN_CHAT_TIMING)
                     if not opened:
@@ -11763,7 +11803,14 @@ def ensure_target_ready_for_send(
             return finish({"ok": False, "attempts": attempt, "validation": pre_validation, "hard_stop": True})
 
         open_chat_started = _sidecar_timing_start(timing, "target_ready_open_chat")
-        opened = open_chat(hwnd, target, exact=exact, artifact_dir=artifact_dir, session_key=clean_session_key)
+        opened = open_chat(
+            hwnd,
+            target,
+            exact=exact,
+            artifact_dir=artifact_dir,
+            session_key=clean_session_key,
+            semantic_target=semantic_target,
+        )
         _sidecar_timing_finish(timing, "target_ready_open_chat", open_chat_started)
         _sidecar_timing_merge_prefixed(timing, "target_ready", _LAST_OPEN_CHAT_TIMING)
         post_open_validation_started = _sidecar_timing_start(timing, "target_ready_post_open_validation")
@@ -12019,6 +12066,23 @@ def validate_active_send_target(
         )
         active_match = bool(title_evidence.get("matched"))
         timing["validate_active_send_target_supplied_frame_title_roi_match"] = bool(active_match)
+    semantic_target = exact_c2_remark_code_target(target)
+    if semantic_target and title_evidence.get("short_code_confirmed") is True and title_evidence.get("admission_allowed") is not True:
+        return finish({
+            "ok": False,
+            "online": True,
+            "reason": "c2_private_admission_failed",
+            "requested_target": target,
+            "confirmed_target": "",
+            "confirmation_confidence": "failed",
+            "conversation_type": str(title_evidence.get("conversation_type") or "unknown"),
+            "conversation_type_reason": str(title_evidence.get("reason") or "c2_private_admission_failed"),
+            "raw_title": str(title_evidence.get("raw_title") or ""),
+            "conversation_type_evidence": title_evidence,
+            "geometry": geometry,
+            "screenshot_path": path,
+            "error": "The requested short-code target is not a confirmed private chat.",
+        })
     timing["validate_active_send_target_active_match"] = bool(active_match)
     if not active_match:
         blind_guard_started = _sidecar_timing_start(timing, "validate_active_send_target_blind_guard")
@@ -12839,6 +12903,13 @@ def active_chat_title_evidence(
     for text in raw_candidates:
         if text and text not in unique_candidates:
             unique_candidates.append(text)
+    requested_codes = extract_c2_remark_codes(normalized_target)
+    normalized_code_target = re.sub(r"[^A-Z0-9]", "", normalized_target.upper())
+    c2_short_code_target = (
+        requested_codes[0]
+        if len(requested_codes) == 1 and re.sub(r"[^A-Z0-9]", "", requested_codes[0]) == normalized_code_target
+        else ""
+    )
     matched_candidates: list[dict[str, Any]] = []
     for text in unique_candidates:
         variants = {
@@ -12847,13 +12918,12 @@ def active_chat_title_evidence(
             re.sub(r"^[：:.\s]+", "", text).strip(),
             normalize_chat_title_for_match(text),
         }
-        matched = False
-        for candidate in variants:
-            if session_name_matches(candidate, normalized_target, exact=exact):
-                matched = True
-                break
-        admission = classify_c2_conversation_title(text, normalized_target)
-        if matched or admission.get("short_code_confirmed"):
+        admission = classify_c2_conversation_title(text, c2_short_code_target or normalized_target)
+        if c2_short_code_target:
+            matched = admission.get("short_code_confirmed") is True
+        else:
+            matched = any(session_name_matches(candidate, normalized_target, exact=exact) for candidate in variants)
+        if matched:
             matched_candidates.append({"raw_title": text, "matched": matched, "admission": admission})
     if not matched_candidates:
         return {
@@ -13341,11 +13411,16 @@ def select_session_row_title_candidate(
     return selected["item"], [], classify_c2_conversation_title(selected["raw_title"], "")
 
 
-def rpa_session_key(name: str, *, row_fingerprint: dict[str, Any] | None = None) -> str:
+def rpa_session_key(
+    name: str,
+    *,
+    row_fingerprint: dict[str, Any] | None = None,
+) -> str:
     fingerprint = row_fingerprint if isinstance(row_fingerprint, dict) else {}
     duplicate = str(fingerprint.get("duplicate_discriminator") or "").strip()
-    # Keep the historical private-chat namespace so existing C2 keys remain stable.
-    # C2 conversation_type is admission evidence only and must never change identity.
+    # This is physical-row evidence for duplicate detection and compatibility.
+    # C2 target identity is remark_code; no locate/read/send decision may rely
+    # on this key when a valid remark_code is available.
     seed = json.dumps(["private", str(name or ""), duplicate], ensure_ascii=False, sort_keys=True)
     return "wx:rpa:v1:" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:20]
 
@@ -14605,6 +14680,13 @@ def strip_chat_unread_suffix(text: str) -> str:
 
 def extract_c2_remark_codes(*values: Any) -> list[str]:
     return win32_ocr_text.extract_c2_remark_codes(*values)
+
+
+def exact_c2_remark_code_target(value: Any) -> str:
+    text = str(value or "").strip().upper()
+    codes = extract_c2_remark_codes(text)
+    normalized = re.sub(r"[^A-Z0-9]", "", text)
+    return codes[0] if len(codes) == 1 and codes[0] == normalized else ""
 
 
 def classify_c2_conversation_title(raw_title: Any, remark_code: Any) -> dict[str, Any]:
