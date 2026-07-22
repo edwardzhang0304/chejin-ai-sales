@@ -2394,6 +2394,115 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         activate_candidate.assert_not_called()
         self.assertEqual(sidecar._LAST_OPEN_CHAT_TIMING["reason"], "active_private_remark_code_match")
 
+    def test_open_chat_stops_on_active_group_before_sidebar_reacquire(self) -> None:
+        image = Image.new("RGB", (965, 852), (247, 247, 247))
+        for group_title in ("CJTEST01 (6)", "CJTEST01（6）"):
+            items = [
+                ocr_item("CJTEST01", 154, 112, 330, 136),
+                ocr_item(group_title, 405, 52, 620, 80),
+            ]
+            with self.subTest(group_title=group_title):
+                with (
+                    patch.object(sidecar, "consume_target_ready_prevalidation_ocr_seed", return_value=None),
+                    patch.object(sidecar, "ensure_main_session_list", return_value=(image, items)),
+                    patch.object(sidecar, "get_window_geometry", return_value={"width": 965, "height": 852}),
+                    patch.object(sidecar, "target_switch_surface_state", return_value={"ok": True}),
+                    patch.object(sidecar, "parse_sessions_from_ocr") as parse_sessions,
+                    patch.object(sidecar, "activate_session_candidate") as activate_candidate,
+                ):
+                    opened = sidecar.open_chat(
+                        1,
+                        "CJTEST01",
+                        exact=False,
+                        session_key="wx:rpa:v1:stale",
+                        semantic_target="CJTEST01",
+                    )
+
+                self.assertFalse(opened)
+                parse_sessions.assert_not_called()
+                activate_candidate.assert_not_called()
+                self.assertEqual(sidecar._LAST_OPEN_CHAT_TIMING["reason"], "active_group_remark_code_blocked")
+                evidence = sidecar._LAST_OPEN_CHAT_TIMING["open_chat_initial_active_evidence"]
+                self.assertEqual(evidence["conversation_type"], "group")
+                self.assertTrue(evidence["short_code_confirmed"])
+
+    def test_open_chat_stops_on_active_unknown_target_title(self) -> None:
+        image = Image.new("RGB", (965, 852), (247, 247, 247))
+        items = [
+            ocr_item("CJTEST01", 154, 112, 330, 136),
+            ocr_item("CJTEST01 (...)", 405, 52, 620, 80),
+        ]
+        with (
+            patch.object(sidecar, "consume_target_ready_prevalidation_ocr_seed", return_value=None),
+            patch.object(sidecar, "ensure_main_session_list", return_value=(image, items)),
+            patch.object(sidecar, "get_window_geometry", return_value={"width": 965, "height": 852}),
+            patch.object(sidecar, "target_switch_surface_state", return_value={"ok": True}),
+            patch.object(sidecar, "parse_sessions_from_ocr") as parse_sessions,
+            patch.object(sidecar, "activate_session_candidate") as activate_candidate,
+        ):
+            opened = sidecar.open_chat(
+                1,
+                "CJTEST01",
+                exact=False,
+                session_key="wx:rpa:v1:stale",
+                semantic_target="CJTEST01",
+            )
+
+        self.assertFalse(opened)
+        parse_sessions.assert_not_called()
+        activate_candidate.assert_not_called()
+        self.assertEqual(sidecar._LAST_OPEN_CHAT_TIMING["reason"], "active_unknown_remark_code_blocked")
+
+    def test_visible_locate_returns_terminal_group_without_second_ocr(self) -> None:
+        previous_timing = dict(sidecar._LAST_OPEN_CHAT_TIMING)
+
+        def fake_open_chat(*_args, **_kwargs):
+            sidecar._LAST_OPEN_CHAT_TIMING.clear()
+            sidecar._LAST_OPEN_CHAT_TIMING.update(
+                {
+                    "reason": "active_group_remark_code_blocked",
+                    "open_chat_initial_active_evidence": {
+                        "matched": True,
+                        "short_code_confirmed": True,
+                        "conversation_type": "group",
+                        "admission_allowed": False,
+                        "raw_title": "CJTEST01 (6)",
+                    },
+                }
+            )
+            return False
+
+        try:
+            with (
+                patch.object(sidecar, "open_chat", side_effect=fake_open_chat),
+                patch.object(sidecar, "validate_active_send_target") as validate,
+            ):
+                result = sidecar.locate_chat_target_for_c2(
+                    1,
+                    target="CJTEST01",
+                    session_key="wx:rpa:v1:stale",
+                    remark_code="CJTEST01",
+                    target_mode="visible",
+                    visible_session_candidate=None,
+                    exact=False,
+                    artifact_dir=None,
+                    sidecar_run_id="run-group",
+                    failure_state="failed",
+                    failure_error_code="TARGET_NOT_CONFIRMED",
+                )
+        finally:
+            sidecar._LAST_OPEN_CHAT_TIMING.clear()
+            sidecar._LAST_OPEN_CHAT_TIMING.update(previous_timing)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_code"], "C2_GROUP_CHAT_NOT_ALLOWED")
+        self.assertEqual(result["guard"]["conversation_type"], "group")
+        self.assertEqual(
+            result["targeting"]["visible_postcheck"]["reason"],
+            "terminal_active_title_admission_reused",
+        )
+        validate.assert_not_called()
+
     def test_open_chat_blocks_two_private_sessions_with_same_remark_code(self) -> None:
         image = Image.new("RGB", (965, 852), (247, 247, 247))
         items = [
