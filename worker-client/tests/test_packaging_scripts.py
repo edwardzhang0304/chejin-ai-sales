@@ -45,6 +45,17 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('"cache"', text)
         self.assertIn('"forbidden_entries"', text)
 
+    def test_run_checks_includes_omniauto_safety_suites(self):
+        text = (ROOT / "run_checks.py").read_text(encoding="utf-8")
+
+        required_scripts = (
+            "run_wechat_win32_ocr_interaction_evidence_checks.py",
+            "run_wechat_win32_ocr_humanized_input_checks.py",
+            "run_wechat_win32_ocr_window_action_planning_checks.py",
+        )
+        for script_name in required_scripts:
+            self.assertIn(script_name, text)
+
 
 if __name__ == "__main__":
     unittest.main()

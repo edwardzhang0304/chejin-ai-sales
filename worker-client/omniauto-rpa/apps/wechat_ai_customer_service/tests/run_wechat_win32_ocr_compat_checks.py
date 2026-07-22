@@ -2001,8 +2001,20 @@ def test_input_fast_visual_confirm_keeps_before_ocr_and_skips_after_ocr() -> Non
         def fake_region(_screenshot, ocr_items, *, geometry):
             calls["region"].append(len(ocr_items))
             if len(calls["region"]) == 1:
-                return {"has_visible_text": False, "ocr_hits": len(ocr_items), "dark_ratio": 0.001}
-            return {"has_visible_text": True, "ocr_hits": len(ocr_items), "dark_ratio": 0.025}
+                return {
+                    "has_visible_text": False,
+                    "ocr_hits": len(ocr_items),
+                    "dark_ratio": 0.001,
+                    "reason": "input_region_blank",
+                    "bounds": list(roi_bounds),
+                }
+            return {
+                "has_visible_text": True,
+                "ocr_hits": len(ocr_items),
+                "dark_ratio": 0.025,
+                "reason": "ocr_or_dark_pixels",
+                "bounds": list(roi_bounds),
+            }
 
         def fake_clear(_hwnd, *, points, geometry, before_state, artifact_dir=None, attempt=1):
             assert_true(before_state.get("has_visible_text") is False, f"before OCR state should be checked: {before_state}")
@@ -7071,18 +7083,26 @@ def test_sidebar_search_clear_uses_window_image_click() -> None:
     previous_escape = os.environ.get("WECHAT_WIN32_OCR_TARGET_SEARCH_CLEAR_ESCAPE")
     originals = {
         "basic_send_window_guard": sidecar_mod.basic_send_window_guard,
+        "capture_wechat": sidecar_mod.capture_wechat,
         "get_window_geometry": sidecar_mod.get_window_geometry,
+        "hotkey": sidecar_mod.hotkey,
         "human_window_image_click": sidecar_mod.human_window_image_click,
         "human_window_image_click_in_bounds": sidecar_mod.human_window_image_click_in_bounds,
         "human_client_click": sidecar_mod.human_client_click,
         "key_press": sidecar_mod.key_press,
+        "run_ocr_traced": sidecar_mod.run_ocr_traced,
+        "sidebar_search_query_text": sidecar_mod.sidebar_search_query_text,
+        "sidebar_search_state_detected": sidecar_mod.sidebar_search_state_detected,
+        "target_switch_surface_state": sidecar_mod.target_switch_surface_state,
         "sleep": sidecar_mod.time.sleep,
     }
     calls: dict[str, object] = {"window_click": 0, "client_click": 0, "keys": []}
     try:
         os.environ.pop("WECHAT_WIN32_OCR_TARGET_SEARCH_CLEAR_ESCAPE", None)
         sidecar_mod.basic_send_window_guard = lambda hwnd: {"ok": True, "reason": "foreground_ok"}
+        sidecar_mod.capture_wechat = lambda *_args, **_kwargs: (Image.new("RGB", (980, 860), "white"), "search.png")
         sidecar_mod.get_window_geometry = lambda hwnd: {"left": 0, "top": 0, "right": 980, "bottom": 860, "width": 980, "height": 860}
+        sidecar_mod.hotkey = lambda *_keys: None
         sidecar_mod.human_window_image_click = (
             lambda hwnd, x, y: calls.__setitem__("window_click", int(calls["window_click"]) + 1)
         )
@@ -7094,6 +7114,26 @@ def test_sidebar_search_clear_uses_window_image_click() -> None:
             lambda hwnd, x, y: calls.__setitem__("client_click", int(calls["client_click"]) + 1)
         )
         sidecar_mod.key_press = lambda key: calls["keys"].append(key)  # type: ignore[union-attr]
+        sidecar_mod.run_ocr_traced = lambda *_args, **_kwargs: [
+            {
+                "text": "搜索",
+                "left": 92,
+                "right": 154,
+                "top": 50,
+                "bottom": 80,
+                "center_x": 123,
+                "center_y": 65,
+            }
+        ]
+        sidecar_mod.sidebar_search_query_text = lambda *_args, **_kwargs: ""
+        sidecar_mod.sidebar_search_state_detected = lambda *_args, **_kwargs: {
+            "detected": True,
+            "reason": "search_box_active",
+        }
+        sidecar_mod.target_switch_surface_state = lambda *_args, **_kwargs: {
+            "ok": True,
+            "state": "chat_surface",
+        }
         sidecar_mod.time.sleep = lambda seconds: None
         result = sidecar_mod.clear_sidebar_search_box_without_select_all(1001, 122, 64, target_hint="新数据测试")
         assert_true(result.get("ok") is True, f"search clear should report ok: {result}")

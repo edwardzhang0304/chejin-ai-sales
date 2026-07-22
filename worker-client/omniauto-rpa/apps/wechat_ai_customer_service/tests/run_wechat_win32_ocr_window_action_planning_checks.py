@@ -360,7 +360,14 @@ def test_search_result_candidate_uses_window_image_click_coordinates() -> None:
         calls.append(("client", int(x), int(y)))
 
     def fake_validate(_hwnd: int, _target: str, *, exact: bool, artifact_dir: str | None = None) -> dict:
-        return {"ok": True, "confirmation_confidence": "active_title_strict", "exact": exact, "artifact_dir": artifact_dir}
+        return {
+            "ok": True,
+            "confirmation_confidence": "active_title_strict",
+            "exact": exact,
+            "artifact_dir": artifact_dir,
+            "conversation_type": "private",
+            "conversation_type_evidence": {"short_code_confirmed": True},
+        }
 
     try:
         sidecar.human_window_image_click = fake_window_image_click
@@ -419,7 +426,7 @@ def test_search_contact_candidates_stop_before_favorites_section() -> None:
     assert_true("虾丸子大人" in str(matches[0].get("name") or ""), f"should keep real contact row: {matches}")
 
 
-def test_search_result_can_fallback_to_first_contact_row_then_confirm_later() -> None:
+def test_search_result_does_not_fallback_without_remark_code_evidence() -> None:
     def item(text: str, left: int, top: int, right: int, bottom: int) -> dict:
         return {
             "text": text,
@@ -438,9 +445,7 @@ def test_search_result_can_fallback_to_first_contact_row_then_confirm_later() ->
         item("群聊", 106, 232, 154, 256),
     ]
     candidate = sidecar.fallback_first_search_contact_candidate(ocr_items, (980, 860), "CJVOICE01")
-    assert_true(candidate is not None, f"fallback candidate should be built from the first contact row: {candidate}")
-    assert_true(candidate.get("fallback_source") == "first_contact_row_after_search", f"fallback source missing: {candidate}")
-    assert_true(candidate.get("search_result_click_points"), f"fallback candidate needs click points: {candidate}")
+    assert_true(candidate is None, f"contact row without the target remark code must not be clicked: {candidate}")
 
 
 def test_active_selected_session_can_confirm_clicked_chat_for_c2() -> None:
@@ -917,7 +922,7 @@ def main() -> int:
         test_sidebar_search_query_ignores_empty_placeholder_icon_text,
         test_search_result_candidate_uses_window_image_click_coordinates,
         test_search_contact_candidates_stop_before_favorites_section,
-        test_search_result_can_fallback_to_first_contact_row_then_confirm_later,
+        test_search_result_does_not_fallback_without_remark_code_evidence,
         test_active_selected_session_can_confirm_clicked_chat_for_c2,
         test_search_by_remark_code_precheck_recovers_foreground_before_failing,
         test_recover_send_window_guard_restores_minimized_geometry,
