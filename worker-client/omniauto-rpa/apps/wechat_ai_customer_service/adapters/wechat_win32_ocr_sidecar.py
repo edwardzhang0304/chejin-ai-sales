@@ -153,6 +153,7 @@ from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import geometry a
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import capture as win32_ocr_capture
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import env_config as win32_ocr_env
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import humanized_input as win32_ocr_humanized
+from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import interaction_evidence as win32_ocr_interaction_evidence
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import device_profile as win32_ocr_device_profile
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import ocr_engine as win32_ocr_engine
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import render_diagnostics as win32_ocr_render
@@ -3643,9 +3644,6 @@ def combined_voice_transcript_anchor_match_evidence(
     if local_exact_candidates:
         selected_pool = local_exact_candidates
         strategy = "unique_duration_and_region"
-    elif len(exact_duration_candidates) == 1:
-        selected_pool = exact_duration_candidates
-        strategy = "unique_duration_after_viewport_shift"
     else:
         selected_pool = local_candidates
         strategy = (
@@ -7631,6 +7629,14 @@ def normalize_soft_blank_input_state(state: dict[str, Any], *, reason: str) -> d
     return normalized
 
 
+def input_surface_click_evidence(input_region: dict[str, Any] | None) -> dict[str, Any]:
+    return win32_ocr_interaction_evidence.input_surface_click_evidence(input_region)
+
+
+def choose_verified_input_click_point(evidence: dict[str, Any] | None) -> dict[str, Any]:
+    return win32_ocr_interaction_evidence.choose_input_click_point(evidence, random_module=random)
+
+
 def clear_existing_input_draft(
     hwnd: int,
     *,
@@ -7645,12 +7651,27 @@ def clear_existing_input_draft(
         return {"ok": True, "cleared": False, "reason": "input_region_already_blank", "before": before_state}
     if input_region_soft_blank_noise(before_state):
         blank = normalize_soft_blank_input_state(before_state, reason="input_region_soft_blank_noise")
-        return {"ok": True, "cleared": False, "reason": "input_region_soft_blank_noise", "before": blank}
-    input_x, input_y = jitter_input_click_point(
-        int(points["input_point"][0]),
-        int(points["input_point"][1]),
-        geometry,
-    )
+        return {"ok": True, "cleared": False, "reason": "input_region_soft_blank_noise", "before": blank, "after": blank}
+    input_click_evidence = input_surface_click_evidence(before_state)
+    if not input_click_evidence.get("ok"):
+        return {
+            "ok": False,
+            "cleared": False,
+            "reason": "input_click_evidence_missing_before_clear",
+            "before": before_state,
+            "input_click_evidence": input_click_evidence,
+        }
+    input_click = choose_verified_input_click_point(input_click_evidence)
+    if not input_click.get("ok"):
+        return {
+            "ok": False,
+            "cleared": False,
+            "reason": "input_click_evidence_missing_before_clear",
+            "before": before_state,
+            "input_click_evidence": input_click_evidence,
+            "input_click": input_click,
+        }
+    input_x, input_y = [int(value) for value in input_click["point"]]
     human_client_click(hwnd, input_x, input_y)
     time.sleep(random.uniform(0.08, 0.16))
     # Avoid Ctrl+A here: select-all artifacts can leak to chat history when
@@ -7697,6 +7718,8 @@ def clear_existing_input_draft(
         "reason": "input_region_clear_failed",
         "before": before_state,
         "after": after_state,
+        "input_click_evidence": input_click_evidence,
+        "input_click": input_click,
         "error": "Could not safely clear pre-existing WeChat draft text.",
     }
 
@@ -8219,30 +8242,30 @@ def paste_text_with_confirmation(
     timing: dict[str, Any] = {}
     ocr_trace_token = _ocr_trace_start()
     paste_started = _sidecar_timing_start(timing, "paste_text_with_confirmation")
+    last_input_click_evidence: dict[str, Any] = {}
+    last_input_click: dict[str, Any] = {}
 
     def finish(payload: dict[str, Any]) -> dict[str, Any]:
         _sidecar_timing_finish(timing, "paste_text_with_confirmation", paste_started)
         _sidecar_timing_merge_ocr_trace(timing, "paste_text_with_confirmation", _ocr_trace_finish(ocr_trace_token))
+        if last_input_click_evidence:
+            payload.setdefault("input_click_evidence", last_input_click_evidence)
+        if last_input_click:
+            payload.setdefault("input_click", last_input_click)
         payload["timing"] = dict(timing)
         return payload
 
-    input_x = int(points["input_point"][0])
-    input_y = int(points["input_point"][1])
     probe_tokens = message_probe_tokens(text)
     probe_token = probe_tokens[0] if probe_tokens else ""
     settings = settings or adapt_humanized_input_settings(humanized_input_settings(), text)
-    attempts = [
-        (input_x, input_y, "human"),
-        (max(session_split_x(int(geometry.get("width") or 0)) + 24, input_x - 150), max(int(geometry.get("height") * 0.80), input_y - 18), "client"),
-        (max(session_split_x(int(geometry.get("width") or 0)) + 36, input_x - 220), max(int(geometry.get("height") * 0.82), input_y - 8), "client"),
-    ]
-    confirm_attempts = send_input_confirm_attempt_count(len(attempts))
+    # Missing input evidence is a hard stop. Alternate geometry retries can
+    # click chat history after the WeChat surface shifts.
+    attempts = ["verified_input_evidence"]
     allow_copyback = env_flag("WECHAT_WIN32_OCR_INPUT_COPYBACK_CONFIRM", default=False)
     fast_visual_confirm = env_flag(
         "WECHAT_WIN32_OCR_INPUT_FAST_VISUAL_CONFIRM",
         default=DEFAULT_INPUT_FAST_VISUAL_CONFIRM,
     )
-    attempts = attempts[:confirm_attempts]
     input_method = "clipboard_chunks"
     last_input_result: dict[str, Any] | None = None
     last_input_region: dict[str, Any] = {}
@@ -8253,7 +8276,7 @@ def paste_text_with_confirmation(
         else:
             # Guarded-click mode is Win32-centric; prefer chunked pacing here.
             input_method = "clipboard_chunks"
-    for attempt, (x, y, mode) in enumerate(attempts, start=1):
+    for attempt, _attempt_mode in enumerate(attempts, start=1):
         timing["attempts_observed"] = attempt
         activate_started = _sidecar_timing_start(timing, "activate_input_window")
         activate_window(hwnd)
@@ -8334,12 +8357,37 @@ def paste_text_with_confirmation(
                 "input_result": last_input_result,
             })
         before_input_region = clear_result.get("after") or before_input_region
-        click_x, click_y = jitter_input_click_point(int(x), int(y), geometry)
+        last_input_click_evidence = input_surface_click_evidence(before_input_region)
+        if not last_input_click_evidence.get("ok"):
+            return finish({
+                "ok": False,
+                "reason": "input_click_evidence_missing_before_type",
+                "probe_token": probe_token,
+                "probe_tokens": probe_tokens,
+                "attempts": attempt,
+                "copyback_enabled": allow_copyback,
+                "input_region": before_input_region,
+                "input_clear": clear_result,
+                "input_mode": input_method,
+                "input_result": last_input_result,
+            })
+        last_input_click = choose_verified_input_click_point(last_input_click_evidence)
+        if not last_input_click.get("ok"):
+            return finish({
+                "ok": False,
+                "reason": "input_click_evidence_missing_before_type",
+                "probe_token": probe_token,
+                "probe_tokens": probe_tokens,
+                "attempts": attempt,
+                "copyback_enabled": allow_copyback,
+                "input_region": before_input_region,
+                "input_clear": clear_result,
+                "input_mode": input_method,
+                "input_result": last_input_result,
+            })
+        click_x, click_y = [int(value) for value in last_input_click["point"]]
         input_click_started = _sidecar_timing_start(timing, "input_click")
-        if mode == "human":
-            human_client_click(hwnd, click_x, click_y)
-        else:
-            client_click(hwnd, click_x, click_y)
+        human_client_click(hwnd, click_x, click_y)
         time.sleep(random.uniform(0.12, 0.28))
         _sidecar_timing_finish(timing, "input_click", input_click_started)
         focus_guard_started = _sidecar_timing_start(timing, "focus_guard_after_input_click")

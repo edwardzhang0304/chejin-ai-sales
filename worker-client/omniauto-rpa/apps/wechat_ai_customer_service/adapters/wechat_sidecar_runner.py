@@ -13,9 +13,19 @@ import argparse
 import json
 import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
+
+APP_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = APP_ROOT.parents[1]
+ADAPTERS_ROOT = Path(__file__).resolve().parent
+for path in (PROJECT_ROOT, APP_ROOT, ADAPTERS_ROOT):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
+
 from wechat_connector import FILE_TRANSFER_ASSISTANT, WeChatConnector
+from apps.wechat_ai_customer_service.adapters.wechat_pr28_runtime_adapter import adapt_wechat_pr28_connector
 
 
 def main() -> int:
@@ -23,6 +33,7 @@ def main() -> int:
     parser.add_argument("action", choices=["status", "sessions", "messages", "send", "voice-transcribe", "smoke"])
     parser.add_argument("--target", default=FILE_TRANSFER_ASSISTANT)
     parser.add_argument("--session-key", default="", help="Optional internal session key for row-level RPA targeting.")
+    parser.add_argument("--conversation-type", default="", help="Optional known conversation type for the active chat.")
     parser.add_argument("--text")
     parser.add_argument("--wait", type=int, default=60)
     parser.add_argument(
@@ -38,7 +49,7 @@ def main() -> int:
             parser.error("--text is required for send")
         args.text = "omniauto stable check " + datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    connector = WeChatConnector()
+    connector = adapt_wechat_pr28_connector(WeChatConnector())
     status = connector.status()
     if not status.get("online"):
         status = connector.wait_online(args.wait)
@@ -56,16 +67,38 @@ def main() -> int:
         result["sessions"] = connector.list_sessions()
         result["ok"] = bool(result["sessions"].get("ok"))
     elif args.action == "messages":
-        result["messages"] = connector.get_messages(args.target, exact=True, session_key=str(args.session_key or ""))
+        result["messages"] = connector.get_messages(
+            args.target,
+            exact=True,
+            session_key=str(args.session_key or ""),
+            conversation_type=str(args.conversation_type or ""),
+        )
         result["ok"] = bool(result["messages"].get("ok"))
     elif args.action == "voice-transcribe":
-        result["voice_transcription"] = connector.transcribe_voice_messages(args.target, exact=True, session_key=str(args.session_key or ""))
+        result["voice_transcription"] = connector.transcribe_voice_messages(
+            args.target,
+            exact=True,
+            session_key=str(args.session_key or ""),
+            conversation_type=str(args.conversation_type or ""),
+        )
         result["ok"] = bool(result["voice_transcription"].get("ok"))
     elif args.action == "send":
-        result["send"] = connector.send_text(args.target, args.text or "", exact=True, session_key=str(args.session_key or ""))
+        result["send"] = connector.send_text(
+            args.target,
+            args.text or "",
+            exact=True,
+            session_key=str(args.session_key or ""),
+            conversation_type=str(args.conversation_type or ""),
+        )
         result["ok"] = bool(result["send"].get("ok"))
     elif args.action == "smoke":
-        verified = connector.send_text_and_verify(args.target, args.text or "", exact=True, session_key=str(args.session_key or ""))
+        verified = connector.send_text_and_verify(
+            args.target,
+            args.text or "",
+            exact=True,
+            session_key=str(args.session_key or ""),
+            conversation_type=str(args.conversation_type or ""),
+        )
         result["send"] = verified.get("send")
         result["messages"] = verified.get("messages")
         result["sent_text"] = args.text
