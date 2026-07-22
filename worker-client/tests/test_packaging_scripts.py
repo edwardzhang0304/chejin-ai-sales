@@ -26,7 +26,12 @@ class PackagingScriptsTest(unittest.TestCase):
 
         self.assertIn("车金Worker客户端.manifest.json", text)
         self.assertIn("Get-FileHash -Algorithm SHA256", text)
-        self.assertIn("omniauto-add-friend-rpa-pr-candidate-20260618.zip", text)
+        self.assertIn('$OmniAutoSourcePath = Join-Path $Root "omniauto-rpa"', text)
+        self.assertIn("omniauto_upstream_commit", text)
+        self.assertIn("omniauto_source_sidecar_sha256", text)
+        self.assertIn("packaged_sidecar_sha256", text)
+        self.assertNotIn("omniauto-add-friend-rpa-pr-candidate-20260618.zip", text)
+        self.assertNotIn("Expand-Archive", text)
         self.assertIn("omniauto-rpa\\apps\\wechat_ai_customer_service\\adapters\\wechat_win32_ocr_sidecar.py", text)
         self.assertIn("python.exe run_checks.py", text)
 
