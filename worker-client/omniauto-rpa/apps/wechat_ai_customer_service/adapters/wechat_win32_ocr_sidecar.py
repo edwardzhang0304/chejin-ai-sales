@@ -521,6 +521,11 @@ def main() -> int:
     parser.add_argument("--sidecar-run-id", default="", help="Correlation id for one Worker-to-sidecar run.")
     parser.add_argument("--target", help="Chat name for messages/send.")
     parser.add_argument("--session-key", default="", help="Internal session key for row-level RPA targeting.")
+    parser.add_argument(
+        "--conversation-type",
+        default="",
+        help="Caller metadata only; C2 private admission still requires title OCR evidence.",
+    )
     parser.add_argument("--target-mode", default="", help="Targeting mode for messages, e.g. search_by_remark_code.")
     parser.add_argument("--visible-session-candidate", default="", help="JSON row candidate from the same Worker visible-session scan.")
     parser.add_argument("--text", help="Message text for send.")
@@ -3587,10 +3592,9 @@ def combined_voice_transcript_anchor_match_evidence(
         evidence["reason"] = "customer_lane_mismatch"
         return evidence
 
-    # Expanded text can make a voice record grow far above or below its original
-    # row. Match the structural region and lane instead of comparing pre/post
-    # top coordinates. Exact duration may recover a unique candidate after a
-    # whole-viewport shift; ambiguous same-duration candidates remain blocked.
+    # Expanded text can make a voice record grow, but duration alone never
+    # authorizes a match after a viewport shift. A local row/lane relation is
+    # still required so a distant same-duration voice cannot be rebound.
     comparable: list[dict[str, Any]] = []
     for candidate in after_messages or [message]:
         if not isinstance(candidate, dict) or not message_is_combined_voice_transcript_record(candidate):
@@ -7343,6 +7347,10 @@ def adapt_humanized_input_settings(settings: dict[str, Any], text: str) -> dict[
     return win32_ocr_humanized.adapt_humanized_input_settings(settings, text)
 
 
+def apply_interaction_rhythm(settings: dict[str, Any]) -> dict[str, Any]:
+    return win32_ocr_humanized.apply_interaction_rhythm(settings)
+
+
 def humanized_sleep_ms(min_ms: int, max_ms: int) -> float:
     low = max(0, int(min_ms))
     high = max(low, int(max_ms))
@@ -9986,6 +9994,51 @@ def dismiss_sidebar_search_state(
     }
 
 
+def sidebar_search_box_evidence(
+    ocr_items: list[dict[str, Any]],
+    *,
+    geometry: dict[str, Any],
+) -> dict[str, Any]:
+    """Require a currently visible sidebar search label before clicking."""
+
+    width = int(geometry.get("width") or 0)
+    height = int(geometry.get("height") or 0)
+    split_x = session_split_x(width)
+    if width <= 0 or height <= 0 or split_x <= 0:
+        return {"ok": False, "reason": "search_box_evidence_geometry_invalid"}
+    for item in ocr_items:
+        text = normalize_ocr_text(item.get("text"))
+        compact = re.sub(r"\s+", "", text).lower()
+        visible_search_label = compact == "search" or bool(re.fullmatch(r"[qo0]?搜索", compact))
+        if not visible_search_label:
+            continue
+        try:
+            left = int(float(item.get("left") or 0))
+            top = int(float(item.get("top") or 0))
+            right = int(float(item.get("right") or 0))
+            bottom = int(float(item.get("bottom") or 0))
+        except (TypeError, ValueError):
+            continue
+        if left < 32 or right > split_x - 12 or top < 28 or bottom > min(142, int(height * 0.20)):
+            continue
+        bounds = [
+            max(42, left - 58),
+            max(42, top - 24),
+            min(max(120, split_x - 34), right + 82),
+            min(132, bottom + 24),
+        ]
+        if bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
+            continue
+        return {
+            "ok": True,
+            "reason": "visible_sidebar_search_label",
+            "bounds": bounds,
+            "point": [int((bounds[0] + bounds[2]) / 2), int((bounds[1] + bounds[3]) / 2)],
+            "item": item,
+        }
+    return {"ok": False, "reason": "search_box_evidence_missing"}
+
+
 def clear_sidebar_search_box_without_select_all(
     hwnd: int,
     search_x: int,
@@ -10008,80 +10061,53 @@ def clear_sidebar_search_box_without_select_all(
         return {"ok": False, "reason": "window_guard_failed_before_search_clear", "window_guard": guard}
     click_result: dict[str, Any] = {"ok": True, "bounds": None}
     active_geometry = geometry if isinstance(geometry, dict) else get_window_geometry(hwnd)
-    split_x = session_split_x(int(active_geometry.get("width") or 0))
-    bounds = [
-        max(42, int(search_x) - 56),
-        max(42, int(search_y) - 22),
-        min(max(120, split_x - 34), int(search_x) + 96),
-        min(132, int(search_y) + 26),
-    ]
-    if bounds[2] > bounds[0] and bounds[3] > bounds[1]:
-        click_result = human_window_image_click_in_bounds(
+    try:
+        evidence_shot, evidence_path = capture_wechat(
             hwnd,
-            int(search_x),
-            int(search_y),
-            bounds=bounds,
-            action_name="sidebar_search_box_click",
+            artifact_dir=artifact_dir,
+            label="open_chat_search_box_before_click",
         )
-    else:
-        human_window_image_click(hwnd, search_x, search_y)
-    humanized_action_sleep(720, 1600)
-    if not artifact_dir and progress_event is None:
-        # Keep the legacy low-disturbance path for ordinary visible-target
-        # search fallback calls. The strict select-all/OCR verification below
-        # is reserved for artifact-backed remark-code targeting.
-        default_backspaces = random.randint(1, 3)
-        backspaces = bounded_int(
-            os.getenv("WECHAT_WIN32_OCR_TARGET_SEARCH_CLEAR_BACKSPACES"),
-            default=default_backspaces,
-            minimum=0,
-            maximum=8,
-        )
-        deletes = bounded_int(
-            os.getenv("WECHAT_WIN32_OCR_TARGET_SEARCH_CLEAR_DELETES"),
-            default=0,
-            minimum=0,
-            maximum=2,
-        )
-        key_count = 1
-        for idx in range(backspaces):
-            guard = recover_send_window_guard(hwnd, max_attempts=1) if recover_foreground else basic_send_window_guard(hwnd)
-            if not guard.get("ok"):
-                return {
-                    "ok": False,
-                    "reason": "window_guard_failed_during_search_clear",
-                    "window_guard": guard,
-                    "backspaces": idx,
-                    "deletes": 0,
-                    "click": click_result,
-                }
-            key_press(win32con.VK_BACK)
-            key_count += 1
-            humanized_action_sleep(140, 460)
-        for idx in range(deletes):
-            guard = recover_send_window_guard(hwnd, max_attempts=1) if recover_foreground else basic_send_window_guard(hwnd)
-            if not guard.get("ok"):
-                return {
-                    "ok": False,
-                    "reason": "window_guard_failed_during_search_clear",
-                    "window_guard": guard,
-                    "backspaces": backspaces,
-                    "deletes": idx,
-                    "click": click_result,
-                }
-            key_press(win32con.VK_DELETE)
-            key_count += 1
-            humanized_action_sleep(160, 480)
-        humanized_action_sleep(520, 1300)
+        evidence_items = run_ocr_traced(evidence_shot, "open_chat_search_box_before_click", source="open_chat")
+    except Exception as exc:
         return {
-            "ok": True,
-            "method": "slow_sidebar_search_prepare",
-            "backspaces": backspaces,
-            "deletes": deletes,
-            "key_count": key_count,
-            "click": click_result,
-            "window_guard": guard,
+            "ok": False,
+            "reason": "search_box_evidence_capture_failed",
+            "error": repr(exc),
         }
+    evidence_surface = target_switch_surface_state(
+        evidence_shot,
+        evidence_items,
+        geometry=active_geometry,
+        screenshot_path=evidence_path,
+        target=target_hint,
+    )
+    search_box_evidence = sidebar_search_box_evidence(evidence_items, geometry=active_geometry)
+    if not evidence_surface.get("ok") or not search_box_evidence.get("ok"):
+        return {
+            "ok": False,
+            "reason": "search_box_evidence_missing_before_click",
+            "surface": evidence_surface,
+            "search_box_evidence": search_box_evidence,
+            "screenshot_path": evidence_path,
+            "ocr_count": len(evidence_items),
+        }
+    bounds = [int(value) for value in search_box_evidence["bounds"]]
+    search_x, search_y = [int(value) for value in search_box_evidence["point"]]
+    click_result = human_window_image_click_in_bounds(
+        hwnd,
+        search_x,
+        search_y,
+        bounds=bounds,
+        action_name="sidebar_search_box_click",
+    )
+    if not click_result.get("ok"):
+        return {
+            "ok": False,
+            "reason": "search_box_click_failed",
+            "click": click_result,
+            "search_box_evidence": search_box_evidence,
+        }
+    humanized_action_sleep(720, 1600)
     probe_shot, probe_path = capture_wechat(hwnd, artifact_dir=artifact_dir, label="open_chat_search_box_after_click")
     probe_items = run_ocr_traced(probe_shot, "open_chat_search_box_after_click", source="open_chat")
     if progress_event is not None:
@@ -10105,6 +10131,7 @@ def clear_sidebar_search_box_without_select_all(
             "reason": str(surface.get("reason") or "search_box_surface_not_ok"),
             "surface": surface,
             "click": click_result,
+            "search_box_evidence": search_box_evidence,
         }
     search_state = sidebar_search_state_detected(probe_shot, probe_items, geometry=active_geometry)
     if not search_state.get("detected"):
@@ -10114,6 +10141,7 @@ def clear_sidebar_search_box_without_select_all(
             "surface": surface,
             "search_state": search_state,
             "click": click_result,
+            "search_box_evidence": search_box_evidence,
         }
 
     guard = recover_send_window_guard(hwnd, max_attempts=2) if recover_foreground else basic_send_window_guard(hwnd)
@@ -10191,6 +10219,7 @@ def clear_sidebar_search_box_without_select_all(
             "surface": clear_surface,
             "search_state": clear_state,
             "click": click_result,
+            "search_box_evidence": search_box_evidence,
             "query_text": clear_query_text,
             "refocus": refocus_result,
         }
@@ -10227,6 +10256,7 @@ def clear_sidebar_search_box_without_select_all(
         "surface": clear_surface,
         "search_state": clear_state,
         "click": click_result,
+        "search_box_evidence": search_box_evidence,
         "window_guard": guard,
         "refocused_after_clear": bool(refocus_result),
         "refocus": refocus_result,

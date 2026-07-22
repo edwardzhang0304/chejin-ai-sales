@@ -950,6 +950,41 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             )
         )
 
+    def test_unique_same_duration_voice_far_from_clicked_row_is_rejected(self) -> None:
+        anchor = {
+            "source": "parser_voice_message_context_menu_anchor",
+            "click_bounds": [790, 615, 860, 646],
+            "item": {
+                "text": '2"',
+                "voice_duration_text": '2"',
+                "sender_role": "self",
+                "parser_bubble_rect": [772, 610, 878, 650],
+            },
+        }
+        far_same_duration = {
+            "type": "voice",
+            "sender": "self",
+            "sender_role": "self",
+            "content": "远处另一条语音的文字",
+            "content_raw_ocr": '2"\n远处另一条语音的文字',
+            "content_clean": "远处另一条语音的文字",
+            "voice_duration_text": '2"',
+            "bubble_rect": [760, 390, 878, 468],
+            "quality_flags": ["voice_duration_prefix_removed"],
+            "avatar_alignment": {"role": "self", "self": {"present": True}},
+        }
+
+        evidence = sidecar.combined_voice_transcript_anchor_match_evidence(
+            far_same_duration,
+            anchor,
+            (965, 852),
+            after_messages=[far_same_duration],
+        )
+
+        self.assertFalse(evidence["accepted"])
+        self.assertEqual(evidence["selected_candidate_count"], 0)
+        self.assertEqual(evidence["reason"], "ambiguous_duration_match")
+
     def test_long_combined_voice_expansion_binds_when_original_row_is_covered(self) -> None:
         anchor = {
             "source": "parser_voice_message_context_menu_anchor",

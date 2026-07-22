@@ -72,6 +72,13 @@ class WeChatPr28RuntimeAdapter:
     def get_messages(self, target: str, exact: bool = True, **kwargs: Any) -> dict[str, Any]:
         return self.delegate.get_messages(target, exact=exact, **physical_rpa_identity_kwargs(kwargs))
 
+    def transcribe_voice_messages(self, target: str, exact: bool = True, **kwargs: Any) -> dict[str, Any]:
+        return self.delegate.transcribe_voice_messages(
+            target,
+            exact=exact,
+            **physical_rpa_identity_kwargs(kwargs),
+        )
+
     def send_text(self, target: str, text: str, exact: bool = True, **kwargs: Any) -> dict[str, Any]:
         return self.delegate.send_text(target, text, exact=exact, **physical_rpa_identity_kwargs(kwargs))
 
