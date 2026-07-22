@@ -8284,7 +8284,7 @@ def paste_text_with_confirmation(
         else:
             # Guarded-click mode is Win32-centric; prefer chunked pacing here.
             input_method = "clipboard_chunks"
-    for attempt, _attempt_mode in enumerate(attempts, start=1):
+    for attempt, mode in enumerate(attempts, start=1):
         timing["attempts_observed"] = attempt
         activate_started = _sidecar_timing_start(timing, "activate_input_window")
         activate_window(hwnd)
