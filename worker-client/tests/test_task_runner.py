@@ -519,8 +519,9 @@ class TaskRunnerTest(unittest.TestCase):
 
         self.assertIn("claim:task-chat", api.events)
         self.assertIn("claim_send:reply-action-1", api.events)
+        self.assertEqual(bridge.sent_replies[0]["target"], "CJTEST01")
         self.assertEqual(bridge.sent_replies[0]["text"], "您好，可以继续沟通这台车。")
-        self.assertEqual(bridge.sent_replies[0]["rpa_session_key"], "wx:rpa:v1:a")
+        self.assertEqual(bridge.sent_replies[0]["rpa_session_key"], "")
         self.assertIn("sent_ack:sent:None", api.events)
 
     def test_chat_reply_pre_send_refresh_supersedes_when_new_customer_message_arrives(self):
@@ -607,7 +608,7 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(bridge.locate_chats[0]["target_mode"], "visible")
         self.assertEqual(bridge.locate_chats[0]["rpa_session_key"], "wx:rpa:v1:a")
         self.assertEqual(bridge.locate_chats[0]["remark_code"], "CJTEST01")
-        self.assertEqual(bridge.message_reads[0]["display_name"], "CJTEST01 许聪")
+        self.assertEqual(bridge.message_reads[0]["display_name"], "CJTEST01")
         self.assertEqual(bridge.message_reads[0]["target_mode"], "current")
         self.assertEqual(bridge.message_reads[0]["remark_code"], "CJTEST01")
         self.assertEqual(bridge.message_reads[0]["rpa_session_key"], "")
@@ -677,7 +678,7 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertNotIn("ingest:1", api.events)
         self.assertEqual(runner.c2_stats["last_error"], "C2_TARGET_CONVERSATION_ID_MISSING")
 
-    def test_c2_message_read_skips_target_without_locator(self):
+    def test_c2_message_read_uses_remark_code_without_legacy_locator(self):
         api = FakeApi(None)
         api.read_targets = [
             WechatReadTarget(
@@ -695,9 +696,10 @@ class TaskRunnerTest(unittest.TestCase):
 
         runner._read_bound_wechat_messages(binding)
 
-        self.assertEqual(bridge.message_reads, [])
-        self.assertNotIn("ingest:1", api.events)
-        self.assertEqual(runner.c2_stats["last_error"], "C2_TARGET_LOCATOR_MISSING")
+        self.assertEqual(bridge.locate_chats[0]["display_name"], "CJTEST01")
+        self.assertEqual(bridge.locate_chats[0]["rpa_session_key"], "")
+        self.assertEqual(bridge.message_reads[0]["display_name"], "CJTEST01")
+        self.assertIn("ingest:1", api.events)
 
     def test_c2_target_dedupe_key_uses_identity_pair(self):
         api = FakeApi(None)
@@ -721,6 +723,27 @@ class TaskRunnerTest(unittest.TestCase):
             ).startswith("invalid:")
         )
 
+    def test_visible_target_matching_uses_structured_remark_candidates_only(self):
+        api = FakeApi(None)
+        bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"))
+        runner, _ = self.make_runner(api, bridge)
+        sessions = [
+            {
+                "name": "普通会话",
+                "last_message_preview": "客户提到了 CJTEST01",
+                "remark_code_candidates": [],
+            },
+            {
+                "name": "OCR 显示名可能变化",
+                "last_message_preview": "无关预览",
+                "remark_code_candidates": ["CJTEST01"],
+            },
+        ]
+
+        matches = runner._visible_sessions_for_remark_code("CJTEST01", sessions)
+
+        self.assertEqual(matches, [sessions[1]])
+
     def test_c2_message_read_uses_read_targets_only_and_ingests(self):
         api = FakeApi(None)
         api.read_targets = [
@@ -739,11 +762,11 @@ class TaskRunnerTest(unittest.TestCase):
 
         runner._read_bound_wechat_messages(binding)
 
-        self.assertEqual(bridge.locate_chats[0]["display_name"], "CJTEST01 许聪")
+        self.assertEqual(bridge.locate_chats[0]["display_name"], "CJTEST01")
         self.assertEqual(bridge.locate_chats[0]["rpa_session_key"], "wx:rpa:v1:a")
         self.assertEqual(bridge.locate_chats[0]["remark_code"], "CJTEST01")
         self.assertEqual(bridge.locate_chats[0]["target_mode"], "visible")
-        self.assertEqual(bridge.message_reads[0]["display_name"], "CJTEST01 许聪")
+        self.assertEqual(bridge.message_reads[0]["display_name"], "CJTEST01")
         self.assertEqual(bridge.message_reads[0]["rpa_session_key"], "")
         self.assertEqual(bridge.message_reads[0]["remark_code"], "CJTEST01")
         self.assertEqual(bridge.message_reads[0]["target_mode"], "current")

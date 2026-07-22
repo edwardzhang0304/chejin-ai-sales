@@ -401,7 +401,15 @@ class TaskRunner:
                 return RpaResult(ok=False, error_code="REPLY_ACTION_EXPIRED", failure_step="reply_action_expired", message="reply_action 已过期，未发送。")
             self._report_step(binding, task, RpaStep(current_step="reply_send_starting", title="准备发送回复", remark="已通过 claim-send，准备定位微信会话。"))
             target = self._send_target(task, claim)
-            sidecar_payload = self.bridge.send_reply(target=target, rpa_session_key=claim.rpa_session_key, text=claim.reply_text, task_id=task.id)
+            target_codes = extract_remark_codes(target)
+            normalized_target = re.sub(r"[^A-Z0-9]", "", target.upper())
+            is_short_code_target = len(target_codes) == 1 and target_codes[0] == normalized_target
+            sidecar_payload = self.bridge.send_reply(
+                target=target,
+                rpa_session_key="" if is_short_code_target else claim.rpa_session_key,
+                text=claim.reply_text,
+                task_id=task.id,
+            )
             evidence = self._send_evidence(sidecar_payload, target=target)
             sidecar_run_id = str(sidecar_payload.get("sidecar_run_id") or sidecar_payload.get("run_id") or "") or None
             if sidecar_payload.get("ok"):
@@ -453,6 +461,9 @@ class TaskRunner:
 
     def _send_target(self, task: Task, claim: ReplySendClaim) -> str:
         for value in (
+            claim.raw.get("remark_code"),
+            task.raw.get("remark_code"),
+            task.remark_code,
             task.raw.get("display_name"),
             task.raw.get("wechat_display_name"),
             task.raw.get("rpa_target"),
@@ -516,13 +527,14 @@ class TaskRunner:
         conversation_id = str(task.raw.get("conversation_id") or "").strip()
         rpa_session_key = str(task.raw.get("rpa_session_key") or "").strip()
         display_name = str(task.raw.get("display_name") or task.raw.get("wechat_display_name") or task.customer_name or "").strip()
-        if not conversation_id or not rpa_session_key or not display_name:
+        remark_code = str(task.raw.get("remark_code") or task.remark_code or "").strip()
+        if not conversation_id or not remark_code:
             return {"ok": False, "error_code": "RECALL_PRECHECK_TARGET_MISSING", "message": "follow_up 任务缺少 recall_precheck_read 所需会话定位字段。"}
         target = WechatReadTarget(
             conversation_id=conversation_id,
             rpa_session_key=rpa_session_key,
             display_name=display_name,
-            remark_code=str(task.raw.get("remark_code") or task.remark_code or "").strip() or None,
+            remark_code=remark_code,
             row_fingerprint={"value": f"recall_precheck:{conversation_id}:{rpa_session_key}"},
             read_reason="recall_precheck",
             authorization_revision=str(task.raw.get("authorization_revision") or "").strip() or None,
@@ -1007,29 +1019,9 @@ class TaskRunner:
 
     def _visible_session_for_binding(self, binding_item: dict[str, Any], sessions: list[Any]) -> dict[str, Any] | None:
         remark_code = str(binding_item.get("remark_code") or "").strip().upper()
-        display_name = str(binding_item.get("display_name") or "").strip()
-        compact_display = self._compact_identity_text(display_name)
-        remark_matches: list[dict[str, Any]] = []
-        display_matches: list[dict[str, Any]] = []
-        for session in sessions:
-            if not isinstance(session, dict):
-                continue
-            session_display = str(session.get("display_name") or session.get("name") or session.get("title") or "").strip()
-            session_preview = str(session.get("last_message_preview") or session.get("content") or session.get("preview") or "").strip()
-            candidates = {str(code or "").strip().upper() for code in (session.get("remark_code_candidates") or [])}
-            session_identity = self._visible_session_identity_text(session)
-            if remark_code and (remark_code in candidates or remark_code in session_identity):
-                remark_matches.append(session)
-            if compact_display and (
-                compact_display == self._compact_identity_text(session_display)
-                or compact_display in self._compact_identity_text(session_identity)
-                or self._compact_identity_text(session_display) in compact_display
-            ):
-                display_matches.append(session)
+        remark_matches = self._visible_sessions_for_remark_code(remark_code, sessions)
         if len(remark_matches) == 1:
             return remark_matches[0]
-        if len(display_matches) == 1:
-            return display_matches[0]
         return None
 
     def _visible_sessions_for_remark_code(self, remark_code: str, sessions: list[Any]) -> list[dict[str, Any]]:
@@ -1043,9 +1035,7 @@ class TaskRunner:
                 continue
             candidates = {str(item or "").strip().upper() for item in (session.get("remark_code_candidates") or [])}
             normalized_candidates = {self._code_match_text(item) for item in candidates if item}
-            identity = self._visible_session_identity_text(session)
-            normalized_identity = self._code_match_text(identity)
-            if code in candidates or normalized_code in normalized_candidates or code in identity or normalized_code in normalized_identity:
+            if code in candidates or normalized_code in normalized_candidates:
                 matches.append(session)
         return matches
 
@@ -1494,8 +1484,6 @@ class TaskRunner:
             return "C2_TARGET_REMARK_CODE_MISSING"
         if str(target.remark_code).strip().upper() not in extract_remark_codes(target.remark_code):
             return "C2_TARGET_REMARK_CODE_INVALID"
-        if not target.rpa_session_key and not target.display_name:
-            return "C2_TARGET_LOCATOR_MISSING"
         if target.ocr_confidence is not None and target.ocr_confidence < CONFIG.c2_message_min_ocr_confidence:
             return "C2_TARGET_OCR_LOW_CONFIDENCE"
         return None
@@ -1598,7 +1586,7 @@ class TaskRunner:
             if enforce_read_targets and not self._backend_still_allows_read_target(binding, target):
                 return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS"}
             effective_target = target
-            target_label = effective_target.display_name or effective_target.remark_code or ""
+            target_label = str(effective_target.remark_code or "").strip()
             real_time_visible_metadata: dict[str, Any] = {}
             visible_source = ""
             fallback_target_mode = ""
@@ -1615,7 +1603,7 @@ class TaskRunner:
                 )
                 if recent_visible_target:
                     effective_target = recent_visible_target
-                    target_label = effective_target.display_name or effective_target.remark_code or ""
+                    target_label = str(effective_target.remark_code or "").strip()
                     visible_source = "recent_visible_scan_hint"
                     if isinstance(effective_target.raw, dict):
                         effective_target.raw["authorization_read_reason"] = target.read_reason
