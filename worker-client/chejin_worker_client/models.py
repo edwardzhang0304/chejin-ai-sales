@@ -180,6 +180,7 @@ class WechatReadTarget:
     lead_id: str | None = None
     sales_id: str | None = None
     read_reason: str | None = None
+    authorization_revision: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -201,5 +202,6 @@ class WechatReadTarget:
             lead_id=payload.get("lead_id"),
             sales_id=payload.get("sales_id"),
             read_reason=payload.get("read_reason"),
+            authorization_revision=str(payload.get("authorization_revision") or "").strip() or None,
             raw=payload,
         )

@@ -23,7 +23,7 @@ from apps.wechat_ai_customer_service.message_identity import (
 
 
 OCR_RPA_ADAPTERS = {"win32_ocr", "wechat_win32_ocr", "rpa_ocr", "ocr_rpa"}
-QUOTE_MARKER_RE = re.compile(r"\[(?:引用|回复)[^\]]*\]")
+QUOTE_MARKER_RE = re.compile(r"\[[^\]\n\r]{0,8}(?:引\s*\[?\s*用|引用|回复)[^\]]*\]")
 LONG_PRESS_OVERLAY_RE = re.compile(r"^(?:复制|转发|收藏|删除|多选|引用|提醒|翻译|搜一搜)(?:\s+|$)")
 SCREEN_TIME_RE = re.compile(r"^(?:星期[一二三四五六日天]|昨天|今天|前天)?\s*\d{1,2}:\d{2}(?::\d{2})?$")
 HIGH_RISK_CAPTURE_FLAGS = {
@@ -396,9 +396,16 @@ def build_message_envelope(
         target_name=target_name,
         conversation_type=conversation_type,
     )
+    observation_id = "observation_" + stable_digest(
+        {"captured_at": capture_time, "source_adapter": source_adapter, "message_id": message_id},
+        24,
+    )
+    source_message_key = str(record.get("source_message_key") or existing.get("source_message_key") or canonical_visual_id or message_id)
 
     envelope = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "observation_id": observation_id,
+        "source_message_key": source_message_key,
         "message_id": message_id,
         "canonical_visual_id": canonical_visual_id,
         "canonical_input_id": canonical_input_id,
@@ -436,6 +443,8 @@ def apply_message_envelope_to_record(record: dict[str, Any], envelope: dict[str,
     next_record["message_id"] = str(next_record.get("message_id") or envelope.get("message_id") or "")
     next_record["canonical_visual_id"] = str(envelope.get("canonical_visual_id") or next_record.get("canonical_visual_id") or "")
     next_record["canonical_input_id"] = str(envelope.get("canonical_input_id") or next_record.get("canonical_input_id") or "")
+    next_record["observation_id"] = str(envelope.get("observation_id") or next_record.get("observation_id") or "")
+    next_record["source_message_key"] = str(envelope.get("source_message_key") or next_record.get("source_message_key") or "")
     next_record["bubble_id"] = str(envelope.get("bubble_id") or "")
     next_record["content"] = content_body
     next_record["content_body"] = content_body
@@ -539,6 +548,18 @@ def existing_message_envelope(record: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def line_looks_like_quote_preview(line: str) -> bool:
+    compact = re.sub(r"\s+", "", str(line or ""))
+    if not compact:
+        return False
+    normalized = compact.replace("[", "").replace("]", "").replace("【", "").replace("】", "")
+    if normalized.startswith(("引用", "回复", "引[用", "引［用")):
+        return True
+    if normalized.startswith("用") and ("老师" in normalized or "旧订单" in normalized or "旧消息" in normalized):
+        return True
+    return False
+
+
 def remove_quote_fragments(text: str) -> tuple[str, list[dict[str, str]]]:
     fragments: list[dict[str, str]] = []
     clean = str(text or "")
@@ -552,7 +573,7 @@ def remove_quote_fragments(text: str) -> tuple[str, list[dict[str, str]]]:
         if not line:
             continue
         compact = re.sub(r"\s+", "", line)
-        if compact.startswith(("引用", "回复")) and ("：" in line or ":" in line or len(compact) <= 80):
+        if line_looks_like_quote_preview(line) and ("：" in line or ":" in line or len(compact) <= 80):
             fragments.append({"text": line, "reason": "quote_line"})
             continue
         lines.append(line)

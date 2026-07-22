@@ -1,12 +1,12 @@
 # AI智能客服售前跟进系统 技术方案
 
-版本：v0.6
+版本：v0.8
 
-日期：2026-06-22
+日期：2026-07-21
 
-当前阶段：运营后台 + Windows Worker 客户端 + V16 系列 C2 状态机定向读取修复；当前 Windows 实机验证包：V16.18
+当前阶段：运营后台 + Windows Worker 客户端；C1 已形成稳定基线，C2 V16.104 已完成文字/语音、V3 授权、private 单聊准入、群聊阻断、统一顺序和语音锚点；图片与 C2-C3 串行接口已定义但尚未实现
 
-一句话结论：当前技术方案统一收口到本文档；add_friend、C2 会话绑定/微信监听、Worker/服务端接口、状态机、错误码和验收口径都在正文中维护，不再另设当前有效专项技术文档。
+一句话结论：当前技术方案统一收口到本文档；C2 只允许“有效短码 + private 单聊 + 当前 read-target 授权”的会话进入消息读取，文字和语音按 V3 合同入库，群聊/unknown 终止本轮；图片与 C2-C3 串行链路按专项接口合同开发，完成代码和实机回归前不得恢复旧图片入口或宣称已接入。
 
 ---
 
@@ -30,6 +30,10 @@
 | 2026-06-24 | v0.6 | C2 曾试图用滚动兜底非第一屏消息，但微信会话列表动态排序，无法保证不漏扫，也不符合销售先看第一屏的习惯 | V16 系列主链路调整为“第一屏主动扫描 + 第一屏命中优先读取 + 状态机驱动定向读取 + 召回前 precheck + 去重入库”；旧滚动兜底方案不保留为当前方案 |
 | 2026-06-30 | v0.6内部修订 | “状态机定向读取”只写了目标和字段，未明确非第一屏会话的 RPA 定位方式，容易被误实现为仅靠第一屏 `rpa_session_key` 查找 | 明确定向读取分两类：第一屏可见目标可用 `rpa_session_key/display_name` 快速读取；非第一屏目标必须通过微信搜索框搜索 `remark_code`，二次确认短码后才允许读取；`rpa_session_key` 降级为第一屏辅助证据 |
 | 2026-07-01 | v0.6内部修订 | 技术方案中写死 V16.2，无法反映 V16 系列持续修复和 V16.18 Windows 实机回归状态 | 改为 V16 系列 C2 状态机定向读取修复；当前 Windows 实机验证包为 V16.18 |
+| 2026-07-01 | v0.7 | C2 已能处理文字读取和短码定向读取，但真实客户可能发送微信语音；若不识别语音，状态机会把“客户已回复”误判为“客户沉默” | 增补 C2 语音消息识别方案：Worker 先通过 OmniAuto `messages` 探测当前会话消息类型；只有发现未转写语音时才调用 `voice-transcribe` 点击微信自带语音转文字，再二次读取 `messages`；语音消息统一入 `message_events`，失败不得触发 AI 自动回复 |
+| 2026-07-20 | v0.8 | v0.7 仍停留在早期语音方案，未覆盖 V3 授权、稳定消息身份、角色门禁、private 单聊准入、群聊终止态、侧栏 OCR 同行聚合和长语音流程 | 以 V16.98 为 C2 当前冻结基线：首屏扫描与授权读取分离；只准入有效短码 private 单聊；群聊/unknown 不搜索、不读取、不转写、不入库；消息上报强制 V3 和 `authorization_revision`；语音转写使用同一 flow、同一 UI 锁和进展型 watchdog；图片识别留待下一版确认 |
+| 2026-07-21 | v0.8内部修订 | 自动召回仍写成 Worker 发送固定文案；销售人工回复与“等待销售回复”容易被混成同一状态 | 召回统一复用服务端 Brain，使用 `trigger_type=recall + recall_cycle_id`；Brain/Guard 产出批准文案后 Worker 才发送。销售已经发出人工回复时进入 `sales_replied_waiting_user`，停止当前AI回复但保留后续召回资格。 |
+| 2026-07-21 | v0.8内部修订 | OmniAuto RPA、Vision、Brain 与车金 Worker/后端存在同义接口和字段所有权不清风险 | 新增 `C2-C3_OmniAuto_Worker_后端接口合同_v0.1_2026-07-21.md`：固定 OmniAuto action/Brain/Vision 名称、三层字段所有权、C2-C3 单会话串行扩展和唯一映射；本手册只保留摘要，详细联调以接口合同为准。 |
 
 ---
 
@@ -71,10 +75,10 @@ Worker = 微信事实采集器 + 微信动作执行器
 Worker 上报事实：
 
 - 客户新文字消息。
-- 客户新图片消息。
+- 客户新图片消息（V16.104 仅识别为待处理观察；目标接口已预冻结，正式采集/入库尚未实现）。
 - 销售手机端同步到桌面端的人工回复。
 - AI/召回发送成功或失败。
-- 图片另存成功或失败。
+- 图片处理成功或失败（预留事实类型，V16.98 不产生该事实）。
 - 微信登录、窗口、风控提示、发送异常。
 
 服务端负责判断：
@@ -180,13 +184,13 @@ Worker 上报事实：
 | `add_friend_blocked` | 加好友任务已创建但不可执行。 | 销售/运营绑定Worker | 仅允许绑定Worker后解除阻塞，不允许Worker领取。 |
 | `add_friend_pending` | 待加好友。 | Worker执行 | 手机号搜索、发送添加通讯录邀请、写初始备注。 |
 | `add_friend_sent` | 已发送添加通讯录邀请，不代表客户已同意。 | Worker扫描会话列表识别新会话 | 等待后续会话绑定。 |
-| `friend_added` | Worker从会话列表识别到新会话，或发现已是好友。 | Worker绑定会话 | 绑定微信会话，进入AI接待。 |
+| `friend_added` | C2首屏发现后，经后端许可点击并确认有效短码、private和输入区可用。 | Worker读取首次会话事实 | 有客户消息则进入AI接待；有销售人工消息则进入 `sales_replied_waiting_user`；双方均无消息才创建主动开场候选。 |
 | `ai_active` | AI正常接待。 | 客户/AI | 客户来消息后AI可持续回复，不设轮次上限。 |
 | `waiting_user_reply` | 我方已经回复，等待客户回。 | 客户 | 服务端到期生成召回任务；Worker监听客户是否回复。 |
 | `recall_precheck` | 召回前读取确认中。 | Worker读取微信事实 / 服务端复核 | 不发送召回；确认无新客户消息后才允许创建 `follow_up`。 |
 | `recalled_waiting_user` | AI已发过召回，继续等待客户回。 | 客户 | 到下一轮召回周期后可再次召回。 |
 | `waiting_sales_reply` | AI已转人工，等待销售回复客户。 | 销售 | 超过N天销售未回，服务端飞书通知销售。 |
-| `sales_replied_waiting_user` | 销售已回复，等待客户回。 | 客户 | 到期可由AI发送召回内容。 |
+| `sales_replied_waiting_user` | 销售已回复，等待客户回。 | 客户 / 召回到期 | 客户回复后重新进入 `ai_active`；长期未回复可进入 `recall_precheck`，由 Brain 生成召回。 |
 | `rejected` | 客户明确拒绝或黑名单。 | 无 | 不加好友、不回复、不召回。 |
 | `closed` | 系统停止自动跟进。常见原因包括销售移除备注短码、销售线下接手、人工确认结束。 | 无 | 不自动回复、不召回、不飞书提醒、不主动关注。 |
 
@@ -236,7 +240,24 @@ conversation.status=add_friend_pending
 
 这不是重新创建任务，而是恢复已有阻塞任务，避免重复加好友任务。
 
-### 4.1 AI持续接待
+### 4.1 首次好友激活与主动开场
+
+```text
+C1只确认好友申请已发送
+-> C2首屏扫描发现短码并上报
+-> 后端签发visible-only点击许可
+-> Worker打开并确认有效短码 + private + 输入区可用
+-> 后端确认friend_added
+```
+
+首次读取分支：
+
+- 存在客户消息：取消主动开场，按普通 C2/C3 客户消息流程处理。
+- 存在未关联既有 AI `reply_action` 的 `self` 消息：视为销售人工回复，消息入库，取消主动开场，状态进入 `sales_replied_waiting_user`；当前不调用 Brain，但后续长期未回复仍可召回。
+- 没有客户消息和销售消息：创建一次性 `trigger_type=friend_welcome` 批次；同一会话只允许成功创建/发送一次。
+- `self` 消息若能与既有 AI `reply_action/sent_ack` 对应，不得误判为销售人工回复。
+
+### 4.2 AI持续接待
 
 ```text
 客户发消息 -> Worker上报message_event -> 服务端判断可AI回复 -> AI生成回复 -> Worker发送 -> sent_ack -> 状态=waiting_user_reply
@@ -248,7 +269,7 @@ conversation.status=add_friend_pending
 - AI是否继续聊由风控、客户意图、模型置信度、会话状态决定。
 - 命中高风险、高意向、模型失败、图片低置信或证据不足时，不继续自动回复，转人工。
 
-### 4.2 等待用户回复
+### 4.3 等待用户回复
 
 任何我方回复成功后，都进入等待用户回复：
 
@@ -262,8 +283,12 @@ AI召回成功 -> recalled_waiting_user
 
 ```text
 未转人工会话 -> ai_active
-已转人工会话 -> waiting_sales_reply 或保持人工负责，由销售继续处理
+waiting_sales_reply 且销售尚未回复 -> 保持人工负责，由销售继续处理
+sales_replied_waiting_user -> ai_active
+AI召回已经成功的会话 -> ai_active；高意向/高风险时仍转 waiting_sales_reply
 ```
+
+`recall_origin_status` 只用于证明本次召回从哪个等待状态进入和避免重复召回，不改变客户新消息的归属：只要原状态为 `sales_replied_waiting_user`，无论召回发送前后，客户新消息都重新进入 `ai_active`。召回文案发送成功后状态统一进入 `recalled_waiting_user`。
 
 如果客户明确拒绝：
 
@@ -271,7 +296,7 @@ AI召回成功 -> recalled_waiting_user
 任意状态 -> rejected
 ```
 
-### 4.3 自动召回
+### 4.4 自动召回
 
 召回不再只属于观望客户，而属于“等待用户回复”类状态。
 
@@ -292,11 +317,12 @@ status in (waiting_user_reply, recalled_waiting_user, sales_replied_waiting_user
 动作：
 
 ```text
-服务端生成 recall_precheck read-target
+服务端生成 recall_precheck read-target，并保存 recall_origin_status
 Worker定向读取该会话最新消息
-若读到客户新消息，则取消本轮召回并进入AI回复或转人工链路
-若确认无客户新消息，服务端才创建follow_up任务
-Worker领取任务并发送AI召回内容
+若读到客户新消息，则取消本轮召回并进入AI回复/转人工判断；原本为 sales_replied_waiting_user 时同样重新进入 ai_active，不继续锁给销售
+若确认无客户新消息，服务端创建 trigger_type=recall 的召回批次
+同一个 Brain 结合历史会话生成召回候选，Guard 审核通过后创建follow_up任务
+Worker领取任务并发送服务端批准的召回内容
 Worker上报sent_ack
 服务端更新last_recall_at、recall_count、last_outbound_at
 状态=recalled_waiting_user
@@ -308,7 +334,7 @@ Worker上报sent_ack
 - 工程上必须保留配置项：召回间隔、每日召回上限、单客户最大召回次数、静默时段。
 - 如果项目方配置为“不限次数”，系统也必须受每日上限和静默时段约束。
 
-### 4.4 转人工与销售超时提醒
+### 4.5 转人工与销售超时提醒
 
 触发转人工：
 
@@ -339,7 +365,7 @@ status=waiting_sales_reply
 - 不单独增加角色权限。
 - 失败时记录错误日志，由项目方人工查看处理。
 
-### 4.5 备注短码作为系统托管开关
+### 4.6 备注短码作为系统托管开关
 
 第一期不额外给销售做“关闭客户”的后台工具。销售在微信里工作的事实优先，备注短码作为最轻量的控制入口。
 
@@ -697,7 +723,7 @@ Worker上报客户消息 -> 控制面检查会话和风控 -> AI/RAG/Guard -> �
 ```
 
 ```text
-等待用户回复类会话到达召回周期 -> 服务端生成recall_precheck读取目标 -> Worker定向读取确认无新客户消息 -> 创建follow_up任务 -> Worker发送固定文案 -> 记录结果
+等待用户回复类会话到达召回周期 -> 服务端生成recall_precheck读取目标 -> Worker定向读取确认无新客户消息 -> 创建trigger_type=recall批次 -> Brain/Guard生成并批准召回内容 -> 创建follow_up任务 -> Worker发送 -> 记录结果
 ```
 
 ### 2.5 已确认决策与待确认
@@ -750,7 +776,7 @@ Worker RPA链路：
 | 车金服务端 | 任务创建、状态机、AI编排、知识库/RAG、风控、召回、错误码、审计、控制面展示 | 不直接操作微信，不调用 Worker 本地 RPA Sidecar |
 | OmniAuto AI Engine Adapter | 在服务端复用 OmniAuto 的 customer_service_brain、RAG、Evidence Pack、Guard、回复生成/润色等能力 | 不监听微信、不发送微信、不保存车金业务主状态 |
 | Worker 主进程 | 心跳、任务领取、任务调度、UI展示、本地串行锁、超时控制、日志/截图上传 | 不写微信点击细节，不决定业务状态 |
-| OmniAuto RPA Sidecar | 微信窗口识别、OCR、点击、输入、发送校验、备注、图片另存、截图取证 | 不保存业务主状态，不做线索分配，不判断是否转人工 |
+| OmniAuto RPA Sidecar | 微信窗口识别、OCR、点击、输入、发送校验、备注、截图取证；图片采集能力待确认 | 不保存业务主状态，不做线索分配，不判断是否转人工 |
 | 微信桌面客户端 | 被 RPA 操作的外部软件 | 不作为系统可信状态源 |
 
 ### 3.1.1 Worker 客户端服务端能力
@@ -838,7 +864,7 @@ backend/alembic/versions/20260611_0004_worker_client_runtime.py
 | add_friend | 手机号搜索、发送添加通讯录邀请、写初始绑定备注、记录邀请发送结果；未绑定Worker时由服务端保持blocked，Worker不可领取 | 不聊天、不调用AI、不判断意向、不决定是否分配销售，不判断客户是否同意 |
 | session_scan/message_ingest（运行时能力，非Task） | 扫描微信会话、识别客户短码、绑定会话、读取已绑定会话消息、按 `dedupe_key` 上报服务端 | 不进入任务中心、不生成AI回复、不发送消息、不判断意向 |
 | chat_reply | 领取服务端已批准的 `reply_action`，调用 OmniAuto 输入并发送回复，回传 `sent_ack` 和证据 | 不监听未绑定会话、不批量加好友、不做线索分配、不改转人工备注 |
-| follow_up | 领取召回任务、发送固定召回文案、上报结果 | 不判断召回资格、不AI自由生成文案 |
+| follow_up | 领取召回任务、发送服务端 Brain/Guard 已批准的召回文案、上报结果 | 不判断召回资格、不在 Worker 本地生成或改写文案 |
 | Local WeChat UI Lock | 所有微信桌面端 UI 操作串行化 | 不决定业务状态 |
 
 ### 3.2 UI锁、优先级与恢复
@@ -1005,7 +1031,7 @@ Worker 启动、心跳或每次获取锁前都必须执行本地锁恢复检查�
 | 65 | `recall_precheck_read` | 召回前确认读取；确认没有新客户消息后才允许 follow_up。 |
 | 60 | `follow_up` | 召回发送；必须经过 recall_precheck。 |
 | 40 | `diagnostic` | 人工排查、诊断截图；不作为主监听兜底。 |
-| 20 | `save_image` | 图片另存等低优先级动作。 |
+| 20 | `save_image` | 历史预留动作，V16.104 禁用；目标方案明确不恢复旧入口。 |
 
 队列规则：
 
@@ -1024,7 +1050,7 @@ Worker 启动、心跳或每次获取锁前都必须执行本地锁恢复检查�
 | `session_scan` | 否 | 否 | 视实现而定 | 若扫描会话列表需要切换/读取微信 UI，则获取本地锁；上报 `session_scan_result`；响应 `next_action=none`。 |
 | `message_ingest` | 否 | 否 | 视实现而定 | 若读取消息需要打开/切换会话，则获取本地锁；读取已绑定会话消息；按 `dedupe_key` 上报；响应 `next_action=none`。 |
 | `chat_reply` | 是 | 是 | 是 | claim `chat_reply` 任务和 `reply_action` -> 校验未过期、未人工接管、上下文未变化 -> 获取本地锁 -> 发送 -> 上报 `sent_ack` -> 释放锁。 |
-| `follow_up` | 是 | 是 | 是 | 仅在 `recall_precheck_read` 确认无新客户消息后，claim `follow_up` 任务 -> 校验召回仍有效 -> 获取本地锁 -> 发送固定文案 -> 上报结果 -> 释放锁。 |
+| `follow_up` | 是 | 是 | 是 | 仅在 `recall_precheck_read` 确认无新客户消息，且 `trigger_type=recall` 的 Brain/Guard 已生成批准文案后，claim `follow_up` 任务 -> 校验召回仍有效 -> 获取本地锁 -> 发送批准文案 -> 上报结果 -> 释放锁。 |
 
 #### 3.2.8 错误码
 
@@ -1126,25 +1152,51 @@ sent_ack用于确认Worker已发送。
 - 目标：知道微信里这条消息是谁发的、属于哪条线索、当前 AI 能不能回。
 - 第一期不读取微信数据库、不破解协议、不使用非公开微信接口、不依赖客户昵称唯一性。
 - 绑定优先通过初始备注/短码；已是好友立即尝试绑定；绑定失败不自动回复。
-- 监听客户文字、图片、系统提示和我方消息；图片 `message type=3` 作为已知线索，实际实现保留兜底。
-- 重复消息通过 `dedupe_key` 去重；同一 `dedupe_key` 只处理一次。
-- 本模块是 OmniAuto 接入 C2 checkpoint。Worker 调用 OmniAuto `sessions/messages` 能力读取微信事实，服务端负责短码绑定、会话状态、消息去重和是否允许后续 AI 回复。
+- 当前 V16.98 已验收范围为客户/我方文字与语音事实；Worker 先用 OmniAuto `messages` 读取/探测消息类型，只有发现未转写语音时才调用 `voice-transcribe`，转写正文必须绑定原语音并按 `message_type=voice` 入库，不能再作为独立 `text` 入库。
+- 图片气泡当前只允许作为“已发现但未处理”的观察对象，不复制、不落本地路径、不调用旧图片入口、不上报伪造图片消息；图片识别链路将在 Vision、临时图像生命周期、消息顺序和后端合同确认后另行补入。
+- 重复消息由 Worker 稳定来源身份和 `dedupe_key` 初筛，服务端以 `unique(conversation_id, dedupe_key)` 做最终防线；页面坐标、扫描轮次和绝对时间不得作为消息主身份。
+- C2 唯一准入条件为：当前会话标题含有效短码、标题同步确认 `conversation_type=private`、服务端 `read-targets` 仍提供当前 `authorization_revision`。群聊和 `unknown` 不进入消息读取。
+- 本模块是 OmniAuto 接入 C2 checkpoint。Worker 调用 OmniAuto `sessions / messages / voice-transcribe` 能力读取微信事实，服务端负责短码绑定、会话状态、消息去重和是否允许后续 AI 回复。
 - 本模块不生成 AI 回复、不发送 AI 回复；AI 回复发送属于 C3 checkpoint，必须在会话绑定和消息入库稳定后实施。
 - C2 接口、状态、错误码和验收标准以本模块为准。
 
 ### 6.0 OmniAuto结合方式
 
+#### 6.0.0 接口名称与适配边界
+
+C2/C3 详细联调字段以 `C2-C3_OmniAuto_Worker_后端接口合同_v0.1_2026-07-21.md` 为唯一专项依据。本手册定义业务流程，专项合同定义可直接开发和测试的请求、响应、枚举、字段所有者及 OmniAuto 到车金后端的唯一映射。
+
+正式命名固定如下：
+
+```text
+OmniAuto RPA action：sessions / open-chat / messages / voice-transcribe / send
+OmniAuto Vision：customer_image_understanding / visual_bridge_input
+OmniAuto Brain：customer_service_brain / brain_plan / brain_plan.recommended_action / reply_segments
+车金后端流程对象：message_batch / batch_id / reply_action / handoff_event
+```
+
+三层边界：
+
+- OmniAuto 输出 UI 观察、Vision 文字化结果和 Brain 计划，不依赖车金 `contracts/c2_contract_v3.json`。
+- Worker 校验 `observation_schema_version`，生成车金 V3 合同指纹、稳定消息身份、统一顺序和后端请求。
+- 后端下发 `conversation_id/authorization_revision`，执行状态机、合同校验、最终去重和持久化，不重做 OCR 左右侧、消息类型或语音父子归属判断。
+- OmniAuto Brain 的 `brain_plan.recommended_action` 是业务语义；车金 `batch_status` 是持久化流程状态。二者只能按接口合同映射，不能互相替代。
+- V16.104 的 `messages/ingest` 仍只完成 C2 入库；后续单会话串行实现是在原响应中增加可选 `message_batch`，Worker 按 `batch_id` 保持原会话和 UI 锁等待 Brain 终态，不新建另一套“上报并问 Brain”接口。
+
 ```text
 Worker运行时扫描
-  -> OmniAuto sessions：扫描微信会话列表，提取display_name、短码候选、未读提示、行特征和截图证据
-  -> 服务端绑定：用remark_code匹配唯一lead/conversation/sales/worker
-  -> OmniAuto messages：读取已绑定会话近期消息
-  -> 服务端入库：按dedupe_key去重，更新conversation状态，后续再触发AI编排
+  -> OmniAuto sessions：扫描微信第一屏，按视觉行聚合OCR并提取唯一短码候选
+  -> 服务端绑定/授权：用remark_code匹配唯一lead/conversation/sales/worker，返回read-target和authorization_revision
+  -> Worker定位目标：首屏唯一命中走visible，未命中才按remark_code搜索
+  -> 顶部标题复核：有效短码且conversation_type=private才准入
+  -> OmniAuto messages：读取当前屏文字/语音观察；必要时在同一flow内完成语音转写并最终复读
+  -> Worker构建V3消息：稳定来源身份、角色证据、item_state/flow_state和原始证据
+  -> 服务端入库：复核授权版本并按unique(conversation_id,dedupe_key)去重
 ```
 
 会话绑定/微信监听是 Worker 运行时能力，不直接作为 `chat_reply` 任务。`chat_reply` 任务只在服务端已经生成并批准 `reply_action` 后，用于让 Worker 调用 OmniAuto 执行发送。
 
-C2 第一屏主动扫描、状态机定向读取和消息读取均属于 Worker 端 OmniAuto RPA Sidecar 能力，具体调用 `sessions/messages`。它们只负责识别微信窗口、OCR 当前可见会话列表、定位/切换指定会话、读取消息和截图取证；不调用加好友正式入口 `add-friend-entry-click-plan-windows`，不执行旧滚动兜底方案，也不运行 OmniAuto 原本的本地 AI 客服闭环。
+C2 第一屏主动扫描、状态机定向读取、消息读取和必要时的语音转文字预处理均属于 Worker 端 OmniAuto RPA Sidecar 能力，具体调用 `sessions / messages / voice-transcribe`。它们只负责识别微信窗口、OCR 当前可见会话列表、定位/切换指定会话、确认短码和单聊类型、读取消息、在发现未转写语音时点击微信语音转文字和截图取证；不调用加好友正式入口 `add-friend-entry-click-plan-windows`，不执行旧滚动兜底方案，不运行 OmniAuto 原本的本地 AI 客服闭环，也不调用尚未确认的图片识别入口。
 
 工程约束：C2 不进入统一任务中心，`session_scan`、`message_ingest`、`wechat_binding` 不允许定义为 `task_type`。C2 只能写入 `wechat_session_bindings`、`message_events` 和会话监听状态；只有进入 C3 且服务端决定需要发送 AI 回复时，才创建 `chat_reply` 任务。
 
@@ -1185,9 +1237,12 @@ V16 系列主链路固定为：
 第一屏主动扫描要求：
 
 - 只扫描当前可见会话列表，不遍历非当前可见区。
-- 单次持有 `Local WeChat UI Lock` 必须短，默认建议 3-8 秒。
+- 普通 OCR 与增强 OCR 必须先聚合同一视觉行，再选择该行标题；唯一合法短码标题优先于数字角标、时间和消息预览。
+- 普通 OCR 与增强 OCR 识别到相同短码时合并为一个会话；同一视觉行出现两个不同短码时按 `unknown` 阻断。
+- 同码同时存在 private 和明确群聊人数后缀证据时，保留 group 证据，不能用 private 结果覆盖安全阻断。
 - 只上报会话事实，不直接判断是否回复，不直接创建 `reply_action`。
-- 发现命中会话后，优先进入 `message_ingest_visible_hit`。
+- `read-targets=[]` 时仍允许执行第一屏事实发现和 `scan-result` 上报，但必须清空本地 `visible_hit_queue`，不得点击会话、读取消息、转写语音或上报消息。
+- 发现短码命中后，只有该目标也存在于本轮 `read-targets` 且携带当前 `authorization_revision`，才允许进入消息读取。
 
 #### 6.0.1.2 第一屏命中优先读取
 
@@ -1197,7 +1252,10 @@ V16 系列主链路固定为：
 
 ```text
 第一屏扫描
--> visible_hit_queue
+-> 上报scan-result
+-> 拉取并复核read-targets授权
+-> 授权命中进入visible_hit_queue
+-> 点击会话并同步确认有效短码 + private
 -> OmniAuto messages读取
 -> 生成dedupe_key
 -> 上报/messages/ingest
@@ -1208,10 +1266,10 @@ V16 系列主链路固定为：
 
 | 规则 | 说明 |
 |---|---|
-| 优先读取 | 第一屏命中优先于普通状态机定向读取。 |
+| 授权后优先读取 | 第一屏命中优先于普通状态机定向读取，但短码命中本身不是读取授权。 |
 | 批量上限 | 每轮最多读取配置化数量，第一期建议 3-5 个，避免长期占用微信。 |
 | 去重 | 同一轮按 `conversation_id + remark_code` 身份键去重；`remark_code` 是非第一屏微信搜索定位主锚点，`rpa_session_key / display_name / row_fingerprint` 只用于第一屏快速定位和排查证据。 |
-| 失败处理 | 找不到目标、OCR低置信、微信异常时记录错误码，不乱滚、不乱点。 |
+| 失败处理 | 找不到目标、OCR低置信、类型为 group/unknown、微信异常或授权已变化时记录错误码，不乱滚、不乱点。 |
 
 #### 6.0.1.3 状态机驱动定向读取
 
@@ -1262,7 +1320,7 @@ waiting_user_reply / recalled_waiting_user 超过N天
 | 结果 | 后续动作 |
 |---|---|
 | 读到新的客户消息 | 取消召回；新消息进入 message_batch，按 AI 回复/转人工链路处理。 |
-| 未读到新客户消息 | 允许创建 `follow_up` 任务，Worker 发送固定召回文案。 |
+| 未读到新客户消息 | 创建 `trigger_type=recall` 的召回批次；同一个 Brain/Guard 生成并批准内容后才创建 `follow_up` 任务。 |
 | 找不到会话 / OCR低置信 / 微信异常 | 不发送召回；记录 `RECALL_PRECHECK_FAILED` 或具体错误码，等待人工或下次检查。 |
 | 读到销售人工回复 | 不发送召回；状态进入销售已回复后的等待客户状态。 |
 
@@ -1271,16 +1329,17 @@ waiting_user_reply / recalled_waiting_user 超过N天
 Worker 本地调度不是简单优先级表，而是闭环调度：
 
 ```text
-1. 当前动作正在执行时，不中途强杀，除非 emergency_stop。
+1. 当前动作正在执行时，持续检查取消信号和授权版本；停止监听或授权变化后不再开始新的微信动作。
 2. 到达第一屏扫描周期时，优先执行 session_scan_visible。
-3. 第一屏命中会话进入 visible_hit_queue，并优先读取。
-4. 服务端消息入库后，AI思考在服务端异步进行，不占用微信 UI 锁。
-5. 若服务端生成 chat_reply，Worker 发送前先做 pre_send_refresh。
-6. 空闲后拉取 read-targets，去重掉本轮第一屏已处理对象。
-7. 处理状态机定向读取 state_target_queue。
-8. 召回到期先执行 recall_precheck_read，确认无新客户消息后才进入 follow_up。
-9. follow_up 发送完成后进入 recalled_waiting_user。
-10. 不执行旧滚动兜底方案。
+3. 上报 scan-result 后拉取 read-targets；为空时清空 visible_hit_queue，本轮不读消息。
+4. 第一屏命中且获得当前授权的会话进入 visible_hit_queue，并优先读取。
+5. 点击目标后用顶部标题同步确认有效短码和 private；group/unknown 立即结束本轮。
+6. 服务端消息入库后，AI思考在服务端异步进行，不占用微信 UI 锁。
+7. 若服务端生成 chat_reply，Worker 发送前先做 pre_send_refresh。
+8. 空闲后处理未被第一屏读取覆盖的 state_target_queue。
+9. 召回到期先执行 recall_precheck_read，确认无新客户消息后才进入 follow_up。
+10. follow_up 发送完成后进入 recalled_waiting_user。
+11. 不执行旧滚动兜底方案。
 ```
 
 本地 UI 操作优先级：
@@ -1308,14 +1367,15 @@ recovery / emergency_stop
 
 ### 6.0.2 C2主动扫描工程规则
 
-主动扫描是 C2 的主工作机制，指 Worker 不等待服务端下发 `chat_reply` 任务，也不等待微信官方推送，而是在本地按规则主动调用 OmniAuto `sessions/messages` 获取微信事实。
+主动扫描是 C2 的主工作机制，指 Worker 不等待服务端下发 `chat_reply` 任务，也不等待微信官方推送，而是在本地按规则主动调用 OmniAuto `sessions / messages` 获取微信事实；仅当 `messages` 探测到未转写语音时，才追加调用 `voice-transcribe`。
 
-主动扫描分为两个短动作：
+主动扫描分为事实扫描、授权读取和条件性语音预处理：
 
 | 动作 | 调用能力 | 作用 | 是否进入统一任务中心 |
 |---|---|---|---|
 | `session_scan` | OmniAuto `sessions` | 扫描会话列表可见区，识别短码、未读提示、会话行特征。 | 否 |
-| `message_ingest` | OmniAuto `messages` | 打开/定位已绑定会话，读取近期消息并上报服务端。 | 否 |
+| `message_ingest` | OmniAuto `messages` | 在 read-target 授权内打开/定位 private 会话，读取当前屏消息并上报服务端。 | 否 |
+| `voice_transcribe` | OmniAuto `voice-transcribe` | 仅在首次读取发现当前屏未转写语音时，在同一 flow 内逐条调用微信自带转文字。 | 否 |
 
 #### 6.0.2.1 主动扫描触发
 
@@ -1336,28 +1396,32 @@ recovery / emergency_stop
 可见区session_scan：5-15秒一轮，配置化
 read-targets拉取：5-15秒一轮，配置化
 单轮message_ingest最大会话数：配置化，第一期建议3-5个
-单轮主动扫描最大持锁时间：配置化，第一期建议10-20秒
+普通首屏扫描和无语音消息读取应保持短动作
+多条语音转写属于长动作例外，以“是否持续取得进展”判断卡死，不以普通扫描总时长强行截断
 ```
 
-以上是默认配置，不作为性能承诺；验收以测试环境实际表现为准。
+以上是调度建议，不作为性能承诺。V16.95 Windows 实测 3 条语音转写耗时约 93 秒，因此 10-20 秒只适用于普通扫描，不适用于正常推进中的语音 flow。
 
 #### 6.0.2.2 主动扫描执行步骤
 
 每轮第一屏主动扫描按以下顺序执行：
 
 ```text
-1. Worker确认本机在线、微信可控、自动监听开关开启。
+1. Worker确认本机在线、微信可控、C2 enabled；第一屏事实扫描允许在read-targets为空时运行。
 2. Worker检查是否处于正在执行的微信 UI 动作；若无锁占用，第一屏扫描可优先执行。
 3. 如果需要操作微信UI，先获取Local WeChat UI Lock。
 4. 调用OmniAuto sessions扫描当前可见会话列表。
-5. 生成scan_id、sidecar_run_id、rpa_session_key、row_fingerprint、remark_code_candidates。
+5. 普通/增强OCR按视觉行聚合，生成scan_id、sidecar_run_id、rpa_session_key、row_fingerprint、remark_code_candidates和conversation_type证据。
 6. 上报 /wechat/sessions/scan-result。
-7. 服务端返回绑定结果和can_ingest_messages。
-8. Worker将第一屏命中会话加入 `visible_hit_queue` 并优先读取。
-9. Worker调用 /wechat/sessions/read-targets 拉取状态机待读取会话，并去重掉本轮第一屏已处理对象。
-10. Worker上报 /wechat/messages/ingest。
-11. 服务端按dedupe_key幂等入库，返回ingest_result。
-12. Worker释放Local WeChat UI Lock，记录本轮结果。
+7. Worker调用 /wechat/sessions/read-targets 获取当前读取授权和authorization_revision。
+8. read-targets为空：清空visible_hit_queue，释放UI锁，本轮只保留扫描事实。
+9. read-targets非空：仅将“有效短码 + 当前授权”命中加入visible_hit_queue，并去重状态机目标。
+10. 点击/定位目标后，用同一次顶部标题确认同步检查remark_code和conversation_type。
+11. 只有conversation_type=private继续；group/unknown立即终止，不搜索、不读、不转写、不入库。
+12. 首次messages读取；发现未转写语音时在同一flow执行voice-transcribe，再做一次最终messages读取和目标复核。
+13. Worker构建contract_version=3消息并携带authorization_revision，上报 /wechat/messages/ingest。
+14. 服务端先复核授权版本，再按dedupe_key幂等入库，返回ingest_result。
+15. Worker释放Local WeChat UI Lock，记录各阶段耗时和结构化证据。
 ```
 
 如果当前已经有微信 UI 动作在执行，主动扫描等待当前动作完成；不做中途抢占。
@@ -1375,6 +1439,7 @@ allow_listening=true
 listen_status in listening/degraded
 conversation.status not in closed/rejected
 worker_id匹配当前Worker
+authorization_revision非空且代表当前监听授权版本
 ```
 
 排序优先级：
@@ -1396,7 +1461,7 @@ conversation.status=closed/rejected 的会话
 非当前 Worker 负责的会话
 ```
 
-`conversation_id + remark_code` 是定向读取的身份收口。若历史脏数据或异常绑定导致已绑定会话缺少 `conversation_id` 或 `remark_code`，服务端不得把该会话作为正常 `read-target` 返回，应将绑定/监听状态置为 `degraded` 或 `needs_review`，并记录对应错误码。`rpa_session_key / display_name` 只用于第一屏可见会话的快速定位和排查证据，不作为非第一屏定向读取的必要条件。
+`conversation_id + remark_code` 是业务身份收口，`authorization_revision` 是本轮读取门票。若历史脏数据或异常绑定导致已绑定会话缺少任一必填值，服务端不得把该会话作为正常 `read-target` 返回，应将绑定/监听状态置为 `degraded` 或 `needs_review`，并记录对应错误码。`rpa_session_key / display_name` 只用于第一屏可见会话的快速定位和排查证据，不作为非第一屏定向读取的必要条件。
 
 #### 6.0.2.4 主动扫描中断与恢复
 
@@ -1409,12 +1474,14 @@ conversation.status=closed/rejected 的会话
 | 微信窗口不可控 | 停止本轮扫描，上报 `WECHAT_WINDOW_NOT_READY`。 |
 | OmniAuto 超时 | 停止本轮扫描，上报 `RPA_SIDECAR_TIMEOUT`。 |
 | Worker 退出/重启 | 不补发、不重复入库；重启后继续按状态机 `read-targets` 读取。 |
+| `read-targets=[]` | 允许继续上报第一屏扫描事实；清空本地命中读取队列，不点击会话、不读取、不转写、不入库。 |
+| `authorization_revision` 变化 | 当前读取许可失效；停止开始后续动作，旧请求由后端返回 409，不得绕过授权重试入库。 |
 
 主动扫描只能上报事实，不能自己补发消息、不能自己创建 `reply_action`、不能直接改变 `conversation.status`。
 
 ### 6.0.3 C2消息去重入库工程规则
 
-去重入库由服务端负责，Worker 只负责生成并上报候选 `dedupe_key` 和原始证据。服务端必须以数据库唯一约束作为最终防线，不能只靠内存判断。
+Worker 负责生成稳定 `source_message_key` 和候选 `dedupe_key`，服务端负责授权复核和最终去重。后续可以在 Worker 本地按 `conversation_id` 维护最近已上报的 `dedupe_key/content_hash` 小缓存减少重复请求，但该缓存只能是前置优化，不能取消服务端数据库唯一约束。
 
 #### 6.0.3.1 dedupe_key生成规则
 
@@ -1422,22 +1489,24 @@ conversation.status=closed/rejected 的会话
 
 | 优先级 | 来源 | 生成方式 |
 |---|---|---|
-| 1 | OmniAuto/微信侧可稳定识别的消息 ID | 如果 OmniAuto 能提供稳定消息 ID，使用 `conversation_id + stable_message_id` 生成。 |
-| 2 | 图片/文件消息 | 使用 `conversation_id + sender_role_hint + message_type + file_hash/image_hash + occurred_at_bucket` 生成。 |
-| 3 | 文本消息 | 使用 `conversation_id + sender_role_hint + message_type + normalized_content_hash + occurred_at_bucket + visual_position_fingerprint` 生成。 |
-| 4 | 兜底 | 使用 `conversation_id + rpa_session_key + sender_role_hint + message_type + raw_payload_hash` 生成，并标记低置信。 |
+| 1 | OmniAuto/微信侧稳定来源 ID | 优先使用稳定消息 ID、`canonical_input_id` 或 `canonical_visual_id` 形成 `source_message_key`。 |
+| 2 | 语音消息 | 优先使用稳定 voice anchor；缺失时使用“角色 + 归一化正文 + 时长 + 同类序号”等稳定语义身份，不使用页面绝对位置和扫描时间桶。 |
+| 3 | 文本消息 | 使用稳定来源身份；缺失时使用“角色 + 归一化正文 + 同类序号”等当前屏内稳定语义身份。 |
+| 4 | 系统/文件等兼容消息 | 使用稳定来源 ID 或受约束的结构化内容摘要；无法形成可靠身份时不入库。 |
+| 5 | 图片消息 | V16.104 未接入图片识别和图片入库；目标使用当前剪贴板内存事务、`customer_image_understanding/visual_bridge_input` 和 C2 统一来源身份，不沿用旧 `image_local_path` 方案。 |
 
 文本归一化规则：
 
 ```text
 去除首尾空白
 统一换行和连续空格
+语音转写文本必须去除语音时长前缀和 OCR 错识别的时长符号
 保留中文、数字、标点本身
 不做语义改写
 不把不同文本合并成同一内容
 ```
 
-时间桶 `occurred_at_bucket` 用于降低 OCR 时间不稳定造成的重复，但不能单独作为去重依据。第一期建议按分钟级或消息列表行位置辅助，实际由 Worker/OmniAuto 能力决定。
+`occurred_at`、页面纵坐标、当前扫描轮次和 `message_position` 都是观察证据，不是消息身份。微信页面位移、语音文字展开或 Worker 重启后，同一消息的 `source_message_key/dedupe_key` 必须保持稳定。
 
 禁止做法：
 
@@ -1445,6 +1514,7 @@ conversation.status=closed/rejected 的会话
 不能只用 content 做 dedupe_key
 不能只用 occurred_at 做 dedupe_key
 不能只用 display_name 做 dedupe_key
+不能把绝对页面坐标、screen_order或authorization_revision放入dedupe_key
 不能把同一客户连续两句不同内容合并成同一 dedupe_key
 不能因为 dedupe_key 生成失败而自动触发 AI 回复
 ```
@@ -1454,14 +1524,16 @@ conversation.status=closed/rejected 的会话
 服务端收到 `/wechat/messages/ingest` 后必须按事务处理：
 
 ```text
-1. 校验 Worker、conversation_id 是否匹配已绑定会话，并确认绑定存在非空 remark_code。
-2. 校验 conversation.status 是否允许监听。
-3. 校验 message.dedupe_key 是否存在。
-4. 对每条消息执行数据库唯一键写入。
-5. 写入成功：创建 message_event，返回 ingested。
-6. 唯一键冲突：不创建新 message_event，返回 duplicated。
-7. 状态不允许、发送方不明确、系统低价值消息、目标未确认、搜索不到或搜索结果不唯一：不创建 message_event，返回 ignored。
-8. 只有 ingested 且 sender_role=customer 的消息，才允许触发后续 message_batch 收集。
+1. 强制校验contract_version=3。
+2. 校验Worker、conversation_id、remark_code与已绑定会话一致。
+3. 校验authorization_revision仍为当前有效监听授权；旧版本请求返回409。
+4. 校验每条消息具有source_message_key、dedupe_key、row_kind、sender_role_source、item_state和flow_state。
+5. 校验conversation.status和监听状态允许入库。
+6. 对每条消息执行数据库唯一键写入。
+7. 写入成功：创建message_event，返回ingested。
+8. 唯一键冲突：不创建新message_event，返回duplicated。
+9. 状态不允许、发送方不明确、目标未确认、群聊/unknown或合同门禁失败：不创建message_event，返回ignored或拒绝整批。
+10. 只有ingested且sender_role=customer的消息，才允许触发后续message_batch收集。
 ```
 
 推荐唯一约束：
@@ -1495,10 +1567,11 @@ unique(worker_id, conversation_id, dedupe_key)
 | 缺少 `dedupe_key` | 拒绝该条消息，返回 `MESSAGE_DEDUPE_KEY_MISSING`。 |
 | `conversation_id` 未绑定当前 Worker、绑定缺少 `remark_code` 或监听状态不允许 | 拒绝整批或该会话消息，返回 `MESSAGE_CONVERSATION_NOT_BOUND`。 |
 | 读取目标未确认、搜索不到或搜索结果不唯一 | 返回 `ignored`，错误码为 `TARGET_NOT_CONFIRMED / SEARCH_NOT_FOUND / SEARCH_AMBIGUOUS`；不得触发 AI，不得创建发送任务。 |
-| OCR 低置信但有明确文本 | 可入库但 `raw_payload/ocr_confidence` 必须保留，后续 Guard 可转人工。 |
+| 普通聊天文本缺少同行头像证明 | 不入库。只有 `lane_geometry`、没有 `same_row_avatar` 不足以证明 customer/self。 |
+| 语音转写文本缺少独立头像 | 只能继承已确认的父语音 `parent_voice` 角色；无法绑定父语音则不入库。 |
 | 发送方无法判断 | 返回 `ignored` 或 `sender_role=unknown`，不得触发 AI 回复。 |
-| 消息顺序异常 | 按 `occurred_at + 入库顺序` 排序展示，不能靠顺序异常重复触发 AI。 |
-| 图片无 hash | C2 只记录图片事实；C4 视觉处理前不得自动生成图片回复。 |
+| 消息顺序异常 | 不得假定物理处理顺序等于对话顺序。V16.104 已按最终权威画面建立统一 `screen_order`，并完成 Windows 实机回归。 |
+| 图片气泡 | V16.104 不复制、不保存、不调用 Vision、不上报图片占位；等待图片识别方案确认。 |
 
 ### 6.0.4 V16状态机定向读取工程方案
 
@@ -1515,6 +1588,38 @@ V16 是 C2 会话监听的修复 checkpoint。修复目标不是扩展旧滚动�
 | 第一屏可见快速读取 | 目标会话刚被 `sessions` 扫到，仍在当前第一屏可见区。 | `rpa_session_key / display_name / remark_code`。 | 可优先用可见行定位，但读取前仍需确认目标短码。 |
 | 短码搜索定向读取 | 服务端 `read-targets` 下发的目标不在第一屏，或第一屏未命中。 | `remark_code`。 | 必须通过微信搜索框搜索短码，找到会话后再次确认标题/备注包含该短码，确认成功才允许读取。 |
 
+`read-targets` 执行前必须先做 `visible-first resolve`，不能只依赖上一次首屏扫描缓存。微信会话列表是动态的，客户新消息可能在 Worker 拉取 `read-targets` 后被顶到第一屏；如果直接搜索短码，会增加不必要的搜索框点击、输入和 UI 风险。
+
+正式执行流程：
+
+```text
+1. Worker 拉取 read-targets
+2. 获取 Local WeChat UI Lock
+3. 在锁内调用 OmniAuto sessions，拿当前实时首屏
+4. 用 read-target.remark_code 匹配当前实时首屏
+5. 如果唯一命中：
+   - 走 visible 路径
+   - 点击当前首屏这一行
+6. 如果没有命中：
+   - 走 search_by_remark_code 路径
+7. 如果多条命中：
+   - 不读
+   - 上报/记录 C2_VISIBLE_TARGET_AMBIGUOUS
+8. 定位成功后调用 messages 探测
+9. 如发现未转写语音，调用 voice-transcribe
+10. 再调用 messages 二次读取
+11. ingest
+12. 释放 Local WeChat UI Lock
+```
+
+规则：
+
+- `visible-first resolve` 是定向读取的本地定位优化，不是新增授权入口。
+- 服务端 `read-targets` 已授权的目标，如果在当前实时首屏唯一命中，可以直接走 visible 路径，不需要再上报 visible_hit 申请许可。
+- 首屏唯一命中必须以 `remark_code` 为主锚点；`rpa_session_key / display_name / row_fingerprint` 只能辅助定位和证据排查。
+- 首屏没有命中时才允许 `search_by_remark_code`。
+- 首屏多条命中同一短码时禁止读取，返回 `C2_VISIBLE_TARGET_AMBIGUOUS`，避免把消息读到错误会话。
+
 禁止做法：
 
 ```text
@@ -1522,6 +1627,7 @@ V16 是 C2 会话监听的修复 checkpoint。修复目标不是扩展旧滚动�
 不能为了找非第一屏会话执行多屏滚动补偿扫描。
 不能在短码未确认时读取当前聊天窗口消息。
 不能在搜索结果多义、低置信或标题不含短码时继续读取。
+不能跳过当前实时首屏解析，直接对所有 read-targets 执行 search_by_remark_code。
 ```
 
 OmniAuto 需要提供或扩展的 RPA 能力：
@@ -1549,19 +1655,20 @@ messages target-mode=search_by_remark_code
 |---|---|---|
 | `TARGET_SEARCH_NOT_FOUND` | 搜索短码未找到会话。 | 不读取、不入库，记录读取失败。 |
 | `TARGET_SEARCH_AMBIGUOUS` | 搜索结果存在多个疑似会话。 | 不读取，进入人工复核或等待下次扫描。 |
+| `C2_VISIBLE_TARGET_AMBIGUOUS` | 当前实时首屏中同一 `remark_code` 命中多条会话。 | 不点击、不读取，记录首屏截图和候选列表，等待人工复核或下轮数据修正。 |
 | `TARGET_CONFIRM_FAILED` | 点击后标题/备注未确认包含短码。 | 不读取，返回目标不确认。 |
 | `TARGET_OCR_LOW_CONFIDENCE` | 搜索结果或标题 OCR 置信度不足。 | 不读取，保留截图证据。 |
 | `TARGET_NOT_CONFIRMED_FOR_MESSAGES` | 目标会话未确认，不允许读取消息。 | 不入库，不触发 AI。 |
 
-#### 6.0.4.1 短码搜索定向读取执行步骤
+#### 6.0.4.1 定向读取执行步骤
 
-短码搜索定向读取要参考 `add_friend` 主链路的工程风格：字段先强校验，校验失败不触达微信 UI；每个 UI 动作都有 step event、截图证据、耗时和错误码；固定坐标兜底必须在报告中明显标红；目标没有二次确认时不得读取消息。
+定向读取要参考 `add_friend` 主链路的工程风格：字段先强校验，校验失败不触达微信 UI；每个 UI 动作都有 step event、截图证据、耗时和错误码；固定坐标兜底必须在报告中明显标红；目标没有二次确认时不得读取消息。
 
-正式 OmniAuto 入口建议保持在 `messages` action 下扩展模式，避免新增一套并行读取协议：
+正式 OmniAuto 入口建议保持在 `messages` action 下扩展模式，避免新增一套并行读取协议。`target_mode=auto` 表示先做实时首屏解析，首屏唯一命中则走 visible，未命中才走 `search_by_remark_code`：
 
 ```text
 action=messages
-target_mode=search_by_remark_code
+target_mode=auto | visible | search_by_remark_code
 conversation_id=<服务端会话ID>
 remark_code=<客户短码>
 read_reason=waiting_user_reply | recent_ai_sent | recall_precheck | pre_send_refresh | waiting_sales_reply
@@ -1578,17 +1685,19 @@ artifact_dir=<本次证据目录>
 | 0 | Payload 强校验 | 校验 `conversation_id / remark_code / read_reason / artifact_dir`；`remark_code` 必须非空、无空白、长度不超过备注规则上限。 | 字段合法，生成 `read_run_id`。 | 返回 `C2_TARGET_PAYLOAD_INVALID`；`wechat_ui_action_attempted=false`；不得探测窗口、截图或点击。 |
 | 1 | 获取本地微信 UI 锁 | Worker 获取 Local WeChat UI Lock，`operation_type=message_ingest`，`read_reason` 写入锁上下文。 | 获得有效锁和 fencing token。 | 返回 `WECHAT_UI_LOCK_BUSY` 或等待下轮调度；不得并发操作微信。 |
 | 2 | 微信窗口预检 | 调 OmniAuto 检查微信主窗口、登录态、遮挡、弹窗、风险提示、当前窗口是否可控。 | 微信主窗口可控，无阻塞弹窗。 | 返回 `WECHAT_WINDOW_NOT_READY / WECHAT_RISK_PROMPT_DETECTED / WECHAT_MODAL_BLOCKED`；释放锁。 |
-| 3 | 基线截图与 step event | 截取操作前窗口，记录当前标题、窗口位置、DPI、当前选中会话摘要。 | evidence 中有 raw/annotated 截图和窗口元数据。 | 截图失败返回 `SCREENSHOT_CAPTURE_FAILED`；不得继续。 |
-| 4 | 定位微信搜索框 | 复用 OmniAuto locator 思路：优先控件/视觉/OCR 定位微信左上搜索框；固定坐标只能作为最后兜底。 | 搜索框点击点位于微信左侧顶部搜索区域。 | 返回 `SEARCH_BOX_NOT_FOUND`；若使用固定兜底，报告必须标记 `fallback_used=true`。 |
-| 5 | 聚焦并清空搜索框 | 点击搜索框，执行清空动作；允许最多 2 次轻量重试。 | OCR/控件状态确认搜索框为空，或已回到占位符状态。 | 返回 `SEARCH_BOX_CLEAR_FAILED`；不得输入短码。 |
-| 6 | 输入短码 | 按“人工复制短码后粘贴搜索”的习惯输入 `remark_code`，默认使用剪贴板粘贴；粘贴前后必须有短随机停顿；不得高速逐字输入；不得输入其他客户信息。 | 搜索框内容或搜索结果上下文能确认本次查询为该 `remark_code`。 | 返回 `SEARCH_INPUT_VERIFY_FAILED`；清理搜索状态并释放锁。 |
-| 7 | 等待搜索结果稳定 | 等待搜索结果刷新，至少两帧 OCR 结果稳定，或达到配置超时。 | 候选结果列表稳定。 | 返回 `TARGET_SEARCH_TIMEOUT`；不得点击不稳定结果。 |
-| 8 | 解析候选结果 | 只接受“联系人/会话标题/备注”包含 `remark_code` 的候选；单纯消息内容命中不能作为目标。 | 唯一候选包含 `remark_code`。 | 0 个候选返回 `TARGET_SEARCH_NOT_FOUND`；多个候选返回 `TARGET_SEARCH_AMBIGUOUS`。 |
-| 9 | 点击唯一候选 | 使用候选行安全点击点进入会话，点击前后均记录截图和候选框。 | 微信进入候选会话。 | 返回 `TARGET_CLICK_FAILED`；不得读取当前窗口。 |
-| 10 | 二次确认目标 | 进入会话后 OCR 标题/备注/当前选中行，必须确认包含 `remark_code`。`display_name` 只能辅助，不能替代短码。 | `target_confirmed=true`，确认来源写入 evidence。 | 返回 `TARGET_CONFIRM_FAILED / TARGET_NOT_CONFIRMED_FOR_MESSAGES`；不得读取消息。 |
-| 11 | 读取消息 | 复用 OmniAuto `messages` 解析能力读取当前会话可见消息，输出 `sender_role_hint / message_type / content / occurred_at / raw_payload`。 | 返回消息列表或明确空结果，并带 `target_confirmed=true`。 | 读取失败返回 `MESSAGE_READ_FAILED`；不得伪造空成功。 |
-| 12 | 生成结果与证据 | 输出 `read_run_id / conversation_id / remark_code / target_mode / target_confirmed / messages / evidence / step_events`。 | Worker 可上报后端 `/wechat/messages/ingest`。 | 结果缺关键字段视为 `C2_MESSAGE_READ_RESULT_INVALID`。 |
-| 13 | 清理或保持安全状态 | 成功读取后可保持目标会话打开，供 `pre_send_refresh` 后继续发送；失败时清理搜索框或回到安全状态。 | 不影响下一次 add_friend / scan / send 操作。 | 清理失败记录 `SEARCH_STATE_CLEANUP_FAILED`，但不得继续执行发送。 |
+| 3 | 实时首屏解析 | 在锁内调用 `sessions`，获取当前这一刻的第一屏会话列表和截图证据，用 `read-target.remark_code` 匹配。 | 唯一命中则进入 visible 路径；未命中才进入搜索路径。 | 多条命中返回 `C2_VISIBLE_TARGET_AMBIGUOUS`；不得点击和读取。 |
+| 4A | visible 点击当前行 | 仅实时首屏唯一命中时执行。使用当前首屏候选行安全点击点进入会话，点击前后均记录截图和候选框。 | 微信进入目标会话。 | 返回 `TARGET_CLICK_FAILED`；不得读取当前窗口。 |
+| 4B | 搜索路径基线截图 | 仅实时首屏未命中时执行。截取操作前窗口，记录当前标题、窗口位置、DPI、当前选中会话摘要。 | evidence 中有 raw/annotated 截图和窗口元数据。 | 截图失败返回 `SCREENSHOT_CAPTURE_FAILED`；不得继续。 |
+| 5 | 定位微信搜索框 | 仅搜索路径执行。复用 OmniAuto locator 思路：优先控件/视觉/OCR 定位微信左上搜索框；固定坐标只能作为最后兜底。 | 搜索框点击点位于微信左侧顶部搜索区域。 | 返回 `SEARCH_BOX_NOT_FOUND`；若使用固定兜底，报告必须标记 `fallback_used=true`。 |
+| 6 | 聚焦并清空搜索框 | 仅搜索路径执行。点击搜索框，执行清空动作；允许最多 2 次轻量重试。 | OCR/控件状态确认搜索框为空，或已回到占位符状态。 | 返回 `SEARCH_BOX_CLEAR_FAILED`；不得输入短码。 |
+| 7 | 输入短码 | 仅搜索路径执行。按“人工复制短码后粘贴搜索”的习惯输入 `remark_code`，默认使用剪贴板粘贴；粘贴前后必须有短随机停顿；不得高速逐字输入；不得输入其他客户信息。 | 搜索框内容或搜索结果上下文能确认本次查询为该 `remark_code`。 | 返回 `SEARCH_INPUT_VERIFY_FAILED`；清理搜索状态并释放锁。 |
+| 8 | 等待搜索结果稳定 | 仅搜索路径执行。等待搜索结果刷新，至少两帧 OCR 结果稳定，或达到配置超时。 | 候选结果列表稳定。 | 返回 `TARGET_SEARCH_TIMEOUT`；不得点击不稳定结果。 |
+| 9 | 解析候选结果 | 仅搜索路径执行。只接受“联系人/会话标题/备注”包含 `remark_code` 的候选；单纯消息内容命中不能作为目标。 | 唯一候选包含 `remark_code`。 | 0 个候选返回 `TARGET_SEARCH_NOT_FOUND`；多个候选返回 `TARGET_SEARCH_AMBIGUOUS`。 |
+| 10 | 点击唯一候选 | 仅搜索路径执行。使用候选行安全点击点进入会话，点击前后均记录截图和候选框。 | 微信进入候选会话。 | 返回 `TARGET_CLICK_FAILED`；不得读取当前窗口。 |
+| 11 | 二次确认目标 | 进入会话后 OCR 标题/备注/当前选中行，必须确认包含 `remark_code`。`display_name` 只能辅助，不能替代短码。 | `target_confirmed=true`，确认来源写入 evidence。 | 返回 `TARGET_CONFIRM_FAILED / TARGET_NOT_CONFIRMED_FOR_MESSAGES`；不得读取消息。 |
+| 12 | 读取消息 | 复用 OmniAuto `messages` 解析能力读取当前会话可见消息，输出 `sender_role_hint / message_type / content / occurred_at / raw_payload`。 | 返回消息列表或明确空结果，并带 `target_confirmed=true`。 | 读取失败返回 `MESSAGE_READ_FAILED`；不得伪造空成功。 |
+| 13 | 生成结果与证据 | 输出 `read_run_id / conversation_id / remark_code / target_mode / target_confirmed / messages / evidence / step_events`。 | Worker 可上报后端 `/wechat/messages/ingest`。 | 结果缺关键字段视为 `C2_MESSAGE_READ_RESULT_INVALID`。 |
+| 14 | 清理或保持安全状态 | 成功读取后可保持目标会话打开，供 `pre_send_refresh` 后继续发送；失败时清理搜索框或回到安全状态。 | 不影响下一次 add_friend / scan / send 操作。 | 清理失败记录 `SEARCH_STATE_CLEANUP_FAILED`，但不得继续执行发送。 |
 
 短码输入策略：
 
@@ -1721,27 +1830,206 @@ Worker claim chat_reply/reply_action
 | 结果 | 处理 |
 |---|---|
 | 读到客户新消息 | 取消召回，进入 C3 AI 回复/转人工判断。 |
-| 未读到新客户消息 | 创建 `follow_up` 任务，Worker 发送固定召回文案。 |
+| 未读到新客户消息 | 创建 `trigger_type=recall` 的召回批次；同一个 Brain/Guard 生成并批准内容后才创建 `follow_up` 任务。 |
 | 读到销售人工回复 | 不召回，状态进入 `sales_replied_waiting_user`。 |
 | 读取失败/找不到会话 | 不召回，记录 `RECALL_PRECHECK_FAILED` 或具体错误码。 |
 
-#### 6.0.4.6 V16验收标准
+#### 6.0.4.6 语音消息识别接入
 
-V16 系列通过标准：
+语音消息属于 C2 微信事实采集能力，不属于 C3 AI 生成能力。Worker 必须先把客户语音转成可入库的 `message_event`，服务端才能判断是否进入 C3。
+
+OmniAuto 当前语音能力不是导出微信语音文件后调用外部 ASR，也不是读取微信数据库。它的实现方式是：
+
+```text
+打开/确认目标会话
+-> OCR 当前聊天窗口
+-> 识别可见语音气泡或“转文字”按钮
+-> 模拟人工 hover / 点击微信自带语音转文字
+-> 等待微信生成转写文本
+-> 再次 OCR 当前聊天窗口
+-> 对比点击前后的消息列表
+-> 把新增文本作为 transcribed_messages 返回
+```
+
+OmniAuto 已提供的动作：
+
+| 能力 | 入口 | 说明 |
+|---|---|---|
+| 语音转文字 | `voice-transcribe` | 点击微信自带语音转文字按钮，返回 `transcribed_messages / new_messages / attempts / screenshot_path` 等证据。 |
+| 消息读取 | `messages` | 读取当前会话可见观察；语音转写文字可以被 OCR 观察到，但必须绑定父语音，不能作为独立普通文本入库。 |
+
+Worker C2 读取某个会话时，执行顺序必须调整为：
+
+```text
+获取本地微信 UI 锁
+-> 定位目标会话：第一屏 visible 或 remark_code 搜索
+-> 调用 OmniAuto messages 做首次读取/消息类型探测
+-> 如果没有未转写语音：直接转换并上报 message_event
+-> 如果发现未转写语音：调用 OmniAuto voice-transcribe，在同一flow内处理当前屏全部可处理语音
+-> 每次点击或页面变化后重新截图，旧坐标立即失效；已完成语音加入本轮processed集合，不能重复右键
+-> voice-transcribe 后调用一次最终messages，新截图同时完成目标复核和消息读取
+-> 将普通文字和已绑定父语音的转写结果转换为message_event；图片留待后续方案
+-> 上报 /api/workers/{worker_id}/wechat/messages/ingest
+-> 释放本地微信 UI 锁
+```
+
+语音转写不单独创建任务，不进入任务中心。它是 `message_ingest` 前的条件性本地预处理步骤，只有首次 `messages` 读取/探测发现未转写语音时才执行，和 `messages` 读取共享同一把 `Local WeChat UI Lock`。不得出现一边执行 `add_friend/chat_reply/send`，另一边点击语音转文字的并行操作。
+
+定位目标会话只能做一次：第一屏 visible 命中或 `search_by_remark_code` 定向搜索成功后，后续 `messages` 和 `voice-transcribe` 都必须在同一个已确认会话内执行。`voice-transcribe` 不得再次搜索客户，`messages` 二次读取也不得再次搜索客户；如果中途发现当前会话标题、短码或会话指纹不匹配，必须失败退出并记录证据，不能继续点击或读取。
+
+Worker 上报语音消息时：
+
+| 字段 | 规则 |
+|---|---|
+| `message_type` | 使用 `voice`。如果 OmniAuto 只能输出转写后的文本，Worker 仍应根据 `voice_transcription.transcribed_messages` 或 `quality_flags=voice_duration_prefix_removed` 标记为 `voice`。 |
+| `content` | 保存微信转写后的文本。 |
+| `sender_role_hint` | V3 合同只使用 `customer / self / system / unknown`；销售本人、历史 `sales / sales_candidate` 在合同边界统一归一为 `self`。语音角色继承原语音气泡/父语音证据。 |
+| `raw_payload` | 必须保存 OmniAuto 原始消息、稳定 voice anchor、父语音绑定、`voice_transcription_meta`、截图引用和质量标记。 |
+| `ocr_confidence` | 使用转写文本 OCR 置信度或消息解析置信度；没有则为空。 |
+
+语音转写状态处理：
+
+| OmniAuto 状态 | Worker处理 | 服务端处理 |
+|---|---|---|
+| `voice_transcribe_completed` | 继续调用 `messages`，把转写文本入库。 | 按正常 `message_event` 处理；客户语音可触发 C3。 |
+| `voice_transcribe_partial` | 同一 flow 内存在成功和失败；只保留已绑定父语音且 `item_state=completed` 的结果，失败项不伪造。 | 成功事实可入库；该状态只是本轮结果摘要，不创建持久化语音任务。 |
+| `voice_transcribe_no_new_text` | 已尝试但没有确认出对应文字，阻断本轮最终消息上报，保留证据。 | 不把时长或疑似文本入库，不触发 C3。 |
+| `voice_transcribe_no_visible_voice` | 继续调用 `messages`；说明当前可见区没有待转写语音。 | 不作为错误。 |
+| `voice_transcribe_target_not_found` | 目标会话或目标语音未能确认，按安全失败阻断；不能与 `no_visible_voice` 混为一谈。 | 不入库，不触发 AI。 |
+| `target_not_confirmed_for_voice_transcribe` | 停止读取该目标，不调用 `messages`。 | 记录读取失败，不触发 AI。 |
+| `voice_transcribe_click_failed` | 停止读取该目标或按配置降级为只读已有文本；默认不触发 AI。 | 记录 `VOICE_TRANSCRIBE_CLICK_FAILED`。 |
+| `voice_transcribe_lock_timeout` | 本轮跳过，等待下轮。 | 记录 `VOICE_TRANSCRIBE_LOCK_TIMEOUT`。 |
+| `voice_transcription_exception` | 本轮失败。 | 记录 `VOICE_TRANSCRIBE_FAILED`，不得创建 `reply_action`。 |
+
+语音转写失败时，不能把“语音时长 5 秒”当成客户内容，也不能因为没有文本就认为客户沉默。V16.98 的 `item_state/flow_state` 是单次 flow 的结果合同，不是新增数据库状态机，也不要求拆出新的语音任务。默认规则：
+
+```text
+目标客户已确认，且客户语音可见但转写失败
+-> 不进入 C3 自动回复
+-> conversation.status 进入 waiting_sales_reply
+-> ai_enabled 保持原值，由 waiting_sales_reply 状态门禁阻断普通实时回复
+-> 记录 error_code
+-> 后台可展示“语音转写失败，需人工查看”
+```
+
+如果目标客户未确认，例如 `target_not_confirmed_for_voice_transcribe`，不得改变会话主状态，只记录读取失败证据，避免把别人的会话误判为当前客户。
+
+服务端判断规则：
+
+- `sender_role=customer` 且 `message_type=voice` 且 `content` 非空：等同客户新消息，可触发 C3。
+- `sender_role=self` 且 `message_type=voice`：等同销售侧人工回复，不触发 AI，并按销售接管/AI 暂停处理。
+- `sender_role=unknown` 或 `content` 为空：不触发 AI，记录 `VOICE_MESSAGE_UNCONFIRMED` 或 `VOICE_TRANSCRIBE_EMPTY`。
+
+实机验证要求：
+
+```text
+1. 客户发一条语音，Worker 能点击微信语音转文字并入库为 message_type=voice。
+2. 客户连续发文字+语音，服务端能按同一 conversation_id 合并上下文。
+3. 销售手机端发语音，桌面同步后不得触发 AI 自动回复。
+4. 语音转写失败时不触发 AI、不召回、不重复点击。
+5. Worker 重启后同一条语音转写文本不重复入库、不重复触发 C3。
+6. add_friend / chat_reply / pre_send_refresh 与 voice-transcribe 共享本地 UI 锁，不允许并行操作微信。
+```
+
+语音 flow 的时间保护采用两层安全机制：
+
+| 机制 | V16.98 默认口径 | 目的 |
+|---|---|---|
+| 无进展 watchdog | 240 秒无任何新截图、成功转写或处理进展才停止 | 识别 OCR/微信 UI/sidecar 真正卡死，不打断正常慢流程。 |
+| 硬安全上限 | 900 秒 | 仅防止进程永久占锁，是最终保险丝，不是正常业务时限或性能承诺。 |
+
+只要持续取得进展，语音 flow 应继续处理当前屏全部可处理语音；不能套用普通首屏扫描的 10-20 秒建议。触发安全保护时必须显式返回已完成项、失败项、停止原因和证据，不得把已成功语音降级成普通 `text`。
+
+#### 6.0.4.7 V16.98 当前冻结口径
+
+本节是 C2 当前实现和验收的最高优先级口径；与前文历史 V16/V17 描述冲突时，以本节为准。
+
+**准入门：**
+
+```text
+有效客户短码
+AND 顶部标题确认conversation_type=private
+AND conversation_id/remark_code匹配当前read-target
+AND authorization_revision仍有效
+= 才允许读取、转写和入库
+```
+
+`conversation_type` 只用于准入，不写入会话主身份，不参与 `source_message_key/dedupe_key`。判断复用点击会话后已有的顶部标题 OCR：标题末尾明确人数后缀如 `(6)`、`（6）` 判为 group；证据不足、不同短码冲突或类型冲突判为 unknown；只有明确 private 才放行。
+
+**终止态：**
+
+| 错误码/状态 | 行为 |
+|---|---|
+| `C2_GROUP_CHAT_NOT_ALLOWED` | 本轮立即结束，不再搜索、不读文字/语音/图片、不转写、不入库。 |
+| `C2_CONVERSATION_TYPE_UNKNOWN` | 本轮立即结束，等待证据改善或人工处理，不降级为 private。 |
+| `C2_VISIBLE_TARGET_AMBIGUOUS` | 当前首屏同码候选不唯一，不点击、不读取、不继续搜索。 |
+
+普通首屏确实没有目标且没有得到以上终止态时，才允许 `search_by_remark_code` 兜底。搜索后仍必须再次确认有效短码和 private。
+
+**扫描与读取分离：**
+
+- `first_screen_session_scan` 是事实发现，可以在 `read-targets=[]` 时继续运行并上报 `scan-result`。
+- `read-targets` 是读取许可；为空时必须清空本地 visible hit 队列。
+- 暂停监听或重新授权会产生新的 `authorization_revision`；旧 Worker ingest 必须返回 409。
+- 停止后的验收重点是不得再定位目标、读取、转写或入库；常驻首屏事实扫描本身不等于尾随读取。
+
+**V3 消息合同：**
+
+```text
+contract_version=3
+authorization_revision
+source_message_key
+row_kind
+sender_role_source
+item_state
+flow_state
+```
+
+- 正式发送方角色为 `customer / self / system / unknown`；`sales / sales_candidate` 仅作旧输入兼容，进入合同边界前归一为 `self`。
+- 普通聊天消息必须由同一行头像结构证明角色；只有左右 lane 推测不足以入库。
+- 语音转写行必须绑定父语音，继承父语音角色和稳定 anchor，最终只形成一条 `voice` 消息。
+- `unknown`、未确认目标、未完成语音、通话/非聊天 UI 和低置信伪消息不得进入 C3。
+- 当前只处理当前屏：`history_load_times=0`、`max_scroll_steps=0`、`max_snapshots=1`；不会为寻找屏幕外历史语音主动上滚。
+- 同一业务阶段尽量复用同一截图完成 OCR；发生点击、转写展开或其他页面变化后必须重新截图。
+
+**性能与可观测性：**
+
+- 保留目标定位、首次读取、voice flow、最终读取和 ingest 的分阶段耗时。
+- 整帧 OCR 漏标题时，只对同一截图标题栏做 ROI 补充 OCR，不为补标题重新截图。
+- 后台 status OCR 按心跳周期运行，UI Lock 占用期间不得并发抢微信窗口。
+- V16.95 Windows 证据显示：首屏目标定位 8.13 秒、首次读取 8.05 秒、3 条语音转写 93.01 秒、最终读取 8.54 秒；这些是现场结果，不是 SLA。
+
+**尚未纳入 V16.98：**
+
+- 图片复制、临时图像获取、Vision 调用、图片结构化结果和图片入库合同。
+- 文字/语音混合消息的统一 `screen_order` 合同；该能力不属于 V16.98，后续由 V16.100 开始开发，并已随 V16.104 完成 Windows 实机回归。
+- C3 自动回复发送和 C4 自动召回实机联动。
+
+#### 6.0.4.8 V16.98验收标准
+
+V16.98 通过标准：
 
 ```text
 1. Worker 能优先扫描微信当前第一屏并上报 session_scan_result。
 2. 第一屏命中会话能优先读取并上报 message_event。
-3. 服务端 read-targets 能按状态机返回非第一屏已知客户。
-4. Worker 能去重掉本轮第一屏已处理对象后再执行状态机定向读取。
-5. 非第一屏定向读取必须通过微信搜索框搜索 remark_code，并在标题/备注二次确认短码后读取。
-6. rpa_session_key 只作为第一屏可见会话辅助定位，不作为跨屏定向读取依据。
-7. chat_reply 发送前执行 pre_send_refresh，新客户消息出现时旧 reply_action 不发送。
-8. 召回到期先执行 recall_precheck，确认无新客户消息后才创建/发送 follow_up。
-9. 不执行旧滚动兜底方案。
-10. 重复读取不会重复入库、重复触发 AI、重复发送回复。
-11. 找不到目标会话、搜索多义、标题不含短码或 OCR 低置信时不乱读、不乱点、不乱发。
-12. V16 定向读取通过后再回归 C3 AI 回复发送链路。
+3. 第一屏扫描结果不能直接授权读取；Worker 必须用当前 read-targets 和 authorization_revision 复核。
+4. Worker 执行 read-target 前必须在 UI 锁内重新调用 `sessions` 做当前实时首屏解析；首屏唯一命中则走 visible 路径，不再搜索短码。
+5. 当前实时首屏没有命中时，才允许通过微信搜索框搜索 remark_code，并在标题/备注二次确认短码后读取。
+6. 当前实时首屏同一短码多条命中时，不读取并返回 `C2_VISIBLE_TARGET_AMBIGUOUS`。
+7. read-targets为空时清空本地命中队列，不读取、不转写、不入库，但允许继续首屏事实扫描。
+8. rpa_session_key 只作为第一屏可见会话辅助定位，不作为跨屏定向读取依据。
+9. chat_reply 发送前执行 pre_send_refresh，新客户消息出现时旧 reply_action 不发送。
+10. 召回到期先执行 recall_precheck，确认无新客户消息后才创建/发送 follow_up。
+11. 不执行旧滚动兜底方案。
+12. 重复读取不会重复入库、重复触发 AI、重复发送回复。
+13. 找不到目标会话、搜索多义、标题不含短码或 OCR 低置信时不乱读、不乱点、不乱发。
+14. 只有有效短码且顶部标题明确为private的会话准入；group/unknown是终止态，不再搜索、读取、转写或入库。
+15. 语音消息先由 `messages` 探测；只有发现未转写语音时才执行 `voice-transcribe`，成功正文绑定父语音并以 `message_type=voice` 入库，不产生重复 text。
+16. 语音物理操作可自下而上，但每次页面变化后重新截图；本轮已完成语音不得重复右键。
+17. 普通聊天角色必须有同行头像证据，销售侧统一为self；unknown不触发AI。
+18. contract_version=3和authorization_revision强制校验；停止/重授权后的旧请求返回409。
+19. 语音转写失败不得触发AI自动回复，不得把语音时长当作客户文本。
+20. 图片识别和统一消息顺序不作为V16.98通过项，必须由后续专项版本另行验收。
 ```
 
 ### 6.1 C2数据结构
@@ -1767,6 +2055,8 @@ V16 系列通过标准：
 | `last_seen_at` | 最近扫描到时间。 |
 | `last_scan_snapshot` | 最近一次扫描摘要或截图证据引用。 |
 
+说明：V16.98 的 `conversation_type=private/group/unknown` 是 Worker 每次点击后根据顶部标题生成的准入证据，放在扫描/定位原始证据中即可；当前不要求为它新增独立数据库状态机字段，也不允许它改变 `conversation_id` 或消息去重身份。
+
 #### 6.1.2 message_events
 
 | 字段 | 说明 |
@@ -1776,13 +2066,15 @@ V16 系列通过标准：
 | `worker_id` | Worker ID。 |
 | `rpa_session_key` | 本机会话定位键。 |
 | `dedupe_key` | 去重键，同一消息只能处理一次。 |
-| `sender_role` | `customer / self / sales / sales_candidate / unknown`。`customer` 才允许进入 C3 AI 回复判断；`self / sales / sales_candidate` 视为销售侧消息，不触发 AI，并按人工接管/AI 暂停处理；`unknown` 不触发 AI。 |
-| `message_type` | `text / image / system / file / unknown`。 |
+| `sender_role` | V3 正式值为 `customer / self / system / unknown`。`customer` 才允许进入 C3 AI 回复判断；`self` 表示销售/本机侧消息，不触发 AI；`system/unknown` 不触发 AI。旧 `sales / sales_candidate` 必须在合同边界前归一为 `self`。 |
+| `message_type` | V3 合同枚举为 `text / image / voice / system / file / unknown`；V16.98 实际准入 `text / voice / system`，图片待后续方案。`voice` 表示微信语音经微信自带转文字并绑定父语音后形成的消息事实。 |
 | `content` | 文本内容或消息摘要。 |
 | `raw_payload` | OmniAuto 原始结构化结果。 |
 | `ocr_confidence` | OCR 置信度。 |
 | `occurred_at` | 微信侧推断时间。 |
 | `ingested_at` | 服务端入库时间。 |
+
+V3 结构化证据还必须保存在 `raw_payload`：`source_message_key / row_kind / sender_role_source / item_state / flow_state / canonical_visual_id / canonical_input_id`；语音额外保存稳定 anchor 和 `voice_transcription_meta`。这些字段用于证明“哪条气泡、谁发的、是否完成”，不是新增业务状态机。
 
 说明：`message_events` 只保存已经入库的消息事实，不保存重复、忽略或失败记录。重复、忽略、失败属于本次接口处理结果，必须放在接口响应的 `results[].ingest_result` 和 `error_code` 中。
 
@@ -1836,6 +2128,8 @@ POST /api/workers/{worker_id}/wechat/sessions/scan-result
 | `last_message_preview` | string | 否 | 列表预览文本。 |
 | `ocr_confidence` | number | 否 | OCR 置信度。 |
 
+V16.98 不在 `sessions[]` 中新增 `conversation_type` 字段：群聊/unknown 的会话行通过清空 `remark_code_candidates` 阻止自动绑定；扫描级 `evidence.c2_conversation_admission` 只保存 private/group/unknown 数量和规则摘要。点击目标后的详细 `raw_title / conversation_type / conversation_type_reason` 保存在 Worker/Sidecar 定位证据中，用于本轮终止判断，不发散新的后端绑定字段。
+
 响应字段：
 
 | 字段 | 说明 |
@@ -1882,13 +2176,15 @@ GET /api/workers/{worker_id}/wechat/sessions/read-targets?limit=20
 | `ocr_confidence` | 最近一次绑定/扫描的 OCR 置信度。 |
 | `last_ingested_at` | 服务端最后入库消息时间。 |
 | `read_reason` | `recall_precheck / recent_ai_sent / waiting_user_reply / waiting_sales_reply`。 |
+| `authorization_revision` | 当前监听授权版本；必填。停止监听或重新授权后会变化，旧版本请求不得入库。 |
 
 契约要求：
 
-- 正常 `read-targets.targets[]` 必须包含 `remark_code`。
+- 正常 `read-targets.targets[]` 必须包含 `conversation_id + remark_code + authorization_revision`。
 - 已绑定会话如果缺少 `remark_code`，不得出现在正常 `read-targets` 中，应进入 `needs_review / degraded` 并记录 `C2_TARGET_REMARK_CODE_MISSING`。
 - Worker 收到缺少 `remark_code` 的读取目标时，必须跳过读取，不得继续打开微信会话或上报消息。
 - Worker 本轮读取去重以 `conversation_id + remark_code` 作为身份键；服务端身份收口必须满足 `conversation_id + remark_code`。
+- `authorization_revision` 只代表本轮读取许可，不参与会话身份和消息 `dedupe_key`。
 - 微信定位分两段：第一屏可见目标可用 `rpa_session_key / display_name / remark_code` 快速定位；第一屏未命中或非第一屏目标必须通过微信搜索框搜索 `remark_code`，并在进入会话后再次确认标题/备注包含该短码。
 - `rpa_session_key`、`display_name`、`row_fingerprint` 仅作辅助定位和排查证据，不能替代 `remark_code` 做非第一屏定向读取。
 
@@ -1902,24 +2198,42 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
+| `contract_version` | integer | 是 | V16.98 固定为 `3`。 |
 | `read_run_id` | string | 是 | 本次读取运行 ID。 |
 | `conversation_id` | string | 是 | 服务端已绑定会话 ID。 |
+| `remark_code` | string | 是 | 本轮已确认的客户短码。 |
+| `authorization_revision` | string | 是 | 必须与服务端当前 read-target 授权一致。 |
 | `rpa_session_key` | string | 否 | 本机会话定位键；第一屏读取时建议上报，短码搜索读取时可为空或上报搜索后重新识别到的定位键。 |
 | `messages` | array | 是 | 本次读取到的消息事实。 |
 | `evidence` | object | 否 | 截图、日志、OCR摘要。 |
+
+`sidecar_run_id` 放入 `evidence.sidecar_run_id` 和每条原始证据中，不新增为后端请求顶层必填字段，避免 Worker 与后端产生一组实际未消费的冗余接口字段。
 
 `messages[]` 字段：
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `dedupe_key` | string | 是 | 消息去重键；同一会话内唯一。 |
-| `sender_role_hint` | string | 是 | `customer / self / sales / sales_candidate / unknown`。Worker 上报该字段，后端落库为 `message_events.sender_role`。 |
-| `message_type` | string | 是 | `text / image / system / file / unknown`。 |
+| `source_message_key` | string | 是 | 消息稳定来源身份；页面移动、重启和授权版本变化后保持稳定。 |
+| `dedupe_key` | string | 是 | 消息去重键；同一会话内唯一，不能包含页面坐标或授权版本。 |
+| `sender_role_hint` | string | 是 | `customer / self / system / unknown`；unknown 不入库、不触发 AI。 |
+| `message_type` | string | 是 | `text / image / voice / system / file / unknown`；V16.98 图片不准入。 |
 | `content` | string | 否 | 文本内容或消息摘要。 |
-| `image_local_path` | string | 否 | 图片本地路径；C2 只记录，不做视觉识别。 |
 | `occurred_at` | datetime | 否 | 微信侧推断时间。 |
 | `ocr_confidence` | number | 否 | OCR 置信度。 |
+| `item_state` | string | 是 | V16.98 可入库消息必须为 `completed`。 |
+| `flow_state` | string | 是 | `completed / partial / failed / cancelled`；表示本轮 flow 结果，不创建独立任务。 |
 | `raw_payload` | object | 否 | OmniAuto 原始结构化结果。 |
+
+语音正文放在顶层 `content`，`raw_payload.voice_transcription` 仅保留同一正文兼容值；结构化转写证据统一放入 `raw_payload.voice_transcription_meta`，不在 `messages[]` 顶层继续发散语音专属字段。推荐结构：
+
+| 字段 | 说明 |
+|---|---|
+| `state` | OmniAuto 语音转写状态，例如 `voice_transcribe_completed`，位于 `voice_transcription_meta`。 |
+| `voice_anchor_stable_key` | 父语音稳定身份，用于证明正文归属。 |
+| `attempt_count` | 本轮点击/识别尝试次数。 |
+| `transcribed_messages_count` | 成功识别出的转写消息数量。 |
+| `before_screenshot_path` / `after_screenshot_path` | 语音转写前后截图证据。 |
+| `quality_flags` | 例如 `voice_duration_prefix_removed`，用于证明已去除语音时长噪声。 |
 
 响应字段：
 
@@ -1930,6 +2244,8 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 | `ignored_count` | 因状态不允许或发送方不明确跳过数量。 |
 | `results[]` | 每条消息的处理结果，包含 `dedupe_key`、`ingest_result=ingested/duplicated/ignored`、`message_event_id`、`error_code`。 |
 | `next_action` | C2 固定为 `none`；不返回 AI 发送动作。 |
+
+兼容说明：上表是 V16.104 已实现的 C2 响应。后续 C2-C3 单会话串行链路启用时，原字段保持兼容，并仅新增可选 `message_batch={batch_id,batch_status}`；具体等待和终态查询合同见 `C2-C3_OmniAuto_Worker_后端接口合同_v0.1_2026-07-21.md`，不得另建同义消息上报接口。
 
 ### 6.3 C2状态流转
 
@@ -1983,10 +2299,21 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 | `SESSION_BINDING_DISABLED` | 会话已关闭、拒绝或短码已移除。 | `bind_status=disabled`。 |
 | `C2_TARGET_REMARK_CODE_MISSING` | 已绑定会话缺少 `remark_code`，不能作为定向读取目标。 | 不返回正常 read-target；进入 `degraded/needs_review` 并提示修复绑定数据。 |
 | `C2_TARGET_CONVERSATION_ID_MISSING` | 已绑定会话缺少 `conversation_id`，不能作为定向读取目标。 | 不返回正常 read-target；进入 `degraded/needs_review` 并提示修复绑定数据。 |
+| `C2_VISIBLE_TARGET_AMBIGUOUS` | 执行 read-target 前实时首屏解析发现同一 `remark_code` 命中多条会话。 | 不点击、不读取、不入库，记录首屏截图和候选列表。 |
+| `C2_GROUP_CHAT_NOT_ALLOWED` | 顶部标题明确为群聊。 | 本轮终止，不搜索、不读取、不转写、不入库。 |
+| `C2_CONVERSATION_TYPE_UNKNOWN` | 顶部标题证据不足或冲突，无法确认 private。 | 本轮终止，不降级准入。 |
+| `C2_TARGET_AUTHORIZATION_REVISION_MISSING` | read-target 或 ingest 缺少授权版本。 | 拒绝读取或入库。 |
+| `MESSAGE_AUTHORIZATION_REVISION_EXPIRED` | Worker 使用停止/重授权前的旧版本上报。 | 返回 409，不写库；Worker停止后续动作并刷新read-targets。 |
 | `MESSAGE_READ_FAILED` | 已绑定会话读取消息失败。 | 记录证据，不改变业务状态。 |
 | `MESSAGE_CONVERSATION_NOT_BOUND` | 上报消息的会话未绑定。 | 拒绝入库。 |
 | `MESSAGE_DEDUPE_KEY_MISSING` | 消息缺少去重键。 | 拒绝入库。 |
 | `MESSAGE_INGEST_DUPLICATED` | 去重键已存在。 | 返回 duplicated，不算失败。 |
+| `VOICE_TRANSCRIBE_FAILED` | 语音转文字整体失败，无法确认有效转写文本。 | 记录证据，不触发 C3，不生成 `reply_action`。 |
+| `VOICE_TRANSCRIBE_CLICK_FAILED` | OmniAuto 找到疑似语音转文字入口，但点击或转写动作失败。 | 记录截图和 OCR 证据，不自动重试发送，不触发 AI。 |
+| `VOICE_TRANSCRIBE_LOCK_TIMEOUT` | 语音转写等待 Local WeChat UI Lock 超时。 | 本轮跳过，保持会话原状态，后续扫描可再尝试。 |
+| `VOICE_TRANSCRIBE_EMPTY` | 转写动作完成但未产生新的可用文字。 | 不把语音时长当正文，不触发 AI。 |
+| `VOICE_MESSAGE_UNCONFIRMED` | OCR 只识别到语音形态或时长，未确认转写文本。 | 记录为待人工查看或下轮扫描重试，不触发 AI。 |
+| `TARGET_NOT_CONFIRMED_FOR_VOICE_TRANSCRIBE` | 定向读取时未能通过短码/会话标题确认目标客户。 | 禁止点击和读取，避免读错人。 |
 | `WECHAT_WINDOW_NOT_READY` | 微信窗口不可控。 | Worker 状态异常，暂停读取。 |
 | `RPA_SIDECAR_TIMEOUT` | OmniAuto Sidecar 超时。 | 记录证据，不自动重放。 |
 
@@ -1994,8 +2321,13 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 
 - Worker 能调用 OmniAuto 扫描微信会话列表，并上传结构化扫描结果和证据。
 - 微信备注中包含有效客户短码时，服务端能绑定唯一 lead/conversation/sales/worker。
+- 只有有效短码且顶部标题明确为 private 的会话可读取；group/unknown 不搜索、不读取、不转写、不入库。
+- read-targets 为空时第一屏扫描可以继续，但本地命中队列被清空，消息新增为 0。
+- 读取和入库必须携带当前 authorization_revision；停止或重授权后的旧请求返回 409。
 - 未绑定或绑定冲突的会话不触发 AI 回复。
 - Worker 能读取已绑定会话的客户文字消息并上报服务端。
+- Worker 先执行 OmniAuto `messages` 读取/探测；发现未转写语音时再执行 `voice-transcribe`，客户语音成功转写后按 `message_type=voice` 入库，并保留 `raw_payload.voice_transcription` 证据。
+- 语音只识别到时长、转写失败、目标客户未确认、UI 锁超时或微信窗口不可控时，不得触发 C3 自动回复，不得把语音时长当作客户正文。
 - 同一消息在 Worker 重启、断网恢复、重复扫描时不会重复入库和重复触发后续动作。
 - 会话绑定失败、消息读取失败、微信窗口不可控、Sidecar 超时均有错误码、trace_id 和可查看证据。
 - 后端、Worker/RPA、前端均按本模块接口字段、状态枚举和错误码实现，不允许各自新增同义状态。
@@ -2004,8 +2336,8 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 
 ```text
 Worker发送AI回复前登记reply_action_id、reply_text_hash、send_started_at、send_finished_at。
-桌面端同步出我方消息时统一标记为 `self / sales / sales_candidate` 中的一种销售侧消息；后端不再把 `ai_worker` 作为主字段值使用。
-否则视为sales_reply，Conversation状态转`sales_replied_waiting_user`，`conversation.ai_enabled=false`。
+桌面端同步出我方消息时在 V3 合同中统一标记为 `self`；旧 `sales / sales_candidate / ai_worker` 只作兼容输入，不作为新事件正式值。
+否则视为sales_reply，Conversation状态转 `sales_replied_waiting_user`，取消当前 AI 回复动作；`ai_enabled` 只作为明确关闭全部自动化的硬开关，不因一条销售回复自动关闭。普通实时AI回复由会话状态门禁阻断，召回到期后仍可进入 `recall_precheck`。
 ```
 
 ### 6.7 重启恢复
@@ -2129,7 +2461,7 @@ message_event
 | `reply_action` | 服务端 AI 编排器 | 表示服务端批准的一次候选回复或转人工决策 | Worker 只能发送 `status=queued` 且 claim 成功的 action。 |
 | `chat_reply task` | 服务端任务中心 | 让 Worker 执行微信发送动作 | `task_type=chat_reply`，必须绑定唯一 `reply_action_id`。 |
 | `sent_ack` | Worker | 证明某个 `reply_action` 已发送或发送失败 | `reply_action_id` 唯一；重复上报只返回既有结果。 |
-| `handoff_event` | 服务端 | 记录转人工原因、触发消息、通知结果 | 转人工后 `conversation.ai_enabled=false`，不创建 `chat_reply` 发送任务。 |
+| `handoff_event` | 服务端 | 记录转人工原因、触发消息、通知结果 | 转人工后进入 `waiting_sales_reply`，由状态门禁阻断普通实时回复，不自动关闭 `ai_enabled` 硬开关，不创建当前批次的发送任务。 |
 
 #### 7.1.1 Conversation正式字段
 
@@ -2384,7 +2716,7 @@ OmniAuto AI Engine 在服务端通过 Adapter 接入，不允许运行 OmniAuto 
 | 失败处理 | 超时、异常、输出不合法、证据不足时默认 `handoff`，不使用本地兜底话术继续自动回复。 |
 | 审计 | 保存 prompt 版本、模型名、RAG命中、Evidence Pack 摘要、候选回复、Guard结果、最终 decision 和 trace_id。 |
 
-Adapter 输出合同：
+车金 Adapter 内部投影如下；它不是第二套模型输出合同，原始语义必须来自 OmniAuto `customer_service_brain.brain_plan`，唯一字段映射见 C2-C3 接口合同：
 
 ```json
 {
@@ -2404,7 +2736,7 @@ Adapter 输出合同：
 | decision | 处理 |
 |---|---|
 | `send_reply` | Guard 通过后创建 `reply_action` 和 `chat_reply task`。 |
-| `handoff` | 创建 `handoff_event`，`conversation.ai_enabled=false`，不创建发送任务。 |
+| `handoff` | 创建 `handoff_event`，状态进入 `waiting_sales_reply`，不自动关闭 `ai_enabled` 硬开关，不创建发送任务。 |
 | `no_action` | 本轮不回复，记录原因。 |
 | `pause` | 暂停会话自动回复，等待人工处理。 |
 | `retry_later` | 模型/依赖短暂异常，按配置短延迟重试；超过次数转人工。 |
@@ -2442,8 +2774,8 @@ Adapter 输出合同：
 - 同一 `reply_action_id` 不会被发送两次。
 - Worker 成功发送后，`sent_ack` 能把状态更新为 `reply_action.sent`、`task.completed`、`conversation.waiting_user_reply`。
 - Worker 失败或结果未知时，不自动补发同一内容。
-- 模型失败、RAG 证据不足、Guard 阻断时，系统转人工或 no_action，不编造回复。
-- 销售人工回复、客户拒绝、短码移除、会话关闭后，AI 不再创建发送任务。
+- Brain 技术失败必须进入 `failed/retry_later`，不得伪装成 `no_action`；RAG 证据不足或 Guard 阻断时可转人工或形成合法 `no_action`，不得编造回复。
+- 等待销售回复、客户拒绝、短码移除或会话关闭时，不创建普通实时 AI 发送任务；销售已回复只进入 `sales_replied_waiting_user`，客户再次回复时交回 AI，客户长期未回复时仍可进入 Brain 召回判断。
 - OmniAuto AI Engine 只在服务端生成候选回复；OmniAuto RPA Sidecar 只在 Worker 端发送已批准文本。
 
 | 主题 | 设计 |
@@ -2481,27 +2813,37 @@ Adapter 输出合同：
 
 ## 8. 模块7：图片理解与图文回复
 
-- 图片采集在 Worker 本地完成，图片理解在服务端完成。
-- 第一版视觉模型使用千问视觉；低置信度全部转人工。
-- 客户多张图片第一期逐张处理。
-- 图片本地保存路径固定可配置；保存周期配置化，默认一年。
-- 云端只保存必要文件和识别结果，不做长期图片库。
-- 视觉模型只负责看懂图片，不直接生成最终客服话术。
+本模块尚未形成最终技术决策，V16.98 不包含图片识别能力。旧版“识别 `type=3` 后另存本地、保留一年、走旧图片入口”的描述已废弃，不得据此开发或验收。
+
+当前已确认的讨论边界：
+
+- 图片应与文字、语音一样属于同一会话读取 flow 的一种消息类型，不能另建平行的会话扫描和准入链路。
+- 图片处理必须复用 C2 的有效短码、private、read-target 和 `authorization_revision` 门禁。
+- 所有消息类型只能有一套正式发送方判别规则：文字、语音、图片最终都必须调用车金 C2 统一 `sender_role` 解析边界，输出仍为 `customer / self / system / unknown`。
+- 保留 xucong Vision 的图片像素检测、连通区域筛选和图片边界定位优势；其现有 `side / visual_side / sender_role` 判定不进入车金正式合同，也不参与最终角色决策。
+- Vision 返回图片 `bubble_rect` 后，直接复用 C2 已有的 `message_row_avatar_role_details` 同行头像规则判定角色：仅左侧同行头像成立时为 `customer`，仅右侧同行头像成立时为 `self`；两侧同时成立或都不成立时为 `unknown`，不得识别上报或进入 C3。系统只执行这一次正式角色判断，不设计 Vision 与 C2 两套结果的投票或冲突状态。
+- Vision 只负责把图片转为结构化可理解事实；最终客户意图、是否回复和回复内容仍由服务端 Brain/Guard 决定。
+- 不恢复旧 Sidecar/Connector 图片入口，不依赖 `image_local_path` 作为跨客户端合同。
+- 是否只在内存中临时获取图片，还是需要对象存储长期保存原图，必须由业务明确“是否需要原图归档”后再决定。
+- 图片结果必须绑定原图片气泡的稳定身份、发送方角色和业务顺序；不能在批次末尾无序追加。
+- 单张图片识别失败只能影响该图片，不能把图片伪装成文字，也不能阻断同批已确认的文字/语音事实入库。
+
+下一版图片方案必须明确后，才能写入本技术方案并开发：
 
 ```text
-客户图片 -> Worker识别type=3 -> 点开另存 -> 上传服务端 -> 千问视觉 -> ImageIntent -> 车源索引 -> evidence pack -> OmniAuto候选回复 -> Guard -> send_reply或handoff
+权威消息画面与统一顺序
+-> Vision只识别图片气泡并返回bubble_rect
+-> C2复用同行头像规则，唯一一次给出customer/self/unknown
+-> 原图临时获取或对象存储策略
+-> Vision结构化输出合同
+-> 与原图片槽位绑定
+-> V3消息上报与后端去重
+-> Brain使用图片事实并由Guard决定动作
 ```
 
-| ImageIntent字段 | 说明 |
-|---|---|
-| image_type | car_photo、car_listing_screenshot、price_screenshot、finance_screenshot、inspection_report、chat_screenshot、unrelated、unknown。 |
-| detected_vehicle | 品牌、车系、车型、年份、颜色等。 |
-| detected_price | 识别到的图片价格与置信度。 |
-| customer_intent | find_similar_car、ask_price、ask_condition、ask_finance、compare_car、unknown。 |
-| risk_flags | price、condition、finance、contract等。 |
+已确认项：复用 xucong Vision 的图片发现与边界定位，删除或忽略其角色定案输出；图片最终发送方直接复用车金 C2 的同行头像 `sender_role` 规则，禁止多套角色规则并行定案。
 
-- 图片保存失败、上传失败、视觉失败、低置信度均不强行图文回复，按规则转人工。
-- 图片也必须遵守 `message_dedupe_key`、`image_dedupe_key`、`reply_action_id`、`sent_ack`，避免重复识别和重复回复。
+待确认项包括：原图是否归档、Vision 部署位置、失败重试边界、图片稳定身份、结构化字段、模型供应商、成本/超时策略和 C3 触发规则。在这些决策完成前，V16.98 对图片的唯一正确行为是跳过，不复制、不保存、不识别、不上报占位消息。
 
 ## 9. 模块8：大风车与车源索引
 
@@ -2541,7 +2883,7 @@ Adapter 输出合同：
 | 风控项 | 口径 |
 |---|---|
 | 自动回复总开关 | 可按全局、销售、Worker、会话控制；关闭后不自动回复和召回。 |
-| 人工接管模式 | waiting_sales_reply 或 sales_replied_waiting_user 时 AI 必须停止。 |
+| 人工接管模式 | `waiting_sales_reply / sales_replied_waiting_user` 时停止普通实时AI回复；其中 `sales_replied_waiting_user` 到期后仍允许按召回规则进入 `recall_precheck`。 |
 | 静默时段 | 客户主动发消息也完全不自动回复；召回必须延期或跳过。 |
 | 每日上限 | AI 回复、加好友、召回上限均配置化，默认待定。 |
 | 黑名单 | 第一期支持，用于拒绝、投诉、无效、不再跟进客户。 |
@@ -2571,10 +2913,10 @@ Adapter 输出合同：
 |---|---|
 | 风控/关键词 | 高风险、高意向、投诉、金融、合同、底价等。 |
 | 模型失败 | DeepSeek 超时或失败、RAG 失败、图片视觉失败、低置信度、车源失败无法安全回复。 |
-| 销售主动回复 | 检测到销售手机端人工消息。 |
+| 销售主动回复 | 检测到销售手机端人工消息后直接进入 `sales_replied_waiting_user`，不再创建“等待销售回复”的 handoff。 |
 | 手动操作 | 控制面或 Worker 执行台点击停止 AI/手动接管。 |
 
-- 进入 `waiting_sales_reply` 时必须 `conversation.ai_enabled=false`。
+- 进入 `waiting_sales_reply` 时由会话状态阻断普通实时 AI 回复；只有人工明确关闭全部自动化时才设置 `conversation.ai_enabled=false`。
 - 飞书通知包含客户标识、线索短码、手机号后四位、销售、触发原因、最近消息、建议动作、时间。
 - 飞书通知失败时 AI 仍停止，控制面和 Worker 执行台展示错误日志，由项目方人工查看处理。
 - 同一 `handoff_event_id` 只触发一次飞书通知，避免重复提醒销售。
@@ -2594,17 +2936,18 @@ Adapter 输出合同：
 - 目标：对已添加微信、处于等待用户回复类状态、长期未互动且未拒绝的客户做低频再触达。
 - 云端先判断召回到期资格，但不得直接创建/发送 `follow_up`；必须先生成 `recall_precheck` 读取目标。
 - Worker 先定向读取该会话，服务端确认没有新客户消息后，才允许创建 `follow_up` 任务。
-- Worker 只发送服务端已创建的固定召回文案并上报结果；第一期不让模型自由生成召回话术。
+- 服务端复用与普通回复相同的 Brain/Guard，以 `trigger_type=recall` 和 `recall_cycle_id` 生成、审核召回内容；不新增召回专用模型。
+- Worker 只发送服务端批准的召回文案并上报结果，不在本地生成或改写内容。
 - 第一期只做一种召回规则；周期默认待定，可配置为 7 天或 14 天。
 - 每个客户最多召回 1 次；每日召回上限待定；扫描频率每天一次。
 - `watching` 不作为第一期必需主状态；观望客户可用 `waiting_user_reply / recalled_waiting_user` 加规则字段表达。
 
 | 规则 | 说明 |
 |---|---|
-| 适用客户 | 已加好友、会话已绑定、处于 `waiting_user_reply / recalled_waiting_user / sales_replied_waiting_user` 等等待用户类状态、未拒绝、未关闭、未黑名单、最近N天无客户/销售消息。 |
+| 适用客户 | 已加好友、会话已绑定、处于 `waiting_user_reply / recalled_waiting_user / sales_replied_waiting_user`、自动化硬开关未关闭、未拒绝、未关闭、未黑名单、最近N天无客户/销售消息。 |
 | 召回前确认 | 到期后先进入 `recall_precheck`，Worker 定向读取该会话；读到新客户消息则取消召回。 |
 | 排除条件 | rejected、waiting_sales_reply、closed、黑名单、近期客户/销售已联系、达到召回上限、风控暂停、静默时段。 |
-| 发送 | 只有 `recall_precheck` 确认无新客户消息后，follow_up 才能获取 Local WeChat UI Lock 并发送固定文案。 |
+| 生成与发送 | 只有 `recall_precheck` 确认无新客户消息后，才创建 `trigger_type=recall` 批次；Brain/Guard 返回 `send_reply` 后创建 follow_up，Worker 保持当前会话和 UI 锁发送批准文案。 |
 | 防重复 | 同一客户同一规则周期只发送一次，同一 follow_up 任务只发送一次，重启后已 sent 不再发送。 |
 
 ## 13. 模块12：测试、验收与部署
@@ -2616,11 +2959,11 @@ Adapter 输出合同：
 | 测试阶段 | 内容 |
 |---|---|
 | P1基础链路 | 线索接入、销售分配、Worker绑定、add_friend、客户短码写入和邀请结果回传。 |
-| P2会话绑定/微信监听 | OmniAuto sessions/messages、短码绑定、消息入库、dedupe_key去重、未绑定会话不自动回复。 |
+| P2会话绑定/微信监听 | OmniAuto sessions / messages / 条件性 voice-transcribe、短码绑定、语音转写入库、消息入库、dedupe_key去重、未绑定会话不自动回复。 |
 | P3文字回复 | 客户文字、RAG、DeepSeek、Guard、`reply_action`、Worker调用OmniAuto发送、审计。 |
-| P4图片回复 | 图片另存、上传、千问视觉、ImageIntent、车源索引、图文回复或转人工。 |
+| P4图片回复 | 待架构确认：统一消息槽位、图片临时获取/对象存储、Vision结构化输出、V3入库、Brain/Guard使用；不沿用旧本地另存入口。 |
 | P5风控接管 | 总开关、静默、上限、黑名单、关键词、模型失败、飞书通知、销售回复后AI停止。 |
-| P6自动召回 | 等待用户回复类状态、N天未联系、召回前 `recall_precheck`、固定文案、上限、跳过原因、防重复。 |
+| P6自动召回 | 等待用户回复类状态、N天未联系、召回前 `recall_precheck`、`trigger_type=recall` 的 Brain/Guard 文案生成、上限、跳过原因、防重复。 |
 | P7异常恢复 | Worker断网/重启、服务端不可用、AI超时、重复消息、reply_action恢复、不重复发送。 |
 
 ### 13.1 S1阻塞缺陷

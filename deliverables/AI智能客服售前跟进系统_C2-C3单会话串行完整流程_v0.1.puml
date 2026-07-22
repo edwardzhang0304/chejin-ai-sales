@@ -1,0 +1,517 @@
+@startuml
+title AI智能客服售前跟进系统 C2-C3 单会话串行完整流程（图片增强目标架构）
+
+skinparam monochrome true
+skinparam shadowing false
+skinparam maxMessageSize 220
+skinparam sequence {
+  ArrowColor #222222
+  LifeLineBorderColor #888888
+  LifeLineBackgroundColor #FFFFFF
+  ParticipantBorderColor #222222
+  ParticipantBackgroundColor #FFFFFF
+  BoxBorderColor #777777
+  BoxBackgroundColor #FFFFFF
+  GroupBorderColor #777777
+  GroupBackgroundColor #FFFFFF
+  GroupHeaderFontStyle bold
+}
+
+autonumber
+
+box "商家侧 Windows Worker（同一 Worker 严格串行）"
+participant "Worker主进程\n单会话Flow调度器" as W
+database "Worker本地SQLite\n已处理清单 + Outbox" as L
+participant "Local WeChat UI Lock\n可续租租约" as Lock
+participant "OmniAuto RPA Sidecar\n由Worker重新编排" as OA
+participant "C2统一角色解析器\nsender_role" as Role
+participant "销售微信桌面客户端" as WX
+end box
+
+box "车金服务端"
+participant "会话绑定与授权服务\nread-targets" as Auth
+participant "Vision网关\n只在内存处理原图" as VG
+participant "图片理解大模型\nVision Model" as VM
+participant "消息入库服务\nmessages/ingest" as Ingest
+database "业务数据库\nmessage_events" as DB
+participant "C3会话调度器\nmessage_batch" as C3
+participant "回复AI引擎\nContext + RAG + Brain + Guard" as Brain
+participant "ReplyAction / SentAck" as Reply
+end box
+
+note over W,Reply
+核心不变量：
+1. 同一个Worker、同一个微信实例，同一时间只处理一个会话。
+2. 从打开目标会话到 send_reply / no_action / handoff / technical_failed 终态，全程持有同一UI锁并自动续租。
+3. 不设置正常业务Flow固定总时限；保留单步骤watchdog、Worker失联租约回收和finally释放。
+4. 每轮重新观察最终画面，但只处理本地已处理清单中不存在的新消息。
+5. 语音由Worker重新编排OmniAuto RPA完成；图片先由Vision检测边界，再由C2统一角色规则定案。
+6. 图片理解模型与回复Brain是两个独立模型阶段，不能合并或互相越权。
+end note
+
+loop Worker运行中；每次循环最多完成一个会话事务
+
+  group 0. 开始新会话前，优先恢复未上报事实
+    W -> L: 查询待发送Outbox
+    alt 存在历史完整JSON批次
+      L --> W: outbox_id + V3批次（不含原图）
+      W -> Ingest: 重传messages/ingest\n沿用原read_run_id/source_message_key/dedupe_key
+      Ingest -> DB: 授权可恢复时执行数据库唯一约束
+      alt 重传成功或全部duplicated
+        Ingest --> W: ingested / duplicated
+        W -> L: 删除已确认Outbox
+      else 服务端仍不可用
+        Ingest --> W: technical_error
+        W -> W: 本轮不操作微信、不调用Brain、不发送
+      end
+    end
+  end
+
+  group 1. 首屏事实扫描与读取授权
+    W -> Lock: acquire(operation=session_scan)\n写入flow_id/fencing_token
+    alt 未获得锁
+      Lock --> W: UI_LOCK_BUSY
+      W -> W: 等待下一轮；不得并发操作微信
+    else 获得锁
+      Lock --> W: acquired
+      W -> Lock: 启动心跳自动续租
+      W -> OA: sessions：扫描当前第一屏
+      OA -> WX: 截图 + 普通/增强OCR\n按视觉行聚合侧栏标题
+      WX --> OA: 当前第一屏画面
+      OA --> W: session_scan_result\n短码候选/行证据/conversation_type候选
+      W -> Auth: 上报scan-result
+      Auth -> Auth: 只更新会话发现/绑定事实\nscan-result本身不授予读取权限
+      Auth -> Auth: 将候选与C1的friend_request_sent核对\n校验短码、Worker/微信实例绑定和首屏行证据
+      Auth -> Auth: 只有核对通过才签发短时点击许可\nread_reason=friend_acceptance_visible_hit\nvisible-only，禁止定向搜索
+      Auth -> Auth: 已有会话到达召回周期时，仅在静默时段/上限/状态检查通过后\n签发read_reason=recall_precheck + recall_cycle_id + recall_origin_status
+      W -> Auth: GET read-targets
+      Auth --> W: 仅返回后端已许可的目标\nconversation_id + remark_code\nauthorization_revision + read_reason + visible-only
+
+      alt read-targets为空
+        W -> W: 清空visible_hit_queue\n不点击、不读消息、不转写、不识图、不入库
+        W -> Lock: finally release
+      else 存在授权目标
+        W -> W: 按优先级选择一个目标\n好友待通过只允许首屏命中；\n已有有效会话才允许短码定向搜索
+
+        group 2. 授权检查 + 打开会话 + 单帧确认和首次读取
+          W -> Auth: 校验当前authorization_revision
+          alt 监听停止、人工接管或revision变化
+            Auth --> W: authorization_invalid / ai_disabled
+            W -> W: 不点击、不读取、不转写、不识图、不入库
+            W -> Lock: finally release
+          else 授权仍有效
+            Auth --> W: authorized
+            W -> OA: open_and_verify\n当前屏、禁止主动上滚
+            alt 目标仍在第一屏且同码唯一
+              OA -> WX: 点击实时首屏唯一会话行
+            else 好友待通过候选已不在第一屏
+              OA --> W: C2_PENDING_FRIEND_VISIBLE_HIT_EXPIRED\n不打开搜索框，等待下次首屏扫描
+            else 已有有效会话第一屏没有命中
+              OA -> WX: 打开搜索框、粘贴短码\n等待结果稳定、唯一命中后点击
+            else 第一屏同码多条/候选歧义
+              OA --> W: C2_VISIBLE_TARGET_AMBIGUOUS
+            end
+
+            OA -> WX: 等会话画面稳定后只截一张新图
+            WX --> OA: captured_frame（暂存在内存）
+            OA -> OA: 先只读取标题和输入区ROI\n核对短码/人数后缀/chat_input_ready
+            OA --> W: remark_code + conversation_type + chat_input_ready\nconfidence + captured_frame_ref
+
+            alt 短码不一致或目标未确认
+              W -> W: TARGET_NOT_CONFIRMED\n不转写、不识图、不入库
+              W -> Lock: finally release
+            else conversation_type=group
+              W -> W: C2_GROUP_CHAT_NOT_ALLOWED\n本轮立即终止，不再搜索
+              W -> Lock: finally release
+            else conversation_type=unknown/冲突
+              W -> W: C2_CONVERSATION_TYPE_UNKNOWN\n不降级为private
+              W -> Lock: finally release
+            else 有效短码 + private + 当前授权
+              alt read_reason=friend_acceptance_visible_hit
+                W -> Auth: 上报首次打开确认\n短码/private/chat_input_ready + 标题证据
+                Auth -> Auth: 再校验短时点击许可和证据\n此时才将friend_request_sent更新为friend_active
+                alt 后端拒绝激活确认
+                  Auth --> W: activation_rejected
+                  W -> W: 不处理initial observations\n不调用Brain、不发送
+                  W -> Lock: finally release
+                else 后端确认好友已可聊天
+                  Auth --> W: activation_confirmed\nactive authorization_revision
+                end
+              else 已有有效会话
+                W -> W: 沿用已有active authorization_revision
+              end
+            end
+
+            opt 后端已activation_confirmed或原本就是有效会话
+              W -> OA: parse_initial_from_captured_frame\n复用captured_frame_ref，不重新截图
+              OA -> OA: OCR观察当前屏文字、语音和图片
+              OA -> Role: 对可见消息统一判定角色\n同行头像优先
+              Role --> OA: customer / self / system / unknown
+              OA --> W: initial observations + 未转写语音anchor列表
+              opt read_reason=recall_precheck
+                W -> W: recall_precheck=true\n保存recall_cycle_id + recall_origin_status\n尚不允许发送召回
+              end
+              opt 本轮刚从friend_request_sent激活为friend_active
+                alt 存在customer消息
+                  W -> W: opening_greeting_candidate=false\n取消主动开场，继续普通C2消息流程
+                else 存在self消息
+                  W -> W: sales_replied_detected=true\n取消主动开场；self事实仍需入库
+                else 没有customer/self消息
+                  W -> W: opening_greeting_candidate=true\n仅system提示视为空会话
+                end
+              end
+              W -> W: 进入当前会话唯一串行事务
+            end
+          end
+        end
+
+        loop 保持当前会话，直到回复发送或明确不回复/转人工/技术失败
+
+          group 3. 语音增强：Worker重新编排OmniAuto RPA
+            loop 当前屏每条未转写语音，物理操作可自下而上
+              W -> L: 查询conversation_id + voice_source_key
+              alt 已completed或failed
+                L --> W: terminal cache hit
+                W -> W: 不重复右键、不重复转写
+              else 新的未转写语音
+                L --> W: cache miss
+                W -> OA: voice-transcribe(anchor)\n保持同一flow_id和UI锁
+                OA -> WX: 重新定位当前anchor并右键
+                OA -> WX: 点击语音转文字入口
+                OA -> WX: 页面变化后立即废弃旧坐标并重新截图
+                WX --> OA: 转写后的新画面
+                OA -> OA: OCR确认正文出现\n绑定parent_voice anchor和原角色
+                OA -> OA: 将本次完整截图和OCR结果\n更新为current_valid_frame
+                alt 转写成功且父语音绑定成功
+                  OA --> W: voice item_state=completed\n正文 + 稳定anchor + 证据
+                  W -> L: 暂存本flow语音结果
+                else 点击/OCR/绑定明确失败
+                  OA --> W: voice item_state=failed + error_code
+                  W -> L: 记录terminal failed\n后续扫描不自动重复处理
+                end
+              end
+            end
+          end
+
+          group 4. 最终权威画面：默认复用，不机械重复截图
+            W -> OA: finalize_current_frame\n同时复核标题和建立统一槽位
+            alt 本轮没有执行语音操作
+              OA -> OA: 复用initial_read完整截图和OCR结果
+            else 已执行语音且最后一次确认画面完整稳定
+              OA -> OA: 复用最后一条语音的\nvoice_transcribe_after截图和OCR结果
+            else 最后画面无效/菜单未关闭/尚未稳定
+              OA -> WX: 清理菜单并等待画面稳定
+              OA -> WX: 仅此异常分支补截一张完整新图
+              WX --> OA: 补截后的有效画面
+              OA -> OA: OCR并更新current_valid_frame
+            end
+            OA -> OA: current_valid_frame成为final_read权威画面
+            OA -> OA: OCR文字/语音转写行\nVision像素算法只检测图片bubble_rect
+            OA -> Role: 所有可见消息行调用同一sender_role边界
+            note right of Role
+            文字/语音：沿用已验证同行头像与父语音规则。
+            图片：忽略Vision的side/visual_side/sender_role；
+            只使用C2 message_row_avatar_role_details定案。
+            两侧头像都成立或都不成立 => unknown。
+            end note
+            Role --> OA: 每个槽位的customer/self/system/unknown
+            OA -> OA: 按final_read visual_top从上到下\n生成slot_id和screen_order
+            OA --> W: final observations + unified slots
+
+            note over W,OA
+            语音展开后被挤出最终屏幕的图片/消息，本轮不处理；
+            C2继续只处理最终当前屏，不主动上滚。
+            end note
+          end
+
+          group 5. 增量过滤：全屏重新观察，但不重复昂贵处理
+            W -> W: 先为每个slot生成不依赖绝对坐标的稳定身份\nsource_message_key + candidate dedupe_key
+            note right of W
+            文字：稳定输入ID优先；否则角色 + 归一化正文 + 同类出现序号。
+            语音：稳定父voice anchor优先；否则角色 + 正文/时长 + 同类出现序号。
+            图片：canonical_visual_id优先；否则角色 + 同类出现序号 + 邻近稳定消息锚点。
+            相同正文/相同图片连续发送两次必须形成两个不同消息身份。
+            final_read的screen_order和绝对坐标只用于排序，不参与身份。
+            end note
+            W -> L: 批量查询conversation_id + source_message_key\n读取terminal processing_result和ingest_state
+            L --> W: 每个slot返回以下一种：\nNOT_FOUND / INGESTED_COMPLETED / INGESTED_FAILED / OUTBOX_WAITING
+
+            loop 遍历final_read统一槽位
+              alt INGESTED_COMPLETED：历史消息已成功入库
+                W -> W: 标记old_completed\n只保留为当前画面顺序/上下文证据
+                note right of W
+                旧文字：不重复上报。
+                旧语音：不重复右键、不重复OCR转写。
+                旧图片：不重复右键、不复制、不上传、不调用Vision。
+                后端Brain需要历史时直接查询message_events，不要求Worker重传。
+                end note
+              else INGESTED_FAILED：历史语音/图片已明确失败并入库
+                W -> W: 标记old_failed\n不自动重试昂贵处理
+                note right of W
+                failed是终态，不是pending。
+                customer失败事实已使会话转人工；后续自动扫描不得反复点击或调用模型。
+                只有显式人工重试/新的产品策略才能清除该终态记录。
+                end note
+              else OUTBOX_WAITING：内容处理完成但入库尚未确认
+                W -> W: 标记old_waiting_ingest\n不得重新语音RPA或Vision
+                W -> L: 沿用Outbox中的完整结构化结果\n优先重传原V3批次
+              else NOT_FOUND：本地从未处理
+                W -> W: 标记new_message\n本轮唯一允许进入增强和新批次的集合
+              else sender_role=unknown或角色证据不可信
+                W -> W: 当前槽位ignored\n不得进入Brain
+              else 新文字槽位
+                W -> W: 保存OCR正文/角色/source key\nitem_state=completed
+              else 新语音槽位且已有本flow completed结果
+                W -> W: 按稳定父anchor回填转写正文\nmessage_type=voice
+              else 新语音槽位但结果failed/无法绑定
+                W -> W: 保留failed事实和error_code\n不得伪装成text
+              else 新图片槽位
+                W -> W: 进入逐张图片增强
+              end
+            end
+
+            opt 本轮发现新的self消息
+              W -> W: sales_replied_detected=true\nself事实继续入库；取消当前主动开场/召回/自动回复
+            end
+
+            alt 状态顺序为OLD*后接NEW*（正常增量边界）
+              W -> W: history_gap=false\n继续处理新消息
+            else 任一NEW_MESSAGE下方再次出现OLD*
+              W -> W: C2_MESSAGE_HISTORY_GAP\nhistory_gap=true
+              note right of W
+              说明以前有中间消息被跳过、身份发生冲突，
+              或本地清单与画面顺序不一致。
+              可继续保存本轮已确认的新消息事实，
+              但禁止Brain自动回复，必须转人工。
+              end note
+            end
+
+            alt source_message_key无法可靠生成或身份证据冲突
+              W -> W: MESSAGE_IDENTITY_UNCONFIRMED\n不得只按content/hash猜测为旧消息
+              W -> W: 该槽位不自动Vision、不触发Brain\n记录证据并转人工
+            end
+
+            note over W,L
+            本地清单负责“不要重复做昂贵动作”；后端唯一约束负责“绝不重复写业务事实”。
+            本地缓存命中不能替代后端dedupe，后端duplicated结果也必须回写本地清单。
+            end note
+          end
+
+          group 6. 图片增强：模型一，只把图片变成结构化事实
+            loop final_read中每张“新图片”按screen_order逐张处理
+              W -> Auth: 图片动作前再次校验authorization_revision
+              alt 授权失效
+                Auth --> W: authorization_invalid
+                W -> W: 停止后续图片和发送动作
+              else 授权有效
+                Auth --> W: authorized
+                W -> OA: 使用final_read fresh bubble_rect捕获图片
+                OA -> WX: 重新确认图片仍在原槽位
+                OA -> WX: 右键图片
+                OA -> WX: OCR确认菜单后点击“复制”
+                WX --> OA: Windows剪贴板位图
+                OA --> W: image bytes（仅内存）\ncanonical_visual_id + slot_id
+                W -> W: 校验格式/大小\n内存压缩 + image_hash
+                W -> VG: HTTPS multipart上传\nWorker Token + conversation_id\nsource_message_key + authorization_revision
+                VG -> VG: 校验Worker、会话、授权、格式和大小\n原图只在请求内存中存在
+                VG -> VM: 单张图片调用Vision模型
+                note right of VM
+                Vision只输出：
+                vision_summary / image_ocr_text / classification /
+                entities / intent_hints / confidence / model trace。
+                Vision不决定最终客户意图、不决定是否回复、不生成回复文案。
+                end note
+                alt 模型成功且结果合同合法
+                  VM --> VG: image_recognition.status=succeeded
+                  VG --> W: 结构化图片事实
+                  W -> W: 回填原slot_id\nitem_state=completed
+                else 模型超时/异常/结果非法
+                  VM --> VG: timeout / provider_error / invalid_result
+                  VG -> VG: 单步骤策略允许时同flow重试一次
+                  VG --> W: image_recognition.status=failed\n明确error_code；绝不返回终态pending
+                  W -> W: 回填原slot_id\nitem_state=failed
+                end
+                W -> W: 立即释放该图片内存\n不写本地文件、不保存image_local_path
+              end
+            end
+          end
+
+          group 7. 收齐终态并构建一次V3增量批次
+            W -> W: 检查所有“新槽位”\n只能是completed / failed / ignored
+            alt 仍存在pending
+              W -> W: 视为C2_FLOW_CONTRACT_INVALID\n转为failed，禁止结束为pending
+            end
+            W -> W: 将新文字 + 新语音 + 新图片结果\n回填final_read原槽位
+            W -> W: 按screen_order排序\n生成稳定source_message_key/dedupe_key
+            note right of W
+            screen_order/绝对坐标/authorization_revision不参与消息身份。
+            图片优先稳定visual id；缺失时使用角色、同类序号、
+            邻近稳定消息锚点，image_hash只作加强证据。
+            end note
+
+            alt 没有任何新消息且opening_greeting_candidate=false且recall_precheck=false
+              W -> W: 不调用ingest、不触发Brain\n当前会话本轮no_action
+            else 没有新消息但opening_greeting_candidate=true
+              W -> W: 不伪造customer消息、不调用messages/ingest\n进入C3主动开场门禁
+            else 没有新消息但recall_precheck=true
+              W -> W: recall_precheck确认客户仍未回复\n不伪造customer消息，进入C3召回门禁
+            else 存在新消息
+              W -> Ingest: POST messages/ingest一次\ncontract_version=3 + read_run_id\n按screen_order发送增量消息
+              Ingest -> Ingest: 校验Worker/绑定/短码/private/revision\n校验row_kind/sender_role_source/item_state
+              Ingest -> DB: unique(conversation_id,dedupe_key)
+              DB --> Ingest: 每条ingested / duplicated / ignored
+
+              alt ingest网络/服务端连续失败
+                Ingest --> W: technical_error
+                W -> L: 保存完整JSON到Outbox\n不保存原图
+                W -> W: technical_failed\n不调用Brain、不发送回复
+              else ingest完成
+                Ingest --> W: ingest results + batch_id（如有新增customer）
+                W -> L: 只把已确认ingested/duplicated的键\n写入持久化已处理清单
+                opt recall_precheck=true且发现新customer
+                  W -> C3: 取消recall_cycle_id\n本轮改为普通客户消息批次
+                  W -> W: recall_precheck=false
+                end
+              end
+            end
+          end
+
+          group 8. C3确定性门禁：先用业务规则，再决定是否调用模型二
+            alt sales_replied_detected=true
+              Ingest -> C3: self事实已入库（如有）\n销售人工消息优先
+              C3 -> DB: conversation.status=sales_replied_waiting_user\n取消当前opening/recall/reply_action
+              C3 --> W: terminal no_action\nreason_code=SALES_REPLIED_WAITING_USER
+            else 会话ai_enabled=false
+              C3 --> W: terminal no_action\n硬开关关闭，不自动回复或召回
+            else opening_greeting_candidate=true
+              W -> C3: 请求创建主动开场批次\ntrigger_type=friend_welcome\nconversation_id + activation_revision
+              C3 -> DB: 原子检查从未发送/创建主动开场\nunique(conversation_id, friend_welcome)
+              alt 主动开场已存在或已经发送
+                C3 --> W: terminal no_action（幂等命中）
+              else 当前仍无customer/self且AI允许
+                C3 --> W: opening batch_id\n进入回复AI
+              end
+            else recall_origin_status=sales_replied_waiting_user且发现新customer
+              Ingest -> C3: 取消recall_cycle_id\n客户已回复
+              C3 -> DB: conversation.status=ai_active
+              C3 --> W: 创建普通客户消息batch\n交回AI判断
+            else recall_precheck=true且没有新customer/self消息
+              W -> C3: 请求创建召回批次\ntrigger_type=recall + recall_cycle_id
+              C3 -> DB: 再校验等待状态、AI开关、静默时段、次数/每日上限\nunique(conversation_id, recall_cycle_id)
+              alt 资格已失效或本轮召回已存在
+                C3 --> W: terminal no_action\n取消或幂等命中
+              else 召回资格仍有效
+                C3 --> W: recall batch_id\n进入同一个回复AI
+              end
+            else 本轮没有ingested的新customer消息
+              W -> W: no_action\nself-only/duplicated/ignored不触发Brain
+            else history_gap=true
+              Ingest -> C3: 新消息事实已入库\n但历史顺序存在缺口
+              C3 -> C3: 直接handoff\n不调用Brain、不自动回复
+              C3 --> W: terminal handoff + C2_MESSAGE_HISTORY_GAP
+            else 会话ai_enabled=false/仍在waiting_sales_reply/全局紧急暂停
+              Ingest -> C3: batch直接no_action或handoff
+              C3 --> W: terminal no_action / handoff
+            else 存在failed的customer语音或customer图片
+              Ingest -> C3: 完整消息事实已入库\n但上下文不完整
+              C3 -> C3: 直接handoff\n不调用Brain、不自动回复
+              C3 --> W: terminal handoff + error_code
+            else 目标、授权、角色和所有customer内容完整
+              Ingest -> C3: collect/freeze message_batch\n返回当前batch_id
+            end
+          end
+
+          group 9. 回复AI：模型二，结合所有模态决定怎么处理
+            opt batch通过C3确定性门禁
+              W -> C3: 只等待当前conversation_id + batch_id\n保持当前会话和UI锁，不处理其他会话
+              alt trigger_type=friend_welcome
+                C3 -> Brain: 构建主动开场上下文\nC1线索资料 + 销售身份/业务规则\n不得伪造客户消息
+              else trigger_type=recall
+                C3 -> Brain: 构建召回上下文\n历史message_events + 上次话题/车辆需求\n召回轮次/历史召回内容/召回策略
+              else 普通客户消息批次
+                C3 -> Brain: 构建完整上下文\n历史message_events + 本轮文字\n语音转写 + Vision图片事实
+              end
+              Brain -> Brain: Context Builder
+              Brain -> Brain: RAG / 车辆事实 / Evidence Pack
+              Brain -> Brain: 回复生成与策略判断
+              Brain -> Brain: Guard审核
+              alt 允许自动回复
+                Brain --> C3: send_reply + approved reply_text
+                C3 -> Reply: 创建当前batch唯一reply_action\nstatus=queued
+                C3 --> W: batch terminal=reply_action_created\nreply_action_id
+              else 高风险/低置信/Guard阻断
+                Brain --> C3: handoff / handoff_for_approval + reason
+                C3 -> DB: conversation.status=waiting_sales_reply\n记录handoff_event\nai_enabled保持原硬开关值
+                C3 --> W: batch terminal=handoff
+              else Brain无可见回复/超时/供应商异常/结果合同非法
+                Brain --> C3: technical_error
+                C3 -> C3: 按同一batch重试策略处理\n不得伪装为no_action
+                C3 --> W: batch_status=failed\ndecision=retry_later\nerror_code + retryable
+              end
+            end
+          end
+
+          group 10. 回复前复查：仍在原会话，不重新切换其他客户
+            alt C3结果=no_action/handoff/technical_failed
+              W -> W: 不发送；当前会话事务到达终态
+            else C3结果=send_reply
+              W -> OA: pre_send_refresh current conversation\n保持原窗口，只做最新截图读取
+              OA -> WX: 截图并读取当前底部消息
+              WX --> OA: 最新画面
+              OA -> Role: 对新增候选继续使用统一角色边界
+              Role --> OA: customer/self/system/unknown
+              OA --> W: refresh observations
+              W -> L: 与已处理清单比较
+
+              alt 等待期间出现新customer文字/语音/图片
+                W -> Reply: supersede旧reply_action\n禁止发送旧回复
+                Reply -> C3: batch/action标记superseded
+                W -> W: 保持同一UI锁和当前会话\n回到语音处理 -> final_read -> Vision -> ingest -> Brain
+              else 检测到新的self消息/销售手机端已回复
+                W -> Reply: cancel旧reply_action
+                W -> Ingest: 增量上报self事实
+                Ingest -> DB: 记录销售人工回复\nstatus=sales_replied_waiting_user
+                W -> W: 当前AI回复终止；等待客户\n到期仍可进入recall_precheck
+              else 没有新增消息且reply_action仍current
+                W -> Reply: claim-send(reply_action_id, flow_id)
+                Reply -> Reply: 原子queued -> sending\n校验未过期、未作废、Worker一致
+                Reply --> W: send_token + approved reply_text
+                W -> OA: send approved reply\n禁止Worker自行改写
+                OA -> WX: 输入、发送、截图校验
+                WX --> OA: 发送结果画面
+                OA --> W: sent / failed / unknown_send_result
+                W -> Reply: sent-ack（幂等）
+                Reply -> DB: reply_action终态\n更新last_outbound_at等
+                opt trigger_type=recall
+                  Reply -> DB: 更新last_recall_at、recall_count\nconversation.status=recalled_waiting_user
+                end
+                Reply --> W: ack confirmed
+              end
+            end
+          end
+
+        end
+
+        group 11. 当前会话事务统一收尾
+          W -> W: 记录各阶段耗时、trace_id和终态证据
+          W -> Lock: finally release(flow_id, fencing_token)
+          Lock --> W: released
+          W -> W: 下一轮才允许选择另一个会话
+        end
+
+      end
+    end
+  end
+
+end
+
+note over W,Reply
+异常恢复补充：
+- Worker/Sidecar正常异常必须进入finally释放UI锁。
+- Worker进程崩溃时，停止心跳后由可续租租约回收stale lock；不能取消租约机制。
+- Vision/Brain没有固定业务总时限，但各自网络调用必须有单步骤watchdog并返回明确成功/失败终态。
+- ingest失败且结果已完整时写本地Outbox；恢复在线后先重传，再开始新的微信会话。
+- 后端数据库唯一约束始终是最终去重防线；本地已处理清单用于避免重复语音RPA、重复图片复制和重复Vision费用。
+end note
+
+@enduml
