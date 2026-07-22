@@ -741,6 +741,23 @@ def locate_chat_target_for_c2(
         semantic_target=clean_remark_code,
     )
     validation = None
+    initial_title_evidence = _LAST_OPEN_CHAT_TIMING.get("open_chat_initial_active_evidence")
+    if (
+        not opened
+        and isinstance(initial_title_evidence, dict)
+        and initial_title_evidence.get("short_code_confirmed") is True
+        and str(initial_title_evidence.get("conversation_type") or "unknown") in {"group", "unknown"}
+    ):
+        conversation_type = str(initial_title_evidence.get("conversation_type") or "unknown")
+        validation = {
+            "ok": False,
+            "online": True,
+            "reason": f"active_{conversation_type}_remark_code_blocked",
+            "active_title_match": True,
+            "confirmation_confidence": "active_title_strict",
+            "conversation_type": conversation_type,
+            "conversation_type_evidence": dict(initial_title_evidence),
+        }
     reused_session_key = str(_LAST_RPA_ACTION_STATE.get("active_session_key") or clean_session_key).strip()
     if opened:
         validation = consume_recent_target_switch_validation(
@@ -754,7 +771,9 @@ def locate_chat_target_for_c2(
     targeting["visible_postcheck"] = {
         "reused": isinstance(validation, dict),
         "reason": (
-            "strict_open_chat_switch_validation_reused"
+            "terminal_active_title_admission_reused"
+            if isinstance(validation, dict) and not opened
+            else "strict_open_chat_switch_validation_reused"
             if isinstance(validation, dict)
             else "strict_open_chat_switch_validation_unavailable"
         ),
@@ -11402,6 +11421,14 @@ def open_chat(
     active_semantic_private = bool(
         clean_semantic_target and active_evidence.get("admission_allowed") is True
     )
+    active_semantic_terminal = bool(
+        clean_semantic_target
+        and active_evidence.get("short_code_confirmed") is True
+        and str(active_evidence.get("conversation_type") or "unknown") in {"group", "unknown"}
+    )
+    if active_semantic_terminal:
+        conversation_type = str(active_evidence.get("conversation_type") or "unknown")
+        return finish(False, f"active_{conversation_type}_remark_code_blocked")
     if not clean_semantic_target and not clean_session_key and active_matches:
         return finish(True, "active_target_match")
     if (
