@@ -17,11 +17,14 @@ os.environ.setdefault("CHEJIN_RPA_MODE", "mock")
 from chejin_worker_client.api import ApiError
 from chejin_worker_client.action_journal import (
     action_journal_path,
+    action_journal_phase,
     initialize_action_journal,
+    read_action_journal,
     update_action_journal_item,
 )
 from chejin_worker_client.c2_contract import contract_revision, contract_sha256
 from chejin_worker_client.models import Binding, RpaResult, RpaStep, Task, WechatReadTarget, WorkerProfile
+from chejin_worker_client.rpa_bridge import RpaBridge
 from chejin_worker_client.storage import (
     checkpoint_c2_action_outcomes,
     db_connection,
@@ -643,6 +646,86 @@ class TaskRunnerTest(unittest.TestCase):
             conn.execute("DELETE FROM reply_send_ack_outbox")
             conn.execute("DELETE FROM c2_runtime_state")
             conn.commit()
+
+    def test_action_journal_vertical_c1_add_friend_reaches_task_completion(self):
+        task = Task(
+            id="task-journal-vertical-c1",
+            task_type="add_friend",
+            status="pending",
+            phone="13800000000",
+            verify_message="您好，我是车金张伟",
+            remark_name="CJ-张伟-CJ8K2P-0000",
+            remark_code="CJ8K2P",
+        )
+        api = FakeApi(task)
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        bridge.mode = "real"
+        observed_phases: list[str] = []
+
+        def sidecar_boundary(args, **_kwargs):
+            journal_path = Path(args[args.index("--action-journal") + 1])
+            observed_phases.append(action_journal_phase(journal_path))
+            update_action_journal_item(
+                journal_path,
+                source_message_key=task.id,
+                action_phase="trigger_attempted",
+                business_state="invite_confirm_click_starting",
+            )
+            observed_phases.append(action_journal_phase(journal_path))
+            update_action_journal_item(
+                journal_path,
+                source_message_key=task.id,
+                action_phase="confirmed",
+                business_state="invite_sent",
+                business_result_confirmed=True,
+                terminal_payload={
+                    "ok": True,
+                    "task_status": "completed",
+                    "result_code": "invite_sent",
+                    "current_step": "invite_confirm_clicked",
+                },
+            )
+            observed_phases.append(action_journal_phase(journal_path))
+            return {
+                "ok": True,
+                "task_status": "completed",
+                "result_code": "invite_sent",
+                "current_step": "invite_confirm_clicked",
+                "message": "已点击发送好友申请。",
+            }
+
+        runner, seen = self.make_runner(api, bridge)  # type: ignore[arg-type]
+        runner.binding = Binding(
+            worker_id="worker-journal-c1",
+            worker_token="token",
+            client_instance_id="client-journal-c1",
+            run_status="running",
+        )
+
+        with patch.object(
+            bridge,
+            "probe",
+            return_value=("ready", "logged_in"),
+        ), patch.object(
+            bridge,
+            "_call_omniauto",
+            side_effect=sidecar_boundary,
+        ):
+            runner.tick_once()
+
+        self.assertEqual(
+            observed_phases,
+            ["not_attempted", "trigger_attempted", "confirmed"],
+        )
+        self.assertIn(
+            f"complete_invite_sent:{task.id}",
+            api.events,
+        )
+        self.assertFalse(
+            action_journal_path("add_friend", task.id).exists()
+        )
+        self.assertTrue(seen["results"][-1].ok)
+        self.assertEqual(seen["results"][-1].result_code, "invite_sent")
 
     def test_c2_flow_finalizer_runs_when_main_flow_raises(self):
         api = FakeApi(None)
@@ -1692,6 +1775,90 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(
             load_reply_send_ack_outbox("reply-action-1")["status"],
             "confirmed",
+        )
+
+    def test_action_journal_vertical_c3_send_reaches_sent_ack(self):
+        task = self.make_chat_reply_task(
+            task_id="task-journal-vertical-send"
+        )
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        api.message_ingest_result = "duplicated"
+        observed_phases: list[str] = []
+
+        class JournalSendBridge(FakeBridge):
+            def send_reply(
+                self,
+                *,
+                target: str,
+                rpa_session_key: str,
+                text: str,
+                task_id: str,
+                reply_action_id: str | None = None,
+                current_only: bool = True,
+                expected_context_guard: dict | None = None,
+                cancel_check=None,
+            ):
+                journal_path = self.send_transaction_journal_path(
+                    str(reply_action_id or "")
+                )
+                observed_phases.append(action_journal_phase(journal_path))
+                update_action_journal_item(
+                    journal_path,
+                    source_message_key=str(reply_action_id or ""),
+                    action_phase="trigger_attempted",
+                    business_state="send_button_click_starting",
+                )
+                observed_phases.append(action_journal_phase(journal_path))
+                update_action_journal_item(
+                    journal_path,
+                    source_message_key=str(reply_action_id or ""),
+                    action_phase="confirmed",
+                    business_state="sent",
+                    business_result_confirmed=True,
+                    terminal_payload={
+                        "state": "sent",
+                        "reply_text": text,
+                    },
+                )
+                observed_phases.append(action_journal_phase(journal_path))
+                return super().send_reply(
+                    target=target,
+                    rpa_session_key=rpa_session_key,
+                    text=text,
+                    task_id=task_id,
+                    reply_action_id=reply_action_id,
+                    current_only=current_only,
+                    expected_context_guard=expected_context_guard,
+                    cancel_check=cancel_check,
+                )
+
+        bridge = JournalSendBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        runner.binding = Binding(
+            worker_id="worker-journal-send",
+            worker_token="token",
+            client_instance_id="client-journal-send",
+            run_status="running",
+        )
+
+        runner.tick_once()
+
+        self.assertEqual(
+            observed_phases,
+            ["not_attempted", "trigger_attempted", "confirmed"],
+        )
+        self.assertIn("sent_ack:sent:None", api.events)
+        self.assertEqual(
+            load_reply_send_ack_outbox("reply-action-1")["status"],
+            "confirmed",
+        )
+        self.assertFalse(
+            bridge.send_transaction_journal_path(
+                "reply-action-1"
+            ).exists()
         )
 
     def test_c2_claimed_chat_reply_is_visible_in_heartbeat_until_send_finishes(self):
@@ -2870,6 +3037,153 @@ class TaskRunnerTest(unittest.TestCase):
                 "target_chat_reconfirm_and_final_read",
                 "build_ingest_payload",
             ],
+        )
+
+    def test_action_journal_vertical_c2_voice_reaches_ingest_and_ledger(self):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-journal-vertical-voice",
+            rpa_session_key="wx:rpa:v1:journal-voice",
+            display_name="CJVOICE01 客户",
+            remark_code="CJVOICE01",
+            row_fingerprint={"title_text": "CJVOICE01 客户"},
+            ocr_confidence=0.98,
+            read_reason="waiting_user_reply",
+            authorization_revision="revision-journal-voice",
+        )
+        api.read_targets = [target]
+        observed_phases: list[str] = []
+
+        class JournalVoiceBridge(FakeBridge):
+            def voice_transcribe(
+                self,
+                *,
+                display_name: str,
+                rpa_session_key: str,
+                **kwargs,
+            ):
+                journal_path = Path(kwargs["action_journal"])
+                journal = read_action_journal(journal_path)
+                source_key = next(iter(journal["items"]))
+                observed_phases.append(action_journal_phase(journal_path))
+                update_action_journal_item(
+                    journal_path,
+                    source_message_key=source_key,
+                    action_phase="trigger_attempted",
+                    business_state="voice_menu_clicked",
+                )
+                observed_phases.append(action_journal_phase(journal_path))
+                update_action_journal_item(
+                    journal_path,
+                    source_message_key=source_key,
+                    action_phase="confirmed",
+                    business_state="completed",
+                    business_result_confirmed=True,
+                    terminal_payload={
+                        "state": "completed",
+                        "transcribed_message": {
+                            "content": "纵向语音已经转写。",
+                            "sender_role": "customer",
+                            "voice_anchor_stable_key": "voice-anchor-vertical",
+                        },
+                    },
+                )
+                observed_phases.append(action_journal_phase(journal_path))
+                self.voice_payload = {
+                    "ok": True,
+                    "state": "voice_transcribe_completed",
+                    "sidecar_run_id": "voice-journal-vertical",
+                    "processed_voice_anchor_keys": [
+                        "voice-anchor-vertical"
+                    ],
+                    "failed_voice_anchor_keys": [],
+                    "item_action_outcomes": [
+                        {
+                            "action_phase": "confirmed",
+                            "business_state": "completed",
+                            "business_result_confirmed": True,
+                            "physical_anchor_keys": [
+                                "voice-anchor-vertical"
+                            ],
+                        }
+                    ],
+                    "transcribed_messages": [
+                        {
+                            "content": "纵向语音已经转写。",
+                            "sender_role": "customer",
+                            "voice_anchor_stable_key": "voice-anchor-vertical",
+                        }
+                    ],
+                }
+                return super().voice_transcribe(
+                    display_name=display_name,
+                    rpa_session_key=rpa_session_key,
+                    **kwargs,
+                )
+
+        bridge = JournalVoiceBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            {
+                "messages": [
+                    {
+                        "id": "voice-message-vertical",
+                        "type": "voice",
+                        "sender_role": "customer",
+                        "content": '[语音] 2"',
+                        "voice_duration": 2,
+                        "voice_anchor_stable_key": "voice-anchor-vertical",
+                        "bubble_rect": [400, 120, 610, 165],
+                    }
+                ]
+            },
+            {
+                "messages": [
+                    {
+                        "id": "voice-message-vertical",
+                        "type": "voice",
+                        "sender_role": "customer",
+                        "content": "纵向语音已经转写。",
+                        "voice_anchor_stable_key": "voice-anchor-vertical",
+                        "bubble_rect": [400, 120, 700, 220],
+                    }
+                ]
+            },
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-journal-voice",
+            worker_token="token",
+            client_instance_id="client-journal-voice",
+            run_status="running",
+        )
+
+        result = runner._read_one_wechat_target(
+            binding,
+            target,
+            current_step="state_target_message_read",
+            enforce_read_targets=True,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            observed_phases,
+            ["not_attempted", "trigger_attempted", "confirmed"],
+        )
+        self.assertEqual(len(api.message_payloads), 1)
+        voice_message = api.message_payloads[0]["messages"][0]
+        self.assertEqual(voice_message["message_type"], "voice")
+        self.assertEqual(voice_message["content"], "纵向语音已经转写。")
+        ledger = load_c2_ledger_entry(
+            target.conversation_id,
+            voice_message["source_message_key"],
+        )
+        self.assertEqual(ledger["terminal_state"], "completed")
+        self.assertEqual(ledger["ingest_state"], "confirmed")
+        self.assertEqual(
+            list_c2_action_journal(target.conversation_id),
+            [],
         )
 
     def test_c2_voice_ledger_is_checked_before_any_right_click(self):
@@ -6406,6 +6720,152 @@ class TaskRunnerTest(unittest.TestCase):
         assert "c2_image_slot_finished" in events
         assert "c2_image_slot_terminalized" in events
         assert "c2_image_slot_cached" in events
+
+    def test_action_journal_vertical_c2_image_reaches_ingest_and_ledger(self):
+        api = FakeApi(None)
+        unique = str(time.time_ns())
+        target = WechatReadTarget(
+            conversation_id=f"conv-journal-image-{unique}",
+            rpa_session_key="wx:rpa:v1:journal-image",
+            display_name="CJIMAGE01 客户",
+            remark_code="CJIMAGE01",
+            row_fingerprint={"title_text": "CJIMAGE01 客户"},
+            read_reason="waiting_user_reply",
+            authorization_revision=f"revision-journal-image-{unique}",
+        )
+        api.read_targets = [target]
+        observation = {
+            "schema_version": 3,
+            "observation_id": f"image-journal-{unique}",
+            "row_kind": "image_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "image",
+            "voice_state": "not_voice",
+            "item_state": "discovered",
+            "image_physical_anchor": {
+                "sender_role": "customer",
+                "preceding_stable_message": f"before-{unique}",
+                "following_stable_message": f"after-{unique}",
+                "occurrence_index": 0,
+            },
+            "bubble_rect": [420, 180, 650, 320],
+            "source_message": {
+                "id": f"image-message-{unique}",
+                "type": "image",
+                "sender_role": "customer",
+            },
+        }
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            {
+                "authoritative_frame_source": "initial_read",
+                "observations": [observation],
+            }
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-journal-image",
+            worker_token="token",
+            client_instance_id="client-journal-image",
+            run_status="running",
+        )
+        observed_phases: list[str] = []
+
+        def vision_boundary(**kwargs):
+            journal_path = Path(kwargs["action_journal_path"])
+            source_key = str(kwargs["source_message_key"])
+            observed_phases.append(action_journal_phase(journal_path))
+            update_action_journal_item(
+                journal_path,
+                source_message_key=source_key,
+                action_phase="trigger_attempted",
+                business_state="clipboard_copy_confirmed",
+            )
+            observed_phases.append(action_journal_phase(journal_path))
+            understanding = {
+                "schema_version": 1,
+                "vision_summary": "客户发来一张车辆外观图。",
+            }
+            update_action_journal_item(
+                journal_path,
+                source_message_key=source_key,
+                action_phase="confirmed",
+                business_state="completed",
+                business_result_confirmed=True,
+                terminal_payload={
+                    "state": "completed",
+                    "customer_image_understanding": understanding,
+                    "visual_bridge_input": {
+                        "summary": "车辆外观图"
+                    },
+                },
+            )
+            observed_phases.append(action_journal_phase(journal_path))
+            return {
+                "state": "completed",
+                "action_phase": "confirmed",
+                "business_state": "completed",
+                "business_result_confirmed": True,
+                "reason": "vision_ready",
+                "customer_image_understanding": understanding,
+                "visual_bridge_input": {"summary": "车辆外观图"},
+                "transaction": {
+                    "action_phase": "confirmed",
+                    "image_sha256": "c" * 64,
+                },
+                "diagnostics": {
+                    "schema_version": 1,
+                    "trace_id": source_key,
+                    "events": [],
+                    "image_persisted": False,
+                },
+            }
+
+        with patch(
+            "chejin_worker_client.omniauto_vision.vision_configuration_status",
+            return_value={
+                "ready": True,
+                "config": {
+                    "customer_image_understanding": {"enabled": True}
+                },
+            },
+        ), patch(
+            "chejin_worker_client.omniauto_vision.process_image_slot",
+            side_effect=vision_boundary,
+        ):
+            result = runner._read_one_wechat_target(
+                binding,
+                target,
+                current_step="state_target_message_read",
+                enforce_read_targets=True,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            observed_phases,
+            ["not_attempted", "trigger_attempted", "confirmed"],
+        )
+        self.assertEqual(len(api.message_payloads), 1)
+        image_message = api.message_payloads[0]["messages"][0]
+        self.assertEqual(image_message["message_type"], "image")
+        self.assertEqual(image_message["item_state"], "completed")
+        self.assertEqual(
+            image_message["content"],
+            "客户发来一张车辆外观图。",
+        )
+        ledger = load_c2_ledger_entry(
+            target.conversation_id,
+            image_message["source_message_key"],
+        )
+        self.assertEqual(ledger["terminal_state"], "completed")
+        self.assertEqual(ledger["ingest_state"], "confirmed")
+        self.assertEqual(
+            list_c2_action_journal(target.conversation_id),
+            [],
+        )
 
     def test_c2_cancelled_vision_is_not_terminalized_in_local_ledger(self):
         api = FakeApi(None)
