@@ -5,6 +5,7 @@ import sys
 import os
 import base64
 import json
+import re
 import subprocess
 import threading
 import time
@@ -44,6 +45,23 @@ def _cancel_requested(callback: Callable[[], bool] | None) -> bool:
         return bool(callback())
     except Exception:
         return True
+
+
+def _safe_exception_reason(exc: Exception, fallback: str) -> str:
+    """Keep a stable diagnostic code without logging paths or image content."""
+
+    message = str(exc or "").strip()
+    token = message.split(":", 1)[0].strip()
+    if token and re.fullmatch(r"[A-Za-z0-9_]+", token):
+        return token.lower()
+    return str(fallback or "vision_runtime_failed")
+
+
+def _window_context_hwnd(value: Any) -> int:
+    try:
+        return int((value or {}).get("hwnd") or 0) if isinstance(value, dict) else 0
+    except (TypeError, ValueError):
+        return 0
 
 
 class _CancellableVisionProvider:
@@ -200,11 +218,22 @@ def _menu_ocr_evidence(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 class _VisionHostState:
-    def __init__(self, trace_id: str) -> None:
+    def __init__(
+        self,
+        trace_id: str,
+        *,
+        window_context: dict[str, Any] | None = None,
+    ) -> None:
         from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar
 
         self.host = wechat_win32_ocr_sidecar
-        self.hwnd = 0
+        self.window_context = (
+            dict(window_context)
+            if isinstance(window_context, dict)
+            else {}
+        )
+        self.hwnd = int(self.window_context.get("hwnd") or 0)
+        self.window_context_validated = False
         self.bubble_rect: list[int] = []
         self.trace_id = str(trace_id or "")
         self.started_at = time.perf_counter()
@@ -232,13 +261,31 @@ class _VisionHostState:
         }
 
     def ensure_window(self) -> int:
-        if self.hwnd:
-            return self.hwnd
-        probe = self.host.ensure_visible_wechat_window(interactive=True)
-        window = self.host.select_primary_visible_main_window(probe)
-        self.hwnd = int((window or {}).get("hwnd") or 0)
         if not self.hwnd:
-            raise RuntimeError("WECHAT_WINDOW_NOT_FOUND")
+            raise RuntimeError("VISION_WINDOW_CONTEXT_MISSING")
+        if self.window_context_validated:
+            return self.hwnd
+        validator = getattr(self.host, "validate_c2_window_context", None)
+        if not callable(validator):
+            raise RuntimeError("VISION_WINDOW_CONTEXT_VALIDATOR_MISSING")
+        validation = validator(self.window_context)
+        if not isinstance(validation, dict) or validation.get("ok") is not True:
+            reason = (
+                str((validation or {}).get("reason") or "")
+                if isinstance(validation, dict)
+                else ""
+            )
+            raise RuntimeError(
+                f"VISION_WINDOW_CONTEXT_INVALID:{reason or 'unknown'}"
+            )
+        self.window_context_validated = True
+        self.record(
+            "window_context",
+            "completed",
+            hwnd=self.hwnd,
+            source=str(self.window_context.get("source") or ""),
+            reason=str(validation.get("reason") or ""),
+        )
         return self.hwnd
 
 
@@ -300,32 +347,145 @@ class _WindowFrame:
 
     def capture_frame(self, context: dict[str, Any]) -> dict[str, Any]:
         started_at = time.perf_counter()
-        hwnd = self.state.ensure_window()
         phase = str(context.get("phase") or "image_candidate")
+        capture_context = getattr(
+            self.state.host,
+            "capture_c2_window_context",
+            None,
+        )
+        if not callable(capture_context):
+            reason = "vision_window_context_capture_missing"
+            self.state.record(
+                "frame_capture",
+                "failed",
+                started_at=started_at,
+                phase=phase,
+                capture_step="window_context",
+                reason=reason,
+                image_persisted=False,
+            )
+            return {
+                "ok": False,
+                "reason": reason,
+            }
+        capture_result = capture_context(
+            self.state.window_context,
+            phase=phase,
+            label=(
+                "vision_image_context_menu"
+                if phase == "image_context_menu"
+                else "vision_image_candidate"
+            ),
+        )
+        if (
+            not isinstance(capture_result, dict)
+            or capture_result.get("ok") is not True
+        ):
+            reason = str(
+                (capture_result or {}).get("reason")
+                or "vision_window_capture_failed"
+            )
+            capture_mode = str(
+                (capture_result or {}).get("capture_mode") or ""
+            )
+            self.state.record(
+                "frame_capture",
+                "failed",
+                started_at=started_at,
+                phase=phase,
+                capture_step=(
+                    "window_context"
+                    if reason.startswith("vision_window_context")
+                    else "window_capture"
+                ),
+                capture_mode=capture_mode,
+                reason=reason,
+                error_type=str(
+                    (capture_result or {}).get("error_type") or ""
+                ),
+                image_persisted=False,
+            )
+            return {
+                "ok": False,
+                "reason": reason,
+                "error_type": str(
+                    (capture_result or {}).get("error_type") or ""
+                ),
+            }
+        image = capture_result.get("image")
+        hwnd = int(capture_result.get("hwnd") or 0)
+        capture_mode = str(capture_result.get("capture_mode") or "")
+        validation = (
+            capture_result.get("validation")
+            if isinstance(capture_result.get("validation"), dict)
+            else {}
+        )
+        if not self.state.window_context_validated:
+            self.state.window_context_validated = True
+            self.state.record(
+                "window_context",
+                "completed",
+                hwnd=hwnd,
+                source=str(self.state.window_context.get("source") or ""),
+                reason=str(validation.get("reason") or ""),
+            )
         try:
-            if phase == "image_context_menu":
-                capture = getattr(self.state.host, "capture_wechat_window_visible_screen", None)
-                if callable(capture):
-                    image, _ = capture(hwnd, artifact_dir=None, label="vision_image_context_menu")
-                else:
-                    image, _ = self.state.host.capture_wechat(hwnd, artifact_dir=None, label="vision_image_context_menu")
-            else:
-                image, _ = self.state.host.capture_wechat(hwnd, artifact_dir=None, label="vision_image_candidate")
             ocr_items = self.state.host.run_ocr(image)
+        except Exception as exc:
+            reason = _safe_exception_reason(exc, "vision_window_ocr_failed")
+            self.state.record(
+                "frame_capture",
+                "failed",
+                started_at=started_at,
+                phase=phase,
+                capture_step="ocr",
+                capture_mode=capture_mode,
+                reason=reason,
+                error_type=type(exc).__name__,
+                image_persisted=False,
+            )
+            return {
+                "ok": False,
+                "reason": reason,
+                "error_type": type(exc).__name__,
+            }
+        try:
             messages = self.state.host.parse_messages_from_ocr(
                 ocr_items,
                 image.size,
                 target=str(context.get("remark_code") or context.get("target_name") or ""),
+                screenshot=image,
             )
             from apps.wechat_ai_customer_service.optional_plugins.vision.capture.wechat import (
                 extract_chat_time_markers,
             )
-
+            time_markers = extract_chat_time_markers(ocr_items, image.size)
+        except Exception as exc:
+            reason = _safe_exception_reason(exc, "vision_window_message_parse_failed")
+            self.state.record(
+                "frame_capture",
+                "failed",
+                started_at=started_at,
+                phase=phase,
+                capture_step="message_parse",
+                capture_mode=capture_mode,
+                reason=reason,
+                error_type=type(exc).__name__,
+                image_persisted=False,
+            )
+            return {
+                "ok": False,
+                "reason": reason,
+                "error_type": type(exc).__name__,
+            }
+        try:
             self.state.record(
                 "frame_capture",
                 "completed",
                 started_at=started_at,
                 phase=phase,
+                capture_step="completed",
+                capture_mode=capture_mode,
                 frame_fingerprint=_frame_fingerprint(image),
                 image_size=[int(image.size[0]), int(image.size[1])],
                 ocr_item_count=len(ocr_items),
@@ -339,19 +499,26 @@ class _WindowFrame:
                 "image_size": image.size,
                 "ocr_items": ocr_items,
                 "messages": messages,
-                "time_markers": extract_chat_time_markers(ocr_items, image.size),
+                "time_markers": time_markers,
             }
         except Exception as exc:
+            reason = _safe_exception_reason(exc, "vision_window_frame_finalize_failed")
             self.state.record(
                 "frame_capture",
                 "failed",
                 started_at=started_at,
                 phase=phase,
-                reason="vision_window_capture_failed",
+                capture_step="frame_finalize",
+                capture_mode=capture_mode,
+                reason=reason,
                 error_type=type(exc).__name__,
                 image_persisted=False,
             )
-            return {"ok": False, "reason": "vision_window_capture_failed", "error_type": type(exc).__name__}
+            return {
+                "ok": False,
+                "reason": reason,
+                "error_type": type(exc).__name__,
+            }
 
 
 class _UiAction:
@@ -563,6 +730,7 @@ def process_image_slot(
     observation: dict[str, Any],
     remark_code: str,
     session_key: str,
+    window_context: dict[str, Any] | None = None,
     config: dict[str, Any] | None = None,
     trace_id: str = "",
     cancel_check: Callable[[], bool] | None = None,
@@ -682,11 +850,24 @@ def process_image_slot(
                 missing_configuration=list(configuration.get("missing_configuration") or []),
             )
         runtime_config = configured
+    if (
+        not isinstance(window_context, dict)
+        or _window_context_hwnd(window_context) <= 0
+        or str(window_context.get("source") or "")
+        != "sidecar_selected_main_window"
+    ):
+        return early_result(
+            "capability_paused",
+            "vision_window_context_missing",
+        )
 
     from apps.wechat_ai_customer_service.optional_plugins.vision.plugin import BuiltinVisionPlugin
     from apps.wechat_ai_customer_service.optional_plugins.vision.ports import VisionHostPorts
 
-    state = _VisionHostState(resolved_trace_id)
+    state = _VisionHostState(
+        resolved_trace_id,
+        window_context=window_context,
+    )
     state.bubble_rect = bubble_rect
     vision_settings = runtime_config.get("customer_image_understanding")
     if not isinstance(vision_settings, dict):

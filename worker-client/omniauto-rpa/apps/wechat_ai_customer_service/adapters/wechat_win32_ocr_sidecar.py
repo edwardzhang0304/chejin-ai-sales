@@ -973,6 +973,7 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
             "state": "chat_target_confirmed" if locate.get("ok") else str(locate.get("state") or "target_not_confirmed"),
             "sidecar_run_id": clean_sidecar_run_id,
             "window_probe": probe,
+            "window_context": build_c2_window_context(hwnd, probe),
         }
         if locate.get("ok") and bool(getattr(args, "capture_initial_messages", False)):
             guard = locate.get("guard") if isinstance(locate.get("guard"), dict) else {}
@@ -1024,6 +1025,7 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
                         initial_messages["target_mode"] = str(args.target_mode or "").strip().lower() or "visible"
                         initial_messages["remark_code"] = str(args.remark_code or "").strip()
                         initial_messages["authoritative_frame_source"] = "initial_read"
+                        initial_messages["window_context"] = build_c2_window_context(hwnd, probe)
                         result["initial_messages_snapshot"] = initial_messages
                         result["initial_messages_frame_reused"] = True
                         result["initial_messages_frame_age_seconds"] = seed.get("age_seconds")
@@ -1125,6 +1127,7 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
             if isinstance(targeting, dict) and targeting.get("review_path"):
                 payload["review_path"] = targeting.get("review_path")
                 payload["evidence_path"] = targeting.get("evidence_path") or targeting.get("review_path")
+        payload["window_context"] = build_c2_window_context(hwnd, probe)
         return payload
     if action == "voice-transcribe":
         clean_sidecar_run_id = str(getattr(args, "sidecar_run_id", "") or "").strip()
@@ -1225,6 +1228,7 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
         if isinstance(targeting, dict) and targeting.get("review_path"):
             payload["review_path"] = targeting.get("review_path")
             payload["evidence_path"] = targeting.get("evidence_path") or targeting.get("review_path")
+        payload["window_context"] = build_c2_window_context(hwnd, probe)
         return payload
     if action == "send":
         if not args.target:
@@ -14715,6 +14719,141 @@ def select_primary_visible_main_window(probe: dict[str, Any]) -> dict[str, Any] 
     if selected is not None:
         return selected
     return dict(visible[0])
+
+
+def build_c2_window_context(hwnd: int, probe: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return the exact WeChat window selected by this Sidecar action."""
+
+    selected = (
+        (probe or {}).get("selected_main_window")
+        if isinstance((probe or {}).get("selected_main_window"), dict)
+        else {}
+    )
+    geometry = get_window_geometry(hwnd)
+    return {
+        "schema_version": 1,
+        "hwnd": int(hwnd),
+        "pid": int(selected.get("pid") or 0),
+        "class_name": str(selected.get("class_name") or ""),
+        "source": "sidecar_selected_main_window",
+        "geometry": {
+            key: int(geometry.get(key) or 0)
+            for key in ("left", "top", "right", "bottom", "width", "height")
+        },
+    }
+
+
+def validate_c2_window_context(context: dict[str, Any] | None) -> dict[str, Any]:
+    """Validate one Sidecar-issued HWND without selecting another window."""
+
+    value = context if isinstance(context, dict) else {}
+    try:
+        hwnd = int(value.get("hwnd") or 0)
+    except (TypeError, ValueError):
+        hwnd = 0
+    if hwnd <= 0:
+        return {"ok": False, "reason": "window_context_hwnd_missing"}
+    try:
+        if not bool(win32gui.IsWindow(hwnd)):
+            return {"ok": False, "reason": "window_context_hwnd_invalid", "hwnd": hwnd}
+        if not bool(win32gui.IsWindowVisible(hwnd)):
+            return {
+                "ok": False,
+                "reason": "window_context_window_not_visible",
+                "hwnd": hwnd,
+            }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "reason": "window_context_validation_failed",
+            "hwnd": hwnd,
+            "error_type": type(exc).__name__,
+        }
+    matching = next(
+        (
+            item
+            for item in (probe_wechat_windows().get("windows") or [])
+            if isinstance(item, dict) and int(item.get("hwnd") or 0) == hwnd
+        ),
+        None,
+    )
+    if not isinstance(matching, dict):
+        return {"ok": False, "reason": "window_context_not_wechat", "hwnd": hwnd}
+    expected_pid = int(value.get("pid") or 0)
+    if expected_pid and int(matching.get("pid") or 0) != expected_pid:
+        return {"ok": False, "reason": "window_context_pid_changed", "hwnd": hwnd}
+    expected_class = str(value.get("class_name") or "").strip()
+    if expected_class and str(matching.get("class_name") or "").strip() != expected_class:
+        return {"ok": False, "reason": "window_context_class_changed", "hwnd": hwnd}
+    return {
+        "ok": True,
+        "reason": "window_context_confirmed",
+        "hwnd": hwnd,
+        "pid": int(matching.get("pid") or 0),
+        "class_name": str(matching.get("class_name") or ""),
+    }
+
+
+def capture_c2_window_context(
+    context: dict[str, Any] | None,
+    *,
+    phase: str,
+    label: str,
+) -> dict[str, Any]:
+    """Capture only the exact HWND selected by the current C2 Sidecar action."""
+
+    validation = validate_c2_window_context(context)
+    if validation.get("ok") is not True:
+        return {
+            "ok": False,
+            "reason": "vision_window_context_invalid",
+            "validation": validation,
+        }
+    hwnd = int(validation.get("hwnd") or 0)
+    capture_mode = "wechat_window_exact_hwnd"
+    try:
+        if str(phase or "") == "image_context_menu":
+            image, _path = capture_wechat_window_visible_screen(
+                hwnd,
+                artifact_dir=None,
+                label=label,
+            )
+            capture_mode = "visible_screen_exact_hwnd"
+        else:
+            try:
+                image, _path = capture_wechat(
+                    hwnd,
+                    artifact_dir=None,
+                    label=label,
+                )
+            except Exception:
+                time.sleep(0.12)
+                image, _path = capture_wechat_window_visible_screen(
+                    hwnd,
+                    artifact_dir=None,
+                    label=f"{label}_retry",
+                )
+                capture_mode = "visible_screen_exact_hwnd_retry"
+    except Exception as exc:
+        return {
+            "ok": False,
+            "reason": (
+                "capture_wechat_window_visible_screen_failed"
+                if capture_mode.startswith("visible_screen")
+                else "capture_wechat_failed"
+            ),
+            "error_type": type(exc).__name__,
+            "capture_mode": capture_mode,
+            "validation": validation,
+        }
+    return {
+        "ok": True,
+        "image": image,
+        "hwnd": hwnd,
+        "capture_mode": capture_mode,
+        "validation": validation,
+        "image_persisted": False,
+    }
 
 
 def window_content_health_score(hwnd: int, geometry: dict[str, Any]) -> int:

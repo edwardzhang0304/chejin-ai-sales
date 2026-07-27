@@ -6934,6 +6934,118 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertIsNone(load_c2_ledger_entry(target.conversation_id, source_key))
         self.assertIs(vision.call_args.kwargs["cancel_check"](), True)
 
+    def test_c2_pre_action_window_failure_is_deferred_with_same_window_context(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="ok", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        unique = str(time.time_ns())
+        target = WechatReadTarget(
+            conversation_id=f"conv-image-frame-{unique}",
+            rpa_session_key="wx:rpa:v1:image-frame",
+            display_name="CJFRAME01",
+            remark_code="CJFRAME01",
+            authorization_revision=f"revision-image-frame-{unique}",
+        )
+        observation = {
+            "schema_version": 3,
+            "observation_id": f"image-frame-{unique}",
+            "row_kind": "image_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "image",
+            "voice_state": "not_voice",
+            "item_state": "discovered",
+            "image_physical_anchor": {
+                "sender_role": "customer",
+                "preceding_stable_message": f"before-{unique}",
+                "following_stable_message": f"after-{unique}",
+                "occurrence_index": 0,
+            },
+            "bubble_rect": [420, 180, 650, 320],
+            "source_message": {
+                "id": f"image-source-{unique}",
+                "type": "image",
+            },
+        }
+        window_context = {
+            "schema_version": 1,
+            "hwnd": 31415,
+            "pid": 2718,
+            "class_name": "WeChatMainWndForPC",
+            "source": "sidecar_selected_main_window",
+        }
+        sidecar_payload = {
+            "window_context": window_context,
+            "observations": [observation],
+        }
+        deferred = {
+            "state": "failed",
+            "reason": "capture_wechat_failed",
+            "action_phase": "not_attempted",
+            "diagnostics": {
+                "events": [
+                    {
+                        "sequence": 1,
+                        "stage": "frame_capture",
+                        "status": "failed",
+                        "reason": "capture_wechat_failed",
+                        "capture_step": "window_capture",
+                        "capture_mode": "wechat_window",
+                    }
+                ],
+                "image_persisted": False,
+            },
+        }
+
+        with patch(
+            "chejin_worker_client.omniauto_vision.vision_configuration_status",
+            return_value={
+                "ready": True,
+                "config": {
+                    "customer_image_understanding": {"enabled": True}
+                },
+            },
+        ), patch(
+            "chejin_worker_client.omniauto_vision.process_image_slot",
+            return_value=deferred,
+        ) as vision:
+            result, stats = runner._process_final_image_slots(
+                binding=binding,
+                target=target,
+                sidecar_payload=sidecar_payload,
+                enforce_read_targets=False,
+            )
+
+        self.assertEqual(stats["capability_paused"], 1)
+        self.assertEqual(stats["deferred"], 1)
+        self.assertEqual(stats["failed"], 0)
+        self.assertEqual(
+            result["vision_capability"]["reason"],
+            "capture_wechat_failed",
+        )
+        self.assertEqual(
+            result["observations"][0]["item_state"],
+            "discovered",
+        )
+        source_key = image_observation_source_key(target, observation)
+        self.assertIsNone(
+            load_c2_ledger_entry(target.conversation_id, source_key)
+        )
+        self.assertEqual(
+            vision.call_args.kwargs["window_context"],
+            window_context,
+        )
+
     def test_confirmed_message_filter_keeps_full_slot_order_but_removes_old_observation(self):
         api = FakeApi(None)
         runner, _ = self.make_runner(

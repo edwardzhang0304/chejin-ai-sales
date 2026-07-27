@@ -139,7 +139,11 @@ def acquire_current_image_via_ports(
                 return fail("vision_cancelled")
             frame = ports.window_frame.capture_frame({**data, "phase": "image_candidate"})
             if not isinstance(frame, dict) or frame.get("ok") is not True:
-                return fail("vision_window_frame_unavailable")
+                return fail(
+                    str((frame or {}).get("reason") or "vision_window_frame_unavailable")
+                    if isinstance(frame, dict)
+                    else "vision_window_frame_unavailable"
+                )
             surface = frame.get("image")
             image_size = getattr(surface, "size", None) or tuple(frame.get("image_size") or ())
             if surface is None or len(image_size) != 2:
