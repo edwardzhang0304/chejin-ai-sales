@@ -530,6 +530,73 @@ class RpaBridgeTest(unittest.TestCase):
         self.assertIn("17368746889", steps[1].remark)
         self.assertIn("键鼠守护", steps[2].title)
 
+    def test_real_bridge_accepts_confirmed_journal_written_by_sidecar_process(self):
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        bridge.mode = "real"
+        task = Task(
+            id="task-real-journal-subprocess",
+            task_type="add_friend",
+            status="running",
+            phone="17368746889",
+            verify_message="您好，我是车金张伟",
+            remark_name="CJ-张伟-CJ8K2P-6889",
+            remark_code="CJ8K2P",
+        )
+        sidecar_script = """
+import argparse
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("action")
+parser.add_argument("--phone")
+parser.add_argument("--wechat")
+parser.add_argument("--verify-message")
+parser.add_argument("--remark-name")
+parser.add_argument("--remark-code")
+parser.add_argument("--artifact-dir")
+parser.add_argument("--action-journal", required=True)
+args = parser.parse_args()
+
+path = Path(args.action_journal)
+payload = json.loads(path.read_text(encoding="utf-8"))
+source_key = next(iter(payload["items"]))
+item = payload["items"][source_key]
+item.update(
+    {
+        "action_phase": "confirmed",
+        "business_state": "invite_sent",
+        "business_result_confirmed": True,
+        "terminal_payload": {
+            "ok": True,
+            "task_status": "completed",
+            "result_code": "invite_sent",
+            "error_code": "",
+            "current_step": "task_completed",
+        },
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+)
+payload["action_phase"] = "confirmed"
+payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+temporary = path.with_suffix(path.suffix + ".sidecar-tmp")
+temporary.write_text(json.dumps(payload), encoding="utf-8")
+os.replace(temporary, path)
+print(json.dumps({"ok": True, "task_status": "completed", "result_code": "invite_sent"}))
+"""
+        with tempfile.TemporaryDirectory(prefix="chejin-journal-sidecar-") as tmp:
+            script_path = Path(tmp) / "journal_sidecar.py"
+            script_path.write_text(sidecar_script, encoding="utf-8")
+            bridge.sidecar_script = script_path
+            result = bridge.run_add_friend(task, lambda step: None)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.result_code, "invite_sent")
+        self.assertEqual(result.evidence_metadata["action_phase"], "confirmed")
+        self.assertTrue(result.evidence_metadata["recovered_from_action_journal"])
+
     def test_add_friend_triggered_journal_blocks_second_physical_attempt(self):
         bridge = RpaBridge(sidecar_script=Path(__file__))
         bridge.mode = "real"

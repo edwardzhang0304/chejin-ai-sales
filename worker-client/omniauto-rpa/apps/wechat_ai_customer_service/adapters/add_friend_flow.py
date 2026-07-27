@@ -656,6 +656,7 @@ def run_add_friend_entry_click_plan_flow(
             verify_message=clean_verify_message,
             remark_name=clean_remark_name,
             remark_code=clean_remark_code,
+            action_journal_path=action_journal_path,
         )
         if menu_click.get("clicked") and query and query_hwnd
         else {

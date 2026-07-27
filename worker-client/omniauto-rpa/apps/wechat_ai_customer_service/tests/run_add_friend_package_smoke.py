@@ -919,6 +919,33 @@ def test_sidecar_uses_flow_context_for_entry_click() -> None:
     )
 
 
+def test_add_friend_flow_forwards_action_journal_on_every_query_path() -> None:
+    import ast
+
+    flow_path = PROJECT_ROOT / "apps/wechat_ai_customer_service/adapters/add_friend_flow.py"
+    tree = ast.parse(flow_path.read_text(encoding="utf-8"))
+    query_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "input_add_friend_query_and_search"
+    ]
+    assert_true(
+        len(query_calls) == 2,
+        f"expected exactly two add_friend query paths, got {[node.lineno for node in query_calls]}",
+    )
+    missing = [
+        node.lineno
+        for node in query_calls
+        if "action_journal_path" not in {keyword.arg for keyword in node.keywords}
+    ]
+    assert_true(
+        not missing,
+        f"every add_friend query path must forward action_journal_path; missing at lines {missing}",
+    )
+
+
 def test_sidecar_uses_add_friend_payload_builders() -> None:
     sidecar = (
         PROJECT_ROOT / "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py"
@@ -1992,6 +2019,7 @@ def main() -> int:
         test_add_friend_flow_context_contract,
         test_add_friend_already_friend_terminal_event_contract,
         test_sidecar_uses_flow_context_for_entry_click,
+        test_add_friend_flow_forwards_action_journal_on_every_query_path,
         test_sidecar_uses_add_friend_payload_builders,
         test_add_friend_uses_shared_operator_guard_module,
         test_add_friend_operator_guard_compat_wrapper_calls_shared_module,
