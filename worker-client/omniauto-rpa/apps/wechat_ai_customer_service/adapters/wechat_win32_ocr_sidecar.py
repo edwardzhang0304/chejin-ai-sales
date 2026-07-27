@@ -7151,6 +7151,26 @@ def add_friend_invite_form_targets(image_size: tuple[int, int], ocr_items: list[
     return win32_ocr_add_friend_windows.add_friend_invite_form_targets(image_size, ocr_items)
 
 
+def capture_invite_form_field_review(
+    hwnd: int,
+    output_dir: Path,
+    *,
+    label: str,
+    verify_message: str,
+    remark_name: str,
+    remark_code: str,
+) -> dict[str, Any]:
+    win32_ocr_add_friend_windows.bind_sidecar_ops(sys.modules[__name__])
+    return win32_ocr_add_friend_windows.capture_invite_form_field_review(
+        hwnd,
+        output_dir,
+        label=label,
+        verify_message=verify_message,
+        remark_name=remark_name,
+        remark_code=remark_code,
+    )
+
+
 def paste_invite_form_text(hwnd: int, target: dict[str, Any], text: str, *, action_name: str) -> dict[str, Any]:
     win32_ocr_add_friend_windows.bind_sidecar_ops(sys.modules[__name__])
     return win32_ocr_add_friend_windows.paste_invite_form_text(hwnd, target, text, action_name=action_name)

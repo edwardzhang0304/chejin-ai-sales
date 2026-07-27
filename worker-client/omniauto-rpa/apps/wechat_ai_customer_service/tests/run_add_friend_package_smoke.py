@@ -1352,6 +1352,7 @@ def test_invite_form_locator_contract() -> None:
     semantic_targets = add_friend_invite_form_targets(
         (468, 834),
         [
+            ocr_item("申请添加朋友", 182, 21, 288, 43, confidence=0.999),
             ocr_item("发送添加朋友申请", 38, 82, 182, 108),
             ocr_item("备注", 38, 276, 82, 304),
             ocr_item("确定", 112, 770, 166, 802),
@@ -1360,6 +1361,15 @@ def test_invite_form_locator_contract() -> None:
     assert_true(
         semantic_targets["invite_greeting_textarea"].get("strategy") == "semantic_ocr_anchor_locator",
         f"greeting should use semantic locator: {semantic_targets}",
+    )
+    assert_true(
+        (semantic_targets["invite_greeting_textarea"].get("item") or {}).get("text")
+        == "发送添加朋友申请",
+        f"greeting must prefer the exact field label over the higher-confidence page title: {semantic_targets}",
+    )
+    assert_true(
+        semantic_targets["invite_greeting_textarea"]["point"][1] > 130,
+        f"greeting click must land inside the textarea, not on its top border: {semantic_targets}",
     )
     assert_true(
         semantic_targets["invite_remark_input"].get("fallback_used") is False,
@@ -1376,6 +1386,25 @@ def test_invite_form_locator_contract() -> None:
         ocr_items=[ocr_item("我是车金二手车张伟", 40, 122, 260, 152), ocr_item("客户-CJ8K2P", 40, 330, 180, 358)],
     )
     assert_true(field_check.get("ok") is True, f"field verification should pass visible OCR text: {field_check}")
+    multiline_check = invite_form_field_verification(
+        verify_message="您好，我是车金二手车的C2Window，您刚咨询过二手车",
+        remark_name="C1ADD01",
+        remark_code="C1ADD01",
+        ocr_items=[
+            ocr_item("您好，我是车金二手车的C2Window，", 40, 122, 350, 150),
+            ocr_item("您刚咨询过二手车", 40, 154, 220, 182),
+            ocr_item("C1ADD01", 40, 320, 150, 348),
+        ],
+        field_bounds={
+            "verify_message": [30, 110, 430, 210],
+            "remark_name": [30, 290, 430, 360],
+            "remark_code": [30, 290, 430, 360],
+        },
+    )
+    assert_true(
+        multiline_check.get("ok") is True,
+        f"multiline greeting OCR fragments should be joined inside the field: {multiline_check}",
+    )
 
 
 def test_invite_form_input_click_failure_blocks_keyboard_actions() -> None:
@@ -1431,6 +1460,30 @@ def test_invite_form_field_verification_blocks_confirm_click() -> None:
         '"confirm": {"ok": False, "skipped": True' in section
         or "'confirm': {'ok': False, 'skipped': True" in section,
         "failed field verification must skip confirm click",
+    )
+
+
+def test_invite_form_failed_field_retries_once_before_confirm() -> None:
+    source = (
+        PROJECT_ROOT
+        / "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/add_friend_windows.py"
+    ).read_text(encoding="utf-8")
+    section = source.split(
+        "def fill_add_friend_invite_form_and_confirm", 1
+    )[1].split("def type_add_friend_query_like_human_for_entry", 1)[0]
+    retry_index = section.find("action_name='invite_greeting_retry'")
+    final_gate_index = section.find("if not field_verification.get('ok')")
+    confirm_index = section.find("action_name='invite_confirm_button_click'")
+    assert_true(retry_index >= 0, "missing one-time greeting retry")
+    assert_true(final_gate_index >= 0, "missing final field verification gate")
+    assert_true(confirm_index >= 0, "missing invite confirm click")
+    assert_true(
+        retry_index < final_gate_index < confirm_index,
+        "retry and final verification must happen before confirm click",
+    )
+    assert_true(
+        "fill_retry_attempts" in section,
+        "retry evidence must be retained for diagnostics",
     )
 
 
@@ -1952,6 +2005,7 @@ def main() -> int:
         test_invite_form_locator_contract,
         test_invite_form_input_click_failure_blocks_keyboard_actions,
         test_invite_form_field_verification_blocks_confirm_click,
+        test_invite_form_failed_field_retries_once_before_confirm,
         test_invite_confirm_uses_durable_action_journal_before_click,
         test_query_verify_invalid_dialog_handle_returns_structured_failure,
         test_add_friend_primary_locator_contract,
