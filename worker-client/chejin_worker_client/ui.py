@@ -989,8 +989,6 @@ class WorkerWindow(QMainWindow):
         if not self.binding:
             return
         next_status = "paused" if self.binding.run_status == "running" else "running"
-        self.binding.run_status = next_status  # type: ignore[assignment]
-        save_binding(self.binding)
         self.runner.set_run_status(next_status)
         self.refresh_view()
 
@@ -1043,7 +1041,11 @@ class WorkerWindow(QMainWindow):
             self.bind_error.setText("绑定已失效，请重新绑定。")
             self.show_page("bind")
             return
-        if status == "online" and self.notice_label.text():
+        if (
+            status == "online"
+            and self.notice_label.text()
+            and not self.runner.run_status_sync_error
+        ):
             self.notice_label.setText("")
             self.notice_label.hide()
         self.refresh_view()
@@ -1094,7 +1096,9 @@ class WorkerWindow(QMainWindow):
         display_task = active_task or self.last_task
         result = self.last_result
 
-        if offline:
+        if self.runner.run_status_sync_error and not is_running:
+            headline = "已在本机暂停，后端同步失败"
+        elif offline:
             headline = "服务端不可达"
         elif active_task and not is_running:
             headline = "暂停接单，当前任务继续执行"
@@ -1121,7 +1125,16 @@ class WorkerWindow(QMainWindow):
 
         self.sales_tile.set_value(profile.bound_sales_name if profile and profile.bound_sales_name else "未绑定")
         run_status_kind = "paused" if offline else ("accepting" if is_running else "paused")
-        self.run_status_tile.set_value("接单中" if is_running else "暂停接单", kind=run_status_kind)
+        self.run_status_tile.set_value(
+            (
+                "接单中"
+                if is_running
+                else "暂停接单 · 同步失败"
+                if self.runner.run_status_sync_error
+                else "暂停接单"
+            ),
+            kind=run_status_kind,
+        )
         self.rpa_tile.set_value("可用" if profile and profile.rpa_component_status == "ready" else "不可用", kind="ok" if profile and profile.rpa_component_status == "ready" else "danger")
         self.wechat_tile.set_value("已连接" if profile and profile.wechat_status == "logged_in" else "未检测到", kind="ok" if profile and profile.wechat_status == "logged_in" else "danger")
 

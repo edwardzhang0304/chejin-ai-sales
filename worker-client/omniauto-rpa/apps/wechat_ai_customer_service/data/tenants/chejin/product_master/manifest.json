@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "authority": "product_master",
+  "category_id": "products",
+  "tenant_id": "chejin",
+  "updated_at": "2026-07-23T11:44:09",
+  "items_path": "items",
+  "compatibility": {
+    "legacy_read_fallback": "knowledge_bases/products",
+    "new_writes_to_legacy": false
+  }
+}

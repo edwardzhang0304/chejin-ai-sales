@@ -2,20 +2,122 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 import time
 import unittest
 from pathlib import Path
+import sys
 from unittest.mock import patch
 
 os.environ.setdefault("CHEJIN_WORKER_HOME", tempfile.mkdtemp(prefix="chejin-worker-test-"))
 os.environ["CHEJIN_RPA_MODE"] = "mock"
 
+from chejin_worker_client.action_journal import (
+    action_journal_path,
+    initialize_action_journal,
+    update_action_journal_item,
+)
+from chejin_worker_client.config import CONFIG
 from chejin_worker_client.models import Task
 from chejin_worker_client.rpa_bridge import OMNIAUTO_ADD_FRIEND_ACTION, RpaBridge, default_sidecar_script
 
 
 class RpaBridgeTest(unittest.TestCase):
+    def setUp(self):
+        shutil.rmtree(
+            CONFIG.app_dir / "transactions" / "actions" / "add_friend",
+            ignore_errors=True,
+        )
+
+    @staticmethod
+    def _confirm_add_friend_journal(
+        args,
+        *,
+        task_id: str,
+        ok: bool = True,
+        result_code: str = "invite_sent",
+        error_code: str = "",
+    ):
+        journal_path = Path(args[args.index("--action-journal") + 1])
+        update_action_journal_item(
+            journal_path,
+            source_message_key=task_id,
+            action_phase="confirmed",
+            business_state=result_code or error_code,
+            business_result_confirmed=True,
+            error_code=error_code or None,
+            terminal_payload={
+                "ok": ok,
+                "result_code": result_code,
+                "error_code": error_code,
+                "current_step": "invite_confirm_clicked",
+            },
+        )
+
+    def test_frozen_runtime_dispatches_sidecar_through_packaged_executable(self):
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        with patch.object(sys, "frozen", True, create=True), patch.object(
+            sys,
+            "executable",
+            "C:\\Program Files\\CheJin\\车金Worker客户端.exe",
+        ):
+            command = bridge._sidecar_command(["status"])
+
+        self.assertEqual(
+            command,
+            [
+                "C:\\Program Files\\CheJin\\车金Worker客户端.exe",
+                "--omniauto-sidecar",
+                "status",
+            ],
+        )
+
+    def test_source_runtime_dispatches_sidecar_through_python(self):
+        bridge = RpaBridge(sidecar_script=Path("sidecar.py"))
+        with patch.object(sys, "frozen", False, create=True):
+            command = bridge._sidecar_command(["status"])
+
+        self.assertEqual(command, [sys.executable, "sidecar.py", "status"])
+
+    def test_call_omniauto_protects_artifact_directory_until_process_finishes(self):
+        with tempfile.TemporaryDirectory(prefix="chejin-active-artifact-") as tmp:
+            artifact_dir = Path(tmp) / "artifacts" / "wechat_c2" / "messages" / "flow-1"
+            artifact_dir.mkdir(parents=True)
+            bridge = RpaBridge(sidecar_script=Path(__file__))
+
+            def fake_process(args, timeout=30, cancel_check=None):
+                del args, timeout, cancel_check
+                self.assertEqual(bridge.active_artifact_dirs(), {artifact_dir.resolve()})
+                return {"ok": True}
+
+            with patch.object(
+                bridge,
+                "_call_omniauto_process",
+                side_effect=fake_process,
+            ):
+                result = bridge._call_omniauto(
+                    ["status", "--artifact-dir", str(artifact_dir)]
+                )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(bridge.active_artifact_dirs(), set())
+
+    def test_artifact_marker_failure_does_not_replace_successful_business_result(self):
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        with patch.object(
+            bridge,
+            "_call_omniauto_process",
+            return_value={"ok": True, "result_code": "invite_sent"},
+        ), patch(
+            "chejin_worker_client.rpa_bridge.record_artifact_outcome",
+            side_effect=OSError("disk full"),
+        ):
+            result = bridge._call_omniauto(["status"])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["result_code"], "invite_sent")
+
     def test_call_omniauto_terminates_running_sidecar_when_cancelled(self):
         with tempfile.TemporaryDirectory(prefix="chejin-cancel-sidecar-") as tmp:
             script = Path(tmp) / "slow_sidecar.py"
@@ -30,9 +132,25 @@ class RpaBridgeTest(unittest.TestCase):
             )
 
         self.assertFalse(result["ok"])
-        self.assertEqual(result["state"], "c2_action_cancelled")
-        self.assertEqual(result["error_code"], "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS")
+        self.assertEqual(result["state"], "action_cancelled")
+        self.assertEqual(result["error_code"], "WORKER_INTERRUPTED")
         self.assertLess(time.monotonic() - started, 3)
+
+    def test_call_omniauto_preserves_specific_cancellation_reason(self):
+        with tempfile.TemporaryDirectory(prefix="chejin-cancel-reason-") as tmp:
+            script = Path(tmp) / "slow_sidecar.py"
+            script.write_text("import time\ntime.sleep(30)\nprint('{}')\n", encoding="utf-8")
+            bridge = RpaBridge(sidecar_script=script)
+
+            result = bridge._call_omniauto(
+                [],
+                timeout=35,
+                cancel_check=lambda: "TASK_LEASE_RENEW_FAILED",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["state"], "action_cancelled")
+        self.assertEqual(result["error_code"], "TASK_LEASE_RENEW_FAILED")
 
     def test_default_sidecar_script_points_to_omniauto_sidecar(self):
         path = default_sidecar_script()
@@ -43,6 +161,7 @@ class RpaBridgeTest(unittest.TestCase):
 
     def test_mock_bridge_emits_add_friend_steps_and_result(self):
         bridge = RpaBridge()
+        bridge.mode = "mock"
         steps = []
         result = bridge.run_add_friend(
             Task(id="task-1", task_type="add_friend", status="running", phone="13800000000", remark="CJ-TEST"),
@@ -72,8 +191,10 @@ class RpaBridgeTest(unittest.TestCase):
         bridge.mode = "real"
         captured = {"args": []}
 
-        def fake_call_omniauto(args, timeout=30):
+        def fake_call_omniauto(args, timeout=30, cancel_check=None):
             captured["args"] = args
+            captured["cancel_check"] = cancel_check
+            self._confirm_add_friend_journal(args, task_id="task-1")
             return {
                 "ok": True,
                 "result_code": "invite_sent",
@@ -110,8 +231,39 @@ class RpaBridgeTest(unittest.TestCase):
         self.assertIn("CJ-张伟-CJ8K2P-0000", captured["args"])
         self.assertIn("--remark-code", captured["args"])
         self.assertIn("CJ8K2P", captured["args"])
+        self.assertIn("--action-journal", captured["args"])
         self.assertNotIn("--remark", captured["args"])
         self.assertNotIn("--sales-name", captured["args"])
+
+    def test_real_add_friend_passes_cancel_check_to_sidecar_process(self):
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        bridge.mode = "real"
+        cancel_check = lambda: True
+
+        with patch.object(
+            bridge,
+            "_call_omniauto",
+            return_value={
+                "ok": False,
+                "error_code": "WORKER_INTERRUPTED",
+                "failure_step": "rpa_execution",
+            },
+        ) as call_omniauto:
+            bridge.run_add_friend(
+                Task(
+                    id="task-cancel",
+                    task_type="add_friend",
+                    status="running",
+                    phone="13800000000",
+                    verify_message="您好，我是车金张伟",
+                    remark_name="CJ-张伟-CJ8K2P-0000",
+                    remark_code="CJ8K2P",
+                ),
+                lambda step: None,
+                cancel_check=cancel_check,
+            )
+
+        self.assertIs(call_omniauto.call_args.kwargs["cancel_check"], cancel_check)
 
     def test_real_bridge_rejects_missing_formal_payload_before_sidecar_call(self):
         bridge = RpaBridge(sidecar_script=Path(__file__))
@@ -141,22 +293,41 @@ class RpaBridgeTest(unittest.TestCase):
         bridge.mode = "real"
         captured = {"args": [], "timeout": None}
 
-        def fake_call_omniauto(args, timeout=30):
+        def fake_call_omniauto(args, timeout=30, cancel_check=None):
             captured["args"] = args
             captured["timeout"] = timeout
-            return {"ok": True, "adapter": "win32_ocr", "state": "send_win32_rpa", "send_result": {"ok": True}}
+            captured["cancel_check"] = cancel_check
+            return {
+                "ok": True,
+                "adapter": "win32_ocr",
+                "state": "send_win32_rpa",
+                "send_result": {"ok": True, "confirmed": True, "result": "sent"},
+            }
 
         with patch.object(bridge, "_call_omniauto", side_effect=fake_call_omniauto):
-            result = bridge.send_reply(target="CJTEST01许聪", rpa_session_key="wx:rpa:v1:a", text="服务端批准文本", task_id="task-chat")
+            result = bridge.send_reply(
+                target="CJTEST01许聪",
+                rpa_session_key="wx:rpa:v1:a",
+                text="服务端批准文本",
+                task_id="task-chat",
+                expected_context_guard={
+                    "schema_version": 1,
+                    "sequence": [],
+                    "message_count": 0,
+                    "bottom": None,
+                },
+            )
 
         self.assertTrue(result["ok"])
         self.assertEqual(captured["args"][0], "send")
+        self.assertIn("--current-only", captured["args"])
         self.assertIn("--target", captured["args"])
         self.assertIn("CJTEST01许聪", captured["args"])
         self.assertIn("--session-key", captured["args"])
         self.assertIn("wx:rpa:v1:a", captured["args"])
         self.assertIn("--text", captured["args"])
         self.assertIn("服务端批准文本", captured["args"])
+        self.assertIn("--expected-context-guard", captured["args"])
         self.assertEqual(captured["timeout"], 180)
 
     def test_real_bridge_get_messages_can_search_by_remark_code(self):
@@ -164,7 +335,7 @@ class RpaBridgeTest(unittest.TestCase):
         bridge.mode = "real"
         captured = {"args": [], "timeout": None}
 
-        def fake_call_omniauto(args, timeout=30):
+        def fake_call_omniauto(args, timeout=30, **_kwargs):
             captured["args"] = args
             captured["timeout"] = timeout
             return {"ok": True, "adapter": "win32_ocr", "state": "messages_ocr", "messages": []}
@@ -199,7 +370,7 @@ class RpaBridgeTest(unittest.TestCase):
         bridge.mode = "real"
         captured = {"args": []}
 
-        def fake_call_omniauto(args, timeout=30):
+        def fake_call_omniauto(args, timeout=30, **_kwargs):
             captured["args"] = args
             artifact_dir = Path(args[args.index("--artifact-dir") + 1])
             artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -320,10 +491,22 @@ class RpaBridgeTest(unittest.TestCase):
         bridge.mode = "real"
         steps = []
 
+        def fake_call_omniauto(args, timeout=30, cancel_check=None):
+            del timeout, cancel_check
+            self._confirm_add_friend_journal(
+                args,
+                task_id="task-preflight",
+            )
+            return {
+                "ok": True,
+                "result_code": "invite_sent",
+                "message": "已发送添加通讯录邀请",
+            }
+
         with patch.object(
             bridge,
             "_call_omniauto",
-            return_value={"ok": True, "result_code": "invite_sent", "message": "已发送添加通讯录邀请"},
+            side_effect=fake_call_omniauto,
         ) as call_omniauto:
             result = bridge.run_add_friend(
                 Task(
@@ -346,6 +529,209 @@ class RpaBridgeTest(unittest.TestCase):
         self.assertIn("启动 OmniAuto", steps[0].title)
         self.assertIn("17368746889", steps[1].remark)
         self.assertIn("键鼠守护", steps[2].title)
+
+    def test_add_friend_triggered_journal_blocks_second_physical_attempt(self):
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        bridge.mode = "real"
+        task = Task(
+            id="task-triggered",
+            task_type="add_friend",
+            status="running",
+            phone="13800000000",
+            verify_message="您好，我是车金张伟",
+            remark_name="CJ-张伟-CJ8K2P-0000",
+            remark_code="CJ8K2P",
+        )
+        journal_path = action_journal_path("add_friend", task.id)
+        initialize_action_journal(
+            journal_path,
+            action_kind="add_friend",
+            transaction_id=task.id,
+            conversation_id=f"task:{task.id}",
+            items=[{"source_message_key": task.id}],
+        )
+        update_action_journal_item(
+            journal_path,
+            source_message_key=task.id,
+            action_phase="trigger_attempted",
+            business_state="invite_confirm_click_starting",
+        )
+
+        with patch.object(bridge, "_call_omniauto") as call_omniauto:
+            result = bridge.run_add_friend(task, lambda step: None)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_code, "ADD_FRIEND_RESULT_UNKNOWN")
+        self.assertTrue(result.evidence_metadata["manual_confirmation_required"])
+        call_omniauto.assert_not_called()
+
+    def test_add_friend_confirmed_journal_recovers_without_second_click(self):
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        bridge.mode = "real"
+        task = Task(
+            id="task-confirmed",
+            task_type="add_friend",
+            status="running",
+            phone="13800000000",
+            verify_message="您好，我是车金张伟",
+            remark_name="CJ-张伟-CJ8K2P-0000",
+            remark_code="CJ8K2P",
+        )
+        journal_path = action_journal_path("add_friend", task.id)
+        initialize_action_journal(
+            journal_path,
+            action_kind="add_friend",
+            transaction_id=task.id,
+            conversation_id=f"task:{task.id}",
+            items=[{"source_message_key": task.id}],
+        )
+        update_action_journal_item(
+            journal_path,
+            source_message_key=task.id,
+            action_phase="confirmed",
+            business_state="invite_sent",
+            business_result_confirmed=True,
+            terminal_payload={
+                "ok": True,
+                "result_code": "invite_sent",
+                "current_step": "invite_confirm_clicked",
+            },
+        )
+
+        with patch.object(bridge, "_call_omniauto") as call_omniauto:
+            result = bridge.run_add_friend(task, lambda step: None)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.result_code, "invite_sent")
+        self.assertTrue(
+            result.evidence_metadata["recovered_from_action_journal"]
+        )
+        call_omniauto.assert_not_called()
+
+    def test_add_friend_confirmed_click_survives_post_click_screenshot_failure(self):
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        bridge.mode = "real"
+        task = Task(
+            id="task-screenshot-failed",
+            task_type="add_friend",
+            status="running",
+            phone="13800000000",
+            verify_message="您好，我是车金张伟",
+            remark_name="CJ-张伟-CJ8K2P-0000",
+            remark_code="CJ8K2P",
+        )
+
+        def fake_call(args, **_kwargs):
+            self._confirm_add_friend_journal(
+                args,
+                task_id=task.id,
+            )
+            return {
+                "ok": False,
+                "error_code": "SCREENSHOT_FAILED_AFTER_CONFIRM",
+                "message": "post-click screenshot failed",
+            }
+
+        with patch.object(bridge, "_call_omniauto", side_effect=fake_call):
+            result = bridge.run_add_friend(task, lambda step: None)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.result_code, "invite_sent")
+        self.assertTrue(result.evidence_metadata["recovered_from_action_journal"])
+
+    def test_add_friend_confirmed_click_survives_post_click_ocr_failure(self):
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        bridge.mode = "real"
+        task = Task(
+            id="task-ocr-failed",
+            task_type="add_friend",
+            status="running",
+            phone="13800000000",
+            verify_message="您好，我是车金张伟",
+            remark_name="CJ-张伟-CJ8K2P-0000",
+            remark_code="CJ8K2P",
+        )
+
+        def fake_call(args, **_kwargs):
+            self._confirm_add_friend_journal(
+                args,
+                task_id=task.id,
+            )
+            return {
+                "ok": False,
+                "error_code": "OCR_FAILED_AFTER_CONFIRM",
+                "message": "post-click OCR failed",
+            }
+
+        with patch.object(bridge, "_call_omniauto", side_effect=fake_call):
+            result = bridge.run_add_friend(task, lambda step: None)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.result_code, "invite_sent")
+        self.assertTrue(result.evidence_metadata["recovered_from_action_journal"])
+
+    def test_add_friend_explicit_restriction_overrides_confirmed_success(self):
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        bridge.mode = "real"
+        task = Task(
+            id="task-account-restricted",
+            task_type="add_friend",
+            status="running",
+            phone="13800000000",
+            verify_message="您好，我是车金张伟",
+            remark_name="CJ-张伟-CJ8K2P-0000",
+            remark_code="CJ8K2P",
+        )
+
+        def fake_call(args, **_kwargs):
+            self._confirm_add_friend_journal(
+                args,
+                task_id=task.id,
+                ok=False,
+                result_code="",
+                error_code="ACCOUNT_RESTRICTED",
+            )
+            return {
+                "ok": True,
+                "task_status": "failed",
+                "error_code": "ACCOUNT_RESTRICTED",
+            }
+
+        with patch.object(bridge, "_call_omniauto", side_effect=fake_call):
+            result = bridge.run_add_friend(task, lambda step: None)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_code, "ACCOUNT_RESTRICTED")
+        self.assertTrue(result.evidence_metadata["recovered_from_action_journal"])
+
+    def test_add_friend_bridge_never_accepts_ok_true_with_failed_status(self):
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        bridge.mode = "real"
+        task = Task(
+            id="task-contradictory-payload",
+            task_type="add_friend",
+            status="running",
+            phone="13800000000",
+            verify_message="您好，我是车金张伟",
+            remark_name="CJ-张伟-CJ8K2P-0000",
+            remark_code="CJ8K2P",
+        )
+
+        with patch.object(
+            bridge,
+            "_call_omniauto",
+            return_value={
+                "ok": True,
+                "task_status": "failed",
+                "result_code": "invite_sent",
+                "error_code": "ACCOUNT_RESTRICTED",
+                "current_step": "invite_confirm_clicked",
+            },
+        ):
+            result = bridge.run_add_friend(task, lambda step: None)
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_code, "ACCOUNT_RESTRICTED")
 
     def test_diagnostic_event_artifact_becomes_step_evidence_path(self):
         bridge = RpaBridge(sidecar_script=Path(__file__))
@@ -373,6 +759,7 @@ class RpaBridgeTest(unittest.TestCase):
 
     def test_mock_bridge_wechat_diagnostics_is_noop(self):
         bridge = RpaBridge()
+        bridge.mode = "mock"
 
         result = bridge.diagnose_wechat()
 

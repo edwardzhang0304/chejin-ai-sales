@@ -58,7 +58,6 @@ def test_missing_input_bounds_causes_zero_rpa_clicks() -> None:
         "capture_wechat": sidecar.capture_wechat,
         "run_ocr_for_input_region_probe": sidecar.run_ocr_for_input_region_probe,
         "input_text_region_state": sidecar.input_text_region_state,
-        "clear_existing_input_draft": sidecar.clear_existing_input_draft,
         "human_client_click": sidecar.human_client_click,
         "time_sleep": sidecar.time.sleep,
     }
@@ -70,7 +69,6 @@ def test_missing_input_bounds_causes_zero_rpa_clicks() -> None:
         sidecar.capture_wechat = lambda *_args, **_kwargs: (object(), "input.png")
         sidecar.run_ocr_for_input_region_probe = lambda *_args, **_kwargs: ([], "roi")
         sidecar.input_text_region_state = lambda *_args, **_kwargs: {"has_visible_text": False, "reason": "input_region_blank"}
-        sidecar.clear_existing_input_draft = lambda *_args, before_state=None, **_kwargs: {"ok": True, "after": before_state}
         sidecar.human_client_click = lambda *_args, **_kwargs: calls.__setitem__("click", calls["click"] + 1)
         sidecar.time.sleep = lambda _seconds: None
         result = sidecar.paste_text_with_confirmation(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from typing import Any
+from urllib.parse import urlencode
 
 import requests
 
@@ -15,6 +16,16 @@ class ApiError(RuntimeError):
         self.code = code
         self.status_code = status_code
         self.data = data
+        self.retryable = (
+            bool(data.get("retryable"))
+            if isinstance(data, dict) and isinstance(data.get("retryable"), bool)
+            else None
+        )
+        self.recovery_action = (
+            str(data.get("recovery_action") or "").strip()
+            if isinstance(data, dict)
+            else ""
+        ) or None
 
 
 class WorkerApiClient:
@@ -22,6 +33,16 @@ class WorkerApiClient:
         self.base_url = (base_url or CONFIG.api_base_url).rstrip("/")
         self.session = requests.Session()
         self.timeout = CONFIG.api_timeout_seconds
+        self.task_lease_fencing_tokens: dict[str, int] = {}
+
+    def _remember_task_lease(self, task: Task | None) -> Task | None:
+        if task and task.lease_fencing_token > 0:
+            self.task_lease_fencing_tokens[task.id] = task.lease_fencing_token
+        return task
+
+    def _task_lease_headers(self, task_id: str) -> dict[str, str]:
+        token = int(self.task_lease_fencing_tokens.get(task_id) or 0)
+        return {"X-Task-Lease-Fencing-Token": str(token)} if token > 0 else {}
 
     def bind(self, worker_id: str, worker_token: str, client_instance_id: str) -> WorkerProfile:
         payload = self._request(
@@ -72,16 +93,51 @@ class WorkerApiClient:
     def pull_task(self, binding: Binding) -> tuple[str, Task | None, str | None]:
         payload = self._request("GET", f"/workers/{binding.worker_id}/tasks/pull", binding=binding)
         task = Task.from_api(payload["task"]) if payload.get("task") else None
+        self._remember_task_lease(task)
         return str(payload.get("mode") or "idle"), task, payload.get("reason")
 
-    def claim_task(self, binding: Binding, task: Task) -> Task:
+    def claim_task(
+        self,
+        binding: Binding,
+        task: Task,
+        *,
+        claim_source: str | None = None,
+        conversation_id: str | None = None,
+    ) -> Task:
         payload = self._request(
             "POST",
             f"/tasks/{task.id}/claim",
             binding=binding,
-            json={"worker_id": binding.worker_id, "current_step": "claimed", "remark": "Worker 客户端已领取任务"},
+            json={
+                "worker_id": binding.worker_id,
+                "current_step": "claimed",
+                "remark": "Worker 客户端已领取任务",
+                "claim_source": claim_source,
+                "conversation_id": conversation_id,
+            },
         )
-        return Task.from_api(payload)
+        return self._remember_task_lease(Task.from_api(payload))  # type: ignore[return-value]
+
+    def renew_task_lease(
+        self,
+        binding: Binding,
+        task_id: str,
+        *,
+        current_step: str | None,
+    ) -> Task:
+        token = int(self.task_lease_fencing_tokens.get(task_id) or 0)
+        if token <= 0:
+            raise ApiError("TASK_LEASE_FENCING_MISSING", "缺少任务租约 fencing token", 409)
+        payload = self._request(
+            "POST",
+            f"/tasks/{task_id}/lease/renew",
+            binding=binding,
+            json={
+                "lease_fencing_token": token,
+                "current_step": current_step,
+            },
+        )
+        return self._remember_task_lease(Task.from_api(payload))  # type: ignore[return-value]
 
     def report_step(self, binding: Binding, task_id: str, current_step: str, remark: str) -> Task:
         payload = self._request(
@@ -89,6 +145,7 @@ class WorkerApiClient:
             f"/tasks/{task_id}/step",
             binding=binding,
             json={"current_step": current_step, "remark": remark},
+            extra_headers=self._task_lease_headers(task_id),
         )
         return Task.from_api(payload)
 
@@ -100,6 +157,7 @@ class WorkerApiClient:
             f"/reply-actions/{task.reply_action_id}/claim-send",
             binding=binding,
             json={"task_id": task.id, "worker_id": binding.worker_id},
+            extra_headers=self._task_lease_headers(task.id),
         )
         return ReplySendClaim.from_api(payload)
 
@@ -109,6 +167,7 @@ class WorkerApiClient:
         claim: ReplySendClaim,
         *,
         send_result: str,
+        action_phase: str,
         reply_text_hash: str | None,
         sidecar_run_id: str | None = None,
         evidence: dict[str, Any] | None = None,
@@ -126,6 +185,7 @@ class WorkerApiClient:
                 "worker_id": binding.worker_id,
                 "client_instance_id": binding.client_instance_id,
                 "send_result": send_result,
+                "action_phase": action_phase,
                 "sent_at": sent_at,
                 "reply_text_hash": reply_text_hash,
                 "sidecar_run_id": sidecar_run_id,
@@ -136,11 +196,25 @@ class WorkerApiClient:
         )
 
     def complete_invite_sent(self, binding: Binding, task_id: str) -> Task:
-        payload = self._request("POST", f"/tasks/{task_id}/invite-sent", binding=binding, json={"remark": "已发送添加通讯录邀请"})
+        payload = self._request(
+            "POST",
+            f"/tasks/{task_id}/invite-sent",
+            binding=binding,
+            json={"remark": "已发送添加通讯录邀请"},
+            extra_headers=self._task_lease_headers(task_id),
+        )
+        self.task_lease_fencing_tokens.pop(task_id, None)
         return Task.from_api(payload)
 
     def complete_already_friend(self, binding: Binding, task_id: str) -> Task:
-        payload = self._request("POST", f"/tasks/{task_id}/already-friend", binding=binding, json={"remark": "客户已是好友"})
+        payload = self._request(
+            "POST",
+            f"/tasks/{task_id}/already-friend",
+            binding=binding,
+            json={"remark": "客户已是好友"},
+            extra_headers=self._task_lease_headers(task_id),
+        )
+        self.task_lease_fencing_tokens.pop(task_id, None)
         return Task.from_api(payload)
 
     def fail_task(self, binding: Binding, task_id: str, error_code: str, failure_step: str | None, message: str) -> Task:
@@ -149,7 +223,9 @@ class WorkerApiClient:
             f"/tasks/{task_id}/fail",
             binding=binding,
             json={"error_code": error_code, "failure_step": failure_step, "failure_remark": message},
+            extra_headers=self._task_lease_headers(task_id),
         )
+        self.task_lease_fencing_tokens.pop(task_id, None)
         return Task.from_api(payload)
 
     def upload_evidence(
@@ -186,14 +262,82 @@ class WorkerApiClient:
         targets = payload.get("targets") if isinstance(payload, dict) else []
         return [WechatReadTarget.from_api(item) for item in targets if isinstance(item, dict)]
 
+    def get_wechat_read_authorization(
+        self,
+        binding: Binding,
+        conversation_id: str,
+        *,
+        continuation_batch_id: str | None = None,
+        continuation_token: str | None = None,
+    ) -> dict[str, Any]:
+        query = ""
+        if continuation_batch_id and continuation_token:
+            query = "?" + urlencode(
+                {
+                    "continuation_batch_id": continuation_batch_id,
+                }
+            )
+        payload = self._request(
+            "GET",
+            (
+                f"/workers/{binding.worker_id}/wechat/conversations/"
+                f"{conversation_id}/read-authorization{query}"
+            ),
+            binding=binding,
+            extra_headers=(
+                {"X-C2-Continuation-Token": continuation_token}
+                if continuation_token
+                else None
+            ),
+        )
+        return dict(payload) if isinstance(payload, dict) else {}
+
+    def confirm_wechat_friend_activation(
+        self,
+        binding: Binding,
+        target: WechatReadTarget,
+        *,
+        conversation_type: str,
+        chat_surface_ready: bool,
+        title_evidence: dict[str, Any],
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/workers/{binding.worker_id}/wechat/conversations/{target.conversation_id}/activation-confirm",
+            binding=binding,
+            json={
+                "authorization_revision": target.authorization_revision,
+                "remark_code": target.remark_code,
+                "conversation_type": conversation_type,
+                "chat_surface_ready": chat_surface_ready,
+                "title_evidence": title_evidence,
+            },
+        )
+
     def post_wechat_messages_ingest(self, binding: Binding, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", f"/workers/{binding.worker_id}/wechat/messages/ingest", binding=binding, json=payload)
 
-    def _request(self, method: str, path: str, *, binding: Binding | None = None, json: dict[str, Any] | None = None) -> Any:
+    def get_wechat_message_batch(self, binding: Binding, batch_id: str) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            f"/workers/{binding.worker_id}/wechat/message-batches/{batch_id}",
+            binding=binding,
+        )
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        binding: Binding | None = None,
+        json: dict[str, Any] | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> Any:
         headers = {"Content-Type": "application/json"}
         if binding:
             headers["X-Worker-Token"] = binding.worker_token
             headers["X-Client-Instance-Id"] = binding.client_instance_id
+        headers.update(extra_headers or {})
         response = self.session.request(method, f"{self.base_url}{path}", headers=headers, json=json, timeout=self.timeout)
         try:
             envelope = response.json()

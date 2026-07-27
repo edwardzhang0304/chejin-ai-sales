@@ -60,10 +60,18 @@ def claim_send(
     db: Session = Depends(get_db),
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
+    x_task_lease_fencing_token: int | None = Header(default=None, alias="X-Task-Lease-Fencing-Token"),
 ):
     try:
         worker_service.authenticate_worker_client(db, payload.worker_id, x_worker_token, x_client_instance_id)
-        data = c3_service.claim_send(db, reply_action_id=reply_action_id, task_id=payload.task_id, worker_id=payload.worker_id)
+        data = c3_service.claim_send(
+            db,
+            reply_action_id=reply_action_id,
+            task_id=payload.task_id,
+            worker_id=payload.worker_id,
+            client_instance_id=x_client_instance_id,
+            lease_fencing_token=x_task_lease_fencing_token,
+        )
         db.commit()
         return ok(data)
     except Exception:

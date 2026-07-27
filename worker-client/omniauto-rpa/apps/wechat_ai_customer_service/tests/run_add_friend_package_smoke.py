@@ -1244,6 +1244,33 @@ def test_entry_click_task_outcome_contract() -> None:
     assert_true(invite_sent.get("task_status") == "completed", f"invite_sent task status mismatch: {invite_sent}")
     assert_true(invite_sent.get("result_code") == "invite_sent", f"invite_sent result mismatch: {invite_sent}")
 
+    contradictory = add_friend_entry_click_task_outcome(
+        {
+            "ok": True,
+            "task_status": "failed",
+            "result_code": "invite_sent",
+            "error_code": "ACCOUNT_RESTRICTED",
+            "current_step": "invite_confirm_clicked",
+        }
+    )
+    assert_true(
+        contradictory.get("ok") is False,
+        f"explicit failure must override a stale click-success flag: {contradictory}",
+    )
+    assert_true(
+        contradictory.get("task_status") == "failed",
+        f"contradictory result must normalize to failed: {contradictory}",
+    )
+    assert_true(
+        contradictory.get("result_code") == "",
+        f"failed result must not retain invite_sent: {contradictory}",
+    )
+    assert_true(
+        contradictory.get("server_report_payload", {}).get("task.status")
+        == "failed",
+        f"server report must use the same normalized terminal state: {contradictory}",
+    )
+
 
 def test_add_friend_actions_contract() -> None:
     from apps.wechat_ai_customer_service.adapters.add_friend_actions import (
@@ -1404,6 +1431,45 @@ def test_invite_form_field_verification_blocks_confirm_click() -> None:
         '"confirm": {"ok": False, "skipped": True' in section
         or "'confirm': {'ok': False, 'skipped': True" in section,
         "failed field verification must skip confirm click",
+    )
+
+
+def test_invite_confirm_uses_durable_action_journal_before_click() -> None:
+    source = (
+        PROJECT_ROOT
+        / "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/add_friend_windows.py"
+    ).read_text(encoding="utf-8")
+    section = source.split(
+        "def fill_add_friend_invite_form_and_confirm", 1
+    )[1].split("def type_add_friend_query_like_human_for_entry", 1)[0]
+    trigger_index = section.find("'trigger_attempted'")
+    click_index = section.find(
+        "action_name='invite_confirm_button_click'"
+    )
+    confirmed_index = section.find("'confirmed'", click_index)
+    post_click_capture_index = section.find(
+        "after_invite_confirm_click_before_capture",
+        click_index,
+    )
+    assert_true(
+        trigger_index >= 0,
+        "add_friend must persist trigger_attempted before confirm click",
+    )
+    assert_true(
+        click_index >= 0,
+        "add_friend final confirm click is missing",
+    )
+    assert_true(
+        trigger_index < click_index,
+        "trigger_attempted must be durable before the physical click",
+    )
+    assert_true(
+        confirmed_index > click_index,
+        "confirmed result must be persisted after the click function returns",
+    )
+    assert_true(
+        post_click_capture_index > confirmed_index,
+        "confirmed invite_sent must be durable before post-click screenshot/OCR",
     )
 
 
@@ -1886,6 +1952,7 @@ def main() -> int:
         test_invite_form_locator_contract,
         test_invite_form_input_click_failure_blocks_keyboard_actions,
         test_invite_form_field_verification_blocks_confirm_click,
+        test_invite_confirm_uses_durable_action_journal_before_click,
         test_query_verify_invalid_dialog_handle_returns_structured_failure,
         test_add_friend_primary_locator_contract,
         test_add_friend_live_window_paths_pass_screenshot_to_plus_locator,

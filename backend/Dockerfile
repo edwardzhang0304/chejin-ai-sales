@@ -13,9 +13,11 @@ RUN pip install -r requirements.txt
 COPY backend/app ./app
 COPY backend/alembic.ini ./
 COPY backend/alembic ./alembic
+COPY backend/configs ./configs
 COPY backend/scripts ./scripts
 COPY backend/docker/entrypoint.sh /entrypoint.sh
 COPY contracts/c2_contract_v3.json ./contracts/c2_contract_v3.json
+COPY worker-client/omniauto-rpa ./omniauto-rpa
 
 RUN chmod +x /entrypoint.sh
 

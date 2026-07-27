@@ -48,6 +48,7 @@ class AddFriendOpsProtocol(Protocol):
     def write_add_friend_entry_click_review(self, output_dir: Any, payload: dict[str, Any]) -> str: ...
     def add_friend_paced_pause(self, tier: str, **kwargs: Any) -> float: ...
     def add_friend_operator_guard_checkpoint(self, **kwargs: Any) -> dict[str, Any]: ...
+    def write_action_phase_journal(self, path: str, phase: str, **kwargs: Any) -> None: ...
     def human_window_image_hover(self, hwnd: int, x: int, y: int) -> dict[str, Any]: ...
     def human_window_image_click_in_bounds(self, hwnd: int, x: int, y: int, *, bounds: list[int], action_name: str = "human_window_image_click_in_bounds") -> dict[str, Any]: ...
     def bounded_int(self, value: Any, *, default: int, minimum: int, maximum: int) -> int: ...
@@ -55,22 +56,34 @@ class AddFriendOpsProtocol(Protocol):
 
 def add_friend_entry_click_task_outcome(query_search: dict[str, Any]) -> dict[str, Any]:
     explicit_status = str(query_search.get("task_status") or "")
-    ok = bool(query_search.get("ok")) or explicit_status == "completed"
-    task_status = explicit_status or ("completed" if ok else "failed")
     result_code = str(query_search.get("result_code") or "")
     error_code = str(query_search.get("error_code") or "")
+    explicit_failure = explicit_status == "failed" or bool(error_code)
+    explicit_success = (
+        explicit_status == "completed"
+        and bool(result_code)
+        and not error_code
+    )
+    if explicit_failure:
+        ok = False
+        task_status = "failed"
+        result_code = ""
+    elif explicit_success:
+        ok = True
+        task_status = "completed"
+    else:
+        ok = bool(query_search.get("ok"))
+        task_status = "completed" if ok else "failed"
     current_step = str(
         query_search.get("current_step")
         or ("task_completed" if task_status == "completed" else query_search.get("state") or "query_search_flow")
     )
-    server_report_payload = query_search.get("server_report_payload")
-    if not isinstance(server_report_payload, dict) or not server_report_payload:
-        server_report_payload = add_friend_server_report_payload(
-            task_status=task_status,
-            result_code=result_code or None,
-            error_code=error_code or None,
-            current_step=current_step,
-        )
+    server_report_payload = add_friend_server_report_payload(
+        task_status=task_status,
+        result_code=result_code or None,
+        error_code=error_code or None,
+        current_step=current_step,
+    )
     return {
         "ok": ok,
         "task_status": task_status,
@@ -93,6 +106,7 @@ def run_add_friend_entry_click_plan_flow(
     remark_code: str = "",
     artifact_dir: str | None = None,
     route: str = ADD_FRIEND_MAIN_ROUTE,
+    action_journal_path: str = "",
 ) -> dict[str, Any]:
     """Run an add_friend entry-click flow using sidecar Windows Win32/OCR ops."""
     selected_route = str(route or ADD_FRIEND_MAIN_ROUTE).strip().lower()
@@ -408,6 +422,7 @@ def run_add_friend_entry_click_plan_flow(
                 verify_message=clean_verify_message,
                 remark_name=clean_remark_name,
                 remark_code=clean_remark_code,
+                action_journal_path=action_journal_path,
             )
             if menu_click.get("clicked") and query and query_hwnd
             else {
@@ -428,6 +443,7 @@ def run_add_friend_entry_click_plan_flow(
             verify_message=clean_verify_message,
             remark_name=clean_remark_name,
             remark_code=clean_remark_code,
+            action_journal_path=action_journal_path,
             remark_code_valid=remark_code_valid,
             probe=probe,
             geometry_before=geometry,

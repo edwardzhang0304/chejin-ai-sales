@@ -4,6 +4,7 @@ import argparse
 import os
 import json
 from pathlib import Path
+import sys
 
 from .preflight import format_json, format_text, has_blocking_failures, run_preflight, write_report
 
@@ -24,7 +25,45 @@ def bootstrap_qt_plugins() -> None:
         return
 
 
+def run_bundled_omniauto_sidecar(argv: list[str]) -> int:
+    """Dispatch the packaged sidecar inside the same frozen executable."""
+    frozen_root = getattr(sys, "_MEIPASS", None)
+    if not frozen_root:
+        raise RuntimeError("bundled_omniauto_sidecar_requires_frozen_runtime")
+    omniauto_root = Path(frozen_root) / "omniauto-rpa"
+    if str(omniauto_root) not in sys.path:
+        sys.path.insert(0, str(omniauto_root))
+    from apps.wechat_ai_customer_service.adapters import (
+        wechat_win32_ocr_sidecar,
+    )
+
+    if "--daemon" in argv:
+        return int(wechat_win32_ocr_sidecar.run_daemon_loop())
+    try:
+        payload = wechat_win32_ocr_sidecar.run_sidecar_cli(argv)
+    except Exception as exc:
+        payload = wechat_win32_ocr_sidecar.exception_payload_for_sidecar(
+            exc,
+            state="win32_ocr_failed",
+        )
+    print(json.dumps(payload, ensure_ascii=True), flush=True)
+    return 0 if bool(payload.get("ok")) else 1
+
+
+def run_bundled_vision_provider_worker() -> int:
+    """Run the killable, stdin/stdout-only Vision provider child."""
+
+    from .vision_provider_worker import main as provider_main
+
+    return int(provider_main())
+
+
 def main() -> int:
+    if len(sys.argv) >= 2 and sys.argv[1] == "--omniauto-sidecar":
+        return run_bundled_omniauto_sidecar(sys.argv[2:])
+    if len(sys.argv) >= 2 and sys.argv[1] == "--vision-provider-worker":
+        return run_bundled_vision_provider_worker()
+
     parser = argparse.ArgumentParser(prog="chejin-worker-client")
     parser.add_argument("--preflight", action="store_true", help="运行客户端环境预检后退出。")
     parser.add_argument("--preflight-format", choices=["text", "json"], default="text", help="预检输出格式。")

@@ -31,11 +31,18 @@ class TaskClaimRequest(BaseModel):
     worker_id: str = Field(min_length=1, max_length=36)
     current_step: str | None = Field(default=None, max_length=64)
     remark: str | None = Field(default=None, max_length=1000)
+    claim_source: str | None = Field(default=None, max_length=64)
+    conversation_id: str | None = Field(default=None, max_length=36)
 
 
 class TaskStepRequest(BaseModel):
     current_step: str = Field(min_length=1, max_length=64)
     remark: str | None = Field(default=None, max_length=1000)
+
+
+class TaskLeaseRenewRequest(BaseModel):
+    lease_fencing_token: int = Field(ge=1)
+    current_step: str | None = Field(default=None, max_length=64)
 
 
 class TaskCompleteRequest(BaseModel):

@@ -39,7 +39,7 @@ P0 已完成并归档。当前有效阶段是 Worker 客户端 Windows 单应用
 - C2 停止语义：`read-targets=[]` 时可继续首屏事实扫描，但必须清空本地读取队列；停止后不得定位目标、读消息、转写或入库。旧授权请求返回409。
 - C2 当前回归状态：V16.95 已完成基础文字、语音、V3、角色、去重和停止 Windows 实测；V16.98 完成群聊终止与侧栏 OCR 收口；V16.104 完成文字/语音统一顺序与语音锚点 Windows 实机回归。图片目标接口已定义，代码和实机回归尚未完成。
 - C3 正式执行口径：发送前必须 `pre_send_refresh`，发现客户新消息时旧 `reply_action` 置为 `superseded`，不得发送旧回复。
-- C4 正式执行口径：召回到期先进入 `recall_precheck`，读取微信事实后再决定是否创建 `follow_up`。
+- C4 正式执行口径：召回到期先进入 `recall_precheck`，读取微信事实后创建 `trigger_type=recall` 批次；Brain/Guard 通过后统一创建 `chat_reply`，不再存在独立 `follow_up` 任务。
 - OmniAuto/Worker/后端接口：复用 OmniAuto `sessions/open-chat/messages/voice-transcribe/send`、`customer_image_understanding/visual_bridge_input` 和 `customer_service_brain/brain_plan` 名称；车金只做明确适配，不建立第二套模型输出协议。
 - 销售回复状态：`ai_enabled` 只作为人工关闭全部自动化的硬开关；等待销售和销售已回复使用状态门禁，客户再次回复交回 AI，长期未回复仍可由 Brain 召回。
 
@@ -51,7 +51,7 @@ P0 已完成并归档。当前有效阶段是 Worker 客户端 Windows 单应用
 | AI 自动回复发送 | 不进入当前 C2 checkpoint；后续 C3 正式开发 / 验收按 PRD v0.4.5 与技术方案 v0.8 的 `pre_send_refresh`、Guard、`reply_action` 和 Worker 发送链路执行 |
 | AI 语音回复 / 语音智能总结 / 外部 ASR | 本轮只做 C2 语音事实采集，复用微信自带转文字，不做 AI 语音回复、不做智能总结、不接外部 ASR |
 | 飞书通知 | 依赖接管状态、销售飞书用户、通知配置 |
-| 自动召回 | 不进入当前 C2 checkpoint；后续 C4 正式开发 / 验收按 PRD v0.4.5 与技术方案 v0.8 的 `recall_precheck` 和 `follow_up` 放行规则执行 |
+| 自动召回 | 不进入当前 C2 checkpoint；后续 C4 正式开发 / 验收按 `recall_precheck -> trigger_type=recall -> chat_reply` 唯一链路执行 |
 | 抖音 API / 巨量引擎 / 小风车 | 已确认下一期再做 |
 | 批量导入 | 当前跳过，不作为下一里程碑 |
 | 销售移动端 | 当前无范围和设计 |

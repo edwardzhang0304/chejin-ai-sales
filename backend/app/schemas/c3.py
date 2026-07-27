@@ -1,6 +1,8 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from app.contracts.c2 import contract_values
 
 
 class MessageBatchCollectRequest(BaseModel):
@@ -23,6 +25,7 @@ class ReplyActionSentAckRequest(BaseModel):
     worker_id: str = Field(min_length=1, max_length=36)
     client_instance_id: str | None = Field(default=None, max_length=128)
     send_result: str = Field(min_length=1, max_length=32)
+    action_phase: str = Field(min_length=1, max_length=32)
     sent_at: datetime | None = None
     reply_text_hash: str | None = Field(default=None, max_length=64)
     sidecar_run_id: str | None = Field(default=None, max_length=128)
@@ -36,3 +39,23 @@ class ReplyActionSentAckRequest(BaseModel):
         if value not in {"sent", "failed", "unknown"}:
             raise ValueError("send_result 仅支持 sent / failed / unknown")
         return value
+
+    @field_validator("action_phase")
+    @classmethod
+    def validate_action_phase(cls, value: str) -> str:
+        if value not in contract_values("action_phases"):
+            raise ValueError(
+                "action_phase 仅支持 not_attempted / trigger_attempted / confirmed"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def validate_send_result_phase(self):
+        allowed = {
+            ("sent", "confirmed"),
+            ("failed", "not_attempted"),
+            ("unknown", "trigger_attempted"),
+        }
+        if (self.send_result, self.action_phase) not in allowed:
+            raise ValueError("send_result 与 action_phase 组合不合法")
+        return self

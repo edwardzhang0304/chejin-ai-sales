@@ -155,8 +155,14 @@ def pull_worker_task(
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
 ):
-    worker = worker_service.authenticate_worker_client(db, worker_id, x_worker_token, x_client_instance_id)
-    return ok(task_service.pull_task_for_worker(db, worker))
+    try:
+        worker = worker_service.authenticate_worker_client(db, worker_id, x_worker_token, x_client_instance_id)
+        data = task_service.pull_task_for_worker(db, worker)
+        db.commit()
+        return ok(data)
+    except Exception:
+        db.rollback()
+        raise
 
 
 @router.post("/workers/{worker_id}/reset-binding")

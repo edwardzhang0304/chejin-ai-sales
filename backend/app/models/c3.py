@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Index, Integer, JSON, String, Text
+from sqlalchemy import Boolean, Date, DateTime, Float, Index, Integer, JSON, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -16,7 +16,14 @@ class Conversation(Base, TimestampMixin):
     worker_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="ai_active")
     ai_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    friend_state: Mapped[str] = mapped_column(String(32), nullable=False, default="friend_active")
     reply_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    recall_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    recall_daily_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    recall_daily_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    recall_cycle_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    recall_origin_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    next_recall_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     handoff_reason_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     handoff_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_inbound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -41,10 +48,28 @@ class MessageBatch(Base, TimestampMixin):
     conversation_id: Mapped[str] = mapped_column(String(36), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="collecting")
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    trigger_type: Mapped[str] = mapped_column(String(32), nullable=False, default="customer_message")
+    trigger_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    recall_cycle_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    retryable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     trigger_message_event_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     message_event_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     message_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     generation_no: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    generation_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    generation_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    continuation_authorization_revision: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+    )
+    continuation_read_reason: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    origin_conversation_status: Mapped[str | None] = mapped_column(
+        String(32),
+        nullable=True,
+    )
     trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     decision: Mapped[str | None] = mapped_column(String(32), nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -58,6 +83,15 @@ class MessageBatch(Base, TimestampMixin):
 
 Index("idx_message_batches_conversation_created", MessageBatch.conversation_id, MessageBatch.created_at.desc())
 Index("idx_message_batches_status_created", MessageBatch.status, MessageBatch.created_at.desc())
+Index(
+    "uq_message_batches_conversation_trigger",
+    MessageBatch.conversation_id,
+    MessageBatch.trigger_type,
+    MessageBatch.trigger_key,
+    unique=True,
+    sqlite_where=text("trigger_key IS NOT NULL AND deleted_at IS NULL"),
+    postgresql_where=text("trigger_key IS NOT NULL AND deleted_at IS NULL"),
+)
 Index(
     "uq_message_batches_active_conversation",
     MessageBatch.conversation_id,
@@ -119,6 +153,7 @@ class SentAck(Base):
     client_instance_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     send_token: Mapped[str] = mapped_column(String(128), nullable=False)
     send_result: Mapped[str] = mapped_column(String(32), nullable=False)
+    action_phase: Mapped[str] = mapped_column(String(32), nullable=False)
     reply_text_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     sidecar_run_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     evidence: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)

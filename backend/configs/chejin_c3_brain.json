@@ -1,0 +1,11 @@
+{
+  "customer_service_brain": {
+    "enabled": true,
+    "mode": "brain_first",
+    "provider": "openai",
+    "model_tier": "flash",
+    "model": "gpt-5.5",
+    "base_url": "https://aiself.vip/v1",
+    "fallback_to_legacy_on_error": false
+  }
+}

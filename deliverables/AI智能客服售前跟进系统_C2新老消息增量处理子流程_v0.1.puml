@@ -36,21 +36,30 @@ partition "A. initial_read：只处理新的未转写语音" {
       :复用Outbox中的转写结果;
       :不重复操作微信;
     else (全新语音)
+      :持久化动作意图\naction_phase=not_attempted;
       :Worker编排OmniAuto RPA;
       :重新定位anchor并右键;
+      :右键/点击前先落盘\naction_phase=trigger_attempted\n落盘失败则禁止点击;
       :点击转文字入口;
       :页面变化后废弃旧坐标并重新截图;
       :将完整截图和OCR结果更新为current_valid_frame;
       :OCR读取转写正文;
 
       if (正文与父语音绑定成功?) then (是)
-        :本flow暂存voice completed\n正文 + parent anchor + sender_role;
-      else (否)
-        :本flow记录voice failed + error_code;
-        :该语音本轮终态为failed;
+        :action_phase=confirmed;
+        :merge_item_outcomes加入voice completed\n正文 + parent anchor + sender_role;
+      elseif (有证据证明动作未触发?) then (是)
+        :action_phase=not_attempted;
+        :merge_item_outcomes加入voice failed + error_code;
+      else (已触发但结果不确定)
+        :action_phase=trigger_attempted;
+        :merge_item_outcomes加入voice failed\nVOICE_TRANSCRIBE_RESULT_UNKNOWN;
       endif
     endif
   endwhile (否)
+
+  :completed集合和failed集合只增不减;
+  :不得用最后一次调用结果覆盖本轮累计集合;
 
   if (消息状态顺序为OLD*后接NEW*?) then (正常)
     :history_gap=false;
@@ -136,7 +145,7 @@ partition "D. 查询本地已处理清单，判定新老消息" {
       elseif (语音?) then (是)
         :不重复右键和转写;
       elseif (图片?) then (是)
-        :不重复复制、上传或调用Vision;
+        :不重复复制或调用Vision;
       endif
       :仅保留为当前画面的顺序和证据;
 
@@ -151,6 +160,11 @@ partition "D. 查询本地已处理清单，判定新老消息" {
       :内容处理已经完成，只是服务端未确认;
       :沿用原read_run_id和完整JSON重传;
       :不重复执行OCR后续动作/语音RPA/Vision;
+
+    elseif (ledger=CAPABILITY_PAUSED?) then (是)
+      :OLD_CAPABILITY_PAUSED;
+      :冻结原Outbox，不重复昂贵动作;
+      :按退避周期自动探测合同/能力恢复;
 
     elseif (ledger不存在?) then (是)
       :NEW_MESSAGE;
@@ -183,23 +197,31 @@ partition "E. 只对NEW_IMAGE执行一次Vision" {
   while (还有NEW_IMAGE?) is (是)
     :用final_read最新bubble_rect重新确认图片仍存在;
     :C2同行头像规则再次确认customer/self;
+    :持久化图片动作意图\naction_phase=not_attempted;
     :右键 -> OCR确认菜单 -> 点击复制;
+    :复制物理点击前先落盘\naction_phase=trigger_attempted\n落盘失败则禁止点击;
     :剪贴板位图读入内存;
     :压缩/格式校验/image_hash;
-    :HTTPS上传车金后端Vision网关;
+    :Worker进程内调用OmniAuto BuiltinVisionPlugin\n不上传车金后端、不保存本地图片;
     :等待单张图片Vision明确终态;
 
     if (Vision成功?) then (是)
+      :action_phase=confirmed;
       :回填vision_summary/OCR/entities/intent_hints;
-      :item_state=completed;
-    else (否)
+      :merge_item_outcomes加入item_state=completed;
+    elseif (有证据证明复制/模型明确失败?) then (是)
       :回填status=failed + error_code;
-      :item_state=failed;
+      :merge_item_outcomes加入item_state=failed;
       :禁止终态pending;
+    else (复制已触发但结果不确定)
+      :回填IMAGE_PROCESS_RESULT_UNKNOWN;
+      :merge_item_outcomes加入item_state=failed;
+      :本轮不自动重复复制/Vision;
     endif
 
     :释放该图片内存;
   endwhile (否)
+  :completed集合和failed集合只增不减;
 }
 
 partition "F. 构建并上报增量批次" {
@@ -213,15 +235,26 @@ partition "F. 构建并上报增量批次" {
 
     if (后端返回ingested?) then (是)
       :写入本地INGESTED_COMPLETED或INGESTED_FAILED;
+      :failed语音/图片已作为事实入库\n不建立后台人工修复任务;
     elseif (后端返回duplicated?) then (是)
       :不创建数据库新记录;
       :仍回写本地已处理清单，避免下轮昂贵重复;
-    elseif (网络/服务端失败?) then (是)
+    elseif (recovery_action=retry?) then (是)
       :完整JSON写入本地Outbox;
-      :不调用Brain、不发送回复;
-    else (ignored/rejected)
-      :记录合同/授权/角色失败证据;
-      :不得触发Brain;
+      :下轮原样重传，不重复RPA/Vision;
+      :设置Worker级Outbox门禁;
+      :后端确认前不调用Brain、不发送回复\n不扫描或切换任何会话;
+    elseif (recovery_action=refresh_and_rebuild?) then (是)
+      :重新取得当前授权;
+      :只重建授权/续行外壳;
+      :原身份、内容、观察时间和证据不变;
+      :设置Worker级Outbox门禁;
+      :不重复RPA/Vision，不调用Brain\n后端确认前不扫描或切换任何会话;
+    else (capability_paused或未知)
+      :冻结原Outbox和ledger;
+      :设置Worker级Outbox门禁;
+      :按退避周期自动探测合同/能力恢复;
+      :恢复前不得触发Brain\n不得扫描或切换任何会话;
     endif
   else (否)
     :不调用ingest;
@@ -268,5 +301,11 @@ legend right
   | OUTBOX_WAITING | 处理完成但服务端尚未确认 | 否，只重传JSON |
   | NOT_FOUND | 本地从未处理过 | 是，仅本轮一次 |
 endlegend
+
+note bottom
+  Outbox是Worker级全局门禁，不是当前会话的普通缓存。
+  未确认事实存在时，下一轮必须先重传/处置该Outbox，
+  不得继续首屏扫描、定向读取或切换其他会话。
+end note
 
 @enduml

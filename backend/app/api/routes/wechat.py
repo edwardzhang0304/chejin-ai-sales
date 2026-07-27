@@ -1,14 +1,24 @@
-from fastapi import APIRouter, Depends, Header, Query
+import logging
+
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query
 from sqlalchemy.orm import Session
 
 from app.api.response import ok
+from app.contracts.c2 import recovery_action_for_error
 from app.core.auth import require_admin_auth
+from app.core.config import get_settings
 from app.core.database import get_db
-from app.schemas.wechat import WechatMessageIngestRequest, WechatSessionScanResultRequest
-from app.services import wechat_service, worker_service
+from app.errors import AppError
+from app.schemas.wechat import (
+    WechatFriendActivationConfirmRequest,
+    WechatMessageIngestRequest,
+    WechatSessionScanResultRequest,
+)
+from app.services import c3_service, wechat_service, worker_service
 
 
 router = APIRouter(tags=["wechat-c2"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/workers/{worker_id}/wechat/sessions/scan-result")
@@ -47,10 +57,70 @@ def read_targets(
         raise
 
 
+@router.get(
+    "/workers/{worker_id}/wechat/conversations/{conversation_id}/read-authorization"
+)
+def read_authorization(
+    worker_id: str,
+    conversation_id: str,
+    continuation_batch_id: str | None = Query(default=None, max_length=36),
+    db: Session = Depends(get_db),
+    continuation_token: str | None = Header(
+        default=None,
+        alias="X-C2-Continuation-Token",
+        max_length=64,
+    ),
+    x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
+    x_client_instance_id: str | None = Header(
+        default=None,
+        alias="X-Client-Instance-Id",
+    ),
+):
+    worker = worker_service.authenticate_worker_client(
+        db,
+        worker_id,
+        x_worker_token,
+        x_client_instance_id,
+    )
+    try:
+        data = wechat_service.read_authorization_for_worker(
+            db,
+            worker=worker,
+            conversation_id=conversation_id,
+            continuation_batch_id=continuation_batch_id,
+            continuation_token=continuation_token,
+        )
+        db.commit()
+        return ok(data)
+    except Exception:
+        db.rollback()
+        raise
+
+
+@router.post("/workers/{worker_id}/wechat/conversations/{conversation_id}/activation-confirm")
+def confirm_friend_activation(
+    worker_id: str,
+    conversation_id: str,
+    payload: WechatFriendActivationConfirmRequest,
+    db: Session = Depends(get_db),
+    x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
+    x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
+):
+    worker = worker_service.authenticate_worker_client(db, worker_id, x_worker_token, x_client_instance_id)
+    try:
+        data = wechat_service.confirm_friend_activation(db, worker, conversation_id, payload)
+        db.commit()
+        return ok(data)
+    except Exception:
+        db.rollback()
+        raise
+
+
 @router.post("/workers/{worker_id}/wechat/messages/ingest")
 def ingest_messages(
     worker_id: str,
     payload: WechatMessageIngestRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
@@ -59,6 +129,94 @@ def ingest_messages(
     try:
         data = wechat_service.ingest_messages(db, worker, payload)
         db.commit()
+        message_batch = data.get("message_batch") if isinstance(data, dict) else None
+        if (
+            isinstance(message_batch, dict)
+            and message_batch.get("batch_id")
+            and str(message_batch.get("batch_status") or "") in {"collecting", "generating"}
+        ):
+            claim = c3_service.claim_message_batch_generation(
+                db,
+                batch_id=str(message_batch["batch_id"]),
+            )
+            db.commit()
+            if claim.get("run"):
+                attempt = int(claim["attempt"])
+                if get_settings().c3_ai_adapter_mode == "mock":
+                    _generate_message_batch(str(message_batch["batch_id"]), attempt)
+                else:
+                    background_tasks.add_task(
+                        _generate_message_batch,
+                        str(message_batch["batch_id"]),
+                        attempt,
+                    )
+        return ok(data)
+    except AppError as exc:
+        db.rollback()
+        if (
+            recovery_action_for_error(exc.code, exc.status_code)
+            == "conversation_terminated"
+        ):
+            terminal = wechat_service.record_ingest_technical_terminal(
+                db,
+                worker=worker,
+                payload=payload,
+                error_code=exc.code,
+            )
+            db.commit()
+            exc.data.update(terminal)
+        raise
+    except Exception:
+        db.rollback()
+        raise
+
+
+def _generate_message_batch(batch_id: str, expected_generation_attempt: int) -> None:
+    from app.core.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        c3_service.generate_for_batch(
+            db,
+            batch_id=batch_id,
+            expected_generation_attempt=expected_generation_attempt,
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("C3 message batch generation failed", extra={"batch_id": batch_id})
+        raise
+    finally:
+        db.close()
+
+
+@router.get("/workers/{worker_id}/wechat/message-batches/{batch_id}")
+def get_message_batch(
+    worker_id: str,
+    batch_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
+    x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
+):
+    worker = worker_service.authenticate_worker_client(db, worker_id, x_worker_token, x_client_instance_id)
+    try:
+        data = c3_service.get_message_batch_for_worker(db, worker=worker, batch_id=batch_id)
+        if data.get("processing"):
+            claim = c3_service.claim_message_batch_generation(
+                db,
+                batch_id=batch_id,
+                stale_only=str(data.get("batch_status") or "") != "collecting",
+            )
+            db.commit()
+            if claim.get("run"):
+                attempt = int(claim["attempt"])
+                if get_settings().c3_ai_adapter_mode == "mock":
+                    _generate_message_batch(batch_id, attempt)
+                else:
+                    background_tasks.add_task(_generate_message_batch, batch_id, attempt)
+            if claim.get("terminal"):
+                data = c3_service.get_message_batch_for_worker(db, worker=worker, batch_id=batch_id)
         return ok(data)
     except Exception:
         db.rollback()

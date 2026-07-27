@@ -6,16 +6,62 @@ from pathlib import Path
 ROOT = Path.cwd()
 OMNIAUTO_RPA_SOURCE = Path(os.environ.get("CHEJIN_OMNIAUTO_RPA_SOURCE") or ROOT / "omniauto-rpa")
 OMNIAUTO_SIDECAR = OMNIAUTO_RPA_SOURCE / "apps" / "wechat_ai_customer_service" / "adapters" / "wechat_win32_ocr_sidecar.py"
+CONTRACT_PATH = ROOT.parent / "contracts" / "c2_contract_v3.json"
 
 if not OMNIAUTO_SIDECAR.exists():
     raise SystemExit(f"OmniAuto sidecar not found: {OMNIAUTO_SIDECAR}")
+if not CONTRACT_PATH.exists():
+    raise SystemExit(f"C2 contract not found: {CONTRACT_PATH}")
+
+EXCLUDED_OMNIAUTO_PARTS = {
+    ".git",
+    ".venv",
+    "__pycache__",
+    ".pytest_cache",
+    "artifacts",
+    "cache",
+    "runtime",
+    "build",
+    "dist",
+}
+ALLOWED_OMNIAUTO_DATA_PREFIXES = (
+    "apps/wechat_ai_customer_service/data/tenants/chejin/product_master/",
+    "apps/wechat_ai_customer_service/data/tenants/chejin/rag_index/",
+)
+
+
+def include_omniauto_file(path):
+    rel = path.relative_to(OMNIAUTO_RPA_SOURCE)
+    rel_name = rel.as_posix()
+    if any(part in EXCLUDED_OMNIAUTO_PARTS for part in rel.parts):
+        return False
+    if "data" in rel.parts and not any(
+        rel_name.startswith(prefix) for prefix in ALLOWED_OMNIAUTO_DATA_PREFIXES
+    ):
+        return False
+    if path.suffix in {".pyc", ".pyo", ".zip", ".env"}:
+        return False
+    if path.name == ".env" or path.name.endswith(".local.env"):
+        return False
+    return True
+
+
+OMNIAUTO_DATAS = [
+    (
+        str(path),
+        "omniauto-rpa/" + path.relative_to(OMNIAUTO_RPA_SOURCE).parent.as_posix(),
+    )
+    for path in OMNIAUTO_RPA_SOURCE.rglob("*")
+    if path.is_file() and include_omniauto_file(path)
+]
 
 a = Analysis(
     ["chejin_worker_client/main.py"],
     pathex=[str(ROOT)],
     binaries=[],
     datas=[
-        (str(OMNIAUTO_RPA_SOURCE), "omniauto-rpa"),
+        *OMNIAUTO_DATAS,
+        (str(CONTRACT_PATH), "contracts"),
         (str(ROOT / "chejin_worker_client" / "web_assets"), "chejin_worker_client/web_assets"),
     ],
     hiddenimports=[
@@ -25,6 +71,7 @@ a = Analysis(
         "PySide6.QtWebChannel",
         "PySide6.QtWebEngineCore",
         "PySide6.QtWebEngineWidgets",
+        "uiautomation",
     ],
     hookspath=[],
     hooksconfig={},

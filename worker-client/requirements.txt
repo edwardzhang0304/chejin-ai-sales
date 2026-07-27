@@ -4,6 +4,7 @@ requests==2.32.3
 pyinstaller==6.11.1
 pywin32==308; platform_system == "Windows"
 pywinauto==0.6.9; platform_system == "Windows"
+uiautomation==2.0.29; platform_system == "Windows"
 pyperclip==1.9.0
 Pillow>=10,<13
 psutil==5.9.8

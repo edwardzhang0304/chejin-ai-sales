@@ -5,7 +5,7 @@ import os
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -122,11 +122,14 @@ class UiLockLease:
     _renew_stop: threading.Event | None = None
     _renew_thread: threading.Thread | None = None
     _last_step_started_at: float = 0.0
+    _lease_lost: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
+    _lease_error: UiLockError | None = field(default=None, init=False, repr=False)
 
     def start_auto_renew(self, interval_seconds: float | None = None) -> None:
         interval = max(1.0, float(interval_seconds or CONFIG.ui_lock_renew_interval_seconds))
         if self._renew_thread and self._renew_thread.is_alive():
             return
+        self.raise_if_lost()
         self._renew_stop = threading.Event()
         self._renew_thread = threading.Thread(target=self._renew_loop, args=(interval,), name="CheJinUiLockRenew", daemon=True)
         self._renew_thread.start()
@@ -136,10 +139,35 @@ class UiLockLease:
         while not self._renew_stop.wait(interval):
             try:
                 self.renew()
-            except UiLockError:
+            except UiLockError as exc:
+                self._lease_error = exc
+                self._lease_lost.set()
                 break
 
+    @property
+    def lease_lost(self) -> bool:
+        return self._lease_lost.is_set()
+
+    @property
+    def lease_error(self) -> UiLockError | None:
+        return self._lease_error
+
+    def cancel_requested(self) -> bool:
+        return self.lease_lost
+
+    def raise_if_lost(self) -> None:
+        if not self.lease_lost:
+            return
+        if self._lease_error is not None:
+            raise self._lease_error
+        raise UiLockError(
+            UI_LOCK_RENEW_FAILED,
+            "微信 UI 锁续租已失败，当前流程不得继续操作微信。",
+            data={"lock_id": self.lock_id},
+        )
+
     def renew(self) -> dict[str, Any]:
+        self.raise_if_lost()
         with _PROCESS_LOCK:
             payload = _read_lock(self.path)
             if not payload or payload.get("lock_id") != self.lock_id or payload.get("owner") != self.owner:
@@ -161,11 +189,13 @@ class UiLockLease:
             return payload
 
     def update_step(self, current_step: str) -> None:
+        self.raise_if_lost()
         self.current_step = str(current_step or self.current_step)
         self._last_step_started_at = time.monotonic()
         self.renew()
 
     def check_step_timeout(self) -> None:
+        self.raise_if_lost()
         if self._last_step_started_at <= 0:
             return
         elapsed = time.monotonic() - self._last_step_started_at

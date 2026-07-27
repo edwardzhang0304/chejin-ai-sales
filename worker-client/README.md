@@ -46,10 +46,18 @@ cd worker-client
 - 安装依赖
 - 运行 `python run_checks.py`
 - 运行 mock 预检并生成 `dist\reports\preflight-build-report.json`
-- 解压 `deliverables\omniauto-add-friend-rpa-pr-candidate-20260618.zip` 作为内置 OmniAuto RPA
+- 直接打包当前源码树中的 `omniauto-rpa`
 - 使用 PyInstaller 生成 Windows 单应用目录
-- 校验 `车金Worker客户端.exe` 和内置 OmniAuto sidecar
-- 生成 `dist\reports\车金Worker客户端.manifest.json`，包含版本、SHA256、文件数和包体大小
+- 校验当前 OmniAuto 完整源码树与安装包内完整目录一致
+- 生成 `dist\reports\车金Worker客户端.manifest.json`，记录 Worker 提交、分支、合同版本和 SHA、OmniAuto 上游提交和 tree SHA、测试/预检结果及安装包 SHA
+
+正式打包要求 Git 工作区干净，且不允许跳过测试或预检。调试包必须显式执行：
+
+```powershell
+.\scripts\build-windows.ps1 -DevelopmentBuild
+```
+
+调试包 manifest 会标记 `formal_release=false`，不得作为正式发布包。
 
 产物：
 
@@ -78,6 +86,15 @@ RPA 模式：
 
 ```text
 %LOCALAPPDATA%\CheJinWorker\
+```
+
+截图证据只会在 `%LOCALAPPDATA%\CheJinWorker\artifacts\` 内清理。成功流程默认保留 7 天，失败或发送结果未知的关键证据默认保留 30 天，默认最大占用 2GB；正在执行的 flow 会被保护。以下环境变量可覆盖默认值：
+
+```powershell
+$env:CHEJIN_ARTIFACT_SUCCESS_RETENTION_DAYS="7"
+$env:CHEJIN_ARTIFACT_CRITICAL_RETENTION_DAYS="30"
+$env:CHEJIN_ARTIFACT_MAX_BYTES="2147483648"
+$env:CHEJIN_ARTIFACT_CLEANUP_INTERVAL_SECONDS="86400"
 ```
 
 本地自检：

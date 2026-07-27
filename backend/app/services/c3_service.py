@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import hashlib
+import hmac
 import secrets
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -17,11 +18,13 @@ from app.models.task import Task
 from app.models.wechat import MessageEvent, WechatSessionBinding
 from app.models.worker import Worker
 from app.services.ai_adapter import AIEngineDecision, get_ai_engine_adapter
+from app.services.message_contract import canonical_reply_text, reply_text_hash
 from app.services.task_service import _write_event, finish_task_and_release_worker, get_task_or_404, task_to_detail
 
 
-ACTIVE_BATCH_STATUSES = {"collecting", "generating"}
+ACTIVE_BATCH_STATUSES = {"collecting", "generating", "retry_wait"}
 OPEN_ACTION_STATUSES = {"draft", "guarding", "queued", "sending"}
+SUPERSEDABLE_ACTION_STATUSES = {"draft", "guarding", "queued"}
 TERMINAL_ACTION_STATUSES = {
     "sent",
     "failed",
@@ -32,10 +35,186 @@ TERMINAL_ACTION_STATUSES = {
     "handoff",
     "blocked",
 }
+UNKNOWN_SEND_TERMINAL_REMARK = (
+    "发送结果未知，原动作已终结且禁止补发；"
+    "会话已转销售正常接管。"
+)
+FAILED_SEND_TERMINAL_REMARK = (
+    "自动发送已终止，会话已转销售正常接管，禁止自动补发。"
+)
+
+
+def _batch_continuation_token(
+    batch: MessageBatch,
+    binding: WechatSessionBinding,
+) -> str:
+    if not (
+        batch.continuation_authorization_revision
+        and batch.continuation_read_reason
+    ):
+        return ""
+    seed = "|".join(
+        [
+            "c3-batch-continuation-v1",
+            batch.id,
+            batch.conversation_id,
+            binding.worker_id,
+            batch.continuation_authorization_revision,
+            batch.continuation_read_reason,
+        ]
+    ).encode("utf-8")
+    secret = get_settings().contact_encryption_secret.encode("utf-8")
+    return hmac.new(secret, seed, hashlib.sha256).hexdigest()
+
+
+def bind_message_batch_continuation(
+    db: Session,
+    *,
+    batch_id: str,
+    binding: WechatSessionBinding,
+    authorization_revision: str,
+    read_reason: str,
+    origin_conversation_status: str,
+) -> dict[str, Any]:
+    """Freeze the one continuation scope that may advance this C2-C3 flow."""
+
+    batch = db.get(MessageBatch, batch_id)
+    if not batch or batch.deleted_at:
+        raise AppError("MESSAGE_BATCH_NOT_FOUND", "消息批次不存在", 404)
+    if batch.conversation_id != binding.conversation_id:
+        raise AppError("MESSAGE_BATCH_CONVERSATION_MISMATCH", "批次与会话不一致", 409)
+    if not batch.continuation_authorization_revision:
+        batch.continuation_authorization_revision = str(authorization_revision)
+        batch.continuation_read_reason = str(read_reason)
+        batch.origin_conversation_status = str(origin_conversation_status or "")
+    elif (
+        batch.continuation_authorization_revision != str(authorization_revision)
+        or batch.continuation_read_reason != str(read_reason)
+    ):
+        raise AppError(
+            "MESSAGE_BATCH_CONTINUATION_CONFLICT",
+            "消息批次已绑定其他授权流程",
+            409,
+        )
+    db.flush()
+    return {
+        "batch_id": batch.id,
+        "token": _batch_continuation_token(batch, binding),
+        "authorization_revision": batch.continuation_authorization_revision,
+        "read_reason": batch.continuation_read_reason,
+    }
+
+
+def message_batch_continuation_authorization(
+    db: Session,
+    *,
+    worker: Worker,
+    batch: MessageBatch,
+    binding: WechatSessionBinding,
+    presented_token: str | None = None,
+) -> dict[str, Any]:
+    """Return a batch-scoped ticket; never widen global read-target admission."""
+
+    from app.services.wechat_service import _authorization_revision
+
+    action = db.scalar(
+        select(ReplyAction).where(
+            ReplyAction.batch_id == batch.id,
+            ReplyAction.current.is_(True),
+            ReplyAction.deleted_at.is_(None),
+        )
+    )
+    task = (
+        db.scalar(
+            select(Task).where(
+                Task.reply_action_id == action.id,
+                Task.deleted_at.is_(None),
+            )
+        )
+        if action
+        else None
+    )
+    processing = bool(batch.active and batch.status in ACTIVE_BATCH_STATUSES)
+    sendable = bool(
+        action
+        and action.status in {"queued", "sending"}
+        and not _is_past(action.expire_at)
+        and task
+        and task.status in {TaskStatus.pending.value, TaskStatus.running.value}
+    )
+    expected_token = _batch_continuation_token(batch, binding)
+    token_matches = bool(
+        expected_token
+        and (
+            presented_token is None
+            or hmac.compare_digest(str(presented_token), expected_token)
+        )
+    )
+    revision_matches = bool(
+        batch.continuation_authorization_revision
+        and batch.continuation_authorization_revision
+        == _authorization_revision(binding)
+    )
+    conversation = db.get(Conversation, batch.conversation_id)
+    allowed = bool(
+        token_matches
+        and revision_matches
+        and worker.id == binding.worker_id
+        and worker.run_status == "running"
+        and binding.bind_status == "bound"
+        and binding.listen_status in {"listening", "degraded"}
+        and binding.allow_listening
+        and binding.deleted_at is None
+        and conversation
+        and conversation.status == "ai_active"
+        and not batch.superseded_by_batch_id
+        and (processing or sendable)
+    )
+    return {
+        "allowed": allowed,
+        "authorization_scope": "batch_continuation",
+        "batch_id": batch.id,
+        "continuation_token": expected_token if allowed else "",
+        "conversation_id": batch.conversation_id,
+        "authorization_revision": (
+            batch.continuation_authorization_revision or ""
+        ),
+        "read_reason": batch.continuation_read_reason or "",
+        "remark_code": binding.remark_code or "",
+        "rpa_session_key": binding.rpa_session_key or "",
+        "display_name": binding.display_name or "",
+        "lead_id": binding.lead_id,
+        "sales_id": binding.sales_id,
+    }
+
+
+def _restore_conversation_after_no_action(
+    conversation: Conversation,
+    batch: MessageBatch,
+) -> None:
+    origin = str(batch.origin_conversation_status or "")
+    if origin in {
+        "waiting_user_reply",
+        "recalled_waiting_user",
+        "waiting_sales_reply",
+        "sales_replied_waiting_user",
+    }:
+        conversation.status = origin
+    elif batch.continuation_read_reason == "recall_precheck":
+        conversation.status = "sales_replied_waiting_user"
+    else:
+        conversation.status = "waiting_user_reply"
+    if batch.trigger_type == "recall":
+        conversation.recall_origin_status = None
+        conversation.recall_cycle_id = None
+
+
+def _final_send_text(value: str | None) -> str:
+    return canonical_reply_text(value)
 
 
 def _hash_text(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return reply_text_hash(value)
 
 
 def _is_past(value) -> bool:
@@ -76,26 +255,43 @@ def _conversation_for_binding(db: Session, binding: WechatSessionBinding) -> Con
 def _ensure_conversation_eligible(binding: WechatSessionBinding, conversation: Conversation) -> None:
     if binding.bind_status != "bound" or not binding.allow_listening:
         raise AppError("CONVERSATION_NOT_ELIGIBLE", "会话未绑定或不允许监听", 409, {"suggested_action": "handoff"})
-    if not conversation.ai_enabled or conversation.status in {"waiting_sales_reply", "closed", "rejected"}:
+    if not conversation.ai_enabled or conversation.status in {
+        "waiting_sales_reply",
+        "sales_replied_waiting_user",
+        "closed",
+        "rejected",
+    }:
         raise AppError("CONVERSATION_NOT_ELIGIBLE", "会话已关闭 AI 或处于人工接管状态", 409, {"suggested_action": "handoff"})
 
 
 def _batch_to_dict(batch: MessageBatch) -> dict[str, Any]:
+    retry_after = None
+    if batch.status == "retry_wait" and batch.generated_at:
+        retry_after = batch.generated_at + timedelta(
+            seconds=max(0.0, float(get_settings().c3_batch_retry_delay_seconds))
+        )
     return {
         "id": batch.id,
         "conversation_id": batch.conversation_id,
         "status": batch.status,
         "active": batch.active,
+        "trigger_type": batch.trigger_type,
+        "trigger_key": batch.trigger_key,
+        "recall_cycle_id": batch.recall_cycle_id,
+        "retryable": batch.retryable,
         "trigger_message_event_id": batch.trigger_message_event_id,
         "message_event_ids": batch.message_event_ids,
         "message_count": batch.message_count,
         "generation_no": batch.generation_no,
+        "generation_attempt_count": batch.generation_attempt_count,
+        "generation_started_at": batch.generation_started_at,
         "trace_id": batch.trace_id,
         "decision": batch.decision,
         "error_code": batch.error_code,
         "suggested_action": batch.suggested_action,
         "superseded_by_batch_id": batch.superseded_by_batch_id,
         "generated_at": batch.generated_at,
+        "retry_after": retry_after,
         "created_at": batch.created_at,
         "updated_at": batch.updated_at,
     }
@@ -145,6 +341,7 @@ def _handoff_to_dict(event: HandoffEvent | None) -> dict[str, Any] | None:
         "risk_flags": event.risk_flags,
         "evidence_refs": event.evidence_refs,
         "notify_error_code": event.notify_error_code,
+        "closed_at": event.closed_at,
         "created_at": event.created_at,
         "updated_at": event.updated_at,
     }
@@ -158,6 +355,7 @@ def _sent_ack_to_dict(ack: SentAck) -> dict[str, Any]:
         "worker_id": ack.worker_id,
         "client_instance_id": ack.client_instance_id,
         "send_result": ack.send_result,
+        "action_phase": ack.action_phase,
         "reply_text_hash": ack.reply_text_hash,
         "sidecar_run_id": ack.sidecar_run_id,
         "evidence": ack.evidence,
@@ -183,16 +381,19 @@ def _active_batch(db: Session, conversation_id: str) -> MessageBatch | None:
 def _customer_messages(db: Session, batch: MessageBatch) -> list[MessageEvent]:
     if not batch.message_event_ids:
         return []
-    return list(
+    rows = list(
         db.scalars(
             select(MessageEvent)
             .where(
                 MessageEvent.id.in_(batch.message_event_ids),
                 MessageEvent.sender_role == "customer",
             )
-            .order_by(MessageEvent.occurred_at.asc().nullsfirst(), MessageEvent.ingested_at.asc(), MessageEvent.id.asc())
         )
     )
+    by_id = {item.id: item for item in rows}
+    # message_event_ids is populated from Worker's authoritative top-to-bottom
+    # V3 array. Do not rebuild a second order from OCR time or database UUIDs.
+    return [by_id[event_id] for event_id in batch.message_event_ids if event_id in by_id]
 
 
 def _cancel_task_for_action(db: Session, action: ReplyAction, *, reason: str) -> None:
@@ -211,7 +412,7 @@ def _supersede_open_actions(db: Session, conversation_id: str, *, reason: str) -
         db.scalars(
             select(ReplyAction).where(
                 ReplyAction.conversation_id == conversation_id,
-                ReplyAction.status.in_(OPEN_ACTION_STATUSES),
+                ReplyAction.status.in_(SUPERSEDABLE_ACTION_STATUSES),
                 ReplyAction.deleted_at.is_(None),
             )
         )
@@ -221,6 +422,13 @@ def _supersede_open_actions(db: Session, conversation_id: str, *, reason: str) -
         action.current = False
         action.error_code = "REPLY_ACTION_SUPERSEDED"
         action.suggested_action = "regenerate"
+        batch = db.get(MessageBatch, action.batch_id)
+        if batch and batch.status not in {"superseded", "cancelled", "handoff_created"}:
+            batch.status = "superseded"
+            batch.active = False
+            batch.retryable = False
+            batch.error_code = "MESSAGE_BATCH_SUPERSEDED"
+            batch.suggested_action = "regenerate"
         _cancel_task_for_action(db, action, reason=reason)
 
 
@@ -233,7 +441,7 @@ def cancel_open_reply_actions_for_conversation_change(db: Session, conversation_
         db.scalars(
             select(ReplyAction).where(
                 ReplyAction.conversation_id == conversation_id,
-                ReplyAction.status.in_(OPEN_ACTION_STATUSES),
+                ReplyAction.status.in_(SUPERSEDABLE_ACTION_STATUSES),
                 ReplyAction.deleted_at.is_(None),
             )
         )
@@ -241,7 +449,76 @@ def cancel_open_reply_actions_for_conversation_change(db: Session, conversation_
     for action in actions:
         action.status = "cancelled"
         action.current = False
+        batch = db.get(MessageBatch, action.batch_id)
+        if batch and batch.status not in {"superseded", "cancelled", "handoff_created"}:
+            batch.status = "cancelled"
+            batch.active = False
+            batch.retryable = False
+            batch.error_code = "MESSAGE_BATCH_CANCELLED_BY_CONVERSATION_CHANGE"
+            batch.suggested_action = reason
         _cancel_task_for_action(db, action, reason=reason)
+
+
+def cancel_active_batches_for_conversation_change(db: Session, conversation_id: str, *, reason: str) -> None:
+    for batch in db.scalars(
+        select(MessageBatch).where(
+            MessageBatch.conversation_id == conversation_id,
+            MessageBatch.active.is_(True),
+            MessageBatch.deleted_at.is_(None),
+        )
+    ):
+        batch.status = "cancelled"
+        batch.active = False
+        batch.error_code = "MESSAGE_BATCH_CANCELLED_BY_CONVERSATION_CHANGE"
+        batch.suggested_action = reason
+    cancel_open_reply_actions_for_conversation_change(db, conversation_id, reason=reason)
+
+
+def create_control_message_batch(
+    db: Session,
+    *,
+    conversation_id: str,
+    trigger_type: str,
+    trigger_key: str,
+    recall_cycle_id: str | None = None,
+    trace_id: str | None = None,
+) -> dict[str, Any]:
+    conversation = db.scalar(
+        select(Conversation)
+        .where(Conversation.conversation_id == conversation_id)
+        .with_for_update()
+    )
+    if not conversation:
+        raise AppError("CONVERSATION_NOT_FOUND", "会话不存在", 404)
+    existing = db.scalar(
+        select(MessageBatch).where(
+            MessageBatch.conversation_id == conversation_id,
+            MessageBatch.trigger_type == trigger_type,
+            MessageBatch.trigger_key == trigger_key,
+            MessageBatch.deleted_at.is_(None),
+        )
+    )
+    if existing:
+        return {"batch_id": existing.id, "batch_status": existing.status, "batch": _batch_to_dict(existing)}
+    active = _active_batch(db, conversation_id)
+    if active:
+        active.status = "superseded"
+        active.active = False
+        active.error_code = "MESSAGE_BATCH_SUPERSEDED"
+    batch = MessageBatch(
+        conversation_id=conversation_id,
+        status="collecting",
+        active=True,
+        trigger_type=trigger_type,
+        trigger_key=trigger_key,
+        recall_cycle_id=recall_cycle_id,
+        message_event_ids=[],
+        message_count=0,
+        trace_id=trace_id,
+    )
+    db.add(batch)
+    db.flush()
+    return {"batch_id": batch.id, "batch_status": batch.status, "batch": _batch_to_dict(batch)}
 
 
 def collect_message_batch(
@@ -252,8 +529,14 @@ def collect_message_batch(
     trace_id: str | None = None,
 ) -> dict[str, Any]:
     binding = _binding_or_404(db, conversation_id)
-    conversation = _conversation_for_binding(db, binding)
-    _ensure_conversation_eligible(binding, conversation)
+    conversation = db.scalar(
+        select(Conversation)
+        .where(Conversation.conversation_id == conversation_id)
+        .with_for_update()
+    )
+    if not conversation:
+        conversation = _conversation_for_binding(db, binding)
+        db.flush()
     message = db.get(MessageEvent, trigger_message_event_id)
     if not message or message.conversation_id != conversation_id:
         raise AppError("MESSAGE_EVENT_NOT_FOUND", "触发消息不存在或不属于该会话", 404, {"suggested_action": "check_message_event"})
@@ -266,10 +549,36 @@ def collect_message_batch(
             "suggested_action": "ignore_non_customer_message",
         }
 
+    existing_for_event = next(
+        (
+            item
+            for item in db.scalars(
+                select(MessageBatch)
+                .where(
+                    MessageBatch.conversation_id == conversation_id,
+                    MessageBatch.deleted_at.is_(None),
+                )
+                .order_by(MessageBatch.created_at.desc())
+            )
+            if message.id in (item.message_event_ids or [])
+        ),
+        None,
+    )
+    if existing_for_event:
+        return {
+            "batch_id": existing_for_event.id,
+            "batch_status": existing_for_event.status,
+            "next_step": "generate" if existing_for_event.status in ACTIVE_BATCH_STATUSES else "use_existing",
+            "batch": _batch_to_dict(existing_for_event),
+        }
+
+    _ensure_conversation_eligible(binding, conversation)
+
     active = _active_batch(db, conversation_id)
-    if active and active.status == "generating":
+    if active and active.status in {"generating", "retry_wait"}:
         active.status = "superseded"
         active.active = False
+        active.retryable = False
         active.error_code = "MESSAGE_BATCH_SUPERSEDED"
         _supersede_open_actions(db, conversation_id, reason="客户新消息到来，旧回复动作作废")
         active = None
@@ -300,8 +609,47 @@ def collect_message_batch(
     return {"batch_id": batch.id, "batch_status": batch.status, "next_step": "generate", "batch": _batch_to_dict(batch)}
 
 
+def collect_customer_message_batch(
+    db: Session,
+    *,
+    conversation_id: str,
+    message_event_ids: list[str],
+    trace_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Atomically collect only newly inserted customer events from one ingest call."""
+    unique_ids = list(dict.fromkeys(message_event_ids))
+    if not unique_ids:
+        return None
+    result: dict[str, Any] | None = None
+    for event_id in unique_ids:
+        result = collect_message_batch(
+            db,
+            conversation_id=conversation_id,
+            trigger_message_event_id=event_id,
+            trace_id=trace_id,
+        )
+    return result
+
+
 def _build_ai_context(db: Session, binding: WechatSessionBinding, conversation: Conversation, batch: MessageBatch) -> dict[str, Any]:
     messages = _customer_messages(db, batch)
+    history_rows = list(
+        db.scalars(
+            select(MessageEvent)
+            .where(MessageEvent.conversation_id == binding.conversation_id)
+            .order_by(
+                func.coalesce(
+                    MessageEvent.observed_at,
+                    MessageEvent.occurred_at,
+                    MessageEvent.ingested_at,
+                ).desc(),
+                MessageEvent.observation_order.desc(),
+                MessageEvent.id.desc(),
+            )
+            .limit(50)
+        )
+    )
+    history_rows.reverse()
     return {
         "conversation": {
             "conversation_id": binding.conversation_id,
@@ -312,6 +660,16 @@ def _build_ai_context(db: Session, binding: WechatSessionBinding, conversation: 
             "status": conversation.status,
             "ai_enabled": conversation.ai_enabled,
             "reply_count": conversation.reply_count,
+            "history": [
+                {
+                    "id": item.id,
+                    "sender_role": item.sender_role,
+                    "message_type": item.message_type,
+                    "content": item.content,
+                    "occurred_at": item.occurred_at.isoformat() if item.occurred_at else None,
+                }
+                for item in history_rows
+            ],
         },
         "messages": [
             {
@@ -321,6 +679,9 @@ def _build_ai_context(db: Session, binding: WechatSessionBinding, conversation: 
                 "dedupe_key": item.dedupe_key,
                 "occurred_at": item.occurred_at.isoformat() if item.occurred_at else None,
                 "ingested_at": item.ingested_at.isoformat(),
+                "message_position": (item.raw_payload or {}).get("message_position"),
+                "customer_image_understanding": (item.raw_payload or {}).get("customer_image_understanding") if item.message_type == "image" else None,
+                "visual_bridge_input": (item.raw_payload or {}).get("visual_bridge_input") if item.message_type == "image" else None,
             }
             for item in messages
         ],
@@ -340,6 +701,164 @@ def _decision_payload(decision: AIEngineDecision) -> dict[str, Any]:
         "error_code": decision.error_code,
         "suggested_action": decision.suggested_action,
         "raw_payload": decision.raw_payload or {},
+    }
+
+
+def open_handoff_events_for_conversation(
+    db: Session,
+    conversation_id: str,
+    *,
+    for_update: bool = False,
+) -> list[HandoffEvent]:
+    """Return the authoritative manual-takeover gate for one conversation."""
+
+    statement = (
+        select(HandoffEvent)
+        .where(
+            HandoffEvent.conversation_id == conversation_id,
+            HandoffEvent.closed_at.is_(None),
+            HandoffEvent.deleted_at.is_(None),
+        )
+        .order_by(HandoffEvent.created_at.asc(), HandoffEvent.id.asc())
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    return list(db.scalars(statement).all())
+
+
+def enforce_open_handoff_gate(
+    db: Session,
+    conversation: Conversation,
+    *,
+    for_update: bool = False,
+) -> list[HandoffEvent]:
+    """Make persisted handoff state win over a stale conversation projection."""
+
+    events = open_handoff_events_for_conversation(
+        db,
+        conversation.conversation_id,
+        for_update=for_update,
+    )
+    if events and str(conversation.status or "") not in {
+        "closed",
+        "rejected",
+    }:
+        conversation.status = "waiting_sales_reply"
+        conversation.recall_origin_status = None
+        conversation.recall_cycle_id = None
+        conversation.next_recall_at = None
+    return events
+
+
+def close_open_handoffs_for_human_sales(
+    db: Session,
+    *,
+    conversation_id: str,
+    sales_message: MessageEvent,
+    visible_message_orders: dict[str, int] | None = None,
+    sales_screen_order: int | None = None,
+) -> dict[str, Any]:
+    """Close only handoffs that predate the confirmed human sales reply."""
+
+    # observed_at only proves when Worker saw the bubble. A historical sales
+    # message discovered in a fresh scan must not close a newer handoff.
+    occurred_at = sales_message.occurred_at
+    visible_orders = visible_message_orders or {}
+
+    def comparable(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    closed: list[HandoffEvent] = []
+    proof_sources: set[str] = set()
+    resume_ai = False
+    closed_at = utcnow()
+    for event in open_handoff_events_for_conversation(
+        db,
+        conversation_id,
+        for_update=True,
+    ):
+        batch = db.get(MessageBatch, event.batch_id) if event.batch_id else None
+        proof_source = ""
+        trigger_event_id = str(
+            (batch.trigger_message_event_id if batch else None)
+            or next(
+                (
+                    event_id
+                    for event_id in reversed(event.trigger_message_event_ids or [])
+                    if str(event_id or "").strip()
+                ),
+                "",
+            )
+        ).strip()
+        trigger_screen_order = visible_orders.get(trigger_event_id)
+        if (
+            trigger_event_id
+            and trigger_screen_order is not None
+            and sales_screen_order is not None
+        ):
+            if int(sales_screen_order) <= int(trigger_screen_order):
+                continue
+            proof_source = "same_final_frame_order"
+        else:
+            time_evidence = (
+                sales_message.raw_payload.get("occurred_at_evidence")
+                if isinstance(sales_message.raw_payload, dict)
+                and isinstance(
+                    sales_message.raw_payload.get("occurred_at_evidence"),
+                    dict,
+                )
+                else {}
+            )
+            time_is_reliable = (
+                str(time_evidence.get("source") or "")
+                == "wechat_message_timestamp"
+                and float(time_evidence.get("confidence") or 0) >= 0.9
+            )
+            if (
+                occurred_at is None
+                or not time_is_reliable
+                or (
+                    event.created_at
+                    and comparable(event.created_at) > comparable(occurred_at)
+                )
+            ):
+                continue
+            proof_source = "reliable_occurred_at"
+
+        if batch and (batch.status == "paused" or batch.decision == "pause"):
+            resume_ai = True
+        evidence_refs = list(event.evidence_refs or [])
+        sales_ref = f"sales_message_event:{sales_message.id}"
+        if sales_ref not in evidence_refs:
+            evidence_refs.append(sales_ref)
+        proof_ref = f"sales_reply_order_proof:{proof_source}"
+        if proof_ref not in evidence_refs:
+            evidence_refs.append(proof_ref)
+        event.evidence_refs = evidence_refs
+        event.status = "sales_replied"
+        event.closed_at = closed_at
+        closed.append(event)
+        proof_sources.add(proof_source)
+    db.flush()
+    remaining = open_handoff_events_for_conversation(
+        db,
+        conversation_id,
+        for_update=True,
+    )
+    return {
+        "closed_count": len(closed),
+        "closed_handoff_ids": [event.id for event in closed],
+        "remaining_open_count": len(remaining),
+        "resume_ai": resume_ai,
+        "time_order_proven": bool(closed),
+        "reason": (
+            "sales_message_after_handoff_proven"
+            if closed
+            else "sales_message_order_unproven"
+        ),
+        "proof_sources": sorted(proof_sources),
     }
 
 
@@ -364,18 +883,225 @@ def _create_handoff(
         ai_payload=_decision_payload(decision),
     )
     db.add(event)
-    conversation.ai_enabled = False
     conversation.status = "waiting_sales_reply"
+    conversation.recall_origin_status = None
+    conversation.recall_cycle_id = None
     conversation.handoff_reason_code = handoff_reason_code
     conversation.handoff_at = utcnow()
     batch.status = "handoff_created"
     batch.active = False
+    batch.retryable = False
     batch.decision = "handoff"
     batch.error_code = handoff_reason_code
     batch.suggested_action = "handoff"
     batch.ai_response_snapshot = _decision_payload(decision)
     batch.generated_at = utcnow()
+    batch.generation_started_at = None
     return event
+
+
+def _pause_conversation_for_manual(
+    db: Session,
+    *,
+    binding: WechatSessionBinding,
+    conversation: Conversation,
+    batch: MessageBatch,
+    decision: AIEngineDecision,
+) -> HandoffEvent:
+    """Turn Brain pause into one explicit manual-takeover terminal state."""
+
+    reason_code = str(
+        decision.error_code
+        or decision.handoff_reason_code
+        or "AI_ENGINE_PAUSED_FOR_MANUAL_REVIEW"
+    )[:64]
+    event = _create_handoff(
+        db,
+        binding=binding,
+        conversation=conversation,
+        batch=batch,
+        decision=decision,
+        handoff_reason_code=reason_code,
+    )
+    conversation.ai_enabled = False
+    batch.status = "paused"
+    batch.decision = "pause"
+    batch.error_code = reason_code
+    batch.suggested_action = "sales_handoff"
+    batch.ai_response_snapshot = _decision_payload(decision)
+    return event
+
+
+def _create_send_failure_handoff(
+    db: Session,
+    *,
+    action: ReplyAction,
+    conversation: Conversation,
+    error_code: str,
+    send_result: str,
+) -> HandoffEvent:
+    existing = db.scalar(
+        select(HandoffEvent).where(
+            HandoffEvent.batch_id == action.batch_id,
+            HandoffEvent.deleted_at.is_(None),
+        )
+    )
+    if existing:
+        return existing
+    batch = db.get(MessageBatch, action.batch_id)
+    event = HandoffEvent(
+        conversation_id=action.conversation_id,
+        batch_id=action.batch_id,
+        status="created",
+        handoff_reason_code=error_code,
+        reason_detail=(
+            UNKNOWN_SEND_TERMINAL_REMARK
+            if send_result == "unknown"
+            else FAILED_SEND_TERMINAL_REMARK
+        ),
+        trigger_message_event_ids=list(batch.message_event_ids or []) if batch else [],
+        risk_flags=[f"send_{send_result}"],
+        evidence_refs=[f"reply_action:{action.id}"],
+        ai_payload={
+            "reply_action_id": action.id,
+            "send_result": send_result,
+            "error_code": error_code,
+        },
+    )
+    db.add(event)
+    conversation.status = "waiting_sales_reply"
+    conversation.handoff_reason_code = error_code
+    conversation.handoff_at = utcnow()
+    if batch:
+        batch.status = "handoff_created"
+        batch.active = False
+        batch.retryable = False
+        batch.decision = "handoff"
+        batch.error_code = error_code
+        batch.suggested_action = "handoff"
+        batch.generated_at = utcnow()
+        batch.generation_started_at = None
+    return event
+
+
+def handoff_unsent_reply_recovery_failure(
+    db: Session,
+    *,
+    reply_action_id: str,
+    error_code: str,
+) -> HandoffEvent | None:
+    action = db.get(ReplyAction, reply_action_id)
+    if (
+        not action
+        or action.deleted_at
+        or action.status not in {"draft", "guarding", "queued"}
+    ):
+        return None
+    batch = db.get(MessageBatch, action.batch_id)
+    if not batch or batch.deleted_at:
+        return None
+    existing = db.scalar(
+        select(HandoffEvent).where(
+            HandoffEvent.batch_id == batch.id,
+            HandoffEvent.deleted_at.is_(None),
+        )
+    )
+    if existing:
+        return existing
+    binding = _binding_or_404(db, action.conversation_id)
+    conversation = _conversation_for_binding(db, binding)
+    action.status = "cancelled"
+    action.current = False
+    action.error_code = error_code
+    action.suggested_action = "handoff"
+    decision = AIEngineDecision(
+        decision="handoff",
+        handoff_reason_code=error_code,
+        risk_flags=["c2_reply_context_recovery_failed"],
+        evidence_refs=[f"reply_action:{action.id}"],
+        guard_result="handoff",
+        error_code=error_code,
+        suggested_action="handoff",
+        raw_payload={"reply_action_id": action.id, "recovery_error_code": error_code},
+    )
+    return _create_handoff(
+        db,
+        binding=binding,
+        conversation=conversation,
+        batch=batch,
+        decision=decision,
+        handoff_reason_code=error_code,
+    )
+
+
+def create_deterministic_handoff_for_ingest(
+    db: Session,
+    *,
+    conversation_id: str,
+    message_event_ids: list[str],
+    reason_codes: list[str],
+    trigger_key: str,
+    trace_id: str | None = None,
+) -> dict[str, Any]:
+    clean_reasons = list(dict.fromkeys(str(value).strip() for value in reason_codes if str(value).strip()))
+    primary_reason = clean_reasons[0] if clean_reasons else "C2_FACT_FLOW_INCOMPLETE"
+    if message_event_ids:
+        batch_result = collect_customer_message_batch(
+            db,
+            conversation_id=conversation_id,
+            message_event_ids=message_event_ids,
+            trace_id=trace_id,
+        )
+    else:
+        batch_result = create_control_message_batch(
+            db,
+            conversation_id=conversation_id,
+            trigger_type="c2_safety_handoff",
+            trigger_key=trigger_key,
+            trace_id=trace_id,
+        )
+    if not batch_result or not batch_result.get("batch_id"):
+        raise AppError("MESSAGE_BATCH_NOT_CREATED", "C2 安全门禁无法创建人工接管批次", 409)
+    batch = db.scalar(
+        select(MessageBatch)
+        .where(MessageBatch.id == str(batch_result["batch_id"]), MessageBatch.deleted_at.is_(None))
+        .with_for_update()
+    )
+    if not batch:
+        raise AppError("MESSAGE_BATCH_NOT_FOUND", "C2 安全门禁批次不存在", 404)
+    existing = db.scalar(
+        select(HandoffEvent).where(HandoffEvent.batch_id == batch.id, HandoffEvent.deleted_at.is_(None))
+    )
+    if not existing:
+        binding = _binding_or_404(db, conversation_id)
+        conversation = _conversation_for_binding(db, binding)
+        decision = AIEngineDecision(
+            decision="handoff",
+            handoff_reason_code=primary_reason,
+            risk_flags=[value.lower() for value in clean_reasons],
+            evidence_refs=[f"c2_flow_gate:{value}" for value in clean_reasons],
+            guard_result="handoff",
+            error_code=primary_reason,
+            suggested_action="handoff",
+            raw_payload={"flow_gate_errors": clean_reasons},
+        )
+        _create_handoff(
+            db,
+            binding=binding,
+            conversation=conversation,
+            batch=batch,
+            decision=decision,
+            handoff_reason_code=primary_reason,
+        )
+    db.flush()
+    return {
+        "batch_id": batch.id,
+        "batch_status": batch.status,
+        "next_step": "handoff",
+        "batch": _batch_to_dict(batch),
+        "error_code": primary_reason,
+        "suggested_action": "handoff",
+    }
 
 
 def _create_chat_reply_task(db: Session, *, binding: WechatSessionBinding, action: ReplyAction) -> Task:
@@ -399,10 +1125,196 @@ def _create_chat_reply_task(db: Session, *, binding: WechatSessionBinding, actio
     return task
 
 
-def generate_for_batch(db: Session, *, batch_id: str, force: bool = False) -> dict[str, Any]:
+def _aware_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def message_batch_generation_is_stale(batch: MessageBatch, *, now: datetime | None = None) -> bool:
+    if batch.status != "generating":
+        return False
+    current = _aware_datetime(now or utcnow())
+    started = _aware_datetime(batch.generation_started_at or batch.updated_at or batch.created_at)
+    if current is None or started is None:
+        return False
+    stale_after = max(1.0, float(get_settings().c3_batch_stale_after_seconds))
+    return (current - started).total_seconds() >= stale_after
+
+
+def message_batch_retry_is_due(batch: MessageBatch, *, now: datetime | None = None) -> bool:
+    if batch.status != "retry_wait" or not batch.retryable:
+        return False
+    current = _aware_datetime(now or utcnow())
+    generated = _aware_datetime(batch.generated_at or batch.updated_at or batch.created_at)
+    if current is None or generated is None:
+        return False
+    retry_delay = max(0.0, float(get_settings().c3_batch_retry_delay_seconds))
+    return (current - generated).total_seconds() >= retry_delay
+
+
+def _handoff_exhausted_generation(
+    db: Session,
+    *,
+    batch: MessageBatch,
+    last_error_code: str | None,
+) -> HandoffEvent:
+    existing = db.scalar(
+        select(HandoffEvent).where(
+            HandoffEvent.batch_id == batch.id,
+            HandoffEvent.deleted_at.is_(None),
+        )
+    )
+    if existing:
+        return existing
+    binding = _binding_or_404(db, batch.conversation_id)
+    conversation = _conversation_for_binding(db, binding)
+    decision = AIEngineDecision(
+        decision="handoff",
+        handoff_reason_code="AI_ENGINE_RETRY_EXHAUSTED",
+        risk_flags=["ai_engine_retry_exhausted"],
+        evidence_refs=[f"last_error:{last_error_code or 'unknown'}"],
+        guard_result="handoff",
+        error_code="AI_ENGINE_RETRY_EXHAUSTED",
+        suggested_action="handoff",
+        raw_payload={
+            "last_error_code": last_error_code,
+            "generation_attempt_count": int(batch.generation_attempt_count or 0),
+        },
+    )
+    return _create_handoff(
+        db,
+        binding=binding,
+        conversation=conversation,
+        batch=batch,
+        decision=decision,
+        handoff_reason_code="AI_ENGINE_RETRY_EXHAUSTED",
+    )
+
+
+def _schedule_retry_or_handoff(
+    db: Session,
+    *,
+    batch: MessageBatch,
+    decision: AIEngineDecision,
+) -> dict[str, Any]:
+    attempts = int(batch.generation_attempt_count or 0)
+    max_attempts = max(1, int(get_settings().c3_batch_recovery_max_attempts))
+    if attempts >= max_attempts:
+        handoff = _handoff_exhausted_generation(
+            db,
+            batch=batch,
+            last_error_code=decision.error_code,
+        )
+        db.flush()
+        return {
+            "decision": "handoff",
+            "batch": _batch_to_dict(batch),
+            "handoff_event_id": handoff.id,
+            "handoff_event": _handoff_to_dict(handoff),
+            "error_code": "AI_ENGINE_RETRY_EXHAUSTED",
+            "suggested_action": "handoff",
+        }
+
+    batch.status = "retry_wait"
+    batch.active = True
+    batch.retryable = True
+    batch.decision = "retry_later"
+    batch.error_code = decision.error_code
+    batch.suggested_action = "retry_later"
+    batch.ai_response_snapshot = _decision_payload(decision)
+    batch.generated_at = utcnow()
+    batch.generation_started_at = None
+    db.flush()
+    return {
+        "decision": "retry_later",
+        "batch": _batch_to_dict(batch),
+        "error_code": decision.error_code,
+        "suggested_action": "retry_later",
+    }
+
+
+def claim_message_batch_generation(
+    db: Session,
+    *,
+    batch_id: str,
+    stale_only: bool = False,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Persist generation ownership before dispatching non-durable background work."""
+
+    batch = db.scalar(
+        select(MessageBatch)
+        .where(MessageBatch.id == batch_id, MessageBatch.deleted_at.is_(None))
+        .with_for_update()
+    )
+    if not batch:
+        raise AppError("MESSAGE_BATCH_NOT_FOUND", "消息批次不存在", 404)
+    if batch.status not in ACTIVE_BATCH_STATUSES and not force:
+        return {"run": False, "terminal": True, "batch": _batch_to_dict(batch)}
+
+    stale = message_batch_generation_is_stale(batch)
+    retry_due = message_batch_retry_is_due(batch)
+    if stale_only and not stale and not retry_due:
+        return {"run": False, "terminal": False, "batch": _batch_to_dict(batch)}
+    if batch.status == "retry_wait" and not retry_due and not force:
+        return {"run": False, "terminal": False, "batch": _batch_to_dict(batch)}
+    if batch.status == "generating" and not stale and not force:
+        return {"run": False, "terminal": False, "batch": _batch_to_dict(batch)}
+
+    max_attempts = max(1, int(get_settings().c3_batch_recovery_max_attempts))
+    attempts = int(batch.generation_attempt_count or 0)
+    if stale and attempts >= max_attempts and not force:
+        _handoff_exhausted_generation(
+            db,
+            batch=batch,
+            last_error_code=batch.error_code or "MESSAGE_BATCH_RECOVERY_EXHAUSTED",
+        )
+        db.flush()
+        return {
+            "run": False,
+            "terminal": True,
+            "error_code": "AI_ENGINE_RETRY_EXHAUSTED",
+            "batch": _batch_to_dict(batch),
+        }
+
+    batch.status = "generating"
+    batch.active = True
+    batch.generation_attempt_count = attempts + 1
+    batch.generation_started_at = utcnow()
+    batch.retryable = False
+    batch.error_code = None
+    batch.suggested_action = "generate"
+    db.flush()
+    return {
+        "run": True,
+        "terminal": False,
+        "attempt": batch.generation_attempt_count,
+        "recovery": stale,
+        "batch": _batch_to_dict(batch),
+    }
+
+
+def generate_for_batch(
+    db: Session,
+    *,
+    batch_id: str,
+    force: bool = False,
+    expected_generation_attempt: int | None = None,
+) -> dict[str, Any]:
     batch = db.scalar(select(MessageBatch).where(MessageBatch.id == batch_id, MessageBatch.deleted_at.is_(None)).with_for_update())
     if not batch:
         raise AppError("MESSAGE_BATCH_NOT_FOUND", "消息批次不存在", 404)
+    if expected_generation_attempt is not None and (
+        batch.status != "generating"
+        or int(batch.generation_attempt_count or 0) != int(expected_generation_attempt)
+    ):
+        return {
+            "decision": batch.decision,
+            "batch": _batch_to_dict(batch),
+            "error_code": "MESSAGE_BATCH_GENERATION_CLAIM_STALE",
+            "suggested_action": "use_current_batch_state",
+        }
 
     existing_action = db.scalar(select(ReplyAction).where(ReplyAction.batch_id == batch.id, ReplyAction.current.is_(True)))
     existing_handoff = db.scalar(select(HandoffEvent).where(HandoffEvent.batch_id == batch.id, HandoffEvent.deleted_at.is_(None)))
@@ -426,123 +1338,154 @@ def generate_for_batch(db: Session, *, batch_id: str, force: bool = False) -> di
     try:
         _ensure_conversation_eligible(binding, conversation)
     except AppError as exc:
-        decision = AIEngineDecision(
-            decision="handoff",
-            handoff_reason_code=exc.code,
-            risk_flags=[exc.code.lower()],
-            guard_result="handoff",
-            error_code=exc.code,
-            suggested_action="handoff",
-        )
-        handoff = _create_handoff(db, binding=binding, conversation=conversation, batch=batch, decision=decision, handoff_reason_code=exc.code)
+        batch.status = "no_action"
+        batch.active = False
+        batch.decision = "no_action"
+        batch.error_code = exc.code
+        batch.suggested_action = "wait_for_business_gate"
+        batch.generated_at = utcnow()
+        _restore_conversation_after_no_action(conversation, batch)
         db.flush()
         return {
-            "decision": "handoff",
+            "decision": "no_action",
             "batch": _batch_to_dict(batch),
-            "handoff_event_id": handoff.id,
-            "handoff_event": _handoff_to_dict(handoff),
             "error_code": exc.code,
-            "suggested_action": "handoff",
+            "suggested_action": "wait_for_business_gate",
         }
 
     batch.status = "generating"
     context = _build_ai_context(db, binding, conversation, batch)
     batch.ai_request_snapshot = context
     messages = context["messages"]
-    if not messages:
+    if not messages and batch.trigger_type == "customer_message":
         batch.status = "no_action"
         batch.active = False
         batch.decision = "no_action"
         batch.error_code = "MESSAGE_BATCH_EMPTY"
         batch.suggested_action = "wait_more"
         batch.generated_at = utcnow()
+        _restore_conversation_after_no_action(conversation, batch)
         db.flush()
         return {"decision": "no_action", "batch": _batch_to_dict(batch), "error_code": "MESSAGE_BATCH_EMPTY", "suggested_action": "wait_more"}
 
+    # Persist the exact Brain input and release database row locks before the
+    # provider network call. New customer/sales facts can then supersede this
+    # generation while the model is thinking instead of waiting on our lock.
+    generation_attempt = int(batch.generation_attempt_count or 0)
+    prepared_batch_id = batch.id
+    prepared_trigger_type = batch.trigger_type
+    prepared_recall_cycle_id = batch.recall_cycle_id
+    db.flush()
+    db.commit()
+
     try:
-        decision = get_ai_engine_adapter().generate_reply_decision(conversation_context=context["conversation"], message_batch={"id": batch.id, "messages": messages})
+        decision = get_ai_engine_adapter().generate_reply_decision(
+            conversation_context=context["conversation"],
+            message_batch={
+                "id": prepared_batch_id,
+                "messages": messages,
+                "trigger_type": prepared_trigger_type,
+                "recall_cycle_id": prepared_recall_cycle_id,
+            },
+        )
     except AppError as exc:
         decision = AIEngineDecision(
-            decision="handoff",
-            handoff_reason_code=exc.code,
+            decision="retry_later",
             risk_flags=[exc.code.lower()],
-            guard_result="handoff",
+            guard_result="failed",
             error_code=exc.code,
-            suggested_action=exc.data.get("suggested_action") or "handoff",
+            suggested_action="retry_later",
+            raw_payload={"provider_error": exc.data},
         )
+    except Exception as exc:
+        decision = AIEngineDecision(
+            decision="retry_later",
+            risk_flags=["ai_engine_exception"],
+            guard_result="failed",
+            error_code="AI_ENGINE_PROVIDER_FAILED",
+            suggested_action="retry_later",
+            raw_payload={"exception_type": type(exc).__name__},
+        )
+
+    batch = db.scalar(
+        select(MessageBatch)
+        .where(
+            MessageBatch.id == prepared_batch_id,
+            MessageBatch.deleted_at.is_(None),
+        )
+        .with_for_update()
+    )
+    if not batch:
+        raise AppError("MESSAGE_BATCH_NOT_FOUND", "消息批次不存在", 404)
+    if (
+        batch.status != "generating"
+        or int(batch.generation_attempt_count or 0) != generation_attempt
+    ):
+        return {
+            "decision": batch.decision,
+            "batch": _batch_to_dict(batch),
+            "error_code": "MESSAGE_BATCH_GENERATION_CLAIM_STALE",
+            "suggested_action": "use_current_batch_state",
+        }
+    binding = _binding_or_404(db, batch.conversation_id)
+    conversation = _conversation_for_binding(db, binding)
 
     payload = _decision_payload(decision)
     batch.ai_response_snapshot = payload
 
     if decision.decision == "send_reply":
-        if not decision.reply_text or decision.guard_result not in {"pass", "rewrite_passed"}:
+        final_reply_text = _final_send_text(decision.reply_text)
+        if not final_reply_text or decision.guard_result not in {"pass", "rewrite_passed"}:
             decision = AIEngineDecision(
-                decision="handoff",
-                handoff_reason_code="AI_ENGINE_CONTRACT_INVALID",
+                decision="retry_later",
                 risk_flags=["ai_contract_invalid"],
-                guard_result="handoff",
+                guard_result="failed",
                 error_code="AI_ENGINE_CONTRACT_INVALID",
-                suggested_action="handoff",
+                suggested_action="retry_later",
                 raw_payload=payload,
             )
-            handoff = _create_handoff(
-                db,
-                binding=binding,
-                conversation=conversation,
-                batch=batch,
-                decision=decision,
-                handoff_reason_code="AI_ENGINE_CONTRACT_INVALID",
+        else:
+            _supersede_open_actions(db, binding.conversation_id, reason="生成新的当前回复动作")
+            expire_at = utcnow() + timedelta(seconds=get_settings().c3_reply_action_ttl_seconds)
+            action = ReplyAction(
+                batch_id=batch.id,
+                conversation_id=binding.conversation_id,
+                status="queued",
+                current=True,
+                generation_no=batch.generation_no,
+                decision="send_reply",
+                reply_text=final_reply_text,
+                reply_text_hash=_hash_text(final_reply_text),
+                confidence=decision.confidence,
+                risk_flags=decision.risk_flags or [],
+                evidence_refs=decision.evidence_refs or [],
+                guard_result=decision.guard_result,
+                expire_at=expire_at,
+                ai_payload=payload,
             )
+            db.add(action)
+            db.flush()
+            task = _create_chat_reply_task(db, binding=binding, action=action)
+            batch.status = "reply_action_created"
+            batch.active = False
+            batch.retryable = False
+            batch.decision = "send_reply"
+            batch.error_code = None
+            batch.suggested_action = "claim_send"
+            batch.generated_at = utcnow()
             db.flush()
             return {
-                "decision": "handoff",
+                "decision": "send_reply",
                 "batch": _batch_to_dict(batch),
-                "handoff_event_id": handoff.id,
-                "handoff_event": _handoff_to_dict(handoff),
-                "error_code": "AI_ENGINE_CONTRACT_INVALID",
-                "suggested_action": "handoff",
+                "reply_action_id": action.id,
+                "reply_action": _reply_action_to_dict(action),
+                "task_id": task.id,
+                "task": task_to_detail(get_task_or_404(db, task.id)),
+                "error_code": None,
+                "suggested_action": "claim_send",
             }
 
-        _supersede_open_actions(db, binding.conversation_id, reason="生成新的当前回复动作")
-        expire_at = utcnow() + timedelta(seconds=get_settings().c3_reply_action_ttl_seconds)
-        action = ReplyAction(
-            batch_id=batch.id,
-            conversation_id=binding.conversation_id,
-            status="queued",
-            current=True,
-            generation_no=batch.generation_no,
-            decision="send_reply",
-            reply_text=decision.reply_text,
-            reply_text_hash=_hash_text(decision.reply_text),
-            confidence=decision.confidence,
-            risk_flags=decision.risk_flags or [],
-            evidence_refs=decision.evidence_refs or [],
-            guard_result=decision.guard_result,
-            expire_at=expire_at,
-            ai_payload=payload,
-        )
-        db.add(action)
-        db.flush()
-        task = _create_chat_reply_task(db, binding=binding, action=action)
-        batch.status = "reply_action_created"
-        batch.active = False
-        batch.decision = "send_reply"
-        batch.error_code = None
-        batch.suggested_action = "claim_send"
-        batch.generated_at = utcnow()
-        db.flush()
-        return {
-            "decision": "send_reply",
-            "batch": _batch_to_dict(batch),
-            "reply_action_id": action.id,
-            "reply_action": _reply_action_to_dict(action),
-            "task_id": task.id,
-            "task": task_to_detail(get_task_or_404(db, task.id)),
-            "error_code": None,
-            "suggested_action": "claim_send",
-        }
-
-    if decision.decision == "handoff":
+    if decision.decision in {"handoff", "handoff_for_approval"}:
         handoff_reason_code = decision.error_code or decision.handoff_reason_code or "HANDOFF_REQUIRED"
         handoff = _create_handoff(
             db,
@@ -563,13 +1506,35 @@ def generate_for_batch(db: Session, *, batch_id: str, force: bool = False) -> di
         }
 
     if decision.decision in {"no_action", "pause", "retry_later"}:
+        if decision.decision == "retry_later":
+            return _schedule_retry_or_handoff(db, batch=batch, decision=decision)
+        if decision.decision == "pause":
+            handoff = _pause_conversation_for_manual(
+                db,
+                binding=binding,
+                conversation=conversation,
+                batch=batch,
+                decision=decision,
+            )
+            db.flush()
+            return {
+                "decision": "pause",
+                "batch": _batch_to_dict(batch),
+                "handoff_event_id": handoff.id,
+                "handoff_event": _handoff_to_dict(handoff),
+                "error_code": batch.error_code,
+                "suggested_action": "sales_handoff",
+            }
         batch.status = "no_action" if decision.decision == "no_action" else "failed"
         batch.active = False
+        batch.retryable = False
         batch.decision = decision.decision
         batch.error_code = decision.error_code
         batch.suggested_action = decision.suggested_action or decision.decision
         batch.ai_response_snapshot = payload
         batch.generated_at = utcnow()
+        if decision.decision == "no_action":
+            _restore_conversation_after_no_action(conversation, batch)
         db.flush()
         return {
             "decision": decision.decision,
@@ -579,34 +1544,24 @@ def generate_for_batch(db: Session, *, batch_id: str, force: bool = False) -> di
         }
 
     decision = AIEngineDecision(
-        decision="handoff",
-        handoff_reason_code="AI_ENGINE_CONTRACT_INVALID",
+        decision="retry_later",
         risk_flags=["ai_contract_invalid"],
-        guard_result="handoff",
+        guard_result="failed",
         error_code="AI_ENGINE_CONTRACT_INVALID",
-        suggested_action="handoff",
+        suggested_action="retry_later",
         raw_payload=payload,
     )
-    handoff = _create_handoff(
-        db,
-        binding=binding,
-        conversation=conversation,
-        batch=batch,
-        decision=decision,
-        handoff_reason_code="AI_ENGINE_CONTRACT_INVALID",
-    )
-    db.flush()
-    return {
-        "decision": "handoff",
-        "batch": _batch_to_dict(batch),
-        "handoff_event_id": handoff.id,
-        "handoff_event": _handoff_to_dict(handoff),
-        "error_code": "AI_ENGINE_CONTRACT_INVALID",
-        "suggested_action": "handoff",
-    }
+    return _schedule_retry_or_handoff(db, batch=batch, decision=decision)
 
 
-def validate_chat_reply_task_claim(db: Session, task: Task, worker: Worker) -> None:
+def validate_chat_reply_task_claim(
+    db: Session,
+    task: Task,
+    worker: Worker,
+    *,
+    claim_source: str | None,
+    conversation_id: str | None,
+) -> None:
     if task.task_type != TaskType.chat_reply.value:
         return
     if not task.reply_action_id:
@@ -614,6 +1569,13 @@ def validate_chat_reply_task_claim(db: Session, task: Task, worker: Worker) -> N
     action = db.get(ReplyAction, task.reply_action_id)
     if not action or action.deleted_at:
         raise AppError("REPLY_ACTION_NOT_FOUND", "reply_action 不存在", 404, {"suggested_action": "cancel_task"})
+    if str(claim_source or "") != "c2_conversation_flow" or str(conversation_id or "") != action.conversation_id:
+        raise AppError(
+            "C2_REPLY_TASK_FLOW_OWNERSHIP_REQUIRED",
+            "chat_reply 只能由持有当前会话 UI 锁的 C2 流程领取",
+            409,
+            {"conversation_id": action.conversation_id, "suggested_action": "claim_from_c2_conversation_flow"},
+        )
     if action.status != "queued":
         raise AppError("REPLY_ACTION_CLAIM_CONFLICT", "reply_action 当前状态不允许领取任务", 409, {"status": action.status, "suggested_action": "do_not_send"})
     if _is_past(action.expire_at):
@@ -628,7 +1590,15 @@ def validate_chat_reply_task_claim(db: Session, task: Task, worker: Worker) -> N
         raise AppError("TASK_WORKER_MISMATCH", "该 chat_reply 任务已指定其他 Worker", 409, {"suggested_action": "do_not_send"})
 
 
-def claim_send(db: Session, *, reply_action_id: str, task_id: str, worker_id: str) -> dict[str, Any]:
+def claim_send(
+    db: Session,
+    *,
+    reply_action_id: str,
+    task_id: str,
+    worker_id: str,
+    client_instance_id: str | None,
+    lease_fencing_token: int | None,
+) -> dict[str, Any]:
     # Local import avoids the c3 <-> wechat service module cycle while keeping
     # the authorization algorithm owned by exactly one backend implementation.
     from app.services.wechat_service import _authorization_revision
@@ -645,6 +1615,35 @@ def claim_send(db: Session, *, reply_action_id: str, task_id: str, worker_id: st
         raise AppError("REPLY_ACTION_CLAIM_CONFLICT", "Worker 必须先领取 chat_reply 任务再 claim-send", 409, {"suggested_action": "claim_task_first"})
     if task.worker_id != worker_id:
         raise AppError("TASK_WORKER_MISMATCH", "任务 Worker 不匹配", 409, {"suggested_action": "do_not_send"})
+    from app.services.task_service import validate_task_lease
+
+    validate_task_lease(
+        task,
+        worker_id=worker_id,
+        client_instance_id=client_instance_id,
+        lease_fencing_token=lease_fencing_token,
+    )
+    if (
+        action.status == "sending"
+        and action.claimed_task_id == task.id
+        and action.claimed_by_worker_id == worker_id
+        and action.send_token
+    ):
+        binding = _binding_or_404(db, action.conversation_id)
+        return {
+            "reply_action_id": action.id,
+            "task_id": task.id,
+            "send_token": action.send_token,
+            "reply_text": action.reply_text,
+            "reply_text_hash": action.reply_text_hash,
+            "conversation_id": action.conversation_id,
+            "rpa_session_key": binding.rpa_session_key,
+            "remark_code": binding.remark_code,
+            "authorization_revision": _authorization_revision(binding),
+            "expire_at": action.expire_at,
+            "duplicated": True,
+            "suggested_action": "reconcile_sent_ack_without_resend",
+        }
     if action.status != "queued":
         raise AppError("REPLY_ACTION_CLAIM_CONFLICT", "reply_action 已被领取或不可发送", 409, {"status": action.status, "suggested_action": "do_not_send"})
     if _is_past(action.expire_at):
@@ -694,13 +1693,52 @@ def sent_ack(db: Session, *, reply_action_id: str, payload: Any) -> dict[str, An
     task = db.scalar(select(Task).where(Task.id == payload.task_id, Task.deleted_at.is_(None)).with_for_update())
     if not task or task.reply_action_id != action.id:
         raise AppError("TASK_NOT_FOUND", "chat_reply 任务不存在或不匹配", 404)
+    if action.status == "unknown_send_result":
+        if payload.send_token != action.send_token:
+            raise AppError(
+                "REPLY_ACTION_CLAIM_CONFLICT",
+                "send_token 不匹配",
+                409,
+                {"suggested_action": "do_not_retry_send"},
+            )
+        ack = SentAck(
+            reply_action_id=action.id,
+            task_id=task.id,
+            worker_id=payload.worker_id,
+            client_instance_id=payload.client_instance_id,
+            send_token=payload.send_token,
+            send_result="unknown",
+            action_phase="trigger_attempted",
+            reply_text_hash=payload.reply_text_hash,
+            sidecar_run_id=payload.sidecar_run_id,
+            evidence={
+                **(payload.evidence or {}),
+                "backend_terminal_reconciled": True,
+                "reported_send_result": payload.send_result,
+                "reported_action_phase": payload.action_phase,
+            },
+            error_code=action.error_code or payload.error_code or "SEND_RESULT_UNKNOWN",
+            remark=UNKNOWN_SEND_TERMINAL_REMARK,
+            sent_at=payload.sent_at,
+        )
+        db.add(ack)
+        db.flush()
+        return {
+            "duplicated": True,
+            "ack": _sent_ack_to_dict(ack),
+            "reply_action": _reply_action_to_dict(action),
+            "task": task_to_detail(get_task_or_404(db, task.id)),
+            "error_code": "SEND_ACK_RECONCILED_TO_UNKNOWN_TERMINAL",
+            "suggested_action": "confirm_ack_without_resend",
+        }
     if action.status != "sending":
         raise AppError("REPLY_ACTION_CLAIM_CONFLICT", "reply_action 未处于 sending 状态，不能回执", 409, {"status": action.status, "suggested_action": "do_not_retry_send"})
     if payload.send_token != action.send_token:
         raise AppError("REPLY_ACTION_CLAIM_CONFLICT", "send_token 不匹配", 409, {"suggested_action": "do_not_retry_send"})
     if payload.reply_text_hash and action.reply_text_hash and payload.reply_text_hash != action.reply_text_hash:
         payload.error_code = payload.error_code or "SEND_TEXT_HASH_MISMATCH"
-        payload.send_result = "failed"
+        payload.send_result = "unknown"
+        payload.action_phase = "trigger_attempted"
 
     ack = SentAck(
         reply_action_id=action.id,
@@ -709,6 +1747,7 @@ def sent_ack(db: Session, *, reply_action_id: str, payload: Any) -> dict[str, An
         client_instance_id=payload.client_instance_id,
         send_token=payload.send_token,
         send_result=payload.send_result,
+        action_phase=payload.action_phase,
         reply_text_hash=payload.reply_text_hash,
         sidecar_run_id=payload.sidecar_run_id,
         evidence=payload.evidence or {},
@@ -724,14 +1763,48 @@ def sent_ack(db: Session, *, reply_action_id: str, payload: Any) -> dict[str, An
     if payload.send_result == "sent":
         action.status = "sent"
         action.sent_at = payload.sent_at or utcnow()
+        pending_ai_events = db.scalars(
+            select(MessageEvent).where(
+                MessageEvent.conversation_id == action.conversation_id,
+                MessageEvent.sender_role.in_({"self", "sales", "sales_candidate"}),
+            )
+        ).all()
+        for event in pending_ai_events:
+            raw = event.raw_payload if isinstance(event.raw_payload, dict) else {}
+            if (
+                str(raw.get("ai_reply_action_id") or "") == action.id
+                and str(raw.get("sender_source") or "") == "ai_pending_ack"
+            ):
+                event.raw_payload = {
+                    **raw,
+                    "sender_source": "ai",
+                }
         task.status = TaskStatus.completed.value
         task.result_code = TaskResultCode.chat_reply_sent.value
         task.error_code = None
         task.completed_at = action.sent_at
-        conversation.status = "waiting_user_reply"
         conversation.reply_count = (conversation.reply_count or 0) + 1
         conversation.last_outbound_at = action.sent_at
         conversation.last_ai_reply_at = action.sent_at
+        batch = db.get(MessageBatch, action.batch_id)
+        claim_boundary = _aware_datetime(action.sending_claimed_at)
+        last_inbound = _aware_datetime(conversation.last_inbound_at)
+        last_sales = _aware_datetime(conversation.last_sales_reply_at)
+        newer_customer_turn = bool(
+            claim_boundary and last_inbound and last_inbound > claim_boundary
+        )
+        newer_sales_turn = bool(
+            claim_boundary and last_sales and last_sales > claim_boundary
+        )
+        if not newer_customer_turn and not newer_sales_turn:
+            conversation.status = "waiting_user_reply"
+            if batch and batch.trigger_type == "recall":
+                conversation.status = "recalled_waiting_user"
+                conversation.recall_origin_status = None
+                conversation.recall_cycle_id = None
+            conversation.next_recall_at = action.sent_at + timedelta(
+                hours=get_settings().c3_recall_after_hours
+            )
         finish_task_and_release_worker(task)
         _write_event(db, task, TaskEventType.completed, from_status=before, to_status=task.status, worker_id=payload.worker_id, remark=payload.remark)
     elif payload.send_result == "failed":
@@ -744,16 +1817,162 @@ def sent_ack(db: Session, *, reply_action_id: str, payload: Any) -> dict[str, An
         task.failed_at = utcnow()
         finish_task_and_release_worker(task)
         _write_event(db, task, TaskEventType.failed, from_status=before, to_status=task.status, worker_id=payload.worker_id, remark=payload.remark)
+        _create_send_failure_handoff(
+            db,
+            action=action,
+            conversation=conversation,
+            error_code=action.error_code,
+            send_result="failed",
+        )
     else:
         action.status = "unknown_send_result"
         action.error_code = payload.error_code or "SEND_RESULT_UNKNOWN"
         task.status = TaskStatus.failed.value
         task.error_code = action.error_code
         task.failure_step = "send_reply_unknown"
-        task.failure_remark = payload.remark or "发送结果未知，需人工确认"
+        task.failure_remark = (
+            payload.remark or UNKNOWN_SEND_TERMINAL_REMARK
+        )
         task.failed_at = utcnow()
         finish_task_and_release_worker(task)
         _write_event(db, task, TaskEventType.failed, from_status=before, to_status=task.status, worker_id=payload.worker_id, remark=task.failure_remark)
+        _create_send_failure_handoff(
+            db,
+            action=action,
+            conversation=conversation,
+            error_code=action.error_code,
+            send_result="unknown",
+        )
 
     db.flush()
     return {"duplicated": False, "ack": _sent_ack_to_dict(ack), "reply_action": _reply_action_to_dict(action), "task": task_to_detail(get_task_or_404(db, task.id))}
+
+
+def recover_stale_sending_reply_action(
+    db: Session,
+    *,
+    reply_action_id: str,
+    now: datetime | None = None,
+) -> bool:
+    action = db.scalar(
+        select(ReplyAction)
+        .where(
+            ReplyAction.id == reply_action_id,
+            ReplyAction.deleted_at.is_(None),
+        )
+        .with_for_update()
+    )
+    if not action or action.status != "sending":
+        return False
+    claimed_at = _aware_datetime(action.sending_claimed_at or action.updated_at)
+    current = _aware_datetime(now or utcnow())
+    if not claimed_at or not current:
+        return False
+    stale_after = max(
+        1.0,
+        float(get_settings().c3_send_ack_stale_after_seconds),
+    )
+    if (current - claimed_at).total_seconds() < stale_after:
+        return False
+    existing_ack = db.scalar(
+        select(SentAck).where(SentAck.reply_action_id == action.id)
+    )
+    if existing_ack:
+        return False
+    task = db.scalar(
+        select(Task)
+        .where(
+            Task.reply_action_id == action.id,
+            Task.deleted_at.is_(None),
+        )
+        .with_for_update()
+    )
+    binding = _binding_or_404(db, action.conversation_id)
+    conversation = _conversation_for_binding(db, binding)
+    action.status = "unknown_send_result"
+    action.error_code = "SEND_ACK_TIMEOUT"
+    if task and task.status == TaskStatus.running.value:
+        before = task.status
+        task.status = TaskStatus.failed.value
+        task.error_code = "SEND_ACK_TIMEOUT"
+        task.failure_step = "send_reply_unknown"
+        task.failure_remark = (
+            "客户端长时间未返回发送结果；"
+            + UNKNOWN_SEND_TERMINAL_REMARK
+        )
+        task.failed_at = utcnow()
+        finish_task_and_release_worker(task)
+        _write_event(
+            db,
+            task,
+            TaskEventType.failed,
+            from_status=before,
+            to_status=task.status,
+            worker_id=action.claimed_by_worker_id,
+            remark=task.failure_remark,
+        )
+    _create_send_failure_handoff(
+        db,
+        action=action,
+        conversation=conversation,
+        error_code="SEND_ACK_TIMEOUT",
+        send_result="unknown",
+    )
+    db.flush()
+    return True
+
+
+def get_message_batch_for_worker(db: Session, *, worker: Worker, batch_id: str) -> dict[str, Any]:
+    batch = db.scalar(
+        select(MessageBatch).where(MessageBatch.id == batch_id, MessageBatch.deleted_at.is_(None))
+    )
+    if not batch:
+        raise AppError("MESSAGE_BATCH_NOT_FOUND", "消息批次不存在", 404)
+    binding = db.scalar(
+        select(WechatSessionBinding).where(
+            WechatSessionBinding.conversation_id == batch.conversation_id,
+            WechatSessionBinding.worker_id == worker.id,
+            WechatSessionBinding.deleted_at.is_(None),
+        )
+    )
+    if not binding:
+        raise AppError("MESSAGE_BATCH_WORKER_MISMATCH", "消息批次不属于当前 Worker 会话", 403)
+
+    action = db.scalar(
+        select(ReplyAction).where(
+            ReplyAction.batch_id == batch.id,
+            ReplyAction.current.is_(True),
+            ReplyAction.deleted_at.is_(None),
+        )
+    )
+    task = db.scalar(select(Task).where(Task.reply_action_id == action.id, Task.deleted_at.is_(None))) if action else None
+    handoff = db.scalar(
+        select(HandoffEvent).where(HandoffEvent.batch_id == batch.id, HandoffEvent.deleted_at.is_(None))
+    )
+    processing = batch.status in ACTIVE_BATCH_STATUSES
+    continuation = message_batch_continuation_authorization(
+        db,
+        worker=worker,
+        batch=batch,
+        binding=binding,
+    )
+
+    return {
+        "batch_id": batch.id,
+        "batch_status": batch.status,
+        "processing": processing,
+        "terminal": not processing,
+        "conversation_id": batch.conversation_id,
+        "trigger_type": batch.trigger_type,
+        "decision": batch.decision,
+        "retryable": batch.retryable,
+        "error_code": batch.error_code,
+        "suggested_action": batch.suggested_action,
+        "reply_action": _reply_action_to_dict(action),
+        "task": task_to_detail(get_task_or_404(db, task.id)) if task else None,
+        "handoff_event": _handoff_to_dict(handoff),
+        "trace_id": batch.trace_id,
+        "updated_at": batch.updated_at,
+        "authorization": continuation,
+        "continuation": continuation,
+    }

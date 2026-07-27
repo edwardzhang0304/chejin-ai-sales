@@ -1,0 +1,842 @@
+from __future__ import annotations
+
+import hashlib
+import sys
+import os
+import base64
+import json
+import subprocess
+import threading
+import time
+from contextlib import nullcontext
+from pathlib import Path
+from typing import Any, Callable
+
+from .c2_contract import observation_role_is_trusted
+from .action_journal import (
+    action_journal_phase,
+    update_action_journal_item,
+)
+
+
+OMNIAUTO_ROOT = Path(__file__).resolve().parents[1] / "omniauto-rpa"
+if str(OMNIAUTO_ROOT) not in sys.path:
+    sys.path.insert(0, str(OMNIAUTO_ROOT))
+
+DEFAULT_VISION_PROVIDER = "anthropic_compatible"
+DEFAULT_VISION_BASE_URL = "https://aiself.vip/v1"
+DEFAULT_VISION_MODEL = "doubao-seed-2-0-lite-260428"
+DEFAULT_VISION_REQUEST_STYLE = "anthropic_messages_vision"
+VISION_API_KEY_ENV_NAMES = (
+    "CUSTOMER_IMAGE_UNDERSTANDING_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+)
+
+
+class VisionCancelledError(RuntimeError):
+    pass
+
+
+def _cancel_requested(callback: Callable[[], bool] | None) -> bool:
+    if not callable(callback):
+        return False
+    try:
+        return bool(callback())
+    except Exception:
+        return True
+
+
+class _CancellableVisionProvider:
+    """Run the blocking model request in a killable in-memory child process."""
+
+    def __init__(self, cancel_check: Callable[[], bool] | None) -> None:
+        self.cancel_check = cancel_check
+
+    @staticmethod
+    def _command() -> list[str]:
+        if getattr(sys, "frozen", False):
+            return [sys.executable, "--vision-provider-worker"]
+        return [
+            sys.executable,
+            "-m",
+            "chejin_worker_client.vision_provider_worker",
+        ]
+
+    def understand(self, request: dict[str, Any]) -> dict[str, Any]:
+        if _cancel_requested(self.cancel_check):
+            raise VisionCancelledError("vision_cancelled_before_provider")
+        image = request.get("image")
+        image_bytes = getattr(image, "image_bytes", None)
+        if not isinstance(image_bytes, (bytes, bytearray, memoryview)) or not image_bytes:
+            raise ValueError("VISION_PROVIDER_IMAGE_INVALID")
+        config = request.get("config")
+        if not isinstance(config, dict):
+            raise ValueError("VISION_PROVIDER_CONFIG_INVALID")
+        settings = config.get("customer_image_understanding")
+        timeout_seconds = (
+            float((settings or {}).get("timeout_seconds") or 10)
+            if isinstance(settings, dict)
+            else 10.0
+        )
+        payload = json.dumps(
+            {
+                "config": config,
+                "customer_text": str(request.get("customer_text") or ""),
+                "message_id": str(request.get("message_id") or ""),
+                "mime_type": str(getattr(image, "mime_type", "") or "image/png"),
+                "width": int(getattr(image, "width", 0) or 0),
+                "height": int(getattr(image, "height", 0) or 0),
+                "image_base64": base64.b64encode(bytes(image_bytes)).decode("ascii"),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        popen_kwargs: dict[str, Any] = {
+            "stdin": subprocess.PIPE,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+        }
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = int(
+                getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            )
+        process = subprocess.Popen(self._command(), **popen_kwargs)
+        completed: dict[str, str] = {}
+
+        def communicate() -> None:
+            stdout, stderr = process.communicate(input=payload)
+            completed["stdout"] = stdout
+            completed["stderr"] = stderr
+
+        thread = threading.Thread(
+            target=communicate,
+            name="chejin-vision-provider-pipe",
+            daemon=True,
+        )
+        thread.start()
+        deadline = time.monotonic() + max(3.0, timeout_seconds + 5.0)
+        while thread.is_alive():
+            if _cancel_requested(self.cancel_check):
+                process.kill()
+                thread.join(timeout=5.0)
+                raise VisionCancelledError("vision_cancelled_during_provider")
+            if time.monotonic() >= deadline:
+                process.kill()
+                thread.join(timeout=5.0)
+                raise TimeoutError("VISION_PROVIDER_PROCESS_TIMEOUT")
+            thread.join(timeout=0.15)
+        try:
+            envelope = json.loads(completed.get("stdout") or "{}")
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("VISION_PROVIDER_RESULT_INVALID") from exc
+        if process.returncode != 0 or envelope.get("ok") is not True:
+            raise RuntimeError(
+                str(envelope.get("error_code") or "VISION_PROVIDER_WORKER_FAILED")
+            )
+        result = envelope.get("result")
+        if not isinstance(result, dict):
+            raise RuntimeError("VISION_PROVIDER_RESULT_INVALID")
+        if _cancel_requested(self.cancel_check):
+            raise VisionCancelledError("vision_cancelled_after_provider")
+        return result
+
+_MENU_EVIDENCE_TOKENS = (
+    "复制",
+    "转发",
+    "收藏",
+    "多选",
+    "删除",
+    "引用",
+    "翻译",
+    "搜一搜",
+    "提醒",
+)
+
+
+def _frame_fingerprint(image: Any) -> str:
+    """Return a non-reversible visual fingerprint without persisting pixels."""
+
+    sample = None
+    try:
+        sample = image.copy()
+        sample.thumbnail((64, 64))
+        seed = f"{getattr(sample, 'mode', '')}|{getattr(sample, 'size', '')}|".encode("utf-8")
+        return hashlib.sha256(seed + sample.tobytes()).hexdigest()
+    except Exception:
+        return ""
+    finally:
+        close = getattr(sample, "close", None)
+        if callable(close):
+            close()
+
+
+def _ocr_bounds(item: dict[str, Any]) -> list[int]:
+    bounds = item.get("bounds") or item.get("bbox") or item.get("rect")
+    if isinstance(bounds, dict):
+        raw = [bounds.get("left"), bounds.get("top"), bounds.get("right"), bounds.get("bottom")]
+    elif isinstance(bounds, (list, tuple)) and len(bounds) >= 4:
+        raw = list(bounds[:4])
+    else:
+        raw = [item.get("left"), item.get("top"), item.get("right"), item.get("bottom")]
+    try:
+        return [int(round(float(value))) for value in raw]
+    except (TypeError, ValueError):
+        return []
+
+
+def _menu_ocr_evidence(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    evidence: list[dict[str, Any]] = []
+    for item in items:
+        text = str(item.get("text") or "").strip()
+        compact = "".join(text.split())
+        token = next((value for value in _MENU_EVIDENCE_TOKENS if value in compact), "")
+        if not token:
+            continue
+        evidence.append({"token": token, "bounds": _ocr_bounds(item)})
+    return evidence[:16]
+
+
+class _VisionHostState:
+    def __init__(self, trace_id: str) -> None:
+        from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar
+
+        self.host = wechat_win32_ocr_sidecar
+        self.hwnd = 0
+        self.bubble_rect: list[int] = []
+        self.trace_id = str(trace_id or "")
+        self.started_at = time.perf_counter()
+        self.events: list[dict[str, Any]] = []
+
+    def record(self, stage: str, status: str, *, started_at: float | None = None, **metadata: Any) -> None:
+        event = {
+            "sequence": len(self.events) + 1,
+            "stage": str(stage),
+            "status": str(status),
+            "offset_ms": int((time.perf_counter() - self.started_at) * 1000),
+        }
+        if started_at is not None:
+            event["duration_ms"] = int((time.perf_counter() - started_at) * 1000)
+        event.update({key: value for key, value in metadata.items() if value is not None})
+        self.events.append(event)
+
+    def diagnostics(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "trace_id": self.trace_id,
+            "total_duration_ms": int((time.perf_counter() - self.started_at) * 1000),
+            "events": [dict(item) for item in self.events],
+            "image_persisted": False,
+        }
+
+    def ensure_window(self) -> int:
+        if self.hwnd:
+            return self.hwnd
+        probe = self.host.ensure_visible_wechat_window(interactive=True)
+        window = self.host.select_primary_visible_main_window(probe)
+        self.hwnd = int((window or {}).get("hwnd") or 0)
+        if not self.hwnd:
+            raise RuntimeError("WECHAT_WINDOW_NOT_FOUND")
+        return self.hwnd
+
+
+class _ConversationTarget:
+    def __init__(self, state: _VisionHostState) -> None:
+        self.state = state
+
+    def confirm_target(self, context: dict[str, Any]) -> dict[str, Any]:
+        started_at = time.perf_counter()
+        hwnd = self.state.ensure_window()
+        target = str(context.get("remark_code") or context.get("target_name") or "").strip()
+        if not target:
+            self.state.record("target_confirmation", "failed", started_at=started_at, reason="vision_target_missing")
+            return {"ok": False, "reason": "vision_target_missing"}
+        candidate_frame = (
+            context.get("candidate_frame")
+            if isinstance(context.get("candidate_frame"), dict)
+            else {}
+        )
+        try:
+            validation = self.state.host.validate_active_send_target(
+                hwnd,
+                target,
+                exact=False,
+                artifact_dir=None,
+                screenshot=candidate_frame.get("image"),
+                ocr_items=candidate_frame.get("ocr_items"),
+                screenshot_path="",
+            )
+            confirmed = self.state.host.c2_target_activation_confirmed(validation)
+        except Exception as exc:
+            self.state.record(
+                "target_confirmation",
+                "failed",
+                started_at=started_at,
+                reason="target_confirmation_exception",
+                error_type=type(exc).__name__,
+            )
+            raise
+        self.state.record(
+            "target_confirmation",
+            "completed" if confirmed else "failed",
+            started_at=started_at,
+            reason=str(validation.get("reason") or validation.get("state") or ""),
+            frame_reused=bool(candidate_frame),
+        )
+        return {
+            "ok": bool(confirmed),
+            "reason": str(validation.get("reason") or validation.get("state") or ""),
+            "remark_code": target,
+            "conversation_type": str(validation.get("conversation_type") or ""),
+            "frame_reused": bool(candidate_frame),
+        }
+
+
+class _WindowFrame:
+    def __init__(self, state: _VisionHostState) -> None:
+        self.state = state
+
+    def capture_frame(self, context: dict[str, Any]) -> dict[str, Any]:
+        started_at = time.perf_counter()
+        hwnd = self.state.ensure_window()
+        phase = str(context.get("phase") or "image_candidate")
+        try:
+            if phase == "image_context_menu":
+                capture = getattr(self.state.host, "capture_wechat_window_visible_screen", None)
+                if callable(capture):
+                    image, _ = capture(hwnd, artifact_dir=None, label="vision_image_context_menu")
+                else:
+                    image, _ = self.state.host.capture_wechat(hwnd, artifact_dir=None, label="vision_image_context_menu")
+            else:
+                image, _ = self.state.host.capture_wechat(hwnd, artifact_dir=None, label="vision_image_candidate")
+            ocr_items = self.state.host.run_ocr(image)
+            messages = self.state.host.parse_messages_from_ocr(
+                ocr_items,
+                image.size,
+                target=str(context.get("remark_code") or context.get("target_name") or ""),
+            )
+            from apps.wechat_ai_customer_service.optional_plugins.vision.capture.wechat import (
+                extract_chat_time_markers,
+            )
+
+            self.state.record(
+                "frame_capture",
+                "completed",
+                started_at=started_at,
+                phase=phase,
+                frame_fingerprint=_frame_fingerprint(image),
+                image_size=[int(image.size[0]), int(image.size[1])],
+                ocr_item_count=len(ocr_items),
+                parsed_message_count=len(messages),
+                menu_ocr_evidence=_menu_ocr_evidence(ocr_items) if phase == "image_context_menu" else [],
+                image_persisted=False,
+            )
+            return {
+                "ok": True,
+                "image": image,
+                "image_size": image.size,
+                "ocr_items": ocr_items,
+                "messages": messages,
+                "time_markers": extract_chat_time_markers(ocr_items, image.size),
+            }
+        except Exception as exc:
+            self.state.record(
+                "frame_capture",
+                "failed",
+                started_at=started_at,
+                phase=phase,
+                reason="vision_window_capture_failed",
+                error_type=type(exc).__name__,
+                image_persisted=False,
+            )
+            return {"ok": False, "reason": "vision_window_capture_failed", "error_type": type(exc).__name__}
+
+
+class _UiAction:
+    def __init__(self, state: _VisionHostState) -> None:
+        self.state = state
+
+    def right_click(self, x: int, y: int) -> None:
+        started_at = time.perf_counter()
+        hwnd = self.state.ensure_window()
+        bounds = self.state.bubble_rect or [x - 4, y - 4, x + 4, y + 4]
+        result = self.state.host.human_window_image_right_click_in_bounds(
+            hwnd,
+            int(x),
+            int(y),
+            bounds=bounds,
+            action_name="c2_vision_image_slot_context_right_click",
+        )
+        if not result.get("ok"):
+            self.state.record(
+                "context_right_click",
+                "failed",
+                started_at=started_at,
+                point=[int(x), int(y)],
+                bounds=[int(value) for value in bounds],
+            )
+            raise RuntimeError("IMAGE_CONTEXT_RIGHT_CLICK_FAILED")
+        self.state.record(
+            "context_right_click",
+            "completed",
+            started_at=started_at,
+            point=[int(x), int(y)],
+            bounds=[int(value) for value in bounds],
+        )
+        self.state.host.humanized_action_sleep(260, 520)
+
+    def click(self, x: int, y: int) -> None:
+        started_at = time.perf_counter()
+        hwnd = self.state.ensure_window()
+        bounds = [int(x) - 8, int(y) - 8, int(x) + 8, int(y) + 8]
+        result = self.state.host.human_window_image_click_in_bounds(
+            hwnd,
+            int(x),
+            int(y),
+            bounds=bounds,
+            action_name="c2_vision_image_copy_menu_click",
+        )
+        if not result.get("ok"):
+            self.state.record(
+                "copy_menu_click",
+                "failed",
+                started_at=started_at,
+                point=[int(x), int(y)],
+                bounds=bounds,
+            )
+            raise RuntimeError("IMAGE_COPY_MENU_CLICK_FAILED")
+        self.state.record(
+            "copy_menu_click",
+            "completed",
+            started_at=started_at,
+            point=[int(x), int(y)],
+            bounds=bounds,
+        )
+        self.state.host.humanized_action_sleep(100, 220)
+
+    def dismiss_menu_safely(self) -> None:
+        started_at = time.perf_counter()
+        hwnd = self.state.ensure_window()
+        result = self.state.host.dismiss_voice_transcribe_context_menu(
+            hwnd,
+            artifact_dir=None,
+            label="c2_vision_image_menu_dismissed",
+        )
+        self.state.record(
+            "context_menu_dismiss",
+            "completed" if not isinstance(result, dict) or result.get("ok", True) else "failed",
+            started_at=started_at,
+        )
+
+
+class _Clipboard:
+    def __init__(self, state: _VisionHostState) -> None:
+        self.state = state
+
+    def sequence_number(self) -> int | None:
+        started_at = time.perf_counter()
+        from apps.wechat_ai_customer_service.optional_plugins.vision.clipboard_payload import (
+            windows_clipboard_sequence_number,
+        )
+
+        value = windows_clipboard_sequence_number()
+        self.state.record(
+            "clipboard_sequence",
+            "completed" if value is not None else "failed",
+            started_at=started_at,
+            sequence_number=value,
+        )
+        return value
+
+    def read_current_bitmap(self) -> Any:
+        started_at = time.perf_counter()
+        from apps.wechat_ai_customer_service.optional_plugins.vision import clipboard_payload
+
+        result = clipboard_payload._read_current_windows_native_clipboard_image()
+        self.state.record(
+            "clipboard_bitmap_read",
+            "completed" if isinstance(result, dict) and result.get("ok") else "failed",
+            started_at=started_at,
+            reason=str(result.get("reason") or "") if isinstance(result, dict) else "clipboard_result_invalid",
+            image_bytes_persisted=False,
+        )
+        return result
+
+
+class _ExistingWorkerLease:
+    """Vision runs while TaskRunner already owns and renews the single UI lock."""
+
+    @staticmethod
+    def lease(action: str, *, timeout_seconds: float) -> Any:
+        del action, timeout_seconds
+        return nullcontext({"acquired": True, "source": "chejin_worker_ui_lease"})
+
+
+def _rect(value: Any) -> list[int]:
+    if isinstance(value, dict):
+        raw = [value.get("left"), value.get("top"), value.get("right"), value.get("bottom")]
+    elif isinstance(value, (list, tuple)) and len(value) >= 4:
+        raw = list(value[:4])
+    else:
+        return []
+    try:
+        result = [int(round(float(item))) for item in raw]
+    except (TypeError, ValueError):
+        return []
+    return result if result[2] > result[0] and result[3] > result[1] else []
+
+
+def explicit_vision_config() -> tuple[dict[str, Any] | None, list[str]]:
+    api_key_env = next(
+        (name for name in VISION_API_KEY_ENV_NAMES if str(os.environ.get(name) or "").strip()),
+        "",
+    )
+    if not api_key_env:
+        return None, ["CUSTOMER_IMAGE_UNDERSTANDING_API_KEY_OR_ANTHROPIC_AUTH_TOKEN"]
+    return {
+        "customer_image_understanding": {
+            "enabled": True,
+            "provider": str(
+                os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_PROVIDER")
+                or DEFAULT_VISION_PROVIDER
+            ).strip(),
+            "base_url": str(
+                os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_BASE_URL")
+                or DEFAULT_VISION_BASE_URL
+            ).strip(),
+            "model": str(
+                os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_MODEL")
+                or DEFAULT_VISION_MODEL
+            ).strip(),
+            "request_style": str(
+                os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_REQUEST_STYLE")
+                or DEFAULT_VISION_REQUEST_STYLE
+            ).strip(),
+            "api_key_env": api_key_env,
+        }
+    }, []
+
+
+def vision_configuration_status() -> dict[str, Any]:
+    """Validate Vision capability before any WeChat image UI action."""
+
+    config, missing = explicit_vision_config()
+    settings = (
+        config.get("customer_image_understanding")
+        if isinstance(config, dict) and isinstance(config.get("customer_image_understanding"), dict)
+        else {}
+    )
+    api_key_env = next(
+        (name for name in VISION_API_KEY_ENV_NAMES if str(os.environ.get(name) or "").strip()),
+        "",
+    )
+    required_values = {
+        "provider": str(settings.get("provider") or os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_PROVIDER") or DEFAULT_VISION_PROVIDER).strip(),
+        "base_url": str(settings.get("base_url") or os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_BASE_URL") or DEFAULT_VISION_BASE_URL).strip(),
+        "model": str(settings.get("model") or os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_MODEL") or DEFAULT_VISION_MODEL).strip(),
+        "request_style": str(settings.get("request_style") or os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_REQUEST_STYLE") or DEFAULT_VISION_REQUEST_STYLE).strip(),
+        "api_key_env": str(settings.get("api_key_env") or api_key_env).strip(),
+    }
+    missing_fields = list(missing)
+    missing_fields.extend(
+        name.upper()
+        for name, value in required_values.items()
+        if not value
+        and name != "api_key_env"
+        and name.upper() not in missing_fields
+    )
+    return {
+        "ready": bool(config) and not missing_fields,
+        "missing_configuration": missing_fields,
+        "provider": required_values["provider"],
+        "base_url": required_values["base_url"],
+        "model": required_values["model"],
+        "request_style": required_values["request_style"],
+        "config": config if config and not missing_fields else None,
+    }
+
+
+def process_image_slot(
+    *,
+    observation: dict[str, Any],
+    remark_code: str,
+    session_key: str,
+    config: dict[str, Any] | None = None,
+    trace_id: str = "",
+    cancel_check: Callable[[], bool] | None = None,
+    action_journal_path: str | Path | None = None,
+    source_message_key: str = "",
+) -> dict[str, Any]:
+    """Run one authorized image slot through OmniAuto Vision in memory."""
+
+    resolved_trace_id = str(trace_id or observation.get("observation_id") or "")
+    normalized_source_key = str(source_message_key or "").strip()
+
+    def journal_update(
+        *,
+        action_phase: str,
+        business_state: str | None,
+        business_result_confirmed: bool,
+    ) -> None:
+        if action_journal_path is None or not normalized_source_key:
+            return
+        update_action_journal_item(
+            action_journal_path,
+            source_message_key=normalized_source_key,
+            action_phase=action_phase,
+            business_state=business_state,
+            business_result_confirmed=business_result_confirmed,
+        )
+
+    def finish_result(result: dict[str, Any]) -> dict[str, Any]:
+        if action_journal_path is None or not normalized_source_key:
+            return result
+        phase = str(
+            result.get("action_phase")
+            or action_journal_phase(action_journal_path)
+            or "not_attempted"
+        ).strip()
+        state = str(result.get("state") or "").strip()
+        completed = bool(
+            state == "completed"
+            and isinstance(result.get("customer_image_understanding"), dict)
+        )
+        result["action_phase"] = phase
+        if phase != "not_attempted":
+            terminal_payload = {
+                "state": state or "failed",
+                "reason": str(result.get("reason") or ""),
+                "customer_image_understanding": (
+                    dict(result.get("customer_image_understanding") or {})
+                    if isinstance(
+                        result.get("customer_image_understanding"), dict
+                    )
+                    else None
+                ),
+                "visual_bridge_input": (
+                    result.get("visual_bridge_input")
+                    if isinstance(
+                        result.get("visual_bridge_input"),
+                        (dict, list, str),
+                    )
+                    else None
+                ),
+            }
+            update_action_journal_item(
+                action_journal_path,
+                source_message_key=normalized_source_key,
+                action_phase=phase,
+                business_state="completed" if completed else "failed",
+                business_result_confirmed=completed,
+                error_code=None if completed else str(
+                    result.get("reason") or "IMAGE_RESULT_UNCONFIRMED"
+                ),
+                terminal_payload=terminal_payload,
+            )
+        return result
+
+    def early_result(state: str, reason: str, **extra: Any) -> dict[str, Any]:
+        event = {
+            "sequence": 1,
+            "stage": "vision_preflight",
+            "status": state,
+            "offset_ms": 0,
+            "reason": reason,
+            "image_persisted": False,
+        }
+        return {
+            "state": state,
+            "reason": reason,
+            "action_phase": "not_attempted",
+            **extra,
+            "diagnostics": {
+                "schema_version": 1,
+                "trace_id": resolved_trace_id,
+                "total_duration_ms": 0,
+                "events": [event],
+                "image_persisted": False,
+            },
+        }
+
+    role = str(observation.get("sender_role") or "").strip().lower()
+    role_source = str(
+        observation.get("sender_role_source") or ""
+    ).strip().lower()
+    bubble_rect = _rect(observation.get("bubble_rect"))
+    if not observation_role_is_trusted(observation):
+        return early_result("ignored", "image_same_row_avatar_unconfirmed")
+    if not bubble_rect:
+        return early_result("failed", "image_bubble_rect_missing")
+    if _cancel_requested(cancel_check):
+        return early_result("cancelled", "vision_cancelled_before_start")
+    runtime_config = dict(config or {})
+    if not runtime_config:
+        configuration = vision_configuration_status()
+        configured = configuration.get("config")
+        if not isinstance(configured, dict):
+            return early_result(
+                "capability_paused",
+                "vision_configuration_incomplete",
+                missing_configuration=list(configuration.get("missing_configuration") or []),
+            )
+        runtime_config = configured
+
+    from apps.wechat_ai_customer_service.optional_plugins.vision.plugin import BuiltinVisionPlugin
+    from apps.wechat_ai_customer_service.optional_plugins.vision.ports import VisionHostPorts
+
+    state = _VisionHostState(resolved_trace_id)
+    state.bubble_rect = bubble_rect
+    vision_settings = runtime_config.get("customer_image_understanding")
+    if not isinstance(vision_settings, dict):
+        vision_settings = {}
+    runtime_config["_chejin_c2_strict_adapter"] = True
+    state.record(
+        "vision_preflight",
+        "completed",
+        provider=str(vision_settings.get("provider") or ""),
+        base_url=str(vision_settings.get("base_url") or ""),
+        model=str(vision_settings.get("model") or ""),
+        request_style=str(vision_settings.get("request_style") or ""),
+        role=role,
+        role_source=role_source,
+        bubble_rect=bubble_rect,
+        image_persisted=False,
+    )
+    ports = VisionHostPorts(
+        rpa_lease=_ExistingWorkerLease(),
+        conversation_target=_ConversationTarget(state),
+        window_frame=_WindowFrame(state),
+        ui_action=_UiAction(state),
+        clipboard=_Clipboard(state),
+        vision_provider=_CancellableVisionProvider(cancel_check),
+    )
+    plugin = BuiltinVisionPlugin(ports=ports, config=runtime_config)
+    plugin_started_at = time.perf_counter()
+    try:
+        result = plugin.run(
+            {
+                "remark_code": remark_code,
+                "target_name": remark_code,
+                "session_key": session_key,
+                "conversation_type": "private",
+                "sender_role": role,
+                "side_filter": "all",
+                "bubble_rect": bubble_rect,
+                "message_id": str(observation.get("observation_id") or ""),
+                "customer_text": "客户发送了一张图片" if role == "customer" else "销售发送了一张图片",
+                "config": runtime_config,
+                "cancel_check": cancel_check,
+                "action_journal_update": journal_update,
+            }
+        )
+    except VisionCancelledError:
+        state.record(
+            "vision_provider",
+            "cancelled",
+            started_at=plugin_started_at,
+            reason="vision_cancelled",
+            image_persisted=False,
+        )
+        return finish_result({
+            "state": "cancelled",
+            "reason": "vision_cancelled",
+            "action_phase": (
+                action_journal_phase(action_journal_path)
+                if action_journal_path is not None
+                else "not_attempted"
+            ),
+            "diagnostics": state.diagnostics(),
+        })
+    except Exception as exc:
+        state.record(
+            "vision_provider",
+            "failed",
+            started_at=plugin_started_at,
+            reason="vision_plugin_exception",
+            error_type=type(exc).__name__,
+            image_persisted=False,
+        )
+        return finish_result({
+            "state": "failed",
+            "reason": "vision_plugin_exception",
+            "error_type": type(exc).__name__,
+            "diagnostics": state.diagnostics(),
+        })
+    if _cancel_requested(cancel_check):
+        transaction = dict(result.get("clipboard_transaction") or {})
+        state.record(
+            "vision_provider",
+            "cancelled",
+            started_at=plugin_started_at,
+            reason="vision_cancelled_after_provider",
+            image_persisted=False,
+        )
+        return finish_result({
+            "state": "cancelled",
+            "reason": "vision_cancelled_after_provider",
+            "action_phase": str(
+                transaction.get("action_phase") or "not_attempted"
+            ),
+            "transaction": transaction,
+            "diagnostics": state.diagnostics(),
+        })
+    if not isinstance(result, dict):
+        state.record(
+            "vision_provider",
+            "failed",
+            started_at=plugin_started_at,
+            reason="vision_result_invalid",
+            image_persisted=False,
+        )
+        return finish_result({
+            "state": "failed",
+            "reason": "vision_result_invalid",
+            "diagnostics": state.diagnostics(),
+        })
+    understanding = result.get("customer_image_understanding")
+    bridge = result.get("visual_bridge_input")
+    if not isinstance(understanding, dict):
+        reason = str(result.get("reason") or "vision_understanding_missing")
+        transaction = dict(result.get("clipboard_transaction") or {})
+        state.record(
+            "vision_provider",
+            "failed",
+            started_at=plugin_started_at,
+            reason=reason,
+            image_persisted=False,
+        )
+        return finish_result({
+            "state": "failed",
+            "reason": reason,
+            "action_phase": str(
+                transaction.get("action_phase") or "not_attempted"
+            ),
+            "transaction": transaction,
+            "diagnostics": state.diagnostics(),
+        })
+    vision_summary = str(understanding.get("vision_summary") or "").strip()
+    completed = bool(result.get("applied") or vision_summary)
+    state.record(
+        "vision_provider",
+        "completed" if completed else "failed",
+        started_at=plugin_started_at,
+        reason=str(result.get("reason") or understanding.get("reason") or ""),
+        applied=bool(result.get("applied")),
+        vision_summary_length=len(vision_summary),
+        vision_summary_sha256=hashlib.sha256(vision_summary.encode("utf-8")).hexdigest() if vision_summary else "",
+        image_persisted=False,
+    )
+    return finish_result({
+        "state": "completed" if completed else "failed",
+        "reason": str(result.get("reason") or understanding.get("reason") or ""),
+        "customer_image_understanding": dict(understanding),
+        "visual_bridge_input": bridge if isinstance(bridge, (dict, list, str)) else {},
+        "transaction": dict(result.get("clipboard_transaction") or {}),
+        "action_phase": str(
+            (result.get("clipboard_transaction") or {}).get("action_phase")
+            or "not_attempted"
+        ),
+        "diagnostics": state.diagnostics(),
+    })
