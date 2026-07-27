@@ -1,25 +1,47 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import hashlib
-import logging
 import re
+import uuid
+from zoneinfo import ZoneInfo
 
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.request_id import get_request_id
 from app.contracts.c2 import c2_contract_v3, contract_revision, contract_row_rules, contract_sha256, contract_values
 from app.errors import AppError
 from app.models.base import utcnow
-from app.models.c3 import Conversation
+from app.models.c3 import Conversation, MessageBatch, ReplyAction
 from app.models.lead import Lead
 from app.models.sales import Sales
+from app.models.task import Task
 from app.models.wechat import MessageEvent, WechatScanRun, WechatSessionBinding
 from app.models.worker import Worker
-from app.schemas.wechat import WechatMessageIngestRequest, WechatSessionScanItem, WechatSessionScanResultRequest
+from app.schemas.wechat import (
+    WechatFriendActivationConfirmRequest,
+    WechatMessageIngestRequest,
+    WechatSessionScanItem,
+    WechatSessionScanResultRequest,
+)
+
+
+def _latest_datetime(*values: datetime | None) -> datetime:
+    present = [value for value in values if value is not None]
+    if not present:
+        return utcnow()
+
+    def comparable(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    return max(present, key=comparable)
+from app.services.message_contract import canonical_reply_text, reply_text_hash
 
 
 BIND_STATUS_BOUND = "bound"
@@ -40,14 +62,35 @@ LISTEN_STATUS_DISABLED = "disabled"
 NEXT_ACTION_NONE = "none"
 LOW_CONFIDENCE_THRESHOLD = 0.7
 CONVERSATION_CLOSED_STATUSES = {"closed", "rejected"}
+WORKER_SEQUENCE_IDENTITY_SOURCES = {
+    "worker_cross_round_sequence",
+    "worker_image_physical_identity",
+}
 SALES_SIDE_SENDER_ROLES = {"self", "sales", "sales_candidate"}
 MESSAGE_TYPES_V3 = contract_values("message_types")
 SENDER_ROLES_V3 = contract_values("sender_roles")
 FLOW_STATES_V3 = contract_values("flow_states")
 ROW_RULES_V3 = contract_row_rules()
+FAILED_INGESTIBLE_MESSAGE_TYPES_V3 = {
+    str(rule.get("message_type") or "")
+    for rule in ROW_RULES_V3.values()
+    if bool(rule.get("failed_ingestible"))
+}
+FLOW_GATE_STRONG_POSITION_SOURCES_V3 = {
+    str(value)
+    for value in (
+        c2_contract_v3()
+        .get("flow_gate_detail_schema", {})
+        .get("strong_position_sources", [])
+    )
+}
+TEMPORARY_CAPABILITY_GATE_CODES_V3 = contract_values(
+    "temporary_capability_gate_codes"
+)
 CONTRACT_REVISION_V3 = contract_revision()
 CONTRACT_SHA256_V3 = contract_sha256()
 OBSERVATION_SCHEMA_VERSION_V3 = int(c2_contract_v3()["observation_schema_version"])
+IMAGE_PERSISTENCE_POLICY = dict(c2_contract_v3().get("image_persistence_policy") or {})
 VOICE_FAILURE_ERROR_CODES = {
     "VOICE_TRANSCRIBE_FAILED",
     "VOICE_TRANSCRIBE_CLICK_FAILED",
@@ -56,10 +99,23 @@ VOICE_FAILURE_ERROR_CODES = {
     "VOICE_MESSAGE_UNCONFIRMED",
     "TARGET_NOT_CONFIRMED_FOR_VOICE_TRANSCRIBE",
 }
-IMAGE_RECOGNITION_STATUSES = {"succeeded", "failed"}
+IMAGE_UNDERSTANDING_FIELDS = set(IMAGE_PERSISTENCE_POLICY.get("customer_image_understanding_allowed_fields") or [])
+IMAGE_UNDERSTANDING_AUDIT_FIELDS = set(
+    IMAGE_PERSISTENCE_POLICY.get("customer_image_understanding_audit_allowed_fields") or []
+)
+VISUAL_BRIDGE_FIELDS = set(IMAGE_PERSISTENCE_POLICY.get("visual_bridge_input_allowed_fields") or [])
+IMAGE_FORBIDDEN_FIELD_NAMES = set(IMAGE_PERSISTENCE_POLICY.get("forbidden_field_names") or [])
+IMAGE_FORBIDDEN_FIELD_PREFIXES = (
+    "provider_response",
+    "raw_provider_response",
+    "retry_response",
+    "initial_response",
+)
+AI_REPLY_RECEIPT_CLOCK_SKEW = timedelta(minutes=5)
 READ_TARGET_FAILURE_RESULTS = {"target_not_confirmed", "search_not_found", "search_ambiguous"}
 READ_REASON_PRIORITY = {
     "recall_precheck": 0,
+    "friend_acceptance_visible_hit": 0,
     "recent_ai_sent": 1,
     "waiting_user_reply": 2,
     "waiting_sales_reply": 3,
@@ -67,7 +123,6 @@ READ_REASON_PRIORITY = {
 VOICE_DURATION_RE = re.compile(
     r"^\s*(?:\[?语音\]?\s*)?\d{1,3}(?:\.\d+)?\s*(?:\"|”|″|秒|s|S)\s*$"
 )
-logger = logging.getLogger(__name__)
 
 
 def _clean_candidates(candidates: list[str]) -> list[str]:
@@ -131,11 +186,12 @@ def _message_to_dict(message: MessageEvent) -> dict:
         "sender_role": message.sender_role,
         "message_type": message.message_type,
         "content": message.content,
-        "image_local_path": message.image_local_path,
         "raw_payload": message.raw_payload,
         "evidence": message.evidence,
         "ocr_confidence": message.ocr_confidence,
         "occurred_at": message.occurred_at,
+        "observed_at": message.observed_at,
+        "observation_order": message.observation_order,
         "ingested_at": message.ingested_at,
         "error_code": message.error_code,
     }
@@ -481,7 +537,22 @@ def _bind_one_session(
         lead=lead,
         remark_code=remark_code,
     )
-    _upsert_conversation_for_binding(db, binding)
+    conversation = _upsert_conversation_for_binding(db, binding)
+    if not already_bound:
+        completed_add_friend = db.scalar(
+            select(Task)
+            .where(
+                Task.lead_id == lead.id,
+                Task.worker_id == worker.id,
+                Task.task_type == "add_friend",
+                Task.result_code.in_(["invite_sent", "already_friend"]),
+                Task.deleted_at.is_(None),
+            )
+            .order_by(Task.completed_at.desc())
+        )
+        if completed_add_friend:
+            conversation.friend_state = "friend_active" if completed_add_friend.result_code == "already_friend" else "friend_request_sent"
+            conversation.status = conversation.friend_state
     result = _binding_to_dict(binding)
     result["bind_status"] = BIND_STATUS_ALREADY_BOUND if already_bound else BIND_STATUS_BOUND
     result["can_ingest_messages"] = True
@@ -491,6 +562,8 @@ def _bind_one_session(
 def ingest_scan_result(db: Session, worker: Worker, payload: WechatSessionScanResultRequest) -> dict:
     existing = db.scalar(select(WechatScanRun).where(WechatScanRun.scan_id == payload.scan_id))
     if existing:
+        if existing.worker_id != worker.id:
+            raise AppError("SESSION_SCAN_ID_CONFLICT", "扫描批次不属于当前 Worker", 409)
         return existing.response_snapshot or {}
 
     if payload.scan_failed:
@@ -552,6 +625,10 @@ def read_targets(db: Session, worker: Worker, limit: int = 20) -> dict:
     targets: list[dict] = []
     for item in bindings:
         conversation = _upsert_conversation_for_binding(db, item)
+        from app.services.c3_service import enforce_open_handoff_gate
+
+        enforce_open_handoff_gate(db, conversation)
+        _prepare_due_recall(conversation)
         if conversation.status in CONVERSATION_CLOSED_STATUSES:
             continue
         read_reason = _read_reason(item, conversation)
@@ -567,17 +644,247 @@ def read_targets(db: Session, worker: Worker, limit: int = 20) -> dict:
             "last_ingested_at": item.last_ingested_at,
             "read_reason": read_reason,
             "authorization_revision": _authorization_revision(item),
+            "_dispatch_binding": item,
         }
         if _clean_locator(item.row_fingerprint):
             target["row_fingerprint"] = item.row_fingerprint
         if item.ocr_confidence is not None:
             target["ocr_confidence"] = item.ocr_confidence
         targets.append(target)
-    targets.sort(key=lambda item: READ_REASON_PRIORITY.get(item["read_reason"], 99))
+    def dispatch_sort_key(target: dict) -> tuple[float, int, float]:
+        dispatch_binding = target["_dispatch_binding"]
+        dispatched_at = dispatch_binding.last_read_dispatched_at
+        last_seen_at = dispatch_binding.last_seen_at
+        dispatched_value = (
+            _latest_datetime(dispatched_at).timestamp()
+            if dispatched_at is not None
+            else float("-inf")
+        )
+        last_seen_value = (
+            _latest_datetime(last_seen_at).timestamp()
+            if last_seen_at is not None
+            else 0.0
+        )
+        return (
+            dispatched_value,
+            READ_REASON_PRIORITY.get(target["read_reason"], 99),
+            -last_seen_value,
+        )
+
+    targets.sort(key=dispatch_sort_key)
+    targets = targets[:limit]
+    dispatched_at = utcnow()
+    for target in targets:
+        target.pop("_dispatch_binding").last_read_dispatched_at = dispatched_at
+    legacy_by_conversation: dict[str, list[dict[str, str]]] = {
+        str(target["conversation_id"]): [] for target in targets
+    }
+    conversation_ids = list(legacy_by_conversation)
+    if conversation_ids:
+        ranked_events = (
+            select(
+                MessageEvent.conversation_id.label("conversation_id"),
+                MessageEvent.dedupe_key.label("dedupe_key"),
+                MessageEvent.source_message_key.label("source_message_key"),
+                MessageEvent.message_type.label("message_type"),
+                MessageEvent.sender_role.label("sender_role"),
+                MessageEvent.raw_payload.label("raw_payload"),
+                MessageEvent.ingested_at.label("ingested_at"),
+                MessageEvent.id.label("event_id"),
+                func.row_number()
+                .over(
+                    partition_by=MessageEvent.conversation_id,
+                    order_by=(MessageEvent.ingested_at.desc(), MessageEvent.id.desc()),
+                )
+                .label("event_rank"),
+            )
+            .where(
+                MessageEvent.worker_id == worker.id,
+                MessageEvent.conversation_id.in_(conversation_ids),
+            )
+            .subquery()
+        )
+        legacy_rows = db.execute(
+            select(ranked_events)
+            .where(ranked_events.c.event_rank <= 200)
+            .order_by(
+                ranked_events.c.conversation_id,
+                ranked_events.c.ingested_at,
+                ranked_events.c.event_id,
+            )
+        ).mappings()
+        for row in legacy_rows:
+            raw_payload = row["raw_payload"] if isinstance(row["raw_payload"], dict) else {}
+            basis = raw_payload.get("dedupe_basis") if isinstance(raw_payload.get("dedupe_basis"), dict) else {}
+            source = str(basis.get("source") or "").strip()
+            if source in WORKER_SEQUENCE_IDENTITY_SOURCES:
+                continue
+            legacy_by_conversation[str(row["conversation_id"])].append(
+                {
+                    "dedupe_key": row["dedupe_key"],
+                    "source_message_key": row["source_message_key"],
+                    "message_type": row["message_type"],
+                    "sender_role": row["sender_role"],
+                }
+            )
+    for target in targets:
+        target["identity_transition"] = {
+            "version": 1,
+            "source_version": "v16.104",
+            "legacy_messages": legacy_by_conversation[str(target["conversation_id"])],
+        }
     return {
-        "targets": targets[:limit],
+        "targets": targets,
         "poll_after_seconds": 10,
         "next_action": NEXT_ACTION_NONE,
+    }
+
+
+def read_authorization_snapshot(
+    db: Session,
+    *,
+    binding: WechatSessionBinding,
+) -> dict:
+    """Return the current lightweight authorization without legacy identity history."""
+
+    conversation = _upsert_conversation_for_binding(db, binding)
+    from app.services.c3_service import enforce_open_handoff_gate
+
+    enforce_open_handoff_gate(db, conversation)
+    _prepare_due_recall(conversation)
+    read_reason = _read_reason(binding, conversation)
+    allowed = bool(
+        binding.bind_status == BIND_STATUS_BOUND
+        and binding.listen_status in {LISTEN_STATUS_LISTENING, LISTEN_STATUS_DEGRADED}
+        and binding.allow_listening
+        and _clean_locator(binding.remark_code)
+        and binding.conversation_id
+        and binding.deleted_at is None
+        and conversation.status not in CONVERSATION_CLOSED_STATUSES
+        and read_reason
+    )
+    return {
+        "allowed": allowed,
+        "conversation_id": binding.conversation_id,
+        "authorization_revision": _authorization_revision(binding),
+        "read_reason": read_reason or "",
+    }
+
+
+def read_authorization_for_worker(
+    db: Session,
+    *,
+    worker: Worker,
+    conversation_id: str,
+    continuation_batch_id: str | None = None,
+    continuation_token: str | None = None,
+) -> dict:
+    """Lightweight long-action authorization check without target discovery data."""
+
+    binding = db.scalar(
+        select(WechatSessionBinding).where(
+            WechatSessionBinding.worker_id == worker.id,
+            WechatSessionBinding.conversation_id == conversation_id,
+            WechatSessionBinding.deleted_at.is_(None),
+        )
+    )
+    if not binding:
+        return {
+            "allowed": False,
+            "conversation_id": conversation_id,
+            "authorization_revision": "",
+            "read_reason": "",
+        }
+    if bool(continuation_batch_id) != bool(continuation_token):
+        raise AppError(
+            "C3_BATCH_CONTINUATION_INCOMPLETE",
+            "批次续行标识和 token 必须同时提供",
+            400,
+        )
+    if continuation_batch_id:
+        batch = db.get(MessageBatch, str(continuation_batch_id))
+        if (
+            not batch
+            or batch.deleted_at
+            or batch.conversation_id != conversation_id
+        ):
+            return {
+                "allowed": False,
+                "authorization_scope": "batch_continuation",
+                "batch_id": str(continuation_batch_id),
+                "conversation_id": conversation_id,
+                "authorization_revision": "",
+                "read_reason": "",
+            }
+        from app.services.c3_service import message_batch_continuation_authorization
+
+        return message_batch_continuation_authorization(
+            db,
+            worker=worker,
+            batch=batch,
+            binding=binding,
+            presented_token=str(continuation_token),
+        )
+    return read_authorization_snapshot(db, binding=binding)
+
+
+def confirm_friend_activation(
+    db: Session,
+    worker: Worker,
+    conversation_id: str,
+    payload: WechatFriendActivationConfirmRequest,
+) -> dict:
+    binding = db.scalar(
+        select(WechatSessionBinding)
+        .where(
+            WechatSessionBinding.conversation_id == conversation_id,
+            WechatSessionBinding.worker_id == worker.id,
+            WechatSessionBinding.deleted_at.is_(None),
+        )
+        .with_for_update()
+    )
+    if not binding:
+        raise AppError("WECHAT_BINDING_NOT_FOUND", "微信会话绑定不存在", 404)
+    if (
+        binding.bind_status != BIND_STATUS_BOUND
+        or not binding.allow_listening
+        or binding.listen_status not in {LISTEN_STATUS_LISTENING, LISTEN_STATUS_DEGRADED}
+    ):
+        raise AppError("C2_TARGET_NOT_AUTHORIZED", "好友激活确认时会话已不允许读取", 409)
+    if str(payload.authorization_revision or "") != _authorization_revision(binding):
+        raise AppError("MESSAGE_AUTHORIZATION_REVISION_EXPIRED", "好友激活授权已过期", 409)
+    if _clean_locator(payload.remark_code) != _clean_locator(binding.remark_code):
+        raise AppError("MESSAGE_TARGET_IDENTITY_MISMATCH", "好友激活的短码与绑定会话不一致", 409)
+    title_evidence = payload.title_evidence if isinstance(payload.title_evidence, dict) else {}
+    if (
+        str(payload.conversation_type or "").strip().lower() != "private"
+        or not payload.chat_surface_ready
+        or title_evidence.get("short_code_confirmed") is not True
+        or title_evidence.get("admission_allowed") is not True
+        or str(title_evidence.get("conversation_type") or "").strip().lower() != "private"
+    ):
+        raise AppError(
+            "C2_FRIEND_ACTIVATION_EVIDENCE_INVALID",
+            "好友激活缺少短码、private 单聊或会话就绪证据",
+            409,
+        )
+    conversation = _upsert_conversation_for_binding(db, binding)
+    if conversation.friend_state == "friend_request_sent":
+        conversation.friend_state = "friend_active"
+        conversation.status = "friend_activation_reading"
+    elif not (
+        conversation.friend_state == "friend_active"
+        and conversation.status in {"friend_activation_reading", "ai_active"}
+    ):
+        raise AppError("C2_FRIEND_ACTIVATION_STATE_INVALID", "当前好友状态不允许执行激活确认", 409)
+    db.flush()
+    return {
+        "conversation_id": conversation_id,
+        "friend_state": conversation.friend_state,
+        "conversation_status": conversation.status,
+        "activation_confirmed": True,
+        "authorization_revision": _authorization_revision(binding),
+        "next_action": "read_current_chat",
     }
 
 
@@ -619,7 +926,27 @@ def _degrade_invalid_bound_targets(db: Session, worker: Worker) -> None:
         db.flush()
 
 
+def _friend_acceptance_recently_visible(binding: WechatSessionBinding) -> bool:
+    last_seen_at = binding.last_seen_at
+    if last_seen_at is None:
+        return False
+    if last_seen_at.tzinfo is None:
+        last_seen_at = last_seen_at.replace(tzinfo=timezone.utc)
+    age_seconds = (
+        utcnow() - last_seen_at.astimezone(timezone.utc)
+    ).total_seconds()
+    return 0 <= age_seconds <= get_settings().c2_friend_acceptance_visible_ttl_seconds
+
+
 def _read_reason(binding: WechatSessionBinding, conversation: Conversation) -> str | None:
+    if conversation.friend_state == "friend_request_sent":
+        return (
+            "friend_acceptance_visible_hit"
+            if _friend_acceptance_recently_visible(binding)
+            else None
+        )
+    if conversation.status == "friend_activation_reading":
+        return "friend_acceptance_visible_hit"
     if conversation.status == "recall_precheck":
         return "recall_precheck"
     if conversation.status == "waiting_user_reply" and conversation.last_ai_reply_at:
@@ -629,6 +956,34 @@ def _read_reason(binding: WechatSessionBinding, conversation: Conversation) -> s
     if conversation.status == "waiting_sales_reply":
         return "waiting_sales_reply"
     return None
+
+
+def _prepare_due_recall(conversation: Conversation) -> None:
+    settings = get_settings()
+    if conversation.status not in {"waiting_user_reply", "sales_replied_waiting_user", "recalled_waiting_user"}:
+        return
+    if not conversation.ai_enabled or not conversation.next_recall_at or conversation.recall_count >= settings.c3_recall_max_cycles:
+        return
+    now = utcnow()
+    comparable_now = now if getattr(conversation.next_recall_at, "tzinfo", None) else now.replace(tzinfo=None)
+    if conversation.next_recall_at > comparable_now:
+        return
+    local_now = now.astimezone(ZoneInfo("Asia/Shanghai"))
+    hour = local_now.hour
+    start = settings.c3_recall_quiet_start_hour
+    end = settings.c3_recall_quiet_end_hour
+    in_quiet = hour >= start or hour < end if start > end else start <= hour < end
+    if in_quiet:
+        return
+    today = local_now.date()
+    if conversation.recall_daily_date != today:
+        conversation.recall_daily_date = today
+        conversation.recall_daily_count = 0
+    if conversation.recall_daily_count >= settings.c3_recall_daily_limit:
+        return
+    conversation.recall_origin_status = conversation.status
+    conversation.status = "recall_precheck"
+    conversation.recall_cycle_id = conversation.recall_cycle_id or f"recall-{uuid.uuid4()}"
 
 
 def _looks_like_voice_payload_text(value: str) -> bool:
@@ -668,27 +1023,84 @@ def _voice_failure_code(raw_payload: dict | None) -> str | None:
     return None
 
 
-def _image_recognition_warning_code(raw_payload: dict | None) -> str | None:
-    if not isinstance(raw_payload, dict) or "image_recognition" not in raw_payload:
-        return "IMAGE_RECOGNITION_RESULT_INVALID"
-    recognition = raw_payload.get("image_recognition")
-    if not isinstance(recognition, dict):
-        return "IMAGE_RECOGNITION_RESULT_INVALID"
-    status = str(recognition.get("status") or "").strip().lower()
-    if status not in IMAGE_RECOGNITION_STATUSES:
-        return "IMAGE_RECOGNITION_RESULT_INVALID"
-    success = recognition.get("success")
-    if "success" in recognition and not isinstance(success, bool):
-        return "IMAGE_RECOGNITION_RESULT_INVALID"
-    supplied_code = str(recognition.get("error_code") or "").strip().upper()
-    if status == "succeeded":
-        if success is False or supplied_code:
-            return "IMAGE_RECOGNITION_RESULT_INVALID"
-        return None
-    if success is True:
-        return "IMAGE_RECOGNITION_RESULT_INVALID"
-    normalized_code = re.sub(r"[^A-Z0-9_]+", "_", supplied_code).strip("_")
-    return normalized_code[:64] or "IMAGE_RECOGNITION_FAILED"
+def _validate_text_only_image_value(value: object, *, path: str) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            normalized_key = str(key).strip().lower()
+            if normalized_key in IMAGE_FORBIDDEN_FIELD_NAMES or normalized_key.startswith(IMAGE_FORBIDDEN_FIELD_PREFIXES):
+                raise AppError("IMAGE_PERSISTENCE_FIELD_FORBIDDEN", f"图片结果包含禁止持久化字段: {path}.{key}", 409)
+            _validate_text_only_image_value(child, path=f"{path}.{key}")
+        return
+    if isinstance(value, list):
+        for index, child in enumerate(value):
+            _validate_text_only_image_value(child, path=f"{path}[{index}]")
+        return
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        if isinstance(value, str):
+            compact = value.strip().lower()
+            if compact.startswith(("data:image/", "file://")) or re.match(r"^[a-z]:[\\/]", compact):
+                raise AppError("IMAGE_PERSISTENCE_VALUE_FORBIDDEN", f"图片结果包含可还原图片或本地路径: {path}", 409)
+        return
+    raise AppError("IMAGE_PERSISTENCE_VALUE_INVALID", f"图片结果字段不是 JSON 文字结构: {path}", 409)
+
+
+def _media_error_data(source_message_key: str) -> dict[str, str]:
+    source_key = str(source_message_key or "").strip()
+    return {"source_message_key": source_key} if source_key else {}
+
+
+def _validate_image_understanding(
+    raw_payload: dict,
+    *,
+    source_message_key: str = "",
+) -> None:
+    # Validate the complete persisted payload, including nested OmniAuto
+    # observation/source evidence. Forbidden image material must not be hidden
+    # outside the two formal Vision result fields.
+    _validate_text_only_image_value(raw_payload, path="raw_payload")
+    understanding = raw_payload.get("customer_image_understanding")
+    bridge = raw_payload.get("visual_bridge_input")
+    if not isinstance(understanding, dict) or not isinstance(bridge, dict):
+        raise AppError(
+            "IMAGE_UNDERSTANDING_REQUIRED",
+            "图片消息缺少 Vision 文字化结果",
+            409,
+            _media_error_data(source_message_key),
+        )
+    unexpected = sorted(set(understanding) - IMAGE_UNDERSTANDING_FIELDS)
+    if unexpected:
+        raise AppError(
+            "IMAGE_UNDERSTANDING_FIELD_INVALID",
+            f"图片理解结果包含非白名单字段: {unexpected}",
+            409,
+            _media_error_data(source_message_key),
+        )
+    if int(understanding.get("schema_version") or 0) != 1:
+        raise AppError(
+            "IMAGE_UNDERSTANDING_SCHEMA_INVALID",
+            "图片理解结果 schema_version 必须为 1",
+            409,
+            _media_error_data(source_message_key),
+        )
+    audit = understanding.get("audit") if isinstance(understanding.get("audit"), dict) else {}
+    unexpected_audit = sorted(set(audit) - IMAGE_UNDERSTANDING_AUDIT_FIELDS)
+    if unexpected_audit:
+        raise AppError(
+            "IMAGE_UNDERSTANDING_FIELD_INVALID",
+            f"图片审计结果包含非白名单字段: {unexpected_audit}",
+            409,
+            _media_error_data(source_message_key),
+        )
+    unexpected_bridge = sorted(set(bridge) - VISUAL_BRIDGE_FIELDS)
+    if unexpected_bridge:
+        raise AppError(
+            "IMAGE_VISUAL_BRIDGE_FIELD_INVALID",
+            f"图片 Brain 桥接结果包含非白名单字段: {unexpected_bridge}",
+            409,
+            _media_error_data(source_message_key),
+        )
+    _validate_text_only_image_value(understanding, path="customer_image_understanding")
+    _validate_text_only_image_value(bridge, path="visual_bridge_input")
 
 
 def _read_failure_result(*payloads: dict | None) -> str | None:
@@ -714,7 +1126,156 @@ def _upsert_conversation_for_binding(db: Session, binding: WechatSessionBinding)
 
 
 def _normalized_contract_text(value: object) -> str:
-    return " ".join(str(value or "").split())
+    return canonical_reply_text(value)
+
+
+def _reply_text_hash(value: object) -> str:
+    return reply_text_hash(value)
+
+
+def _verified_ai_reply_action_for_self_message(
+    db: Session,
+    *,
+    conversation_id: str,
+    content: object,
+    source_message_key: str,
+    raw_payload: dict,
+) -> ReplyAction | None:
+    """Validate a Worker-confirmed stable bubble receipt against one sent action."""
+    normalized = _normalized_contract_text(content)
+    receipt = (
+        raw_payload.get("ai_reply_receipt")
+        if isinstance(raw_payload.get("ai_reply_receipt"), dict)
+        else {}
+    )
+    action_id = str(receipt.get("reply_action_id") or "").strip()
+    receipt_hash = str(receipt.get("reply_text_hash") or "").strip()
+    receipt_source_key = str(receipt.get("source_message_key") or "").strip()
+    worker_stable_id = str(receipt.get("worker_stable_id") or "").strip()
+    reconciliation_state = str(
+        receipt.get("reconciliation_state") or "confirmed"
+    ).strip()
+    if (
+        not normalized
+        or not action_id
+        or not receipt_hash
+        or not worker_stable_id
+        or receipt_source_key != source_message_key
+        or receipt_hash != _reply_text_hash(normalized)
+    ):
+        return None
+
+    used_action_ids: set[str] = set()
+    recent_self_events = db.scalars(
+        select(MessageEvent)
+        .where(
+            MessageEvent.conversation_id == conversation_id,
+            MessageEvent.sender_role.in_(SALES_SIDE_SENDER_ROLES),
+        )
+        .order_by(MessageEvent.ingested_at.desc())
+        .limit(200)
+    ).all()
+    for event in recent_self_events:
+        raw = event.raw_payload if isinstance(event.raw_payload, dict) else {}
+        used_action_id = str(raw.get("ai_reply_action_id") or "").strip()
+        if used_action_id:
+            used_action_ids.add(used_action_id)
+
+    if (
+        action_id in used_action_ids
+        and reconciliation_state != "ai_unreconciled"
+    ):
+        return None
+    action = db.get(ReplyAction, action_id)
+    if (
+        not action
+        or action.deleted_at is not None
+        or action.conversation_id != conversation_id
+        or action.status not in {
+            "sending",
+            "sent",
+            "unknown_send_result",
+        }
+        or action.reply_text_hash != receipt_hash
+        or _normalized_contract_text(action.reply_text) != normalized
+    ):
+        return None
+    if reconciliation_state == "ai_unreconciled":
+        return action
+    try:
+        confirmed_at = datetime.fromisoformat(
+            str(receipt.get("confirmed_at") or "").replace("Z", "+00:00")
+        )
+    except ValueError:
+        return None
+    now = utcnow()
+    if confirmed_at.tzinfo is None:
+        confirmed_at = confirmed_at.replace(tzinfo=now.tzinfo)
+    if action.status == "sent":
+        sent_at = action.sent_at
+        if sent_at is None:
+            return None
+        if sent_at.tzinfo is None:
+            sent_at = sent_at.replace(tzinfo=now.tzinfo)
+        if abs(confirmed_at - sent_at) > AI_REPLY_RECEIPT_CLOCK_SKEW:
+            return None
+    else:
+        claimed_at = action.sending_claimed_at
+        if claimed_at is None:
+            return None
+        if claimed_at.tzinfo is None:
+            claimed_at = claimed_at.replace(tzinfo=now.tzinfo)
+        if confirmed_at + AI_REPLY_RECEIPT_CLOCK_SKEW < claimed_at:
+            return None
+    return action
+
+
+def _unreconciled_ai_reply_action_without_local_receipt(
+    db: Session,
+    *,
+    conversation_id: str,
+    content: object,
+) -> ReplyAction | None:
+    """Protect one unresolved AI send when the Worker's local receipt is lost."""
+
+    normalized = _normalized_contract_text(content)
+    if not normalized:
+        return None
+    used_action_ids: set[str] = set()
+    recent_self_events = db.scalars(
+        select(MessageEvent)
+        .where(
+            MessageEvent.conversation_id == conversation_id,
+            MessageEvent.sender_role.in_(SALES_SIDE_SENDER_ROLES),
+        )
+        .order_by(MessageEvent.ingested_at.desc())
+        .limit(200)
+    ).all()
+    for event in recent_self_events:
+        raw = event.raw_payload if isinstance(event.raw_payload, dict) else {}
+        action_id = str(raw.get("ai_reply_action_id") or "").strip()
+        if action_id:
+            used_action_ids.add(action_id)
+
+    candidates = db.scalars(
+        select(ReplyAction)
+        .where(
+            ReplyAction.conversation_id == conversation_id,
+            ReplyAction.status == "unknown_send_result",
+            ReplyAction.reply_text_hash == _reply_text_hash(normalized),
+            ReplyAction.deleted_at.is_(None),
+        )
+        .order_by(ReplyAction.created_at.desc(), ReplyAction.id.desc())
+    ).all()
+    return next(
+        (
+            action
+            for action in candidates
+            if action.id not in used_action_ids
+            and _normalized_contract_text(action.reply_text) == normalized
+        ),
+        None,
+    )
 
 
 def _validate_v3_observation(observation: object, *, require_ingestible: bool | None = None) -> tuple[str, dict]:
@@ -732,9 +1293,27 @@ def _validate_v3_observation(observation: object, *, require_ingestible: bool | 
     rule = ROW_RULES_V3.get(row_kind)
     if not isinstance(rule, dict):
         raise AppError("MESSAGE_ROW_KIND_INVALID", "V3 消息 row_kind 不合法", 409)
-    if require_ingestible is True and not bool(rule.get("ingestible")):
+    effective_rule = dict(rule)
+    item_state = str(observation.get("item_state") or "").strip().lower()
+    terminal_non_ingestible = row_kind == "image_bubble" and item_state in {
+        str(value) for value in rule.get("terminal_non_ingestible_item_states") or []
+    }
+    if terminal_non_ingestible:
+        effective_rule["ingestible"] = False
+        effective_rule["required_fields"] = [
+            "observation_id", "row_kind", "sender_role", "sender_role_source",
+            "message_type", "voice_state", "source_message",
+        ]
+    elif row_kind == "image_bubble" and item_state == "failed":
+        effective_rule["required_fields"] = list(rule.get("failed_required_fields") or [])
+    elif item_state == "failed" and bool(rule.get("failed_ingestible")):
+        effective_rule["ingestible"] = True
+        effective_rule["required_fields"] = list(
+            rule.get("failed_required_fields") or []
+        )
+    if require_ingestible is True and not bool(effective_rule.get("ingestible")):
         raise AppError("MESSAGE_ROW_KIND_NOT_INGESTIBLE", "V3 非可入库行被组装成最终消息", 409)
-    for field in rule.get("required_fields") or []:
+    for field in effective_rule.get("required_fields") or []:
         value = observation.get(str(field))
         if value is None or (isinstance(value, str) and not value.strip()):
             raise AppError("MESSAGE_OBSERVATION_REQUIRED_FIELD_MISSING", f"V3 observation 缺少字段: {field}", 409)
@@ -751,7 +1330,7 @@ def _validate_v3_observation(observation: object, *, require_ingestible: bool | 
     voice_state = str(observation.get("voice_state") or "").strip().lower()
     if voice_state not in {str(value) for value in rule.get("allowed_voice_states") or []}:
         raise AppError("MESSAGE_ROW_VOICE_STATE_INVALID", "V3 消息语音状态不合法", 409)
-    return observation_id, rule
+    return observation_id, effective_rule
 
 
 def _validate_v3_request_contract(payload: WechatMessageIngestRequest) -> None:
@@ -762,9 +1341,7 @@ def _validate_v3_request_contract(payload: WechatMessageIngestRequest) -> None:
     if int(payload.observation_schema_version or 0) != OBSERVATION_SCHEMA_VERSION_V3:
         raise AppError("MESSAGE_OBSERVATION_SCHEMA_VERSION_MISMATCH", "V3 observation schema 版本不一致", 409)
 
-    evidence = payload.evidence
-    if not isinstance(evidence, dict):
-        raise AppError("MESSAGE_BATCH_EVIDENCE_MISSING", "V3 批次缺少完整 OmniAuto 证据", 409)
+    evidence = payload.evidence.model_dump(mode="json")
     if str(evidence.get("contract_revision") or "").strip() != CONTRACT_REVISION_V3:
         raise AppError("MESSAGE_EVIDENCE_CONTRACT_REVISION_MISMATCH", "V3 批次证据合同修订号不一致", 409)
     if str(evidence.get("contract_sha256") or "").strip().lower() != CONTRACT_SHA256_V3:
@@ -842,11 +1419,70 @@ def _validate_v3_request_contract(payload: WechatMessageIngestRequest) -> None:
         if voice_state not in allowed_voice_states:
             raise AppError("MESSAGE_ROW_VOICE_STATE_INVALID", "V3 消息语音状态不合法", 409)
 
-        if canonical_type in {"text", "voice", "system"}:
+        item_state = str(item.item_state or "").strip().lower()
+        failed_voice = canonical_type == "voice" and item_state == "failed"
+        if (
+            canonical_type in {"text", "voice", "system"}
+            and not failed_voice
+        ) or (
+            canonical_type == "image" and str(item.item_state or "").strip().lower() == "completed"
+        ):
             observed_content = _normalized_contract_text(observation.get("content_clean"))
             canonical_content = _normalized_contract_text(item.content)
             if not observed_content or canonical_content != observed_content:
                 raise AppError("MESSAGE_ROW_CONTENT_MISMATCH", "OmniAuto observation 与 Worker 正文不一致", 409)
+        if canonical_type == "image":
+            if str(item.item_state or "").strip().lower() == "completed":
+                _validate_image_understanding(
+                    raw_payload,
+                    source_message_key=item.source_message_key,
+                )
+                if observation.get("customer_image_understanding") != raw_payload.get("customer_image_understanding"):
+                    raise AppError(
+                        "IMAGE_UNDERSTANDING_EVIDENCE_MISMATCH",
+                        "图片理解结果与原始 image_bubble 证据不一致",
+                        409,
+                        _media_error_data(item.source_message_key),
+                    )
+                if observation.get("visual_bridge_input") != raw_payload.get("visual_bridge_input"):
+                    raise AppError(
+                        "IMAGE_BRIDGE_EVIDENCE_MISMATCH",
+                        "图片桥接输入与原始 image_bubble 证据不一致",
+                        409,
+                        _media_error_data(item.source_message_key),
+                    )
+            else:
+                _validate_text_only_image_value(raw_payload, path="raw_payload")
+                reason = str(raw_payload.get("image_processing_reason") or observation.get("image_processing_reason") or "").strip()
+                if not reason:
+                    raise AppError(
+                        "IMAGE_FAILURE_REASON_MISSING",
+                        "失败图片事实缺少明确原因",
+                        409,
+                        _media_error_data(item.source_message_key),
+                    )
+        elif failed_voice:
+            reason = str(
+                raw_payload.get("voice_processing_reason")
+                or observation.get("voice_processing_reason")
+                or ""
+            ).strip()
+            if not reason:
+                raise AppError(
+                    "VOICE_FAILURE_REASON_MISSING",
+                    "失败语音事实缺少明确原因",
+                    409,
+                    _media_error_data(item.source_message_key),
+                )
+            if reason != str(
+                observation.get("voice_processing_reason") or ""
+            ).strip():
+                raise AppError(
+                    "VOICE_FAILURE_REASON_MISMATCH",
+                    "失败语音原因与原始 observation 不一致",
+                    409,
+                    _media_error_data(item.source_message_key),
+                )
 
     if mapped_observation_ids != ingestible_observation_ids:
         missing = sorted(ingestible_observation_ids - mapped_observation_ids)
@@ -856,6 +1492,141 @@ def _validate_v3_request_contract(payload: WechatMessageIngestRequest) -> None:
             f"V3 observation 与最终消息不是一一对应: missing={missing}, unexpected={unexpected}",
             409,
         )
+
+
+def _ordered_v3_messages(payload: WechatMessageIngestRequest) -> list:
+    """Validate the only business ordering signal and return messages top-to-bottom."""
+
+    orders = [int(item.message_position.screen_order) for item in payload.messages]
+    if len(orders) != len(set(orders)):
+        raise AppError(
+            "MESSAGE_SCREEN_ORDER_DUPLICATED",
+            "同一批消息的 screen_order 不能重复",
+            409,
+        )
+    return sorted(
+        list(payload.messages),
+        key=lambda item: int(item.message_position.screen_order),
+    )
+
+
+def _visible_existing_message_orders(
+    db: Session,
+    *,
+    conversation_id: str,
+    evidence_payload: dict,
+) -> dict[str, int]:
+    """Resolve persisted message ids against Worker's complete final-frame slots."""
+
+    source_orders: dict[str, int] = {}
+    conflicted_sources: set[str] = set()
+    for raw in evidence_payload.get("slot_ledger_states") or []:
+        if not isinstance(raw, dict):
+            continue
+        if str(raw.get("order_source") or "").strip() != "visual_top":
+            continue
+        source_key = str(raw.get("source_message_key") or "").strip()
+        try:
+            screen_order = int(raw.get("screen_order") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not source_key or screen_order <= 0:
+            continue
+        existing_order = source_orders.get(source_key)
+        if existing_order is not None and existing_order != screen_order:
+            conflicted_sources.add(source_key)
+            continue
+        source_orders[source_key] = screen_order
+    for source_key in conflicted_sources:
+        source_orders.pop(source_key, None)
+    if not source_orders:
+        return {}
+
+    events = db.scalars(
+        select(MessageEvent).where(
+            MessageEvent.conversation_id == conversation_id,
+            MessageEvent.source_message_key.in_(list(source_orders)),
+        )
+    )
+    return {
+        event.id: source_orders[event.source_message_key]
+        for event in events
+        if event.source_message_key in source_orders
+    }
+
+
+def _flow_gate_details_by_code(evidence_payload: dict) -> dict[str, list[dict]]:
+    strong_position_sources = FLOW_GATE_STRONG_POSITION_SOURCES_V3
+    result: dict[str, list[dict]] = {}
+    for raw in evidence_payload.get("flow_gate_details") or []:
+        if not isinstance(raw, dict):
+            raise AppError(
+                "MESSAGE_FLOW_GATE_DETAIL_INVALID",
+                "安全门禁位置证据必须是对象",
+                409,
+            )
+        code = str(raw.get("error_code") or "").strip()
+        position_source = str(raw.get("position_source") or "").strip()
+        if not code or not position_source:
+            raise AppError(
+                "MESSAGE_FLOW_GATE_DETAIL_INVALID",
+                "安全门禁位置证据缺少 error_code 或 position_source",
+                409,
+            )
+        detail = {
+            "error_code": code,
+            "position_source": position_source,
+        }
+        subject_sender_role = str(raw.get("subject_sender_role") or "").strip()
+        if subject_sender_role:
+            if subject_sender_role not in {"customer", "self"}:
+                raise AppError(
+                    "MESSAGE_FLOW_GATE_SUBJECT_ROLE_INVALID",
+                    "安全门禁发送方角色不合法",
+                    409,
+                )
+            detail["subject_sender_role"] = subject_sender_role
+        for key in ("min_screen_order", "max_screen_order"):
+            value = raw.get(key)
+            if value is None:
+                continue
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError) as exc:
+                raise AppError(
+                    "MESSAGE_FLOW_GATE_POSITION_INVALID",
+                    "安全门禁 screen_order 不合法",
+                    409,
+                ) from exc
+            if parsed < 1:
+                raise AppError(
+                    "MESSAGE_FLOW_GATE_POSITION_INVALID",
+                    "安全门禁 screen_order 必须大于零",
+                    409,
+                )
+            detail[key] = parsed
+        if (
+            detail.get("min_screen_order") is not None
+            and detail.get("max_screen_order") is not None
+            and int(detail["min_screen_order"]) > int(detail["max_screen_order"])
+        ):
+            raise AppError(
+                "MESSAGE_FLOW_GATE_POSITION_INVALID",
+                "安全门禁位置范围前后颠倒",
+                409,
+            )
+        has_position = (
+            detail.get("min_screen_order") is not None
+            or detail.get("max_screen_order") is not None
+        )
+        if has_position and position_source not in strong_position_sources:
+            raise AppError(
+                "MESSAGE_FLOW_GATE_POSITION_SOURCE_UNTRUSTED",
+                "安全门禁位置没有真实气泡坐标证据",
+                409,
+            )
+        result.setdefault(code, []).append(detail)
+    return result
 
 
 def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestRequest) -> dict:
@@ -878,16 +1649,168 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
     if str(payload.authorization_revision or "") != _authorization_revision(binding):
         raise AppError("MESSAGE_AUTHORIZATION_REVISION_EXPIRED", "读取授权已过期，已拒绝旧任务入库", 409)
     _validate_v3_request_contract(payload)
-    for item in payload.messages:
+    ordered_messages = _ordered_v3_messages(payload)
+    evidence_payload = payload.evidence.model_dump(mode="json")
+    ingest_partition = (
+        evidence_payload.get("ingest_partition")
+        if isinstance(evidence_payload.get("ingest_partition"), dict)
+        else {}
+    )
+    partition_index = int(ingest_partition.get("index") or 0)
+    partition_count = int(ingest_partition.get("count") or 0)
+    partitioned = bool(partition_index and partition_count)
+    partition_final = bool(
+        partitioned and partition_index == partition_count
+    )
+    if partitioned:
+        if str(ingest_partition.get("group_id") or "") != payload.read_run_id:
+            raise AppError(
+                "MESSAGE_INGEST_PARTITION_IDENTITY_MISMATCH",
+                "消息分片与 read_run_id 不一致",
+                409,
+            )
+        expected_source_keys = {
+            str(value).strip()
+            for value in (
+                ingest_partition.get("expected_source_message_keys") or []
+            )
+            if str(value).strip()
+        }
+        current_source_keys = {
+            str(item.source_message_key or "").strip()
+            for item in ordered_messages
+            if str(item.source_message_key or "").strip()
+        }
+        if not current_source_keys.issubset(expected_source_keys):
+            raise AppError(
+                "MESSAGE_INGEST_PARTITION_SOURCE_MISMATCH",
+                "消息分片包含完整清单之外的消息",
+                409,
+            )
+    else:
+        expected_source_keys = set()
+    incoming_read_reason = str(
+        evidence_payload.get("authorization_read_reason") or ""
+    ).strip()
+    if not incoming_read_reason:
+        raise AppError(
+            "MESSAGE_AUTHORIZATION_READ_REASON_MISSING",
+            "V3 请求缺少取得消息时的授权原因",
+            409,
+        )
+    flow_gate_details_by_code = _flow_gate_details_by_code(evidence_payload)
+    flow_gate_error_codes = [
+        str(value).strip()
+        for value in (evidence_payload.get("flow_gate_errors") or [])
+        if str(value).strip()
+    ]
+    if set(flow_gate_details_by_code) != set(flow_gate_error_codes):
+        raise AppError(
+            "MESSAGE_FLOW_GATE_DETAIL_MISMATCH",
+            "安全门禁错误码与位置证据不是一一对应",
+            409,
+        )
+    partition_gate = "C2_INGEST_PARTITION_INCOMPLETE"
+    if partitioned and not partition_final:
+        if flow_gate_error_codes != [partition_gate]:
+            raise AppError(
+                "MESSAGE_INGEST_PARTITION_GATE_MISSING",
+                "非末尾消息分片必须使用临时分片门禁",
+                409,
+            )
+    elif partition_gate in flow_gate_error_codes:
+        raise AppError(
+            "MESSAGE_INGEST_PARTITION_GATE_STALE",
+            "末尾分片或普通批次不能保留临时分片门禁",
+            409,
+        )
+    for item in ordered_messages:
         if str(item.sender_role_hint or "").strip().lower() not in SENDER_ROLES_V3:
             raise AppError("MESSAGE_SENDER_ROLE_INVALID", "V3 消息发送方角色不合法", 409)
         if str(item.message_type or "").strip().lower() not in MESSAGE_TYPES_V3:
             raise AppError("MESSAGE_TYPE_INVALID", "V3 消息类型不合法", 409)
-        if str(item.item_state or "").strip().lower() != "completed":
-            raise AppError("MESSAGE_ITEM_STATE_INVALID", "只有已完成的消息项可以入库", 409)
+        item_state = str(item.item_state or "").strip().lower()
+        message_type = str(item.message_type or "").strip().lower()
+        failed_fact_allowed = (
+            item_state == "failed"
+            and message_type in FAILED_INGESTIBLE_MESSAGE_TYPES_V3
+        )
+        if item_state != "completed" and not failed_fact_allowed:
+            raise AppError(
+                "MESSAGE_ITEM_STATE_INVALID",
+                "只有完成消息或明确失败的图片/语音事实可以入库",
+                409,
+            )
         if str(item.flow_state or "").strip().lower() not in FLOW_STATES_V3:
             raise AppError("MESSAGE_FLOW_STATE_INVALID", "V3 消息流程状态不合法", 409)
     conversation = _upsert_conversation_for_binding(db, binding)
+    from app.services.c3_service import enforce_open_handoff_gate
+
+    open_handoff_active = bool(
+        enforce_open_handoff_gate(
+            db,
+            conversation,
+            for_update=True,
+        )
+    )
+    origin_conversation_status = str(
+        conversation.recall_origin_status
+        if conversation.status == "recall_precheck"
+        and conversation.recall_origin_status
+        else conversation.status
+        or ""
+    )
+    current_authorization = read_authorization_snapshot(db, binding=binding)
+    continuation_batch_id = str(
+        evidence_payload.get("continuation_batch_id") or ""
+    ).strip()
+    continuation_token = str(
+        evidence_payload.get("continuation_token") or ""
+    ).strip()
+    continuation_authorization: dict = {}
+    if continuation_batch_id and continuation_token:
+        continuation_batch = db.get(MessageBatch, continuation_batch_id)
+        if (
+            continuation_batch
+            and not continuation_batch.deleted_at
+            and continuation_batch.conversation_id == payload.conversation_id
+        ):
+            from app.services.c3_service import (
+                message_batch_continuation_authorization,
+            )
+
+            continuation_authorization = (
+                message_batch_continuation_authorization(
+                    db,
+                    worker=worker,
+                    batch=continuation_batch,
+                    binding=binding,
+                    presented_token=continuation_token,
+                )
+            )
+    state_transition_allowed = bool(
+        (
+            current_authorization.get("allowed") is True
+            and str(current_authorization.get("read_reason") or "")
+            == incoming_read_reason
+        )
+        or (
+            continuation_authorization.get("allowed") is True
+            and str(continuation_authorization.get("read_reason") or "")
+            == incoming_read_reason
+        )
+    )
+    state_transition_reason = (
+        "batch_continuation_matches"
+        if continuation_authorization.get("allowed") is True
+        else "authorization_state_matches"
+        if state_transition_allowed
+        else (
+            "batch_continuation_invalid"
+            if continuation_batch_id
+            else "authorization_read_reason_changed"
+        )
+    )
     conversation_allowed = conversation.status not in CONVERSATION_CLOSED_STATUSES
     observed_rpa_session_key = payload.rpa_session_key or ""
 
@@ -895,36 +1818,56 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
     duplicated_count = 0
     ignored_count = 0
     results: list[dict] = []
-    for item in payload.messages:
+    new_customer_message_ids: list[str] = []
+    new_sales_message = False
+    human_sales_observed = False
+    last_human_sales_screen_order = 0
+    visible_message_orders = _visible_existing_message_orders(
+        db,
+        conversation_id=payload.conversation_id,
+        evidence_payload=evidence_payload,
+    )
+    for item in ordered_messages:
         message_type = str(item.message_type or "").strip().lower()
         source_dedupe_key = item.dedupe_key.strip() if item.dedupe_key else ""
         raw_payload = dict(item.raw_payload or {})
         if item.message_position:
             raw_payload["message_position"] = item.message_position.model_dump(exclude_none=True)
         content = item.content
-        image_warning_codes: list[str] = []
-        stored_image_local_path = item.image_local_path
-        if message_type == "image":
-            image_warning_code = _image_recognition_warning_code(raw_payload)
-            if image_warning_code:
-                image_warning_codes.append(image_warning_code)
-            if str(item.image_local_path or "").strip():
-                stored_image_local_path = None
-                image_warning_codes.append("IMAGE_LOCAL_PATH_IGNORED")
-        read_failure = _read_failure_result(item.raw_payload, payload.evidence)
+        if message_type == "image" and str(item.item_state or "").strip().lower() == "completed":
+            _validate_image_understanding(
+                raw_payload,
+                source_message_key=item.source_message_key,
+            )
+        read_failure = _read_failure_result(item.raw_payload, evidence_payload)
         if read_failure:
             raise AppError(read_failure.upper(), "V3 读取失败证据不能伪装成可入库消息", 409)
         sender_role = str(item.sender_role_hint or "").strip().lower()
         if message_type == "voice":
-            voice_error_code = _voice_failure_code(raw_payload)
-            transcript = str(item.content or "").strip()
-            if not voice_error_code and not transcript:
-                voice_error_code = "VOICE_TRANSCRIBE_EMPTY"
-            if VOICE_DURATION_RE.match(transcript) or _looks_like_voice_payload_text(transcript):
-                voice_error_code = "VOICE_TRANSCRIBE_INVALID_CONTENT"
-            if voice_error_code:
-                raise AppError(voice_error_code, "V3 未完成或无效的语音不能入库", 409)
-            content = transcript
+            if str(item.item_state or "").strip().lower() == "failed":
+                if item.content is not None:
+                    raise AppError(
+                        "VOICE_FAILURE_CONTENT_INVALID",
+                        "失败语音事实不能伪造转写正文",
+                        409,
+                        _media_error_data(item.source_message_key),
+                    )
+                content = None
+            else:
+                voice_error_code = _voice_failure_code(raw_payload)
+                transcript = str(item.content or "").strip()
+                if not voice_error_code and not transcript:
+                    voice_error_code = "VOICE_TRANSCRIBE_EMPTY"
+                if VOICE_DURATION_RE.match(transcript) or _looks_like_voice_payload_text(transcript):
+                    voice_error_code = "VOICE_TRANSCRIBE_INVALID_CONTENT"
+                if voice_error_code:
+                    raise AppError(
+                        voice_error_code,
+                        "V3 未完成或无效的语音不能入库",
+                        409,
+                        _media_error_data(item.source_message_key),
+                    )
+                content = transcript
             dedupe_key = source_dedupe_key
         else:
             if not source_dedupe_key:
@@ -941,8 +1884,28 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             )
         )
         if exists:
+            if state_transition_allowed and exists.sender_role in SALES_SIDE_SENDER_ROLES:
+                existing_raw_payload = (
+                    exists.raw_payload
+                    if isinstance(exists.raw_payload, dict)
+                    else {}
+                )
+                new_sales_message = True
+                if str(existing_raw_payload.get("sender_source") or "") == "human":
+                    human_sales_observed = True
+                    last_human_sales_screen_order = max(
+                        last_human_sales_screen_order,
+                        int(item.message_position.screen_order),
+                    )
             duplicated_count += 1
-            results.append({"dedupe_key": dedupe_key, "ingest_result": "duplicated", "error_code": "MESSAGE_INGEST_DUPLICATED"})
+            results.append(
+                {
+                    "source_message_key": item.source_message_key,
+                    "dedupe_key": dedupe_key,
+                    "ingest_result": "duplicated",
+                    "error_code": "MESSAGE_INGEST_DUPLICATED",
+                }
+            )
             continue
         source_exists = db.scalar(
             select(MessageEvent).where(
@@ -953,6 +1916,57 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
         )
         if source_exists:
             raise AppError("MESSAGE_SOURCE_CONFLICT", "同一读取批次的来源消息已存在", 409)
+
+        ai_reply_action = None
+        if sender_role in SALES_SIDE_SENDER_ROLES:
+            ai_reply_action = _verified_ai_reply_action_for_self_message(
+                db,
+                conversation_id=payload.conversation_id,
+                content=content,
+                source_message_key=item.source_message_key,
+                raw_payload=raw_payload,
+            )
+            local_receipt = (
+                raw_payload.get("ai_reply_receipt")
+                if isinstance(raw_payload.get("ai_reply_receipt"), dict)
+                else {}
+            )
+            server_guarded_unreconciled = False
+            if not ai_reply_action and not local_receipt:
+                ai_reply_action = _unreconciled_ai_reply_action_without_local_receipt(
+                    db,
+                    conversation_id=payload.conversation_id,
+                    content=content,
+                )
+                server_guarded_unreconciled = ai_reply_action is not None
+            raw_payload["sender_source"] = (
+                "ai"
+                if ai_reply_action and ai_reply_action.status == "sent"
+                else "ai_unreconciled_server_guard"
+                if server_guarded_unreconciled
+                else "ai_unreconciled"
+                if (
+                    ai_reply_action
+                    and str(
+                        (
+                            raw_payload.get("ai_reply_receipt")
+                            if isinstance(
+                                raw_payload.get("ai_reply_receipt"),
+                                dict,
+                            )
+                            else {}
+                        ).get("reconciliation_state")
+                        or ""
+                    )
+                    == "ai_unreconciled"
+                )
+                else "ai_pending_ack"
+                if ai_reply_action
+                else "human"
+            )
+            if ai_reply_action:
+                raw_payload["ai_reply_action_id"] = ai_reply_action.id
+                raw_payload["ai_reply_text_hash"] = ai_reply_action.reply_text_hash
 
         message = MessageEvent(
             conversation_id=payload.conversation_id,
@@ -968,69 +1982,557 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             sender_role=sender_role,
             message_type=message_type,
             content=content,
-            image_local_path=stored_image_local_path,
             raw_payload=raw_payload,
-            evidence=payload.evidence or {},
+            evidence=evidence_payload,
             ocr_confidence=item.ocr_confidence,
             item_state=item.item_state,
             flow_state=item.flow_state,
             occurred_at=item.occurred_at,
+            observed_at=payload.evidence.finished_at,
+            observation_order=int(item.message_position.screen_order),
             ingested_at=utcnow(),
-            error_code=image_warning_codes[0] if image_warning_codes else None,
+            error_code=(
+                str(raw_payload.get("image_processing_reason") or "IMAGE_UNDERSTANDING_FAILED")[:64]
+                if message_type == "image" and str(item.item_state or "").strip().lower() == "failed"
+                else (
+                    str(
+                        raw_payload.get("voice_processing_reason")
+                        or "VOICE_TRANSCRIBE_FAILED"
+                    )[:64]
+                    if message_type == "voice"
+                    and str(item.item_state or "").strip().lower() == "failed"
+                    else None
+                )
+            ),
         )
         try:
             with db.begin_nested():
                 db.add(message)
                 db.flush()
         except IntegrityError:
+            if state_transition_allowed and message.sender_role in SALES_SIDE_SENDER_ROLES:
+                new_sales_message = True
+                if str(raw_payload.get("sender_source") or "") == "human":
+                    human_sales_observed = True
+                    last_human_sales_screen_order = max(
+                        last_human_sales_screen_order,
+                        int(item.message_position.screen_order),
+                    )
             duplicated_count += 1
-            results.append({"dedupe_key": dedupe_key, "ingest_result": "duplicated", "error_code": "MESSAGE_INGEST_DUPLICATED"})
+            results.append(
+                {
+                    "source_message_key": item.source_message_key,
+                    "dedupe_key": dedupe_key,
+                    "ingest_result": "duplicated",
+                    "error_code": "MESSAGE_INGEST_DUPLICATED",
+                }
+            )
             continue
         binding.last_ingested_at = message.ingested_at
         event_time = message.occurred_at or message.ingested_at
-        if message.sender_role == "customer":
-            conversation.last_inbound_at = event_time
-            from app.services.c3_service import supersede_open_reply_actions_for_new_inbound
+        if state_transition_allowed:
+            if message.sender_role == "customer":
+                conversation.last_inbound_at = _latest_datetime(
+                    conversation.last_inbound_at,
+                    event_time,
+                )
+                conversation.recall_cycle_id = None
+                conversation.recall_origin_status = None
+                conversation.next_recall_at = None
+                if open_handoff_active:
+                    conversation.status = "waiting_sales_reply"
+                else:
+                    conversation.status = "ai_active"
+                    new_customer_message_ids.append(message.id)
+                    from app.services.c3_service import (
+                        supersede_open_reply_actions_for_new_inbound,
+                    )
 
-            supersede_open_reply_actions_for_new_inbound(db, binding.conversation_id)
-        elif message.sender_role in SALES_SIDE_SENDER_ROLES:
-            conversation.last_outbound_at = event_time
-            conversation.last_sales_reply_at = event_time
-            conversation.sales_first_reply_at = conversation.sales_first_reply_at or event_time
-            conversation.status = "sales_replied_waiting_user"
-            conversation.ai_enabled = False
-            from app.services.c3_service import cancel_open_reply_actions_for_conversation_change
+                    supersede_open_reply_actions_for_new_inbound(
+                        db,
+                        binding.conversation_id,
+                    )
+            elif message.sender_role in SALES_SIDE_SENDER_ROLES:
+                new_sales_message = True
+                if str(raw_payload.get("sender_source") or "") in {
+                    "ai",
+                    "ai_pending_ack",
+                    "ai_unreconciled",
+                    "ai_unreconciled_server_guard",
+                }:
+                    # This is the right-side bubble produced by our own sent
+                    # ReplyAction. It closes customer facts above it, but it is not
+                    # evidence that a human sales person took over the conversation.
+                    new_customer_message_ids.clear()
+                    conversation.last_outbound_at = _latest_datetime(
+                        conversation.last_outbound_at,
+                        event_time,
+                    )
+                else:
+                    from app.services.c3_service import (
+                        close_open_handoffs_for_human_sales,
+                    )
 
-            cancel_open_reply_actions_for_conversation_change(db, binding.conversation_id, reason="销售已人工回复，取消未发送 AI 回复")
+                    had_open_handoff = open_handoff_active
+                    handoff_resolution = close_open_handoffs_for_human_sales(
+                        db,
+                        conversation_id=binding.conversation_id,
+                        sales_message=message,
+                        visible_message_orders=visible_message_orders,
+                        sales_screen_order=int(item.message_position.screen_order),
+                    )
+                    open_handoff_active = bool(
+                        handoff_resolution["remaining_open_count"]
+                    )
+                    # ordered_messages is the backend-validated screen order.
+                    # A later human sales reply supersedes all earlier customer turns
+                    # in this batch; only customer messages after that reply may open
+                    # a new Brain batch.
+                    new_customer_message_ids.clear()
+                    conversation.last_outbound_at = _latest_datetime(
+                        conversation.last_outbound_at,
+                        event_time,
+                    )
+                    if (
+                        had_open_handoff
+                        and handoff_resolution["closed_count"] == 0
+                    ) or open_handoff_active:
+                        conversation.status = "waiting_sales_reply"
+                    else:
+                        if handoff_resolution["resume_ai"]:
+                            conversation.ai_enabled = True
+                        conversation.last_sales_reply_at = _latest_datetime(
+                            conversation.last_sales_reply_at,
+                            event_time,
+                        )
+                        conversation.sales_first_reply_at = (
+                            conversation.sales_first_reply_at or event_time
+                        )
+                        conversation.status = "sales_replied_waiting_user"
+                        conversation.recall_origin_status = None
+                        conversation.handoff_reason_code = None
+                        conversation.next_recall_at = event_time + timedelta(
+                            hours=get_settings().c3_recall_after_hours
+                        )
+                        human_sales_observed = True
+                        last_human_sales_screen_order = max(
+                            last_human_sales_screen_order,
+                            int(item.message_position.screen_order),
+                        )
+                        from app.services.c3_service import (
+                            cancel_active_batches_for_conversation_change,
+                        )
+
+                        cancel_active_batches_for_conversation_change(
+                            db,
+                            binding.conversation_id,
+                            reason="销售已人工回复，取消开场、召回和未发送 AI 回复",
+                        )
         ingested_count += 1
-        result = {"dedupe_key": dedupe_key, "ingest_result": "ingested", "message_id": message.id, "message_event_id": message.id}
-        if image_warning_codes:
-            trace_id = get_request_id()
-            logger.warning(
-                "image message ingested with warnings",
-                extra={
-                    "trace_id": trace_id,
-                    "conversation_id": payload.conversation_id,
-                    "read_run_id": payload.read_run_id,
-                    "message_event_id": message.id,
-                    "dedupe_key": dedupe_key,
-                    "warning_codes": image_warning_codes,
-                },
-            )
-            result["warning_code"] = image_warning_codes[0]
-            result["warning_codes"] = image_warning_codes
-            result["trace_id"] = trace_id
+        result = {
+            "source_message_key": item.source_message_key,
+            "dedupe_key": dedupe_key,
+            "ingest_result": "ingested",
+            "message_id": message.id,
+            "message_event_id": message.id,
+        }
         if source_dedupe_key and source_dedupe_key != dedupe_key:
             result["source_dedupe_key"] = source_dedupe_key
         results.append(result)
 
+    if partition_final:
+        partition_events = list(
+            db.scalars(
+                select(MessageEvent).where(
+                    MessageEvent.conversation_id == payload.conversation_id,
+                    MessageEvent.source_message_key.in_(
+                        sorted(expected_source_keys)
+                    ),
+                )
+            )
+        )
+        found_source_keys = {
+            str(event.source_message_key or "").strip()
+            for event in partition_events
+            if str(event.source_message_key or "").strip()
+        }
+        if found_source_keys != expected_source_keys:
+            raise AppError(
+                "MESSAGE_INGEST_PARTITION_INCOMPLETE",
+                "消息分片尚未全部入库，末尾分片稍后重试",
+                425,
+            )
+        current_run_events = [
+            event
+            for event in partition_events
+            if str(event.read_run_id or "") == payload.read_run_id
+        ]
+        sales_orders = [
+            int(event.observation_order or 0)
+            for event in current_run_events
+            if event.sender_role in SALES_SIDE_SENDER_ROLES
+        ]
+        latest_sales_order = max(sales_orders, default=0)
+        new_customer_message_ids = [
+            event.id
+            for event in current_run_events
+            if event.sender_role == "customer"
+            and int(event.observation_order or 0) > latest_sales_order
+        ]
+        new_sales_message = bool(sales_orders)
+        human_sales_events = [
+            event
+            for event in current_run_events
+            if event.sender_role in SALES_SIDE_SENDER_ROLES
+            and str(
+                (
+                    event.raw_payload
+                    if isinstance(event.raw_payload, dict)
+                    else {}
+                ).get("sender_source")
+                or ""
+            )
+            == "human"
+        ]
+        human_sales_observed = bool(human_sales_events)
+        last_human_sales_screen_order = max(
+            (
+                int(event.observation_order or 0)
+                for event in human_sales_events
+            ),
+            default=0,
+        )
+
+    if not state_transition_allowed:
+        db.flush()
+        return {
+            "ingested_count": ingested_count,
+            "duplicated_count": duplicated_count,
+            "ignored_count": ignored_count,
+            "results": results,
+            "state_transition_applied": False,
+            "state_transition_reason": state_transition_reason,
+            "current_read_reason": str(
+                current_authorization.get("read_reason") or ""
+            ),
+            "next_action": NEXT_ACTION_NONE,
+        }
+
+    message_batch = None
+    flow_gate_errors = list(flow_gate_error_codes)
+    failed_customer_images = [
+        item
+        for item in ordered_messages
+        if str(item.message_type or "").strip().lower() == "image"
+        and str(item.item_state or "").strip().lower() == "failed"
+        and str(item.sender_role_hint or "").strip().lower() == "customer"
+    ]
+    if failed_customer_images and "C2_IMAGE_UNDERSTANDING_FAILED" not in flow_gate_errors:
+        flow_gate_errors.append("C2_IMAGE_UNDERSTANDING_FAILED")
+        failed_image_detail: dict[str, Any] = {
+            "error_code": "C2_IMAGE_UNDERSTANDING_FAILED",
+            "position_source": "position_unavailable",
+        }
+        if all(
+            item.message_position.order_source == "visual_top"
+            for item in failed_customer_images
+        ):
+            failed_customer_image_orders = [
+                int(item.message_position.screen_order)
+                for item in failed_customer_images
+            ]
+            failed_image_detail.update(
+                {
+                    "min_screen_order": min(failed_customer_image_orders),
+                    "max_screen_order": max(failed_customer_image_orders),
+                    "position_source": "failed_image_visual_top",
+                }
+            )
+        flow_gate_details_by_code["C2_IMAGE_UNDERSTANDING_FAILED"] = [
+            failed_image_detail
+        ]
+    failed_voices = [
+        item
+        for item in ordered_messages
+        if str(item.message_type or "").strip().lower() == "voice"
+        and str(item.item_state or "").strip().lower() == "failed"
+        and str(item.sender_role_hint or "").strip().lower()
+        in {"customer", "self"}
+    ]
+    if failed_voices and "C2_VOICE_TRANSCRIBE_FAILED" not in flow_gate_errors:
+        flow_gate_errors.append("C2_VOICE_TRANSCRIBE_FAILED")
+        failed_voice_details: list[dict] = []
+        for sender_role in ("customer", "self"):
+            role_items = [
+                item
+                for item in failed_voices
+                if str(item.sender_role_hint or "").strip().lower()
+                == sender_role
+            ]
+            if not role_items:
+                continue
+            detail: dict[str, Any] = {
+                "error_code": "C2_VOICE_TRANSCRIBE_FAILED",
+                "position_source": "position_unavailable",
+                "subject_sender_role": sender_role,
+            }
+            if all(
+                item.message_position.order_source == "visual_top"
+                for item in role_items
+            ):
+                orders = [
+                    int(item.message_position.screen_order)
+                    for item in role_items
+                ]
+                detail.update(
+                    {
+                        "min_screen_order": min(orders),
+                        "max_screen_order": max(orders),
+                        "position_source": "failed_voice_visual_top",
+                    }
+                )
+            failed_voice_details.append(detail)
+        flow_gate_details_by_code["C2_VOICE_TRANSCRIBE_FAILED"] = (
+            failed_voice_details
+        )
+
+    def gate_is_proven_before_latest_human_sales(code: str) -> bool:
+        if (
+            not human_sales_observed
+            or new_customer_message_ids
+            or last_human_sales_screen_order <= 0
+        ):
+            return False
+        details = flow_gate_details_by_code.get(code) or []
+        if not details:
+            return False
+        strong_position_sources = FLOW_GATE_STRONG_POSITION_SOURCES_V3
+        return all(
+            detail.get("position_source") in strong_position_sources
+            and detail.get("max_screen_order") is not None
+            and (
+                int(detail["max_screen_order"]) < last_human_sales_screen_order
+                or (
+                    code == "C2_VOICE_TRANSCRIBE_FAILED"
+                    and detail.get("subject_sender_role") == "self"
+                    and int(detail["max_screen_order"])
+                    == last_human_sales_screen_order
+                )
+            )
+            for detail in details
+        )
+
+    flow_gate_errors = [
+        code
+        for code in flow_gate_errors
+        if not gate_is_proven_before_latest_human_sales(code)
+    ]
+    temporary_capability_gates = [
+        code
+        for code in flow_gate_errors
+        if code in TEMPORARY_CAPABILITY_GATE_CODES_V3
+    ]
+    handoff_flow_gates = [
+        code
+        for code in flow_gate_errors
+        if code not in TEMPORARY_CAPABILITY_GATE_CODES_V3
+    ]
+    if open_handoff_active:
+        if handoff_flow_gates:
+            from app.services.c3_service import (
+                open_handoff_events_for_conversation,
+            )
+
+            existing_handoff = next(
+                iter(
+                    open_handoff_events_for_conversation(
+                        db,
+                        payload.conversation_id,
+                        for_update=True,
+                    )
+                ),
+                None,
+            )
+            existing_batch = (
+                db.get(MessageBatch, existing_handoff.batch_id)
+                if existing_handoff and existing_handoff.batch_id
+                else None
+            )
+            if existing_batch:
+                message_batch = {
+                    "batch_id": existing_batch.id,
+                    "batch_status": existing_batch.status,
+                }
+    elif handoff_flow_gates:
+        from app.services.c3_service import create_deterministic_handoff_for_ingest
+
+        stable_flow_gate_key = str(evidence_payload.get("flow_gate_identity_key") or "").strip()
+        message_batch = create_deterministic_handoff_for_ingest(
+            db,
+            conversation_id=payload.conversation_id,
+            message_event_ids=new_customer_message_ids,
+            reason_codes=handoff_flow_gates,
+            trigger_key=(
+                f"identity:{stable_flow_gate_key}"
+                if stable_flow_gate_key
+                else f"{payload.read_run_id}:{handoff_flow_gates[0]}"
+            ),
+            trace_id=get_request_id(),
+        )
+    elif temporary_capability_gates:
+        # Missing local capability is not a customer-service handoff. Persist
+        # safe facts, keep the target readable, and let the pending image be
+        # completed after configuration recovery.
+        readable_origin_statuses = {
+            "friend_activation_reading",
+            "waiting_user_reply",
+            "recalled_waiting_user",
+            "waiting_sales_reply",
+            "sales_replied_waiting_user",
+        }
+        if conversation.status == "ai_active":
+            conversation.status = (
+                origin_conversation_status
+                if origin_conversation_status in readable_origin_statuses
+                else "waiting_user_reply"
+            )
+        message_batch = {
+            "batch_id": None,
+            "batch_status": "capability_paused",
+            "reason_codes": temporary_capability_gates,
+        }
+    elif new_customer_message_ids:
+        from app.services.c3_service import collect_customer_message_batch
+
+        message_batch = collect_customer_message_batch(
+            db,
+            conversation_id=payload.conversation_id,
+            message_event_ids=new_customer_message_ids,
+            trace_id=get_request_id(),
+        )
+    elif not new_sales_message:
+        read_reason = str(evidence_payload.get("read_reason") or "").strip()
+        from app.services.c3_service import create_control_message_batch
+
+        if (
+            conversation.friend_state == "friend_active"
+            and conversation.status == "friend_activation_reading"
+            and read_reason == "friend_acceptance_visible_hit"
+        ):
+            has_human_messages = db.scalar(
+                select(MessageEvent.id)
+                .where(
+                    MessageEvent.conversation_id == payload.conversation_id,
+                    MessageEvent.sender_role.in_(["customer", "self"]),
+                )
+                .limit(1)
+            )
+            conversation.status = "ai_active"
+            if not has_human_messages:
+                message_batch = create_control_message_batch(
+                    db,
+                    conversation_id=payload.conversation_id,
+                    trigger_type="friend_welcome",
+                    trigger_key="friend_welcome",
+                    trace_id=get_request_id(),
+                )
+        elif conversation.status == "recall_precheck" and read_reason == "recall_precheck" and conversation.recall_cycle_id:
+            cycle_id = conversation.recall_cycle_id
+            message_batch = create_control_message_batch(
+                db,
+                conversation_id=payload.conversation_id,
+                trigger_type="recall",
+                trigger_key=cycle_id,
+                recall_cycle_id=cycle_id,
+                trace_id=get_request_id(),
+            )
+            local_today = utcnow().astimezone(ZoneInfo("Asia/Shanghai")).date()
+            if conversation.recall_daily_date != local_today:
+                conversation.recall_daily_date = local_today
+                conversation.recall_daily_count = 0
+            conversation.recall_count += 1
+            conversation.recall_daily_count += 1
+            conversation.status = "ai_active"
+            conversation.next_recall_at = None
     db.flush()
-    return {
+    response = {
         "ingested_count": ingested_count,
         "duplicated_count": duplicated_count,
         "ignored_count": ignored_count,
         "results": results,
+        "state_transition_applied": True,
+        "state_transition_reason": state_transition_reason,
         "next_action": NEXT_ACTION_NONE,
+    }
+    if partitioned:
+        response["ingest_partition"] = {
+            "group_id": payload.read_run_id,
+            "index": partition_index,
+            "count": partition_count,
+            "complete": partition_final,
+        }
+    if message_batch:
+        batch_row = db.get(MessageBatch, str(message_batch["batch_id"]))
+        continuation = None
+        if batch_row and batch_row.active and batch_row.status in {
+            "collecting",
+            "generating",
+            "retry_wait",
+        }:
+            from app.services.c3_service import bind_message_batch_continuation
+
+            continuation = bind_message_batch_continuation(
+                db,
+                batch_id=batch_row.id,
+                binding=binding,
+                authorization_revision=_authorization_revision(binding),
+                read_reason=incoming_read_reason,
+                origin_conversation_status=origin_conversation_status,
+            )
+        response["message_batch"] = {
+            "batch_id": message_batch["batch_id"],
+            "batch_status": message_batch["batch_status"],
+        }
+        if continuation:
+            response["message_batch"]["continuation"] = continuation
+    return response
+
+
+def record_ingest_technical_terminal(
+    db: Session,
+    *,
+    worker: Worker,
+    payload: WechatMessageIngestRequest,
+    error_code: str,
+) -> dict[str, Any]:
+    """Persist the backend-owned terminal for an unrecoverable C2 identity fault."""
+
+    binding = db.scalar(
+        select(WechatSessionBinding).where(
+            WechatSessionBinding.conversation_id == payload.conversation_id,
+            WechatSessionBinding.worker_id == worker.id,
+            WechatSessionBinding.deleted_at.is_(None),
+        )
+    )
+    if not binding:
+        return {"terminal_confirmed": False}
+    conversation = _upsert_conversation_for_binding(db, binding)
+    from app.services.c3_service import create_deterministic_handoff_for_ingest
+
+    result = create_deterministic_handoff_for_ingest(
+        db,
+        conversation_id=conversation.conversation_id,
+        message_event_ids=[],
+        reason_codes=[str(error_code)],
+        trigger_key=(
+            f"c2-technical-terminal:{payload.read_run_id}:{error_code}"
+        ),
+        trace_id=get_request_id(),
+    )
+    return {
+        "terminal_confirmed": True,
+        "conversation_id": conversation.conversation_id,
+        "message_batch": result,
     }
 
 
@@ -1047,6 +2549,18 @@ def get_bindings_by_lead(db: Session, lead_id: str) -> dict:
 
 
 def list_messages(db: Session, conversation_id: str, page: int = 1, page_size: int = 20) -> dict:
-    query = select(MessageEvent).where(MessageEvent.conversation_id == conversation_id).order_by(MessageEvent.ingested_at.desc())
+    query = (
+        select(MessageEvent)
+        .where(MessageEvent.conversation_id == conversation_id)
+        .order_by(
+            func.coalesce(
+                MessageEvent.observed_at,
+                MessageEvent.occurred_at,
+                MessageEvent.ingested_at,
+            ).desc(),
+            MessageEvent.observation_order.desc(),
+            MessageEvent.id.desc(),
+        )
+    )
     items = list(db.scalars(query.offset((page - 1) * page_size).limit(page_size)))
     return {"items": [_message_to_dict(item) for item in items], "page": page, "page_size": page_size}

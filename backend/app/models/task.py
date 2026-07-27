@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, JSON, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -27,6 +27,11 @@ class Task(Base, TimestampMixin):
     cancel_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     remark: Mapped[str | None] = mapped_column(Text, nullable=True)
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_owner_worker_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("workers.id"), nullable=True)
+    lease_owner_client_instance_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_last_renewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_fencing_token: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -36,7 +41,7 @@ class Task(Base, TimestampMixin):
 
     lead: Mapped["Lead | None"] = relationship()
     sales: Mapped["Sales | None"] = relationship()
-    worker: Mapped["Worker | None"] = relationship()
+    worker: Mapped["Worker | None"] = relationship(foreign_keys=[worker_id])
     original_task: Mapped["Task | None"] = relationship(remote_side=[id])
     events: Mapped[list["TaskEvent"]] = relationship(back_populates="task", cascade="all, delete-orphan")
     notes: Mapped[list["TaskNote"]] = relationship(back_populates="task", cascade="all, delete-orphan")
@@ -47,6 +52,7 @@ Index("idx_tasks_type_status_created_at", Task.task_type, Task.status, Task.crea
 Index("idx_tasks_status_created_at", Task.status, Task.created_at.desc())
 Index("idx_tasks_sales_status", Task.sales_id, Task.status)
 Index("idx_tasks_worker_status", Task.worker_id, Task.status)
+Index("idx_tasks_lease_expiry", Task.status, Task.lease_expires_at)
 Index("idx_tasks_lead_type_status", Task.lead_id, Task.task_type, Task.status)
 Index("idx_tasks_result_code", Task.result_code)
 Index("idx_tasks_error_code", Task.error_code)

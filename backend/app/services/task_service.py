@@ -1,12 +1,14 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import hashlib
 import re
 from typing import Any
+from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session, object_session, selectinload
 
 from app.core.request_context import ActorContext
+from app.core.config import get_settings
 from app.enums import ContactType, TaskBlockCode, TaskEventType, TaskResultCode, TaskStatus, TaskType
 from app.errors import AppError
 from app.models.lead import Lead, LeadContact
@@ -24,6 +26,81 @@ ACTIVE_TASK_STATUSES = {TaskStatus.blocked.value, TaskStatus.pending.value, Task
 CANCELLABLE_TASK_STATUSES = {TaskStatus.blocked.value, TaskStatus.pending.value, TaskStatus.running.value}
 REMARK_CODE_PREFIX = "CJ"
 REMARK_CODE_ALPHABET = "ABCDEFGHKMNPRSTUVWXYZ23456789"
+SYSTEM_TASK_LEASE_ACTOR = ActorContext(
+    operator_id=UUID(int=0),
+    operator_name="任务租约恢复器",
+    role="system",
+    ip_address=None,
+    user_agent=None,
+    request_id="task-lease-recovery",
+)
+
+
+def _aware(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def task_lease_is_expired(task: Task, *, now: datetime | None = None) -> bool:
+    expires_at = _aware(task.lease_expires_at)
+    return expires_at is None or expires_at <= _aware(now or utcnow())
+
+
+def validate_task_lease(
+    task: Task,
+    *,
+    worker_id: str,
+    client_instance_id: str | None,
+    lease_fencing_token: int | None,
+) -> None:
+    if task.status != TaskStatus.running.value:
+        raise AppError("TASK_LEASE_NOT_RUNNING", "仅 running 任务持有服务端租约", 409)
+    if not client_instance_id:
+        raise AppError("TASK_LEASE_CLIENT_INSTANCE_REQUIRED", "缺少任务租约客户端实例", 401)
+    if (
+        task.lease_owner_worker_id != worker_id
+        or task.lease_owner_client_instance_id != client_instance_id
+    ):
+        raise AppError("TASK_LEASE_OWNER_MISMATCH", "当前客户端不是任务租约持有者", 409)
+    if int(lease_fencing_token or 0) != int(task.lease_fencing_token or 0):
+        raise AppError("TASK_LEASE_FENCING_STALE", "任务租约 fencing token 已失效", 409)
+    if task_lease_is_expired(task):
+        raise AppError("TASK_LEASE_EXPIRED", "服务端任务租约已过期", 409)
+
+
+def renew_task_lease(
+    db: Session,
+    task_id: str,
+    *,
+    worker_id: str,
+    client_instance_id: str | None,
+    lease_fencing_token: int,
+    current_step: str | None,
+) -> dict[str, Any]:
+    task = db.scalar(
+        select(Task)
+        .options(*_task_load_options())
+        .where(Task.id == task_id, Task.deleted_at.is_(None))
+        .with_for_update()
+    )
+    if not task:
+        raise AppError("TASK_NOT_FOUND", "任务不存在", 404)
+    validate_task_lease(
+        task,
+        worker_id=worker_id,
+        client_instance_id=client_instance_id,
+        lease_fencing_token=lease_fencing_token,
+    )
+    now = utcnow()
+    task.lease_last_renewed_at = now
+    task.lease_expires_at = now + timedelta(seconds=get_settings().task_lease_seconds)
+    if current_step:
+        task.current_step = current_step
+    db.flush()
+    return task_to_worker_execution_detail(task)
 
 
 def _parse_datetime(value: str | None, field_name: str) -> datetime | None:
@@ -221,6 +298,7 @@ def _sent_ack_summary(ack: SentAck | None) -> dict[str, Any] | None:
         "worker_id": ack.worker_id,
         "client_instance_id": ack.client_instance_id,
         "send_result": ack.send_result,
+        "action_phase": ack.action_phase,
         "reply_text_hash": ack.reply_text_hash,
         "sidecar_run_id": ack.sidecar_run_id,
         "error_code": ack.error_code,
@@ -371,6 +449,11 @@ def task_to_list_item(task: Task) -> dict[str, Any]:
         "created_at": task.created_at,
         "updated_at": task.updated_at,
         "claimed_at": task.claimed_at,
+        "lease_owner_worker_id": task.lease_owner_worker_id,
+        "lease_owner_client_instance_id": task.lease_owner_client_instance_id,
+        "lease_expires_at": task.lease_expires_at,
+        "lease_last_renewed_at": task.lease_last_renewed_at,
+        "lease_fencing_token": task.lease_fencing_token,
         "completed_at": task.completed_at,
         "failed_at": task.failed_at,
         "cancelled_at": task.cancelled_at,
@@ -380,6 +463,11 @@ def task_to_list_item(task: Task) -> dict[str, Any]:
             "worker": _worker_summary(task),
             "current_step": task.current_step,
             "claimed_at": task.claimed_at,
+            "lease_owner_worker_id": task.lease_owner_worker_id,
+            "lease_owner_client_instance_id": task.lease_owner_client_instance_id,
+            "lease_expires_at": task.lease_expires_at,
+            "lease_last_renewed_at": task.lease_last_renewed_at,
+            "lease_fencing_token": task.lease_fencing_token,
             "completed_at": task.completed_at,
             "failed_at": task.failed_at,
             "cancelled_at": task.cancelled_at,
@@ -406,6 +494,11 @@ def task_to_detail(task: Task) -> dict[str, Any]:
             "worker": _worker_summary(task),
             "current_step": task.current_step,
             "claimed_at": task.claimed_at,
+            "lease_owner_worker_id": task.lease_owner_worker_id,
+            "lease_owner_client_instance_id": task.lease_owner_client_instance_id,
+            "lease_expires_at": task.lease_expires_at,
+            "lease_last_renewed_at": task.lease_last_renewed_at,
+            "lease_fencing_token": task.lease_fencing_token,
             "completed_at": task.completed_at,
             "failed_at": task.failed_at,
             "cancelled_at": task.cancelled_at,
@@ -443,6 +536,10 @@ def _task_load_options():
 
 
 def finish_task_and_release_worker(task: Task) -> None:
+    task.lease_owner_worker_id = None
+    task.lease_owner_client_instance_id = None
+    task.lease_expires_at = None
+    task.lease_last_renewed_at = None
     if task.worker:
         task.worker.running_status = "idle"
         if task.worker.current_task == task.id:
@@ -455,6 +552,15 @@ def get_task_or_404(db: Session, task_id: str) -> Task:
     if not task:
         raise AppError("TASK_NOT_FOUND", "任务不存在", 404)
     return task
+
+
+def _task_claim_statement(task_id: str):
+    return (
+        select(Task)
+        .options(*_task_load_options())
+        .where(Task.id == task_id, Task.deleted_at.is_(None))
+        .with_for_update()
+    )
 
 
 def list_tasks(
@@ -759,8 +865,15 @@ def claim_task(
     actor: ActorContext,
     *,
     require_worker_ready: bool = False,
+    claim_source: str | None = None,
+    conversation_id: str | None = None,
+    client_instance_id: str | None = None,
 ) -> dict[str, Any]:
-    task = get_task_or_404(db, task_id)
+    # The task row is the server-side claim boundary. Without a row lock, two
+    # transactions can both observe pending and issue different leases.
+    task = db.scalar(_task_claim_statement(task_id))
+    if not task:
+        raise AppError("TASK_NOT_FOUND", "任务不存在", 404)
     if task.status != TaskStatus.pending.value:
         raise AppError("TASK_CLAIM_NOT_ALLOWED", "仅 pending 任务可领取", 409)
     worker = db.get(Worker, worker_id)
@@ -773,7 +886,13 @@ def claim_task(
     if task.task_type == TaskType.chat_reply.value:
         from app.services.c3_service import validate_chat_reply_task_claim
 
-        validate_chat_reply_task_claim(db, task, worker)
+        validate_chat_reply_task_claim(
+            db,
+            task,
+            worker,
+            claim_source=claim_source,
+            conversation_id=conversation_id,
+        )
     if require_worker_ready:
         from app.services.worker_service import worker_can_claim
 
@@ -792,7 +911,17 @@ def claim_task(
     task.status = TaskStatus.running.value
     task.worker_id = worker.id
     task.current_step = current_step or task.current_step or "claimed"
-    task.claimed_at = utcnow()
+    now = utcnow()
+    task.claimed_at = now
+    task.lease_owner_worker_id = worker.id
+    task.lease_owner_client_instance_id = (
+        client_instance_id
+        or worker.client_instance_id
+        or f"admin:{actor.operator_id}"
+    )
+    task.lease_fencing_token = int(task.lease_fencing_token or 0) + 1
+    task.lease_last_renewed_at = now
+    task.lease_expires_at = now + timedelta(seconds=get_settings().task_lease_seconds)
     task.updated_by = str(actor.operator_id)
     worker.running_status = "running"
     worker.current_task = task.id
@@ -804,6 +933,30 @@ def claim_task(
 def pull_task_for_worker(db: Session, worker: Worker) -> dict[str, Any]:
     running_task = _running_task_for_worker(db, worker.id)
     if running_task:
+        if task_lease_is_expired(running_task):
+            fail_task(
+                db,
+                running_task.id,
+                "TASK_LEASE_EXPIRED",
+                running_task.current_step or "task_lease",
+                "服务端任务租约过期；为避免旧客户端继续操作微信，任务已终止且不得自动重放。",
+                SYSTEM_TASK_LEASE_ACTOR,
+            )
+            return {
+                "mode": "lease_expired",
+                "can_claim": False,
+                "reason": "TASK_LEASE_EXPIRED",
+                "task": None,
+            }
+        if (
+            running_task.lease_owner_client_instance_id != worker.client_instance_id
+        ):
+            return {
+                "mode": "lease_blocked",
+                "can_claim": False,
+                "reason": "TASK_LEASE_HELD_BY_OTHER_CLIENT",
+                "task": None,
+            }
         return {"mode": "running", "can_claim": False, "reason": None, "task": task_to_worker_execution_detail(running_task)}
 
     from app.services.worker_service import worker_can_claim
@@ -820,7 +973,14 @@ def pull_task_for_worker(db: Session, worker: Worker) -> dict[str, Any]:
             Task.status == TaskStatus.pending.value,
             Task.deleted_at.is_(None),
         )
-        .order_by(Task.created_at.asc(), Task.id.asc())
+        .order_by(
+            case(
+                (Task.task_type == TaskType.chat_reply.value, 0),
+                else_=1,
+            ),
+            Task.created_at.asc(),
+            Task.id.asc(),
+        )
     )
     return {
         "mode": "pending" if pending_task else "idle",
@@ -860,9 +1020,40 @@ def complete_task(db: Session, task_id: str, result_code: TaskResultCode, remark
     return task_to_detail(get_task_or_404(db, task.id))
 
 
-def fail_task(db: Session, task_id: str, error_code: str, failure_step: str | None, failure_remark: str | None, actor: ActorContext) -> dict[str, Any]:
+_PENDING_CHAT_REPLY_RECOVERY_ERRORS = {
+    "C2_REPLY_CONTEXT_MISSING",
+    "C2_REPLY_TARGET_NOT_AUTHORIZED",
+    "C2_REPLY_CONTEXT_RECOVERY_FAILED",
+    "C3_REPLACEMENT_BATCH_MISSING",
+    "TASK_LEASE_EXPIRED",
+}
+_CHAT_REPLY_RECOVERY_HANDOFF_ERRORS = {
+    "C2_REPLY_CONTEXT_MISSING",
+    "C2_REPLY_TARGET_NOT_AUTHORIZED",
+    "C2_REPLY_CONTEXT_RECOVERY_FAILED",
+    "C3_REPLACEMENT_BATCH_MISSING",
+    "TASK_LEASE_EXPIRED",
+}
+
+
+def fail_task(
+    db: Session,
+    task_id: str,
+    error_code: str,
+    failure_step: str | None,
+    failure_remark: str | None,
+    actor: ActorContext,
+    *,
+    allow_pending_chat_reply_recovery: bool = False,
+) -> dict[str, Any]:
     task = get_task_or_404(db, task_id)
-    if task.status != TaskStatus.running.value:
+    pending_reply_recovery = (
+        allow_pending_chat_reply_recovery
+        and task.status == TaskStatus.pending.value
+        and task.task_type == TaskType.chat_reply.value
+        and error_code in _PENDING_CHAT_REPLY_RECOVERY_ERRORS
+    )
+    if task.status != TaskStatus.running.value and not pending_reply_recovery:
         raise AppError("TASK_FAIL_NOT_ALLOWED", "仅 running 任务可标记失败", 409)
     before = task.status
     task.status = TaskStatus.failed.value
@@ -871,6 +1062,40 @@ def fail_task(db: Session, task_id: str, error_code: str, failure_step: str | No
     task.failure_remark = failure_remark
     task.failed_at = utcnow()
     task.updated_by = str(actor.operator_id)
+    if (
+        task.task_type == TaskType.chat_reply.value
+        and task.reply_action_id
+        and (pending_reply_recovery or task.status == TaskStatus.failed.value)
+    ):
+        action = db.get(ReplyAction, task.reply_action_id)
+        if (
+            action
+            and not action.deleted_at
+            and action.status in {"draft", "guarding", "queued"}
+        ):
+            if error_code in _CHAT_REPLY_RECOVERY_HANDOFF_ERRORS:
+                from app.services.c3_service import (
+                    handoff_unsent_reply_recovery_failure,
+                )
+
+                handoff_unsent_reply_recovery_failure(
+                    db,
+                    reply_action_id=action.id,
+                    error_code=error_code,
+                )
+            else:
+                action.status = "cancelled"
+                action.current = False
+                action.error_code = error_code
+                action.suggested_action = "wait_for_new_authorization"
+                batch = db.get(MessageBatch, action.batch_id)
+                if batch and not batch.deleted_at:
+                    batch.status = "cancelled"
+                    batch.active = False
+                    batch.retryable = False
+                    batch.decision = "no_action"
+                    batch.error_code = error_code
+                    batch.suggested_action = "wait_for_new_authorization"
     finish_task_and_release_worker(task)
     _write_event(db, task, TaskEventType.failed, actor=actor, from_status=before, to_status=task.status, remark=failure_remark)
     db.flush()

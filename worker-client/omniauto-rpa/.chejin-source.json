@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "upstream_repository": "meta-xucong/omniauto",
+  "upstream_commit": "855c21881641cdb2f9fe69d3f2e1caa05e37d04d",
+  "integration_note": "车金适配层在此上游基线上维护，完整目录 tree SHA 由打包时动态计算。"
+}

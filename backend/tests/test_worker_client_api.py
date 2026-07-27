@@ -1,7 +1,17 @@
-from fastapi.testclient import TestClient
+from datetime import timedelta
+import threading
+import time
 
-from app.core.database import Base, engine
+from fastapi.testclient import TestClient
+import pytest
+from sqlalchemy.dialects import postgresql
+
+from app.core.database import Base, SessionLocal, engine
 from app.main import app
+from app.models.base import utcnow
+from app.models.task import Task
+from app.services import task_service
+from app.errors import AppError
 
 
 client = TestClient(app)
@@ -77,6 +87,67 @@ def _first_task() -> dict:
     items = response.json()["data"]["items"]
     assert items
     return items[0]
+
+
+def test_task_claim_statement_has_database_row_lock():
+    statement = task_service._task_claim_statement("task-lock-contract")
+    sql = str(statement.compile(dialect=postgresql.dialect()))
+    assert "FOR UPDATE" in sql
+
+
+def test_postgres_concurrent_task_claim_allows_only_one_winner():
+    if engine.dialect.name != "postgresql":
+        pytest.skip("PostgreSQL row-lock concurrency test")
+
+    worker = _create_worker("并发领取 Worker")
+    _bind_worker(worker)
+    _heartbeat(worker)
+    _create_sales(worker["id"])
+    _create_lead("并发领取客户", "13896676681")
+    task = _first_task()
+    second_started = threading.Event()
+    outcomes: list[str] = []
+
+    def second_claim() -> None:
+        with SessionLocal() as second_db:
+            second_started.set()
+            try:
+                task_service.claim_task(
+                    second_db,
+                    task["id"],
+                    worker["id"],
+                    "second_claim",
+                    None,
+                    task_service.SYSTEM_TASK_LEASE_ACTOR,
+                    client_instance_id="client-a",
+                )
+                second_db.commit()
+                outcomes.append("claimed")
+            except AppError as exc:
+                second_db.rollback()
+                outcomes.append(exc.code)
+
+    with SessionLocal() as first_db:
+        first = task_service.claim_task(
+            first_db,
+            task["id"],
+            worker["id"],
+            "first_claim",
+            None,
+            task_service.SYSTEM_TASK_LEASE_ACTOR,
+            client_instance_id="client-a",
+        )
+        assert first["status"] == "running"
+        contender = threading.Thread(target=second_claim, daemon=True)
+        contender.start()
+        assert second_started.wait(timeout=2)
+        time.sleep(0.1)
+        assert contender.is_alive()
+        first_db.commit()
+
+    contender.join(timeout=5)
+    assert not contender.is_alive()
+    assert outcomes == ["TASK_CLAIM_NOT_ALLOWED"]
 
 
 def test_worker_client_bind_is_single_instance_and_reset_invalidates_old_client():
@@ -158,6 +229,13 @@ def test_worker_can_pull_claim_report_steps_complete_and_upload_evidence():
     )
     assert claimed.status_code == 200
     assert claimed.json()["data"]["status"] == "running"
+    lease_token = claimed.json()["data"]["lease_fencing_token"]
+    assert lease_token > 0
+    lease_headers = {
+        "X-Worker-Token": worker["worker_token"],
+        "X-Client-Instance-Id": "client-a",
+        "X-Task-Lease-Fencing-Token": str(lease_token),
+    }
 
     running_pull = client.get(
         f"/api/workers/{worker['id']}/tasks/pull",
@@ -169,7 +247,7 @@ def test_worker_can_pull_claim_report_steps_complete_and_upload_evidence():
     step = client.post(
         f"/api/tasks/{task['id']}/step",
         json={"current_step": "sending_invite", "remark": "正在发送好友申请"},
-        headers={"X-Worker-Token": worker["worker_token"], "X-Client-Instance-Id": "client-a"},
+        headers=lease_headers,
     )
     assert step.status_code == 200
 
@@ -189,7 +267,7 @@ def test_worker_can_pull_claim_report_steps_complete_and_upload_evidence():
     completed = client.post(
         f"/api/tasks/{task['id']}/invite-sent",
         json={"remark": "已发送添加通讯录邀请"},
-        headers={"X-Worker-Token": worker["worker_token"], "X-Client-Instance-Id": "client-a"},
+        headers=lease_headers,
     )
     assert completed.status_code == 200
     detail = completed.json()["data"]
@@ -255,3 +333,61 @@ def test_worker_heartbeat_rejects_legacy_running_status_values():
     )
     assert invalid.status_code == 400
     assert invalid.json()["code"] == "WORKER_RUNNING_STATUS_INVALID"
+
+
+def test_task_lease_renewal_rejects_stale_fencing_and_expiry_is_terminal():
+    worker = _create_worker()
+    _bind_worker(worker)
+    _heartbeat(worker)
+    _create_sales(worker["id"])
+    _create_lead("租约测试客户", "13896676680")
+    task = _first_task()
+    worker_headers = {
+        "X-Worker-Token": worker["worker_token"],
+        "X-Client-Instance-Id": "client-a",
+    }
+
+    claimed = client.post(
+        f"/api/tasks/{task['id']}/claim",
+        json={"worker_id": worker["id"], "current_step": "checking_rpa"},
+        headers=worker_headers,
+    )
+    assert claimed.status_code == 200
+    token = claimed.json()["data"]["lease_fencing_token"]
+    original_expiry = claimed.json()["data"]["lease_expires_at"]
+
+    renewed = client.post(
+        f"/api/tasks/{task['id']}/lease/renew",
+        json={"lease_fencing_token": token, "current_step": "phone_search_started"},
+        headers=worker_headers,
+    )
+    assert renewed.status_code == 200
+    assert renewed.json()["data"]["lease_fencing_token"] == token
+    assert renewed.json()["data"]["lease_expires_at"] >= original_expiry
+
+    stale = client.post(
+        f"/api/tasks/{task['id']}/lease/renew",
+        json={"lease_fencing_token": token + 1, "current_step": "must_not_run"},
+        headers=worker_headers,
+    )
+    assert stale.status_code == 409
+    assert stale.json()["code"] == "TASK_LEASE_FENCING_STALE"
+
+    with SessionLocal() as db:
+        row = db.get(Task, task["id"])
+        row.lease_expires_at = utcnow() - timedelta(seconds=1)
+        db.commit()
+
+    expired_pull = client.get(
+        f"/api/workers/{worker['id']}/tasks/pull",
+        headers=worker_headers,
+    )
+    assert expired_pull.status_code == 200
+    assert expired_pull.json()["data"]["mode"] == "lease_expired"
+    assert expired_pull.json()["data"]["reason"] == "TASK_LEASE_EXPIRED"
+    assert expired_pull.json()["data"]["task"] is None
+
+    detail = client.get(f"/api/tasks/{task['id']}", headers=HEADERS)
+    assert detail.status_code == 200
+    assert detail.json()["data"]["status"] == "failed"
+    assert detail.json()["data"]["error_code"] == "TASK_LEASE_EXPIRED"

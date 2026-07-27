@@ -3890,7 +3890,7 @@ def check_listener_humanized_send_env_mapping() -> dict[str, Any]:
         and mapped.get("WECHAT_WIN32_OCR_HUMANIZED_SEND_TRIGGER_DELAY_MAX_MS") == "1200"
         and mapped.get("WECHAT_WIN32_OCR_HUMANIZED_SEND_AFTER_TRIGGER_DELAY_MAX_MS") == "880"
         and mapped.get("WECHAT_WIN32_OCR_INPUT_FAST_VISUAL_CONFIRM") == "1"
-        and mapped.get("WECHAT_WIN32_OCR_SEND_TRIGGER_MODE") == "enter_only"
+        and mapped.get("WECHAT_WIN32_OCR_SEND_TRIGGER_MODE") == "click_only"
         and mapped.get("WECHAT_WIN32_OCR_SEND_INPUT_CONFIRM_ATTEMPTS") == "1"
         and mapped.get("WECHAT_WIN32_OCR_SEND_MIN_INTERVAL_SECONDS") == "90"
         and mapped.get("WECHAT_WIN32_OCR_SEND_BURST_LIMIT") == "2"
@@ -4533,7 +4533,7 @@ def check_sidecar_open_chat_avoids_ctrl_a_selection() -> dict[str, Any]:
     sidecar_path = ADAPTERS_ROOT / "wechat_win32_ocr_sidecar.py"
     source = sidecar_path.read_text(encoding="utf-8")
     start = source.find("def open_chat(")
-    end = source.find("def ensure_target_ready_for_send(", start if start >= 0 else 0)
+    end = source.find("def active_send_guard_is_strong(", start if start >= 0 else 0)
     snippet = source[start:end] if start >= 0 and end > start else ""
     helper_used = "clear_sidebar_search_box_without_select_all(" in snippet
     has_ctrl_a = 'hotkey(win32con.VK_CONTROL, ord("A"))' in snippet

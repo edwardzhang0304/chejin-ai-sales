@@ -120,7 +120,7 @@ RPA_HUMANIZED_SEND_DEFAULTS = {
     "adaptive_speed_enabled": True,
     "fast_send_confirmation_enabled": True,
     "input_fast_visual_confirm_enabled": True,
-    "send_trigger_mode": "enter_only",
+    "send_trigger_mode": "click_only",
     "send_input_confirm_attempts": 3,
     "send_rate_min_interval_seconds": 0,
     "send_rate_burst_window_seconds": 600,
@@ -186,9 +186,7 @@ def normalize_send_trigger_mode(method: Any) -> str:
     if raw not in {"click_only", "enter_only", "enter_then_click"}:
         return str(RPA_HUMANIZED_SEND_DEFAULTS["send_trigger_mode"])
     if raw == "enter_then_click":
-        return "enter_only"
-    if raw == "click_only" and not env_bool("WECHAT_WIN32_OCR_ALLOW_CLICK_SEND_TRIGGER", default=False):
-        return "enter_only"
+        return "click_only"
     return raw
 
 

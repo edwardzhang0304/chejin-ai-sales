@@ -1,6 +1,6 @@
 export type TaskStatus = "blocked" | "pending" | "running" | "completed" | "failed" | "cancelled";
 
-export type TaskType = "add_friend" | "chat_reply" | "follow_up" | string;
+export type TaskType = "add_friend" | "chat_reply" | string;
 
 export type TaskQuery = {
   keyword: string;

@@ -1,0 +1,269 @@
+{
+  "generated_file": true,
+  "source": "contracts/c2_contract_v3.json",
+  "contract_revision": "3.8.0",
+  "contract_sha256": "5cdef86580b1bc9c6352ba8e34ee914e1b4bf1e20925024b1f30131062fcbe90",
+  "observation_schema_version": 3,
+  "action_phases": [
+    "not_attempted",
+    "trigger_attempted",
+    "confirmed"
+  ],
+  "sender_roles": [
+    "customer",
+    "self",
+    "system",
+    "unknown"
+  ],
+  "row_rules": {
+    "text_bubble": {
+      "ingestible": true,
+      "message_type": "text",
+      "allowed_sender_roles": [
+        "customer",
+        "self"
+      ],
+      "allowed_sender_role_sources": [
+        "same_row_avatar"
+      ],
+      "discovery_allowed_sender_roles": [
+        "customer",
+        "self",
+        "system",
+        "unknown"
+      ],
+      "discovery_allowed_sender_role_sources": [
+        "same_row_avatar",
+        "system",
+        "unknown"
+      ],
+      "allowed_voice_states": [
+        "not_voice"
+      ],
+      "required_fields": [
+        "observation_id",
+        "row_kind",
+        "sender_role",
+        "sender_role_source",
+        "message_type",
+        "voice_state",
+        "content_clean",
+        "source_message"
+      ]
+    },
+    "voice_bubble": {
+      "ingestible": false,
+      "failed_ingestible": true,
+      "message_type": "voice",
+      "allowed_sender_roles": [
+        "customer",
+        "self"
+      ],
+      "allowed_sender_role_sources": [
+        "same_row_avatar"
+      ],
+      "allowed_voice_states": [
+        "untranscribed",
+        "transcribed"
+      ],
+      "required_fields": [
+        "observation_id",
+        "row_kind",
+        "sender_role",
+        "sender_role_source",
+        "message_type",
+        "voice_state"
+      ],
+      "failed_required_fields": [
+        "observation_id",
+        "row_kind",
+        "sender_role",
+        "sender_role_source",
+        "message_type",
+        "voice_state",
+        "item_state",
+        "voice_anchor_key",
+        "voice_processing_reason",
+        "source_message"
+      ]
+    },
+    "voice_transcript": {
+      "ingestible": true,
+      "failed_ingestible": true,
+      "message_type": "voice",
+      "allowed_sender_roles": [
+        "customer",
+        "self"
+      ],
+      "allowed_sender_role_sources": [
+        "parent_voice"
+      ],
+      "allowed_voice_states": [
+        "transcribed"
+      ],
+      "required_fields": [
+        "observation_id",
+        "row_kind",
+        "sender_role",
+        "sender_role_source",
+        "message_type",
+        "voice_state",
+        "content_clean",
+        "parent_voice_anchor_key",
+        "source_message"
+      ],
+      "failed_required_fields": [
+        "observation_id",
+        "row_kind",
+        "sender_role",
+        "sender_role_source",
+        "message_type",
+        "voice_state",
+        "item_state",
+        "parent_voice_anchor_key",
+        "voice_processing_reason",
+        "source_message"
+      ]
+    },
+    "image_bubble": {
+      "ingestible": true,
+      "failed_ingestible": true,
+      "message_type": "image",
+      "allowed_sender_roles": [
+        "customer",
+        "self"
+      ],
+      "allowed_sender_role_sources": [
+        "same_row_avatar"
+      ],
+      "allowed_voice_states": [
+        "not_voice"
+      ],
+      "discovery_required_fields": [
+        "observation_id",
+        "row_kind",
+        "sender_role",
+        "sender_role_source",
+        "message_type",
+        "voice_state",
+        "bubble_rect",
+        "image_physical_anchor",
+        "source_message"
+      ],
+      "required_fields": [
+        "observation_id",
+        "row_kind",
+        "sender_role",
+        "sender_role_source",
+        "message_type",
+        "voice_state",
+        "content_clean",
+        "image_physical_anchor",
+        "customer_image_understanding",
+        "visual_bridge_input",
+        "source_message"
+      ],
+      "failed_required_fields": [
+        "observation_id",
+        "row_kind",
+        "sender_role",
+        "sender_role_source",
+        "message_type",
+        "voice_state",
+        "item_state",
+        "image_physical_anchor",
+        "image_processing_reason",
+        "source_message"
+      ],
+      "terminal_non_ingestible_item_states": [
+        "ignored"
+      ]
+    },
+    "system_message": {
+      "ingestible": true,
+      "message_type": "system",
+      "allowed_sender_roles": [
+        "system"
+      ],
+      "allowed_sender_role_sources": [
+        "system"
+      ],
+      "allowed_voice_states": [
+        "not_voice"
+      ],
+      "required_fields": [
+        "observation_id",
+        "row_kind",
+        "sender_role",
+        "sender_role_source",
+        "message_type",
+        "voice_state",
+        "content_clean",
+        "source_message"
+      ]
+    },
+    "call_event": {
+      "ingestible": false,
+      "message_type": "system",
+      "allowed_sender_roles": [
+        "system"
+      ],
+      "allowed_sender_role_sources": [
+        "system"
+      ],
+      "allowed_voice_states": [
+        "not_voice"
+      ],
+      "required_fields": [
+        "observation_id",
+        "row_kind",
+        "sender_role",
+        "sender_role_source",
+        "message_type",
+        "voice_state"
+      ]
+    },
+    "system_banner": {
+      "ingestible": false,
+      "message_type": "system",
+      "allowed_sender_roles": [
+        "system"
+      ],
+      "allowed_sender_role_sources": [
+        "system"
+      ],
+      "allowed_voice_states": [
+        "not_voice"
+      ],
+      "required_fields": [
+        "observation_id",
+        "row_kind",
+        "sender_role",
+        "sender_role_source",
+        "message_type",
+        "voice_state"
+      ]
+    },
+    "unknown": {
+      "ingestible": false,
+      "message_type": "unknown",
+      "allowed_sender_roles": [
+        "unknown"
+      ],
+      "allowed_sender_role_sources": [
+        "unknown"
+      ],
+      "allowed_voice_states": [
+        "not_voice"
+      ],
+      "required_fields": [
+        "observation_id",
+        "row_kind",
+        "sender_role",
+        "sender_role_source",
+        "message_type",
+        "voice_state"
+      ]
+    }
+  }
+}

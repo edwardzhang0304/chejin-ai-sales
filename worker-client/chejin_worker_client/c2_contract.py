@@ -83,13 +83,31 @@ def contract_row_rules() -> dict[str, dict[str, Any]]:
     return rules
 
 
+def observation_role_is_trusted(observation: dict[str, Any]) -> bool:
+    """Validate one observation's final role against the shared C2 contract."""
+
+    row_kind = str(observation.get("row_kind") or "").strip().lower()
+    rule = contract_row_rules().get(row_kind)
+    if not isinstance(rule, dict):
+        return False
+    role = str(observation.get("sender_role") or "").strip().lower()
+    role_source = str(
+        observation.get("sender_role_source") or ""
+    ).strip().lower()
+    return role in {
+        str(value).strip().lower()
+        for value in (rule.get("allowed_sender_roles") or [])
+    } and role_source in {
+        str(value).strip().lower()
+        for value in (rule.get("allowed_sender_role_sources") or [])
+    }
+
+
+def temporary_capability_gate_codes() -> frozenset[str]:
+    return contract_values("temporary_capability_gate_codes")
+
+
 def sidecar_contract_error(payload: dict[str, Any], *, require_observations: bool = True) -> str:
-    if int(payload.get("contract_version") or 0) != 3:
-        return "C2_CONTRACT_VERSION_REQUIRED"
-    if str(payload.get("contract_revision") or "") != contract_revision():
-        return "C2_CONTRACT_REVISION_MISMATCH"
-    if str(payload.get("contract_sha256") or "") != contract_sha256():
-        return "C2_CONTRACT_SHA256_MISMATCH"
     if int(payload.get("observation_schema_version") or 0) != int(
         c2_contract_v3().get("observation_schema_version") or 0
     ):

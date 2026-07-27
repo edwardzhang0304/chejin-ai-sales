@@ -28,7 +28,7 @@ assert spec and spec.loader
 spec.loader.exec_module(sidecar)
 
 from apps.wechat_ai_customer_service.adapters import wechat_connector
-from chejin_worker_client.task_runner import _messages_need_voice_transcribe
+from chejin_worker_client.task_runner import _untranscribed_voice_observations
 
 
 def ocr_item(text: str, left: int, top: int, right: int, bottom: int) -> dict:
@@ -432,7 +432,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         self.assertEqual(messages[0]["type"], "voice")
         self.assertEqual(messages[0]["sender_role"], "self")
         self.assertTrue(hint["detected"])
-        self.assertTrue(_messages_need_voice_transcribe(payload))
+        self.assertGreaterEqual(len(_untranscribed_voice_observations(payload)), 1)
         self.assertEqual(observations[0]["row_kind"], "voice_bubble")
         self.assertEqual(observations[0]["voice_state"], "untranscribed")
         self.assertEqual(observations[0]["sender_role_source"], "same_row_avatar")
@@ -867,6 +867,15 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             patch.object(sidecar, "run_ocr", return_value=[]),
             patch.object(sidecar, "parse_messages_from_ocr", side_effect=lambda *_args, **_kwargs: next(parsed_snapshots)),
             patch.object(sidecar, "get_window_geometry", return_value={"width": 965, "height": 852}),
+            patch.object(
+                sidecar,
+                "validate_active_send_target",
+                side_effect=[
+                    {"ok": True, "conversation_type": "private", "short_code_confirmed": True},
+                    {"ok": False, "reason": "target_title_not_confirmed"},
+                ],
+            ) as validate_target,
+            patch.object(sidecar, "c2_target_activation_confirmed", side_effect=lambda value: value.get("ok") is True),
             patch.object(sidecar, "find_unified_untranscribed_voice_observation", return_value=unified_voice_observation(anchor)),
             patch.object(sidecar, "has_remaining_voice_transcribe_candidate", return_value=False),
             patch.object(
@@ -882,7 +891,12 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             patch.object(sidecar, "humanized_action_sleep", return_value=None),
             patch.object(sidecar, "scroll_chat_history", scroll_mock),
         ):
-            result = sidecar.voice_transcribe_payload(1, {}, target="CJR8S5K3")
+            result = sidecar.voice_transcribe_payload(
+                1,
+                {},
+                target="CJR8S5K3",
+                confirm_target="CJR8S5K3",
+            )
 
         self.assertEqual(result["state"], "voice_transcribe_completed")
         self.assertEqual([item["content"] for item in result["transcribed_messages"]], ["今天天气真不错"])
@@ -894,6 +908,12 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         self.assertGreaterEqual(result["timing"]["capture_call_count"], 2)
         self.assertGreaterEqual(result["timing"]["wait_call_count"], 1)
         self.assertGreaterEqual(result["timing"]["total_duration_seconds"], 0)
+        self.assertTrue(result["initial_target_confirmation"]["ok"])
+        self.assertFalse(result["target_confirmation"]["ok"])
+        self.assertFalse(result["final_frame_validation"]["target_confirmed"])
+        self.assertFalse(result["final_frame_reusable"])
+        self.assertEqual(validate_target.call_count, 2)
+        self.assertEqual(validate_target.call_args_list[-1].kwargs["screenshot_path"], "recovered.png")
         scroll_mock.assert_not_called()
 
     def test_combined_voice_record_is_bound_to_clicked_row_with_duplicate_duration(self) -> None:

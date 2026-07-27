@@ -11,6 +11,7 @@ import re
 from typing import Any
 
 from .config import CONFIG
+from .c2_contract import c2_contract_v3
 from .models import Binding, utc_now_iso
 
 
@@ -18,8 +19,47 @@ APP_DIR = CONFIG.app_dir
 DB_FILE = APP_DIR / "worker_client.sqlite3"
 MAX_LOGS = 1000
 RETENTION_DAYS = 30
+MAX_C2_LEDGER_ROWS_PER_CONVERSATION = 2000
 DEFAULT_ACCEPT_SCHEDULE = {"enabled": False, "start": "09:00", "end": "21:00"}
 TIME_RE = re.compile(r"^\d{2}:\d{2}$")
+
+
+def _c2_outbox_states() -> set[str]:
+    state_machine = (
+        c2_contract_v3().get("outbox_recovery_contract") or {}
+    ).get("state_machine")
+    return {
+        str(value)
+        for value in (
+            state_machine.get("states")
+            if isinstance(state_machine, dict)
+            else []
+        )
+    }
+
+
+def _outbox_backoff_seconds(attempt_count: int) -> int:
+    contract = c2_contract_v3().get("outbox_recovery_contract") or {}
+    machine = contract.get("state_machine") or {}
+    schedule = [
+        max(1, int(value))
+        for value in (machine.get("retry_backoff_seconds") or [])
+    ]
+    if not schedule:
+        schedule = [1, 2, 5, 10, 30, 60]
+    index = min(max(0, int(attempt_count) - 1), len(schedule) - 1)
+    maximum = max(
+        schedule[-1],
+        int(machine.get("max_retry_interval_seconds") or schedule[-1]),
+    )
+    return min(schedule[index], maximum)
+
+
+def _next_attempt_iso(attempt_count: int) -> str:
+    return (
+        datetime.now(timezone.utc)
+        + timedelta(seconds=_outbox_backoff_seconds(attempt_count))
+    ).isoformat()
 
 
 def ensure_app_dir() -> None:
@@ -91,7 +131,139 @@ def init_db(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS c2_message_ledger (
+          conversation_id TEXT NOT NULL,
+          source_message_key TEXT NOT NULL,
+          dedupe_key TEXT,
+          message_type TEXT NOT NULL,
+          terminal_state TEXT NOT NULL,
+          ingest_state TEXT NOT NULL,
+          result_json TEXT NOT NULL DEFAULT '{}',
+          first_seen_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (conversation_id, source_message_key)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS c2_ingest_outbox (
+          outbox_id TEXT PRIMARY KEY,
+          conversation_id TEXT NOT NULL,
+          authorization_revision TEXT NOT NULL,
+          read_run_id TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          status TEXT NOT NULL,
+          attempt_count INTEGER NOT NULL DEFAULT 0,
+          refresh_attempt_count INTEGER NOT NULL DEFAULT 0,
+          last_error TEXT,
+          next_attempt_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS c2_action_journal (
+          flow_id TEXT NOT NULL,
+          conversation_id TEXT NOT NULL,
+          source_message_key TEXT NOT NULL,
+          outcome_json TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (flow_id, source_message_key)
+        )
+        """
+    )
+    outbox_columns = {
+        str(row["name"])
+        for row in conn.execute("PRAGMA table_info(c2_ingest_outbox)").fetchall()
+    }
+    if "refresh_attempt_count" not in outbox_columns:
+        conn.execute(
+            "ALTER TABLE c2_ingest_outbox "
+            "ADD COLUMN refresh_attempt_count INTEGER NOT NULL DEFAULT 0"
+        )
+    if "next_attempt_at" not in outbox_columns:
+        conn.execute(
+            "ALTER TABLE c2_ingest_outbox "
+            "ADD COLUMN next_attempt_at TEXT"
+        )
+    conn.execute(
+        "UPDATE c2_ingest_outbox "
+        "SET status = 'capability_paused', next_attempt_at = COALESCE(next_attempt_at, ?) "
+        "WHERE status IN ('quarantined', 'abandoned', 'payload_terminated')",
+        (utc_now_iso(),),
+    )
+    conn.execute(
+        "UPDATE c2_message_ledger SET ingest_state = 'waiting' "
+        "WHERE ingest_state = 'quarantined'"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS reply_send_ack_outbox (
+          reply_action_id TEXT PRIMARY KEY,
+          task_id TEXT NOT NULL,
+          send_token TEXT NOT NULL,
+          status TEXT NOT NULL,
+          action_phase TEXT NOT NULL DEFAULT 'not_attempted',
+          reply_text_hash TEXT,
+          ack_payload_json TEXT,
+          attempt_count INTEGER NOT NULL DEFAULT 0,
+          last_error TEXT,
+          next_attempt_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+        """
+    )
+    send_ack_columns = {
+        str(row["name"])
+        for row in conn.execute(
+            "PRAGMA table_info(reply_send_ack_outbox)"
+        ).fetchall()
+    }
+    if "action_phase" not in send_ack_columns:
+        conn.execute(
+            "ALTER TABLE reply_send_ack_outbox "
+            "ADD COLUMN action_phase TEXT NOT NULL DEFAULT 'not_attempted'"
+        )
+    if "reply_text_hash" not in send_ack_columns:
+        conn.execute(
+            "ALTER TABLE reply_send_ack_outbox "
+            "ADD COLUMN reply_text_hash TEXT"
+        )
+    if "next_attempt_at" not in send_ack_columns:
+        conn.execute(
+            "ALTER TABLE reply_send_ack_outbox "
+            "ADD COLUMN next_attempt_at TEXT"
+        )
+    conn.execute(
+        """
+        UPDATE reply_send_ack_outbox
+        SET status = CASE
+              WHEN COALESCE(ack_payload_json, '') != '' THEN 'waiting'
+              ELSE 'intent'
+            END,
+            next_attempt_at = COALESCE(next_attempt_at, ?)
+        WHERE status = 'abandoned'
+        """,
+        (utc_now_iso(),),
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_local_logs_created_at ON local_logs(created_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_c2_ledger_updated ON c2_message_ledger(conversation_id, updated_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_c2_outbox_waiting ON c2_ingest_outbox(status, created_at)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_c2_action_journal_conversation "
+        "ON c2_action_journal(conversation_id, created_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reply_send_ack_outbox_waiting "
+        "ON reply_send_ack_outbox(status, created_at)"
+    )
     conn.commit()
 
 
@@ -229,6 +401,915 @@ def clear_c2_state(key: str) -> None:
     with db_connection() as conn:
         conn.execute("DELETE FROM c2_runtime_state WHERE key = ?", (clean_key,))
         conn.commit()
+
+
+_OUTBOX_FORBIDDEN_KEYS = set(
+    (c2_contract_v3().get("image_persistence_policy") or {}).get("forbidden_field_names") or []
+)
+
+_OUTBOX_FORBIDDEN_KEY_PREFIXES = (
+    "provider_response",
+    "raw_provider_response",
+    "retry_response",
+    "initial_response",
+)
+
+
+def _assert_outbox_text_only(value: Any, *, path: str = "payload") -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            normalized = str(key).strip().lower()
+            if normalized in _OUTBOX_FORBIDDEN_KEYS or normalized.startswith(_OUTBOX_FORBIDDEN_KEY_PREFIXES):
+                raise ValueError(f"C2_OUTBOX_FORBIDDEN_IMAGE_FIELD:{path}.{key}")
+            _assert_outbox_text_only(child, path=f"{path}.{key}")
+        return
+    if isinstance(value, list):
+        for index, child in enumerate(value):
+            _assert_outbox_text_only(child, path=f"{path}[{index}]")
+        return
+    if isinstance(value, str):
+        compact = value.strip().lower()
+        image_context = any(token in path.lower() for token in ("image", "vision", "thumbnail", "asset"))
+        if compact.startswith("data:image/") or (image_context and (compact.startswith("file://") or re.match(r"^[a-z]:[\\/]", compact))):
+            raise ValueError(f"C2_OUTBOX_FORBIDDEN_IMAGE_VALUE:{path}")
+        return
+    if value is None or isinstance(value, (bool, int, float)):
+        return
+    raise ValueError(f"C2_OUTBOX_NON_JSON_VALUE:{path}")
+
+
+def load_c2_ledger_entry(conversation_id: str, source_message_key: str) -> dict[str, Any] | None:
+    with db_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT conversation_id, source_message_key, dedupe_key, message_type,
+                   terminal_state, ingest_state, result_json, first_seen_at, updated_at
+            FROM c2_message_ledger
+            WHERE conversation_id = ? AND source_message_key = ?
+            """,
+            (str(conversation_id), str(source_message_key)),
+        ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    try:
+        item["result"] = json.loads(item.pop("result_json") or "{}")
+    except json.JSONDecodeError:
+        item["result"] = {}
+    return item
+
+
+def save_c2_ledger_terminal(
+    *,
+    conversation_id: str,
+    source_message_key: str,
+    dedupe_key: str | None,
+    message_type: str,
+    terminal_state: str,
+    ingest_state: str,
+    result: dict[str, Any] | None = None,
+) -> None:
+    if terminal_state not in {"completed", "failed", "ignored"}:
+        raise ValueError("C2_LEDGER_TERMINAL_STATE_INVALID")
+    if ingest_state not in {
+        "not_required",
+        "waiting",
+        "confirmed",
+    }:
+        raise ValueError("C2_LEDGER_INGEST_STATE_INVALID")
+    _assert_outbox_text_only(result or {}, path="ledger_result")
+    now = utc_now_iso()
+    with db_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO c2_message_ledger (
+              conversation_id, source_message_key, dedupe_key, message_type,
+              terminal_state, ingest_state, result_json, first_seen_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(conversation_id, source_message_key) DO UPDATE SET
+              dedupe_key = COALESCE(excluded.dedupe_key, c2_message_ledger.dedupe_key),
+              message_type = excluded.message_type,
+              terminal_state = excluded.terminal_state,
+              ingest_state = excluded.ingest_state,
+              result_json = excluded.result_json,
+              updated_at = excluded.updated_at
+            """,
+            (
+                str(conversation_id),
+                str(source_message_key),
+                str(dedupe_key or "") or None,
+                str(message_type),
+                terminal_state,
+                ingest_state,
+                json.dumps(result or {}, ensure_ascii=False, separators=(",", ":")),
+                now,
+                now,
+            ),
+        )
+        rows = conn.execute(
+            """
+            SELECT source_message_key FROM c2_message_ledger
+            WHERE conversation_id = ? AND ingest_state = 'confirmed'
+            ORDER BY updated_at DESC
+            LIMIT -1 OFFSET ?
+            """,
+            (str(conversation_id), MAX_C2_LEDGER_ROWS_PER_CONVERSATION),
+        ).fetchall()
+        if rows:
+            conn.executemany(
+                "DELETE FROM c2_message_ledger WHERE conversation_id = ? AND source_message_key = ?",
+                [(str(conversation_id), str(row["source_message_key"])) for row in rows],
+            )
+        conn.commit()
+
+
+def mark_c2_ledger_ingested(conversation_id: str, source_message_keys: list[str]) -> None:
+    keys = [str(value).strip() for value in source_message_keys if str(value).strip()]
+    if not keys:
+        return
+    now = utc_now_iso()
+    with db_connection() as conn:
+        conn.executemany(
+            """
+            UPDATE c2_message_ledger
+            SET ingest_state = 'confirmed', updated_at = ?
+            WHERE conversation_id = ? AND source_message_key = ?
+            """,
+            [(now, str(conversation_id), key) for key in keys],
+        )
+        conn.commit()
+
+
+def mark_c2_ledger_rejected(conversation_id: str, source_message_keys: list[str]) -> None:
+    keys = [str(value).strip() for value in source_message_keys if str(value).strip()]
+    if not keys:
+        return
+    now = utc_now_iso()
+    with db_connection() as conn:
+        conn.executemany(
+            """
+            UPDATE c2_message_ledger
+            SET terminal_state = 'failed', ingest_state = 'not_required', updated_at = ?
+            WHERE conversation_id = ? AND source_message_key = ?
+            """,
+            [(now, str(conversation_id), key) for key in keys],
+        )
+        conn.commit()
+
+
+def checkpoint_c2_action_outcomes(
+    *,
+    flow_id: str,
+    conversation_id: str,
+    outcomes: list[dict[str, Any]],
+) -> None:
+    """Persist irreversible action facts before the flow can exit or crash."""
+
+    normalized_flow_id = str(flow_id or "").strip()
+    normalized_conversation_id = str(conversation_id or "").strip()
+    if not normalized_flow_id or not normalized_conversation_id:
+        raise ValueError("C2_ACTION_JOURNAL_IDENTITY_MISSING")
+    now = utc_now_iso()
+    rows: list[tuple[str, str, str, str, str, str]] = []
+    for outcome in outcomes:
+        if not isinstance(outcome, dict):
+            continue
+        source_message_key = str(
+            outcome.get("source_message_key") or ""
+        ).strip()
+        result = str(outcome.get("result") or "").strip().lower()
+        if not source_message_key or result not in {"completed", "failed"}:
+            continue
+        _assert_outbox_text_only(
+            outcome,
+            path="c2_action_journal.outcome",
+        )
+        rows.append(
+            (
+                normalized_flow_id,
+                normalized_conversation_id,
+                source_message_key,
+                json.dumps(
+                    outcome,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                now,
+                now,
+            )
+        )
+    if not rows:
+        return
+    with db_connection() as conn:
+        conn.executemany(
+            """
+            INSERT INTO c2_action_journal (
+              flow_id, conversation_id, source_message_key,
+              outcome_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(flow_id, source_message_key) DO UPDATE SET
+              outcome_json = excluded.outcome_json,
+              updated_at = excluded.updated_at
+            """,
+            rows,
+        )
+        conn.commit()
+
+
+def list_c2_action_journal(
+    conversation_id: str,
+) -> list[dict[str, Any]]:
+    with db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT flow_id, conversation_id, source_message_key,
+                   outcome_json, created_at, updated_at
+            FROM c2_action_journal
+            WHERE conversation_id = ?
+            ORDER BY created_at ASC, source_message_key ASC
+            """,
+            (str(conversation_id),),
+        ).fetchall()
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["outcome"] = json.loads(
+                item.pop("outcome_json") or "{}"
+            )
+        except json.JSONDecodeError:
+            item["outcome"] = {}
+        results.append(item)
+    return results
+
+
+def clear_c2_action_journal(flow_id: str) -> None:
+    with db_connection() as conn:
+        conn.execute(
+            "DELETE FROM c2_action_journal WHERE flow_id = ?",
+            (str(flow_id),),
+        )
+        conn.commit()
+
+
+def _c2_outbox_id(payload: dict[str, Any]) -> str:
+    read_run_id = str(payload.get("read_run_id") or "").strip()
+    evidence = (
+        payload.get("evidence")
+        if isinstance(payload.get("evidence"), dict)
+        else {}
+    )
+    partition = (
+        evidence.get("ingest_partition")
+        if isinstance(evidence.get("ingest_partition"), dict)
+        else {}
+    )
+    partition_index = int(partition.get("index") or 0)
+    return (
+        f"c2-outbox:{read_run_id}:part-{partition_index}"
+        if partition_index > 0
+        else f"c2-outbox:{read_run_id}"
+    )
+
+
+def enqueue_c2_outbox(payload: dict[str, Any]) -> str:
+    _assert_outbox_text_only(payload)
+    read_run_id = str(payload.get("read_run_id") or "").strip()
+    conversation_id = str(payload.get("conversation_id") or "").strip()
+    authorization_revision = str(payload.get("authorization_revision") or "").strip()
+    if not read_run_id or not conversation_id or not authorization_revision:
+        raise ValueError("C2_OUTBOX_IDENTITY_MISSING")
+    outbox_id = _c2_outbox_id(payload)
+    now = utc_now_iso()
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    with db_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO c2_ingest_outbox (
+              outbox_id, conversation_id, authorization_revision, read_run_id,
+              payload_json, status, attempt_count, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, 'waiting', 0, ?, ?)
+            ON CONFLICT(outbox_id) DO UPDATE SET
+              payload_json = CASE
+                WHEN c2_ingest_outbox.status IN (
+                  'confirmed', 'capability_paused', 'split_completed',
+                  'target_terminated', 'conversation_terminated'
+                )
+                THEN c2_ingest_outbox.payload_json
+                ELSE excluded.payload_json
+              END,
+              updated_at = CASE
+                WHEN c2_ingest_outbox.status IN (
+                  'confirmed', 'capability_paused', 'split_completed',
+                  'target_terminated', 'conversation_terminated'
+                )
+                THEN c2_ingest_outbox.updated_at
+                ELSE excluded.updated_at
+              END
+            """,
+            (outbox_id, conversation_id, authorization_revision, read_run_id, encoded, now, now),
+        )
+        conn.commit()
+    return outbox_id
+
+
+def list_c2_outbox_waiting(limit: int = 20) -> list[dict[str, Any]]:
+    now = utc_now_iso()
+    with db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT outbox_id, conversation_id, authorization_revision, read_run_id,
+                   payload_json, status, attempt_count, refresh_attempt_count,
+                   last_error, next_attempt_at, created_at, updated_at
+            FROM c2_ingest_outbox
+            WHERE status IN (
+              'waiting', 'retry_waiting', 'refresh_pending',
+              'rebuild_pending', 'split_pending', 'capability_paused'
+            )
+              AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+            ORDER BY created_at ASC
+            LIMIT ?
+            """,
+            (now, max(1, int(limit))),
+        ).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["payload"] = json.loads(item.pop("payload_json"))
+        except json.JSONDecodeError:
+            item["payload"] = {}
+        result.append(item)
+    return result
+
+
+def has_pending_c2_outbox() -> bool:
+    with db_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM c2_ingest_outbox
+            WHERE status IN (
+              'waiting', 'retry_waiting', 'refresh_pending',
+              'rebuild_pending', 'split_pending', 'capability_paused'
+            )
+            LIMIT 1
+            """
+        ).fetchone()
+    return row is not None
+
+
+def load_c2_outbox_entry(outbox_id: str) -> dict[str, Any] | None:
+    with db_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT outbox_id, conversation_id, authorization_revision,
+                   read_run_id, payload_json, status, attempt_count,
+                   refresh_attempt_count, last_error, next_attempt_at,
+                   created_at, updated_at
+            FROM c2_ingest_outbox
+            WHERE outbox_id = ?
+            """,
+            (str(outbox_id),),
+        ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    try:
+        item["payload"] = json.loads(item.pop("payload_json"))
+    except json.JSONDecodeError:
+        item["payload"] = {}
+    return item
+
+
+def mark_c2_outbox_attempt(outbox_id: str, error: str | None = None) -> None:
+    with db_connection() as conn:
+        conn.execute(
+            """
+            UPDATE c2_ingest_outbox
+            SET attempt_count = attempt_count + 1, last_error = ?, updated_at = ?
+            WHERE outbox_id = ?
+              AND status IN (
+                'waiting', 'retry_waiting', 'refresh_pending',
+                'rebuild_pending', 'split_pending', 'capability_paused'
+              )
+            """,
+            (str(error or "") or None, utc_now_iso(), str(outbox_id)),
+        )
+        conn.commit()
+
+
+def set_c2_outbox_error(outbox_id: str, error: str) -> None:
+    with db_connection() as conn:
+        conn.execute(
+            """
+            UPDATE c2_ingest_outbox
+            SET last_error = ?, updated_at = ?
+            WHERE outbox_id = ?
+              AND status IN (
+                'waiting', 'retry_waiting', 'refresh_pending',
+                'rebuild_pending', 'split_pending', 'capability_paused'
+              )
+            """,
+            (str(error or "") or None, utc_now_iso(), str(outbox_id)),
+        )
+        conn.commit()
+
+
+def refresh_c2_outbox_payload(
+    outbox_id: str,
+    payload: dict[str, Any],
+    *,
+    next_status: str,
+) -> None:
+    _assert_outbox_text_only(payload)
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    authorization_revision = str(
+        payload.get("authorization_revision") or ""
+    ).strip()
+    if not authorization_revision:
+        raise ValueError("C2_OUTBOX_AUTHORIZATION_REVISION_MISSING")
+    if str(next_status) not in _c2_outbox_states():
+        raise ValueError("C2_OUTBOX_TARGET_STATE_INVALID")
+    with db_connection() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE c2_ingest_outbox
+            SET authorization_revision = ?, payload_json = ?,
+                status = ?, last_error = NULL, next_attempt_at = NULL,
+                updated_at = ?
+            WHERE outbox_id = ? AND status = 'refresh_pending'
+            """,
+            (
+                authorization_revision,
+                encoded,
+                str(next_status),
+                utc_now_iso(),
+                str(outbox_id),
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("C2_OUTBOX_NOT_WAITING")
+        conn.commit()
+
+
+def rebuild_c2_outbox_payload(
+    outbox_id: str,
+    payload: dict[str, Any],
+) -> None:
+    _assert_outbox_text_only(payload)
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    with db_connection() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE c2_ingest_outbox
+            SET payload_json = ?, status = 'waiting', last_error = NULL,
+                next_attempt_at = NULL, updated_at = ?
+            WHERE outbox_id = ? AND status = 'rebuild_pending'
+            """,
+            (encoded, utc_now_iso(), str(outbox_id)),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("C2_OUTBOX_NOT_REBUILD_PENDING")
+        conn.commit()
+
+
+def prepare_c2_outbox_payload(
+    outbox_id: str,
+    payload: dict[str, Any],
+) -> None:
+    """Persist a successfully prepared transport payload over its raw checkpoint."""
+
+    _assert_outbox_text_only(payload)
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    with db_connection() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE c2_ingest_outbox
+            SET payload_json = ?, status = 'waiting', last_error = NULL,
+                next_attempt_at = NULL, updated_at = ?
+            WHERE outbox_id = ?
+              AND status IN (
+                'waiting', 'retry_waiting', 'refresh_pending',
+                'rebuild_pending', 'split_pending', 'capability_paused'
+              )
+            """,
+            (encoded, utc_now_iso(), str(outbox_id)),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("C2_OUTBOX_NOT_PREPARABLE")
+        conn.commit()
+
+
+def replace_c2_outbox_with_partitions(
+    outbox_id: str,
+    payloads: list[dict[str, Any]],
+) -> list[str]:
+    if len(payloads) < 2:
+        raise ValueError("C2_OUTBOX_PARTITIONS_REQUIRED")
+    now = utc_now_iso()
+    rows: list[tuple[str, str, str, str, str]] = []
+    for payload in payloads:
+        _assert_outbox_text_only(payload)
+        child_id = _c2_outbox_id(payload)
+        conversation_id = str(payload.get("conversation_id") or "").strip()
+        authorization_revision = str(
+            payload.get("authorization_revision") or ""
+        ).strip()
+        read_run_id = str(payload.get("read_run_id") or "").strip()
+        if (
+            not child_id
+            or not conversation_id
+            or not authorization_revision
+            or not read_run_id
+        ):
+            raise ValueError("C2_OUTBOX_PARTITION_IDENTITY_MISSING")
+        rows.append(
+            (
+                child_id,
+                conversation_id,
+                authorization_revision,
+                read_run_id,
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            )
+        )
+    with db_connection() as conn:
+        parent = conn.execute(
+            "SELECT status FROM c2_ingest_outbox WHERE outbox_id = ?",
+            (str(outbox_id),),
+        ).fetchone()
+        if not parent or str(parent["status"]) != "split_pending":
+            raise ValueError("C2_OUTBOX_NOT_SPLIT_PENDING")
+        for row in rows:
+            conn.execute(
+                """
+                INSERT INTO c2_ingest_outbox (
+                  outbox_id, conversation_id, authorization_revision,
+                  read_run_id, payload_json, status, attempt_count,
+                  created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'waiting', 0, ?, ?)
+                ON CONFLICT(outbox_id) DO NOTHING
+                """,
+                (*row, now, now),
+            )
+        conn.execute(
+            """
+            UPDATE c2_ingest_outbox
+            SET status = 'split_completed', last_error = NULL,
+                next_attempt_at = NULL, updated_at = ?
+            WHERE outbox_id = ? AND status = 'split_pending'
+            """,
+            (now, str(outbox_id)),
+        )
+        conn.commit()
+    return [row[0] for row in rows]
+
+
+def transition_c2_outbox(
+    outbox_id: str,
+    *,
+    status: str,
+    error: str | None = None,
+    increment_refresh: bool = False,
+) -> None:
+    if str(status) not in _c2_outbox_states():
+        raise ValueError("C2_OUTBOX_TARGET_STATE_INVALID")
+    with db_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT attempt_count
+            FROM c2_ingest_outbox
+            WHERE outbox_id = ?
+            """,
+            (str(outbox_id),),
+        ).fetchone()
+        attempt_count = int(row["attempt_count"] or 0) if row else 0
+        next_attempt_at = (
+            None
+            if str(status) in {"waiting", "confirmed"}
+            else _next_attempt_iso(attempt_count)
+        )
+        cursor = conn.execute(
+            """
+            UPDATE c2_ingest_outbox
+            SET status = ?, last_error = ?, next_attempt_at = ?, updated_at = ?,
+                refresh_attempt_count = refresh_attempt_count + ?
+            WHERE outbox_id = ?
+              AND status IN (
+                'waiting', 'retry_waiting', 'refresh_pending',
+                'rebuild_pending', 'split_pending', 'capability_paused'
+              )
+            """,
+            (
+                str(status),
+                str(error or "") or None,
+                next_attempt_at,
+                utc_now_iso(),
+                1 if increment_refresh else 0,
+                str(outbox_id),
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("C2_OUTBOX_TRANSITION_SOURCE_INVALID")
+        conn.commit()
+
+
+def mark_c2_outbox_capability_paused(
+    outbox_id: str,
+    error: str,
+) -> None:
+    transition_c2_outbox(
+        outbox_id,
+        status="capability_paused",
+        error=error,
+    )
+
+
+def save_reply_send_intent(
+    *,
+    reply_action_id: str,
+    task_id: str,
+    send_token: str,
+    reply_text_hash: str | None = None,
+) -> None:
+    if not reply_action_id or not task_id or not send_token:
+        raise ValueError("REPLY_SEND_INTENT_IDENTITY_MISSING")
+    now = utc_now_iso()
+    with db_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO reply_send_ack_outbox (
+              reply_action_id, task_id, send_token, status, action_phase,
+              reply_text_hash,
+              ack_payload_json, attempt_count, created_at, updated_at
+            ) VALUES (?, ?, ?, 'intent', 'not_attempted', ?, NULL, 0, ?, ?)
+            ON CONFLICT(reply_action_id) DO UPDATE SET
+              task_id = excluded.task_id,
+              send_token = excluded.send_token,
+              reply_text_hash = excluded.reply_text_hash,
+              updated_at = excluded.updated_at
+            WHERE reply_send_ack_outbox.status != 'confirmed'
+            """,
+            (
+                reply_action_id,
+                task_id,
+                send_token,
+                str(reply_text_hash or "") or None,
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+
+
+def finalize_reply_send_ack(
+    *,
+    reply_action_id: str,
+    ack_payload: dict[str, Any],
+) -> None:
+    _assert_outbox_text_only(ack_payload, path="reply_send_ack")
+    encoded = json.dumps(
+        ack_payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    with db_connection() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE reply_send_ack_outbox
+            SET status = 'waiting', ack_payload_json = ?,
+                action_phase = ?,
+                last_error = NULL, next_attempt_at = NULL, updated_at = ?
+            WHERE reply_action_id = ? AND status != 'confirmed'
+            """,
+            (
+                encoded,
+                str(ack_payload.get("action_phase") or "not_attempted"),
+                utc_now_iso(),
+                reply_action_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("REPLY_SEND_INTENT_NOT_FOUND")
+        conn.commit()
+
+
+def list_reply_send_ack_outbox(limit: int = 20) -> list[dict[str, Any]]:
+    now = utc_now_iso()
+    with db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT reply_action_id, task_id, send_token, status, action_phase,
+                   reply_text_hash,
+                   ack_payload_json, attempt_count, last_error, next_attempt_at,
+                   created_at, updated_at
+            FROM reply_send_ack_outbox
+            WHERE status IN ('intent', 'waiting', 'capability_paused')
+              AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+            ORDER BY created_at ASC
+            LIMIT ?
+            """,
+            (now, max(1, int(limit))),
+        ).fetchall()
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        encoded = item.pop("ack_payload_json") or ""
+        try:
+            item["ack_payload"] = json.loads(encoded) if encoded else None
+        except json.JSONDecodeError:
+            item["ack_payload"] = None
+        items.append(item)
+    return items
+
+
+def has_pending_reply_send_ack_outbox() -> bool:
+    with db_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM reply_send_ack_outbox
+            WHERE status IN ('intent', 'waiting', 'capability_paused')
+            LIMIT 1
+            """
+        ).fetchone()
+    return row is not None
+
+
+def load_reply_send_ack_outbox(reply_action_id: str) -> dict[str, Any] | None:
+    with db_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT reply_action_id, task_id, send_token, status, action_phase,
+                   reply_text_hash,
+                   ack_payload_json, attempt_count, last_error, next_attempt_at,
+                   created_at, updated_at
+            FROM reply_send_ack_outbox
+            WHERE reply_action_id = ?
+            """,
+            (reply_action_id,),
+        ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    encoded = item.pop("ack_payload_json") or ""
+    try:
+        item["ack_payload"] = json.loads(encoded) if encoded else None
+    except json.JSONDecodeError:
+        item["ack_payload"] = None
+    return item
+
+
+def discard_reply_send_intent(reply_action_id: str) -> None:
+    """Remove only a persisted send that is proven not physically attempted."""
+
+    with db_connection() as conn:
+        conn.execute(
+            """
+            DELETE FROM reply_send_ack_outbox
+            WHERE reply_action_id = ?
+              AND status = 'intent'
+              AND action_phase = 'not_attempted'
+            """,
+            (reply_action_id,),
+        )
+        conn.commit()
+
+
+def mark_reply_send_ack_attempt(reply_action_id: str) -> None:
+    with db_connection() as conn:
+        conn.execute(
+            """
+            UPDATE reply_send_ack_outbox
+            SET attempt_count = attempt_count + 1, updated_at = ?
+            WHERE reply_action_id = ?
+              AND status IN ('intent', 'waiting', 'capability_paused')
+            """,
+            (utc_now_iso(), reply_action_id),
+        )
+        conn.commit()
+
+
+def set_reply_send_ack_error(
+    reply_action_id: str,
+    error: str,
+    *,
+    status: str = "waiting",
+) -> None:
+    if status not in {"waiting", "capability_paused"}:
+        raise ValueError("REPLY_SEND_ACK_STATUS_INVALID")
+    with db_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT attempt_count
+            FROM reply_send_ack_outbox
+            WHERE reply_action_id = ?
+            """,
+            (reply_action_id,),
+        ).fetchone()
+        attempt_count = int(row["attempt_count"] or 0) if row else 0
+        conn.execute(
+            """
+            UPDATE reply_send_ack_outbox
+            SET status = ?, last_error = ?, next_attempt_at = ?, updated_at = ?
+            WHERE reply_action_id = ?
+              AND status IN ('intent', 'waiting', 'capability_paused')
+            """,
+            (
+                status,
+                str(error or "") or None,
+                _next_attempt_iso(attempt_count),
+                utc_now_iso(),
+                reply_action_id,
+            ),
+        )
+        conn.commit()
+
+
+def mark_reply_send_ack_confirmed(reply_action_id: str) -> None:
+    with db_connection() as conn:
+        conn.execute(
+            """
+            UPDATE reply_send_ack_outbox
+            SET status = 'confirmed', last_error = NULL,
+                next_attempt_at = NULL, updated_at = ?
+            WHERE reply_action_id = ?
+            """,
+            (utc_now_iso(), reply_action_id),
+        )
+        conn.commit()
+
+
+def prune_terminal_outboxes(
+    *,
+    retention_days: int = 30,
+    max_terminal_rows: int = 5000,
+) -> dict[str, int]:
+    """Delete only old terminal records; never remove waiting or intent work."""
+
+    cutoff = (
+        datetime.now(timezone.utc)
+        - timedelta(days=max(1, int(retention_days)))
+    ).isoformat()
+    keep_limit = max(100, int(max_terminal_rows))
+    deleted: dict[str, int] = {}
+    with db_connection() as conn:
+        for table, identity_column, terminal_statuses in (
+            (
+                "c2_ingest_outbox",
+                "outbox_id",
+                (
+                    "confirmed",
+                    "split_completed",
+                    "target_terminated",
+                    "conversation_terminated",
+                ),
+            ),
+            (
+                "reply_send_ack_outbox",
+                "reply_action_id",
+                ("confirmed",),
+            ),
+        ):
+            placeholders = ",".join("?" for _ in terminal_statuses)
+            cursor = conn.execute(
+                f"""
+                DELETE FROM {table}
+                WHERE status IN ({placeholders})
+                  AND updated_at < ?
+                """,
+                (*terminal_statuses, cutoff),
+            )
+            removed = max(0, int(cursor.rowcount or 0))
+            terminal_rows = conn.execute(
+                f"""
+                SELECT {identity_column}
+                FROM {table}
+                WHERE status IN ({placeholders})
+                ORDER BY updated_at DESC
+                LIMIT -1 OFFSET ?
+                """,
+                (*terminal_statuses, keep_limit),
+            ).fetchall()
+            stale_ids = [str(row[identity_column]) for row in terminal_rows]
+            if stale_ids:
+                id_placeholders = ",".join("?" for _ in stale_ids)
+                cursor = conn.execute(
+                    f"""
+                    DELETE FROM {table}
+                    WHERE {identity_column} IN ({id_placeholders})
+                      AND status IN ({placeholders})
+                    """,
+                    (*stale_ids, *terminal_statuses),
+                )
+                removed += max(0, int(cursor.rowcount or 0))
+            deleted[table] = removed
+        conn.commit()
+    return deleted
 
 
 def is_accept_schedule_active(schedule: dict[str, Any] | None, now: datetime | None = None) -> bool:

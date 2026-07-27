@@ -48,7 +48,11 @@ group C1 add_friend：搜索手机号、申请好友、写客户短码
   W -> TS: 拉取/领取 add_friend 任务
   W -> OA: 调用 add-friend-entry-click-plan-windows\nphone_or_wechat / verify_message / remark_code
   OA -> WX: 手机号搜索、提交好友申请、写入客户短码
-  alt 邀请发送成功
+  alt 最终“确定”按钮物理点击成功，且无明确风控/失败
+    note over OA,W
+    不等待微信成功页面或成功文案。
+    点击后诊断截图/OCR异常不得降级本次成功点击。
+    end note
     OA --> W: completed + result_code=invite_sent
     W -> TS: 上报 task 完成
     TS -> CP: conversation.status=add_friend_sent
@@ -155,11 +159,11 @@ group C4 召回与人工跟进：召回前先precheck，Worker只执行已批准
       else precheck确认无新客户消息
         CP -> AI: 创建trigger_type=recall批次
 Brain生成召回文案并通过Guard
-        CP -> TS: 创建 follow_up 任务
-        W -> TS: 领取 follow_up
+        CP -> TS: 创建trigger_type=recall的chat_reply任务
+        W -> TS: 当前单会话Flow领取chat_reply
         W -> OA: 发送Brain批准的召回文案
         OA -> WX: 发送召回
-        W -> CP: 上报 follow_up sent_ack
+        W -> CP: 上报chat_reply sent_ack
         CP -> CP: status=recalled_waiting_user
 recall_count+1
       else precheck失败/目标不确认

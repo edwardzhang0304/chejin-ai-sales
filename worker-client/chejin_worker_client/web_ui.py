@@ -33,7 +33,7 @@ from .ui_lock import lock_summary
 
 WINDOW_WIDTH = 316
 WINDOW_HEIGHT = 628
-CLIENT_VERSION = "V16.107 · Worker C2/C3 客户端"
+CLIENT_VERSION = "V16.108 · Worker C2/C3 客户端"
 TITLEBAR_HEIGHT = 28
 WINDOW_CONTROL_WIDTH = 90
 WINDOW_RADIUS = 10
@@ -350,6 +350,12 @@ class WorkerWebWindow(QMainWindow):
 
     def _task_model_for_screen(self, task: Task | None, offline: bool, run_status: str) -> dict[str, str]:
         model = _task_model(task)
+        if self.runner.run_status_sync_error and run_status == "paused":
+            model["statusText"] = "暂停接单 · 同步失败"
+            model["metaText"] = (
+                "本地微信操作已停止，暂停状态尚未同步到后端，客户端正在自动重试。"
+            )
+            return model
         if task:
             if offline:
                 model["statusText"] = "离线"
@@ -448,8 +454,6 @@ class WorkerWebWindow(QMainWindow):
         if not self.binding:
             return
         next_status = "running" if accepting else "paused"
-        self.binding.run_status = next_status  # type: ignore[assignment]
-        save_binding(self.binding)
         self.runner.set_run_status(next_status)
         self._publish()
 

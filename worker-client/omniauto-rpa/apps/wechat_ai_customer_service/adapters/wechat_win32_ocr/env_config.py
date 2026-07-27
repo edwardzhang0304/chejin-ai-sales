@@ -11,7 +11,7 @@ DEFAULT_HUMANIZED_INPUT_METHOD = "sendinput_unicode"
 DEFAULT_HUMANIZED_INPUT_ENFORCE_INTERMITTENT = True
 DEFAULT_HUMANIZED_ALLOW_CLIPBOARD_ONCE = False
 DEFAULT_SEND_INPUT_CONFIRM_ATTEMPTS = 3
-DEFAULT_SEND_TRIGGER_MODE = "enter_only"
+DEFAULT_SEND_TRIGGER_MODE = "click_only"
 DEFAULT_STRICT_SEND_FOCUS_GUARD = True
 DEFAULT_FOCUS_CLICK_FALLBACK = True
 DEFAULT_ALLOW_UNKNOWN_FOREGROUND_GUARD = True
@@ -64,9 +64,7 @@ def normalize_send_trigger_mode(raw_mode: str | None, *, default: str = DEFAULT_
     if mode not in {"click_only", "enter_only", "enter_then_click"}:
         return default
     if mode == "enter_then_click":
-        return "enter_only"
-    if mode == "click_only" and not env_flag("WECHAT_WIN32_OCR_ALLOW_CLICK_SEND_TRIGGER", default=False):
-        return "enter_only"
+        return "click_only"
     return mode
 
 

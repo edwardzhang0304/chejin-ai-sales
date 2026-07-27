@@ -77,3 +77,34 @@ def contract_row_rules() -> dict[str, dict[str, Any]]:
     if declared_ingestible != derived_ingestible:
         raise RuntimeError("C2 ingestible_row_kinds and row_rules are inconsistent")
     return rules
+
+
+def recovery_action_for_error(error_code: str, status_code: int) -> str:
+    """Return the single contract-owned recovery action for an API error."""
+
+    contract = c2_contract_v3().get("outbox_recovery_contract")
+    if not isinstance(contract, dict):
+        raise RuntimeError("Invalid C2 outbox_recovery_contract")
+    code = str(error_code or "").strip()
+    code_groups = (
+        ("refresh_and_rebuild_codes", "refresh_and_rebuild"),
+        ("rebuild_failed_fact_codes", "rebuild_failed_facts"),
+        ("split_and_retry_codes", "split_and_retry"),
+        ("target_terminated_codes", "target_terminated"),
+        ("conversation_terminated_codes", "conversation_terminated"),
+        ("capability_paused_codes", "capability_paused"),
+    )
+    for field, action in code_groups:
+        if code in {
+            str(value)
+            for value in (contract.get(field) or [])
+        }:
+            return action
+    if int(status_code) in {
+        int(value) for value in (contract.get("retry_statuses") or [])
+    } or int(status_code) >= 500:
+        return "retry"
+    return str(
+        contract.get("unknown_api_error_action")
+        or "capability_paused"
+    )

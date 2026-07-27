@@ -15,6 +15,7 @@ services:
       AUTO_CREATE_TABLES: ${AUTO_CREATE_TABLES:-false}
       DOCS_ENABLED: ${DOCS_ENABLED:-true}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,null}
+      C3_OMNIAUTO_CONFIG_PATH: ${C3_OMNIAUTO_CONFIG_PATH:-/app/configs/chejin_c3_brain.json}
       WAIT_FOR_DB: "1"
       RUN_MIGRATIONS: "1"
     ports:
