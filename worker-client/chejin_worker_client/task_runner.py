@@ -123,6 +123,21 @@ IMAGE_OPERATION_BLOCKING_GATE_CODES = frozenset(
         "MESSAGE_IDENTITY_UNCONFIRMED",
     }
 )
+IMAGE_PRE_ACTION_CAPABILITY_PAUSE_REASONS = frozenset(
+    {
+        "vision_window_context_missing",
+        "vision_window_context_invalid",
+        "vision_window_context_validator_missing",
+        "vision_window_context_capture_missing",
+        "vision_window_capture_failed",
+        "capture_wechat_failed",
+        "capture_wechat_window_visible_screen_failed",
+        "vision_window_ocr_failed",
+        "rapidocr_onnxruntime_unavailable",
+        "vision_window_message_parse_failed",
+        "vision_window_frame_finalize_failed",
+    }
+)
 TASK_LEASE_DEFINITIVE_LOSS_CODES = frozenset(
     {
         "TASK_NOT_FOUND",
@@ -315,6 +330,8 @@ C2_LOCATE_TERMINAL_ERROR_CODES = {
 
 _C2_IMAGE_DIAGNOSTIC_FIELDS = {
     "phase",
+    "capture_step",
+    "capture_mode",
     "frame_fingerprint",
     "image_size",
     "ocr_item_count",
@@ -4339,6 +4356,11 @@ class TaskRunner:
                         observation=observation,
                         remark_code=str(target.remark_code or ""),
                         session_key=str(target.rpa_session_key or ""),
+                        window_context=(
+                            dict(payload.get("window_context") or {})
+                            if isinstance(payload.get("window_context"), dict)
+                            else None
+                        ),
                         trace_id=source_key,
                         cancel_check=cancel_check,
                         action_journal_path=image_action_journal,
@@ -4356,6 +4378,71 @@ class TaskRunner:
                 if isinstance(result.get("transaction"), dict)
                 else {}
             )
+            diagnostics = (
+                result.get("diagnostics")
+                if isinstance(result.get("diagnostics"), dict)
+                else {}
+            )
+            result_reason = str(result.get("reason") or "")
+            result_action_phase = str(
+                result.get("action_phase")
+                or transaction.get("action_phase")
+                or "not_attempted"
+            )
+            capability_paused = (
+                result_reason == "vision_configuration_incomplete"
+                or (
+                    result_action_phase == "not_attempted"
+                    and result_reason in IMAGE_PRE_ACTION_CAPABILITY_PAUSE_REASONS
+                )
+            )
+            if capability_paused:
+                for diagnostic_event in diagnostics.get("events") or []:
+                    safe_event = _safe_c2_image_diagnostic_event(
+                        diagnostic_event
+                    )
+                    append_log(
+                        (
+                            "WARN"
+                            if safe_event.get("status") == "failed"
+                            else "INFO"
+                        ),
+                        "c2_image_stage",
+                        "C2 图片处理阶段证据。",
+                        error_code=(
+                            str(safe_event.get("reason") or "") or None
+                        )
+                        if safe_event.get("status") == "failed"
+                        else None,
+                        metadata={**common_metadata, **safe_event},
+                    )
+                stats["capability_paused"] += 1
+                stats["deferred"] += 1
+                if result_reason == "vision_configuration_incomplete":
+                    stats["configuration_incomplete"] += 1
+                payload["vision_capability"] = {
+                    "ready": False,
+                    "state": "capability_paused",
+                    "reason": result_reason,
+                    "missing_configuration": list(
+                        result.get("missing_configuration") or []
+                    ),
+                }
+                append_log(
+                    "WARN",
+                    "c2_vision_capability_paused",
+                    "图片不可逆操作尚未发生；当前图片保持待处理并阻断 Brain，能力恢复后可安全重试。",
+                    error_code="C2_VISION_CAPABILITY_PAUSED",
+                    metadata={
+                        **common_metadata,
+                        "reason": result_reason,
+                        "missing_configuration": list(
+                            result.get("missing_configuration") or []
+                        ),
+                        "action_phase": result_action_phase,
+                    },
+                )
+                continue
             image_action = classify_action_result(
                 "image",
                 {
@@ -4417,7 +4504,6 @@ class TaskRunner:
                     ),
                     "action_outcome": image_action,
                 }
-            diagnostics = result.get("diagnostics") if isinstance(result.get("diagnostics"), dict) else {}
             for diagnostic_event in diagnostics.get("events") or []:
                 safe_event = _safe_c2_image_diagnostic_event(diagnostic_event)
                 append_log(
@@ -4480,22 +4566,6 @@ class TaskRunner:
                     "image_persisted": False,
                 },
             )
-            if str(result.get("reason") or "") == "vision_configuration_incomplete":
-                stats["capability_paused"] += 1
-                stats["deferred"] += 1
-                stats["configuration_incomplete"] += 1
-                append_log(
-                    "WARN",
-                    "c2_vision_capability_paused",
-                    "OmniAuto Vision 缺少真实配置，本轮未点击图片且未写终态；配置恢复后允许处理一次。",
-                    error_code="C2_VISION_CONFIGURATION_INCOMPLETE",
-                    metadata={
-                        "conversation_id": target.conversation_id,
-                        "remark_code": target.remark_code,
-                        "missing_configuration": list(result.get("missing_configuration") or []),
-                    },
-                )
-                continue
             if terminal_state not in {"completed", "failed", "ignored"}:
                 terminal_state = "failed"
                 result = {**result, "state": terminal_state, "reason": "vision_terminal_state_invalid"}
@@ -6976,16 +7046,28 @@ class TaskRunner:
                     image_stats.get("capability_paused")
                     or image_stats.get("configuration_incomplete")
                 ):
+                    vision_capability = (
+                        sidecar_payload.get("vision_capability")
+                        if isinstance(
+                            sidecar_payload.get("vision_capability"),
+                            dict,
+                        )
+                        else {}
+                    )
+                    capability_reason = str(
+                        vision_capability.get("reason")
+                        or "vision_capability_paused"
+                    )
                     self.c2_stats["last_error"] = "C2_VISION_CAPABILITY_PAUSED"
                     save_c2_state(
                         "vision_capability",
                         {
                             "state": "capability_paused",
-                            "reason": "vision_configuration_incomplete",
+                            "reason": capability_reason,
                             "conversation_id": target.conversation_id,
                             "remark_code": target.remark_code,
                             "missing_configuration": list(
-                                (sidecar_payload.get("vision_capability") or {}).get(
+                                vision_capability.get(
                                     "missing_configuration"
                                 )
                                 or []
@@ -6997,11 +7079,11 @@ class TaskRunner:
                         f"vision_capability:{target.conversation_id}",
                         {
                             "state": "capability_paused",
-                            "reason": "vision_configuration_incomplete",
+                            "reason": capability_reason,
                             "conversation_id": target.conversation_id,
                             "remark_code": target.remark_code,
                             "missing_configuration": list(
-                                (sidecar_payload.get("vision_capability") or {}).get(
+                                vision_capability.get(
                                     "missing_configuration"
                                 )
                                 or []
@@ -7028,11 +7110,12 @@ class TaskRunner:
                     append_log(
                         "WARN",
                         "c2_vision_capability_paused_flow_continues",
-                        "Vision 缺少配置；图片保持待处理并阻断 Brain，同屏文字、语音和销售消息继续入库。",
+                        "Vision 当前不可安全执行；图片保持待处理并阻断 Brain，同屏文字、语音和销售消息继续入库。",
                         error_code="C2_VISION_CAPABILITY_PAUSED",
                         metadata={
                             "conversation_id": target.conversation_id,
                             "remark_code": target.remark_code,
+                            "reason": capability_reason,
                             "deferred_image_count": int(
                                 image_stats.get("capability_paused") or 0
                             ),

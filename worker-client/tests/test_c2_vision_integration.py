@@ -22,6 +22,8 @@ from chejin_worker_client.omniauto_vision import (
     DEFAULT_VISION_REQUEST_STYLE,
     VisionCancelledError,
     _CancellableVisionProvider,
+    _VisionHostState,
+    _WindowFrame,
     _frame_fingerprint,
     _menu_ocr_evidence,
     explicit_vision_config,
@@ -35,6 +37,7 @@ from chejin_worker_client.action_journal import (
 from chejin_worker_client.wechat_c2 import apply_image_terminal_result
 from apps.wechat_ai_customer_service.optional_plugins.vision.capture import transaction
 from apps.wechat_ai_customer_service.optional_plugins.vision.ports import VisionHostPorts
+from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar
 
 
 class C2VisionIntegrationTests(unittest.TestCase):
@@ -82,6 +85,16 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "type": "image",
                 "image_physical_anchor": image_anchor,
             },
+        }
+
+    @staticmethod
+    def window_context() -> dict:
+        return {
+            "schema_version": 1,
+            "hwnd": 31415,
+            "pid": 2718,
+            "class_name": "WeChatMainWndForPC",
+            "source": "sidecar_selected_main_window",
         }
 
     def test_missing_api_key_stops_before_plugin(self):
@@ -437,6 +450,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     observation=self.image_observation(),
                     remark_code="CJTEST01",
                     session_key="wx-row-1",
+                    window_context=self.window_context(),
                     config={
                         "customer_image_understanding": {
                             "enabled": True
@@ -484,6 +498,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 observation=self.image_observation(role="customer"),
                 remark_code="CJTEST01",
                 session_key="wx-row-1",
+                window_context=self.window_context(),
                 config={"customer_image_understanding": {"enabled": True, "api_key": "unit-only"}},
             )
 
@@ -496,6 +511,211 @@ class C2VisionIntegrationTests(unittest.TestCase):
             [item["stage"] for item in result["diagnostics"]["events"]],
             ["vision_preflight", "vision_provider"],
         )
+
+    def test_vision_uses_sidecar_window_context_without_selecting_window(self):
+        state = _VisionHostState(
+            "vision-window-context",
+            window_context=self.window_context(),
+        )
+        with patch.object(
+            state.host,
+            "validate_c2_window_context",
+            return_value={
+                "ok": True,
+                "reason": "window_context_confirmed",
+                "hwnd": 31415,
+            },
+        ) as validator, patch.object(
+            state.host,
+            "ensure_visible_wechat_window",
+            side_effect=AssertionError("Vision must not search for a window"),
+        ) as search, patch.object(
+            state.host,
+            "select_primary_visible_main_window",
+            side_effect=AssertionError("Vision must not select a window"),
+        ) as select:
+            self.assertEqual(state.ensure_window(), 31415)
+            self.assertEqual(state.ensure_window(), 31415)
+
+        validator.assert_called_once_with(self.window_context())
+        search.assert_not_called()
+        select.assert_not_called()
+
+    def test_vision_frame_uses_only_sidecar_context_capture_entry(self):
+        state = _VisionHostState(
+            "vision-window-capture",
+            window_context=self.window_context(),
+        )
+        frame = _WindowFrame(state)
+        image = Image.new("RGB", (800, 600), "white")
+        capture_result = {
+            "ok": True,
+            "image": image,
+            "hwnd": 31415,
+            "capture_mode": "wechat_window_exact_hwnd",
+            "validation": {
+                "ok": True,
+                "reason": "window_context_confirmed",
+                "hwnd": 31415,
+            },
+        }
+        with patch.object(
+            state.host,
+            "capture_c2_window_context",
+            return_value=capture_result,
+        ) as capture, patch.object(
+            state.host,
+            "capture_wechat",
+            side_effect=AssertionError("Vision must not call raw capture"),
+        ) as raw_capture, patch.object(
+            state.host,
+            "capture_wechat_window_visible_screen",
+            side_effect=AssertionError("Vision must not call fallback capture"),
+        ) as fallback_capture, patch.object(
+            state.host,
+            "run_ocr",
+            return_value=[],
+        ), patch.object(
+            state.host,
+            "parse_messages_from_ocr",
+            return_value=[],
+        ):
+            result = frame.capture_frame(
+                {
+                    "phase": "image_candidate",
+                    "remark_code": "CJTEST01",
+                }
+            )
+
+        self.assertTrue(result["ok"])
+        capture.assert_called_once_with(
+            self.window_context(),
+            phase="image_candidate",
+            label="vision_image_candidate",
+        )
+        raw_capture.assert_not_called()
+        fallback_capture.assert_not_called()
+        image.close()
+
+    def test_sidecar_window_context_binds_exact_selected_hwnd(self):
+        probe = {
+            "selected_main_window": {
+                "hwnd": 31415,
+                "pid": 2718,
+                "class_name": "WeChatMainWndForPC",
+            }
+        }
+        with patch.object(
+            wechat_win32_ocr_sidecar,
+            "get_window_geometry",
+            return_value={
+                "left": 10,
+                "top": 20,
+                "right": 1010,
+                "bottom": 820,
+                "width": 1000,
+                "height": 800,
+            },
+        ), patch.object(
+            wechat_win32_ocr_sidecar,
+            "win32gui",
+            SimpleNamespace(
+                IsWindow=lambda _hwnd: True,
+                IsWindowVisible=lambda _hwnd: True,
+            ),
+        ), patch.object(
+            wechat_win32_ocr_sidecar,
+            "probe_wechat_windows",
+            return_value={
+                "windows": [
+                    {
+                        "hwnd": 31415,
+                        "pid": 2718,
+                        "class_name": "WeChatMainWndForPC",
+                    }
+                ]
+            },
+        ):
+            context = wechat_win32_ocr_sidecar.build_c2_window_context(
+                31415,
+                probe,
+            )
+            validation = (
+                wechat_win32_ocr_sidecar.validate_c2_window_context(
+                    context
+                )
+            )
+
+        self.assertEqual(context["hwnd"], 31415)
+        self.assertEqual(context["source"], "sidecar_selected_main_window")
+        self.assertTrue(validation["ok"])
+        self.assertEqual(validation["hwnd"], 31415)
+
+    def test_sidecar_context_capture_never_selects_another_window(self):
+        image = Image.new("RGB", (800, 600), "white")
+        with patch.object(
+            wechat_win32_ocr_sidecar,
+            "validate_c2_window_context",
+            return_value={
+                "ok": True,
+                "reason": "window_context_confirmed",
+                "hwnd": 31415,
+            },
+        ), patch.object(
+            wechat_win32_ocr_sidecar,
+            "capture_wechat",
+            return_value=(image, None),
+        ) as capture, patch.object(
+            wechat_win32_ocr_sidecar,
+            "ensure_visible_wechat_window",
+            side_effect=AssertionError("must not search for another window"),
+        ) as search, patch.object(
+            wechat_win32_ocr_sidecar,
+            "select_primary_visible_main_window",
+            side_effect=AssertionError("must not select another window"),
+        ) as select:
+            result = wechat_win32_ocr_sidecar.capture_c2_window_context(
+                self.window_context(),
+                phase="image_candidate",
+                label="vision_image_candidate",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["hwnd"], 31415)
+        capture.assert_called_once_with(
+            31415,
+            artifact_dir=None,
+            label="vision_image_candidate",
+        )
+        search.assert_not_called()
+        select.assert_not_called()
+        image.close()
+
+    def test_missing_sidecar_window_context_pauses_before_plugin(self):
+        class ForbiddenPlugin:
+            def __init__(self, **_kwargs):
+                raise AssertionError("plugin must not start without C2 window context")
+
+        with patch(
+            "apps.wechat_ai_customer_service.optional_plugins."
+            "vision.plugin.BuiltinVisionPlugin",
+            ForbiddenPlugin,
+        ):
+            result = process_image_slot(
+                observation=self.image_observation(),
+                remark_code="CJTEST01",
+                session_key="wx-row-1",
+                config={
+                    "customer_image_understanding": {
+                        "enabled": True,
+                        "api_key": "unit-only",
+                    }
+                },
+            )
+
+        self.assertEqual(result["state"], "capability_paused")
+        self.assertEqual(result["reason"], "vision_window_context_missing")
+        self.assertEqual(result["action_phase"], "not_attempted")
 
     def test_strict_adapter_disables_all_legacy_vision_entries(self):
         from apps.wechat_ai_customer_service.optional_plugins.vision.plugin import (
