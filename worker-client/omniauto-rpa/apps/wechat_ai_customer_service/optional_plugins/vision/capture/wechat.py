@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -26,6 +27,25 @@ COPY_IMAGE_MENU_TOKENS = (
     "copyimage",
     "copy image",
     "copy",
+)
+CONTEXT_MENU_EVIDENCE_TOKENS = (
+    "复制图片",
+    "复制",
+    "转发",
+    "收藏",
+    "多选",
+    "删除",
+    "引用",
+    "翻译",
+    "搜一搜",
+    "提醒",
+    "copy image",
+    "copy",
+    "forward",
+    "favorite",
+    "delete",
+    "quote",
+    "translate",
 )
 CHAT_TIME_RE = re.compile(
     r"^(?:(?:昨天|前天|星期[一二三四五六日天])\s*)?(?:[01]?\d|2[0-3]):[0-5]\d$"
@@ -258,6 +278,234 @@ def _structural_media_side(
     return candidates[0]
 
 
+def _exclude_avatar_column_from_media_bounds(
+    screenshot: Image.Image,
+    bounds: tuple[int, int, int, int],
+    *,
+    side: str,
+) -> tuple[tuple[int, int, int, int], bool]:
+    """Keep the media rectangle outside the same-row avatar column.
+
+    Connected-component detection can join a textured avatar to an adjacent
+    image through a small visual bridge. The preliminary structural side is
+    used only to trim that avatar column; the host adapter still owns the
+    authoritative sender-role decision through its shared avatar rule.
+    """
+    left, top, right, bottom = bounds
+    lane = _structural_media_lanes(*screenshot.size).get(str(side or "").strip().lower())
+    if not lane:
+        return bounds, False
+    if side == "customer":
+        left = max(left, int(lane["media_left"]))
+    elif side == "self":
+        right = min(right, int(lane["media_right"]))
+    normalized = (left, top, right, bottom)
+    return normalized, normalized != bounds
+
+
+def _visual_bounds(value: Any) -> tuple[int, int, int, int] | None:
+    if isinstance(value, dict):
+        raw = (
+            value.get("left"),
+            value.get("top"),
+            value.get("right"),
+            value.get("bottom"),
+        )
+    elif isinstance(value, (list, tuple)) and len(value) >= 4:
+        raw = value[:4]
+    else:
+        return None
+    try:
+        left, top, right, bottom = (int(float(item)) for item in raw)
+    except (TypeError, ValueError):
+        return None
+    if right <= left or bottom <= top:
+        return None
+    return left, top, right, bottom
+
+
+def image_bubble_visual_fingerprint(
+    screenshot: Image.Image,
+    bounds: Any,
+) -> str:
+    """Return the one shared movement-stable fingerprint for an image bubble."""
+
+    rect = _visual_bounds(bounds)
+    if rect is None:
+        return ""
+    left, top, right, bottom = rect
+    left = max(0, left)
+    top = max(0, top)
+    right = min(int(screenshot.size[0]), right)
+    bottom = min(int(screenshot.size[1]), bottom)
+    if right <= left or bottom <= top:
+        return ""
+    crop = screenshot.crop((left, top, right, bottom))
+    try:
+        resampling = getattr(Image, "Resampling", Image).LANCZOS
+        gray = crop.convert("L").resize((9, 8), resampling)
+        pixels = list(gray.getdata())
+        bits = [
+            1
+            if pixels[row * 9 + column] > pixels[row * 9 + column + 1]
+            else 0
+            for row in range(8)
+            for column in range(8)
+        ]
+        value = sum(bit << index for index, bit in enumerate(bits))
+        return f"dhash64:{value:016x}"
+    finally:
+        crop.close()
+
+
+def image_visual_fingerprint_distance(left: Any, right: Any) -> int | None:
+    """Return dHash Hamming distance, or None for incompatible evidence."""
+
+    left_text = str(left or "").strip().lower()
+    right_text = str(right or "").strip().lower()
+    if not left_text.startswith("dhash64:") or not right_text.startswith("dhash64:"):
+        return None
+    try:
+        return (
+            int(left_text.split(":", 1)[1], 16)
+            ^ int(right_text.split(":", 1)[1], 16)
+        ).bit_count()
+    except (TypeError, ValueError):
+        return None
+
+
+def stable_image_neighbor_signature(message: dict[str, Any]) -> str:
+    payload = {
+        "sender_role": str(
+            message.get("sender_role")
+            or message.get("sender")
+            or "unknown"
+        ).strip().lower(),
+        "message_type": str(
+            message.get("type")
+            or message.get("message_type")
+            or "unknown"
+        ).strip().lower(),
+        "content": str(
+            message.get("content")
+            or message.get("content_clean")
+            or message.get("content_raw_ocr")
+            or ""
+        ).strip(),
+        "voice_duration": message.get("voice_duration"),
+    }
+    return "message_semantic_" + hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:24]
+
+
+def attach_image_physical_anchors(
+    screenshot: Image.Image,
+    image_items: list[dict[str, Any]],
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Attach fingerprint, physical side, neighbours and relative occurrence."""
+
+    def message_identity(item: dict[str, Any]) -> str:
+        for key in (
+            "message_id",
+            "id",
+            "legacy_message_id",
+            "original_message_id",
+            "canonical_input_id",
+        ):
+            value = str(item.get(key) or "").strip()
+            if value:
+                return value
+        return ""
+
+    stable_by_message_id = {
+        message_identity(message): stable_image_neighbor_signature(message)
+        for message in messages
+        if isinstance(message, dict) and message_identity(message)
+    }
+    text_rows: list[tuple[int, int, str]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        message_type = str(
+            message.get("type") or message.get("message_type") or "text"
+        ).strip().lower()
+        if message_type != "text":
+            continue
+        rect = _visual_bounds(message.get("bubble_rect"))
+        if rect is None:
+            continue
+        text_rows.append(
+            (rect[1], rect[3], stable_image_neighbor_signature(message))
+        )
+    text_rows.sort(key=lambda item: (item[0], item[1], item[2]))
+
+    ordered = sorted(
+        [dict(item) for item in image_items if isinstance(item, dict)],
+        key=lambda item: (
+            (_visual_bounds(item.get("bounds") or item.get("bubble_rect")) or (0, 0, 0, 0))[1],
+            0
+            if str(
+                item.get("sender_role")
+                or item.get("sender")
+                or item.get("side")
+                or ""
+            ).strip().lower()
+            == "customer"
+            else 1,
+        ),
+    )
+    occurrences: dict[tuple[str, str, str, str], int] = {}
+    occurrence_groups: list[tuple[str, str, str, str]] = []
+    anchored: list[dict[str, Any]] = []
+    for item in ordered:
+        bounds = _visual_bounds(item.get("bounds") or item.get("bubble_rect"))
+        if bounds is None:
+            continue
+        role = str(
+            item.get("sender_role")
+            or item.get("sender")
+            or item.get("side")
+            or "unknown"
+        ).strip().lower()
+        preceding_id = str(item.get("_vision_preceding_text_id") or "").strip()
+        following_id = str(item.get("_vision_following_text_id") or "").strip()
+        preceding = stable_by_message_id.get(preceding_id, "")
+        following = stable_by_message_id.get(following_id, "")
+        if not preceding:
+            prior = [row for row in text_rows if row[1] <= bounds[1] + 6]
+            preceding = prior[-1][2] if prior else ""
+        if not following:
+            later = [row for row in text_rows if row[0] >= bounds[3] - 6]
+            following = later[0][2] if later else ""
+        fingerprint = image_bubble_visual_fingerprint(screenshot, bounds)
+        occurrence_group = (role, preceding, following, fingerprint)
+        occurrence_index = occurrences.get(occurrence_group, 0)
+        occurrences[occurrence_group] = occurrence_index + 1
+        item["image_physical_anchor"] = {
+            "sender_role": role,
+            "preceding_stable_message": preceding,
+            "following_stable_message": following,
+            "bubble_visual_fingerprint": fingerprint,
+            "occurrence_index": occurrence_index,
+            "occurrence_count": 0,
+        }
+        item["visual_fingerprint"] = fingerprint
+        anchored.append(item)
+        occurrence_groups.append(occurrence_group)
+    occurrence_totals: dict[tuple[str, str, str, str], int] = {}
+    for occurrence_group in occurrence_groups:
+        occurrence_totals[occurrence_group] = (
+            occurrence_totals.get(occurrence_group, 0) + 1
+        )
+    for item, occurrence_group in zip(anchored, occurrence_groups):
+        item["image_physical_anchor"]["occurrence_count"] = occurrence_totals[
+            occurrence_group
+        ]
+    return anchored
+
+
 def detect_visual_image_bubbles(
     screenshot: Image.Image,
     *,
@@ -336,13 +584,31 @@ def detect_visual_image_bubbles(
             area = bw * bh
             if bw < 90 or bh < 90 or area < 14000:
                 continue
-            if _covered_by_text(bounds, messages or []):
-                continue
             structural_side = _structural_media_side(image, bounds)
             if structural_side is None:
                 continue
             side, structural_score, structure_evidence = structural_side
             if clean_side_filter != "all" and side != clean_side_filter:
+                continue
+            bounds, avatar_column_excluded = _exclude_avatar_column_from_media_bounds(
+                image,
+                bounds,
+                side=side,
+            )
+            bw = bounds[2] - bounds[0]
+            bh = bounds[3] - bounds[1]
+            area = bw * bh
+            if bw < 90 or bh < 90 or area < 14000:
+                continue
+            if _covered_by_text(bounds, messages or []):
+                continue
+            if avatar_column_excluded:
+                structure_evidence = [
+                    *structure_evidence,
+                    "avatar_column_excluded_from_media_bounds",
+                ]
+            visual_fingerprint = image_bubble_visual_fingerprint(image, bounds)
+            if not visual_fingerprint:
                 continue
             score = area + bounds[3] * 12 + structural_score * 10000
             candidates.append(
@@ -356,6 +622,7 @@ def detect_visual_image_bubbles(
                     "detection_method": "structural_media_lane_v1",
                     "structure_evidence": structure_evidence,
                     "auxiliary_visual_evidence": ["colour_texture_connected_component"],
+                    "visual_fingerprint": visual_fingerprint,
                     "anchor": {"x": int((bounds[0] + bounds[2]) / 2), "y": int((bounds[1] + bounds[3]) / 2)},
                     "wechat_message_time": nearest_chat_time_marker(bounds, time_markers),
                 }
@@ -410,10 +677,49 @@ def _find_context_menu_item(
     *,
     tokens: tuple[str, ...],
     priority_fn: Any,
+    anchor: tuple[int, int] | None = None,
+    require_menu_cluster: bool = False,
 ) -> dict[str, Any] | None:
     width, height = image_size
     candidates: list[dict[str, Any]] = []
     normalized_tokens = [normalize_menu_text(token) for token in tokens]
+    normalized_menu_tokens = {
+        normalize_menu_text(token)
+        for token in CONTEXT_MENU_EVIDENCE_TOKENS
+        if normalize_menu_text(token)
+    }
+
+    def item_geometry(item: dict[str, Any]) -> tuple[int, int, int, int, int, int] | None:
+        try:
+            left = max(0, int(float(item.get("left") or 0)))
+            top = max(0, int(float(item.get("top") or 0)))
+            right = min(width, int(float(item.get("right") or 0)))
+            bottom = min(height, int(float(item.get("bottom") or 0)))
+        except (TypeError, ValueError):
+            return None
+        if right <= left or bottom <= top:
+            return None
+        return left, top, right, bottom, int((left + right) / 2), int((top + bottom) / 2)
+
+    menu_rows: list[dict[str, Any]] = []
+    for item in ocr_items:
+        if not isinstance(item, dict):
+            continue
+        compact = normalize_menu_text(item.get("text"))
+        geometry = item_geometry(item)
+        if compact not in normalized_menu_tokens or geometry is None:
+            continue
+        left, top, right, bottom, center_x, center_y = geometry
+        menu_rows.append(
+            {
+                "text": str(item.get("text") or "").strip(),
+                "compact": compact,
+                "bounds": [left, top, right, bottom],
+                "x": center_x,
+                "y": center_y,
+            }
+        )
+
     for item in ocr_items:
         if not isinstance(item, dict):
             continue
@@ -424,20 +730,54 @@ def _find_context_menu_item(
         priority = int(priority_fn(compact) or 0)
         if priority <= 0 and not any(token and token in compact for token in normalized_tokens):
             continue
-        left = max(0, int(float(item.get("left") or 0)) - 28)
-        top = max(0, int(float(item.get("top") or 0)) - 12)
-        right = min(width, int(float(item.get("right") or 0)) + 60)
-        bottom = min(height, int(float(item.get("bottom") or 0)) + 14)
-        if right <= left or bottom <= top:
+        geometry = item_geometry(item)
+        if geometry is None:
             continue
+        item_left, item_top, item_right, item_bottom, center_x, center_y = geometry
+        if anchor is not None:
+            anchor_x, anchor_y = int(anchor[0]), int(anchor[1])
+            if abs(center_x - anchor_x) > 360 or abs(center_y - anchor_y) > 420:
+                continue
+        cluster_rows = [
+            row
+            for row in menu_rows
+            if abs(int(row["x"]) - center_x) <= 150
+            and abs(int(row["y"]) - center_y) <= 360
+        ]
+        distinct_row_y = {
+            int(round(int(row["y"]) / 8.0))
+            for row in cluster_rows
+        }
+        if require_menu_cluster and (
+            priority < 2
+            or len(distinct_row_y) < 2
+        ):
+            continue
+        cluster_bounds = [
+            min([item_left, *(int(row["bounds"][0]) for row in cluster_rows)]),
+            min([item_top, *(int(row["bounds"][1]) for row in cluster_rows)]),
+            max([item_right, *(int(row["bounds"][2]) for row in cluster_rows)]),
+            max([item_bottom, *(int(row["bounds"][3]) for row in cluster_rows)]),
+        ]
+        click_bounds = [
+            max(0, item_left - 20),
+            max(0, item_top - 8),
+            min(width, item_right + 20),
+            min(height, item_bottom + 8),
+        ]
         candidates.append(
             {
                 "text": text,
-                "bounds": [left, top, right, bottom],
-                "x": int((left + right) / 2),
-                "y": int((top + bottom) / 2),
+                "bounds": click_bounds,
+                "menu_bounds": cluster_bounds,
+                "x": center_x,
+                "y": center_y,
                 "confidence": float(item.get("confidence") or 0.0),
                 "priority": int(priority or 1),
+                "menu_evidence": [
+                    {"text": str(row["text"]), "bounds": list(row["bounds"])}
+                    for row in cluster_rows
+                ],
             }
         )
     if not candidates:
@@ -450,12 +790,20 @@ def find_save_menu_item(ocr_items: list[dict[str, Any]], image_size: tuple[int, 
     return None
 
 
-def find_copy_menu_item(ocr_items: list[dict[str, Any]], image_size: tuple[int, int]) -> dict[str, Any] | None:
+def find_copy_menu_item(
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    anchor: tuple[int, int] | None = None,
+    require_menu_cluster: bool = False,
+) -> dict[str, Any] | None:
     return _find_context_menu_item(
         ocr_items,
         image_size,
         tokens=COPY_IMAGE_MENU_TOKENS,
         priority_fn=copy_menu_priority,
+        anchor=anchor,
+        require_menu_cluster=require_menu_cluster,
     )
 
 

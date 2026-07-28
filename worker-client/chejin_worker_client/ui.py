@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from .api import WorkerApiClient
-from .models import Binding, RpaResult, RpaStep, Task, WorkerProfile
+from .models import Binding, RpaResult, RpaStep, Task, WorkerProfile, task_type_title
 from .rpa_bridge import RpaBridge
 from .storage import append_log, clear_binding, load_binding, new_client_instance_id, read_logs, save_binding
 from .task_runner import TaskRunner
@@ -733,7 +733,7 @@ class WorkerWindow(QMainWindow):
         task_title_box.setSpacing(1)
         self.task_id_label = QLabel("暂无")
         self.task_id_label.setObjectName("taskId")
-        self.task_title_label = QLabel("添加通讯录邀请")
+        self.task_title_label = QLabel("Worker 任务")
         self.task_title_label.setObjectName("cardTitle")
         task_title_box.addWidget(self.task_id_label)
         task_title_box.addWidget(self.task_title_label)
@@ -1059,7 +1059,14 @@ class WorkerWindow(QMainWindow):
             self.last_task = task
             self.last_result = None
             if not self.step_history:
-                self.step_history.append(("任务已领取", "Worker 已领取 add_friend 任务。", "done", None))
+                self.step_history.append(
+                    (
+                        "任务已领取",
+                        f"Worker 已领取 {task_type_title(task.task_type)}任务。",
+                        "done",
+                        None,
+                    )
+                )
         self.refresh_view()
 
     def on_step(self, step: RpaStep) -> None:
@@ -1073,9 +1080,12 @@ class WorkerWindow(QMainWindow):
         self.last_result = result
         if result.ok:
             title = "回传执行结果"
-            remark = "已发送添加通讯录邀请，该结果不代表客户已同意好友申请。"
-            if result.result_code == "already_friend":
+            if self.last_task and self.last_task.task_type == "chat_reply":
+                remark = "AI 回复已发送并回传。"
+            elif result.result_code == "already_friend":
                 remark = "客户已是好友，任务已回传完成。"
+            else:
+                remark = "已发送添加通讯录邀请，该结果不代表客户已同意好友申请。"
             self.step_history.append((title, remark, "final", result.evidence_path))
         else:
             self.step_history.append(("任务执行失败", f"{result.error_code or 'OTHER'} · {result.message}", "error", result.evidence_path))
@@ -1157,11 +1167,13 @@ class WorkerWindow(QMainWindow):
 
         if display_task:
             self.task_id_label.setText(_short_task_id(display_task.id))
-            self.task_title_label.setText("添加通讯录邀请")
+            self.task_title_label.setText(task_type_title(display_task.task_type))
             self.task_meta_label.setText(self._task_meta(display_task))
         elif result:
             self.task_id_label.setText("最近任务")
-            self.task_title_label.setText("添加通讯录邀请")
+            self.task_title_label.setText(
+                task_type_title(self.last_task.task_type if self.last_task else None)
+            )
             self.task_meta_label.setText(result.message or result.result_code or result.error_code or "结果已回传。")
 
         if result:

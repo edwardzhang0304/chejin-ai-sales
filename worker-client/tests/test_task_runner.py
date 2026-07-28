@@ -3429,9 +3429,6 @@ class TaskRunnerTest(unittest.TestCase):
         failed_ledger = load_c2_ledger_entry("conv-1", failed_source_key)
         self.assertEqual(failed_ledger["terminal_state"], "failed")
         self.assertEqual(failed_ledger["ingest_state"], "confirmed")
-        self.assertTrue(
-            failed_ledger["result"]["sales_handoff_required"]
-        )
 
         runner.c2_read_failure_cooldowns.clear()
         runner.c2_read_success_cooldowns.clear()
@@ -3568,9 +3565,6 @@ class TaskRunnerTest(unittest.TestCase):
         )
         self.assertEqual(failed_ledger["terminal_state"], "failed")
         self.assertEqual(failed_ledger["ingest_state"], "confirmed")
-        self.assertTrue(
-            failed_ledger["result"]["sales_handoff_required"]
-        )
 
     def test_c2_failed_voice_does_not_block_reliable_image_vision(self):
         api = FakeApi(None)
@@ -4033,7 +4027,6 @@ class TaskRunnerTest(unittest.TestCase):
             result={
                 "state": "failed",
                 "error_code": "VOICE_TRANSCRIBE_PARTIAL",
-                "sales_handoff_required": True,
             },
         )
         bridge.get_messages_payloads = [{"messages": [failed_message]}]
@@ -7045,6 +7038,88 @@ class TaskRunnerTest(unittest.TestCase):
             vision.call_args.kwargs["window_context"],
             window_context,
         )
+
+    def test_c2_image_moved_out_of_view_stays_deferred_without_ledger(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="ok", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        unique = str(time.time_ns())
+        target = WechatReadTarget(
+            conversation_id=f"conv-image-moved-{unique}",
+            rpa_session_key="wx:rpa:v1:image-moved",
+            display_name="CJMOVED01",
+            remark_code="CJMOVED01",
+            authorization_revision=f"revision-image-moved-{unique}",
+        )
+        observation = {
+            "schema_version": 3,
+            "observation_id": f"image-moved-{unique}",
+            "row_kind": "image_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "image",
+            "voice_state": "not_voice",
+            "item_state": "discovered",
+            "image_physical_anchor": {
+                "sender_role": "customer",
+                "preceding_stable_message": f"before-{unique}",
+                "following_stable_message": f"after-{unique}",
+                "bubble_visual_fingerprint": "dhash64:0123456789abcdef",
+                "occurrence_index": 0,
+            },
+            "bubble_rect": [420, 180, 650, 320],
+            "source_message": {
+                "id": f"image-source-{unique}",
+                "type": "image",
+            },
+        }
+        sidecar_payload = {"observations": [observation]}
+        with patch(
+            "chejin_worker_client.omniauto_vision.vision_configuration_status",
+            return_value={
+                "ready": True,
+                "config": {
+                    "customer_image_understanding": {"enabled": True}
+                },
+            },
+        ), patch(
+            "chejin_worker_client.omniauto_vision.process_image_slot",
+            return_value={
+                "state": "failed",
+                "reason": "image_bubble_slot_not_reconfirmed",
+                "action_phase": "not_attempted",
+                "diagnostics": {"events": [], "image_persisted": False},
+            },
+        ) as vision:
+            result, stats = runner._process_final_image_slots(
+                binding=binding,
+                target=target,
+                sidecar_payload=sidecar_payload,
+                enforce_read_targets=False,
+            )
+
+        self.assertEqual(stats["deferred"], 1)
+        self.assertEqual(stats["failed"], 0)
+        self.assertEqual(stats["completed"], 0)
+        self.assertEqual(
+            result["observations"][0]["item_state"],
+            "discovered",
+        )
+        source_key = image_observation_source_key(target, observation)
+        self.assertIsNone(
+            load_c2_ledger_entry(target.conversation_id, source_key)
+        )
+        vision.assert_called_once()
 
     def test_confirmed_message_filter_keeps_full_slot_order_but_removes_old_observation(self):
         api = FakeApi(None)

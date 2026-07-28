@@ -11,7 +11,7 @@ DEFAULT_HUMANIZED_INPUT_METHOD = "sendinput_unicode"
 DEFAULT_HUMANIZED_INPUT_ENFORCE_INTERMITTENT = True
 DEFAULT_HUMANIZED_ALLOW_CLIPBOARD_ONCE = False
 DEFAULT_SEND_INPUT_CONFIRM_ATTEMPTS = 3
-DEFAULT_SEND_TRIGGER_MODE = "click_only"
+DEFAULT_SEND_TRIGGER_MODE = "enter_only"
 DEFAULT_STRICT_SEND_FOCUS_GUARD = True
 DEFAULT_FOCUS_CLICK_FALLBACK = True
 DEFAULT_ALLOW_UNKNOWN_FOREGROUND_GUARD = True
@@ -60,12 +60,8 @@ def normalize_humanized_input_method(
 
 
 def normalize_send_trigger_mode(raw_mode: str | None, *, default: str = DEFAULT_SEND_TRIGGER_MODE) -> str:
-    mode = str(raw_mode or default).strip().lower()
-    if mode not in {"click_only", "enter_only", "enter_then_click"}:
-        return default
-    if mode == "enter_then_click":
-        return "click_only"
-    return mode
+    del raw_mode, default
+    return DEFAULT_SEND_TRIGGER_MODE
 
 
 def strict_send_focus_guard_enabled() -> bool:

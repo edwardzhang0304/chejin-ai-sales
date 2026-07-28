@@ -95,7 +95,7 @@ $PackagedPythonArchive = (
   .\.venv\Scripts\pyi-archive_viewer.exe -l -r $ExePath
 ) -join "`n"
 if ($PackagedPythonArchive -notmatch 'uiautomation') {
-  throw "打包失败：最终 exe 未包含正式回复所需的 uiautomation"
+  throw "打包失败：最终 exe 未包含 Windows UIA 诊断所需的 uiautomation"
 }
 
 $SidecarCandidates = @(

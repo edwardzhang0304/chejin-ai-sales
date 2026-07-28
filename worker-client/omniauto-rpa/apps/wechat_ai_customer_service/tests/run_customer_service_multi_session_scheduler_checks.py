@@ -3652,7 +3652,7 @@ def check_managed_bridge_applies_rpa_fast_send_confirmation_env() -> None:
                     "fast_send_confirmation_enabled": True,
                     "input_fast_visual_confirm_enabled": True,
                     "send_input_confirm_attempts": 1,
-                    "send_trigger_mode": "click_only",
+                    "send_trigger_mode": "enter_only",
                     "send_trigger_delay_min_ms": 520,
                     "send_trigger_delay_max_ms": 1500,
                     "send_after_trigger_delay_min_ms": 260,
@@ -3684,7 +3684,7 @@ def check_managed_bridge_applies_rpa_fast_send_confirmation_env() -> None:
             )
             assert_equal(
                 os.environ.get("WECHAT_WIN32_OCR_SEND_TRIGGER_MODE"),
-                "click_only",
+                "enter_only",
                 "bridge reload should apply send trigger mode",
             )
             assert_equal(

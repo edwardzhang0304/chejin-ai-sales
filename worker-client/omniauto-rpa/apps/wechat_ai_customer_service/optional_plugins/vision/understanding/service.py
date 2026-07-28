@@ -25,6 +25,7 @@ DEFAULT_BASE_URL = "https://aiself.vip/v1"
 DEFAULT_MODEL = "doubao-seed-2-0-lite-260428"
 DEFAULT_REQUEST_STYLE = "anthropic_messages_vision"
 DEFAULT_MAX_TOKENS = 1800
+DEFAULT_TIMEOUT_SECONDS = 60
 DEFAULT_CATALOG_IDENTITY_CANDIDATE_LIMIT = 30
 
 
@@ -74,7 +75,17 @@ def effective_customer_image_understanding_settings(config: dict[str, Any] | Non
         or os.getenv("CUSTOMER_IMAGE_UNDERSTANDING_API_KEY")
         or ""
     ).strip()
-    timeout_seconds = max(3, int(settings.get("timeout_seconds") or os.getenv("CUSTOMER_IMAGE_UNDERSTANDING_TIMEOUT_SECONDS") or 10))
+    timeout_seconds = max(
+        3,
+        min(
+            300,
+            int(
+                settings.get("timeout_seconds")
+                or os.getenv("CUSTOMER_IMAGE_UNDERSTANDING_TIMEOUT_SECONDS")
+                or DEFAULT_TIMEOUT_SECONDS
+            ),
+        ),
+    )
     max_tokens = max(800, int(settings.get("max_tokens") or os.getenv("CUSTOMER_IMAGE_UNDERSTANDING_MAX_TOKENS") or DEFAULT_MAX_TOKENS))
     return {
         "enabled": settings.get("enabled", True) is not False,
@@ -418,7 +429,7 @@ def maybe_run_customer_image_understanding(
                 "provider": str(settings.get("base_url") or ""),
                 "model": str(settings.get("model") or ""),
                 "request_style": str(settings.get("request_style") or ""),
-                "timeout_seconds": int(settings.get("timeout_seconds") or 10),
+                "timeout_seconds": int(settings.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS),
                 "max_tokens": int(settings.get("max_tokens") or DEFAULT_MAX_TOKENS),
                 "image_paths": image_paths[:3],
                 "source_messages": source_messages,
@@ -435,7 +446,7 @@ def maybe_run_customer_image_understanding(
         request_style=str(settings.get("request_style") or ""),
         prompt=prompt,
         image_paths=image_paths[:3],
-        timeout_seconds=int(settings.get("timeout_seconds") or 10),
+        timeout_seconds=int(settings.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS),
         max_tokens=int(settings.get("max_tokens") or DEFAULT_MAX_TOKENS),
         image_payloads=memory_payloads[:3],
     )
@@ -458,7 +469,7 @@ def maybe_run_customer_image_understanding(
                     "provider": str(settings.get("base_url") or ""),
                     "model": str(settings.get("model") or ""),
                     "request_style": str(settings.get("request_style") or ""),
-                    "timeout_seconds": int(settings.get("timeout_seconds") or 10),
+                    "timeout_seconds": int(settings.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS),
                     "max_tokens": max(int(settings.get("max_tokens") or DEFAULT_MAX_TOKENS), DEFAULT_MAX_TOKENS * 2),
                     "image_paths": image_paths[:2],
                     "source_messages": source_messages,
@@ -477,7 +488,7 @@ def maybe_run_customer_image_understanding(
             request_style=str(settings.get("request_style") or ""),
             prompt=retry_prompt,
             image_paths=image_paths[:2],
-            timeout_seconds=int(settings.get("timeout_seconds") or 10),
+            timeout_seconds=int(settings.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS),
             max_tokens=max(int(settings.get("max_tokens") or DEFAULT_MAX_TOKENS), DEFAULT_MAX_TOKENS * 2),
             image_payloads=memory_payloads[:2],
         )

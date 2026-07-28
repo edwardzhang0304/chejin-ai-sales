@@ -3870,7 +3870,7 @@ def check_listener_humanized_send_env_mapping() -> dict[str, Any]:
             "send_after_trigger_delay_min_ms": 880,
             "send_after_trigger_delay_max_ms": 240,
             "input_fast_visual_confirm_enabled": True,
-            "send_trigger_mode": "click_only",
+            "send_trigger_mode": "enter_only",
             "send_input_confirm_attempts": 1,
             "send_rate_min_interval_seconds": 90,
             "send_rate_burst_window_seconds": 600,
@@ -3890,7 +3890,7 @@ def check_listener_humanized_send_env_mapping() -> dict[str, Any]:
         and mapped.get("WECHAT_WIN32_OCR_HUMANIZED_SEND_TRIGGER_DELAY_MAX_MS") == "1200"
         and mapped.get("WECHAT_WIN32_OCR_HUMANIZED_SEND_AFTER_TRIGGER_DELAY_MAX_MS") == "880"
         and mapped.get("WECHAT_WIN32_OCR_INPUT_FAST_VISUAL_CONFIRM") == "1"
-        and mapped.get("WECHAT_WIN32_OCR_SEND_TRIGGER_MODE") == "click_only"
+        and mapped.get("WECHAT_WIN32_OCR_SEND_TRIGGER_MODE") == "enter_only"
         and mapped.get("WECHAT_WIN32_OCR_SEND_INPUT_CONFIRM_ATTEMPTS") == "1"
         and mapped.get("WECHAT_WIN32_OCR_SEND_MIN_INTERVAL_SECONDS") == "90"
         and mapped.get("WECHAT_WIN32_OCR_SEND_BURST_LIMIT") == "2"

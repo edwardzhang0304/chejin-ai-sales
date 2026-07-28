@@ -51,7 +51,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("packaged_omniauto_tree_sha256", text)
         self.assertIn("import uiautomation", text)
         self.assertIn("pyi-archive_viewer.exe -l -r", text)
-        self.assertIn("最终 exe 未包含正式回复所需的 uiautomation", text)
+        self.assertIn("最终 exe 未包含 Windows UIA 诊断所需的 uiautomation", text)
         self.assertIn('"--omniauto-sidecar", "--help"', text)
         self.assertIn("最终 exe 无法启动内置 OmniAuto sidecar", text)
         self.assertNotIn('$OmniAutoUpstreamCommit = "855c218', text)
@@ -137,7 +137,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('"uiautomation"', text)
         self.assertNotIn('(str(OMNIAUTO_RPA_SOURCE), "omniauto-rpa")', text)
 
-    def test_windows_requirements_pin_uiautomation_for_formal_send(self):
+    def test_windows_requirements_pin_uiautomation_for_diagnostics(self):
         text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
 
         self.assertIn(
