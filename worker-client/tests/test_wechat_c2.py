@@ -59,6 +59,43 @@ class WechatC2Test(unittest.TestCase):
             },
         }
 
+    @staticmethod
+    def _identity_image(
+        observation_id: str,
+        top: int,
+        *,
+        occurrence_index: int,
+        occurrence_count: int,
+        fingerprint: str = "dhash64:1234567890abcdef",
+    ) -> dict:
+        anchor = {
+            "sender_role": "customer",
+            "preceding_stable_message": "",
+            "following_stable_message": "",
+            "bubble_visual_fingerprint": fingerprint,
+            "occurrence_index": occurrence_index,
+            "occurrence_count": occurrence_count,
+        }
+        return {
+            "schema_version": 3,
+            "observation_id": observation_id,
+            "row_kind": "image_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "image",
+            "voice_state": "not_voice",
+            "content_clean": "",
+            "bubble_rect": [420, top, 650, top + 120],
+            "image_physical_anchor": anchor,
+            "source_message": {
+                "id": observation_id,
+                "source_adapter": "win32_ocr",
+                "type": "image",
+                "sender_role": "customer",
+                "image_physical_anchor": anchor,
+            },
+        }
+
     def test_cross_round_identity_survives_page_shift(self):
         first, state, errors = reconcile_cross_round_observation_identities(
             [
@@ -116,6 +153,142 @@ class WechatC2Test(unittest.TestCase):
         self.assertEqual(errors[0]["error_code"], "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS")
         self.assertEqual(blocked_state, state)
         self.assertTrue(all("_worker_stable_id" not in item for item in current))
+
+    def test_cross_round_identity_aligns_previous_suffix_for_repeated_text(self):
+        first, state, errors = reconcile_cross_round_observation_identities(
+            [
+                self._identity_text("old-a-1", "A", 180),
+                self._identity_text("old-a-2", "A", 260),
+                self._identity_text("old-b", "B", 340),
+            ]
+        )
+        current, _, current_errors = (
+            reconcile_cross_round_observation_identities(
+                [
+                    self._identity_text("current-a", "A", 180),
+                    self._identity_text("current-b", "B", 260),
+                    self._identity_text("current-c", "C", 340),
+                ],
+                state,
+            )
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(current_errors, [])
+        self.assertEqual(
+            current[0]["_worker_stable_id"],
+            first[1]["_worker_stable_id"],
+        )
+        self.assertEqual(
+            current[1]["_worker_stable_id"],
+            first[2]["_worker_stable_id"],
+        )
+        self.assertNotIn(
+            current[2]["_worker_stable_id"],
+            {
+                first[0]["_worker_stable_id"],
+                first[1]["_worker_stable_id"],
+                first[2]["_worker_stable_id"],
+            },
+        )
+
+    def test_cross_round_identity_aligns_repeated_image_after_occurrence_reset(self):
+        first, state, errors = reconcile_cross_round_observation_identities(
+            [
+                self._identity_image(
+                    "old-image-1",
+                    180,
+                    occurrence_index=0,
+                    occurrence_count=2,
+                ),
+                self._identity_image(
+                    "old-image-2",
+                    340,
+                    occurrence_index=1,
+                    occurrence_count=2,
+                ),
+                self._identity_text("old-b", "B", 500),
+            ]
+        )
+        current, _, current_errors = (
+            reconcile_cross_round_observation_identities(
+                [
+                    self._identity_image(
+                        "current-image",
+                        180,
+                        occurrence_index=0,
+                        occurrence_count=1,
+                    ),
+                    self._identity_text("current-b", "B", 340),
+                    self._identity_text("current-c", "C", 420),
+                ],
+                state,
+            )
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(current_errors, [])
+        self.assertEqual(
+            current[0]["_worker_stable_id"],
+            first[1]["_worker_stable_id"],
+        )
+        self.assertEqual(
+            current[1]["_worker_stable_id"],
+            first[2]["_worker_stable_id"],
+        )
+
+    def test_cross_round_identity_upgrades_v2_image_state_without_guessing(self):
+        first, state, errors = reconcile_cross_round_observation_identities(
+            [
+                self._identity_image(
+                    "old-image",
+                    180,
+                    occurrence_index=0,
+                    occurrence_count=1,
+                ),
+                self._identity_text("old-b", "B", 340),
+            ]
+        )
+        v2_state = {
+            **state,
+            "version": 2,
+            "last_frame": [
+                {
+                    "signature": item["signature"],
+                    "stable_id": item["stable_id"],
+                }
+                for item in state["last_frame"]
+            ],
+            "recent_frames": [],
+        }
+        current, upgraded_state, current_errors = (
+            reconcile_cross_round_observation_identities(
+                [
+                    self._identity_image(
+                        "current-image",
+                        420,
+                        occurrence_index=0,
+                        occurrence_count=1,
+                    ),
+                    self._identity_text("current-b", "B", 580),
+                ],
+                v2_state,
+            )
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(current_errors, [])
+        self.assertEqual(upgraded_state["version"], 3)
+        self.assertEqual(
+            [item["_worker_stable_id"] for item in current],
+            [item["_worker_stable_id"] for item in first],
+        )
+        self.assertTrue(
+            all(
+                item.get("alignment_signature")
+                for item in upgraded_state["last_frame"]
+            )
+        )
 
     def test_v16104_transition_keeps_legacy_key_and_assigns_new_identity_only_to_new_suffix(self):
         old_observation = self._identity_text("legacy-old", "历史消息", 180)
