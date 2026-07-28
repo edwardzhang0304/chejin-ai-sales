@@ -421,7 +421,15 @@ class RealOmniAutoAIEngineAdapter:
                 risk_flags=risk_flags,
                 evidence_refs=evidence_refs,
                 guard_result="failed",
-                error_code="AI_ENGINE_PROVIDER_FAILED" if no_visible_class == "llm_unavailable" else "AI_ENGINE_NO_VISIBLE_REPLY",
+                error_code=(
+                    "AI_ENGINE_PROVIDER_TIMEOUT"
+                    if no_visible_class == "llm_timeout"
+                    else (
+                        "AI_ENGINE_PROVIDER_FAILED"
+                        if no_visible_class == "llm_unavailable"
+                        else "AI_ENGINE_NO_VISIBLE_REPLY"
+                    )
+                ),
                 suggested_action="retry_later",
                 raw_payload=raw_payload,
             )

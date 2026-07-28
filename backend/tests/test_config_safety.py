@@ -83,6 +83,13 @@ def test_packaged_brain_config_uses_runtime_secret_only():
     assert brain["provider"] == "openai"
     assert brain["model"] == "gpt-5.5"
     assert brain["base_url"] == "https://aiself.vip/v1"
+    assert brain["low_authority_fast_timeout_seconds"] >= 30
+    assert brain["quality_repair_timeout_seconds"] >= 30
+    assert brain["semantic_reviewer_timeout_seconds"] >= 30
+    assert (
+        brain["same_capture_brain_unavailable_retry_timeout_seconds"]
+        >= brain["low_authority_fast_timeout_seconds"]
+    )
     assert "api_key" not in brain
     assert "doubao" not in json.dumps(brain).lower()
 
