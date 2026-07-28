@@ -12,6 +12,10 @@ import time
 from datetime import datetime
 from typing import Any
 
+from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.env_config import (
+    DEFAULT_SEND_TRIGGER_MODE,
+)
+
 
 FILE_TRANSFER_ASSISTANT_NAME = "".join(chr(c) for c in [0x6587, 0x4EF6, 0x4F20, 0x8F93, 0x52A9, 0x624B])
 
@@ -485,7 +489,7 @@ def apply_customer_service_live_safety_guard(
     rpa_send["send_post_input_delay_min_ms"] = max(int(rpa_send.get("send_post_input_delay_min_ms") or 0), 320)
     rpa_send["send_post_input_delay_max_ms"] = max(int(rpa_send.get("send_post_input_delay_max_ms") or 0), 900)
     rpa_send["input_fast_visual_confirm_enabled"] = True
-    rpa_send["send_trigger_mode"] = "click_only"
+    rpa_send["send_trigger_mode"] = DEFAULT_SEND_TRIGGER_MODE
     rpa_send["send_input_confirm_attempts"] = 1
     rpa_send["send_rate_min_interval_seconds"] = 0
     rpa_send["send_rate_burst_window_seconds"] = max(int(rpa_send.get("send_rate_burst_window_seconds") or 0), 600)

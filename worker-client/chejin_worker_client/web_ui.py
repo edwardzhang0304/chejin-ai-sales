@@ -15,7 +15,7 @@ from PySide6.QtWidgets import QApplication, QMainWindow
 
 from .api import WorkerApiClient
 from .config import CONFIG
-from .models import Binding, RpaResult, RpaStep, Task, WorkerProfile
+from .models import Binding, RpaResult, RpaStep, Task, WorkerProfile, task_type_title
 from .rpa_bridge import RpaBridge
 from .storage import (
     append_log,
@@ -33,7 +33,7 @@ from .ui_lock import lock_summary
 
 WINDOW_WIDTH = 316
 WINDOW_HEIGHT = 628
-CLIENT_VERSION = "V16.111 · Worker C2/C3 客户端"
+CLIENT_VERSION = "V16.113 · Worker C2/C3 客户端"
 TITLEBAR_HEIGHT = 28
 WINDOW_CONTROL_WIDTH = 90
 WINDOW_RADIUS = 10
@@ -59,18 +59,22 @@ def _task_model(task: Task | None) -> dict[str, str]:
             "phone": "-",
             "sellerName": "-",
             "noteCode": "-",
-            "metaText": "当前没有正在执行的 add_friend 任务。",
+            "metaText": "当前没有正在执行的 Worker 任务。",
         }
     note_code = task.remark_code or "-"
+    if task.task_type == "chat_reply":
+        meta_text = f"{task.customer_name or '当前客户'} · AI 回复发送"
+    else:
+        meta_text = f"{task.customer_name or '未知客户'} · {task.phone or task.wechat or '-'} · {task.sales_name or '-'} · 备注短码：{note_code}"
     return {
         "id": task.id or "-",
-        "title": "添加通讯录邀请",
+        "title": task_type_title(task.task_type),
         "statusText": "接单中",
         "customerName": task.customer_name or "未知客户",
         "phone": task.phone or task.wechat or "-",
         "sellerName": task.sales_name or "-",
         "noteCode": note_code,
-        "metaText": f"{task.customer_name or '未知客户'} · {task.phone or task.wechat or '-'} · {task.sales_name or '-'} · 备注短码：{note_code}",
+        "metaText": meta_text,
     }
 
 
@@ -392,7 +396,16 @@ class WorkerWebWindow(QMainWindow):
         steps = list(self.step_history)
         if self.current_task:
             title = self.current_task.current_step or "正在执行任务"
-            steps.append({"state": "current", "title": title, "description": "Worker 正在执行 add_friend 任务。"})
+            steps.append(
+                {
+                    "state": "current",
+                    "title": title,
+                    "description": (
+                        f"Worker 正在执行"
+                        f"{task_type_title(self.current_task.task_type)}任务。"
+                    ),
+                }
+            )
         return steps or [{"state": "current", "title": "等待任务", "description": "接单中，等待服务端分配任务。"}]
 
     def _completed_steps(self) -> list[dict[str, Any]]:
@@ -499,7 +512,16 @@ class WorkerWebWindow(QMainWindow):
             self.last_task = task
             self.last_result = None
             if not self.step_history:
-                self.step_history.append({"state": "done", "title": "任务已领取", "description": "Worker 已领取 add_friend 任务。"})
+                self.step_history.append(
+                    {
+                        "state": "done",
+                        "title": "任务已领取",
+                        "description": (
+                            f"Worker 已领取"
+                            f"{task_type_title(task.task_type)}任务。"
+                        ),
+                    }
+                )
         self._publish()
 
     @Slot(object)

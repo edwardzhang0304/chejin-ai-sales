@@ -28,6 +28,8 @@ DEFAULT_VISION_PROVIDER = "anthropic_compatible"
 DEFAULT_VISION_BASE_URL = "https://aiself.vip/v1"
 DEFAULT_VISION_MODEL = "doubao-seed-2-0-lite-260428"
 DEFAULT_VISION_REQUEST_STYLE = "anthropic_messages_vision"
+DEFAULT_VISION_TIMEOUT_SECONDS = 60.0
+MAX_VISION_TIMEOUT_SECONDS = 300.0
 VISION_API_KEY_ENV_NAMES = (
     "CUSTOMER_IMAGE_UNDERSTANDING_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
@@ -64,6 +66,19 @@ def _window_context_hwnd(value: Any) -> int:
         return 0
 
 
+def _vision_timeout_seconds(value: Any = None) -> float:
+    raw = (
+        value
+        if value not in (None, "")
+        else os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_TIMEOUT_SECONDS")
+    )
+    try:
+        parsed = float(raw) if raw not in (None, "") else DEFAULT_VISION_TIMEOUT_SECONDS
+    except (TypeError, ValueError):
+        parsed = DEFAULT_VISION_TIMEOUT_SECONDS
+    return max(3.0, min(MAX_VISION_TIMEOUT_SECONDS, parsed))
+
+
 class _CancellableVisionProvider:
     """Run the blocking model request in a killable in-memory child process."""
 
@@ -91,10 +106,10 @@ class _CancellableVisionProvider:
         if not isinstance(config, dict):
             raise ValueError("VISION_PROVIDER_CONFIG_INVALID")
         settings = config.get("customer_image_understanding")
-        timeout_seconds = (
-            float((settings or {}).get("timeout_seconds") or 10)
+        timeout_seconds = _vision_timeout_seconds(
+            (settings or {}).get("timeout_seconds")
             if isinstance(settings, dict)
-            else 10.0
+            else None
         )
         payload = json.dumps(
             {
@@ -415,6 +430,10 @@ class _WindowFrame:
         image = capture_result.get("image")
         hwnd = int(capture_result.get("hwnd") or 0)
         capture_mode = str(capture_result.get("capture_mode") or "")
+        screen_origin = list(capture_result.get("screen_origin") or [0, 0])
+        if len(screen_origin) < 2:
+            screen_origin = [0, 0]
+        screen_origin = [int(screen_origin[0]), int(screen_origin[1])]
         validation = (
             capture_result.get("validation")
             if isinstance(capture_result.get("validation"), dict)
@@ -429,6 +448,33 @@ class _WindowFrame:
                 source=str(self.state.window_context.get("source") or ""),
                 reason=str(validation.get("reason") or ""),
             )
+        if phase == "image_context_menu":
+            menu_anchor_screen = list(context.get("menu_anchor_screen") or [])
+            if len(menu_anchor_screen) < 2:
+                image.close()
+                return {
+                    "ok": False,
+                    "reason": "vision_menu_anchor_missing",
+                }
+            anchor_x = int(menu_anchor_screen[0]) - screen_origin[0]
+            anchor_y = int(menu_anchor_screen[1]) - screen_origin[1]
+            roi_left = max(0, anchor_x - 380)
+            roi_top = max(0, anchor_y - 420)
+            roi_right = min(int(image.size[0]), anchor_x + 380)
+            roi_bottom = min(int(image.size[1]), anchor_y + 420)
+            if roi_right <= roi_left or roi_bottom <= roi_top:
+                image.close()
+                return {
+                    "ok": False,
+                    "reason": "vision_menu_roi_invalid",
+                }
+            full_image = image
+            image = full_image.crop((roi_left, roi_top, roi_right, roi_bottom))
+            full_image.close()
+            screen_origin = [
+                screen_origin[0] + roi_left,
+                screen_origin[1] + roi_top,
+            ]
         try:
             ocr_items = self.state.host.run_ocr(image)
         except Exception as exc:
@@ -444,40 +490,45 @@ class _WindowFrame:
                 error_type=type(exc).__name__,
                 image_persisted=False,
             )
+            image.close()
             return {
                 "ok": False,
                 "reason": reason,
                 "error_type": type(exc).__name__,
             }
-        try:
-            messages = self.state.host.parse_messages_from_ocr(
-                ocr_items,
-                image.size,
-                target=str(context.get("remark_code") or context.get("target_name") or ""),
-                screenshot=image,
-            )
-            from apps.wechat_ai_customer_service.optional_plugins.vision.capture.wechat import (
-                extract_chat_time_markers,
-            )
-            time_markers = extract_chat_time_markers(ocr_items, image.size)
-        except Exception as exc:
-            reason = _safe_exception_reason(exc, "vision_window_message_parse_failed")
-            self.state.record(
-                "frame_capture",
-                "failed",
-                started_at=started_at,
-                phase=phase,
-                capture_step="message_parse",
-                capture_mode=capture_mode,
-                reason=reason,
-                error_type=type(exc).__name__,
-                image_persisted=False,
-            )
-            return {
-                "ok": False,
-                "reason": reason,
-                "error_type": type(exc).__name__,
-            }
+        messages: list[dict[str, Any]] = []
+        time_markers: list[dict[str, Any]] = []
+        if phase != "image_context_menu":
+            try:
+                messages = self.state.host.parse_messages_from_ocr(
+                    ocr_items,
+                    image.size,
+                    target=str(context.get("remark_code") or context.get("target_name") or ""),
+                    screenshot=image,
+                )
+                from apps.wechat_ai_customer_service.optional_plugins.vision.capture.wechat import (
+                    extract_chat_time_markers,
+                )
+                time_markers = extract_chat_time_markers(ocr_items, image.size)
+            except Exception as exc:
+                reason = _safe_exception_reason(exc, "vision_window_message_parse_failed")
+                self.state.record(
+                    "frame_capture",
+                    "failed",
+                    started_at=started_at,
+                    phase=phase,
+                    capture_step="message_parse",
+                    capture_mode=capture_mode,
+                    reason=reason,
+                    error_type=type(exc).__name__,
+                    image_persisted=False,
+                )
+                image.close()
+                return {
+                    "ok": False,
+                    "reason": reason,
+                    "error_type": type(exc).__name__,
+                }
         try:
             self.state.record(
                 "frame_capture",
@@ -500,6 +551,7 @@ class _WindowFrame:
                 "ocr_items": ocr_items,
                 "messages": messages,
                 "time_markers": time_markers,
+                "screen_origin": screen_origin,
             }
         except Exception as exc:
             reason = _safe_exception_reason(exc, "vision_window_frame_finalize_failed")
@@ -514,6 +566,7 @@ class _WindowFrame:
                 error_type=type(exc).__name__,
                 image_persisted=False,
             )
+            image.close()
             return {
                 "ok": False,
                 "reason": reason,
@@ -525,15 +578,27 @@ class _UiAction:
     def __init__(self, state: _VisionHostState) -> None:
         self.state = state
 
-    def right_click(self, x: int, y: int) -> None:
+    def right_click(
+        self,
+        x: int,
+        y: int,
+        *,
+        bounds: list[int],
+    ) -> dict[str, Any]:
         started_at = time.perf_counter()
         hwnd = self.state.ensure_window()
-        bounds = self.state.bubble_rect or [x - 4, y - 4, x + 4, y + 4]
+        current_bounds = [int(value) for value in list(bounds or [])[:4]]
+        if (
+            len(current_bounds) != 4
+            or current_bounds[2] <= current_bounds[0]
+            or current_bounds[3] <= current_bounds[1]
+        ):
+            raise RuntimeError("IMAGE_CURRENT_BUBBLE_BOUNDS_INVALID")
         result = self.state.host.human_window_image_right_click_in_bounds(
             hwnd,
             int(x),
             int(y),
-            bounds=bounds,
+            bounds=current_bounds,
             action_name="c2_vision_image_slot_context_right_click",
         )
         if not result.get("ok"):
@@ -542,7 +607,7 @@ class _UiAction:
                 "failed",
                 started_at=started_at,
                 point=[int(x), int(y)],
-                bounds=[int(value) for value in bounds],
+                bounds=current_bounds,
             )
             raise RuntimeError("IMAGE_CONTEXT_RIGHT_CLICK_FAILED")
         self.state.record(
@@ -550,19 +615,18 @@ class _UiAction:
             "completed",
             started_at=started_at,
             point=[int(x), int(y)],
-            bounds=[int(value) for value in bounds],
+            bounds=current_bounds,
         )
         self.state.host.humanized_action_sleep(260, 520)
+        return dict(result)
 
-    def click(self, x: int, y: int) -> None:
+    def click_screen(self, x: int, y: int, *, bounds: list[int]) -> None:
         started_at = time.perf_counter()
-        hwnd = self.state.ensure_window()
-        bounds = [int(x) - 8, int(y) - 8, int(x) + 8, int(y) + 8]
-        result = self.state.host.human_window_image_click_in_bounds(
-            hwnd,
+        self.state.ensure_window()
+        result = self.state.host.human_screen_click_in_bounds(
             int(x),
             int(y),
-            bounds=bounds,
+            bounds=[int(value) for value in bounds[:4]],
             action_name="c2_vision_image_copy_menu_click",
         )
         if not result.get("ok"):
@@ -682,6 +746,7 @@ def explicit_vision_config() -> tuple[dict[str, Any] | None, list[str]]:
                 or DEFAULT_VISION_REQUEST_STYLE
             ).strip(),
             "api_key_env": api_key_env,
+            "timeout_seconds": _vision_timeout_seconds(),
         }
     }, []
 
@@ -705,6 +770,7 @@ def vision_configuration_status() -> dict[str, Any]:
         "model": str(settings.get("model") or os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_MODEL") or DEFAULT_VISION_MODEL).strip(),
         "request_style": str(settings.get("request_style") or os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_REQUEST_STYLE") or DEFAULT_VISION_REQUEST_STYLE).strip(),
         "api_key_env": str(settings.get("api_key_env") or api_key_env).strip(),
+        "timeout_seconds": _vision_timeout_seconds(settings.get("timeout_seconds")),
     }
     missing_fields = list(missing)
     missing_fields.extend(
@@ -721,6 +787,7 @@ def vision_configuration_status() -> dict[str, Any]:
         "base_url": required_values["base_url"],
         "model": required_values["model"],
         "request_style": required_values["request_style"],
+        "timeout_seconds": required_values["timeout_seconds"],
         "config": config if config and not missing_fields else None,
     }
 
@@ -833,8 +900,16 @@ def process_image_slot(
         observation.get("sender_role_source") or ""
     ).strip().lower()
     bubble_rect = _rect(observation.get("bubble_rect"))
+    source_message = (
+        observation.get("source_message")
+        if isinstance(observation.get("source_message"), dict)
+        else {}
+    )
     if not observation_role_is_trusted(observation):
         return early_result("ignored", "image_same_row_avatar_unconfirmed")
+    image_physical_anchor = observation.get("image_physical_anchor")
+    if not isinstance(image_physical_anchor, dict):
+        image_physical_anchor = source_message.get("image_physical_anchor")
     if not bubble_rect:
         return early_result("failed", "image_bubble_rect_missing")
     if _cancel_requested(cancel_check):
@@ -860,6 +935,10 @@ def process_image_slot(
             "capability_paused",
             "vision_window_context_missing",
         )
+    if not isinstance(image_physical_anchor, dict) or not str(
+        image_physical_anchor.get("bubble_visual_fingerprint") or ""
+    ).strip():
+        return early_result("deferred", "image_slot_identity_missing")
 
     from apps.wechat_ai_customer_service.optional_plugins.vision.plugin import BuiltinVisionPlugin
     from apps.wechat_ai_customer_service.optional_plugins.vision.ports import VisionHostPorts
@@ -883,6 +962,7 @@ def process_image_slot(
         role=role,
         role_source=role_source,
         bubble_rect=bubble_rect,
+        image_physical_anchor=image_physical_anchor,
         image_persisted=False,
     )
     ports = VisionHostPorts(
@@ -905,6 +985,7 @@ def process_image_slot(
                 "sender_role": role,
                 "side_filter": "all",
                 "bubble_rect": bubble_rect,
+                "image_physical_anchor": dict(image_physical_anchor),
                 "message_id": str(observation.get("observation_id") or ""),
                 "customer_text": "客户发送了一张图片" if role == "customer" else "销售发送了一张图片",
                 "config": runtime_config,

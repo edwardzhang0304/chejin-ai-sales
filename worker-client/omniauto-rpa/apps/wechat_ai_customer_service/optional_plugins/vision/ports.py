@@ -25,9 +25,15 @@ class WindowFramePort(Protocol):
 
 
 class UiActionPort(Protocol):
-    def right_click(self, x: int, y: int) -> None: ...
+    def right_click(
+        self,
+        x: int,
+        y: int,
+        *,
+        bounds: list[int],
+    ) -> dict[str, Any]: ...
 
-    def click(self, x: int, y: int) -> None: ...
+    def click_screen(self, x: int, y: int, *, bounds: list[int]) -> None: ...
 
 
 class ClipboardPort(Protocol):

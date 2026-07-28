@@ -138,6 +138,13 @@ IMAGE_PRE_ACTION_CAPABILITY_PAUSE_REASONS = frozenset(
         "vision_window_frame_finalize_failed",
     }
 )
+IMAGE_PRE_ACTION_DEFERRED_REASONS = frozenset(
+    {
+        "image_bubble_not_found",
+        "image_bubble_slot_not_reconfirmed",
+        "image_slot_identity_missing",
+    }
+)
 TASK_LEASE_DEFINITIVE_LOSS_CODES = frozenset(
     {
         "TASK_NOT_FOUND",
@@ -376,6 +383,9 @@ def _safe_c2_image_transaction(value: Any) -> dict[str, Any]:
             "image_sha256",
             "image_width",
             "image_height",
+            "slot_identity_confirmed",
+            "slot_identity_evidence",
+            "current_bubble_rect",
             "source",
         )
         if transaction.get(key) is not None
@@ -3664,7 +3674,6 @@ class TaskRunner:
                             ).get("image_processing_reason")
                             or "MESSAGE_PROCESSING_FAILED"
                         ),
-                        "sales_handoff_required": True,
                     }
                     if item_state == "failed"
                     else {}
@@ -3753,7 +3762,6 @@ class TaskRunner:
                 result={
                     "state": "failed",
                     "error_code": str(error_code or "VOICE_TRANSCRIBE_FAILED"),
-                    "sales_handoff_required": True,
                 },
             )
 
@@ -4389,6 +4397,26 @@ class TaskRunner:
                 or transaction.get("action_phase")
                 or "not_attempted"
             )
+            pre_action_deferred = (
+                result_action_phase == "not_attempted"
+                and (
+                    str(result.get("state") or "") == "deferred"
+                    or result_reason in IMAGE_PRE_ACTION_DEFERRED_REASONS
+                )
+            )
+            if pre_action_deferred:
+                stats["deferred"] += 1
+                append_log(
+                    "INFO",
+                    "c2_image_slot_deferred_after_reconfirmation",
+                    "当前画面无法证明仍是原图片；未右键、未复制、未调用 Vision，也不写失败终态。",
+                    metadata={
+                        **common_metadata,
+                        "reason": result_reason,
+                        "action_phase": result_action_phase,
+                    },
+                )
+                continue
             capability_paused = (
                 result_reason == "vision_configuration_incomplete"
                 or (
@@ -5743,7 +5771,6 @@ class TaskRunner:
                     ),
                     "state": result,
                     "action_outcome": outcome,
-                    "sales_handoff_required": result == "failed",
                 },
             )
 

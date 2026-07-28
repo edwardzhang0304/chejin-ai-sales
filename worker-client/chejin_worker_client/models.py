@@ -10,6 +10,15 @@ RunStatus = Literal["running", "paused"]
 RpaStatus = Literal["ready", "unavailable"]
 WechatStatus = Literal["logged_in", "not_found", "logged_out", "unknown"]
 
+TASK_TYPE_TITLES = {
+    "add_friend": "添加通讯录邀请",
+    "chat_reply": "AI 自动回复",
+}
+
+
+def task_type_title(task_type: str | None) -> str:
+    return TASK_TYPE_TITLES.get(str(task_type or "").strip(), "Worker 任务")
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
