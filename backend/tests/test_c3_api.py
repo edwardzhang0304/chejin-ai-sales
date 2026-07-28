@@ -422,6 +422,57 @@ def test_real_adapter_maps_brain_no_visible_provider_result_to_retry_later(monke
     assert decision.raw_payload["omniauto_brain_result"]["no_visible_reply"]["retryable"] is True
 
 
+def test_real_adapter_preserves_brain_timeout_as_provider_timeout(monkeypatch):
+    adapter = RealOmniAutoAIEngineAdapter()
+    monkeypatch.setattr(
+        adapter,
+        "_load_config",
+        lambda: {
+            "customer_service_brain": {
+                "provider": "test",
+                "model": "test",
+                "api_key": "test-only",
+            }
+        },
+    )
+    monkeypatch.setattr(adapter, "_load_brain", lambda: object())
+    monkeypatch.setattr(
+        adapter,
+        "_run_brain_isolated",
+        lambda **_kwargs: {
+            "rule_name": "customer_service_brain_no_visible_reply",
+            "adoptable": False,
+            "visible_reply_source": "none",
+            "reply_text": "",
+            "reason": "customer_service_brain_llm_unavailable",
+            "no_visible_reply": {
+                "class": "llm_timeout",
+                "stage": "brain_llm",
+                "reason": "customer_service_brain_llm_unavailable",
+                "retryable": True,
+            },
+            "llm_status": {
+                "ok": False,
+                "status": 0,
+                "error": "llm_wall_timeout_after_12.0s",
+            },
+            "brain_plan": {},
+        },
+    )
+
+    decision = adapter.generate_reply_decision(
+        conversation_context={"conversation_id": "conv-timeout"},
+        message_batch={
+            "id": "batch-timeout",
+            "messages": [{"content": "你好"}],
+        },
+    )
+
+    assert decision.decision == "retry_later"
+    assert decision.error_code == "AI_ENGINE_PROVIDER_TIMEOUT"
+    assert decision.suggested_action == "retry_later"
+
+
 @pytest.mark.parametrize(
     ("recommended_action", "expected_decision", "expected_suggested_action"),
     [
