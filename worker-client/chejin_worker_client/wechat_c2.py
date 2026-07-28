@@ -426,6 +426,99 @@ def observation_identity_signature(observation: dict[str, Any]) -> str:
     return stable_digest(basis, length=40)
 
 
+def observation_alignment_signature(observation: dict[str, Any]) -> str:
+    """Return the coordinate-free signature used only for viewport alignment."""
+
+    row_kind = str(observation.get("row_kind") or "").strip().lower()
+    if row_kind != "image_bubble":
+        return observation_identity_signature(observation)
+    role = str(observation.get("sender_role") or "").strip().lower()
+    message_type_value = str(
+        observation.get("message_type") or ""
+    ).strip().lower()
+    source = (
+        observation.get("source_message")
+        if isinstance(observation.get("source_message"), dict)
+        else {}
+    )
+    anchor = observation.get("image_physical_anchor")
+    if not isinstance(anchor, dict):
+        anchor = source.get("image_physical_anchor")
+    anchor = anchor if isinstance(anchor, dict) else {}
+    return stable_digest(
+        {
+            "row_kind": row_kind,
+            "sender_role": role,
+            "message_type": message_type_value,
+            "bubble_visual_fingerprint": anchor.get(
+                "bubble_visual_fingerprint"
+            ),
+        },
+        length=40,
+    )
+
+
+def _stored_frame_signature_matches(
+    stored_item: dict[str, Any],
+    *,
+    current_index: int,
+    current_identity_signatures: list[str],
+    current_alignment_signatures: list[str],
+) -> bool:
+    """Compare one stored slot with the matching current contract version."""
+
+    stored_alignment = str(
+        stored_item.get("alignment_signature") or ""
+    ).strip()
+    stored_signature = str(stored_item.get("signature") or "").strip()
+    if stored_alignment:
+        return stored_alignment == current_alignment_signatures[current_index]
+    return stored_signature == current_identity_signatures[current_index]
+
+
+def _viewport_overlap_matches(
+    previous_frame: list[dict[str, Any]],
+    current_identity_signatures: list[str],
+    current_alignment_signatures: list[str],
+) -> tuple[dict[int, str], bool]:
+    """Align the previous visible suffix with the current visible prefix."""
+
+    max_overlap = min(
+        len(previous_frame),
+        len(current_alignment_signatures),
+    )
+    overlap_lengths = [
+        length
+        for length in range(1, max_overlap + 1)
+        if all(
+            _stored_frame_signature_matches(
+                previous_frame[
+                    len(previous_frame) - length + offset
+                ],
+                current_index=offset,
+                current_identity_signatures=current_identity_signatures,
+                current_alignment_signatures=current_alignment_signatures,
+            )
+            for offset in range(length)
+        )
+    ]
+    if len(overlap_lengths) > 1:
+        return {}, True
+    if not overlap_lengths:
+        return {}, False
+    overlap = overlap_lengths[0]
+    previous_start = len(previous_frame) - overlap
+    return (
+        {
+            current_index: str(
+                previous_frame[previous_start + current_index]["stable_id"]
+            )
+            for current_index in range(overlap)
+        },
+        False,
+    )
+
+
 def reconcile_cross_round_observation_identities(
     observations: list[Any],
     previous_state: dict[str, Any] | None = None,
@@ -475,18 +568,22 @@ def reconcile_cross_round_observation_identities(
                 "authority_index": index,
                 "rect": message_rect({"bubble_rect": observation.get("bubble_rect")}),
                 "signature": observation_identity_signature(observation),
+                "alignment_signature": observation_alignment_signature(
+                    observation
+                ),
             }
         )
     ordered = order_authoritative_slots(slots)
     current_signatures = [str(item["signature"]) for item in ordered]
-    previous_signatures = [str(item["signature"]) for item in previous_frame]
-    if (
-        len(previous_signatures) > 1
-        and len(current_signatures) > 1
-        and len(set(previous_signatures)) == 1
-        and len(set(current_signatures)) == 1
-        and previous_signatures[0] == current_signatures[0]
-    ):
+    current_alignment_signatures = [
+        str(item["alignment_signature"]) for item in ordered
+    ]
+    matches, overlap_ambiguous = _viewport_overlap_matches(
+        previous_frame,
+        current_signatures,
+        current_alignment_signatures,
+    )
+    if overlap_ambiguous:
         return (
             enriched,
             state,
@@ -495,46 +592,36 @@ def reconcile_cross_round_observation_identities(
                     "observation_id": "frame",
                     "row_kind": "message_sequence",
                     "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
-                    "signature": current_signatures[0],
-                    "reason": "all_visible_messages_are_identical_across_rounds",
+                    "signature": (
+                        current_alignment_signatures[0]
+                        if current_alignment_signatures
+                        else ""
+                    ),
+                    "reason": "multiple_viewport_suffix_prefix_overlaps",
                 }
             ],
         )
-
-    rows = len(previous_signatures) + 1
-    columns = len(current_signatures) + 1
-    lcs = [[0] * columns for _ in range(rows)]
-    for previous_index in range(len(previous_signatures) - 1, -1, -1):
-        for current_index in range(len(current_signatures) - 1, -1, -1):
-            if previous_signatures[previous_index] == current_signatures[current_index]:
-                lcs[previous_index][current_index] = 1 + lcs[previous_index + 1][current_index + 1]
-            else:
-                lcs[previous_index][current_index] = max(
-                    lcs[previous_index + 1][current_index],
-                    lcs[previous_index][current_index + 1],
-                )
-    matches: dict[int, str] = {}
-    previous_index = 0
-    current_index = 0
-    while previous_index < len(previous_signatures) and current_index < len(current_signatures):
-        if previous_signatures[previous_index] == current_signatures[current_index]:
-            matches[current_index] = str(previous_frame[previous_index]["stable_id"])
-            previous_index += 1
-            current_index += 1
-        elif lcs[previous_index + 1][current_index] >= lcs[previous_index][current_index + 1]:
-            previous_index += 1
-        else:
-            current_index += 1
 
     # A temporarily unrelated viewport must not erase recoverable identity
     # evidence. Restore an older frame only when the complete ordered
     # signature sequence matches; a single repeated message remains
     # ambiguous and is never guessed from the catalog.
-    if not matches and len(current_signatures) > 1:
+    if not matches and len(current_alignment_signatures) > 1:
         exact_historical_frames = [
             frame
             for frame in [previous_frame, *recent_frames]
-            if [str(item["signature"]) for item in frame] == current_signatures
+            if len(frame) == len(current_alignment_signatures)
+            and all(
+                _stored_frame_signature_matches(
+                    item,
+                    current_index=index,
+                    current_identity_signatures=current_signatures,
+                    current_alignment_signatures=(
+                        current_alignment_signatures
+                    ),
+                )
+                for index, item in enumerate(frame)
+            )
         ]
         unique_identity_sequences = {
             tuple(str(item["stable_id"]) for item in frame)
@@ -551,6 +638,7 @@ def reconcile_cross_round_observation_identities(
         observation_index = int(slot["authority_index"])
         observation = enriched[observation_index]
         signature = str(slot["signature"])
+        alignment_signature = str(slot["alignment_signature"])
         stable_id = matches.get(ordered_index, "")
         if not stable_id:
             historical = [value for value in catalog.get(signature, []) if value not in used_ids]
@@ -563,7 +651,13 @@ def reconcile_cross_round_observation_identities(
                         "signature": signature,
                     }
                 )
-                frame.append({"signature": signature, "stable_id": ""})
+                frame.append(
+                    {
+                        "signature": signature,
+                        "alignment_signature": alignment_signature,
+                        "stable_id": "",
+                    }
+                )
                 continue
             stable_id = f"worker-message-{next_sequence}"
             next_sequence += 1
@@ -575,7 +669,13 @@ def reconcile_cross_round_observation_identities(
         if stable_id not in known:
             known.append(stable_id)
             del known[:-50]
-        frame.append({"signature": signature, "stable_id": stable_id})
+        frame.append(
+            {
+                "signature": signature,
+                "alignment_signature": alignment_signature,
+                "stable_id": stable_id,
+            }
+        )
 
     if errors:
         return (
@@ -596,7 +696,14 @@ def reconcile_cross_round_observation_identities(
     seen_frame_sequences: set[tuple[tuple[str, str], ...]] = set()
     for historical_frame in frame_history:
         sequence = tuple(
-            (str(item["signature"]), str(item["stable_id"]))
+            (
+                str(
+                    item.get("alignment_signature")
+                    or item.get("signature")
+                    or ""
+                ),
+                str(item["stable_id"]),
+            )
             for item in historical_frame
         )
         if not sequence or sequence in seen_frame_sequences:
@@ -606,7 +713,7 @@ def reconcile_cross_round_observation_identities(
         if len(unique_frame_history) >= 5:
             break
     new_state = {
-        "version": 2,
+        "version": 3,
         "next_sequence": next_sequence,
         "last_frame": frame,
         "recent_frames": unique_frame_history,

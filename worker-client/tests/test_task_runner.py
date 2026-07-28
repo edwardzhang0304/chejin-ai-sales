@@ -4352,6 +4352,100 @@ class TaskRunnerTest(unittest.TestCase):
             "confirmed Outbox must not be submitted to the backend twice",
         )
 
+    def test_cross_round_identity_ambiguity_blocks_vision_ingest_and_brain(self):
+        api = FakeApi(None)
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            {
+                "ok": True,
+                "observations": [
+                    {
+                        "schema_version": 3,
+                        "observation_id": "ambiguous-image",
+                        "row_kind": "image_bubble",
+                        "sender_role": "customer",
+                        "sender_role_source": "same_row_avatar",
+                        "message_type": "image",
+                        "voice_state": "not_voice",
+                        "item_state": "discovered",
+                        "bubble_rect": [420, 180, 650, 320],
+                        "image_physical_anchor": {
+                            "sender_role": "customer",
+                            "preceding_stable_message": "",
+                            "following_stable_message": "",
+                            "bubble_visual_fingerprint": (
+                                "dhash64:1234567890abcdef"
+                            ),
+                            "occurrence_index": 0,
+                            "occurrence_count": 1,
+                        },
+                        "source_message": {
+                            "id": "ambiguous-image",
+                            "type": "image",
+                        },
+                    }
+                ],
+            }
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        target = WechatReadTarget(
+            conversation_id="conv-cross-round-ambiguous",
+            rpa_session_key="",
+            display_name="CJAMB01",
+            remark_code="CJAMB01",
+            authorization_revision="revision-cross-round-ambiguous",
+        )
+        identity_errors = [
+            {
+                "observation_id": "ambiguous-image",
+                "row_kind": "image_bubble",
+                "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+                "signature": "ambiguous-signature",
+            }
+        ]
+
+        def reject_identity(_target, observations, previous_state):
+            return list(observations), dict(previous_state or {}), identity_errors
+
+        with patch(
+            "chejin_worker_client.task_runner."
+            "reconcile_v16104_identity_transition",
+            side_effect=reject_identity,
+        ), patch(
+            "chejin_worker_client.omniauto_vision.process_image_slot"
+        ) as vision, patch.object(
+            runner,
+            "_wait_and_send_current_c3_batch",
+        ) as brain:
+            result = runner._read_one_wechat_target(
+                binding,
+                target,
+                current_step="state_target_message_read",
+                enforce_read_targets=False,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["error_code"],
+            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+        )
+        vision.assert_not_called()
+        brain.assert_not_called()
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(api.message_payloads[0]["messages"], [])
+        self.assertEqual(
+            api.message_payloads[0]["evidence"]["flow_gate_errors"],
+            ["MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"],
+        )
+
     def test_all_c2_outbox_submit_types_preserve_original_json_after_network_failure(self):
         api = FakeApi(None)
         api.message_ingest_error = RuntimeError("network down")
