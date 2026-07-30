@@ -3629,7 +3629,11 @@ class TaskRunnerTest(unittest.TestCase):
                 ]
             }
 
-        bridge.get_messages_payloads = [frame_payload(), frame_payload()]
+        bridge.get_messages_payloads = [
+            frame_payload(),
+            frame_payload(),
+            frame_payload(),
+        ]
         bridge.voice_payload = {
             "ok": True,
             "state": "voice_transcribe_partial",
@@ -3683,7 +3687,7 @@ class TaskRunnerTest(unittest.TestCase):
                 enforce_read_targets=False,
             )
 
-        self.assertTrue(result["ok"])
+        self.assertTrue(result["ok"], result)
         self.assertEqual(vision.call_count, 1)
         self.assertEqual(len(api.message_payloads), 1)
         payload = api.message_payloads[0]
@@ -6850,7 +6854,11 @@ class TaskRunnerTest(unittest.TestCase):
             {
                 "authoritative_frame_source": "initial_read",
                 "observations": [observation],
-            }
+            },
+            {
+                "authoritative_frame_source": "final_read",
+                "observations": [observation],
+            },
         ]
         runner, _ = self.make_runner(api, bridge)
         binding = Binding(
@@ -6930,7 +6938,7 @@ class TaskRunnerTest(unittest.TestCase):
                 enforce_read_targets=True,
             )
 
-        self.assertTrue(result["ok"])
+        self.assertTrue(result["ok"], result)
         self.assertEqual(
             observed_phases,
             ["not_attempted", "trigger_attempted", "confirmed"],
@@ -7214,6 +7222,312 @@ class TaskRunnerTest(unittest.TestCase):
             load_c2_ledger_entry(target.conversation_id, source_key)
         )
         vision.assert_called_once()
+
+    def test_post_vision_refresh_processes_new_image_in_same_ui_lease(self):
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(
+                RpaResult(ok=True, result_code="ok", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        target = WechatReadTarget(
+            conversation_id="conv-post-vision-new-image",
+            rpa_session_key="",
+            display_name="CJPOST01",
+            remark_code="CJPOST01",
+            authorization_revision="revision-post-vision",
+        )
+        new_image = {
+            "observation_id": "new-image",
+            "row_kind": "image_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+        }
+        refreshed_payload = {
+            "ok": True,
+            "observations": [new_image],
+        }
+        runner.bridge.get_messages = unittest.mock.Mock(
+            side_effect=[
+                dict(refreshed_payload),
+                dict(refreshed_payload),
+            ]
+        )
+        lease = unittest.mock.Mock()
+        plans = [
+            {
+                "history_gap": False,
+                "identity_errors": [],
+                "new_image_source_keys": {"new-image-key"},
+            },
+            {
+                "history_gap": False,
+                "identity_errors": [],
+                "new_image_source_keys": set(),
+            },
+        ]
+        processed_payload = {
+            **refreshed_payload,
+            "observations": [
+                {**new_image, "item_state": "completed"}
+            ],
+        }
+        with patch(
+            "chejin_worker_client.task_runner.sidecar_contract_error",
+            return_value=None,
+        ), patch(
+            "chejin_worker_client.task_runner.load_c2_state",
+            return_value=None,
+        ), patch(
+            "chejin_worker_client.task_runner.save_c2_state",
+        ), patch(
+            "chejin_worker_client.task_runner."
+            "reconcile_v16104_identity_transition",
+            side_effect=lambda _target, observations, _state: (
+                observations,
+                {"schema_version": 1},
+                [],
+            ),
+        ), patch.object(
+            runner,
+            "_build_final_slot_incremental_plan",
+            side_effect=plans,
+        ), patch.object(
+            runner,
+            "_process_final_image_slots",
+            side_effect=[
+                (
+                    processed_payload,
+                    {
+                        "discovered": 1,
+                        "completed": 1,
+                        "failed": 0,
+                        "ignored": 0,
+                        "cached": 0,
+                        "authorization_revoked": 0,
+                        "configuration_incomplete": 0,
+                        "capability_paused": 0,
+                        "deferred": 0,
+                    },
+                ),
+                (
+                    processed_payload,
+                    {
+                        "discovered": 1,
+                        "completed": 1,
+                        "failed": 0,
+                        "ignored": 0,
+                        "cached": 1,
+                        "authorization_revoked": 0,
+                        "configuration_incomplete": 0,
+                        "capability_paused": 0,
+                        "deferred": 0,
+                    },
+                ),
+            ],
+        ) as process_images:
+            result = runner._converge_current_screen_after_images(
+                binding=binding,
+                target=target,
+                target_label="CJPOST01",
+                sidecar_payload={"ok": True, "observations": []},
+                lease=lease,
+                action_cancel_requested=lambda: False,
+                enforce_read_targets=True,
+                flow_outcomes=FlowOutcomeAccumulator(),
+            )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(runner.bridge.get_messages.call_count, 2)
+        self.assertEqual(process_images.call_count, 2)
+        first_call = process_images.call_args_list[0].kwargs
+        self.assertEqual(
+            first_call["allowed_new_source_keys"],
+            {"new-image-key"},
+        )
+        for read_call in runner.bridge.get_messages.call_args_list:
+            self.assertEqual(
+                read_call.kwargs["target_mode"],
+                "current",
+            )
+            self.assertNotIn("max_scroll_steps", read_call.kwargs)
+        self.assertGreaterEqual(lease.update_step.call_count, 3)
+
+    def test_post_vision_refresh_finishes_new_voice_before_return(self):
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(
+                RpaResult(ok=True, result_code="ok", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        target = WechatReadTarget(
+            conversation_id="conv-post-vision-new-voice",
+            rpa_session_key="",
+            display_name="CJPOST02",
+            remark_code="CJPOST02",
+            authorization_revision="revision-post-vision-voice",
+        )
+        voice = {
+            "observation_id": "new-voice",
+            "row_kind": "voice_bubble",
+            "message_type": "voice",
+            "voice_state": "untranscribed",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+        }
+        refreshed_payload = {
+            "ok": True,
+            "observations": [voice],
+        }
+        transcribed_payload = {
+            "ok": True,
+            "observations": [
+                {
+                    **voice,
+                    "voice_state": "transcribed",
+                    "row_kind": "voice_transcript",
+                }
+            ],
+        }
+        runner.bridge.get_messages = unittest.mock.Mock(
+            return_value=refreshed_payload
+        )
+        with patch(
+            "chejin_worker_client.task_runner.sidecar_contract_error",
+            return_value=None,
+        ), patch(
+            "chejin_worker_client.task_runner.load_c2_state",
+            return_value=None,
+        ), patch(
+            "chejin_worker_client.task_runner.save_c2_state",
+        ), patch(
+            "chejin_worker_client.task_runner."
+            "reconcile_v16104_identity_transition",
+            side_effect=lambda _target, observations, _state: (
+                observations,
+                {"schema_version": 1},
+                [],
+            ),
+        ), patch.object(
+            runner,
+            "_finish_new_visible_voices_in_current_chat",
+            return_value={
+                "ok": True,
+                "payload": transcribed_payload,
+                "failed_source_keys": [],
+                "failed_roles": {},
+            },
+        ) as finish_voice, patch.object(
+            runner,
+            "_build_final_slot_incremental_plan",
+            return_value={
+                "history_gap": False,
+                "identity_errors": [],
+                "new_image_source_keys": set(),
+            },
+        ):
+            result = runner._converge_current_screen_after_images(
+                binding=binding,
+                target=target,
+                target_label="CJPOST02",
+                sidecar_payload={"ok": True, "observations": []},
+                lease=unittest.mock.Mock(),
+                action_cancel_requested=lambda: False,
+                enforce_read_targets=True,
+                flow_outcomes=FlowOutcomeAccumulator(),
+            )
+
+        self.assertTrue(result["ok"], result)
+        finish_voice.assert_called_once()
+        self.assertEqual(
+            result["payload"]["observations"][0]["voice_state"],
+            "transcribed",
+        )
+
+    def test_post_vision_identity_ambiguity_blocks_media_and_ingest(self):
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(
+                RpaResult(ok=True, result_code="ok", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        target = WechatReadTarget(
+            conversation_id="conv-post-vision-ambiguous",
+            rpa_session_key="",
+            display_name="CJPOST03",
+            remark_code="CJPOST03",
+            authorization_revision="revision-post-vision-ambiguous",
+        )
+        runner.bridge.get_messages = unittest.mock.Mock(
+            return_value={
+                "ok": True,
+                "observations": [
+                    {
+                        "observation_id": "ambiguous-image",
+                        "row_kind": "image_bubble",
+                    }
+                ],
+            }
+        )
+        with patch(
+            "chejin_worker_client.task_runner.sidecar_contract_error",
+            return_value=None,
+        ), patch(
+            "chejin_worker_client.task_runner.load_c2_state",
+            return_value=None,
+        ), patch(
+            "chejin_worker_client.task_runner."
+            "reconcile_v16104_identity_transition",
+            return_value=(
+                [],
+                {"schema_version": 1},
+                [
+                    {
+                        "error_code": (
+                            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                        )
+                    }
+                ],
+            ),
+        ), patch.object(
+            runner,
+            "_process_final_image_slots",
+        ) as process_images:
+            result = runner._converge_current_screen_after_images(
+                binding=binding,
+                target=target,
+                target_label="CJPOST03",
+                sidecar_payload={"ok": True, "observations": []},
+                lease=unittest.mock.Mock(),
+                action_cancel_requested=lambda: False,
+                enforce_read_targets=True,
+                flow_outcomes=FlowOutcomeAccumulator(),
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["error_code"],
+            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+        )
+        process_images.assert_not_called()
 
     def test_confirmed_message_filter_keeps_full_slot_order_but_removes_old_observation(self):
         api = FakeApi(None)

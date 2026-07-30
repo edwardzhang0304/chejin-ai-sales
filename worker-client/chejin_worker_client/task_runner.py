@@ -5507,6 +5507,356 @@ class TaskRunner:
                     **summarized_outcomes(),
                 }
 
+    def _converge_current_screen_after_images(
+        self,
+        *,
+        binding: Binding,
+        target: WechatReadTarget,
+        target_label: str,
+        sidecar_payload: dict[str, Any],
+        lease: UiLockLease,
+        action_cancel_requested: Callable[[], bool],
+        enforce_read_targets: bool,
+        flow_outcomes: FlowOutcomeAccumulator,
+    ) -> dict[str, Any]:
+        """Finish media that arrived while Vision held the current chat.
+
+        This loop never scrolls or switches conversations. Each iteration
+        performs one current-screen read, reconciles Worker-owned identities,
+        finishes visible voices, and processes only image source keys that are
+        still NEW against the local ledger.
+        """
+
+        current_payload = dict(sidecar_payload)
+        aggregate_image_stats = {
+            "discovered": 0,
+            "completed": 0,
+            "failed": 0,
+            "ignored": 0,
+            "cached": 0,
+            "authorization_revoked": 0,
+            "configuration_incomplete": 0,
+            "capability_paused": 0,
+            "deferred": 0,
+        }
+        failed_voice_source_keys: set[str] = set()
+        failed_voice_roles: dict[str, str] = {}
+        seen_pending_image_sets: set[tuple[str, ...]] = set()
+
+        def add_image_stats(values: dict[str, Any]) -> None:
+            for key in aggregate_image_stats:
+                aggregate_image_stats[key] += int(values.get(key) or 0)
+
+        while True:
+            if action_cancel_requested():
+                return {
+                    "ok": False,
+                    "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
+                    "payload": current_payload,
+                    "image_stats": aggregate_image_stats,
+                }
+            lease.update_step("image_post_vision_final_read")
+            self.current_step = "image_post_vision_final_read"
+            refreshed = self.bridge.get_messages(
+                display_name=target_label,
+                rpa_session_key="",
+                remark_code=target.remark_code or "",
+                target_mode="current",
+                max_duration_seconds=20,
+                cancel_check=action_cancel_requested,
+            )
+            if not refreshed.get("ok"):
+                return {
+                    "ok": False,
+                    "error_code": str(
+                        refreshed.get("error_code")
+                        or refreshed.get("state")
+                        or "TARGET_NOT_CONFIRMED_FOR_MESSAGES"
+                    ),
+                    "payload": current_payload,
+                    "image_stats": aggregate_image_stats,
+                }
+            contract_error = sidecar_contract_error(refreshed)
+            if contract_error:
+                return {
+                    "ok": False,
+                    "error_code": contract_error,
+                    "payload": current_payload,
+                    "image_stats": aggregate_image_stats,
+                }
+
+            identity_state_key = (
+                f"message_identity:{target.conversation_id}"
+            )
+            observations, identity_state, identity_errors = (
+                reconcile_v16104_identity_transition(
+                    target,
+                    list(refreshed.get("observations") or []),
+                    load_c2_state(identity_state_key),
+                )
+            )
+            if identity_errors:
+                return {
+                    "ok": False,
+                    "error_code": str(
+                        identity_errors[0].get("error_code")
+                        or "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                    ),
+                    "payload": current_payload,
+                    "image_stats": aggregate_image_stats,
+                }
+            save_c2_state(identity_state_key, identity_state)
+            refreshed["observations"] = observations
+            refreshed["initial_messages"] = (
+                current_payload.get("initial_messages")
+                or sidecar_payload.get("initial_messages")
+                or sidecar_payload
+            )
+            refreshed["voice_transcription"] = (
+                current_payload.get("voice_transcription")
+                or sidecar_payload.get("voice_transcription")
+            )
+            refreshed["authoritative_frame_source"] = "final_read"
+            current_payload = refreshed
+
+            failed_ledger_groups: dict[str, set[str]] = {}
+            for observation in (
+                current_payload.get("observations") or []
+            ):
+                if (
+                    not isinstance(observation, dict)
+                    or observation.get("row_kind") != "voice_bubble"
+                    or observation.get("voice_state")
+                    != "untranscribed"
+                ):
+                    continue
+                try:
+                    source_key = voice_observation_source_key(
+                        target,
+                        observation,
+                    )
+                except ValueError:
+                    continue
+                ledger = load_c2_ledger_entry(
+                    target.conversation_id,
+                    source_key,
+                )
+                if (
+                    not ledger
+                    or ledger.get("terminal_state") != "failed"
+                ):
+                    continue
+                result = (
+                    ledger.get("result")
+                    if isinstance(ledger.get("result"), dict)
+                    else {}
+                )
+                error_code = str(
+                    result.get("error_code")
+                    or "VOICE_TRANSCRIBE_FAILED"
+                )
+                failed_ledger_groups.setdefault(
+                    error_code,
+                    set(),
+                ).add(source_key)
+            for error_code, source_keys in failed_ledger_groups.items():
+                annotated_roles = (
+                    self._annotate_failed_voice_observations(
+                        target=target,
+                        sidecar_payload=current_payload,
+                        failed_source_keys=source_keys,
+                        error_code=error_code,
+                    )
+                )
+                failed_voice_source_keys.update(source_keys)
+                failed_voice_roles.update(annotated_roles)
+
+            if _untranscribed_voice_observations(current_payload):
+                voice_result = (
+                    self._finish_new_visible_voices_in_current_chat(
+                        binding=binding,
+                        target=target,
+                        target_label=target_label,
+                        sidecar_payload=current_payload,
+                        lease=lease,
+                        action_cancel_requested=action_cancel_requested,
+                        enforce_read_targets=enforce_read_targets,
+                        excluded_voice_anchor_keys=set(),
+                        flow_outcomes=flow_outcomes,
+                    )
+                )
+                if not voice_result.get("ok"):
+                    return {
+                        **voice_result,
+                        "image_stats": aggregate_image_stats,
+                    }
+                current_payload = dict(
+                    voice_result.get("payload") or current_payload
+                )
+                new_failed_keys = {
+                    str(value)
+                    for value in (
+                        voice_result.get("failed_source_keys") or []
+                    )
+                    if str(value).strip()
+                }
+                if new_failed_keys:
+                    failure_code = str(
+                        voice_result.get("failure_code")
+                        or "VOICE_TRANSCRIBE_FAILED"
+                    )
+                    self._mark_voice_sources_failed(
+                        target=target,
+                        source_keys=sorted(new_failed_keys),
+                        error_code=failure_code,
+                    )
+                    annotated_roles = (
+                        self._annotate_failed_voice_observations(
+                            target=target,
+                            sidecar_payload=current_payload,
+                            failed_source_keys=new_failed_keys,
+                            error_code=failure_code,
+                        )
+                    )
+                    failed_voice_source_keys.update(new_failed_keys)
+                    failed_voice_roles.update(annotated_roles)
+                    failed_voice_roles.update(
+                        {
+                            str(key): str(value)
+                            for key, value in (
+                                voice_result.get("failed_roles") or {}
+                            ).items()
+                            if str(value) in {"customer", "self"}
+                        }
+                    )
+
+            incremental_plan = self._build_final_slot_incremental_plan(
+                target=target,
+                sidecar_payload=current_payload,
+            )
+            if incremental_plan["identity_errors"]:
+                return {
+                    "ok": False,
+                    "error_code": (
+                        "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                    ),
+                    "payload": current_payload,
+                    "image_stats": aggregate_image_stats,
+                }
+            blocking_image_gate_errors: list[str] = []
+            if incremental_plan["history_gap"]:
+                blocking_image_gate_errors.append(
+                    "C2_MESSAGE_HISTORY_GAP"
+                )
+            pending_image_keys = tuple(
+                sorted(incremental_plan["new_image_source_keys"])
+            )
+            allowed_image_keys = (
+                set(pending_image_keys)
+                if not blocking_image_gate_errors
+                else set()
+            )
+            image_observations = [
+                item
+                for item in (current_payload.get("observations") or [])
+                if isinstance(item, dict)
+                and item.get("row_kind") == "image_bubble"
+            ]
+            if not image_observations:
+                return {
+                    "ok": True,
+                    "payload": current_payload,
+                    "image_stats": aggregate_image_stats,
+                    "failed_voice_source_keys": sorted(
+                        failed_voice_source_keys
+                    ),
+                    "failed_voice_roles": failed_voice_roles,
+                }
+
+            if pending_image_keys in seen_pending_image_sets:
+                append_log(
+                    "WARN",
+                    "c2_post_vision_current_screen_no_progress",
+                    "图片处理后当前屏待处理集合未变化；保持未完成图片待下轮处理，本轮不重复右键。",
+                    error_code="C2_IMAGE_CURRENT_SCREEN_NO_PROGRESS",
+                    metadata={
+                        "conversation_id": target.conversation_id,
+                        "remark_code": target.remark_code,
+                        "pending_image_source_keys": list(
+                            pending_image_keys
+                        ),
+                    },
+                )
+                return {
+                    "ok": True,
+                    "payload": current_payload,
+                    "image_stats": aggregate_image_stats,
+                    "failed_voice_source_keys": sorted(
+                        failed_voice_source_keys
+                    ),
+                    "failed_voice_roles": failed_voice_roles,
+                }
+            seen_pending_image_sets.add(pending_image_keys)
+
+            lease.update_step("image_understanding_current_chat")
+            self.current_step = "image_understanding_current_chat"
+            current_payload, image_stats = (
+                self._process_final_image_slots(
+                    binding=binding,
+                    target=target,
+                    sidecar_payload=current_payload,
+                    enforce_read_targets=enforce_read_targets,
+                    cancel_check=action_cancel_requested,
+                    allowed_new_source_keys=allowed_image_keys,
+                    incremental_gate_reason=(
+                        blocking_image_gate_errors[0]
+                        if blocking_image_gate_errors
+                        else ""
+                    ),
+                    flow_outcomes=flow_outcomes,
+                )
+            )
+            add_image_stats(image_stats)
+            if not pending_image_keys:
+                return {
+                    "ok": True,
+                    "payload": current_payload,
+                    "image_stats": aggregate_image_stats,
+                    "failed_voice_source_keys": sorted(
+                        failed_voice_source_keys
+                    ),
+                    "failed_voice_roles": failed_voice_roles,
+                }
+            if image_stats.get("authorization_revoked"):
+                return {
+                    "ok": False,
+                    "error_code": (
+                        "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS"
+                    ),
+                    "payload": current_payload,
+                    "image_stats": aggregate_image_stats,
+                }
+            if (
+                image_stats.get("capability_paused")
+                or image_stats.get("configuration_incomplete")
+                or (
+                    pending_image_keys
+                    and not any(
+                        image_stats.get(key)
+                        for key in ("completed", "failed", "ignored")
+                    )
+                )
+            ):
+                return {
+                    "ok": True,
+                    "payload": current_payload,
+                    "image_stats": aggregate_image_stats,
+                    "failed_voice_source_keys": sorted(
+                        failed_voice_source_keys
+                    ),
+                    "failed_voice_roles": failed_voice_roles,
+                }
+
     @staticmethod
     def _start_irreversible_action_journal(
         *,
@@ -7069,6 +7419,137 @@ class TaskRunner:
                         "target_confirmation": locate_payload,
                         "final_messages": sidecar_payload,
                     }
+                image_actions_completed = (
+                    int(image_stats.get("completed") or 0)
+                    + int(image_stats.get("failed") or 0)
+                    > int(image_stats.get("cached") or 0)
+                )
+                convergence = (
+                    self._converge_current_screen_after_images(
+                        binding=binding,
+                        target=target,
+                        target_label=target_label,
+                        sidecar_payload=sidecar_payload,
+                        lease=lease,
+                        action_cancel_requested=action_cancel_requested,
+                        enforce_read_targets=enforce_read_targets,
+                        flow_outcomes=flow_outcomes,
+                    )
+                    if image_actions_completed
+                    else {
+                        "ok": True,
+                        "payload": sidecar_payload,
+                        "image_stats": {},
+                        "failed_voice_source_keys": [],
+                        "failed_voice_roles": {},
+                    }
+                )
+                if not convergence.get("ok"):
+                    code = str(
+                        convergence.get("error_code")
+                        or "C2_POST_VISION_CURRENT_SCREEN_FAILED"
+                    )
+                    self.c2_stats["last_error"] = code
+                    return {
+                        "ok": False,
+                        "error_code": code,
+                        "target_confirmation": locate_payload,
+                        "final_messages": (
+                            convergence.get("payload")
+                            or sidecar_payload
+                        ),
+                    }
+                sidecar_payload = dict(
+                    convergence.get("payload") or sidecar_payload
+                )
+                post_image_stats = dict(
+                    convergence.get("image_stats") or {}
+                )
+                for key in image_stats:
+                    # Refreshed screens include prior terminal images as
+                    # cached, so summing would count the same slot twice.
+                    image_stats[key] = max(
+                        int(image_stats.get(key) or 0),
+                        int(post_image_stats.get(key) or 0),
+                    )
+                partial_failed_voice_source_keys = sorted(
+                    {
+                        *partial_failed_voice_source_keys,
+                        *(
+                            str(value)
+                            for value in (
+                                convergence.get(
+                                    "failed_voice_source_keys"
+                                )
+                                or []
+                            )
+                            if str(value).strip()
+                        ),
+                    }
+                )
+                partial_failed_voice_roles.update(
+                    {
+                        str(key): str(value)
+                        for key, value in (
+                            convergence.get("failed_voice_roles") or {}
+                        ).items()
+                        if str(value) in {"customer", "self"}
+                    }
+                )
+                incremental_plan = (
+                    self._build_final_slot_incremental_plan(
+                        target=target,
+                        sidecar_payload=sidecar_payload,
+                    )
+                )
+                flow_gate_errors = []
+                if incremental_plan["history_gap"]:
+                    flow_gate_errors.append(
+                        "C2_MESSAGE_HISTORY_GAP"
+                    )
+                if incremental_plan["identity_errors"]:
+                    flow_gate_errors.append(
+                        "MESSAGE_IDENTITY_UNCONFIRMED"
+                    )
+                flow_gate_details = [
+                    dict(item)
+                    for item in (
+                        incremental_plan.get("flow_gate_details") or []
+                    )
+                    if isinstance(item, dict)
+                ]
+                if partial_failed_voice_source_keys:
+                    flow_gate_errors.append(
+                        "C2_VOICE_TRANSCRIBE_FAILED"
+                    )
+                    flow_gate_details.extend(
+                        self._failed_voice_gate_details(
+                            failed_source_roles=(
+                                partial_failed_voice_roles
+                            ),
+                            slot_ledger_states=list(
+                                incremental_plan.get(
+                                    "slot_ledger_states"
+                                )
+                                or []
+                            ),
+                        )
+                    )
+                sidecar_payload["history_gap"] = bool(
+                    incremental_plan["history_gap"]
+                )
+                sidecar_payload["flow_gate_errors"] = (
+                    flow_gate_errors
+                )
+                sidecar_payload["flow_gate_details"] = (
+                    flow_gate_details
+                )
+                sidecar_payload["failed_voice_source_keys"] = (
+                    partial_failed_voice_source_keys
+                )
+                sidecar_payload["slot_ledger_states"] = (
+                    incremental_plan["slot_ledger_states"]
+                )
                 if (
                     image_stats.get("capability_paused")
                     or image_stats.get("configuration_incomplete")

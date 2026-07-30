@@ -19,6 +19,11 @@ from .wechat import (
     find_copy_menu_item,
     image_visual_fingerprint_distance,
 )
+from .visual_fingerprint import (
+    clipboard_payload_fingerprint,
+    crop_fingerprint,
+    fingerprints_match,
+)
 
 
 CLIPBOARD_WAIT_TIMEOUT_SECONDS = 2.5
@@ -193,13 +198,38 @@ def acquire_current_image_via_ports(
     """Acquire exactly one current bitmap while holding the host RPA lease."""
 
     data = dict(request or {})
-    action_phase = "not_attempted"
+    return _acquire_current_image_via_ports(
+        ports,
+        data,
+        lease_already_held=False,
+    )
+
+
+def _acquire_current_image_via_ports(
+    ports: VisionHostPorts,
+    data: dict[str, Any],
+    *,
+    lease_already_held: bool,
+) -> dict[str, Any]:
+    action_phase = str(
+        data.get("_prior_action_phase") or "not_attempted"
+    )
+    retry_attempt = max(
+        0,
+        min(1, int(data.get("_clipboard_fingerprint_retry_attempt") or 0)),
+    )
 
     def fail(reason: str, **extra: Any) -> dict[str, Any]:
+        transaction = dict(extra.pop("transaction", {}) or {})
+        transaction.setdefault("action_phase", action_phase)
+        transaction.setdefault(
+            "clipboard_fingerprint_retry_count",
+            retry_attempt,
+        )
         return _failure(
             reason,
             action_phase=action_phase,
-            transaction={"action_phase": action_phase},
+            transaction=transaction,
             **extra,
         )
 
@@ -226,7 +256,7 @@ def acquire_current_image_via_ports(
         return fail("image_clipboard_side_filter_invalid")
     lease = (
         ports.rpa_lease.lease("vision_current_image", timeout_seconds=float(data.get("lock_timeout_seconds") or 45.0))
-        if ports.rpa_lease is not None
+        if ports.rpa_lease is not None and not lease_already_held
         else nullcontext({"acquired": True, "source": "vision_port_noop_lease"})
     )
     surface = None
@@ -282,6 +312,15 @@ def acquire_current_image_via_ports(
             ]
             if len(current_bounds) != 4 or _bounds(current_bounds) is None:
                 return fail("image_bubble_current_bounds_missing")
+            try:
+                expected_clipboard_fingerprint = crop_fingerprint(
+                    surface,
+                    current_bounds,
+                )
+            except Exception:
+                expected_clipboard_fingerprint = {}
+            if not expected_clipboard_fingerprint:
+                return fail("image_bubble_clipboard_fingerprint_missing")
             sequence_before = ports.clipboard.sequence_number()
             right_click_result = ports.ui_action.right_click(
                 int(anchor.get("x") or 0),
@@ -428,6 +467,52 @@ def acquire_current_image_via_ports(
             if _cancelled(data):
                 payload.release()
                 return fail("vision_cancelled")
+            actual_clipboard_fingerprint = clipboard_payload_fingerprint(
+                payload
+            )
+            clipboard_matches_target = fingerprints_match(
+                expected_clipboard_fingerprint,
+                actual_clipboard_fingerprint,
+            )
+            if not clipboard_matches_target:
+                payload.release()
+                if retry_attempt < 1:
+                    retry_data = {
+                        **data,
+                        "_clipboard_fingerprint_retry_attempt": 1,
+                        "_prior_action_phase": "trigger_attempted",
+                    }
+                    retry_result = _acquire_current_image_via_ports(
+                        ports,
+                        retry_data,
+                        lease_already_held=True,
+                    )
+                    retry_transaction = (
+                        dict(retry_result.get("transaction") or {})
+                        if isinstance(retry_result, dict)
+                        else {}
+                    )
+                    retry_transaction[
+                        "clipboard_fingerprint_retry_count"
+                    ] = 1
+                    retry_transaction[
+                        "clipboard_fingerprint_first_attempt_mismatch"
+                    ] = True
+                    if isinstance(retry_result, dict):
+                        retry_result["transaction"] = retry_transaction
+                    return retry_result
+                return fail(
+                    "clipboard_image_fingerprint_mismatch",
+                    transaction={
+                        "status": "clipboard_rejected",
+                        "right_click_ok": True,
+                        "menu_copy_confirmed": True,
+                        "clipboard_sequence_changed": True,
+                        "clipboard_content_read": True,
+                        "clipboard_image_valid": True,
+                        "clipboard_image_matches_target": False,
+                    },
+                )
             image_sha256 = hashlib.sha256(bytes(payload.image_bytes)).hexdigest()
             if callable(journal_update):
                 journal_update(
@@ -456,6 +541,8 @@ def acquire_current_image_via_ports(
                     "clipboard_sequence_changed": True,
                     "clipboard_content_read": True,
                     "clipboard_image_valid": True,
+                    "clipboard_image_matches_target": True,
+                    "clipboard_fingerprint_retry_count": retry_attempt,
                     "visual_side": direction,
                     "slot_identity_confirmed": True,
                     "slot_identity_evidence": dict(
