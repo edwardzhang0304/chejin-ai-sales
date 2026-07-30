@@ -43,7 +43,6 @@ from chejin_worker_client.task_runner import (
     C2_RECENT_VISIBLE_CACHE_TTL_SECONDS,
     TaskLeaseGuard,
     TaskRunner,
-    image_operation_gate_errors,
 )
 from chejin_worker_client.transaction_outcomes import (
     FlowOutcomeAccumulator,
@@ -619,21 +618,6 @@ class TaskRunnerTest(unittest.TestCase):
             },
         )
 
-    def test_voice_failure_blocks_brain_but_not_reliable_image_operation(self):
-        self.assertEqual(
-            image_operation_gate_errors(["C2_VOICE_TRANSCRIBE_FAILED"]),
-            [],
-        )
-        self.assertEqual(
-            image_operation_gate_errors(
-                [
-                    "C2_VOICE_TRANSCRIBE_FAILED",
-                    "C2_MESSAGE_HISTORY_GAP",
-                ]
-            ),
-            ["C2_MESSAGE_HISTORY_GAP"],
-        )
-
     def setUp(self):
         try:
             LOCK_FILE.unlink()
@@ -1062,6 +1046,8 @@ class TaskRunnerTest(unittest.TestCase):
             on_error=lambda item: seen["errors"].append(item),
         )
         runner.c2_stop_guard_before_voice_seconds = 0
+        runner.last_c2_vision_preflight_at = time.monotonic()
+        runner.c2_vision_preflight_ready = True
         return runner, seen
 
     def make_chat_reply_task(self, *, task_id: str, status: str = "pending") -> Task:
@@ -1719,14 +1705,14 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(bridge.probe_calls, 0)
         self.assertIn("heartbeat:ready:logged_in", api.events)
 
-    def test_heartbeat_reports_persisted_vision_capability_pause(self):
+    def test_heartbeat_reports_persisted_global_vision_preflight(self):
         api = FakeApi(None)
         runner, _ = self.make_runner(api, FakeBridge(RpaResult(ok=True, result_code="unused", message="unused")))
         runner.binding = Binding(worker_id="worker-1", worker_token="token", client_instance_id="client-1", run_status="paused")
         save_c2_state(
-            "vision_capability",
+            "vision_preflight",
             {
-                "state": "capability_paused",
+                "state": "vision_not_ready",
                 "reason": "vision_configuration_incomplete",
                 "missing_configuration": ["CUSTOMER_IMAGE_UNDERSTANDING_API_KEY"],
             },
@@ -1735,7 +1721,7 @@ class TaskRunnerTest(unittest.TestCase):
         runner.tick_once()
 
         vision = api.heartbeat_payloads[-1]["local_lock_summary"]["capabilities"]["vision"]
-        self.assertEqual(vision["state"], "capability_paused")
+        self.assertEqual(vision["state"], "vision_not_ready")
         self.assertEqual(vision["missing_configuration"], ["CUSTOMER_IMAGE_UNDERSTANDING_API_KEY"])
 
     def test_schedule_paused_worker_only_sends_heartbeat(self):
@@ -2294,6 +2280,44 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertIn("claim_send:reply-action-1", api.events)
         self.assertFalse(any(event.startswith("read_targets:") for event in api.events))
         self.assertIn("sent_ack:sent:None", api.events)
+
+    def test_chat_reply_recovery_obeys_global_vision_preflight_before_ui(self):
+        task = self.make_chat_reply_task(
+            task_id="task-chat-vision-not-ready",
+            status="running",
+        )
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        bridge = FakeBridge(
+            RpaResult(
+                ok=True,
+                result_code="invite_sent",
+                message="unused",
+            )
+        )
+        runner, _ = self.make_runner(api, bridge)
+        runner.binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        with patch.object(
+            runner,
+            "_c2_vision_ready_before_scan",
+            return_value=False,
+        ):
+            runner.tick_once()
+
+        self.assertEqual(bridge.c2_operation_order, [])
+        self.assertEqual(bridge.sent_replies, [])
+        self.assertFalse(
+            any(event.startswith("sent_ack:") for event in api.events)
+        )
+        self.assertFalse(
+            any(event.startswith("fail:") for event in api.events)
+        )
 
     def test_pending_chat_reply_without_exact_batch_ticket_is_not_sent(self):
         task = self.make_chat_reply_task(task_id="task-chat-no-ticket")
@@ -6207,6 +6231,85 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertFalse(bridge.locate_chats[0]["capture_initial_messages"])
         self.assertEqual(len(bridge.message_reads), 1)
 
+    def test_image_observer_exception_blocks_same_screen_text_ingest(self):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-image-observer-error",
+            rpa_session_key="wx:rpa:v1:image-observer-error",
+            display_name="CJIMGERR1",
+            remark_code="CJIMGERR1",
+            row_fingerprint={"title_text": "CJIMGERR1"},
+            read_reason="waiting_user_reply",
+            authorization_revision="revision-image-observer-error",
+        )
+        api.read_targets = [target]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.locate_payloads = [
+            {
+                "ok": True,
+                "state": "chat_target_confirmed",
+                "conversation_type": "private",
+                "conversation_type_evidence": {
+                    "matched": True,
+                    "short_code_confirmed": True,
+                    "admission_allowed": True,
+                    "conversation_type": "private",
+                    "raw_title": "CJIMGERR1",
+                },
+            }
+        ]
+        bridge.get_messages_payloads = [
+            {
+                "ok": True,
+                "observations": [
+                    {
+                        "schema_version": 3,
+                        "observation_id": "same-screen-text",
+                        "row_kind": "text_bubble",
+                        "sender_role": "customer",
+                        "sender_role_source": "same_row_avatar",
+                        "message_type": "text",
+                        "voice_state": "not_voice",
+                        "content_clean": "图片检测器异常时不能单独回复这句话",
+                        "source_message": {"id": "same-screen-text"},
+                    }
+                ],
+                "observation_validation_errors": [
+                    {
+                        "observation_id": "structural-image-observer",
+                        "row_kind": "image_bubble",
+                        "error_codes": ["C2_IMAGE_OBSERVATION_FAILED"],
+                        "stage": "detect_visual_image_bubbles",
+                        "error_type": "RuntimeError",
+                    }
+                ],
+            }
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        result = runner._read_one_wechat_target(
+            binding,
+            target,
+            current_step="state_target_message_read",
+            enforce_read_targets=True,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["error_code"],
+            "OMNIAUTO_OBSERVATION_CONTRACT_INVALID",
+        )
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(bridge.voice_transcribes, [])
+
     def test_c2_read_cancelled_before_locating_when_read_targets_empty_after_lock(self):
         api = FakeApi(None)
         bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"))
@@ -7029,7 +7132,7 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertIsNone(load_c2_ledger_entry(target.conversation_id, source_key))
         self.assertIs(vision.call_args.kwargs["cancel_check"](), True)
 
-    def test_c2_pre_action_window_failure_is_deferred_with_same_window_context(self):
+    def test_c2_pre_action_window_failure_is_terminal_failed_with_same_window_context(self):
         api = FakeApi(None)
         runner, _ = self.make_runner(
             api,
@@ -7083,7 +7186,7 @@ class TaskRunnerTest(unittest.TestCase):
             "window_context": window_context,
             "observations": [observation],
         }
-        deferred = {
+        failed = {
             "state": "failed",
             "reason": "capture_wechat_failed",
             "action_phase": "not_attempted",
@@ -7112,7 +7215,7 @@ class TaskRunnerTest(unittest.TestCase):
             },
         ), patch(
             "chejin_worker_client.omniauto_vision.process_image_slot",
-            return_value=deferred,
+            return_value=failed,
         ) as vision:
             result, stats = runner._process_final_image_slots(
                 binding=binding,
@@ -7121,27 +7224,23 @@ class TaskRunnerTest(unittest.TestCase):
                 enforce_read_targets=False,
             )
 
-        self.assertEqual(stats["capability_paused"], 1)
-        self.assertEqual(stats["deferred"], 1)
-        self.assertEqual(stats["failed"], 0)
+        self.assertEqual(stats["failed"], 1)
         self.assertEqual(
-            result["vision_capability"]["reason"],
-            "capture_wechat_failed",
-        )
-        self.assertEqual(
-            result["observations"][0]["item_state"],
-            "discovered",
+            result["observations"][0]["item_state"], "failed"
         )
         source_key = image_observation_source_key(target, observation)
-        self.assertIsNone(
-            load_c2_ledger_entry(target.conversation_id, source_key)
+        self.assertEqual(
+            load_c2_ledger_entry(
+                target.conversation_id, source_key
+            )["terminal_state"],
+            "failed",
         )
         self.assertEqual(
             vision.call_args.kwargs["window_context"],
             window_context,
         )
 
-    def test_c2_image_moved_out_of_view_stays_deferred_without_ledger(self):
+    def test_c2_image_moved_out_of_view_is_removed_without_ledger(self):
         api = FakeApi(None)
         runner, _ = self.make_runner(
             api,
@@ -7197,8 +7296,8 @@ class TaskRunnerTest(unittest.TestCase):
         ), patch(
             "chejin_worker_client.omniauto_vision.process_image_slot",
             return_value={
-                "state": "failed",
-                "reason": "image_bubble_slot_not_reconfirmed",
+                "state": "not_visible",
+                "reason": "image_bubble_not_visible_after_refresh",
                 "action_phase": "not_attempted",
                 "diagnostics": {"events": [], "image_persisted": False},
             },
@@ -7210,19 +7309,11 @@ class TaskRunnerTest(unittest.TestCase):
                 enforce_read_targets=False,
             )
 
-        self.assertEqual(stats["deferred"], 1)
+        self.assertEqual(stats["removed_from_final_screen"], 1)
         self.assertEqual(stats["failed"], 0)
         self.assertEqual(stats["completed"], 0)
-        self.assertTrue(stats["must_block_brain"])
-        self.assertFalse(stats["requires_final_refresh"])
-        self.assertEqual(
-            stats["brain_gate_codes"],
-            ["C2_IMAGE_PROCESSING_DEFERRED"],
-        )
-        self.assertEqual(
-            result["observations"][0]["item_state"],
-            "discovered",
-        )
+        self.assertTrue(stats["requires_final_refresh"])
+        self.assertEqual(result["observations"], [])
         source_key = image_observation_source_key(target, observation)
         self.assertIsNone(
             load_c2_ledger_entry(target.conversation_id, source_key)
@@ -7336,7 +7427,76 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(phase_result["completed"], 1)
         self.assertEqual(phase_result["new_action_count"], 1)
         self.assertTrue(phase_result["requires_final_refresh"])
-        self.assertFalse(phase_result["must_block_brain"])
+
+    def test_incremental_plan_routes_untrusted_image_to_ignored_state_machine(self):
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(
+                RpaResult(ok=True, result_code="ok", message="unused")
+            ),
+        )
+        unique = str(time.time_ns())
+        target = WechatReadTarget(
+            conversation_id=f"conv-image-untrusted-{unique}",
+            rpa_session_key="wx:rpa:v1:image-untrusted",
+            display_name="CJIGNORE01",
+            remark_code="CJIGNORE01",
+            authorization_revision=f"revision-image-untrusted-{unique}",
+        )
+        observation = {
+            "schema_version": 3,
+            "observation_id": f"image-untrusted-{unique}",
+            "row_kind": "image_bubble",
+            "sender_role": "unknown",
+            "sender_role_source": "same_row_avatar_unconfirmed",
+            "message_type": "image",
+            "voice_state": "not_voice",
+            "item_state": "discovered",
+            "image_physical_anchor": {
+                "sender_role": "unknown",
+                "preceding_stable_message": f"before-{unique}",
+                "following_stable_message": f"after-{unique}",
+                "bubble_visual_fingerprint": f"fingerprint-{unique}",
+                "occurrence_index": 0,
+            },
+            "bubble_rect": [420, 220, 650, 340],
+            "source_message": {
+                "id": f"source-image-untrusted-{unique}",
+                "type": "image",
+            },
+        }
+
+        plan = runner._build_final_slot_incremental_plan(
+            target=target,
+            sidecar_payload={
+                "observation_schema_version": 3,
+                "authoritative_frame_source": "final_read",
+                "observations": [observation],
+            },
+        )
+
+        source_key = image_observation_source_key(target, observation)
+        self.assertEqual(plan["identity_errors"], [])
+        self.assertEqual(plan["new_image_source_keys"], {source_key})
+
+        result, phase_result = runner._process_final_image_slots(
+            binding=Binding(
+                worker_id="worker-1",
+                worker_token="token",
+                client_instance_id="client-1",
+                run_status="running",
+            ),
+            target=target,
+            sidecar_payload={"observations": [observation]},
+            enforce_read_targets=False,
+            allowed_new_source_keys={source_key},
+        )
+
+        self.assertEqual(phase_result["ignored"], 1)
+        self.assertEqual(result["observations"][0]["item_state"], "ignored")
+        ledger = load_c2_ledger_entry(target.conversation_id, source_key)
+        self.assertEqual(ledger["terminal_state"], "ignored")
+        self.assertEqual(ledger["ingest_state"], "not_required")
 
     def test_post_vision_refresh_processes_new_image_in_same_ui_lease(self):
         runner, _ = self.make_runner(
@@ -7426,9 +7586,7 @@ class TaskRunnerTest(unittest.TestCase):
                         "ignored": 0,
                         "cached": 0,
                         "authorization_revoked": 0,
-                        "configuration_incomplete": 0,
-                        "capability_paused": 0,
-                        "deferred": 0,
+                        "removed_from_final_screen": 0,
                     },
                 ),
                 (
@@ -7440,9 +7598,7 @@ class TaskRunnerTest(unittest.TestCase):
                         "ignored": 0,
                         "cached": 1,
                         "authorization_revoked": 0,
-                        "configuration_incomplete": 0,
-                        "capability_paused": 0,
-                        "deferred": 0,
+                        "removed_from_final_screen": 0,
                     },
                 ),
             ],
@@ -7716,7 +7872,7 @@ class TaskRunnerTest(unittest.TestCase):
             ["old-trigger", "new-sales"],
         )
 
-    def test_c2_history_gap_blocks_image_ui_action_before_vision(self):
+    def test_c2_history_gap_blocks_brain_but_still_terminalizes_image(self):
         api = FakeApi(None)
         bridge = FakeBridge(RpaResult(ok=True, result_code="ok", message="unused"))
         runner, _ = self.make_runner(api, bridge)
@@ -7778,14 +7934,23 @@ class TaskRunnerTest(unittest.TestCase):
         )
 
         plan = runner._build_final_slot_incremental_plan(target=target, sidecar_payload=payload)
-        with patch("chejin_worker_client.omniauto_vision.process_image_slot") as vision:
+        with patch(
+            "chejin_worker_client.omniauto_vision.process_image_slot",
+            return_value={
+                "state": "failed",
+                "reason": "image_copy_failed",
+                "action_phase": "not_attempted",
+                "diagnostics": {"events": [], "image_persisted": False},
+            },
+        ) as vision:
             _, stats = runner._process_final_image_slots(
                 binding=binding,
                 target=target,
                 sidecar_payload=payload,
                 enforce_read_targets=False,
-                allowed_new_source_keys=set() if plan["history_gap"] else plan["new_image_source_keys"],
-                incremental_gate_reason="C2_MESSAGE_HISTORY_GAP" if plan["history_gap"] else "",
+                allowed_new_source_keys=set(
+                    plan["new_image_source_keys"]
+                ),
             )
 
         self.assertTrue(plan["history_gap"])
@@ -7800,19 +7965,17 @@ class TaskRunnerTest(unittest.TestCase):
             plan["flow_gate_details"][0]["position_source"],
             "slot_ledger_visual_top",
         )
-        self.assertEqual(stats["failed"], 0)
-        self.assertEqual(stats["deferred"], 1)
+        self.assertEqual(stats["failed"], 1)
         image_source_key = next(item["source_message_key"] for item in plan["slot_ledger_states"] if item["row_kind"] == "image_bubble")
-        self.assertIsNone(load_c2_ledger_entry(target.conversation_id, image_source_key))
-        deferred_image = next(
-            item
-            for item in payload["observations"]
-            if item.get("observation_id") == f"new-image-{unique}"
+        self.assertEqual(
+            load_c2_ledger_entry(
+                target.conversation_id, image_source_key
+            )["terminal_state"],
+            "failed",
         )
-        self.assertEqual(deferred_image["item_state"], "discovered")
-        vision.assert_not_called()
+        vision.assert_called_once()
 
-    def test_c2_missing_vision_configuration_pauses_without_terminalizing(self):
+    def test_c2_image_method_fails_closed_if_global_preflight_is_bypassed(self):
         api = FakeApi(None)
         runner, _ = self.make_runner(api, FakeBridge(RpaResult(ok=True, result_code="ok", message="unused")))
         binding = Binding(worker_id="worker-1", worker_token="token", client_instance_id="client-1", run_status="running")
@@ -7847,16 +8010,14 @@ class TaskRunnerTest(unittest.TestCase):
             ]
         }
         with patch(
-            "chejin_worker_client.omniauto_vision.vision_configuration_status",
+            "chejin_worker_client.omniauto_vision.process_image_slot",
             return_value={
-                "ready": False,
-                "missing_configuration": ["CUSTOMER_IMAGE_UNDERSTANDING_API_KEY"],
-                "provider": "anthropic_compatible",
-                "base_url": "https://example.invalid/v1",
-                "model": "unit-model",
-                "request_style": "anthropic_messages_vision",
+                "state": "failed",
+                "reason": "vision_configuration_incomplete",
+                "action_phase": "not_attempted",
+                "diagnostics": {"events": [], "image_persisted": False},
             },
-        ), patch("chejin_worker_client.omniauto_vision.process_image_slot") as vision:
+        ) as vision:
             _, first_stats = runner._process_final_image_slots(
                 binding=binding,
                 target=target,
@@ -7870,20 +8031,16 @@ class TaskRunnerTest(unittest.TestCase):
                 enforce_read_targets=False,
             )
 
-        assert vision.call_count == 0
-        assert first_stats["configuration_incomplete"] == 1
-        assert first_stats["capability_paused"] == 1
-        assert first_stats["failed"] == 0
-        assert second_stats["configuration_incomplete"] == 1
-        assert second_stats["capability_paused"] == 1
-        assert second_stats["cached"] == 0
-        assert second_stats["failed"] == 0
+        assert vision.call_count == 1
+        assert first_stats["failed"] == 1
+        assert second_stats["cached"] == 1
+        assert second_stats["failed"] == 1
         assert first_stats["cached"] == 0
         source_key = image_observation_source_key(target, sidecar_payload["observations"][0])
         ledger = load_c2_ledger_entry(target.conversation_id, source_key)
-        assert ledger is None
+        assert ledger["terminal_state"] == "failed"
 
-    def test_c2_vision_pause_does_not_freeze_text_and_voice_conversation_read(self):
+    def test_legacy_per_target_vision_pause_state_does_not_control_c2(self):
         api = FakeApi(None)
         bridge = FakeBridge(
             RpaResult(ok=True, result_code="ok", message="unused"),
@@ -7914,7 +8071,7 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertIn("messages", bridge.c2_operation_order)
         self.assertEqual(len(api.message_payloads), 1)
 
-    def test_c2_missing_vision_configuration_keeps_text_and_defers_image(self):
+    def test_c2_global_vision_preflight_blocks_before_any_wechat_action(self):
         api = FakeApi(None)
         bridge = FakeBridge(
             RpaResult(ok=True, result_code="ok", message="unused"),
@@ -7979,6 +8136,8 @@ class TaskRunnerTest(unittest.TestCase):
             remark_code="CJIMAGE04",
             authorization_revision="revision-image-config-mixed",
         )
+        runner.last_c2_vision_preflight_at = 0.0
+        runner.c2_vision_preflight_ready = False
 
         with patch(
             "chejin_worker_client.omniauto_vision.vision_configuration_status",
@@ -7988,34 +8147,16 @@ class TaskRunnerTest(unittest.TestCase):
                     "CUSTOMER_IMAGE_UNDERSTANDING_API_KEY"
                 ],
             },
-        ), patch(
-            "chejin_worker_client.omniauto_vision.process_image_slot"
-        ) as vision:
-            result = runner._read_one_wechat_target(binding, target)
+        ):
+            self.assertFalse(runner._c2_vision_ready_before_scan())
 
-        self.assertTrue(result["ok"])
-        vision.assert_not_called()
-        self.assertEqual(len(api.message_payloads), 1)
-        payload = api.message_payloads[0]
-        self.assertEqual(
-            [item["content"] for item in payload["messages"]],
-            ["图片旁边的文字仍要入库"],
-        )
-        self.assertIn(
-            "C2_VISION_CAPABILITY_PAUSED",
-            payload["evidence"]["flow_gate_errors"],
-        )
-        image = next(
-            item
-            for item in payload["evidence"]["observations"]
-            if item.get("row_kind") == "image_bubble"
-        )
-        image_source_key = image_observation_source_key(target, image)
-        self.assertIsNone(
-            load_c2_ledger_entry(target.conversation_id, image_source_key)
-        )
+        self.assertEqual(bridge.c2_operation_order, [])
+        self.assertEqual(api.message_payloads, [])
+        state = load_c2_state("vision_preflight")
+        self.assertEqual(state["state"], "vision_not_ready")
+        self.assertEqual(state["error_code"], "C2_VISION_NOT_READY")
 
-    def test_c2_deferred_image_keeps_text_and_adds_brain_gate(self):
+    def test_c2_visible_unreconfirmed_image_becomes_failed_fact(self):
         api = FakeApi(None)
         bridge = FakeBridge(
             RpaResult(ok=True, result_code="ok", message="unused"),
@@ -8026,7 +8167,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "observations": [
                     {
                         "schema_version": 3,
-                        "observation_id": "text-with-deferred-image",
+                        "observation_id": "text-with-unreconfirmed-image",
                         "row_kind": "text_bubble",
                         "sender_role": "customer",
                         "sender_role_source": "same_row_avatar",
@@ -8036,14 +8177,14 @@ class TaskRunnerTest(unittest.TestCase):
                         "content_clean": "请结合图片看看",
                         "bubble_rect": [420, 120, 680, 160],
                         "source_message": {
-                            "id": "text-with-deferred-image",
+                            "id": "text-with-unreconfirmed-image",
                             "type": "text",
                             "content": "请结合图片看看",
                         },
                     },
                     {
                         "schema_version": 3,
-                        "observation_id": "deferred-image",
+                        "observation_id": "unreconfirmed-image",
                         "row_kind": "image_bubble",
                         "sender_role": "customer",
                         "sender_role_source": "same_row_avatar",
@@ -8054,7 +8195,7 @@ class TaskRunnerTest(unittest.TestCase):
                         "image_physical_anchor": {
                             "sender_role": "customer",
                             "preceding_stable_message": (
-                                "text-with-deferred-image"
+                                "text-with-unreconfirmed-image"
                             ),
                             "following_stable_message": "",
                             "bubble_visual_fingerprint": (
@@ -8064,7 +8205,7 @@ class TaskRunnerTest(unittest.TestCase):
                             "occurrence_count": 1,
                         },
                         "source_message": {
-                            "id": "deferred-image",
+                            "id": "unreconfirmed-image",
                             "type": "image",
                         },
                     },
@@ -8080,11 +8221,11 @@ class TaskRunnerTest(unittest.TestCase):
         )
         runner.binding = binding
         target = WechatReadTarget(
-            conversation_id="conv-image-deferred-mixed",
+            conversation_id="conv-image-unreconfirmed-mixed",
             rpa_session_key="",
             display_name="CJIMAGE05",
             remark_code="CJIMAGE05",
-            authorization_revision="revision-image-deferred-mixed",
+            authorization_revision="revision-image-unreconfirmed-mixed",
         )
 
         with patch(
@@ -8099,8 +8240,8 @@ class TaskRunnerTest(unittest.TestCase):
         ), patch(
             "chejin_worker_client.omniauto_vision.process_image_slot",
             return_value={
-                "state": "deferred",
-                "reason": "image_bubble_slot_not_reconfirmed",
+                "state": "failed",
+                "reason": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
                 "action_phase": "not_attempted",
                 "diagnostics": {
                     "events": [],
@@ -8114,15 +8255,15 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(len(api.message_payloads), 1)
         payload = api.message_payloads[0]
         self.assertEqual(
-            [item["content"] for item in payload["messages"]],
-            ["请结合图片看看"],
-        )
-        self.assertIn(
-            "C2_IMAGE_PROCESSING_DEFERRED",
-            payload["evidence"]["flow_gate_errors"],
+            [item["message_type"] for item in payload["messages"]],
+            ["text", "image"],
         )
         self.assertNotIn(
             "C2_IMAGE_UNDERSTANDING_FAILED",
+            payload["evidence"]["flow_gate_errors"],
+        )
+        self.assertNotIn(
+            "C2_IMAGE_PROCESSING_DEFERRED",
             payload["evidence"]["flow_gate_errors"],
         )
 

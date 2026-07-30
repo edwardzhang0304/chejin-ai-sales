@@ -21,10 +21,14 @@ from chejin_worker_client.transaction_outcomes import (
     merge_item_outcomes,
     transition_outbox_state,
 )
+from chejin_worker_client.image_phase import (
+    mark_image_action,
+    mark_image_terminal,
+    merge_image_phase_results,
+    new_image_phase_result,
+)
 from chejin_worker_client.wechat_c2 import (
-    build_image_processing_gate,
-    merge_flow_gate_details,
-    build_vision_capability_pause_gate,
+    project_final_slot_flow_gates,
 )
 
 
@@ -240,108 +244,83 @@ class C2ContractTests(unittest.TestCase):
             "capability_paused",
         )
 
-    def test_vision_pause_gate_uses_contract_trusted_slot_position(self):
-        self.assertIn(
-            "C2_VISION_CAPABILITY_PAUSED",
-            temporary_capability_gate_codes(),
-        )
-        errors, details = build_vision_capability_pause_gate(
-            [
-                {
-                    "row_kind": "image_bubble",
-                    "ledger_state": "NEW_MESSAGE",
-                    "screen_order": 2,
-                    "order_source": "visual_top",
-                }
-            ]
-        )
+    def test_image_temporary_gates_are_retired_from_contract(self):
+        temporary_codes = temporary_capability_gate_codes()
+        self.assertNotIn("C2_VISION_CAPABILITY_PAUSED", temporary_codes)
+        self.assertNotIn("C2_IMAGE_PROCESSING_DEFERRED", temporary_codes)
+        self.assertIn("C2_INGEST_PARTITION_INCOMPLETE", temporary_codes)
 
-        self.assertEqual(errors, ["C2_VISION_CAPABILITY_PAUSED"])
-        self.assertEqual(
-            details,
-            [
-                {
-                    "error_code": "C2_VISION_CAPABILITY_PAUSED",
-                    "position_source": "slot_ledger_visual_top",
-                    "min_screen_order": 2,
-                    "max_screen_order": 2,
-                }
-            ],
-        )
-
-    def test_deferred_image_gate_uses_same_contract_position_rule(self):
-        self.assertIn(
-            "C2_IMAGE_PROCESSING_DEFERRED",
-            temporary_capability_gate_codes(),
-        )
-        errors, details = build_image_processing_gate(
+    def test_flow_gate_details_preserve_distinct_subject_evidence(self):
+        projection = project_final_slot_flow_gates(
             {
-                "brain_gate_codes": [
-                    "C2_IMAGE_PROCESSING_DEFERRED"
+                "history_gap": False,
+                "identity_errors": [],
+                "flow_gate_details": [],
+                "slot_ledger_states": [
+                    {
+                        "source_message_key": "voice-customer",
+                        "screen_order": 2,
+                        "order_source": "visual_top",
+                    },
+                    {
+                        "source_message_key": "voice-self",
+                        "screen_order": 3,
+                        "order_source": "visual_top",
+                    },
+                    {
+                        "source_message_key": "voice-self-copy",
+                        "screen_order": 3,
+                        "order_source": "visual_top",
+                    },
                 ],
-                "unresolved_reason_by_source": {
-                    "image-source-1": "C2_IMAGE_PROCESSING_DEFERRED"
-                },
             },
-            [
-                {
-                    "row_kind": "image_bubble",
-                    "ledger_state": "NEW_MESSAGE",
-                    "source_message_key": "image-source-1",
-                    "screen_order": 2,
-                    "order_source": "visual_top",
-                }
-            ],
+            failed_voice_source_roles={
+                "voice-customer": "customer",
+                "voice-self": "self",
+                "voice-self-copy": "self",
+            },
         )
+        details = projection["flow_gate_details"]
 
-        self.assertEqual(errors, ["C2_IMAGE_PROCESSING_DEFERRED"])
+        self.assertEqual(len(details), 2)
         self.assertEqual(
-            details,
-            [
-                {
-                    "error_code": "C2_IMAGE_PROCESSING_DEFERRED",
-                    "position_source": "slot_ledger_visual_top",
-                    "min_screen_order": 2,
-                    "max_screen_order": 2,
-                }
-            ],
+            [item["subject_sender_role"] for item in details],
+            ["customer", "self"],
         )
 
-    def test_flow_gate_details_keep_one_authoritative_detail_per_code(self):
-        details = merge_flow_gate_details(
-            [
-                {
-                    "error_code": "C2_MESSAGE_HISTORY_GAP",
-                    "position_source": "slot_ledger_visual_top",
-                    "min_screen_order": 2,
-                    "max_screen_order": 4,
-                }
-            ],
-            [
-                {
-                    "error_code": "C2_MESSAGE_HISTORY_GAP",
-                    "position_source": "slot_ledger_visual_top",
-                    "min_screen_order": 3,
-                    "max_screen_order": 3,
-                },
-                {
-                    "error_code": "C2_IMAGE_PROCESSING_DEFERRED",
-                    "position_source": "slot_ledger_visual_top",
-                    "min_screen_order": 3,
-                    "max_screen_order": 3,
-                },
-            ],
+    def test_image_phase_statistics_accumulate_unique_messages(self):
+        first = new_image_phase_result()
+        mark_image_action(first, "image-1")
+        mark_image_terminal(
+            first,
+            "image-1",
+            terminal_state="completed",
+        )
+        second = new_image_phase_result()
+        mark_image_action(second, "image-2")
+        mark_image_terminal(
+            second,
+            "image-2",
+            terminal_state="completed",
+        )
+        cached_repeat = new_image_phase_result()
+        mark_image_terminal(
+            cached_repeat,
+            "image-1",
+            terminal_state="completed",
+            cached=True,
         )
 
+        merge_image_phase_results(first, second)
+        merge_image_phase_results(first, cached_repeat)
+
+        self.assertEqual(first["completed"], 2)
+        self.assertEqual(first["cached"], 1)
+        self.assertEqual(first["new_action_count"], 2)
         self.assertEqual(
-            [item["error_code"] for item in details],
-            [
-                "C2_MESSAGE_HISTORY_GAP",
-                "C2_IMAGE_PROCESSING_DEFERRED",
-            ],
+            first["completed_source_keys"],
+            ["image-1", "image-2"],
         )
-        self.assertEqual(details[0]["min_screen_order"], 2)
-        self.assertEqual(details[0]["max_screen_order"], 4)
 
     def test_role_trust_is_derived_from_each_contract_row_rule(self):
         self.assertTrue(

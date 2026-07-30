@@ -50,9 +50,20 @@ note over W,Reply
 4. 每轮重新观察最终画面，但只处理本地已处理清单中不存在的新消息。
 5. 语音由Worker重新编排OmniAuto RPA完成；图片槽位和同行头像角色先由最终画面定案，Vision只处理已授权的新图片。
 6. 图片理解模型与回复Brain是两个独立模型阶段，不能合并或互相越权。
+7. Vision配置在进入C2扫描循环前全局预检；会话内图片不得结束为pending/deferred。
 end note
 
 loop Worker运行中；每次循环最多完成一个会话事务
+
+  group -1. C2启动前全局Vision能力预检
+    W -> W: 校验真实Provider API Key/模型/地址
+    alt 配置缺失
+      W -> W: vision_not_ready\n不扫描、不打开会话、不操作微信
+      break 配置恢复并重新预检前不进入C2
+    else 配置完整
+      W -> W: 允许进入C2扫描循环
+    end
+  end
 
   group 0. 开始新会话前，优先恢复未获后端确认的回执和事实
     W -> L: 查询Worker级Outbox\nsent_ack优先，其次C2消息事实
@@ -249,6 +260,12 @@ loop Worker运行中；每次循环最多完成一个会话事务
             end
             OA -> OA: current_valid_frame成为final_read权威画面
             OA -> OA: OCR文字/语音转写行\nVision像素算法只检测图片bubble_rect
+            alt 图片检测/物理锚点代码异常
+              OA --> W: C2_IMAGE_OBSERVATION_FAILED\n结构化observation contract error
+              W -> W: 入库和Brain前失败关闭\n不得当成image_count=0
+            else 图片检测正常（含0张）
+              OA --> W: 正常observations
+            end
             OA -> Role: 所有可见消息行调用同一sender_role边界
             note right of Role
             文字/语音：沿用已验证同行头像与父语音规则。
@@ -347,32 +364,46 @@ loop Worker运行中；每次循环最多完成一个会话事务
                 W -> W: 停止后续图片和发送动作
               else 授权有效
                 Auth --> W: authorized
-                W -> OA: 使用final_read fresh bubble_rect捕获图片
-                OA -> WX: 重新确认图片仍在原槽位
-                OA -> WX: 右键图片
-                OA -> WX: OCR确认菜单后点击“复制”
-                WX --> OA: Windows剪贴板位图
-                OA --> W: image bytes（仅当前进程内存）\ncanonical_visual_id + slot_id
-                W -> W: 校验格式/大小\n内存压缩 + image_hash
-                W -> VG: 进程内调用 BuiltinVisionPlugin.run(context)\n不上传车金后端，不写本地文件
-                VG -> VM: 按正式 Provider 配置调用单张图片 Vision 模型
-                note right of VM
-                Vision只输出：
-                vision_summary / image_ocr_text / classification /
-                entities / intent_hints / confidence / model trace。
-                Vision不决定最终客户意图、不决定是否回复、不生成回复文案。
-                end note
-                alt 模型成功且结果合同合法
-                  VM --> VG: customer_image_understanding + visual_bridge_input
-                  VG --> W: 文字白名单结构化图片事实
-                  W -> W: 回填原slot_id\nitem_state=completed
-                else 模型超时/异常/结果非法
-                  VM --> VG: timeout / provider_error / invalid_result
-                  VG -> VG: 单步骤策略允许时同flow重试一次
-                  VG --> W: state=failed + 明确reason\n绝不返回终态pending
-                  W -> W: 回填原slot_id\nitem_state=failed
+                W -> OA: 页面变化时先重建完整final_read\n使用最新bubble_rect重新确认
+                alt 图片已被顶出当前屏
+                  OA --> W: current_frame_absent
+                  W -> W: 从本轮候选删除\n不门禁、不追踪、不上滚
+                else 图片仍可见但身份无法唯一确认
+                  OA --> W: slot_reconfirm_failed
+                  W -> W: item_state=failed\nC2_IMAGE_SLOT_RECONFIRM_FAILED\n不右键、不调用Vision
+                else 图片仍可见且身份唯一
+                  OA -> Role: 对最新画面再次执行C2同行头像规则
+                  alt 刷新C2角色与初始角色不同或为unknown
+                    Role --> W: role_reconfirm_failed
+                    W -> W: item_state=failed\nC2_IMAGE_SLOT_RECONFIRM_FAILED\n不右键、不调用Vision
+                  else 两次C2角色一致
+                    Role --> OA: role_reconfirmed\nvisual_side仅记录诊断
+                    OA -> WX: 右键图片
+                  OA -> WX: OCR确认菜单后点击“复制”
+                  WX --> OA: Windows剪贴板位图
+                  OA --> W: image bytes（仅当前进程内存）\ncanonical_visual_id + slot_id
+                  W -> W: 校验格式/大小\n内存压缩 + image_hash
+                  W -> VG: 进程内调用 BuiltinVisionPlugin.run(context)\n不上传车金后端，不写本地文件
+                  VG -> VM: 按正式 Provider 配置调用单张图片 Vision 模型
+                  note right of VM
+                  Vision只输出：
+                  vision_summary / image_ocr_text / classification /
+                  entities / intent_hints / confidence / model trace。
+                  Vision不决定最终客户意图、不决定是否回复、不生成回复文案。
+                  end note
+                  alt 模型成功且结果合同合法
+                    VM --> VG: customer_image_understanding + visual_bridge_input
+                    VG --> W: 文字白名单结构化图片事实
+                    W -> W: 回填原slot_id\nitem_state=completed
+                  else 模型超时/异常/结果非法
+                    VM --> VG: timeout / provider_error / invalid_result
+                    VG -> VG: 单步骤策略允许时同flow重试一次
+                    VG --> W: state=failed + 明确reason\n绝不返回终态pending
+                    W -> W: 回填原slot_id\nitem_state=failed
+                  end
+                  W -> W: 立即释放该图片内存\n不写本地文件、不保存image_local_path
+                  end
                 end
-                W -> W: 立即释放该图片内存\n不写本地文件、不保存image_local_path
               end
             end
           end

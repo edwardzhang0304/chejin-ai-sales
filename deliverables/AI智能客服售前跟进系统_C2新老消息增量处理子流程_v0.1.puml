@@ -15,6 +15,15 @@ skinparam activity {
 
 start
 
+:C2扫描循环启动前全局检查Vision配置;
+if (API Key/模型/地址完整?) then (是)
+  :允许进入C2;
+else (否)
+  :vision_not_ready;
+  :不扫描、不打开会话、不操作微信;
+  stop
+endif
+
 :Worker已持有当前单会话UI锁;
 :短码、private、read-target、authorization_revision已确认;
 
@@ -87,6 +96,12 @@ partition "B. final_read：复用最后有效画面" {
   :current_valid_frame成为final_read唯一权威画面;
   :再次确认顶部短码和private;
   :同时识别文字行、语音转写行、图片bubble_rect;
+  if (图片检测或物理锚点生成异常?) then (是)
+    :C2_IMAGE_OBSERVATION_FAILED;
+    :不得伪装成0张图片\n入库和Brain前失败关闭;
+    stop
+  else (正常，含0张)
+  endif
   :所有模态调用C2统一sender_role边界;
   :按final_read visual_top建立全部slots和screen_order;
   note right
@@ -195,33 +210,51 @@ partition "D. 查询本地已处理清单，判定新老消息" {
 
 partition "E. 只对NEW_IMAGE执行一次Vision" {
   while (还有NEW_IMAGE?) is (是)
-    :用final_read最新bubble_rect重新确认图片仍存在;
-    :C2同行头像规则再次确认customer/self;
-    :持久化图片动作意图\naction_phase=not_attempted;
-    :右键 -> OCR确认菜单 -> 点击复制;
-    :复制物理点击前先落盘\naction_phase=trigger_attempted\n落盘失败则禁止点击;
-    :剪贴板位图读入内存;
-    :压缩/格式校验/image_hash;
-    :Worker进程内调用OmniAuto BuiltinVisionPlugin\n不上传车金后端、不保存本地图片;
-    :等待单张图片Vision明确终态;
+    :页面变化时重建完整final_read;
+    if (图片已被顶出当前屏?) then (是)
+      :从本轮候选删除;
+      :不门禁、不追踪、不上滚;
+    elseif (图片仍可见但身份无法唯一确认?) then (是)
+      :item_state=failed;
+      :error_code=C2_IMAGE_SLOT_RECONFIRM_FAILED;
+      :不右键、不调用Vision、不跨轮重试;
+    else (身份唯一)
+      :用最新bubble_rect重新确认图片;
+      :C2同行头像规则再次确认customer/self;
+      if (刷新C2角色与初始角色一致?) then (是)
+        :visual_side只记录诊断;
+        :持久化图片动作意图\naction_phase=not_attempted;
+        :右键 -> OCR确认菜单 -> 点击复制;
+        :复制物理点击前先落盘\naction_phase=trigger_attempted\n落盘失败则禁止点击;
+        :剪贴板位图读入内存;
+        :压缩/格式校验/image_hash;
+        :Worker进程内调用OmniAuto BuiltinVisionPlugin\n不上传车金后端、不保存本地图片;
+        :等待单张图片Vision明确终态;
 
-    if (Vision成功?) then (是)
-      :action_phase=confirmed;
-      :回填vision_summary/OCR/entities/intent_hints;
-      :merge_item_outcomes加入item_state=completed;
-    elseif (有证据证明复制/模型明确失败?) then (是)
-      :回填status=failed + error_code;
-      :merge_item_outcomes加入item_state=failed;
-      :禁止终态pending;
-    else (复制已触发但结果不确定)
-      :回填IMAGE_PROCESS_RESULT_UNKNOWN;
-      :merge_item_outcomes加入item_state=failed;
-      :本轮不自动重复复制/Vision;
+        if (Vision成功?) then (是)
+          :action_phase=confirmed;
+          :回填vision_summary/OCR/entities/intent_hints;
+          :merge_item_outcomes加入item_state=completed;
+        elseif (有证据证明复制/模型明确失败?) then (是)
+          :回填status=failed + error_code;
+          :merge_item_outcomes加入item_state=failed;
+          :禁止终态pending;
+        else (复制已触发但结果不确定)
+          :回填IMAGE_PROCESS_RESULT_UNKNOWN;
+          :merge_item_outcomes加入item_state=failed;
+          :本轮不自动重复复制/Vision;
+        endif
+
+        :释放该图片内存;
+      else (否或unknown)
+        :item_state=failed;
+        :error_code=C2_IMAGE_SLOT_RECONFIRM_FAILED;
+        :action_phase=not_attempted\n不右键、不调用Vision;
+      endif
     endif
-
-    :释放该图片内存;
   endwhile (否)
   :completed集合和failed集合只增不减;
+  :禁止会话内图片pending/deferred;
 }
 
 partition "F. 构建并上报增量批次" {

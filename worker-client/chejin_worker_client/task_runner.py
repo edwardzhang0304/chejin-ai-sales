@@ -33,8 +33,8 @@ from .config import CONFIG
 from .image_phase import (
     finalize_image_phase_result,
     mark_image_action,
+    mark_image_removed_from_final_screen,
     mark_image_terminal,
-    mark_image_unresolved,
     merge_image_phase_results,
     new_image_phase_result,
 )
@@ -89,14 +89,13 @@ from .wechat_c2 import (
     apply_image_terminal_result,
     authoritative_order_source,
     build_flow_gate_ingest_payload,
-    build_image_processing_gate,
     build_message_ingest_payload,
     build_scan_result_payload,
     extract_remark_codes,
     image_observation_source_key,
-    merge_flow_gate_details,
     message_rect,
     order_authoritative_slots,
+    project_final_slot_flow_gates,
     reconcile_cross_round_observation_identities,
     reconcile_v16104_identity_transition,
     voice_observation_anchor_key,
@@ -126,34 +125,6 @@ C2_RECENT_VISIBLE_CACHE_TTL_SECONDS = 90.0
 LEGACY_FOLLOW_UP_REMOVAL_CONDITION = (
     "Remove after the production database migration proves no pending/running follow_up rows remain."
 )
-IMAGE_OPERATION_BLOCKING_GATE_CODES = frozenset(
-    {
-        "C2_MESSAGE_HISTORY_GAP",
-        "MESSAGE_IDENTITY_UNCONFIRMED",
-    }
-)
-IMAGE_PRE_ACTION_CAPABILITY_PAUSE_REASONS = frozenset(
-    {
-        "vision_window_context_missing",
-        "vision_window_context_invalid",
-        "vision_window_context_validator_missing",
-        "vision_window_context_capture_missing",
-        "vision_window_capture_failed",
-        "capture_wechat_failed",
-        "capture_wechat_window_visible_screen_failed",
-        "vision_window_ocr_failed",
-        "rapidocr_onnxruntime_unavailable",
-        "vision_window_message_parse_failed",
-        "vision_window_frame_finalize_failed",
-    }
-)
-IMAGE_PRE_ACTION_DEFERRED_REASONS = frozenset(
-    {
-        "image_bubble_not_found",
-        "image_bubble_slot_not_reconfirmed",
-        "image_slot_identity_missing",
-    }
-)
 TASK_LEASE_DEFINITIVE_LOSS_CODES = frozenset(
     {
         "TASK_NOT_FOUND",
@@ -164,16 +135,6 @@ TASK_LEASE_DEFINITIVE_LOSS_CODES = frozenset(
         "TASK_LEASE_EXPIRED",
     }
 )
-
-
-def image_operation_gate_errors(flow_gate_errors: list[str]) -> list[str]:
-    """Only structural uncertainty may prevent a reliable image operation."""
-
-    return [
-        code
-        for code in flow_gate_errors
-        if code in IMAGE_OPERATION_BLOCKING_GATE_CODES
-    ]
 
 
 def voice_action_journal_anchor_keys(
@@ -594,6 +555,9 @@ class TaskRunner:
         self.poll_interval_seconds = CONFIG.poll_interval_seconds
         self.last_c2_scan_at = 0.0
         self.last_c2_read_at = 0.0
+        self.last_c2_vision_preflight_at = 0.0
+        self.c2_vision_preflight_ready = False
+        self.c2_vision_preflight_signature = ""
         self.c2_read_failure_cooldowns: dict[str, float] = {}
         self.c2_read_success_cooldowns: dict[str, float] = {}
         self.c2_read_allowlist_keys: set[str] = set()
@@ -751,7 +715,7 @@ class TaskRunner:
             rpa_status = self.last_rpa_component_status or "unavailable"
             wechat_status = self.last_wechat_status or "unknown"
         local_lock = lock_summary()
-        vision_capability = load_c2_state("vision_capability")
+        vision_capability = load_c2_state("vision_preflight")
         if vision_capability:
             local_lock = {
                 **local_lock,
@@ -1032,6 +996,15 @@ class TaskRunner:
             self.on_error("运行环境异常，已暂停接单。")
 
     def _execute_c2_reply_recovery(self, binding: Binding, task: Task, mode: str) -> None:
+        if not self._c2_vision_ready_before_scan():
+            append_log(
+                "WARN",
+                "c2_reply_recovery_blocked_by_vision_preflight",
+                "Vision 全局配置未就绪，待发送回复保持任务中心状态，本轮不打开微信。",
+                task_id=task.id,
+                error_code="C2_VISION_NOT_READY",
+            )
+            return
         c3 = task.raw.get("c3") if isinstance(task.raw.get("c3"), dict) else {}
         batch = c3.get("message_batch") if isinstance(c3.get("message_batch"), dict) else {}
         action = c3.get("reply_action") if isinstance(c3.get("reply_action"), dict) else {}
@@ -1964,6 +1937,9 @@ class TaskRunner:
             if not binding or not CONFIG.c2_enabled or not self._c2_dependencies_ready():
                 self.stop_event.wait(1.0)
                 continue
+            if not self._c2_vision_ready_before_scan():
+                self.stop_event.wait(1.0)
+                continue
             if self.current_ui_lock is not None or bool(lock_summary().get("locked")):
                 self.stop_event.wait(0.5)
                 continue
@@ -2006,6 +1982,93 @@ class TaskRunner:
                 (self.api, "post_wechat_messages_ingest"),
             )
         )
+
+    def _c2_vision_ready_before_scan(self) -> bool:
+        now = time.monotonic()
+        if now - self.last_c2_vision_preflight_at < 5.0:
+            return self.c2_vision_preflight_ready
+        self.last_c2_vision_preflight_at = now
+        try:
+            from .omniauto_vision import vision_configuration_status
+
+            status = vision_configuration_status()
+        except Exception as exc:
+            status = {
+                "ready": False,
+                "missing_configuration": ["VISION_PREFLIGHT_EXCEPTION"],
+                "error_type": type(exc).__name__,
+            }
+        ready = bool(status.get("ready"))
+        missing = sorted(
+            {
+                str(value).strip()
+                for value in (
+                    status.get("missing_configuration") or []
+                )
+                if str(value).strip()
+            }
+        )
+        signature = json.dumps(
+            {
+                "ready": ready,
+                "missing_configuration": missing,
+                "provider": str(status.get("provider") or ""),
+                "base_url": str(status.get("base_url") or ""),
+                "model": str(status.get("model") or ""),
+                "request_style": str(status.get("request_style") or ""),
+                "error_type": str(status.get("error_type") or ""),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        changed = signature != self.c2_vision_preflight_signature
+        self.c2_vision_preflight_signature = signature
+        self.c2_vision_preflight_ready = ready
+        self.c2_stats["vision_ready"] = ready
+        self.c2_stats["vision_missing_configuration"] = missing
+        if ready:
+            if self.c2_stats.get("last_error") == "C2_VISION_NOT_READY":
+                self.c2_stats["last_error"] = None
+        else:
+            self.c2_stats["last_error"] = "C2_VISION_NOT_READY"
+        save_c2_state(
+            "vision_preflight",
+            {
+                "state": "ready" if ready else "vision_not_ready",
+                "error_code": None if ready else "C2_VISION_NOT_READY",
+                "missing_configuration": missing,
+                "provider": str(status.get("provider") or ""),
+                "base_url": str(status.get("base_url") or ""),
+                "model": str(status.get("model") or ""),
+                "request_style": str(status.get("request_style") or ""),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        if changed:
+            append_log(
+                "INFO" if ready else "ERROR",
+                (
+                    "c2_vision_preflight_ready"
+                    if ready
+                    else "c2_vision_preflight_blocked"
+                ),
+                (
+                    "Vision 全局配置预检通过，C2 可以开始扫描。"
+                    if ready
+                    else "Vision 全局配置未就绪，C2 不扫描、不打开会话。"
+                ),
+                error_code=None if ready else "C2_VISION_NOT_READY",
+                metadata={
+                    "ready": ready,
+                    "missing_configuration": missing,
+                    "provider": str(status.get("provider") or ""),
+                    "base_url": str(status.get("base_url") or ""),
+                    "model": str(status.get("model") or ""),
+                    "request_style": str(status.get("request_style") or ""),
+                    "error_type": str(status.get("error_type") or ""),
+                },
+            )
+        return ready
 
     def _wechat_ready_for_c2(self) -> bool:
         return self.last_rpa_component_status == "ready" and self.last_wechat_status == "logged_in"
@@ -3824,69 +3887,6 @@ class TaskRunner:
             failed_roles[source_key] = role
         return failed_roles
 
-    @staticmethod
-    def _failed_voice_gate_details(
-        *,
-        failed_source_roles: dict[str, str],
-        slot_ledger_states: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        slots_by_source = {
-            str(item.get("source_message_key") or ""): item
-            for item in slot_ledger_states
-            if isinstance(item, dict)
-        }
-        details: list[dict[str, Any]] = []
-        for role in ("customer", "self"):
-            role_keys = sorted(
-                source_key
-                for source_key, sender_role in failed_source_roles.items()
-                if sender_role == role
-            )
-            if not role_keys:
-                continue
-            role_slots = [
-                slots_by_source.get(source_key) for source_key in role_keys
-            ]
-            role_slots = [
-                item for item in role_slots if isinstance(item, dict)
-            ]
-            orders = sorted(
-                {
-                    int(item.get("screen_order") or 0)
-                    for item in role_slots
-                    if int(item.get("screen_order") or 0) > 0
-                }
-            )
-            has_visual_order_proof = (
-                len(role_slots) == len(role_keys)
-                and bool(orders)
-                and all(
-                    item.get("order_source") == "visual_top"
-                    for item in role_slots
-                )
-            )
-            detail: dict[str, Any] = {
-                "error_code": "C2_VOICE_TRANSCRIBE_FAILED",
-                "position_source": (
-                    "failed_voice_visual_top"
-                    if has_visual_order_proof
-                    else "position_unavailable"
-                ),
-                "subject_sender_role": role,
-            }
-            if has_visual_order_proof:
-                detail["min_screen_order"] = orders[0]
-                detail["max_screen_order"] = orders[-1]
-            details.append(detail)
-        if not details:
-            details.append(
-                {
-                    "error_code": "C2_VOICE_TRANSCRIBE_FAILED",
-                    "position_source": "position_unavailable",
-                }
-            )
-        return details
-
     def _report_identity_failure_gate(
         self,
         *,
@@ -4039,7 +4039,12 @@ class TaskRunner:
             else:
                 source_key = ""
             trusted_role = observation_role_is_trusted(observation)
-            if not source_key or not trusted_role or source_key in seen_source_keys:
+            role_required_for_identity = row_kind != "image_bubble"
+            if (
+                not source_key
+                or (role_required_for_identity and not trusted_role)
+                or source_key in seen_source_keys
+            ):
                 error = {
                     "observation_id": observation_id or f"observation-{index}",
                     "screen_order": screen_order,
@@ -4141,6 +4146,250 @@ class TaskRunner:
             "flow_gate_details": flow_gate_details,
         }
 
+    def _image_slot_access_decision(
+        self,
+        *,
+        binding: Binding,
+        target: WechatReadTarget,
+        observation: dict[str, Any],
+        source_key: str,
+        allowed_new_source_keys: set[str] | None,
+        enforce_read_targets: bool,
+    ) -> str:
+        if not observation_role_is_trusted(observation):
+            return "role_untrusted"
+        if (
+            allowed_new_source_keys is not None
+            and source_key not in allowed_new_source_keys
+        ):
+            return "not_new"
+        if (
+            enforce_read_targets
+            and not self._backend_still_allows_read_target(
+                binding,
+                target,
+            )
+        ):
+            return "authorization_revoked"
+        return "process"
+
+    def _execute_one_image_slot_vision(
+        self,
+        *,
+        target: WechatReadTarget,
+        payload: dict[str, Any],
+        observation: dict[str, Any],
+        source_key: str,
+        cancel_check: Callable[[], bool] | None,
+        flow_outcomes: FlowOutcomeAccumulator | None,
+    ) -> dict[str, Any]:
+        image_action_journal: Path | None = None
+        if flow_outcomes is not None:
+            image_action_journal = self._start_irreversible_action_journal(
+                action_kind="image",
+                target=target,
+                items=[
+                    {
+                        "source_message_key": source_key,
+                        "physical_anchor_keys": [
+                            str(
+                                observation.get("observation_id") or ""
+                            ).strip()
+                        ],
+                    }
+                ],
+                flow_outcomes=flow_outcomes,
+            )
+        try:
+            from .omniauto_vision import process_image_slot
+
+            return process_image_slot(
+                observation=observation,
+                remark_code=str(target.remark_code or ""),
+                session_key=str(target.rpa_session_key or ""),
+                window_context=(
+                    dict(payload.get("window_context") or {})
+                    if isinstance(payload.get("window_context"), dict)
+                    else None
+                ),
+                trace_id=source_key,
+                cancel_check=cancel_check,
+                action_journal_path=image_action_journal,
+                source_message_key=source_key,
+            )
+        except Exception as exc:
+            return {
+                "state": "failed",
+                "reason": "vision_adapter_failed",
+                "error_type": type(exc).__name__,
+                "diagnostics": {
+                    "events": [],
+                    "image_persisted": False,
+                },
+            }
+
+    @staticmethod
+    def _normalize_one_image_slot_result(
+        result: dict[str, Any],
+        *,
+        source_key: str,
+    ) -> dict[str, Any]:
+        normalized = dict(result or {})
+        transaction = (
+            dict(normalized.get("transaction"))
+            if isinstance(normalized.get("transaction"), dict)
+            else {}
+        )
+        diagnostics = (
+            dict(normalized.get("diagnostics"))
+            if isinstance(normalized.get("diagnostics"), dict)
+            else {}
+        )
+        action_phase = str(
+            normalized.get("action_phase")
+            or transaction.get("action_phase")
+            or "not_attempted"
+        )
+        if (
+            action_phase == "not_attempted"
+            and str(normalized.get("state") or "") == "not_visible"
+        ):
+            return {
+                "result": normalized,
+                "transaction": transaction,
+                "diagnostics": diagnostics,
+                "action_phase": action_phase,
+                "removed_from_final_screen": True,
+                "action_was_attempted": False,
+                "terminal_state": "",
+            }
+        action_outcome = classify_action_result(
+            "image",
+            {
+                **normalized,
+                "action_phase": action_phase,
+                "error_code": normalized.get("reason"),
+                "evidence": transaction,
+            },
+            source_message_key=source_key,
+        )
+        normalized["action_outcome"] = action_outcome
+        raw_terminal_state = str(
+            normalized.get("state") or ""
+        ).strip()
+        if (
+            raw_terminal_state not in {"cancelled", "ignored"}
+            and action_outcome["result"] != "completed"
+        ):
+            normalized = {
+                **normalized,
+                "state": "failed",
+                "reason": str(
+                    action_outcome.get("error_code")
+                    or "IMAGE_UNDERSTANDING_RESULT_UNCONFIRMED"
+                ),
+                "action_outcome": action_outcome,
+            }
+        return {
+            "result": normalized,
+            "transaction": transaction,
+            "diagnostics": diagnostics,
+            "action_outcome": action_outcome,
+            "action_phase": action_phase,
+            "removed_from_final_screen": False,
+            "action_was_attempted": action_phase != "not_attempted",
+            "raw_terminal_state": raw_terminal_state,
+            "terminal_state": str(normalized.get("state") or "failed"),
+        }
+
+    @staticmethod
+    def _persist_one_image_slot_terminal(
+        *,
+        target: WechatReadTarget,
+        payload: dict[str, Any],
+        observation: dict[str, Any],
+        source_key: str,
+        result: dict[str, Any],
+        stats: dict[str, Any],
+    ) -> tuple[dict[str, Any], str, str]:
+        terminal_state = str(result.get("state") or "failed")
+        if terminal_state not in {"completed", "failed", "ignored"}:
+            terminal_state = "failed"
+            result = {
+                **result,
+                "state": "failed",
+                "reason": "vision_terminal_state_invalid",
+            }
+        terminal_observation = apply_image_terminal_result(
+            observation,
+            result,
+        )
+        projected_state = str(
+            terminal_observation.get("item_state") or terminal_state
+        )
+        if projected_state in {"completed", "failed", "ignored"}:
+            terminal_state = projected_state
+        terminal_reason = str(
+            terminal_observation.get("image_processing_reason")
+            or result.get("reason")
+            or ""
+        )
+        if terminal_state == "failed":
+            artifact_dir_value = str(
+                payload.get("artifact_dir") or ""
+            ).strip()
+            if artifact_dir_value:
+                record_artifact_outcome(
+                    Path(artifact_dir_value),
+                    {
+                        "ok": False,
+                        "error_code": (
+                            terminal_reason or "C2_IMAGE_SLOT_FAILED"
+                        ),
+                    },
+                )
+        ledger_result: dict[str, Any] = {
+            "state": terminal_state,
+            "reason": terminal_reason,
+        }
+        if terminal_state == "completed":
+            ledger_result.update(
+                {
+                    "customer_image_understanding": dict(
+                        terminal_observation.get(
+                            "customer_image_understanding"
+                        )
+                        or {}
+                    ),
+                    "visual_bridge_input": dict(
+                        terminal_observation.get("visual_bridge_input")
+                        or {}
+                    ),
+                    "transaction": _safe_c2_image_transaction(
+                        result.get("transaction")
+                    ),
+                }
+            )
+        save_c2_ledger_terminal(
+            conversation_id=target.conversation_id,
+            source_message_key=source_key,
+            dedupe_key=None,
+            message_type="image",
+            terminal_state=terminal_state,
+            ingest_state=(
+                "waiting"
+                if terminal_state in {"completed", "failed"}
+                else "not_required"
+            ),
+            result=ledger_result,
+        )
+        mark_image_terminal(
+            stats,
+            source_key,
+            terminal_state=terminal_state,
+        )
+        return terminal_observation, terminal_state, terminal_reason
+
     def _process_final_image_slots(
         self,
         *,
@@ -4150,7 +4399,6 @@ class TaskRunner:
         enforce_read_targets: bool,
         cancel_check: Callable[[], bool] | None = None,
         allowed_new_source_keys: set[str] | None = None,
-        incremental_gate_reason: str = "",
         flow_outcomes: FlowOutcomeAccumulator | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         observations = sidecar_payload.get("observations")
@@ -4174,65 +4422,6 @@ class TaskRunner:
             if isinstance(item, dict) and item.get("row_kind") == "image_bubble"
         ]
         stats["discovered"] = len(indexed)
-        pending_config_source_keys: set[str] = set()
-        for _index, observation in indexed:
-            source_key = image_observation_source_key(target, observation)
-            source = observation.get("source_message") if isinstance(observation.get("source_message"), dict) else {}
-            observation["source_message"] = {**source, "source_message_key": source_key}
-            ledger = load_c2_ledger_entry(target.conversation_id, source_key)
-            if ledger and ledger.get("terminal_state") in {"completed", "failed", "ignored"}:
-                continue
-            if allowed_new_source_keys is not None and source_key not in allowed_new_source_keys:
-                continue
-            if observation_role_is_trusted(observation):
-                pending_config_source_keys.add(source_key)
-        if pending_config_source_keys:
-            from .omniauto_vision import vision_configuration_status
-
-            configuration = vision_configuration_status()
-            if not configuration.get("ready"):
-                stats["configuration_incomplete"] = 1
-                stats["capability_paused"] = len(pending_config_source_keys)
-                stats["deferred"] += len(pending_config_source_keys)
-                for source_key in pending_config_source_keys:
-                    mark_image_unresolved(
-                        stats,
-                        source_key,
-                        "C2_VISION_CAPABILITY_PAUSED",
-                    )
-                payload["vision_capability"] = {
-                    "ready": False,
-                    "state": "capability_paused",
-                    "reason": "vision_configuration_incomplete",
-                    "missing_configuration": list(configuration.get("missing_configuration") or []),
-                }
-                append_log(
-                    "WARN",
-                    "c2_vision_capability_paused",
-                    "OmniAuto Vision 配置不完整，已在任何图片右键、剪贴板读取和模型调用前暂停图片能力。",
-                    error_code="C2_VISION_CONFIGURATION_INCOMPLETE",
-                    metadata={
-                        "conversation_id": target.conversation_id,
-                        "remark_code": target.remark_code,
-                        "paused_image_count": len(pending_config_source_keys),
-                        "missing_configuration": list(configuration.get("missing_configuration") or []),
-                        "provider": configuration.get("provider"),
-                        "base_url": configuration.get("base_url"),
-                        "model": configuration.get("model"),
-                        "request_style": configuration.get("request_style"),
-                        "image_persisted": False,
-                    },
-                )
-                payload["observation_validation_errors"] = [
-                    {
-                        "observation_id": str(item.get("observation_id") or ""),
-                        "row_kind": str(item.get("row_kind") or ""),
-                        "error_codes": list(item.get("contract_errors") or []),
-                    }
-                    for item in enriched_observations
-                    if isinstance(item, dict) and item.get("contract_errors")
-                ]
-                return payload, finalize_image_phase_result(stats)
         for index, observation in sorted(indexed, key=lambda value: (visual_top(value[1]), value[0])):
             source_key = image_observation_source_key(target, observation)
             source = observation.get("source_message") if isinstance(observation.get("source_message"), dict) else {}
@@ -4266,8 +4455,12 @@ class TaskRunner:
                 result = ledger.get("result") if isinstance(ledger.get("result"), dict) else {}
                 result = {**result, "state": ledger.get("terminal_state")}
                 enriched_observations[index] = apply_image_terminal_result(observation, result)
-                stats["cached"] += 1
-                stats[str(ledger.get("terminal_state"))] += 1
+                mark_image_terminal(
+                    stats,
+                    source_key,
+                    terminal_state=str(ledger.get("terminal_state")),
+                    cached=True,
+                )
                 append_log(
                     "INFO",
                     "c2_image_slot_cached",
@@ -4279,43 +4472,15 @@ class TaskRunner:
                     },
                 )
                 continue
-            if allowed_new_source_keys is not None and source_key not in allowed_new_source_keys:
-                mark_image_unresolved(
-                    stats,
-                    source_key,
-                    (
-                        incremental_gate_reason
-                        or "C2_IMAGE_PROCESSING_DEFERRED"
-                    ),
-                )
-                if incremental_gate_reason:
-                    reason = (
-                        "image_processing_blocked_by_history_gap"
-                        if incremental_gate_reason == "C2_MESSAGE_HISTORY_GAP"
-                        else "image_processing_blocked_by_identity_conflict"
-                    )
-                    stats["deferred"] += 1
-                    append_log(
-                        "WARN",
-                        "c2_image_slot_deferred_by_incremental_gate",
-                        "最终画面存在历史断层或身份冲突，本条图片未操作微信、未调用 Vision，也不写图片终态；门禁解除后允许重新处理。",
-                        error_code=incremental_gate_reason,
-                        metadata={
-                            **common_metadata,
-                            "processing_state": "deferred",
-                            "reason": reason,
-                        },
-                    )
-                else:
-                    stats["deferred"] += 1
-                    append_log(
-                        "INFO",
-                        "c2_image_slot_deferred_by_incremental_gate",
-                        "图片不是本轮安全 NEW_IMAGE，未执行右键、复制或 Vision。",
-                        metadata=common_metadata,
-                    )
-                continue
-            if not observation_role_is_trusted(observation):
+            access_decision = self._image_slot_access_decision(
+                binding=binding,
+                target=target,
+                observation=observation,
+                source_key=source_key,
+                allowed_new_source_keys=allowed_new_source_keys,
+                enforce_read_targets=enforce_read_targets,
+            )
+            if access_decision == "role_untrusted":
                 result = {"state": "ignored", "reason": "image_same_row_avatar_unconfirmed"}
                 append_log(
                     "WARN",
@@ -4324,6 +4489,24 @@ class TaskRunner:
                     error_code="C2_IMAGE_ROLE_UNCONFIRMED",
                     metadata=common_metadata,
                 )
+            elif access_decision == "not_new":
+                append_log(
+                    "INFO",
+                    "c2_image_slot_not_new",
+                    "图片不是本轮 NEW_IMAGE；旧终态由 ledger 复用，OUTBOX 只重传原 JSON。",
+                    metadata=common_metadata,
+                )
+                continue
+            elif access_decision == "authorization_revoked":
+                stats["authorization_revoked"] = 1
+                append_log(
+                    "WARN",
+                    "c2_image_authorization_checked",
+                    "C2 图片处理前后端授权已撤销。",
+                    error_code="C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
+                    metadata={**common_metadata, "allowed": False},
+                )
+                break
             else:
                 append_log(
                     "INFO",
@@ -4331,103 +4514,46 @@ class TaskRunner:
                     "C2 图片已通过统一同行头像角色规则。",
                     metadata=common_metadata,
                 )
-                allowed = not enforce_read_targets or self._backend_still_allows_read_target(binding, target)
                 append_log(
-                    "INFO" if allowed else "WARN",
+                    "INFO",
                     "c2_image_authorization_checked",
                     "C2 图片处理前已重新校验后端授权。",
-                    error_code=None if allowed else "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
-                    metadata={**common_metadata, "allowed": allowed},
+                    metadata={**common_metadata, "allowed": True},
                 )
-                if not allowed:
-                    stats["authorization_revoked"] = 1
-                    break
                 append_log(
                     "INFO",
                     "c2_image_slot_started",
                     "C2 图片开始执行内存剪贴板与 OmniAuto Vision 流程。",
                     metadata=common_metadata,
                 )
-                image_action_journal: Path | None = None
-                if flow_outcomes is not None:
-                    image_action_journal = (
-                        self._start_irreversible_action_journal(
-                            action_kind="image",
-                            target=target,
-                            items=[
-                                {
-                                    "source_message_key": source_key,
-                                    "physical_anchor_keys": [
-                                        str(
-                                            observation.get(
-                                                "observation_id"
-                                            )
-                                            or ""
-                                        ).strip()
-                                    ],
-                                }
-                            ],
-                            flow_outcomes=flow_outcomes,
-                        )
-                    )
-                try:
-                    from .omniauto_vision import process_image_slot
-
-                    result = process_image_slot(
-                        observation=observation,
-                        remark_code=str(target.remark_code or ""),
-                        session_key=str(target.rpa_session_key or ""),
-                        window_context=(
-                            dict(payload.get("window_context") or {})
-                            if isinstance(payload.get("window_context"), dict)
-                            else None
-                        ),
-                        trace_id=source_key,
-                        cancel_check=cancel_check,
-                        action_journal_path=image_action_journal,
-                        source_message_key=source_key,
-                    )
-                except Exception as exc:
-                    result = {
-                        "state": "failed",
-                        "reason": "vision_adapter_failed",
-                        "error_type": type(exc).__name__,
-                        "diagnostics": {"events": [], "image_persisted": False},
-                    }
-            transaction = (
-                result.get("transaction")
-                if isinstance(result.get("transaction"), dict)
-                else {}
-            )
-            diagnostics = (
-                result.get("diagnostics")
-                if isinstance(result.get("diagnostics"), dict)
-                else {}
-            )
-            result_reason = str(result.get("reason") or "")
-            result_action_phase = str(
-                result.get("action_phase")
-                or transaction.get("action_phase")
-                or "not_attempted"
-            )
-            pre_action_deferred = (
-                result_action_phase == "not_attempted"
-                and (
-                    str(result.get("state") or "") == "deferred"
-                    or result_reason in IMAGE_PRE_ACTION_DEFERRED_REASONS
+                result = self._execute_one_image_slot_vision(
+                    target=target,
+                    payload=payload,
+                    observation=observation,
+                    source_key=source_key,
+                    cancel_check=cancel_check,
+                    flow_outcomes=flow_outcomes,
                 )
+            normalized = self._normalize_one_image_slot_result(
+                result,
+                source_key=source_key,
             )
-            if pre_action_deferred:
-                stats["deferred"] += 1
-                mark_image_unresolved(
+            result = normalized["result"]
+            transaction = normalized["transaction"]
+            diagnostics = normalized["diagnostics"]
+            result_reason = str(result.get("reason") or "")
+            result_action_phase = normalized["action_phase"]
+            if normalized["removed_from_final_screen"]:
+                stats["removed_from_final_screen"] += 1
+                mark_image_removed_from_final_screen(
                     stats,
                     source_key,
-                    "C2_IMAGE_PROCESSING_DEFERRED",
                 )
+                enriched_observations[index] = None
                 append_log(
                     "INFO",
-                    "c2_image_slot_deferred_after_reconfirmation",
-                    "当前画面无法证明仍是原图片；未右键、未复制、未调用 Vision，也不写失败终态。",
+                    "c2_image_slot_removed_from_final_screen",
+                    "动作前重建画面后图片已不在当前屏，本轮删除旧候选，不右键、不门禁。",
                     metadata={
                         **common_metadata,
                         "reason": result_reason,
@@ -4435,90 +4561,16 @@ class TaskRunner:
                     },
                 )
                 continue
-            capability_paused = (
-                result_reason == "vision_configuration_incomplete"
-                or (
-                    result_action_phase == "not_attempted"
-                    and result_reason in IMAGE_PRE_ACTION_CAPABILITY_PAUSE_REASONS
-                )
-            )
-            if capability_paused:
-                for diagnostic_event in diagnostics.get("events") or []:
-                    safe_event = _safe_c2_image_diagnostic_event(
-                        diagnostic_event
-                    )
-                    append_log(
-                        (
-                            "WARN"
-                            if safe_event.get("status") == "failed"
-                            else "INFO"
-                        ),
-                        "c2_image_stage",
-                        "C2 图片处理阶段证据。",
-                        error_code=(
-                            str(safe_event.get("reason") or "") or None
-                        )
-                        if safe_event.get("status") == "failed"
-                        else None,
-                        metadata={**common_metadata, **safe_event},
-                    )
-                stats["capability_paused"] += 1
-                stats["deferred"] += 1
-                mark_image_unresolved(
-                    stats,
-                    source_key,
-                    "C2_VISION_CAPABILITY_PAUSED",
-                )
-                if result_reason == "vision_configuration_incomplete":
-                    stats["configuration_incomplete"] += 1
-                payload["vision_capability"] = {
-                    "ready": False,
-                    "state": "capability_paused",
-                    "reason": result_reason,
-                    "missing_configuration": list(
-                        result.get("missing_configuration") or []
-                    ),
-                }
-                append_log(
-                    "WARN",
-                    "c2_vision_capability_paused",
-                    "图片不可逆操作尚未发生；当前图片保持待处理并阻断 Brain，能力恢复后可安全重试。",
-                    error_code="C2_VISION_CAPABILITY_PAUSED",
-                    metadata={
-                        **common_metadata,
-                        "reason": result_reason,
-                        "missing_configuration": list(
-                            result.get("missing_configuration") or []
-                        ),
-                        "action_phase": result_action_phase,
-                    },
-                )
-                continue
-            image_action = classify_action_result(
-                "image",
-                {
-                    **result,
-                    "action_phase": (
-                        result.get("action_phase")
-                        or transaction.get("action_phase")
-                    ),
-                    "error_code": result.get("reason"),
-                    "evidence": transaction,
-                },
-                source_message_key=source_key,
-            )
-            result["action_outcome"] = image_action
-            raw_terminal_state = str(result.get("state") or "").strip()
-            action_was_attempted = (
-                image_action.get("action_phase") != "not_attempted"
-            )
+            image_action = normalized["action_outcome"]
+            raw_terminal_state = normalized["raw_terminal_state"]
+            action_was_attempted = normalized["action_was_attempted"]
             if action_was_attempted:
                 mark_image_action(stats, source_key)
             if (
                 flow_outcomes is not None
                 and (
                     action_was_attempted
-                    or raw_terminal_state in {"completed", "failed", "ignored"}
+                    or raw_terminal_state in {"completed", "failed"}
                 )
             ):
                 image_evidence = dict(image_action.get("evidence") or {})
@@ -4544,19 +4596,6 @@ class TaskRunner:
                     ),
                 }
                 flow_outcomes.record(image_action)
-            if (
-                raw_terminal_state != "cancelled"
-                and image_action["result"] != "completed"
-            ):
-                result = {
-                    **result,
-                    "state": "failed",
-                    "reason": str(
-                        image_action.get("error_code")
-                        or "IMAGE_UNDERSTANDING_RESULT_UNCONFIRMED"
-                    ),
-                    "action_outcome": image_action,
-                }
             for diagnostic_event in diagnostics.get("events") or []:
                 safe_event = _safe_c2_image_diagnostic_event(diagnostic_event)
                 append_log(
@@ -4619,50 +4658,18 @@ class TaskRunner:
                     "image_persisted": False,
                 },
             )
-            if terminal_state not in {"completed", "failed", "ignored"}:
-                terminal_state = "failed"
-                result = {**result, "state": terminal_state, "reason": "vision_terminal_state_invalid"}
-            terminal_observation = apply_image_terminal_result(observation, result)
-            projected_state = str(terminal_observation.get("item_state") or terminal_state)
-            if projected_state in {"completed", "failed", "ignored"}:
-                terminal_state = projected_state
-            terminal_reason = str(
-                terminal_observation.get("image_processing_reason") or result.get("reason") or ""
+            (
+                terminal_observation,
+                terminal_state,
+                terminal_reason,
+            ) = self._persist_one_image_slot_terminal(
+                target=target,
+                payload=payload,
+                observation=observation,
+                source_key=source_key,
+                result=result,
+                stats=stats,
             )
-            if terminal_state == "failed":
-                artifact_dir_value = str(payload.get("artifact_dir") or "").strip()
-                if artifact_dir_value:
-                    record_artifact_outcome(
-                        Path(artifact_dir_value),
-                        {
-                            "ok": False,
-                            "error_code": terminal_reason or "C2_IMAGE_SLOT_FAILED",
-                        },
-                    )
-            ledger_result: dict[str, Any] = {
-                "state": terminal_state,
-                "reason": terminal_reason,
-            }
-            if terminal_state == "completed" and isinstance(terminal_observation, dict):
-                ledger_result.update(
-                    {
-                        "customer_image_understanding": dict(
-                            terminal_observation.get("customer_image_understanding") or {}
-                        ),
-                        "visual_bridge_input": dict(terminal_observation.get("visual_bridge_input") or {}),
-                        "transaction": _safe_c2_image_transaction(result.get("transaction")),
-                    }
-                )
-            save_c2_ledger_terminal(
-                conversation_id=target.conversation_id,
-                source_message_key=source_key,
-                dedupe_key=None,
-                message_type="image",
-                terminal_state=terminal_state,
-                ingest_state="waiting" if terminal_state in {"completed", "failed"} else "not_required",
-                result=ledger_result,
-            )
-            mark_image_terminal(stats, source_key)
             enriched_observations[index] = terminal_observation
             summary = str(terminal_observation.get("content_clean") or "") if isinstance(terminal_observation, dict) else ""
             append_log(
@@ -4679,14 +4686,25 @@ class TaskRunner:
                     "image_persisted": False,
                 },
             )
-            stats[terminal_state] += 1
-        payload["observation_validation_errors"] = [
+        payload["observations"] = [
+            item
+            for item in enriched_observations
+            if isinstance(item, dict)
+        ]
+        existing_validation_errors = [
+            dict(item)
+            for item in (
+                payload.get("observation_validation_errors") or []
+            )
+            if isinstance(item, dict)
+        ]
+        payload["observation_validation_errors"] = existing_validation_errors + [
             {
                 "observation_id": str(item.get("observation_id") or ""),
                 "row_kind": str(item.get("row_kind") or ""),
                 "error_codes": list(item.get("contract_errors") or []),
             }
-            for item in enriched_observations
+            for item in payload["observations"]
             if isinstance(item, dict) and item.get("contract_errors")
         ]
         return payload, finalize_image_phase_result(stats)
@@ -5758,19 +5776,10 @@ class TaskRunner:
                     "payload": current_payload,
                     "image_stats": aggregate_image_stats,
                 }
-            blocking_image_gate_errors: list[str] = []
-            if incremental_plan["history_gap"]:
-                blocking_image_gate_errors.append(
-                    "C2_MESSAGE_HISTORY_GAP"
-                )
             pending_image_keys = tuple(
                 sorted(incremental_plan["new_image_source_keys"])
             )
-            allowed_image_keys = (
-                set(pending_image_keys)
-                if not blocking_image_gate_errors
-                else set()
-            )
+            allowed_image_keys = set(pending_image_keys)
             image_observations = [
                 item
                 for item in (current_payload.get("observations") or [])
@@ -5790,10 +5799,10 @@ class TaskRunner:
 
             if pending_image_keys in seen_pending_image_sets:
                 append_log(
-                    "WARN",
+                    "ERROR",
                     "c2_post_vision_current_screen_no_progress",
-                    "图片处理后当前屏待处理集合未变化；保持未完成图片待下轮处理，本轮不重复右键。",
-                    error_code="C2_IMAGE_CURRENT_SCREEN_NO_PROGRESS",
+                    "图片处理后当前屏仍有未形成终态的图片；禁止继续入库或进入 Brain。",
+                    error_code="C2_IMAGE_TERMINALIZATION_INCOMPLETE",
                     metadata={
                         "conversation_id": target.conversation_id,
                         "remark_code": target.remark_code,
@@ -5803,7 +5812,8 @@ class TaskRunner:
                     },
                 )
                 return {
-                    "ok": True,
+                    "ok": False,
+                    "error_code": "C2_IMAGE_TERMINALIZATION_INCOMPLETE",
                     "payload": current_payload,
                     "image_stats": aggregate_image_stats,
                     "failed_voice_source_keys": sorted(
@@ -5823,11 +5833,6 @@ class TaskRunner:
                     enforce_read_targets=enforce_read_targets,
                     cancel_check=action_cancel_requested,
                     allowed_new_source_keys=allowed_image_keys,
-                    incremental_gate_reason=(
-                        blocking_image_gate_errors[0]
-                        if blocking_image_gate_errors
-                        else ""
-                    ),
                     flow_outcomes=flow_outcomes,
                 )
             )
@@ -5851,25 +5856,20 @@ class TaskRunner:
                     "payload": current_payload,
                     "image_stats": aggregate_image_stats,
                 }
-            if (
-                image_stats.get("capability_paused")
-                or image_stats.get("configuration_incomplete")
-                or (
-                    pending_image_keys
-                    and not any(
-                        image_stats.get(key)
-                        for key in ("completed", "failed", "ignored")
-                    )
+            if pending_image_keys and not any(
+                image_stats.get(key)
+                for key in (
+                    "completed",
+                    "failed",
+                    "ignored",
+                    "removed_from_final_screen",
                 )
             ):
                 return {
-                    "ok": True,
+                    "ok": False,
+                    "error_code": "C2_IMAGE_TERMINALIZATION_INCOMPLETE",
                     "payload": current_payload,
                     "image_stats": aggregate_image_stats,
-                    "failed_voice_source_keys": sorted(
-                        failed_voice_source_keys
-                    ),
-                    "failed_voice_roles": failed_voice_roles,
                 }
 
     @staticmethod
@@ -7342,33 +7342,17 @@ class TaskRunner:
                 target=target,
                 sidecar_payload=sidecar_payload,
             )
-            flow_gate_errors: list[str] = []
-            if incremental_plan["history_gap"]:
-                flow_gate_errors.append("C2_MESSAGE_HISTORY_GAP")
-            if incremental_plan["identity_errors"]:
-                flow_gate_errors.append("MESSAGE_IDENTITY_UNCONFIRMED")
-            flow_gate_details = [
-                dict(item)
-                for item in (incremental_plan.get("flow_gate_details") or [])
-                if isinstance(item, dict)
-            ]
-            if partial_failed_voice_source_keys:
-                flow_gate_errors.append("C2_VOICE_TRANSCRIBE_FAILED")
-                flow_gate_details.extend(
-                    self._failed_voice_gate_details(
-                        failed_source_roles=partial_failed_voice_roles,
-                        slot_ledger_states=list(
-                            incremental_plan.get("slot_ledger_states") or []
-                        ),
-                    )
-                )
-            sidecar_payload["history_gap"] = bool(incremental_plan["history_gap"])
-            sidecar_payload["flow_gate_errors"] = flow_gate_errors
-            sidecar_payload["flow_gate_details"] = flow_gate_details
+            gate_projection = project_final_slot_flow_gates(
+                incremental_plan,
+                failed_voice_source_roles=partial_failed_voice_roles,
+            )
+            flow_gate_errors = list(
+                gate_projection["flow_gate_errors"]
+            )
+            sidecar_payload.update(gate_projection)
             sidecar_payload["failed_voice_source_keys"] = (
                 partial_failed_voice_source_keys
             )
-            sidecar_payload["slot_ledger_states"] = incremental_plan["slot_ledger_states"]
             if flow_gate_errors:
                 append_log(
                     "WARN",
@@ -7382,13 +7366,8 @@ class TaskRunner:
                         "slot_ledger_states": incremental_plan["slot_ledger_states"],
                     },
                 )
-            blocking_image_gate_errors = image_operation_gate_errors(
-                flow_gate_errors
-            )
-            allowed_new_image_source_keys = (
-                set(incremental_plan["new_image_source_keys"])
-                if not blocking_image_gate_errors
-                else set()
+            allowed_new_image_source_keys = set(
+                incremental_plan["new_image_source_keys"]
             )
             image_observations = [
                 item
@@ -7406,11 +7385,6 @@ class TaskRunner:
                     enforce_read_targets=enforce_read_targets,
                     cancel_check=action_cancel_requested,
                     allowed_new_source_keys=allowed_new_image_source_keys,
-                    incremental_gate_reason=(
-                        blocking_image_gate_errors[0]
-                        if blocking_image_gate_errors
-                        else ""
-                    ),
                     flow_outcomes=flow_outcomes,
                 )
                 record_phase("image_understanding", phase_started_at, **image_stats)
@@ -7512,202 +7486,19 @@ class TaskRunner:
                         sidecar_payload=sidecar_payload,
                     )
                 )
-                flow_gate_errors = []
-                if incremental_plan["history_gap"]:
-                    flow_gate_errors.append(
-                        "C2_MESSAGE_HISTORY_GAP"
-                    )
-                if incremental_plan["identity_errors"]:
-                    flow_gate_errors.append(
-                        "MESSAGE_IDENTITY_UNCONFIRMED"
-                    )
-                flow_gate_details = [
-                    dict(item)
-                    for item in (
-                        incremental_plan.get("flow_gate_details") or []
-                    )
-                    if isinstance(item, dict)
-                ]
-                if partial_failed_voice_source_keys:
-                    flow_gate_errors.append(
-                        "C2_VOICE_TRANSCRIBE_FAILED"
-                    )
-                    flow_gate_details.extend(
-                        self._failed_voice_gate_details(
-                            failed_source_roles=(
-                                partial_failed_voice_roles
-                            ),
-                            slot_ledger_states=list(
-                                incremental_plan.get(
-                                    "slot_ledger_states"
-                                )
-                                or []
-                            ),
-                        )
-                    )
-                image_gate_errors, image_gate_details = (
-                    build_image_processing_gate(
-                        image_stats,
-                        list(
-                            incremental_plan.get(
-                                "slot_ledger_states"
-                            )
-                            or []
-                        ),
-                    )
+                gate_projection = project_final_slot_flow_gates(
+                    incremental_plan,
+                    failed_voice_source_roles=(
+                        partial_failed_voice_roles
+                    ),
                 )
-                for error_code in image_gate_errors:
-                    if error_code not in flow_gate_errors:
-                        flow_gate_errors.append(error_code)
-                flow_gate_details = merge_flow_gate_details(
-                    flow_gate_details,
-                    image_gate_details,
+                flow_gate_errors = list(
+                    gate_projection["flow_gate_errors"]
                 )
-                sidecar_payload["history_gap"] = bool(
-                    incremental_plan["history_gap"]
-                )
-                sidecar_payload["flow_gate_errors"] = (
-                    flow_gate_errors
-                )
-                sidecar_payload["flow_gate_details"] = (
-                    flow_gate_details
-                )
+                sidecar_payload.update(gate_projection)
                 sidecar_payload["failed_voice_source_keys"] = (
                     partial_failed_voice_source_keys
                 )
-                sidecar_payload["slot_ledger_states"] = (
-                    incremental_plan["slot_ledger_states"]
-                )
-                if (
-                    image_stats.get("capability_paused")
-                    or image_stats.get("configuration_incomplete")
-                ):
-                    vision_capability = (
-                        sidecar_payload.get("vision_capability")
-                        if isinstance(
-                            sidecar_payload.get("vision_capability"),
-                            dict,
-                        )
-                        else {}
-                    )
-                    capability_reason = str(
-                        vision_capability.get("reason")
-                        or "vision_capability_paused"
-                    )
-                    self.c2_stats["last_error"] = "C2_VISION_CAPABILITY_PAUSED"
-                    save_c2_state(
-                        "vision_capability",
-                        {
-                            "state": "capability_paused",
-                            "reason": capability_reason,
-                            "conversation_id": target.conversation_id,
-                            "remark_code": target.remark_code,
-                            "missing_configuration": list(
-                                vision_capability.get(
-                                    "missing_configuration"
-                                )
-                                or []
-                            ),
-                            "updated_at": datetime.now(timezone.utc).isoformat(),
-                        },
-                    )
-                    save_c2_state(
-                        f"vision_capability:{target.conversation_id}",
-                        {
-                            "state": "capability_paused",
-                            "reason": capability_reason,
-                            "conversation_id": target.conversation_id,
-                            "remark_code": target.remark_code,
-                            "missing_configuration": list(
-                                vision_capability.get(
-                                    "missing_configuration"
-                                )
-                                or []
-                            ),
-                            "updated_at": datetime.now(timezone.utc).isoformat(),
-                        },
-                    )
-                    sidecar_payload["flow_gate_errors"] = flow_gate_errors
-                    sidecar_payload["flow_gate_details"] = flow_gate_details
-                    append_log(
-                        "WARN",
-                        "c2_vision_capability_paused_flow_continues",
-                        "Vision 当前不可安全执行；图片保持待处理并阻断 Brain，同屏文字、语音和销售消息继续入库。",
-                        error_code="C2_VISION_CAPABILITY_PAUSED",
-                        metadata={
-                            "conversation_id": target.conversation_id,
-                            "remark_code": target.remark_code,
-                            "reason": capability_reason,
-                            "deferred_image_count": int(
-                                image_stats.get("capability_paused") or 0
-                            ),
-                        },
-                    )
-                elif image_stats.get("discovered"):
-                    clear_c2_state(f"vision_capability:{target.conversation_id}")
-                    save_c2_state(
-                        "vision_capability",
-                        {
-                            "state": "ready",
-                            "reason": "vision_configuration_ready",
-                            "conversation_id": target.conversation_id,
-                            "remark_code": target.remark_code,
-                            "updated_at": datetime.now(timezone.utc).isoformat(),
-                        },
-                    )
-                failed_customer_images = [
-                    item
-                    for item in (sidecar_payload.get("observations") or [])
-                    if isinstance(item, dict)
-                    and item.get("row_kind") == "image_bubble"
-                    and item.get("item_state") == "failed"
-                    and item.get("sender_role") == "customer"
-                ]
-                if failed_customer_images and "C2_IMAGE_UNDERSTANDING_FAILED" not in flow_gate_errors:
-                    flow_gate_errors.append("C2_IMAGE_UNDERSTANDING_FAILED")
-                    sidecar_payload["flow_gate_errors"] = flow_gate_errors
-                    slot_by_observation = {
-                        str(item.get("observation_id") or ""): item
-                        for item in incremental_plan["slot_ledger_states"]
-                        if isinstance(item, dict)
-                    }
-                    failed_image_slots = [
-                        slot_by_observation.get(
-                            str(item.get("observation_id") or "")
-                        )
-                        for item in failed_customer_images
-                    ]
-                    failed_image_slots = [
-                        item for item in failed_image_slots if isinstance(item, dict)
-                    ]
-                    image_orders = sorted(
-                        {
-                            int(item.get("screen_order") or 0)
-                            for item in failed_image_slots
-                            if int(item.get("screen_order") or 0) > 0
-                        }
-                    )
-                    has_visual_order_proof = (
-                        len(failed_image_slots) == len(failed_customer_images)
-                        and bool(image_orders)
-                        and all(
-                            item.get("order_source") == "visual_top"
-                            for item in failed_image_slots
-                        )
-                    )
-                    image_detail: dict[str, Any] = {
-                        "error_code": "C2_IMAGE_UNDERSTANDING_FAILED",
-                        "position_source": (
-                            "failed_image_visual_top"
-                            if has_visual_order_proof
-                            else "position_unavailable"
-                        ),
-                    }
-                    if has_visual_order_proof:
-                        image_detail["min_screen_order"] = image_orders[0]
-                        image_detail["max_screen_order"] = image_orders[-1]
-                    flow_gate_details.append(image_detail)
-                    sidecar_payload["flow_gate_details"] = flow_gate_details
             phase_started_at = time.perf_counter()
             try:
                 payload = build_message_ingest_payload(target, sidecar_payload)

@@ -9,6 +9,15 @@ from typing import Any
 from .wechat import detect_visual_image_bubbles, extract_chat_time_markers
 
 
+class ImageSurfaceObservationError(RuntimeError):
+    def __init__(self, stage: str, cause: Exception) -> None:
+        self.stage = str(stage or "image_surface_observation")
+        self.error_type = type(cause).__name__
+        super().__init__(
+            f"C2_IMAGE_OBSERVATION_FAILED:{self.stage}:{self.error_type}"
+        )
+
+
 def visual_image_envelopes_from_bubbles(
     bubbles: list[dict[str, Any]] | None,
     existing_messages: list[dict[str, Any]] | None,
@@ -171,8 +180,11 @@ def visual_image_messages_from_current_surface(
                 tuple(getattr(screenshot, "size", (0, 0))),
             ),
         )
-    except Exception:
-        return []
+    except Exception as exc:
+        raise ImageSurfaceObservationError(
+            "detect_visual_image_bubbles",
+            exc,
+        ) from exc
     return visual_image_envelopes_from_bubbles(bubbles, existing_messages, target=target)
 
 

@@ -10,10 +10,15 @@ IMAGE_PHASE_COUNTER_KEYS = (
     "ignored",
     "cached",
     "authorization_revoked",
-    "configuration_incomplete",
-    "capability_paused",
-    "deferred",
+    "removed_from_final_screen",
 )
+
+IMAGE_PHASE_STATE_SOURCE_FIELDS = {
+    "completed": "completed_source_keys",
+    "failed": "failed_source_keys",
+    "ignored": "ignored_source_keys",
+    "cached": "cached_source_keys",
+}
 
 
 def new_image_phase_result() -> dict[str, Any]:
@@ -24,12 +29,14 @@ def new_image_phase_result() -> dict[str, Any]:
         {
             "new_action_source_keys": [],
             "terminal_source_keys": [],
-            "unresolved_new_source_keys": [],
-            "unresolved_reason_by_source": {},
+            "removed_source_keys": [],
+            "refresh_source_keys": [],
+            **{
+                field: []
+                for field in IMAGE_PHASE_STATE_SOURCE_FIELDS.values()
+            },
             "new_action_count": 0,
             "requires_final_refresh": False,
-            "must_block_brain": False,
-            "brain_gate_codes": [],
         }
     )
     return result
@@ -48,32 +55,24 @@ def finalize_image_phase_result(
 ) -> dict[str, Any]:
     action_keys = _clean_keys(result.get("new_action_source_keys"))
     terminal_keys = _clean_keys(result.get("terminal_source_keys"))
-    reason_by_source = {
-        str(key).strip(): str(value).strip()
-        for key, value in (
-            result.get("unresolved_reason_by_source") or {}
-        ).items()
-        if str(key).strip() and str(value).strip()
-    }
-    unresolved_keys = (
-        _clean_keys(result.get("unresolved_new_source_keys"))
-        | set(reason_by_source)
-    ) - terminal_keys
-    reason_by_source = {
-        key: value
-        for key, value in reason_by_source.items()
-        if key in unresolved_keys
-    }
-    gate_codes = sorted(set(reason_by_source.values()))
+    removed_keys = _clean_keys(result.get("removed_source_keys"))
+    refresh_keys = (
+        _clean_keys(result.get("refresh_source_keys"))
+        | action_keys
+        | removed_keys
+    )
 
     result["new_action_source_keys"] = sorted(action_keys)
     result["terminal_source_keys"] = sorted(terminal_keys)
-    result["unresolved_new_source_keys"] = sorted(unresolved_keys)
-    result["unresolved_reason_by_source"] = reason_by_source
+    result["removed_source_keys"] = sorted(removed_keys)
+    result["refresh_source_keys"] = sorted(refresh_keys)
+    for state, field in IMAGE_PHASE_STATE_SOURCE_FIELDS.items():
+        state_keys = _clean_keys(result.get(field))
+        result[field] = sorted(state_keys)
+        result[state] = len(state_keys)
+    result["removed_from_final_screen"] = len(removed_keys)
     result["new_action_count"] = len(action_keys)
-    result["requires_final_refresh"] = bool(action_keys)
-    result["must_block_brain"] = bool(unresolved_keys)
-    result["brain_gate_codes"] = gate_codes
+    result["requires_final_refresh"] = bool(refresh_keys)
     return result
 
 
@@ -90,24 +89,33 @@ def mark_image_action(
 def mark_image_terminal(
     result: dict[str, Any],
     source_message_key: str,
+    *,
+    terminal_state: str,
+    cached: bool = False,
 ) -> None:
-    result.setdefault("terminal_source_keys", []).append(
-        str(source_message_key or "").strip()
-    )
+    key = str(source_message_key or "").strip()
+    state = str(terminal_state or "").strip().lower()
+    if not key or state not in {"completed", "failed", "ignored"}:
+        raise ValueError("C2_IMAGE_TERMINAL_STATE_INVALID")
+    result.setdefault("terminal_source_keys", []).append(key)
+    result.setdefault(
+        IMAGE_PHASE_STATE_SOURCE_FIELDS[state],
+        [],
+    ).append(key)
+    if cached:
+        result.setdefault("cached_source_keys", []).append(key)
     finalize_image_phase_result(result)
 
 
-def mark_image_unresolved(
+def mark_image_removed_from_final_screen(
     result: dict[str, Any],
     source_message_key: str,
-    gate_code: str,
 ) -> None:
     key = str(source_message_key or "").strip()
-    code = str(gate_code or "").strip()
-    if not key or not code:
+    if not key:
         return
-    result.setdefault("unresolved_new_source_keys", []).append(key)
-    result.setdefault("unresolved_reason_by_source", {})[key] = code
+    result.setdefault("removed_source_keys", []).append(key)
+    result.setdefault("refresh_source_keys", []).append(key)
     finalize_image_phase_result(result)
 
 
@@ -115,24 +123,23 @@ def merge_image_phase_results(
     target: dict[str, Any],
     incoming: dict[str, Any],
 ) -> dict[str, Any]:
-    for key in IMAGE_PHASE_COUNTER_KEYS:
-        # Every refreshed frame reports prior terminal images as cached.
-        # Keep screen-level counters monotonic without counting those slots
-        # again; action identity is merged separately below.
+    for key in ("discovered", "authorization_revoked"):
         target[key] = max(
             int(target.get(key) or 0),
             int(incoming.get(key) or 0),
         )
+    for state, field in IMAGE_PHASE_STATE_SOURCE_FIELDS.items():
+        target.setdefault(field, []).extend(incoming.get(field) or [])
     target.setdefault("new_action_source_keys", []).extend(
         incoming.get("new_action_source_keys") or []
     )
     target.setdefault("terminal_source_keys", []).extend(
         incoming.get("terminal_source_keys") or []
     )
-    target.setdefault("unresolved_new_source_keys", []).extend(
-        incoming.get("unresolved_new_source_keys") or []
+    target.setdefault("removed_source_keys", []).extend(
+        incoming.get("removed_source_keys") or []
     )
-    target.setdefault("unresolved_reason_by_source", {}).update(
-        incoming.get("unresolved_reason_by_source") or {}
+    target.setdefault("refresh_source_keys", []).extend(
+        incoming.get("refresh_source_keys") or []
     )
     return finalize_image_phase_result(target)

@@ -87,6 +87,9 @@ FLOW_GATE_STRONG_POSITION_SOURCES_V3 = {
 TEMPORARY_CAPABILITY_GATE_CODES_V3 = contract_values(
     "temporary_capability_gate_codes"
 )
+RETIRED_FLOW_GATE_CODES_V3 = contract_values(
+    "retired_flow_gate_codes"
+)
 CONTRACT_REVISION_V3 = contract_revision()
 CONTRACT_SHA256_V3 = contract_sha256()
 OBSERVATION_SCHEMA_VERSION_V3 = int(c2_contract_v3()["observation_schema_version"])
@@ -1704,6 +1707,18 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
         for value in (evidence_payload.get("flow_gate_errors") or [])
         if str(value).strip()
     ]
+    retired_flow_gate_codes = sorted(
+        set(flow_gate_error_codes) & RETIRED_FLOW_GATE_CODES_V3
+    )
+    if retired_flow_gate_codes:
+        raise AppError(
+            "MESSAGE_FLOW_GATE_CODE_RETIRED",
+            "请求包含已退出 V3 合同的图片临时门禁",
+            409,
+            {
+                "retired_flow_gate_codes": retired_flow_gate_codes,
+            },
+        )
     if set(flow_gate_details_by_code) != set(flow_gate_error_codes):
         raise AppError(
             "MESSAGE_FLOW_GATE_DETAIL_MISMATCH",
@@ -2380,9 +2395,8 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             trace_id=get_request_id(),
         )
     elif temporary_capability_gates:
-        # Missing local capability is not a customer-service handoff. Persist
-        # safe facts, keep the target readable, and let the pending image be
-        # completed after configuration recovery.
+        # Request-level protocol capability gates keep safe facts readable
+        # without creating a customer-service handoff.
         readable_origin_statuses = {
             "friend_activation_reading",
             "waiting_user_reply",

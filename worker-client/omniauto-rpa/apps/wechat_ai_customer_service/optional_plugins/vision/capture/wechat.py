@@ -404,7 +404,7 @@ def attach_image_physical_anchors(
     image_items: list[dict[str, Any]],
     messages: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Attach fingerprint, physical side, neighbours and relative occurrence."""
+    """Attach C2 role, physical side, neighbours and relative occurrence."""
 
     def message_identity(item: dict[str, Any]) -> str:
         for key in (
@@ -424,6 +424,63 @@ def attach_image_physical_anchors(
         for message in messages
         if isinstance(message, dict) and message_identity(message)
     }
+    image_role_rows: list[
+        tuple[tuple[int, int, int, int], str]
+    ] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        message_type = str(
+            message.get("type")
+            or message.get("message_type")
+            or message.get("row_kind")
+            or ""
+        ).strip().lower()
+        if message_type not in {"image", "image_bubble"}:
+            continue
+        role = str(message.get("sender_role") or "").strip().lower()
+        if role not in {"customer", "self"}:
+            continue
+        rect = _visual_bounds(
+            message.get("bubble_rect") or message.get("bounds")
+        )
+        if rect is not None:
+            image_role_rows.append((rect, role))
+
+    def c2_role_for_bounds(
+        bounds: tuple[int, int, int, int],
+        item: dict[str, Any],
+    ) -> str:
+        explicit = str(item.get("sender_role") or "").strip().lower()
+        if explicit in {"customer", "self"}:
+            return explicit
+        center_x = (bounds[0] + bounds[2]) / 2.0
+        center_y = (bounds[1] + bounds[3]) / 2.0
+        candidates: list[tuple[float, str]] = []
+        for message_bounds, role in image_role_rows:
+            intersection_width = max(
+                0,
+                min(bounds[2], message_bounds[2])
+                - max(bounds[0], message_bounds[0]),
+            )
+            intersection_height = max(
+                0,
+                min(bounds[3], message_bounds[3])
+                - max(bounds[1], message_bounds[1]),
+            )
+            intersection = intersection_width * intersection_height
+            if intersection > 0:
+                candidates.append((float(intersection), role))
+                continue
+            if (
+                message_bounds[0] <= center_x <= message_bounds[2]
+                and message_bounds[1] <= center_y <= message_bounds[3]
+            ):
+                candidates.append((1.0, role))
+        if not candidates:
+            return "unknown"
+        candidates.sort(key=lambda value: value[0], reverse=True)
+        return candidates[0][1]
     text_rows: list[tuple[int, int, str]] = []
     for message in messages:
         if not isinstance(message, dict):
@@ -445,15 +502,7 @@ def attach_image_physical_anchors(
         [dict(item) for item in image_items if isinstance(item, dict)],
         key=lambda item: (
             (_visual_bounds(item.get("bounds") or item.get("bubble_rect")) or (0, 0, 0, 0))[1],
-            0
-            if str(
-                item.get("sender_role")
-                or item.get("sender")
-                or item.get("side")
-                or ""
-            ).strip().lower()
-            == "customer"
-            else 1,
+            (_visual_bounds(item.get("bounds") or item.get("bubble_rect")) or (0, 0, 0, 0))[0],
         ),
     )
     occurrences: dict[tuple[str, str, str, str], int] = {}
@@ -463,12 +512,12 @@ def attach_image_physical_anchors(
         bounds = _visual_bounds(item.get("bounds") or item.get("bubble_rect"))
         if bounds is None:
             continue
-        role = str(
-            item.get("sender_role")
-            or item.get("sender")
-            or item.get("side")
-            or "unknown"
+        role = c2_role_for_bounds(bounds, item)
+        visual_side = str(
+            item.get("visual_side") or item.get("side") or "unknown"
         ).strip().lower()
+        if visual_side not in {"customer", "self"}:
+            visual_side = "unknown"
         preceding_id = str(item.get("_vision_preceding_text_id") or "").strip()
         following_id = str(item.get("_vision_following_text_id") or "").strip()
         preceding = stable_by_message_id.get(preceding_id, "")
@@ -485,6 +534,10 @@ def attach_image_physical_anchors(
         occurrences[occurrence_group] = occurrence_index + 1
         item["image_physical_anchor"] = {
             "sender_role": role,
+            "visual_side": visual_side,
+            "visual_side_consistent": (
+                role in {"customer", "self"} and role == visual_side
+            ),
             "preceding_stable_message": preceding,
             "following_stable_message": following,
             "bubble_visual_fingerprint": fingerprint,
