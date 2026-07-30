@@ -300,6 +300,7 @@
   },
   "temporary_capability_gate_codes": [
     "C2_VISION_CAPABILITY_PAUSED",
+    "C2_IMAGE_PROCESSING_DEFERRED",
     "C2_INGEST_PARTITION_INCOMPLETE"
   ],
   "temporary_capability_gate_rule": "temporary capability gates may persist message facts and block Brain, but must not create a handoff; after capability recovery the pending fact may be completed and resume the normal batch flow",

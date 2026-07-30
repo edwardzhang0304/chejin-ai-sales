@@ -79,6 +79,93 @@ def build_vision_capability_pause_gate(
     return ["C2_VISION_CAPABILITY_PAUSED"], [detail]
 
 
+def build_image_processing_gate(
+    image_phase_result: dict[str, Any],
+    slot_ledger_states: list[dict[str, Any]],
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Map unresolved image identities to contract-valid temporary gates."""
+
+    reason_by_source = {
+        str(key).strip(): str(value).strip()
+        for key, value in (
+            image_phase_result.get("unresolved_reason_by_source") or {}
+        ).items()
+        if str(key).strip() and str(value).strip()
+    }
+    gate_codes = sorted(
+        {
+            str(value).strip()
+            for value in (
+                image_phase_result.get("brain_gate_codes") or []
+            )
+            if str(value).strip()
+        }
+    )
+    details: list[dict[str, Any]] = []
+    for gate_code in gate_codes:
+        source_keys = {
+            key
+            for key, value in reason_by_source.items()
+            if value == gate_code
+        }
+        slots = [
+            item
+            for item in slot_ledger_states
+            if isinstance(item, dict)
+            and item.get("row_kind") == "image_bubble"
+            and str(item.get("source_message_key") or "").strip()
+            in source_keys
+        ]
+        orders = sorted(
+            {
+                int(item.get("screen_order") or 0)
+                for item in slots
+                if int(item.get("screen_order") or 0) > 0
+            }
+        )
+        has_strong_order = bool(
+            slots
+            and len(slots) == len(source_keys)
+            and orders
+            and all(
+                item.get("order_source") == "visual_top"
+                for item in slots
+            )
+        )
+        detail: dict[str, Any] = {
+            "error_code": gate_code,
+            "position_source": (
+                "slot_ledger_visual_top"
+                if has_strong_order
+                else "position_unavailable"
+            ),
+        }
+        if has_strong_order:
+            detail["min_screen_order"] = orders[0]
+            detail["max_screen_order"] = orders[-1]
+        details.append(detail)
+    return gate_codes, details
+
+
+def merge_flow_gate_details(
+    *detail_groups: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep exactly one authoritative position detail per gate code."""
+
+    merged: list[dict[str, Any]] = []
+    seen_codes: set[str] = set()
+    for group in detail_groups:
+        for item in group:
+            if not isinstance(item, dict):
+                continue
+            error_code = str(item.get("error_code") or "").strip()
+            if not error_code or error_code in seen_codes:
+                continue
+            seen_codes.add(error_code)
+            merged.append(dict(item))
+    return merged
+
+
 def _drop_image_runtime_fields(value: Any) -> Any:
     if isinstance(value, dict):
         return {

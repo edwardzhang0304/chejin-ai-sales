@@ -30,6 +30,14 @@ from .c2_outbox_recovery import (
     split_ingest_payload,
 )
 from .config import CONFIG
+from .image_phase import (
+    finalize_image_phase_result,
+    mark_image_action,
+    mark_image_terminal,
+    mark_image_unresolved,
+    merge_image_phase_results,
+    new_image_phase_result,
+)
 from .message_contract import canonical_reply_text, reply_text_hash
 from .models import Binding, ReplySendClaim, RpaResult, RpaStep, Task, WechatReadTarget, WorkerProfile
 from .rpa_bridge import RpaBridge
@@ -81,11 +89,12 @@ from .wechat_c2 import (
     apply_image_terminal_result,
     authoritative_order_source,
     build_flow_gate_ingest_payload,
+    build_image_processing_gate,
     build_message_ingest_payload,
     build_scan_result_payload,
-    build_vision_capability_pause_gate,
     extract_remark_codes,
     image_observation_source_key,
+    merge_flow_gate_details,
     message_rect,
     order_authoritative_slots,
     reconcile_cross_round_observation_identities,
@@ -4143,24 +4152,14 @@ class TaskRunner:
         allowed_new_source_keys: set[str] | None = None,
         incremental_gate_reason: str = "",
         flow_outcomes: FlowOutcomeAccumulator | None = None,
-    ) -> tuple[dict[str, Any], dict[str, int]]:
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         observations = sidecar_payload.get("observations")
+        stats = new_image_phase_result()
         if not isinstance(observations, list):
-            return sidecar_payload, {"discovered": 0, "completed": 0, "failed": 0, "ignored": 0, "cached": 0}
+            return sidecar_payload, stats
         payload = dict(sidecar_payload)
         enriched_observations = [dict(item) if isinstance(item, dict) else item for item in observations]
         payload["observations"] = enriched_observations
-        stats = {
-            "discovered": 0,
-            "completed": 0,
-            "failed": 0,
-            "ignored": 0,
-            "cached": 0,
-            "authorization_revoked": 0,
-            "configuration_incomplete": 0,
-            "capability_paused": 0,
-            "deferred": 0,
-        }
 
         def visual_top(item: dict[str, Any]) -> float:
             rect = item.get("bubble_rect")
@@ -4195,6 +4194,12 @@ class TaskRunner:
                 stats["configuration_incomplete"] = 1
                 stats["capability_paused"] = len(pending_config_source_keys)
                 stats["deferred"] += len(pending_config_source_keys)
+                for source_key in pending_config_source_keys:
+                    mark_image_unresolved(
+                        stats,
+                        source_key,
+                        "C2_VISION_CAPABILITY_PAUSED",
+                    )
                 payload["vision_capability"] = {
                     "ready": False,
                     "state": "capability_paused",
@@ -4227,7 +4232,7 @@ class TaskRunner:
                     for item in enriched_observations
                     if isinstance(item, dict) and item.get("contract_errors")
                 ]
-                return payload, stats
+                return payload, finalize_image_phase_result(stats)
         for index, observation in sorted(indexed, key=lambda value: (visual_top(value[1]), value[0])):
             source_key = image_observation_source_key(target, observation)
             source = observation.get("source_message") if isinstance(observation.get("source_message"), dict) else {}
@@ -4275,6 +4280,14 @@ class TaskRunner:
                 )
                 continue
             if allowed_new_source_keys is not None and source_key not in allowed_new_source_keys:
+                mark_image_unresolved(
+                    stats,
+                    source_key,
+                    (
+                        incremental_gate_reason
+                        or "C2_IMAGE_PROCESSING_DEFERRED"
+                    ),
+                )
                 if incremental_gate_reason:
                     reason = (
                         "image_processing_blocked_by_history_gap"
@@ -4406,6 +4419,11 @@ class TaskRunner:
             )
             if pre_action_deferred:
                 stats["deferred"] += 1
+                mark_image_unresolved(
+                    stats,
+                    source_key,
+                    "C2_IMAGE_PROCESSING_DEFERRED",
+                )
                 append_log(
                     "INFO",
                     "c2_image_slot_deferred_after_reconfirmation",
@@ -4446,6 +4464,11 @@ class TaskRunner:
                     )
                 stats["capability_paused"] += 1
                 stats["deferred"] += 1
+                mark_image_unresolved(
+                    stats,
+                    source_key,
+                    "C2_VISION_CAPABILITY_PAUSED",
+                )
                 if result_reason == "vision_configuration_incomplete":
                     stats["configuration_incomplete"] += 1
                 payload["vision_capability"] = {
@@ -4489,6 +4512,8 @@ class TaskRunner:
             action_was_attempted = (
                 image_action.get("action_phase") != "not_attempted"
             )
+            if action_was_attempted:
+                mark_image_action(stats, source_key)
             if (
                 flow_outcomes is not None
                 and (
@@ -4637,6 +4662,7 @@ class TaskRunner:
                 ingest_state="waiting" if terminal_state in {"completed", "failed"} else "not_required",
                 result=ledger_result,
             )
+            mark_image_terminal(stats, source_key)
             enriched_observations[index] = terminal_observation
             summary = str(terminal_observation.get("content_clean") or "") if isinstance(terminal_observation, dict) else ""
             append_log(
@@ -4663,7 +4689,7 @@ class TaskRunner:
             for item in enriched_observations
             if isinstance(item, dict) and item.get("contract_errors")
         ]
-        return payload, stats
+        return payload, finalize_image_phase_result(stats)
 
     def _wait_and_send_current_c3_batch(
         self,
@@ -5528,24 +5554,13 @@ class TaskRunner:
         """
 
         current_payload = dict(sidecar_payload)
-        aggregate_image_stats = {
-            "discovered": 0,
-            "completed": 0,
-            "failed": 0,
-            "ignored": 0,
-            "cached": 0,
-            "authorization_revoked": 0,
-            "configuration_incomplete": 0,
-            "capability_paused": 0,
-            "deferred": 0,
-        }
+        aggregate_image_stats = new_image_phase_result()
         failed_voice_source_keys: set[str] = set()
         failed_voice_roles: dict[str, str] = {}
         seen_pending_image_sets: set[tuple[str, ...]] = set()
 
         def add_image_stats(values: dict[str, Any]) -> None:
-            for key in aggregate_image_stats:
-                aggregate_image_stats[key] += int(values.get(key) or 0)
+            merge_image_phase_results(aggregate_image_stats, values)
 
         while True:
             if action_cancel_requested():
@@ -7419,10 +7434,8 @@ class TaskRunner:
                         "target_confirmation": locate_payload,
                         "final_messages": sidecar_payload,
                     }
-                image_actions_completed = (
-                    int(image_stats.get("completed") or 0)
-                    + int(image_stats.get("failed") or 0)
-                    > int(image_stats.get("cached") or 0)
+                image_actions_completed = bool(
+                    image_stats.get("requires_final_refresh")
                 )
                 convergence = (
                     self._converge_current_screen_after_images(
@@ -7465,13 +7478,10 @@ class TaskRunner:
                 post_image_stats = dict(
                     convergence.get("image_stats") or {}
                 )
-                for key in image_stats:
-                    # Refreshed screens include prior terminal images as
-                    # cached, so summing would count the same slot twice.
-                    image_stats[key] = max(
-                        int(image_stats.get(key) or 0),
-                        int(post_image_stats.get(key) or 0),
-                    )
+                merge_image_phase_results(
+                    image_stats,
+                    post_image_stats,
+                )
                 partial_failed_voice_source_keys = sorted(
                     {
                         *partial_failed_voice_source_keys,
@@ -7535,6 +7545,24 @@ class TaskRunner:
                             ),
                         )
                     )
+                image_gate_errors, image_gate_details = (
+                    build_image_processing_gate(
+                        image_stats,
+                        list(
+                            incremental_plan.get(
+                                "slot_ledger_states"
+                            )
+                            or []
+                        ),
+                    )
+                )
+                for error_code in image_gate_errors:
+                    if error_code not in flow_gate_errors:
+                        flow_gate_errors.append(error_code)
+                flow_gate_details = merge_flow_gate_details(
+                    flow_gate_details,
+                    image_gate_details,
+                )
                 sidecar_payload["history_gap"] = bool(
                     incremental_plan["history_gap"]
                 )
@@ -7599,20 +7627,6 @@ class TaskRunner:
                             "updated_at": datetime.now(timezone.utc).isoformat(),
                         },
                     )
-                    pause_errors, pause_details = (
-                        build_vision_capability_pause_gate(
-                            list(
-                                incremental_plan.get(
-                                    "slot_ledger_states"
-                                )
-                                or []
-                            )
-                        )
-                    )
-                    for error_code in pause_errors:
-                        if error_code not in flow_gate_errors:
-                            flow_gate_errors.append(error_code)
-                    flow_gate_details.extend(pause_details)
                     sidecar_payload["flow_gate_errors"] = flow_gate_errors
                     sidecar_payload["flow_gate_details"] = flow_gate_details
                     append_log(

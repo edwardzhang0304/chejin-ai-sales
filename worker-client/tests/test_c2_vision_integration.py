@@ -54,6 +54,48 @@ from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar
 
 
 class C2VisionIntegrationTests(unittest.TestCase):
+    def test_c2_role_remains_authoritative_when_visual_side_conflicts(self):
+        screenshot = Image.new("RGB", (800, 700), "white")
+        expected_anchor = {
+            "sender_role": "customer",
+            "preceding_stable_message": "before-message",
+            "following_stable_message": "after-message",
+            "bubble_visual_fingerprint": "dhash64:0000000000000000",
+            "occurrence_index": 0,
+            "occurrence_count": 1,
+        }
+        current_candidate = {
+            "bounds": [430, 220, 630, 360],
+            "side": "self",
+            "anchor": {"x": 530, "y": 290},
+            "image_physical_anchor": {
+                "sender_role": "self",
+                "preceding_stable_message": "before-message",
+                "following_stable_message": "after-message",
+                "bubble_visual_fingerprint": "dhash64:0000000000000000",
+                "occurrence_index": 0,
+                "occurrence_count": 1,
+            },
+        }
+        with patch.object(
+            transaction,
+            "attach_image_physical_anchors",
+            return_value=[current_candidate],
+        ):
+            matched = transaction._matching_bubble(
+                screenshot,
+                [current_candidate],
+                [],
+                expected_anchor=expected_anchor,
+                expected_role="customer",
+            )
+
+        self.assertTrue(matched)
+        evidence = matched["identity_match_evidence"]
+        self.assertEqual(evidence["c2_sender_role"], "customer")
+        self.assertEqual(evidence["visual_side"], "self")
+        self.assertFalse(evidence["visual_side_consistent"])
+        screenshot.close()
     def setUp(self) -> None:
         self.vision_env_names = (
             "CUSTOMER_IMAGE_UNDERSTANDING_PROVIDER",

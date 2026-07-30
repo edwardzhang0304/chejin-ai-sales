@@ -7213,6 +7213,12 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(stats["deferred"], 1)
         self.assertEqual(stats["failed"], 0)
         self.assertEqual(stats["completed"], 0)
+        self.assertTrue(stats["must_block_brain"])
+        self.assertFalse(stats["requires_final_refresh"])
+        self.assertEqual(
+            stats["brain_gate_codes"],
+            ["C2_IMAGE_PROCESSING_DEFERRED"],
+        )
         self.assertEqual(
             result["observations"][0]["item_state"],
             "discovered",
@@ -7222,6 +7228,115 @@ class TaskRunnerTest(unittest.TestCase):
             load_c2_ledger_entry(target.conversation_id, source_key)
         )
         vision.assert_called_once()
+
+    def test_cached_ignored_and_new_completed_image_requires_final_refresh(self):
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(
+                RpaResult(ok=True, result_code="ok", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        unique = str(time.time_ns())
+        target = WechatReadTarget(
+            conversation_id=f"conv-image-refresh-{unique}",
+            rpa_session_key="wx:rpa:v1:image-refresh",
+            display_name="CJREFRESH01",
+            remark_code="CJREFRESH01",
+            authorization_revision=f"revision-image-refresh-{unique}",
+        )
+
+        def image_observation(name: str, top: int) -> dict:
+            return {
+                "schema_version": 3,
+                "observation_id": f"{name}-{unique}",
+                "row_kind": "image_bubble",
+                "sender_role": "customer",
+                "sender_role_source": "same_row_avatar",
+                "message_type": "image",
+                "voice_state": "not_voice",
+                "item_state": "discovered",
+                "image_physical_anchor": {
+                    "sender_role": "customer",
+                    "preceding_stable_message": (
+                        f"before-{name}-{unique}"
+                    ),
+                    "following_stable_message": (
+                        f"after-{name}-{unique}"
+                    ),
+                    "occurrence_index": 0,
+                },
+                "bubble_rect": [420, top, 650, top + 120],
+                "source_message": {
+                    "id": f"source-{name}-{unique}",
+                    "type": "image",
+                },
+            }
+
+        old_ignored = image_observation("old-ignored", 120)
+        new_image = image_observation("new-completed", 300)
+        old_source_key = image_observation_source_key(
+            target,
+            old_ignored,
+        )
+        save_c2_ledger_terminal(
+            conversation_id=target.conversation_id,
+            source_message_key=old_source_key,
+            dedupe_key=None,
+            message_type="image",
+            terminal_state="ignored",
+            ingest_state="not_required",
+            result={
+                "state": "ignored",
+                "reason": "image_same_row_avatar_unconfirmed",
+            },
+        )
+        completed = {
+            "state": "completed",
+            "action_phase": "confirmed",
+            "reason": "vision_ready",
+            "customer_image_understanding": {
+                "schema_version": 1,
+                "vision_summary": "新图片已识别",
+            },
+            "visual_bridge_input": {"summary": "新图片"},
+            "transaction": {"action_phase": "confirmed"},
+            "diagnostics": {"events": [], "image_persisted": False},
+        }
+        with patch(
+            "chejin_worker_client.omniauto_vision."
+            "vision_configuration_status",
+            return_value={
+                "ready": True,
+                "config": {
+                    "customer_image_understanding": {"enabled": True}
+                },
+            },
+        ), patch(
+            "chejin_worker_client.omniauto_vision.process_image_slot",
+            return_value=completed,
+        ) as vision:
+            _, phase_result = runner._process_final_image_slots(
+                binding=binding,
+                target=target,
+                sidecar_payload={
+                    "observations": [old_ignored, new_image]
+                },
+                enforce_read_targets=False,
+            )
+
+        self.assertEqual(vision.call_count, 1)
+        self.assertEqual(phase_result["cached"], 1)
+        self.assertEqual(phase_result["ignored"], 1)
+        self.assertEqual(phase_result["completed"], 1)
+        self.assertEqual(phase_result["new_action_count"], 1)
+        self.assertTrue(phase_result["requires_final_refresh"])
+        self.assertFalse(phase_result["must_block_brain"])
 
     def test_post_vision_refresh_processes_new_image_in_same_ui_lease(self):
         runner, _ = self.make_runner(
@@ -7898,6 +8013,117 @@ class TaskRunnerTest(unittest.TestCase):
         image_source_key = image_observation_source_key(target, image)
         self.assertIsNone(
             load_c2_ledger_entry(target.conversation_id, image_source_key)
+        )
+
+    def test_c2_deferred_image_keeps_text_and_adds_brain_gate(self):
+        api = FakeApi(None)
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="ok", message="unused"),
+        )
+        bridge.get_messages_payloads = [
+            {
+                "ok": True,
+                "observations": [
+                    {
+                        "schema_version": 3,
+                        "observation_id": "text-with-deferred-image",
+                        "row_kind": "text_bubble",
+                        "sender_role": "customer",
+                        "sender_role_source": "same_row_avatar",
+                        "message_type": "text",
+                        "voice_state": "not_voice",
+                        "item_state": "completed",
+                        "content_clean": "请结合图片看看",
+                        "bubble_rect": [420, 120, 680, 160],
+                        "source_message": {
+                            "id": "text-with-deferred-image",
+                            "type": "text",
+                            "content": "请结合图片看看",
+                        },
+                    },
+                    {
+                        "schema_version": 3,
+                        "observation_id": "deferred-image",
+                        "row_kind": "image_bubble",
+                        "sender_role": "customer",
+                        "sender_role_source": "same_row_avatar",
+                        "message_type": "image",
+                        "voice_state": "not_voice",
+                        "item_state": "discovered",
+                        "bubble_rect": [420, 180, 680, 360],
+                        "image_physical_anchor": {
+                            "sender_role": "customer",
+                            "preceding_stable_message": (
+                                "text-with-deferred-image"
+                            ),
+                            "following_stable_message": "",
+                            "bubble_visual_fingerprint": (
+                                "dhash64:0123456789abcdef"
+                            ),
+                            "occurrence_index": 0,
+                            "occurrence_count": 1,
+                        },
+                        "source_message": {
+                            "id": "deferred-image",
+                            "type": "image",
+                        },
+                    },
+                ],
+            }
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        target = WechatReadTarget(
+            conversation_id="conv-image-deferred-mixed",
+            rpa_session_key="",
+            display_name="CJIMAGE05",
+            remark_code="CJIMAGE05",
+            authorization_revision="revision-image-deferred-mixed",
+        )
+
+        with patch(
+            "chejin_worker_client.omniauto_vision."
+            "vision_configuration_status",
+            return_value={
+                "ready": True,
+                "config": {
+                    "customer_image_understanding": {"enabled": True}
+                },
+            },
+        ), patch(
+            "chejin_worker_client.omniauto_vision.process_image_slot",
+            return_value={
+                "state": "deferred",
+                "reason": "image_bubble_slot_not_reconfirmed",
+                "action_phase": "not_attempted",
+                "diagnostics": {
+                    "events": [],
+                    "image_persisted": False,
+                },
+            },
+        ):
+            result = runner._read_one_wechat_target(binding, target)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(len(api.message_payloads), 1)
+        payload = api.message_payloads[0]
+        self.assertEqual(
+            [item["content"] for item in payload["messages"]],
+            ["请结合图片看看"],
+        )
+        self.assertIn(
+            "C2_IMAGE_PROCESSING_DEFERRED",
+            payload["evidence"]["flow_gate_errors"],
+        )
+        self.assertNotIn(
+            "C2_IMAGE_UNDERSTANDING_FAILED",
+            payload["evidence"]["flow_gate_errors"],
         )
 
     def test_ai_reply_receipt_attaches_only_to_matching_stable_self_bubble(self):

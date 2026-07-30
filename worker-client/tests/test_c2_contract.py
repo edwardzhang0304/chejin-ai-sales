@@ -21,7 +21,11 @@ from chejin_worker_client.transaction_outcomes import (
     merge_item_outcomes,
     transition_outbox_state,
 )
-from chejin_worker_client.wechat_c2 import build_vision_capability_pause_gate
+from chejin_worker_client.wechat_c2 import (
+    build_image_processing_gate,
+    merge_flow_gate_details,
+    build_vision_capability_pause_gate,
+)
 
 
 class C2ContractTests(unittest.TestCase):
@@ -264,6 +268,80 @@ class C2ContractTests(unittest.TestCase):
                 }
             ],
         )
+
+    def test_deferred_image_gate_uses_same_contract_position_rule(self):
+        self.assertIn(
+            "C2_IMAGE_PROCESSING_DEFERRED",
+            temporary_capability_gate_codes(),
+        )
+        errors, details = build_image_processing_gate(
+            {
+                "brain_gate_codes": [
+                    "C2_IMAGE_PROCESSING_DEFERRED"
+                ],
+                "unresolved_reason_by_source": {
+                    "image-source-1": "C2_IMAGE_PROCESSING_DEFERRED"
+                },
+            },
+            [
+                {
+                    "row_kind": "image_bubble",
+                    "ledger_state": "NEW_MESSAGE",
+                    "source_message_key": "image-source-1",
+                    "screen_order": 2,
+                    "order_source": "visual_top",
+                }
+            ],
+        )
+
+        self.assertEqual(errors, ["C2_IMAGE_PROCESSING_DEFERRED"])
+        self.assertEqual(
+            details,
+            [
+                {
+                    "error_code": "C2_IMAGE_PROCESSING_DEFERRED",
+                    "position_source": "slot_ledger_visual_top",
+                    "min_screen_order": 2,
+                    "max_screen_order": 2,
+                }
+            ],
+        )
+
+    def test_flow_gate_details_keep_one_authoritative_detail_per_code(self):
+        details = merge_flow_gate_details(
+            [
+                {
+                    "error_code": "C2_MESSAGE_HISTORY_GAP",
+                    "position_source": "slot_ledger_visual_top",
+                    "min_screen_order": 2,
+                    "max_screen_order": 4,
+                }
+            ],
+            [
+                {
+                    "error_code": "C2_MESSAGE_HISTORY_GAP",
+                    "position_source": "slot_ledger_visual_top",
+                    "min_screen_order": 3,
+                    "max_screen_order": 3,
+                },
+                {
+                    "error_code": "C2_IMAGE_PROCESSING_DEFERRED",
+                    "position_source": "slot_ledger_visual_top",
+                    "min_screen_order": 3,
+                    "max_screen_order": 3,
+                },
+            ],
+        )
+
+        self.assertEqual(
+            [item["error_code"] for item in details],
+            [
+                "C2_MESSAGE_HISTORY_GAP",
+                "C2_IMAGE_PROCESSING_DEFERRED",
+            ],
+        )
+        self.assertEqual(details[0]["min_screen_order"], 2)
+        self.assertEqual(details[0]["max_screen_order"], 4)
 
     def test_role_trust_is_derived_from_each_contract_row_rule(self):
         self.assertTrue(
