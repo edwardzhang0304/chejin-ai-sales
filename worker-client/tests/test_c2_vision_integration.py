@@ -38,6 +38,9 @@ from chejin_worker_client.action_journal import (
 )
 from chejin_worker_client.wechat_c2 import apply_image_terminal_result
 from apps.wechat_ai_customer_service.optional_plugins.vision.capture import transaction
+from apps.wechat_ai_customer_service.optional_plugins.vision.capture import (
+    visual_fingerprint,
+)
 from apps.wechat_ai_customer_service.optional_plugins.vision.capture.wechat import (
     attach_image_physical_anchors,
     detect_visual_image_bubbles,
@@ -185,7 +188,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 return next(self.sequence)
 
             def read_current_bitmap(self):
-                return image.copy()
+                return image.crop((420, 180, 650, 320))
 
         target = Target()
         frames = Frames()
@@ -258,7 +261,9 @@ class C2VisionIntegrationTests(unittest.TestCase):
             ui_action=Actions(),
             clipboard=SimpleNamespace(
                 sequence_number=iter([10, 11, 11]).__next__,
-                read_current_bitmap=lambda: image.copy(),
+                read_current_bitmap=lambda: image.crop(
+                    (420, 180, 650, 320)
+                ),
             ),
         )
         with patch.object(
@@ -557,7 +562,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 return self.values.pop(0) if self.values else 11
 
             def read_current_bitmap(self):
-                return image.copy()
+                return image.crop((420, 180, 650, 320))
 
         actions = Actions()
         clipboard = Clipboard()
@@ -644,7 +649,9 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 return self.sequence
 
             def read_current_bitmap(self):
-                return image.copy()
+                return image.crop(
+                    tuple(actions.right_click_bounds[-1])
+                )
 
         clipboard = Clipboard()
         actions = Actions()
@@ -988,6 +995,252 @@ class C2VisionIntegrationTests(unittest.TestCase):
         replacement_pattern.close()
         initial.close()
         current.close()
+
+    def test_clipboard_fingerprint_retry_reanchors_once_then_succeeds(self):
+        frame_image = Image.new("RGB", (800, 600), "white")
+        bubble_image = Image.new("RGB", (200, 140), (30, 120, 210))
+        draw = ImageDraw.Draw(bubble_image)
+        draw.rectangle([35, 25, 160, 110], fill=(235, 175, 35))
+        bounds = [430, 180, 630, 320]
+        frame_image.paste(bubble_image, (bounds[0], bounds[1]))
+        expected = attach_image_physical_anchors(
+            frame_image,
+            [{"bounds": bounds, "side": "customer"}],
+            [],
+        )[0]["image_physical_anchor"]
+        wrong_image = Image.new("RGB", (200, 140), (210, 40, 60))
+
+        class Frames:
+            candidate_count = 0
+
+            def capture_frame(self, context):
+                if context.get("phase") == "image_candidate":
+                    self.candidate_count += 1
+                    return {
+                        "ok": True,
+                        "image": frame_image.copy(),
+                        "image_size": frame_image.size,
+                        "messages": [],
+                        "time_markers": [],
+                    }
+                return {
+                    "ok": True,
+                    "image": frame_image.copy(),
+                    "image_size": frame_image.size,
+                    "ocr_items": [{"text": "复制"}],
+                    "screen_origin": [0, 0],
+                }
+
+        class Actions:
+            right_click_count = 0
+
+            def right_click(self, _x, _y, *, bounds):
+                self.right_click_count += 1
+                return {"screen_x": 530, "screen_y": 250}
+
+            def click_screen(self, _x, _y, *, bounds):
+                return None
+
+        class Clipboard:
+            sequences = iter([10, 11, 11, 20, 21, 21])
+            reads = 0
+
+            def sequence_number(self):
+                return next(self.sequences)
+
+            def read_current_bitmap(self):
+                self.reads += 1
+                return (
+                    wrong_image.copy()
+                    if self.reads == 1
+                    else bubble_image.copy()
+                )
+
+        frames = Frames()
+        actions = Actions()
+        clipboard = Clipboard()
+        ports = VisionHostPorts(
+            rpa_lease=SimpleNamespace(
+                lease=lambda *_args, **_kwargs: nullcontext()
+            ),
+            conversation_target=SimpleNamespace(
+                confirm_target=lambda _context: {"ok": True}
+            ),
+            window_frame=frames,
+            ui_action=actions,
+            clipboard=clipboard,
+        )
+        with patch.object(
+            transaction,
+            "detect_visual_image_bubbles",
+            return_value=[
+                {
+                    "bounds": bounds,
+                    "side": "customer",
+                    "anchor": {"x": 530, "y": 250},
+                }
+            ],
+        ), patch.object(
+            transaction,
+            "find_copy_menu_item",
+            return_value={
+                "x": 620,
+                "y": 320,
+                "bounds": [600, 300, 650, 340],
+            },
+        ):
+            result = transaction.acquire_current_image_via_ports(
+                ports,
+                {
+                    "sender_role": "customer",
+                    "bubble_rect": bounds,
+                    "image_physical_anchor": expected,
+                },
+            )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(frames.candidate_count, 2)
+        self.assertEqual(actions.right_click_count, 2)
+        self.assertEqual(clipboard.reads, 2)
+        self.assertTrue(
+            result["transaction"]["clipboard_image_matches_target"]
+        )
+        self.assertEqual(
+            result["transaction"]["clipboard_fingerprint_retry_count"],
+            1,
+        )
+        self.assertTrue(
+            result["transaction"][
+                "clipboard_fingerprint_first_attempt_mismatch"
+            ]
+        )
+        result["_ephemeral_clipboard_image"].release()
+        wrong_image.close()
+        bubble_image.close()
+        frame_image.close()
+
+    def test_clipboard_fingerprint_mismatch_twice_never_reaches_vision(self):
+        frame_image = Image.new("RGB", (800, 600), "white")
+        bubble_image = Image.new("RGB", (200, 140), (30, 120, 210))
+        bounds = [430, 180, 630, 320]
+        frame_image.paste(bubble_image, (bounds[0], bounds[1]))
+        expected = attach_image_physical_anchors(
+            frame_image,
+            [{"bounds": bounds, "side": "customer"}],
+            [],
+        )[0]["image_physical_anchor"]
+        wrong_image = Image.new("RGB", (200, 140), (210, 40, 60))
+
+        class Frames:
+            def capture_frame(self, context):
+                return {
+                    "ok": True,
+                    "image": frame_image.copy(),
+                    "image_size": frame_image.size,
+                    "messages": [],
+                    "time_markers": [],
+                    "ocr_items": (
+                        [{"text": "复制"}]
+                        if context.get("phase") == "image_context_menu"
+                        else []
+                    ),
+                    "screen_origin": [0, 0],
+                }
+
+        class Actions:
+            right_click_count = 0
+
+            def right_click(self, _x, _y, *, bounds):
+                self.right_click_count += 1
+                return {"screen_x": 530, "screen_y": 250}
+
+            def click_screen(self, _x, _y, *, bounds):
+                return None
+
+        class Clipboard:
+            sequences = iter([10, 11, 11, 20, 21, 21])
+
+            def sequence_number(self):
+                return next(self.sequences)
+
+            def read_current_bitmap(self):
+                return wrong_image.copy()
+
+        actions = Actions()
+        ports = VisionHostPorts(
+            rpa_lease=SimpleNamespace(
+                lease=lambda *_args, **_kwargs: nullcontext()
+            ),
+            conversation_target=SimpleNamespace(
+                confirm_target=lambda _context: {"ok": True}
+            ),
+            window_frame=Frames(),
+            ui_action=actions,
+            clipboard=Clipboard(),
+        )
+        with patch.object(
+            transaction,
+            "detect_visual_image_bubbles",
+            return_value=[
+                {
+                    "bounds": bounds,
+                    "side": "customer",
+                    "anchor": {"x": 530, "y": 250},
+                }
+            ],
+        ), patch.object(
+            transaction,
+            "find_copy_menu_item",
+            return_value={
+                "x": 620,
+                "y": 320,
+                "bounds": [600, 300, 650, 340],
+            },
+        ):
+            result = transaction.acquire_current_image_via_ports(
+                ports,
+                {
+                    "sender_role": "customer",
+                    "bubble_rect": bounds,
+                    "image_physical_anchor": expected,
+                },
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["reason"],
+            "clipboard_image_fingerprint_mismatch",
+        )
+        self.assertEqual(result["action_phase"], "trigger_attempted")
+        self.assertEqual(actions.right_click_count, 2)
+        self.assertFalse(
+            result["transaction"]["clipboard_image_matches_target"]
+        )
+        self.assertNotIn("_ephemeral_clipboard_image", result)
+        wrong_image.close()
+        bubble_image.close()
+        frame_image.close()
+
+    def test_upstream_clipboard_fingerprint_allows_scaled_compression(self):
+        source = Image.new("RGB", (160, 120), (20, 120, 210))
+        draw = ImageDraw.Draw(source)
+        draw.rectangle([35, 25, 120, 95], fill=(230, 180, 40))
+        buffer = io.BytesIO()
+        source.resize((320, 240), Image.Resampling.LANCZOS).save(
+            buffer,
+            format="JPEG",
+            quality=82,
+        )
+        buffer.seek(0)
+        with Image.open(buffer) as compressed:
+            compressed.load()
+            self.assertTrue(
+                visual_fingerprint.fingerprints_match(
+                    visual_fingerprint.image_fingerprint(source),
+                    visual_fingerprint.image_fingerprint(compressed),
+                )
+            )
+        source.close()
 
     def test_identical_image_is_not_clicked_when_duplicate_group_shrinks(self):
         initial = Image.new("RGB", (800, 700), "white")
