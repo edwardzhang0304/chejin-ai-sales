@@ -447,6 +447,24 @@ X-Request-Id: ...     # 可选
 `observation_index_fallback` 只能用于普通消息
 排序，不能用于关闭人工接管、清除安全门禁或推动 Brain。
 
+当前屏已经发现的新图片如果因位置变化、指纹无法唯一确认或右键前复核失败而
+尚未执行图片动作，Worker 必须提交临时门禁
+`C2_IMAGE_PROCESSING_DEFERRED`。该门禁必须遵守：
+
+```text
+同屏已确认文字和语音可以入库
+未收口图片不作为 completed/failed 消息上报
+不得创建 Brain 批次或 reply_action
+不得创建永久 handoff_event
+会话保持可读取，后续画面能够唯一确认时继续处理
+```
+
+图片归属的唯一业务结论来自 C2 同行头像规则。复制前重新定位得到的
+`visual_side` 只能记录为物理一致性证据，不得否决或覆盖已经确认的
+`customer/self`。图片阶段必须集中返回本轮真实动作数、未收口图片身份、
+是否需要最终刷新和是否阻断 Brain；主流程不得再用
+`completed + failed > cached` 等计数公式重新猜测阶段结果。
+
 准入条件固定为：
 
 ```text
@@ -928,6 +946,8 @@ OmniAuto 文字化结果沿用当前 schema：
 | P1 | 已收口 | 普通会话复用 open-chat 确认帧；新好友为保证激活顺序，激活后单独读取。Vision 配置在任何图片 UI 动作前一次性预检。 |
 | P0 | 已收口 | Sidecar、Worker 与后端已统一落实 `action_phase`；发送触发后无法确认时只进入 `unknown`，不会按普通失败清除证据。 |
 | P0 | 已收口 | Worker 已使用唯一 `merge_item_outcomes` 单调累计语音/图片逐条结果；后续调用只能合并，不能覆盖既有成功或失败结果。 |
+| P0 | 已收口 | 图片阶段统一返回新动作、终态、未收口项、最终刷新和 Brain 门禁；`C2_IMAGE_PROCESSING_DEFERRED` 允许安全事实入库但禁止 Brain，不创建永久 handoff。 |
+| P0 | 已收口 | 图片角色只采用 C2 同行头像结论；复制前几何侧仅记录物理一致性证据，不再作为第二套准入规则。 |
 | P0 | 已收口 | 后端失败外壳与 Worker Outbox 统一使用 `retry / refresh_and_rebuild / capability_paused`；旧 `quarantine/abandoned` 仅作为启动迁移输入，不再是运行时终态。 |
 | P1 | 待实机 | 真实 Vision Provider 凭据、Windows 微信图文语音混合回归与进程重启 Outbox 回归尚未完成。 |
 

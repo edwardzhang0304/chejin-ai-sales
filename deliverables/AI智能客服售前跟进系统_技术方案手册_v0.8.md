@@ -2034,7 +2034,7 @@ Worker C2 读取某个会话时，执行顺序必须调整为：
 -> 以最终有效画面建立文字、语音、图片统一slots和screen_order
 -> 为每个slot生成稳定source_message_key，并查询本地ledger/Outbox判定NEW、OLD、OUTBOX_WAITING或身份冲突
 -> 只对NEW_IMAGE执行一次图片右键复制和进程内真实OmniAuto Vision；旧图片和Outbox图片不得重复复制或重复计费
--> 图片成功回填customer_image_understanding/visual_bridge_input；只有真实调用Vision后的技术失败才回填failed事实；历史断层或身份冲突导致未执行时保持deferred且不写终态；配置缺失则在任何图片UI动作前进入capability_paused
+-> 图片成功回填customer_image_understanding/visual_bridge_input；只有真实调用Vision后的技术失败才回填failed事实；历史断层、身份冲突或图片无法重新确认导致未执行时保持deferred且不写终态；当前屏新图片尚未收口时提交C2_IMAGE_PROCESSING_DEFERRED临时门禁，允许安全事实入库但禁止Brain且不创建永久handoff；配置缺失则在任何图片UI动作前进入capability_paused
 -> 按最终screen_order收集本轮新文字、已绑定父语音和图片终态，转换为message_event
 -> 上报 /api/workers/{worker_id}/wechat/messages/ingest
 -> 无需等待batch或batch已终态：释放本地微信 UI 锁
@@ -3056,15 +3056,29 @@ OmniAuto AI Engine 在服务端通过 Adapter 接入，不允许运行 OmniAuto 
 |---|---|
 | 新图片识别成功 | `message_type=image + item_state=completed`，保存文字白名单结果并按原槽位顺序入库。 |
 | 单张图片技术失败 | `message_type=image + item_state=failed + content=null + error_code/reason` 入库；不得伪装为文字，不自动重复 Vision。 |
-| 图片因本轮上下文不安全而未执行 | 保持 `deferred/discovered`，不写 ledger 终态、不上报失败图片；历史断层或身份冲突门禁仍阻止 Brain，后续安全时允许处理一次。 |
+| 图片因本轮上下文不安全而未执行 | 保持 `deferred/discovered`，不写 ledger 终态、不上报失败图片；当前屏新图片仍未收口时提交 `C2_IMAGE_PROCESSING_DEFERRED` 临时门禁，已确认文字和语音可以入库，但不得创建 Brain 批次、回复任务或永久 handoff；后续安全时允许处理一次。 |
 | 客户图片失败 | 同批已确认文字和语音继续入库；失败图片不得进入 Brain，后端确定性进入 handoff。 |
 | Vision 配置缺失 | `capability_paused`，停止本轮图片 UI 动作，但继续保存安全的文字、语音和销售事实；不创建永久 handoff，不把配置问题写成图片永久失败。 |
 | 同屏语音失败 | 失败语音阻断 Brain，但不阻止身份可靠的新图片执行复制和 Vision；历史断层或消息身份冲突才允许阻止图片物理操作。 |
 | 网络或后端未确认 | 完整 JSON 进入 Outbox；下轮只重传，不重复图片 RPA 或 Vision。 |
 | 后端返回 duplicated | 不新增数据库记录，但用服务端原样返回的 `source_message_key` 确认本地 ledger，避免下轮重复处理。 |
-| 图片身份或角色不确定 | 不复制、不调用 Vision、不触发 Brain；保存门禁错误和证据。 |
+| 图片身份不确定 | 不复制、不调用 Vision、不触发 Brain；保存门禁错误和证据。 |
 
 图片稳定身份以 `canonical_visual_id` 优先，必要时使用角色、同类出现序号和邻近稳定消息锚点降级。`image_hash` 只有复制后才能得到，只能增强证据，不能作为复制前唯一去重条件；画面坐标、扫描编号、读取编号和扫描时间均不得成为消息身份。
+
+图片的 `customer/self` 只由 C2 同行头像规则确定。图片事务重新截图时得到的几何
+左右侧只能用于记录 `visual_side_consistent` 物理证据，不得覆盖或否决 C2 角色。
+图片阶段必须通过一个统一结果对象表达：
+
+```text
+本轮真实执行的新图片动作
+已经形成终态的图片
+当前屏仍未收口的新图片
+是否必须执行图片后最终刷新
+是否必须阻断 Brain
+```
+
+后续流程不得再通过 `completed/failed/cached` 计数关系自行推导这些结论。
 
 ## 9. 模块8：大风车与车源索引
 

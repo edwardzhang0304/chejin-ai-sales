@@ -98,11 +98,9 @@ def _matching_bubble(
             if isinstance(bubble.get("image_physical_anchor"), dict)
             else {}
         )
-        current_role = str(
+        current_visual_side = str(
             current_anchor.get("sender_role") or bubble.get("side") or ""
         ).strip().lower()
-        if current_role != expected_role:
-            continue
         fingerprint_distance = image_visual_fingerprint_distance(
             expected_fingerprint,
             current_anchor.get("bubble_visual_fingerprint"),
@@ -116,7 +114,11 @@ def _matching_bubble(
             {
                 **bubble,
                 "identity_match_evidence": {
-                    "sender_role": current_role,
+                    "c2_sender_role": expected_role,
+                    "visual_side": current_visual_side,
+                    "visual_side_consistent": (
+                        current_visual_side == expected_role
+                    ),
                     "fingerprint_distance": fingerprint_distance,
                     "preceding_stable_message": str(
                         current_anchor.get("preceding_stable_message") or ""
