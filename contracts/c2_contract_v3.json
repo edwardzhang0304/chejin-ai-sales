@@ -1,6 +1,6 @@
 {
   "contract_version": 3,
-  "contract_revision": "3.8.0",
+  "contract_revision": "3.9.0",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "sender_roles": ["customer", "self", "system", "unknown"],
@@ -299,11 +299,13 @@
     "position_rule": "a customer gate may be cleared only by a later human sales message; a failed self voice gate may also close at the same screen_order because that failed voice is itself the persisted human-sales fact"
   },
   "temporary_capability_gate_codes": [
-    "C2_VISION_CAPABILITY_PAUSED",
-    "C2_IMAGE_PROCESSING_DEFERRED",
     "C2_INGEST_PARTITION_INCOMPLETE"
   ],
-  "temporary_capability_gate_rule": "temporary capability gates may persist message facts and block Brain, but must not create a handoff; after capability recovery the pending fact may be completed and resume the normal batch flow",
+  "retired_flow_gate_codes": [
+    "C2_VISION_CAPABILITY_PAUSED",
+    "C2_IMAGE_PROCESSING_DEFERRED"
+  ],
+  "temporary_capability_gate_rule": "temporary capability gates are request-level protocol gates only; Vision configuration and individual image processing must never use this mechanism",
   "slot_ledger_state_schema": {
     "owner": "worker",
     "required_fields": [

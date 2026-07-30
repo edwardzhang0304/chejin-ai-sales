@@ -99,6 +99,24 @@ class StorageTest(unittest.TestCase):
                 status="abandoned",
             )
 
+    def test_unreleased_image_outbox_migration_is_not_product_code(self):
+        self.assertFalse(
+            hasattr(
+                self.storage,
+                "_migrate_retired_flow_gate_outboxes",
+            )
+        )
+        self.assertFalse(
+            hasattr(
+                self.storage,
+                "_retired_flow_gate_codes",
+            )
+        )
+        self.assertNotIn(
+            "retired_migrated",
+            self.storage._c2_outbox_states(),
+        )
+
     def test_capability_paused_outbox_payload_is_immutable(self):
         original = {
             "conversation_id": "conv-quarantine-freeze",

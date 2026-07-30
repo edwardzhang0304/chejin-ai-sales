@@ -447,23 +447,47 @@ X-Request-Id: ...     # 可选
 `observation_index_fallback` 只能用于普通消息
 排序，不能用于关闭人工接管、清除安全门禁或推动 Brain。
 
-当前屏已经发现的新图片如果因位置变化、指纹无法唯一确认或右键前复核失败而
-尚未执行图片动作，Worker 必须提交临时门禁
-`C2_IMAGE_PROCESSING_DEFERRED`。该门禁必须遵守：
+`C2_IMAGE_PROCESSING_DEFERRED` 已从目标合同废弃。新 Worker 不得提交该错误码，
+后端新合同不得用它实现“文字先入库、图片以后补”的跨轮恢复。
+
+图片动作前页面变化时必须先重建完整 `final_read`：
 
 ```text
-同屏已确认文字和语音可以入库
-未收口图片不作为 completed/failed 消息上报
-不得创建 Brain 批次或 reply_action
-不得创建永久 handoff_event
-会话保持可读取，后续画面能够唯一确认时继续处理
+重建后图片已出屏 -> 本轮不建立该图片槽位，不门禁、不上滚
+重建后图片仍可见且身份唯一 -> 继续复制和 Vision
+重建后图片仍可见但身份不唯一 -> item_state=failed
 ```
+
+Vision 配置必须在 Worker 进入 C2 扫描循环前完成全局预检。配置缺失属于客户端
+`vision_not_ready`，不是单张图片状态，也不得复用后端请求级
+`capability_paused`。
 
 图片归属的唯一业务结论来自 C2 同行头像规则。复制前重新定位得到的
 `visual_side` 只能记录为物理一致性证据，不得否决或覆盖已经确认的
-`customer/self`。图片阶段必须集中返回本轮真实动作数、未收口图片身份、
-是否需要最终刷新和是否阻断 Brain；主流程不得再用
+`customer/self`。图片阶段必须集中返回本轮真实动作数、终态集合和最终刷新
+结果；主流程不得再用
 `completed + failed > cached` 等计数公式重新猜测阶段结果。
+
+复制前重新截图后，必须再次使用同一套 C2 同行头像规则计算
+`refreshed_sender_role`。只有
+`initial_sender_role == refreshed_sender_role` 且两者均为
+`customer/self` 时才允许右键；刷新后为另一角色或 `unknown` 时返回
+`C2_IMAGE_SLOT_RECONFIRM_FAILED + action_phase=not_attempted`。这项比较是
+两次 C2 正式结论的一致性校验，不是使用 `visual_side` 重新判断角色。
+
+图片观察入口必须区分：
+
+```text
+检测器正常完成且 image_count=0 -> 当前画面确实没有图片，正常继续
+检测器或物理锚点生成异常 -> C2_IMAGE_OBSERVATION_FAILED，阻断本批 Brain
+```
+
+图片观察异常不得返回空数组伪装成“没有图片”，也不得让同屏文字单独触发
+Brain。
+
+目标实现不再保留“未收口图片身份”作为跨轮业务状态。图片阶段只返回本 Flow
+动作证据和 `completed/failed/ignored` 终态；`visual_side` 不得参与角色定案、
+跨轮身份或相同图片 occurrence 分组。
 
 准入条件固定为：
 
@@ -943,10 +967,10 @@ OmniAuto 文字化结果沿用当前 schema：
 | P0 | 已收口 | `chat_reply` 只能由持有当前会话 UI 锁的 C2 flow 领取；普通任务线程被 Worker 与后端双重阻断。 |
 | P0 | 已收口 | 语音在右键前查询持久化稳定身份；最终槽位先判定 NEW/OLD/OUTBOX，发现历史断层或失败客户图片时保存事实并确定性转人工。 |
 | P0 | 已收口 | 新好友先调用 activation-confirm，再读取消息、转写语音和处理图片。 |
-| P1 | 已收口 | 普通会话复用 open-chat 确认帧；新好友为保证激活顺序，激活后单独读取。Vision 配置在任何图片 UI 动作前一次性预检。 |
+| P1 | 待按新状态机整改 | 普通会话继续复用 open-chat 确认帧；Vision 配置改为 C2 扫描循环启动前全局预检，缺配置时不得打开任何会话。 |
 | P0 | 已收口 | Sidecar、Worker 与后端已统一落实 `action_phase`；发送触发后无法确认时只进入 `unknown`，不会按普通失败清除证据。 |
 | P0 | 已收口 | Worker 已使用唯一 `merge_item_outcomes` 单调累计语音/图片逐条结果；后续调用只能合并，不能覆盖既有成功或失败结果。 |
-| P0 | 已收口 | 图片阶段统一返回新动作、终态、未收口项、最终刷新和 Brain 门禁；`C2_IMAGE_PROCESSING_DEFERRED` 允许安全事实入库但禁止 Brain，不创建永久 handoff。 |
+| P0 | 待按新状态机整改 | 删除 `C2_IMAGE_PROCESSING_DEFERRED` 和图片跨轮未收口项；出屏图片本轮不存在，仍可见但不能唯一确认则 failed；当前屏 NEW_IMAGE 必须在同一 Flow 内终态。 |
 | P0 | 已收口 | 图片角色只采用 C2 同行头像结论；复制前几何侧仅记录物理一致性证据，不再作为第二套准入规则。 |
 | P0 | 已收口 | 后端失败外壳与 Worker Outbox 统一使用 `retry / refresh_and_rebuild / capability_paused`；旧 `quarantine/abandoned` 仅作为启动迁移输入，不再是运行时终态。 |
 | P1 | 待实机 | 真实 Vision Provider 凭据、Windows 微信图文语音混合回归与进程重启 Outbox 回归尚未完成。 |

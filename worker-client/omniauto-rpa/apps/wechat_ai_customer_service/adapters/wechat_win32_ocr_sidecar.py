@@ -2120,11 +2120,13 @@ def messages_payload(
             "reason": blocking_reason,
             "error": f"WeChat messages view is blocked by: {blocking_reason}",
         }
+    image_observation_errors: list[dict[str, Any]] = []
     messages = merge_structural_image_messages(
         screenshot,
         ocr_items,
         merge_message_history_snapshots(snapshots),
         target=target,
+        observation_validation_errors=image_observation_errors,
     )
     visible_voice_hint = latest.get("visible_untranscribed_voice") if isinstance(latest.get("visible_untranscribed_voice"), dict) else {"detected": False}
     observations = build_message_observations_v3(messages, visible_voice_hint)
@@ -2136,7 +2138,7 @@ def messages_payload(
         }
         for observation in observations
         if isinstance(observation, dict) and observation.get("contract_errors")
-    ]
+    ] + image_observation_errors
     return {
         "ok": True,
         "online": True,
@@ -2324,11 +2326,13 @@ def voice_transcribe_payload(
         final_target_confirmed = bool(
             not confirm_target or c2_target_activation_confirmed(final_target_confirmation)
         )
+        image_observation_errors: list[dict[str, Any]] = []
         authoritative_messages = merge_structural_image_messages(
             final_screenshot,
             final_ocr_items,
             after_messages,
             target=target,
+            observation_validation_errors=image_observation_errors,
         )
         observations = build_message_observations_v3(authoritative_messages)
         observation_validation_errors = [
@@ -2339,7 +2343,7 @@ def voice_transcribe_payload(
             }
             for observation in observations
             if isinstance(observation, dict) and observation.get("contract_errors")
-        ]
+        ] + image_observation_errors
         visible_menu_texts = voice_transcribe_menu_texts_from_items(final_ocr_items)
         visible_panel_texts = chat_info_panel_texts_from_items(final_ocr_items)
         final_frame_reusable = bool(
@@ -5253,10 +5257,30 @@ def merge_structural_image_messages(
     messages: list[dict[str, Any]],
     *,
     target: str,
+    observation_validation_errors: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     merged = [dict(item) for item in messages if isinstance(item, dict)]
     if screenshot is None:
         return merged
+
+    def image_observation_failed(
+        stage: str,
+        exc: Exception,
+    ) -> list[dict[str, Any]]:
+        error = {
+            "observation_id": "structural-image-observer",
+            "row_kind": "image_bubble",
+            "error_codes": ["C2_IMAGE_OBSERVATION_FAILED"],
+            "stage": str(stage),
+            "error_type": type(exc).__name__,
+        }
+        if observation_validation_errors is None:
+            raise RuntimeError(
+                f"C2_IMAGE_OBSERVATION_FAILED:{stage}:{type(exc).__name__}"
+            ) from exc
+        observation_validation_errors.append(error)
+        return merged
+
     try:
         from apps.wechat_ai_customer_service.optional_plugins.vision.capture.surface import (
             visual_image_messages_from_current_surface,
@@ -5273,8 +5297,11 @@ def merge_structural_image_messages(
             side_filter="all",
             max_images=8,
         )
-    except Exception:
-        image_messages = []
+    except Exception as exc:
+        return image_observation_failed(
+            "detect_visual_image_bubbles",
+            exc,
+        )
     for image_message in image_messages:
         bounds = image_message.get("bubble_rect") if isinstance(image_message, dict) else None
         avatar_alignment = message_row_avatar_role_details(screenshot, bounds or [], screenshot.size)
@@ -5290,8 +5317,11 @@ def merge_structural_image_messages(
             image_messages,
             merged,
         )
-    except Exception:
-        image_messages = []
+    except Exception as exc:
+        return image_observation_failed(
+            "attach_image_physical_anchors",
+            exc,
+        )
     for image_message in image_messages:
         physical_anchor = (
             image_message.get("image_physical_anchor")

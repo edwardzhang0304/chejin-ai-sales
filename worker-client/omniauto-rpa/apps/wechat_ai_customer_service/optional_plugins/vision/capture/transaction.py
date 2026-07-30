@@ -58,7 +58,7 @@ def _bounds(value: Any) -> tuple[float, float, float, float] | None:
     return left, top, right, bottom
 
 
-def _matching_bubble(
+def _bubble_match_evidence(
     screenshot: Any,
     bubbles: list[dict[str, Any]],
     messages: list[dict[str, Any]],
@@ -72,14 +72,14 @@ def _matching_bubble(
     ).strip().lower()
     expected_role = str(expected_role or "").strip().lower()
     if not expected_fingerprint or expected_role not in {"customer", "self"}:
-        return {}
+        return {"state": "identity_invalid", "bubble": {}}
     try:
         expected_occurrence = int(anchor.get("occurrence_index") or 0)
         expected_occurrence_count = int(anchor.get("occurrence_count") or 0)
     except (TypeError, ValueError):
-        return {}
+        return {"state": "identity_invalid", "bubble": {}}
     if expected_occurrence_count <= 0:
-        return {}
+        return {"state": "identity_invalid", "bubble": {}}
     expected_preceding = str(
         anchor.get("preceding_stable_message") or ""
     ).strip()
@@ -92,14 +92,18 @@ def _matching_bubble(
         messages,
     )
     fingerprint_matches: list[dict[str, Any]] = []
+    role_conflicts: list[dict[str, Any]] = []
     for bubble in current_candidates:
         current_anchor = (
             bubble.get("image_physical_anchor")
             if isinstance(bubble.get("image_physical_anchor"), dict)
             else {}
         )
+        current_role = str(
+            current_anchor.get("sender_role") or ""
+        ).strip().lower()
         current_visual_side = str(
-            current_anchor.get("sender_role") or bubble.get("side") or ""
+            current_anchor.get("visual_side") or bubble.get("side") or ""
         ).strip().lower()
         fingerprint_distance = image_visual_fingerprint_distance(
             expected_fingerprint,
@@ -110,14 +114,29 @@ def _matching_bubble(
             or fingerprint_distance > IMAGE_FINGERPRINT_MAX_DISTANCE
         ):
             continue
+        if current_role != expected_role:
+            role_conflicts.append(
+                {
+                    "expected_c2_sender_role": expected_role,
+                    "refreshed_c2_sender_role": (
+                        current_role
+                        if current_role in {"customer", "self"}
+                        else "unknown"
+                    ),
+                    "visual_side": current_visual_side,
+                    "fingerprint_distance": fingerprint_distance,
+                }
+            )
+            continue
         fingerprint_matches.append(
             {
                 **bubble,
                 "identity_match_evidence": {
-                    "c2_sender_role": expected_role,
+                    "expected_c2_sender_role": expected_role,
+                    "refreshed_c2_sender_role": current_role,
                     "visual_side": current_visual_side,
                     "visual_side_consistent": (
-                        current_visual_side == expected_role
+                        current_visual_side == current_role
                     ),
                     "fingerprint_distance": fingerprint_distance,
                     "preceding_stable_message": str(
@@ -169,9 +188,34 @@ def _matching_bubble(
         if expected_neighbors and matching_neighbor_count == 0:
             continue
         contextual_matches.append(bubble)
-    if len(contextual_matches) != 1:
-        return {}
-    return contextual_matches[0]
+    if len(contextual_matches) == 1:
+        return {
+            "state": "matched",
+            "bubble": contextual_matches[0],
+            "fingerprint_match_count": len(fingerprint_matches),
+            "contextual_match_count": 1,
+        }
+    if not fingerprint_matches:
+        if role_conflicts:
+            return {
+                "state": "role_mismatch",
+                "bubble": {},
+                "fingerprint_match_count": len(role_conflicts),
+                "contextual_match_count": 0,
+                "role_conflicts": role_conflicts,
+            }
+        return {
+            "state": "not_visible",
+            "bubble": {},
+            "fingerprint_match_count": 0,
+            "contextual_match_count": 0,
+        }
+    return {
+        "state": "ambiguous",
+        "bubble": {},
+        "fingerprint_match_count": len(fingerprint_matches),
+        "contextual_match_count": len(contextual_matches),
+    }
 
 
 def _dismiss_menu_safely(port: Any) -> None:
@@ -292,16 +336,34 @@ def _acquire_current_image_via_ports(
                 time_markers=[item for item in (frame.get("time_markers") or []) if isinstance(item, dict)],
             )
             if not bubbles:
-                return fail("image_bubble_not_found")
-            bubble = _matching_bubble(
+                return fail(
+                    "image_bubble_not_visible_after_refresh",
+                    state="image_not_visible",
+                )
+            match_evidence = _bubble_match_evidence(
                 surface,
                 bubbles,
                 [item for item in (frame.get("messages") or []) if isinstance(item, dict)],
                 expected_anchor=expected_anchor,
                 expected_role=sender_role,
             )
+            if match_evidence.get("state") == "not_visible":
+                return fail(
+                    "image_bubble_not_visible_after_refresh",
+                    state="image_not_visible",
+                    transaction={
+                        "identity_match_evidence": match_evidence,
+                    },
+                )
+            bubble = dict(match_evidence.get("bubble") or {})
             if not bubble:
-                return fail("image_bubble_slot_not_reconfirmed")
+                return fail(
+                    "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+                    state="image_identity_failed",
+                    transaction={
+                        "identity_match_evidence": match_evidence,
+                    },
+                )
             if _cancelled(data):
                 return fail("vision_cancelled")
             # Message ownership is decided by C2's same-row avatar contract.
@@ -516,6 +578,13 @@ def _acquire_current_image_via_ports(
                     },
                 )
             image_sha256 = hashlib.sha256(bytes(payload.image_bytes)).hexdigest()
+            visual_side = str(
+                (bubble.get("identity_match_evidence") or {}).get(
+                    "visual_side"
+                )
+                or bubble.get("side")
+                or "unknown"
+            ).strip().lower()
             if callable(journal_update):
                 journal_update(
                     action_phase="confirmed",
@@ -530,7 +599,7 @@ def _acquire_current_image_via_ports(
                 "occurrence": {
                     "sender": direction,
                     "sender_role": direction,
-                    "visual_side": direction,
+                    "visual_side": visual_side,
                     "pending_signal_id": str(data.get("pending_signal_id") or ""),
                     "message_id": str(data.get("message_id") or data.get("pending_signal_id") or "memory-current-image"),
                 },
@@ -545,7 +614,11 @@ def _acquire_current_image_via_ports(
                     "clipboard_image_valid": True,
                     "clipboard_image_matches_target": True,
                     "clipboard_fingerprint_retry_count": retry_attempt,
-                    "visual_side": direction,
+                    "visual_side": visual_side,
+                    "visual_side_consistent": (
+                        visual_side in {"customer", "self"}
+                        and visual_side == direction
+                    ),
                     "slot_identity_confirmed": True,
                     "slot_identity_evidence": dict(
                         bubble.get("identity_match_evidence") or {}

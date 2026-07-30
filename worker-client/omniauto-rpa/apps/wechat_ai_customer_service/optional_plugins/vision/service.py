@@ -63,6 +63,10 @@ class VisionService:
                 "applied": False,
                 "adoptable": False,
                 "reason": str(acquisition.get("reason") or "vision_port_transaction_failed"),
+                "acquisition_state": str(
+                    acquisition.get("state")
+                    or "vision_port_transaction_failed"
+                ),
                 "clipboard_transaction": dict(acquisition.get("transaction") or {}),
             }
         payload = acquisition.pop("_ephemeral_clipboard_image", None)

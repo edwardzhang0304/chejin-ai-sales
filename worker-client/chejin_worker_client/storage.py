@@ -38,6 +38,27 @@ def _c2_outbox_states() -> set[str]:
     }
 
 
+def _c2_outbox_terminal_states() -> set[str]:
+    state_machine = (
+        c2_contract_v3().get("outbox_recovery_contract") or {}
+    ).get("state_machine")
+    properties = (
+        state_machine.get("state_properties")
+        if isinstance(state_machine, dict)
+        else {}
+    )
+    return {
+        str(state)
+        for state, definition in (
+            properties.items()
+            if isinstance(properties, dict)
+            else []
+        )
+        if isinstance(definition, dict)
+        and definition.get("automatic_retry") is False
+    }
+
+
 def _outbox_backoff_seconds(attempt_count: int) -> int:
     contract = c2_contract_v3().get("outbox_recovery_contract") or {}
     machine = contract.get("state_machine") or {}
@@ -682,32 +703,42 @@ def enqueue_c2_outbox(payload: dict[str, Any]) -> str:
     outbox_id = _c2_outbox_id(payload)
     now = utc_now_iso()
     encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    immutable_statuses = sorted(
+        _c2_outbox_terminal_states() | {"capability_paused"}
+    )
+    immutable_placeholders = ",".join(
+        "?" for _ in immutable_statuses
+    )
     with db_connection() as conn:
         conn.execute(
-            """
+            f"""
             INSERT INTO c2_ingest_outbox (
               outbox_id, conversation_id, authorization_revision, read_run_id,
               payload_json, status, attempt_count, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, 'waiting', 0, ?, ?)
             ON CONFLICT(outbox_id) DO UPDATE SET
               payload_json = CASE
-                WHEN c2_ingest_outbox.status IN (
-                  'confirmed', 'capability_paused', 'split_completed',
-                  'target_terminated', 'conversation_terminated'
-                )
+                WHEN c2_ingest_outbox.status IN ({immutable_placeholders})
                 THEN c2_ingest_outbox.payload_json
                 ELSE excluded.payload_json
               END,
               updated_at = CASE
-                WHEN c2_ingest_outbox.status IN (
-                  'confirmed', 'capability_paused', 'split_completed',
-                  'target_terminated', 'conversation_terminated'
-                )
+                WHEN c2_ingest_outbox.status IN ({immutable_placeholders})
                 THEN c2_ingest_outbox.updated_at
                 ELSE excluded.updated_at
               END
             """,
-            (outbox_id, conversation_id, authorization_revision, read_run_id, encoded, now, now),
+            (
+                outbox_id,
+                conversation_id,
+                authorization_revision,
+                read_run_id,
+                encoded,
+                now,
+                now,
+                *immutable_statuses,
+                *immutable_statuses,
+            ),
         )
         conn.commit()
     return outbox_id
@@ -1262,12 +1293,7 @@ def prune_terminal_outboxes(
             (
                 "c2_ingest_outbox",
                 "outbox_id",
-                (
-                    "confirmed",
-                    "split_completed",
-                    "target_terminated",
-                    "conversation_terminated",
-                ),
+                tuple(sorted(_c2_outbox_terminal_states())),
             ),
             (
                 "reply_send_ack_outbox",

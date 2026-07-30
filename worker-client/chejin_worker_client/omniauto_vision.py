@@ -249,7 +249,6 @@ class _VisionHostState:
         )
         self.hwnd = int(self.window_context.get("hwnd") or 0)
         self.window_context_validated = False
-        self.bubble_rect: list[int] = []
         self.trace_id = str(trace_id or "")
         self.started_at = time.perf_counter()
         self.events: list[dict[str, Any]] = []
@@ -920,7 +919,7 @@ def process_image_slot(
         configured = configuration.get("config")
         if not isinstance(configured, dict):
             return early_result(
-                "capability_paused",
+                "failed",
                 "vision_configuration_incomplete",
                 missing_configuration=list(configuration.get("missing_configuration") or []),
             )
@@ -932,13 +931,16 @@ def process_image_slot(
         != "sidecar_selected_main_window"
     ):
         return early_result(
-            "capability_paused",
+            "failed",
             "vision_window_context_missing",
         )
     if not isinstance(image_physical_anchor, dict) or not str(
         image_physical_anchor.get("bubble_visual_fingerprint") or ""
     ).strip():
-        return early_result("deferred", "image_slot_identity_missing")
+        return early_result(
+            "failed",
+            "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+        )
 
     from apps.wechat_ai_customer_service.optional_plugins.vision.plugin import BuiltinVisionPlugin
     from apps.wechat_ai_customer_service.optional_plugins.vision.ports import VisionHostPorts
@@ -947,7 +949,6 @@ def process_image_slot(
         resolved_trace_id,
         window_context=window_context,
     )
-    state.bubble_rect = bubble_rect
     vision_settings = runtime_config.get("customer_image_understanding")
     if not isinstance(vision_settings, dict):
         vision_settings = {}
@@ -1062,6 +1063,7 @@ def process_image_slot(
     if not isinstance(understanding, dict):
         reason = str(result.get("reason") or "vision_understanding_missing")
         transaction = dict(result.get("clipboard_transaction") or {})
+        acquisition_state = str(result.get("acquisition_state") or "")
         state.record(
             "vision_provider",
             "failed",
@@ -1070,7 +1072,11 @@ def process_image_slot(
             image_persisted=False,
         )
         return finish_result({
-            "state": "failed",
+            "state": (
+                "not_visible"
+                if acquisition_state == "image_not_visible"
+                else "failed"
+            ),
             "reason": reason,
             "action_phase": str(
                 transaction.get("action_phase") or "not_attempted"

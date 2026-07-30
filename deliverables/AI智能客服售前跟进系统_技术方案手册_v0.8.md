@@ -50,6 +50,7 @@
 | 2026-07-24 | v0.8内部修订 | 手册仍混有“等待 Brain 释放 UI 锁、chat_reply 到达后另行抢锁、180 秒固定持锁上限”的旧并发方案，销售回复解除人工接管也缺少可靠顺序口径 | 统一为 C2-C3 单会话串行事务：打开会话后保持当前会话和 UI 锁，完成文字/语音/图片、入库、Brain、回复前复查和发送终态后才释放；正常链路的 chat_reply 由当前 C2 Flow 领取，恢复线程只处理崩溃恢复；长动作使用租约续期和进展型 watchdog；销售回复以稳定消息身份和最终画面相对顺序为主证据，occurred_at 仅作辅助。 |
 | 2026-07-25 | v0.8内部修订 | add_friend 把点击后的诊断截图/OCR误写成成功前置条件，任务租约也未区分明确失效与暂时网络异常；C2 Outbox、发送回执的全局阻断口径不够集中 | add_friend 以最终“确定”按钮物理点击成功作为 `invite_sent` 完成点，不等待微信成功状态；点击后诊断只能发现明确失败，诊断异常不得降级成功点击。租约瞬时续租异常在本地到期前重试，明确失效或真实到期才停止。任何未获后端确认的消息 Outbox 或 `sent_ack` 均阻断全部新会话扫描和 UI 动作。 |
 | 2026-07-25 | v0.8内部修订 | Outbox `quarantine` 和发送回执 `abandoned` 被错误设计为需要人工修消息或人工确认，无法形成无人值守闭环 | 删除技术消息的人工处置终态：消息级识别失败以 `item_state=failed` 正常入库并阻断 Brain；临时故障按退避周期自动重试；请求级合同不兼容进入 `capability_paused` 并自动探测恢复；发送无法确认由后端持久化 `unknown_send_result`，禁止补发但自动结束原回复动作。 |
+| 2026-07-30 | v0.8内部修订 | 图片 `deferred` 临时门禁没有定义跨轮所有者、被顶出屏后的结束方式和已入库文字重新触发 Brain 的协议，导致流程与 PUML“新槽位必须终态”冲突 | 删除会话内图片 `pending/deferred`：Vision 配置改为 C2 启动前全局预检；只处理 final_read 当前屏图片；出屏图片不建立槽位，仍可见但无法唯一确认则 failed；当前屏 NEW_IMAGE 必须在同一 Flow 内结束为 completed/failed/ignored。 |
 
 ---
 
@@ -1676,7 +1677,7 @@ unique(worker_id, conversation_id, dedupe_key)
 | 语音转写文本缺少独立头像 | 只能继承已确认的父语音 `parent_voice` 角色；无法绑定父语音则不入库。 |
 | 发送方无法判断 | 返回 `ignored` 或 `sender_role=unknown`，不得触发 AI 回复。 |
 | 消息顺序异常 | 不得假定物理处理顺序等于对话顺序。V16.104 已按最终权威画面建立统一 `screen_order`，并完成 Windows 实机回归。 |
-| 图片气泡 | 先在最终画面建立统一槽位和稳定身份；只对 `NEW_IMAGE` 执行内存剪贴板事务和 Vision。`OLD/OUTBOX` 不重复复制或调用模型；历史断层或身份冲突时只延期，不写图片终态，门禁解除后仍可处理一次。 |
+| 图片气泡 | 先在最终画面建立统一槽位和稳定身份；只对 `NEW_IMAGE` 执行内存剪贴板事务和 Vision。`OLD/OUTBOX` 不重复复制或调用模型；被顶出 final_read 的图片本轮不存在，仍可见但身份冲突或无法唯一确认时形成 failed 事实，不保留跨轮 deferred。 |
 
 #### 6.0.3.5 逐条结果单调合并
 
@@ -2034,7 +2035,7 @@ Worker C2 读取某个会话时，执行顺序必须调整为：
 -> 以最终有效画面建立文字、语音、图片统一slots和screen_order
 -> 为每个slot生成稳定source_message_key，并查询本地ledger/Outbox判定NEW、OLD、OUTBOX_WAITING或身份冲突
 -> 只对NEW_IMAGE执行一次图片右键复制和进程内真实OmniAuto Vision；旧图片和Outbox图片不得重复复制或重复计费
--> 图片成功回填customer_image_understanding/visual_bridge_input；只有真实调用Vision后的技术失败才回填failed事实；历史断层、身份冲突或图片无法重新确认导致未执行时保持deferred且不写终态；当前屏新图片尚未收口时提交C2_IMAGE_PROCESSING_DEFERRED临时门禁，允许安全事实入库但禁止Brain且不创建永久handoff；配置缺失则在任何图片UI动作前进入capability_paused
+-> 图片成功回填customer_image_understanding/visual_bridge_input；右键前仍可见但身份无法唯一确认、复制失败、Vision失败或结果非法均回填failed事实；被顶出最终当前屏的图片本轮不建立槽位；禁止会话内图片deferred/pending
 -> 按最终screen_order收集本轮新文字、已绑定父语音和图片终态，转换为message_event
 -> 上报 /api/workers/{worker_id}/wechat/messages/ingest
 -> 无需等待batch或batch已终态：释放本地微信 UI 锁
@@ -2458,7 +2459,7 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 - C2 Worker 只提交消息事实，不创建 `reply_action` 或回复文案；后端状态机可以根据该批事实启动 Brain、创建 `reply_action` 和任务中心任务。
 - `messages/ingest` 不直接下发发送动作；当前 C2 单会话流程通过 `message_batch` 续行票等待 Brain，并领取同一批次的 `chat_reply`。
 - Worker 为 `paused` 时停止所有微信 UI 操作，包括首屏扫描、定向读取、语音、图片、加好友和发送；心跳与已落入本地 Outbox 的事实重传可以继续。
-- Vision 配置缺失只暂停图片理解：文字、语音和销售消息继续读取入库；图片保持待处理并阻断 Brain，配置恢复后仅补处理该图片。
+- Vision 配置属于 C2 启动前全局前置条件：API Key、模型或地址缺失时 C2 为 `vision_not_ready`，不得扫描或打开会话；配置恢复并重新预检通过后才允许进入 C2。
 - 服务端是状态唯一事实源；Worker 只上报扫描和消息事实，不直接改变最终业务状态。
 
 ### 6.4 C2错误码
@@ -2482,6 +2483,8 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 | `MESSAGE_CONVERSATION_NOT_BOUND` | 上报消息的会话未绑定。 | 拒绝入库。 |
 | `MESSAGE_DEDUPE_KEY_MISSING` | 消息缺少去重键。 | 拒绝入库。 |
 | `MESSAGE_INGEST_DUPLICATED` | 去重键已存在。 | 返回 duplicated，不算失败。 |
+| `C2_VISION_NOT_READY` | C2 启动前发现真实 Vision Provider 的 API Key、模型或地址缺失。 | 不进入扫描循环、不打开会话；配置恢复并重新预检通过后启动 C2。 |
+| `C2_IMAGE_SLOT_RECONFIRM_FAILED` | 图片仍在最终当前屏，但动作前无法用稳定身份唯一确认原槽位。 | 不右键、不调用 Vision；以 failed 图片事实入库并阻断 Brain，不跨轮重试。 |
 | `VOICE_TRANSCRIBE_FAILED` | 语音转文字整体失败，无法确认有效转写文本。 | 记录证据，不触发 C3，不生成 `reply_action`。 |
 | `VOICE_TRANSCRIBE_CLICK_FAILED` | OmniAuto 找到疑似语音转文字入口，但点击或转写动作失败。 | 记录截图和 OCR 证据，不自动重试发送，不触发 AI。 |
 | `VOICE_TRANSCRIBE_LOCK_TIMEOUT` | 语音转写等待 Local WeChat UI Lock 超时。 | 本轮跳过，保持会话原状态，后续扫描可再尝试。 |
@@ -2501,6 +2504,8 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 - 未绑定或绑定冲突的会话不触发 AI 回复。
 - Worker 能读取已绑定会话的客户文字消息并上报服务端。
 - Worker 先执行 OmniAuto `messages` 读取/探测；发现未转写语音时再执行 `voice-transcribe`，客户语音成功转写后按 `message_type=voice` 入库，并保留 `raw_payload.voice_transcription` 证据。
+- C2 进入扫描循环前必须通过真实 Vision 配置预检；当前屏 NEW_IMAGE 必须在同一 Flow 内结束为 completed/failed/ignored，不允许图片 pending/deferred。
+- 图片动作前重建最终画面后已经出屏的图片本轮不处理；仍在屏幕但无法唯一确认时形成 failed 事实，不允许反复右键或跨轮 Vision。
 - 语音只识别到时长、转写失败、目标客户未确认、UI 锁超时或微信窗口不可控时，不得触发 C3 自动回复，不得把语音时长当作客户正文。
 - 同一消息在 Worker 重启、断网恢复、重复扫描时不会重复入库和重复触发后续动作。
 - 会话绑定失败、消息读取失败、微信窗口不可控、Sidecar 超时均有错误码、trace_id 和可查看证据。
@@ -3018,6 +3023,7 @@ OmniAuto AI Engine 在服务端通过 Adapter 接入，不允许运行 OmniAuto 
 - Worker 负责最终画面统一槽位、`screen_order`、跨轮 `source_message_key/dedupe_key`、本地 ledger、Outbox 和 V3 映射。
 - 后端负责授权、消息事实持久化、数据库最终去重、`message_batch`、状态机、Brain/Guard、handoff 和 `chat_reply`。
 - Vision 只理解图片，不生成客户可见回复；唯一回复作者是服务端 `customer_service_brain`。
+- 会话内不存在图片 `pending/deferred`。全局能力未就绪在进入 C2 前阻断；进入会话后的当前屏 NEW_IMAGE 必须在同一 Flow 内结束为 `completed/failed/ignored`。
 
 ### 8.2 单会话图片处理流程
 
@@ -3029,6 +3035,8 @@ OmniAuto AI Engine 在服务端通过 Adapter 接入，不允许运行 OmniAuto 
 -> OLD图片不复制、不调用Vision；OUTBOX图片只重传原JSON
 -> 只把NEW_IMAGE加入图片增强队列
 -> 再次确认图片bubble_rect、同行头像角色、当前短码、private和authorization_revision
+-> 刷新后的同行头像角色必须与初始C2角色一致；另一角色或unknown时零点击并failed
+-> 页面已经变化时先重建完整final_read；图片已出屏则从本轮候选删除，仍可见但无法唯一匹配则failed
 -> 右键图片，OCR确认菜单，点击复制
 -> 从Windows剪贴板把位图读入当前进程内存
 -> 在内存中完成格式校验、尺寸限制和image_hash
@@ -3048,7 +3056,7 @@ OmniAuto AI Engine 在服务端通过 Adapter 接入，不允许运行 OmniAuto 
 - 原图只在 Worker 当前进程内存中短暂存在，单张 Vision 完成后立即释放；不得写入 ledger、Outbox、日志、截图证据或后端。
 - 允许持久化的只有文本白名单投影 `customer_image_understanding`、`visual_bridge_input` 和不含原图内容的事务审计。
 - 图片继续复用 `POST /api/workers/{worker_id}/wechat/messages/ingest`；不得新增 `image_recognition` 同义字段或图片专用后端接口。
-- 真实 Provider 配置必须在任何图片右键前一次性预检。API Key、模型或地址缺失时进入 `capability_paused`，本轮不点击图片、不写图片终态；文字、语音和销售消息继续入库，但不创建 Brain 批次或永久 handoff。会话保持可读取，配置恢复后只补处理该图片并恢复正常批次流程。不得用 mock 冒充真实能力完成。
+- 真实 Provider 配置必须在 C2 扫描循环启动前完成全局预检。API Key、模型或地址缺失时 Worker 进入 `vision_not_ready`，不得首屏扫描、定向读取或打开会话；配置恢复并重新预检通过后才能启动 C2。不得用 mock 冒充真实能力完成。
 
 ### 8.4 成功、失败与重试口径
 
@@ -3056,18 +3064,23 @@ OmniAuto AI Engine 在服务端通过 Adapter 接入，不允许运行 OmniAuto 
 |---|---|
 | 新图片识别成功 | `message_type=image + item_state=completed`，保存文字白名单结果并按原槽位顺序入库。 |
 | 单张图片技术失败 | `message_type=image + item_state=failed + content=null + error_code/reason` 入库；不得伪装为文字，不自动重复 Vision。 |
-| 图片因本轮上下文不安全而未执行 | 保持 `deferred/discovered`，不写 ledger 终态、不上报失败图片；当前屏新图片仍未收口时提交 `C2_IMAGE_PROCESSING_DEFERRED` 临时门禁，已确认文字和语音可以入库，但不得创建 Brain 批次、回复任务或永久 handoff；后续安全时允许处理一次。 |
+| 图片在动作前已被顶出最终当前屏 | 重建 final_read 后本轮不建立该图片槽位，不上滚、不追踪、不产生失败事实或 Brain 门禁；后续自然可见时重新观察。 |
+| 图片仍在最终当前屏但无法唯一确认原稳定身份 | `message_type=image + item_state=failed + content=null + error_code=C2_IMAGE_SLOT_RECONFIRM_FAILED` 入库；不右键、不调用 Vision、不跨轮重试。 |
 | 客户图片失败 | 同批已确认文字和语音继续入库；失败图片不得进入 Brain，后端确定性进入 handoff。 |
-| Vision 配置缺失 | `capability_paused`，停止本轮图片 UI 动作，但继续保存安全的文字、语音和销售事实；不创建永久 handoff，不把配置问题写成图片永久失败。 |
+| Vision 配置缺失 | C2 启动前全局 `vision_not_ready`；不得进入任何会话 Flow。该状态不是图片消息状态，也不使用后端 `capability_paused`。 |
 | 同屏语音失败 | 失败语音阻断 Brain，但不阻止身份可靠的新图片执行复制和 Vision；历史断层或消息身份冲突才允许阻止图片物理操作。 |
 | 网络或后端未确认 | 完整 JSON 进入 Outbox；下轮只重传，不重复图片 RPA 或 Vision。 |
 | 后端返回 duplicated | 不新增数据库记录，但用服务端原样返回的 `source_message_key` 确认本地 ledger，避免下轮重复处理。 |
 | 图片身份不确定 | 不复制、不调用 Vision、不触发 Brain；保存门禁错误和证据。 |
+| 图片检测成功且数量为 0 | 按当前画面没有图片正常继续。 |
+| 图片检测器或物理锚点生成异常 | 返回 `C2_IMAGE_OBSERVATION_FAILED` 结构化合同错误；同屏文字可保留在本地事实，但本批不得入库后触发 Brain，禁止伪装成零图片。 |
 
 图片稳定身份以 `canonical_visual_id` 优先，必要时使用角色、同类出现序号和邻近稳定消息锚点降级。`image_hash` 只有复制后才能得到，只能增强证据，不能作为复制前唯一去重条件；画面坐标、扫描编号、读取编号和扫描时间均不得成为消息身份。
 
 图片的 `customer/self` 只由 C2 同行头像规则确定。图片事务重新截图时得到的几何
 左右侧只能用于记录 `visual_side_consistent` 物理证据，不得覆盖或否决 C2 角色。
+但重新截图后仍必须再次执行同一套 C2 同行头像规则，并将结果与初始 C2
+角色比较；两次正式角色不一致或刷新结果为 `unknown` 时不得右键。
 图片阶段必须通过一个统一结果对象表达：
 
 ```text

@@ -26,9 +26,7 @@ from chejin_worker_client.c2_outbox_recovery import (
     split_ingest_payload,
 )
 from chejin_worker_client.wechat_c2 import (
-    build_image_processing_gate,
     build_message_ingest_payload as build_worker_message_ingest_payload,
-    build_vision_capability_pause_gate,
 )
 
 from app.contracts.c2 import c2_contract_v3, contract_revision, contract_sha256
@@ -1212,7 +1210,7 @@ def test_empty_flow_gate_creates_handoff_instead_of_silently_skipping_brain_guar
         assert db.query(Task).filter(Task.task_type == "chat_reply").count() == 0
 
 
-def test_vision_capability_pause_persists_safe_facts_without_handoff_and_recovers():
+def test_retired_vision_capability_gate_is_rejected_without_persisting_facts():
     worker = _create_worker()
     _create_sales(worker["id"])
     _create_lead("Vision 配置恢复客户", "13896676689")
@@ -1238,19 +1236,17 @@ def test_vision_capability_pause_persists_safe_facts_without_handoff_and_recover
         ],
         read_reason="waiting_user_reply",
     )
-    (
-        paused_payload["evidence"]["flow_gate_errors"],
-        paused_payload["evidence"]["flow_gate_details"],
-    ) = build_vision_capability_pause_gate(
-        [
-            {
-                "row_kind": "image_bubble",
-                "ledger_state": "NEW_MESSAGE",
-                "screen_order": 2,
-                "order_source": "visual_top",
-            }
-        ]
-    )
+    paused_payload["evidence"]["flow_gate_errors"] = [
+        "C2_VISION_CAPABILITY_PAUSED"
+    ]
+    paused_payload["evidence"]["flow_gate_details"] = [
+        {
+            "error_code": "C2_VISION_CAPABILITY_PAUSED",
+            "position_source": "slot_ledger_visual_top",
+            "min_screen_order": 2,
+            "max_screen_order": 2,
+        }
+    ]
 
     paused = client.post(
         f"/api/workers/{worker['id']}/wechat/messages/ingest",
@@ -1258,47 +1254,17 @@ def test_vision_capability_pause_persists_safe_facts_without_handoff_and_recover
         headers=_worker_headers(worker),
     )
 
-    assert paused.status_code == 200, paused.text
-    paused_data = paused.json()["data"]
-    assert paused_data["ingested_count"] == 1
-    assert paused_data["message_batch"]["batch_status"] == "capability_paused"
+    assert paused.status_code == 409, paused.text
+    assert paused.json()["code"] == "MESSAGE_FLOW_GATE_CODE_RETIRED"
     with SessionLocal() as db:
         conversation = db.get(Conversation, binding["conversation_id"])
         assert conversation.status == "waiting_user_reply"
         assert db.query(HandoffEvent).count() == 0
         assert db.query(MessageBatch).count() == 0
-
-    recovered_payload = _v3_ingest_payload(
-        binding,
-        remark_code,
-        read_run_id="read-vision-capability-recovered",
-        messages=[
-            _v3_message(
-                "recovered-image",
-                role="customer",
-                message_type="image",
-                content="一张已经成功识别的车辆图片",
-                screen_order=2,
-                )
-        ],
-        read_reason="waiting_user_reply",
-    )
-    recovered = client.post(
-        f"/api/workers/{worker['id']}/wechat/messages/ingest",
-        json=recovered_payload,
-        headers=_worker_headers(worker),
-    )
-
-    assert recovered.status_code == 200, recovered.text
-    recovered_data = recovered.json()["data"]
-    assert recovered_data["ingested_count"] == 1
-    assert recovered_data["message_batch"]["batch_id"]
-    with SessionLocal() as db:
-        assert db.query(HandoffEvent).count() == 0
-        assert db.query(MessageBatch).count() == 1
+        assert db.query(MessageEvent).count() == 0
 
 
-def test_deferred_image_persists_text_without_brain_or_handoff():
+def test_retired_deferred_image_gate_is_rejected_without_persisting_text():
     worker = _create_worker()
     _create_sales(worker["id"])
     _create_lead("图片暂缓客户", "13896676690")
@@ -1324,28 +1290,17 @@ def test_deferred_image_persists_text_without_brain_or_handoff():
         ],
         read_reason="waiting_user_reply",
     )
-    (
-        payload["evidence"]["flow_gate_errors"],
-        payload["evidence"]["flow_gate_details"],
-    ) = build_image_processing_gate(
+    payload["evidence"]["flow_gate_errors"] = [
+        "C2_IMAGE_PROCESSING_DEFERRED"
+    ]
+    payload["evidence"]["flow_gate_details"] = [
         {
-            "brain_gate_codes": ["C2_IMAGE_PROCESSING_DEFERRED"],
-            "unresolved_reason_by_source": {
-                "deferred-image-source": (
-                    "C2_IMAGE_PROCESSING_DEFERRED"
-                )
-            },
-        },
-        [
-            {
-                "row_kind": "image_bubble",
-                "ledger_state": "NEW_MESSAGE",
-                "source_message_key": "deferred-image-source",
-                "screen_order": 2,
-                "order_source": "visual_top",
-            }
-        ],
-    )
+            "error_code": "C2_IMAGE_PROCESSING_DEFERRED",
+            "position_source": "slot_ledger_visual_top",
+            "min_screen_order": 2,
+            "max_screen_order": 2,
+        }
+    ]
 
     response = client.post(
         f"/api/workers/{worker['id']}/wechat/messages/ingest",
@@ -1353,14 +1308,12 @@ def test_deferred_image_persists_text_without_brain_or_handoff():
         headers=_worker_headers(worker),
     )
 
-    assert response.status_code == 200, response.text
-    data = response.json()["data"]
-    assert data["ingested_count"] == 1
-    assert data["message_batch"]["batch_status"] == "capability_paused"
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "MESSAGE_FLOW_GATE_CODE_RETIRED"
     with SessionLocal() as db:
         conversation = db.get(Conversation, binding["conversation_id"])
         assert conversation.status == "waiting_user_reply"
-        assert db.query(MessageEvent).count() == 1
+        assert db.query(MessageEvent).count() == 0
         assert db.query(MessageBatch).count() == 0
         assert db.query(HandoffEvent).count() == 0
         assert db.query(ReplyAction).count() == 0
