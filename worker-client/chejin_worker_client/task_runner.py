@@ -54,6 +54,7 @@ from .storage import (
     list_c2_outbox_waiting,
     list_c2_action_journal,
     list_c2_ledger_entries,
+    list_waiting_c2_ledger_conversation_ids,
     list_reply_send_ack_outbox,
     load_c2_outbox_entry,
     load_c2_state,
@@ -1438,6 +1439,7 @@ class TaskRunner:
         binding: Binding,
         *,
         reason: str,
+        allowed_image_recovery_conversation_id: str = "",
     ) -> bool:
         """Recover durable work before authorizing any new WeChat UI action."""
 
@@ -1467,7 +1469,53 @@ class TaskRunner:
                 metadata={"reason": reason},
             )
             return False
+        pending_image_conversations = (
+            self._pending_image_recovery_conversation_ids()
+        )
+        allowed_recovery = str(
+            allowed_image_recovery_conversation_id or ""
+        ).strip()
+        if pending_image_conversations and (
+            not allowed_recovery
+            or allowed_recovery != pending_image_conversations[0]
+        ):
+            append_log(
+                "INFO",
+                "worker_transaction_barrier_pending_image_fact",
+                "图片事实尚未得到后端确认，只允许恢复最早的原会话。",
+                error_code="C2_IMAGE_FACT_PENDING",
+                metadata={
+                    "reason": reason,
+                    "conversation_id": pending_image_conversations[0],
+                    "pending_conversation_count": len(
+                        pending_image_conversations
+                    ),
+                },
+            )
+            return False
         return True
+
+    @staticmethod
+    def _pending_image_recovery_conversation_ids() -> list[str]:
+        ordered = list_waiting_c2_ledger_conversation_ids(
+            message_type="image",
+        )
+        seen = set(ordered)
+        journal_entries = sorted(
+            list_action_journals(action_kinds=("image",)),
+            key=lambda entry: (
+                str(entry[1].get("created_at") or ""),
+                str(entry[1].get("conversation_id") or ""),
+            ),
+        )
+        for _path, payload in journal_entries:
+            conversation_id = str(
+                payload.get("conversation_id") or ""
+            ).strip()
+            if conversation_id and conversation_id not in seen:
+                ordered.append(conversation_id)
+                seen.add(conversation_id)
+        return ordered
 
     def _send_evidence(self, payload: dict[str, Any], *, target: str) -> dict[str, Any]:
         return {
@@ -1952,6 +2000,12 @@ class TaskRunner:
                 binding,
                 reason="c2_loop",
             ):
+                if (
+                    self._pending_image_recovery_conversation_ids()
+                    and self._ui_actions_enabled(binding)
+                    and self._wechat_ready_for_c2()
+                ):
+                    self._recover_pending_image_transaction(binding)
                 self.stop_event.wait(1.0)
                 continue
             if not self._ui_actions_enabled(binding):
@@ -1971,6 +2025,118 @@ class TaskRunner:
                 self._read_state_target_queue(binding)
                 self.last_c2_read_at = now
             self.stop_event.wait(1.0)
+
+    def _recover_pending_image_transaction(
+        self,
+        binding: Binding,
+    ) -> bool:
+        pending_conversations = (
+            self._pending_image_recovery_conversation_ids()
+        )
+        if not pending_conversations:
+            return True
+        conversation_id = pending_conversations[0]
+        try:
+            targets = self._fetch_read_targets(binding)
+        except Exception as exc:
+            append_log(
+                "WARN",
+                "c2_image_fact_recovery_read_targets_failed",
+                "获取原会话恢复授权失败，继续保持全局门禁并稍后重试。",
+                error_code="C2_IMAGE_FACT_RECOVERY_AUTHORIZATION_FAILED",
+                metadata={
+                    "conversation_id": conversation_id,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return False
+        target = next(
+            (
+                item
+                for item in targets
+                if item.conversation_id == conversation_id
+            ),
+            None,
+        )
+        if target is None:
+            append_log(
+                "WARN",
+                "c2_image_fact_recovery_waiting_authorization",
+                "待上报图片事实的原会话当前没有读取授权，继续保持全局门禁。",
+                error_code="C2_IMAGE_FACT_RECOVERY_TARGET_UNAVAILABLE",
+                metadata={"conversation_id": conversation_id},
+            )
+            return False
+        validation_error = self._validate_read_target(target)
+        if validation_error:
+            append_log(
+                "WARN",
+                "c2_image_fact_recovery_target_invalid",
+                "待上报图片事实的原会话授权不完整，继续保持全局门禁。",
+                error_code=validation_error,
+                metadata={
+                    "conversation_id": conversation_id,
+                    "remark_code": target.remark_code,
+                },
+            )
+            return False
+        append_log(
+            "INFO",
+            "c2_image_fact_recovery_started",
+            "开始恢复待上报图片事实；本轮只允许打开原会话。",
+            metadata={
+                "conversation_id": conversation_id,
+                "remark_code": target.remark_code,
+            },
+        )
+        try:
+            result = self._read_one_wechat_target(
+                binding,
+                target,
+                current_step="image_fact_recovery",
+                enforce_read_targets=True,
+                recovery_waiting_image_facts=True,
+            )
+        except Exception as exc:
+            append_log(
+                "WARN",
+                "c2_image_fact_recovery_interrupted",
+                "恢复图片事实时后端或本地事务暂时失败，继续保持全局门禁并稍后重试。",
+                error_code="C2_IMAGE_FACT_RECOVERY_INTERRUPTED",
+                metadata={
+                    "conversation_id": conversation_id,
+                    "remark_code": target.remark_code,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return False
+        recovered = bool(
+            result.get("ok")
+            and conversation_id
+            not in self._pending_image_recovery_conversation_ids()
+        )
+        append_log(
+            "INFO" if recovered else "WARN",
+            "c2_image_fact_recovery_finished",
+            (
+                "待上报图片事实已由现有 Outbox 交给后端。"
+                if recovered
+                else "待上报图片事实尚未确认，继续保持全局门禁。"
+            ),
+            error_code=(
+                None
+                if recovered
+                else str(
+                    result.get("error_code")
+                    or "C2_IMAGE_FACT_RECOVERY_PENDING"
+                )
+            ),
+            metadata={
+                "conversation_id": conversation_id,
+                "remark_code": target.remark_code,
+            },
+        )
+        return recovered
 
     def _c2_dependencies_ready(self) -> bool:
         return all(
@@ -4198,6 +4364,12 @@ class TaskRunner:
                                 observation.get("observation_id") or ""
                             ).strip()
                         ],
+                        "replayable_observation": (
+                            replayable_image_observation(
+                                observation,
+                                source_message_key=source_key,
+                            )
+                        ),
                     }
                 ],
                 flow_outcomes=flow_outcomes,
@@ -6081,6 +6253,45 @@ class TaskRunner:
                 business_state = str(
                     item.get("business_state") or ""
                 ).strip()
+                terminal_payload = (
+                    dict(item.get("terminal_payload") or {})
+                    if isinstance(item.get("terminal_payload"), dict)
+                    else {}
+                )
+                if action_kind == "image" and isinstance(
+                    item.get("replayable_observation"),
+                    dict,
+                ):
+                    recovered_state = (
+                        "completed" if business_confirmed else "failed"
+                    )
+                    recovered_reason = str(
+                        terminal_payload.get("reason")
+                        or item.get("error_code")
+                        or "IMAGE_INTERRUPTED_AFTER_TRIGGER"
+                    )
+                    terminal_observation = apply_image_terminal_result(
+                        dict(item["replayable_observation"]),
+                        {
+                            "state": recovered_state,
+                            "reason": recovered_reason,
+                            "action_phase": phase,
+                            "customer_image_understanding": (
+                                terminal_payload.get(
+                                    "customer_image_understanding"
+                                )
+                            ),
+                            "visual_bridge_input": terminal_payload.get(
+                                "visual_bridge_input"
+                            ),
+                        },
+                    )
+                    terminal_payload[
+                        "replayable_observation"
+                    ] = replayable_image_observation(
+                        terminal_observation,
+                        source_message_key=str(source_key),
+                    )
                 outcome = classify_action_result(
                     action_kind,
                     {
@@ -6108,22 +6319,18 @@ class TaskRunner:
                         **(
                             {
                                 "customer_image_understanding": (
-                                    item.get("terminal_payload") or {}
+                                    terminal_payload
                                 ).get("customer_image_understanding")
                             }
                             if action_kind == "image"
-                            and isinstance(
-                                item.get("terminal_payload"), dict
-                            )
+                            and terminal_payload
                             else {}
                         ),
                     },
                     source_message_key=str(source_key),
                 )
-                if isinstance(item.get("terminal_payload"), dict):
-                    outcome["terminal_payload"] = dict(
-                        item["terminal_payload"]
-                    )
+                if terminal_payload:
+                    outcome["terminal_payload"] = terminal_payload
                 recovered_outcomes = merge_item_outcomes(
                     recovered_outcomes,
                     [outcome],
@@ -6287,6 +6494,7 @@ class TaskRunner:
         held_lease: UiLockLease | None = None,
         current_only: bool = False,
         wait_for_brain: bool = True,
+        recovery_waiting_image_facts: bool = False,
     ) -> dict[str, Any]:
         owner = f"{binding.worker_id}:{binding.client_instance_id}:message_ingest:{target.conversation_id}"
         lease: UiLockLease | None = held_lease
@@ -6353,6 +6561,11 @@ class TaskRunner:
                     if not self._worker_transaction_barrier_ready(
                         binding,
                         reason="message_read_lock",
+                        allowed_image_recovery_conversation_id=(
+                            target.conversation_id
+                            if recovery_waiting_image_facts
+                            else ""
+                        ),
                     ):
                         return {
                             "ok": False,
@@ -7201,6 +7414,11 @@ class TaskRunner:
                 transcribed_payload["initial_messages"] = sidecar_payload
                 transcribed_payload["authoritative_frame_source"] = "final_read"
                 sidecar_payload = transcribed_payload
+            if recovery_waiting_image_facts:
+                sidecar_payload = self._merge_waiting_image_facts(
+                    target=target,
+                    sidecar_payload=sidecar_payload,
+                )
             identity_state_key = f"message_identity:{target.conversation_id}"
             reconciled_observations, identity_state, cross_round_identity_errors = (
                 reconcile_v16104_identity_transition(

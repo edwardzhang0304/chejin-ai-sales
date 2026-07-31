@@ -97,6 +97,17 @@ def initialize_action_journal(
             "terminal_payload": None,
             "updated_at": _now_iso(),
         }
+        replayable_observation = item.get("replayable_observation")
+        if isinstance(replayable_observation, dict):
+            normalized_items[source_key]["replayable_observation"] = (
+                json.loads(
+                    json.dumps(
+                        replayable_observation,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                )
+            )
     if not normalized_items:
         raise ValueError("ACTION_JOURNAL_ITEMS_MISSING")
     now = _now_iso()

@@ -1480,6 +1480,86 @@ class TaskRunnerTest(unittest.TestCase):
                 )
                 conn.commit()
 
+    def test_tick_once_does_not_pull_task_while_image_fact_waits_for_outbox(
+        self,
+    ):
+        task = Task(
+            id="task-add-friend-image-ledger-barrier",
+            task_type="add_friend",
+            status="pending",
+            phone="17368746889",
+        )
+        api = FakeApi(task)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(
+                    ok=True,
+                    result_code="invite_sent",
+                    message="unused",
+                )
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-image-ledger-barrier",
+            worker_token="token",
+            client_instance_id="client-image-ledger-barrier",
+            run_status="running",
+        )
+        runner.binding = binding
+        unique = str(time.time_ns())
+        conversation_id = f"conv-image-ledger-barrier-{unique}"
+        source_key = f"source:image-ledger-barrier-{unique}"
+        save_c2_ledger_terminal(
+            conversation_id=conversation_id,
+            source_message_key=source_key,
+            dedupe_key=None,
+            message_type="image",
+            terminal_state="completed",
+            ingest_state="waiting",
+            result={
+                "state": "completed",
+                "replayable_observation": {
+                    "schema_version": 3,
+                    "observation_id": f"image-ledger-{unique}",
+                    "row_kind": "image_bubble",
+                    "sender_role": "customer",
+                    "sender_role_source": "same_row_avatar",
+                    "message_type": "image",
+                    "voice_state": "not_voice",
+                    "item_state": "completed",
+                    "content_clean": "等待上报的图片事实",
+                    "source_message": {
+                        "type": "image",
+                        "sender_role": "customer",
+                        "source_message_key": source_key,
+                    },
+                },
+            },
+        )
+        try:
+            runner.tick_once()
+
+            self.assertNotIn("pull", api.events)
+            self.assertFalse(
+                any(event.startswith("claim:") for event in api.events)
+            )
+            ledger = load_c2_ledger_entry(
+                conversation_id,
+                source_key,
+            )
+            self.assertEqual(ledger["ingest_state"], "waiting")
+        finally:
+            with db_connection() as conn:
+                conn.execute(
+                    """
+                    DELETE FROM c2_message_ledger
+                    WHERE conversation_id = ?
+                    """,
+                    (conversation_id,),
+                )
+                conn.commit()
+
     def test_claim_response_does_not_drop_plain_contact_from_pull_payload(self):
         pulled_task = Task(id="task-plain", task_type="add_friend", status="pending", phone="17368746889")
         masked_claim_task = Task(id="task-plain", task_type="add_friend", status="running", phone="173****6889")
@@ -7173,7 +7253,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "sender_role": "customer",
             },
         }
-        reconciled, _, identity_errors = (
+        reconciled, identity_state, identity_errors = (
             reconcile_v16104_identity_transition(
                 target,
                 [observation],
@@ -7181,6 +7261,10 @@ class TaskRunnerTest(unittest.TestCase):
             )
         )
         self.assertEqual(identity_errors, [])
+        save_c2_state(
+            f"message_identity:{target.conversation_id}",
+            identity_state,
+        )
         initial_payload = {
             "observation_schema_version": 3,
             "authoritative_frame_source": "final_read",
@@ -7243,31 +7327,59 @@ class TaskRunnerTest(unittest.TestCase):
                 enforce_read_targets=False,
                 flow_outcomes=FlowOutcomeAccumulator(),
             )
+            self.assertFalse(
+                runner._worker_transaction_barrier_ready(
+                    binding,
+                    reason="restart_test_before_recovery",
+                )
+            )
+            second_target = WechatReadTarget(
+                conversation_id=f"conv-image-second-{unique}",
+                rpa_session_key="wx:rpa:v1:image-second",
+                display_name="CJSECOND1",
+                remark_code="CJSECOND1",
+                authorization_revision=f"revision-image-second-{unique}",
+            )
+            api.read_targets = [second_target, target]
+            recovery_bridge = FakeBridge(
+                RpaResult(
+                    ok=True,
+                    result_code="ok",
+                    message="unused",
+                )
+            )
+            recovery_bridge.get_messages_payloads = [
+                {
+                    "authoritative_frame_source": "initial_read",
+                    "observations": [],
+                }
+            ]
             restarted_runner, _ = self.make_runner(
                 api,
-                FakeBridge(
-                    RpaResult(
-                        ok=True,
-                        result_code="ok",
-                        message="unused",
-                    )
-                ),
+                recovery_bridge,
             )
-            restored = restarted_runner._merge_waiting_image_facts(
-                target=target,
-                sidecar_payload={
-                    "observation_schema_version": 3,
-                    "authoritative_frame_source": "final_read",
-                    "observations": [],
-                },
-            )
-            restored, restored_stats = (
-                restarted_runner._process_final_image_slots(
-                    binding=binding,
-                    target=target,
-                    sidecar_payload=restored,
-                    enforce_read_targets=False,
+            restarted_runner.binding = binding
+            restarted_runner.last_rpa_component_status = "ready"
+            restarted_runner.last_wechat_status = "logged_in"
+            post_messages_ingest = api.post_wechat_messages_ingest
+
+            def confirm_ingest_then_stop(
+                current_binding,
+                payload,
+            ):
+                result = post_messages_ingest(
+                    current_binding,
+                    payload,
                 )
+                restarted_runner.stop_event.set()
+                return result
+
+            api.post_wechat_messages_ingest = confirm_ingest_then_stop
+            restarted_runner._c2_loop()
+            recovered = (
+                target.conversation_id
+                not in restarted_runner
+                ._pending_image_recovery_conversation_ids()
             )
 
         self.assertFalse(convergence["ok"])
@@ -7275,13 +7387,41 @@ class TaskRunnerTest(unittest.TestCase):
             convergence["error_code"],
             "final_frame_capture_failed",
         )
+        self.assertTrue(recovered)
         self.assertEqual(vision.call_count, 1)
-        self.assertEqual(restored_stats["cached"], 1)
-        ingest = build_message_ingest_payload(target, restored)
-        self.assertEqual(len(ingest["messages"]), 1)
+        self.assertNotIn("sessions", recovery_bridge.c2_operation_order)
         self.assertEqual(
-            ingest["messages"][0]["content"],
+            [item["display_name"] for item in recovery_bridge.locate_chats],
+            [target.remark_code],
+        )
+        self.assertNotIn(
+            second_target.remark_code,
+            [
+                item["display_name"]
+                for item in recovery_bridge.locate_chats
+            ],
+        )
+        self.assertEqual(len(api.message_payloads), 1)
+        image_messages = [
+            item
+            for item in api.message_payloads[0]["messages"]
+            if item.get("message_type") == "image"
+        ]
+        self.assertEqual(len(image_messages), 1)
+        self.assertEqual(
+            image_messages[0]["content"],
             "重启后仍需上报的车辆图片",
+        )
+        ledger = load_c2_ledger_entry(
+            target.conversation_id,
+            image_messages[0]["source_message_key"],
+        )
+        self.assertEqual(ledger["ingest_state"], "confirmed")
+        self.assertTrue(
+            restarted_runner._worker_transaction_barrier_ready(
+                binding,
+                reason="restart_test_after_recovery",
+            )
         )
 
     def test_action_journal_vertical_c2_image_reaches_ingest_and_ledger(self):
@@ -7340,10 +7480,21 @@ class TaskRunnerTest(unittest.TestCase):
             run_status="running",
         )
         observed_phases: list[str] = []
+        journal_observations: list[dict] = []
+        journal_source_keys: list[str] = []
 
         def vision_boundary(**kwargs):
             journal_path = Path(kwargs["action_journal_path"])
             source_key = str(kwargs["source_message_key"])
+            journal_source_keys.append(source_key)
+            journal_payload = read_action_journal(journal_path)
+            journal_observations.append(
+                dict(
+                    journal_payload["items"][source_key][
+                        "replayable_observation"
+                    ]
+                )
+            )
             observed_phases.append(action_journal_phase(journal_path))
             update_action_journal_item(
                 journal_path,
@@ -7415,6 +7566,19 @@ class TaskRunnerTest(unittest.TestCase):
             observed_phases,
             ["not_attempted", "trigger_attempted", "confirmed"],
         )
+        self.assertEqual(len(journal_observations), 1)
+        self.assertEqual(
+            journal_observations[0]["sender_role"],
+            "customer",
+        )
+        self.assertEqual(
+            journal_observations[0]["source_message"][
+                "source_message_key"
+            ],
+            journal_source_keys[0],
+        )
+        self.assertNotIn("image_bytes", journal_observations[0])
+        self.assertNotIn("image_local_path", journal_observations[0])
         self.assertEqual(len(api.message_payloads), 1)
         image_message = api.message_payloads[0]["messages"][0]
         self.assertEqual(image_message["message_type"], "image")
@@ -7432,6 +7596,193 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(
             list_c2_action_journal(target.conversation_id),
             [],
+        )
+
+    def test_scheduler_recovers_confirmed_image_journal_after_process_exit(
+        self,
+    ):
+        api = FakeApi(None)
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-image-journal-restart",
+            worker_token="token",
+            client_instance_id="client-image-journal-restart",
+            run_status="running",
+        )
+        unique = str(time.time_ns())
+        target = WechatReadTarget(
+            conversation_id=f"conv-image-journal-restart-{unique}",
+            rpa_session_key="wx:rpa:v1:image-journal-restart",
+            display_name="CJJOURNAL1",
+            remark_code="CJJOURNAL1",
+            authorization_revision=(
+                f"revision-image-journal-restart-{unique}"
+            ),
+        )
+        observation = {
+            "schema_version": 3,
+            "observation_id": f"image-journal-restart-{unique}",
+            "row_kind": "image_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "image",
+            "voice_state": "not_voice",
+            "item_state": "discovered",
+            "image_physical_anchor": {
+                "sender_role": "customer",
+                "visual_side": "customer",
+                "preceding_stable_message": f"before-{unique}",
+                "following_stable_message": f"after-{unique}",
+                "bubble_visual_fingerprint": (
+                    "dhash64:1234567890abcdef"
+                ),
+                "occurrence_index": 0,
+                "occurrence_count": 1,
+            },
+            "bubble_rect": [420, 220, 650, 360],
+            "source_message": {
+                "id": f"image-journal-source-{unique}",
+                "type": "image",
+                "sender_role": "customer",
+            },
+        }
+        reconciled, identity_state, identity_errors = (
+            reconcile_v16104_identity_transition(
+                target,
+                [observation],
+                {},
+            )
+        )
+        self.assertEqual(identity_errors, [])
+        save_c2_state(
+            f"message_identity:{target.conversation_id}",
+            identity_state,
+        )
+        source_key = image_observation_source_key(
+            target,
+            reconciled[0],
+        )
+        flow_outcomes = FlowOutcomeAccumulator()
+
+        def vision_finishes_then_process_exits(**kwargs):
+            journal_path = Path(kwargs["action_journal_path"])
+            update_action_journal_item(
+                journal_path,
+                source_message_key=source_key,
+                action_phase="trigger_attempted",
+                business_state="clipboard_copy_confirmed",
+            )
+            update_action_journal_item(
+                journal_path,
+                source_message_key=source_key,
+                action_phase="confirmed",
+                business_state="completed",
+                business_result_confirmed=True,
+                terminal_payload={
+                    "state": "completed",
+                    "reason": "vision_ready",
+                    "customer_image_understanding": {
+                        "schema_version": 1,
+                        "vision_summary": "进程退出前已识别的车辆图片",
+                    },
+                    "visual_bridge_input": {
+                        "summary": "车辆图片",
+                    },
+                },
+            )
+            raise SystemExit("simulated hard process exit")
+
+        with patch(
+            "chejin_worker_client.omniauto_vision.process_image_slot",
+            side_effect=vision_finishes_then_process_exits,
+        ) as vision:
+            with self.assertRaises(SystemExit):
+                runner._execute_one_image_slot_vision(
+                    target=target,
+                    payload={
+                        "window_context": {
+                            "hwnd": 100,
+                            "capture_source": "confirmed_c2_window",
+                        }
+                    },
+                    observation=reconciled[0],
+                    source_key=source_key,
+                    cancel_check=lambda: False,
+                    flow_outcomes=flow_outcomes,
+                )
+            self.assertIsNone(
+                load_c2_ledger_entry(
+                    target.conversation_id,
+                    source_key,
+                )
+            )
+            self.assertFalse(
+                runner._worker_transaction_barrier_ready(
+                    binding,
+                    reason="journal_restart_before_recovery",
+                )
+            )
+            second_target = WechatReadTarget(
+                conversation_id=f"conv-journal-second-{unique}",
+                rpa_session_key="wx:rpa:v1:journal-second",
+                display_name="CJSECOND2",
+                remark_code="CJSECOND2",
+                authorization_revision=f"revision-journal-second-{unique}",
+            )
+            api.read_targets = [second_target, target]
+            recovery_bridge = FakeBridge(
+                RpaResult(
+                    ok=True,
+                    result_code="unused",
+                    message="unused",
+                )
+            )
+            recovery_bridge.get_messages_payloads = [
+                {
+                    "authoritative_frame_source": "initial_read",
+                    "observations": [],
+                }
+            ]
+            restarted_runner, _ = self.make_runner(
+                api,
+                recovery_bridge,
+            )
+            recovered = (
+                restarted_runner._recover_pending_image_transaction(
+                    binding
+                )
+            )
+
+        self.assertTrue(recovered)
+        self.assertEqual(vision.call_count, 1)
+        self.assertNotIn("sessions", recovery_bridge.c2_operation_order)
+        self.assertEqual(
+            [item["display_name"] for item in recovery_bridge.locate_chats],
+            [target.remark_code],
+        )
+        self.assertEqual(len(api.message_payloads), 1)
+        image_messages = [
+            item
+            for item in api.message_payloads[0]["messages"]
+            if item.get("message_type") == "image"
+        ]
+        self.assertEqual(len(image_messages), 1)
+        self.assertEqual(
+            image_messages[0]["content"],
+            "进程退出前已识别的车辆图片",
+        )
+        self.assertEqual(image_messages[0]["item_state"], "completed")
+        ledger = load_c2_ledger_entry(
+            target.conversation_id,
+            source_key,
+        )
+        self.assertEqual(ledger["ingest_state"], "confirmed")
+        self.assertNotIn(
+            target.conversation_id,
+            restarted_runner._pending_image_recovery_conversation_ids(),
         )
 
     def test_c2_cancelled_vision_is_not_terminalized_in_local_ledger(self):
