@@ -37,7 +37,6 @@ DEFAULT_VISION_TIMEOUT_SECONDS = 60.0
 MAX_VISION_TIMEOUT_SECONDS = 300.0
 VISION_API_KEY_ENV_NAMES = (
     "CUSTOMER_IMAGE_UNDERSTANDING_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
 )
 
 
@@ -753,7 +752,13 @@ class _Clipboard:
         started_at = time.perf_counter()
         from apps.wechat_ai_customer_service.optional_plugins.vision import clipboard_payload
 
-        result = clipboard_payload._read_current_windows_native_clipboard_image()
+        result = clipboard_payload._read_current_windows_native_clipboard_image(
+            source_limits=(
+                image_contract().get("source_limits")
+                if isinstance(image_contract(), dict)
+                else {}
+            ),
+        )
         self.state.record(
             "clipboard_bitmap_read",
             "completed" if isinstance(result, dict) and result.get("ok") else "failed",
@@ -806,12 +811,22 @@ def _rect(value: Any) -> list[int]:
 
 
 def explicit_vision_config() -> tuple[dict[str, Any] | None, list[str]]:
+    provider_contract = image_contract().get("provider_contract") or {}
+    required_api_key_env = str(
+        provider_contract.get("api_key_env")
+        or "CUSTOMER_IMAGE_UNDERSTANDING_API_KEY"
+    ).strip()
     api_key_env = next(
-        (name for name in VISION_API_KEY_ENV_NAMES if str(os.environ.get(name) or "").strip()),
+        (
+            name
+            for name in VISION_API_KEY_ENV_NAMES
+            if name == required_api_key_env
+            and str(os.environ.get(name) or "").strip()
+        ),
         "",
     )
     if not api_key_env:
-        return None, ["CUSTOMER_IMAGE_UNDERSTANDING_API_KEY_OR_ANTHROPIC_AUTH_TOKEN"]
+        return None, [required_api_key_env]
     return {
         "_chejin_image_contract": image_contract(),
         "customer_image_understanding": {
@@ -849,9 +864,13 @@ def _vision_configuration_errors(
         str(item).lower()
         for item in contract.get("development_http_hosts") or []
     }
-    development_mode = str(
+    runtime_mode = str(
         os.environ.get("CHEJIN_RPA_MODE") or ""
-    ).strip().lower() != "real"
+    ).strip().lower()
+    development_mode = runtime_mode in {
+        str(item).strip().lower()
+        for item in contract.get("development_modes") or []
+    }
     errors: list[str] = []
     if scheme != "https" and not (
         development_mode

@@ -11,7 +11,7 @@ from __future__ import annotations
 import io
 from typing import Any
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageChops, ImageOps
 
 from ..clipboard_payload import EphemeralClipboardImage
 from .wechat import clamp_bounds
@@ -20,6 +20,8 @@ from .wechat import clamp_bounds
 MAX_DHASH_DISTANCE = 16
 MAX_ASPECT_RATIO_RELATIVE_ERROR = 0.18
 MAX_COLOR_GRID_AVG_DISTANCE = 48.0
+MIN_CONTENT_TRIM_AREA_RATIO = 0.50
+CENTER_CROP_RATIOS = (0.90, 0.80, 0.70)
 
 
 def _inset_bounds(
@@ -56,9 +58,7 @@ def _dhash64(image: Image.Image) -> int:
     return value
 
 
-def image_fingerprint(image: Image.Image) -> dict[str, Any]:
-    normalized = ImageOps.exif_transpose(image).convert("RGB")
-    normalized.load()
+def _fingerprint_signature(normalized: Image.Image) -> dict[str, Any]:
     width, height = normalized.size
     if width <= 0 or height <= 0:
         return {}
@@ -82,6 +82,100 @@ def image_fingerprint(image: Image.Image) -> dict[str, Any]:
         "dhash64": _dhash64(normalized),
         "color_grid": color_grid,
     }
+
+
+def _center_crop(image: Image.Image, x_ratio: float, y_ratio: float) -> Image.Image:
+    width, height = image.size
+    crop_width = max(24, min(width, int(round(width * x_ratio))))
+    crop_height = max(24, min(height, int(round(height * y_ratio))))
+    left = max(0, (width - crop_width) // 2)
+    top = max(0, (height - crop_height) // 2)
+    return image.crop((left, top, left + crop_width, top + crop_height))
+
+
+def _trim_uniform_padding(image: Image.Image) -> Image.Image | None:
+    width, height = image.size
+    if width < 24 or height < 24:
+        return None
+    corners = [
+        image.getpixel((0, 0)),
+        image.getpixel((width - 1, 0)),
+        image.getpixel((0, height - 1)),
+        image.getpixel((width - 1, height - 1)),
+    ]
+    background = tuple(
+        int(round(sum(int(pixel[channel]) for pixel in corners) / 4.0))
+        for channel in range(3)
+    )
+    difference = ImageChops.difference(
+        image,
+        Image.new("RGB", image.size, background),
+    ).convert("L")
+    mask = difference.point(lambda value: 255 if value > 12 else 0)
+    bounds = mask.getbbox()
+    mask.close()
+    difference.close()
+    if not bounds:
+        return None
+    left, top, right, bottom = bounds
+    content_area = max(0, right - left) * max(0, bottom - top)
+    if (
+        right - left < 24
+        or bottom - top < 24
+        or content_area / float(width * height) < MIN_CONTENT_TRIM_AREA_RATIO
+        or bounds == (0, 0, width, height)
+    ):
+        return None
+    return image.crop(bounds)
+
+
+def image_fingerprint(image: Image.Image) -> dict[str, Any]:
+    normalized = ImageOps.exif_transpose(image).convert("RGB")
+    normalized.load()
+    base = _fingerprint_signature(normalized)
+    if not base:
+        normalized.close()
+        return {}
+    variants: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+
+    def add_variant(candidate: Image.Image, kind: str) -> None:
+        signature = _fingerprint_signature(candidate)
+        if not signature:
+            return
+        key = (
+            signature.get("orientation"),
+            round(float(signature.get("aspect_ratio") or 0.0), 4),
+            int(signature.get("dhash64") or 0),
+            tuple(signature.get("color_grid") or []),
+        )
+        if key in seen:
+            return
+        seen.add(key)
+        variants.append({"kind": kind, **signature})
+
+    try:
+        add_variant(normalized, "full")
+        for ratio in CENTER_CROP_RATIOS:
+            for x_ratio, y_ratio, kind in (
+                (ratio, ratio, f"center_{int(ratio * 100)}"),
+                (ratio, 1.0, f"center_x_{int(ratio * 100)}"),
+                (1.0, ratio, f"center_y_{int(ratio * 100)}"),
+            ):
+                candidate = _center_crop(normalized, x_ratio, y_ratio)
+                try:
+                    add_variant(candidate, kind)
+                finally:
+                    candidate.close()
+        trimmed = _trim_uniform_padding(normalized)
+        if trimmed is not None:
+            try:
+                add_variant(trimmed, "uniform_padding_trimmed")
+            finally:
+                trimmed.close()
+    finally:
+        normalized.close()
+    return {**base, "variants": variants}
 
 
 def crop_fingerprint(
@@ -140,35 +234,53 @@ def fingerprints_match(
 ) -> bool:
     if not expected or not actual:
         return False
-    if str(expected.get("orientation") or "") != str(
-        actual.get("orientation") or ""
-    ):
-        return False
-    try:
-        expected_ratio = float(expected.get("aspect_ratio") or 0.0)
-        actual_ratio = float(actual.get("aspect_ratio") or 0.0)
-    except (TypeError, ValueError):
-        return False
-    if expected_ratio <= 0.0 or actual_ratio <= 0.0:
-        return False
-    if (
-        abs(expected_ratio - actual_ratio)
-        / max(expected_ratio, actual_ratio)
-        > MAX_ASPECT_RATIO_RELATIVE_ERROR
-    ):
-        return False
-    if (
-        _color_grid_distance(
-            expected.get("color_grid"),
-            actual.get("color_grid"),
-        )
-        > MAX_COLOR_GRID_AVG_DISTANCE
-    ):
-        return False
-    try:
-        return _hamming64(
-            int(expected.get("dhash64") or 0),
-            int(actual.get("dhash64") or 0),
-        ) <= MAX_DHASH_DISTANCE
-    except (TypeError, ValueError):
-        return False
+    expected_variants = [
+        item
+        for item in (expected.get("variants") or [expected])
+        if isinstance(item, dict)
+    ]
+    actual_variants = [
+        item
+        for item in (actual.get("variants") or [actual])
+        if isinstance(item, dict)
+    ]
+    for expected_variant in expected_variants:
+        for actual_variant in actual_variants:
+            if str(expected_variant.get("orientation") or "") != str(
+                actual_variant.get("orientation") or ""
+            ):
+                continue
+            try:
+                expected_ratio = float(
+                    expected_variant.get("aspect_ratio") or 0.0
+                )
+                actual_ratio = float(
+                    actual_variant.get("aspect_ratio") or 0.0
+                )
+            except (TypeError, ValueError):
+                continue
+            if expected_ratio <= 0.0 or actual_ratio <= 0.0:
+                continue
+            if (
+                abs(expected_ratio - actual_ratio)
+                / max(expected_ratio, actual_ratio)
+                > MAX_ASPECT_RATIO_RELATIVE_ERROR
+            ):
+                continue
+            if (
+                _color_grid_distance(
+                    expected_variant.get("color_grid"),
+                    actual_variant.get("color_grid"),
+                )
+                > MAX_COLOR_GRID_AVG_DISTANCE
+            ):
+                continue
+            try:
+                if _hamming64(
+                    int(expected_variant.get("dhash64") or 0),
+                    int(actual_variant.get("dhash64") or 0),
+                ) <= MAX_DHASH_DISTANCE:
+                    return True
+            except (TypeError, ValueError):
+                continue
+    return False

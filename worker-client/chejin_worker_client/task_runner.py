@@ -22,6 +22,7 @@ from .action_journal import (
 )
 from .artifact_retention import cleanup_artifacts, record_artifact_outcome
 from .c2_contract import (
+    formal_image_failure_code,
     observation_role_is_trusted,
     sidecar_contract_error,
 )
@@ -4558,16 +4559,19 @@ class TaskRunner:
             normalized.get("state") or ""
         ).strip()
         if (
-            raw_terminal_state not in {"cancelled", "ignored"}
+            raw_terminal_state != "cancelled"
             and action_outcome["result"] != "completed"
         ):
+            raw_reason = str(
+                action_outcome.get("error_code")
+                or normalized.get("reason")
+                or ""
+            )
             normalized = {
                 **normalized,
                 "state": "failed",
-                "reason": str(
-                    action_outcome.get("error_code")
-                    or "IMAGE_UNDERSTANDING_RESULT_UNCONFIRMED"
-                ),
+                "reason": formal_image_failure_code(raw_reason),
+                "reason_detail": raw_reason,
                 "action_outcome": action_outcome,
             }
         return {
@@ -4593,7 +4597,7 @@ class TaskRunner:
         stats: dict[str, Any],
     ) -> tuple[dict[str, Any], str, str]:
         terminal_state = str(result.get("state") or "failed")
-        if terminal_state not in {"completed", "failed", "ignored"}:
+        if terminal_state not in {"completed", "failed"}:
             terminal_state = "failed"
             result = {
                 **result,
@@ -4607,7 +4611,7 @@ class TaskRunner:
         projected_state = str(
             terminal_observation.get("item_state") or terminal_state
         )
-        if projected_state in {"completed", "failed", "ignored"}:
+        if projected_state in {"completed", "failed"}:
             terminal_state = projected_state
         terminal_reason = str(
             terminal_observation.get("image_processing_reason")
@@ -4861,7 +4865,7 @@ class TaskRunner:
                 metadata=common_metadata,
             )
             ledger = load_c2_ledger_entry(target.conversation_id, source_key)
-            if ledger and ledger.get("terminal_state") in {"completed", "failed", "ignored"}:
+            if ledger and ledger.get("terminal_state") in {"completed", "failed"}:
                 result = ledger.get("result") if isinstance(ledger.get("result"), dict) else {}
                 result = {**result, "state": ledger.get("terminal_state")}
                 enriched_observations[index] = apply_image_terminal_result(observation, result)
@@ -6275,7 +6279,6 @@ class TaskRunner:
                 for key in (
                     "completed",
                     "failed",
-                    "ignored",
                     "removed_from_final_screen",
                 )
             ):

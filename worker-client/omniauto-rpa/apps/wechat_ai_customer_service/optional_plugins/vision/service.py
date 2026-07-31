@@ -279,6 +279,11 @@ class VisionService:
         from .understanding.service import maybe_run_customer_image_understanding
 
         data = vision_context(request)
+        effective_config = (
+            data.get("config")
+            if isinstance(data.get("config"), dict)
+            else self._config
+        )
         supplied = data.get("image")
         owned_payload = False
         if isinstance(supplied, (bytes, bytearray, memoryview)):
@@ -287,6 +292,7 @@ class VisionService:
                 mime_type=str(data.get("mime_type") or "image/png"),
                 width=int(data.get("width") or 0),
                 height=int(data.get("height") or 0),
+                source_limits=effective_config,
             )
             owned_payload = True
         else:
@@ -295,7 +301,7 @@ class VisionService:
             return unavailable_result("vision_memory_image_missing")
         try:
             return maybe_run_customer_image_understanding(
-                config=(data.get("config") if isinstance(data.get("config"), dict) else self._config),
+                config=effective_config,
                 customer_text=str(data.get("customer_text") or ""),
                 image_assets=[{"message_id": str(data.get("message_id") or "memory-image"), "message_type": "image"}],
                 source_reason=str(data.get("source_reason") or "memory_image_api"),

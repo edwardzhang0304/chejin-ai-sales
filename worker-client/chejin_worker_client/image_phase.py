@@ -7,7 +7,6 @@ IMAGE_PHASE_COUNTER_KEYS = (
     "discovered",
     "completed",
     "failed",
-    "ignored",
     "cached",
     "authorization_revoked",
     "removed_from_final_screen",
@@ -16,7 +15,6 @@ IMAGE_PHASE_COUNTER_KEYS = (
 IMAGE_PHASE_STATE_SOURCE_FIELDS = {
     "completed": "completed_source_keys",
     "failed": "failed_source_keys",
-    "ignored": "ignored_source_keys",
     "cached": "cached_source_keys",
 }
 
@@ -95,7 +93,7 @@ def mark_image_terminal(
 ) -> None:
     key = str(source_message_key or "").strip()
     state = str(terminal_state or "").strip().lower()
-    if not key or state not in {"completed", "failed", "ignored"}:
+    if not key or state not in {"completed", "failed"}:
         raise ValueError("C2_IMAGE_TERMINAL_STATE_INVALID")
     result.setdefault("terminal_source_keys", []).append(key)
     result.setdefault(

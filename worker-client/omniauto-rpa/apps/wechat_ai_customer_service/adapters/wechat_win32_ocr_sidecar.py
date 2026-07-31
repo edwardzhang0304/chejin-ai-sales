@@ -5292,7 +5292,14 @@ def merge_structural_image_messages(
             merged,
             target=target,
             role_resolver=message_row_avatar_role_details,
-            max_images=64,
+            max_images=int(
+                (
+                    _C2_GENERATED_SCHEMA.get("image_contract") or {}
+                ).get("source_limits", {}).get(
+                    "max_visible_image_candidates",
+                    64,
+                )
+            ),
         )
     except Exception as exc:
         return image_observation_failed(

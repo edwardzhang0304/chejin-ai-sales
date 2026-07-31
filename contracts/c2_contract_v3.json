@@ -1,6 +1,6 @@
 {
   "contract_version": 3,
-  "contract_revision": "3.11.0",
+  "contract_revision": "3.12.0",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "sender_roles": ["customer", "self", "system", "unknown"],
@@ -197,7 +197,7 @@
       "discovery_required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state", "bubble_rect", "image_physical_anchor", "source_message"],
       "required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state", "content_clean", "image_physical_anchor", "customer_image_understanding", "visual_bridge_input", "source_message"],
       "failed_required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state", "item_state", "image_physical_anchor", "image_processing_reason", "source_message"],
-      "terminal_non_ingestible_item_states": ["ignored"]
+      "terminal_non_ingestible_item_states": []
     },
     "system_message": {
       "ingestible": true,
@@ -338,9 +338,11 @@
       "clipboard_no_progress_timeout_seconds": 15
     },
     "provider_contract": {
+      "api_key_env": "CUSTOMER_IMAGE_UNDERSTANDING_API_KEY",
       "max_provider_attempts": 2,
       "process_overhead_seconds": 15,
       "production_requires_https": true,
+      "development_modes": ["dev", "test", "development", "mock"],
       "development_http_hosts": ["127.0.0.1", "localhost"],
       "allowed_combinations": [
         {
@@ -358,7 +360,8 @@
       "C2_IMAGE_PROVIDER_PAYLOAD_TOO_LARGE",
       "C2_IMAGE_CLIPBOARD_CLEAR_FAILED",
       "C2_IMAGE_VISION_CONFIG_INVALID",
-      "C2_IMAGE_UNDERSTANDING_SCHEMA_INVALID"
+      "C2_IMAGE_UNDERSTANDING_SCHEMA_INVALID",
+      "C2_IMAGE_UNDERSTANDING_FAILED"
     ],
     "schemas": {
       "customer_image_understanding_v1": {
