@@ -17,6 +17,7 @@ from omniauto_tree import (
     tree_manifest,
     verify_same_tree,
 )
+from tests.contract_artifacts import resolve_contract_artifact
 
 
 class PackagingScriptsTest(unittest.TestCase):
@@ -82,6 +83,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('"canonical_contract_sha256"', text)
         self.assertIn('"contract_file_check": "passed"', text)
         self.assertIn("C2_CONTRACT_FILE_MISMATCH", text)
+        self.assertIn("c2_v3_mixed_roundtrip.json", text)
         self.assertIn("_zip_member_sha256", text)
         self.assertIn("--development-build", text)
         self.assertIn("preflight_status", text)
@@ -187,7 +189,7 @@ class PackagingScriptsTest(unittest.TestCase):
                 packaged_root / "scripts" / "generate-c2-observation-schema.py",
             )
             shutil.copy2(
-                ROOT.parent / "contracts" / "c2_contract_v3.json",
+                resolve_contract_artifact("c2_contract_v3.json"),
                 packaged_root / "contracts" / "c2_contract_v3.json",
             )
             shutil.copy2(

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import unittest
 
 from chejin_worker_client.c2_contract import contract_revision, contract_sha256
@@ -17,6 +16,7 @@ from chejin_worker_client.wechat_c2 import (
     reconcile_v16104_identity_transition,
     sender_role_hint,
 )
+from tests.contract_artifacts import resolve_contract_artifact
 
 
 def build_message_ingest_payload(*_args, **_kwargs):
@@ -451,7 +451,10 @@ class WechatC2Test(unittest.TestCase):
         self.assertTrue(all(item.get("_worker_stable_id") for item in recovered))
 
     def test_shared_mixed_roundtrip_fixture_is_translated_by_worker_in_screen_order(self):
-        fixture_path = Path(__file__).resolve().parents[2] / "contracts" / "examples" / "c2_v3_mixed_roundtrip.json"
+        fixture_path = resolve_contract_artifact(
+            "examples",
+            "c2_v3_mixed_roundtrip.json",
+        )
         fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
         target = WechatReadTarget(**fixture["target"])
 
