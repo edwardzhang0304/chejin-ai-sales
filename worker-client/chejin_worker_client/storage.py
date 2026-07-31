@@ -519,6 +519,42 @@ def list_c2_ledger_entries(
     return result
 
 
+def list_waiting_c2_ledger_conversation_ids(
+    *,
+    message_type: str | None = None,
+) -> list[str]:
+    clauses = ["ingest_state = 'waiting'"]
+    values: list[Any] = []
+    if message_type:
+        clauses.append("message_type = ?")
+        values.append(str(message_type))
+    with db_connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT conversation_id, result_json, first_seen_at
+            FROM c2_message_ledger
+            WHERE {' AND '.join(clauses)}
+            ORDER BY first_seen_at ASC, conversation_id ASC
+            """,
+            values,
+        ).fetchall()
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        conversation_id = str(row["conversation_id"] or "").strip()
+        if not conversation_id or conversation_id in seen:
+            continue
+        try:
+            result = json.loads(row["result_json"] or "{}")
+        except json.JSONDecodeError:
+            result = {}
+        if not isinstance(result.get("replayable_observation"), dict):
+            continue
+        ordered.append(conversation_id)
+        seen.add(conversation_id)
+    return ordered
+
+
 def save_c2_ledger_terminal(
     *,
     conversation_id: str,
