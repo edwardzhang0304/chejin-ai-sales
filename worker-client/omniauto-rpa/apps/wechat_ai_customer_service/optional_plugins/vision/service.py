@@ -53,7 +53,10 @@ class VisionService:
 
     def _inspect_via_ports(self, data: dict[str, Any]) -> dict[str, Any]:
         from .capture.transaction import acquire_current_image_via_ports
-        from .projection.brain import build_customer_image_brain_bridge
+        from .projection.brain import (
+            build_customer_image_brain_bridge,
+            compact_customer_image_brain_bridge,
+        )
         from .projection.message import build_brain_safe_image_proxy_messages
 
         acquisition = acquire_current_image_via_ports(self._ports, data)
@@ -119,6 +122,50 @@ class VisionService:
                 {},
                 source_reason="vision_host_ports_current_transaction",
             )
+            if self._config.get("_chejin_c2_strict_adapter"):
+                from .result_schema import (
+                    image_result_schema,
+                    project_to_schema,
+                    validate_schema,
+                )
+
+                understanding_schema = image_result_schema(
+                    self._config,
+                    "customer_image_understanding_v1",
+                )
+                understanding = project_to_schema(
+                    understanding,
+                    understanding_schema,
+                )
+                bridge = {
+                    "schema_version": 1,
+                    **compact_customer_image_brain_bridge(bridge),
+                }
+                bridge_schema = image_result_schema(
+                    self._config,
+                    "visual_bridge_input_v1",
+                )
+                bridge = project_to_schema(bridge, bridge_schema)
+                if (
+                    not understanding_schema
+                    or not bridge_schema
+                    or validate_schema(
+                        understanding,
+                        understanding_schema,
+                    )
+                    or validate_schema(bridge, bridge_schema)
+                ):
+                    return {
+                        "enabled": True,
+                        "applied": False,
+                        "adoptable": False,
+                        "reason": (
+                            "C2_IMAGE_UNDERSTANDING_SCHEMA_INVALID"
+                        ),
+                        "clipboard_transaction": dict(
+                            acquisition.get("transaction") or {}
+                        ),
+                    }
             occurrence = acquisition.get("occurrence") if isinstance(acquisition.get("occurrence"), dict) else {}
             proxies = (
                 build_brain_safe_image_proxy_messages(
@@ -208,7 +255,7 @@ class VisionService:
                 or ""
             ),
             side_filter=str(data.get("side_filter") or "all"),
-            max_images=int(data.get("max_images") or 8),
+            max_images=int(data.get("max_images") or 64),
         )
 
     def inspect_self_context(self, request: dict[str, Any] | None) -> dict[str, Any]:

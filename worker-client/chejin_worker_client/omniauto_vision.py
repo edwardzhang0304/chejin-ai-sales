@@ -9,11 +9,16 @@ import re
 import subprocess
 import threading
 import time
+from urllib.parse import urlparse
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Callable
 
-from .c2_contract import observation_role_is_trusted
+from .c2_contract import (
+    image_contract,
+    observation_role_is_trusted,
+    validate_image_result_schema,
+)
 from .action_journal import (
     action_journal_phase,
     update_action_journal_item,
@@ -77,6 +82,23 @@ def _vision_timeout_seconds(value: Any = None) -> float:
     except (TypeError, ValueError):
         parsed = DEFAULT_VISION_TIMEOUT_SECONDS
     return max(3.0, min(MAX_VISION_TIMEOUT_SECONDS, parsed))
+
+
+def _vision_process_timeout_seconds(single_attempt_timeout: Any) -> float:
+    provider_contract = image_contract().get("provider_contract") or {}
+    max_attempts = max(
+        1,
+        int(provider_contract.get("max_provider_attempts") or 1),
+    )
+    process_overhead = max(
+        5.0,
+        float(provider_contract.get("process_overhead_seconds") or 5.0),
+    )
+    return max(
+        3.0,
+        _vision_timeout_seconds(single_attempt_timeout) * max_attempts
+        + process_overhead,
+    )
 
 
 class _CancellableVisionProvider:
@@ -150,7 +172,9 @@ class _CancellableVisionProvider:
             daemon=True,
         )
         thread.start()
-        deadline = time.monotonic() + max(3.0, timeout_seconds + 5.0)
+        deadline = time.monotonic() + _vision_process_timeout_seconds(
+            timeout_seconds
+        )
         while thread.is_alive():
             if _cancel_requested(self.cancel_check):
                 process.kill()
@@ -525,7 +549,14 @@ class _WindowFrame:
                     ),
                     max_images=max(
                         1,
-                        int(context.get("max_images") or 8),
+                        int(
+                            context.get("max_images")
+                            or (
+                                image_contract().get("source_limits")
+                                or {}
+                            ).get("max_visible_image_candidates")
+                            or 64
+                        ),
                     ),
                 )
                 messages.extend(image_messages)
@@ -732,6 +763,24 @@ class _Clipboard:
         )
         return result
 
+    def clear_current(self, expected_sequence: int) -> dict[str, Any]:
+        started_at = time.perf_counter()
+        from apps.wechat_ai_customer_service.optional_plugins.vision.clipboard_payload import (
+            clear_current_windows_clipboard_image,
+        )
+
+        result = clear_current_windows_clipboard_image(
+            int(expected_sequence)
+        )
+        self.state.record(
+            "clipboard_clear",
+            "completed" if result.get("ok") else "failed",
+            started_at=started_at,
+            reason=str(result.get("reason") or ""),
+            image_bytes_persisted=False,
+        )
+        return result
+
 
 class _ExistingWorkerLease:
     """Vision runs while TaskRunner already owns and renews the single UI lock."""
@@ -764,6 +813,7 @@ def explicit_vision_config() -> tuple[dict[str, Any] | None, list[str]]:
     if not api_key_env:
         return None, ["CUSTOMER_IMAGE_UNDERSTANDING_API_KEY_OR_ANTHROPIC_AUTH_TOKEN"]
     return {
+        "_chejin_image_contract": image_contract(),
         "customer_image_understanding": {
             "enabled": True,
             "provider": str(
@@ -786,6 +836,49 @@ def explicit_vision_config() -> tuple[dict[str, Any] | None, list[str]]:
             "timeout_seconds": _vision_timeout_seconds(),
         }
     }, []
+
+
+def _vision_configuration_errors(
+    values: dict[str, Any],
+) -> list[str]:
+    contract = image_contract().get("provider_contract") or {}
+    parsed = urlparse(str(values.get("base_url") or ""))
+    host = str(parsed.hostname or "").lower()
+    scheme = str(parsed.scheme or "").lower()
+    development_hosts = {
+        str(item).lower()
+        for item in contract.get("development_http_hosts") or []
+    }
+    development_mode = str(
+        os.environ.get("CHEJIN_RPA_MODE") or ""
+    ).strip().lower() != "real"
+    errors: list[str] = []
+    if scheme != "https" and not (
+        development_mode
+        and scheme == "http"
+        and host in development_hosts
+    ):
+        errors.append("CUSTOMER_IMAGE_UNDERSTANDING_BASE_URL_HTTPS_REQUIRED")
+    allowed = contract.get("allowed_combinations") or []
+    matched = any(
+        isinstance(item, dict)
+        and str(item.get("provider") or "")
+        == str(values.get("provider") or "")
+        and str(item.get("host") or "").lower() == host
+        and str(item.get("request_style") or "")
+        == str(values.get("request_style") or "")
+        and str(values.get("model") or "")
+        in {
+            str(model)
+            for model in item.get("models") or []
+        }
+        for item in allowed
+    )
+    if not matched:
+        errors.append(
+            "CUSTOMER_IMAGE_UNDERSTANDING_PROVIDER_COMBINATION_INVALID"
+        )
+    return errors
 
 
 def vision_configuration_status() -> dict[str, Any]:
@@ -816,6 +909,11 @@ def vision_configuration_status() -> dict[str, Any]:
         if not value
         and name != "api_key_env"
         and name.upper() not in missing_fields
+    )
+    missing_fields.extend(
+        error
+        for error in _vision_configuration_errors(required_values)
+        if error not in missing_fields
     )
     return {
         "ready": bool(config) and not missing_fields,
@@ -943,7 +1041,10 @@ def process_image_slot(
         else {}
     )
     if not observation_role_is_trusted(observation):
-        return early_result("ignored", "image_same_row_avatar_unconfirmed")
+        return early_result(
+            "unconfirmed",
+            "MESSAGE_IDENTITY_UNCONFIRMED",
+        )
     image_physical_anchor = observation.get("image_physical_anchor")
     if not isinstance(image_physical_anchor, dict):
         image_physical_anchor = source_message.get("image_physical_anchor")
@@ -962,6 +1063,57 @@ def process_image_slot(
                 missing_configuration=list(configuration.get("missing_configuration") or []),
             )
         runtime_config = configured
+    runtime_config.setdefault(
+        "_chejin_image_contract",
+        image_contract(),
+    )
+    vision_settings = runtime_config.get(
+        "customer_image_understanding"
+    )
+    if not isinstance(vision_settings, dict):
+        vision_settings = {}
+    vision_settings = {
+        "enabled": True,
+        "provider": str(
+            vision_settings.get("provider")
+            or DEFAULT_VISION_PROVIDER
+        ).strip(),
+        "base_url": str(
+            vision_settings.get("base_url")
+            or DEFAULT_VISION_BASE_URL
+        ).strip(),
+        "model": str(
+            vision_settings.get("model")
+            or DEFAULT_VISION_MODEL
+        ).strip(),
+        "request_style": str(
+            vision_settings.get("request_style")
+            or DEFAULT_VISION_REQUEST_STYLE
+        ).strip(),
+        "timeout_seconds": _vision_timeout_seconds(
+            vision_settings.get("timeout_seconds")
+        ),
+        **{
+            key: value
+            for key, value in vision_settings.items()
+            if key not in {
+                "enabled",
+                "provider",
+                "base_url",
+                "model",
+                "request_style",
+                "timeout_seconds",
+            }
+        },
+    }
+    runtime_config["customer_image_understanding"] = vision_settings
+    config_errors = _vision_configuration_errors(vision_settings)
+    if config_errors:
+        return early_result(
+            "failed",
+            "vision_configuration_invalid",
+            missing_configuration=config_errors,
+        )
     if (
         not isinstance(window_context, dict)
         or _window_context_hwnd(window_context) <= 0
@@ -1120,6 +1272,29 @@ def process_image_slot(
                 transaction.get("action_phase") or "not_attempted"
             ),
             "transaction": transaction,
+            "diagnostics": state.diagnostics(),
+        })
+    understanding_errors = validate_image_result_schema(
+        understanding,
+        "customer_image_understanding_v1",
+    )
+    bridge_errors = validate_image_result_schema(
+        bridge,
+        "visual_bridge_input_v1",
+    )
+    if understanding_errors or bridge_errors:
+        return finish_result({
+            "state": "failed",
+            "reason": "C2_IMAGE_UNDERSTANDING_SCHEMA_INVALID",
+            "action_phase": str(
+                (result.get("clipboard_transaction") or {}).get(
+                    "action_phase"
+                )
+                or "not_attempted"
+            ),
+            "transaction": dict(
+                result.get("clipboard_transaction") or {}
+            ),
             "diagnostics": state.diagnostics(),
         })
     vision_summary = str(understanding.get("vision_summary") or "").strip()

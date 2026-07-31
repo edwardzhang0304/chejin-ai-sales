@@ -1,6 +1,6 @@
 {
   "contract_version": 3,
-  "contract_revision": "3.10.0",
+  "contract_revision": "3.11.0",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "sender_roles": ["customer", "self", "system", "unknown"],
@@ -327,6 +327,276 @@
     "safety_rule": "only visual_top is strong physical-order evidence; observation_index_fallback must never clear a flow gate or handoff",
     "uniqueness_rule": "source_message_key and screen_order must each be unique inside one authoritative frame"
   },
+  "image_contract": {
+    "source_limits": {
+      "max_encoded_source_bytes": 12582912,
+      "max_decoded_pixels": 20000000,
+      "max_decoded_rgba_bytes": 80000000,
+      "max_provider_payload_bytes": 3145728,
+      "max_provider_edge_px": 2048,
+      "max_visible_image_candidates": 64,
+      "clipboard_no_progress_timeout_seconds": 15
+    },
+    "provider_contract": {
+      "max_provider_attempts": 2,
+      "process_overhead_seconds": 15,
+      "production_requires_https": true,
+      "development_http_hosts": ["127.0.0.1", "localhost"],
+      "allowed_combinations": [
+        {
+          "provider": "anthropic_compatible",
+          "host": "aiself.vip",
+          "request_style": "anthropic_messages_vision",
+          "models": ["doubao-seed-2-0-lite-260428"]
+        }
+      ]
+    },
+    "error_codes": [
+      "C2_IMAGE_OBSERVATION_FAILED",
+      "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+      "C2_IMAGE_SOURCE_INVALID",
+      "C2_IMAGE_PROVIDER_PAYLOAD_TOO_LARGE",
+      "C2_IMAGE_CLIPBOARD_CLEAR_FAILED",
+      "C2_IMAGE_VISION_CONFIG_INVALID",
+      "C2_IMAGE_UNDERSTANDING_SCHEMA_INVALID"
+    ],
+    "schemas": {
+      "customer_image_understanding_v1": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema_version",
+          "enabled",
+          "applied",
+          "adoptable",
+          "reason",
+          "provider",
+          "request_style",
+          "model",
+          "vision_summary",
+          "image_ocr_text",
+          "classification",
+          "entities",
+          "intent_hints",
+          "bridge",
+          "catalog_alignment",
+          "audit"
+        ],
+        "properties": {
+          "schema_version": {"type": "integer", "const": 1},
+          "enabled": {"type": "boolean"},
+          "applied": {"type": "boolean"},
+          "adoptable": {"type": "boolean"},
+          "reason": {"type": "string", "maxLength": 160},
+          "provider": {"type": "string", "maxLength": 300},
+          "request_style": {
+            "type": "string",
+            "enum": ["anthropic_messages_vision", "openai_chat_vision"]
+          },
+          "model": {"type": "string", "maxLength": 160},
+          "vision_summary": {"type": "string", "maxLength": 2000},
+          "image_ocr_text": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {"type": "string", "maxLength": 500}
+          },
+          "classification": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["is_vehicle", "vehicle_confidence", "unknown", "non_vehicle_reason"],
+            "properties": {
+              "is_vehicle": {"type": "boolean"},
+              "vehicle_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+              "unknown": {"type": "boolean"},
+              "non_vehicle_reason": {"type": "string", "maxLength": 300}
+            }
+          },
+          "entities": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "brand_candidates",
+              "series_candidates",
+              "model_clues",
+              "body_type",
+              "color",
+              "year_clues"
+            ],
+            "properties": {
+              "brand_candidates": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {"type": "string", "maxLength": 120}
+              },
+              "series_candidates": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {"type": "string", "maxLength": 120}
+              },
+              "model_clues": {
+                "type": "array",
+                "maxItems": 12,
+                "items": {"type": "string", "maxLength": 200}
+              },
+              "body_type": {"type": "string", "maxLength": 120},
+              "color": {"type": "string", "maxLength": 120},
+              "year_clues": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {"type": "string", "maxLength": 60}
+              }
+            }
+          },
+          "intent_hints": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "wants_catalog_match",
+              "wants_similar_recommendation",
+              "wants_general_chat",
+              "needs_clarification"
+            ],
+            "properties": {
+              "wants_catalog_match": {"type": "boolean"},
+              "wants_similar_recommendation": {"type": "boolean"},
+              "wants_general_chat": {"type": "boolean"},
+              "needs_clarification": {"type": "boolean"}
+            }
+          },
+          "bridge": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["normalized_vehicle_query", "brain_mode", "catalog_lookup_mode"],
+            "properties": {
+              "normalized_vehicle_query": {"type": "string", "maxLength": 500},
+              "brain_mode": {"type": "string", "maxLength": 120},
+              "catalog_lookup_mode": {"type": "string", "maxLength": 120}
+            }
+          },
+          "catalog_alignment": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "selected_product_id",
+              "selected_product_name",
+              "alignment_confidence",
+              "alignment_reason",
+              "uncertain_reason"
+            ],
+            "properties": {
+              "selected_product_id": {"type": "string", "maxLength": 128},
+              "selected_product_name": {"type": "string", "maxLength": 200},
+              "alignment_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+              "alignment_reason": {"type": "string", "maxLength": 500},
+              "uncertain_reason": {"type": "string", "maxLength": 500}
+            }
+          },
+          "audit": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "latency_ms",
+              "used_fallback",
+              "provider_error",
+              "retry_error",
+              "retry_after_non_json",
+              "catalog_identity_candidate_count"
+            ],
+            "properties": {
+              "latency_ms": {"type": "integer", "minimum": 0, "maximum": 3600000},
+              "used_fallback": {"type": "boolean"},
+              "provider_error": {"type": "string", "maxLength": 128},
+              "retry_error": {"type": "string", "maxLength": 128},
+              "retry_after_non_json": {"type": "boolean"},
+              "catalog_identity_candidate_count": {"type": "integer", "minimum": 0, "maximum": 1000},
+              "image_sha256": {"type": "string", "pattern": "^(|[0-9a-f]{64})$"}
+            }
+          }
+        }
+      },
+      "visual_bridge_input_v1": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema_version",
+          "present",
+          "vision_summary",
+          "classification",
+          "catalog_assist",
+          "intent_hints",
+          "vehicle_image_retrieval",
+          "source_message_ids"
+        ],
+        "properties": {
+          "schema_version": {"type": "integer", "const": 1},
+          "present": {"type": "boolean"},
+          "vision_summary": {"type": "string", "maxLength": 2000},
+          "classification": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["is_vehicle", "vehicle_confidence", "unknown"],
+            "properties": {
+              "is_vehicle": {"type": "boolean"},
+              "vehicle_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+              "unknown": {"type": "boolean"}
+            }
+          },
+          "catalog_assist": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "normalized_vehicle_query",
+              "candidate_names",
+              "exact_candidate_name"
+            ],
+            "properties": {
+              "normalized_vehicle_query": {"type": "string", "maxLength": 500},
+              "candidate_names": {
+                "type": "array",
+                "maxItems": 3,
+                "items": {"type": "string", "maxLength": 200}
+              },
+              "exact_candidate_name": {"type": "string", "maxLength": 200}
+            }
+          },
+          "intent_hints": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "wants_catalog_match",
+              "wants_similar_recommendation",
+              "needs_clarification"
+            ],
+            "properties": {
+              "wants_catalog_match": {"type": "boolean"},
+              "wants_similar_recommendation": {"type": "boolean"},
+              "needs_clarification": {"type": "boolean"}
+            }
+          },
+          "vehicle_image_retrieval": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["matched", "candidate_names"],
+            "properties": {
+              "matched": {"type": "boolean"},
+              "candidate_names": {
+                "type": "array",
+                "maxItems": 3,
+                "items": {"type": "string", "maxLength": 200}
+              }
+            }
+          },
+          "source_message_ids": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {"type": "string", "maxLength": 128}
+          }
+        }
+      }
+    }
+  },
   "image_persistence_policy": {
     "allowed_raw_payload_fields": ["customer_image_understanding", "visual_bridge_input"],
     "customer_image_understanding_allowed_fields": [
@@ -348,6 +618,7 @@
       "audit"
     ],
     "visual_bridge_input_allowed_fields": [
+      "schema_version",
       "present",
       "vision_summary",
       "classification",

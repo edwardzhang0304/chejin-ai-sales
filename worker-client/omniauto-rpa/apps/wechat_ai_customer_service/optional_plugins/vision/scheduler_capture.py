@@ -19,6 +19,7 @@ from .occurrence import (
     resolve_pending_visual_occurrence,
 )
 from .trigger import customer_image_capture_trigger, image_preview_text
+from .capture.wechat import DEFAULT_MAX_VISIBLE_IMAGE_CANDIDATES
 
 
 def legacy_observe_current_surface(
@@ -26,7 +27,7 @@ def legacy_observe_current_surface(
     connector: Any,
     target: Any,
     side_filter: str = "all",
-    max_images: int = 8,
+    max_images: int = DEFAULT_MAX_VISIBLE_IMAGE_CANDIDATES,
 ) -> dict[str, Any]:
     """Preserve the historical test/host seam inside the Vision owner."""
 
@@ -133,7 +134,7 @@ def prepare_scheduler_capture(
                 connector=connector,
                 target=target,
                 side_filter="all",
-                max_images=8,
+                max_images=DEFAULT_MAX_VISIBLE_IMAGE_CANDIDATES,
             )
         except Exception as exc:  # noqa: BLE001 - optional vision fails closed.
             surface_observation = {

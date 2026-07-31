@@ -24,7 +24,7 @@ from .visual_fingerprint import (
 )
 
 
-CLIPBOARD_WAIT_TIMEOUT_SECONDS = 2.5
+CLIPBOARD_WAIT_TIMEOUT_SECONDS = 15.0
 CLIPBOARD_POLL_INTERVAL_SECONDS = 0.08
 IMAGE_FINGERPRINT_MAX_DISTANCE = 6
 
@@ -472,12 +472,36 @@ def _acquire_current_image_via_ports(
             payload = None
             sequence_after = None
             clipboard_reason = "clipboard_sequence_unchanged_after_copy"
+            config = (
+                data.get("config")
+                if isinstance(data.get("config"), dict)
+                else {}
+            )
+            image_contract = (
+                config.get("_chejin_image_contract")
+                if isinstance(
+                    config.get("_chejin_image_contract"),
+                    dict,
+                )
+                else {}
+            )
+            source_limits = (
+                image_contract.get("source_limits")
+                if isinstance(
+                    image_contract.get("source_limits"),
+                    dict,
+                )
+                else {}
+            )
             wait_timeout = max(
                 0.2,
                 min(
-                    5.0,
+                    60.0,
                     float(
                         data.get("clipboard_wait_timeout_seconds")
+                        or source_limits.get(
+                            "clipboard_no_progress_timeout_seconds"
+                        )
                         or CLIPBOARD_WAIT_TIMEOUT_SECONDS
                     ),
                 ),
@@ -570,6 +594,44 @@ def _acquire_current_image_via_ports(
                         "clipboard_image_matches_target": False,
                     },
                 )
+            clear_current = getattr(
+                ports.clipboard,
+                "clear_current",
+                None,
+            )
+            clear_result = (
+                clear_current(int(sequence_after))
+                if callable(clear_current)
+                else {
+                    "ok": False,
+                    "reason": "clipboard_clear_port_missing",
+                }
+            )
+            if clear_result.get("ok") is not True:
+                payload.release()
+                action_phase = "confirmed"
+                if callable(journal_update):
+                    journal_update(
+                        action_phase="confirmed",
+                        business_state="failed",
+                        business_result_confirmed=False,
+                    )
+                return fail(
+                    "C2_IMAGE_CLIPBOARD_CLEAR_FAILED",
+                    transaction={
+                        "status": "clipboard_clear_failed",
+                        "right_click_ok": True,
+                        "menu_copy_confirmed": True,
+                        "clipboard_sequence_changed": True,
+                        "clipboard_content_read": True,
+                        "clipboard_image_valid": True,
+                        "clipboard_image_matches_target": True,
+                        "clipboard_cleared": False,
+                        "clipboard_clear_reason": str(
+                            clear_result.get("reason") or ""
+                        ),
+                    },
+                )
             image_sha256 = hashlib.sha256(bytes(payload.image_bytes)).hexdigest()
             visual_side = str(
                 (bubble.get("identity_match_evidence") or {}).get(
@@ -606,6 +668,10 @@ def _acquire_current_image_via_ports(
                     "clipboard_content_read": True,
                     "clipboard_image_valid": True,
                     "clipboard_image_matches_target": True,
+                    "clipboard_cleared": bool(clear_result.get("ok")),
+                    "clipboard_clear_reason": str(
+                        clear_result.get("reason") or ""
+                    ),
                     "clipboard_fingerprint_retry_count": retry_attempt,
                     "visual_side": visual_side,
                     "visual_side_consistent": (

@@ -10,6 +10,7 @@ from typing import Any
 from PIL import Image, ImageStat
 
 DEFAULT_BOTTOM_EXCLUDE_PX = 95
+DEFAULT_MAX_VISIBLE_IMAGE_CANDIDATES = 64
 IMAGE_PREVIEW_TOKENS = ("[图片]", "[照片]", "[Image]", "图片", "照片", "发送了一张图片")
 SAVE_MENU_TOKENS = (
     "另存为",
@@ -563,7 +564,7 @@ def detect_visual_image_bubbles(
     screenshot: Image.Image,
     *,
     messages: list[dict[str, Any]] | None = None,
-    max_images: int = 1,
+    max_images: int = DEFAULT_MAX_VISIBLE_IMAGE_CANDIDATES,
     side_filter: str = "customer",
     time_markers: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
@@ -681,7 +682,16 @@ def detect_visual_image_bubbles(
                 }
             )
     candidates.sort(key=lambda item: float(item.get("score") or 0.0), reverse=True)
-    return candidates[: max(1, min(int(max_images or 1), 8))]
+    limit = max(
+        1,
+        min(
+            int(max_images or DEFAULT_MAX_VISIBLE_IMAGE_CANDIDATES),
+            DEFAULT_MAX_VISIBLE_IMAGE_CANDIDATES,
+        ),
+    )
+    if len(candidates) > limit:
+        raise RuntimeError("C2_IMAGE_OBSERVATION_TRUNCATED")
+    return candidates
 
 
 def detect_customer_image_bubbles(
@@ -1078,7 +1088,7 @@ def execute_wechat_clipboard_image_copy(
     bubbles = detect_visual_image_bubbles(
         screenshot,
         messages=messages,
-        max_images=8,
+        max_images=DEFAULT_MAX_VISIBLE_IMAGE_CANDIDATES,
         side_filter=visual_side,
         time_markers=extract_chat_time_markers(ocr_items, image_size),
     )

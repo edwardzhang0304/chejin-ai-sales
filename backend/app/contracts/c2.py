@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -77,6 +78,52 @@ def contract_row_rules() -> dict[str, dict[str, Any]]:
     if declared_ingestible != derived_ingestible:
         raise RuntimeError("C2 ingestible_row_kinds and row_rules are inconsistent")
     return rules
+
+
+def image_contract() -> dict[str, Any]:
+    value = c2_contract_v3().get("image_contract")
+    if not isinstance(value, dict):
+        raise RuntimeError("Invalid C2 contract image_contract")
+    return dict(value)
+
+
+def validate_image_result_schema(
+    value: Any,
+    schema_name: str,
+) -> list[str]:
+    schemas = image_contract().get("schemas")
+    schema = schemas.get(schema_name) if isinstance(schemas, dict) else None
+    if not isinstance(schema, dict):
+        raise RuntimeError(f"Invalid C2 image schema: {schema_name}")
+    errors: list[str] = []
+
+    def reject_non_finite(item: Any, path: str) -> None:
+        if isinstance(item, float) and not math.isfinite(item):
+            errors.append(f"{path}: non-finite number")
+            return
+        if isinstance(item, dict):
+            for key, child in item.items():
+                reject_non_finite(child, f"{path}.{key}")
+        elif isinstance(item, list):
+            for index, child in enumerate(item):
+                reject_non_finite(child, f"{path}[{index}]")
+
+    reject_non_finite(value, "$")
+    try:
+        from jsonschema import Draft7Validator
+    except ImportError as exc:
+        raise RuntimeError("jsonschema dependency is required") from exc
+    validator = Draft7Validator(schema)
+    for error in sorted(
+        validator.iter_errors(value),
+        key=lambda item: tuple(str(part) for part in item.absolute_path),
+    ):
+        path = "$" + "".join(
+            f"[{part}]" if isinstance(part, int) else f".{part}"
+            for part in error.absolute_path
+        )
+        errors.append(f"{path}: {error.message}")
+    return errors
 
 
 def recovery_action_for_error(error_code: str, status_code: int) -> str:

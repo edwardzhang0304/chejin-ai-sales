@@ -2034,9 +2034,6 @@ class TaskRunner:
             if not binding or not CONFIG.c2_enabled or not self._c2_dependencies_ready():
                 self.stop_event.wait(1.0)
                 continue
-            if not self._c2_vision_ready_before_scan():
-                self.stop_event.wait(1.0)
-                continue
             if self.current_ui_lock is not None or bool(lock_summary().get("locked")):
                 self.stop_event.wait(0.5)
                 continue
@@ -2059,6 +2056,9 @@ class TaskRunner:
                 self.stop_event.wait(1.0)
                 continue
             if not self._wechat_ready_for_c2():
+                self.stop_event.wait(1.0)
+                continue
+            if not self._c2_vision_ready_before_scan():
                 self.stop_event.wait(1.0)
                 continue
             now = time.monotonic()
@@ -4314,10 +4314,9 @@ class TaskRunner:
             else:
                 source_key = ""
             trusted_role = observation_role_is_trusted(observation)
-            role_required_for_identity = row_kind != "image_bubble"
             if (
                 not source_key
-                or (role_required_for_identity and not trusted_role)
+                or not trusted_role
                 or source_key in seen_source_keys
             ):
                 error = {
@@ -4892,14 +4891,14 @@ class TaskRunner:
                 enforce_read_targets=enforce_read_targets,
             )
             if access_decision == "role_untrusted":
-                result = {"state": "ignored", "reason": "image_same_row_avatar_unconfirmed"}
                 append_log(
                     "WARN",
                     "c2_image_role_rejected",
-                    "C2 图片缺少统一同行头像角色证据，本条忽略且不调用 Vision。",
-                    error_code="C2_IMAGE_ROLE_UNCONFIRMED",
+                    "C2 图片初始同行头像角色不可信；本轮不建立图片身份、不落终态、不调用 Vision。",
+                    error_code="MESSAGE_IDENTITY_UNCONFIRMED",
                     metadata=common_metadata,
                 )
+                continue
             elif access_decision == "not_new":
                 append_log(
                     "INFO",

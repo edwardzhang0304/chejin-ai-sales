@@ -231,7 +231,14 @@ def _project_visual_bridge_input(value: Any) -> dict[str, Any]:
         compact_customer_image_brain_bridge,
     )
 
-    return _drop_image_runtime_fields(compact_customer_image_brain_bridge(value if isinstance(value, dict) else {}))
+    return {
+        "schema_version": 1,
+        **_drop_image_runtime_fields(
+            compact_customer_image_brain_bridge(
+                value if isinstance(value, dict) else {}
+            )
+        ),
+    }
 
 
 

@@ -158,10 +158,77 @@ def _v3_message(
             "applied": True,
             "adoptable": True,
             "reason": "vision_ready",
+            "provider": "https://aiself.vip/v1",
+            "request_style": "anthropic_messages_vision",
+            "model": "doubao-seed-2-0-lite-260428",
             "vision_summary": content,
             "image_ocr_text": [],
+            "classification": {
+                "is_vehicle": True,
+                "vehicle_confidence": 0.9,
+                "unknown": False,
+                "non_vehicle_reason": "",
+            },
+            "entities": {
+                "brand_candidates": [],
+                "series_candidates": [],
+                "model_clues": [],
+                "body_type": "",
+                "color": "",
+                "year_clues": [],
+            },
+            "intent_hints": {
+                "wants_catalog_match": False,
+                "wants_similar_recommendation": False,
+                "wants_general_chat": False,
+                "needs_clarification": False,
+            },
+            "bridge": {
+                "normalized_vehicle_query": "",
+                "brain_mode": "",
+                "catalog_lookup_mode": "",
+            },
+            "catalog_alignment": {
+                "selected_product_id": "",
+                "selected_product_name": "",
+                "alignment_confidence": 0.0,
+                "alignment_reason": "",
+                "uncertain_reason": "",
+            },
+            "audit": {
+                "latency_ms": 10,
+                "used_fallback": False,
+                "provider_error": "",
+                "retry_error": "",
+                "retry_after_non_json": False,
+                "catalog_identity_candidate_count": 0,
+            },
         }
-        bridge = {"present": True, "vision_summary": content}
+        bridge = {
+            "schema_version": 1,
+            "present": True,
+            "vision_summary": content,
+            "classification": {
+                "is_vehicle": True,
+                "vehicle_confidence": 0.9,
+                "unknown": False,
+            },
+            "catalog_assist": {
+                "normalized_vehicle_query": "",
+                "candidate_names": [],
+                "exact_candidate_name": "",
+            },
+            "intent_hints": {
+                "wants_catalog_match": False,
+                "wants_similar_recommendation": False,
+                "needs_clarification": False,
+            },
+            "vehicle_image_retrieval": {
+                "matched": False,
+                "candidate_names": [],
+            },
+            "source_message_ids": [source_key],
+        }
         observation["customer_image_understanding"] = understanding
         observation["visual_bridge_input"] = bridge
     message_position = {
@@ -1164,6 +1231,51 @@ def test_failed_vision_fact_and_text_are_persisted_without_failing_batch_or_crea
         assert rows[0].error_code == "IMAGE_UNDERSTANDING_PROVIDER_FAILED"
         handoff = db.query(HandoffEvent).one()
         assert handoff.handoff_reason_code == "C2_IMAGE_UNDERSTANDING_FAILED"
+        assert db.query(ReplyAction).count() == 0
+
+
+def test_failed_self_image_is_sales_intervention_not_waiting_for_sales():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("销售图片识别失败客户", "13896676685")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    payload = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id="read-failed-self-image",
+        messages=[
+            _v3_failed_image_message(
+                "failed-self-image",
+                role="self",
+                screen_order=1,
+                reason="IMAGE_UNDERSTANDING_PROVIDER_FAILED",
+                order_source="visual_top",
+            )
+        ],
+    )
+
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers=_worker_headers(worker),
+    )
+
+    assert response.status_code == 200, response.text
+    with SessionLocal() as db:
+        message = db.query(MessageEvent).filter(
+            MessageEvent.conversation_id == binding["conversation_id"]
+        ).one()
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert message.sender_role == "self"
+        assert message.item_state == "failed"
+        assert conversation.status == "sales_replied_waiting_user"
+        assert db.query(HandoffEvent).count() == 0
         assert db.query(ReplyAction).count() == 0
 
 

@@ -199,7 +199,7 @@ def observe_structural_image_messages(
     *,
     target: str,
     role_resolver: Callable[[Any, Any, Any], dict[str, Any]],
-    max_images: int = 8,
+    max_images: int = 64,
 ) -> list[dict[str, Any]]:
     """Run the one formal C2 image observation pipeline for the current frame."""
 

@@ -39,6 +39,7 @@ def generated_payload(contract: dict) -> dict:
         "action_phases": list(contract["action_phases"]),
         "sender_roles": list(contract["sender_roles"]),
         "row_rules": dict(contract["row_rules"]),
+        "image_contract": dict(contract["image_contract"]),
     }
 
 
