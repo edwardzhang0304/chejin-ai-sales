@@ -997,7 +997,7 @@ def voice_observation_source_key(target: WechatReadTarget, observation: dict[str
 def apply_image_terminal_result(observation: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
     enriched = dict(observation)
     state = str(result.get("state") or "failed").strip().lower()
-    if state not in {"completed", "failed", "ignored"}:
+    if state not in {"completed", "failed"}:
         state = "failed"
     enriched["item_state"] = state
     enriched["image_processing_reason"] = str(result.get("reason") or "")
@@ -1559,7 +1559,7 @@ def _build_message_ingest_payload_v3(
             validation_code = "OBSERVATION_SCHEMA_VERSION_MISMATCH"
         elif not isinstance(rule, dict):
             validation_code = "OBSERVATION_ROW_KIND_UNKNOWN"
-        elif row_kind == "image_bubble" and item_state in {"discovered", "ignored"}:
+        elif row_kind == "image_bubble" and item_state == "discovered":
             validation_code = ""
         else:
             required_fields = (

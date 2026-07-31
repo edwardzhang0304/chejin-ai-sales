@@ -299,6 +299,36 @@ def _acquire_current_image_via_ports(
     surface = None
     menu_surface = None
     menu_opened = False
+    owned_clipboard_sequence: int | None = None
+    acquired_payload = None
+    payload_transferred = False
+
+    def clear_owned_clipboard() -> dict[str, Any]:
+        nonlocal owned_clipboard_sequence
+        if owned_clipboard_sequence is None:
+            return {"ok": True, "reason": "clipboard_not_owned"}
+        sequence = int(owned_clipboard_sequence)
+        owned_clipboard_sequence = None
+        clear_current = getattr(ports.clipboard, "clear_current", None)
+        if not callable(clear_current):
+            return {
+                "ok": False,
+                "reason": "clipboard_clear_port_missing",
+            }
+        try:
+            result = clear_current(sequence)
+        except Exception as exc:  # noqa: BLE001 - cleanup must be normalized
+            return {
+                "ok": False,
+                "reason": "clipboard_clear_exception",
+                "error_type": type(exc).__name__,
+            }
+        return (
+            dict(result)
+            if isinstance(result, dict)
+            else {"ok": False, "reason": "clipboard_clear_invalid_result"}
+        )
+
     try:
         with lease:
             if _cancelled(data):
@@ -525,9 +555,12 @@ def _acquire_current_image_via_ports(
                     candidate_sequence is not None
                     and int(candidate_sequence) != int(sequence_before)
                 ):
+                    if owned_clipboard_sequence is None:
+                        owned_clipboard_sequence = int(candidate_sequence)
                     candidate_payload = ephemeral_image_from_memory(
                         ports.clipboard.read_current_bitmap(),
                         mime_type=str(data.get("mime_type") or "image/png"),
+                        source_limits=source_limits,
                     )
                     if candidate_payload is None:
                         clipboard_reason = "clipboard_current_content_not_bitmap"
@@ -538,6 +571,7 @@ def _acquire_current_image_via_ports(
                             and int(verified_sequence) == int(candidate_sequence)
                         ):
                             payload = candidate_payload
+                            acquired_payload = candidate_payload
                             sequence_after = int(candidate_sequence)
                             break
                         candidate_payload.release()
@@ -547,6 +581,7 @@ def _acquire_current_image_via_ports(
                 return fail(clipboard_reason)
             if _cancelled(data):
                 payload.release()
+                acquired_payload = None
                 return fail("vision_cancelled")
             actual_clipboard_fingerprint = clipboard_payload_fingerprint(
                 payload
@@ -557,6 +592,20 @@ def _acquire_current_image_via_ports(
             )
             if not clipboard_matches_target:
                 payload.release()
+                acquired_payload = None
+                clear_result = clear_owned_clipboard()
+                if clear_result.get("ok") is not True:
+                    return fail(
+                        "C2_IMAGE_CLIPBOARD_CLEAR_FAILED",
+                        transaction={
+                            "status": "clipboard_clear_failed",
+                            "clipboard_image_matches_target": False,
+                            "clipboard_cleared": False,
+                            "clipboard_clear_reason": str(
+                                clear_result.get("reason") or ""
+                            ),
+                        },
+                    )
                 if retry_attempt < 1:
                     retry_data = {
                         **data,
@@ -594,21 +643,10 @@ def _acquire_current_image_via_ports(
                         "clipboard_image_matches_target": False,
                     },
                 )
-            clear_current = getattr(
-                ports.clipboard,
-                "clear_current",
-                None,
-            )
-            clear_result = (
-                clear_current(int(sequence_after))
-                if callable(clear_current)
-                else {
-                    "ok": False,
-                    "reason": "clipboard_clear_port_missing",
-                }
-            )
+            clear_result = clear_owned_clipboard()
             if clear_result.get("ok") is not True:
                 payload.release()
+                acquired_payload = None
                 action_phase = "confirmed"
                 if callable(journal_update):
                     journal_update(
@@ -646,6 +684,7 @@ def _acquire_current_image_via_ports(
                     business_state="clipboard_confirmed",
                     business_result_confirmed=False,
                 )
+            payload_transferred = True
             return {
                 "ok": True,
                 "state": "image_clipboard_copied",
@@ -694,6 +733,12 @@ def _acquire_current_image_via_ports(
     except Exception as exc:  # noqa: BLE001 - host failures are normalized
         return fail("vision_port_transaction_exception", error_type=type(exc).__name__)
     finally:
+        clear_owned_clipboard()
+        if acquired_payload is not None and not payload_transferred:
+            try:
+                acquired_payload.release()
+            except Exception:
+                pass
         if menu_opened:
             _dismiss_menu_safely(ports.ui_action)
         for transient_image in (surface, menu_surface):

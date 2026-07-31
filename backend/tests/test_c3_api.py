@@ -1202,7 +1202,7 @@ def test_brain_history_preserves_structured_image_context_across_rounds():
         assert item["vision_summary"] == "白色 SUV 外观，车头朝左"
         assert item["image_ocr_text"] == ["测试车牌"]
         assert item["normalized_vehicle_query"] == "白色 SUV"
-        assert item["server_validated_product_id"] == "server-product-001"
+        assert item["server_validated_product_id"] == ""
 
 
 def test_stale_message_batch_generation_is_reclaimed_once():

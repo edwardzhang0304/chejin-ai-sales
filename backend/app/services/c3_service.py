@@ -708,9 +708,7 @@ def _build_ai_context(db: Session, binding: WechatSessionBinding, conversation: 
                     )
                     or ""
                 )[:500],
-                "server_validated_product_id": str(
-                    raw.get("server_validated_product_id") or ""
-                )[:128],
+                "server_validated_product_id": "",
                 "customer_image_understanding": understanding,
                 "visual_bridge_input": bridge,
             }

@@ -184,7 +184,11 @@ def _settings(value: dict[str, Any] | None) -> dict[str, Any]:
         "model": _clean(source.get("model"), 160),
         "base_url": _clean(source.get("base_url"), 360).rstrip("/"),
         "api_key": _clean(source.get("api_key"), 2000),
-        "api_key_env": _clean(source.get("api_key_env") or "ANTHROPIC_AUTH_TOKEN", 160),
+        "api_key_env": _clean(
+            source.get("api_key_env")
+            or "CUSTOMER_IMAGE_UNDERSTANDING_API_KEY",
+            160,
+        ),
         "timeout_seconds": max(3, min(timeout_seconds, 120)),
         "max_tokens": max(300, min(max_tokens, 3000)),
     }

@@ -576,6 +576,11 @@ def detect_visual_image_bubbles(
     crop = image.crop((left, top, right, bottom))
     scale = min(1.0, 220.0 / max(1, crop.width), 300.0 / max(1, crop.height))
     small = crop.resize((max(32, int(crop.width * scale)), max(32, int(crop.height * scale))), Image.Resampling.BILINEAR)
+    background_stat = ImageStat.Stat(small)
+    background = [
+        float(value)
+        for value in (background_stat.median or [242.0, 242.0, 242.0])[:3]
+    ]
     block = 5
     grid_w = max(1, small.width // block)
     grid_h = max(1, small.height // block)
@@ -600,7 +605,23 @@ def detect_visual_image_bubbles(
             # connected-component size and text-overlap checks still reject
             # avatars, glyphs and ordinary UI chrome.
             dark_low_texture_surface = brightness <= 58.0 and spread <= 20.0
-            active[gy][gx] = spread >= 16.0 or delta >= 24.0 or dark_low_texture_surface
+            background_distance = sum(
+                abs(float(value) - background[index])
+                for index, value in enumerate(mean[:3])
+            ) / 3.0
+            # Pale documents and screenshots often have almost no texture or
+            # colour spread. Their rectangular surface still differs from the
+            # surrounding chat canvas. The downstream lane, avatar-row, size
+            # and text-overlap checks remain authoritative structural gates.
+            pale_rectangular_surface = (
+                background_distance >= 6.0 and spread <= 24.0
+            )
+            active[gy][gx] = (
+                spread >= 16.0
+                or delta >= 24.0
+                or dark_low_texture_surface
+                or pale_rectangular_surface
+            )
     visited: set[tuple[int, int]] = set()
     candidates: list[dict[str, Any]] = []
     clean_side_filter = str(side_filter or "customer").strip().lower()
@@ -675,7 +696,9 @@ def detect_visual_image_bubbles(
                     "score": float(score),
                     "detection_method": "structural_media_lane_v1",
                     "structure_evidence": structure_evidence,
-                    "auxiliary_visual_evidence": ["colour_texture_connected_component"],
+                    "auxiliary_visual_evidence": [
+                        "colour_texture_or_background_surface_component"
+                    ],
                     "visual_fingerprint": visual_fingerprint,
                     "anchor": {"x": int((bounds[0] + bounds[2]) / 2), "y": int((bounds[1] + bounds[3]) / 2)},
                     "wechat_message_time": nearest_chat_time_marker(bounds, time_markers),

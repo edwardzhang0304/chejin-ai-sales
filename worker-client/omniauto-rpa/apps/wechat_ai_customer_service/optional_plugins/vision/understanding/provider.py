@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from PIL import Image, ImageOps
+from ..limits import DEFAULT_IMAGE_SOURCE_LIMITS
 
 try:
     from llm_output_adapter import parse_llm_json_object
@@ -20,18 +21,22 @@ except Exception:  # pragma: no cover - script mode fallback
 
 DEFAULT_MAX_TOKENS = 1800
 DEFAULT_TEMPERATURE = 0.1
-MAX_IMAGE_PAYLOAD_BYTES = 3 * 1024 * 1024
-MAX_IMAGE_SOURCE_BYTES = 12 * 1024 * 1024
-MAX_IMAGE_RAW_BYTES = 80 * 1024 * 1024
-MAX_IMAGE_EDGE_PX = 2048
-MAX_IMAGE_PIXELS = 20_000_000
+MAX_IMAGE_PAYLOAD_BYTES = DEFAULT_IMAGE_SOURCE_LIMITS["max_provider_payload_bytes"]
+MAX_IMAGE_SOURCE_BYTES = DEFAULT_IMAGE_SOURCE_LIMITS["max_encoded_source_bytes"]
+MAX_IMAGE_RAW_BYTES = DEFAULT_IMAGE_SOURCE_LIMITS["max_decoded_rgba_bytes"]
+MAX_IMAGE_EDGE_PX = DEFAULT_IMAGE_SOURCE_LIMITS["max_provider_edge_px"]
+MAX_IMAGE_PIXELS = DEFAULT_IMAGE_SOURCE_LIMITS["max_decoded_pixels"]
 
 
 class ImagePayloadError(ValueError):
     """Raised when a local visual asset cannot be safely sent to a provider."""
 
 
-def _memory_image_payload_bytes(payload: Any) -> tuple[bytes, str]:
+def _memory_image_payload_bytes(
+    payload: Any,
+    *,
+    max_payload_bytes: int = MAX_IMAGE_PAYLOAD_BYTES,
+) -> tuple[bytes, str]:
     """Read an ephemeral image payload without accepting a filesystem path."""
     if isinstance(payload, dict):
         raw = payload.get("image_bytes")
@@ -48,7 +53,7 @@ def _memory_image_payload_bytes(payload: Any) -> tuple[bytes, str]:
     image_bytes = bytes(raw)
     if not image_bytes:
         raise ImagePayloadError("ephemeral_image_payload_empty")
-    if len(image_bytes) > MAX_IMAGE_PAYLOAD_BYTES:
+    if len(image_bytes) > int(max_payload_bytes):
         raise ImagePayloadError("ephemeral_image_payload_too_large")
     if not mime_type.startswith("image/"):
         raise ImagePayloadError("ephemeral_image_mime_invalid")
@@ -69,8 +74,15 @@ def data_url_from_image_path(path: str | Path) -> str:
     return f"data:{mime_type};base64,{encoded}"
 
 
-def data_url_from_memory_image_payload(payload: Any) -> str:
-    image_bytes, mime_type = _memory_image_payload_bytes(payload)
+def data_url_from_memory_image_payload(
+    payload: Any,
+    *,
+    max_payload_bytes: int = MAX_IMAGE_PAYLOAD_BYTES,
+) -> str:
+    image_bytes, mime_type = _memory_image_payload_bytes(
+        payload,
+        max_payload_bytes=max_payload_bytes,
+    )
     encoded = base64.b64encode(image_bytes).decode("ascii")
     return f"data:{mime_type};base64,{encoded}"
 
@@ -88,8 +100,15 @@ def anthropic_image_part(path: str | Path) -> dict[str, Any]:
     }
 
 
-def anthropic_memory_image_part(payload: Any) -> dict[str, Any]:
-    image_bytes, mime_type = _memory_image_payload_bytes(payload)
+def anthropic_memory_image_part(
+    payload: Any,
+    *,
+    max_payload_bytes: int = MAX_IMAGE_PAYLOAD_BYTES,
+) -> dict[str, Any]:
+    image_bytes, mime_type = _memory_image_payload_bytes(
+        payload,
+        max_payload_bytes=max_payload_bytes,
+    )
     encoded = base64.b64encode(image_bytes).decode("ascii")
     return {
         "type": "image",
@@ -109,12 +128,23 @@ def build_openai_chat_vision_payload(
     max_tokens: int = DEFAULT_MAX_TOKENS,
     temperature: float = DEFAULT_TEMPERATURE,
     image_payloads: list[Any] | None = None,
+    max_image_payload_bytes: int = MAX_IMAGE_PAYLOAD_BYTES,
 ) -> dict[str, Any]:
     if any(str(path).strip() for path in image_paths or []):
         raise ImagePayloadError("legacy_image_path_input_rejected")
     content = [{"type": "text", "text": str(prompt or "")}]
     for payload in image_payloads or []:
-        content.append({"type": "image_url", "image_url": {"url": data_url_from_memory_image_payload(payload)}})
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": data_url_from_memory_image_payload(
+                        payload,
+                        max_payload_bytes=max_image_payload_bytes,
+                    )
+                },
+            }
+        )
     return {
         "model": model,
         "messages": [{"role": "user", "content": content}],
@@ -132,12 +162,18 @@ def build_anthropic_messages_vision_payload(
     max_tokens: int = DEFAULT_MAX_TOKENS,
     temperature: float = DEFAULT_TEMPERATURE,
     image_payloads: list[Any] | None = None,
+    max_image_payload_bytes: int = MAX_IMAGE_PAYLOAD_BYTES,
 ) -> dict[str, Any]:
     if any(str(path).strip() for path in image_paths or []):
         raise ImagePayloadError("legacy_image_path_input_rejected")
     content = [{"type": "text", "text": str(prompt or "")}]
     for payload in image_payloads or []:
-        content.append(anthropic_memory_image_part(payload))
+        content.append(
+            anthropic_memory_image_part(
+                payload,
+                max_payload_bytes=max_image_payload_bytes,
+            )
+        )
     return {
         "model": model,
         "messages": [{"role": "user", "content": content}],
@@ -216,6 +252,7 @@ def run_customer_image_understanding_provider(
     max_tokens: int = DEFAULT_MAX_TOKENS,
     temperature: float = DEFAULT_TEMPERATURE,
     image_payloads: list[Any] | None = None,
+    max_image_payload_bytes: int = MAX_IMAGE_PAYLOAD_BYTES,
 ) -> dict[str, Any]:
     clean_style = str(request_style or "openai_chat_vision").strip().lower()
     if [str(path).strip() for path in image_paths if str(path).strip()]:
@@ -236,6 +273,7 @@ def run_customer_image_understanding_provider(
                 max_tokens=max_tokens,
                 temperature=temperature,
                 image_payloads=image_payloads,
+                max_image_payload_bytes=max_image_payload_bytes,
             )
             url = str(base_url or "").rstrip("/") + "/messages"
             headers = {
@@ -253,6 +291,7 @@ def run_customer_image_understanding_provider(
                 max_tokens=max_tokens,
                 temperature=temperature,
                 image_payloads=image_payloads,
+                max_image_payload_bytes=max_image_payload_bytes,
             )
             url = str(base_url or "").rstrip("/") + "/chat/completions"
             headers = {

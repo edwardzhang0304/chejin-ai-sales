@@ -39,6 +39,7 @@ def main() -> int:
                 mime_type=str(request.get("mime_type") or "image/png"),
                 width=int(request.get("width") or 0),
                 height=int(request.get("height") or 0),
+                source_limits=config,
             )
             if payload is None:
                 raise ValueError("VISION_PROVIDER_IMAGE_INVALID")

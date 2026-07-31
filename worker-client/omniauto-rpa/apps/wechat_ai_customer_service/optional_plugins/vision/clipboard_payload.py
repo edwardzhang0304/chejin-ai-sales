@@ -16,6 +16,7 @@ from typing import Any, Callable
 
 from PIL import Image, ImageOps
 
+from .limits import resolve_image_source_limits
 from .understanding.provider import (
     MAX_IMAGE_EDGE_PX,
     MAX_IMAGE_PAYLOAD_BYTES,
@@ -107,13 +108,17 @@ def _image_from_encoded_clipboard_bytes(
         return None
 
 
-def _dib_as_bmp_bytes(value: Any) -> bytes | None:
+def _dib_as_bmp_bytes(
+    value: Any,
+    *,
+    max_raw_bytes: int = MAX_IMAGE_RAW_BYTES,
+) -> bytes | None:
     """Add an in-memory BMP file header to a native CF_DIB/CF_DIBV5 payload."""
 
     if not isinstance(value, (bytes, bytearray, memoryview)):
         return None
     dib = bytes(value)
-    if len(dib) < 12 or len(dib) > MAX_IMAGE_RAW_BYTES:
+    if len(dib) < 12 or len(dib) > int(max_raw_bytes):
         return None
     try:
         header_size = int(struct.unpack_from("<I", dib, 0)[0])
@@ -148,7 +153,12 @@ def _dib_as_bmp_bytes(value: Any) -> bytes | None:
     return file_header + dib
 
 
-def _image_from_hbitmap(value: Any) -> Image.Image | None:
+def _image_from_hbitmap(
+    value: Any,
+    *,
+    max_pixels: int = MAX_IMAGE_PIXELS,
+    max_raw_bytes: int = MAX_IMAGE_RAW_BYTES,
+) -> Image.Image | None:
     """Read CF_BITMAP into a temporary in-memory DIB; never save the bitmap."""
 
     try:
@@ -195,10 +205,10 @@ def _image_from_hbitmap(value: Any) -> Image.Image | None:
     if int(gdi32.GetObjectW(hbitmap, ctypes.sizeof(bitmap), ctypes.byref(bitmap))) <= 0:
         return None
     width, height = int(bitmap.bmWidth), abs(int(bitmap.bmHeight))
-    if width <= 0 or height <= 0 or width * height > MAX_IMAGE_PIXELS:
+    if width <= 0 or height <= 0 or width * height > int(max_pixels):
         return None
     byte_count = width * height * 4
-    if byte_count <= 0 or byte_count > MAX_IMAGE_RAW_BYTES:
+    if byte_count <= 0 or byte_count > int(max_raw_bytes):
         return None
     hdc = user32.GetDC(0)
     if not hdc:
@@ -230,24 +240,41 @@ def _image_from_hbitmap(value: Any) -> Image.Image | None:
             raw[index] = 0
 
 
-def _decode_native_clipboard_value(*, format_id: int, format_name: str, value: Any) -> Image.Image | None:
+def _decode_native_clipboard_value(
+    *,
+    format_id: int,
+    format_name: str,
+    value: Any,
+    source_limits: dict[str, Any] | None = None,
+) -> Image.Image | None:
     """Accept only native image clipboard formats, never paths or text."""
 
+    limits = resolve_image_source_limits(source_limits)
     name = str(format_name or "").strip().lower()
     if name in _NATIVE_IMAGE_FORMAT_PRIORITY:
-        return _image_from_encoded_clipboard_bytes(value)
+        return _image_from_encoded_clipboard_bytes(
+            value,
+            max_source_bytes=limits["max_encoded_source_bytes"],
+        )
     if format_id in {_CF_DIB, _CF_DIBV5}:
-        bmp = _dib_as_bmp_bytes(value)
+        bmp = _dib_as_bmp_bytes(
+            value,
+            max_raw_bytes=limits["max_decoded_rgba_bytes"],
+        )
         return (
             _image_from_encoded_clipboard_bytes(
                 bmp,
-                max_source_bytes=MAX_IMAGE_RAW_BYTES,
+                max_source_bytes=limits["max_decoded_rgba_bytes"],
             )
             if bmp is not None
             else None
         )
     if format_id == _CF_BITMAP:
-        return _image_from_hbitmap(value)
+        return _image_from_hbitmap(
+            value,
+            max_pixels=limits["max_decoded_pixels"],
+            max_raw_bytes=limits["max_decoded_rgba_bytes"],
+        )
     return None
 
 
@@ -258,7 +285,10 @@ def _native_clipboard_format_name(clipboard: Any, format_id: int) -> str:
         return ""
 
 
-def _read_current_windows_native_clipboard_image() -> dict[str, Any]:
+def _read_current_windows_native_clipboard_image(
+    *,
+    source_limits: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Read a native bitmap from the current Windows clipboard generation only."""
 
     try:
@@ -294,6 +324,7 @@ def _read_current_windows_native_clipboard_image() -> dict[str, Any]:
                 format_id=format_id,
                 format_name=format_name,
                 value=value,
+                source_limits=source_limits,
             )
             if image is not None:
                 return {"ok": True, "image": image}
@@ -325,17 +356,23 @@ def _read_injected_clipboard_image(reader: Callable[[], Any]) -> dict[str, Any]:
 
 def _encode_ephemeral_image(
     image: Image.Image,
+    *,
+    source_limits: dict[str, Any] | None = None,
 ) -> EphemeralClipboardImage | None:
+    limits = resolve_image_source_limits(source_limits)
+    max_pixels = limits["max_decoded_pixels"]
+    max_edge = limits["max_provider_edge_px"]
+    max_payload_bytes = limits["max_provider_payload_bytes"]
     width, height = image.size
-    if width <= 0 or height <= 0 or width * height > MAX_IMAGE_PIXELS:
+    if width <= 0 or height <= 0 or width * height > max_pixels:
         return None
     normalized = image
     owns_normalized = False
-    if max(width, height) > MAX_IMAGE_EDGE_PX:
+    if max(width, height) > max_edge:
         normalized = image.copy()
         owns_normalized = True
         normalized.thumbnail(
-            (MAX_IMAGE_EDGE_PX, MAX_IMAGE_EDGE_PX),
+            (max_edge, max_edge),
             Image.Resampling.LANCZOS,
         )
         width, height = normalized.size
@@ -367,7 +404,7 @@ def _encode_ephemeral_image(
                 raw = buffer.getvalue()
             finally:
                 buffer.close()
-            if raw and len(raw) <= MAX_IMAGE_PAYLOAD_BYTES:
+            if raw and len(raw) <= max_payload_bytes:
                 return EphemeralClipboardImage(
                     image_bytes=bytearray(raw),
                     mime_type=mime_type,
@@ -386,6 +423,7 @@ def ephemeral_image_from_memory(
     mime_type: str = "image/png",
     width: int = 0,
     height: int = 0,
+    source_limits: dict[str, Any] | None = None,
 ) -> EphemeralClipboardImage | None:
     """Normalize a host-port bitmap result into the module-owned payload."""
 
@@ -396,20 +434,33 @@ def ephemeral_image_from_memory(
         return None if raw.released else raw
     if isinstance(raw, (bytes, bytearray, memoryview)):
         content = bytes(raw)
-        if not content or len(content) > MAX_IMAGE_SOURCE_BYTES:
+        limits = resolve_image_source_limits(source_limits)
+        if (
+            not content
+            or len(content) > limits["max_encoded_source_bytes"]
+        ):
             return None
-        image = _image_from_encoded_clipboard_bytes(content)
+        image = _image_from_encoded_clipboard_bytes(
+            content,
+            max_source_bytes=limits["max_encoded_source_bytes"],
+        )
         if image is None:
             return None
         try:
-            return _encode_ephemeral_image(image)
+            return _encode_ephemeral_image(
+                image,
+                source_limits=limits,
+            )
         finally:
             image.close()
     image = _clipboard_image(raw)
     if image is None:
         return None
     try:
-        return _encode_ephemeral_image(image)
+        return _encode_ephemeral_image(
+            image,
+            source_limits=source_limits,
+        )
     finally:
         image.close()
 
@@ -419,6 +470,7 @@ def read_current_clipboard_image(
     *,
     clipboard_reader: Callable[[], Any] | None = None,
     sequence_provider: Callable[[], int | None] | None = None,
+    source_limits: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Read only the clipboard generation produced by the current RPA copy.
 
@@ -445,7 +497,9 @@ def read_current_clipboard_image(
     read_result = (
         _read_injected_clipboard_image(clipboard_reader)
         if clipboard_reader is not None
-        else _read_current_windows_native_clipboard_image()
+        else _read_current_windows_native_clipboard_image(
+            source_limits=source_limits,
+        )
     )
     if not read_result.get("ok"):
         return read_result
@@ -453,7 +507,10 @@ def read_current_clipboard_image(
     if not isinstance(image, Image.Image):
         return {"ok": False, "reason": "clipboard_current_content_not_bitmap"}
     try:
-        payload = _encode_ephemeral_image(image)
+        payload = _encode_ephemeral_image(
+            image,
+            source_limits=source_limits,
+        )
     finally:
         try:
             image.close()

@@ -1,8 +1,8 @@
 {
   "generated_file": true,
   "source": "contracts/c2_contract_v3.json",
-  "contract_revision": "3.11.0",
-  "contract_sha256": "c4effb41cb93c5a726c5c364b1b71fdb7b2adad17327268ca21200458aaa190f",
+  "contract_revision": "3.12.0",
+  "contract_sha256": "0d0fe8dd77bca6761adcb336d9042fc753821c9d5f310022ea01fd16d801925e",
   "observation_schema_version": 3,
   "action_phases": [
     "not_attempted",
@@ -175,9 +175,7 @@
         "image_processing_reason",
         "source_message"
       ],
-      "terminal_non_ingestible_item_states": [
-        "ignored"
-      ]
+      "terminal_non_ingestible_item_states": []
     },
     "system_message": {
       "ingestible": true,
@@ -277,9 +275,16 @@
       "clipboard_no_progress_timeout_seconds": 15
     },
     "provider_contract": {
+      "api_key_env": "CUSTOMER_IMAGE_UNDERSTANDING_API_KEY",
       "max_provider_attempts": 2,
       "process_overhead_seconds": 15,
       "production_requires_https": true,
+      "development_modes": [
+        "dev",
+        "test",
+        "development",
+        "mock"
+      ],
       "development_http_hosts": [
         "127.0.0.1",
         "localhost"
@@ -302,7 +307,8 @@
       "C2_IMAGE_PROVIDER_PAYLOAD_TOO_LARGE",
       "C2_IMAGE_CLIPBOARD_CLEAR_FAILED",
       "C2_IMAGE_VISION_CONFIG_INVALID",
-      "C2_IMAGE_UNDERSTANDING_SCHEMA_INVALID"
+      "C2_IMAGE_UNDERSTANDING_SCHEMA_INVALID",
+      "C2_IMAGE_UNDERSTANDING_FAILED"
     ],
     "schemas": {
       "customer_image_understanding_v1": {

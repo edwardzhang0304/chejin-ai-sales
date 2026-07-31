@@ -8277,7 +8277,7 @@ class TaskRunnerTest(unittest.TestCase):
         )
         vision.assert_called_once()
 
-    def test_cached_ignored_and_new_completed_image_requires_final_refresh(self):
+    def test_cached_failed_and_new_completed_image_requires_final_refresh(self):
         runner, _ = self.make_runner(
             FakeApi(None),
             FakeBridge(
@@ -8326,22 +8326,22 @@ class TaskRunnerTest(unittest.TestCase):
                 },
             }
 
-        old_ignored = image_observation("old-ignored", 120)
+        old_failed = image_observation("old-failed", 120)
         new_image = image_observation("new-completed", 300)
         old_source_key = image_observation_source_key(
             target,
-            old_ignored,
+            old_failed,
         )
         save_c2_ledger_terminal(
             conversation_id=target.conversation_id,
             source_message_key=old_source_key,
             dedupe_key=None,
             message_type="image",
-            terminal_state="ignored",
-            ingest_state="not_required",
+            terminal_state="failed",
+            ingest_state="confirmed",
             result={
-                "state": "ignored",
-                "reason": "image_same_row_avatar_unconfirmed",
+                "state": "failed",
+                "reason": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
             },
         )
         completed = {
@@ -8373,14 +8373,14 @@ class TaskRunnerTest(unittest.TestCase):
                 binding=binding,
                 target=target,
                 sidecar_payload={
-                    "observations": [old_ignored, new_image]
+                    "observations": [old_failed, new_image]
                 },
                 enforce_read_targets=False,
             )
 
         self.assertEqual(vision.call_count, 1)
         self.assertEqual(phase_result["cached"], 1)
-        self.assertEqual(phase_result["ignored"], 1)
+        self.assertEqual(phase_result["failed"], 1)
         self.assertEqual(phase_result["completed"], 1)
         self.assertEqual(phase_result["new_action_count"], 1)
         self.assertTrue(phase_result["requires_final_refresh"])
@@ -8453,7 +8453,7 @@ class TaskRunnerTest(unittest.TestCase):
             allowed_new_source_keys=set(),
         )
 
-        self.assertEqual(phase_result["ignored"], 0)
+        self.assertNotIn("ignored", phase_result)
         self.assertEqual(
             result["observations"][0]["item_state"],
             "discovered",
