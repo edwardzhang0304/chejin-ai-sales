@@ -8,6 +8,8 @@ import subprocess
 import sys
 import unittest
 
+from tests.contract_artifacts import resolve_contract_artifact
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ADAPTERS = ROOT / "omniauto-rpa" / "apps" / "wechat_ai_customer_service" / "adapters"
@@ -32,7 +34,10 @@ class OmniAutoIntegrationContractTest(unittest.TestCase):
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
 
-        fixture_path = ROOT.parent / "contracts" / "examples" / "c2_v3_mixed_roundtrip.json"
+        fixture_path = resolve_contract_artifact(
+            "examples",
+            "c2_v3_mixed_roundtrip.json",
+        )
         fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
         for observation in fixture["omniauto_output"]["observations"]:
             self.assertEqual(

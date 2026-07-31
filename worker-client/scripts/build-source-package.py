@@ -190,6 +190,13 @@ def build(
             PROJECT_ROOT / "contracts" / "c2_contract_v3.json",
             "worker-client/contracts/c2_contract_v3.json",
         )
+        archive.write(
+            PROJECT_ROOT
+            / "contracts"
+            / "examples"
+            / "c2_v3_mixed_roundtrip.json",
+            "worker-client/contracts/examples/c2_v3_mixed_roundtrip.json",
+        )
     sha256 = hashlib.sha256(zip_path.read_bytes()).hexdigest()
     with zipfile.ZipFile(zip_path) as archive:
         names = archive.namelist()

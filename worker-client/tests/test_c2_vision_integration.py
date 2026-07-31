@@ -92,6 +92,7 @@ from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar
 from apps.wechat_ai_customer_service.workflows import (
     customer_service_brain,
 )
+from tests.contract_artifacts import resolve_contract_artifact
 
 
 class C2VisionIntegrationTests(unittest.TestCase):
@@ -3168,11 +3169,9 @@ class C2VisionIntegrationTests(unittest.TestCase):
 
     def test_shared_image_schema_rejects_string_boolean_and_nonfinite_confidence(self):
         fixture = json.loads(
-            (
-                Path(__file__).resolve().parents[2]
-                / "contracts"
-                / "examples"
-                / "c2_v3_mixed_roundtrip.json"
+            resolve_contract_artifact(
+                "examples",
+                "c2_v3_mixed_roundtrip.json",
             ).read_text(encoding="utf-8")
         )
         image_observation = next(
