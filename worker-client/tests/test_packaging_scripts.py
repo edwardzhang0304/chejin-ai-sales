@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -169,6 +171,44 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["chejin_integration_commit"],
             "ff9e0de00013ac51a2f2a05e3774748c43c846fb",
         )
+
+    def test_generated_schema_check_runs_from_packaged_layout(self):
+        with tempfile.TemporaryDirectory() as temp:
+            packaged_root = Path(temp) / "worker-client"
+            (packaged_root / "scripts").mkdir(parents=True)
+            (packaged_root / "contracts").mkdir()
+            generated_relative = Path(
+                "omniauto-rpa/apps/wechat_ai_customer_service/adapters/"
+                "chejin_c2_observation_schema.generated.json"
+            )
+            (packaged_root / generated_relative).parent.mkdir(parents=True)
+            shutil.copy2(
+                ROOT / "scripts" / "generate-c2-observation-schema.py",
+                packaged_root / "scripts" / "generate-c2-observation-schema.py",
+            )
+            shutil.copy2(
+                ROOT.parent / "contracts" / "c2_contract_v3.json",
+                packaged_root / "contracts" / "c2_contract_v3.json",
+            )
+            shutil.copy2(
+                ROOT / generated_relative,
+                packaged_root / generated_relative,
+            )
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "scripts/generate-c2-observation-schema.py",
+                    "--check",
+                ],
+                cwd=packaged_root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("C2 observation schema is current", result.stdout)
 
     def test_pyinstaller_spec_packages_contract_and_filters_omniauto_runtime_data(self):
         text = (ROOT / "packaging" / "chejin-worker-client.spec").read_text(encoding="utf-8")

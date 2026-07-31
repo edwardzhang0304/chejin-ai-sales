@@ -8,7 +8,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = ROOT.parent
-CONTRACT_PATH = PROJECT_ROOT / "contracts" / "c2_contract_v3.json"
 DEFAULT_OUTPUT = (
     ROOT
     / "omniauto-rpa"
@@ -17,6 +16,17 @@ DEFAULT_OUTPUT = (
     / "adapters"
     / "chejin_c2_observation_schema.generated.json"
 )
+
+
+def resolve_contract_path() -> Path:
+    candidates = (
+        PROJECT_ROOT / "contracts" / "c2_contract_v3.json",
+        ROOT / "contracts" / "c2_contract_v3.json",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError("C2_CONTRACT_NOT_FOUND")
 
 
 def canonical_sha256(payload: dict) -> str:
@@ -44,7 +54,7 @@ def generated_payload(contract: dict) -> dict:
 
 
 def rendered_payload() -> str:
-    contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+    contract = json.loads(resolve_contract_path().read_text(encoding="utf-8"))
     return json.dumps(generated_payload(contract), ensure_ascii=False, indent=2) + "\n"
 
 
