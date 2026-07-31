@@ -73,67 +73,6 @@ def windows_clipboard_sequence_number() -> int | None:
         return None
 
 
-def windows_clipboard_image_ownership_evidence(
-    expected_sequence: int,
-    expected_window: int,
-) -> dict[str, Any]:
-    """Prove a clipboard generation came from the current WeChat process."""
-
-    current_sequence = windows_clipboard_sequence_number()
-    if current_sequence != int(expected_sequence):
-        return {
-            "owned": False,
-            "reason": "clipboard_sequence_not_current",
-        }
-    try:
-        user32 = getattr(getattr(ctypes, "windll", None), "user32", None)
-        get_owner = getattr(user32, "GetClipboardOwner", None)
-        get_process = getattr(user32, "GetWindowThreadProcessId", None)
-        has_format = getattr(user32, "IsClipboardFormatAvailable", None)
-        if not all(
-            callable(item)
-            for item in (get_owner, get_process, has_format)
-        ):
-            return {
-                "owned": False,
-                "reason": "clipboard_owner_api_unavailable",
-            }
-        owner_window = int(get_owner() or 0)
-        if owner_window <= 0 or int(expected_window or 0) <= 0:
-            return {
-                "owned": False,
-                "reason": "clipboard_owner_window_missing",
-            }
-        owner_process = ctypes.c_ulong(0)
-        expected_process = ctypes.c_ulong(0)
-        get_process(owner_window, ctypes.byref(owner_process))
-        get_process(int(expected_window), ctypes.byref(expected_process))
-        image_format_available = any(
-            bool(has_format(format_id))
-            for format_id in (_CF_DIBV5, _CF_DIB, _CF_BITMAP)
-        )
-        owned = bool(
-            image_format_available
-            and owner_process.value > 0
-            and owner_process.value == expected_process.value
-        )
-        return {
-            "owned": owned,
-            "reason": (
-                "clipboard_owned_by_wechat_process"
-                if owned
-                else "clipboard_owner_not_wechat_image"
-            ),
-            "image_format_available": image_format_available,
-        }
-    except Exception as exc:
-        return {
-            "owned": False,
-            "reason": "clipboard_owner_check_failed",
-            "error_type": type(exc).__name__,
-        }
-
-
 def _clipboard_image(value: Any) -> Image.Image | None:
     if not isinstance(value, Image.Image):
         return None

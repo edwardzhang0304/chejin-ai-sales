@@ -10,12 +10,23 @@
 > `C1-C3_事务恢复与事实结算统一架构_v0.1_2026-07-31.md`
 > 为最高约束。旧实现中的图片专用恢复和“收到 `target_terminated` 后本地丢弃事实”
 > 不再属于正式合同。
-> 当前机器合同 `3.10.0` 仅是整改前实现快照；必须由后端首个整改提交连同 schema、
-> 共享样例和合同测试一起升级，不能只改 JSON 枚举后交给客户端。
+> 当前机器合同 `3.10.0` 是 `86b87f2` 候选实现快照；本轮删除PID硬门禁、删除五个
+> 专用失败原因并补三个观察失败映射时，客户端与后端必须连同 schema、共享样例和
+> 合同测试一次性升级到下一 revision，不能只改 JSON 枚举，也不得借合同升级重开
+> 其他状态机设计。
 >
 > 图片流程的状态矩阵、Windows 位图、剪贴板、Vision Provider、结果 schema、
-> 服务端产品权威、跨轮 Brain 上下文和 UAT 门禁，以
-> `C2_图片流程封版口径与一次性整改清单_v0.1_2026-07-31.md` 为最高专项约束。
+> 服务端产品权威、跨轮 Brain 上下文和 UAT 门禁，统一以
+> `AI智能客服售前跟进系统_技术方案手册_v0.8.md` 第 8 章为最高架构约束。
+> `C2_图片流程封版口径与一次性整改清单_v0.1_2026-07-31.md` 只保留为历史
+> 审计材料。
+> 客户端实际代码以
+> `AI智能客服售前跟进系统_技术方案手册_v0.8.md` 第 8.5 至 8.8 节为最高实施
+> 约束：继续复用以 OmniAuto `855c218` 为共同基础、从 `2318bd8` 选择性接入的
+> 图片一致性能力，不新增第二套剪贴板接口；撤销
+> `claim_copy_ownership/微信窗口PID` 硬门禁，保留现有 sequence、位图、
+> 指纹辅助、Vision、终态和清理合同。来源元数据必须同时记录基础提交、选择性
+> 来源提交和最终目录 tree SHA，不得把选择性引入伪装成整个目录升级。
 
 ## 0. 三层统一与职责边界（最高约束）
 
@@ -1067,22 +1078,22 @@ completed。持久化时剔除 Provider 原始响应/错误正文、图片字节
 | P0 | 已收口 | 后端真实 OmniAuto Brain Adapter 与状态映射已实现；客户后发重建批次，销售后发取消回复。 |
 | P0 | 已收口 | 后端逐条返回 `source_message_key`，Worker 精确确认本地 ledger；未确认时 Outbox 只重传 JSON，不重做 RPA/Vision。 |
 | P0 | 已收口 | `chat_reply` 只能由持有当前会话 UI 锁的 C2 flow 领取；普通任务线程被 Worker 与后端双重阻断。 |
-| P0 | 部分收口 | 语音在右键前查询持久化稳定身份，最终槽位先判定 NEW/OLD/OUTBOX；但初次图片角色不可信仍被持久化为 ignored，必须改为帧级身份门禁。 |
+| P0 | 已在当前候选收口；本轮回归保留 | 语音在右键前查询持久化稳定身份，最终槽位先判定 NEW/OLD/OUTBOX；初次图片角色不可信使用帧级身份门禁，不持久化为 ignored。 |
 | P0 | 已收口 | 新好友先调用 activation-confirm，再读取消息、转写语音和处理图片。 |
-| P1 | 待按新状态机整改 | 普通会话继续复用 open-chat 确认帧；Vision 只门禁新的 C2 UI 流程，事务恢复与事实结算先于能力预检。 |
+| P1 | 已在当前候选收口；本轮回归保留 | 普通会话继续复用 open-chat 确认帧；Vision 只门禁新的 C2 UI 流程，事务恢复与事实结算先于能力预检。 |
 | P0 | 已收口 | Sidecar、Worker 与后端已统一落实 `action_phase`；发送触发后无法确认时只进入 `unknown`，不会按普通失败清除证据。 |
 | P0 | 已收口 | Worker 已使用唯一 `merge_item_outcomes` 单调累计语音/图片逐条结果；后续调用只能合并，不能覆盖既有成功或失败结果。 |
-| P0 | 待按新状态机整改 | 删除 `C2_IMAGE_PROCESSING_DEFERRED` 和图片跨轮未收口项；出屏图片本轮不存在，仍可见但不能唯一确认则 failed；当前屏 NEW_IMAGE 必须在同一 Flow 内终态。 |
+| P0 | 已在当前候选收口；本轮回归保留 | 删除 `C2_IMAGE_PROCESSING_DEFERRED` 和图片跨轮未收口项；出屏图片本轮不存在，仍可见但不能唯一确认则 failed；当前屏 NEW_IMAGE 必须在同一 Flow 内终态。 |
 | P0 | 已收口 | 图片角色只采用 C2 同行头像结论；复制前几何侧仅记录物理一致性证据，不再作为第二套准入规则。 |
 | P0 | 已收口 | 后端失败外壳与 Worker Outbox 统一使用 `retry / refresh_and_rebuild / capability_paused`；旧 `quarantine/abandoned` 仅作为启动迁移输入，不再是运行时终态。 |
-| P0 | 待统一整改 | 图片专用恢复必须改为 voice/image 共用 `media_fact` 协调器；语音日志补齐 replayable observation，并进入同一 Worker 级全局门禁。 |
-| P0 | 待统一整改 | 废弃新合同中的 `target_terminated -> 本地not_required`；实现 `resume_current_target / settle_without_ui / retry_later` 与 `fact_settlement`。 |
-| P0 | 待统一整改 | `unbound/binding_failed/needs_review/degraded/paused` 不得作为永久终止；原事务身份可信时 fact_only 结算，暂不可证时 retry_later；单次短码 OCR 缺失不得覆盖已有 bound 绑定。 |
-| P0 | 待统一整改 | 技术恢复终态不得创建 handoff 冒充结算；改用通用 recovery settlement 持久化，并支持绑定已不存在时仍安全终结原事务。 |
-| P0 | 待统一整改 | 分离 Windows 原始位图和 Provider 载荷上限，支持普通 1080p DIB/HBITMAP 自适应压缩，并在取入内存后清除系统剪贴板。 |
-| P0 | 待统一整改 | Vision 父进程预算覆盖两次合法请求；Provider 使用 HTTPS/请求风格白名单；模型结果由共享完整 schema 校验。 |
-| P0 | 待统一整改 | 图片观察不得静默截断 8 张；failed 图片门禁覆盖 customer/self；历史图片上下文保留结构化结果。 |
-| P0 | 待统一整改 | 车金严格 Vision 入口不得使用客户端本地 KnowledgeRuntime 确认正式产品 ID；后端使用服务端权威车源验证。 |
+| P0 | 已在当前候选收口；本轮回归保留 | 图片专用恢复必须改为 voice/image 共用 `media_fact` 协调器；语音日志补齐 replayable observation，并进入同一 Worker 级全局门禁。 |
+| P0 | 已在当前候选收口；本轮回归保留 | 废弃新合同中的 `target_terminated -> 本地not_required`；实现 `resume_current_target / settle_without_ui / retry_later` 与 `fact_settlement`。 |
+| P0 | 已在当前候选收口；本轮回归保留 | `unbound/binding_failed/needs_review/degraded/paused` 不得作为永久终止；原事务身份可信时 fact_only 结算，暂不可证时 retry_later；单次短码 OCR 缺失不得覆盖已有 bound 绑定。 |
+| P0 | 已在当前候选收口；本轮回归保留 | 技术恢复终态不得创建 handoff 冒充结算；改用通用 recovery settlement 持久化，并支持绑定已不存在时仍安全终结原事务。 |
+| P0 | 已在当前候选收口；本轮回归保留 | 分离 Windows 原始位图和 Provider 载荷上限，支持普通 1080p DIB/HBITMAP 自适应压缩，并在取入内存后清除系统剪贴板。 |
+| P0 | 已在当前候选收口；本轮回归保留 | Vision 父进程预算覆盖两次合法请求；Provider 使用 HTTPS/请求风格白名单；模型结果由共享完整 schema 校验。 |
+| P0 | 已在当前候选收口；本轮回归保留 | 图片观察不得静默截断 8 张；failed 图片门禁覆盖 customer/self；历史图片上下文保留结构化结果。 |
+| P0 | 已在当前候选收口；本轮回归保留 | 车金严格 Vision 入口不得使用客户端本地 KnowledgeRuntime 确认正式产品 ID；后端使用服务端权威车源验证。 |
 | P1 | 待实机 | 真实 Vision Provider 凭据、Windows 微信图文语音混合回归与进程重启 Outbox 回归尚未完成。 |
 
 ## 11. 联调验收门禁
@@ -1100,7 +1111,7 @@ completed。持久化时剔除 Provider 原始响应/错误正文、图片字节
 11. 业务编排只消费统一结果对象，不直接解析 Sidecar 原始异常、HTTP 文案或 Provider 原始返回。
 12. 状态转换测试必须表驱动覆盖全部枚举组合，并至少验证：完成事实不丢失、失败集合不缩小、未知发送不重发、隔离 Outbox 不循环重建。
 13. 同一业务规则只能在一层拥有：OmniAuto 提供观察证据，Worker 映射执行结果，后端持久化业务真相。
-14. 图片专项自动化和 Windows UAT 必须逐项通过
-`C2_图片流程封版口径与一次性整改清单_v0.1_2026-07-31.md` 第 10 节；任何 P0
-未通过不得打 UAT 包。
-14. 允许在现有大函数周围提取上述集中判定器和阶段结果对象；本期不要求全面重写，但禁止继续增长重复分支。
+14. 图片专项自动化、来源追溯、不可变候选包和 Windows UAT 必须逐项通过
+`AI智能客服售前跟进系统_技术方案手册_v0.8.md` 第 8.5 至 8.8 节；任何 P0
+未通过不得形成正式 UAT 结论。
+15. 允许在现有大函数周围提取上述集中判定器和阶段结果对象；本期不要求全面重写，但禁止继续增长重复分支。

@@ -10,7 +10,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from build_policy import BuildPolicyError, validate_build_policy
-from omniauto_tree import tree_manifest, verify_same_tree
+from omniauto_tree import (
+    load_source_provenance,
+    tree_manifest,
+    verify_same_tree,
+)
 
 
 class PackagingScriptsTest(unittest.TestCase):
@@ -33,7 +37,9 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("车金Worker客户端.manifest.json", text)
         self.assertIn("Get-FileHash -Algorithm SHA256", text)
         self.assertIn('$OmniAutoSourcePath = Join-Path $Root "omniauto-rpa"', text)
-        self.assertIn("omniauto_upstream_commit", text)
+        self.assertIn("omniauto_upstream_base_commit", text)
+        self.assertIn("omniauto_selective_integrations", text)
+        self.assertIn("omniauto_chejin_integration_commit", text)
         self.assertIn("omniauto_source_sidecar_sha256", text)
         self.assertIn("packaged_sidecar_sha256", text)
         self.assertIn("generated_observation_schema_sha256", text)
@@ -67,6 +73,9 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('"forbidden_entries"', text)
         self.assertIn("ALLOWED_DATA_PREFIXES", text)
         self.assertIn('"omniauto_tree_sha256"', text)
+        self.assertIn('"omniauto_upstream_base_commit"', text)
+        self.assertIn('"omniauto_selective_integrations"', text)
+        self.assertIn('"omniauto_chejin_integration_commit"', text)
         self.assertIn('"generated_observation_schema_sha256"', text)
         self.assertIn('"canonical_contract_sha256"', text)
         self.assertIn('"contract_file_check": "passed"', text)
@@ -113,7 +122,17 @@ class PackagingScriptsTest(unittest.TestCase):
             for base in (source, packaged):
                 (base / "apps").mkdir(parents=True)
                 (base / ".chejin-source.json").write_text(
-                    '{"upstream_commit":"855c21881641cdb2f9fe69d3f2e1caa05e37d04d"}',
+                    (
+                        '{"schema_version":2,'
+                        '"upstream_base_commit":'
+                        '"855c21881641cdb2f9fe69d3f2e1caa05e37d04d",'
+                        '"selective_integrations":[{'
+                        '"source_commit":'
+                        '"2318bd8c5aa8d8ff2272a8decc285ef2ae9e01e7",'
+                        '"scope":["visual_fingerprint"]}],'
+                        '"chejin_integration_commit":'
+                        '"ff9e0de00013ac51a2f2a05e3774748c43c846fb"}'
+                    ),
                     encoding="utf-8",
                 )
                 (base / "apps" / "one.py").write_text("one", encoding="utf-8")
@@ -126,6 +145,30 @@ class PackagingScriptsTest(unittest.TestCase):
             (packaged / "apps" / "two.py").write_text("two", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "OMNIAUTO_TREE_MISMATCH"):
                 verify_same_tree(source, packaged)
+
+    def test_omniauto_provenance_requires_base_selective_and_chejin_commits(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source_path = ROOT / "omniauto-rpa" / ".chejin-source.json"
+            (root / ".chejin-source.json").write_bytes(
+                source_path.read_bytes()
+            )
+            provenance = load_source_provenance(root)
+
+        self.assertEqual(
+            provenance["upstream_base_commit"],
+            "855c21881641cdb2f9fe69d3f2e1caa05e37d04d",
+        )
+        self.assertEqual(
+            provenance["selective_integrations"][0]["source_commit"],
+            "2318bd8c5aa8d8ff2272a8decc285ef2ae9e01e7",
+        )
+        self.assertEqual(
+            provenance["chejin_integration_commit"],
+            "ff9e0de00013ac51a2f2a05e3774748c43c846fb",
+        )
 
     def test_pyinstaller_spec_packages_contract_and_filters_omniauto_runtime_data(self):
         text = (ROOT / "packaging" / "chejin-worker-client.spec").read_text(encoding="utf-8")

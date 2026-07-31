@@ -10,6 +10,21 @@
 
 一句话结论：当前技术方案统一收口到本文档；C2 只允许“有效短码 + private 单聊 + 当前 read-target 授权”的会话进入消息读取，文字、语音和图片事实按 V3 合同入库，群聊/unknown 终止本轮；Brain 回复经任务中心派发，并由仍持有当前会话 UI 锁的 C2 流程执行。完成 Windows 真实模型和真实微信回归前，不得恢复旧图片/旧发送入口或宣称正式发布。
 
+## 文档治理规则
+
+1. 本手册是业务流程、架构边界和技术决策的唯一事实源。后续架构变更只能先修改
+   本手册，不得新建平行“最终方案”“封版方案”或用聊天记录代替正式口径。
+2. `C2-C3_OmniAuto_Worker_后端接口合同` 是本手册的派生接口合同，只定义字段、
+   枚举、所有者和三层映射；与本手册冲突时以本手册为准。
+3. PUML 是本手册的派生图示，只展示流程，不新增业务规则；图文冲突时先修本手册，
+   再同步图。
+4. 测试报告、审计报告、版本交付说明和历史整改清单只记录当时证据，不作为现行
+   开发依据。
+5. 每次正式变更顺序固定为：更新本手册 -> 更新接口合同/机器合同 -> 同步PUML ->
+   修改代码 -> 自动化 -> 形成干净且可追溯的 Git 提交 -> 构建不可变候选包 ->
+   Windows UAT -> 通过后合并。不得由代码审计意见直接创造新业务流程，也不得用
+   dirty 工作区构建的包形成正式 UAT 结论。
+
 > **2026-07-31 事务恢复唯一口径**
 >
 > UI 准入、事实结算和业务推进是三道独立门禁。授权撤销只停止新的微信动作，不能删除已经产生的事实；语音和图片共用 `media_fact` 恢复协议；历史事实可通过既有 `messages/ingest` 以 `fact_settlement` 范围补录，但固定不推进状态机、不启动 Brain。完整定义见
@@ -17,11 +32,19 @@
 
 > **2026-07-31 图片流程唯一口径**
 >
-> 图片角色歧义、Windows 原始位图、Vision 超时和结果 schema、系统剪贴板、服务端权威产品库、跨轮图片上下文、`customer/self` 失败门禁及 UAT 门禁，以
-> `C2_图片流程封版口径与一次性整改清单_v0.1_2026-07-31.md` 为唯一专项依据。
-> 本手册或旧流程图存在冲突时，以该封版口径为准，客户端不得自行选择分支。
+> 图片角色歧义、Windows 原始位图、Vision 超时和结果 schema、系统剪贴板、
+> 服务端权威产品库、跨轮图片上下文、`customer/self` 失败门禁及 UAT 门禁统一
+> 收录在本文第 8 章。`C2_图片流程封版口径与一次性整改清单_v0.1_2026-07-31.md`
+> 只保留为历史审计材料；与本文冲突时一律以本文为准。
+>
+> **2026-07-31 最终客户端实现修订：**图片模块继续复用以 OmniAuto
+> `855c218` 为共同基础、从 `2318bd8` 选择性接入的图片一致性能力，不重写
+> 剪贴板事务。`86b87f2` 后来增加的
+> `claim_copy_ownership/微信窗口PID` 硬门禁不属于正式方案；具体删除范围、
+> 必须保留项、测试和Windows UAT统一见本文第 8.5 至 8.8 节。
 
-当前代码相对 2026-07-31 目标架构仍有一组统一整改项，不再按单个测试案例拆分：
+截至当前候选提交 `86b87f2`，下列统一整改项已经进入候选实现，本轮不得重新设计或
+再次拆分；客户端删除PID硬门禁时必须把它们作为回归保留项：
 
 1. 图片专用恢复协调器改为语音/图片共用 `media_fact` 协调器。
 2. 语音 ActionJournal 补齐可脱离 UI 结算的 `replayable_observation`。
@@ -75,6 +98,7 @@
 | 2026-07-30 | v0.8内部修订 | 图片 `deferred` 临时门禁没有定义跨轮所有者、被顶出屏后的结束方式和已入库文字重新触发 Brain 的协议，导致流程与 PUML“新槽位必须终态”冲突 | 删除会话内图片 `pending/deferred`：Vision 配置改为 C2 启动前全局预检；只处理 final_read 当前屏图片；出屏图片不建立槽位。该版曾允许 NEW_IMAGE 结束为 ignored，已被 2026-07-31 图片封版口径收紧为：初始身份不可信走帧级门禁，已建立稳定身份的图片只允许 completed/failed。 |
 | 2026-07-31 | v0.8内部修订 | 图片专用恢复把 `unbound/binding_failed` 当永久终止，语音未进入相同门禁，授权失效还可能在后端未保存事实时清理本地记录 | 拆分 UI 准入、事实结算、业务推进；语音/图片统一为 `media_fact` 恢复；恢复先于 Vision 等能力预检；新增 `resume_current_target / settle_without_ui / retry_later` 三态及 `fact_settlement` 入库范围；单次短码 OCR 缺失不得确认永久移除。 |
 | 2026-07-31 | v0.8内部修订 | 图片主链已接通，但真实 Windows 图片大小、初始角色歧义、两次 Vision 请求预算、剪贴板清理、历史图片上下文和客户端本地产品库边界未冻结 | 新增图片流程封版口径；初始角色不可信改为帧级身份门禁；原始位图与 Provider 大小上限分离；图片结果使用共享 schema；车金正式产品只由服务端确认；failed 图片门禁覆盖 customer/self；补齐跨轮图片上下文和 UAT 门禁。 |
+| 2026-07-31 | v0.8内部修订 | 审计过程中把后加的剪贴板拥有者/PID证明误当成OmniAuto正式能力，继续追加规则会形成第二套图片事务；同时把选择性引入误写成整个目录来自2318bd8会造成来源失真 | 以855c218共同基础和2318bd8选择性图片能力组成现有图片执行器；只撤销86b87f2新增的claim_copy_ownership硬门禁，保留现有slot复核、sequence、位图、指纹辅助、Vision、结果终态和清理链；来源记录同时保留基础提交、选择性来源提交和完整tree SHA；自动化通过后从干净提交构建不可变候选包并直接进入Windows UAT。 |
 
 ---
 
@@ -2677,7 +2701,10 @@ Worker发送AI回复前登记reply_action_id、reply_text_hash、send_started_at
 - OmniAuto 现有 RAG 能力需要先做代码评估；知识库资料由项目方整理。
 - 模型失败直接转人工，不使用兜底话术继续自动回复。
 - AI 只输出候选回复和动作建议，不拥有最终发送权。
-- AI 文字回复属于 OmniAuto 接入 C3 checkpoint；C2 会话绑定/微信监听未验收前，不进入自动发送开发和验收。
+- AI文字回复属于OmniAuto接入C3 checkpoint。当前C2-C3候选实现已存在，本轮不得
+  另行扩展自动发送开发；最终图片UAT必须在同一会话内验证
+  `图片事实 -> Brain -> reply_action -> 发送 -> sent_ack`，任一C2准入或图片门禁
+  失败时不得进入后续发送。
 
 ### 7.0 服务端AI大脑内部职责拆分
 
@@ -3190,6 +3217,172 @@ OmniAuto AI Engine 在服务端通过 Adapter 接入，不允许运行 OmniAuto 
 分类、实体、中性查询和服务端确认产品 ID；不能只保留
 `message_type=image + content`。当前轮与历史轮使用同一个投影函数，保证下一轮
 “这辆多少钱/刚才那台”仍有图片上下文。
+
+### 8.5 当前实现基线与唯一整改范围
+
+正式代码基线固定为：
+
+```text
+车金分支：codex/c2-omniauto-2318bd8-integration
+当前提交：86b87f2
+OmniAuto共同基础：meta-xucong/omniauto@855c218
+图片一致性能力选择性来源：meta-xucong/omniauto@2318bd8
+首次集成提交：ff9e0de
+```
+
+这里的 `2318bd8` 是图片气泡和复制后一致性能力的选择性来源，不表示当前
+`worker-client/omniauto-rpa` 整个目录与上游该提交完全相同。许聪更新后的
+OmniAuto 图片能力可以使用，不重写、不替换。继续完整复用：
+
+```text
+图片气泡观察
+-> 动作前重新定位
+-> 右键并OCR确认局部“复制”
+-> 点击复制
+-> 校验剪贴板新代次并读取内存位图
+-> 图片指纹辅助检查
+-> 内存Vision
+-> 返回completed/failed
+```
+
+本轮只撤销车金在 `86b87f2` 后来增加、且未经 Windows 实机证明的
+`claim_copy_ownership/微信窗口PID` 硬门禁。不得借此改写 OmniAuto 的图片检测、
+重新定位、复制、指纹辅助、内存图片、Vision 或结果返回主链。
+
+唯一业务代码及机器合同修改：
+
+1. 在 `capture/transaction.py` 删除 `claim_copy_ownership` 调用和
+   `test_port_bitmap_proof` 兜底，恢复为：
+
+   ```text
+   sequence变化
+   -> 读取当前bitmap
+   -> bitmap可解码
+   -> 二次读取sequence仍等于本次candidate_sequence
+   -> 接受同一份内存payload
+   ```
+
+2. 从 OmniAuto `ClipboardPort` 删除 `claim_copy_ownership` 方法。
+3. 从 Worker `_Clipboard` 适配器删除 `claim_copy_ownership`。
+4. 从 `clipboard_payload.py` 删除
+   `windows_clipboard_image_ownership_evidence`。
+5. 从机器合同删除只服务于上述误加门禁的失败原因：
+   `clipboard_copy_ownership_unconfirmed`、
+   `clipboard_owner_api_unavailable`、
+   `clipboard_owner_window_missing`、
+   `clipboard_owner_not_wechat_image`、
+   `clipboard_owner_check_failed`；升级合同 revision 并重新生成 OmniAuto
+   observation schema。
+6. 把实际会产生但尚未映射的
+   `vision_host_ports_incomplete`、
+   `vision_window_context_capture_missing`、
+   `vision_window_capture_failed`
+   精确归入 `C2_IMAGE_OBSERVATION_FAILED`，并增加错误原因映射完整性测试。
+   完整性测试必须证明运行时可产生的图片失败原因全部显式映射，不得用
+   `default_failure_error_code` 掩盖漏配。
+
+发布来源元数据必须同时修正，但不得把选择性集成伪装成整个 OmniAuto 目录升级：
+
+```text
+upstream_base_commit = 855c218...
+selective_integrations[].source_commit = 2318bd8...
+selective_integrations[].scope = 图片气泡/视觉指纹/复制一致性重试
+chejin_integration_commit = ff9e0de...
+```
+
+打包 manifest 必须记录 Worker Git commit、branch、`git_dirty=false`、
+OmniAuto 基础提交、选择性来源提交、完整目录 tree SHA256、包内 tree SHA256、
+合同 revision/SHA、生成 observation schema SHA 和自动化/preflight 结果。
+tree SHA 必须由最终提交后的真实目录动态计算，不得把历史 tree SHA 手工写成当前值。
+
+### 8.6 证据层级与不得回退项
+
+图片业务身份只由 Worker/C2 的最终画面统一 slot、同行头像 `sender_role`、
+`canonical_visual_id` 或“角色 + 同类出现序号 + 邻近稳定消息锚点”以及
+`source_message_key` 决定。只有 `NEW_IMAGE` 才进入 OmniAuto；
+`OLD/OUTBOX` 不得重复执行图片动作。
+
+OmniAuto 当前事务只负责证明：
+
+```text
+动作前原slot仍在当前屏
+-> 记录sequence_before
+-> 右键并点击局部“复制”
+-> sequence_after != sequence_before
+-> 当前图片位图可解码
+-> 读取前后sequence_after稳定
+```
+
+保留现有图片指纹作为复制一致性辅助检查。指纹不生成消息身份、不判断角色；
+指纹匹配不能单独授权点击、Vision 或覆盖 Worker 身份。首次不匹配沿用现有同 Flow
+最多一次重新确认/复制；再次不匹配后明确 failed，重启和下一轮不得再执行。
+
+必须保留：
+
+- `86b87f2` 对空 Vision 结果、业务终态和 ActionJournal 一致性的修复。
+- `86b87f2` 对 finally 剪贴板清理失败和外部新代次保护的修复。
+- OmniAuto `2318bd8` 的图片检测、重新定位、局部菜单、指纹辅助和同 Flow
+  最多一次重新确认。
+- 原始位图与 Provider 载荷大小分离、内存压缩、真实 Vision 和共享 schema。
+- 既有短码 + private准入、统一 sender_role、文字、语音、最终顺序、当前屏不主动
+  上滚、单会话UI锁、Outbox、授权、停止、Brain回复和召回流程。
+
+不得趁本次修改重构其他模块、增加新接口、恢复旧图片入口或调整 C1/C2/C3
+业务状态。
+
+### 8.7 自动化与Windows UAT
+
+客户端修改后必须一次性通过：
+
+1. 正式 ClipboardPort 和测试 Fake 均不再包含/依赖
+   `claim_copy_ownership`。
+2. sequence不变时不读取旧图片、不调用Vision。
+3. sequence变化、bitmap有效且读取期间稳定时进入现有指纹/Vision链。
+4. 读取期间sequence再次变化时失败并释放候选图片。
+5. 指纹首次不匹配最多同Flow重试一次，重启不重复。
+6. 空Vision摘要不得成为completed。
+7. finally清理失败不得被吞掉；外部新代次不得被清除。
+8. 所有实际图片失败原因都有机器合同精确映射。
+9. `python3 run_checks.py`、后端C2/C3回归、合同生成、Python编译和
+   `git diff --check` 全部通过。
+10. 来源元数据能同时表达 `855c218` 基础和 `2318bd8` 选择性集成，打包脚本及
+    manifest 测试覆盖新增字段。
+
+自动化通过后必须先形成唯一 Git 提交并确认工作区干净，再由该提交构建
+Windows UAT 包；不得先用 dirty 包测试、UAT 后再修改来源文件重打同版本包。
+候选包、manifest 和测试结果必须绑定同一个 Git commit 和 ZIP SHA256。
+完成这些检查后直接进入 Windows UAT，不再追加静态审计轮次。实机至少验证：
+
+- 客户单图、我方单图、连续两张相同图片。
+- 白底长截图、车辆照片、含文字车辆图和普通大图。
+- 文字 + 语音 + 图片混合及最终入库顺序。
+- Vision期间新增消息，原图片完成后继续读取最终当前屏。
+- 旧图片、Outbox图片、动作前被顶出屏图片均不重复处理。
+- Vision成功、超时、鉴权失败、非JSON纠正和schema非法。
+- 停止授权、崩溃恢复和ingest响应丢失不重复执行图片动作。
+- Windows 剪贴板 owner 为空、隐藏窗口或非微信主窗口PID时，只要会话、slot、
+  sequence、可解码位图、稳定读取和指纹链成立，正常图片不得被额外PID规则拒绝。
+- 图片读取期间其他程序或用户复制新图片时，错图必须被指纹/sequence门禁拒绝；
+  用户后来产生的新剪贴板代次不得被清除。
+
+UAT 责任固定为：架构师维护方案和判定门禁，客户端工程师按本节实现，后端工程师
+同步机器合同并回归，用户与测试人员在真实 Windows 微信执行用例并提供证据，
+架构师依据证据给出通过或退回结论。已确定使用豆包 Vision，不再把“是否使用
+第三方 Vision”或“谁提供 Windows 环境”列为待管理决策。
+
+### 8.8 后续变更控制
+
+以后只有以下确定问题可以阻断图片 UAT：
+
+- 操作错误会话，或把旧图片当新图片重复处理。
+- 图片角色、消息身份或最终顺序错误。
+- 同一图片动作跨轮重复执行。
+- 原图进入文件、日志、后端或安装包。
+- 图片终态丢失或错误触发Brain。
+- 修改导致文字、语音、回复、召回或停止流程回归。
+
+其他性能参数、诊断字段、感知指纹阈值和没有真实复现的算法推测进入P1/P2，
+不再阻断打包。
 
 ## 9. 模块8：大风车与车源索引
 

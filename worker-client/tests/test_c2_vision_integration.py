@@ -40,6 +40,7 @@ from chejin_worker_client.omniauto_vision import (
     DEFAULT_VISION_TIMEOUT_SECONDS,
     VisionCancelledError,
     _CancellableVisionProvider,
+    _Clipboard,
     _UiAction,
     _VisionHostState,
     _WindowFrame,
@@ -69,6 +70,9 @@ from apps.wechat_ai_customer_service.optional_plugins.vision.capture.wechat impo
     find_copy_menu_item,
 )
 from apps.wechat_ai_customer_service.optional_plugins.vision.ports import VisionHostPorts
+from apps.wechat_ai_customer_service.optional_plugins.vision.ports import (
+    ClipboardPort,
+)
 from apps.wechat_ai_customer_service.optional_plugins.vision.clipboard_payload import (
     ephemeral_image_from_memory,
 )
@@ -1253,7 +1257,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertNotIn("_ephemeral_clipboard_image", failed)
         image.close()
 
-    def test_invalid_copied_bitmap_is_cleared_on_failure_exit(self):
+    def test_invalid_copied_bitmap_is_not_claimed_or_cleared(self):
         image = Image.new("RGB", (800, 600), "white")
         observed_images = self.observed_image_messages(
             image,
@@ -1279,13 +1283,6 @@ class C2VisionIntegrationTests(unittest.TestCase):
             @staticmethod
             def read_current_bitmap():
                 return b"not-an-image"
-
-            @staticmethod
-            def claim_copy_ownership(_expected_sequence):
-                return {
-                    "owned": True,
-                    "reason": "test_wechat_process_owner",
-                }
 
             def clear_current(self, expected_sequence):
                 self.cleared_sequences.append(expected_sequence)
@@ -1348,77 +1345,209 @@ class C2VisionIntegrationTests(unittest.TestCase):
             result["reason"],
             "clipboard_current_content_not_bitmap",
         )
-        self.assertEqual(clipboard.cleared_sequences, [11])
+        self.assertEqual(clipboard.cleared_sequences, [])
+        image.close()
 
-        for clear_result, expected_reason, expected_clear_reason in (
-            (
-                {"ok": False, "reason": "clipboard_clear_failed"},
-                "C2_IMAGE_CLIPBOARD_CLEAR_FAILED",
-                "clipboard_clear_failed",
-            ),
-            (
+    def test_clipboard_ports_do_not_expose_pid_owner_claims(self):
+        self.assertFalse(hasattr(ClipboardPort, "claim_copy_ownership"))
+        self.assertFalse(hasattr(_Clipboard, "claim_copy_ownership"))
+
+    def test_unchanged_clipboard_sequence_never_reads_old_bitmap(self):
+        image = Image.new("RGB", (800, 600), "white")
+        observed = self.observed_image_messages(
+            image,
+            [
                 {
-                    "ok": False,
-                    "reason": "clipboard_sequence_not_current_for_clear",
+                    "bounds": [420, 180, 650, 320],
+                    "sender_role": "customer",
+                    "side": "customer",
+                    "anchor": {"x": 500, "y": 240},
+                }
+            ],
+        )
+
+        class Clipboard:
+            read_count = 0
+            clear_count = 0
+
+            @staticmethod
+            def sequence_number():
+                return 10
+
+            def read_current_bitmap(self):
+                self.read_count += 1
+                return image.crop((420, 180, 650, 320))
+
+            def clear_current(self, _expected_sequence):
+                self.clear_count += 1
+                return {"ok": True}
+
+        clipboard = Clipboard()
+        ports = VisionHostPorts(
+            rpa_lease=SimpleNamespace(
+                lease=lambda *_args, **_kwargs: nullcontext()
+            ),
+            conversation_target=SimpleNamespace(
+                confirm_target=lambda _context: {"ok": True}
+            ),
+            window_frame=SimpleNamespace(
+                capture_frame=lambda _context: {
+                    "ok": True,
+                    "image": image.copy(),
+                    "image_size": image.size,
+                    "messages": [dict(item) for item in observed],
+                    "time_markers": [],
+                    "ocr_items": [],
+                    "screen_origin": [0, 0],
+                }
+            ),
+            ui_action=SimpleNamespace(
+                right_click=lambda *_args, **_kwargs: {
+                    "screen_x": 500,
+                    "screen_y": 240,
                 },
-                "clipboard_current_content_not_bitmap",
-                "clipboard_replaced_by_external",
+                click_screen=lambda *_args, **_kwargs: None,
+            ),
+            clipboard=clipboard,
+        )
+        with patch.object(
+            transaction,
+            "find_copy_menu_item",
+            return_value={
+                "x": 620,
+                "y": 320,
+                "bounds": [600, 300, 650, 340],
+            },
+        ):
+            result = transaction.acquire_current_image_via_ports(
+                ports,
+                {
+                    "sender_role": "customer",
+                    "bubble_rect": [420, 180, 650, 320],
+                    "image_physical_anchor": observed[0][
+                        "image_physical_anchor"
+                    ],
+                    "clipboard_wait_timeout_seconds": 0.2,
+                    "clipboard_poll_interval_seconds": 0.02,
+                },
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["reason"],
+            "clipboard_sequence_unchanged_after_copy",
+        )
+        self.assertEqual(clipboard.read_count, 0)
+        self.assertEqual(clipboard.clear_count, 0)
+        image.close()
+
+    def test_clipboard_sequence_change_during_read_releases_every_candidate(
+        self,
+    ):
+        image = Image.new("RGB", (800, 600), "white")
+        observed = self.observed_image_messages(
+            image,
+            [
+                {
+                    "bounds": [420, 180, 650, 320],
+                    "sender_role": "customer",
+                    "side": "customer",
+                    "anchor": {"x": 500, "y": 240},
+                }
+            ],
+        )
+
+        class Clipboard:
+            sequence = 9
+            clear_count = 0
+
+            def sequence_number(self):
+                self.sequence += 1
+                return self.sequence
+
+            @staticmethod
+            def read_current_bitmap():
+                return image.crop((420, 180, 650, 320))
+
+            def clear_current(self, _expected_sequence):
+                self.clear_count += 1
+                return {"ok": True}
+
+        clipboard = Clipboard()
+        ports = VisionHostPorts(
+            rpa_lease=SimpleNamespace(
+                lease=lambda *_args, **_kwargs: nullcontext()
+            ),
+            conversation_target=SimpleNamespace(
+                confirm_target=lambda _context: {"ok": True}
+            ),
+            window_frame=SimpleNamespace(
+                capture_frame=lambda _context: {
+                    "ok": True,
+                    "image": image.copy(),
+                    "image_size": image.size,
+                    "messages": [dict(item) for item in observed],
+                    "time_markers": [],
+                    "ocr_items": [],
+                    "screen_origin": [0, 0],
+                }
+            ),
+            ui_action=SimpleNamespace(
+                right_click=lambda *_args, **_kwargs: {
+                    "screen_x": 500,
+                    "screen_y": 240,
+                },
+                click_screen=lambda *_args, **_kwargs: None,
+            ),
+            clipboard=clipboard,
+        )
+        created_payloads = []
+        real_ephemeral = transaction.ephemeral_image_from_memory
+
+        def tracked_ephemeral(*args, **kwargs):
+            payload = real_ephemeral(*args, **kwargs)
+            created_payloads.append(payload)
+            return payload
+
+        with (
+            patch.object(
+                transaction,
+                "find_copy_menu_item",
+                return_value={
+                    "x": 620,
+                    "y": 320,
+                    "bounds": [600, 300, 650, 340],
+                },
+            ),
+            patch.object(
+                transaction,
+                "ephemeral_image_from_memory",
+                side_effect=tracked_ephemeral,
             ),
         ):
-            with self.subTest(clear_result=clear_result):
-                class FinalizerClipboard(Clipboard):
-                    sequence = 10
-                    cleared_sequences = []
-
-                    def clear_current(self, expected_sequence):
-                        self.cleared_sequences.append(expected_sequence)
-                        return dict(clear_result)
-
-                finalizer_clipboard = FinalizerClipboard()
-                finalizer_ports = VisionHostPorts(
-                    rpa_lease=ports.rpa_lease,
-                    conversation_target=ports.conversation_target,
-                    window_frame=ports.window_frame,
-                    ui_action=ports.ui_action,
-                    clipboard=finalizer_clipboard,
-                )
-                with patch.object(
-                    transaction,
-                    "find_copy_menu_item",
-                    return_value={
-                        "x": 620,
-                        "y": 320,
-                        "bounds": [600, 300, 650, 340],
-                    },
-                ):
-                    finalizer_result = (
-                        transaction.acquire_current_image_via_ports(
-                            finalizer_ports,
-                            {
-                                "sender_role": "customer",
-                                "bubble_rect": [420, 180, 650, 320],
-                                "image_physical_anchor": observed_images[0][
-                                    "image_physical_anchor"
-                                ],
-                                "clipboard_wait_timeout_seconds": 0.05,
-                                "clipboard_poll_interval_seconds": 0.02,
-                            },
-                        )
-                    )
-                self.assertEqual(
-                    finalizer_result["reason"],
-                    expected_reason,
-                )
-                self.assertEqual(
-                    finalizer_result["transaction"][
-                        "clipboard_clear_reason"
+            result = transaction.acquire_current_image_via_ports(
+                ports,
+                {
+                    "sender_role": "customer",
+                    "bubble_rect": [420, 180, 650, 320],
+                    "image_physical_anchor": observed[0][
+                        "image_physical_anchor"
                     ],
-                    expected_clear_reason,
-                )
-                self.assertEqual(
-                    finalizer_clipboard.cleared_sequences,
-                    [11],
-                )
+                    "clipboard_wait_timeout_seconds": 0.2,
+                    "clipboard_poll_interval_seconds": 0.02,
+                },
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["reason"],
+            "clipboard_sequence_changed_during_read",
+        )
+        self.assertTrue(created_payloads)
+        self.assertTrue(
+            all(payload is not None and payload.released for payload in created_payloads)
+        )
+        self.assertEqual(clipboard.clear_count, 0)
         image.close()
 
     def test_two_visible_images_are_reconfirmed_and_copied_by_requested_slot(self):

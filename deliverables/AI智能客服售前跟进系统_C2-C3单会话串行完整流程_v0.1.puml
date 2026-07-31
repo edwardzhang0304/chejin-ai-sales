@@ -415,6 +415,12 @@ loop Worker运行中；每次循环最多完成一个会话事务
           end
 
           group 6. 图片增强：模型一，只把图片变成结构化事实
+            note over W,VG
+            复用以OmniAuto 855c218为基础、
+            从2318bd8选择性接入的图片一致性能力。
+            不新增第二套剪贴板模块，不使用claim_copy_ownership/微信PID作为准入门禁。
+            稳定slot和C2角色决定图片身份；现有指纹只作复制一致性辅助检查。
+            end note
             loop final_read中每张“新图片”按screen_order逐张处理
               W -> Auth: 图片动作前再次校验authorization_revision
               alt 授权失效

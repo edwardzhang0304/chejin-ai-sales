@@ -38,9 +38,25 @@ if (-not (Test-Path $OmniAutoProvenancePath)) {
   throw "打包失败：缺少 OmniAuto 来源说明 $OmniAutoProvenancePath"
 }
 $OmniAutoProvenance = Get-Content -Raw -Encoding UTF8 $OmniAutoProvenancePath | ConvertFrom-Json
-$OmniAutoUpstreamCommit = [string]$OmniAutoProvenance.upstream_commit
-if ($OmniAutoUpstreamCommit -notmatch '^[0-9a-fA-F]{40}$') {
-  throw "打包失败：OmniAuto upstream commit 不合法"
+$OmniAutoUpstreamBaseCommit = [string]$OmniAutoProvenance.upstream_base_commit
+$OmniAutoChejinIntegrationCommit = [string]$OmniAutoProvenance.chejin_integration_commit
+$OmniAutoSelectiveIntegrations = @($OmniAutoProvenance.selective_integrations)
+if ($OmniAutoUpstreamBaseCommit -notmatch '^[0-9a-fA-F]{40}$') {
+  throw "打包失败：OmniAuto upstream base commit 不合法"
+}
+if ($OmniAutoChejinIntegrationCommit -notmatch '^[0-9a-fA-F]{40}$') {
+  throw "打包失败：OmniAuto chejin integration commit 不合法"
+}
+if ($OmniAutoSelectiveIntegrations.Count -lt 1) {
+  throw "打包失败：OmniAuto selective integrations 不能为空"
+}
+foreach ($Integration in $OmniAutoSelectiveIntegrations) {
+  if ([string]$Integration.source_commit -notmatch '^[0-9a-fA-F]{40}$') {
+    throw "打包失败：OmniAuto selective source commit 不合法"
+  }
+  if (@($Integration.scope).Count -lt 1) {
+    throw "打包失败：OmniAuto selective integration scope 不能为空"
+  }
 }
 
 if (-not (Test-Path ".venv")) {
@@ -180,7 +196,9 @@ $Manifest = [ordered]@{
   c2_contract_file_check = "passed"
   generated_observation_schema_sha256 = $GeneratedObservationSchemaHash.Hash
   packaged_generated_observation_schema_sha256 = $PackagedGeneratedSchemaHash.Hash
-  omniauto_upstream_commit = $OmniAutoUpstreamCommit
+  omniauto_upstream_base_commit = $OmniAutoUpstreamBaseCommit
+  omniauto_selective_integrations = $OmniAutoSelectiveIntegrations
+  omniauto_chejin_integration_commit = $OmniAutoChejinIntegrationCommit
   omniauto_source_path = $OmniAutoSourcePath
   omniauto_source_tree_sha256 = $OmniAutoTreeVerification.source.tree_sha256
   omniauto_source_file_count = $OmniAutoTreeVerification.source.file_count

@@ -69,9 +69,31 @@ def tree_manifest(root: Path) -> dict[str, object]:
 def load_source_provenance(root: Path) -> dict[str, object]:
     path = root / ".chejin-source.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
-    commit = str(payload.get("upstream_commit") or "").strip()
-    if len(commit) != 40:
-        raise ValueError("OMNIAUTO_UPSTREAM_COMMIT_INVALID")
+    base_commit = str(payload.get("upstream_base_commit") or "").strip()
+    if len(base_commit) != 40:
+        raise ValueError("OMNIAUTO_UPSTREAM_BASE_COMMIT_INVALID")
+    integration_commit = str(
+        payload.get("chejin_integration_commit") or ""
+    ).strip()
+    if len(integration_commit) != 40:
+        raise ValueError("OMNIAUTO_CHEJIN_INTEGRATION_COMMIT_INVALID")
+    integrations = payload.get("selective_integrations")
+    if not isinstance(integrations, list) or not integrations:
+        raise ValueError("OMNIAUTO_SELECTIVE_INTEGRATIONS_REQUIRED")
+    for item in integrations:
+        if not isinstance(item, dict):
+            raise ValueError("OMNIAUTO_SELECTIVE_INTEGRATION_INVALID")
+        source_commit = str(item.get("source_commit") or "").strip()
+        scope = item.get("scope")
+        if len(source_commit) != 40:
+            raise ValueError(
+                "OMNIAUTO_SELECTIVE_SOURCE_COMMIT_INVALID"
+            )
+        if not isinstance(scope, list) or not all(
+            isinstance(value, str) and value.strip()
+            for value in scope
+        ):
+            raise ValueError("OMNIAUTO_SELECTIVE_SCOPE_INVALID")
     return payload
 
 
