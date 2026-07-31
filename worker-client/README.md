@@ -49,7 +49,7 @@ cd worker-client
 - 直接打包当前源码树中的 `omniauto-rpa`
 - 使用 PyInstaller 生成 Windows 单应用目录
 - 校验当前 OmniAuto 完整源码树与安装包内完整目录一致
-- 生成 `dist\reports\车金Worker客户端.manifest.json`，记录 Worker 提交、分支、合同版本和 SHA、OmniAuto 上游提交和 tree SHA、测试/预检结果及安装包 SHA
+- 生成 `dist\reports\车金Worker客户端.manifest.json`，记录 Worker 提交、分支、合同版本和 SHA、OmniAuto 基础提交、选择性来源、车金集成提交和 tree SHA、测试/预检结果及安装包 SHA
 
 正式打包要求 Git 工作区干净，且不允许跳过测试或预检。调试包必须显式执行：
 

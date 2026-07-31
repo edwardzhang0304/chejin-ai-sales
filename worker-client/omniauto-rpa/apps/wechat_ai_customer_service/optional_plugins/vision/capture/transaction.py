@@ -577,16 +577,6 @@ def _acquire_current_image_via_ports(
                     candidate_sequence is not None
                     and int(candidate_sequence) != int(sequence_before)
                 ):
-                    prove_ownership = getattr(
-                        ports.clipboard,
-                        "claim_copy_ownership",
-                        None,
-                    )
-                    ownership = (
-                        prove_ownership(int(candidate_sequence))
-                        if callable(prove_ownership)
-                        else {"owned": True, "reason": "test_port_bitmap_proof"}
-                    )
                     candidate_payload = ephemeral_image_from_memory(
                         ports.clipboard.read_current_bitmap(),
                         mime_type=str(data.get("mime_type") or "image/png"),
@@ -594,25 +584,7 @@ def _acquire_current_image_via_ports(
                     )
                     if candidate_payload is None:
                         clipboard_reason = "clipboard_current_content_not_bitmap"
-                        if (
-                            isinstance(ownership, dict)
-                            and ownership.get("owned") is True
-                        ):
-                            owned_clipboard_sequence = int(
-                                candidate_sequence
-                            )
                     else:
-                        if (
-                            not isinstance(ownership, dict)
-                            or ownership.get("owned") is not True
-                        ):
-                            candidate_payload.release()
-                            clipboard_reason = str(
-                                (ownership or {}).get("reason")
-                                or "clipboard_copy_ownership_unconfirmed"
-                            )
-                            time.sleep(poll_interval)
-                            continue
                         verified_sequence = ports.clipboard.sequence_number()
                         if (
                             verified_sequence is not None

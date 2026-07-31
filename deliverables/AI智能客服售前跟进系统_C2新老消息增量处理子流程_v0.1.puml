@@ -236,6 +236,11 @@ partition "D. 查询本地已处理清单，判定新老消息" {
 }
 
 partition "E. 只对NEW_IMAGE执行一次Vision" {
+  note
+    复用以OmniAuto 855c218为基础、从2318bd8选择性接入的图片一致性能力，
+    不新增第二套剪贴板模块，不使用claim_copy_ownership/微信PID硬门禁。
+    稳定slot和C2角色决定图片身份；现有指纹只作复制一致性辅助检查。
+  end note
   while (还有NEW_IMAGE?) is (是)
     :页面变化时重建完整final_read;
     if (图片已被顶出当前屏?) then (是)
@@ -359,20 +364,16 @@ partition "G. Brain上下文与等待期间新增消息" {
   endif
 }
 
-stop
-
 legend right
   |= Ledger状态 |= 含义 |= 是否重复昂贵处理 |
   | INGESTED_COMPLETED | 已成功/重复确认入库 | 否 |
   | INGESTED_FAILED | 失败事实已入库并终态收口 | 否 |
   | OUTBOX_WAITING | 处理完成但服务端尚未确认 | 否，只重传JSON |
   | NOT_FOUND | 本地从未处理过 | 是，仅本轮一次 |
+  Outbox是Worker级全局门禁，不是当前会话的普通缓存。
+  未确认事实存在时必须先重传/处置，不得扫描、定向读取或切换其他会话。
 endlegend
 
-note bottom
-  Outbox是Worker级全局门禁，不是当前会话的普通缓存。
-  未确认事实存在时，下一轮必须先重传/处置该Outbox，
-  不得继续首屏扫描、定向读取或切换其他会话。
-end note
+stop
 
 @enduml

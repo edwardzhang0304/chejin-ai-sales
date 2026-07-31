@@ -232,7 +232,15 @@ def build(
             "git_dirty": git_dirty,
             "build_kind": "development" if development_build else "official",
             "formal_release": not development_build,
-            "omniauto_upstream_commit": omniauto_provenance["upstream_commit"],
+            "omniauto_upstream_base_commit": omniauto_provenance[
+                "upstream_base_commit"
+            ],
+            "omniauto_selective_integrations": omniauto_provenance[
+                "selective_integrations"
+            ],
+            "omniauto_chejin_integration_commit": omniauto_provenance[
+                "chejin_integration_commit"
+            ],
             "omniauto_tree_sha256": omniauto_source_tree["tree_sha256"],
             "omniauto_file_count": omniauto_source_tree["file_count"],
             "packaged_omniauto_tree_sha256": omniauto_packaged_tree["tree_sha256"],

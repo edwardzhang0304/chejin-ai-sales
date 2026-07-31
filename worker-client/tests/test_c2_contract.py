@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import os
+from pathlib import Path
 import tempfile
 import unittest
 
@@ -11,6 +13,7 @@ os.environ.setdefault(
 
 from chejin_worker_client.c2_contract import (
     formal_image_failure_code,
+    image_contract,
     observation_role_is_trusted,
     temporary_capability_gate_codes,
 )
@@ -180,6 +183,79 @@ class C2ContractTests(unittest.TestCase):
                     formal_image_failure_code(reason),
                     code,
                 )
+
+    def test_all_runtime_image_failure_reasons_are_explicitly_mapped(self):
+        root = Path(__file__).resolve().parents[1]
+        transaction_path = (
+            root
+            / "omniauto-rpa"
+            / "apps"
+            / "wechat_ai_customer_service"
+            / "optional_plugins"
+            / "vision"
+            / "capture"
+            / "transaction.py"
+        )
+        tree = ast.parse(transaction_path.read_text(encoding="utf-8"))
+        runtime_reasons: set[str] = set()
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "fail"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                runtime_reasons.add(node.args[0].value)
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = (
+                    node.targets
+                    if isinstance(node, ast.Assign)
+                    else [node.target]
+                )
+                if not any(
+                    isinstance(target, ast.Name)
+                    and target.id == "clipboard_reason"
+                    for target in targets
+                ):
+                    continue
+                if (
+                    isinstance(node.value, ast.Constant)
+                    and isinstance(node.value.value, str)
+                ):
+                    runtime_reasons.add(node.value.value)
+        runtime_reasons.update(
+            {
+                "MESSAGE_IDENTITY_UNCONFIRMED",
+                "vision_cancelled_before_start",
+                "vision_configuration_incomplete",
+                "vision_configuration_invalid",
+                "vision_window_context_missing",
+                "vision_window_context_capture_missing",
+                "vision_window_capture_failed",
+                "vision_window_frame_finalize_failed",
+                "vision_plugin_exception",
+                "vision_cancelled_after_provider",
+                "vision_result_invalid",
+                "vision_understanding_missing",
+                "C2_IMAGE_UNDERSTANDING_SCHEMA_INVALID",
+            }
+        )
+        reason_map = image_contract()["failure_reason_to_error_code"]
+        self.assertEqual(
+            sorted(runtime_reasons - set(reason_map)),
+            [],
+            "图片运行时原因必须在机器合同中逐项映射",
+        )
+        retired_owner_reasons = {
+            "clipboard_copy_ownership_unconfirmed",
+            "clipboard_owner_api_unavailable",
+            "clipboard_owner_window_missing",
+            "clipboard_owner_not_wechat_image",
+            "clipboard_owner_check_failed",
+        }
+        self.assertTrue(retired_owner_reasons.isdisjoint(reason_map))
 
     def test_send_confirmation_requires_a_physical_trigger(self):
         classified = classify_action_result(

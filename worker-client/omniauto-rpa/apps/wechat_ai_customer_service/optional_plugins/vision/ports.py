@@ -41,11 +41,6 @@ class ClipboardPort(Protocol):
 
     def read_current_bitmap(self) -> Any: ...
 
-    def claim_copy_ownership(
-        self,
-        expected_sequence: int,
-    ) -> dict[str, Any]: ...
-
     def clear_current(self, expected_sequence: int) -> dict[str, Any]: ...
 
 

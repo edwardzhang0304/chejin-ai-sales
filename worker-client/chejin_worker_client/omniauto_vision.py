@@ -768,27 +768,6 @@ class _Clipboard:
         )
         return result
 
-    def claim_copy_ownership(
-        self,
-        expected_sequence: int,
-    ) -> dict[str, Any]:
-        from apps.wechat_ai_customer_service.optional_plugins.vision.clipboard_payload import (
-            windows_clipboard_image_ownership_evidence,
-        )
-
-        result = windows_clipboard_image_ownership_evidence(
-            int(expected_sequence),
-            int(self.state.ensure_window()),
-        )
-        self.state.record(
-            "clipboard_ownership",
-            "completed" if result.get("owned") else "failed",
-            reason=str(result.get("reason") or ""),
-            sequence_number=int(expected_sequence),
-            image_bytes_persisted=False,
-        )
-        return result
-
     def clear_current(self, expected_sequence: int) -> dict[str, Any]:
         started_at = time.perf_counter()
         from apps.wechat_ai_customer_service.optional_plugins.vision.clipboard_payload import (

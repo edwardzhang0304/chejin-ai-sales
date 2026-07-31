@@ -1,6 +1,18 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "upstream_repository": "meta-xucong/omniauto",
-  "upstream_commit": "855c21881641cdb2f9fe69d3f2e1caa05e37d04d",
-  "integration_note": "车金适配层在此上游基线上维护，完整目录 tree SHA 由打包时动态计算。"
+  "upstream_base_commit": "855c21881641cdb2f9fe69d3f2e1caa05e37d04d",
+  "selective_integrations": [
+    {
+      "source_repository": "meta-xucong/omniauto",
+      "source_commit": "2318bd8c5aa8d8ff2272a8decc285ef2ae9e01e7",
+      "scope": [
+        "image_bubble_observation",
+        "visual_fingerprint",
+        "clipboard_copy_consistency_retry"
+      ]
+    }
+  ],
+  "chejin_integration_commit": "ff9e0de00013ac51a2f2a05e3774748c43c846fb",
+  "integration_note": "车金目录以 855c218 为共同基础，选择性引入 2318bd8 图片能力；完整目录 tree SHA 由打包时动态计算。"
 }
