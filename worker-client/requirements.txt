@@ -7,6 +7,7 @@ pywinauto==0.6.9; platform_system == "Windows"
 uiautomation==2.0.29; platform_system == "Windows"
 pyperclip==1.9.0
 Pillow>=10,<13
+jsonschema>=4.22,<5
 psutil==5.9.8
 openpyxl>=3.1,<4
 fastapi>=0.115,<1

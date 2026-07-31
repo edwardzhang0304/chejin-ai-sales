@@ -10,6 +10,7 @@ from __future__ import annotations
 import ctypes
 import io
 import struct
+import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -19,6 +20,7 @@ from .understanding.provider import (
     MAX_IMAGE_EDGE_PX,
     MAX_IMAGE_PAYLOAD_BYTES,
     MAX_IMAGE_PIXELS,
+    MAX_IMAGE_RAW_BYTES,
     MAX_IMAGE_SOURCE_BYTES,
 )
 
@@ -81,13 +83,17 @@ def _clipboard_image(value: Any) -> Image.Image | None:
         return None
 
 
-def _image_from_encoded_clipboard_bytes(value: Any) -> Image.Image | None:
+def _image_from_encoded_clipboard_bytes(
+    value: Any,
+    *,
+    max_source_bytes: int = MAX_IMAGE_SOURCE_BYTES,
+) -> Image.Image | None:
     """Decode a native clipboard image blob without touching the filesystem."""
 
     if not isinstance(value, (bytes, bytearray, memoryview)):
         return None
     raw = bytes(value)
-    if not raw or len(raw) > MAX_IMAGE_SOURCE_BYTES:
+    if not raw or len(raw) > int(max_source_bytes):
         return None
     try:
         with Image.open(io.BytesIO(raw)) as source:
@@ -107,7 +113,7 @@ def _dib_as_bmp_bytes(value: Any) -> bytes | None:
     if not isinstance(value, (bytes, bytearray, memoryview)):
         return None
     dib = bytes(value)
-    if len(dib) < 12 or len(dib) > MAX_IMAGE_PAYLOAD_BYTES:
+    if len(dib) < 12 or len(dib) > MAX_IMAGE_RAW_BYTES:
         return None
     try:
         header_size = int(struct.unpack_from("<I", dib, 0)[0])
@@ -192,7 +198,7 @@ def _image_from_hbitmap(value: Any) -> Image.Image | None:
     if width <= 0 or height <= 0 or width * height > MAX_IMAGE_PIXELS:
         return None
     byte_count = width * height * 4
-    if byte_count <= 0 or byte_count > MAX_IMAGE_PAYLOAD_BYTES:
+    if byte_count <= 0 or byte_count > MAX_IMAGE_RAW_BYTES:
         return None
     hdc = user32.GetDC(0)
     if not hdc:
@@ -232,7 +238,14 @@ def _decode_native_clipboard_value(*, format_id: int, format_name: str, value: A
         return _image_from_encoded_clipboard_bytes(value)
     if format_id in {_CF_DIB, _CF_DIBV5}:
         bmp = _dib_as_bmp_bytes(value)
-        return _image_from_encoded_clipboard_bytes(bmp) if bmp is not None else None
+        return (
+            _image_from_encoded_clipboard_bytes(
+                bmp,
+                max_source_bytes=MAX_IMAGE_RAW_BYTES,
+            )
+            if bmp is not None
+            else None
+        )
     if format_id == _CF_BITMAP:
         return _image_from_hbitmap(value)
     return None
@@ -310,7 +323,9 @@ def _read_injected_clipboard_image(reader: Callable[[], Any]) -> dict[str, Any]:
     return {"ok": True, "image": image}
 
 
-def _encode_ephemeral_png(image: Image.Image) -> EphemeralClipboardImage | None:
+def _encode_ephemeral_image(
+    image: Image.Image,
+) -> EphemeralClipboardImage | None:
     width, height = image.size
     if width <= 0 or height <= 0 or width * height > MAX_IMAGE_PIXELS:
         return None
@@ -324,22 +339,45 @@ def _encode_ephemeral_png(image: Image.Image) -> EphemeralClipboardImage | None:
             Image.Resampling.LANCZOS,
         )
         width, height = normalized.size
-    buffer = io.BytesIO()
     try:
-        normalized.save(buffer, format="PNG", optimize=True, compress_level=9)
-        raw = buffer.getvalue()
+        attempts = [
+            ("PNG", "image/png", {"optimize": True, "compress_level": 9}),
+            *[
+                (
+                    "JPEG",
+                    "image/jpeg",
+                    {
+                        "quality": quality,
+                        "optimize": True,
+                        "progressive": True,
+                        "subsampling": 2,
+                    },
+                )
+                for quality in (92, 86, 80, 74, 68, 60, 52, 44)
+            ],
+        ]
+        for image_format, mime_type, save_options in attempts:
+            buffer = io.BytesIO()
+            try:
+                normalized.save(
+                    buffer,
+                    format=image_format,
+                    **save_options,
+                )
+                raw = buffer.getvalue()
+            finally:
+                buffer.close()
+            if raw and len(raw) <= MAX_IMAGE_PAYLOAD_BYTES:
+                return EphemeralClipboardImage(
+                    image_bytes=bytearray(raw),
+                    mime_type=mime_type,
+                    width=int(width),
+                    height=int(height),
+                )
+        return None
     finally:
-        buffer.close()
         if owns_normalized:
             normalized.close()
-    if not raw or len(raw) > MAX_IMAGE_PAYLOAD_BYTES:
-        return None
-    return EphemeralClipboardImage(
-        image_bytes=bytearray(raw),
-        mime_type="image/png",
-        width=int(width),
-        height=int(height),
-    )
 
 
 def ephemeral_image_from_memory(
@@ -364,14 +402,14 @@ def ephemeral_image_from_memory(
         if image is None:
             return None
         try:
-            return _encode_ephemeral_png(image)
+            return _encode_ephemeral_image(image)
         finally:
             image.close()
     image = _clipboard_image(raw)
     if image is None:
         return None
     try:
-        return _encode_ephemeral_png(image)
+        return _encode_ephemeral_image(image)
     finally:
         image.close()
 
@@ -415,7 +453,7 @@ def read_current_clipboard_image(
     if not isinstance(image, Image.Image):
         return {"ok": False, "reason": "clipboard_current_content_not_bitmap"}
     try:
-        payload = _encode_ephemeral_png(image)
+        payload = _encode_ephemeral_image(image)
     finally:
         try:
             image.close()
@@ -429,3 +467,60 @@ def read_current_clipboard_image(
     if payload is None:
         return {"ok": False, "reason": "clipboard_current_image_invalid"}
     return {"ok": True, "image": payload}
+
+
+def clear_current_windows_clipboard_image(
+    expected_sequence: int,
+) -> dict[str, Any]:
+    """Clear only the clipboard generation read by this image transaction."""
+
+    current = windows_clipboard_sequence_number()
+    if current != int(expected_sequence):
+        return {
+            "ok": False,
+            "reason": "clipboard_sequence_not_current_for_clear",
+        }
+    try:
+        import win32clipboard
+    except Exception as exc:
+        return {
+            "ok": False,
+            "reason": "clipboard_clear_unavailable",
+            "error_type": type(exc).__name__,
+        }
+    deadline = time.monotonic() + 2.0
+    last_error_type = ""
+    while True:
+        opened = False
+        try:
+            win32clipboard.OpenClipboard()
+            opened = True
+            if windows_clipboard_sequence_number() != int(
+                expected_sequence
+            ):
+                return {
+                    "ok": False,
+                    "reason": "clipboard_sequence_changed_before_clear",
+                }
+            win32clipboard.EmptyClipboard()
+            return {"ok": True}
+        except Exception as exc:
+            last_error_type = type(exc).__name__
+        finally:
+            if opened:
+                try:
+                    win32clipboard.CloseClipboard()
+                except Exception:
+                    pass
+        if time.monotonic() >= deadline:
+            return {
+                "ok": False,
+                "reason": "clipboard_clear_failed",
+                "error_type": last_error_type,
+            }
+        if windows_clipboard_sequence_number() != int(expected_sequence):
+            return {
+                "ok": False,
+                "reason": "clipboard_sequence_changed_before_clear",
+            }
+        time.sleep(0.05)

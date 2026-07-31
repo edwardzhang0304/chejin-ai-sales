@@ -13,7 +13,14 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.request_id import get_request_id
-from app.contracts.c2 import c2_contract_v3, contract_revision, contract_row_rules, contract_sha256, contract_values
+from app.contracts.c2 import (
+    c2_contract_v3,
+    contract_revision,
+    contract_row_rules,
+    contract_sha256,
+    contract_values,
+    validate_image_result_schema,
+)
 from app.errors import AppError
 from app.models.base import utcnow
 from app.models.c3 import Conversation, MessageBatch, ReplyAction
@@ -1140,6 +1147,27 @@ def _validate_image_understanding(
             f"图片 Brain 桥接结果包含非白名单字段: {unexpected_bridge}",
             409,
             _media_error_data(source_message_key),
+        )
+    understanding_errors = validate_image_result_schema(
+        understanding,
+        "customer_image_understanding_v1",
+    )
+    bridge_errors = validate_image_result_schema(
+        bridge,
+        "visual_bridge_input_v1",
+    )
+    if understanding_errors or bridge_errors:
+        raise AppError(
+            "IMAGE_UNDERSTANDING_SCHEMA_INVALID",
+            "图片理解结果不符合共享合同",
+            409,
+            {
+                **_media_error_data(source_message_key),
+                "schema_errors": [
+                    *understanding_errors[:8],
+                    *bridge_errors[:8],
+                ],
+            },
         )
     _validate_text_only_image_value(understanding, path="customer_image_understanding")
     _validate_text_only_image_value(bridge, path="visual_bridge_input")
@@ -2274,37 +2302,50 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
 
     message_batch = None
     flow_gate_errors = list(flow_gate_error_codes)
-    failed_customer_images = [
+    failed_images = [
         item
         for item in ordered_messages
         if str(item.message_type or "").strip().lower() == "image"
         and str(item.item_state or "").strip().lower() == "failed"
-        and str(item.sender_role_hint or "").strip().lower() == "customer"
+        and str(item.sender_role_hint or "").strip().lower()
+        in {"customer", "self"}
     ]
-    if failed_customer_images and "C2_IMAGE_UNDERSTANDING_FAILED" not in flow_gate_errors:
+    if failed_images and "C2_IMAGE_UNDERSTANDING_FAILED" not in flow_gate_errors:
         flow_gate_errors.append("C2_IMAGE_UNDERSTANDING_FAILED")
-        failed_image_detail: dict[str, Any] = {
-            "error_code": "C2_IMAGE_UNDERSTANDING_FAILED",
-            "position_source": "position_unavailable",
-        }
-        if all(
-            item.message_position.order_source == "visual_top"
-            for item in failed_customer_images
-        ):
-            failed_customer_image_orders = [
-                int(item.message_position.screen_order)
-                for item in failed_customer_images
+        failed_image_details: list[dict[str, Any]] = []
+        for sender_role in ("customer", "self"):
+            role_items = [
+                item
+                for item in failed_images
+                if str(item.sender_role_hint or "").strip().lower()
+                == sender_role
             ]
-            failed_image_detail.update(
-                {
-                    "min_screen_order": min(failed_customer_image_orders),
-                    "max_screen_order": max(failed_customer_image_orders),
-                    "position_source": "failed_image_visual_top",
-                }
-            )
-        flow_gate_details_by_code["C2_IMAGE_UNDERSTANDING_FAILED"] = [
-            failed_image_detail
-        ]
+            if not role_items:
+                continue
+            detail: dict[str, Any] = {
+                "error_code": "C2_IMAGE_UNDERSTANDING_FAILED",
+                "position_source": "position_unavailable",
+                "subject_sender_role": sender_role,
+            }
+            if all(
+                item.message_position.order_source == "visual_top"
+                for item in role_items
+            ):
+                orders = [
+                    int(item.message_position.screen_order)
+                    for item in role_items
+                ]
+                detail.update(
+                    {
+                        "min_screen_order": min(orders),
+                        "max_screen_order": max(orders),
+                        "position_source": "failed_image_visual_top",
+                    }
+                )
+            failed_image_details.append(detail)
+        flow_gate_details_by_code[
+            "C2_IMAGE_UNDERSTANDING_FAILED"
+        ] = failed_image_details
     failed_voices = [
         item
         for item in ordered_messages
@@ -2367,7 +2408,11 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             and (
                 int(detail["max_screen_order"]) < last_human_sales_screen_order
                 or (
-                    code == "C2_VOICE_TRANSCRIBE_FAILED"
+                    code
+                    in {
+                        "C2_VOICE_TRANSCRIBE_FAILED",
+                        "C2_IMAGE_UNDERSTANDING_FAILED",
+                    }
                     and detail.get("subject_sender_role") == "self"
                     and int(detail["max_screen_order"])
                     == last_human_sales_screen_order

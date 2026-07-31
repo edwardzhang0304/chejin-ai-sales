@@ -29,6 +29,28 @@ DEFAULT_TIMEOUT_SECONDS = 60
 DEFAULT_CATALOG_IDENTITY_CANDIDATE_LIMIT = 30
 
 
+def _stable_provider_error(result: dict[str, Any] | None) -> str:
+    data = result if isinstance(result, dict) else {}
+    try:
+        status = int(data.get("status") or 0)
+    except (TypeError, ValueError):
+        status = 0
+    raw = str(data.get("error") or "").strip().lower()
+    if status in {401, 403}:
+        return "VISION_PROVIDER_AUTH_FAILED"
+    if status == 429:
+        return "VISION_PROVIDER_RATE_LIMITED"
+    if "timeout" in raw or "timed out" in raw:
+        return "VISION_PROVIDER_TIMEOUT"
+    if raw == "customer_image_understanding_response_not_json_object":
+        return "VISION_PROVIDER_RESPONSE_NOT_JSON"
+    if status >= 500:
+        return "VISION_PROVIDER_SERVER_FAILED"
+    if status == 0:
+        return "VISION_PROVIDER_NETWORK_FAILED"
+    return "VISION_PROVIDER_FAILED"
+
+
 def best_effort_archive_prompt_event(kind: str, payload: dict[str, Any], *, config: dict[str, Any] | None = None) -> None:
     try:
         from apps.wechat_ai_customer_service.workflows.customer_service_prompt_archive import archive_prompt_event
@@ -324,6 +346,10 @@ def maybe_run_customer_image_understanding(
 ) -> dict[str, Any]:
     started = time.time()
     settings = effective_customer_image_understanding_settings(config)
+    strict_adapter = bool(
+        isinstance(config, dict)
+        and config.get("_chejin_c2_strict_adapter")
+    )
     memory_payloads = list(image_payloads or [])
     image_paths = unique_image_paths_for_understanding(image_assets)
     local_profiles = [analyze_ephemeral_customer_image(item) for item in memory_payloads]
@@ -413,7 +439,11 @@ def maybe_run_customer_image_understanding(
             source_messages=source_messages,
             local_visual_profile=local_visual_profile,
         )
-    catalog_identity_candidates = catalog_identity_candidates_for_visual_prompt()
+    catalog_identity_candidates = (
+        []
+        if strict_adapter
+        else catalog_identity_candidates_for_visual_prompt()
+    )
     prompt = build_customer_image_understanding_prompt(
         customer_text=customer_text,
         source_reason=source_reason,
@@ -497,9 +527,27 @@ def maybe_run_customer_image_understanding(
             provider_result = retry_result
         else:
             provider_result["retry_error"] = str(retry_result.get("error") or "")
+            provider_result["retry_status"] = int(
+                retry_result.get("status") or 0
+            )
             provider_result["retry_response_text"] = str(retry_result.get("response_text") or "")[:600]
             provider_result["retry_response_diagnostics"] = retry_result.get("response_diagnostics")
     if not provider_result.get("ok"):
+        provider_error = (
+            _stable_provider_error(provider_result)
+            if strict_adapter
+            else str(provider_result.get("error") or "")
+        )
+        retry_error = (
+            _stable_provider_error(
+                {
+                    "error": provider_result.get("retry_error"),
+                    "status": provider_result.get("retry_status"),
+                }
+            )
+            if strict_adapter and provider_result.get("retry_error")
+            else str(provider_result.get("retry_error") or "")
+        )
         fallback = {
             "applied": False,
             "adoptable": True,
@@ -525,13 +573,27 @@ def maybe_run_customer_image_understanding(
             },
             "audit": {
                 "latency_ms": int((time.time() - started) * 1000),
-                "provider_error": str(provider_result.get("error") or ""),
-                "provider_response_text": str(provider_result.get("response_text") or "")[:600],
-                "provider_response_diagnostics": provider_result.get("response_diagnostics"),
-                "retry_error": str(provider_result.get("retry_error") or ""),
-                "retry_response_text": str(provider_result.get("retry_response_text") or "")[:600],
-                "retry_response_diagnostics": provider_result.get("retry_response_diagnostics"),
+                "provider_error": provider_error,
+                "retry_error": retry_error,
                 "used_fallback": False,
+                **(
+                    {}
+                    if strict_adapter
+                    else {
+                        "provider_response_text": str(
+                            provider_result.get("response_text") or ""
+                        )[:600],
+                        "provider_response_diagnostics": provider_result.get(
+                            "response_diagnostics"
+                        ),
+                        "retry_response_text": str(
+                            provider_result.get("retry_response_text") or ""
+                        )[:600],
+                        "retry_response_diagnostics": provider_result.get(
+                            "retry_response_diagnostics"
+                        ),
+                    }
+                ),
             },
         }
         normalized = normalize_customer_image_understanding_result(
@@ -560,7 +622,85 @@ def maybe_run_customer_image_understanding(
             )
         return normalized
     parsed = dict(provider_result.get("parsed") or {})
-    stabilize_catalog_alignment_bridge(parsed)
+    if strict_adapter:
+        from ..result_schema import image_result_schema, validate_schema
+
+        untrusted_candidate = {
+            "schema_version": 1,
+            "enabled": True,
+            "applied": True,
+            "adoptable": True,
+            "reason": str(parsed.get("reason") or "vision_ready"),
+            "provider": str(settings.get("base_url") or ""),
+            "request_style": str(settings.get("request_style") or ""),
+            "model": str(settings.get("model") or ""),
+            "vision_summary": parsed.get("vision_summary", ""),
+            "image_ocr_text": parsed.get("image_ocr_text", []),
+            "classification": parsed.get("classification", {}),
+            "entities": parsed.get("entities", {}),
+            "intent_hints": parsed.get("intent_hints", {}),
+            "bridge": parsed.get("bridge", {}),
+            "catalog_alignment": parsed.get("catalog_alignment", {}),
+            "audit": {
+                "latency_ms": int((time.time() - started) * 1000),
+                "used_fallback": False,
+                "provider_error": "",
+                "retry_error": "",
+                "retry_after_non_json": bool(
+                    provider_result.get("retry_after_non_json", False)
+                ),
+                "catalog_identity_candidate_count": 0,
+            },
+        }
+        schema = image_result_schema(
+            config,
+            "customer_image_understanding_v1",
+        )
+        schema_errors = (
+            validate_schema(untrusted_candidate, schema)
+            if schema
+            else ["shared image result schema missing"]
+        )
+        if schema_errors:
+            return normalize_customer_image_understanding_result(
+                {
+                    "applied": False,
+                    "adoptable": False,
+                    "reason": "image_understanding_contract_invalid",
+                    "audit": {
+                        "latency_ms": int(
+                            (time.time() - started) * 1000
+                        ),
+                        "provider_error": (
+                            "C2_IMAGE_UNDERSTANDING_SCHEMA_INVALID"
+                        ),
+                        "used_fallback": False,
+                    },
+                },
+                enabled=True,
+                provider="",
+                request_style=str(settings.get("request_style") or ""),
+                model=str(settings.get("model") or ""),
+            )
+        catalog_alignment = (
+            untrusted_candidate.get("catalog_alignment")
+            if isinstance(
+                untrusted_candidate.get("catalog_alignment"),
+                dict,
+            )
+            else {}
+        )
+        catalog_alignment.update(
+            {
+                "selected_product_id": "",
+                "selected_product_name": "",
+                "alignment_confidence": 0.0,
+                "alignment_reason": "",
+            }
+        )
+        parsed["catalog_alignment"] = catalog_alignment
+    else:
+        stabilize_catalog_alignment_bridge(parsed)
     parsed["applied"] = True
     parsed["adoptable"] = True
     parsed.setdefault("reason", "vision_ready")

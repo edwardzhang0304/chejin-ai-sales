@@ -74,11 +74,76 @@
           "applied": true,
           "adoptable": true,
           "reason": "vision_ready",
+          "provider": "https://aiself.vip/v1",
+          "request_style": "anthropic_messages_vision",
+          "model": "doubao-seed-2-0-lite-260428",
           "vision_summary": "销售发送了一张白色 SUV 外观图。",
-          "image_ocr_text": []
+          "image_ocr_text": [],
+          "classification": {
+            "is_vehicle": true,
+            "vehicle_confidence": 0.9,
+            "unknown": false,
+            "non_vehicle_reason": ""
+          },
+          "entities": {
+            "brand_candidates": [],
+            "series_candidates": [],
+            "model_clues": [],
+            "body_type": "SUV",
+            "color": "白色",
+            "year_clues": []
+          },
+          "intent_hints": {
+            "wants_catalog_match": false,
+            "wants_similar_recommendation": false,
+            "wants_general_chat": false,
+            "needs_clarification": false
+          },
+          "bridge": {
+            "normalized_vehicle_query": "白色 SUV",
+            "brain_mode": "",
+            "catalog_lookup_mode": ""
+          },
+          "catalog_alignment": {
+            "selected_product_id": "",
+            "selected_product_name": "",
+            "alignment_confidence": 0.0,
+            "alignment_reason": "",
+            "uncertain_reason": ""
+          },
+          "audit": {
+            "latency_ms": 10,
+            "used_fallback": false,
+            "provider_error": "",
+            "retry_error": "",
+            "retry_after_non_json": false,
+            "catalog_identity_candidate_count": 0
+          }
         },
         "visual_bridge_input": {
-          "summary": "白色 SUV 外观图"
+          "schema_version": 1,
+          "present": true,
+          "vision_summary": "销售发送了一张白色 SUV 外观图。",
+          "classification": {
+            "is_vehicle": true,
+            "vehicle_confidence": 0.9,
+            "unknown": false
+          },
+          "catalog_assist": {
+            "normalized_vehicle_query": "白色 SUV",
+            "candidate_names": [],
+            "exact_candidate_name": ""
+          },
+          "intent_hints": {
+            "wants_catalog_match": false,
+            "wants_similar_recommendation": false,
+            "needs_clarification": false
+          },
+          "vehicle_image_retrieval": {
+            "matched": false,
+            "candidate_names": []
+          },
+          "source_message_ids": ["fixture-image-1"]
         },
         "source_message": {
           "id": "fixture-source-image-1",

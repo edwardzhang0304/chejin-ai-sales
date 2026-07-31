@@ -5292,7 +5292,7 @@ def merge_structural_image_messages(
             merged,
             target=target,
             role_resolver=message_row_avatar_role_details,
-            max_images=8,
+            max_images=64,
         )
     except Exception as exc:
         return image_observation_failed(

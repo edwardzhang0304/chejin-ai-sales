@@ -8385,7 +8385,7 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(phase_result["new_action_count"], 1)
         self.assertTrue(phase_result["requires_final_refresh"])
 
-    def test_incremental_plan_routes_untrusted_image_to_ignored_state_machine(self):
+    def test_incremental_plan_routes_untrusted_image_to_identity_gate(self):
         runner, _ = self.make_runner(
             FakeApi(None),
             FakeBridge(
@@ -8433,8 +8433,12 @@ class TaskRunnerTest(unittest.TestCase):
         )
 
         source_key = image_observation_source_key(target, observation)
-        self.assertEqual(plan["identity_errors"], [])
-        self.assertEqual(plan["new_image_source_keys"], {source_key})
+        self.assertEqual(len(plan["identity_errors"]), 1)
+        self.assertEqual(
+            plan["identity_errors"][0]["error_code"],
+            "MESSAGE_IDENTITY_UNCONFIRMED",
+        )
+        self.assertEqual(plan["new_image_source_keys"], set())
 
         result, phase_result = runner._process_final_image_slots(
             binding=Binding(
@@ -8446,14 +8450,16 @@ class TaskRunnerTest(unittest.TestCase):
             target=target,
             sidecar_payload={"observations": [observation]},
             enforce_read_targets=False,
-            allowed_new_source_keys={source_key},
+            allowed_new_source_keys=set(),
         )
 
-        self.assertEqual(phase_result["ignored"], 1)
-        self.assertEqual(result["observations"][0]["item_state"], "ignored")
+        self.assertEqual(phase_result["ignored"], 0)
+        self.assertEqual(
+            result["observations"][0]["item_state"],
+            "discovered",
+        )
         ledger = load_c2_ledger_entry(target.conversation_id, source_key)
-        self.assertEqual(ledger["terminal_state"], "ignored")
-        self.assertEqual(ledger["ingest_state"], "not_required")
+        self.assertIsNone(ledger)
 
     def test_post_vision_refresh_processes_new_image_in_same_ui_lease(self):
         runner, _ = self.make_runner(

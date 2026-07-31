@@ -1122,6 +1122,89 @@ def test_brain_history_uses_observed_order_when_old_fact_arrives_late():
         ]
 
 
+def test_brain_history_preserves_structured_image_context_across_rounds():
+    worker, binding = _setup_bound_conversation()
+    image_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-history-image",
+        "[图片]",
+    )
+    with SessionLocal() as db:
+        image = db.get(MessageEvent, image_id)
+        image.message_type = "image"
+        image.content = None
+        image.item_state = "completed"
+        image.raw_payload = {
+            **dict(image.raw_payload or {}),
+            "item_state": "completed",
+            "customer_image_understanding": {
+                "schema_version": 1,
+                "vision_summary": "白色 SUV 外观，车头朝左",
+                "image_ocr_text": ["测试车牌"],
+                "classification": {
+                    "is_vehicle": True,
+                    "vehicle_confidence": 0.91,
+                    "unknown": False,
+                },
+                "entities": {
+                    "brand_candidates": ["测试品牌"],
+                    "series_candidates": [],
+                },
+                "bridge": {
+                    "normalized_vehicle_query": "白色 SUV",
+                },
+            },
+            "visual_bridge_input": {
+                "schema_version": 1,
+                "present": True,
+                "vision_summary": "白色 SUV 外观，车头朝左",
+                "catalog_assist": {
+                    "normalized_vehicle_query": "白色 SUV",
+                },
+            },
+            "server_validated_product_id": "server-product-001",
+        }
+        batch = MessageBatch(
+            conversation_id=binding["conversation_id"],
+            status="collecting",
+            active=False,
+            message_event_ids=[image_id],
+            message_count=1,
+            generation_no=100,
+        )
+        db.add(batch)
+        db.flush()
+        binding_row = db.query(WechatSessionBinding).filter(
+            WechatSessionBinding.conversation_id
+            == binding["conversation_id"]
+        ).one()
+        conversation = db.get(
+            Conversation,
+            binding["conversation_id"],
+        )
+
+        context = c3_service._build_ai_context(
+            db,
+            binding_row,
+            conversation,
+            batch,
+        )
+
+    history_image = next(
+        item
+        for item in context["conversation"]["history"]
+        if item["id"] == image_id
+    )
+    current_image = context["messages"][0]
+    for item in (history_image, current_image):
+        assert item["message_type"] == "image"
+        assert item["vision_summary"] == "白色 SUV 外观，车头朝左"
+        assert item["image_ocr_text"] == ["测试车牌"]
+        assert item["normalized_vehicle_query"] == "白色 SUV"
+        assert item["server_validated_product_id"] == "server-product-001"
+
+
 def test_stale_message_batch_generation_is_reclaimed_once():
     worker, binding = _setup_bound_conversation()
     message_id = _ingest(worker, binding["conversation_id"], "msg-c3-stale-recovery", "恢复测试")

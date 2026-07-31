@@ -650,6 +650,73 @@ def _build_ai_context(db: Session, binding: WechatSessionBinding, conversation: 
         )
     )
     history_rows.reverse()
+
+    def compact_message(item: MessageEvent) -> dict[str, Any]:
+        raw = item.raw_payload if isinstance(item.raw_payload, dict) else {}
+        result: dict[str, Any] = {
+            "id": item.id,
+            "source_message_key": str(raw.get("source_message_key") or ""),
+            "sender_role": item.sender_role,
+            "message_type": item.message_type,
+            "content": item.content,
+            "item_state": str(raw.get("item_state") or ""),
+            "error_code": str(
+                raw.get("image_processing_reason")
+                or raw.get("voice_processing_reason")
+                or ""
+            ),
+            "occurred_at": (
+                item.occurred_at.isoformat()
+                if item.occurred_at
+                else None
+            ),
+            "message_position": raw.get("message_position"),
+        }
+        if str(item.message_type or "").strip().lower() != "image":
+            return result
+        understanding = (
+            raw.get("customer_image_understanding")
+            if isinstance(raw.get("customer_image_understanding"), dict)
+            else {}
+        )
+        bridge = (
+            raw.get("visual_bridge_input")
+            if isinstance(raw.get("visual_bridge_input"), dict)
+            else {}
+        )
+        catalog_assist = (
+            bridge.get("catalog_assist")
+            if isinstance(bridge.get("catalog_assist"), dict)
+            else {}
+        )
+        result.update(
+            {
+                "vision_summary": str(
+                    understanding.get("vision_summary") or ""
+                )[:2000],
+                "image_ocr_text": list(
+                    understanding.get("image_ocr_text") or []
+                )[:20],
+                "classification": dict(
+                    understanding.get("classification") or {}
+                ),
+                "entities": dict(understanding.get("entities") or {}),
+                "normalized_vehicle_query": str(
+                    catalog_assist.get("normalized_vehicle_query")
+                    or (understanding.get("bridge") or {}).get(
+                        "normalized_vehicle_query"
+                    )
+                    or ""
+                )[:500],
+                "server_validated_product_id": str(
+                    raw.get("server_validated_product_id") or ""
+                )[:128],
+                "customer_image_understanding": understanding,
+                "visual_bridge_input": bridge,
+            }
+        )
+        return result
+
     return {
         "conversation": {
             "conversation_id": binding.conversation_id,
@@ -660,28 +727,13 @@ def _build_ai_context(db: Session, binding: WechatSessionBinding, conversation: 
             "status": conversation.status,
             "ai_enabled": conversation.ai_enabled,
             "reply_count": conversation.reply_count,
-            "history": [
-                {
-                    "id": item.id,
-                    "sender_role": item.sender_role,
-                    "message_type": item.message_type,
-                    "content": item.content,
-                    "occurred_at": item.occurred_at.isoformat() if item.occurred_at else None,
-                }
-                for item in history_rows
-            ],
+            "history": [compact_message(item) for item in history_rows],
         },
         "messages": [
             {
-                "id": item.id,
-                "content": item.content,
-                "message_type": item.message_type,
+                **compact_message(item),
                 "dedupe_key": item.dedupe_key,
-                "occurred_at": item.occurred_at.isoformat() if item.occurred_at else None,
                 "ingested_at": item.ingested_at.isoformat(),
-                "message_position": (item.raw_payload or {}).get("message_position"),
-                "customer_image_understanding": (item.raw_payload or {}).get("customer_image_understanding") if item.message_type == "image" else None,
-                "visual_bridge_input": (item.raw_payload or {}).get("visual_bridge_input") if item.message_type == "image" else None,
             }
             for item in messages
         ],

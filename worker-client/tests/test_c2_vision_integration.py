@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 import io
+import random
 import tempfile
 import threading
 import unittest
@@ -28,9 +30,14 @@ from chejin_worker_client.omniauto_vision import (
     _WindowFrame,
     _frame_fingerprint,
     _menu_ocr_evidence,
+    _vision_process_timeout_seconds,
     explicit_vision_config,
     process_image_slot,
     vision_configuration_status,
+)
+from chejin_worker_client.c2_contract import (
+    image_contract,
+    validate_image_result_schema,
 )
 from chejin_worker_client.action_journal import (
     initialize_action_journal,
@@ -49,6 +56,7 @@ from apps.wechat_ai_customer_service.optional_plugins.vision.capture.wechat impo
 from apps.wechat_ai_customer_service.optional_plugins.vision.ports import VisionHostPorts
 from apps.wechat_ai_customer_service.optional_plugins.vision.understanding.service import (
     effective_customer_image_understanding_settings,
+    maybe_run_customer_image_understanding,
 )
 from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar
 
@@ -490,6 +498,9 @@ class C2VisionIntegrationTests(unittest.TestCase):
             def read_current_bitmap(self):
                 return image.crop((420, 180, 650, 320))
 
+            def clear_current(self, expected_sequence):
+                return {"ok": expected_sequence == 11}
+
         target = Target()
         frames = Frames()
         ports = VisionHostPorts(
@@ -575,6 +586,9 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 read_current_bitmap=lambda: image.crop(
                     (420, 180, 650, 320)
                 ),
+                clear_current=lambda expected_sequence: {
+                    "ok": expected_sequence == 11
+                },
             ),
         )
         with patch.object(
@@ -701,6 +715,29 @@ class C2VisionIntegrationTests(unittest.TestCase):
             75.0,
         )
         self.assertEqual(provider_settings["timeout_seconds"], 75)
+
+    def test_vision_parent_budget_covers_two_provider_attempts_and_overhead(self):
+        self.assertEqual(_vision_process_timeout_seconds(75), 165.0)
+
+    def test_formal_vision_configuration_rejects_http_provider_endpoint(self):
+        with patch.dict(
+            os.environ,
+            {
+                "CHEJIN_RPA_MODE": "real",
+                "ANTHROPIC_AUTH_TOKEN": "unit-only",
+                "CUSTOMER_IMAGE_UNDERSTANDING_BASE_URL": (
+                    "http://aiself.vip/v1"
+                ),
+            },
+            clear=False,
+        ):
+            status = vision_configuration_status()
+
+        self.assertFalse(status["ready"])
+        self.assertIn(
+            "CUSTOMER_IMAGE_UNDERSTANDING_BASE_URL_HTTPS_REQUIRED",
+            status["missing_configuration"],
+        )
 
     def test_copy_menu_requires_local_menu_cluster_and_ignores_chat_copy_text(self):
         ocr_items = [
@@ -881,6 +918,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
         class Clipboard:
             values = [10, 10, 10, 11, 11]
             calls = 0
+            cleared_sequences = []
 
             def sequence_number(self):
                 self.calls += 1
@@ -888,6 +926,10 @@ class C2VisionIntegrationTests(unittest.TestCase):
 
             def read_current_bitmap(self):
                 return image.crop((420, 180, 650, 320))
+
+            def clear_current(self, expected_sequence):
+                self.cleared_sequences.append(expected_sequence)
+                return {"ok": True, "reason": "clipboard_image_cleared"}
 
         actions = Actions()
         clipboard = Clipboard()
@@ -940,7 +982,59 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertEqual(actions.right_click_count, 1)
         self.assertEqual(actions.copy_click_count, 1)
         self.assertGreaterEqual(clipboard.calls, 5)
+        self.assertEqual(clipboard.cleared_sequences, [11])
+        self.assertTrue(result["transaction"]["clipboard_cleared"])
         result["_ephemeral_clipboard_image"].release()
+
+        class FailingClipboard:
+            values = [20, 21, 21]
+
+            def sequence_number(self):
+                return self.values.pop(0) if self.values else 21
+
+            def read_current_bitmap(self):
+                return image.crop((420, 180, 650, 320))
+
+            @staticmethod
+            def clear_current(_expected_sequence):
+                return {
+                    "ok": False,
+                    "reason": "clipboard_clear_failed",
+                }
+
+        failed_ports = VisionHostPorts(
+            rpa_lease=ports.rpa_lease,
+            conversation_target=ports.conversation_target,
+            window_frame=ports.window_frame,
+            ui_action=actions,
+            clipboard=FailingClipboard(),
+        )
+        with patch.object(
+            transaction,
+            "find_copy_menu_item",
+            return_value={
+                "x": 620,
+                "y": 320,
+                "bounds": [600, 300, 650, 340],
+            },
+        ):
+            failed = transaction.acquire_current_image_via_ports(
+                failed_ports,
+                {
+                    "sender_role": "customer",
+                    "bubble_rect": [420, 180, 650, 320],
+                    "image_physical_anchor": observed_images[0][
+                        "image_physical_anchor"
+                    ],
+                },
+            )
+        self.assertFalse(failed["ok"])
+        self.assertEqual(
+            failed["reason"],
+            "C2_IMAGE_CLIPBOARD_CLEAR_FAILED",
+        )
+        self.assertEqual(failed["action_phase"], "confirmed")
+        self.assertNotIn("_ephemeral_clipboard_image", failed)
         image.close()
 
     def test_two_visible_images_are_reconfirmed_and_copied_by_requested_slot(self):
@@ -971,6 +1065,9 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 return image.crop(
                     tuple(actions.right_click_bounds[-1])
                 )
+
+            def clear_current(self, expected_sequence):
+                return {"ok": expected_sequence == self.sequence}
 
         clipboard = Clipboard()
         actions = Actions()
@@ -1115,6 +1212,9 @@ class C2VisionIntegrationTests(unittest.TestCase):
 
             def read_current_bitmap(self):
                 return target_pattern.copy()
+
+            def clear_current(self, expected_sequence):
+                return {"ok": expected_sequence == self.sequence}
 
         clipboard = Clipboard()
         right_click_calls: list[dict] = []
@@ -1427,6 +1527,9 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     if self.reads == 1
                     else bubble_image.copy()
                 )
+
+            def clear_current(self, expected_sequence):
+                return {"ok": expected_sequence == 21}
 
         frames = Frames()
         actions = Actions()
@@ -1777,7 +1880,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
         )
         self.assertIsNone(status["config"])
 
-    def test_non_same_row_role_is_ignored_without_vision(self):
+    def test_non_same_row_role_is_unconfirmed_without_vision(self):
         result = process_image_slot(
             observation=self.image_observation(role_source="unknown"),
             remark_code="CJTEST01",
@@ -1785,8 +1888,8 @@ class C2VisionIntegrationTests(unittest.TestCase):
             config={"customer_image_understanding": {"enabled": True}},
         )
 
-        self.assertEqual(result["state"], "ignored")
-        self.assertEqual(result["reason"], "image_same_row_avatar_unconfirmed")
+        self.assertEqual(result["state"], "unconfirmed")
+        self.assertEqual(result["reason"], "MESSAGE_IDENTITY_UNCONFIRMED")
         self.assertFalse(result["diagnostics"]["image_persisted"])
 
     def test_blocking_provider_process_is_killed_when_authorization_is_cancelled(self):
@@ -1924,9 +2027,81 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "reason": "vision_ready",
                     "customer_image_understanding": {
                         "schema_version": 1,
+                        "enabled": True,
+                        "applied": True,
+                        "adoptable": True,
+                        "reason": "vision_ready",
+                        "provider": "https://aiself.vip/v1",
+                        "request_style": "anthropic_messages_vision",
+                        "model": "doubao-seed-2-0-lite-260428",
                         "vision_summary": "客户发来一张车辆外观图",
+                        "image_ocr_text": [],
+                        "classification": {
+                            "is_vehicle": True,
+                            "vehicle_confidence": 0.9,
+                            "unknown": False,
+                            "non_vehicle_reason": "",
+                        },
+                        "entities": {
+                            "brand_candidates": [],
+                            "series_candidates": [],
+                            "model_clues": [],
+                            "body_type": "",
+                            "color": "",
+                            "year_clues": [],
+                        },
+                        "intent_hints": {
+                            "wants_catalog_match": False,
+                            "wants_similar_recommendation": False,
+                            "wants_general_chat": False,
+                            "needs_clarification": False,
+                        },
+                        "bridge": {
+                            "normalized_vehicle_query": "",
+                            "brain_mode": "",
+                            "catalog_lookup_mode": "",
+                        },
+                        "catalog_alignment": {
+                            "selected_product_id": "",
+                            "selected_product_name": "",
+                            "alignment_confidence": 0.0,
+                            "alignment_reason": "",
+                            "uncertain_reason": "",
+                        },
+                        "audit": {
+                            "latency_ms": 10,
+                            "used_fallback": False,
+                            "provider_error": "",
+                            "retry_error": "",
+                            "retry_after_non_json": False,
+                            "catalog_identity_candidate_count": 0,
+                        },
                     },
-                    "visual_bridge_input": {"summary": "车辆外观图"},
+                    "visual_bridge_input": {
+                        "schema_version": 1,
+                        "present": True,
+                        "vision_summary": "客户发来一张车辆外观图",
+                        "classification": {
+                            "is_vehicle": True,
+                            "vehicle_confidence": 0.9,
+                            "unknown": False,
+                        },
+                        "catalog_assist": {
+                            "normalized_vehicle_query": "",
+                            "candidate_names": [],
+                            "exact_candidate_name": "",
+                        },
+                        "intent_hints": {
+                            "wants_catalog_match": False,
+                            "wants_similar_recommendation": False,
+                            "needs_clarification": False,
+                        },
+                        "vehicle_image_retrieval": {
+                            "matched": False,
+                            "candidate_names": [],
+                        },
+                        "source_message_ids": ["memory-current-image"],
+                    },
                     "clipboard_transaction": {"image_sha256": "a" * 64},
                 }
 
@@ -2213,6 +2388,176 @@ class C2VisionIntegrationTests(unittest.TestCase):
         finally:
             payload.release()
 
+    def test_high_entropy_1080p_source_is_compressed_before_provider_limit(self):
+        from apps.wechat_ai_customer_service.optional_plugins.vision.clipboard_payload import (
+            ephemeral_image_from_memory,
+        )
+        from apps.wechat_ai_customer_service.optional_plugins.vision.understanding.provider import (
+            MAX_IMAGE_PAYLOAD_BYTES,
+        )
+
+        source = Image.frombytes(
+            "RGB",
+            (1920, 1080),
+            random.Random(20260731).randbytes(1920 * 1080 * 3),
+        )
+        encoded = io.BytesIO()
+        try:
+            source.save(encoded, format="PNG", compress_level=0)
+            source_bytes = encoded.getvalue()
+            self.assertGreater(len(source_bytes), MAX_IMAGE_PAYLOAD_BYTES)
+            payload = ephemeral_image_from_memory(
+                source_bytes,
+                mime_type="image/png",
+            )
+        finally:
+            source.close()
+            encoded.close()
+
+        self.assertIsNotNone(payload)
+        try:
+            self.assertLessEqual(
+                len(payload.image_bytes),
+                MAX_IMAGE_PAYLOAD_BYTES,
+            )
+            self.assertLessEqual(max(payload.width, payload.height), 2048)
+        finally:
+            payload.release()
+
+    def test_windows_1080p_dib_is_decoded_before_provider_compression(self):
+        from apps.wechat_ai_customer_service.optional_plugins.vision.clipboard_payload import (
+            _decode_native_clipboard_value,
+            _encode_ephemeral_image,
+        )
+        from apps.wechat_ai_customer_service.optional_plugins.vision.understanding.provider import (
+            MAX_IMAGE_PAYLOAD_BYTES,
+        )
+
+        source = Image.frombytes(
+            "RGB",
+            (1920, 1080),
+            random.Random(31072026).randbytes(1920 * 1080 * 3),
+        )
+        encoded = io.BytesIO()
+        decoded = None
+        try:
+            source.save(encoded, format="BMP")
+            dib = encoded.getvalue()[14:]
+            self.assertGreater(len(dib), MAX_IMAGE_PAYLOAD_BYTES)
+            decoded = _decode_native_clipboard_value(
+                format_id=8,
+                format_name="",
+                value=dib,
+            )
+            self.assertIsNotNone(decoded)
+            payload = _encode_ephemeral_image(decoded)
+        finally:
+            source.close()
+            encoded.close()
+            if decoded is not None:
+                decoded.close()
+
+        self.assertIsNotNone(payload)
+        try:
+            self.assertLessEqual(
+                len(payload.image_bytes),
+                MAX_IMAGE_PAYLOAD_BYTES,
+            )
+        finally:
+            payload.release()
+
+    def test_shared_image_schema_rejects_string_boolean_and_nonfinite_confidence(self):
+        fixture = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts"
+                / "examples"
+                / "c2_v3_mixed_roundtrip.json"
+            ).read_text(encoding="utf-8")
+        )
+        image_observation = next(
+            item
+            for item in fixture["omniauto_output"]["observations"]
+            if item["message_type"] == "image"
+        )
+        understanding = json.loads(
+            json.dumps(
+                image_observation["customer_image_understanding"]
+            )
+        )
+        understanding["classification"]["is_vehicle"] = "false"
+        errors = validate_image_result_schema(
+            understanding,
+            "customer_image_understanding_v1",
+        )
+        self.assertTrue(
+            any("classification.is_vehicle" in item for item in errors),
+            errors,
+        )
+
+        understanding["classification"]["is_vehicle"] = False
+        understanding["classification"]["vehicle_confidence"] = float("nan")
+        errors = validate_image_result_schema(
+            understanding,
+            "customer_image_understanding_v1",
+        )
+        self.assertTrue(
+            any("non-finite" in item for item in errors),
+            errors,
+        )
+
+    def test_strict_provider_failure_does_not_expose_raw_error_body(self):
+        from apps.wechat_ai_customer_service.optional_plugins.vision.clipboard_payload import (
+            ephemeral_image_from_memory,
+        )
+
+        source = Image.new("RGB", (64, 48), "white")
+        payload = ephemeral_image_from_memory(source)
+        source.close()
+        self.assertIsNotNone(payload)
+        try:
+            with patch(
+                "apps.wechat_ai_customer_service.optional_plugins.vision."
+                "understanding.service."
+                "run_customer_image_understanding_provider",
+                return_value={
+                    "ok": False,
+                    "status": 401,
+                    "error": "secret provider response body",
+                },
+            ):
+                result = maybe_run_customer_image_understanding(
+                    config={
+                        "_chejin_c2_strict_adapter": True,
+                        "_chejin_image_contract": image_contract(),
+                        "customer_image_understanding": {
+                            "enabled": True,
+                            "api_key": "unit-only",
+                            "base_url": DEFAULT_VISION_BASE_URL,
+                            "model": DEFAULT_VISION_MODEL,
+                            "request_style": DEFAULT_VISION_REQUEST_STYLE,
+                        },
+                    },
+                    customer_text="请看图",
+                    image_assets=[
+                        {
+                            "message_id": "image-provider-error",
+                            "message_type": "image",
+                        }
+                    ],
+                    source_reason="strict_provider_error_test",
+                    image_payloads=[payload],
+                    ephemeral_clipboard=True,
+                )
+        finally:
+            payload.release()
+
+        self.assertEqual(
+            result["audit"]["provider_error"],
+            "VISION_PROVIDER_AUTH_FAILED",
+        )
+        self.assertNotIn("secret provider response body", json.dumps(result))
+
     def test_encoded_memory_image_rejects_non_allowlisted_format(self):
         from apps.wechat_ai_customer_service.optional_plugins.vision.clipboard_payload import (
             ephemeral_image_from_memory,
@@ -2399,6 +2744,43 @@ class C2VisionIntegrationTests(unittest.TestCase):
 
         self.assertEqual(merged, [text_message])
         self.assertEqual(errors, [])
+
+    def test_structural_detector_returns_nine_visible_images_without_silent_cap(self):
+        screenshot = Image.new("RGB", (1200, 2300), (242, 242, 242))
+        draw = ImageDraw.Draw(screenshot)
+        for index in range(9):
+            top = 170 + index * 220
+            for y in range(top, top + 45, 5):
+                for x in range(380, 425, 5):
+                    draw.rectangle(
+                        (x, y, x + 4, y + 4),
+                        fill=((x + y) % 200, 80, 160),
+                    )
+            for y in range(top, top + 120, 5):
+                for x in range(495, 650, 5):
+                    draw.rectangle(
+                        (x, y, x + 4, y + 4),
+                        fill=((x * 3 + y) % 255, (x + y * 2) % 255, 80),
+                    )
+        try:
+            candidates = detect_visual_image_bubbles(
+                screenshot,
+                messages=[],
+                side_filter="all",
+            )
+            self.assertEqual(len(candidates), 9)
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "C2_IMAGE_OBSERVATION_TRUNCATED",
+            ):
+                detect_visual_image_bubbles(
+                    screenshot,
+                    messages=[],
+                    side_filter="all",
+                    max_images=8,
+                )
+        finally:
+            screenshot.close()
 
     def test_structural_image_bounds_exclude_avatar_before_shared_role_resolution(self):
         screenshot = Image.new("RGB", (974, 853), (242, 242, 242))
