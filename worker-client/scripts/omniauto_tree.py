@@ -4,6 +4,11 @@ import hashlib
 import json
 from pathlib import Path
 
+from client_delivery_policy import (
+    is_client_forbidden_path,
+    load_client_exclude_paths,
+)
+
 
 EXCLUDED_PARTS = {
     ".git",
@@ -22,9 +27,19 @@ ALLOWED_DATA_PREFIXES = (
 )
 
 
-def include_file(root: Path, path: Path) -> bool:
+def include_file(
+    root: Path,
+    path: Path,
+    *,
+    client_exclude_paths: tuple[str, ...] = (),
+) -> bool:
     rel = path.relative_to(root)
     rel_name = rel.as_posix()
+    if client_exclude_paths and is_client_forbidden_path(
+        rel_name,
+        client_exclude_paths,
+    ):
+        return False
     if any(part in EXCLUDED_PARTS for part in rel.parts):
         return False
     if "data" in rel.parts and not any(
@@ -38,13 +53,26 @@ def include_file(root: Path, path: Path) -> bool:
     return True
 
 
-def tree_manifest(root: Path) -> dict[str, object]:
+def tree_manifest(
+    root: Path,
+    *,
+    client_delivery: bool = False,
+) -> dict[str, object]:
     resolved = root.resolve()
+    client_exclude_paths = (
+        load_client_exclude_paths(resolved) if client_delivery else ()
+    )
     files = sorted(
         (
             path
             for path in resolved.rglob("*")
-            if path.is_file() and not path.is_symlink() and include_file(resolved, path)
+            if path.is_file()
+            and not path.is_symlink()
+            and include_file(
+                resolved,
+                path,
+                client_exclude_paths=client_exclude_paths,
+            )
         ),
         key=lambda path: path.relative_to(resolved).as_posix(),
     )
@@ -98,8 +126,8 @@ def load_source_provenance(root: Path) -> dict[str, object]:
 
 
 def verify_same_tree(source_root: Path, packaged_root: Path) -> dict[str, object]:
-    source = tree_manifest(source_root)
-    packaged = tree_manifest(packaged_root)
+    source = tree_manifest(source_root, client_delivery=True)
+    packaged = tree_manifest(packaged_root, client_delivery=True)
     if source["tree_sha256"] != packaged["tree_sha256"]:
         source_files = {
             str(item["path"]): str(item["sha256"])

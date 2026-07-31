@@ -7,6 +7,10 @@ import sys
 ROOT = Path.cwd()
 sys.path.insert(0, str(ROOT / "scripts"))
 from build_source import resolve_contract_path
+from client_delivery_policy import (
+    is_client_forbidden_path,
+    load_client_exclude_paths,
+)
 
 OMNIAUTO_RPA_SOURCE = Path(os.environ.get("CHEJIN_OMNIAUTO_RPA_SOURCE") or ROOT / "omniauto-rpa")
 OMNIAUTO_SIDECAR = OMNIAUTO_RPA_SOURCE / "apps" / "wechat_ai_customer_service" / "adapters" / "wechat_win32_ocr_sidecar.py"
@@ -32,11 +36,14 @@ ALLOWED_OMNIAUTO_DATA_PREFIXES = (
     "apps/wechat_ai_customer_service/data/tenants/chejin/product_master/",
     "apps/wechat_ai_customer_service/data/tenants/chejin/rag_index/",
 )
+OMNIAUTO_CLIENT_EXCLUDES = load_client_exclude_paths(OMNIAUTO_RPA_SOURCE)
 
 
 def include_omniauto_file(path):
     rel = path.relative_to(OMNIAUTO_RPA_SOURCE)
     rel_name = rel.as_posix()
+    if is_client_forbidden_path(rel_name, OMNIAUTO_CLIENT_EXCLUDES):
+        return False
     if any(part in EXCLUDED_OMNIAUTO_PARTS for part in rel.parts):
         return False
     if "data" in rel.parts and not any(

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import importlib.util
+import json
 import shutil
 import subprocess
 import sys
@@ -12,6 +14,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from build_policy import BuildPolicyError, validate_build_policy
+from client_delivery_policy import (
+    forbidden_tree_entries,
+    is_client_forbidden_path,
+    load_client_exclude_paths,
+)
 from build_source import (
     BuildSourceError,
     resolve_contract_path,
@@ -26,6 +33,19 @@ from tests.contract_artifacts import resolve_contract_artifact
 
 
 class PackagingScriptsTest(unittest.TestCase):
+    @staticmethod
+    def _load_source_package_module():
+        path = ROOT / "scripts" / "build-source-package.py"
+        spec = importlib.util.spec_from_file_location(
+            "chejin_build_source_package_test",
+            path,
+        )
+        if spec is None or spec.loader is None:
+            raise AssertionError("source package module unavailable")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
     def test_powershell_param_block_precedes_executable_statements(self):
         scripts = [
             ROOT / "scripts" / "build-windows.ps1",
@@ -65,6 +85,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("packaged_omniauto_tree_sha256", text)
         self.assertIn("import uiautomation", text)
         self.assertIn("pyi-archive_viewer.exe -l -r", text)
+        self.assertIn("client_delivery_policy.py", text)
+        self.assertIn("client_delivery_boundary_check", text)
         self.assertIn("最终 exe 未包含 Windows UIA 诊断所需的 uiautomation", text)
         self.assertIn('"--omniauto-sidecar", "--help"', text)
         self.assertIn("最终 exe 无法启动内置 OmniAuto sidecar", text)
@@ -154,6 +176,24 @@ class PackagingScriptsTest(unittest.TestCase):
                     encoding="utf-8",
                 )
                 (base / "apps" / "one.py").write_text("one", encoding="utf-8")
+                boundary_manifest = (
+                    base
+                    / "apps"
+                    / "wechat_ai_customer_service"
+                    / "deploy"
+                    / "client_source_manifest.json"
+                )
+                boundary_manifest.parent.mkdir(parents=True)
+                boundary_manifest.write_text(
+                    json.dumps(
+                        {
+                            "exclude_paths": [
+                                "apps/wechat_ai_customer_service/vps_admin/"
+                            ]
+                        }
+                    ),
+                    encoding="utf-8",
+                )
 
             verified = verify_same_tree(source, packaged)
             self.assertEqual(
@@ -377,8 +417,86 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('(str(CONTRACT_PATH), "contracts")', text)
         self.assertIn("EXCLUDED_OMNIAUTO_PARTS", text)
         self.assertIn("ALLOWED_OMNIAUTO_DATA_PREFIXES", text)
+        self.assertIn("load_client_exclude_paths", text)
+        self.assertIn("is_client_forbidden_path", text)
         self.assertIn('"uiautomation"', text)
         self.assertNotIn('(str(OMNIAUTO_RPA_SOURCE), "omniauto-rpa")', text)
+
+    def test_client_delivery_policy_rejects_actual_server_private_paths(self):
+        omniauto_root = ROOT / "omniauto-rpa"
+        excludes = load_client_exclude_paths(omniauto_root)
+
+        self.assertTrue(
+            is_client_forbidden_path(
+                "apps/wechat_ai_customer_service/vps_admin/app.py",
+                excludes,
+            )
+        )
+        self.assertTrue(
+            is_client_forbidden_path(
+                "apps/wechat_ai_customer_service/deploy/aliyun1/"
+                "vps_admin_control_plane.enc.json",
+                excludes,
+            )
+        )
+        self.assertFalse(
+            is_client_forbidden_path(
+                "apps/wechat_ai_customer_service/adapters/"
+                "wechat_win32_ocr_sidecar.py",
+                excludes,
+            )
+        )
+
+    def test_source_zip_member_scan_rejects_server_private_paths(self):
+        module = self._load_source_package_module()
+        private_member = (
+            "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/"
+            "vps_admin/app.py"
+        )
+        allowed_member = (
+            "worker-client/omniauto-rpa/apps/wechat_ai_customer_service/"
+            "adapters/wechat_win32_ocr_sidecar.py"
+        )
+
+        forbidden = module._forbidden_entries(
+            [private_member, allowed_member]
+        )
+
+        self.assertEqual(forbidden, [private_member])
+
+    def test_final_package_tree_scan_detects_server_private_files(self):
+        excludes = load_client_exclude_paths(ROOT / "omniauto-rpa")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            private_file = (
+                root
+                / "apps"
+                / "wechat_ai_customer_service"
+                / "deploy"
+                / "aliyun1"
+                / "control_plane.enc.json"
+            )
+            allowed_file = (
+                root
+                / "apps"
+                / "wechat_ai_customer_service"
+                / "adapters"
+                / "sidecar.py"
+            )
+            private_file.parent.mkdir(parents=True)
+            allowed_file.parent.mkdir(parents=True)
+            private_file.write_text("private", encoding="utf-8")
+            allowed_file.write_text("allowed", encoding="utf-8")
+
+            forbidden = forbidden_tree_entries(root, excludes)
+
+        self.assertEqual(
+            forbidden,
+            [
+                "apps/wechat_ai_customer_service/deploy/aliyun1/"
+                "control_plane.enc.json"
+            ],
+        )
 
     def test_windows_requirements_pin_uiautomation_for_diagnostics(self):
         text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
