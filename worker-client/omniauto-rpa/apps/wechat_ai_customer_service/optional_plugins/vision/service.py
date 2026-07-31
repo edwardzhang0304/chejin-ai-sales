@@ -58,6 +58,7 @@ class VisionService:
             compact_customer_image_brain_bridge,
         )
         from .projection.message import build_brain_safe_image_proxy_messages
+        from .result_schema import image_understanding_completed
 
         acquisition = acquire_current_image_via_ports(self._ports, data)
         if not acquisition.get("ok"):
@@ -99,8 +100,8 @@ class VisionService:
                         ),
                     }
                 understanding = dict(understanding) if isinstance(understanding, dict) else {}
-                understanding.setdefault("applied", bool(understanding.get("vision_summary")))
-                understanding.setdefault("adoptable", bool(understanding.get("vision_summary")))
+                understanding.setdefault("applied", False)
+                understanding.setdefault("adoptable", False)
                 understanding.setdefault("reason", "vision_provider_port_ready")
             else:
                 from .understanding.service import maybe_run_customer_image_understanding
@@ -122,6 +123,7 @@ class VisionService:
                 {},
                 source_reason="vision_host_ports_current_transaction",
             )
+            understanding_schema: dict[str, Any] = {}
             if self._config.get("_chejin_c2_strict_adapter"):
                 from .result_schema import (
                     image_result_schema,
@@ -166,6 +168,10 @@ class VisionService:
                             acquisition.get("transaction") or {}
                         ),
                     }
+            understanding_completed = image_understanding_completed(
+                understanding,
+                understanding_schema,
+            )
             occurrence = acquisition.get("occurrence") if isinstance(acquisition.get("occurrence"), dict) else {}
             proxies = (
                 build_brain_safe_image_proxy_messages(
@@ -178,8 +184,12 @@ class VisionService:
             )
             result = {
                 "enabled": True,
-                "applied": bool(understanding.get("applied") or understanding.get("vision_summary")),
-                "adoptable": bool(direction == "customer" and (understanding.get("adoptable") or understanding.get("vision_summary"))),
+                "applied": understanding_completed,
+                "adoptable": bool(
+                    direction == "customer"
+                    and understanding_completed
+                    and understanding.get("adoptable") is True
+                ),
                 "context_only": direction == "self",
                 "reason": str(understanding.get("reason") or "vision_host_ports_ready"),
                 "direction": direction,

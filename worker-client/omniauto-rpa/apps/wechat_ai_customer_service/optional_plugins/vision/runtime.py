@@ -283,9 +283,21 @@ def maybe_capture_self_image_context(
         releaser = getattr(ephemeral_image, "release", None)
         if callable(releaser):
             releaser()
+    from .result_schema import (
+        image_result_schema,
+        image_understanding_completed,
+    )
+
+    completed = image_understanding_completed(
+        understanding,
+        image_result_schema(
+            config,
+            "customer_image_understanding_v1",
+        ),
+    )
     return {
         "enabled": True,
-        "applied": bool(understanding.get("applied") or understanding.get("vision_summary")),
+        "applied": completed,
         "context_only": True,
         "reason": str(understanding.get("reason") or "self_image_context_ready"),
         "clipboard_transaction": public_transaction,

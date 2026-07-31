@@ -234,53 +234,74 @@ def fingerprints_match(
 ) -> bool:
     if not expected or not actual:
         return False
-    expected_variants = [
-        item
-        for item in (expected.get("variants") or [expected])
-        if isinstance(item, dict)
-    ]
-    actual_variants = [
-        item
-        for item in (actual.get("variants") or [actual])
-        if isinstance(item, dict)
-    ]
-    for expected_variant in expected_variants:
-        for actual_variant in actual_variants:
-            if str(expected_variant.get("orientation") or "") != str(
-                actual_variant.get("orientation") or ""
-            ):
-                continue
-            try:
-                expected_ratio = float(
-                    expected_variant.get("aspect_ratio") or 0.0
-                )
-                actual_ratio = float(
-                    actual_variant.get("aspect_ratio") or 0.0
-                )
-            except (TypeError, ValueError):
-                continue
-            if expected_ratio <= 0.0 or actual_ratio <= 0.0:
-                continue
-            if (
-                abs(expected_ratio - actual_ratio)
-                / max(expected_ratio, actual_ratio)
-                > MAX_ASPECT_RATIO_RELATIVE_ERROR
-            ):
-                continue
-            if (
-                _color_grid_distance(
-                    expected_variant.get("color_grid"),
-                    actual_variant.get("color_grid"),
-                )
-                > MAX_COLOR_GRID_AVG_DISTANCE
-            ):
-                continue
-            try:
-                if _hamming64(
-                    int(expected_variant.get("dhash64") or 0),
-                    int(actual_variant.get("dhash64") or 0),
-                ) <= MAX_DHASH_DISTANCE:
-                    return True
-            except (TypeError, ValueError):
-                continue
+
+    def variants_by_kind(
+        fingerprint: dict[str, Any],
+    ) -> dict[str, dict[str, Any]]:
+        variants = [
+            item
+            for item in (fingerprint.get("variants") or [])
+            if isinstance(item, dict)
+        ]
+        if not variants:
+            variants = [{"kind": "full", **fingerprint}]
+        return {
+            str(item.get("kind") or "full"): item
+            for item in variants
+        }
+
+    expected_by_kind = variants_by_kind(expected)
+    actual_by_kind = variants_by_kind(actual)
+    pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    expected_full = expected_by_kind.get("full")
+    actual_full = actual_by_kind.get("full")
+    if expected_full is not None:
+        for kind, actual_variant in actual_by_kind.items():
+            if kind == "full" or kind.startswith("center_"):
+                pairs.append((expected_full, actual_variant))
+    expected_trimmed = expected_by_kind.get("uniform_padding_trimmed")
+    if expected_trimmed is not None and actual_full is not None:
+        pairs.append((expected_trimmed, actual_full))
+
+    # Matching is directional: the expected screenshot thumbnail may be a
+    # centered crop of the clipboard original, or may contain removable
+    # padding.  Cropping both images would discard their distinguishing edges.
+    for expected_variant, actual_variant in pairs:
+        if str(expected_variant.get("orientation") or "") != str(
+            actual_variant.get("orientation") or ""
+        ):
+            continue
+        try:
+            expected_ratio = float(
+                expected_variant.get("aspect_ratio") or 0.0
+            )
+            actual_ratio = float(
+                actual_variant.get("aspect_ratio") or 0.0
+            )
+        except (TypeError, ValueError):
+            continue
+        if expected_ratio <= 0.0 or actual_ratio <= 0.0:
+            continue
+        if (
+            abs(expected_ratio - actual_ratio)
+            / max(expected_ratio, actual_ratio)
+            > MAX_ASPECT_RATIO_RELATIVE_ERROR
+        ):
+            continue
+        if (
+            _color_grid_distance(
+                expected_variant.get("color_grid"),
+                actual_variant.get("color_grid"),
+            )
+            > MAX_COLOR_GRID_AVG_DISTANCE
+        ):
+            continue
+        try:
+            if _hamming64(
+                int(expected_variant.get("dhash64") or 0),
+                int(actual_variant.get("dhash64") or 0),
+            ) <= MAX_DHASH_DISTANCE:
+                return True
+        except (TypeError, ValueError):
+            continue
     return False

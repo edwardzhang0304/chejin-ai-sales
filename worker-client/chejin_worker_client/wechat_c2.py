@@ -1006,26 +1006,12 @@ def apply_image_terminal_result(observation: dict[str, Any], result: dict[str, A
         return enriched
     understanding = _project_customer_image_understanding(result.get("customer_image_understanding") or {})
     bridge = _project_visual_bridge_input(result.get("visual_bridge_input") or {})
-    if not isinstance(understanding, dict) or int(understanding.get("schema_version") or 0) != 1:
-        enriched["item_state"] = "failed"
-        enriched["image_processing_reason"] = "image_understanding_contract_invalid"
-        return enriched
     transaction = result.get("transaction") if isinstance(result.get("transaction"), dict) else {}
     image_sha256 = str(transaction.get("image_sha256") or "").strip().lower()
     if image_sha256:
         audit = understanding.get("audit") if isinstance(understanding.get("audit"), dict) else {}
         understanding["audit"] = {**audit, "image_sha256": image_sha256}
     summary = str(understanding.get("vision_summary") or "").strip()
-    if not summary:
-        ocr_text = understanding.get("image_ocr_text")
-        if isinstance(ocr_text, list):
-            summary = " ".join(str(item).strip() for item in ocr_text if str(item).strip())
-        elif isinstance(ocr_text, str):
-            summary = ocr_text.strip()
-    if not summary:
-        enriched["item_state"] = "failed"
-        enriched["image_processing_reason"] = "image_understanding_text_missing"
-        return enriched
     enriched["content_clean"] = summary
     enriched["customer_image_understanding"] = understanding
     enriched["visual_bridge_input"] = bridge

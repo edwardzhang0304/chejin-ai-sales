@@ -109,17 +109,6 @@ def classify_action_result(
                 or nested_send.get("physical_send_triggered") is True
             )
         )
-    elif action == "image" and isinstance(
-        raw.get("customer_image_understanding"), dict
-    ):
-        understanding = raw["customer_image_understanding"]
-        business_confirmed = bool(
-            business_state == "completed"
-            and (
-                understanding.get("applied") is True
-                or str(understanding.get("vision_summary") or "").strip()
-            )
-        )
     else:
         business_confirmed = explicit_business_confirmation is True
 

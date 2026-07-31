@@ -255,20 +255,23 @@ def _acquire_current_image_via_ports(
         0,
         min(1, int(data.get("_clipboard_fingerprint_retry_attempt") or 0)),
     )
+    terminal_result: dict[str, Any] | None = None
 
     def fail(reason: str, **extra: Any) -> dict[str, Any]:
+        nonlocal terminal_result
         transaction = dict(extra.pop("transaction", {}) or {})
         transaction.setdefault("action_phase", action_phase)
         transaction.setdefault(
             "clipboard_fingerprint_retry_count",
             retry_attempt,
         )
-        return _failure(
+        terminal_result = _failure(
             reason,
             action_phase=action_phase,
             transaction=transaction,
             **extra,
         )
+        return terminal_result
 
     required = (
         ports.conversation_target,
@@ -306,9 +309,12 @@ def _acquire_current_image_via_ports(
     def clear_owned_clipboard() -> dict[str, Any]:
         nonlocal owned_clipboard_sequence
         if owned_clipboard_sequence is None:
-            return {"ok": True, "reason": "clipboard_not_owned"}
+            return {
+                "ok": True,
+                "cleared": False,
+                "reason": "clipboard_not_owned",
+            }
         sequence = int(owned_clipboard_sequence)
-        owned_clipboard_sequence = None
         clear_current = getattr(ports.clipboard, "clear_current", None)
         if not callable(clear_current):
             return {
@@ -323,11 +329,27 @@ def _acquire_current_image_via_ports(
                 "reason": "clipboard_clear_exception",
                 "error_type": type(exc).__name__,
             }
-        return (
+        normalized = (
             dict(result)
             if isinstance(result, dict)
             else {"ok": False, "reason": "clipboard_clear_invalid_result"}
         )
+        reason = str(normalized.get("reason") or "")
+        if normalized.get("ok") is True:
+            owned_clipboard_sequence = None
+            normalized.setdefault("cleared", True)
+            return normalized
+        if reason in {
+            "clipboard_sequence_not_current_for_clear",
+            "clipboard_sequence_changed_before_clear",
+        }:
+            owned_clipboard_sequence = None
+            return {
+                "ok": True,
+                "cleared": False,
+                "reason": "clipboard_replaced_by_external",
+            }
+        return normalized
 
     try:
         with lease:
@@ -555,8 +577,16 @@ def _acquire_current_image_via_ports(
                     candidate_sequence is not None
                     and int(candidate_sequence) != int(sequence_before)
                 ):
-                    if owned_clipboard_sequence is None:
-                        owned_clipboard_sequence = int(candidate_sequence)
+                    prove_ownership = getattr(
+                        ports.clipboard,
+                        "claim_copy_ownership",
+                        None,
+                    )
+                    ownership = (
+                        prove_ownership(int(candidate_sequence))
+                        if callable(prove_ownership)
+                        else {"owned": True, "reason": "test_port_bitmap_proof"}
+                    )
                     candidate_payload = ephemeral_image_from_memory(
                         ports.clipboard.read_current_bitmap(),
                         mime_type=str(data.get("mime_type") or "image/png"),
@@ -564,7 +594,25 @@ def _acquire_current_image_via_ports(
                     )
                     if candidate_payload is None:
                         clipboard_reason = "clipboard_current_content_not_bitmap"
+                        if (
+                            isinstance(ownership, dict)
+                            and ownership.get("owned") is True
+                        ):
+                            owned_clipboard_sequence = int(
+                                candidate_sequence
+                            )
                     else:
+                        if (
+                            not isinstance(ownership, dict)
+                            or ownership.get("owned") is not True
+                        ):
+                            candidate_payload.release()
+                            clipboard_reason = str(
+                                (ownership or {}).get("reason")
+                                or "clipboard_copy_ownership_unconfirmed"
+                            )
+                            time.sleep(poll_interval)
+                            continue
                         verified_sequence = ports.clipboard.sequence_number()
                         if (
                             verified_sequence is not None
@@ -573,6 +621,12 @@ def _acquire_current_image_via_ports(
                             payload = candidate_payload
                             acquired_payload = candidate_payload
                             sequence_after = int(candidate_sequence)
+                            # A stable sequence plus a successfully decoded
+                            # bitmap proves this copy generation belongs to
+                            # the current transaction. Sequence alone does not.
+                            owned_clipboard_sequence = int(
+                                candidate_sequence
+                            )
                             break
                         candidate_payload.release()
                         clipboard_reason = "clipboard_sequence_changed_during_read"
@@ -603,6 +657,21 @@ def _acquire_current_image_via_ports(
                             "clipboard_cleared": False,
                             "clipboard_clear_reason": str(
                                 clear_result.get("reason") or ""
+                            ),
+                        },
+                    )
+                if (
+                    str(clear_result.get("reason") or "")
+                    == "clipboard_replaced_by_external"
+                ):
+                    return fail(
+                        "clipboard_replaced_by_external",
+                        transaction={
+                            "status": "clipboard_replaced_by_external",
+                            "clipboard_image_matches_target": False,
+                            "clipboard_cleared": False,
+                            "clipboard_clear_reason": (
+                                "clipboard_replaced_by_external"
                             ),
                         },
                     )
@@ -707,7 +776,12 @@ def _acquire_current_image_via_ports(
                     "clipboard_content_read": True,
                     "clipboard_image_valid": True,
                     "clipboard_image_matches_target": True,
-                    "clipboard_cleared": bool(clear_result.get("ok")),
+                    "clipboard_cleared": bool(
+                        clear_result.get(
+                            "cleared",
+                            clear_result.get("ok"),
+                        )
+                    ),
                     "clipboard_clear_reason": str(
                         clear_result.get("reason") or ""
                     ),
@@ -733,7 +807,48 @@ def _acquire_current_image_via_ports(
     except Exception as exc:  # noqa: BLE001 - host failures are normalized
         return fail("vision_port_transaction_exception", error_type=type(exc).__name__)
     finally:
-        clear_owned_clipboard()
+        cleanup_result = clear_owned_clipboard()
+        if (
+            cleanup_result.get("ok") is not True
+            and isinstance(terminal_result, dict)
+        ):
+            original_reason = str(terminal_result.get("reason") or "")
+            transaction = dict(
+                terminal_result.get("transaction") or {}
+            )
+            transaction.update(
+                {
+                    "status": "clipboard_clear_failed",
+                    "clipboard_cleared": False,
+                    "clipboard_clear_reason": str(
+                        cleanup_result.get("reason") or ""
+                    ),
+                    "original_failure_reason": original_reason,
+                }
+            )
+            terminal_result.update(
+                {
+                    "reason": "C2_IMAGE_CLIPBOARD_CLEAR_FAILED",
+                    "transaction": transaction,
+                }
+            )
+        elif isinstance(terminal_result, dict):
+            transaction = dict(
+                terminal_result.get("transaction") or {}
+            )
+            if (
+                str(cleanup_result.get("reason") or "")
+                == "clipboard_replaced_by_external"
+            ):
+                transaction.update(
+                    {
+                        "clipboard_cleared": False,
+                        "clipboard_clear_reason": (
+                            "clipboard_replaced_by_external"
+                        ),
+                    }
+                )
+                terminal_result["transaction"] = transaction
         if acquired_payload is not None and not payload_transferred:
             try:
                 acquired_payload.release()
