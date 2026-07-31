@@ -15,7 +15,27 @@ skinparam activity {
 
 start
 
-:C2扫描循环启动前全局检查Vision配置;
+partition "0. 新UI动作前先恢复历史事务" {
+  :按顺序恢复sent_ack Outbox、messages Outbox、\nvoice/image ActionJournal和media Ledger;
+  if (存在未结算事务?) then (是)
+    if (全部action_phase=not_attempted?) then (是)
+      :本地清理未触发动作意图;
+    else (否)
+      :后端返回resume_current_target /\nsettle_without_ui / retry_later;
+      if (resume_current_target?) then (是)
+        :只恢复原会话，不处理其他会话;
+      elseif (settle_without_ui?) then (是)
+        :不打开微信，使用messages/ingest\n以fact_settlement结算;
+        :后端固定不推进状态机、不启动Brain;
+      else (retry_later或未知)
+        :保留原记录并阻断所有新UI动作;
+        stop
+      endif
+    endif
+  endif
+}
+
+:历史事务结算后，检查新C2 UI流程的Vision配置;
 if (API Key/模型/地址完整?) then (是)
   :允许进入C2;
 else (否)
@@ -45,7 +65,7 @@ partition "A. initial_read：只处理新的未转写语音" {
       :复用Outbox中的转写结果;
       :不重复操作微信;
     else (全新语音)
-      :持久化动作意图\naction_phase=not_attempted;
+      :持久化动作意图和replayable_observation\naction_phase=not_attempted;
       :Worker编排OmniAuto RPA;
       :重新定位anchor并右键;
       :右键/点击前先落盘\naction_phase=trigger_attempted\n落盘失败则禁止点击;
@@ -96,7 +116,7 @@ partition "B. final_read：复用最后有效画面" {
   :current_valid_frame成为final_read唯一权威画面;
   :再次确认顶部短码和private;
   :同时识别文字行、语音转写行、图片bubble_rect;
-  if (图片检测或物理锚点生成异常?) then (是)
+  if (图片检测/物理锚点异常或候选被截断?) then (是)
     :C2_IMAGE_OBSERVATION_FAILED;
     :不得伪装成0张图片\n入库和Brain前失败关闭;
     stop
@@ -135,6 +155,13 @@ partition "C. 为每个最终slot生成稳定身份" {
       endif
     else (否)
       :slot标记identity_or_role_unconfirmed;
+      if (row_kind=image?) then (是)
+        :尚未建立业务图片身份;
+        :MESSAGE_IDENTITY_UNCONFIRMED帧级门禁;
+        :零点击/零Vision/零terminal ledger;
+      else (否)
+        :普通消息不入库;
+      endif
       :不自动增强、不触发Brain;
     endif
   endwhile (否)
@@ -168,7 +195,7 @@ partition "D. 查询本地已处理清单，判定新老消息" {
       :OLD_FAILED;
       :失败已经是终态;
       :不自动重试语音或Vision;
-      :customer失败继续保持handoff/AI关闭口径;
+      :未被后续销售事实覆盖的customer/self失败\n继续保持上下文门禁;
 
     elseif (ledger=OUTBOX_WAITING?) then (是)
       :OLD_WAITING_INGEST;
@@ -197,7 +224,7 @@ partition "D. 查询本地已处理清单，判定新老消息" {
       elseif (新图片?) then (是)
         :进入图片增强队列;
       else (证据不足)
-        :ignored / handoff;
+        :帧级身份门禁;
       endif
 
     else (身份冲突)
@@ -227,11 +254,16 @@ partition "E. 只对NEW_IMAGE执行一次Vision" {
         :右键 -> OCR确认菜单 -> 点击复制;
         :复制物理点击前先落盘\naction_phase=trigger_attempted\n落盘失败则禁止点击;
         :剪贴板位图读入内存;
-        :压缩/格式校验/image_hash;
+        :按像素/源内存上限解码;
+        :缩放并自适应编码到Provider上限;
+        :校验image_hash/目标视觉指纹;
+        :清除本次Windows剪贴板内容;
         :Worker进程内调用OmniAuto BuiltinVisionPlugin\n不上传车金后端、不保存本地图片;
+        :HTTPS + 白名单request_style调用真实Vision;
+        :父进程预算覆盖合法的两次模型请求;
         :等待单张图片Vision明确终态;
 
-        if (Vision成功?) then (是)
+        if (Vision成功且共享JSON Schema合法?) then (是)
           :action_phase=confirmed;
           :回填vision_summary/OCR/entities/intent_hints;
           :merge_item_outcomes加入item_state=completed;
@@ -304,7 +336,9 @@ partition "G. Brain上下文与等待期间新增消息" {
     :后端用数据库历史消息 + 本轮新增消息构建完整上下文;
     note right
       Worker不重传旧消息。
-      Brain读取message_events中的旧文字、旧语音、旧图片事实，
+      Brain读取message_events中的旧文字、旧语音、旧图片事实；
+      历史图片保留item_state/error_code、摘要/OCR/实体、
+      中性查询和服务端确认product_id，
       再叠加本轮新增消息。
     end note
     :生成当前batch_id并调用回复AI引擎;
@@ -320,7 +354,7 @@ partition "G. Brain上下文与等待期间新增消息" {
       :执行send_reply/no_action/handoff终态;
     endif
   else (否)
-    :self-only、重复、ignored或customer模态失败;
+    :self-only、重复、身份门禁或\n未被后续销售事实覆盖的customer/self模态失败;
     :不调用Brain或直接handoff;
   endif
 }
