@@ -11,6 +11,10 @@ import zipfile
 
 from build_policy import validate_build_policy
 from build_source import verify_build_source
+from client_delivery_policy import (
+    is_client_forbidden_path,
+    load_client_exclude_paths,
+)
 from omniauto_tree import load_source_provenance, tree_manifest
 
 
@@ -44,6 +48,8 @@ ALLOWED_DATA_PREFIXES = (
     "omniauto-rpa/apps/wechat_ai_customer_service/data/tenants/chejin/product_master/",
     "omniauto-rpa/apps/wechat_ai_customer_service/data/tenants/chejin/rag_index/",
 )
+OMNIAUTO_ROOT = ROOT / "omniauto-rpa"
+OMNIAUTO_CLIENT_EXCLUDES = load_client_exclude_paths(OMNIAUTO_ROOT)
 
 
 def _version_label() -> str:
@@ -56,6 +62,11 @@ def _is_excluded(path: Path) -> bool:
     rel = path.relative_to(ROOT)
     parts = rel.parts
     rel_name = rel.as_posix()
+    if rel_name.startswith("omniauto-rpa/") and is_client_forbidden_path(
+        rel_name[len("omniauto-rpa/") :],
+        OMNIAUTO_CLIENT_EXCLUDES,
+    ):
+        return True
     if "data" in parts and not any(rel_name.startswith(prefix) for prefix in ALLOWED_DATA_PREFIXES):
         return True
     if any(part in EXCLUDE_DIRS for part in parts):
@@ -103,6 +114,13 @@ def _forbidden_entries(names: list[str]) -> list[str]:
             rel = Path(name).relative_to("worker-client")
         parts = rel.parts
         base = parts[-1] if parts else ""
+        rel_name = rel.as_posix()
+        if rel_name.startswith("omniauto-rpa/") and is_client_forbidden_path(
+            rel_name[len("omniauto-rpa/") :],
+            OMNIAUTO_CLIENT_EXCLUDES,
+        ):
+            forbidden.append(name)
+            continue
         if any(part in EXCLUDE_DIRS for part in parts):
             forbidden.append(name)
             continue
@@ -202,8 +220,8 @@ def build(
     packaged_contract_sha256 = _zip_member_sha256(zip_path, packaged_contract_path)
     if source_contract_sha256 != packaged_contract_sha256:
         raise SystemExit("C2_CONTRACT_FILE_MISMATCH")
-    omniauto_root = ROOT / "omniauto-rpa"
-    omniauto_source_tree = tree_manifest(omniauto_root)
+    omniauto_root = OMNIAUTO_ROOT
+    omniauto_source_tree = tree_manifest(omniauto_root, client_delivery=True)
     omniauto_packaged_tree = _zip_omniauto_manifest(zip_path)
     if omniauto_source_tree["tree_sha256"] != omniauto_packaged_tree["tree_sha256"]:
         raise SystemExit("OMNIAUTO_TREE_MISMATCH")

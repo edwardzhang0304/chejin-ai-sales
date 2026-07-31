@@ -7,6 +7,11 @@ from pathlib import Path
 import sys
 
 from .preflight import format_json, format_text, has_blocking_failures, run_preflight, write_report
+from .single_instance import (
+    SingleInstanceAlreadyRunning,
+    acquire_single_instance,
+    notify_already_running,
+)
 
 
 def bootstrap_qt_plugins() -> None:
@@ -86,13 +91,22 @@ def main() -> int:
         print(format_json(checks) if args.preflight_format == "json" else format_text(checks))
         return 1 if has_blocking_failures(checks) else 0
 
-    bootstrap_qt_plugins()
-    if os.environ.get("CHEJIN_WORKER_UI_MODE") == "pyside":
-        from .ui import run_app
-    else:
-        from .web_ui import run_app
+    try:
+        instance_guard = acquire_single_instance()
+    except SingleInstanceAlreadyRunning:
+        notify_already_running()
+        return 2
 
-    return run_app()
+    bootstrap_qt_plugins()
+    try:
+        if os.environ.get("CHEJIN_WORKER_UI_MODE") == "pyside":
+            from .ui import run_app
+        else:
+            from .web_ui import run_app
+
+        return run_app()
+    finally:
+        instance_guard.release()
 
 
 if __name__ == "__main__":

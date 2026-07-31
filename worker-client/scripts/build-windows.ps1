@@ -159,6 +159,14 @@ $PackagedOmniAutoPath = $PackagedOmniAutoCandidates | Where-Object { Test-Path $
 if (-not $PackagedOmniAutoPath) {
   throw "打包失败：dist 产物中未找到完整 OmniAuto 目录"
 }
+$ClientBoundaryJson = & .\.venv\Scripts\python.exe scripts\client_delivery_policy.py --omniauto-root $OmniAutoSourcePath --scan-root $PackagedOmniAutoPath
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：客户端产物包含服务器私有文件。$ClientBoundaryJson"
+}
+$ClientBoundary = $ClientBoundaryJson | ConvertFrom-Json
+if ($ClientBoundary.ok -ne $true) {
+  throw "打包失败：客户端交付边界检查未通过。"
+}
 $OmniAutoTreeVerification = (
   .\.venv\Scripts\python.exe scripts\verify-omniauto-tree.py --source $OmniAutoSourcePath --packaged $PackagedOmniAutoPath
 ) | ConvertFrom-Json
@@ -217,6 +225,7 @@ $Manifest = [ordered]@{
   packaged_omniauto_tree_sha256 = $OmniAutoTreeVerification.packaged.tree_sha256
   packaged_omniauto_file_count = $OmniAutoTreeVerification.packaged.file_count
   omniauto_tree_check = "passed"
+  client_delivery_boundary_check = "passed"
   omniauto_source_sidecar_sha256 = $OmniAutoSourceSidecarHash.Hash
   sidecar_path = $SidecarPath
   packaged_sidecar_sha256 = $PackagedSidecarHash.Hash
