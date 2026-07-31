@@ -3008,6 +3008,103 @@ class C2VisionIntegrationTests(unittest.TestCase):
         )
         image.close()
 
+    def test_window_frame_normalizes_dynamic_message_parse_failure(self):
+        image = Image.new("RGB", (800, 600), "white")
+
+        class State:
+            window_context = {"hwnd": 31415}
+            window_context_validated = True
+
+            class Host:
+                capture_c2_window_context = staticmethod(
+                    lambda *_args, **_kwargs: {
+                        "ok": True,
+                        "image": image.copy(),
+                        "hwnd": 31415,
+                        "capture_mode": "test",
+                        "screen_origin": [0, 0],
+                    }
+                )
+                run_ocr = staticmethod(lambda _image: [])
+
+                @staticmethod
+                def parse_messages_from_ocr(*_args, **_kwargs):
+                    raise RuntimeError("structural_image_detector_failed")
+
+            host = Host()
+
+            @staticmethod
+            def record(*_args, **_kwargs):
+                return None
+
+        result = _WindowFrame(State()).capture_frame(
+            {"phase": "image_candidate"}
+        )
+
+        self.assertEqual(
+            result["reason"],
+            "vision_window_message_parse_failed",
+        )
+        self.assertEqual(
+            result["reason_detail"],
+            "structural_image_detector_failed",
+        )
+        self.assertEqual(
+            formal_image_failure_code(result["reason"]),
+            "C2_IMAGE_OBSERVATION_FAILED",
+        )
+        image.close()
+
+    def test_window_frame_normalizes_dynamic_finalize_failure(self):
+        image = Image.new("RGB", (800, 600), "white")
+
+        class State:
+            window_context = {"hwnd": 31415}
+            window_context_validated = True
+
+            class Host:
+                capture_c2_window_context = staticmethod(
+                    lambda *_args, **_kwargs: {
+                        "ok": True,
+                        "image": image.copy(),
+                        "hwnd": 31415,
+                        "capture_mode": "test",
+                        "screen_origin": [0, 0],
+                    }
+                )
+                run_ocr = staticmethod(lambda _image: [])
+                parse_messages_from_ocr = staticmethod(
+                    lambda *_args, **_kwargs: []
+                )
+                message_row_avatar_role_details = staticmethod(
+                    lambda *_args, **_kwargs: {}
+                )
+
+            host = Host()
+
+            @staticmethod
+            def record(_stage, status, **_kwargs):
+                if status == "completed":
+                    raise RuntimeError("diagnostic_sink_failed")
+
+        result = _WindowFrame(State()).capture_frame(
+            {"phase": "image_candidate"}
+        )
+
+        self.assertEqual(
+            result["reason"],
+            "vision_window_frame_finalize_failed",
+        )
+        self.assertEqual(
+            result["reason_detail"],
+            "diagnostic_sink_failed",
+        )
+        self.assertEqual(
+            formal_image_failure_code(result["reason"]),
+            "C2_IMAGE_OBSERVATION_FAILED",
+        )
+        image.close()
+
     def test_sidecar_window_context_binds_exact_selected_hwnd(self):
         probe = {
             "selected_main_window": {
