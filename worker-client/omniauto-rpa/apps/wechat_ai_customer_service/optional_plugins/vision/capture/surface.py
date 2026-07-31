@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
+from typing import Any, Callable
 
-from .wechat import detect_visual_image_bubbles, extract_chat_time_markers
+from .wechat import (
+    attach_image_physical_anchors,
+    detect_visual_image_bubbles,
+    extract_chat_time_markers,
+)
 
 
 class ImageSurfaceObservationError(RuntimeError):
@@ -186,6 +190,125 @@ def visual_image_messages_from_current_surface(
             exc,
         ) from exc
     return visual_image_envelopes_from_bubbles(bubbles, existing_messages, target=target)
+
+
+def observe_structural_image_messages(
+    screenshot: Any,
+    ocr_items: list[dict[str, Any]] | None,
+    existing_messages: list[dict[str, Any]] | None,
+    *,
+    target: str,
+    role_resolver: Callable[[Any, Any, Any], dict[str, Any]],
+    max_images: int = 8,
+) -> list[dict[str, Any]]:
+    """Run the one formal C2 image observation pipeline for the current frame."""
+
+    messages = [
+        dict(item)
+        for item in (existing_messages or [])
+        if isinstance(item, dict)
+    ]
+    try:
+        image_messages = visual_image_messages_from_current_surface(
+            screenshot,
+            ocr_items,
+            messages,
+            target=target,
+            side_filter="all",
+            max_images=max_images,
+        )
+    except ImageSurfaceObservationError:
+        raise
+    except Exception as exc:
+        raise ImageSurfaceObservationError(
+            "detect_visual_image_bubbles",
+            exc,
+        ) from exc
+    try:
+        for image_message in image_messages:
+            bounds = image_message.get("bubble_rect")
+            avatar_alignment = role_resolver(
+                screenshot,
+                bounds or [],
+                tuple(getattr(screenshot, "size", (0, 0))),
+            )
+            avatar_role = str(
+                (avatar_alignment or {}).get("role") or ""
+            ).strip().lower()
+            if avatar_role not in {"customer", "self"}:
+                avatar_role = "unknown"
+            image_message["sender"] = avatar_role
+            image_message["sender_role"] = avatar_role
+            image_message["avatar_alignment"] = dict(
+                avatar_alignment or {}
+            )
+    except Exception as exc:
+        raise ImageSurfaceObservationError(
+            "same_row_avatar_role",
+            exc,
+        ) from exc
+
+    try:
+        image_messages = attach_image_physical_anchors(
+            screenshot,
+            image_messages,
+            messages,
+        )
+    except Exception as exc:
+        raise ImageSurfaceObservationError(
+            "attach_image_physical_anchors",
+            exc,
+        ) from exc
+
+    for image_message in image_messages:
+        physical_anchor = (
+            image_message.get("image_physical_anchor")
+            if isinstance(
+                image_message.get("image_physical_anchor"),
+                dict,
+            )
+            else {}
+        )
+        visual_seed = json.dumps(
+            {
+                "target": str(target or "").strip().upper(),
+                "sender_role": str(
+                    physical_anchor.get("sender_role") or "unknown"
+                ),
+                "message_type": "image",
+                "occurrence_index": physical_anchor.get(
+                    "occurrence_index"
+                ),
+                "preceding_stable_message": physical_anchor.get(
+                    "preceding_stable_message"
+                ),
+                "following_stable_message": physical_anchor.get(
+                    "following_stable_message"
+                ),
+                "bubble_visual_fingerprint": physical_anchor.get(
+                    "bubble_visual_fingerprint"
+                ),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        canonical_visual_id = (
+            "canonical_visual_"
+            + hashlib.sha256(visual_seed.encode("utf-8")).hexdigest()[:24]
+        )
+        image_message["canonical_visual_id"] = canonical_visual_id
+        image_message["id"] = canonical_visual_id
+        image_message["message_id"] = canonical_visual_id
+        image_message["bounds"] = list(
+            image_message.get("bubble_rect") or []
+        )
+        bounds = image_message.get("bounds") or []
+        if len(bounds) >= 4:
+            image_message["anchor"] = {
+                "x": int((float(bounds[0]) + float(bounds[2])) / 2),
+                "y": int((float(bounds[1]) + float(bounds[3])) / 2),
+            }
+    return image_messages
 
 
 def self_visual_image_messages_from_current_surface(

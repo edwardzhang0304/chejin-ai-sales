@@ -14,8 +14,6 @@ from typing import Any
 from ..clipboard_payload import ephemeral_image_from_memory
 from ..ports import VisionHostPorts
 from .wechat import (
-    attach_image_physical_anchors,
-    detect_visual_image_bubbles,
     find_copy_menu_item,
     image_visual_fingerprint_distance,
 )
@@ -59,9 +57,7 @@ def _bounds(value: Any) -> tuple[float, float, float, float] | None:
 
 
 def _bubble_match_evidence(
-    screenshot: Any,
-    bubbles: list[dict[str, Any]],
-    messages: list[dict[str, Any]],
+    current_candidates: list[dict[str, Any]],
     *,
     expected_anchor: Any,
     expected_role: str,
@@ -86,11 +82,6 @@ def _bubble_match_evidence(
     expected_following = str(
         anchor.get("following_stable_message") or ""
     ).strip()
-    current_candidates = attach_image_physical_anchors(
-        screenshot,
-        bubbles,
-        messages,
-    )
     fingerprint_matches: list[dict[str, Any]] = []
     role_conflicts: list[dict[str, Any]] = []
     for bubble in current_candidates:
@@ -328,22 +319,24 @@ def _acquire_current_image_via_ports(
             )
             if not isinstance(target_proof, dict) or target_proof.get("ok") is not True:
                 return fail("vision_target_confirmation_failed")
-            bubbles = detect_visual_image_bubbles(
-                surface,
-                messages=[item for item in (frame.get("messages") or []) if isinstance(item, dict)],
-                max_images=max(1, int(data.get("max_images") or 8)),
-                side_filter=side_filter,
-                time_markers=[item for item in (frame.get("time_markers") or []) if isinstance(item, dict)],
-            )
-            if not bubbles:
+            current_candidates = [
+                dict(item)
+                for item in (frame.get("messages") or [])
+                if isinstance(item, dict)
+                and str(
+                    item.get("type")
+                    or item.get("message_type")
+                    or ""
+                ).strip().lower()
+                == "image"
+            ]
+            if not current_candidates:
                 return fail(
                     "image_bubble_not_visible_after_refresh",
                     state="image_not_visible",
                 )
             match_evidence = _bubble_match_evidence(
-                surface,
-                bubbles,
-                [item for item in (frame.get("messages") or []) if isinstance(item, dict)],
+                current_candidates,
                 expected_anchor=expected_anchor,
                 expected_role=sender_role,
             )

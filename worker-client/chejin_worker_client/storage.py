@@ -480,6 +480,45 @@ def load_c2_ledger_entry(conversation_id: str, source_message_key: str) -> dict[
     return item
 
 
+def list_c2_ledger_entries(
+    conversation_id: str,
+    *,
+    message_type: str | None = None,
+    ingest_state: str | None = None,
+) -> list[dict[str, Any]]:
+    clauses = ["conversation_id = ?"]
+    values: list[Any] = [str(conversation_id)]
+    if message_type:
+        clauses.append("message_type = ?")
+        values.append(str(message_type))
+    if ingest_state:
+        clauses.append("ingest_state = ?")
+        values.append(str(ingest_state))
+    with db_connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT conversation_id, source_message_key, dedupe_key, message_type,
+                   terminal_state, ingest_state, result_json, first_seen_at,
+                   updated_at
+            FROM c2_message_ledger
+            WHERE {' AND '.join(clauses)}
+            ORDER BY first_seen_at ASC, source_message_key ASC
+            """,
+            values,
+        ).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["result"] = json.loads(
+                item.pop("result_json") or "{}"
+            )
+        except json.JSONDecodeError:
+            item["result"] = {}
+        result.append(item)
+    return result
+
+
 def save_c2_ledger_terminal(
     *,
     conversation_id: str,
