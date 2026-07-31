@@ -637,22 +637,8 @@ def read_targets(db: Session, worker: Worker, limit: int = 20) -> dict:
         read_reason = _read_reason(item, conversation)
         if not read_reason:
             continue
-        target = {
-            "conversation_id": item.conversation_id,
-            "lead_id": item.lead_id,
-            "sales_id": item.sales_id,
-            "remark_code": item.remark_code,
-            "rpa_session_key": item.rpa_session_key,
-            "display_name": item.display_name,
-            "last_ingested_at": item.last_ingested_at,
-            "read_reason": read_reason,
-            "authorization_revision": _authorization_revision(item),
-            "_dispatch_binding": item,
-        }
-        if _clean_locator(item.row_fingerprint):
-            target["row_fingerprint"] = item.row_fingerprint
-        if item.ocr_confidence is not None:
-            target["ocr_confidence"] = item.ocr_confidence
+        target = _read_target_payload(item, read_reason=read_reason)
+        target["_dispatch_binding"] = item
         targets.append(target)
     def dispatch_sort_key(target: dict) -> tuple[float, int, float]:
         dispatch_binding = target["_dispatch_binding"]
@@ -743,6 +729,29 @@ def read_targets(db: Session, worker: Worker, limit: int = 20) -> dict:
     }
 
 
+def _read_target_payload(
+    binding: WechatSessionBinding,
+    *,
+    read_reason: str,
+) -> dict:
+    target = {
+        "conversation_id": binding.conversation_id,
+        "lead_id": binding.lead_id,
+        "sales_id": binding.sales_id,
+        "remark_code": binding.remark_code,
+        "rpa_session_key": binding.rpa_session_key,
+        "display_name": binding.display_name,
+        "last_ingested_at": binding.last_ingested_at,
+        "read_reason": read_reason,
+        "authorization_revision": _authorization_revision(binding),
+    }
+    if _clean_locator(binding.row_fingerprint):
+        target["row_fingerprint"] = binding.row_fingerprint
+    if binding.ocr_confidence is not None:
+        target["ocr_confidence"] = binding.ocr_confidence
+    return target
+
+
 def read_authorization_snapshot(
     db: Session,
     *,
@@ -766,12 +775,19 @@ def read_authorization_snapshot(
         and conversation.status not in CONVERSATION_CLOSED_STATUSES
         and read_reason
     )
-    return {
+    result = {
         "allowed": allowed,
+        "recovery_decision": "allowed" if allowed else "retry_later",
         "conversation_id": binding.conversation_id,
         "authorization_revision": _authorization_revision(binding),
         "read_reason": read_reason or "",
     }
+    if allowed:
+        result["target"] = _read_target_payload(
+            binding,
+            read_reason=str(read_reason),
+        )
+    return result
 
 
 def read_authorization_for_worker(
@@ -786,14 +802,25 @@ def read_authorization_for_worker(
 
     binding = db.scalar(
         select(WechatSessionBinding).where(
-            WechatSessionBinding.worker_id == worker.id,
             WechatSessionBinding.conversation_id == conversation_id,
-            WechatSessionBinding.deleted_at.is_(None),
         )
     )
-    if not binding:
+    terminal_binding = bool(
+        not binding
+        or binding.worker_id != worker.id
+        or binding.deleted_at is not None
+        or binding.bind_status
+        in {
+            BIND_STATUS_UNBOUND,
+            BIND_STATUS_FAILED,
+            BIND_STATUS_DISABLED,
+        }
+        or binding.listen_status == LISTEN_STATUS_DISABLED
+    )
+    if terminal_binding:
         return {
             "allowed": False,
+            "recovery_decision": "target_terminated",
             "conversation_id": conversation_id,
             "authorization_revision": "",
             "read_reason": "",
@@ -828,6 +855,18 @@ def read_authorization_for_worker(
             binding=binding,
             presented_token=str(continuation_token),
         )
+    conversation = db.get(Conversation, conversation_id)
+    if conversation and (
+        conversation.deleted_at is not None
+        or conversation.status in CONVERSATION_CLOSED_STATUSES
+    ):
+        return {
+            "allowed": False,
+            "recovery_decision": "target_terminated",
+            "conversation_id": conversation_id,
+            "authorization_revision": _authorization_revision(binding),
+            "read_reason": "",
+        }
     return read_authorization_snapshot(db, binding=binding)
 
 

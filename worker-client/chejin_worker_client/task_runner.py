@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 from .api import ApiError, WorkerApiClient
 from .action_journal import (
+    action_journal_is_strictly_not_attempted,
     action_journal_path,
     action_journal_phase,
     initialize_action_journal,
@@ -78,6 +79,7 @@ from .storage import (
     set_c2_outbox_error,
     set_reply_send_ack_error,
     transition_c2_outbox,
+    terminate_waiting_c2_image_ledger,
 )
 from .transaction_outcomes import (
     FlowOutcomeAccumulator,
@@ -1469,6 +1471,7 @@ class TaskRunner:
                 metadata={"reason": reason},
             )
             return False
+        self._discard_not_attempted_image_action_journals()
         pending_image_conversations = (
             self._pending_image_recovery_conversation_ids()
         )
@@ -1494,6 +1497,50 @@ class TaskRunner:
             )
             return False
         return True
+
+    @staticmethod
+    def _discard_not_attempted_image_action_journals() -> int:
+        removed_count = 0
+        journal_entries = sorted(
+            list_action_journals(action_kinds=("image",)),
+            key=lambda entry: (
+                str(entry[1].get("created_at") or ""),
+                str(entry[1].get("conversation_id") or ""),
+            ),
+        )
+        for path, payload in journal_entries:
+            if action_journal_is_strictly_not_attempted(payload):
+                try:
+                    remove_action_journal(path)
+                except OSError as exc:
+                    append_log(
+                        "WARN",
+                        "c2_image_not_attempted_journal_remove_failed",
+                        "未执行图片动作日志暂时无法清理，继续保持全局门禁。",
+                        error_code="C2_IMAGE_JOURNAL_REMOVE_FAILED",
+                        metadata={
+                            "conversation_id": str(
+                                payload.get("conversation_id") or ""
+                            ),
+                            "error_type": type(exc).__name__,
+                        },
+                    )
+                else:
+                    append_log(
+                        "INFO",
+                        "c2_image_not_attempted_journal_removed",
+                        "图片动作日志证明尚未右键，已在全局门禁前安全清理。",
+                        metadata={
+                            "conversation_id": str(
+                                payload.get("conversation_id") or ""
+                            ),
+                            "transaction_id": str(
+                                payload.get("transaction_id") or ""
+                            ),
+                        },
+                    )
+                    removed_count += 1
+        return removed_count
 
     @staticmethod
     def _pending_image_recovery_conversation_ids() -> list[str]:
@@ -2030,6 +2077,7 @@ class TaskRunner:
         self,
         binding: Binding,
     ) -> bool:
+        self._discard_not_attempted_image_action_journals()
         pending_conversations = (
             self._pending_image_recovery_conversation_ids()
         )
@@ -2037,7 +2085,10 @@ class TaskRunner:
             return True
         conversation_id = pending_conversations[0]
         try:
-            targets = self._fetch_read_targets(binding)
+            authorization = self.api.get_wechat_read_authorization(
+                binding,
+                conversation_id,
+            )
         except Exception as exc:
             append_log(
                 "WARN",
@@ -2050,20 +2101,76 @@ class TaskRunner:
                 },
             )
             return False
-        target = next(
-            (
-                item
-                for item in targets
-                if item.conversation_id == conversation_id
-            ),
-            None,
-        )
-        if target is None:
+        recovery_decision = str(
+            authorization.get("recovery_decision") or ""
+        ).strip()
+        if recovery_decision == "target_terminated":
+            try:
+                terminated_ledger_count = (
+                    terminate_waiting_c2_image_ledger(
+                        conversation_id,
+                        reason="backend_confirmed_target_terminated",
+                    )
+                )
+                journal_count = 0
+                for path, _payload in list_action_journals(
+                    conversation_id=conversation_id,
+                    action_kinds=("image",),
+                ):
+                    remove_action_journal(path)
+                    journal_count += 1
+            except (OSError, ValueError) as exc:
+                append_log(
+                    "WARN",
+                    "c2_image_fact_recovery_termination_failed",
+                    "后端已确认目标结束，但本地恢复事务尚未安全终结，继续保持门禁。",
+                    error_code="C2_IMAGE_FACT_RECOVERY_TERMINATION_FAILED",
+                    metadata={
+                        "conversation_id": conversation_id,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                return False
+            append_log(
+                "INFO",
+                "c2_image_fact_recovery_target_terminated",
+                "后端确认原会话永久结束，已终结该会话的本地图片恢复事务。",
+                error_code="C2_IMAGE_FACT_RECOVERY_TARGET_TERMINATED",
+                metadata={
+                    "conversation_id": conversation_id,
+                    "terminated_ledger_count": terminated_ledger_count,
+                    "removed_journal_count": journal_count,
+                },
+            )
+            return True
+        if recovery_decision != "allowed":
             append_log(
                 "WARN",
                 "c2_image_fact_recovery_waiting_authorization",
-                "待上报图片事实的原会话当前没有读取授权，继续保持全局门禁。",
-                error_code="C2_IMAGE_FACT_RECOVERY_TARGET_UNAVAILABLE",
+                "待上报图片事实的原会话暂不可用，继续保持全局门禁。",
+                error_code="C2_IMAGE_FACT_RECOVERY_RETRY_LATER",
+                metadata={
+                    "conversation_id": conversation_id,
+                    "recovery_decision": recovery_decision or "missing",
+                },
+            )
+            return False
+        target_payload = authorization.get("target")
+        target = (
+            WechatReadTarget.from_api(target_payload)
+            if isinstance(target_payload, dict)
+            else None
+        )
+        if (
+            target is None
+            or target.conversation_id != conversation_id
+            or authorization.get("allowed") is not True
+        ):
+            append_log(
+                "WARN",
+                "c2_image_fact_recovery_authorization_invalid",
+                "图片恢复授权缺少一致的原会话定位信息，继续保持全局门禁。",
+                error_code="C2_IMAGE_FACT_RECOVERY_AUTHORIZATION_INVALID",
                 metadata={"conversation_id": conversation_id},
             )
             return False

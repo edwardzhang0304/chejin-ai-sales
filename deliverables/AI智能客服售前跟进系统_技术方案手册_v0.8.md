@@ -1177,6 +1177,14 @@ sent_ack用于确认Worker已发送。
 5. Worker 本地记录是执行证据和恢复缓存；`reply_action`、`message_event`、`message_batch` 和人工接管等业务真相由后端持久化。
 6. 动作日志只能在对应 ledger/发送回执可靠落盘后删除。Sidecar 异常、停止、
    授权撤销或统一收尾均不得直接清除尚未恢复的动作日志。
+7. 图片事务恢复不依赖普通 `read-targets` 列表。Worker 使用现有轻量授权接口
+   查询原会话，后端只允许返回 `allowed / retry_later / target_terminated`：
+   `allowed` 只恢复原会话；`retry_later` 保留事实并继续阻断新 UI 动作；
+   `target_terminated` 仅在解绑、替换、删除、禁用或会话关闭等永久条件被后端
+   确认后，终结该会话的本地恢复事务。
+8. 图片动作日志的全部条目均明确为 `not_attempted` 时，证明右键和复制均未
+   发生，Worker 在全局门禁前本地清理；只要存在 `trigger_attempted` 或
+   `confirmed`，就必须进入上述三态恢复协议，客户端不得自行猜测终态。
 7. add_friend 是本合同的明确特例：最终“确定”按钮点击函数返回成功，就是
    `action_phase=confirmed` 的证据；不再等待第二个 UI 成功状态。点击后截图/OCR
    仅用于发现明确风控/失败，不能作为进入 `confirmed` 的前置条件。

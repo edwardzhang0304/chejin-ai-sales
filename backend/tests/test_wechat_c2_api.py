@@ -3209,7 +3209,7 @@ def test_ingest_rejects_ambiguous_final_frame_slot_ledger(
         assert db.query(MessageEvent).count() == 0
 
 
-def test_lightweight_read_authorization_returns_only_current_ticket():
+def test_lightweight_read_authorization_returns_current_recovery_target():
     worker = _create_worker()
     _create_sales(worker["id"])
     _create_lead("轻量授权客户", "13896676687")
@@ -3235,14 +3235,79 @@ def test_lightweight_read_authorization_returns_only_current_ticket():
 
     assert response.status_code == 200, response.text
     data = response.json()["data"]
-    assert data == {
-        "allowed": True,
-        "conversation_id": binding["conversation_id"],
-        "authorization_revision": _binding_authorization_revision(binding["id"]),
-        "read_reason": "waiting_sales_reply",
-    }
+    assert data["allowed"] is True
+    assert data["recovery_decision"] == "allowed"
+    assert data["conversation_id"] == binding["conversation_id"]
+    assert data["authorization_revision"] == _binding_authorization_revision(
+        binding["id"]
+    )
+    assert data["read_reason"] == "waiting_sales_reply"
+    assert data["target"]["conversation_id"] == binding["conversation_id"]
+    assert data["target"]["remark_code"] == remark_code
+    assert data["target"]["read_reason"] == "waiting_sales_reply"
+    assert (
+        data["target"]["authorization_revision"]
+        == data["authorization_revision"]
+    )
+    worker_target = WorkerWechatReadTarget.from_api(data["target"])
+    assert worker_target.conversation_id == binding["conversation_id"]
+    assert worker_target.remark_code == remark_code
+    assert worker_target.authorization_revision == data[
+        "authorization_revision"
+    ]
     assert "identity_transition" not in data
     assert "targets" not in data
+
+
+def test_image_recovery_authorization_distinguishes_retry_and_termination():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("图片恢复授权客户", "13896676688")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    endpoint = (
+        f"/api/workers/{worker['id']}/wechat/conversations/"
+        f"{binding['conversation_id']}/read-authorization"
+    )
+
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        row.listen_status = "error"
+        row.allow_listening = False
+        db.commit()
+    retry = client.get(endpoint, headers=_worker_headers(worker))
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["data"]["allowed"] is False
+    assert retry.json()["data"]["recovery_decision"] == "retry_later"
+
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        row.bind_status = "needs_review"
+        row.listen_status = "not_started"
+        db.commit()
+    review = client.get(endpoint, headers=_worker_headers(worker))
+    assert review.status_code == 200, review.text
+    assert review.json()["data"]["allowed"] is False
+    assert review.json()["data"]["recovery_decision"] == "retry_later"
+
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        row.bind_status = "unbound"
+        db.commit()
+    terminated = client.get(endpoint, headers=_worker_headers(worker))
+    assert terminated.status_code == 200, terminated.text
+    assert terminated.json()["data"] == {
+        "allowed": False,
+        "recovery_decision": "target_terminated",
+        "conversation_id": binding["conversation_id"],
+        "authorization_revision": "",
+        "read_reason": "",
+    }
 
 
 def test_delayed_outbox_ingests_fact_without_rolling_back_current_state():

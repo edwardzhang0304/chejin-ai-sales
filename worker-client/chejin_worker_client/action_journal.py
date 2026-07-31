@@ -226,3 +226,23 @@ def action_journal_phase(path: str | Path) -> str:
         key=lambda value: _PHASE_RANK.get(value, 0),
         default="not_attempted",
     )
+
+
+def action_journal_is_strictly_not_attempted(
+    payload: dict[str, Any],
+) -> bool:
+    """True only when every persisted item proves no action was triggered."""
+
+    items = payload.get("items")
+    if (
+        str(payload.get("action_phase") or "").strip()
+        != "not_attempted"
+        or not isinstance(items, dict)
+        or not items
+    ):
+        return False
+    return all(
+        isinstance(item, dict)
+        and str(item.get("action_phase") or "").strip() == "not_attempted"
+        for item in items.values()
+    )

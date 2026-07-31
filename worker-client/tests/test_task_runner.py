@@ -79,6 +79,7 @@ class FakeApi:
         self.message_batch_result: dict | None = None
         self.heartbeat_payloads: list[dict] = []
         self.message_ingest_error: Exception | None = None
+        self.read_authorization_overrides: dict[str, dict] = {}
         self.claim_reply_text = "您好，可以继续沟通这台车。"
         self.claim_reply_hash = hashlib.sha256(self.claim_reply_text.encode("utf-8")).hexdigest()
 
@@ -216,6 +217,10 @@ class FakeApi:
         continuation_token: str | None = None,
     ):
         self.events.append(f"read_authorization:{conversation_id}")
+        if conversation_id in self.read_authorization_overrides:
+            return dict(
+                self.read_authorization_overrides[conversation_id]
+            )
         target = next(
             (
                 item
@@ -227,6 +232,7 @@ class FakeApi:
         if target is None:
             return {
                 "allowed": False,
+                "recovery_decision": "target_terminated",
                 "conversation_id": conversation_id,
                 "authorization_revision": "",
                 "read_reason": "",
@@ -235,9 +241,22 @@ class FakeApi:
             target.authorization_revision = f"revision-{target.conversation_id}"
         return {
             "allowed": True,
+            "recovery_decision": "allowed",
             "conversation_id": target.conversation_id,
             "authorization_revision": target.authorization_revision,
             "read_reason": target.read_reason,
+            "target": {
+                "conversation_id": target.conversation_id,
+                "rpa_session_key": target.rpa_session_key,
+                "display_name": target.display_name,
+                "remark_code": target.remark_code,
+                "row_fingerprint": target.row_fingerprint,
+                "ocr_confidence": target.ocr_confidence,
+                "lead_id": target.lead_id,
+                "sales_id": target.sales_id,
+                "read_reason": target.read_reason,
+                "authorization_revision": target.authorization_revision,
+            },
             **(
                 {
                     "authorization_scope": "batch_continuation",
@@ -7340,7 +7359,32 @@ class TaskRunnerTest(unittest.TestCase):
                 remark_code="CJSECOND1",
                 authorization_revision=f"revision-image-second-{unique}",
             )
-            api.read_targets = [second_target, target]
+            api.read_targets = [second_target]
+            api.read_authorization_overrides[
+                target.conversation_id
+            ] = {
+                "allowed": True,
+                "recovery_decision": "allowed",
+                "conversation_id": target.conversation_id,
+                "authorization_revision": (
+                    target.authorization_revision
+                ),
+                "read_reason": target.read_reason or "",
+                "target": {
+                    "conversation_id": target.conversation_id,
+                    "rpa_session_key": target.rpa_session_key,
+                    "display_name": target.display_name,
+                    "remark_code": target.remark_code,
+                    "row_fingerprint": target.row_fingerprint,
+                    "ocr_confidence": target.ocr_confidence,
+                    "lead_id": target.lead_id,
+                    "sales_id": target.sales_id,
+                    "read_reason": target.read_reason or "",
+                    "authorization_revision": (
+                        target.authorization_revision
+                    ),
+                },
+            }
             recovery_bridge = FakeBridge(
                 RpaResult(
                     ok=True,
@@ -7423,6 +7467,199 @@ class TaskRunnerTest(unittest.TestCase):
                 reason="restart_test_after_recovery",
             )
         )
+
+    def test_not_attempted_image_journal_is_removed_before_global_barrier(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="ok", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-image-not-attempted",
+            worker_token="token",
+            client_instance_id="client-image-not-attempted",
+            run_status="running",
+        )
+        transaction_id = f"image-not-attempted-{time.time_ns()}"
+        path = action_journal_path("image", transaction_id)
+        initialize_action_journal(
+            path,
+            action_kind="image",
+            transaction_id=transaction_id,
+            conversation_id="conv-image-not-attempted",
+            items=[
+                {
+                    "source_message_key": "image-not-attempted-source",
+                    "physical_anchor_keys": ["image-anchor"],
+                    "replayable_observation": {
+                        "schema_version": 3,
+                        "observation_id": "image-not-attempted-observation",
+                        "row_kind": "image_bubble",
+                        "sender_role": "customer",
+                        "sender_role_source": "same_row_avatar",
+                        "message_type": "image",
+                        "voice_state": "not_voice",
+                    },
+                }
+            ],
+        )
+
+        self.assertTrue(path.exists())
+        self.assertTrue(
+            runner._worker_transaction_barrier_ready(
+                binding,
+                reason="not_attempted_image_journal",
+            )
+        )
+        self.assertFalse(path.exists())
+        self.assertNotIn(
+            "read_authorization:conv-image-not-attempted",
+            api.events,
+        )
+
+    def test_image_recovery_retry_later_keeps_exact_transaction_blocking(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="ok", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-image-retry",
+            worker_token="token",
+            client_instance_id="client-image-retry",
+            run_status="running",
+        )
+        conversation_id = f"conv-image-retry-{time.time_ns()}"
+        source_key = "image-retry-source"
+        save_c2_ledger_terminal(
+            conversation_id=conversation_id,
+            source_message_key=source_key,
+            dedupe_key="image-retry-dedupe",
+            message_type="image",
+            terminal_state="completed",
+            ingest_state="waiting",
+            result={
+                "replayable_observation": {
+                    "schema_version": 3,
+                    "observation_id": "image-retry-observation",
+                    "row_kind": "image_bubble",
+                    "sender_role": "customer",
+                    "sender_role_source": "same_row_avatar",
+                    "message_type": "image",
+                    "voice_state": "not_voice",
+                }
+            },
+        )
+        api.read_authorization_overrides[conversation_id] = {
+            "allowed": False,
+            "recovery_decision": "retry_later",
+            "conversation_id": conversation_id,
+            "authorization_revision": "revision-retry",
+            "read_reason": "",
+        }
+
+        self.assertFalse(
+            runner._recover_pending_image_transaction(binding)
+        )
+        self.assertEqual(
+            load_c2_ledger_entry(conversation_id, source_key)[
+                "ingest_state"
+            ],
+            "waiting",
+        )
+        self.assertFalse(
+            runner._worker_transaction_barrier_ready(
+                binding,
+                reason="image_recovery_retry_later",
+            )
+        )
+
+    def test_backend_terminated_image_target_closes_only_local_recovery(self):
+        api = FakeApi(None)
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="ok", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-image-terminated",
+            worker_token="token",
+            client_instance_id="client-image-terminated",
+            run_status="running",
+        )
+        conversation_id = f"conv-image-terminated-{time.time_ns()}"
+        source_key = "image-terminated-source"
+        replayable_observation = {
+            "schema_version": 3,
+            "observation_id": "image-terminated-observation",
+            "row_kind": "image_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "image",
+            "voice_state": "not_voice",
+        }
+        save_c2_ledger_terminal(
+            conversation_id=conversation_id,
+            source_message_key=source_key,
+            dedupe_key="image-terminated-dedupe",
+            message_type="image",
+            terminal_state="completed",
+            ingest_state="waiting",
+            result={
+                "replayable_observation": replayable_observation,
+            },
+        )
+        journal_path = action_journal_path(
+            "image",
+            f"image-terminated-{time.time_ns()}",
+        )
+        initialize_action_journal(
+            journal_path,
+            action_kind="image",
+            transaction_id="image-terminated-transaction",
+            conversation_id=conversation_id,
+            items=[
+                {
+                    "source_message_key": source_key,
+                    "physical_anchor_keys": ["image-anchor"],
+                    "replayable_observation": replayable_observation,
+                }
+            ],
+        )
+        update_action_journal_item(
+            journal_path,
+            source_message_key=source_key,
+            action_phase="trigger_attempted",
+        )
+        api.read_authorization_overrides[conversation_id] = {
+            "allowed": False,
+            "recovery_decision": "target_terminated",
+            "conversation_id": conversation_id,
+            "authorization_revision": "",
+            "read_reason": "",
+        }
+
+        self.assertTrue(
+            runner._recover_pending_image_transaction(binding)
+        )
+        ledger = load_c2_ledger_entry(conversation_id, source_key)
+        self.assertEqual(ledger["terminal_state"], "completed")
+        self.assertEqual(ledger["ingest_state"], "not_required")
+        self.assertEqual(
+            ledger["result"]["recovery"]["state"],
+            "target_terminated",
+        )
+        self.assertFalse(journal_path.exists())
+        self.assertTrue(
+            runner._worker_transaction_barrier_ready(
+                binding,
+                reason="image_recovery_target_terminated",
+            )
+        )
+        self.assertEqual(bridge.locate_chats, [])
 
     def test_action_journal_vertical_c2_image_reaches_ingest_and_ledger(self):
         api = FakeApi(None)
