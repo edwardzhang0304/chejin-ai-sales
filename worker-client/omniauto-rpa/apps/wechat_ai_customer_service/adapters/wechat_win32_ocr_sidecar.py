@@ -5283,68 +5283,28 @@ def merge_structural_image_messages(
 
     try:
         from apps.wechat_ai_customer_service.optional_plugins.vision.capture.surface import (
-            visual_image_messages_from_current_surface,
-        )
-        from apps.wechat_ai_customer_service.optional_plugins.vision.capture.wechat import (
-            attach_image_physical_anchors,
+            observe_structural_image_messages,
         )
 
-        image_messages = visual_image_messages_from_current_surface(
+        image_messages = observe_structural_image_messages(
             screenshot,
             ocr_items,
             merged,
             target=target,
-            side_filter="all",
+            role_resolver=message_row_avatar_role_details,
             max_images=8,
         )
     except Exception as exc:
         return image_observation_failed(
-            "detect_visual_image_bubbles",
+            str(
+                getattr(
+                    exc,
+                    "stage",
+                    "structural_image_observation",
+                )
+            ),
             exc,
         )
-    for image_message in image_messages:
-        bounds = image_message.get("bubble_rect") if isinstance(image_message, dict) else None
-        avatar_alignment = message_row_avatar_role_details(screenshot, bounds or [], screenshot.size)
-        avatar_role = str(avatar_alignment.get("role") or "").strip().lower()
-        if avatar_role not in {"customer", "self"}:
-            avatar_role = "unknown"
-        image_message["sender"] = avatar_role
-        image_message["sender_role"] = avatar_role
-        image_message["avatar_alignment"] = avatar_alignment
-    try:
-        image_messages = attach_image_physical_anchors(
-            screenshot,
-            image_messages,
-            merged,
-        )
-    except Exception as exc:
-        return image_observation_failed(
-            "attach_image_physical_anchors",
-            exc,
-        )
-    for image_message in image_messages:
-        physical_anchor = (
-            image_message.get("image_physical_anchor")
-            if isinstance(image_message.get("image_physical_anchor"), dict)
-            else {}
-        )
-        visual_seed = json.dumps(
-            {
-                "target": str(target or "").strip().upper(),
-                "sender_role": str(physical_anchor.get("sender_role") or "unknown"),
-                "message_type": "image",
-                "occurrence_index": physical_anchor.get("occurrence_index"),
-                "preceding_stable_message": physical_anchor.get("preceding_stable_message"),
-                "following_stable_message": physical_anchor.get("following_stable_message"),
-                "bubble_visual_fingerprint": physical_anchor.get("bubble_visual_fingerprint"),
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-        canonical_visual_id = "canonical_visual_" + hashlib.sha256(visual_seed.encode("utf-8")).hexdigest()[:24]
-        image_message["canonical_visual_id"] = canonical_visual_id
-        image_message["id"] = canonical_visual_id
-        image_message["message_id"] = canonical_visual_id
     merged.extend(image_messages)
 
     def message_visual_top(item: dict[str, Any]) -> float:

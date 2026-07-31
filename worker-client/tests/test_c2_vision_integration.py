@@ -54,6 +54,35 @@ from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar
 
 
 class C2VisionIntegrationTests(unittest.TestCase):
+    @staticmethod
+    def observed_image_messages(
+        screenshot,
+        bubbles,
+        *,
+        messages=None,
+    ):
+        observed = attach_image_physical_anchors(
+            screenshot,
+            bubbles,
+            list(messages or []),
+        )
+        for item in observed:
+            bounds = list(
+                item.get("bounds") or item.get("bubble_rect") or []
+            )
+            item["type"] = "image"
+            item["message_type"] = "image"
+            item["bubble_rect"] = bounds
+            item["bounds"] = bounds
+            item.setdefault(
+                "anchor",
+                {
+                    "x": int((bounds[0] + bounds[2]) / 2),
+                    "y": int((bounds[1] + bounds[3]) / 2),
+                },
+            )
+        return observed
+
     def test_c2_role_remains_authoritative_when_visual_side_conflicts(self):
         screenshot = Image.new("RGB", (800, 700), "white")
         expected_anchor = {
@@ -78,18 +107,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "occurrence_count": 1,
             },
         }
-        with patch.object(
-            transaction,
-            "attach_image_physical_anchors",
-            return_value=[current_candidate],
-        ):
-            match = transaction._bubble_match_evidence(
-                screenshot,
-                [current_candidate],
-                [],
-                expected_anchor=expected_anchor,
-                expected_role="customer",
-            )
+        match = transaction._bubble_match_evidence(
+            [current_candidate],
+            expected_anchor=expected_anchor,
+            expected_role="customer",
+        )
 
         self.assertEqual(match["state"], "matched")
         matched = match["bubble"]
@@ -131,18 +153,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "occurrence_count": 1,
             },
         }
-        with patch.object(
-            transaction,
-            "attach_image_physical_anchors",
-            return_value=[current_candidate],
-        ):
-            match = transaction._bubble_match_evidence(
-                screenshot,
-                [current_candidate],
-                [],
-                expected_anchor=expected_anchor,
-                expected_role="customer",
-            )
+        match = transaction._bubble_match_evidence(
+            [current_candidate],
+            expected_anchor=expected_anchor,
+            expected_role="customer",
+        )
 
         self.assertEqual(match["state"], "role_mismatch")
         self.assertEqual(match["bubble"], {})
@@ -174,18 +189,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "occurrence_count": 1,
             },
         }
-        with patch.object(
-            transaction,
-            "attach_image_physical_anchors",
-            return_value=[current_candidate],
-        ):
-            match = transaction._bubble_match_evidence(
-                screenshot,
-                [current_candidate],
-                [],
-                expected_anchor=expected_anchor,
-                expected_role="customer",
-            )
+        match = transaction._bubble_match_evidence(
+            [current_candidate],
+            expected_anchor=expected_anchor,
+            expected_role="customer",
+        )
 
         self.assertEqual(match["state"], "role_mismatch")
         self.assertEqual(match["bubble"], {})
@@ -209,6 +217,20 @@ class C2VisionIntegrationTests(unittest.TestCase):
         for refreshed_role in ("self", "unknown"):
             with self.subTest(refreshed_role=refreshed_role):
                 actions = Actions()
+                current_candidate = {
+                    "type": "image",
+                    "message_type": "image",
+                    "bubble_rect": [120, 220, 320, 360],
+                    "bounds": [120, 220, 320, 360],
+                    "sender_role": refreshed_role,
+                    "side": "customer",
+                    "anchor": {"x": 220, "y": 290},
+                    "image_physical_anchor": {
+                        **self.image_anchor(),
+                        "sender_role": refreshed_role,
+                        "visual_side": "customer",
+                    },
+                }
                 ports = VisionHostPorts(
                     rpa_lease=SimpleNamespace(
                         lease=lambda *_args, **_kwargs: nullcontext()
@@ -221,33 +243,21 @@ class C2VisionIntegrationTests(unittest.TestCase):
                             "ok": True,
                             "image": screenshot.copy(),
                             "image_size": screenshot.size,
-                            "messages": [],
+                            "messages": [dict(current_candidate)],
                             "time_markers": [],
                         }
                     ),
                     ui_action=actions,
                     clipboard=SimpleNamespace(),
                 )
-                with patch.object(
-                    transaction,
-                    "detect_visual_image_bubbles",
-                    return_value=[
-                        {
-                            "bounds": [120, 220, 320, 360],
-                            "sender_role": refreshed_role,
-                            "side": "customer",
-                            "anchor": {"x": 220, "y": 290},
-                        }
-                    ],
-                ):
-                    result = transaction.acquire_current_image_via_ports(
-                        ports,
-                        {
-                            "sender_role": "customer",
-                            "bubble_rect": [120, 220, 320, 360],
-                            "image_physical_anchor": self.image_anchor(),
-                        },
-                    )
+                result = transaction.acquire_current_image_via_ports(
+                    ports,
+                    {
+                        "sender_role": "customer",
+                        "bubble_rect": [120, 220, 320, 360],
+                        "image_physical_anchor": self.image_anchor(),
+                    },
+                )
 
                 self.assertFalse(result["ok"])
                 self.assertEqual(
@@ -417,6 +427,18 @@ class C2VisionIntegrationTests(unittest.TestCase):
     def test_image_candidate_frame_is_reused_for_target_confirmation(self):
         image = Image.new("RGB", (800, 600), "white")
 
+        observed_images = self.observed_image_messages(
+            image,
+            [
+                {
+                    "bounds": [420, 180, 650, 320],
+                    "sender_role": "customer",
+                    "side": "customer",
+                    "anchor": {"x": 500, "y": 240},
+                }
+            ],
+        )
+
         class Target:
             context = {}
 
@@ -440,7 +462,15 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 frame_image = image.copy()
                 if context.get("phase") == "image_candidate":
                     self.candidate_image = frame_image
-                return {"ok": True, "image": frame_image, "image_size": image.size, "messages": [], "time_markers": []}
+                return {
+                    "ok": True,
+                    "image": frame_image,
+                    "image_size": image.size,
+                    "messages": [
+                        dict(item) for item in observed_images
+                    ],
+                    "time_markers": [],
+                }
 
         class Actions:
             def right_click(self, _x, _y, *, bounds):
@@ -471,10 +501,6 @@ class C2VisionIntegrationTests(unittest.TestCase):
         )
         with patch.object(
             transaction,
-            "detect_visual_image_bubbles",
-            return_value=[{"bounds": [420, 180, 650, 320], "sender_role": "customer", "side": "customer", "anchor": {"x": 500, "y": 240}}],
-        ), patch.object(
-            transaction,
             "find_copy_menu_item",
             return_value={"x": 620, "y": 320, "bounds": [600, 300, 650, 340]},
         ):
@@ -483,7 +509,9 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 {
                     "sender_role": "customer",
                     "bubble_rect": [420, 180, 650, 320],
-                    "image_physical_anchor": self.image_anchor(),
+                    "image_physical_anchor": observed_images[0][
+                        "image_physical_anchor"
+                    ],
                 },
             )
 
@@ -496,6 +524,17 @@ class C2VisionIntegrationTests(unittest.TestCase):
     def test_copy_journal_is_persisted_before_physical_click(self):
         image = Image.new("RGB", (800, 600), "white")
         events: list[str] = []
+        observed_images = self.observed_image_messages(
+            image,
+            [
+                {
+                    "bounds": [420, 180, 650, 320],
+                    "sender_role": "customer",
+                    "side": "customer",
+                    "anchor": {"x": 500, "y": 240},
+                }
+            ],
+        )
 
         class Actions:
             def right_click(self, _x, _y, *, bounds):
@@ -518,7 +557,9 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "ok": True,
                     "image": image.copy(),
                     "image_size": image.size,
-                    "messages": [],
+                    "messages": [
+                        dict(item) for item in observed_images
+                    ],
                     "time_markers": [],
                     "ocr_items": (
                         [{"text": "复制"}]
@@ -538,17 +579,6 @@ class C2VisionIntegrationTests(unittest.TestCase):
         )
         with patch.object(
             transaction,
-            "detect_visual_image_bubbles",
-            return_value=[
-                {
-                    "bounds": [420, 180, 650, 320],
-                    "sender_role": "customer",
-                    "side": "customer",
-                    "anchor": {"x": 500, "y": 240},
-                }
-            ],
-        ), patch.object(
-            transaction,
             "find_copy_menu_item",
             return_value={"x": 620, "y": 320, "bounds": [600, 300, 650, 340]},
         ):
@@ -557,7 +587,9 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 {
                     "sender_role": "customer",
                     "bubble_rect": [420, 180, 650, 320],
-                    "image_physical_anchor": self.image_anchor(),
+                    "image_physical_anchor": observed_images[0][
+                        "image_physical_anchor"
+                    ],
                     "action_journal_update": lambda **kwargs: events.append(
                         str(kwargs["action_phase"])
                     ),
@@ -573,6 +605,17 @@ class C2VisionIntegrationTests(unittest.TestCase):
 
     def test_copy_click_exception_always_dismisses_context_menu(self):
         image = Image.new("RGB", (800, 600), "white")
+        observed_images = self.observed_image_messages(
+            image,
+            [
+                {
+                    "bounds": [420, 180, 650, 320],
+                    "sender_role": "customer",
+                    "side": "customer",
+                    "anchor": {"x": 500, "y": 240},
+                }
+            ],
+        )
 
         class Actions:
             dismissed = 0
@@ -597,7 +640,9 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "ok": True,
                     "image": image.copy(),
                     "image_size": image.size,
-                    "messages": [],
+                    "messages": [
+                        dict(item) for item in observed_images
+                    ],
                     "time_markers": [],
                     "ocr_items": [{"text": "复制"}] if context.get("phase") == "image_context_menu" else [],
                     "screen_origin": [0, 0],
@@ -608,10 +653,6 @@ class C2VisionIntegrationTests(unittest.TestCase):
         )
         with patch.object(
             transaction,
-            "detect_visual_image_bubbles",
-            return_value=[{"bounds": [420, 180, 650, 320], "sender_role": "customer", "side": "customer", "anchor": {"x": 500, "y": 240}}],
-        ), patch.object(
-            transaction,
             "find_copy_menu_item",
             return_value={"x": 620, "y": 320, "bounds": [600, 300, 650, 340]},
         ):
@@ -620,7 +661,9 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 {
                     "sender_role": "customer",
                     "bubble_rect": [420, 180, 650, 320],
-                    "image_physical_anchor": self.image_anchor(),
+                    "image_physical_anchor": observed_images[0][
+                        "image_physical_anchor"
+                    ],
                 },
             )
 
@@ -810,6 +853,17 @@ class C2VisionIntegrationTests(unittest.TestCase):
 
     def test_delayed_clipboard_update_is_polled_after_one_copy_click(self):
         image = Image.new("RGB", (800, 600), "white")
+        observed_images = self.observed_image_messages(
+            image,
+            [
+                {
+                    "bounds": [420, 180, 650, 320],
+                    "sender_role": "customer",
+                    "side": "customer",
+                    "anchor": {"x": 500, "y": 240},
+                }
+            ],
+        )
 
         class Actions:
             right_click_count = 0
@@ -849,7 +903,9 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "ok": True,
                     "image": image.copy(),
                     "image_size": image.size,
-                    "messages": [],
+                    "messages": [
+                        dict(item) for item in observed_images
+                    ],
                     "time_markers": [],
                     "ocr_items": [],
                     "screen_origin": [0, 0],
@@ -859,17 +915,6 @@ class C2VisionIntegrationTests(unittest.TestCase):
             clipboard=clipboard,
         )
         with patch.object(
-            transaction,
-            "detect_visual_image_bubbles",
-            return_value=[
-                {
-                    "bounds": [420, 180, 650, 320],
-                    "sender_role": "customer",
-                    "side": "customer",
-                    "anchor": {"x": 500, "y": 240},
-                }
-            ],
-        ), patch.object(
             transaction,
             "find_copy_menu_item",
             return_value={
@@ -883,7 +928,9 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 {
                     "sender_role": "customer",
                     "bubble_rect": [420, 180, 650, 320],
-                    "image_physical_anchor": self.image_anchor(),
+                    "image_physical_anchor": observed_images[0][
+                        "image_physical_anchor"
+                    ],
                     "clipboard_wait_timeout_seconds": 0.5,
                     "clipboard_poll_interval_seconds": 0.02,
                 },
@@ -927,27 +974,6 @@ class C2VisionIntegrationTests(unittest.TestCase):
 
         clipboard = Clipboard()
         actions = Actions()
-        ports = VisionHostPorts(
-            rpa_lease=SimpleNamespace(
-                lease=lambda *_args, **_kwargs: nullcontext()
-            ),
-            conversation_target=SimpleNamespace(
-                confirm_target=lambda _context: {"ok": True}
-            ),
-            window_frame=SimpleNamespace(
-                capture_frame=lambda _context: {
-                    "ok": True,
-                    "image": image.copy(),
-                    "image_size": image.size,
-                    "messages": [],
-                    "time_markers": [],
-                    "ocr_items": [],
-                    "screen_origin": [0, 0],
-                }
-            ),
-            ui_action=actions,
-            clipboard=clipboard,
-        )
         bubbles = [
             {
                 "bounds": [420, 140, 650, 280],
@@ -962,12 +988,35 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "anchor": {"x": 520, "y": 475},
             },
         ]
+        observed_images = self.observed_image_messages(
+            image,
+            bubbles,
+        )
+        ports = VisionHostPorts(
+            rpa_lease=SimpleNamespace(
+                lease=lambda *_args, **_kwargs: nullcontext()
+            ),
+            conversation_target=SimpleNamespace(
+                confirm_target=lambda _context: {"ok": True}
+            ),
+            window_frame=SimpleNamespace(
+                capture_frame=lambda _context: {
+                    "ok": True,
+                    "image": image.copy(),
+                    "image_size": image.size,
+                    "messages": [
+                        dict(item) for item in observed_images
+                    ],
+                    "time_markers": [],
+                    "ocr_items": [],
+                    "screen_origin": [0, 0],
+                }
+            ),
+            ui_action=actions,
+            clipboard=clipboard,
+        )
         results = []
         with patch.object(
-            transaction,
-            "detect_visual_image_bubbles",
-            return_value=bubbles,
-        ), patch.object(
             transaction,
             "find_copy_menu_item",
             return_value={
@@ -976,17 +1025,16 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "bounds": [600, 300, 650, 340],
             },
         ):
-            for occurrence_index, bubble in enumerate(bubbles):
+            for occurrence_index, bubble in enumerate(observed_images):
                 results.append(
                     transaction.acquire_current_image_via_ports(
                         ports,
                         {
                             "sender_role": "customer",
                             "bubble_rect": bubble["bounds"],
-                            "image_physical_anchor": self.image_anchor(
-                                occurrence_index=occurrence_index,
-                                occurrence_count=2,
-                            ),
+                            "image_physical_anchor": bubble[
+                                "image_physical_anchor"
+                            ],
                         },
                     )
                 )
@@ -1144,11 +1192,27 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "anchor": {"x": 530, "y": 475},
             },
         ]
+        current_observed_images = self.observed_image_messages(
+            current,
+            current_bubbles,
+            messages=current_messages,
+        )
+        ports.window_frame.capture_frame = lambda _context: {
+            "ok": True,
+            "image": current.copy(),
+            "image_size": current.size,
+            "messages": [
+                *current_messages,
+                *(
+                    dict(item)
+                    for item in current_observed_images
+                ),
+            ],
+            "time_markers": [],
+            "ocr_items": [],
+            "screen_origin": [0, 0],
+        }
         with patch.object(
-            transaction,
-            "detect_visual_image_bubbles",
-            return_value=current_bubbles,
-        ), patch.object(
             transaction,
             "find_copy_menu_item",
             return_value={
@@ -1211,9 +1275,26 @@ class C2VisionIntegrationTests(unittest.TestCase):
         current.paste(replacement_pattern, (old_bounds[0], old_bounds[1]))
         expected = attach_image_physical_anchors(
             initial,
-            [{"bounds": old_bounds, "side": "customer"}],
+            [
+                {
+                    "bounds": old_bounds,
+                    "side": "customer",
+                    "sender_role": "customer",
+                }
+            ],
             [],
         )[0]["image_physical_anchor"]
+        current_observed_images = self.observed_image_messages(
+            current,
+            [
+                {
+                    "bounds": old_bounds,
+                    "side": "customer",
+                    "sender_role": "customer",
+                    "anchor": {"x": 530, "y": 475},
+                }
+            ],
+        )
 
         class Actions:
             right_click_count = 0
@@ -1236,32 +1317,24 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "ok": True,
                     "image": current.copy(),
                     "image_size": current.size,
-                    "messages": [],
+                    "messages": [
+                        dict(item)
+                        for item in current_observed_images
+                    ],
                     "time_markers": [],
                 }
             ),
             ui_action=actions,
             clipboard=SimpleNamespace(sequence_number=lambda: 40),
         )
-        with patch.object(
-            transaction,
-            "detect_visual_image_bubbles",
-            return_value=[
-                {
-                    "bounds": old_bounds,
-                    "side": "customer",
-                    "anchor": {"x": 530, "y": 475},
-                }
-            ],
-        ):
-            result = transaction.acquire_current_image_via_ports(
-                ports,
-                {
-                    "sender_role": "customer",
-                    "bubble_rect": old_bounds,
-                    "image_physical_anchor": expected,
-                },
-            )
+        result = transaction.acquire_current_image_via_ports(
+            ports,
+            {
+                "sender_role": "customer",
+                "bubble_rect": old_bounds,
+                "image_physical_anchor": expected,
+            },
+        )
 
         self.assertFalse(result["ok"])
         self.assertEqual(
@@ -1285,9 +1358,26 @@ class C2VisionIntegrationTests(unittest.TestCase):
         frame_image.paste(bubble_image, (bounds[0], bounds[1]))
         expected = attach_image_physical_anchors(
             frame_image,
-            [{"bounds": bounds, "side": "customer"}],
+            [
+                {
+                    "bounds": bounds,
+                    "side": "customer",
+                    "sender_role": "customer",
+                }
+            ],
             [],
         )[0]["image_physical_anchor"]
+        observed_images = self.observed_image_messages(
+            frame_image,
+            [
+                {
+                    "bounds": bounds,
+                    "sender_role": "customer",
+                    "side": "customer",
+                    "anchor": {"x": 530, "y": 250},
+                }
+            ],
+        )
         wrong_image = Image.new("RGB", (200, 140), (210, 40, 60))
 
         class Frames:
@@ -1300,7 +1390,9 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         "ok": True,
                         "image": frame_image.copy(),
                         "image_size": frame_image.size,
-                        "messages": [],
+                        "messages": [
+                            dict(item) for item in observed_images
+                        ],
                         "time_markers": [],
                     }
                 return {
@@ -1352,17 +1444,6 @@ class C2VisionIntegrationTests(unittest.TestCase):
         )
         with patch.object(
             transaction,
-            "detect_visual_image_bubbles",
-            return_value=[
-                {
-                    "bounds": bounds,
-                    "sender_role": "customer",
-                    "side": "customer",
-                    "anchor": {"x": 530, "y": 250},
-                }
-            ],
-        ), patch.object(
-            transaction,
             "find_copy_menu_item",
             return_value={
                 "x": 620,
@@ -1407,9 +1488,26 @@ class C2VisionIntegrationTests(unittest.TestCase):
         frame_image.paste(bubble_image, (bounds[0], bounds[1]))
         expected = attach_image_physical_anchors(
             frame_image,
-            [{"bounds": bounds, "side": "customer"}],
+            [
+                {
+                    "bounds": bounds,
+                    "side": "customer",
+                    "sender_role": "customer",
+                }
+            ],
             [],
         )[0]["image_physical_anchor"]
+        observed_images = self.observed_image_messages(
+            frame_image,
+            [
+                {
+                    "bounds": bounds,
+                    "sender_role": "customer",
+                    "side": "customer",
+                    "anchor": {"x": 530, "y": 250},
+                }
+            ],
+        )
         wrong_image = Image.new("RGB", (200, 140), (210, 40, 60))
 
         class Frames:
@@ -1418,7 +1516,9 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "ok": True,
                     "image": frame_image.copy(),
                     "image_size": frame_image.size,
-                    "messages": [],
+                    "messages": [
+                        dict(item) for item in observed_images
+                    ],
                     "time_markers": [],
                     "ocr_items": (
                         [{"text": "复制"}]
@@ -1460,17 +1560,6 @@ class C2VisionIntegrationTests(unittest.TestCase):
             clipboard=Clipboard(),
         )
         with patch.object(
-            transaction,
-            "detect_visual_image_bubbles",
-            return_value=[
-                {
-                    "bounds": bounds,
-                    "sender_role": "customer",
-                    "side": "customer",
-                    "anchor": {"x": 530, "y": 250},
-                }
-            ],
-        ), patch.object(
             transaction,
             "find_copy_menu_item",
             return_value={
@@ -1532,14 +1621,33 @@ class C2VisionIntegrationTests(unittest.TestCase):
         initial_candidates = attach_image_physical_anchors(
             initial,
             [
-                {"bounds": first_bounds, "side": "customer"},
-                {"bounds": second_bounds, "side": "customer"},
+                {
+                    "bounds": first_bounds,
+                    "side": "customer",
+                    "sender_role": "customer",
+                },
+                {
+                    "bounds": second_bounds,
+                    "side": "customer",
+                    "sender_role": "customer",
+                },
             ],
             [],
         )
         expected = initial_candidates[0]["image_physical_anchor"]
         self.assertEqual(expected["occurrence_index"], 0)
         self.assertEqual(expected["occurrence_count"], 2)
+        current_observed_images = self.observed_image_messages(
+            current,
+            [
+                {
+                    "bounds": second_bounds,
+                    "side": "customer",
+                    "sender_role": "customer",
+                    "anchor": {"x": 530, "y": 460},
+                }
+            ],
+        )
 
         class Actions:
             right_click_count = 0
@@ -1562,32 +1670,24 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "ok": True,
                     "image": current.copy(),
                     "image_size": current.size,
-                    "messages": [],
+                    "messages": [
+                        dict(item)
+                        for item in current_observed_images
+                    ],
                     "time_markers": [],
                 }
             ),
             ui_action=actions,
             clipboard=SimpleNamespace(sequence_number=lambda: 50),
         )
-        with patch.object(
-            transaction,
-            "detect_visual_image_bubbles",
-            return_value=[
-                {
-                    "bounds": second_bounds,
-                    "side": "customer",
-                    "anchor": {"x": 530, "y": 460},
-                }
-            ],
-        ):
-            result = transaction.acquire_current_image_via_ports(
-                ports,
-                {
-                    "sender_role": "customer",
-                    "bubble_rect": first_bounds,
-                    "image_physical_anchor": expected,
-                },
-            )
+        result = transaction.acquire_current_image_via_ports(
+            ports,
+            {
+                "sender_role": "customer",
+                "bubble_rect": first_bounds,
+                "image_physical_anchor": expected,
+            },
+        )
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["reason"], "C2_IMAGE_SLOT_RECONFIRM_FAILED")
@@ -1608,6 +1708,9 @@ class C2VisionIntegrationTests(unittest.TestCase):
             "occurrence_count": 1,
         }
         current_candidate = {
+            "type": "image",
+            "message_type": "image",
+            "bubble_rect": bounds,
             "bounds": bounds,
             "side": "customer",
             "anchor": {"x": 530, "y": 290},
@@ -1642,30 +1745,21 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "ok": True,
                     "image": current.copy(),
                     "image_size": current.size,
-                    "messages": [],
+                    "messages": [dict(current_candidate)],
                     "time_markers": [],
                 }
             ),
             ui_action=actions,
             clipboard=SimpleNamespace(sequence_number=lambda: 60),
         )
-        with patch.object(
-            transaction,
-            "detect_visual_image_bubbles",
-            return_value=[current_candidate],
-        ), patch.object(
-            transaction,
-            "attach_image_physical_anchors",
-            return_value=[current_candidate],
-        ):
-            result = transaction.acquire_current_image_via_ports(
-                ports,
-                {
-                    "sender_role": "customer",
-                    "bubble_rect": bounds,
-                    "image_physical_anchor": expected,
-                },
-            )
+        result = transaction.acquire_current_image_via_ports(
+            ports,
+            {
+                "sender_role": "customer",
+                "bubble_rect": bounds,
+                "image_physical_anchor": expected,
+            },
+        )
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["reason"], "C2_IMAGE_SLOT_RECONFIRM_FAILED")
@@ -2355,6 +2449,109 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertEqual(observations[0]["sender_role"], "customer")
         self.assertEqual(observations[0]["sender_role_source"], "same_row_avatar")
         self.assertNotIn("contract_errors", observations[0])
+
+    def test_initial_read_and_preclick_refresh_share_real_image_observer(self):
+        screenshot = Image.new("RGB", (974, 853), (242, 242, 242))
+        draw = ImageDraw.Draw(screenshot)
+        for y in range(391, 436, 5):
+            for x in range(408, 453, 5):
+                tone = 50 if ((x + y) // 5) % 2 else 205
+                draw.rectangle(
+                    (x, y, x + 4, y + 4),
+                    fill=(tone, 110, 170),
+                )
+        for y in range(390, 654, 8):
+            for x in range(470, 670, 8):
+                tone = 35 if ((x + y) // 8) % 2 else 220
+                draw.rectangle(
+                    (x, y, x + 7, y + 7),
+                    fill=(tone, 150, 80),
+                )
+        draw.rectangle(
+            (451, 402, 472, 414),
+            fill=(70, 120, 170),
+        )
+
+        initial_messages = (
+            wechat_win32_ocr_sidecar.merge_structural_image_messages(
+                screenshot,
+                [],
+                [],
+                target="CJTEST01",
+            )
+        )
+
+        class State:
+            window_context = {"hwnd": 31415}
+            window_context_validated = True
+            events = []
+
+            class Host:
+                message_row_avatar_role_details = staticmethod(
+                    wechat_win32_ocr_sidecar.message_row_avatar_role_details
+                )
+                parse_messages_from_ocr = staticmethod(
+                    lambda *_args, **_kwargs: []
+                )
+                run_ocr = staticmethod(lambda _image: [])
+
+                @staticmethod
+                def capture_c2_window_context(
+                    _context,
+                    *,
+                    phase,
+                    label,
+                ):
+                    return {
+                        "ok": True,
+                        "image": screenshot.copy(),
+                        "hwnd": 31415,
+                        "capture_mode": "test_frame_input",
+                        "screen_origin": [0, 0],
+                        "validation": {
+                            "reason": "window_context_confirmed"
+                        },
+                    }
+
+            host = Host()
+
+            @staticmethod
+            def record(*_args, **_kwargs):
+                return None
+
+        refreshed = _WindowFrame(State()).capture_frame(
+            {
+                "phase": "image_candidate",
+                "remark_code": "CJTEST01",
+            }
+        )
+        try:
+            refreshed_images = [
+                item
+                for item in refreshed["messages"]
+                if item.get("type") == "image"
+            ]
+            self.assertEqual(len(initial_messages), 1)
+            self.assertEqual(len(refreshed_images), 1)
+            self.assertEqual(
+                initial_messages[0]["sender_role"],
+                "customer",
+            )
+            self.assertEqual(
+                refreshed_images[0]["sender_role"],
+                "customer",
+            )
+            self.assertEqual(
+                initial_messages[0]["canonical_visual_id"],
+                refreshed_images[0]["canonical_visual_id"],
+            )
+            self.assertEqual(
+                refreshed_images[0]["avatar_alignment"]["role"],
+                "customer",
+            )
+        finally:
+            refreshed["image"].close()
+            screenshot.close()
 
     def test_structural_self_image_bounds_exclude_avatar_before_shared_role_resolution(self):
         screenshot = Image.new("RGB", (974, 853), (242, 242, 242))

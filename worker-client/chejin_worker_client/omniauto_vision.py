@@ -505,8 +505,46 @@ class _WindowFrame:
                     target=str(context.get("remark_code") or context.get("target_name") or ""),
                     screenshot=image,
                 )
+                from apps.wechat_ai_customer_service.optional_plugins.vision.capture.surface import (
+                    observe_structural_image_messages,
+                )
                 from apps.wechat_ai_customer_service.optional_plugins.vision.capture.wechat import (
                     extract_chat_time_markers,
+                )
+                image_messages = observe_structural_image_messages(
+                    image,
+                    ocr_items,
+                    messages,
+                    target=str(
+                        context.get("remark_code")
+                        or context.get("target_name")
+                        or ""
+                    ),
+                    role_resolver=(
+                        self.state.host.message_row_avatar_role_details
+                    ),
+                    max_images=max(
+                        1,
+                        int(context.get("max_images") or 8),
+                    ),
+                )
+                messages.extend(image_messages)
+                def message_visual_top(item: dict[str, Any]) -> float:
+                    rect = item.get("bubble_rect")
+                    try:
+                        return float(
+                            rect.get("top")
+                            if isinstance(rect, dict)
+                            else rect[1]
+                        )
+                    except (TypeError, ValueError, IndexError):
+                        return 0.0
+
+                messages.sort(
+                    key=lambda item: (
+                        message_visual_top(item),
+                        str(item.get("id") or ""),
+                    )
                 )
                 time_markers = extract_chat_time_markers(ocr_items, image.size)
             except Exception as exc:

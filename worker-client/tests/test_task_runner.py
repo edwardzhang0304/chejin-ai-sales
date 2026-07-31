@@ -49,7 +49,12 @@ from chejin_worker_client.transaction_outcomes import (
     merge_item_outcomes,
 )
 from chejin_worker_client.ui_lock import LOCK_FILE, UiLockError
-from chejin_worker_client.wechat_c2 import image_observation_source_key, voice_observation_source_key
+from chejin_worker_client.wechat_c2 import (
+    build_message_ingest_payload,
+    image_observation_source_key,
+    reconcile_v16104_identity_transition,
+    voice_observation_source_key,
+)
 
 
 class FakeApi:
@@ -6914,6 +6919,370 @@ class TaskRunnerTest(unittest.TestCase):
         assert "c2_image_slot_finished" in events
         assert "c2_image_slot_terminalized" in events
         assert "c2_image_slot_cached" in events
+
+    def test_completed_image_pushed_out_is_restored_and_ingested_once(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="ok", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-image-replay",
+            worker_token="token",
+            client_instance_id="client-image-replay",
+            run_status="running",
+        )
+        unique = str(time.time_ns())
+        target = WechatReadTarget(
+            conversation_id=f"conv-image-replay-{unique}",
+            rpa_session_key="wx:rpa:v1:image-replay",
+            display_name="CJREPLAY1",
+            remark_code="CJREPLAY1",
+            authorization_revision=f"revision-image-replay-{unique}",
+        )
+        observation = {
+            "schema_version": 3,
+            "observation_id": f"image-replay-{unique}",
+            "row_kind": "image_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "image",
+            "voice_state": "not_voice",
+            "item_state": "discovered",
+            "image_physical_anchor": {
+                "sender_role": "customer",
+                "visual_side": "customer",
+                "preceding_stable_message": f"before-{unique}",
+                "following_stable_message": f"after-{unique}",
+                "bubble_visual_fingerprint": (
+                    "dhash64:0123456789abcdef"
+                ),
+                "occurrence_index": 0,
+                "occurrence_count": 1,
+            },
+            "bubble_rect": [420, 180, 650, 320],
+            "source_message": {
+                "id": f"image-source-{unique}",
+                "type": "image",
+                "sender_role": "customer",
+            },
+        }
+        context_text = {
+            "schema_version": 3,
+            "observation_id": f"text-context-{unique}",
+            "row_kind": "text_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "text",
+            "voice_state": "not_voice",
+            "content_clean": "图片后的稳定锚点文字",
+            "bubble_rect": [420, 340, 650, 390],
+            "source_message": {
+                "id": f"text-context-source-{unique}",
+                "type": "text",
+                "sender_role": "customer",
+                "content": "图片后的稳定锚点文字",
+            },
+        }
+        reconciled, identity_state, identity_errors = (
+            reconcile_v16104_identity_transition(
+                target,
+                [observation, context_text],
+                {},
+            )
+        )
+        self.assertEqual(identity_errors, [])
+        initial_payload = {
+            "observation_schema_version": 3,
+            "authoritative_frame_source": "final_read",
+            "observations": reconciled,
+        }
+        completed = {
+            "state": "completed",
+            "action_phase": "confirmed",
+            "reason": "vision_ready",
+            "customer_image_understanding": {
+                "schema_version": 1,
+                "vision_summary": "已完成且后来被顶出屏幕的车辆图片",
+            },
+            "visual_bridge_input": {
+                "summary": "车辆图片",
+            },
+            "transaction": {
+                "action_phase": "confirmed",
+                "image_sha256": "d" * 64,
+            },
+            "diagnostics": {
+                "events": [],
+                "image_persisted": False,
+            },
+        }
+        with patch(
+            "chejin_worker_client.omniauto_vision."
+            "vision_configuration_status",
+            return_value={
+                "ready": True,
+                "config": {
+                    "customer_image_understanding": {"enabled": True}
+                },
+            },
+        ), patch(
+            "chejin_worker_client.omniauto_vision.process_image_slot",
+            return_value=completed,
+        ) as vision:
+            processed, first_stats = runner._process_final_image_slots(
+                binding=binding,
+                target=target,
+                sidecar_payload=initial_payload,
+                enforce_read_targets=False,
+            )
+            shifted_context = {
+                **context_text,
+                "bubble_rect": [420, 120, 650, 170],
+                "source_message": {
+                    **context_text["source_message"],
+                    "bubble_rect": [420, 120, 650, 170],
+                },
+            }
+            new_text = {
+                "schema_version": 3,
+                "observation_id": f"text-new-{unique}",
+                "row_kind": "text_bubble",
+                "sender_role": "customer",
+                "sender_role_source": "same_row_avatar",
+                "message_type": "text",
+                "voice_state": "not_voice",
+                "content_clean": "图片被顶出后出现的新文字",
+                "bubble_rect": [420, 190, 650, 240],
+                "source_message": {
+                    "id": f"text-new-source-{unique}",
+                    "type": "text",
+                    "sender_role": "customer",
+                    "content": "图片被顶出后出现的新文字",
+                },
+            }
+            current_observations, _, current_identity_errors = (
+                reconcile_v16104_identity_transition(
+                    target,
+                    [shifted_context, new_text],
+                    identity_state,
+                )
+            )
+            self.assertEqual(current_identity_errors, [])
+            pushed_out_payload = {
+                "observation_schema_version": 3,
+                "authoritative_frame_source": "final_read",
+                "observations": current_observations,
+            }
+            restored = runner._merge_waiting_image_facts(
+                target=target,
+                sidecar_payload=pushed_out_payload,
+            )
+            restored, second_stats = runner._process_final_image_slots(
+                binding=binding,
+                target=target,
+                sidecar_payload=restored,
+                enforce_read_targets=False,
+            )
+
+        self.assertEqual(vision.call_count, 1)
+        self.assertEqual(first_stats["completed"], 1)
+        self.assertEqual(second_stats["cached"], 1)
+        self.assertEqual(len(restored["observations"]), 3)
+        restored_images = [
+            item
+            for item in restored["observations"]
+            if item.get("row_kind") == "image_bubble"
+        ]
+        self.assertEqual(len(restored_images), 1)
+        self.assertEqual(
+            restored_images[0]["content_clean"],
+            "已完成且后来被顶出屏幕的车辆图片",
+        )
+        self.assertNotIn("bubble_rect", restored_images[0])
+        ingest = build_message_ingest_payload(target, restored)
+        self.assertEqual(len(ingest["messages"]), 3)
+        self.assertEqual(
+            ingest["messages"][0]["message_type"],
+            "image",
+        )
+        self.assertEqual(
+            ingest["messages"][0]["item_state"],
+            "completed",
+        )
+        source_key = ingest["messages"][0]["source_message_key"]
+        ledger = load_c2_ledger_entry(
+            target.conversation_id,
+            source_key,
+        )
+        self.assertEqual(ledger["ingest_state"], "waiting")
+        serialized = json.dumps(ledger["result"], ensure_ascii=False)
+        self.assertNotIn("image_bytes", serialized)
+        self.assertNotIn("image_local_path", serialized)
+        self.assertEqual(
+            processed["observations"][0]["_worker_stable_id"],
+            restored_images[0]["_worker_stable_id"],
+        )
+
+    def test_completed_image_survives_final_read_failure_and_restart(self):
+        api = FakeApi(None)
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="ok", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-image-restart",
+            worker_token="token",
+            client_instance_id="client-image-restart",
+            run_status="running",
+        )
+        unique = str(time.time_ns())
+        target = WechatReadTarget(
+            conversation_id=f"conv-image-restart-{unique}",
+            rpa_session_key="wx:rpa:v1:image-restart",
+            display_name="CJRESTART1",
+            remark_code="CJRESTART1",
+            authorization_revision=f"revision-image-restart-{unique}",
+        )
+        observation = {
+            "schema_version": 3,
+            "observation_id": f"image-restart-{unique}",
+            "row_kind": "image_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "image",
+            "voice_state": "not_voice",
+            "item_state": "discovered",
+            "image_physical_anchor": {
+                "sender_role": "customer",
+                "visual_side": "customer",
+                "preceding_stable_message": f"before-{unique}",
+                "following_stable_message": f"after-{unique}",
+                "bubble_visual_fingerprint": (
+                    "dhash64:fedcba9876543210"
+                ),
+                "occurrence_index": 0,
+                "occurrence_count": 1,
+            },
+            "bubble_rect": [420, 220, 650, 360],
+            "source_message": {
+                "id": f"image-source-{unique}",
+                "type": "image",
+                "sender_role": "customer",
+            },
+        }
+        reconciled, _, identity_errors = (
+            reconcile_v16104_identity_transition(
+                target,
+                [observation],
+                {},
+            )
+        )
+        self.assertEqual(identity_errors, [])
+        initial_payload = {
+            "observation_schema_version": 3,
+            "authoritative_frame_source": "final_read",
+            "observations": reconciled,
+        }
+        completed = {
+            "state": "completed",
+            "action_phase": "confirmed",
+            "reason": "vision_ready",
+            "customer_image_understanding": {
+                "schema_version": 1,
+                "vision_summary": "重启后仍需上报的车辆图片",
+            },
+            "visual_bridge_input": {"summary": "车辆图片"},
+            "transaction": {
+                "action_phase": "confirmed",
+                "image_sha256": "e" * 64,
+            },
+            "diagnostics": {
+                "events": [],
+                "image_persisted": False,
+            },
+        }
+        bridge.get_messages_payloads = [
+            {
+                "ok": False,
+                "state": "final_frame_capture_failed",
+            }
+        ]
+        with patch(
+            "chejin_worker_client.omniauto_vision."
+            "vision_configuration_status",
+            return_value={
+                "ready": True,
+                "config": {
+                    "customer_image_understanding": {"enabled": True}
+                },
+            },
+        ), patch(
+            "chejin_worker_client.omniauto_vision.process_image_slot",
+            return_value=completed,
+        ) as vision:
+            processed, _ = runner._process_final_image_slots(
+                binding=binding,
+                target=target,
+                sidecar_payload=initial_payload,
+                enforce_read_targets=False,
+            )
+            convergence = runner._converge_current_screen_after_images(
+                binding=binding,
+                target=target,
+                target_label=target.display_name,
+                sidecar_payload=processed,
+                lease=type(
+                    "Lease",
+                    (),
+                    {"update_step": lambda _self, _step: None},
+                )(),
+                action_cancel_requested=lambda: False,
+                enforce_read_targets=False,
+                flow_outcomes=FlowOutcomeAccumulator(),
+            )
+            restarted_runner, _ = self.make_runner(
+                api,
+                FakeBridge(
+                    RpaResult(
+                        ok=True,
+                        result_code="ok",
+                        message="unused",
+                    )
+                ),
+            )
+            restored = restarted_runner._merge_waiting_image_facts(
+                target=target,
+                sidecar_payload={
+                    "observation_schema_version": 3,
+                    "authoritative_frame_source": "final_read",
+                    "observations": [],
+                },
+            )
+            restored, restored_stats = (
+                restarted_runner._process_final_image_slots(
+                    binding=binding,
+                    target=target,
+                    sidecar_payload=restored,
+                    enforce_read_targets=False,
+                )
+            )
+
+        self.assertFalse(convergence["ok"])
+        self.assertEqual(
+            convergence["error_code"],
+            "final_frame_capture_failed",
+        )
+        self.assertEqual(vision.call_count, 1)
+        self.assertEqual(restored_stats["cached"], 1)
+        ingest = build_message_ingest_payload(target, restored)
+        self.assertEqual(len(ingest["messages"]), 1)
+        self.assertEqual(
+            ingest["messages"][0]["content"],
+            "重启后仍需上报的车辆图片",
+        )
 
     def test_action_journal_vertical_c2_image_reaches_ingest_and_ledger(self):
         api = FakeApi(None)

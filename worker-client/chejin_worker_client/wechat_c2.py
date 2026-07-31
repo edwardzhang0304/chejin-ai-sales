@@ -1032,6 +1032,32 @@ def apply_image_terminal_result(observation: dict[str, Any], result: dict[str, A
     return enriched
 
 
+def replayable_image_observation(
+    observation: dict[str, Any],
+    *,
+    source_message_key: str,
+) -> dict[str, Any]:
+    """Freeze one terminal image fact without image bytes or runtime paths."""
+
+    projected = _drop_image_runtime_fields(dict(observation))
+    source = (
+        projected.get("source_message")
+        if isinstance(projected.get("source_message"), dict)
+        else {}
+    )
+    projected["source_message"] = {
+        **_drop_image_runtime_fields(dict(source)),
+        "source_message_key": str(source_message_key or "").strip(),
+    }
+    return json.loads(
+        json.dumps(
+            projected,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    )
+
+
 def normalized_voice_flow_state(value: Any) -> str:
     state = str(value or "").strip().lower()
     if state == "voice_transcribe_completed":

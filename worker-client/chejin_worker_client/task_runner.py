@@ -53,6 +53,7 @@ from .storage import (
     has_pending_reply_send_ack_outbox,
     list_c2_outbox_waiting,
     list_c2_action_journal,
+    list_c2_ledger_entries,
     list_reply_send_ack_outbox,
     load_c2_outbox_entry,
     load_c2_state,
@@ -98,6 +99,7 @@ from .wechat_c2 import (
     project_final_slot_flow_gates,
     reconcile_cross_round_observation_identities,
     reconcile_v16104_identity_transition,
+    replayable_image_observation,
     voice_observation_anchor_key,
     voice_observation_source_key,
 )
@@ -4351,6 +4353,10 @@ class TaskRunner:
         ledger_result: dict[str, Any] = {
             "state": terminal_state,
             "reason": terminal_reason,
+            "replayable_observation": replayable_image_observation(
+                terminal_observation,
+                source_message_key=source_key,
+            ),
         }
         if terminal_state == "completed":
             ledger_result.update(
@@ -4389,6 +4395,132 @@ class TaskRunner:
             terminal_state=terminal_state,
         )
         return terminal_observation, terminal_state, terminal_reason
+
+    @staticmethod
+    def _merge_waiting_image_facts(
+        *,
+        target: WechatReadTarget,
+        sidecar_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Restore terminal image facts that are not yet confirmed by backend."""
+
+        payload = dict(sidecar_payload)
+        observations = [
+            dict(item) if isinstance(item, dict) else item
+            for item in (payload.get("observations") or [])
+        ]
+        visible_source_keys: set[str] = set()
+        for observation in observations:
+            if (
+                not isinstance(observation, dict)
+                or observation.get("row_kind") != "image_bubble"
+            ):
+                continue
+            source = (
+                observation.get("source_message")
+                if isinstance(observation.get("source_message"), dict)
+                else {}
+            )
+            source_key = str(
+                source.get("source_message_key") or ""
+            ).strip()
+            if not source_key:
+                try:
+                    source_key = image_observation_source_key(
+                        target,
+                        observation,
+                    )
+                except ValueError:
+                    source_key = ""
+            if source_key:
+                visible_source_keys.add(source_key)
+
+        restored = 0
+        restored_observations: list[dict[str, Any]] = []
+        for ledger in list_c2_ledger_entries(
+            target.conversation_id,
+            message_type="image",
+            ingest_state="waiting",
+        ):
+            source_key = str(
+                ledger.get("source_message_key") or ""
+            ).strip()
+            if not source_key or source_key in visible_source_keys:
+                continue
+            result = (
+                ledger.get("result")
+                if isinstance(ledger.get("result"), dict)
+                else {}
+            )
+            replayable = (
+                result.get("replayable_observation")
+                if isinstance(
+                    result.get("replayable_observation"),
+                    dict,
+                )
+                else {}
+            )
+            if (
+                replayable.get("row_kind") != "image_bubble"
+                or str(replayable.get("item_state") or "")
+                not in {"completed", "failed"}
+            ):
+                continue
+            restored_observation = dict(replayable)
+            # This fact is durable, but its last visible coordinates are not
+            # current-screen evidence. Keeping them would let an old frame
+            # reorder the recovered image among newly visible messages.
+            for field in ("bubble_rect", "bounds", "anchor"):
+                restored_observation.pop(field, None)
+            restored_source = (
+                dict(restored_observation.get("source_message"))
+                if isinstance(
+                    restored_observation.get("source_message"),
+                    dict,
+                )
+                else {}
+            )
+            for field in ("bubble_rect", "bounds", "anchor"):
+                restored_source.pop(field, None)
+            restored_observation["source_message"] = restored_source
+            restored_observations.append(restored_observation)
+            visible_source_keys.add(source_key)
+            restored += 1
+
+        if restored:
+            def stable_sequence(item: Any) -> int | None:
+                if not isinstance(item, dict):
+                    return None
+                match = re.fullmatch(
+                    r"worker-message-(\d+)",
+                    str(item.get("_worker_stable_id") or "").strip(),
+                )
+                return int(match.group(1)) if match else None
+
+            combined = [*restored_observations, *observations]
+            sequences = [stable_sequence(item) for item in combined]
+            if all(sequence is not None for sequence in sequences):
+                combined = [
+                    item
+                    for _, item in sorted(
+                        zip(sequences, combined),
+                        key=lambda pair: int(pair[0] or 0),
+                    )
+                ]
+            observations = combined
+            append_log(
+                "INFO",
+                "c2_image_fact_restored",
+                "已从本地账本恢复尚未确认入库的完整图片事实。",
+                metadata={
+                    "conversation_id": target.conversation_id,
+                    "remark_code": target.remark_code,
+                    "restored_count": restored,
+                    "image_persisted": False,
+                },
+            )
+        payload["observations"] = observations
+        return payload
 
     def _process_final_image_slots(
         self,
@@ -5640,6 +5772,10 @@ class TaskRunner:
                 }
             save_c2_state(identity_state_key, identity_state)
             refreshed["observations"] = observations
+            refreshed = self._merge_waiting_image_facts(
+                target=target,
+                sidecar_payload=refreshed,
+            )
             refreshed["initial_messages"] = (
                 current_payload.get("initial_messages")
                 or sidecar_payload.get("initial_messages")
@@ -7105,6 +7241,10 @@ class TaskRunner:
                     "final_messages": sidecar_payload,
                     "identity_errors": cross_round_identity_errors,
                 }
+            sidecar_payload = self._merge_waiting_image_facts(
+                target=target,
+                sidecar_payload=sidecar_payload,
+            )
             sidecar_payload["observations"] = (
                 self._attach_possible_ai_send_receipts(
                     target=target,
