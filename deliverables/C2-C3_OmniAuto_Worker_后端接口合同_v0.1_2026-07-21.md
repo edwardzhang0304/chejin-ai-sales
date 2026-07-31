@@ -502,8 +502,9 @@ AND authorization_revision 未变化
 
 ### 6.2.1 `GET /api/workers/{worker_id}/wechat/conversations/{conversation_id}/read-authorization`
 
-长动作每秒取消检查使用本轻量接口，不得反复下载完整
-`read-targets/identity_transition`。响应只包含：
+长动作每秒取消检查和“已处理图片事实尚未入库”的原会话恢复，统一使用
+本轻量接口，不得反复下载完整 `read-targets/identity_transition`。普通长动作
+响应包含：
 
 ```json
 {
@@ -516,8 +517,39 @@ AND authorization_revision 未变化
 ```
 
 Worker 必须同时匹配 `conversation_id + authorization_revision + read_reason`。
-该接口只用于正在执行流程的续租/取消判断，不负责发现目标，不能替代开始
-动作前的完整 `read-targets` 准入。
+该接口不负责普通目标发现，不能替代开始动作前的完整 `read-targets` 准入。
+唯一例外是恢复已经持久化的图片事务：后端必须返回三态结果，避免
+`read-targets` 的数量限制或状态变化让整台 Worker 永久停住。
+
+```json
+{
+  "allowed": true,
+  "recovery_decision": "allowed",
+  "conversation_id": "...",
+  "authorization_revision": "...",
+  "read_reason": "waiting_sales_reply",
+  "target": {
+    "conversation_id": "...",
+    "remark_code": "CJ...",
+    "rpa_session_key": "...",
+    "display_name": "...",
+    "authorization_revision": "...",
+    "read_reason": "waiting_sales_reply"
+  }
+}
+```
+
+恢复决定只有：
+
+| `recovery_decision` | Worker 行为 |
+|---|---|
+| `allowed` | 只恢复响应中 `target` 指向的原会话。 |
+| `retry_later` | 保留原 Ledger 和动作日志，阻断新 UI 动作，稍后重试。 |
+| `target_terminated` | 后端已确认目标解绑、替换、删除或会话关闭；只终结该会话本地恢复事务。 |
+
+缺失或未知决定必须按 `retry_later` 失败关闭。图片动作日志中所有条目均明确为
+`not_attempted` 时，证明尚未发生右键或复制，Worker 必须在进入全局门禁前
+本地清理，不需要请求后端。
 
 当消息入库已经创建 Brain 批次、会话进入 `ai_active` 后，全局读取授权
 必须保持 `allowed=false`。后端只给当前 `batch_id` 签发一张批次续行票：

@@ -1,6 +1,6 @@
 {
   "contract_version": 3,
-  "contract_revision": "3.9.0",
+  "contract_revision": "3.10.0",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "sender_roles": ["customer", "self", "system", "unknown"],
@@ -397,6 +397,16 @@
     "ingest_results": ["ingested", "duplicated", "ignored"],
     "source_message_key_owner": "worker",
     "confirmation_rule": "worker_must_confirm_local_ledger_by_exact_source_message_key"
+  },
+  "image_transaction_recovery_contract": {
+    "authorization_endpoint": "GET /api/workers/{worker_id}/wechat/conversations/{conversation_id}/read-authorization",
+    "decisions": ["allowed", "retry_later", "target_terminated"],
+    "decision_field": "recovery_decision",
+    "allowed_target_field": "target",
+    "not_attempted_rule": "an image action journal whose every item is explicitly not_attempted is removed locally before the global transaction barrier",
+    "retry_later_rule": "retain the exact ledger and action journal, block new UI actions, and retry the lightweight authorization check without reopening another conversation",
+    "target_terminated_rule": "only a backend-confirmed permanent target termination may mark the exact conversation's waiting image facts not_required and remove its image action journals",
+    "unknown_decision_rule": "missing or unknown decisions fail closed as retry_later"
   },
   "outbox_recovery_contract": {
     "actions": [

@@ -653,6 +653,69 @@ def mark_c2_ledger_rejected(conversation_id: str, source_message_keys: list[str]
         conn.commit()
 
 
+def terminate_waiting_c2_image_ledger(
+    conversation_id: str,
+    *,
+    reason: str,
+) -> int:
+    """Close only waiting image facts after backend confirms target termination."""
+
+    now = utc_now_iso()
+    updates: list[tuple[str, str, str, str]] = []
+    with db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT source_message_key, result_json
+            FROM c2_message_ledger
+            WHERE conversation_id = ?
+              AND message_type = 'image'
+              AND ingest_state = 'waiting'
+            ORDER BY first_seen_at ASC, source_message_key ASC
+            """,
+            (str(conversation_id),),
+        ).fetchall()
+        for row in rows:
+            try:
+                result = json.loads(row["result_json"] or "{}")
+            except json.JSONDecodeError:
+                result = {}
+            if not isinstance(result, dict):
+                result = {}
+            result["recovery"] = {
+                "state": "target_terminated",
+                "reason": str(reason or "backend_confirmed"),
+                "confirmed_at": now,
+            }
+            _assert_outbox_text_only(result, path="ledger_result")
+            updates.append(
+                (
+                    json.dumps(
+                        result,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                    now,
+                    str(conversation_id),
+                    str(row["source_message_key"]),
+                )
+            )
+        if updates:
+            conn.executemany(
+                """
+                UPDATE c2_message_ledger
+                SET ingest_state = 'not_required',
+                    result_json = ?,
+                    updated_at = ?
+                WHERE conversation_id = ?
+                  AND source_message_key = ?
+                  AND ingest_state = 'waiting'
+                """,
+                updates,
+            )
+        conn.commit()
+    return len(updates)
+
+
 def checkpoint_c2_action_outcomes(
     *,
     flow_id: str,
