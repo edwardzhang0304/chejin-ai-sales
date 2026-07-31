@@ -355,16 +355,18 @@ def _strict_image_result_candidate(
     started: float,
     retry_after_non_json: bool,
 ) -> dict[str, Any]:
+    vision_summary = str(parsed.get("vision_summary") or "").strip()
+    completed = bool(vision_summary)
     return {
         "schema_version": 1,
         "enabled": True,
-        "applied": True,
-        "adoptable": True,
+        "applied": completed,
+        "adoptable": completed,
         "reason": str(parsed.get("reason") or "vision_ready"),
         "provider": str(settings.get("base_url") or ""),
         "request_style": str(settings.get("request_style") or ""),
         "model": str(settings.get("model") or ""),
-        "vision_summary": parsed.get("vision_summary", ""),
+        "vision_summary": vision_summary,
         "image_ocr_text": parsed.get("image_ocr_text", []),
         "classification": parsed.get("classification", {}),
         "entities": parsed.get("entities", {}),
@@ -390,7 +392,11 @@ def _strict_image_result_validation(
     started: float,
     retry_after_non_json: bool,
 ) -> tuple[dict[str, Any], list[str]]:
-    from ..result_schema import image_result_schema, validate_schema
+    from ..result_schema import (
+        image_result_schema,
+        image_understanding_completed,
+        validate_schema,
+    )
 
     candidate = _strict_image_result_candidate(
         parsed=parsed,
@@ -407,6 +413,8 @@ def _strict_image_result_validation(
         if schema
         else ["shared image result schema missing"]
     )
+    if not image_understanding_completed(candidate, schema):
+        errors.append("provider image understanding is not completed")
     return candidate, errors
 
 
@@ -537,7 +545,7 @@ def maybe_run_customer_image_understanding(
     if not str(settings.get("api_key") or "").strip():
         fallback = {
             "applied": False,
-            "adoptable": True,
+            "adoptable": False,
             "reason": "customer_image_understanding_provider_not_configured",
             "vision_summary": "",
             "classification": {
@@ -707,7 +715,7 @@ def maybe_run_customer_image_understanding(
         )
         fallback = {
             "applied": False,
-            "adoptable": True,
+            "adoptable": False,
             "reason": "customer_image_understanding_provider_failed",
             "vision_summary": "",
             "classification": {

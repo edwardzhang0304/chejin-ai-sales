@@ -10,6 +10,7 @@ os.environ.setdefault(
 )
 
 from chejin_worker_client.c2_contract import (
+    formal_image_failure_code,
     observation_role_is_trusted,
     temporary_capability_gate_codes,
 )
@@ -125,12 +126,14 @@ class C2ContractTests(unittest.TestCase):
                 self.assertEqual(classified["error_code"], error_code)
                 self.assertFalse(classified["contract_valid"])
 
-    def test_image_completion_is_decided_inside_the_single_classifier(self):
+    def test_image_completion_uses_the_producer_business_verdict(self):
         completed = classify_action_result(
             "image",
             {
                 "action_phase": "confirmed",
                 "state": "completed",
+                "business_state": "completed",
+                "business_result_confirmed": True,
                 "customer_image_understanding": {
                     "applied": True,
                     "vision_summary": "车辆图片",
@@ -143,6 +146,8 @@ class C2ContractTests(unittest.TestCase):
             {
                 "action_phase": "confirmed",
                 "state": "completed",
+                "business_state": "failed",
+                "business_result_confirmed": False,
                 "customer_image_understanding": {},
             },
             source_message_key="image-2",
@@ -150,6 +155,31 @@ class C2ContractTests(unittest.TestCase):
 
         self.assertEqual(completed["result"], "completed")
         self.assertEqual(copied_only["result"], "failed")
+
+    def test_image_failure_reason_mapping_is_exact_and_contract_driven(self):
+        expected = {
+            "clipboard_sequence_missing_before_copy": (
+                "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED"
+            ),
+            "clipboard_sequence_unchanged_after_copy": (
+                "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED"
+            ),
+            "image_clipboard_transaction_lock_timeout": (
+                "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED"
+            ),
+            "clipboard_clear_failed": (
+                "C2_IMAGE_CLIPBOARD_CLEAR_FAILED"
+            ),
+            "customer_image_understanding_provider_failed": (
+                "C2_IMAGE_UNDERSTANDING_FAILED"
+            ),
+        }
+        for reason, code in expected.items():
+            with self.subTest(reason=reason):
+                self.assertEqual(
+                    formal_image_failure_code(reason),
+                    code,
+                )
 
     def test_send_confirmation_requires_a_physical_trigger(self):
         classified = classify_action_result(

@@ -1,6 +1,6 @@
 {
   "contract_version": 3,
-  "contract_revision": "3.12.0",
+  "contract_revision": "3.12.1",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "sender_roles": ["customer", "self", "system", "unknown"],
@@ -358,11 +358,68 @@
       "C2_IMAGE_SLOT_RECONFIRM_FAILED",
       "C2_IMAGE_SOURCE_INVALID",
       "C2_IMAGE_PROVIDER_PAYLOAD_TOO_LARGE",
+      "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED",
       "C2_IMAGE_CLIPBOARD_CLEAR_FAILED",
       "C2_IMAGE_VISION_CONFIG_INVALID",
       "C2_IMAGE_UNDERSTANDING_SCHEMA_INVALID",
       "C2_IMAGE_UNDERSTANDING_FAILED"
     ],
+    "default_failure_error_code": "C2_IMAGE_UNDERSTANDING_FAILED",
+    "failure_reason_to_error_code": {
+      "C2_IMAGE_OBSERVATION_FAILED": "C2_IMAGE_OBSERVATION_FAILED",
+      "vision_window_frame_unavailable": "C2_IMAGE_OBSERVATION_FAILED",
+      "vision_window_frame_invalid": "C2_IMAGE_OBSERVATION_FAILED",
+      "vision_window_message_parse_failed": "C2_IMAGE_OBSERVATION_FAILED",
+      "C2_IMAGE_SLOT_RECONFIRM_FAILED": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+      "image_sender_role_untrusted": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+      "image_slot_identity_missing": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+      "image_bubble_rect_missing": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+      "image_clipboard_side_filter_invalid": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+      "vision_target_confirmation_failed": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+      "image_bubble_not_visible_after_refresh": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+      "image_bubble_current_bounds_missing": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+      "image_bubble_clipboard_fingerprint_missing": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+      "image_context_menu_unavailable": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+      "image_context_menu_copy_item_missing": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+      "image_context_menu_screen_click_unavailable": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+      "image_context_menu_copy_bounds_missing": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+      "clipboard_image_fingerprint_mismatch": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+      "C2_IMAGE_SOURCE_INVALID": "C2_IMAGE_SOURCE_INVALID",
+      "clipboard_current_content_not_bitmap": "C2_IMAGE_SOURCE_INVALID",
+      "clipboard_current_image_invalid": "C2_IMAGE_SOURCE_INVALID",
+      "image_decode_failed": "C2_IMAGE_SOURCE_INVALID",
+      "image_pixel_limit_exceeded": "C2_IMAGE_SOURCE_INVALID",
+      "C2_IMAGE_PROVIDER_PAYLOAD_TOO_LARGE": "C2_IMAGE_PROVIDER_PAYLOAD_TOO_LARGE",
+      "image_provider_payload_too_large": "C2_IMAGE_PROVIDER_PAYLOAD_TOO_LARGE",
+      "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED": "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED",
+      "clipboard_sequence_missing_before_copy": "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED",
+      "clipboard_sequence_unchanged_after_copy": "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED",
+      "clipboard_sequence_changed_during_read": "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED",
+      "clipboard_replaced_by_external": "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED",
+      "clipboard_copy_ownership_unconfirmed": "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED",
+      "clipboard_owner_api_unavailable": "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED",
+      "clipboard_owner_window_missing": "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED",
+      "clipboard_owner_not_wechat_image": "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED",
+      "clipboard_owner_check_failed": "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED",
+      "image_clipboard_transaction_lock_timeout": "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED",
+      "vision_cancelled": "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED",
+      "vision_port_transaction_exception": "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED",
+      "C2_IMAGE_CLIPBOARD_CLEAR_FAILED": "C2_IMAGE_CLIPBOARD_CLEAR_FAILED",
+      "clipboard_clear_port_missing": "C2_IMAGE_CLIPBOARD_CLEAR_FAILED",
+      "clipboard_clear_exception": "C2_IMAGE_CLIPBOARD_CLEAR_FAILED",
+      "clipboard_clear_invalid_result": "C2_IMAGE_CLIPBOARD_CLEAR_FAILED",
+      "clipboard_clear_failed": "C2_IMAGE_CLIPBOARD_CLEAR_FAILED",
+      "C2_IMAGE_VISION_CONFIG_INVALID": "C2_IMAGE_VISION_CONFIG_INVALID",
+      "customer_image_understanding_provider_not_configured": "C2_IMAGE_VISION_CONFIG_INVALID",
+      "C2_IMAGE_UNDERSTANDING_SCHEMA_INVALID": "C2_IMAGE_UNDERSTANDING_SCHEMA_INVALID",
+      "image_understanding_contract_invalid": "C2_IMAGE_UNDERSTANDING_SCHEMA_INVALID",
+      "image_understanding_text_missing": "C2_IMAGE_UNDERSTANDING_SCHEMA_INVALID",
+      "C2_IMAGE_UNDERSTANDING_FAILED": "C2_IMAGE_UNDERSTANDING_FAILED",
+      "customer_image_understanding_provider_failed": "C2_IMAGE_UNDERSTANDING_FAILED",
+      "vision_provider_exception": "C2_IMAGE_UNDERSTANDING_FAILED",
+      "vision_result_invalid": "C2_IMAGE_UNDERSTANDING_FAILED",
+      "vision_understanding_missing": "C2_IMAGE_UNDERSTANDING_FAILED"
+    },
     "schemas": {
       "customer_image_understanding_v1": {
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -385,6 +442,25 @@
           "bridge",
           "catalog_alignment",
           "audit"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "applied": {"const": true}
+              },
+              "required": ["applied"]
+            },
+            "then": {
+              "properties": {
+                "vision_summary": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              }
+            }
+          }
         ],
         "properties": {
           "schema_version": {"type": "integer", "const": 1},

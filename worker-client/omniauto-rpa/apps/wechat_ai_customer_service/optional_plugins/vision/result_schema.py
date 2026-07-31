@@ -80,3 +80,18 @@ def image_result_schema(
     )
     schema = schemas.get(schema_name)
     return dict(schema) if isinstance(schema, dict) else {}
+
+
+def image_understanding_completed(
+    value: Any,
+    schema: dict[str, Any] | None = None,
+) -> bool:
+    """Return the sole business completion verdict for a Vision result."""
+
+    if not isinstance(value, dict):
+        return False
+    if value.get("applied") is not True:
+        return False
+    if not str(value.get("vision_summary") or "").strip():
+        return False
+    return not schema or not validate_schema(value, schema)

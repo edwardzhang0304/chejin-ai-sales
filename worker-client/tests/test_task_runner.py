@@ -3773,6 +3773,8 @@ class TaskRunnerTest(unittest.TestCase):
         completed_image = {
             "state": "completed",
             "action_phase": "confirmed",
+            "business_state": "completed",
+            "business_result_confirmed": True,
             "reason": "vision_ready",
             "customer_image_understanding": {
                 "schema_version": 1,
@@ -6950,6 +6952,8 @@ class TaskRunnerTest(unittest.TestCase):
         completed = {
             "state": "completed",
             "action_phase": "confirmed",
+            "business_state": "completed",
+            "business_result_confirmed": True,
             "reason": "vision_ready",
             "customer_image_understanding": {
                 "schema_version": 1,
@@ -7101,6 +7105,8 @@ class TaskRunnerTest(unittest.TestCase):
         completed = {
             "state": "completed",
             "action_phase": "confirmed",
+            "business_state": "completed",
+            "business_result_confirmed": True,
             "reason": "vision_ready",
             "customer_image_understanding": {
                 "schema_version": 1,
@@ -7292,6 +7298,8 @@ class TaskRunnerTest(unittest.TestCase):
         completed = {
             "state": "completed",
             "action_phase": "confirmed",
+            "business_state": "completed",
+            "business_result_confirmed": True,
             "reason": "vision_ready",
             "customer_image_understanding": {
                 "schema_version": 1,
@@ -8347,6 +8355,8 @@ class TaskRunnerTest(unittest.TestCase):
         completed = {
             "state": "completed",
             "action_phase": "confirmed",
+            "business_state": "completed",
+            "business_result_confirmed": True,
             "reason": "vision_ready",
             "customer_image_understanding": {
                 "schema_version": 1,

@@ -768,6 +768,27 @@ class _Clipboard:
         )
         return result
 
+    def claim_copy_ownership(
+        self,
+        expected_sequence: int,
+    ) -> dict[str, Any]:
+        from apps.wechat_ai_customer_service.optional_plugins.vision.clipboard_payload import (
+            windows_clipboard_image_ownership_evidence,
+        )
+
+        result = windows_clipboard_image_ownership_evidence(
+            int(expected_sequence),
+            int(self.state.ensure_window()),
+        )
+        self.state.record(
+            "clipboard_ownership",
+            "completed" if result.get("owned") else "failed",
+            reason=str(result.get("reason") or ""),
+            sequence_number=int(expected_sequence),
+            image_bytes_persisted=False,
+        )
+        return result
+
     def clear_current(self, expected_sequence: int) -> dict[str, Any]:
         started_at = time.perf_counter()
         from apps.wechat_ai_customer_service.optional_plugins.vision.clipboard_payload import (
@@ -980,6 +1001,12 @@ def process_image_slot(
         )
 
     def finish_result(result: dict[str, Any]) -> dict[str, Any]:
+        state = str(result.get("state") or "").strip()
+        completed = state == "completed"
+        result["business_state"] = (
+            "completed" if completed else "failed"
+        )
+        result["business_result_confirmed"] = completed
         if action_journal_path is None or not normalized_source_key:
             return result
         phase = str(
@@ -987,11 +1014,6 @@ def process_image_slot(
             or action_journal_phase(action_journal_path)
             or "not_attempted"
         ).strip()
-        state = str(result.get("state") or "").strip()
-        completed = bool(
-            state == "completed"
-            and isinstance(result.get("customer_image_understanding"), dict)
-        )
         result["action_phase"] = phase
         if phase != "not_attempted":
             terminal_payload = {
@@ -1017,8 +1039,10 @@ def process_image_slot(
                 action_journal_path,
                 source_message_key=normalized_source_key,
                 action_phase=phase,
-                business_state="completed" if completed else "failed",
-                business_result_confirmed=completed,
+                business_state=result["business_state"],
+                business_result_confirmed=result[
+                    "business_result_confirmed"
+                ],
                 error_code=None if completed else str(
                     result.get("reason") or "IMAGE_RESULT_UNCONFIRMED"
                 ),
@@ -1317,7 +1341,7 @@ def process_image_slot(
             "diagnostics": state.diagnostics(),
         })
     vision_summary = str(understanding.get("vision_summary") or "").strip()
-    completed = bool(result.get("applied") or vision_summary)
+    completed = result.get("applied") is True
     state.record(
         "vision_provider",
         "completed" if completed else "failed",

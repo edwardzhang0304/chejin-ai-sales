@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..result_schema import image_understanding_completed
+
 
 def _text(value: Any) -> str:
     if isinstance(value, list):
@@ -45,6 +47,9 @@ def normalize_customer_image_understanding_result(
     local_visual_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     data = payload if isinstance(payload, dict) else {}
+    vision_summary = str(data.get("vision_summary") or "").strip()
+    applied = image_understanding_completed(data)
+    adoptable = bool(applied and data.get("adoptable") is True)
     classification = data.get("classification") if isinstance(data.get("classification"), dict) else {}
     entities = data.get("entities") if isinstance(data.get("entities"), dict) else {}
     intent_hints = data.get("intent_hints") if isinstance(data.get("intent_hints"), dict) else {}
@@ -54,8 +59,8 @@ def normalize_customer_image_understanding_result(
     return {
         "schema_version": 1,
         "enabled": bool(enabled),
-        "applied": bool(data.get("applied", False)),
-        "adoptable": bool(data.get("adoptable", True)),
+        "applied": applied,
+        "adoptable": adoptable,
         "reason": str(data.get("reason") or ""),
         "provider": str(data.get("provider") or provider or ""),
         "request_style": str(data.get("request_style") or request_style or ""),
@@ -66,7 +71,7 @@ def normalize_customer_image_understanding_result(
             if isinstance(item, dict)
         ],
         "local_visual_profile": dict(local_visual_profile or data.get("local_visual_profile") or {}),
-        "vision_summary": str(data.get("vision_summary") or "").strip(),
+        "vision_summary": vision_summary,
         "image_ocr_text": _text_list(data.get("image_ocr_text"), limit=8),
         "classification": {
             "is_vehicle": bool(classification.get("is_vehicle", False)),

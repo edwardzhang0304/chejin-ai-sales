@@ -117,45 +117,19 @@ def image_contract() -> dict[str, Any]:
 
 def formal_image_failure_code(reason: Any) -> str:
     clean = str(reason or "").strip()
+    contract = image_contract()
     declared = {
         str(value)
-        for value in (image_contract().get("error_codes") or [])
+        for value in (contract.get("error_codes") or [])
     }
-    if clean in declared:
-        return clean
-    lowered = clean.lower()
-    if "clipboard_clear" in lowered:
-        code = "C2_IMAGE_CLIPBOARD_CLEAR_FAILED"
-    elif "configuration" in lowered or "config_" in lowered:
-        code = "C2_IMAGE_VISION_CONFIG_INVALID"
-    elif "schema" in lowered or "contract_invalid" in lowered:
-        code = "C2_IMAGE_UNDERSTANDING_SCHEMA_INVALID"
-    elif (
-        "payload_too_large" in lowered
-        or "provider_payload" in lowered
-    ):
-        code = "C2_IMAGE_PROVIDER_PAYLOAD_TOO_LARGE"
-    elif (
-        "source_invalid" in lowered
-        or "content_not_bitmap" in lowered
-        or "image_decode" in lowered
-    ):
-        code = "C2_IMAGE_SOURCE_INVALID"
-    elif any(
-        token in lowered
-        for token in (
-            "slot_reconfirm",
-            "bubble_",
-            "target_confirmation",
-            "context_menu",
-            "fingerprint_mismatch",
-        )
-    ):
-        code = "C2_IMAGE_SLOT_RECONFIRM_FAILED"
-    elif "observation" in lowered:
-        code = "C2_IMAGE_OBSERVATION_FAILED"
-    else:
-        code = "C2_IMAGE_UNDERSTANDING_FAILED"
+    reason_map = contract.get("failure_reason_to_error_code")
+    if not isinstance(reason_map, dict):
+        raise RuntimeError("Invalid C2 image failure reason map")
+    code = str(
+        reason_map.get(clean)
+        or contract.get("default_failure_error_code")
+        or ""
+    ).strip()
     if code not in declared:
         raise RuntimeError(f"Undeclared C2 image error code: {code}")
     return code
