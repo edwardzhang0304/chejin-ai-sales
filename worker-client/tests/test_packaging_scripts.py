@@ -268,6 +268,107 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertFalse(development["git_available"])
         self.assertTrue(development["git_dirty"])
         self.assertEqual(development["git_commit"], "")
+        self.assertFalse(development["git_detached"])
+
+    def test_official_build_rejects_unrelated_parent_git_repository(self):
+        with tempfile.TemporaryDirectory() as temp:
+            outer_root = Path(temp) / "unrelated"
+            client_root = outer_root / "ignored-source" / "worker-client"
+            contract = client_root / "contracts" / "c2_contract_v3.json"
+            controlled = client_root / "scripts" / "build_source.py"
+            outer_root.mkdir()
+            subprocess.run(
+                ["git", "init", "-q"],
+                cwd=outer_root,
+                check=True,
+            )
+            (outer_root / ".gitignore").write_text(
+                "ignored-source/\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                ["git", "add", ".gitignore"],
+                cwd=outer_root,
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=Chejin Test",
+                    "-c",
+                    "user.email=chejin-test@example.invalid",
+                    "commit",
+                    "-q",
+                    "-m",
+                    "test parent",
+                ],
+                cwd=outer_root,
+                check=True,
+            )
+            contract.parent.mkdir(parents=True)
+            controlled.parent.mkdir(parents=True)
+            contract.write_text("{}", encoding="utf-8")
+            controlled.write_text("# ignored source", encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                BuildSourceError,
+                "OFFICIAL_BUILD_GIT_SOURCE_REQUIRED",
+            ):
+                verify_build_source(
+                    client_root,
+                    development_build=False,
+                )
+
+    def test_official_detached_head_is_recorded_explicitly(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project_root = Path(temp) / "project"
+            client_root = project_root / "worker-client"
+            contract = project_root / "contracts" / "c2_contract_v3.json"
+            controlled = client_root / "scripts" / "build_source.py"
+            contract.parent.mkdir(parents=True)
+            controlled.parent.mkdir(parents=True)
+            contract.write_text("{}", encoding="utf-8")
+            controlled.write_text("# controlled source", encoding="utf-8")
+            subprocess.run(
+                ["git", "init", "-q"],
+                cwd=project_root,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "add", "."],
+                cwd=project_root,
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=Chejin Test",
+                    "-c",
+                    "user.email=chejin-test@example.invalid",
+                    "commit",
+                    "-q",
+                    "-m",
+                    "test source",
+                ],
+                cwd=project_root,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "checkout", "--detach", "-q", "HEAD"],
+                cwd=project_root,
+                check=True,
+            )
+
+            result = verify_build_source(
+                client_root,
+                development_build=False,
+            )
+
+        self.assertTrue(result["git_available"])
+        self.assertTrue(result["git_detached"])
+        self.assertEqual(result["git_branch"], "DETACHED")
 
     def test_pyinstaller_spec_packages_contract_and_filters_omniauto_runtime_data(self):
         text = (ROOT / "packaging" / "chejin-worker-client.spec").read_text(encoding="utf-8")

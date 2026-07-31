@@ -38,8 +38,10 @@ MAX_VISION_TIMEOUT_SECONDS = 300.0
 VISION_WINDOW_STABLE_FAILURE_REASONS = frozenset(
     {
         "vision_window_context_capture_missing",
+        "vision_window_context_missing",
         "vision_window_capture_failed",
         "vision_window_frame_finalize_failed",
+        "vision_window_message_parse_failed",
         "vision_window_ocr_failed",
     }
 )
@@ -613,7 +615,8 @@ class _WindowFrame:
                 )
                 time_markers = extract_chat_time_markers(ocr_items, image.size)
             except Exception as exc:
-                reason = _safe_exception_reason(exc, "vision_window_message_parse_failed")
+                reason = "vision_window_message_parse_failed"
+                reason_detail = _safe_exception_reason(exc, reason)
                 self.state.record(
                     "frame_capture",
                     "failed",
@@ -622,6 +625,7 @@ class _WindowFrame:
                     capture_step="message_parse",
                     capture_mode=capture_mode,
                     reason=reason,
+                    reason_detail=reason_detail,
                     error_type=type(exc).__name__,
                     image_persisted=False,
                 )
@@ -629,6 +633,7 @@ class _WindowFrame:
                 return {
                     "ok": False,
                     "reason": reason,
+                    "reason_detail": reason_detail,
                     "error_type": type(exc).__name__,
                 }
         try:
@@ -656,7 +661,8 @@ class _WindowFrame:
                 "screen_origin": screen_origin,
             }
         except Exception as exc:
-            reason = _safe_exception_reason(exc, "vision_window_frame_finalize_failed")
+            reason = "vision_window_frame_finalize_failed"
+            reason_detail = _safe_exception_reason(exc, reason)
             self.state.record(
                 "frame_capture",
                 "failed",
@@ -665,6 +671,7 @@ class _WindowFrame:
                 capture_step="frame_finalize",
                 capture_mode=capture_mode,
                 reason=reason,
+                reason_detail=reason_detail,
                 error_type=type(exc).__name__,
                 image_persisted=False,
             )
@@ -672,6 +679,7 @@ class _WindowFrame:
             return {
                 "ok": False,
                 "reason": reason,
+                "reason_detail": reason_detail,
                 "error_type": type(exc).__name__,
             }
 
