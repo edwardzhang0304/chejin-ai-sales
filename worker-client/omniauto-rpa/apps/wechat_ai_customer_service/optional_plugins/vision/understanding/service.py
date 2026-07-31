@@ -246,6 +246,7 @@ def build_customer_image_understanding_prompt(
         "不要输出价格、库存、承诺或客服回复；商品事实后续仍由 product_master 和 Brain 处理。\n"
         "输出必须是 JSON 对象，字段只允许：\n"
         "vision_summary, image_ocr_text, classification, entities, intent_hints, bridge, catalog_alignment。\n"
+        "image_ocr_text 必须是字符串数组；没有可见文字时必须返回 []，不能返回字符串或 null。\n"
         "classification 包含 is_vehicle, vehicle_confidence, unknown, non_vehicle_reason。\n"
         "entities 包含 brand_candidates, series_candidates, model_clues, body_type, color, year_clues。\n"
         "intent_hints 包含 wants_catalog_match, wants_similar_recommendation, wants_general_chat, needs_clarification。\n"
@@ -321,6 +322,100 @@ def stabilize_catalog_alignment_bridge(parsed: dict[str, Any]) -> None:
         bridge["catalog_lookup_mode"] = "vehicle_exact_then_similar"
 
 
+def _strict_image_result_candidate(
+    *,
+    parsed: dict[str, Any],
+    settings: dict[str, Any],
+    started: float,
+    retry_after_non_json: bool,
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "enabled": True,
+        "applied": True,
+        "adoptable": True,
+        "reason": str(parsed.get("reason") or "vision_ready"),
+        "provider": str(settings.get("base_url") or ""),
+        "request_style": str(settings.get("request_style") or ""),
+        "model": str(settings.get("model") or ""),
+        "vision_summary": parsed.get("vision_summary", ""),
+        "image_ocr_text": parsed.get("image_ocr_text", []),
+        "classification": parsed.get("classification", {}),
+        "entities": parsed.get("entities", {}),
+        "intent_hints": parsed.get("intent_hints", {}),
+        "bridge": parsed.get("bridge", {}),
+        "catalog_alignment": parsed.get("catalog_alignment", {}),
+        "audit": {
+            "latency_ms": int((time.time() - started) * 1000),
+            "used_fallback": False,
+            "provider_error": "",
+            "retry_error": "",
+            "retry_after_non_json": retry_after_non_json,
+            "catalog_identity_candidate_count": 0,
+        },
+    }
+
+
+def _strict_image_result_validation(
+    *,
+    parsed: dict[str, Any],
+    config: dict[str, Any] | None,
+    settings: dict[str, Any],
+    started: float,
+    retry_after_non_json: bool,
+) -> tuple[dict[str, Any], list[str]]:
+    from ..result_schema import image_result_schema, validate_schema
+
+    candidate = _strict_image_result_candidate(
+        parsed=parsed,
+        settings=settings,
+        started=started,
+        retry_after_non_json=retry_after_non_json,
+    )
+    schema = image_result_schema(
+        config,
+        "customer_image_understanding_v1",
+    )
+    errors = (
+        validate_schema(candidate, schema)
+        if schema
+        else ["shared image result schema missing"]
+    )
+    return candidate, errors
+
+
+def _normalize_understanding_result(
+    payload: dict[str, Any] | None,
+    *,
+    config: dict[str, Any] | None,
+    strict_adapter: bool,
+    enabled: bool,
+    provider: str,
+    request_style: str,
+    model: str,
+    source_messages: list[dict[str, Any]] | None = None,
+    local_visual_profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized = normalize_customer_image_understanding_result(
+        payload,
+        enabled=enabled,
+        provider=provider,
+        request_style=request_style,
+        model=model,
+        source_messages=source_messages,
+        local_visual_profile=local_visual_profile,
+    )
+    if not strict_adapter:
+        return normalized
+    from ..result_schema import image_result_schema, project_to_schema
+
+    schema = image_result_schema(
+        config,
+        "customer_image_understanding_v1",
+    )
+    return project_to_schema(normalized, schema) if schema else normalized
+
+
 def unique_image_paths_for_understanding(image_assets: list[dict[str, Any]]) -> list[str]:
     seen: set[str] = set()
     paths: list[str] = []
@@ -371,8 +466,10 @@ def maybe_run_customer_image_understanding(
         if isinstance(item, dict)
     ]
     if not settings.get("enabled", True):
-        return normalize_customer_image_understanding_result(
+        return _normalize_understanding_result(
             {"applied": False, "adoptable": False, "reason": "customer_image_understanding_disabled"},
+            config=config,
+            strict_adapter=strict_adapter,
             enabled=False,
             provider="",
             request_style=str(settings.get("request_style") or ""),
@@ -381,8 +478,10 @@ def maybe_run_customer_image_understanding(
             local_visual_profile=local_visual_profile,
         )
     if image_paths:
-        return normalize_customer_image_understanding_result(
+        return _normalize_understanding_result(
             {"applied": False, "adoptable": False, "reason": "legacy_image_path_input_rejected"},
+            config=config,
+            strict_adapter=strict_adapter,
             enabled=bool(settings.get("enabled", True)),
             provider="",
             request_style=str(settings.get("request_style") or ""),
@@ -391,8 +490,10 @@ def maybe_run_customer_image_understanding(
             local_visual_profile=local_visual_profile,
         )
     if not image_paths and not memory_payloads:
-        return normalize_customer_image_understanding_result(
+        return _normalize_understanding_result(
             {"applied": False, "adoptable": False, "reason": "customer_image_assets_missing"},
+            config=config,
+            strict_adapter=strict_adapter,
             enabled=True,
             provider="",
             request_style=str(settings.get("request_style") or ""),
@@ -430,8 +531,10 @@ def maybe_run_customer_image_understanding(
                 "used_fallback": False,
             },
         }
-        return normalize_customer_image_understanding_result(
+        return _normalize_understanding_result(
             fallback,
+            config=config,
+            strict_adapter=strict_adapter,
             enabled=True,
             provider="",
             request_style=str(settings.get("request_style") or ""),
@@ -480,10 +583,25 @@ def maybe_run_customer_image_understanding(
         max_tokens=int(settings.get("max_tokens") or DEFAULT_MAX_TOKENS),
         image_payloads=memory_payloads[:3],
     )
+    retry_reason = ""
     if (
         not provider_result.get("ok")
-        and str(provider_result.get("error") or "") == "customer_image_understanding_response_not_json_object"
+        and str(provider_result.get("error") or "")
+        == "customer_image_understanding_response_not_json_object"
     ):
+        retry_reason = "non_json"
+    elif provider_result.get("ok") and strict_adapter:
+        initial_parsed = dict(provider_result.get("parsed") or {})
+        _, initial_schema_errors = _strict_image_result_validation(
+            parsed=initial_parsed,
+            config=config,
+            settings=settings,
+            started=started,
+            retry_after_non_json=False,
+        )
+        if initial_schema_errors:
+            retry_reason = "schema_invalid"
+    if retry_reason:
         retry_prompt = build_customer_image_understanding_retry_prompt(
             customer_text=customer_text,
             source_reason=source_reason,
@@ -523,7 +641,7 @@ def maybe_run_customer_image_understanding(
             image_payloads=memory_payloads[:2],
         )
         if retry_result.get("ok"):
-            retry_result["retry_after_non_json"] = True
+            retry_result["retry_after_non_json"] = retry_reason == "non_json"
             provider_result = retry_result
         else:
             provider_result["retry_error"] = str(retry_result.get("error") or "")
@@ -596,8 +714,10 @@ def maybe_run_customer_image_understanding(
                 ),
             },
         }
-        normalized = normalize_customer_image_understanding_result(
+        normalized = _normalize_understanding_result(
             fallback,
+            config=config,
+            strict_adapter=strict_adapter,
             enabled=True,
             provider="",
             request_style=str(settings.get("request_style") or ""),
@@ -623,46 +743,17 @@ def maybe_run_customer_image_understanding(
         return normalized
     parsed = dict(provider_result.get("parsed") or {})
     if strict_adapter:
-        from ..result_schema import image_result_schema, validate_schema
-
-        untrusted_candidate = {
-            "schema_version": 1,
-            "enabled": True,
-            "applied": True,
-            "adoptable": True,
-            "reason": str(parsed.get("reason") or "vision_ready"),
-            "provider": str(settings.get("base_url") or ""),
-            "request_style": str(settings.get("request_style") or ""),
-            "model": str(settings.get("model") or ""),
-            "vision_summary": parsed.get("vision_summary", ""),
-            "image_ocr_text": parsed.get("image_ocr_text", []),
-            "classification": parsed.get("classification", {}),
-            "entities": parsed.get("entities", {}),
-            "intent_hints": parsed.get("intent_hints", {}),
-            "bridge": parsed.get("bridge", {}),
-            "catalog_alignment": parsed.get("catalog_alignment", {}),
-            "audit": {
-                "latency_ms": int((time.time() - started) * 1000),
-                "used_fallback": False,
-                "provider_error": "",
-                "retry_error": "",
-                "retry_after_non_json": bool(
-                    provider_result.get("retry_after_non_json", False)
-                ),
-                "catalog_identity_candidate_count": 0,
-            },
-        }
-        schema = image_result_schema(
-            config,
-            "customer_image_understanding_v1",
-        )
-        schema_errors = (
-            validate_schema(untrusted_candidate, schema)
-            if schema
-            else ["shared image result schema missing"]
+        untrusted_candidate, schema_errors = _strict_image_result_validation(
+            parsed=parsed,
+            config=config,
+            settings=settings,
+            started=started,
+            retry_after_non_json=bool(
+                provider_result.get("retry_after_non_json", False)
+            ),
         )
         if schema_errors:
-            return normalize_customer_image_understanding_result(
+            return _normalize_understanding_result(
                 {
                     "applied": False,
                     "adoptable": False,
@@ -677,6 +768,8 @@ def maybe_run_customer_image_understanding(
                         "used_fallback": False,
                     },
                 },
+                config=config,
+                strict_adapter=strict_adapter,
                 enabled=True,
                 provider="",
                 request_style=str(settings.get("request_style") or ""),
@@ -711,8 +804,10 @@ def maybe_run_customer_image_understanding(
         "catalog_identity_candidate_count": len(catalog_identity_candidates),
     }
     parsed["provider"] = str(settings.get("base_url") or "")
-    normalized = normalize_customer_image_understanding_result(
+    normalized = _normalize_understanding_result(
         parsed,
+        config=config,
+        strict_adapter=strict_adapter,
         enabled=True,
         provider=str(settings.get("base_url") or ""),
         request_style=str(settings.get("request_style") or ""),
