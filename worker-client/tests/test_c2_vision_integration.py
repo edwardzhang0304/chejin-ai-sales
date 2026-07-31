@@ -2557,6 +2557,107 @@ class C2VisionIntegrationTests(unittest.TestCase):
             "VISION_PROVIDER_AUTH_FAILED",
         )
         self.assertNotIn("secret provider response body", json.dumps(result))
+        self.assertEqual(
+            validate_image_result_schema(
+                result,
+                "customer_image_understanding_v1",
+            ),
+            [],
+        )
+
+    def test_strict_provider_retries_schema_invalid_json_without_coercion(self):
+        from apps.wechat_ai_customer_service.optional_plugins.vision.clipboard_payload import (
+            ephemeral_image_from_memory,
+        )
+
+        def parsed_result(image_ocr_text):
+            return {
+                "vision_summary": "车辆外观图",
+                "image_ocr_text": image_ocr_text,
+                "classification": {
+                    "is_vehicle": True,
+                    "vehicle_confidence": 0.8,
+                    "unknown": False,
+                    "non_vehicle_reason": "",
+                },
+                "entities": {
+                    "brand_candidates": [],
+                    "series_candidates": [],
+                    "model_clues": [],
+                    "body_type": "",
+                    "color": "",
+                    "year_clues": [],
+                },
+                "intent_hints": {
+                    "wants_catalog_match": False,
+                    "wants_similar_recommendation": False,
+                    "wants_general_chat": False,
+                    "needs_clarification": False,
+                },
+                "bridge": {
+                    "normalized_vehicle_query": "",
+                    "brain_mode": "",
+                    "catalog_lookup_mode": "",
+                },
+                "catalog_alignment": {
+                    "selected_product_id": "",
+                    "selected_product_name": "",
+                    "alignment_confidence": 0.0,
+                    "alignment_reason": "",
+                    "uncertain_reason": "",
+                },
+            }
+
+        source = Image.new("RGB", (64, 48), "white")
+        payload = ephemeral_image_from_memory(source)
+        source.close()
+        self.assertIsNotNone(payload)
+        try:
+            with patch(
+                "apps.wechat_ai_customer_service.optional_plugins.vision."
+                "understanding.service."
+                "run_customer_image_understanding_provider",
+                side_effect=[
+                    {"ok": True, "parsed": parsed_result("错误的字符串类型")},
+                    {"ok": True, "parsed": parsed_result([])},
+                ],
+            ) as provider:
+                result = maybe_run_customer_image_understanding(
+                    config={
+                        "_chejin_c2_strict_adapter": True,
+                        "_chejin_image_contract": image_contract(),
+                        "customer_image_understanding": {
+                            "enabled": True,
+                            "api_key": "unit-only",
+                            "base_url": DEFAULT_VISION_BASE_URL,
+                            "model": DEFAULT_VISION_MODEL,
+                            "request_style": DEFAULT_VISION_REQUEST_STYLE,
+                        },
+                    },
+                    customer_text="请看图",
+                    image_assets=[
+                        {
+                            "message_id": "image-schema-retry",
+                            "message_type": "image",
+                        }
+                    ],
+                    source_reason="strict_schema_retry_test",
+                    image_payloads=[payload],
+                    ephemeral_clipboard=True,
+                )
+        finally:
+            payload.release()
+
+        self.assertEqual(provider.call_count, 2)
+        self.assertTrue(result["applied"])
+        self.assertEqual(result["image_ocr_text"], [])
+        self.assertEqual(
+            validate_image_result_schema(
+                result,
+                "customer_image_understanding_v1",
+            ),
+            [],
+        )
 
     def test_encoded_memory_image_rejects_non_allowlisted_format(self):
         from apps.wechat_ai_customer_service.optional_plugins.vision.clipboard_payload import (
