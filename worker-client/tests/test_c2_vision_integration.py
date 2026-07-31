@@ -52,6 +52,7 @@ from chejin_worker_client.omniauto_vision import (
     vision_configuration_status,
 )
 from chejin_worker_client.c2_contract import (
+    formal_image_failure_code,
     image_contract,
     validate_image_result_schema,
 )
@@ -2083,7 +2084,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertEqual(frames.candidate_count, 2)
         self.assertEqual(actions.right_click_count, 2)
         self.assertEqual(clipboard.reads, 2)
-        self.assertEqual(clipboard.cleared_sequences, [11, 21])
+        self.assertEqual(clipboard.cleared_sequences, [21])
         self.assertTrue(
             result["transaction"]["clipboard_image_matches_target"]
         )
@@ -2210,7 +2211,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(result["action_phase"], "trigger_attempted")
         self.assertEqual(actions.right_click_count, 2)
-        self.assertEqual(clipboard.cleared_sequences, [11, 21])
+        self.assertEqual(clipboard.cleared_sequences, [])
         self.assertFalse(
             result["transaction"]["clipboard_image_matches_target"]
         )
@@ -2911,6 +2912,100 @@ class C2VisionIntegrationTests(unittest.TestCase):
         )
         raw_capture.assert_not_called()
         fallback_capture.assert_not_called()
+        image.close()
+
+    def test_window_frame_normalizes_dynamic_capture_failures(self):
+        raw_reasons = (
+            "vision_window_context_invalid",
+            "capture_wechat_failed",
+            "capture_wechat_window_visible_screen_failed",
+        )
+
+        for raw_reason in raw_reasons:
+            with self.subTest(raw_reason=raw_reason):
+                class State:
+                    window_context = {"hwnd": 31415}
+                    window_context_validated = True
+
+                    class Host:
+                        @staticmethod
+                        def capture_c2_window_context(
+                            _context,
+                            *,
+                            phase,
+                            label,
+                        ):
+                            return {
+                                "ok": False,
+                                "reason": raw_reason,
+                            }
+
+                    host = Host()
+
+                    @staticmethod
+                    def record(*_args, **_kwargs):
+                        return None
+
+                result = _WindowFrame(State()).capture_frame(
+                    {"phase": "image_candidate"}
+                )
+
+                self.assertEqual(
+                    result["reason"],
+                    "vision_window_capture_failed",
+                )
+                self.assertEqual(result["reason_detail"], raw_reason)
+                self.assertEqual(
+                    formal_image_failure_code(result["reason"]),
+                    "C2_IMAGE_OBSERVATION_FAILED",
+                )
+
+    def test_window_frame_normalizes_dynamic_ocr_failure(self):
+        image = Image.new("RGB", (800, 600), "white")
+
+        class State:
+            window_context = {"hwnd": 31415}
+            window_context_validated = True
+
+            class Host:
+                @staticmethod
+                def capture_c2_window_context(
+                    _context,
+                    *,
+                    phase,
+                    label,
+                ):
+                    return {
+                        "ok": True,
+                        "image": image.copy(),
+                        "hwnd": 31415,
+                        "capture_mode": "test",
+                        "screen_origin": [0, 0],
+                    }
+
+                @staticmethod
+                def run_ocr(_image):
+                    raise RuntimeError("capture_wechat_ocr_driver_failed")
+
+            host = Host()
+
+            @staticmethod
+            def record(*_args, **_kwargs):
+                return None
+
+        result = _WindowFrame(State()).capture_frame(
+            {"phase": "image_candidate"}
+        )
+
+        self.assertEqual(result["reason"], "vision_window_ocr_failed")
+        self.assertEqual(
+            result["reason_detail"],
+            "capture_wechat_ocr_driver_failed",
+        )
+        self.assertEqual(
+            formal_image_failure_code(result["reason"]),
+            "C2_IMAGE_OBSERVATION_FAILED",
+        )
         image.close()
 
     def test_sidecar_window_context_binds_exact_selected_hwnd(self):

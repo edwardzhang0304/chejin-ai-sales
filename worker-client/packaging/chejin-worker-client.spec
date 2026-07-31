@@ -2,11 +2,15 @@
 
 import os
 from pathlib import Path
+import sys
 
 ROOT = Path.cwd()
+sys.path.insert(0, str(ROOT / "scripts"))
+from build_source import resolve_contract_path
+
 OMNIAUTO_RPA_SOURCE = Path(os.environ.get("CHEJIN_OMNIAUTO_RPA_SOURCE") or ROOT / "omniauto-rpa")
 OMNIAUTO_SIDECAR = OMNIAUTO_RPA_SOURCE / "apps" / "wechat_ai_customer_service" / "adapters" / "wechat_win32_ocr_sidecar.py"
-CONTRACT_PATH = ROOT.parent / "contracts" / "c2_contract_v3.json"
+CONTRACT_PATH = resolve_contract_path(ROOT)
 
 if not OMNIAUTO_SIDECAR.exists():
     raise SystemExit(f"OmniAuto sidecar not found: {OMNIAUTO_SIDECAR}")

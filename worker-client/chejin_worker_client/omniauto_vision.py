@@ -35,6 +35,14 @@ DEFAULT_VISION_MODEL = "doubao-seed-2-0-lite-260428"
 DEFAULT_VISION_REQUEST_STYLE = "anthropic_messages_vision"
 DEFAULT_VISION_TIMEOUT_SECONDS = 60.0
 MAX_VISION_TIMEOUT_SECONDS = 300.0
+VISION_WINDOW_STABLE_FAILURE_REASONS = frozenset(
+    {
+        "vision_window_context_capture_missing",
+        "vision_window_capture_failed",
+        "vision_window_frame_finalize_failed",
+        "vision_window_ocr_failed",
+    }
+)
 VISION_API_KEY_ENV_NAMES = (
     "CUSTOMER_IMAGE_UNDERSTANDING_API_KEY",
 )
@@ -61,6 +69,18 @@ def _safe_exception_reason(exc: Exception, fallback: str) -> str:
     if token and re.fullmatch(r"[A-Za-z0-9_]+", token):
         return token.lower()
     return str(fallback or "vision_runtime_failed")
+
+
+def _normalize_window_frame_failure_reason(
+    reason: Any,
+    fallback: str,
+) -> tuple[str, str]:
+    detail = str(reason or fallback).strip() or fallback
+    if detail in VISION_WINDOW_STABLE_FAILURE_REASONS:
+        return detail, detail
+    if "ocr" in detail.lower():
+        return "vision_window_ocr_failed", detail
+    return fallback, detail
 
 
 def _window_context_hwnd(value: Any) -> int:
@@ -418,9 +438,13 @@ class _WindowFrame:
             not isinstance(capture_result, dict)
             or capture_result.get("ok") is not True
         ):
-            reason = str(
+            raw_reason = str(
                 (capture_result or {}).get("reason")
                 or "vision_window_capture_failed"
+            )
+            reason, reason_detail = _normalize_window_frame_failure_reason(
+                raw_reason,
+                "vision_window_capture_failed",
             )
             capture_mode = str(
                 (capture_result or {}).get("capture_mode") or ""
@@ -437,6 +461,7 @@ class _WindowFrame:
                 ),
                 capture_mode=capture_mode,
                 reason=reason,
+                reason_detail=reason_detail,
                 error_type=str(
                     (capture_result or {}).get("error_type") or ""
                 ),
@@ -445,6 +470,7 @@ class _WindowFrame:
             return {
                 "ok": False,
                 "reason": reason,
+                "reason_detail": reason_detail,
                 "error_type": str(
                     (capture_result or {}).get("error_type") or ""
                 ),
@@ -500,7 +526,14 @@ class _WindowFrame:
         try:
             ocr_items = self.state.host.run_ocr(image)
         except Exception as exc:
-            reason = _safe_exception_reason(exc, "vision_window_ocr_failed")
+            raw_reason = _safe_exception_reason(
+                exc,
+                "vision_window_ocr_failed",
+            )
+            reason, reason_detail = _normalize_window_frame_failure_reason(
+                raw_reason,
+                "vision_window_ocr_failed",
+            )
             self.state.record(
                 "frame_capture",
                 "failed",
@@ -509,6 +542,7 @@ class _WindowFrame:
                 capture_step="ocr",
                 capture_mode=capture_mode,
                 reason=reason,
+                reason_detail=reason_detail,
                 error_type=type(exc).__name__,
                 image_persisted=False,
             )
@@ -516,6 +550,7 @@ class _WindowFrame:
             return {
                 "ok": False,
                 "reason": reason,
+                "reason_detail": reason_detail,
                 "error_type": type(exc).__name__,
             }
         messages: list[dict[str, Any]] = []

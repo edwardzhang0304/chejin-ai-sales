@@ -12,6 +12,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from build_policy import BuildPolicyError, validate_build_policy
+from build_source import (
+    BuildSourceError,
+    resolve_contract_path,
+    verify_build_source,
+)
 from omniauto_tree import (
     load_source_provenance,
     tree_manifest,
@@ -64,6 +69,13 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('"--omniauto-sidecar", "--help"', text)
         self.assertIn("最终 exe 无法启动内置 OmniAuto sidecar", text)
         self.assertNotIn('$OmniAutoUpstreamCommit = "855c218', text)
+        self.assertIn("scripts\\build_source.py", text)
+        self.assertIn("$LASTEXITCODE -ne 0", text)
+        self.assertNotIn("git rev-parse", text)
+        self.assertNotIn("git status --porcelain", text)
+        self.assertIn("OFFICIAL_BUILD_GIT_SOURCE_REQUIRED", (
+            ROOT / "scripts" / "build_source.py"
+        ).read_text(encoding="utf-8"))
 
     def test_source_package_script_excludes_local_env_and_runtime_state(self):
         text = (ROOT / "scripts" / "build-source-package.py").read_text(encoding="utf-8")
@@ -87,6 +99,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("_zip_member_sha256", text)
         self.assertIn("--development-build", text)
         self.assertIn("preflight_status", text)
+        self.assertIn("verify_build_source", text)
+        self.assertNotIn("def _git_output", text)
 
     def test_official_build_policy_rejects_dirty_and_skipped_checks(self):
         with self.assertRaises(BuildPolicyError):
@@ -212,10 +226,53 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("C2 observation schema is current", result.stdout)
 
+    def test_contract_path_prefers_packaged_contract(self):
+        with tempfile.TemporaryDirectory() as temp:
+            project_root = Path(temp)
+            client_root = project_root / "worker-client"
+            packaged_contract = (
+                client_root / "contracts" / "c2_contract_v3.json"
+            )
+            repository_contract = (
+                project_root / "contracts" / "c2_contract_v3.json"
+            )
+            packaged_contract.parent.mkdir(parents=True)
+            repository_contract.parent.mkdir(parents=True)
+            packaged_contract.write_text("packaged", encoding="utf-8")
+            repository_contract.write_text("repository", encoding="utf-8")
+
+            resolved = resolve_contract_path(client_root)
+
+        self.assertEqual(resolved, packaged_contract.resolve())
+
+    def test_official_build_without_git_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            client_root = Path(temp) / "worker-client"
+            contract = client_root / "contracts" / "c2_contract_v3.json"
+            contract.parent.mkdir(parents=True)
+            contract.write_text("{}", encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                BuildSourceError,
+                "OFFICIAL_BUILD_GIT_SOURCE_REQUIRED",
+            ):
+                verify_build_source(
+                    client_root,
+                    development_build=False,
+                )
+            development = verify_build_source(
+                client_root,
+                development_build=True,
+            )
+
+        self.assertFalse(development["git_available"])
+        self.assertTrue(development["git_dirty"])
+        self.assertEqual(development["git_commit"], "")
+
     def test_pyinstaller_spec_packages_contract_and_filters_omniauto_runtime_data(self):
         text = (ROOT / "packaging" / "chejin-worker-client.spec").read_text(encoding="utf-8")
 
-        self.assertIn('CONTRACT_PATH = ROOT.parent / "contracts" / "c2_contract_v3.json"', text)
+        self.assertIn("CONTRACT_PATH = resolve_contract_path(ROOT)", text)
         self.assertIn('(str(CONTRACT_PATH), "contracts")', text)
         self.assertIn("EXCLUDED_OMNIAUTO_PARTS", text)
         self.assertIn("ALLOWED_OMNIAUTO_DATA_PREFIXES", text)

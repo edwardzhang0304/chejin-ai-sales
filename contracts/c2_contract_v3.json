@@ -1,6 +1,6 @@
 {
   "contract_version": 3,
-  "contract_revision": "3.12.2",
+  "contract_revision": "3.12.3",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "sender_roles": ["customer", "self", "system", "unknown"],
@@ -371,6 +371,7 @@
       "vision_window_context_capture_missing": "C2_IMAGE_OBSERVATION_FAILED",
       "vision_window_capture_failed": "C2_IMAGE_OBSERVATION_FAILED",
       "vision_window_frame_finalize_failed": "C2_IMAGE_OBSERVATION_FAILED",
+      "vision_window_ocr_failed": "C2_IMAGE_OBSERVATION_FAILED",
       "vision_window_context_missing": "C2_IMAGE_OBSERVATION_FAILED",
       "vision_window_frame_unavailable": "C2_IMAGE_OBSERVATION_FAILED",
       "vision_window_frame_invalid": "C2_IMAGE_OBSERVATION_FAILED",

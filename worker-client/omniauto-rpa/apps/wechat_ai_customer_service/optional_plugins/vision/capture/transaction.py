@@ -360,7 +360,12 @@ def _acquire_current_image_via_ports(
                 return fail(
                     str((frame or {}).get("reason") or "vision_window_frame_unavailable")
                     if isinstance(frame, dict)
-                    else "vision_window_frame_unavailable"
+                    else "vision_window_frame_unavailable",
+                    reason_detail=(
+                        str((frame or {}).get("reason_detail") or "")
+                        if isinstance(frame, dict)
+                        else ""
+                    ),
                 )
             surface = frame.get("image")
             image_size = getattr(surface, "size", None) or tuple(frame.get("image_size") or ())
@@ -593,12 +598,6 @@ def _acquire_current_image_via_ports(
                             payload = candidate_payload
                             acquired_payload = candidate_payload
                             sequence_after = int(candidate_sequence)
-                            # A stable sequence plus a successfully decoded
-                            # bitmap proves this copy generation belongs to
-                            # the current transaction. Sequence alone does not.
-                            owned_clipboard_sequence = int(
-                                candidate_sequence
-                            )
                             break
                         candidate_payload.release()
                         clipboard_reason = "clipboard_sequence_changed_during_read"
@@ -619,34 +618,6 @@ def _acquire_current_image_via_ports(
             if not clipboard_matches_target:
                 payload.release()
                 acquired_payload = None
-                clear_result = clear_owned_clipboard()
-                if clear_result.get("ok") is not True:
-                    return fail(
-                        "C2_IMAGE_CLIPBOARD_CLEAR_FAILED",
-                        transaction={
-                            "status": "clipboard_clear_failed",
-                            "clipboard_image_matches_target": False,
-                            "clipboard_cleared": False,
-                            "clipboard_clear_reason": str(
-                                clear_result.get("reason") or ""
-                            ),
-                        },
-                    )
-                if (
-                    str(clear_result.get("reason") or "")
-                    == "clipboard_replaced_by_external"
-                ):
-                    return fail(
-                        "clipboard_replaced_by_external",
-                        transaction={
-                            "status": "clipboard_replaced_by_external",
-                            "clipboard_image_matches_target": False,
-                            "clipboard_cleared": False,
-                            "clipboard_clear_reason": (
-                                "clipboard_replaced_by_external"
-                            ),
-                        },
-                    )
                 if retry_attempt < 1:
                     retry_data = {
                         **data,
@@ -684,6 +655,10 @@ def _acquire_current_image_via_ports(
                         "clipboard_image_matches_target": False,
                     },
                 )
+            # Clearing is permitted only after the copied bitmap is proven to
+            # match the target slot. A stable but mismatched generation may
+            # belong to a concurrent user clipboard action.
+            owned_clipboard_sequence = int(sequence_after)
             clear_result = clear_owned_clipboard()
             if clear_result.get("ok") is not True:
                 payload.release()

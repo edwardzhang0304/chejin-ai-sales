@@ -31,6 +31,9 @@ from chejin_worker_client.image_phase import (
     merge_image_phase_results,
     new_image_phase_result,
 )
+from chejin_worker_client.omniauto_vision import (
+    VISION_WINDOW_STABLE_FAILURE_REASONS,
+)
 from chejin_worker_client.wechat_c2 import (
     project_final_slot_flow_gates,
 )
@@ -231,10 +234,6 @@ class C2ContractTests(unittest.TestCase):
                 "vision_cancelled_before_start",
                 "vision_configuration_incomplete",
                 "vision_configuration_invalid",
-                "vision_window_context_missing",
-                "vision_window_context_capture_missing",
-                "vision_window_capture_failed",
-                "vision_window_frame_finalize_failed",
                 "vision_plugin_exception",
                 "vision_cancelled_after_provider",
                 "vision_result_invalid",
@@ -242,6 +241,7 @@ class C2ContractTests(unittest.TestCase):
                 "C2_IMAGE_UNDERSTANDING_SCHEMA_INVALID",
             }
         )
+        runtime_reasons.update(VISION_WINDOW_STABLE_FAILURE_REASONS)
         reason_map = image_contract()["failure_reason_to_error_code"]
         self.assertEqual(
             sorted(runtime_reasons - set(reason_map)),

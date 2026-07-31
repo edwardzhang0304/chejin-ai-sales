@@ -21,9 +21,22 @@ $OmniAutoSidecarPath = Join-Path $OmniAutoSourcePath "apps\wechat_ai_customer_se
 $GeneratedObservationSchemaPath = Join-Path $OmniAutoSourcePath "apps\wechat_ai_customer_service\adapters\chejin_c2_observation_schema.generated.json"
 $TestsStatus = "not_run"
 $PreflightStatus = "not_run"
-$GitCommit = (git rev-parse HEAD 2>$null)
-$GitBranch = (git branch --show-current 2>$null)
-$GitDirty = [bool](git status --porcelain 2>$null)
+$BuildSourceArgs = @("scripts\build_source.py")
+if ($DevelopmentBuild) {
+  $BuildSourceArgs += "--development-build"
+}
+$BuildSourceJson = & python @BuildSourceArgs
+if ($LASTEXITCODE -ne 0) {
+  throw "正式打包失败：缺少有效 Git 来源或合同文件。$BuildSourceJson"
+}
+$BuildSource = $BuildSourceJson | ConvertFrom-Json
+if ($BuildSource.ok -ne $true) {
+  throw "正式打包失败：源码身份检查未通过。"
+}
+$GitCommit = [string]$BuildSource.git_commit
+$GitBranch = [string]$BuildSource.git_branch
+$GitDirty = [bool]$BuildSource.git_dirty
+$SourceContractPath = [string]$BuildSource.contract_path
 
 if (-not $DevelopmentBuild -and $GitDirty) {
   throw "正式打包失败：Git 工作区存在未提交修改。调试包请显式使用 -DevelopmentBuild。"
@@ -156,7 +169,6 @@ $TotalBytes = ($Files | Measure-Object -Property Length -Sum).Sum
 $Version = .\.venv\Scripts\python.exe -c "from chejin_worker_client import __version__; print(__version__)"
 $ContractRevision = .\.venv\Scripts\python.exe -c "from chejin_worker_client.c2_contract import contract_revision; print(contract_revision())"
 $ContractCanonicalSha256 = .\.venv\Scripts\python.exe -c "from chejin_worker_client.c2_contract import contract_sha256; print(contract_sha256())"
-$SourceContractPath = Join-Path (Split-Path -Parent $Root) "contracts\c2_contract_v3.json"
 $PackagedContractCandidates = @(
   (Join-Path $PackageDir "_internal\contracts\c2_contract_v3.json"),
   (Join-Path $PackageDir "contracts\c2_contract_v3.json")
