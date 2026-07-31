@@ -1,8 +1,8 @@
 {
   "generated_file": true,
   "source": "contracts/c2_contract_v3.json",
-  "contract_revision": "3.12.2",
-  "contract_sha256": "1a3a77bea9cb7db60a88a687d29312a42e74b61517d8e0b52553fa510417b1bc",
+  "contract_revision": "3.12.3",
+  "contract_sha256": "afe3ee2c27d846b2abab8940cbb83e28faaca503132c5a49eaed61d302c61478",
   "observation_schema_version": 3,
   "action_phases": [
     "not_attempted",
@@ -318,6 +318,7 @@
       "vision_window_context_capture_missing": "C2_IMAGE_OBSERVATION_FAILED",
       "vision_window_capture_failed": "C2_IMAGE_OBSERVATION_FAILED",
       "vision_window_frame_finalize_failed": "C2_IMAGE_OBSERVATION_FAILED",
+      "vision_window_ocr_failed": "C2_IMAGE_OBSERVATION_FAILED",
       "vision_window_context_missing": "C2_IMAGE_OBSERVATION_FAILED",
       "vision_window_frame_unavailable": "C2_IMAGE_OBSERVATION_FAILED",
       "vision_window_frame_invalid": "C2_IMAGE_OBSERVATION_FAILED",

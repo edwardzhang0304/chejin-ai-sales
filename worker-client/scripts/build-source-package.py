@@ -10,6 +10,7 @@ import subprocess
 import zipfile
 
 from build_policy import validate_build_policy
+from build_source import verify_build_source
 from omniauto_tree import load_source_provenance, tree_manifest
 
 
@@ -72,17 +73,6 @@ def _is_excluded(path: Path) -> bool:
 
 def _iter_files() -> list[Path]:
     return sorted((item for item in ROOT.rglob("*") if item.is_file() and not _is_excluded(item)), key=lambda item: item.relative_to(ROOT).as_posix())
-
-
-def _git_output(*args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result.stdout.strip() if result.returncode == 0 else ""
 
 
 def _sha256_bytes(payload: bytes) -> str:
@@ -162,7 +152,11 @@ def build(
     development_build: bool = False,
 ) -> dict[str, object]:
     DELIVERABLES.mkdir(parents=True, exist_ok=True)
-    git_dirty = bool(_git_output("status", "--porcelain"))
+    build_source = verify_build_source(
+        ROOT,
+        development_build=development_build,
+    )
+    git_dirty = bool(build_source["git_dirty"])
     validate_build_policy(
         git_dirty=git_dirty,
         skip_tests=tests_status != "passed",
@@ -202,7 +196,7 @@ def build(
         names = archive.namelist()
     forbidden = _forbidden_entries(names)
     contract, contract_fingerprint = _canonical_contract()
-    source_contract_path = PROJECT_ROOT / "contracts" / "c2_contract_v3.json"
+    source_contract_path = Path(str(build_source["contract_path"]))
     source_contract_sha256 = _sha256_bytes(source_contract_path.read_bytes())
     packaged_contract_path = "worker-client/contracts/c2_contract_v3.json"
     packaged_contract_sha256 = _zip_member_sha256(zip_path, packaged_contract_path)
@@ -234,8 +228,8 @@ def build(
         "forbidden_entries": forbidden,
         "built_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "source": {
-            "git_commit": _git_output("rev-parse", "HEAD"),
-            "git_branch": _git_output("branch", "--show-current"),
+            "git_commit": str(build_source["git_commit"]),
+            "git_branch": str(build_source["git_branch"]),
             "git_dirty": git_dirty,
             "build_kind": "development" if development_build else "official",
             "formal_release": not development_build,
