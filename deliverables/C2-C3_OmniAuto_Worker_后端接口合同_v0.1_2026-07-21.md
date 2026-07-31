@@ -4,7 +4,18 @@
 
 日期：2026-07-21
 
-状态：接口命名和职责边界冻结；以 V16.107 正式基线开发图片与 C2-C3 单会话串行链路。自动化合同已接通，但真实 Vision 凭据和 Windows 实机验收通过前，不得宣称功能完成。
+状态：接口命名和职责边界冻结。2026-07-31 增补 C1-C3 统一事务恢复与事实结算口径；客户端和后端完成三层整改、真实 Vision/Brain 联调和 Windows 故障注入验收前，不得宣称功能完成。
+
+> 恢复流程以
+> `C1-C3_事务恢复与事实结算统一架构_v0.1_2026-07-31.md`
+> 为最高约束。旧实现中的图片专用恢复和“收到 `target_terminated` 后本地丢弃事实”
+> 不再属于正式合同。
+> 当前机器合同 `3.10.0` 仅是整改前实现快照；必须由后端首个整改提交连同 schema、
+> 共享样例和合同测试一起升级，不能只改 JSON 枚举后交给客户端。
+>
+> 图片流程的状态矩阵、Windows 位图、剪贴板、Vision Provider、结果 schema、
+> 服务端产品权威、跨轮 Brain 上下文和 UAT 门禁，以
+> `C2_图片流程封版口径与一次性整改清单_v0.1_2026-07-31.md` 为最高专项约束。
 
 ## 0. 三层统一与职责边界（最高约束）
 
@@ -74,7 +85,8 @@ Worker 负责“当前获准处理哪个会话，以及如何把 OmniAuto 结果
 | `source_message_key`、`dedupe_key`、`message_position` | Worker | 必须由最终当前屏观察统一组装；坐标和授权版本不得进入消息身份 |
 | `conversation_id`、`authorization_revision`、`read_reason` | 后端 | Worker 只能使用 `read-targets` 下发值，不得生成或修补 |
 | `message_batch`、会话状态、唯一约束、最终入库结果 | 后端 | Worker 和 OmniAuto 不直接修改业务状态 |
-| `customer_image_understanding`、`visual_bridge_input` | OmniAuto Vision | 只包含文字化结果和非图片内容审计，不生成客户回复 |
+| `customer_image_understanding`、`visual_bridge_input` | OmniAuto Vision | 只包含通过共享 schema 的文字化结果和非图片内容审计，不生成客户回复；车金严格入口不使用客户端本地产品库确认正式 product_id |
+| `server_validated_product_id`、历史图片紧凑上下文 | 车金后端 | 使用服务端权威车源/RAG确认；Worker 和 OmniAuto 只能提供视觉线索 |
 | `brain_plan`、`reply_text` | OmniAuto Brain | Guard 可以阻断或要求 Brain 重写，但不能自行写客户可见话术 |
 
 ## 4. 三种返回外壳不得混用
@@ -160,6 +172,9 @@ not_attempted / trigger_attempted / confirmed
   `confirmed`。
 - `ActionJournal` 只有在 Worker 已将对应终态写入本地 ledger/可靠回执后才能
   删除。进程重启和 Sidecar 异常收尾必须先恢复日志，再允许新的物理动作。
+- 语音和图片 ActionJournal 必须在物理动作前保存完整的文字化
+  `replayable_observation`，至少包含消息身份、角色证据、稳定 anchor、观察时间和
+  顺序；图片原始位图仍禁止持久化。只保存坐标的语音日志不满足跨重启恢复合同。
 
 ## 5. OmniAuto RPA Sidecar 合同
 
@@ -277,7 +292,7 @@ AND 不是 group/unknown
 - 观察顺序为当前画面自上而下；Worker 在语音全部处理完成后的最终帧建立统一 `screen_order`。
 - 普通 `voice_bubble` 只是待处理观察，不能直接入库。只有真实执行转写后明确失败、且保留稳定语音锚点、同行头像角色和最终画面位置的语音，才允许以 `item_state=failed + content=null + voice_processing_reason` 形成失败语音事实。
 - `voice_transcript` 必须带 `parent_voice_anchor_key`，最终只形成一条 `message_type=voice`，不得再形成一条 text。
-- `image_bubble` 发现态只观察、不入库；经第 9 节 Vision 后必须形成明确终态。成功图片以 `item_state=completed` 入库；失败图片以 `item_state=failed + content=null + error_code/reason` 入库并直接转人工；`discovered/ignored` 不入库。
+- `image_bubble` 发现态只观察、不入库。初次同行头像角色不可信时尚未形成业务图片身份，必须形成帧级 `MESSAGE_IDENTITY_UNCONFIRMED`，零点击、零 Vision、零 terminal ledger；不得用 `ignored` 静默结案。只有角色可信且稳定身份唯一的 `NEW_IMAGE` 才进入第 9 节，并在同一 Flow 形成 `completed/failed`。`discovered/ignored` 不入库。
 
 ### 5.4 `voice-transcribe`
 
@@ -458,9 +473,10 @@ X-Request-Id: ...     # 可选
 重建后图片仍可见但身份不唯一 -> item_state=failed
 ```
 
-Vision 配置必须在 Worker 进入 C2 扫描循环前完成全局预检。配置缺失属于客户端
+Vision 配置必须在 Worker 开始“新的 C2 UI 流程”前完成预检。配置缺失属于客户端
 `vision_not_ready`，不是单张图片状态，也不得复用后端请求级
-`capability_paused`。
+`capability_paused`。全局事务恢复必须排在该预检之前：已有 `sent_ack`、消息
+Outbox 和 `settle_without_ui` 事实结算不需要 Vision，不能被一起阻断。
 
 图片归属的唯一业务结论来自 C2 同行头像规则。复制前重新定位得到的
 `visual_side` 只能记录为物理一致性证据，不得否决或覆盖已经确认的
@@ -486,7 +502,8 @@ Vision 配置必须在 Worker 进入 C2 扫描循环前完成全局预检。配�
 Brain。
 
 目标实现不再保留“未收口图片身份”作为跨轮业务状态。图片阶段只返回本 Flow
-动作证据和 `completed/failed/ignored` 终态；`visual_side` 不得参与角色定案、
+动作证据和 `completed/failed` 终态；初次角色不可信属于帧级身份门禁，不是图片
+终态。`visual_side` 不得参与角色定案、
 跨轮身份或相同图片 occurrence 分组。
 
 准入条件固定为：
@@ -502,8 +519,8 @@ AND authorization_revision 未变化
 
 ### 6.2.1 `GET /api/workers/{worker_id}/wechat/conversations/{conversation_id}/read-authorization`
 
-长动作每秒取消检查和“已处理图片事实尚未入库”的原会话恢复，统一使用
-本轻量接口，不得反复下载完整 `read-targets/identity_transition`。普通长动作
+长动作每秒取消检查和“已触发语音/图片动作但事实尚未结算”的原会话恢复，统一
+使用本轻量接口，不得反复下载完整 `read-targets/identity_transition`。普通长动作
 响应包含：
 
 ```json
@@ -518,24 +535,26 @@ AND authorization_revision 未变化
 
 Worker 必须同时匹配 `conversation_id + authorization_revision + read_reason`。
 该接口不负责普通目标发现，不能替代开始动作前的完整 `read-targets` 准入。
-唯一例外是恢复已经持久化的图片事务：后端必须返回三态结果，避免
+唯一例外是恢复已经持久化的语音/图片事务：后端必须返回统一三态结果，避免
 `read-targets` 的数量限制或状态变化让整台 Worker 永久停住。
+
+恢复请求必须携带或引用：
+
+```text
+?recovery_transaction_id=...
+&action_kind=voice|image
+&source_message_key_digest=...
+&original_authorization_revision=...
+```
 
 ```json
 {
-  "allowed": true,
-  "recovery_decision": "allowed",
+  "allowed": false,
+  "recovery_decision": "settle_without_ui",
+  "settlement_mode": "fact_only",
+  "settlement_token": "***",
   "conversation_id": "...",
-  "authorization_revision": "...",
-  "read_reason": "waiting_sales_reply",
-  "target": {
-    "conversation_id": "...",
-    "remark_code": "CJ...",
-    "rpa_session_key": "...",
-    "display_name": "...",
-    "authorization_revision": "...",
-    "read_reason": "waiting_sales_reply"
-  }
+  "trace_id": "..."
 }
 ```
 
@@ -543,13 +562,35 @@ Worker 必须同时匹配 `conversation_id + authorization_revision + read_reaso
 
 | `recovery_decision` | Worker 行为 |
 |---|---|
-| `allowed` | 只恢复响应中 `target` 指向的原会话。 |
+| `resume_current_target` | 只恢复响应中 `target` 指向的原会话；仍须重新确认有效短码、private 和当前授权。 |
+| `settle_without_ui` | 不打开微信，使用现有 `messages/ingest` 结算原事实或技术终态；后端逐条确认前不得清理本地记录。 |
 | `retry_later` | 保留原 Ledger 和动作日志，阻断新 UI 动作，稍后重试。 |
-| `target_terminated` | 后端已确认目标解绑、替换、删除或会话关闭；只终结该会话本地恢复事务。 |
 
-缺失或未知决定必须按 `retry_later` 失败关闭。图片动作日志中所有条目均明确为
-`not_attempted` 时，证明尚未发生右键或复制，Worker 必须在进入全局门禁前
-本地清理，不需要请求后端。
+`settlement_mode` 只允许：
+
+| `settlement_mode` | 后端行为 |
+|---|---|
+| `fact_only` | 原身份仍可证明；幂等保存消息事实，固定 `state_transition_applied=false`、`message_batch=null`。 |
+| `technical_terminal` | 原身份无法安全映射；持久化恢复终结审计和精确 source key 结果，不写入错误会话。 |
+
+缺失或未知决定必须按 `retry_later` 失败关闭。语音/图片动作日志中所有条目均明确
+为 `not_attempted` 时，Worker 在全局门禁前本地清理，不需要请求后端。
+`unbound / binding_failed / needs_review / degraded / paused` 不得返回永久终结。
+后端仍能证明原 Worker、原绑定、原 conversation 和原短码身份时，返回
+`settle_without_ui + fact_only`，但不改变当前绑定状态；身份暂不可证时才
+`retry_later`。会话关闭、拒绝、可靠确认短码移除或绑定禁用时，已经产生的事实
+仍返回 `settle_without_ui`，不能要求 Worker 本地改成 `not_required`。
+
+`settlement_token` 使用请求头 `X-C2-Settlement-Token`，建议有效期 5 分钟，并
+绑定 Worker、conversation、`recovery_transaction_id` 和 source key 摘要。同一
+事务在有效期内允许幂等重试，不能因第一次响应丢失而失效。服务端必须以
+`unique(worker_id, recovery_transaction_id)` 持久化结算结果；技术终态使用通用
+recovery settlement 记录，不得创建 handoff 冒充恢复成功。
+
+`source_message_key_digest` 固定为
+`sha256(UTF-8(sorted(unique(source_message_key)).join("\n"))).hexdigest()`。
+缺少 `dedupe_key` 时只允许调用 Worker 现有唯一消息身份组装器从
+`replayable_observation` 补齐，不得在恢复模块新增哈希算法。
 
 当消息入库已经创建 Brain 批次、会话进入 `ai_active` 后，全局读取授权
 必须保持 `allowed=false`。后端只给当前 `batch_id` 签发一张批次续行票：
@@ -592,6 +633,7 @@ V3 请求顶层字段：
   "contract_revision": "3.4.8",
   "contract_sha256": "1805645ca709d6cd38c54bd637a808e7536608e635ca1cdba07ba3c311c36de2",
   "observation_schema_version": 3,
+  "authorization_scope": "active_read",
   "read_run_id": "read-...",
   "conversation_id": "...",
   "remark_code": "CJ123456",
@@ -614,6 +656,10 @@ V3 请求顶层字段：
 
 硬规则：
 
+- `authorization_scope` 只允许 `active_read / fact_settlement`。
+  `active_read` 使用当前 `authorization_revision`；`fact_settlement` 必须在请求头
+  携带恢复授权返回的短时 `settlement_token`，后端固定
+  `state_transition_applied=false`、`message_batch=null`。
 - 顶层不再发送 `sidecar_run_id`；它只放在 `evidence.sidecar_run_id`，避免同一字段双份。
 - `contract_*` 由 Worker 生成。Sidecar 即使兼容性输出同名字段，也只可作诊断，不是权威来源。
 - V3 下 `contract_revision/contract_sha256/observation_schema_version/remark_code/authorization_revision` 和每条 canonical message 必填字段必须在 Pydantic schema 与 service 校验中一致，不再一层 optional、一层 required。
@@ -641,6 +687,9 @@ V3 请求顶层字段：
   校验和使用这份顺序证据，不能自行用坐标、扫描时间或正文重算消息身份。
   `screen_order` 只证明顺序，永远不能进入 `source_message_key` 或
   `dedupe_key`。
+- `fact_settlement` 是恢复特例：`authoritative_frame_source` 固定为
+  `action_journal_recovery`，`slot_ledger_states` 只列本次结算的精确 source keys，
+  不伪装成完整当前屏；后端不得据此做上下文完整性、销售顺序或 Brain 判断。
 - `order_source=visual_top` 表示最终画面中所有相关气泡都有真实上下边界，
   可用于证明销售消息位于触发消息之后。`observation_index_fallback` 只
   允许恢复普通消息排列，不能解除 handoff、清除安全门禁或推动任何依赖
@@ -700,10 +749,14 @@ V3 请求顶层字段：
 | `rebuild_failed_facts` | 后端必须返回具体 `source_message_key`；Worker 只把该条无效语音或图片重建为合法 failed 事实，其他成功消息保持不变。 |
 | `split_and_retry` | 请求过大时按原 `read_run_id` 和 `screen_order` 拆批；全部分片落盘后再发送，最后一片确认前不得启动 Brain。 |
 | `capability_paused` | 仅用于合同版本、SHA 或 schema 暂不兼容；冻结原 Outbox 和 ledger，停止新 UI 动作并自动探测恢复。 |
-| `target_terminated` | 后端确认目标已解绑、短码失效或不可监听；终结该目标 Outbox。 |
+| `settle_without_ui` | 当前 UI 授权不再有效，但原事实可结算；Worker 取得 settlement token，只重建授权外壳并原样提交事实，不打开微信、不重做媒体动作。 |
 | `conversation_terminated` | 后端先持久化技术终态并停止该会话自动处理，再确认 Worker 终结 Outbox。 |
 
 兼容字段 `retryable` 只能用于旧客户端展示，不能作为新 Worker 的唯一决策依据。后端不得要求 Worker 解析 `message` 文本或根据 HTTP 状态码猜测恢复方式。未知/缺失 `recovery_action` 时，新 Worker 必须保守进入 `capability_paused`，不得丢弃事实或建立人工消息处理队列。
+
+旧客户端可能识别的 `target_terminated` 只保留为版本兼容输入，服务端不得再对新
+合同返回。兼容层必须把它转换为 `settle_without_ui`，并且在事实或
+`technical_terminal` 已持久化前不得返回 `terminal_confirmed=true`。
 
 `VALIDATION_ERROR` 发生在请求解析阶段，后端尚未保存消息事实，因此只能返回
 `capability_paused`，且不得返回 `terminal_confirmed=true`。只有后端已经持久化目标或
@@ -711,8 +764,8 @@ V3 请求顶层字段：
 
 任务线程与 C2 线程必须共用同一把 `c2_outbox_lock`。创建、首次提交、后台重传和状态迁移均在该单飞区间内执行；同一 Outbox 同一时刻最多允许一个 HTTP 请求。
 
-本地保留期清理必须覆盖全部非重试终态：
-`confirmed / split_completed / target_terminated /
+本地保留期清理必须覆盖全部已由后端确认的非重试终态：
+`confirmed / split_completed / fact_settled /
 conversation_terminated`。`waiting / retry_waiting / refresh_pending /
 rebuild_pending / split_pending / capability_paused` 不得按终态清理。
 
@@ -897,17 +950,20 @@ retry_later / fallback_existing
 
 车金 `AIEngineDecision` 是适配器内部类型，不是新的模型输出协议。`raw_payload` 必须保存原始 OmniAuto Brain 结果，便于审计映射是否正确。
 
-## 9. 图片接口预冻结
+## 9. 图片接口冻结
 
 图片能力复用 OmniAuto 当前命名和边界，不新增图片专用后端接口：
 
 ```text
 image_bubble
 → C2 同行头像规则确定 customer/self
+→ Worker建立稳定身份并只选择NEW_IMAGE
 → 当前剪贴板一次性图片事务
 → customer_image_understanding
 → visual_bridge_input
-→ 与本轮文字、语音按最终当前屏顺序组成 message_batch
+→ 与本轮文字、语音按最终当前屏顺序组成messages/ingest
+→ 后端用服务端权威车源校验视觉产品线索
+→ message_batch
 → customer_service_brain
 ```
 
@@ -937,9 +993,10 @@ maybe_route_customer_image_turn(
 
 1. Worker 保持当前会话和 UI 锁。
 2. OmniAuto connector 的 `run_customer_clipboard_image_transaction` 在当前会话完成右键复制。
-3. Vision 插件只在进程内消费不可 JSON 序列化的临时图片载荷。
-4. 插件释放图片内存并返回文字化 `customer_image_understanding`、`visual_bridge_input`。
-5. Worker 只把允许持久化的文字结果映射进现有 `messages/ingest`。
+3. Vision 插件只在进程内消费不可 JSON 序列化的临时图片载荷；Windows 原始位图先按源内存上限解码，再缩放和自适应编码到 Provider 上限。
+4. 完成目标指纹校验并取得内存副本后，清除本次复制产生的系统剪贴板内容。
+5. 插件释放图片内存并返回通过共享 schema 的文字化 `customer_image_understanding`、`visual_bridge_input`。
+6. Worker 只把允许持久化的文字结果映射进现有 `messages/ingest`。
 
 如果新版 OmniAuto 尚未同步进 Worker 打包目录，本能力必须保持关闭，不允许用临时接口代替。
 
@@ -948,11 +1005,16 @@ maybe_route_customer_image_turn(
 - 不恢复 Sidecar `image-save` 或 `image-clipboard-copy` action。
 - 不使用 `image_local_path`、截图裁切、历史图片文件或后端图片上传接口。
 - 图片只在当前进程内存中短暂存在；Vision 完成后立即释放。
+- Windows `CF_DIB/CF_DIBV5/CF_BITMAP` 原始内存上限与最终 Provider 3 MB 上限分开；不得在压缩前用 3 MB 拒绝普通 1080p 位图。
+- 图片复制到内存并校验后清除当前剪贴板代次；生产环境关闭剪贴板历史和跨设备同步。
 - 可持久化的只有 `customer_image_understanding` 文字结果、`visual_bridge_input` 和不含图片内容的事务审计。
 - 图片角色只使用 C2 的 `sender_role/sender_role_source=same_row_avatar`；忽略 Vision 的 `side/visual_side` 归属判断。
 - Vision 不生成客户可见回复；唯一回复作者仍是 `customer_service_brain`。
+- Provider 地址默认只允许 HTTPS，请求风格使用明确白名单。未知风格不得自动落入其他 Provider 分支。
+- 一次非 JSON 格式纠正重试属于同一合法 Vision 调用；父进程安全预算必须覆盖两次请求和进程通信余量。
+- 车金严格入口禁止把客户端 OmniAuto `KnowledgeRuntime` 的产品候选作为正式产品事实；正式 product_id 只能由后端权威车源验证。
 
-OmniAuto 文字化结果沿用当前 schema：
+OmniAuto 文字化结果沿用以下对象名：
 
 ```json
 {
@@ -977,15 +1039,23 @@ OmniAuto 文字化结果沿用当前 schema：
 }
 ```
 
-上面字段名直接来自 OmniAuto `normalize_customer_image_understanding_result`。持久化时必须做文本白名单投影，剔除 Provider 原始响应、图片字节、图片路径、`asset_id`、缩略图和可还原图片的内容；不得把完整运行时对象原样写入 `raw_payload`。
+字段名来自 OmniAuto `normalize_customer_image_understanding_result`，但不能继续由
+OmniAuto、Worker 和后端分别手抄限制。`contracts/c2_contract_v3.json` 必须新增
+完整的 `customer_image_understanding_v1` 与 `visual_bridge_input_v1` JSON Schema，
+并生成或复用三层校验器。Schema 固定必填字段、类型、长度、数组条数、有限数及
+`0..1` 置信度范围；字符串 `"false"`、NaN、越界值和仅靠默认空字段不得成为
+completed。持久化时剔除 Provider 原始响应/错误正文、图片字节、图片路径、
+`asset_id`、缩略图和可还原图片的内容。
 
 正式启用图片入库必须同时满足：
 
 1. `contracts/c2_contract_v3.json` 必须允许 `completed` 图片事实和结构完整的 `failed` 图片事实入库，同时拦截 `discovered/ignored/pending` 占位。
 2. Worker 在 `raw_payload.customer_image_understanding` 保存上述文字白名单投影；不得改名为 `image_recognition`，也不得保存完整运行时对象。
 3. 后端校验图片 canonical message 与原始 `image_bubble` 的稳定来源关系。
-4. `failed` 客户图片不得伪装文字或触发 Brain，后端必须创建确定性 handoff；同批已确认文字和语音仍正常入库。
-5. 自动化测试和 Windows 实机回归通过后再开启能力开关。
+4. `failed customer/self` 图片不得伪装文字；后端使用与 failed 语音相同的角色和最终画面顺序门禁，未被可靠后续销售事实覆盖时禁止 Brain；同批已确认文字和语音仍正常入库。
+5. 后端给 Brain 的历史图片保留紧凑 `item_state/error_code`、摘要、OCR、分类、实体、中性查询和服务端确认产品 ID，支持下一轮“这辆/刚才那台”。
+6. 图片检测不得静默限制为 8 张。若内部容量不足，必须返回 `observation_truncated=true + C2_IMAGE_OBSERVATION_FAILED` 并阻断 Brain。
+7. 自动化测试和 Windows 实机回归通过后再开启能力开关。
 
 ## 10. 当前实施审计状态
 
@@ -997,14 +1067,22 @@ OmniAuto 文字化结果沿用当前 schema：
 | P0 | 已收口 | 后端真实 OmniAuto Brain Adapter 与状态映射已实现；客户后发重建批次，销售后发取消回复。 |
 | P0 | 已收口 | 后端逐条返回 `source_message_key`，Worker 精确确认本地 ledger；未确认时 Outbox 只重传 JSON，不重做 RPA/Vision。 |
 | P0 | 已收口 | `chat_reply` 只能由持有当前会话 UI 锁的 C2 flow 领取；普通任务线程被 Worker 与后端双重阻断。 |
-| P0 | 已收口 | 语音在右键前查询持久化稳定身份；最终槽位先判定 NEW/OLD/OUTBOX，发现历史断层或失败客户图片时保存事实并确定性转人工。 |
+| P0 | 部分收口 | 语音在右键前查询持久化稳定身份，最终槽位先判定 NEW/OLD/OUTBOX；但初次图片角色不可信仍被持久化为 ignored，必须改为帧级身份门禁。 |
 | P0 | 已收口 | 新好友先调用 activation-confirm，再读取消息、转写语音和处理图片。 |
-| P1 | 待按新状态机整改 | 普通会话继续复用 open-chat 确认帧；Vision 配置改为 C2 扫描循环启动前全局预检，缺配置时不得打开任何会话。 |
+| P1 | 待按新状态机整改 | 普通会话继续复用 open-chat 确认帧；Vision 只门禁新的 C2 UI 流程，事务恢复与事实结算先于能力预检。 |
 | P0 | 已收口 | Sidecar、Worker 与后端已统一落实 `action_phase`；发送触发后无法确认时只进入 `unknown`，不会按普通失败清除证据。 |
 | P0 | 已收口 | Worker 已使用唯一 `merge_item_outcomes` 单调累计语音/图片逐条结果；后续调用只能合并，不能覆盖既有成功或失败结果。 |
 | P0 | 待按新状态机整改 | 删除 `C2_IMAGE_PROCESSING_DEFERRED` 和图片跨轮未收口项；出屏图片本轮不存在，仍可见但不能唯一确认则 failed；当前屏 NEW_IMAGE 必须在同一 Flow 内终态。 |
 | P0 | 已收口 | 图片角色只采用 C2 同行头像结论；复制前几何侧仅记录物理一致性证据，不再作为第二套准入规则。 |
 | P0 | 已收口 | 后端失败外壳与 Worker Outbox 统一使用 `retry / refresh_and_rebuild / capability_paused`；旧 `quarantine/abandoned` 仅作为启动迁移输入，不再是运行时终态。 |
+| P0 | 待统一整改 | 图片专用恢复必须改为 voice/image 共用 `media_fact` 协调器；语音日志补齐 replayable observation，并进入同一 Worker 级全局门禁。 |
+| P0 | 待统一整改 | 废弃新合同中的 `target_terminated -> 本地not_required`；实现 `resume_current_target / settle_without_ui / retry_later` 与 `fact_settlement`。 |
+| P0 | 待统一整改 | `unbound/binding_failed/needs_review/degraded/paused` 不得作为永久终止；原事务身份可信时 fact_only 结算，暂不可证时 retry_later；单次短码 OCR 缺失不得覆盖已有 bound 绑定。 |
+| P0 | 待统一整改 | 技术恢复终态不得创建 handoff 冒充结算；改用通用 recovery settlement 持久化，并支持绑定已不存在时仍安全终结原事务。 |
+| P0 | 待统一整改 | 分离 Windows 原始位图和 Provider 载荷上限，支持普通 1080p DIB/HBITMAP 自适应压缩，并在取入内存后清除系统剪贴板。 |
+| P0 | 待统一整改 | Vision 父进程预算覆盖两次合法请求；Provider 使用 HTTPS/请求风格白名单；模型结果由共享完整 schema 校验。 |
+| P0 | 待统一整改 | 图片观察不得静默截断 8 张；failed 图片门禁覆盖 customer/self；历史图片上下文保留结构化结果。 |
+| P0 | 待统一整改 | 车金严格 Vision 入口不得使用客户端本地 KnowledgeRuntime 确认正式产品 ID；后端使用服务端权威车源验证。 |
 | P1 | 待实机 | 真实 Vision Provider 凭据、Windows 微信图文语音混合回归与进程重启 Outbox 回归尚未完成。 |
 
 ## 11. 联调验收门禁
@@ -1022,4 +1100,7 @@ OmniAuto 文字化结果沿用当前 schema：
 11. 业务编排只消费统一结果对象，不直接解析 Sidecar 原始异常、HTTP 文案或 Provider 原始返回。
 12. 状态转换测试必须表驱动覆盖全部枚举组合，并至少验证：完成事实不丢失、失败集合不缩小、未知发送不重发、隔离 Outbox 不循环重建。
 13. 同一业务规则只能在一层拥有：OmniAuto 提供观察证据，Worker 映射执行结果，后端持久化业务真相。
+14. 图片专项自动化和 Windows UAT 必须逐项通过
+`C2_图片流程封版口径与一次性整改清单_v0.1_2026-07-31.md` 第 10 节；任何 P0
+未通过不得打 UAT 包。
 14. 允许在现有大函数周围提取上述集中判定器和阶段结果对象；本期不要求全面重写，但禁止继续增长重复分支。
