@@ -111,6 +111,15 @@ $OmniAutoSourceTree = (
   .\.venv\Scripts\python.exe scripts\verify-omniauto-tree.py --source $OmniAutoSourcePath
 ) | ConvertFrom-Json
 
+$Version = .\.venv\Scripts\python.exe -c "from chejin_worker_client import __version__; print(__version__)"
+$RuntimeBuildIdentityPath = Join-Path $ReportsDir "runtime-build-identity.json"
+@{
+  version = $Version.Trim()
+  git_commit = $GitCommit.Trim()
+  git_branch = $GitBranch.Trim()
+} | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 $RuntimeBuildIdentityPath
+$env:CHEJIN_BUILD_IDENTITY_PATH = $RuntimeBuildIdentityPath
+
 .\.venv\Scripts\pyinstaller.exe --clean --noconfirm packaging\chejin-worker-client.spec
 
 if (-not (Test-Path $ExePath)) {
@@ -174,7 +183,6 @@ $OmniAutoTreeVerification = (
 $Hash = Get-FileHash -Algorithm SHA256 $ExePath
 $Files = Get-ChildItem $PackageDir -Recurse -File
 $TotalBytes = ($Files | Measure-Object -Property Length -Sum).Sum
-$Version = .\.venv\Scripts\python.exe -c "from chejin_worker_client import __version__; print(__version__)"
 $ContractRevision = .\.venv\Scripts\python.exe -c "from chejin_worker_client.c2_contract import contract_revision; print(contract_revision())"
 $ContractCanonicalSha256 = .\.venv\Scripts\python.exe -c "from chejin_worker_client.c2_contract import contract_sha256; print(contract_sha256())"
 $PackagedContractCandidates = @(

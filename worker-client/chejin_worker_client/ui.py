@@ -8,7 +8,6 @@ from PySide6.QtCore import QByteArray, QPoint, QSize, QTime, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
-    QApplication,
     QDialog,
     QFrame,
     QGridLayout,
@@ -29,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from .api import WorkerApiClient
 from .models import Binding, RpaResult, RpaStep, Task, WorkerProfile, task_type_title
+from .qt_application import GuardedQApplication
 from .rpa_bridge import RpaBridge
 from .storage import append_log, clear_binding, load_binding, new_client_instance_id, read_logs, save_binding
 from .task_runner import TaskRunner
@@ -1904,7 +1904,7 @@ class WorkerWindow(QMainWindow):
 
 
 def run_app() -> int:
-    app = QApplication([])
+    app = GuardedQApplication([])
     window = WorkerWindow()
     window.show()
     QTimer.singleShot(0, lambda: append_log("INFO", "ui_started", "Worker UI 启动。"))

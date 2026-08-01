@@ -23,6 +23,7 @@ from .action_journal import (
     action_journal_phase,
     update_action_journal_item,
 )
+from .emergency_stop import emergency_stop_requested
 
 
 OMNIAUTO_ROOT = Path(__file__).resolve().parents[1] / "omniauto-rpa"
@@ -55,6 +56,8 @@ class VisionCancelledError(RuntimeError):
 
 
 def _cancel_requested(callback: Callable[[], bool] | None) -> bool:
+    if emergency_stop_requested():
+        return True
     if not callable(callback):
         return False
     try:
@@ -211,9 +214,11 @@ class _CancellableVisionProvider:
         except json.JSONDecodeError as exc:
             raise RuntimeError("VISION_PROVIDER_RESULT_INVALID") from exc
         if process.returncode != 0 or envelope.get("ok") is not True:
-            raise RuntimeError(
+            error = RuntimeError(
                 str(envelope.get("error_code") or "VISION_PROVIDER_WORKER_FAILED")
             )
+            error.diagnostic_traceback = str(envelope.get("traceback") or "")  # type: ignore[attr-defined]
+            raise error
         result = envelope.get("result")
         if not isinstance(result, dict):
             raise RuntimeError("VISION_PROVIDER_RESULT_INVALID")
@@ -1268,12 +1273,16 @@ def process_image_slot(
             "diagnostics": state.diagnostics(),
         })
     except Exception as exc:
+        provider_traceback = str(
+            getattr(exc, "diagnostic_traceback", "") or ""
+        )
         state.record(
             "vision_provider",
             "failed",
             started_at=plugin_started_at,
             reason="vision_plugin_exception",
             error_type=type(exc).__name__,
+            provider_traceback=provider_traceback,
             image_persisted=False,
         )
         return finish_result({

@@ -6,6 +6,7 @@ import io
 import json
 from pathlib import Path
 import sys
+import traceback
 
 
 OMNIAUTO_ROOT = Path(__file__).resolve().parents[1] / "omniauto-rpa"
@@ -64,10 +65,23 @@ def main() -> int:
         envelope = {"ok": True, "result": result}
         exit_code = 0
     except Exception as exc:  # noqa: BLE001
+        from .incident_evidence import redact_diagnostic
+
         envelope = {
             "ok": False,
             "error_code": "VISION_PROVIDER_WORKER_FAILED",
             "exception_type": type(exc).__name__,
+            "traceback": str(
+                redact_diagnostic(
+                    "".join(
+                        traceback.format_exception(
+                            type(exc),
+                            exc,
+                            exc.__traceback__,
+                        )
+                    )
+                )
+            ),
         }
         exit_code = 1
     finally:

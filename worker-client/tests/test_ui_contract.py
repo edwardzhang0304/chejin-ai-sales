@@ -16,6 +16,24 @@ class UiContractTest(unittest.TestCase):
         self.assertIn("CHEJIN_WORKER_UI_MODE", text)
         self.assertNotIn("--ui", text)
         self.assertNotIn("tk_ui", text)
+        self.assertIn("install_runtime_supervision", text)
+        self.assertIn("mark_runtime_clean_exit", text)
+
+    def test_qt_callbacks_use_guarded_application(self):
+        qt_runtime = (
+            ROOT / "chejin_worker_client" / "qt_application.py"
+        ).read_text(encoding="utf-8")
+        web_ui = (ROOT / "chejin_worker_client" / "web_ui.py").read_text(
+            encoding="utf-8"
+        )
+        classic_ui = (ROOT / "chejin_worker_client" / "ui.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("class GuardedQApplication", qt_runtime)
+        self.assertIn("run_guarded_qt_callback", qt_runtime)
+        self.assertIn("GuardedQApplication(sys.argv)", web_ui)
+        self.assertIn("GuardedQApplication([])", classic_ui)
 
     def test_legacy_tk_demo_ui_is_deleted(self):
         self.assertFalse((ROOT / "chejin_worker_client" / "tk_ui.py").exists())
@@ -148,12 +166,27 @@ class UiContractTest(unittest.TestCase):
 
         self.assertIn("QWebEngineView", web_ui)
         self.assertIn("QWebChannel", web_ui)
-        self.assertIn("CLIENT_VERSION = \"V16.115 · Worker C2/C3 客户端\"", web_ui)
+        self.assertIn("CLIENT_VERSION = \"V16.116 · Worker C2/C3 客户端\"", web_ui)
         self.assertFalse((ROOT / "web-ui-src").exists())
         self.assertTrue((ROOT / "chejin_worker_client" / "web_assets" / "index.html").exists())
         self.assertTrue((ROOT / "chejin_worker_client" / "web_assets" / "worker-ui.css").exists())
         self.assertTrue((ROOT / "chejin_worker_client" / "web_assets" / "worker-ui.tokens.css").exists())
         self.assertTrue(app_js.exists())
+
+    def test_incident_evidence_controls_and_log_fields_are_visible(self):
+        web_ui = (ROOT / "chejin_worker_client" / "web_ui.py").read_text(encoding="utf-8")
+        app_js = (ROOT / "chejin_worker_client" / "web_assets" / "worker-web-app.js").read_text(encoding="utf-8")
+
+        self.assertIn("exportLatestIncident", web_ui)
+        self.assertIn("openIncidentDirectory", web_ui)
+        self.assertIn('"incidentId"', web_ui)
+        self.assertIn('"sidecarRunId"', web_ui)
+        self.assertIn('"evidencePath"', web_ui)
+        self.assertIn("onExportLatestIncident", app_js)
+        self.assertIn("exportLatestIncident", app_js)
+        self.assertIn("openIncidentDirectory", app_js)
+        self.assertIn("incident_id", app_js)
+        self.assertIn("sidecar_run_id", app_js)
 
     def test_window_shell_matches_static_design_chrome(self):
         text = (ROOT / "chejin_worker_client" / "ui.py").read_text(encoding="utf-8")

@@ -90,6 +90,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("最终 exe 未包含 Windows UIA 诊断所需的 uiautomation", text)
         self.assertIn('"--omniauto-sidecar", "--help"', text)
         self.assertIn("最终 exe 无法启动内置 OmniAuto sidecar", text)
+        self.assertIn("runtime-build-identity.json", text)
+        self.assertIn("CHEJIN_BUILD_IDENTITY_PATH", text)
         self.assertNotIn('$OmniAutoUpstreamCommit = "855c218', text)
         self.assertIn("scripts\\build_source.py", text)
         self.assertIn("$LASTEXITCODE -ne 0", text)
@@ -107,6 +109,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertNotIn("endswith(\".example.env\")", text)
         self.assertIn('"runtime"', text)
         self.assertIn('"cache"', text)
+        self.assertIn('".full-check-venv"', text)
         self.assertIn('"forbidden_entries"', text)
         self.assertIn("ALLOWED_DATA_PREFIXES", text)
         self.assertIn('"omniauto_tree_sha256"', text)
@@ -122,6 +125,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("--development-build", text)
         self.assertIn("preflight_status", text)
         self.assertIn("verify_build_source", text)
+        self.assertIn("runtime-build-identity.json", text)
+        self.assertIn('"version": _full_version()', text)
         self.assertNotIn("def _git_output", text)
 
     def test_official_build_policy_rejects_dirty_and_skipped_checks(self):

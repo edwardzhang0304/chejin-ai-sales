@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import CONFIG
+from .emergency_stop import emergency_stop_requested
 from .artifact_retention import record_artifact_outcome
 from .action_journal import (
     action_journal_path,
@@ -649,6 +650,22 @@ class RpaBridge:
         timeout: int = 30,
         cancel_check: CancellationCheck | None = None,
     ) -> dict[str, Any]:
+        if emergency_stop_requested():
+            return {
+                "ok": False,
+                "state": "action_cancelled",
+                "error_code": "WORKER_EMERGENCY_STOPPED",
+                "message": "The worker emergency stop is active.",
+            }
+        original_cancel_check = cancel_check
+
+        def emergency_aware_cancel_check() -> bool | str:
+            if emergency_stop_requested():
+                return "WORKER_EMERGENCY_STOPPED"
+            if original_cancel_check is None:
+                return False
+            return original_cancel_check()
+
         artifact_dir = self._artifact_dir_from_args(args)
         resolved_artifact_dir = artifact_dir.resolve() if artifact_dir is not None else None
         if resolved_artifact_dir is not None:
@@ -658,7 +675,7 @@ class RpaBridge:
             result = self._call_omniauto_process(
                 args,
                 timeout=timeout,
-                cancel_check=cancel_check,
+                cancel_check=emergency_aware_cancel_check,
             )
             try:
                 record_artifact_outcome(artifact_dir, result)

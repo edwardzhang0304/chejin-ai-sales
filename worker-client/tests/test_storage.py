@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 class StorageTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.previous_home = os.environ.get("CHEJIN_WORKER_HOME")
         os.environ["CHEJIN_WORKER_HOME"] = self.tmp.name
         import chejin_worker_client.config as config
         import chejin_worker_client.storage as storage
@@ -18,6 +19,13 @@ class StorageTest(unittest.TestCase):
         self.storage = importlib.reload(storage)
 
     def tearDown(self):
+        import chejin_worker_client.incident_evidence as incident_evidence
+
+        incident_evidence.stop_incident_worker(wait=True)
+        if self.previous_home is None:
+            os.environ.pop("CHEJIN_WORKER_HOME", None)
+        else:
+            os.environ["CHEJIN_WORKER_HOME"] = self.previous_home
         self.tmp.cleanup()
 
     def test_binding_and_logs_are_persisted_in_sqlite(self):
