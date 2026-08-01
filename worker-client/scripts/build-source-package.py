@@ -27,6 +27,7 @@ EXCLUDE_DIRS = {
     ".venv",
     ".visual-venv",
     ".visual-venv312",
+    ".full-check-venv",
     "__pycache__",
     ".pytest_cache",
     "artifacts",
@@ -56,6 +57,12 @@ def _version_label() -> str:
     namespace: dict[str, str] = {}
     exec((ROOT / "chejin_worker_client" / "__init__.py").read_text(encoding="utf-8"), namespace)
     return str(namespace["__version__"]).rsplit(".", 1)[0]
+
+
+def _full_version() -> str:
+    namespace: dict[str, str] = {}
+    exec((ROOT / "chejin_worker_client" / "__init__.py").read_text(encoding="utf-8"), namespace)
+    return str(namespace["__version__"])
 
 
 def _is_excluded(path: Path) -> bool:
@@ -209,6 +216,18 @@ def build(
             / "c2_v3_mixed_roundtrip.json",
             "worker-client/contracts/examples/c2_v3_mixed_roundtrip.json",
         )
+        archive.writestr(
+            "worker-client/runtime-build-identity.json",
+            json.dumps(
+                {
+                    "version": _full_version(),
+                    "git_commit": str(build_source["git_commit"]),
+                    "git_branch": str(build_source["git_branch"]),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
     sha256 = hashlib.sha256(zip_path.read_bytes()).hexdigest()
     with zipfile.ZipFile(zip_path) as archive:
         names = archive.namelist()
@@ -236,7 +255,7 @@ def build(
     )
     manifest = {
         "ok": not forbidden,
-        "version": version,
+        "version": _full_version(),
         "zip_path": str(zip_path.resolve()),
         "sha256": sha256,
         "bytes": zip_path.stat().st_size,

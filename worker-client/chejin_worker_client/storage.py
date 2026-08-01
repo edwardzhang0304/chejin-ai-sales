@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
+import traceback
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -1501,8 +1503,24 @@ def append_log(
     task_id: str | None = None,
     error_code: str | None = None,
     metadata: dict[str, Any] | None = None,
-) -> None:
+    force_incident: bool = False,
+) -> dict[str, Any]:
     record_id = str(uuid.uuid4())
+    stored_metadata = dict(metadata or {})
+    if str(level or "").upper() == "ERROR" or force_incident:
+        if not stored_metadata.get("traceback"):
+            exc_type, exc, exc_traceback = sys.exc_info()
+            if exc_type is not None and exc is not None and exc_traceback is not None:
+                stored_metadata["traceback"] = "".join(
+                    traceback.format_exception(exc_type, exc, exc_traceback)
+                )
+        try:
+            from .incident_evidence import redact_diagnostic
+
+            message = str(redact_diagnostic(message))
+            stored_metadata = dict(redact_diagnostic(stored_metadata))
+        except Exception:
+            pass
     with db_connection() as conn:
         conn.execute(
             """
@@ -1517,11 +1535,77 @@ def append_log(
                 task_id,
                 error_code,
                 message,
-                json.dumps(metadata or {}, ensure_ascii=False),
+                json.dumps(stored_metadata, ensure_ascii=False),
             ),
         )
         conn.commit()
     prune_logs()
+    incident: dict[str, Any] | None = None
+    if str(level or "").upper() == "ERROR" or force_incident:
+        try:
+            from .incident_evidence import schedule_incident, start_incident_worker
+
+            incident = schedule_incident(
+                event=event,
+                error_code=error_code,
+                message=message,
+                task_id=task_id,
+                metadata=stored_metadata,
+                traceback_text=str(stored_metadata.get("traceback") or ""),
+                log_record_id=record_id,
+                start_worker=False,
+            )
+        except Exception as exc:
+            stored_metadata["incident_capture_error"] = type(exc).__name__
+        else:
+            stored_metadata.update(incident)
+        with db_connection() as conn:
+            conn.execute(
+                "UPDATE local_logs SET metadata = ? WHERE id = ?",
+                (json.dumps(stored_metadata, ensure_ascii=False), record_id),
+            )
+            conn.commit()
+        if incident:
+            start_incident_worker()
+    return {
+        "id": record_id,
+        "incident_id": str((incident or {}).get("incident_id") or ""),
+        "evidence_path": str((incident or {}).get("evidence_path") or ""),
+    }
+
+
+def update_log_incident_path(
+    record_id: str,
+    incident_id: str,
+    evidence_path: str,
+) -> None:
+    """Update an existing log after asynchronous incident capture completes."""
+
+    with db_connection() as conn:
+        row = conn.execute(
+            "SELECT metadata FROM local_logs WHERE id = ?",
+            (record_id,),
+        ).fetchone()
+        if not row:
+            return
+        try:
+            metadata = json.loads(row["metadata"] or "{}")
+        except json.JSONDecodeError:
+            metadata = {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata.update(
+            {
+                "incident_id": str(incident_id or ""),
+                "evidence_path": str(evidence_path or ""),
+                "incident_pending": False,
+            }
+        )
+        conn.execute(
+            "UPDATE local_logs SET metadata = ? WHERE id = ?",
+            (json.dumps(metadata, ensure_ascii=False), record_id),
+        )
+        conn.commit()
 
 
 def read_logs(limit: int = 200) -> list[dict[str, Any]]:

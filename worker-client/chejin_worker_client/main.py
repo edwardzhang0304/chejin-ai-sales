@@ -98,13 +98,21 @@ def main() -> int:
         return 2
 
     bootstrap_qt_plugins()
+    from .runtime_supervision import (
+        install_runtime_supervision,
+        mark_runtime_clean_exit,
+    )
+
+    install_runtime_supervision()
     try:
         if os.environ.get("CHEJIN_WORKER_UI_MODE") == "pyside":
             from .ui import run_app
         else:
             from .web_ui import run_app
 
-        return run_app()
+        exit_code = run_app()
+        mark_runtime_clean_exit(exit_code)
+        return exit_code
     finally:
         instance_guard.release()
 

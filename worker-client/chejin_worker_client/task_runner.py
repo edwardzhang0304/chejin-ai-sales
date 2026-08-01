@@ -5,6 +5,7 @@ import json
 import re
 import threading
 import time
+import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +33,7 @@ from .c2_outbox_recovery import (
     split_ingest_payload,
 )
 from .config import CONFIG
+from .emergency_stop import emergency_stop_requested, trigger_emergency_stop
 from .image_phase import (
     finalize_image_phase_result,
     mark_image_action,
@@ -40,6 +42,7 @@ from .image_phase import (
     merge_image_phase_results,
     new_image_phase_result,
 )
+from .incident_evidence import mark_incident_recovered
 from .message_contract import canonical_reply_text, reply_text_hash
 from .models import Binding, ReplySendClaim, RpaResult, RpaStep, Task, WechatReadTarget, WorkerProfile
 from .rpa_bridge import RpaBridge
@@ -327,6 +330,7 @@ _C2_IMAGE_DIAGNOSTIC_FIELDS = {
     "sequence_number",
     "reason",
     "error_type",
+    "provider_traceback",
     "provider",
     "base_url",
     "model",
@@ -553,6 +557,9 @@ class TaskRunner:
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         self.c2_thread: threading.Thread | None = None
+        self.thread_monitor: threading.Thread | None = None
+        self._thread_health_lock = threading.RLock()
+        self._thread_failure_reported: set[str] = set()
         self.c2_manual_scan_requested = threading.Event()
         self.task_lock = threading.Lock()
         self.reply_send_ack_lock = threading.Lock()
@@ -581,13 +588,33 @@ class TaskRunner:
     def start(self, binding: Binding) -> None:
         self.binding = binding
         self.stop_event.clear()
+        with self._thread_health_lock:
+            self._thread_failure_reported.clear()
         self._maybe_cleanup_artifacts(force=True)
         if not (self.thread and self.thread.is_alive()):
-            self.thread = threading.Thread(target=self._loop, name="CheJinWorkerTaskRunner", daemon=True)
+            self.thread = threading.Thread(
+                target=self._run_supervised_loop,
+                args=("task_runner", self._loop),
+                name="CheJinWorkerTaskRunner",
+                daemon=True,
+            )
             self.thread.start()
         if CONFIG.c2_enabled and not (self.c2_thread and self.c2_thread.is_alive()):
-            self.c2_thread = threading.Thread(target=self._c2_loop, name="CheJinWorkerC2Listener", daemon=True)
+            self.c2_thread = threading.Thread(
+                target=self._run_supervised_loop,
+                args=("c2_listener", self._c2_loop),
+                name="CheJinWorkerC2Listener",
+                daemon=True,
+            )
             self.c2_thread.start()
+        if not (self.thread_monitor and self.thread_monitor.is_alive()):
+            self.thread_monitor = threading.Thread(
+                target=self._run_supervised_loop,
+                args=("thread_monitor", self._monitor_background_threads),
+                name="CheJinWorkerThreadMonitor",
+                daemon=True,
+            )
+            self.thread_monitor.start()
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -596,11 +623,99 @@ class TaskRunner:
     def request_immediate_scan(self) -> None:
         self.c2_manual_scan_requested.set()
 
+    def _run_supervised_loop(
+        self,
+        thread_kind: str,
+        target: Callable[[], None],
+    ) -> None:
+        try:
+            target()
+        except BaseException as exc:
+            self._handle_background_thread_failure(
+                thread_kind,
+                error_code="WORKER_BACKGROUND_THREAD_CRASHED",
+                message=f"{thread_kind} 后台线程异常退出：{exc}",
+                traceback_text="".join(
+                    traceback.format_exception(type(exc), exc, exc.__traceback__)
+                ),
+            )
+            return
+        if not self.stop_event.is_set():
+            self._handle_background_thread_failure(
+                thread_kind,
+                error_code="WORKER_BACKGROUND_THREAD_EXITED",
+                message=f"{thread_kind} 后台线程意外结束。",
+                traceback_text="",
+            )
+
+    def _monitor_background_threads(self) -> None:
+        while not self.stop_event.wait(1.0):
+            if (
+                self._pending_run_status_sync == "paused"
+                and not (self.thread and self.thread.is_alive())
+            ):
+                self._sync_pending_run_status()
+            expected = {"task_runner": self.thread}
+            if CONFIG.c2_enabled:
+                expected["c2_listener"] = self.c2_thread
+            for thread_kind, thread in expected.items():
+                if thread is not None and thread.is_alive():
+                    continue
+                self._handle_background_thread_failure(
+                    thread_kind,
+                    error_code="WORKER_BACKGROUND_THREAD_NOT_ALIVE",
+                    message=f"线程监控发现 {thread_kind} 已停止运行。",
+                    traceback_text="",
+                )
+
+    def _handle_background_thread_failure(
+        self,
+        thread_kind: str,
+        *,
+        error_code: str,
+        message: str,
+        traceback_text: str,
+    ) -> None:
+        emergency_state = trigger_emergency_stop(
+            reason=error_code,
+            origin=f"thread:{thread_kind}",
+        )
+        with self._thread_health_lock:
+            if thread_kind in self._thread_failure_reported:
+                return
+            self._thread_failure_reported.add(thread_kind)
+        pause_error = ""
+        if self.binding:
+            try:
+                self._apply_local_run_status("paused")
+                self._pending_run_status_sync = "paused"
+            except Exception as exc:
+                self.binding.run_status = "paused"
+                pause_error = f"{type(exc).__name__}: {exc}"
+        self.c2_stats["last_error"] = error_code
+        result = append_log(
+            "ERROR",
+            "worker_background_thread_failed",
+            message,
+            error_code=error_code,
+            metadata={
+                "thread_kind": thread_kind,
+                "traceback": traceback_text,
+                "automatic_pause": True,
+                "pause_persist_error": pause_error,
+                "emergency_stop": emergency_state,
+            },
+        )
+        incident_id = str((result or {}).get("incident_id") or "")
+        suffix = f"，故障编号 {incident_id}" if incident_id else ""
+        self.on_error(f"后台线程异常，客户端已自动暂停{suffix}。")
+
     def _ui_actions_enabled(self, binding: Binding | None = None) -> bool:
         active = binding or self.binding
         return bool(
             active
             and not self.stop_event.is_set()
+            and not emergency_stop_requested()
             and active.run_status == "running"
         )
 
@@ -652,6 +767,9 @@ class TaskRunner:
         if run_status not in {"running", "paused"}:
             self.on_error("接单状态无效。")
             return False
+        if run_status == "running" and emergency_stop_requested():
+            self.on_error("客户端已触发紧急停止，请重启后再开始接单。")
+            return False
         if run_status == "paused":
             # Pause is fail-safe: stop every new/in-flight UI action locally
             # before attempting to synchronize the server-side switch.
@@ -700,7 +818,7 @@ class TaskRunner:
 
     def tick_once(self) -> None:
         binding = self.binding
-        if not binding:
+        if not binding or emergency_stop_requested():
             return
         self._sync_pending_run_status()
         now = time.monotonic()
@@ -712,14 +830,32 @@ class TaskRunner:
         ui_action_active = self.current_ui_lock is not None or bool(lock_summary().get("locked"))
         if not self.current_task and not ui_action_active:
             self._maybe_cleanup_artifacts()
+        previous_wechat_status = self.last_wechat_status
+        probe_performed = False
         if probe_due and not ui_action_active:
             rpa_status, wechat_status = self.bridge.probe()
+            probe_performed = True
             self.last_rpa_component_status = rpa_status
             self.last_wechat_status = wechat_status
             self.last_rpa_probe_at = time.monotonic()
         else:
             rpa_status = self.last_rpa_component_status or "unavailable"
             wechat_status = self.last_wechat_status or "unknown"
+        if probe_performed and wechat_status == "not_found":
+            if previous_wechat_status != "not_found":
+                append_log(
+                    "WARN",
+                    "wechat_window_missing",
+                    "未检测到可用的微信桌面窗口。",
+                    error_code="WECHAT_WINDOW_NOT_FOUND",
+                    metadata={
+                        "rpa_component_status": rpa_status,
+                        "wechat_status": wechat_status,
+                    },
+                    force_incident=True,
+                )
+        elif probe_performed and wechat_status == "logged_in":
+            mark_incident_recovered("wechat_window_missing")
         local_lock = lock_summary()
         vision_capability = load_c2_state("vision_preflight")
         if vision_capability:
@@ -752,6 +888,7 @@ class TaskRunner:
                     profile.run_status = "paused"
             self.on_profile(profile)
             self.on_status("online")
+            mark_incident_recovered("heartbeat_failed")
         except ApiError as exc:
             if exc.status_code == 401:
                 self.on_status("invalid")
@@ -780,7 +917,7 @@ class TaskRunner:
             return
 
         if (
-            binding.run_status == "running"
+            self._ui_actions_enabled(binding)
             and rpa_status == "ready"
             and wechat_status == "logged_in"
             and not self.current_task
@@ -791,6 +928,8 @@ class TaskRunner:
 
     def _pull_and_execute(self, binding: Binding) -> None:
         with self.task_lock:
+            if not self._ui_actions_enabled(binding):
+                return
             if self.current_ui_lock is not None or bool(lock_summary().get("locked")):
                 append_log(
                     "INFO",
@@ -814,9 +953,13 @@ class TaskRunner:
                 if reason and reason != "NO_PENDING_TASK":
                     self.on_error(reason)
                 return
+            if not self._ui_actions_enabled(binding):
+                return
             self._execute_task(binding, task, mode)
 
     def _execute_task(self, binding: Binding, task: Task, mode: str) -> None:
+        if not self._ui_actions_enabled(binding):
+            return
         self.current_task = task
         self.on_task(task)
         self.on_result(None)
@@ -827,7 +970,11 @@ class TaskRunner:
                     self._start_task_lease_guard(binding, task)
                 self._execute_c2_reply_recovery(binding, task, mode)
                 return
+            if not self._ui_actions_enabled(binding):
+                return
             running_task = task if mode == "running" else self.api.claim_task(binding, task)
+            if not self._ui_actions_enabled(binding):
+                return
             if not running_task.search_phone and task.search_phone:
                 running_task.phone = task.phone
             if not running_task.wechat and task.wechat:
@@ -996,7 +1143,17 @@ class TaskRunner:
             metadata=result.evidence_metadata,
         )
         self.on_result(result)
-        append_log("ERROR", "task_failed", result.message, task_id=failed.id, error_code=result.error_code)
+        append_log(
+            "ERROR",
+            "task_failed",
+            result.message,
+            task_id=failed.id,
+            error_code=result.error_code,
+            metadata={
+                "evidence_path": result.evidence_path,
+                "evidence_metadata": result.evidence_metadata or {},
+            },
+        )
         if result.error_code in ENV_STOP_ERRORS:
             self.set_run_status("paused")
             self.on_error("运行环境异常，已暂停接单。")
@@ -1365,6 +1522,23 @@ class TaskRunner:
                 sent_at=sent_at,
             ),
         )
+        if send_result == "unknown":
+            append_log(
+                "ERROR",
+                "send_result_unknown",
+                "微信发送动作结果不确定，已在本地持久化禁止自动补发。",
+                task_id=claim.task_id,
+                error_code=error_code or "SEND_RESULT_UNKNOWN",
+                metadata={
+                    "reply_action_id": claim.reply_action_id,
+                    "sidecar_run_id": sidecar_run_id,
+                    "send_result": send_result,
+                    "action_phase": action_phase,
+                    "evidence": evidence or {},
+                    "local_terminal_persisted": True,
+                },
+                force_incident=True,
+            )
         record = load_reply_send_ack_outbox(claim.reply_action_id)
         return bool(record) and self._attempt_reply_send_ack(binding, record)
 
@@ -5097,8 +5271,21 @@ class TaskRunner:
                     "reason": terminal_reason,
                     "vision_summary_length": len(summary),
                     "vision_summary_sha256": _c2_text_fingerprint(summary),
+                    "transaction": _safe_c2_image_transaction(
+                        result.get("transaction")
+                    ),
+                    "diagnostics": {
+                        "trace_id": str(diagnostics.get("trace_id") or ""),
+                        "total_duration_ms": diagnostics.get("total_duration_ms"),
+                        "events": [
+                            _safe_c2_image_diagnostic_event(item)
+                            for item in (diagnostics.get("events") or [])
+                            if isinstance(item, dict)
+                        ],
+                    },
                     "image_persisted": False,
                 },
+                force_incident=terminal_state == "failed",
             )
         payload["observations"] = [
             item
@@ -5295,6 +5482,13 @@ class TaskRunner:
             if recovered_task is not None and recovered_task.id == pending_task.id:
                 task = recovered_task
             else:
+                if not self._ui_actions_enabled(binding):
+                    return {
+                        "ok": False,
+                        "error_code": "WORKER_EMERGENCY_STOPPED",
+                        "failure_step": "before_claim_task",
+                        "batch": status,
+                    }
                 try:
                     task = self.api.claim_task(
                         binding,
@@ -5309,6 +5503,13 @@ class TaskRunner:
                         "failure_step": "claim_task",
                         "batch": status,
                     }
+            if not self._ui_actions_enabled(binding):
+                return {
+                    "ok": False,
+                    "error_code": "WORKER_EMERGENCY_STOPPED",
+                    "failure_step": "after_claim_task",
+                    "batch": status,
+                }
             self.current_task = task
             self.on_task(task)
             if (
@@ -6969,6 +7170,7 @@ class TaskRunner:
                         "step_events": sidecar_payload.get("step_events"),
                         "open_chat_timing": sidecar_payload.get("open_chat_timing"),
                     },
+                    force_incident=True,
                 )
                 return {"ok": False, "error_code": code}
             initial_contract_error = sidecar_contract_error(sidecar_payload)
@@ -6986,6 +7188,7 @@ class TaskRunner:
                         "contract_sha256": sidecar_payload.get("contract_sha256"),
                         "observation_validation_errors": sidecar_payload.get("observation_validation_errors"),
                     },
+                    force_incident=True,
                 )
                 return {
                     "ok": False,
@@ -7463,6 +7666,7 @@ class TaskRunner:
                             "review_path": transcribed_payload.get("review_path"),
                             "target_mode": transcribed_payload.get("target_mode"),
                         },
+                        force_incident=True,
                     )
                     if voice_action_failure_code:
                         self._report_voice_failure_gate(
@@ -7495,6 +7699,7 @@ class TaskRunner:
                             "contract_sha256": transcribed_payload.get("contract_sha256"),
                             "observation_validation_errors": transcribed_payload.get("observation_validation_errors"),
                         },
+                        force_incident=True,
                     )
                     if voice_action_failure_code:
                         self._report_voice_failure_gate(
@@ -7904,6 +8109,22 @@ class TaskRunner:
                         or "C2_POST_VISION_CURRENT_SCREEN_FAILED"
                     )
                     self.c2_stats["last_error"] = code
+                    append_log(
+                        "WARN",
+                        "c2_post_vision_current_screen_failed",
+                        "Vision 后最终当前屏收敛失败。",
+                        error_code=code,
+                        metadata={
+                            "conversation_id": target.conversation_id,
+                            "remark_code": target.remark_code,
+                            "sidecar_run_id": (
+                                convergence.get("payload") or {}
+                            ).get("sidecar_run_id")
+                            if isinstance(convergence.get("payload"), dict)
+                            else None,
+                        },
+                        force_incident=True,
+                    )
                     return {
                         "ok": False,
                         "error_code": code,

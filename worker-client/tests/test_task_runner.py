@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -24,6 +25,7 @@ from chejin_worker_client.action_journal import (
 )
 from chejin_worker_client.c2_contract import contract_revision, contract_sha256
 from chejin_worker_client.models import Binding, RpaResult, RpaStep, Task, WechatReadTarget, WorkerProfile
+from chejin_worker_client.incident_evidence import wait_for_incident
 from chejin_worker_client.rpa_bridge import RpaBridge
 from chejin_worker_client.storage import (
     checkpoint_c2_action_outcomes,
@@ -35,6 +37,7 @@ from chejin_worker_client.storage import (
     load_c2_ledger_entry,
     load_c2_outbox_entry,
     load_reply_send_ack_outbox,
+    read_logs,
     save_c2_state,
     save_c2_ledger_terminal,
     save_reply_send_intent,
@@ -643,6 +646,9 @@ class TaskRunnerTest(unittest.TestCase):
         )
 
     def setUp(self):
+        from chejin_worker_client.emergency_stop import reset_emergency_stop_for_tests
+
+        reset_emergency_stop_for_tests()
         try:
             LOCK_FILE.unlink()
         except FileNotFoundError:
@@ -2023,6 +2029,36 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(
             possible["sends"][0]["reconciliation_state"],
             "ai_unreconciled",
+        )
+        incident_logs = [
+            row
+            for row in read_logs(limit=50)
+            if row.get("event") == "send_result_unknown"
+            and (row.get("metadata") or {}).get("sidecar_run_id")
+            == "send-unconfirmed"
+        ]
+        self.assertEqual(len(incident_logs), 1)
+        incident_path = wait_for_incident(
+            incident_logs[0]["metadata"]["incident_id"],
+            timeout=10.0,
+        )
+        self.assertIsNotNone(incident_path)
+        assert incident_path is not None
+        self.assertTrue(
+            incident_path.is_file()
+        )
+        self.assertTrue(
+            incident_logs[0]["metadata"]["incident_id"].startswith("INC-")
+        )
+        with zipfile.ZipFile(incident_path) as archive:
+            outbox = json.loads(archive.read("state/outbox.json"))
+        self.assertEqual(
+            outbox["related_sent_ack"]["ack_payload"]["send_result"],
+            "unknown",
+        )
+        self.assertEqual(
+            outbox["related_sent_ack"]["action_phase"],
+            "trigger_attempted",
         )
 
     def test_pre_click_send_failure_clears_possible_ai_send(self):
@@ -8946,7 +8982,128 @@ class TaskRunnerTest(unittest.TestCase):
             )["terminal_state"],
             "failed",
         )
+        incident_log = next(
+            row
+            for row in read_logs(limit=50)
+            if row.get("event") == "c2_image_slot_terminalized"
+            and (row.get("metadata") or {}).get("conversation_id")
+            == target.conversation_id
+        )
+        incident_path = wait_for_incident(
+            incident_log["metadata"]["incident_id"],
+            timeout=10.0,
+        )
+        self.assertIsNotNone(incident_path)
         vision.assert_called_once()
+
+    def test_real_image_terminal_path_captures_each_unattended_failure(self):
+        api = FakeApi(None)
+        bridge = FakeBridge(RpaResult(ok=True, result_code="ok", message="unused"))
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        unique = str(time.time_ns())
+        target = WechatReadTarget(
+            conversation_id=f"conv-image-incidents-{unique}",
+            rpa_session_key="wx:rpa:v1:image-incidents",
+            display_name="CJIMAGEINC 客户",
+            remark_code="CJIMAGEINC",
+            authorization_revision=f"revision-image-incidents-{unique}",
+        )
+        payload = bridge._contractual_message_payload({"ok": True, "messages": []})
+        failure_reasons = [
+            "image_bubble_not_visible_after_refresh",
+            "clipboard_image_fingerprint_mismatch",
+            "customer_image_understanding_provider_failed",
+        ]
+        payload["observations"] = [
+            {
+                "schema_version": 3,
+                "observation_id": f"image-incident-{index}-{unique}",
+                "row_kind": "image_bubble",
+                "sender_role": "customer",
+                "sender_role_source": "same_row_avatar",
+                "message_type": "image",
+                "voice_state": "not_voice",
+                "item_state": "discovered",
+                "image_physical_anchor": {
+                    "sender_role": "customer",
+                    "preceding_stable_message": f"before-{index}-{unique}",
+                    "following_stable_message": f"after-{index}-{unique}",
+                    "occurrence_index": 0,
+                },
+                "bubble_rect": [420, 120 + index * 180, 650, 260 + index * 180],
+                "source_message": {
+                    "id": f"image-source-{index}-{unique}",
+                    "type": "image",
+                },
+            }
+            for index in range(len(failure_reasons))
+        ]
+        plan = runner._build_final_slot_incremental_plan(
+            target=target,
+            sidecar_payload=payload,
+        )
+        results = [
+            {
+                "state": "failed",
+                "reason": reason,
+                "action_phase": "not_attempted" if index == 0 else "trigger_attempted",
+                "diagnostics": {
+                    "events": [],
+                    "image_persisted": False,
+                    "provider_error_type": "TimeoutExpired" if index == 2 else "",
+                },
+            }
+            for index, reason in enumerate(failure_reasons)
+        ]
+
+        with patch(
+            "chejin_worker_client.omniauto_vision.process_image_slot",
+            side_effect=results,
+        ) as vision:
+            _, stats = runner._process_final_image_slots(
+                binding=binding,
+                target=target,
+                sidecar_payload=payload,
+                enforce_read_targets=False,
+                allowed_new_source_keys=set(plan["new_image_source_keys"]),
+            )
+
+        self.assertEqual(stats["failed"], 3)
+        self.assertEqual(vision.call_count, 3)
+        incident_logs = [
+            row
+            for row in read_logs(limit=100)
+            if row.get("event") == "c2_image_slot_terminalized"
+            and (row.get("metadata") or {}).get("conversation_id")
+            == target.conversation_id
+        ]
+        self.assertEqual(len(incident_logs), 3)
+        self.assertEqual(
+            sorted(row.get("error_code") for row in incident_logs),
+            sorted(
+                [
+                "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+                "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+                "C2_IMAGE_UNDERSTANDING_FAILED",
+                ]
+            ),
+        )
+        for row in incident_logs:
+            incident_path = wait_for_incident(
+                row["metadata"]["incident_id"],
+                timeout=10.0,
+            )
+            self.assertIsNotNone(incident_path)
+            assert incident_path is not None
+            with zipfile.ZipFile(incident_path) as archive:
+                manifest = json.loads(archive.read("manifest.json"))
+            self.assertEqual(manifest["error_code"], row["error_code"])
 
     def test_c2_image_method_fails_closed_if_global_preflight_is_bypassed(self):
         api = FakeApi(None)

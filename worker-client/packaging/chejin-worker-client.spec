@@ -15,6 +15,9 @@ from client_delivery_policy import (
 OMNIAUTO_RPA_SOURCE = Path(os.environ.get("CHEJIN_OMNIAUTO_RPA_SOURCE") or ROOT / "omniauto-rpa")
 OMNIAUTO_SIDECAR = OMNIAUTO_RPA_SOURCE / "apps" / "wechat_ai_customer_service" / "adapters" / "wechat_win32_ocr_sidecar.py"
 CONTRACT_PATH = resolve_contract_path(ROOT)
+BUILD_IDENTITY_PATH = Path(
+    os.environ.get("CHEJIN_BUILD_IDENTITY_PATH") or ""
+)
 
 if not OMNIAUTO_SIDECAR.exists():
     raise SystemExit(f"OmniAuto sidecar not found: {OMNIAUTO_SIDECAR}")
@@ -74,6 +77,11 @@ a = Analysis(
         *OMNIAUTO_DATAS,
         (str(CONTRACT_PATH), "contracts"),
         (str(ROOT / "chejin_worker_client" / "web_assets"), "chejin_worker_client/web_assets"),
+        *(
+            [(str(BUILD_IDENTITY_PATH), ".")]
+            if BUILD_IDENTITY_PATH.is_file()
+            else []
+        ),
     ],
     hiddenimports=[
         "PySide6.QtCore",
