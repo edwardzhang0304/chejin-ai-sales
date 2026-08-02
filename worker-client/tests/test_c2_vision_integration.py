@@ -2395,8 +2395,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
         initial.close()
         current.close()
 
-    def test_single_fingerprint_match_without_neighbor_match_is_not_clicked(self):
-        current = Image.new("RGB", (800, 700), "white")
+    def test_static_unique_image_survives_neighbor_ocr_drift(self):
         bounds = [430, 220, 630, 360]
         expected = {
             "sender_role": "customer",
@@ -2422,49 +2421,56 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "occurrence_count": 1,
             },
         }
-
-        class Actions:
-            right_click_count = 0
-
-            def right_click(self, _x, _y, *, bounds):
-                self.bounds = bounds
-                self.right_click_count += 1
-                return {}
-
-        actions = Actions()
-        ports = VisionHostPorts(
-            rpa_lease=SimpleNamespace(
-                lease=lambda *_args, **_kwargs: nullcontext()
-            ),
-            conversation_target=SimpleNamespace(
-                confirm_target=lambda _context: {"ok": True}
-            ),
-            window_frame=SimpleNamespace(
-                capture_frame=lambda _context: {
-                    "ok": True,
-                    "image": current.copy(),
-                    "image_size": current.size,
-                    "messages": [dict(current_candidate)],
-                    "time_markers": [],
-                }
-            ),
-            ui_action=actions,
-            clipboard=SimpleNamespace(sequence_number=lambda: 60),
+        match = transaction._bubble_match_evidence(
+            [current_candidate],
+            expected_anchor=expected,
+            expected_role="customer",
+            expected_bounds=bounds,
         )
-        result = transaction.acquire_current_image_via_ports(
-            ports,
-            {
+
+        self.assertEqual(match["state"], "matched")
+        self.assertEqual(
+            match["bubble"]["identity_match_evidence"]["match_mode"],
+            "stable_slot_with_neighbor_ocr_drift",
+        )
+        self.assertEqual(match["stable_slot_iou"], 1.0)
+
+    def test_moved_image_without_neighbor_match_remains_ambiguous(self):
+        original_bounds = [430, 220, 630, 360]
+        moved_bounds = [430, 80, 630, 220]
+        expected = {
+            "sender_role": "customer",
+            "preceding_stable_message": "message_semantic_expected",
+            "following_stable_message": "",
+            "bubble_visual_fingerprint": "dhash64:0000000000000000",
+            "occurrence_index": 0,
+            "occurrence_count": 1,
+        }
+        current_candidate = {
+            "type": "image",
+            "message_type": "image",
+            "bounds": moved_bounds,
+            "image_physical_anchor": {
                 "sender_role": "customer",
-                "bubble_rect": bounds,
-                "image_physical_anchor": expected,
+                "preceding_stable_message": "message_semantic_other",
+                "following_stable_message": "",
+                "bubble_visual_fingerprint": "dhash64:0000000000000000",
+                "occurrence_index": 0,
+                "occurrence_count": 1,
             },
+        }
+
+        match = transaction._bubble_match_evidence(
+            [current_candidate],
+            expected_anchor=expected,
+            expected_role="customer",
+            expected_bounds=original_bounds,
         )
 
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["reason"], "C2_IMAGE_SLOT_RECONFIRM_FAILED")
-        self.assertEqual(result["action_phase"], "not_attempted")
-        self.assertEqual(actions.right_click_count, 0)
-        current.close()
+        self.assertEqual(match["state"], "ambiguous")
+        self.assertEqual(match["bubble"], {})
+        self.assertEqual(match["occurrence_match_count"], 1)
+        self.assertLess(match["stable_slot_iou"], 0.85)
 
     def test_capability_preflight_reports_missing_key_without_touching_plugin(self):
         status = vision_configuration_status()
