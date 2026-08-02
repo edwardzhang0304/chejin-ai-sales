@@ -164,6 +164,12 @@ class C2ContractTests(unittest.TestCase):
 
     def test_image_failure_reason_mapping_is_exact_and_contract_driven(self):
         expected = {
+            "image_context_menu_copy_item_missing": (
+                "C2_IMAGE_MENU_OPERATION_FAILED"
+            ),
+            "image_context_menu_copy_click_failed": (
+                "C2_IMAGE_MENU_OPERATION_FAILED"
+            ),
             "clipboard_sequence_missing_before_copy": (
                 "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED"
             ),
@@ -171,6 +177,9 @@ class C2ContractTests(unittest.TestCase):
                 "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED"
             ),
             "image_clipboard_transaction_lock_timeout": (
+                "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED"
+            ),
+            "clipboard_image_fingerprint_mismatch": (
                 "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED"
             ),
             "clipboard_clear_failed": (

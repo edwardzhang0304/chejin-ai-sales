@@ -2581,6 +2581,7 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 | `MESSAGE_INGEST_DUPLICATED` | 去重键已存在。 | 返回 duplicated，不算失败。 |
 | `C2_VISION_NOT_READY` | 新 C2 UI 流程启动前发现真实 Vision Provider 的 API Key、模型或地址缺失。 | 不开始新扫描、不打开会话；已有回执、Outbox 和 `settle_without_ui` 仍先恢复。 |
 | `C2_IMAGE_SLOT_RECONFIRM_FAILED` | 图片仍在最终当前屏，但动作前无法用稳定身份唯一确认原槽位。 | 不右键、不调用 Vision；以 failed 图片事实入库并阻断 Brain，不跨轮重试。 |
+| `C2_IMAGE_MENU_OPERATION_FAILED` | 图片槽位已确认且右键已执行，但菜单未准备好、未识别到“复制”或菜单项无法安全点击。 | 关闭菜单，不读取剪贴板、不调用 Vision；以 failed 图片事实入库并阻断 Brain。 |
 | `VOICE_TRANSCRIBE_FAILED` | 语音转文字整体失败，无法确认有效转写文本。 | 记录证据，不触发 C3，不生成 `reply_action`。 |
 | `VOICE_TRANSCRIBE_CLICK_FAILED` | OmniAuto 找到疑似语音转文字入口，但点击或转写动作失败。 | 记录截图和 OCR 证据，不自动重试发送，不触发 AI。 |
 | `VOICE_TRANSCRIBE_LOCK_TIMEOUT` | 语音转写等待 Local WeChat UI Lock 超时。 | 本轮跳过，保持会话原状态，后续扫描可再尝试。 |

@@ -1217,7 +1217,34 @@ def execute_wechat_clipboard_image_copy(
         bounds=bounds,
         action_name="image_clipboard_copy_context_right_click",
     )
-    sidecar_ops.humanized_action_sleep(360, 720)
+    wait_for_menu = getattr(
+        sidecar_ops,
+        "wait_for_wechat_context_menu_stable",
+        None,
+    )
+    if not callable(wait_for_menu):
+        try:
+            sidecar_ops.key_press(sidecar_ops.win32con.VK_ESCAPE)
+        except Exception:
+            pass
+        return {
+            "ok": False,
+            "online": True,
+            "adapter": "win32_ocr",
+            "state": "image_clipboard_copy_failed",
+            "reason": "image_context_menu_unavailable",
+            "target": target_name,
+            "session_key": session_key,
+            "assets": [],
+            "messages": [],
+            "transaction": {
+                "status": "failed",
+                "captured_at": captured_at,
+                "right_click_ok": bool(right_click.get("ok")),
+                "menu_copy_confirmed": False,
+            },
+        }
+    wait_for_menu()
     try:
         menu_screenshot, _menu_path, _menu_capture_method = capture_context_menu_image(
             sidecar_ops=sidecar_ops,

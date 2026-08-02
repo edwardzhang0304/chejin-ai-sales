@@ -69,6 +69,7 @@ from apps.wechat_ai_customer_service.optional_plugins.vision.capture import (
 from apps.wechat_ai_customer_service.optional_plugins.vision.capture.wechat import (
     attach_image_physical_anchors,
     detect_visual_image_bubbles,
+    execute_wechat_clipboard_image_copy,
     find_copy_menu_item,
 )
 from apps.wechat_ai_customer_service.optional_plugins.vision.ports import VisionHostPorts
@@ -783,6 +784,100 @@ class C2VisionIntegrationTests(unittest.TestCase):
             ["trigger_attempted", "click", "confirmed"],
         )
         result["_ephemeral_clipboard_image"].release()
+
+    def test_image_right_click_uses_shared_wechat_context_menu_wait(self):
+        events: list[object] = []
+
+        state = SimpleNamespace(
+            ensure_window=lambda: 123,
+            host=SimpleNamespace(
+                human_window_image_right_click_in_bounds=lambda *args, **kwargs: {
+                    "ok": True,
+                    "screen_x": 500,
+                    "screen_y": 240,
+                },
+                wait_for_wechat_context_menu_stable=lambda: (
+                    events.append("stable_wait") or 1200
+                ),
+            ),
+            record=lambda event, status, **details: events.append(
+                (event, status, details)
+            ),
+        )
+
+        result = _UiAction(state).right_click(
+            500,
+            240,
+            bounds=[420, 180, 650, 320],
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertIn("stable_wait", events)
+        wait_events = [
+            event
+            for event in events
+            if isinstance(event, tuple)
+            and event[0] == "context_menu_stable_wait"
+        ]
+        self.assertEqual(len(wait_events), 1)
+        self.assertEqual(wait_events[0][2]["menu_wait_ms"], 1200)
+
+    def test_legacy_image_copy_uses_shared_context_menu_wait(self):
+        screenshot = Image.new("RGB", (800, 600), "white")
+        menu_screenshot = Image.new("RGB", (800, 600), "white")
+        events: list[str] = []
+        sequences = iter([10, 11])
+        sidecar_ops = SimpleNamespace(
+            capture_wechat=lambda *_args, **_kwargs: (screenshot, "before.png"),
+            run_ocr=lambda _image: [],
+            get_window_geometry=lambda _hwnd: {"width": 800, "height": 600},
+            parse_messages_from_ocr=lambda *_args, **_kwargs: [],
+            blocking_screen_reason=lambda _items: "",
+            clipboard_sequence_number=lambda: next(sequences),
+            human_window_image_right_click_in_bounds=lambda *_args, **_kwargs: {
+                "ok": True
+            },
+            wait_for_wechat_context_menu_stable=lambda: (
+                events.append("shared_context_menu_wait") or 1800
+            ),
+            humanized_action_sleep=lambda *_args: None,
+            key_press=lambda *_args: None,
+            win32con=SimpleNamespace(VK_ESCAPE=27),
+        )
+        bubble = {
+            "anchor": {"x": 240, "y": 260},
+            "bounds": [120, 180, 360, 340],
+        }
+        with (
+            patch(
+                "apps.wechat_ai_customer_service.optional_plugins.vision.capture.wechat.detect_visual_image_bubbles",
+                return_value=[bubble],
+            ),
+            patch(
+                "apps.wechat_ai_customer_service.optional_plugins.vision.capture.wechat.capture_context_menu_image",
+                return_value=(menu_screenshot, "menu.png", "visible_screen"),
+            ),
+            patch(
+                "apps.wechat_ai_customer_service.optional_plugins.vision.capture.wechat.find_copy_menu_item",
+                return_value={"x": 420, "y": 300, "bounds": [390, 280, 455, 325]},
+            ),
+            patch(
+                "apps.wechat_ai_customer_service.optional_plugins.vision.capture.wechat.click_context_menu_item",
+                return_value={"ok": True},
+            ),
+        ):
+            result = execute_wechat_clipboard_image_copy(
+                hwnd=101,
+                probe={},
+                target_name="CJR8S5K3",
+                side_filter="customer",
+                sidecar_ops=sidecar_ops,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(events, ["shared_context_menu_wait"])
+        screenshot.close()
+        menu_screenshot.close()
 
     def test_copy_click_exception_always_dismisses_context_menu(self):
         image = Image.new("RGB", (800, 600), "white")
@@ -1765,6 +1860,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             host=SimpleNamespace(
                 human_window_image_right_click_in_bounds=right_click_host,
                 human_screen_click_in_bounds=click_screen_host,
+                wait_for_wechat_context_menu_stable=lambda: 1200,
                 humanized_action_sleep=lambda *_args: None,
                 dismiss_voice_transcribe_context_menu=lambda *_args, **_kwargs: {
                     "ok": True
