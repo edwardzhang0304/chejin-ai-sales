@@ -47,6 +47,7 @@ class _ErrorResponse:
         return {
             "code": "MESSAGE_AUTHORIZATION_REVISION_EXPIRED",
             "message": "expired",
+            "trace_id": "trace-error-1",
             "data": {
                 "retryable": False,
                 "recovery_action": "refresh_and_rebuild",
@@ -98,6 +99,7 @@ class WorkerApiClientTest(unittest.TestCase):
             raised.exception.recovery_action,
             "refresh_and_rebuild",
         )
+        self.assertEqual(raised.exception.trace_id, "trace-error-1")
 
 
 if __name__ == "__main__":

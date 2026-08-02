@@ -6863,6 +6863,7 @@ class TaskRunnerTest(unittest.TestCase):
                     "recovery_action": "capability_paused",
                     "retryable": False,
                 },
+                "trace-validation-paused",
             )
 
         api.post_wechat_messages_ingest = reject_invalid_schema  # type: ignore[method-assign]
@@ -6912,6 +6913,23 @@ class TaskRunnerTest(unittest.TestCase):
                 source_key,
             )["ingest_state"],
             "waiting",
+        )
+        incident_log = next(
+            row
+            for row in read_logs(limit=50)
+            if row.get("event") == "c2_outbox_capability_paused"
+            and (row.get("metadata") or {}).get("outbox_id") == outbox_id
+            and (row.get("metadata") or {}).get("backend_error_response")
+        )
+        metadata = incident_log["metadata"]
+        self.assertEqual(metadata["trace_id"], "trace-validation-paused")
+        self.assertEqual(
+            metadata["backend_error_response"]["code"],
+            "VALIDATION_ERROR",
+        )
+        self.assertEqual(
+            metadata["backend_error_response"]["data"]["recovery_action"],
+            "capability_paused",
         )
 
     def test_c2_outbox_replay_confirms_exact_source_key_without_rerunning_rpa(self):

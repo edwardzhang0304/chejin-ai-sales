@@ -42,7 +42,7 @@ from .image_phase import (
     merge_image_phase_results,
     new_image_phase_result,
 )
-from .incident_evidence import mark_incident_recovered
+from .incident_evidence import mark_incident_recovered, redact_diagnostic
 from .message_contract import canonical_reply_text, reply_text_hash
 from .models import Binding, ReplySendClaim, RpaResult, RpaStep, Task, WechatReadTarget, WorkerProfile
 from .rpa_bridge import RpaBridge
@@ -3688,6 +3688,22 @@ class TaskRunner:
                         "read_run_id": payload.get("read_run_id"),
                         "status_code": (
                             exc.status_code if isinstance(exc, ApiError) else None
+                        ),
+                        "trace_id": (
+                            exc.trace_id if isinstance(exc, ApiError) else None
+                        ),
+                        "backend_error_response": (
+                            redact_diagnostic(
+                                {
+                                    "code": exc.code,
+                                    "message": str(exc),
+                                    "status_code": exc.status_code,
+                                    "trace_id": exc.trace_id,
+                                    "data": exc.data,
+                                }
+                            )
+                            if isinstance(exc, ApiError)
+                            else None
                         ),
                         "recovery_action": "capability_paused",
                         "requested_recovery_action": recovery_action,

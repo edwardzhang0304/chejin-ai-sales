@@ -11,11 +11,19 @@ from .models import Binding, ReplySendClaim, Task, WechatReadTarget, WorkerProfi
 
 
 class ApiError(RuntimeError):
-    def __init__(self, code: str, message: str, status_code: int, data: Any = None) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        status_code: int,
+        data: Any = None,
+        trace_id: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.status_code = status_code
         self.data = data
+        self.trace_id = str(trace_id or "").strip() or None
         self.retryable = (
             bool(data.get("retryable"))
             if isinstance(data, dict) and isinstance(data.get("retryable"), bool)
@@ -344,5 +352,11 @@ class WorkerApiClient:
         except ValueError as exc:
             raise ApiError("HTTP_ERROR", response.text or "服务端响应不是 JSON", response.status_code) from exc
         if response.status_code >= 400 or envelope.get("code") != "OK":
-            raise ApiError(str(envelope.get("code") or "API_ERROR"), str(envelope.get("message") or "接口调用失败"), response.status_code, envelope.get("data"))
+            raise ApiError(
+                str(envelope.get("code") or "API_ERROR"),
+                str(envelope.get("message") or "接口调用失败"),
+                response.status_code,
+                envelope.get("data"),
+                envelope.get("trace_id"),
+            )
         return envelope.get("data")

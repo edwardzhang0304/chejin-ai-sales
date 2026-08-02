@@ -143,6 +143,53 @@ class IncidentEvidenceTest(unittest.TestCase):
         finally:
             external.unlink(missing_ok=True)
 
+    def test_related_paused_outbox_and_public_revision_are_preserved(self) -> None:
+        payload = {
+            "contract_revision": "3.12.3",
+            "conversation_id": "conversation-paused",
+            "authorization_revision": "authorization-revision-17",
+            "read_run_id": "read-paused",
+            "messages": [],
+            "evidence": {},
+        }
+        outbox_id = self.storage.enqueue_c2_outbox(payload)
+        self.storage.mark_c2_outbox_capability_paused(
+            outbox_id,
+            "MESSAGE_CONTRACT_REVISION_MISMATCH",
+        )
+
+        result = self.storage.append_log(
+            "ERROR",
+            "c2_outbox_capability_paused",
+            "contract mismatch",
+            error_code="MESSAGE_CONTRACT_REVISION_MISMATCH",
+            metadata={
+                "outbox_id": outbox_id,
+                "conversation_id": "conversation-paused",
+                "trace_id": "trace-contract-409",
+            },
+        )
+
+        with zipfile.ZipFile(self._completed_path(result)) as archive:
+            outbox = json.loads(archive.read("state/outbox.json"))
+            occurrence = json.loads(archive.read("occurrences/initial.json"))
+        self.assertEqual(
+            outbox["related_c2_outbox"]["outbox_id"],
+            outbox_id,
+        )
+        self.assertEqual(
+            outbox["related_c2_outbox"]["authorization_revision"],
+            "authorization-revision-17",
+        )
+        self.assertEqual(
+            outbox["related_c2_outbox"]["payload"]["authorization_revision"],
+            "authorization-revision-17",
+        )
+        self.assertEqual(
+            occurrence["metadata"]["trace_id"],
+            "trace-contract-409",
+        )
+
     def test_error_inside_except_captures_complete_traceback_automatically(self) -> None:
         try:
             raise ValueError("automatic traceback marker")

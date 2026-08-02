@@ -22,6 +22,71 @@ class ImageSurfaceObservationError(RuntimeError):
         )
 
 
+def messages_outside_image_bubbles(
+    messages: list[dict[str, Any]] | None,
+    image_messages: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Remove OCR rows rendered inside a detected image bubble.
+
+    Text and voice-looking content inside a customer screenshot belongs to
+    that image and must reach the system through Vision, not the chat parser.
+    """
+
+    def bounds(value: Any) -> tuple[float, float, float, float] | None:
+        if isinstance(value, dict):
+            raw = (
+                value.get("left"),
+                value.get("top"),
+                value.get("right"),
+                value.get("bottom"),
+            )
+        elif isinstance(value, (list, tuple)) and len(value) >= 4:
+            raw = value[:4]
+        else:
+            return None
+        try:
+            left, top, right, bottom = (float(item) for item in raw)
+        except (TypeError, ValueError):
+            return None
+        if right <= left or bottom <= top:
+            return None
+        return left, top, right, bottom
+
+    image_bounds = [
+        rect
+        for item in image_messages or []
+        if isinstance(item, dict)
+        for rect in [bounds(item.get("bubble_rect") or item.get("bounds"))]
+        if rect is not None
+    ]
+    if not image_bounds:
+        return [dict(item) for item in messages or [] if isinstance(item, dict)]
+
+    kept: list[dict[str, Any]] = []
+    for item in messages or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or item.get("message_type") or "").lower() == "image":
+            kept.append(dict(item))
+            continue
+        rect = bounds(item.get("bubble_rect"))
+        if rect is None:
+            kept.append(dict(item))
+            continue
+        left, top, right, bottom = rect
+        row_area = max(1.0, (right - left) * (bottom - top))
+        embedded = False
+        for image_left, image_top, image_right, image_bottom in image_bounds:
+            overlap_width = max(0.0, min(right, image_right) - max(left, image_left))
+            overlap_height = max(0.0, min(bottom, image_bottom) - max(top, image_top))
+            if (overlap_width * overlap_height) / row_area >= 0.90:
+                embedded = True
+                break
+        if not embedded:
+            kept.append(dict(item))
+    return kept
+
+
 def visual_image_envelopes_from_bubbles(
     bubbles: list[dict[str, Any]] | None,
     existing_messages: list[dict[str, Any]] | None,
@@ -189,7 +254,15 @@ def visual_image_messages_from_current_surface(
             "detect_visual_image_bubbles",
             exc,
         ) from exc
-    return visual_image_envelopes_from_bubbles(bubbles, existing_messages, target=target)
+    anchor_messages = messages_outside_image_bubbles(
+        existing_messages,
+        bubbles,
+    )
+    return visual_image_envelopes_from_bubbles(
+        bubbles,
+        anchor_messages,
+        target=target,
+    )
 
 
 def observe_structural_image_messages(
@@ -224,6 +297,7 @@ def observe_structural_image_messages(
             "detect_visual_image_bubbles",
             exc,
         ) from exc
+    messages = messages_outside_image_bubbles(messages, image_messages)
     try:
         for image_message in image_messages:
             bounds = image_message.get("bubble_rect")
