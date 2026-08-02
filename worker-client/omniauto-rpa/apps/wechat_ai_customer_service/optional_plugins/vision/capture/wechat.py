@@ -326,6 +326,50 @@ def _visual_bounds(value: Any) -> tuple[int, int, int, int] | None:
     return left, top, right, bottom
 
 
+def _trim_sparse_vertical_whiskers(
+    cells: list[tuple[int, int]],
+) -> tuple[list[tuple[int, int]], bool]:
+    """Drop thin vertical bridges without assuming a media aspect ratio.
+
+    Pale screenshots can join the chat header or surrounding chrome to the
+    real media rectangle through one or two active grid cells.  Those sparse
+    rows move the candidate's top away from its same-row avatar.  Keep the
+    dense body of the connected component; the threshold is derived from the
+    component itself so landscape, portrait and long images use one rule.
+    """
+
+    if not cells:
+        return cells, False
+    row_counts: dict[int, int] = {}
+    for _x, y in cells:
+        row_counts[y] = row_counts.get(y, 0) + 1
+    ordered_rows = sorted(row_counts)
+    if len(ordered_rows) < 4:
+        return cells, False
+    peak_width = max(row_counts.values())
+    if peak_width < 4:
+        return cells, False
+    dense_threshold = max(3, (peak_width * 22 + 99) // 100)
+    dense_rows = [
+        y for y in ordered_rows if row_counts[y] >= dense_threshold
+    ]
+    if len(dense_rows) < 2:
+        return cells, False
+    first_dense = dense_rows[0]
+    last_dense = dense_rows[-1]
+    original_span = ordered_rows[-1] - ordered_rows[0] + 1
+    retained_span = last_dense - first_dense + 1
+    # A real media surface must remain the dominant vertical body.  This
+    # prevents a sparse or highly fragmented component from being reshaped
+    # into a plausible image merely by this cleanup step.
+    if retained_span * 100 < original_span * 60:
+        return cells, False
+    trimmed = [
+        (x, y) for x, y in cells if first_dense <= y <= last_dense
+    ]
+    return trimmed, len(trimmed) != len(cells)
+
+
 def image_bubble_visual_fingerprint(
     screenshot: Image.Image,
     bounds: Any,
@@ -645,6 +689,9 @@ def detect_visual_image_bubbles(
                         continue
                     visited.add((nx, ny))
                     stack.append((nx, ny))
+            cells, vertical_whiskers_trimmed = (
+                _trim_sparse_vertical_whiskers(cells)
+            )
             min_x = min(point[0] for point in cells)
             max_x = max(point[0] for point in cells)
             min_y = min(point[1] for point in cells)
@@ -693,6 +740,11 @@ def detect_visual_image_bubbles(
                 structure_evidence = [
                     *structure_evidence,
                     "avatar_column_excluded_from_media_bounds",
+                ]
+            if vertical_whiskers_trimmed:
+                structure_evidence = [
+                    *structure_evidence,
+                    "sparse_vertical_whiskers_trimmed",
                 ]
             visual_fingerprint = image_bubble_visual_fingerprint(image, bounds)
             if not visual_fingerprint:
