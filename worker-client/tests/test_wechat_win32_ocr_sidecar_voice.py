@@ -1891,6 +1891,56 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
 
         self.assertEqual(sidecar.voice_transcribe_menu_texts_from_items(items), ["语音转文字", "收起文字"])
 
+    def test_context_menu_stable_wait_uses_shared_default(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "WECHAT_WIN32_OCR_CONTEXT_MENU_WAIT_MS": "1200",
+                    "WECHAT_WIN32_OCR_VOICE_CONTEXT_MENU_WAIT_MS": "600",
+                },
+                clear=False,
+            ),
+            patch.object(sidecar, "humanized_action_sleep") as sleep,
+        ):
+            wait_ms = sidecar.wait_for_wechat_context_menu_stable()
+
+        self.assertEqual(wait_ms, 1200)
+        sleep.assert_called_once_with(950, 1650)
+
+    def test_context_menu_stable_wait_uses_longer_production_default(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "WECHAT_WIN32_OCR_CONTEXT_MENU_WAIT_MS": "",
+                    "WECHAT_WIN32_OCR_VOICE_CONTEXT_MENU_WAIT_MS": "",
+                },
+                clear=False,
+            ),
+            patch.object(sidecar, "humanized_action_sleep") as sleep,
+        ):
+            wait_ms = sidecar.wait_for_wechat_context_menu_stable()
+
+        self.assertEqual(wait_ms, 1800)
+        sleep.assert_called_once_with(1550, 2250)
+
+    def test_each_context_menu_action_waits_independently(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {"WECHAT_WIN32_OCR_CONTEXT_MENU_WAIT_MS": "1800"},
+                clear=False,
+            ),
+            patch.object(sidecar, "humanized_action_sleep") as sleep,
+        ):
+            first_wait_ms = sidecar.wait_for_wechat_context_menu_stable()
+            second_wait_ms = sidecar.wait_for_wechat_context_menu_stable()
+
+        self.assertEqual([first_wait_ms, second_wait_ms], [1800, 1800])
+        self.assertEqual(sleep.call_count, 2)
+        sleep.assert_any_call(1550, 2250)
+
     def test_context_menu_prefers_nearby_collapse_over_far_inline_transcribe(self) -> None:
         image = Image.new("RGB", (1920, 1080), (247, 247, 247))
         anchor = {

@@ -5448,6 +5448,22 @@ def find_visual_voice_transcribe_hover_target(
     return max(targets, key=lambda target: float((target.get("visual_score") or {}).get("score") or 0.0))
 
 
+def wait_for_wechat_context_menu_stable() -> int:
+    """Wait until a WeChat desktop context menu is stable enough to OCR."""
+
+    raw_wait_ms = os.getenv("WECHAT_WIN32_OCR_CONTEXT_MENU_WAIT_MS")
+    if raw_wait_ms in (None, ""):
+        raw_wait_ms = os.getenv("WECHAT_WIN32_OCR_VOICE_CONTEXT_MENU_WAIT_MS")
+    menu_wait_ms = bounded_int(
+        raw_wait_ms,
+        default=1800,
+        minimum=400,
+        maximum=5000,
+    )
+    humanized_action_sleep(max(350, menu_wait_ms - 250), menu_wait_ms + 450)
+    return menu_wait_ms
+
+
 def open_voice_transcribe_context_menu(
     hwnd: int,
     duration_target: dict[str, Any],
@@ -5467,13 +5483,7 @@ def open_voice_transcribe_context_menu(
         bounds=[int(value) for value in anchor.get("click_bounds") or []],
         action_name="voice_transcribe_context_right_click",
     )
-    menu_wait_ms = bounded_int(
-        os.getenv("WECHAT_WIN32_OCR_VOICE_CONTEXT_MENU_WAIT_MS"),
-        default=1200,
-        minimum=400,
-        maximum=4000,
-    )
-    humanized_action_sleep(max(350, menu_wait_ms - 250), menu_wait_ms + 450)
+    menu_wait_ms = wait_for_wechat_context_menu_stable()
     # The WeChat context menu is a desktop popup. On right-side/self voice
     # bubbles it can extend outside the WeChat window rectangle, so capture the
     # visible screen and click in screen coordinates instead of window coords.

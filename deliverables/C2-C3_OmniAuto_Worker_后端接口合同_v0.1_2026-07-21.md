@@ -502,6 +502,8 @@ Outbox 和 `settle_without_ui` 事实结算不需要 Vision，不能被一起阻
 `C2_IMAGE_SLOT_RECONFIRM_FAILED + action_phase=not_attempted`。这项比较是
 两次 C2 正式结论的一致性校验，不是使用 `visual_side` 重新判断角色。
 
+图片槽位已完成上述确认后，如右键菜单未准备好、未识别到“复制”或菜单项无法安全点击，正式错误必须为 `C2_IMAGE_MENU_OPERATION_FAILED`，不得伪装成槽位复核失败。复制后的 sequence、位图或指纹一致性失败继续使用 `C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED`。
+
 图片观察入口必须区分：
 
 ```text

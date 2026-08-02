@@ -9035,6 +9035,7 @@ class TaskRunnerTest(unittest.TestCase):
         payload = bridge._contractual_message_payload({"ok": True, "messages": []})
         failure_reasons = [
             "image_bubble_not_visible_after_refresh",
+            "image_context_menu_copy_item_missing",
             "clipboard_image_fingerprint_mismatch",
             "customer_image_understanding_provider_failed",
         ]
@@ -9074,7 +9075,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "diagnostics": {
                     "events": [],
                     "image_persisted": False,
-                    "provider_error_type": "TimeoutExpired" if index == 2 else "",
+                    "provider_error_type": "TimeoutExpired" if index == 3 else "",
                 },
             }
             for index, reason in enumerate(failure_reasons)
@@ -9092,8 +9093,8 @@ class TaskRunnerTest(unittest.TestCase):
                 allowed_new_source_keys=set(plan["new_image_source_keys"]),
             )
 
-        self.assertEqual(stats["failed"], 3)
-        self.assertEqual(vision.call_count, 3)
+        self.assertEqual(stats["failed"], 4)
+        self.assertEqual(vision.call_count, 4)
         incident_logs = [
             row
             for row in read_logs(limit=100)
@@ -9101,13 +9102,14 @@ class TaskRunnerTest(unittest.TestCase):
             and (row.get("metadata") or {}).get("conversation_id")
             == target.conversation_id
         ]
-        self.assertEqual(len(incident_logs), 3)
+        self.assertEqual(len(incident_logs), 4)
         self.assertEqual(
             sorted(row.get("error_code") for row in incident_logs),
             sorted(
                 [
                 "C2_IMAGE_SLOT_RECONFIRM_FAILED",
-                "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+                "C2_IMAGE_MENU_OPERATION_FAILED",
+                "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED",
                 "C2_IMAGE_UNDERSTANDING_FAILED",
                 ]
             ),

@@ -749,7 +749,19 @@ class _UiAction:
             point=[int(x), int(y)],
             bounds=current_bounds,
         )
-        self.state.host.humanized_action_sleep(260, 520)
+        wait_for_menu = getattr(
+            self.state.host,
+            "wait_for_wechat_context_menu_stable",
+            None,
+        )
+        if not callable(wait_for_menu):
+            raise RuntimeError("WECHAT_CONTEXT_MENU_WAIT_UNAVAILABLE")
+        menu_wait_ms = int(wait_for_menu())
+        self.state.record(
+            "context_menu_stable_wait",
+            "completed",
+            menu_wait_ms=menu_wait_ms,
+        )
         return dict(result)
 
     def click_screen(self, x: int, y: int, *, bounds: list[int]) -> None:

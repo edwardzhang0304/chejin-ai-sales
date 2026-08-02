@@ -41,6 +41,23 @@ def test_generic_validation_failure_pauses_instead_of_claiming_a_terminal():
     )
 
 
+def test_backend_uses_the_shared_image_menu_failure_code():
+    image_contract = c2_contract_v3()["image_contract"]
+    assert "C2_IMAGE_MENU_OPERATION_FAILED" in image_contract["error_codes"]
+    assert (
+        image_contract["failure_reason_to_error_code"][
+            "image_context_menu_copy_item_missing"
+        ]
+        == "C2_IMAGE_MENU_OPERATION_FAILED"
+    )
+    assert (
+        image_contract["failure_reason_to_error_code"][
+            "clipboard_image_fingerprint_mismatch"
+        ]
+        == "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED"
+    )
+
+
 @pytest.mark.parametrize(
     ("send_result", "action_phase"),
     [

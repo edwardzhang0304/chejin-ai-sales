@@ -145,7 +145,7 @@ class IncidentEvidenceTest(unittest.TestCase):
 
     def test_related_paused_outbox_and_public_revision_are_preserved(self) -> None:
         payload = {
-            "contract_revision": "3.12.3",
+            "contract_revision": "3.12.4",
             "conversation_id": "conversation-paused",
             "authorization_revision": "authorization-revision-17",
             "read_run_id": "read-paused",
