@@ -39,6 +39,7 @@ _SECRET_KEY_RE = re.compile(
     r"(?:token|api[_-]?key|authorization|password|passwd|secret|cookie)",
     re.IGNORECASE,
 )
+_PUBLIC_DIAGNOSTIC_KEYS = {"authorization_revision"}
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+\-/=]+")
 _SK_RE = re.compile(r"\bsk-[A-Za-z0-9_-]{12,}\b")
 _ALLOWED_TEXT_SUFFIXES = {".json", ".jsonl", ".log", ".txt", ".md", ".html", ".htm"}
@@ -137,7 +138,8 @@ def _sanitize(value: Any, secrets: set[str]) -> Any:
             key_text = str(key)
             result[key_text] = (
                 "[REDACTED]"
-                if _SECRET_KEY_RE.search(key_text)
+                if key_text not in _PUBLIC_DIAGNOSTIC_KEYS
+                and _SECRET_KEY_RE.search(key_text)
                 else _sanitize(item, secrets)
             )
         return result
@@ -648,8 +650,21 @@ def _create_incident_package(request: dict[str, Any]) -> Path:
     }
     related_ids = _related_ids(context)
     reply_action_id = str(related_ids.get("reply_action_id") or "")
+    c2_messages = storage.list_c2_outbox_waiting(limit=100)
+    related_outbox_id = str(related_ids.get("outbox_id") or "")
+    related_c2_outbox = (
+        storage.load_c2_outbox_entry(related_outbox_id)
+        if related_outbox_id
+        else None
+    )
+    if related_c2_outbox and all(
+        str(item.get("outbox_id") or "") != related_outbox_id
+        for item in c2_messages
+    ):
+        c2_messages.append(related_c2_outbox)
     outbox_snapshot = {
-        "c2_messages": storage.list_c2_outbox_waiting(limit=100),
+        "c2_messages": c2_messages,
+        "related_c2_outbox": related_c2_outbox,
         "sent_ack": storage.list_reply_send_ack_outbox(limit=100),
         "related_sent_ack": (
             storage.load_reply_send_ack_outbox(reply_action_id)

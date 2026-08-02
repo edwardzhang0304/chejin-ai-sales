@@ -3976,6 +3976,128 @@ class C2VisionIntegrationTests(unittest.TestCase):
         finally:
             blank.close()
 
+    def test_structural_detector_rejects_sparse_ui_bridge_beside_real_image(self):
+        screenshot = Image.new("RGB", (974, 853), (250, 250, 250))
+        draw = ImageDraw.Draw(screenshot)
+
+        # A real customer image and same-row avatar.
+        for y in range(264, 586, 6):
+            for x in range(464, 610, 6):
+                tone = 40 if ((x + y) // 6) % 2 else 220
+                draw.rectangle((x, y, x + 5, y + 5), fill=(tone, 145, 85))
+        for y in range(264, 309, 5):
+            for x in range(408, 453, 5):
+                tone = 55 if ((x + y) // 5) % 2 else 205
+                draw.rectangle((x, y, x + 4, y + 4), fill=(tone, 110, 170))
+
+        # Two unrelated self-side controls connected by a narrow UI edge.
+        # Their combined bounds are image-sized, but the interior is mostly
+        # blank chat canvas and must not become an image observation.
+        draw.rectangle((780, 120, 875, 180), fill=(126, 231, 139))
+        draw.rectangle((755, 620, 875, 680), fill=(126, 231, 139))
+        draw.rectangle((965, 110, 971, 735), fill=(225, 225, 225))
+        draw.line((875, 150, 968, 150), fill=(225, 225, 225), width=4)
+        draw.line((875, 650, 968, 650), fill=(225, 225, 225), width=4)
+        for top in (120, 620):
+            for y in range(top, top + 45, 5):
+                for x in range(900, 945, 5):
+                    tone = 50 if ((x + y) // 5) % 2 else 205
+                    draw.rectangle((x, y, x + 4, y + 4), fill=(tone, 110, 170))
+
+        messages = [
+            {
+                "id": "self-text-top",
+                "type": "text",
+                "sender_role": "self",
+                "content": "顶部文字",
+                "bubble_rect": [780, 120, 875, 180],
+            },
+            {
+                "id": "self-text-bottom",
+                "type": "text",
+                "sender_role": "self",
+                "content": "底部文字",
+                "bubble_rect": [755, 620, 875, 680],
+            },
+        ]
+        try:
+            candidates = detect_visual_image_bubbles(
+                screenshot,
+                messages=messages,
+                side_filter="all",
+            )
+        finally:
+            screenshot.close()
+
+        self.assertEqual(len(candidates), 1, candidates)
+        self.assertEqual(candidates[0]["side"], "customer")
+        self.assertGreaterEqual(candidates[0]["component_fill_ratio"], 0.28)
+
+    def test_image_observer_removes_chat_like_ocr_rows_inside_image(self):
+        screenshot = Image.new("RGB", (974, 853), (242, 242, 242))
+        draw = ImageDraw.Draw(screenshot)
+        for y in range(330, 550, 6):
+            for x in range(470, 700, 6):
+                tone = 35 if ((x + y) // 6) % 2 else 220
+                draw.rectangle((x, y, x + 5, y + 5), fill=(tone, 150, 80))
+        for y in range(330, 375, 5):
+            for x in range(408, 453, 5):
+                tone = 50 if ((x + y) // 5) % 2 else 205
+                draw.rectangle((x, y, x + 4, y + 4), fill=(tone, 110, 170))
+
+        messages = [
+            {
+                "id": "before-image",
+                "type": "text",
+                "sender_role": "customer",
+                "content": "图片前消息",
+                "bubble_rect": {"left": 480, "top": 260, "right": 610, "bottom": 290},
+            },
+            {
+                "id": "embedded-voice",
+                "type": "voice",
+                "sender_role": "customer",
+                "content": '5"',
+                "bubble_rect": {"left": 500, "top": 355, "right": 575, "bottom": 382},
+            },
+            {
+                "id": "embedded-text",
+                "type": "text",
+                "sender_role": "customer",
+                "content": "截图里面的聊天文字",
+                "bubble_rect": {"left": 500, "top": 420, "right": 640, "bottom": 452},
+            },
+            {
+                "id": "after-image",
+                "type": "text",
+                "sender_role": "self",
+                "content": "图片后消息",
+                "bubble_rect": {"left": 760, "top": 600, "right": 875, "bottom": 630},
+            },
+        ]
+        try:
+            merged = wechat_win32_ocr_sidecar.merge_structural_image_messages(
+                screenshot,
+                [],
+                messages,
+                target="CJTEST01",
+            )
+        finally:
+            screenshot.close()
+
+        ids = {str(item.get("id") or "") for item in merged}
+        self.assertIn("before-image", ids)
+        self.assertIn("after-image", ids)
+        self.assertNotIn("embedded-voice", ids)
+        self.assertNotIn("embedded-text", ids)
+        images = [item for item in merged if item.get("type") == "image"]
+        self.assertEqual(len(images), 1, merged)
+        self.assertEqual(images[0]["_vision_preceding_text_id"], "before-image")
+        self.assertEqual(images[0]["_vision_following_text_id"], "after-image")
+        anchor = images[0]["image_physical_anchor"]
+        self.assertTrue(anchor["preceding_stable_message"])
+        self.assertTrue(anchor["following_stable_message"])
+
     def test_initial_read_and_preclick_refresh_share_real_image_observer(self):
         screenshot = Image.new("RGB", (974, 853), (242, 242, 242))
         draw = ImageDraw.Draw(screenshot)

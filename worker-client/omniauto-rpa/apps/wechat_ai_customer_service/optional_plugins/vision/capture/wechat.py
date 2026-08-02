@@ -11,6 +11,7 @@ from PIL import Image, ImageStat
 
 DEFAULT_BOTTOM_EXCLUDE_PX = 95
 DEFAULT_MAX_VISIBLE_IMAGE_CANDIDATES = 64
+MIN_MEDIA_COMPONENT_FILL_RATIO = 0.28
 IMAGE_PREVIEW_TOKENS = ("[图片]", "[照片]", "[Image]", "图片", "照片", "发送了一张图片")
 SAVE_MENU_TOKENS = (
     "另存为",
@@ -659,6 +660,17 @@ def detect_visual_image_bubbles(
             area = bw * bh
             if bw < 90 or bh < 90 or area < 14000:
                 continue
+            component_cell_area = max(
+                1,
+                (max_x - min_x + 1) * (max_y - min_y + 1),
+            )
+            component_fill_ratio = len(cells) / component_cell_area
+            # A media surface is a compact rectangular component. Disjoint UI
+            # controls joined by a thin edge can span a large bounding box but
+            # leave most of it empty; treating that box as an image creates a
+            # false observation that blocks the whole authoritative frame.
+            if component_fill_ratio < MIN_MEDIA_COMPONENT_FILL_RATIO:
+                continue
             structural_side = _structural_media_side(image, bounds)
             if structural_side is None:
                 continue
@@ -695,6 +707,7 @@ def detect_visual_image_bubbles(
                     "side": side,
                     "score": float(score),
                     "detection_method": "structural_media_lane_v1",
+                    "component_fill_ratio": round(component_fill_ratio, 6),
                     "structure_evidence": structure_evidence,
                     "auxiliary_visual_evidence": [
                         "colour_texture_or_background_surface_component"

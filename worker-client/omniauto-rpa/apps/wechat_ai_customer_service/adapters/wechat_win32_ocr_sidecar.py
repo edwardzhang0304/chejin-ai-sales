@@ -5283,6 +5283,7 @@ def merge_structural_image_messages(
 
     try:
         from apps.wechat_ai_customer_service.optional_plugins.vision.capture.surface import (
+            messages_outside_image_bubbles,
             observe_structural_image_messages,
         )
 
@@ -5312,6 +5313,7 @@ def merge_structural_image_messages(
             ),
             exc,
         )
+    merged = messages_outside_image_bubbles(merged, image_messages)
     merged.extend(image_messages)
 
     def message_visual_top(item: dict[str, Any]) -> float:
