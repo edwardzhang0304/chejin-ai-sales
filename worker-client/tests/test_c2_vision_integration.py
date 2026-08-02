@@ -3976,6 +3976,125 @@ class C2VisionIntegrationTests(unittest.TestCase):
         finally:
             blank.close()
 
+    def test_sparse_header_bridge_is_trimmed_for_variable_image_sizes(self):
+        variants = {
+            "landscape": (250, 140),
+            "portrait": (140, 310),
+            "long_image": (170, 470),
+            "compact_document": (130, 120),
+        }
+        for name, (media_width, media_height) in variants.items():
+            with self.subTest(name=name):
+                frame_height = max(853, 220 + media_height)
+                screenshot = Image.new(
+                    "RGB",
+                    (974, frame_height),
+                    (242, 242, 242),
+                )
+                draw = ImageDraw.Draw(screenshot)
+                media_left = 470
+                media_top = 170
+                media_right = media_left + media_width
+                media_bottom = media_top + media_height
+
+                # A pale media surface connected to upper chrome by a thin
+                # antialiased bridge reproduces the Windows UAT regression.
+                draw.rectangle(
+                    (media_left, media_top, media_right, media_bottom),
+                    fill=(255, 255, 255),
+                )
+                draw.rectangle(
+                    (media_left, 103, media_left + 3, media_top),
+                    fill=(255, 255, 255),
+                )
+                for y in range(media_top + 18, media_bottom - 8, 18):
+                    draw.rectangle(
+                        (
+                            media_left + 14,
+                            y,
+                            min(media_right - 12, media_left + media_width // 2),
+                            min(media_bottom - 4, y + 5),
+                        ),
+                        fill=(220, 226, 232),
+                    )
+                for y in range(media_top, media_top + 45, 5):
+                    for x in range(408, 453, 5):
+                        tone = 55 if ((x + y) // 5) % 2 else 205
+                        draw.rectangle(
+                            (x, y, x + 4, y + 4),
+                            fill=(tone, 110, 170),
+                        )
+
+                try:
+                    messages = (
+                        wechat_win32_ocr_sidecar.merge_structural_image_messages(
+                            screenshot,
+                            [],
+                            [],
+                            target="CJTEST01",
+                        )
+                    )
+                finally:
+                    screenshot.close()
+
+                self.assertEqual(len(messages), 1, messages)
+                image_message = messages[0]
+                self.assertEqual(image_message["sender_role"], "customer")
+                self.assertEqual(
+                    image_message["avatar_alignment"]["role"],
+                    "customer",
+                )
+                self.assertGreaterEqual(
+                    image_message["bubble_rect"][1],
+                    media_top - 28,
+                )
+                observations = (
+                    wechat_win32_ocr_sidecar.build_message_observations_v3(
+                        messages
+                    )
+                )
+                self.assertNotIn("contract_errors", observations[0])
+
+    def test_sparse_header_bridge_is_trimmed_for_self_image(self):
+        screenshot = Image.new("RGB", (974, 853), (242, 242, 242))
+        draw = ImageDraw.Draw(screenshot)
+        media_bounds = (665, 170, 875, 500)
+        draw.rectangle(media_bounds, fill=(255, 255, 255))
+        draw.rectangle((872, 103, 875, 170), fill=(255, 255, 255))
+        for y in range(190, 485, 20):
+            draw.rectangle((700, y, 830, y + 6), fill=(220, 226, 232))
+        for y in range(170, 215, 5):
+            for x in range(895, 940, 5):
+                tone = 55 if ((x + y) // 5) % 2 else 205
+                draw.rectangle(
+                    (x, y, x + 4, y + 4),
+                    fill=(tone, 110, 170),
+                )
+
+        try:
+            messages = (
+                wechat_win32_ocr_sidecar.merge_structural_image_messages(
+                    screenshot,
+                    [],
+                    [],
+                    target="CJTEST01",
+                )
+            )
+        finally:
+            screenshot.close()
+
+        self.assertEqual(len(messages), 1, messages)
+        self.assertEqual(messages[0]["sender_role"], "self")
+        self.assertEqual(
+            messages[0]["avatar_alignment"]["role"],
+            "self",
+        )
+        self.assertGreaterEqual(messages[0]["bubble_rect"][1], 142)
+        observations = (
+            wechat_win32_ocr_sidecar.build_message_observations_v3(messages)
+        )
+        self.assertNotIn("contract_errors", observations[0])
+
     def test_structural_detector_rejects_sparse_ui_bridge_beside_real_image(self):
         screenshot = Image.new("RGB", (974, 853), (250, 250, 250))
         draw = ImageDraw.Draw(screenshot)
