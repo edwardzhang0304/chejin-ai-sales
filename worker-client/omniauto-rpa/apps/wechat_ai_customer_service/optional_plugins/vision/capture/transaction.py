@@ -27,6 +27,7 @@ from .visual_fingerprint import (
 CLIPBOARD_WAIT_TIMEOUT_SECONDS = 15.0
 CLIPBOARD_POLL_INTERVAL_SECONDS = 0.08
 IMAGE_FINGERPRINT_MAX_DISTANCE = 6
+IMAGE_STABLE_SLOT_MIN_IOU = 0.85
 
 
 def _failure(reason: str, **extra: Any) -> dict[str, Any]:
@@ -56,11 +57,36 @@ def _bounds(value: Any) -> tuple[float, float, float, float] | None:
     return left, top, right, bottom
 
 
+def _bounds_iou(first: Any, second: Any) -> float:
+    first_bounds = _bounds(first)
+    second_bounds = _bounds(second)
+    if first_bounds is None or second_bounds is None:
+        return 0.0
+    first_left, first_top, first_right, first_bottom = first_bounds
+    second_left, second_top, second_right, second_bottom = second_bounds
+    intersection_width = max(
+        0.0,
+        min(first_right, second_right) - max(first_left, second_left),
+    )
+    intersection_height = max(
+        0.0,
+        min(first_bottom, second_bottom) - max(first_top, second_top),
+    )
+    intersection_area = intersection_width * intersection_height
+    first_area = (first_right - first_left) * (first_bottom - first_top)
+    second_area = (second_right - second_left) * (
+        second_bottom - second_top
+    )
+    union_area = first_area + second_area - intersection_area
+    return intersection_area / union_area if union_area > 0 else 0.0
+
+
 def _bubble_match_evidence(
     current_candidates: list[dict[str, Any]],
     *,
     expected_anchor: Any,
     expected_role: str,
+    expected_bounds: Any = None,
 ) -> dict[str, Any]:
     anchor = expected_anchor if isinstance(expected_anchor, dict) else {}
     expected_fingerprint = str(
@@ -145,6 +171,7 @@ def _bubble_match_evidence(
                 },
             }
         )
+    occurrence_matches = []
     contextual_matches = []
     for bubble in fingerprint_matches:
         evidence = (
@@ -159,6 +186,7 @@ def _bubble_match_evidence(
             != expected_occurrence_count
         ):
             continue
+        occurrence_matches.append(bubble)
         current_preceding = str(
             evidence.get("preceding_stable_message") or ""
         ).strip()
@@ -180,12 +208,39 @@ def _bubble_match_evidence(
             continue
         contextual_matches.append(bubble)
     if len(contextual_matches) == 1:
+        contextual_matches[0]["identity_match_evidence"][
+            "match_mode"
+        ] = "stable_neighbor_context"
         return {
             "state": "matched",
             "bubble": contextual_matches[0],
             "fingerprint_match_count": len(fingerprint_matches),
             "contextual_match_count": 1,
         }
+    # Full-frame OCR can read an unchanged neighboring text bubble slightly
+    # differently between adjacent captures. Allow that drift only when every
+    # non-OCR identity signal is unique and the image stayed in the same slot.
+    if len(occurrence_matches) == 1 and not contextual_matches:
+        geometry_iou = _bounds_iou(
+            expected_bounds,
+            occurrence_matches[0].get("bounds")
+            or occurrence_matches[0].get("bubble_rect"),
+        )
+        if geometry_iou >= IMAGE_STABLE_SLOT_MIN_IOU:
+            occurrence_matches[0]["identity_match_evidence"].update(
+                {
+                    "match_mode": "stable_slot_with_neighbor_ocr_drift",
+                    "stable_slot_iou": round(geometry_iou, 6),
+                }
+            )
+            return {
+                "state": "matched",
+                "bubble": occurrence_matches[0],
+                "fingerprint_match_count": len(fingerprint_matches),
+                "contextual_match_count": 0,
+                "occurrence_match_count": 1,
+                "stable_slot_iou": round(geometry_iou, 6),
+            }
     if not fingerprint_matches:
         if role_conflicts:
             return {
@@ -206,6 +261,20 @@ def _bubble_match_evidence(
         "bubble": {},
         "fingerprint_match_count": len(fingerprint_matches),
         "contextual_match_count": len(contextual_matches),
+        "occurrence_match_count": len(occurrence_matches),
+        "stable_slot_iou": round(
+            max(
+                (
+                    _bounds_iou(
+                        expected_bounds,
+                        item.get("bounds") or item.get("bubble_rect"),
+                    )
+                    for item in occurrence_matches
+                ),
+                default=0.0,
+            ),
+            6,
+        ),
     }
 
 
@@ -396,13 +465,14 @@ def _acquire_current_image_via_ports(
                 current_candidates,
                 expected_anchor=expected_anchor,
                 expected_role=sender_role,
+                expected_bounds=data.get("bubble_rect"),
             )
             if match_evidence.get("state") == "not_visible":
                 return fail(
                     "image_bubble_not_visible_after_refresh",
                     state="image_not_visible",
                     transaction={
-                        "identity_match_evidence": match_evidence,
+                        "slot_identity_evidence": match_evidence,
                     },
                 )
             bubble = dict(match_evidence.get("bubble") or {})
@@ -411,7 +481,7 @@ def _acquire_current_image_via_ports(
                     "C2_IMAGE_SLOT_RECONFIRM_FAILED",
                     state="image_identity_failed",
                     transaction={
-                        "identity_match_evidence": match_evidence,
+                        "slot_identity_evidence": match_evidence,
                     },
                 )
             if _cancelled(data):
