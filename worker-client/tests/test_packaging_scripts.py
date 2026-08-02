@@ -90,6 +90,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("最终 exe 未包含 Windows UIA 诊断所需的 uiautomation", text)
         self.assertIn('"--omniauto-sidecar", "--help"', text)
         self.assertIn("最终 exe 无法启动内置 OmniAuto sidecar", text)
+        self.assertIn('"--omniauto-ocr-probe"', text)
+        self.assertIn("最终 exe 无法启动图片复核 OCR 独立进程", text)
         self.assertIn("runtime-build-identity.json", text)
         self.assertIn("CHEJIN_BUILD_IDENTITY_PATH", text)
         self.assertNotIn('$OmniAutoUpstreamCommit = "855c218', text)

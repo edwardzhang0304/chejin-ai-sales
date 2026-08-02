@@ -24,6 +24,10 @@ from .action_journal import (
     update_action_journal_item,
 )
 from .emergency_stop import emergency_stop_requested
+from .omniauto_ocr_client import (
+    CancellableOmniAutoOcr,
+    OmniAutoOcrCancelledError,
+)
 
 
 OMNIAUTO_ROOT = Path(__file__).resolve().parents[1] / "omniauto-rpa"
@@ -226,6 +230,7 @@ class _CancellableVisionProvider:
             raise VisionCancelledError("vision_cancelled_after_provider")
         return result
 
+
 _MENU_EVIDENCE_TOKENS = (
     "复制",
     "转发",
@@ -288,6 +293,7 @@ class _VisionHostState:
         trace_id: str,
         *,
         window_context: dict[str, Any] | None = None,
+        ocr_runner: CancellableOmniAutoOcr | None = None,
     ) -> None:
         from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar
 
@@ -302,6 +308,12 @@ class _VisionHostState:
         self.trace_id = str(trace_id or "")
         self.started_at = time.perf_counter()
         self.events: list[dict[str, Any]] = []
+        self.ocr_runner = ocr_runner
+
+    def run_ocr(self, image: Any) -> list[dict[str, Any]]:
+        if self.ocr_runner is not None:
+            return self.ocr_runner.recognize(image)
+        return self.host.run_ocr(image)
 
     def record(self, stage: str, status: str, *, started_at: float | None = None, **metadata: Any) -> None:
         event = {
@@ -531,7 +543,12 @@ class _WindowFrame:
                 screen_origin[1] + roi_top,
             ]
         try:
-            ocr_items = self.state.host.run_ocr(image)
+            state_ocr = getattr(self.state, "run_ocr", None)
+            ocr_items = (
+                state_ocr(image)
+                if callable(state_ocr)
+                else self.state.host.run_ocr(image)
+            )
         except Exception as exc:
             raw_reason = _safe_exception_reason(
                 exc,
@@ -1205,9 +1222,15 @@ def process_image_slot(
     from apps.wechat_ai_customer_service.optional_plugins.vision.plugin import BuiltinVisionPlugin
     from apps.wechat_ai_customer_service.optional_plugins.vision.ports import VisionHostPorts
 
+    ocr_runner = (
+        CancellableOmniAutoOcr(cancel_check)
+        if sys.platform == "win32"
+        else None
+    )
     state = _VisionHostState(
         resolved_trace_id,
         window_context=window_context,
+        ocr_runner=ocr_runner,
     )
     vision_settings = runtime_config.get("customer_image_understanding")
     if not isinstance(vision_settings, dict):
@@ -1254,7 +1277,7 @@ def process_image_slot(
                 "action_journal_update": journal_update,
             }
         )
-    except VisionCancelledError:
+    except (VisionCancelledError, OmniAutoOcrCancelledError):
         state.record(
             "vision_provider",
             "cancelled",
@@ -1291,6 +1314,9 @@ def process_image_slot(
             "error_type": type(exc).__name__,
             "diagnostics": state.diagnostics(),
         })
+    finally:
+        if ocr_runner is not None:
+            ocr_runner.close()
     if _cancel_requested(cancel_check):
         transaction = dict(result.get("clipboard_transaction") or {})
         state.record(

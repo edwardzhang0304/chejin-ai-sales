@@ -51,6 +51,7 @@ from chejin_worker_client.omniauto_vision import (
     process_image_slot,
     vision_configuration_status,
 )
+from chejin_worker_client.omniauto_ocr_client import CancellableOmniAutoOcr
 from chejin_worker_client.c2_contract import (
     formal_image_failure_code,
     image_contract,
@@ -2913,6 +2914,107 @@ class C2VisionIntegrationTests(unittest.TestCase):
         raw_capture.assert_not_called()
         fallback_capture.assert_not_called()
         image.close()
+
+    def test_vision_frame_uses_isolated_ocr_runner_when_configured(self):
+        image = Image.new("RGB", (800, 600), "white")
+        calls = []
+
+        class OcrRunner:
+            @staticmethod
+            def recognize(value):
+                calls.append(value.size)
+                return []
+
+        state = _VisionHostState(
+            "vision-isolated-ocr",
+            window_context=self.window_context(),
+            ocr_runner=OcrRunner(),
+        )
+        with patch.object(
+            state.host,
+            "capture_c2_window_context",
+            return_value={
+                "ok": True,
+                "image": image.copy(),
+                "hwnd": 31415,
+                "capture_mode": "test",
+                "screen_origin": [0, 0],
+            },
+        ), patch.object(
+            state.host,
+            "run_ocr",
+            side_effect=AssertionError(
+                "Qt process must not initialize OmniAuto OCR"
+            ),
+        ), patch.object(
+            state.host,
+            "parse_messages_from_ocr",
+            return_value=[],
+        ):
+            result = _WindowFrame(state).capture_frame(
+                {
+                    "phase": "image_candidate",
+                    "remark_code": "CJTEST01",
+                }
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls, [(800, 600)])
+        result["image"].close()
+        image.close()
+
+    def test_vision_frame_keeps_isolated_ocr_runtime_reason(self):
+        image = Image.new("RGB", (800, 600), "white")
+
+        class OcrRunner:
+            @staticmethod
+            def recognize(_value):
+                raise RuntimeError("rapidocr_onnxruntime_unavailable")
+
+        state = _VisionHostState(
+            "vision-isolated-ocr-failure",
+            window_context=self.window_context(),
+            ocr_runner=OcrRunner(),
+        )
+        with patch.object(
+            state.host,
+            "capture_c2_window_context",
+            return_value={
+                "ok": True,
+                "image": image.copy(),
+                "hwnd": 31415,
+                "capture_mode": "test",
+                "screen_origin": [0, 0],
+            },
+        ), patch.object(
+            state.host,
+            "run_ocr",
+            side_effect=AssertionError("direct OCR must stay unused"),
+        ):
+            result = _WindowFrame(state).capture_frame(
+                {"phase": "image_candidate"}
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "vision_window_ocr_failed")
+        self.assertEqual(
+            result["reason_detail"],
+            "rapidocr_onnxruntime_unavailable",
+        )
+        image.close()
+
+    def test_isolated_ocr_uses_dedicated_child_entry(self):
+        runner = CancellableOmniAutoOcr(None)
+
+        with patch.object(sys, "frozen", False, create=True):
+            self.assertEqual(
+                runner.command(),
+                [
+                    sys.executable,
+                    "-m",
+                    "chejin_worker_client.omniauto_ocr_worker",
+                ],
+            )
 
     def test_window_frame_normalizes_dynamic_capture_failures(self):
         raw_reasons = (

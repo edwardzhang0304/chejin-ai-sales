@@ -16,6 +16,7 @@ from chejin_worker_client.preflight import (
     checks_to_dict,
     format_text,
     has_blocking_failures,
+    omniauto_vision_ocr_check,
     run_preflight,
     write_report,
 )
@@ -59,6 +60,20 @@ class PreflightTest(unittest.TestCase):
         self.assertIn("sidecar", names)
         self.assertNotIn("backend", names)
         self.assertNotIn("wechat", names)
+
+    def test_vision_ocr_preflight_uses_production_subprocess_probe(self):
+        with patch(
+            "chejin_worker_client.omniauto_ocr_client.probe_omniauto_ocr_subprocess",
+            return_value={"ok": False, "reason": "rapidocr_onnxruntime_unavailable"},
+        ):
+            check = omniauto_vision_ocr_check()
+
+        self.assertFalse(check.ok)
+        self.assertEqual(check.name, "vision_ocr_subprocess")
+        self.assertEqual(
+            check.detail["reason"],
+            "rapidocr_onnxruntime_unavailable",
+        )
 
 
 if __name__ == "__main__":

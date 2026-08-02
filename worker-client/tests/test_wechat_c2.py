@@ -589,6 +589,31 @@ class WechatC2Test(unittest.TestCase):
         self.assertEqual(payload["sessions"][0]["remark_code_candidates"], ["CJ8K2P"])
         self.assertTrue(payload["sessions"][0]["unread_hint"])
 
+    def test_scan_payload_admits_short_code_before_glued_time_suffix(self):
+        payload = build_scan_result_payload(
+            {
+                "ok": True,
+                "sessions": [
+                    {
+                        "name": "CJR8S5K3虾丸子大",
+                        "raw_title": "CJR8S5K3虾丸子大...11:05",
+                        "session_key": "wx:rpa:v1:cjr8s5k3",
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(
+            payload["sessions"][0]["remark_code_candidates"],
+            ["CJR8S5K3"],
+        )
+        self.assertEqual(
+            payload["evidence"]["c2_conversation_admission"][
+                "private_candidate_count"
+            ],
+            1,
+        )
+
     def test_scan_payload_excludes_session_without_sidecar_identity(self):
         payload = build_scan_result_payload(
             {

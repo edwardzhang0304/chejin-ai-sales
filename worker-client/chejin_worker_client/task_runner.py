@@ -329,6 +329,7 @@ _C2_IMAGE_DIAGNOSTIC_FIELDS = {
     "bounds",
     "sequence_number",
     "reason",
+    "reason_detail",
     "error_type",
     "provider_traceback",
     "provider",
