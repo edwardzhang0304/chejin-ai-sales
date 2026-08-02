@@ -90,6 +90,8 @@ a = Analysis(
         "PySide6.QtWebChannel",
         "PySide6.QtWebEngineCore",
         "PySide6.QtWebEngineWidgets",
+        "rapidocr_onnxruntime",
+        "onnxruntime",
         "uiautomation",
     ],
     hookspath=[],

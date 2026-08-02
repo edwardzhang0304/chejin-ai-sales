@@ -446,6 +446,14 @@ def test_parse_sessions_keeps_truncated_remark_code_title_with_time_suffix() -> 
     sessions = parse_sessions_from_ocr(items, (980, 860))
     names = [item["name"] for item in sessions]
     assert_true(names[0] == "CJR8S5K3 虾丸子大", f"truncated code title with time should survive session parsing: {sessions}")
+    assert_true(
+        sessions[0]["c2_remark_code_candidates"] == ["CJR8S5K3"],
+        f"time suffix cleanup must preserve private short-code admission: {sessions}",
+    )
+    assert_true(
+        sessions[0]["conversation_type"] == "private",
+        f"cleaned short-code title must remain private: {sessions}",
+    )
     assert_true("只争朝夕：还有..." not in names, f"preview text with ellipsis should not become a session title: {sessions}")
 
 

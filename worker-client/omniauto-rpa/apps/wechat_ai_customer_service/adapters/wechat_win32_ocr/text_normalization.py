@@ -46,11 +46,12 @@ def extract_c2_remark_codes(*values: Any) -> list[str]:
 
 def classify_c2_conversation_title(raw_title: Any, remark_code: Any) -> dict[str, Any]:
     raw = normalize_ocr_text(raw_title)
+    title = strip_session_time_suffix(raw)
     code = normalize_ocr_text(remark_code).upper()
-    compact_raw = re.sub(r"[^A-Z0-9]", "", raw.upper())
+    compact_raw = re.sub(r"[^A-Z0-9]", "", title.upper())
     compact_code = re.sub(r"[^A-Z0-9]", "", code)
     short_code_confirmed = bool(compact_code and compact_code in compact_raw)
-    exact_member_suffix = C2_GROUP_MEMBER_SUFFIX_RE.search(raw)
+    exact_member_suffix = C2_GROUP_MEMBER_SUFFIX_RE.search(title)
 
     if exact_member_suffix:
         return {
@@ -62,13 +63,13 @@ def classify_c2_conversation_title(raw_title: Any, remark_code: Any) -> dict[str
             "member_count_suffix": exact_member_suffix.group(0).strip(),
             "admission_allowed": False,
         }
-    if not raw:
+    if not title:
         reason = "title_ocr_empty"
     elif not short_code_confirmed:
         reason = "remark_code_not_confirmed_in_raw_title"
-    elif "..." in raw or "…" in raw:
+    elif "..." in title or "…" in title:
         reason = "title_ocr_incomplete_ellipsis"
-    elif C2_FUZZY_MEMBER_SUFFIX_RE.search(raw):
+    elif C2_FUZZY_MEMBER_SUFFIX_RE.search(title):
         reason = "member_count_suffix_ambiguous"
     else:
         return {

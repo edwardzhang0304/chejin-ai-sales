@@ -75,6 +75,50 @@ class SingleInstanceTest(unittest.TestCase):
         notify.assert_called_once_with()
         bootstrap.assert_not_called()
 
+    def test_ocr_worker_dispatch_runs_before_qt_and_instance_guard(self):
+        with (
+            mock.patch.object(
+                main.sys,
+                "argv",
+                ["chejin-worker-client", "--omniauto-ocr-worker"],
+            ),
+            mock.patch.object(
+                main,
+                "run_bundled_omniauto_ocr_worker",
+                return_value=0,
+            ) as worker,
+            mock.patch.object(main, "acquire_single_instance") as acquire,
+            mock.patch.object(main, "bootstrap_qt_plugins") as bootstrap,
+        ):
+            result = main.main()
+
+        self.assertEqual(result, 0)
+        worker.assert_called_once_with()
+        acquire.assert_not_called()
+        bootstrap.assert_not_called()
+
+    def test_ocr_probe_dispatch_runs_before_qt_and_instance_guard(self):
+        with (
+            mock.patch.object(
+                main.sys,
+                "argv",
+                ["chejin-worker-client", "--omniauto-ocr-probe"],
+            ),
+            mock.patch.object(
+                main,
+                "run_bundled_omniauto_ocr_probe",
+                return_value=0,
+            ) as probe,
+            mock.patch.object(main, "acquire_single_instance") as acquire,
+            mock.patch.object(main, "bootstrap_qt_plugins") as bootstrap,
+        ):
+            result = main.main()
+
+        self.assertEqual(result, 0)
+        probe.assert_called_once_with()
+        acquire.assert_not_called()
+        bootstrap.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

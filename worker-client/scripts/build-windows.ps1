@@ -129,6 +129,10 @@ $BundledSidecarProbe = Start-Process -FilePath $ExePath -ArgumentList @("--omnia
 if ($BundledSidecarProbe.ExitCode -ne 0) {
   throw "打包失败：最终 exe 无法启动内置 OmniAuto sidecar"
 }
+$BundledVisionOcrProbe = Start-Process -FilePath $ExePath -ArgumentList @("--omniauto-ocr-probe") -Wait -PassThru
+if ($BundledVisionOcrProbe.ExitCode -ne 0) {
+  throw "打包失败：最终 exe 无法启动图片复核 OCR 独立进程"
+}
 $PackagedPythonArchive = (
   .\.venv\Scripts\pyi-archive_viewer.exe -l -r $ExePath
 ) -join "`n"

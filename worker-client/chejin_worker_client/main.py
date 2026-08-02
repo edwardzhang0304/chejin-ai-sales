@@ -63,11 +63,31 @@ def run_bundled_vision_provider_worker() -> int:
     return int(provider_main())
 
 
+def run_bundled_omniauto_ocr_worker() -> int:
+    """Run OmniAuto OCR outside the Qt GUI process."""
+
+    from .omniauto_ocr_worker import main as ocr_main
+
+    return int(ocr_main())
+
+
+def run_bundled_omniauto_ocr_probe() -> int:
+    from .omniauto_ocr_client import probe_omniauto_ocr_subprocess
+
+    result = probe_omniauto_ocr_subprocess()
+    print(json.dumps(result, ensure_ascii=False), flush=True)
+    return 0 if result.get("ok") is True else 1
+
+
 def main() -> int:
     if len(sys.argv) >= 2 and sys.argv[1] == "--omniauto-sidecar":
         return run_bundled_omniauto_sidecar(sys.argv[2:])
     if len(sys.argv) >= 2 and sys.argv[1] == "--vision-provider-worker":
         return run_bundled_vision_provider_worker()
+    if len(sys.argv) >= 2 and sys.argv[1] == "--omniauto-ocr-worker":
+        return run_bundled_omniauto_ocr_worker()
+    if len(sys.argv) >= 2 and sys.argv[1] == "--omniauto-ocr-probe":
+        return run_bundled_omniauto_ocr_probe()
 
     parser = argparse.ArgumentParser(prog="chejin-worker-client")
     parser.add_argument("--preflight", action="store_true", help="运行客户端环境预检后退出。")
