@@ -45,6 +45,10 @@ class ClearC2LocalLedgerTest(unittest.TestCase):
                 INSERT INTO c2_runtime_state VALUES (
                   'possible_ai_sends:conversation-1', '{}'
                 );
+                INSERT INTO c2_runtime_state VALUES (
+                  'message_identity:conversation-1',
+                  '{"version":3,"last_frame":[{"signature":"stale"}]}'
+                );
                 INSERT INTO c2_message_ledger VALUES ('ledger-1');
                 INSERT INTO c2_ingest_outbox VALUES ('outbox-1');
                 INSERT INTO c2_action_journal VALUES ('journal-1');
@@ -80,6 +84,7 @@ class ClearC2LocalLedgerTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         result = json.loads(completed.stdout)
         self.assertTrue(result["binding_preserved"])
+        self.assertEqual(result["deleted_message_identity_states"], 1)
 
         with sqlite3.connect(self.database) as connection:
             binding = connection.execute(
@@ -112,6 +117,18 @@ class ClearC2LocalLedgerTest(unittest.TestCase):
                     ).fetchone()[0],
                     1,
                 )
+            self.assertIsNone(
+                connection.execute(
+                    "SELECT value FROM c2_runtime_state "
+                    "WHERE key = 'message_identity:conversation-1'"
+                ).fetchone()
+            )
+            self.assertIsNotNone(
+                connection.execute(
+                    "SELECT value FROM c2_runtime_state "
+                    "WHERE key = 'possible_ai_sends:conversation-1'"
+                ).fetchone()
+            )
 
         self.assertFalse(
             (

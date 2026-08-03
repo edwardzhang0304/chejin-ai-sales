@@ -13,6 +13,7 @@ C2_LEDGER_TABLES = (
     "c2_message_ledger",
 )
 MEDIA_ACTION_KINDS = ("image", "voice")
+MESSAGE_IDENTITY_STATE_PREFIX = "message_identity:"
 
 
 def _app_dir() -> Path:
@@ -43,6 +44,7 @@ def clear_c2_local_ledger(app_dir: Path) -> dict[str, object]:
             "database_path": str(database_path),
             "binding_preserved": True,
             "deleted_rows": {},
+            "deleted_message_identity_states": 0,
             "deleted_media_action_files": 0,
         }
 
@@ -67,6 +69,25 @@ def clear_c2_local_ledger(app_dir: Path) -> dict[str, object]:
             )
             connection.execute(f"DELETE FROM {table}")
             deleted_rows[table] = before
+        deleted_identity_states = 0
+        if "c2_runtime_state" in tables:
+            deleted_identity_states = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM c2_runtime_state "
+                    "WHERE substr(key, 1, ?) = ?",
+                    (
+                        len(MESSAGE_IDENTITY_STATE_PREFIX),
+                        MESSAGE_IDENTITY_STATE_PREFIX,
+                    ),
+                ).fetchone()[0]
+            )
+            connection.execute(
+                "DELETE FROM c2_runtime_state WHERE substr(key, 1, ?) = ?",
+                (
+                    len(MESSAGE_IDENTITY_STATE_PREFIX),
+                    MESSAGE_IDENTITY_STATE_PREFIX,
+                ),
+            )
         connection.commit()
     except Exception:
         connection.rollback()
@@ -94,12 +115,13 @@ def clear_c2_local_ledger(app_dir: Path) -> dict[str, object]:
         "binding_preserved": True,
         "worker_id": str(binding_row[0]) if binding_row else None,
         "deleted_rows": deleted_rows,
+        "deleted_message_identity_states": deleted_identity_states,
         "deleted_media_action_files": deleted_files,
         "preserved": [
             "binding",
             "client_settings",
             "local_logs",
-            "c2_runtime_state",
+            "c2_runtime_state except message_identity:*",
             "reply_send_ack_outbox",
             "add_friend_action_journal",
             "send_action_journal",
