@@ -411,6 +411,87 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         self.assertEqual(messages[0]["sender_role"], "self")
         self.assertEqual(messages[0]["avatar_alignment"]["role"], "self")
 
+    def test_image_internal_duration_text_cannot_trigger_voice_flow(self) -> None:
+        image = Image.new("RGB", (974, 853), (242, 242, 242))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((0, 0, 376, 852), fill=(238, 238, 238))
+        self.draw_avatar(draw, (408, 330, 453, 375))
+        for y in range(330, 550, 6):
+            for x in range(470, 700, 6):
+                tone = 35 if ((x + y) // 6) % 2 else 220
+                draw.rectangle((x, y, x + 5, y + 5), fill=(tone, 150, 80))
+
+        embedded_duration = ocr_item(":22", 500, 355, 516, 363)
+        raw_messages = sidecar.parse_messages_from_ocr(
+            [embedded_duration],
+            image.size,
+            target="CJR8S5K3",
+            screenshot=image,
+        )
+        self.assertEqual(raw_messages[0]["type"], "voice")
+        self.assertIn("untranscribed_voice_placeholder", raw_messages[0]["quality_flags"])
+
+        messages = sidecar.parse_current_chat_frame_messages(
+            [embedded_duration],
+            image.size,
+            target="CJR8S5K3",
+            screenshot=image,
+        )
+        hint = sidecar.visible_untranscribed_voice_hint(
+            image,
+            [embedded_duration],
+            image.size,
+            parsed_messages=messages,
+        )
+        voice_observations = [
+            observation
+            for observation in sidecar.build_unified_voice_observations_v3(
+                image,
+                [embedded_duration],
+                image.size,
+                parsed_messages=messages,
+            )
+            if observation.get("message_type") == "voice"
+        ]
+
+        self.assertEqual([message["type"] for message in messages], ["image"])
+        self.assertEqual(hint, {"detected": False})
+        self.assertEqual(voice_observations, [])
+
+    def test_real_voice_outside_image_remains_actionable(self) -> None:
+        image = Image.new("RGB", (974, 853), (242, 242, 242))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((0, 0, 376, 852), fill=(238, 238, 238))
+        self.draw_avatar(draw, (408, 330, 453, 375))
+        for y in range(330, 550, 6):
+            for x in range(470, 700, 6):
+                tone = 35 if ((x + y) // 6) % 2 else 220
+                draw.rectangle((x, y, x + 5, y + 5), fill=(tone, 150, 80))
+        draw.rounded_rectangle((772, 610, 919, 654), radius=8, fill=(140, 226, 146))
+        self.draw_avatar(draw, (900, 608, 946, 656))
+
+        items = [
+            ocr_item(":22", 500, 355, 516, 363),
+            ocr_item('4"', 812, 620, 862, 645),
+        ]
+        messages = sidecar.parse_current_chat_frame_messages(
+            items,
+            image.size,
+            target="CJR8S5K3",
+            screenshot=image,
+        )
+        hint = sidecar.visible_untranscribed_voice_hint(
+            image,
+            items,
+            image.size,
+            parsed_messages=messages,
+        )
+
+        self.assertEqual([message["type"] for message in messages], ["image", "voice"])
+        self.assertTrue(hint["detected"])
+        self.assertEqual(hint["sender_role"], "self")
+        self.assertGreater(float(hint["bubble_rect"][1]), 550.0)
+
     def test_v1685_right_voice_with_open_paren_ocr_noise_uses_unified_observation(self) -> None:
         image = Image.new("RGB", (981, 860), (247, 247, 247))
         draw = ImageDraw.Draw(image)
