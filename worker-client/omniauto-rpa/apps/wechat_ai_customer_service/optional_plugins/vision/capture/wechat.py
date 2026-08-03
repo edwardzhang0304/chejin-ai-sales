@@ -12,6 +12,9 @@ from PIL import Image, ImageStat
 DEFAULT_BOTTOM_EXCLUDE_PX = 95
 DEFAULT_MAX_VISIBLE_IMAGE_CANDIDATES = 64
 MIN_MEDIA_COMPONENT_FILL_RATIO = 0.28
+TEXT_OVERLAP_REJECTION_RATIO = 0.42
+MEDIA_ROLE_EDGE_CONTINUITY_RATIO = 0.45
+MEDIA_EDGE_BACKGROUND_DISTANCE = 6.0
 IMAGE_PREVIEW_TOKENS = ("[图片]", "[照片]", "[Image]", "图片", "照片", "发送了一张图片")
 SAVE_MENU_TOKENS = (
     "另存为",
@@ -135,13 +138,26 @@ def _chat_bounds(width: int, height: int) -> tuple[int, int, int, int]:
     return left, top, right, bottom
 
 
-def _covered_by_text(bounds: tuple[int, int, int, int], messages: list[dict[str, Any]]) -> bool:
+def _maximum_text_overlap_ratio(
+    bounds: tuple[int, int, int, int],
+    messages: list[dict[str, Any]],
+) -> float:
     left, top, right, bottom = bounds
     area = max(1, (right - left) * (bottom - top))
+    maximum = 0.0
     for message in messages:
         if not isinstance(message, dict):
             continue
-        rect = message.get("bubble_rect") if isinstance(message.get("bubble_rect"), dict) else {}
+        message_type = str(
+            message.get("type") or message.get("message_type") or ""
+        ).strip().lower()
+        if message_type != "text":
+            continue
+        rect = (
+            message.get("bubble_rect")
+            if isinstance(message.get("bubble_rect"), dict)
+            else {}
+        )
         if not rect:
             continue
         ml = int(float(rect.get("left") or 0)) - 8
@@ -155,9 +171,58 @@ def _covered_by_text(bounds: tuple[int, int, int, int], messages: list[dict[str,
         if overlap_right <= overlap_left or overlap_bottom <= overlap_top:
             continue
         overlap = (overlap_right - overlap_left) * (overlap_bottom - overlap_top)
-        if overlap / area >= 0.42:
-            return True
-    return False
+        maximum = max(maximum, overlap / area)
+    return maximum
+
+
+def _role_facing_edge_surface_continuity(
+    screenshot: Image.Image,
+    bounds: tuple[int, int, int, int],
+    *,
+    side: str,
+    background: list[float],
+) -> float:
+    """Measure whether the role-facing edge is a full media edge or a text tail.
+
+    A WeChat text bubble narrows to a small tail on the avatar-facing edge. An
+    image thumbnail keeps a continuous rectangular edge. This structural
+    evidence lets text-heavy screenshots remain images without treating a
+    genuinely long text bubble as media.
+    """
+
+    left, top, right, bottom = bounds
+    width = right - left
+    height = bottom - top
+    if width <= 0 or height <= 0 or side not in {"customer", "self"}:
+        return 0.0
+    strip_width = max(2, min(8, int(round(min(width, height) * 0.03))))
+    if side == "customer":
+        strip = (left, top, min(right, left + strip_width), bottom)
+    else:
+        strip = (max(left, right - strip_width), top, right, bottom)
+    edge_image = screenshot.crop(strip).convert("RGB")
+    try:
+        pixel_reader = getattr(
+            edge_image,
+            "get_flattened_data",
+            edge_image.getdata,
+        )
+        pixels = list(pixel_reader())
+    finally:
+        edge_image.close()
+    if not pixels:
+        return 0.0
+    active = sum(
+        1
+        for pixel in pixels
+        if sum(
+            abs(float(pixel[index]) - float(background[index]))
+            for index in range(3)
+        )
+        / 3.0
+        >= MEDIA_EDGE_BACKGROUND_DISTANCE
+    )
+    return active / len(pixels)
 
 
 def _structural_media_lanes(width: int, height: int) -> dict[str, dict[str, int]]:
@@ -638,7 +703,7 @@ def detect_visual_image_bubbles(
             # Pale documents and screenshots often have almost no texture or
             # colour spread. Their rectangular surface still differs from the
             # surrounding chat canvas. The downstream lane, avatar-row, size
-            # and text-overlap checks remain authoritative structural gates.
+            # and text-surface checks remain authoritative structural gates.
             pale_rectangular_surface = (
                 background_distance >= 6.0 and spread <= 24.0
             )
@@ -715,7 +780,20 @@ def detect_visual_image_bubbles(
             area = bw * bh
             if bw < 90 or bh < 90 or area < 14000:
                 continue
-            if _covered_by_text(bounds, messages or []):
+            text_overlap_ratio = _maximum_text_overlap_ratio(
+                bounds,
+                messages or [],
+            )
+            role_edge_continuity = _role_facing_edge_surface_continuity(
+                image,
+                bounds,
+                side=side,
+                background=background,
+            )
+            if (
+                text_overlap_ratio >= TEXT_OVERLAP_REJECTION_RATIO
+                and role_edge_continuity < MEDIA_ROLE_EDGE_CONTINUITY_RATIO
+            ):
                 continue
             if avatar_column_excluded:
                 structure_evidence = [
@@ -741,6 +819,11 @@ def detect_visual_image_bubbles(
                     "score": float(score),
                     "detection_method": "structural_media_lane_v1",
                     "component_fill_ratio": round(component_fill_ratio, 6),
+                    "text_overlap_ratio": round(text_overlap_ratio, 6),
+                    "role_facing_edge_surface_continuity": round(
+                        role_edge_continuity,
+                        6,
+                    ),
                     "structure_evidence": structure_evidence,
                     "auxiliary_visual_evidence": [
                         "colour_texture_or_background_surface_component"
