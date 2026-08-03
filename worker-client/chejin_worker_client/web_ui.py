@@ -18,7 +18,7 @@ from PySide6.QtWidgets import QFileDialog, QMainWindow
 
 from .api import WorkerApiClient
 from .config import CONFIG
-from .incident_evidence import incident_directory, latest_incident
+from .incident_evidence import incident_by_id, incident_directory, latest_incident
 from .models import Binding, RpaResult, RpaStep, Task, WorkerProfile, task_type_title
 from .qt_application import GuardedQApplication
 from .rpa_bridge import RpaBridge
@@ -38,7 +38,7 @@ from .ui_lock import lock_summary
 
 WINDOW_WIDTH = 316
 WINDOW_HEIGHT = 628
-CLIENT_VERSION = "V16.120 · Worker C2/C3 客户端"
+CLIENT_VERSION = "V16.124 · Worker C2/C3 客户端"
 TITLEBAR_HEIGHT = 28
 WINDOW_CONTROL_WIDTH = 90
 WINDOW_RADIUS = 10
@@ -160,6 +160,10 @@ class WorkerWebBridge(QObject):
     @Slot(result=str)
     def exportLatestIncident(self) -> str:
         return self.window.export_latest_incident()
+
+    @Slot(str, result=str)
+    def exportIncident(self, incident_id: str) -> str:
+        return self.window.export_incident(incident_id)
 
     @Slot(result=str)
     def openIncidentDirectory(self) -> str:
@@ -519,15 +523,14 @@ class WorkerWebWindow(QMainWindow):
         append_log("INFO", "c2_manual_scan_requested", "已触发手动立即扫描。")
         self._publish()
 
-    def export_latest_incident(self) -> str:
-        latest = latest_incident()
-        if not latest:
+    def _export_incident(self, incident: dict[str, str] | None, *, dialog_title: str) -> str:
+        if not incident:
             self.on_error("当前没有可导出的故障证据包。")
             return ""
-        source = Path(latest["evidence_path"])
+        source = Path(incident["evidence_path"])
         destination, _ = QFileDialog.getSaveFileName(
             self,
-            "导出最近一次故障证据",
+            dialog_title,
             str(Path.home() / "Downloads" / source.name),
             "ZIP 文件 (*.zip)",
         )
@@ -549,11 +552,23 @@ class WorkerWebWindow(QMainWindow):
         append_log(
             "INFO",
             "incident_exported",
-            "最近一次故障证据已导出。",
-            metadata={"incident_id": latest.get("incident_id"), "export_path": str(target)},
+            "故障证据已导出。",
+            metadata={"incident_id": incident.get("incident_id"), "export_path": str(target)},
         )
         self._publish()
         return str(target)
+
+    def export_latest_incident(self) -> str:
+        return self._export_incident(
+            latest_incident(),
+            dialog_title="导出最近一次故障证据",
+        )
+
+    def export_incident(self, incident_id: str) -> str:
+        return self._export_incident(
+            incident_by_id(incident_id),
+            dialog_title="导出所选故障证据",
+        )
 
     def open_incident_directory(self) -> str:
         directory = incident_directory()

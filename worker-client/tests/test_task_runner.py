@@ -9141,6 +9141,21 @@ class TaskRunnerTest(unittest.TestCase):
             authorization_revision=f"revision-image-incidents-{unique}",
         )
         payload = bridge._contractual_message_payload({"ok": True, "messages": []})
+        import chejin_worker_client.incident_evidence as incident_evidence
+
+        artifact_dir = (
+            incident_evidence.incident_directory().parent
+            / "artifacts"
+            / "wechat_c2"
+            / "messages"
+            / f"image-menu-incident-{unique}"
+        )
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        menu_screenshot = artifact_dir / "vision_image_context_menu.png"
+        menu_roi_screenshot = artifact_dir / "vision_image_context_menu_ocr_roi.png"
+        menu_screenshot.write_bytes(b"\x89PNG\r\n\x1a\nfull-menu")
+        menu_roi_screenshot.write_bytes(b"\x89PNG\r\n\x1a\nmenu-roi")
+        payload["artifact_dir"] = str(artifact_dir)
         failure_reasons = [
             "image_bubble_not_visible_after_refresh",
             "image_context_menu_copy_item_missing",
@@ -9175,19 +9190,44 @@ class TaskRunnerTest(unittest.TestCase):
             target=target,
             sidecar_payload=payload,
         )
-        results = [
-            {
+        results = []
+        for index, reason in enumerate(failure_reasons):
+            diagnostics_events = []
+            if reason == "image_context_menu_copy_item_missing":
+                diagnostics_events = [
+                    {
+                        "sequence": 8,
+                        "stage": "frame_capture",
+                        "status": "completed",
+                        "phase": "image_context_menu",
+                        "screenshot_path": str(menu_screenshot),
+                        "roi_screenshot_path": str(menu_roi_screenshot),
+                        "ocr_item_count": 40,
+                        "local_ocr_item_count": 39,
+                        "local_ocr_evidence": [
+                            {
+                                "text": "复",
+                                "confidence": 0.91,
+                                "bounds": [540, 272, 570, 320],
+                            },
+                            {
+                                "text": "制",
+                                "confidence": 0.92,
+                                "bounds": [571, 272, 610, 320],
+                            },
+                        ],
+                    }
+                ]
+            results.append({
                 "state": "failed",
                 "reason": reason,
                 "action_phase": "not_attempted" if index == 0 else "trigger_attempted",
                 "diagnostics": {
-                    "events": [],
+                    "events": diagnostics_events,
                     "image_persisted": False,
                     "provider_error_type": "TimeoutExpired" if index == 3 else "",
                 },
-            }
-            for index, reason in enumerate(failure_reasons)
-        ]
+            })
 
         with patch(
             "chejin_worker_client.omniauto_vision.process_image_slot",
@@ -9231,6 +9271,28 @@ class TaskRunnerTest(unittest.TestCase):
             assert incident_path is not None
             with zipfile.ZipFile(incident_path) as archive:
                 manifest = json.loads(archive.read("manifest.json"))
+                if row.get("error_code") == "C2_IMAGE_MENU_OPERATION_FAILED":
+                    names = archive.namelist()
+                    occurrence = json.loads(
+                        archive.read("occurrences/initial.json")
+                    )
+                    diagnostic_event = occurrence["metadata"]["diagnostics"][
+                        "events"
+                    ][0]
+                    self.assertEqual(
+                        [item["text"] for item in diagnostic_event["local_ocr_evidence"]],
+                        ["复", "制"],
+                    )
+                    self.assertEqual(
+                        diagnostic_event["roi_screenshot_path"],
+                        str(menu_roi_screenshot),
+                    )
+                    self.assertTrue(
+                        any(name.endswith(menu_screenshot.name) for name in names)
+                    )
+                    self.assertTrue(
+                        any(name.endswith(menu_roi_screenshot.name) for name in names)
+                    )
             self.assertEqual(manifest["error_code"], row["error_code"])
 
     def test_c2_image_method_fails_closed_if_global_preflight_is_bypassed(self):
