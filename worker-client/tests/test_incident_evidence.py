@@ -173,6 +173,22 @@ class IncidentEvidenceTest(unittest.TestCase):
         event = occurrence["metadata"]["diagnostics"]["events"][0]
         self.assertEqual(event["local_ocr_evidence"][0]["text"], "复制")
 
+        later = self.storage.append_log(
+            "ERROR",
+            "backend_connection_failed",
+            "later unrelated incident",
+            error_code="BACKEND_CONNECTION_FAILED",
+        )
+        self._completed_path(later)
+        selected = self.incidents.incident_by_id(result["incident_id"])
+        self.assertIsNotNone(selected)
+        assert selected is not None
+        self.assertEqual(selected["incident_id"], result["incident_id"])
+        with zipfile.ZipFile(selected["evidence_path"]) as archive:
+            selected_manifest = json.loads(archive.read("manifest.json"))
+        self.assertEqual(selected_manifest["event"], "c2_image_slot_terminalized")
+        self.assertIsNone(self.incidents.incident_by_id("../latest"))
+
     def test_external_paths_and_raw_database_are_not_exported(self) -> None:
         external = Path(self.tmp.name).parent / "external-incident-secret.txt"
         external.write_text("external secret", encoding="utf-8")

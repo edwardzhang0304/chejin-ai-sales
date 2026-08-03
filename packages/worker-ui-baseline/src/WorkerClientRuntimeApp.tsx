@@ -18,6 +18,9 @@ interface CheJinBridge {
   startAccepting(): void;
   pauseAccepting(): void;
   updateAcceptSchedule(enabled: boolean, start: string, end: string): void;
+  exportLatestIncident?(): void;
+  exportIncident?(incidentId: string): void;
+  openIncidentDirectory?(): void;
   startWindowDrag?(screenX: number, screenY: number): void;
   moveWindowDrag?(screenX: number, screenY: number): void;
   endWindowDrag?(): void;
@@ -194,6 +197,9 @@ function App() {
       onStartAccepting={() => bridge?.startAccepting()}
       onPauseAccepting={() => bridge?.pauseAccepting()}
       onUpdateAcceptSchedule={updateAcceptSchedule}
+      onExportLatestIncident={() => bridge?.exportLatestIncident?.()}
+      onExportIncident={(incidentId) => bridge?.exportIncident?.(incidentId)}
+      onOpenIncidentDirectory={() => bridge?.openIncidentDirectory?.()}
     />
   );
 }

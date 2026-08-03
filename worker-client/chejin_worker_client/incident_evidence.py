@@ -971,6 +971,19 @@ def latest_incident() -> dict[str, str] | None:
     }
 
 
+def incident_by_id(incident_id: str) -> dict[str, str] | None:
+    normalized = str(incident_id or "").strip()
+    if not re.fullmatch(r"INC-[A-Za-z0-9-]+", normalized):
+        return None
+    path = incident_directory() / f"{normalized}.zip"
+    if not path.is_file():
+        return None
+    return {
+        "incident_id": normalized,
+        "evidence_path": str(path),
+    }
+
+
 def export_latest_incident(destination: str | Path) -> Path:
     latest = latest_incident()
     if not latest:

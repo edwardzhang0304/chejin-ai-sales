@@ -22096,17 +22096,25 @@ function ScheduleSettingsScreen({
     ] })
   ] }) });
 }
-function LogsScreen({ model, onExportLatestIncident, onOpenIncidentDirectory }) {
+function LogsScreen({
+  model,
+  onExportLatestIncident,
+  onExportIncident,
+  onOpenIncidentDirectory
+}) {
   return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("section", { className: "cw-screen screen active", "data-screen-view": "logs", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cw-logs-page", children: [
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)("header", { className: "cw-workspace-head workspace-head", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "cw-eyebrow", children: "\u8BBE\u7F6E / \u672C\u673A\u6267\u884C\u65E5\u5FD7" }),
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: "\u672C\u673A\u6267\u884C\u65E5\u5FD7\u660E\u7EC6" })
     ] }) }),
     /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cw-incident-actions", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", onClick: onExportLatestIncident, children: "\u5BFC\u51FA\u6700\u8FD1\u6545\u969C\u8BC1\u636E" }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", onClick: onExportLatestIncident, children: "\u5BFC\u51FA\u6700\u8FD1\u6545\u969C" }),
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", onClick: onOpenIncidentDirectory, children: "\u6253\u5F00\u8BC1\u636E\u76EE\u5F55" })
     ] }),
-    model.latestIncident?.incident_id ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", { className: "cw-incident-latest", children: ["\u6700\u8FD1\u6545\u969C\uFF1A", model.latestIncident.incident_id] }) : null,
+    model.latestIncident?.incident_id ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", { className: "cw-incident-latest", children: [
+      "\u6700\u8FD1\u6545\u969C\uFF1A",
+      model.latestIncident.incident_id
+    ] }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "cw-log-table log-table", children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cw-log-head", children: [
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "\u65F6\u95F4" }),
@@ -22121,10 +22129,31 @@ function LogsScreen({ model, onExportLatestIncident, onOpenIncidentDirectory }) 
         /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", { children: [
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)("b", { children: row.event }),
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: row.content }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("small", { children: ["error_code: ", row.errorCode] }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("small", { children: ["incident_id: ", row.incidentId] }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("small", { children: ["sidecar_run_id: ", row.sidecarRunId] }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("small", { children: ["evidence: ", row.evidencePath] })
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("small", { children: [
+            "error_code: ",
+            row.errorCode
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("small", { children: [
+            "incident_id: ",
+            row.incidentId
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("small", { children: [
+            "sidecar_run_id: ",
+            row.sidecarRunId
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("small", { children: [
+            "evidence: ",
+            row.evidencePath
+          ] }),
+          row.incidentId !== "-" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+            "button",
+            {
+              className: "cw-log-incident-export",
+              type: "button",
+              onClick: () => onExportIncident?.(row.incidentId),
+              children: "\u5BFC\u51FA\u6B64\u6545\u969C"
+            }
+          ) : null
         ] })
       ] }, `${row.time}-${index}`))
     ] })
@@ -22196,7 +22225,15 @@ function renderScreen(props) {
   if (screen === "failed") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskScreen, { screen, model, steps: model.failedSteps, statusText: "\u5931\u8D25", dockState: model.status.receiveState, onStartAccepting, onPauseAccepting });
   if (screen === "settings") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(SettingsScreen, { model, onScreenChange });
   if (screen === "schedule-settings") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ScheduleSettingsScreen, { model, onUpdateAcceptSchedule });
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(LogsScreen, { model, onExportLatestIncident: props.onExportLatestIncident, onOpenIncidentDirectory: props.onOpenIncidentDirectory });
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+    LogsScreen,
+    {
+      model,
+      onExportLatestIncident: props.onExportLatestIncident,
+      onExportIncident: props.onExportIncident,
+      onOpenIncidentDirectory: props.onOpenIncidentDirectory
+    }
+  );
 }
 function WorkerClientBaseline(props) {
   return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "cw-window app-window", "data-active-screen": props.screen, "aria-label": "\u8F66\u91D1 Worker \u5BA2\u6237\u7AEF", children: [
@@ -22288,10 +22325,10 @@ var workerClientMock = {
     }
   ],
   logs: [
-    { time: "10:27:05", level: "INFO", task: "TASK-1831", content: "\u56DE\u4F20\u6267\u884C\u7ED3\u679C\u3002" },
-    { time: "10:26:46", level: "INFO", task: "TASK-1831", content: "\u5199\u5165\u5907\u6CE8\u77ED\u7801\u3002" },
-    { time: "10:26:18", level: "INFO", task: "TASK-1831", content: "\u641C\u7D22\u5BA2\u6237\u3002" },
-    { time: "10:21:02", level: "INFO", task: "-", content: "\u5F00\u59CB\u63A5\u5355\u3002" }
+    { time: "10:27:05", level: "INFO", task: "TASK-1831", content: "\u56DE\u4F20\u6267\u884C\u7ED3\u679C\u3002", event: "task_result_reported", errorCode: "-", incidentId: "-", sidecarRunId: "-", evidencePath: "-" },
+    { time: "10:26:46", level: "INFO", task: "TASK-1831", content: "\u5199\u5165\u5907\u6CE8\u77ED\u7801\u3002", event: "remark_written", errorCode: "-", incidentId: "-", sidecarRunId: "-", evidencePath: "-" },
+    { time: "10:26:18", level: "INFO", task: "TASK-1831", content: "\u641C\u7D22\u5BA2\u6237\u3002", event: "customer_search_started", errorCode: "-", incidentId: "-", sidecarRunId: "-", evidencePath: "-" },
+    { time: "10:21:02", level: "INFO", task: "-", content: "\u5F00\u59CB\u63A5\u5355\u3002", event: "worker_started", errorCode: "-", incidentId: "-", sidecarRunId: "-", evidencePath: "-" }
   ]
 };
 
@@ -22441,6 +22478,7 @@ function App() {
       onPauseAccepting: () => bridge?.pauseAccepting(),
       onUpdateAcceptSchedule: updateAcceptSchedule,
       onExportLatestIncident: () => bridge?.exportLatestIncident?.(),
+      onExportIncident: (incidentId) => bridge?.exportIncident?.(incidentId),
       onOpenIncidentDirectory: () => bridge?.openIncidentDirectory?.()
     }
   );

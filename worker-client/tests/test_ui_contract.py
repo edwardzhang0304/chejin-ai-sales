@@ -166,7 +166,7 @@ class UiContractTest(unittest.TestCase):
 
         self.assertIn("QWebEngineView", web_ui)
         self.assertIn("QWebChannel", web_ui)
-        self.assertIn("CLIENT_VERSION = \"V16.120 · Worker C2/C3 客户端\"", web_ui)
+        self.assertIn("CLIENT_VERSION = \"V16.124 · Worker C2/C3 客户端\"", web_ui)
         self.assertFalse((ROOT / "web-ui-src").exists())
         self.assertTrue((ROOT / "chejin_worker_client" / "web_assets" / "index.html").exists())
         self.assertTrue((ROOT / "chejin_worker_client" / "web_assets" / "worker-ui.css").exists())
@@ -176,15 +176,25 @@ class UiContractTest(unittest.TestCase):
     def test_incident_evidence_controls_and_log_fields_are_visible(self):
         web_ui = (ROOT / "chejin_worker_client" / "web_ui.py").read_text(encoding="utf-8")
         app_js = (ROOT / "chejin_worker_client" / "web_assets" / "worker-web-app.js").read_text(encoding="utf-8")
+        ui_source = (
+            ROOT.parent
+            / "packages"
+            / "worker-ui-baseline"
+            / "src"
+            / "WorkerClientBaseline.tsx"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("exportLatestIncident", web_ui)
+        self.assertIn("exportIncident", web_ui)
         self.assertIn("openIncidentDirectory", web_ui)
         self.assertIn('"incidentId"', web_ui)
         self.assertIn('"sidecarRunId"', web_ui)
         self.assertIn('"evidencePath"', web_ui)
         self.assertIn("onExportLatestIncident", app_js)
         self.assertIn("exportLatestIncident", app_js)
+        self.assertIn("exportIncident", app_js)
         self.assertIn("openIncidentDirectory", app_js)
+        self.assertIn("导出此故障", ui_source)
         self.assertIn("incident_id", app_js)
         self.assertIn("sidecar_run_id", app_js)
 
