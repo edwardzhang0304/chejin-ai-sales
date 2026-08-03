@@ -28,6 +28,12 @@ from .omniauto_ocr_client import (
     CancellableOmniAutoOcr,
     OmniAutoOcrCancelledError,
 )
+from .subprocess_protocol import (
+    UNICODE_PROTOCOL_SENTINEL,
+    encode_subprocess_json,
+    require_unicode_protocol,
+    subprocess_utf8_environment,
+)
 
 
 OMNIAUTO_ROOT = Path(__file__).resolve().parents[1] / "omniauto-rpa"
@@ -161,7 +167,7 @@ class _CancellableVisionProvider:
             if isinstance(settings, dict)
             else None
         )
-        payload = json.dumps(
+        payload = encode_subprocess_json(
             {
                 "config": config,
                 "customer_text": str(request.get("customer_text") or ""),
@@ -170,9 +176,8 @@ class _CancellableVisionProvider:
                 "width": int(getattr(image, "width", 0) or 0),
                 "height": int(getattr(image, "height", 0) or 0),
                 "image_base64": base64.b64encode(bytes(image_bytes)).decode("ascii"),
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
+                "protocol_unicode_sentinel": UNICODE_PROTOCOL_SENTINEL,
+            }
         )
         popen_kwargs: dict[str, Any] = {
             "stdin": subprocess.PIPE,
@@ -181,6 +186,7 @@ class _CancellableVisionProvider:
             "text": True,
             "encoding": "utf-8",
             "errors": "replace",
+            "env": subprocess_utf8_environment(),
         }
         if os.name == "nt":
             popen_kwargs["creationflags"] = int(
@@ -223,6 +229,7 @@ class _CancellableVisionProvider:
             )
             error.diagnostic_traceback = str(envelope.get("traceback") or "")  # type: ignore[attr-defined]
             raise error
+        require_unicode_protocol(envelope)
         result = envelope.get("result")
         if not isinstance(result, dict):
             raise RuntimeError("VISION_PROVIDER_RESULT_INVALID")

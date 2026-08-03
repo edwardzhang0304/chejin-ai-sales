@@ -11,6 +11,12 @@ import time
 from typing import Any, Callable
 
 from .emergency_stop import emergency_stop_requested
+from .subprocess_protocol import (
+    UNICODE_PROTOCOL_SENTINEL,
+    encode_subprocess_json,
+    require_unicode_protocol,
+    subprocess_utf8_environment,
+)
 
 
 DEFAULT_OMNIAUTO_OCR_TIMEOUT_SECONDS = 45.0
@@ -71,6 +77,7 @@ class CancellableOmniAutoOcr:
             "encoding": "utf-8",
             "errors": "replace",
             "bufsize": 1,
+            "env": subprocess_utf8_environment(),
         }
         if os.name == "nt":
             popen_kwargs["creationflags"] = int(
@@ -79,20 +86,8 @@ class CancellableOmniAutoOcr:
         self.process = subprocess.Popen(self.command(), **popen_kwargs)
         return self.process
 
-    def recognize(self, image: Any) -> list[dict[str, Any]]:
-        if _cancel_requested(self.cancel_check):
-            raise OmniAutoOcrCancelledError("vision_window_ocr_cancelled")
-        buffer = io.BytesIO()
-        image.save(buffer, format="PNG")
-        request = json.dumps(
-            {
-                "image_base64": base64.b64encode(
-                    buffer.getvalue()
-                ).decode("ascii")
-            },
-            ensure_ascii=True,
-            separators=(",", ":"),
-        )
+    def _exchange(self, payload: dict[str, Any]) -> dict[str, Any]:
+        request = encode_subprocess_json(payload)
         with self._lock:
             process = self._start()
             if process.stdin is None or process.stdout is None:
@@ -129,24 +124,51 @@ class CancellableOmniAutoOcr:
             except json.JSONDecodeError as exc:
                 self.close()
                 raise RuntimeError("omniauto_ocr_worker_result_invalid") from exc
-            if envelope.get("ok") is not True:
-                error = RuntimeError(
-                    str(
-                        envelope.get("reason")
-                        or envelope.get("error_code")
-                        or "omniauto_ocr_worker_failed"
-                    )
+            return envelope
+
+    def verify_unicode_protocol(self) -> None:
+        envelope = self._exchange(
+            {
+                "protocol_probe_only": True,
+                "protocol_unicode_sentinel": UNICODE_PROTOCOL_SENTINEL,
+            }
+        )
+        if envelope.get("ok") is not True:
+            raise RuntimeError("omniauto_ocr_worker_protocol_probe_failed")
+        require_unicode_protocol(envelope)
+
+    def recognize(self, image: Any) -> list[dict[str, Any]]:
+        if _cancel_requested(self.cancel_check):
+            raise OmniAutoOcrCancelledError("vision_window_ocr_cancelled")
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        envelope = self._exchange(
+            {
+                "image_base64": base64.b64encode(
+                    buffer.getvalue()
+                ).decode("ascii"),
+                "protocol_unicode_sentinel": UNICODE_PROTOCOL_SENTINEL,
+            }
+        )
+        if envelope.get("ok") is not True:
+            error = RuntimeError(
+                str(
+                    envelope.get("reason")
+                    or envelope.get("error_code")
+                    or "omniauto_ocr_worker_failed"
                 )
-                error.diagnostic_traceback = str(  # type: ignore[attr-defined]
-                    envelope.get("traceback") or ""
-                )
-                raise error
-            items = envelope.get("items")
-            if not isinstance(items, list) or any(
-                not isinstance(item, dict) for item in items
-            ):
-                raise RuntimeError("omniauto_ocr_worker_result_invalid")
-            return items
+            )
+            error.diagnostic_traceback = str(  # type: ignore[attr-defined]
+                envelope.get("traceback") or ""
+            )
+            raise error
+        require_unicode_protocol(envelope)
+        items = envelope.get("items")
+        if not isinstance(items, list) or any(
+            not isinstance(item, dict) for item in items
+        ):
+            raise RuntimeError("omniauto_ocr_worker_result_invalid")
+        return items
 
     def close(self) -> None:
         process = self.process
@@ -163,6 +185,13 @@ class CancellableOmniAutoOcr:
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=5.0)
+        finally:
+            for stream in (process.stdout, process.stderr):
+                try:
+                    if stream is not None:
+                        stream.close()
+                except Exception:
+                    pass
 
 
 def probe_omniauto_ocr_subprocess() -> dict[str, Any]:
@@ -173,8 +202,13 @@ def probe_omniauto_ocr_subprocess() -> dict[str, Any]:
     runner = CancellableOmniAutoOcr(None)
     image = Image.new("RGB", (96, 48), "white")
     try:
+        runner.verify_unicode_protocol()
         items = runner.recognize(image)
-        return {"ok": True, "ocr_item_count": len(items)}
+        return {
+            "ok": True,
+            "ocr_item_count": len(items),
+            "protocol_unicode_verified": True,
+        }
     except Exception as exc:  # noqa: BLE001
         message = str(exc or "").split(":", 1)[0].strip().lower()
         return {

@@ -8,6 +8,11 @@ from pathlib import Path
 import sys
 import traceback
 
+from .subprocess_protocol import (
+    UNICODE_PROTOCOL_SENTINEL,
+    encode_subprocess_json,
+)
+
 
 OMNIAUTO_ROOT = Path(__file__).resolve().parents[1] / "omniauto-rpa"
 if str(OMNIAUTO_ROOT) not in sys.path:
@@ -23,6 +28,8 @@ def main() -> int:
         encoded_image = str(request.get("image_base64") or "")
         if not isinstance(config, dict) or not encoded_image:
             raise ValueError("VISION_PROVIDER_WORKER_REQUEST_INVALID")
+        if request.get("protocol_unicode_sentinel") != UNICODE_PROTOCOL_SENTINEL:
+            raise ValueError("VISION_PROVIDER_WORKER_PROTOCOL_INVALID")
         image_bytes = base64.b64decode(encoded_image, validate=True)
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             from apps.wechat_ai_customer_service.optional_plugins.vision.clipboard_payload import (
@@ -62,7 +69,11 @@ def main() -> int:
             )
         if not isinstance(result, dict):
             raise TypeError("VISION_PROVIDER_RESULT_INVALID")
-        envelope = {"ok": True, "result": result}
+        envelope = {
+            "ok": True,
+            "result": result,
+            "protocol_unicode_sentinel": UNICODE_PROTOCOL_SENTINEL,
+        }
         exit_code = 0
     except Exception as exc:  # noqa: BLE001
         from .incident_evidence import redact_diagnostic
@@ -90,7 +101,7 @@ def main() -> int:
                 release_payload(payload)
             except Exception:
                 pass
-    sys.stdout.write(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")))
+    sys.stdout.write(encode_subprocess_json(envelope))
     sys.stdout.flush()
     return exit_code
 

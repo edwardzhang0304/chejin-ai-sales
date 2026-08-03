@@ -12,6 +12,11 @@ from typing import Any
 
 from PIL import Image
 
+from .subprocess_protocol import (
+    UNICODE_PROTOCOL_SENTINEL,
+    encode_subprocess_json,
+)
+
 
 OMNIAUTO_ROOT = Path(__file__).resolve().parents[1] / "omniauto-rpa"
 if str(OMNIAUTO_ROOT) not in sys.path:
@@ -26,9 +31,19 @@ def _stable_reason(exc: Exception) -> str:
 
 
 def process_request(request: dict[str, Any]) -> dict[str, Any]:
-    encoded_image = str(request.get("image_base64") or "")
-    if not encoded_image:
+    if request.get("protocol_probe_only") is not True and not str(
+        request.get("image_base64") or ""
+    ):
         raise ValueError("OMNIAUTO_OCR_WORKER_REQUEST_INVALID")
+    if request.get("protocol_unicode_sentinel") != UNICODE_PROTOCOL_SENTINEL:
+        raise ValueError("OMNIAUTO_OCR_WORKER_PROTOCOL_INVALID")
+    if request.get("protocol_probe_only") is True:
+        return {
+            "ok": True,
+            "items": [],
+            "protocol_unicode_sentinel": UNICODE_PROTOCOL_SENTINEL,
+        }
+    encoded_image = str(request.get("image_base64") or "")
     image_bytes = base64.b64decode(encoded_image, validate=True)
     image = None
     try:
@@ -43,7 +58,11 @@ def process_request(request: dict[str, Any]) -> dict[str, Any]:
             not isinstance(item, dict) for item in items
         ):
             raise TypeError("OMNIAUTO_OCR_RESULT_INVALID")
-        return {"ok": True, "items": items}
+        return {
+            "ok": True,
+            "items": items,
+            "protocol_unicode_sentinel": UNICODE_PROTOCOL_SENTINEL,
+        }
     finally:
         if image is not None:
             image.close()
@@ -82,10 +101,7 @@ def main() -> int:
             envelope = process_request(request)
         except Exception as exc:  # noqa: BLE001
             envelope = _error_envelope(exc)
-        sys.stdout.write(
-            json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
-            + "\n"
-        )
+        sys.stdout.write(encode_subprocess_json(envelope) + "\n")
         sys.stdout.flush()
     return 0
 

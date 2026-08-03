@@ -50,7 +50,9 @@ from chejin_worker_client.omniauto_vision import (
     process_image_slot,
     vision_configuration_status,
 )
-from chejin_worker_client.omniauto_ocr_client import CancellableOmniAutoOcr
+from chejin_worker_client.omniauto_ocr_client import (
+    CancellableOmniAutoOcr,
+)
 from chejin_worker_client.c2_contract import (
     formal_image_failure_code,
     image_contract,
@@ -3206,6 +3208,13 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "chejin_worker_client.omniauto_ocr_worker",
                 ],
             )
+
+    def test_real_isolated_ocr_process_preserves_unicode_protocol(self):
+        runner = CancellableOmniAutoOcr(None)
+        try:
+            runner.verify_unicode_protocol()
+        finally:
+            runner.close()
 
     def test_window_frame_normalizes_dynamic_capture_failures(self):
         raw_reasons = (
