@@ -1908,6 +1908,37 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         self.assertEqual(wait_ms, 1200)
         sleep.assert_called_once_with(950, 1650)
 
+    def test_shared_context_menu_observer_captures_once_and_filters_near_anchor(self) -> None:
+        image = Image.new("RGB", (1920, 1080), "white")
+        near = ocr_item("复制", 430, 400, 500, 432)
+        companion = ocr_item("转发", 430, 444, 500, 476)
+        far = ocr_item("聊天正文", 1000, 50, 1120, 82)
+        with (
+            patch.object(sidecar, "capture_visible_screen", return_value=(image, "menu.png")) as capture,
+            patch.object(sidecar, "run_ocr", return_value=[near, companion, far]) as ocr,
+        ):
+            result = sidecar.observe_wechat_context_menu(
+                1,
+                anchor_screen=(520, 460),
+                artifact_dir="evidence",
+                label="shared_menu",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            [item["text"] for item in result["local_ocr_items"]],
+            ["复制", "转发"],
+        )
+        self.assertEqual(result["screenshot_path"], "menu.png")
+        self.assertEqual(result["ocr_roi"], [140, 40, 900, 880])
+        self.assertEqual(
+            [item["text"] for item in result["menu_structure_evidence"]],
+            ["复制", "转发"],
+        )
+        capture.assert_called_once_with(artifact_dir="evidence", label="shared_menu")
+        self.assertEqual(ocr.call_args.args[0].size, (760, 840))
+        image.close()
+
     def test_context_menu_stable_wait_uses_longer_production_default(self) -> None:
         with (
             patch.dict(

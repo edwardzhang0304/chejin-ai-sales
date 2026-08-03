@@ -30,25 +30,6 @@ COPY_IMAGE_MENU_TOKENS = (
     "copy image",
     "copy",
 )
-CONTEXT_MENU_EVIDENCE_TOKENS = (
-    "复制图片",
-    "复制",
-    "转发",
-    "收藏",
-    "多选",
-    "删除",
-    "引用",
-    "翻译",
-    "搜一搜",
-    "提醒",
-    "copy image",
-    "copy",
-    "forward",
-    "favorite",
-    "delete",
-    "quote",
-    "translate",
-)
 CHAT_TIME_RE = re.compile(
     r"^(?:(?:昨天|前天|星期[一二三四五六日天])\s*)?(?:[01]?\d|2[0-3]):[0-5]\d$"
 )
@@ -829,16 +810,10 @@ def _find_context_menu_item(
     tokens: tuple[str, ...],
     priority_fn: Any,
     anchor: tuple[int, int] | None = None,
-    require_menu_cluster: bool = False,
 ) -> dict[str, Any] | None:
     width, height = image_size
     candidates: list[dict[str, Any]] = []
     normalized_tokens = [normalize_menu_text(token) for token in tokens]
-    normalized_menu_tokens = {
-        normalize_menu_text(token)
-        for token in CONTEXT_MENU_EVIDENCE_TOKENS
-        if normalize_menu_text(token)
-    }
 
     def item_geometry(item: dict[str, Any]) -> tuple[int, int, int, int, int, int] | None:
         try:
@@ -852,25 +827,6 @@ def _find_context_menu_item(
             return None
         return left, top, right, bottom, int((left + right) / 2), int((top + bottom) / 2)
 
-    menu_rows: list[dict[str, Any]] = []
-    for item in ocr_items:
-        if not isinstance(item, dict):
-            continue
-        compact = normalize_menu_text(item.get("text"))
-        geometry = item_geometry(item)
-        if compact not in normalized_menu_tokens or geometry is None:
-            continue
-        left, top, right, bottom, center_x, center_y = geometry
-        menu_rows.append(
-            {
-                "text": str(item.get("text") or "").strip(),
-                "compact": compact,
-                "bounds": [left, top, right, bottom],
-                "x": center_x,
-                "y": center_y,
-            }
-        )
-
     for item in ocr_items:
         if not isinstance(item, dict):
             continue
@@ -879,7 +835,7 @@ def _find_context_menu_item(
         if not compact:
             continue
         priority = int(priority_fn(compact) or 0)
-        if priority <= 0 and not any(token and token in compact for token in normalized_tokens):
+        if priority < 2 and not any(token and compact == token for token in normalized_tokens):
             continue
         geometry = item_geometry(item)
         if geometry is None:
@@ -889,27 +845,6 @@ def _find_context_menu_item(
             anchor_x, anchor_y = int(anchor[0]), int(anchor[1])
             if abs(center_x - anchor_x) > 360 or abs(center_y - anchor_y) > 420:
                 continue
-        cluster_rows = [
-            row
-            for row in menu_rows
-            if abs(int(row["x"]) - center_x) <= 150
-            and abs(int(row["y"]) - center_y) <= 360
-        ]
-        distinct_row_y = {
-            int(round(int(row["y"]) / 8.0))
-            for row in cluster_rows
-        }
-        if require_menu_cluster and (
-            priority < 2
-            or len(distinct_row_y) < 2
-        ):
-            continue
-        cluster_bounds = [
-            min([item_left, *(int(row["bounds"][0]) for row in cluster_rows)]),
-            min([item_top, *(int(row["bounds"][1]) for row in cluster_rows)]),
-            max([item_right, *(int(row["bounds"][2]) for row in cluster_rows)]),
-            max([item_bottom, *(int(row["bounds"][3]) for row in cluster_rows)]),
-        ]
         click_bounds = [
             max(0, item_left - 20),
             max(0, item_top - 8),
@@ -920,19 +855,30 @@ def _find_context_menu_item(
             {
                 "text": text,
                 "bounds": click_bounds,
-                "menu_bounds": cluster_bounds,
+                "menu_bounds": [item_left, item_top, item_right, item_bottom],
                 "x": center_x,
                 "y": center_y,
                 "confidence": float(item.get("confidence") or 0.0),
                 "priority": int(priority or 1),
-                "menu_evidence": [
-                    {"text": str(row["text"]), "bounds": list(row["bounds"])}
-                    for row in cluster_rows
-                ],
+                "distance_to_anchor": (
+                    ((center_x - int(anchor[0])) ** 2 + (center_y - int(anchor[1])) ** 2) ** 0.5
+                    if anchor is not None
+                    else 0.0
+                ),
+                "menu_evidence": [{"text": text, "bounds": [item_left, item_top, item_right, item_bottom]}],
             }
         )
     if not candidates:
         return None
+    if anchor is not None:
+        return min(
+            candidates,
+            key=lambda item: (
+                -int(item.get("priority") or 0),
+                float(item.get("distance_to_anchor") or 0.0),
+                -float(item.get("confidence") or 0.0),
+            ),
+        )
     return max(candidates, key=lambda item: (int(item.get("priority") or 0), float(item.get("confidence") or 0.0), int(item.get("y") or 0)))
 
 
@@ -946,7 +892,6 @@ def find_copy_menu_item(
     image_size: tuple[int, int],
     *,
     anchor: tuple[int, int] | None = None,
-    require_menu_cluster: bool = False,
 ) -> dict[str, Any] | None:
     return _find_context_menu_item(
         ocr_items,
@@ -954,7 +899,6 @@ def find_copy_menu_item(
         tokens=COPY_IMAGE_MENU_TOKENS,
         priority_fn=copy_menu_priority,
         anchor=anchor,
-        require_menu_cluster=require_menu_cluster,
     )
 
 
@@ -1015,27 +959,6 @@ def clamp_bounds(bounds: list[int] | tuple[int, int, int, int], image_size: tupl
     right = max(left + 1, min(width, right))
     bottom = max(top + 1, min(height, bottom))
     return left, top, right, bottom
-
-
-def capture_context_menu_image(
-    *,
-    sidecar_ops: Any,
-    hwnd: int,
-    artifact_dir: str,
-    label: str,
-) -> tuple[Any, str, str]:
-    # Geometry/menu OCR is transient.  Ignore the historical artifact-dir
-    # argument so no caller can turn this helper into a screenshot archive.
-    del artifact_dir
-    visible_capture = getattr(sidecar_ops, "capture_wechat_window_visible_screen", None)
-    if callable(visible_capture):
-        try:
-            image, _path = visible_capture(hwnd, artifact_dir=None, label=label)
-            return image, "", "visible_window"
-        except Exception:
-            pass
-    image, _path = sidecar_ops.capture_wechat(hwnd, artifact_dir=None, label=label)
-    return image, "", "window_capture"
 
 
 def click_context_menu_item(
@@ -1245,18 +1168,35 @@ def execute_wechat_clipboard_image_copy(
             },
         }
     wait_for_menu()
-    try:
-        menu_screenshot, _menu_path, _menu_capture_method = capture_context_menu_image(
-            sidecar_ops=sidecar_ops,
-            hwnd=hwnd,
-            artifact_dir="",
-            label="image_clipboard_copy_context_menu",
-        )
-        menu_items = sidecar_ops.run_ocr(menu_screenshot)
-        menu_size = getattr(menu_screenshot, "size", image_size)
-        copy_target = find_copy_menu_item(menu_items, menu_size)
-    except Exception:
-        copy_target = None
+    observe_menu = getattr(sidecar_ops, "observe_wechat_context_menu", None)
+    menu_observation: dict[str, Any] = {}
+    if callable(observe_menu):
+        try:
+            menu_observation = observe_menu(
+                hwnd,
+                anchor_screen=(
+                    int((right_click or {}).get("screen_x") or 0),
+                    int((right_click or {}).get("screen_y") or 0),
+                ),
+                artifact_dir=None,
+                label="image_clipboard_copy_context_menu",
+            )
+        except Exception:
+            menu_observation = {}
+    menu_items = [
+        item
+        for item in (menu_observation.get("local_ocr_items") or [])
+        if isinstance(item, dict)
+    ]
+    menu_size = tuple(menu_observation.get("image_size") or image_size)
+    copy_target = find_copy_menu_item(
+        menu_items,
+        menu_size,
+        anchor=(
+            int((right_click or {}).get("screen_x") or 0),
+            int((right_click or {}).get("screen_y") or 0),
+        ),
+    )
     if not right_click.get("ok") or not copy_target:
         try:
             sidecar_ops.key_press(sidecar_ops.win32con.VK_ESCAPE)

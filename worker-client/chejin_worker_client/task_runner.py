@@ -321,8 +321,12 @@ _C2_IMAGE_DIAGNOSTIC_FIELDS = {
     "frame_fingerprint",
     "image_size",
     "ocr_item_count",
+    "local_ocr_item_count",
+    "ocr_roi",
+    "ocr_execution",
+    "menu_structure_evidence",
     "parsed_message_count",
-    "menu_ocr_evidence",
+    "screenshot_path",
     "image_persisted",
     "image_bytes_persisted",
     "point",
@@ -4688,6 +4692,7 @@ class TaskRunner:
                 cancel_check=cancel_check,
                 action_journal_path=image_action_journal,
                 source_message_key=source_key,
+                artifact_dir=str(payload.get("artifact_dir") or "") or None,
             )
         except Exception as exc:
             return {

@@ -45,7 +45,6 @@ from chejin_worker_client.omniauto_vision import (
     _VisionHostState,
     _WindowFrame,
     _frame_fingerprint,
-    _menu_ocr_evidence,
     _vision_process_timeout_seconds,
     explicit_vision_config,
     process_image_slot,
@@ -63,6 +62,7 @@ from chejin_worker_client.action_journal import (
 )
 from chejin_worker_client.wechat_c2 import apply_image_terminal_result
 from apps.wechat_ai_customer_service.optional_plugins.vision.capture import transaction
+from apps.wechat_ai_customer_service.optional_plugins.vision.capture import wechat as wechat_capture
 from apps.wechat_ai_customer_service.optional_plugins.vision.capture import (
     visual_fingerprint,
 )
@@ -824,7 +824,6 @@ class C2VisionIntegrationTests(unittest.TestCase):
 
     def test_legacy_image_copy_uses_shared_context_menu_wait(self):
         screenshot = Image.new("RGB", (800, 600), "white")
-        menu_screenshot = Image.new("RGB", (800, 600), "white")
         events: list[str] = []
         sequences = iter([10, 11])
         sidecar_ops = SimpleNamespace(
@@ -835,7 +834,9 @@ class C2VisionIntegrationTests(unittest.TestCase):
             blocking_screen_reason=lambda _items: "",
             clipboard_sequence_number=lambda: next(sequences),
             human_window_image_right_click_in_bounds=lambda *_args, **_kwargs: {
-                "ok": True
+                "ok": True,
+                "screen_x": 240,
+                "screen_y": 260,
             },
             wait_for_wechat_context_menu_stable=lambda: (
                 events.append("shared_context_menu_wait") or 1800
@@ -843,6 +844,20 @@ class C2VisionIntegrationTests(unittest.TestCase):
             humanized_action_sleep=lambda *_args: None,
             key_press=lambda *_args: None,
             win32con=SimpleNamespace(VK_ESCAPE=27),
+            observe_wechat_context_menu=lambda *_args, **_kwargs: {
+                "ok": True,
+                "image_size": (800, 600),
+                "local_ocr_items": [
+                    {
+                        "text": "复制",
+                        "left": 390,
+                        "top": 280,
+                        "right": 455,
+                        "bottom": 325,
+                        "confidence": 0.99,
+                    }
+                ],
+            },
         )
         bubble = {
             "anchor": {"x": 240, "y": 260},
@@ -852,10 +867,6 @@ class C2VisionIntegrationTests(unittest.TestCase):
             patch(
                 "apps.wechat_ai_customer_service.optional_plugins.vision.capture.wechat.detect_visual_image_bubbles",
                 return_value=[bubble],
-            ),
-            patch(
-                "apps.wechat_ai_customer_service.optional_plugins.vision.capture.wechat.capture_context_menu_image",
-                return_value=(menu_screenshot, "menu.png", "visible_screen"),
             ),
             patch(
                 "apps.wechat_ai_customer_service.optional_plugins.vision.capture.wechat.find_copy_menu_item",
@@ -877,7 +888,6 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(events, ["shared_context_menu_wait"])
         screenshot.close()
-        menu_screenshot.close()
 
     def test_copy_click_exception_always_dismisses_context_menu(self):
         image = Image.new("RGB", (800, 600), "white")
@@ -1057,7 +1067,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             status["missing_configuration"],
         )
 
-    def test_copy_menu_requires_local_menu_cluster_and_ignores_chat_copy_text(self):
+    def test_copy_menu_uses_exact_local_action_text_and_ignores_chat_copy_text(self):
         ocr_items = [
             {
                 "text": "请复制这段文字给我",
@@ -1097,52 +1107,83 @@ class C2VisionIntegrationTests(unittest.TestCase):
             ocr_items,
             (1200, 900),
             anchor=(520, 260),
-            require_menu_cluster=True,
         )
         chat_only = find_copy_menu_item(
             ocr_items[:1],
             (1200, 900),
             anchor=(520, 260),
-            require_menu_cluster=True,
         )
 
         self.assertEqual(copy_item["text"], "复制")
-        self.assertEqual(len(copy_item["menu_evidence"]), 3)
+        self.assertEqual(len(copy_item["menu_evidence"]), 1)
         self.assertIsNone(chat_only)
 
-    def test_menu_frame_ocr_is_cropped_around_anchor_and_skips_chat_parser(self):
+    def test_copy_menu_prefers_exact_candidate_nearest_right_click_anchor(self):
+        near = {
+            "text": "复制",
+            "left": 560,
+            "top": 280,
+            "right": 620,
+            "bottom": 312,
+            "confidence": 0.91,
+        }
+        far = {
+            "text": "复制",
+            "left": 850,
+            "top": 620,
+            "right": 910,
+            "bottom": 652,
+            "confidence": 0.99,
+        }
+
+        result = find_copy_menu_item(
+            [far, near],
+            (1200, 900),
+            anchor=(520, 260),
+        )
+
+        self.assertEqual(result["text"], "复制")
+        self.assertEqual(result["bounds"], [540, 272, 640, 320])
+
+    def test_menu_frame_uses_shared_full_screen_observer_and_preserves_evidence(self):
         full_screen = Image.new("RGB", (1200, 900), "white")
+        calls: list[dict] = []
 
         class State:
             window_context = {"hwnd": 31415}
             window_context_validated = True
             events = []
+            artifact_dir = "evidence-dir"
 
             class Host:
                 @staticmethod
-                def capture_c2_window_context(_context, *, phase, label):
-                    self.assertEqual(phase, "image_context_menu")
-                    self.assertEqual(label, "vision_image_context_menu")
+                def observe_wechat_context_menu(hwnd, **kwargs):
+                    calls.append({"hwnd": hwnd, **kwargs})
+                    self.assertEqual(kwargs["label"], "vision_image_context_menu")
                     return {
                         "ok": True,
                         "image": full_screen.copy(),
-                        "hwnd": 31415,
+                        "image_size": full_screen.size,
                         "capture_mode": "visible_screen",
                         "screen_origin": [0, 0],
-                        "validation": {"reason": "window_context_confirmed"},
+                        "local_ocr_items": [{"text": "复制"}],
+                        "ocr_item_count": 7,
+                        "local_ocr_item_count": 1,
+                        "ocr_roi": [520, 80, 1200, 900],
+                        "ocr_execution": "isolated_runner",
+                        "menu_structure_evidence": [
+                            {"text": "复制", "bounds": [580, 280, 640, 312]}
+                        ],
+                        "screenshot_path": "evidence-dir/vision_image_context_menu.png",
                     }
 
-                @staticmethod
-                def run_ocr(image):
-                    self.assertLess(image.size[0], full_screen.size[0])
-                    self.assertLess(image.size[1], full_screen.size[1])
-                    return [{"text": "复制"}]
-
-                @staticmethod
-                def parse_messages_from_ocr(*_args, **_kwargs):
-                    raise AssertionError("menu ROI must not parse chat messages")
-
             host = Host()
+
+            def ensure_window(self):
+                return 31415
+
+            def run_ocr(self, _image):
+                return []
 
             def record(self, *_args, **_kwargs):
                 return None
@@ -1155,8 +1196,18 @@ class C2VisionIntegrationTests(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(result["screen_origin"], [520, 80])
+        self.assertEqual(result["screen_origin"], [0, 0])
         self.assertEqual(result["messages"], [])
+        self.assertEqual(result["screenshot_path"], "evidence-dir/vision_image_context_menu.png")
+        self.assertEqual(calls[0]["anchor_screen"], [900, 500])
+        self.assertEqual(calls[0]["artifact_dir"], "evidence-dir")
+        self.assertTrue(callable(calls[0]["ocr_runner"]))
+        self.assertFalse(
+            hasattr(
+                wechat_capture,
+                "capture_context_menu_image",
+            )
+        )
         result["image"].close()
         full_screen.close()
 
@@ -3847,16 +3898,6 @@ class C2VisionIntegrationTests(unittest.TestCase):
             encoded.close()
 
         self.assertIsNone(payload)
-
-    def test_menu_ocr_evidence_drops_chat_text_and_keeps_allowlisted_menu_tokens(self):
-        evidence = _menu_ocr_evidence(
-            [
-                {"text": "复制", "bounds": [600, 220, 660, 250]},
-                {"text": "客户身份证号码和聊天正文", "bounds": [420, 180, 710, 210]},
-            ]
-        )
-
-        self.assertEqual(evidence, [{"token": "复制", "bounds": [600, 220, 660, 250]}])
 
     def test_persisted_projection_drops_runtime_image_fields(self):
         projected = apply_image_terminal_result(
