@@ -62,7 +62,10 @@ from chejin_worker_client.action_journal import (
     initialize_action_journal,
     read_action_journal,
 )
-from chejin_worker_client.wechat_c2 import apply_image_terminal_result
+from chejin_worker_client.wechat_c2 import (
+    apply_image_terminal_result,
+    reconcile_cross_round_observation_identities,
+)
 from apps.wechat_ai_customer_service.optional_plugins.vision.capture import transaction
 from apps.wechat_ai_customer_service.optional_plugins.vision.capture import wechat as wechat_capture
 from apps.wechat_ai_customer_service.optional_plugins.vision.capture import (
@@ -4637,6 +4640,224 @@ class C2VisionIntegrationTests(unittest.TestCase):
         anchor = images[0]["image_physical_anchor"]
         self.assertTrue(anchor["preceding_stable_message"])
         self.assertTrue(anchor["following_stable_message"])
+
+    def test_text_heavy_media_is_not_rejected_as_a_text_bubble(self):
+        variants = {
+            "customer": {
+                "media": (464, 300, 700, 510),
+                "avatar": (408, 300, 452, 344),
+                "embedded": {
+                    "left": 478,
+                    "top": 310,
+                    "right": 686,
+                    "bottom": 445,
+                },
+            },
+            "self": {
+                "media": (556, 300, 890, 487),
+                "avatar": (895, 300, 939, 344),
+                "embedded": {
+                    "left": 571,
+                    "top": 309,
+                    "right": 871,
+                    "bottom": 410,
+                },
+            },
+        }
+        for role, fixture in variants.items():
+            with self.subTest(role=role):
+                screenshot = Image.new("RGB", (980, 860), (250, 250, 250))
+                draw = ImageDraw.Draw(screenshot)
+                draw.rectangle(fixture["media"], fill=(28, 28, 28))
+                embedded = fixture["embedded"]
+                for y in range(embedded["top"] + 5, embedded["bottom"], 18):
+                    draw.rectangle(
+                        (
+                            embedded["left"] + 8,
+                            y,
+                            embedded["right"] - 8,
+                            min(embedded["bottom"], y + 5),
+                        ),
+                        fill=(232, 232, 232),
+                    )
+                avatar = fixture["avatar"]
+                for y in range(avatar[1], avatar[3] + 1, 5):
+                    for x in range(avatar[0], avatar[2] + 1, 5):
+                        tone = 55 if ((x + y) // 5) % 2 else 205
+                        draw.rectangle(
+                            (x, y, x + 4, y + 4),
+                            fill=(tone, 110, 170),
+                        )
+                messages = [
+                    {
+                        "id": "embedded-image-text",
+                        "type": "text",
+                        "sender_role": role,
+                        "content": "OCR 误识的图片内长文字",
+                        "bubble_rect": embedded,
+                    }
+                ]
+                try:
+                    candidates = detect_visual_image_bubbles(
+                        screenshot,
+                        messages=messages,
+                        side_filter="all",
+                    )
+                    merged = (
+                        wechat_win32_ocr_sidecar.merge_structural_image_messages(
+                            screenshot,
+                            [],
+                            messages,
+                            target="CJTEST01",
+                        )
+                    )
+                finally:
+                    screenshot.close()
+
+                self.assertEqual(len(candidates), 1, candidates)
+                self.assertEqual(candidates[0]["side"], role)
+                self.assertGreaterEqual(
+                    candidates[0]["text_overlap_ratio"],
+                    0.42,
+                )
+                self.assertGreaterEqual(
+                    candidates[0]["role_facing_edge_surface_continuity"],
+                    0.45,
+                )
+                self.assertEqual(
+                    [item["type"] for item in merged],
+                    ["image"],
+                    merged,
+                )
+                self.assertEqual(merged[0]["sender_role"], role)
+
+    def test_genuine_long_text_bubbles_do_not_become_images(self):
+        variants = {
+            "customer": {
+                "bubble": (470, 300, 780, 500),
+                "tail": [(470, 320), (458, 330), (470, 340)],
+                "avatar": (408, 300, 452, 344),
+                "color": (235, 235, 240),
+                "text": {"left": 500, "top": 320, "right": 750, "bottom": 475},
+            },
+            "self": {
+                "bubble": (570, 300, 878, 500),
+                "tail": [(878, 320), (890, 330), (878, 340)],
+                "avatar": (895, 300, 939, 344),
+                "color": (152, 240, 152),
+                "text": {"left": 600, "top": 320, "right": 848, "bottom": 475},
+            },
+        }
+        for role, fixture in variants.items():
+            with self.subTest(role=role):
+                screenshot = Image.new("RGB", (980, 860), (250, 250, 250))
+                draw = ImageDraw.Draw(screenshot)
+                draw.rounded_rectangle(
+                    fixture["bubble"],
+                    radius=12,
+                    fill=fixture["color"],
+                )
+                draw.polygon(fixture["tail"], fill=fixture["color"])
+                text_rect = fixture["text"]
+                for y in range(text_rect["top"] + 4, text_rect["bottom"], 22):
+                    draw.rectangle(
+                        (
+                            text_rect["left"] + 6,
+                            y,
+                            text_rect["right"] - 6,
+                            min(text_rect["bottom"], y + 5),
+                        ),
+                        fill=(45, 55, 45),
+                    )
+                avatar = fixture["avatar"]
+                for y in range(avatar[1], avatar[3] + 1, 5):
+                    for x in range(avatar[0], avatar[2] + 1, 5):
+                        tone = 55 if ((x + y) // 5) % 2 else 205
+                        draw.rectangle(
+                            (x, y, x + 4, y + 4),
+                            fill=(tone, 110, 170),
+                        )
+                try:
+                    candidates = detect_visual_image_bubbles(
+                        screenshot,
+                        messages=[
+                            {
+                                "id": f"{role}-long-text",
+                                "type": "text",
+                                "sender_role": role,
+                                "content": "真实长文字气泡",
+                                "bubble_rect": text_rect,
+                            }
+                        ],
+                        side_filter="all",
+                    )
+                finally:
+                    screenshot.close()
+
+                self.assertEqual(candidates, [])
+
+    def test_image_internal_ocr_drift_cannot_break_cross_round_identity(self):
+        screenshot = Image.new("RGB", (980, 860), (250, 250, 250))
+        draw = ImageDraw.Draw(screenshot)
+        draw.rectangle((556, 300, 890, 487), fill=(28, 28, 28))
+        for y in range(314, 410, 18):
+            draw.rectangle((579, y, 851, y + 5), fill=(232, 232, 232))
+        for y in range(300, 345, 5):
+            for x in range(895, 940, 5):
+                tone = 55 if ((x + y) // 5) % 2 else 205
+                draw.rectangle(
+                    (x, y, x + 4, y + 4),
+                    fill=(tone, 110, 170),
+                )
+
+        def observations(content: str) -> list[dict[str, object]]:
+            messages = wechat_win32_ocr_sidecar.merge_structural_image_messages(
+                screenshot,
+                [],
+                [
+                    {
+                        "id": "unstable-image-ocr",
+                        "type": "text",
+                        "sender_role": "self",
+                        "content": content,
+                        "bubble_rect": {
+                            "left": 571,
+                            "top": 309,
+                            "right": 871,
+                            "bottom": 410,
+                        },
+                    }
+                ],
+                target="CJTEST01",
+            )
+            return wechat_win32_ocr_sidecar.build_message_observations_v3(
+                messages
+            )
+
+        try:
+            first, state, first_errors = (
+                reconcile_cross_round_observation_identities(
+                    observations("第一次误识文字"),
+                    None,
+                )
+            )
+            second, _, second_errors = (
+                reconcile_cross_round_observation_identities(
+                    observations("第二次另一种误识文字"),
+                    state,
+                )
+            )
+        finally:
+            screenshot.close()
+
+        self.assertEqual(first_errors, [])
+        self.assertEqual(second_errors, [])
+        self.assertEqual([item["row_kind"] for item in first], ["image_bubble"])
+        self.assertEqual([item["row_kind"] for item in second], ["image_bubble"])
+        self.assertEqual(
+            first[0]["_worker_stable_id"],
+            second[0]["_worker_stable_id"],
+        )
 
     def test_initial_read_and_preclick_refresh_share_real_image_observer(self):
         screenshot = Image.new("RGB", (974, 853), (242, 242, 242))
