@@ -198,6 +198,58 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         self.assertIs(title_roi_ocr.call_args.args[0], image)
         capture.assert_not_called()
 
+    def test_successful_messages_frame_writes_review_artifacts(self) -> None:
+        image = Image.new("RGB", (965, 852), (247, 247, 247))
+        items = [
+            ocr_item("CJR8S5K3 虾丸子大人", 430, 48, 650, 78),
+            ocr_item("测试消息", 470, 300, 570, 330),
+        ]
+        snapshot = {
+            "screenshot": image,
+            "screenshot_path": "messages.png",
+            "ocr_items": items,
+            "messages": [],
+            "visible_untranscribed_voice": {"detected": False},
+        }
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            sidecar,
+            "capture_message_history_snapshots",
+            return_value=[snapshot],
+        ), patch.object(
+            sidecar,
+            "get_window_geometry",
+            return_value={
+                "width": 965,
+                "height": 852,
+                "left": 0,
+                "top": 0,
+                "right": 965,
+                "bottom": 852,
+            },
+        ):
+            payload = sidecar.messages_payload(
+                101,
+                {},
+                target="CJR8S5K3 虾丸子大人",
+                history_load_times=0,
+                confirm_target="CJR8S5K3",
+                artifact_dir=tmp,
+            )
+
+            self.assertTrue(payload["ok"])
+            self.assertNotIn(
+                "review_error",
+                payload,
+                payload.get("review_error"),
+            )
+            self.assertTrue(Path(payload["review_path"]).is_file())
+            self.assertTrue(Path(payload["evidence_path"]).is_file())
+            self.assertTrue(
+                (Path(tmp) / "wechat_messages_frame_review.json").is_file()
+            )
+
+
     def test_reused_frame_skips_title_roi_when_full_ocr_already_matches(self) -> None:
         image = Image.new("RGB", (965, 852), (247, 247, 247))
         full_items = [

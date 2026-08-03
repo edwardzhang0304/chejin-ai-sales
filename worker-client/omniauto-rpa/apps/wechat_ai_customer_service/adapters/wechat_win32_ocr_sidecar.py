@@ -2148,7 +2148,7 @@ def messages_payload(
         for observation in observations
         if isinstance(observation, dict) and observation.get("contract_errors")
     ] + image_observation_errors
-    return {
+    payload = {
         "ok": True,
         "online": True,
         "adapter": "win32_ocr",
@@ -2168,6 +2168,14 @@ def messages_payload(
         "ocr_items_count": len(ocr_items),
         "target_confirmation": target_confirmation,
     }
+    if artifact_dir:
+        try:
+            review_path = write_messages_frame_review(Path(artifact_dir), payload)
+            payload["review_path"] = review_path
+            payload["evidence_path"] = review_path
+        except Exception as exc:
+            payload["review_error"] = repr(exc)
+    return payload
 
 
 def voice_transcribe_payload(
@@ -11969,6 +11977,76 @@ def write_messages_targeting_review(output_dir: Path, payload: dict[str, Any]) -
         title="C2 messages 定向读取复核报告",
         description="本报告验证 search_by_remark_code 是否清空搜索框、输入短码、唯一命中联系人、点击进入会话并二次确认短码。",
         summary=summary,
+        events=step_events_from_review_rows(rows),
+    )
+
+
+def write_messages_frame_review(output_dir: Path, payload: dict[str, Any]) -> str:
+    observations = [
+        item
+        for item in (payload.get("observations") or [])
+        if isinstance(item, dict)
+    ]
+    screenshot_path = str(payload.get("screenshot_path") or "")
+    rows = [
+        _targeting_review_row(
+            title="00 最终当前画面",
+            purpose="核对本次消息排序、角色和图片槽位所依据的实际微信画面。",
+            expected="截图、会话确认和 observations 必须来自同一次当前屏读取。",
+            source={"screenshot_path": screenshot_path},
+            detection={
+                "ok": payload.get("ok"),
+                "state": payload.get("state"),
+                "page_fingerprint": payload.get("page_fingerprint"),
+                "ocr_items_count": payload.get("ocr_items_count"),
+                "observation_count": len(observations),
+            },
+        ),
+        _targeting_review_row(
+            title="01 当前会话确认",
+            purpose="确认本次最终画面仍属于目标短码 private 会话。",
+            expected="target_confirmation.ok=true 且会话类型允许 C2 读取。",
+            detection=(
+                payload.get("target_confirmation")
+                if isinstance(payload.get("target_confirmation"), dict)
+                else {}
+            ),
+        ),
+        _targeting_review_row(
+            title="02 统一消息槽位",
+            purpose="查看文字、语音、图片的最终顺序和角色证据。",
+            expected="每个物理消息只应出现一次，角色必须来自 C2 统一规则。",
+            detection={
+                "observations": [
+                    {
+                        "observation_id": item.get("observation_id"),
+                        "row_kind": item.get("row_kind"),
+                        "message_type": item.get("message_type"),
+                        "sender_role": item.get("sender_role"),
+                        "sender_role_source": item.get("sender_role_source"),
+                        "bubble_rect": item.get("bubble_rect"),
+                        "item_state": item.get("item_state"),
+                        "image_processing_reason": item.get(
+                            "image_processing_reason"
+                        ),
+                    }
+                    for item in observations
+                ]
+            },
+        ),
+    ]
+    return write_step_event_report(
+        output_dir=output_dir,
+        json_name="wechat_messages_frame_review.json",
+        html_name="wechat_messages_frame_review.html",
+        title="C2 当前消息画面复核报告",
+        description="本报告固定最终当前屏截图、会话确认和统一消息槽位证据。",
+        summary={
+            "ok": payload.get("ok"),
+            "state": payload.get("state"),
+            "screenshot_path": screenshot_path,
+            "observation_count": len(observations),
+        },
         events=step_events_from_review_rows(rows),
     )
 

@@ -46,6 +46,7 @@ from chejin_worker_client.task_runner import (
     C2_RECENT_VISIBLE_CACHE_TTL_SECONDS,
     TaskLeaseGuard,
     TaskRunner,
+    _freeze_phase_metadata,
 )
 from chejin_worker_client.transaction_outcomes import (
     FlowOutcomeAccumulator,
@@ -612,6 +613,24 @@ class FakeBridge:
 
 
 class TaskRunnerTest(unittest.TestCase):
+    def test_phase_metadata_is_frozen_before_later_image_merges(self):
+        source_key = "source:image-1"
+        mutable = {
+            "completed": 1,
+            "completed_source_keys": [source_key],
+            "terminal_source_keys": [source_key],
+            "cached_source_keys": [],
+        }
+
+        frozen = _freeze_phase_metadata(mutable)
+        mutable["completed_source_keys"].append(source_key)
+        mutable["terminal_source_keys"].append(source_key)
+        mutable["cached_source_keys"].append(source_key)
+
+        self.assertEqual(frozen["completed_source_keys"], [source_key])
+        self.assertEqual(frozen["terminal_source_keys"], [source_key])
+        self.assertEqual(frozen["cached_source_keys"], [])
+
     def test_original_and_later_voice_failures_are_merged_not_overwritten(self):
         outcomes = merge_item_outcomes(
             [

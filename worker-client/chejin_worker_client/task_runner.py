@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -150,6 +151,12 @@ _C2_REUSED_SNAPSHOT_EVIDENCE_FIELDS = (
     "review_path",
     "evidence_path",
 )
+
+
+def _freeze_phase_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Snapshot diagnostics so later phase merges cannot rewrite history."""
+
+    return copy.deepcopy(metadata)
 
 
 def _reuse_initial_snapshot_with_locate_evidence(
@@ -6866,7 +6873,15 @@ class TaskRunner:
                 "name": name,
                 "duration_seconds": round(max(0.0, time.perf_counter() - started_at), 4),
             }
-            phase.update({key: value for key, value in metadata.items() if value is not None})
+            phase.update(
+                _freeze_phase_metadata(
+                    {
+                        key: value
+                        for key, value in metadata.items()
+                        if value is not None
+                    }
+                )
+            )
             flow_timing["phases"].append(phase)
 
         last_authorization_check = 0.0
