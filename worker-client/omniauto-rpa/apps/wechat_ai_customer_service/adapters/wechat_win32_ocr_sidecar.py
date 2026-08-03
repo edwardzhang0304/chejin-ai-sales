@@ -988,7 +988,7 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
                 screenshot = seed.get("screenshot")
                 ocr_items = list(seed.get("ocr_items") or [])
                 if screenshot is not None and ocr_items:
-                    parsed_messages = parse_messages_from_ocr(
+                    parsed_messages = parse_current_chat_frame_messages(
                         ocr_items,
                         screenshot.size,
                         target=str(args.target or ""),
@@ -2128,7 +2128,16 @@ def messages_payload(
         target=target,
         observation_validation_errors=image_observation_errors,
     )
-    visible_voice_hint = latest.get("visible_untranscribed_voice") if isinstance(latest.get("visible_untranscribed_voice"), dict) else {"detected": False}
+    visible_voice_hint = (
+        visible_untranscribed_voice_hint(
+            screenshot,
+            ocr_items,
+            screenshot.size,
+            parsed_messages=messages,
+        )
+        if screenshot is not None
+        else {"detected": False}
+    )
     observations = build_message_observations_v3(messages, visible_voice_hint)
     observation_validation_errors = [
         {
@@ -2275,7 +2284,12 @@ def voice_transcribe_payload(
     before_messages = timed_call(
         "parse",
         "voice_transcribe_before",
-        lambda: parse_messages_from_ocr(before_items, image_size, target=target, screenshot=before_screenshot),
+        lambda: parse_current_chat_frame_messages(
+            before_items,
+            image_size,
+            target=target,
+            screenshot=before_screenshot,
+        ),
     )
     visible_button_attempt: dict[str, Any] | None = None
     context_menu_attempt: dict[str, Any] | None = None
@@ -2872,7 +2886,12 @@ def voice_transcribe_payload(
         after_messages = timed_call(
             "parse",
             f"voice_transcribe_after_{attempt_index}",
-            lambda: parse_messages_from_ocr(after_items, after_size, target=target, screenshot=after_screenshot),
+            lambda: parse_current_chat_frame_messages(
+                after_items,
+                after_size,
+                target=target,
+                screenshot=after_screenshot,
+            ),
         )
         new_messages, transcribed_messages = transcribed_messages_from_after(after_messages, attempt_baseline_messages)
         if click_result.get("ok") and clicked_context_anchor:
@@ -2915,7 +2934,7 @@ def voice_transcribe_payload(
                 recovered_messages = timed_call(
                     "parse",
                     f"voice_transcribe_reanchor_{attempt_index}_{reanchor_index}",
-                    lambda: parse_messages_from_ocr(
+                    lambda: parse_current_chat_frame_messages(
                         recovered_items,
                         recovered_size,
                         target=target,
@@ -2987,7 +3006,7 @@ def voice_transcribe_payload(
                     )
                     completed_items = run_ocr(completed_screenshot)
                     completed_size = getattr(completed_screenshot, "size", after_size)
-                    completed_messages = parse_messages_from_ocr(
+                    completed_messages = parse_current_chat_frame_messages(
                         completed_items,
                         completed_size,
                         target=target,
@@ -3033,7 +3052,7 @@ def voice_transcribe_payload(
                     )
                     fallback_items = run_ocr(fallback_screenshot)
                     fallback_size = getattr(fallback_screenshot, "size", after_size)
-                    fallback_messages = parse_messages_from_ocr(
+                    fallback_messages = parse_current_chat_frame_messages(
                         fallback_items,
                         fallback_size,
                         target=target,
@@ -3059,7 +3078,7 @@ def voice_transcribe_payload(
                             )
                             retry_items = run_ocr(retry_screenshot)
                             retry_size = getattr(retry_screenshot, "size", fallback_size)
-                            retry_messages = parse_messages_from_ocr(
+                            retry_messages = parse_current_chat_frame_messages(
                                 retry_items,
                                 retry_size,
                                 target=target,
@@ -4075,7 +4094,7 @@ def parsed_message_overlapping_bounds(
     return best_message
 
 
-def visual_component_rejected_by_parsed_text(
+def visual_component_rejected_by_non_voice_slot(
     component: dict[str, Any],
     parsed_messages: list[dict[str, Any]] | None,
 ) -> bool:
@@ -4083,7 +4102,26 @@ def visual_component_rejected_by_parsed_text(
     if not bounds:
         return False
     message = parsed_message_overlapping_bounds(bounds, parsed_messages, pad=10.0)
-    return bool(message and message_is_text_record(message) and not message_is_voice_record(message))
+    return bool(message and not message_is_voice_record(message))
+
+
+def evidence_overlaps_image_slot(
+    evidence: dict[str, Any],
+    parsed_messages: list[dict[str, Any]] | None,
+) -> bool:
+    bounds = component_bounds(evidence)
+    if not bounds or not parsed_messages:
+        return False
+    for message in parsed_messages:
+        if not isinstance(message, dict):
+            continue
+        message_type = str(message.get("type") or message.get("message_type") or "").strip().lower()
+        if message_type != "image":
+            continue
+        image_bounds = message_rect_bounds(message)
+        if image_bounds and rects_overlap_or_near(bounds, image_bounds, pad=0.0):
+            return True
+    return False
 
 
 def visual_component_overlaps_transcribed_parser_voice(
@@ -4316,7 +4354,7 @@ def find_visual_customer_voice_context_anchor_targets(
             continue
         if gray_count < 850:
             continue
-        if visual_component_rejected_by_parsed_text(component, parsed_messages):
+        if visual_component_rejected_by_non_voice_slot(component, parsed_messages):
             continue
         if visual_component_overlaps_transcribed_parser_voice(component, parsed_messages, image_size):
             continue
@@ -4516,7 +4554,7 @@ def find_visual_self_voice_context_anchor_targets(
             continue
         if green_count < 220:
             continue
-        if visual_component_rejected_by_parsed_text(component, parsed_messages):
+        if visual_component_rejected_by_non_voice_slot(component, parsed_messages):
             continue
         if visual_component_overlaps_transcribed_parser_voice(component, parsed_messages, image_size):
             continue
@@ -4769,6 +4807,11 @@ def build_unified_voice_observations_v3(
 ) -> list[dict[str, Any]]:
     """Fuse parser, OCR, pixels, avatar and button evidence into one voice truth."""
     messages = [message for message in parsed_messages or [] if isinstance(message, dict)]
+    voice_ocr_items = [
+        item
+        for item in ocr_items
+        if isinstance(item, dict) and not evidence_overlaps_image_slot(item, messages)
+    ]
     excluded = excluded_anchor_keys or set()
     parser_targets = {
         str((target.get("item") or {}).get("message_id") or ""): normalize_voice_evidence_target(image, target, image_size)
@@ -4879,22 +4922,22 @@ def build_unified_voice_observations_v3(
             }
         )
 
-    for raw_target in voice_duration_context_anchor_targets(ocr_items, image_size):
+    for raw_target in voice_duration_context_anchor_targets(voice_ocr_items, image_size):
         raw_item = raw_target.get("item") if isinstance(raw_target.get("item"), dict) else {}
-        raw_state = "transcribed" if voice_duration_has_transcribed_text_below(raw_item, ocr_items, image_size) else "untranscribed"
+        raw_state = "transcribed" if voice_duration_has_transcribed_text_below(raw_item, voice_ocr_items, image_size) else "untranscribed"
         merge_evidence(raw_target, "ocr_duration", inferred_state=raw_state)
 
     for visual_target in find_visual_customer_voice_context_anchor_targets(
         image,
         image_size,
-        ocr_items,
+        voice_ocr_items,
         parsed_messages=messages,
     ):
         merge_evidence(visual_target, "visual_customer_bubble")
     for visual_target in find_visual_self_voice_context_anchor_targets(
         image,
         image_size,
-        ocr_items,
+        voice_ocr_items,
         parsed_messages=messages,
     ):
         merge_evidence(visual_target, "visual_self_bubble")
@@ -4930,7 +4973,7 @@ def build_unified_voice_observations_v3(
         and not observation.get("contract_errors")
         and isinstance(observation.get("action_target"), dict)
     ]
-    for button in find_voice_transcribe_targets(ocr_items, image_size, allow_inferred=False):
+    for button in find_voice_transcribe_targets(voice_ocr_items, image_size, allow_inferred=False):
         if not pending:
             break
         button_y = voice_target_center_y(button)
@@ -6495,7 +6538,12 @@ def capture_message_history_snapshots(
     def capture(label: str) -> None:
         screenshot, path = capture_wechat(hwnd, artifact_dir=artifact_dir, label=label)
         ocr_items = run_ocr(screenshot)
-        parsed_messages = parse_messages_from_ocr(ocr_items, screenshot.size, target=target, screenshot=screenshot)
+        parsed_messages = parse_current_chat_frame_messages(
+            ocr_items,
+            screenshot.size,
+            target=target,
+            screenshot=screenshot,
+        )
         snapshots.append(
             {
                 "label": label,
@@ -6562,11 +6610,17 @@ def capture_message_history_snapshots_until_anchor(
     def capture(label: str) -> None:
         screenshot, path = capture_wechat(hwnd, artifact_dir=artifact_dir, label=label)
         ocr_items = run_ocr(screenshot)
-        parsed_messages = parse_messages_from_ocr(ocr_items, screenshot.size, target=target, screenshot=screenshot)
+        parsed_messages = parse_current_chat_frame_messages(
+            ocr_items,
+            screenshot.size,
+            target=target,
+            screenshot=screenshot,
+        )
         snapshots.append(
             {
                 "label": label,
                 "screenshot_path": path,
+                "screenshot": screenshot,
                 "ocr_items": ocr_items,
                 "messages": parsed_messages,
                 "visible_untranscribed_voice": visible_untranscribed_voice_hint(
@@ -13549,7 +13603,7 @@ def build_send_fact_snapshot_from_frame(
         ocr_items=ocr_items,
         screenshot_path=screenshot_path,
     )
-    messages = parse_messages_from_ocr(
+    messages = parse_current_chat_frame_messages(
         ocr_items,
         screenshot.size,
         target=target,
@@ -15271,6 +15325,28 @@ def parse_messages_from_ocr(
         if str(message.get("content") or "").strip():
             messages.append(message)
     return attach_structural_voice_anchor_keys(messages)
+
+
+def parse_current_chat_frame_messages(
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    target: str,
+    screenshot: Any | None,
+) -> list[dict[str, Any]]:
+    """Build one frame's message truth before any media action is allowed."""
+    parsed_messages = parse_messages_from_ocr(
+        ocr_items,
+        image_size,
+        target=target,
+        screenshot=screenshot,
+    )
+    return merge_structural_image_messages(
+        screenshot,
+        ocr_items,
+        parsed_messages,
+        target=target,
+    )
 
 
 def classify_message_side(item: dict[str, Any], *, width: int) -> str:
