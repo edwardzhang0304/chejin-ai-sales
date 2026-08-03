@@ -1915,6 +1915,11 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         far = ocr_item("聊天正文", 1000, 50, 1120, 82)
         with (
             patch.object(sidecar, "capture_visible_screen", return_value=(image, "menu.png")) as capture,
+            patch.object(
+                sidecar,
+                "save_screenshot_artifact",
+                return_value="menu_roi.png",
+            ) as save_roi,
             patch.object(sidecar, "run_ocr", return_value=[near, companion, far]) as ocr,
         ):
             result = sidecar.observe_wechat_context_menu(
@@ -1936,6 +1941,8 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             ["复制", "转发"],
         )
         capture.assert_called_once_with(artifact_dir="evidence", label="shared_menu")
+        self.assertEqual(result["roi_screenshot_path"], "menu_roi.png")
+        save_roi.assert_called_once()
         self.assertEqual(ocr.call_args.args[0].size, (760, 840))
         image.close()
 

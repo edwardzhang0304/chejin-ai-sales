@@ -145,6 +145,25 @@ TASK_LEASE_DEFINITIVE_LOSS_CODES = frozenset(
     }
 )
 
+_C2_REUSED_SNAPSHOT_EVIDENCE_FIELDS = (
+    "artifact_dir",
+    "review_path",
+    "evidence_path",
+)
+
+
+def _reuse_initial_snapshot_with_locate_evidence(
+    snapshot: dict[str, Any],
+    locate_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep the locate run's evidence context when its message frame is reused."""
+
+    reused = dict(snapshot)
+    for field in _C2_REUSED_SNAPSHOT_EVIDENCE_FIELDS:
+        if not reused.get(field) and locate_payload.get(field):
+            reused[field] = locate_payload[field]
+    return reused
+
 
 def voice_action_journal_anchor_keys(
     observation: dict[str, Any],
@@ -7153,7 +7172,10 @@ class TaskRunner:
                 else None
             )
             if reusable_initial_snapshot and reusable_initial_snapshot.get("ok"):
-                sidecar_payload = dict(reusable_initial_snapshot)
+                sidecar_payload = _reuse_initial_snapshot_with_locate_evidence(
+                    reusable_initial_snapshot,
+                    locate_payload,
+                )
             else:
                 sidecar_payload = self.bridge.get_messages(
                     display_name=target_label,
