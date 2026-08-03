@@ -231,19 +231,6 @@ class _CancellableVisionProvider:
         return result
 
 
-_MENU_EVIDENCE_TOKENS = (
-    "复制",
-    "转发",
-    "收藏",
-    "多选",
-    "删除",
-    "引用",
-    "翻译",
-    "搜一搜",
-    "提醒",
-)
-
-
 def _frame_fingerprint(image: Any) -> str:
     """Return a non-reversible visual fingerprint without persisting pixels."""
 
@@ -261,32 +248,6 @@ def _frame_fingerprint(image: Any) -> str:
             close()
 
 
-def _ocr_bounds(item: dict[str, Any]) -> list[int]:
-    bounds = item.get("bounds") or item.get("bbox") or item.get("rect")
-    if isinstance(bounds, dict):
-        raw = [bounds.get("left"), bounds.get("top"), bounds.get("right"), bounds.get("bottom")]
-    elif isinstance(bounds, (list, tuple)) and len(bounds) >= 4:
-        raw = list(bounds[:4])
-    else:
-        raw = [item.get("left"), item.get("top"), item.get("right"), item.get("bottom")]
-    try:
-        return [int(round(float(value))) for value in raw]
-    except (TypeError, ValueError):
-        return []
-
-
-def _menu_ocr_evidence(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    evidence: list[dict[str, Any]] = []
-    for item in items:
-        text = str(item.get("text") or "").strip()
-        compact = "".join(text.split())
-        token = next((value for value in _MENU_EVIDENCE_TOKENS if value in compact), "")
-        if not token:
-            continue
-        evidence.append({"token": token, "bounds": _ocr_bounds(item)})
-    return evidence[:16]
-
-
 class _VisionHostState:
     def __init__(
         self,
@@ -294,6 +255,7 @@ class _VisionHostState:
         *,
         window_context: dict[str, Any] | None = None,
         ocr_runner: CancellableOmniAutoOcr | None = None,
+        artifact_dir: str | None = None,
     ) -> None:
         from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar
 
@@ -309,6 +271,7 @@ class _VisionHostState:
         self.started_at = time.perf_counter()
         self.events: list[dict[str, Any]] = []
         self.ocr_runner = ocr_runner
+        self.artifact_dir = str(artifact_dir or "") or None
 
     def run_ocr(self, image: Any) -> list[dict[str, Any]]:
         if self.ocr_runner is not None:
@@ -424,6 +387,53 @@ class _WindowFrame:
     def capture_frame(self, context: dict[str, Any]) -> dict[str, Any]:
         started_at = time.perf_counter()
         phase = str(context.get("phase") or "image_candidate")
+        if phase == "image_context_menu":
+            hwnd = self.state.ensure_window()
+            observation = self.state.host.observe_wechat_context_menu(
+                hwnd,
+                anchor_screen=list(context.get("menu_anchor_screen") or []),
+                artifact_dir=self.state.artifact_dir,
+                label="vision_image_context_menu",
+                ocr_runner=self.state.run_ocr,
+            )
+            if observation.get("ok") is not True:
+                self.state.record(
+                    "frame_capture",
+                    "failed",
+                    started_at=started_at,
+                    phase=phase,
+                    capture_step="context_menu_observation",
+                    reason=str(observation.get("reason") or "context_menu_observation_failed"),
+                    error_type=str(observation.get("error_type") or ""),
+                    image_persisted=bool(observation.get("screenshot_path")),
+                )
+                return observation
+            self.state.record(
+                "frame_capture",
+                "completed",
+                started_at=started_at,
+                phase=phase,
+                capture_step="context_menu_observation",
+                capture_mode=str(observation.get("capture_mode") or "visible_screen"),
+                image_size=list(observation.get("image_size") or []),
+                ocr_item_count=int(observation.get("ocr_item_count") or 0),
+                local_ocr_item_count=int(observation.get("local_ocr_item_count") or 0),
+                ocr_roi=list(observation.get("ocr_roi") or []),
+                ocr_execution=str(observation.get("ocr_execution") or ""),
+                menu_structure_evidence=list(observation.get("menu_structure_evidence") or []),
+                screenshot_path=str(observation.get("screenshot_path") or ""),
+                image_persisted=bool(observation.get("screenshot_path")),
+            )
+            return {
+                "ok": True,
+                "image": observation.get("image"),
+                "image_size": tuple(observation.get("image_size") or (0, 0)),
+                "ocr_items": list(observation.get("local_ocr_items") or []),
+                "messages": [],
+                "time_markers": [],
+                "screen_origin": [0, 0],
+                "screenshot_path": str(observation.get("screenshot_path") or ""),
+            }
         capture_context = getattr(
             self.state.host,
             "capture_c2_window_context",
@@ -515,33 +525,6 @@ class _WindowFrame:
                 source=str(self.state.window_context.get("source") or ""),
                 reason=str(validation.get("reason") or ""),
             )
-        if phase == "image_context_menu":
-            menu_anchor_screen = list(context.get("menu_anchor_screen") or [])
-            if len(menu_anchor_screen) < 2:
-                image.close()
-                return {
-                    "ok": False,
-                    "reason": "vision_menu_anchor_missing",
-                }
-            anchor_x = int(menu_anchor_screen[0]) - screen_origin[0]
-            anchor_y = int(menu_anchor_screen[1]) - screen_origin[1]
-            roi_left = max(0, anchor_x - 380)
-            roi_top = max(0, anchor_y - 420)
-            roi_right = min(int(image.size[0]), anchor_x + 380)
-            roi_bottom = min(int(image.size[1]), anchor_y + 420)
-            if roi_right <= roi_left or roi_bottom <= roi_top:
-                image.close()
-                return {
-                    "ok": False,
-                    "reason": "vision_menu_roi_invalid",
-                }
-            full_image = image
-            image = full_image.crop((roi_left, roi_top, roi_right, roi_bottom))
-            full_image.close()
-            screen_origin = [
-                screen_origin[0] + roi_left,
-                screen_origin[1] + roi_top,
-            ]
         try:
             state_ocr = getattr(self.state, "run_ocr", None)
             ocr_items = (
@@ -579,85 +562,85 @@ class _WindowFrame:
             }
         messages: list[dict[str, Any]] = []
         time_markers: list[dict[str, Any]] = []
-        if phase != "image_context_menu":
-            try:
-                messages = self.state.host.parse_messages_from_ocr(
-                    ocr_items,
-                    image.size,
-                    target=str(context.get("remark_code") or context.get("target_name") or ""),
-                    screenshot=image,
-                )
-                from apps.wechat_ai_customer_service.optional_plugins.vision.capture.surface import (
-                    observe_structural_image_messages,
-                )
-                from apps.wechat_ai_customer_service.optional_plugins.vision.capture.wechat import (
-                    extract_chat_time_markers,
-                )
-                image_messages = observe_structural_image_messages(
-                    image,
-                    ocr_items,
-                    messages,
-                    target=str(
-                        context.get("remark_code")
-                        or context.get("target_name")
-                        or ""
+        try:
+            messages = self.state.host.parse_messages_from_ocr(
+                ocr_items,
+                image.size,
+                target=str(context.get("remark_code") or context.get("target_name") or ""),
+                screenshot=image,
+            )
+            from apps.wechat_ai_customer_service.optional_plugins.vision.capture.surface import (
+                observe_structural_image_messages,
+            )
+            from apps.wechat_ai_customer_service.optional_plugins.vision.capture.wechat import (
+                extract_chat_time_markers,
+            )
+            image_messages = observe_structural_image_messages(
+                image,
+                ocr_items,
+                messages,
+                target=str(
+                    context.get("remark_code")
+                    or context.get("target_name")
+                    or ""
+                ),
+                role_resolver=(
+                    self.state.host.message_row_avatar_role_details
+                ),
+                max_images=max(
+                    1,
+                    int(
+                        context.get("max_images")
+                        or (
+                            image_contract().get("source_limits")
+                            or {}
+                        ).get("max_visible_image_candidates")
+                        or 64
                     ),
-                    role_resolver=(
-                        self.state.host.message_row_avatar_role_details
-                    ),
-                    max_images=max(
-                        1,
-                        int(
-                            context.get("max_images")
-                            or (
-                                image_contract().get("source_limits")
-                                or {}
-                            ).get("max_visible_image_candidates")
-                            or 64
-                        ),
-                    ),
-                )
-                messages.extend(image_messages)
-                def message_visual_top(item: dict[str, Any]) -> float:
-                    rect = item.get("bubble_rect")
-                    try:
-                        return float(
-                            rect.get("top")
-                            if isinstance(rect, dict)
-                            else rect[1]
-                        )
-                    except (TypeError, ValueError, IndexError):
-                        return 0.0
+                ),
+            )
+            messages.extend(image_messages)
 
-                messages.sort(
-                    key=lambda item: (
-                        message_visual_top(item),
-                        str(item.get("id") or ""),
+            def message_visual_top(item: dict[str, Any]) -> float:
+                rect = item.get("bubble_rect")
+                try:
+                    return float(
+                        rect.get("top")
+                        if isinstance(rect, dict)
+                        else rect[1]
                     )
+                except (TypeError, ValueError, IndexError):
+                    return 0.0
+
+            messages.sort(
+                key=lambda item: (
+                    message_visual_top(item),
+                    str(item.get("id") or ""),
                 )
-                time_markers = extract_chat_time_markers(ocr_items, image.size)
-            except Exception as exc:
-                reason = "vision_window_message_parse_failed"
-                reason_detail = _safe_exception_reason(exc, reason)
-                self.state.record(
-                    "frame_capture",
-                    "failed",
-                    started_at=started_at,
-                    phase=phase,
-                    capture_step="message_parse",
-                    capture_mode=capture_mode,
-                    reason=reason,
-                    reason_detail=reason_detail,
-                    error_type=type(exc).__name__,
-                    image_persisted=False,
-                )
-                image.close()
-                return {
-                    "ok": False,
-                    "reason": reason,
-                    "reason_detail": reason_detail,
-                    "error_type": type(exc).__name__,
-                }
+            )
+            time_markers = extract_chat_time_markers(ocr_items, image.size)
+        except Exception as exc:
+            reason = "vision_window_message_parse_failed"
+            reason_detail = _safe_exception_reason(exc, reason)
+            self.state.record(
+                "frame_capture",
+                "failed",
+                started_at=started_at,
+                phase=phase,
+                capture_step="message_parse",
+                capture_mode=capture_mode,
+                reason=reason,
+                reason_detail=reason_detail,
+                error_type=type(exc).__name__,
+                image_persisted=False,
+            )
+            image.close()
+            return {
+                "ok": False,
+                "reason": reason,
+                "reason_detail": reason_detail,
+                "error_type": type(exc).__name__,
+            }
         try:
             self.state.record(
                 "frame_capture",
@@ -670,7 +653,6 @@ class _WindowFrame:
                 image_size=[int(image.size[0]), int(image.size[1])],
                 ocr_item_count=len(ocr_items),
                 parsed_message_count=len(messages),
-                menu_ocr_evidence=_menu_ocr_evidence(ocr_items) if phase == "image_context_menu" else [],
                 image_persisted=False,
             )
             return {
@@ -1034,6 +1016,7 @@ def process_image_slot(
     cancel_check: Callable[[], bool] | None = None,
     action_journal_path: str | Path | None = None,
     source_message_key: str = "",
+    artifact_dir: str | None = None,
 ) -> dict[str, Any]:
     """Run one authorized image slot through OmniAuto Vision in memory."""
 
@@ -1243,6 +1226,7 @@ def process_image_slot(
         resolved_trace_id,
         window_context=window_context,
         ocr_runner=ocr_runner,
+        artifact_dir=artifact_dir,
     )
     vision_settings = runtime_config.get("customer_image_understanding")
     if not isinstance(vision_settings, dict):

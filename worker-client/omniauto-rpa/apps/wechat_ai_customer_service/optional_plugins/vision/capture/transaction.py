@@ -556,7 +556,6 @@ def _acquire_current_image_via_ports(
                 [item for item in (menu_frame.get("ocr_items") or []) if isinstance(item, dict)],
                 tuple(menu_size),
                 anchor=anchor_in_menu_frame,
-                require_menu_cluster=True,
             )
             if not copy_item:
                 _dismiss_menu_safely(ports.ui_action)

@@ -5464,6 +5464,127 @@ def wait_for_wechat_context_menu_stable() -> int:
     return menu_wait_ms
 
 
+def observe_wechat_context_menu(
+    hwnd: int,
+    *,
+    anchor_screen: tuple[int, int] | list[int],
+    artifact_dir: str | None = None,
+    label: str = "wechat_context_menu",
+    ocr_runner: Any | None = None,
+) -> dict[str, Any]:
+    """Capture one popup and OCR its anchor ROI without reactivating WeChat."""
+
+    if int(hwnd or 0) <= 0:
+        return {"ok": False, "reason": "context_menu_window_invalid"}
+    try:
+        anchor_x = int(anchor_screen[0])
+        anchor_y = int(anchor_screen[1])
+    except (TypeError, ValueError, IndexError):
+        return {"ok": False, "reason": "context_menu_anchor_missing"}
+    screenshot = None
+    ocr_image = None
+    try:
+        screenshot, screenshot_path = capture_visible_screen(
+            artifact_dir=artifact_dir,
+            label=label,
+        )
+        width, height = getattr(screenshot, "size", (0, 0))
+        roi = [0, 0, int(width), int(height)]
+        if anchor_x > 0 and anchor_y > 0:
+            roi = [
+                max(0, anchor_x - 380),
+                max(0, anchor_y - 420),
+                min(int(width), anchor_x + 380),
+                min(int(height), anchor_y + 420),
+            ]
+        if roi[2] <= roi[0] or roi[3] <= roi[1]:
+            raise RuntimeError("context_menu_ocr_roi_invalid")
+        ocr_image = screenshot.crop(tuple(roi))
+        runner = ocr_runner if callable(ocr_runner) else run_ocr
+        raw_ocr_items = runner(ocr_image)
+        ocr_items: list[dict[str, Any]] = []
+        for raw_item in raw_ocr_items:
+            if not isinstance(raw_item, dict):
+                continue
+            item = dict(raw_item)
+            for key in ("left", "right", "center_x"):
+                if key in item:
+                    item[key] = float(item.get(key) or 0) + roi[0]
+            for key in ("top", "bottom", "center_y"):
+                if key in item:
+                    item[key] = float(item.get(key) or 0) + roi[1]
+            ocr_items.append(item)
+    except Exception as exc:
+        close_ocr_image = getattr(ocr_image, "close", None)
+        if callable(close_ocr_image):
+            close_ocr_image()
+        close = getattr(screenshot, "close", None)
+        if callable(close):
+            close()
+        return {
+            "ok": False,
+            "reason": "context_menu_observation_failed",
+            "error_type": type(exc).__name__,
+        }
+    close_ocr_image = getattr(ocr_image, "close", None)
+    if callable(close_ocr_image):
+        close_ocr_image()
+    width, height = getattr(screenshot, "size", (0, 0))
+    local_items: list[dict[str, Any]] = []
+    for item in ocr_items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            center_x = float(
+                item.get("center_x")
+                or (float(item.get("left") or 0) + float(item.get("right") or 0)) / 2
+            )
+            center_y = float(
+                item.get("center_y")
+                or (float(item.get("top") or 0) + float(item.get("bottom") or 0)) / 2
+            )
+        except (TypeError, ValueError):
+            continue
+        if (
+            (not anchor_x or abs(center_x - anchor_x) <= 360)
+            and (not anchor_y or abs(center_y - anchor_y) <= 420)
+        ):
+            local_items.append(item)
+    return {
+        "ok": True,
+        "reason": "context_menu_observed",
+        "image": screenshot,
+        "image_size": (int(width), int(height)),
+        "screen_origin": [0, 0],
+        "ocr_items": ocr_items,
+        "local_ocr_items": local_items,
+        "ocr_item_count": len(ocr_items),
+        "local_ocr_item_count": len(local_items),
+        "ocr_roi": roi,
+        "ocr_execution": "isolated_runner" if callable(ocr_runner) else "sidecar",
+        "menu_structure_evidence": [
+            {
+                "text": str(item.get("text") or ""),
+                "bounds": [
+                    float(item.get("left") or 0),
+                    float(item.get("top") or 0),
+                    float(item.get("right") or 0),
+                    float(item.get("bottom") or 0),
+                ],
+            }
+            for item in local_items
+            if normalize_ocr_text(item.get("text"))
+            in {
+                "复制", "复制图片", "转发", "收藏", "多选", "删除", "引用",
+                "语音转文字", "转文字", "收起文字",
+            }
+        ][:16],
+        "screenshot_path": screenshot_path,
+        "capture_mode": "visible_screen",
+        "anchor_screen": [anchor_x, anchor_y],
+    }
+
+
 def open_voice_transcribe_context_menu(
     hwnd: int,
     duration_target: dict[str, Any],
@@ -5487,10 +5608,20 @@ def open_voice_transcribe_context_menu(
     # The WeChat context menu is a desktop popup. On right-side/self voice
     # bubbles it can extend outside the WeChat window rectangle, so capture the
     # visible screen and click in screen coordinates instead of window coords.
-    menu_screenshot, menu_path = capture_visible_screen(artifact_dir=artifact_dir, label="voice_transcribe_context_menu")
-    menu_items = run_ocr(menu_screenshot)
-    menu_size = getattr(menu_screenshot, "size", image_size)
     anchor_screen_y = int((right_click or {}).get("screen_y") or 0)
+    anchor_screen_x = int((right_click or {}).get("screen_x") or 0)
+    observation = observe_wechat_context_menu(
+        hwnd,
+        anchor_screen=(anchor_screen_x, anchor_screen_y),
+        artifact_dir=artifact_dir,
+        label="voice_transcribe_context_menu",
+    )
+    menu_items = [
+        item
+        for item in (observation.get("local_ocr_items") or [])
+        if isinstance(item, dict)
+    ]
+    menu_size = tuple(observation.get("image_size") or image_size)
     menu_target = find_voice_transcribe_menu_item_target(menu_items, menu_size, anchor=anchor, anchor_screen_y=anchor_screen_y)
     collapse_target = find_voice_transcribe_menu_collapse_item_target(menu_items, menu_size, anchor=anchor, anchor_screen_y=anchor_screen_y)
     local_radius = max(96.0, min(180.0, float(menu_size[1] if menu_size else 0) * 0.18))
@@ -5531,6 +5662,10 @@ def open_voice_transcribe_context_menu(
             else ("avatar_context_menu" if wrong_avatar_menu else ("text_message_context_menu" if wrong_text_menu else "unknown"))
         )
     )
+    menu_screenshot = observation.get("image")
+    close_menu_screenshot = getattr(menu_screenshot, "close", None)
+    if callable(close_menu_screenshot):
+        close_menu_screenshot()
     return {
         "ok": bool(right_click.get("ok") and (menu_target or collapse_target)),
         "right_click": right_click,
@@ -5538,10 +5673,11 @@ def open_voice_transcribe_context_menu(
         "anchor_point": [anchor_x, anchor_y],
         "anchor_jitter": anchor_jitter,
         "menu_wait_ms": menu_wait_ms,
-        "menu_screenshot_path": menu_path,
-        "menu_capture_mode": "visible_screen",
+        "menu_screenshot_path": str(observation.get("screenshot_path") or ""),
+        "menu_capture_mode": str(observation.get("capture_mode") or "visible_screen"),
         "menu_local_radius": local_radius,
-        "menu_ocr_items_count": len(menu_items),
+        "menu_ocr_items_count": int(observation.get("ocr_item_count") or 0),
+        "menu_local_ocr_items_count": len(menu_items),
         "menu_state": menu_state,
         "menu_texts": menu_texts,
         "wrong_context_menu_texts": text_menu_texts,
@@ -15419,29 +15555,22 @@ def capture_c2_window_context(
     capture_mode = "wechat_window_exact_hwnd"
     screen_origin = [0, 0]
     try:
-        if str(phase or "") == "image_context_menu":
-            image, _path = capture_visible_screen(
+        window_rect = win32gui.GetWindowRect(hwnd)
+        screen_origin = [int(window_rect[0]), int(window_rect[1])]
+        try:
+            image, _path = capture_wechat(
+                hwnd,
                 artifact_dir=None,
                 label=label,
             )
-            capture_mode = "visible_screen_menu_exact_hwnd_context"
-        else:
-            window_rect = win32gui.GetWindowRect(hwnd)
-            screen_origin = [int(window_rect[0]), int(window_rect[1])]
-            try:
-                image, _path = capture_wechat(
-                    hwnd,
-                    artifact_dir=None,
-                    label=label,
-                )
-            except Exception:
-                time.sleep(0.12)
-                image, _path = capture_wechat_window_visible_screen(
-                    hwnd,
-                    artifact_dir=None,
-                    label=f"{label}_retry",
-                )
-                capture_mode = "visible_screen_exact_hwnd_retry"
+        except Exception:
+            time.sleep(0.12)
+            image, _path = capture_wechat_window_visible_screen(
+                hwnd,
+                artifact_dir=None,
+                label=f"{label}_retry",
+            )
+            capture_mode = "visible_screen_exact_hwnd_retry"
     except Exception as exc:
         return {
             "ok": False,
