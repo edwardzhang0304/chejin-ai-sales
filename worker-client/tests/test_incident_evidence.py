@@ -127,6 +127,52 @@ class IncidentEvidenceTest(unittest.TestCase):
         self.assertEqual(last_log["metadata"]["incident_id"], results[-1]["incident_id"])
         self.assertEqual(last_log["metadata"]["evidence_path"], results[-1]["evidence_path"])
 
+    def test_image_menu_failure_zip_contains_full_roi_and_ocr_evidence(self) -> None:
+        artifact_dir = Path(self.tmp.name) / "artifacts" / "wechat_c2" / "messages" / "menu-run"
+        artifact_dir.mkdir(parents=True)
+        full_screen = artifact_dir / "vision_image_context_menu_1.png"
+        roi_screen = artifact_dir / "vision_image_context_menu_ocr_roi_1.png"
+        full_screen.write_bytes(b"\x89PNG\r\n\x1a\nfull-menu-evidence")
+        roi_screen.write_bytes(b"\x89PNG\r\n\x1a\nroi-menu-evidence")
+
+        result = self.storage.append_log(
+            "WARN",
+            "c2_image_slot_terminalized",
+            "image menu operation failed",
+            error_code="C2_IMAGE_MENU_OPERATION_FAILED",
+            force_incident=True,
+            metadata={
+                "conversation_id": "conversation-menu-evidence",
+                "sidecar_run_id": "sidecar-menu-evidence",
+                "artifact_dir": str(artifact_dir),
+                "diagnostics": {
+                    "events": [
+                        {
+                            "stage": "frame_capture",
+                            "phase": "image_context_menu",
+                            "screenshot_path": str(full_screen),
+                            "roi_screenshot_path": str(roi_screen),
+                            "local_ocr_evidence": [
+                                {
+                                    "text": "复制",
+                                    "confidence": 0.97,
+                                    "bounds": [540, 272, 640, 320],
+                                }
+                            ],
+                        }
+                    ]
+                },
+            },
+        )
+
+        with zipfile.ZipFile(self._completed_path(result)) as archive:
+            names = archive.namelist()
+            occurrence = json.loads(archive.read("occurrences/initial.json"))
+        self.assertTrue(any(name.endswith(full_screen.name) for name in names))
+        self.assertTrue(any(name.endswith(roi_screen.name) for name in names))
+        event = occurrence["metadata"]["diagnostics"]["events"][0]
+        self.assertEqual(event["local_ocr_evidence"][0]["text"], "复制")
+
     def test_external_paths_and_raw_database_are_not_exported(self) -> None:
         external = Path(self.tmp.name).parent / "external-incident-secret.txt"
         external.write_text("external secret", encoding="utf-8")

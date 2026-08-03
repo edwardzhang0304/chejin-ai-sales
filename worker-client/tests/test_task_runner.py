@@ -5301,12 +5301,19 @@ class TaskRunnerTest(unittest.TestCase):
                 ],
             }
         )
+        artifact_dir = Path(
+            tempfile.mkdtemp(prefix="chejin-reused-frame-evidence-")
+        )
+        review_path = artifact_dir / "wechat_messages_targeting_review.json"
+        review_path.write_text("{}", encoding="utf-8")
         bridge.locate_payloads = [
             {
                 "ok": True,
                 "state": "chat_target_confirmed",
                 "initial_messages_frame_reused": True,
                 "initial_messages_snapshot": snapshot,
+                "artifact_dir": str(artifact_dir),
+                "review_path": str(review_path),
             }
         ]
         runner, _ = self.make_runner(api, bridge)
@@ -5318,6 +5325,107 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(bridge.message_reads, [])
         self.assertTrue(bridge.locate_chats[0]["capture_initial_messages"])
         self.assertEqual(api.message_payloads[0]["messages"][0]["content"], "复用打开会话时的画面")
+
+    def test_reused_initial_snapshot_passes_real_evidence_dir_to_image_vision(self):
+        api = FakeApi(None)
+        unique = str(time.time_ns())
+        target = WechatReadTarget(
+            conversation_id=f"conv-frame-image-{unique}",
+            rpa_session_key="wx:rpa:v1:frame-image",
+            display_name="CJFRAME02 客户",
+            remark_code="CJFRAME02",
+            read_reason="waiting_user_reply",
+            authorization_revision=f"revision-frame-image-{unique}",
+        )
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        snapshot = bridge._contractual_message_payload(
+            {
+                "ok": True,
+                "state": "messages_ocr",
+                "sidecar_run_id": "locate-frame-image-1",
+                "observations": [
+                    {
+                        "schema_version": 3,
+                        "observation_id": f"image-frame-{unique}",
+                        "row_kind": "image_bubble",
+                        "sender_role": "customer",
+                        "sender_role_source": "same_row_avatar",
+                        "message_type": "image",
+                        "voice_state": "not_voice",
+                        "item_state": "discovered",
+                        "bubble_rect": [420, 180, 650, 320],
+                        "image_physical_anchor": {
+                            "sender_role": "customer",
+                            "bubble_visual_fingerprint": (
+                                "dhash64:0123456789abcdef"
+                            ),
+                            "preceding_stable_message": "",
+                            "following_stable_message": "",
+                            "occurrence_index": 0,
+                            "occurrence_count": 1,
+                        },
+                        "source_message": {
+                            "id": f"image-frame-source-{unique}",
+                            "type": "image",
+                            "sender_role": "customer",
+                        },
+                    }
+                ],
+            }
+        )
+        artifact_dir = Path(
+            tempfile.mkdtemp(prefix="chejin-reused-image-evidence-")
+        )
+        review_path = artifact_dir / "wechat_messages_targeting_review.json"
+        review_path.write_text("{}", encoding="utf-8")
+        bridge.locate_payloads = [
+            {
+                "ok": True,
+                "state": "chat_target_confirmed",
+                "initial_messages_frame_reused": True,
+                "initial_messages_snapshot": snapshot,
+                "artifact_dir": str(artifact_dir),
+                "review_path": str(review_path),
+            }
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        failed_before_copy = {
+            "state": "failed",
+            "action_phase": "not_attempted",
+            "reason": "image_context_menu_copy_item_missing",
+            "diagnostics": {"events": [], "image_persisted": False},
+        }
+
+        with patch(
+            "chejin_worker_client.omniauto_vision.vision_configuration_status",
+            return_value={
+                "ready": True,
+                "config": {
+                    "customer_image_understanding": {"enabled": True}
+                },
+            },
+        ), patch(
+            "chejin_worker_client.omniauto_vision.process_image_slot",
+            return_value=failed_before_copy,
+        ) as vision:
+            result = runner._read_one_wechat_target(binding, target)
+
+        self.assertTrue(result.get("ok"), result)
+        self.assertEqual(bridge.message_reads, [])
+        self.assertEqual(vision.call_count, 1)
+        self.assertEqual(
+            vision.call_args.kwargs["artifact_dir"],
+            str(artifact_dir),
+        )
+        self.assertTrue(artifact_dir.is_dir())
 
     def test_c2_recent_visible_hit_survives_one_ocr_miss(self):
         api = FakeApi(None)

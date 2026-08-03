@@ -5483,6 +5483,7 @@ def observe_wechat_context_menu(
         return {"ok": False, "reason": "context_menu_anchor_missing"}
     screenshot = None
     ocr_image = None
+    roi_screenshot_path = ""
     try:
         screenshot, screenshot_path = capture_visible_screen(
             artifact_dir=artifact_dir,
@@ -5500,6 +5501,11 @@ def observe_wechat_context_menu(
         if roi[2] <= roi[0] or roi[3] <= roi[1]:
             raise RuntimeError("context_menu_ocr_roi_invalid")
         ocr_image = screenshot.crop(tuple(roi))
+        roi_screenshot_path = save_screenshot_artifact(
+            ocr_image,
+            artifact_dir=artifact_dir,
+            label=f"{label}_ocr_roi",
+        )
         runner = ocr_runner if callable(ocr_runner) else run_ocr
         raw_ocr_items = runner(ocr_image)
         ocr_items: list[dict[str, Any]] = []
@@ -5579,7 +5585,22 @@ def observe_wechat_context_menu(
                 "语音转文字", "转文字", "收起文字",
             }
         ][:16],
+        "local_ocr_evidence": [
+            {
+                "text": str(item.get("text") or ""),
+                "confidence": item.get("confidence"),
+                "bounds": [
+                    float(item.get("left") or 0),
+                    float(item.get("top") or 0),
+                    float(item.get("right") or 0),
+                    float(item.get("bottom") or 0),
+                ],
+            }
+            for item in local_items
+            if str(item.get("text") or "").strip()
+        ][:64],
         "screenshot_path": screenshot_path,
+        "roi_screenshot_path": roi_screenshot_path,
         "capture_mode": "visible_screen",
         "anchor_screen": [anchor_x, anchor_y],
     }

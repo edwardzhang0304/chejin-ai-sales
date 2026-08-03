@@ -1211,6 +1211,44 @@ class C2VisionIntegrationTests(unittest.TestCase):
         result["image"].close()
         full_screen.close()
 
+    def test_shared_menu_observer_writes_real_full_and_roi_evidence(self):
+        full_screen = Image.new("RGB", (1200, 900), "white")
+        ocr_items = [
+            {
+                "text": "复制",
+                "left": 40,
+                "top": 30,
+                "right": 100,
+                "bottom": 62,
+                "confidence": 0.97,
+            }
+        ]
+        with tempfile.TemporaryDirectory(
+            prefix="chejin-real-menu-evidence-"
+        ) as artifact_dir, patch.object(
+            wechat_win32_ocr_sidecar.ImageGrab,
+            "grab",
+            return_value=full_screen.copy(),
+        ):
+            result = wechat_win32_ocr_sidecar.observe_wechat_context_menu(
+                31415,
+                anchor_screen=(520, 260),
+                artifact_dir=artifact_dir,
+                label="vision_image_context_menu",
+                ocr_runner=lambda _image: list(ocr_items),
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertTrue(Path(result["screenshot_path"]).is_file())
+            self.assertTrue(Path(result["roi_screenshot_path"]).is_file())
+            self.assertEqual(result["local_ocr_evidence"][0]["text"], "复制")
+            self.assertEqual(
+                result["menu_structure_evidence"][0]["text"],
+                "复制",
+            )
+            result["image"].close()
+        full_screen.close()
+
     def test_menu_click_uses_screen_port_without_window_reactivation(self):
         calls = []
 

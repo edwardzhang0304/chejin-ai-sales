@@ -421,8 +421,13 @@ class _WindowFrame:
                 ocr_roi=list(observation.get("ocr_roi") or []),
                 ocr_execution=str(observation.get("ocr_execution") or ""),
                 menu_structure_evidence=list(observation.get("menu_structure_evidence") or []),
+                local_ocr_evidence=list(observation.get("local_ocr_evidence") or []),
                 screenshot_path=str(observation.get("screenshot_path") or ""),
-                image_persisted=bool(observation.get("screenshot_path")),
+                roi_screenshot_path=str(observation.get("roi_screenshot_path") or ""),
+                image_persisted=bool(
+                    observation.get("screenshot_path")
+                    or observation.get("roi_screenshot_path")
+                ),
             )
             return {
                 "ok": True,
@@ -433,6 +438,9 @@ class _WindowFrame:
                 "time_markers": [],
                 "screen_origin": [0, 0],
                 "screenshot_path": str(observation.get("screenshot_path") or ""),
+                "roi_screenshot_path": str(
+                    observation.get("roi_screenshot_path") or ""
+                ),
             }
         capture_context = getattr(
             self.state.host,
