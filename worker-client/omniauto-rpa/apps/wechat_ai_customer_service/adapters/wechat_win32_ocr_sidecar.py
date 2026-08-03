@@ -5294,6 +5294,19 @@ def build_message_observations_v3(
     return observations
 
 
+def _structural_image_identity(message: dict[str, Any]) -> str:
+    if str(
+        message.get("type") or message.get("message_type") or ""
+    ).strip().lower() != "image":
+        return ""
+    return str(
+        message.get("canonical_visual_id")
+        or message.get("message_id")
+        or message.get("id")
+        or ""
+    ).strip()
+
+
 def merge_structural_image_messages(
     screenshot: Image.Image | None,
     ocr_items: list[dict[str, Any]],
@@ -5356,7 +5369,21 @@ def merge_structural_image_messages(
             ),
             exc,
         )
-    merged = messages_outside_image_bubbles(merged, image_messages)
+    # A reused open-chat frame may already contain structural image messages.
+    # Re-observing that frame must replace current evidence, not create another
+    # occurrence. Genuine repeated bubbles have different physical occurrence
+    # anchors and therefore different canonical ids.
+    observed_image_ids = {
+        _structural_image_identity(item)
+        for item in image_messages
+        if isinstance(item, dict)
+    }
+    observed_image_ids.discard("")
+    merged = [
+        item
+        for item in messages_outside_image_bubbles(merged, image_messages)
+        if _structural_image_identity(item) not in observed_image_ids
+    ]
     merged.extend(image_messages)
 
     def message_visual_top(item: dict[str, Any]) -> float:

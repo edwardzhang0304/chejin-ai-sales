@@ -4027,6 +4027,135 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertEqual(first["canonical_visual_id"], second["canonical_visual_id"])
         self.assertNotEqual(first["bubble_rect"], second["bubble_rect"])
 
+    def test_reused_structural_image_frame_is_idempotent(self):
+        """An already-parsed reused frame must still contain one image slot."""
+        from apps.wechat_ai_customer_service.adapters import (
+            wechat_win32_ocr_sidecar as sidecar,
+        )
+        from apps.wechat_ai_customer_service.optional_plugins.vision.capture import (
+            surface,
+        )
+
+        screenshot = Image.new("RGB", (1000, 800), "white")
+        text_message = {
+            "id": "text-after",
+            "type": "text",
+            "sender_role": "customer",
+            "content": "刚结束",
+            "bubble_rect": [464, 616, 609, 647],
+        }
+
+        def image_envelope(*_args, **_kwargs):
+            return [
+                {
+                    "id": "temporary-image",
+                    "message_id": "temporary-image",
+                    "type": "image",
+                    "sender": "customer",
+                    "sender_role": "customer",
+                    "bubble_rect": [464, 143, 609, 465],
+                    "bounds": [464, 143, 609, 465],
+                    "time": "",
+                }
+            ]
+
+        def attach_anchor(_screenshot, images, _messages):
+            return [
+                {
+                    **item,
+                    "image_physical_anchor": {
+                        "sender_role": "customer",
+                        "occurrence_index": 0,
+                        "occurrence_count": 1,
+                        "preceding_stable_message": "",
+                        "following_stable_message": "text-after",
+                        "bubble_visual_fingerprint": "dhash64:618b2b2b0d950f0f",
+                    },
+                }
+                for item in images
+            ]
+
+        try:
+            with patch.object(
+                surface,
+                "visual_image_messages_from_current_surface",
+                side_effect=image_envelope,
+            ), patch.object(
+                surface,
+                "attach_image_physical_anchors",
+                side_effect=attach_anchor,
+            ), patch.object(
+                sidecar,
+                "message_row_avatar_role_details",
+                return_value={
+                    "role": "customer",
+                    "source": "same_row_avatar",
+                },
+            ), patch.object(
+                sidecar,
+                "get_window_geometry",
+                return_value={
+                    "left": 0,
+                    "top": 0,
+                    "right": 1000,
+                    "bottom": 800,
+                    "width": 1000,
+                    "height": 800,
+                },
+            ):
+                first = sidecar.merge_structural_image_messages(
+                    screenshot,
+                    [],
+                    [text_message],
+                    target="CJR8S5K3",
+                )
+                reused = sidecar.merge_structural_image_messages(
+                    screenshot,
+                    [],
+                    first,
+                    target="CJR8S5K3",
+                )
+                payload = sidecar.messages_payload(
+                    101,
+                    {},
+                    target="CJR8S5K3",
+                    history_load_times=0,
+                    seed_snapshot={
+                        "screenshot": screenshot,
+                        "screenshot_path": "reused-frame.png",
+                        "ocr_items": [],
+                        "messages": first,
+                    },
+                )
+        finally:
+            screenshot.close()
+
+        images = [item for item in reused if item.get("type") == "image"]
+        self.assertEqual(len(images), 1)
+        observations = sidecar.build_message_observations_v3(reused)
+        image_observations = [
+            item for item in observations if item.get("message_type") == "image"
+        ]
+        self.assertEqual(len(image_observations), 1)
+        self.assertNotIn(":", image_observations[0]["observation_id"])
+        payload_image_observations = [
+            item
+            for item in payload["observations"]
+            if item.get("message_type") == "image"
+        ]
+        self.assertEqual(len(payload_image_observations), 1)
+        self.assertEqual(
+            payload_image_observations[0]["observation_id"],
+            image_observations[0]["observation_id"],
+        )
+        send_guard_validation = sidecar.validate_send_context_guard(
+            payload["send_context_guard"],
+            sidecar.build_send_context_guard(
+                sidecar.build_message_observations_v3(first)
+            ),
+        )
+        self.assertTrue(send_guard_validation["ok"])
+
     def test_structural_image_detector_exception_is_not_zero_images(self):
         from apps.wechat_ai_customer_service.adapters import (
             wechat_win32_ocr_sidecar as sidecar,
