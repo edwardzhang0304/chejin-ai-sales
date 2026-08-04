@@ -4276,6 +4276,67 @@ class C2VisionIntegrationTests(unittest.TestCase):
         finally:
             screenshot.close()
 
+    def test_structural_detector_ignores_clipped_boundary_image_but_keeps_complete_image(self):
+        for width, height in ((974, 853), (1200, 1000)):
+            with self.subTest(size=(width, height)):
+                screenshot = Image.new("RGB", (width, height), (242, 242, 242))
+                draw = ImageDraw.Draw(screenshot)
+                chat_top = wechat_capture.chat_header_cutoff_y(height)
+
+                # This older image starts exactly at the current chat crop.
+                # Its avatar/upper row evidence may be outside the screen.
+                for y in range(chat_top, chat_top + 160, 8):
+                    for x in range(470, 670, 8):
+                        draw.rectangle(
+                            (x, y, x + 7, y + 7),
+                            fill=((x + y) % 220, 120, 70),
+                        )
+
+                complete_top = chat_top + 320
+                for y in range(complete_top, complete_top + 45, 5):
+                    for x in range(408, 453, 5):
+                        draw.rectangle(
+                            (x, y, x + 4, y + 4),
+                            fill=(60 if ((x + y) // 5) % 2 else 205, 100, 165),
+                        )
+                for y in range(complete_top, complete_top + 190, 8):
+                    for x in range(470, 700, 8):
+                        draw.rectangle(
+                            (x, y, x + 7, y + 7),
+                            fill=((x * 3 + y) % 255, (x + y * 2) % 255, 80),
+                        )
+
+                try:
+                    candidates = detect_visual_image_bubbles(
+                        screenshot,
+                        messages=[],
+                        side_filter="all",
+                    )
+                    messages = wechat_win32_ocr_sidecar.merge_structural_image_messages(
+                        screenshot,
+                        [],
+                        [],
+                        target="CJTEST01",
+                    )
+                    observations = (
+                        wechat_win32_ocr_sidecar.build_message_observations_v3(
+                            messages
+                        )
+                    )
+                finally:
+                    screenshot.close()
+
+                self.assertEqual(len(candidates), 1)
+                self.assertGreater(candidates[0]["bounds"][1], chat_top)
+                self.assertEqual(candidates[0]["side"], "customer")
+                self.assertEqual(len(observations), 1)
+                self.assertEqual(observations[0]["sender_role"], "customer")
+                self.assertEqual(
+                    observations[0]["sender_role_source"],
+                    "same_row_avatar",
+                )
+                self.assertNotIn("contract_errors", observations[0])
+
     def test_structural_image_bounds_exclude_avatar_before_shared_role_resolution(self):
         screenshot = Image.new("RGB", (974, 853), (242, 242, 242))
         draw = ImageDraw.Draw(screenshot)
