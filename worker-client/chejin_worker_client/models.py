@@ -10,6 +10,15 @@ RunStatus = Literal["running", "paused"]
 RpaStatus = Literal["ready", "unavailable"]
 WechatStatus = Literal["logged_in", "not_found", "logged_out", "unknown"]
 
+TASK_TYPE_TITLES = {
+    "add_friend": "添加通讯录邀请",
+    "chat_reply": "AI 自动回复",
+}
+
+
+def task_type_title(task_type: str | None) -> str:
+    return TASK_TYPE_TITLES.get(str(task_type or "").strip(), "Worker 任务")
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -77,6 +86,8 @@ class Task:
     result_code: str | None = None
     error_code: str | None = None
     reply_action_id: str | None = None
+    lease_expires_at: str | None = None
+    lease_fencing_token: int = 0
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -119,6 +130,13 @@ class Task:
             result_code=payload.get("result_code"),
             error_code=payload.get("error_code"),
             reply_action_id=payload.get("reply_action_id"),
+            lease_expires_at=payload.get("lease_expires_at")
+            or execution.get("lease_expires_at"),
+            lease_fencing_token=int(
+                payload.get("lease_fencing_token")
+                or execution.get("lease_fencing_token")
+                or 0
+            ),
             raw=payload,
         )
 
@@ -134,6 +152,10 @@ class ReplySendClaim:
     rpa_session_key: str
     expire_at: str | None
     raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def duplicated(self) -> bool:
+        return self.raw.get("duplicated") is True
 
     @classmethod
     def from_api(cls, payload: dict[str, Any]) -> "ReplySendClaim":

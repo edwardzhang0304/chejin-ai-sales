@@ -60,14 +60,8 @@ def normalize_humanized_input_method(
 
 
 def normalize_send_trigger_mode(raw_mode: str | None, *, default: str = DEFAULT_SEND_TRIGGER_MODE) -> str:
-    mode = str(raw_mode or default).strip().lower()
-    if mode not in {"click_only", "enter_only", "enter_then_click"}:
-        return default
-    if mode == "enter_then_click":
-        return "enter_only"
-    if mode == "click_only" and not env_flag("WECHAT_WIN32_OCR_ALLOW_CLICK_SEND_TRIGGER", default=False):
-        return "enter_only"
-    return mode
+    del raw_mode, default
+    return DEFAULT_SEND_TRIGGER_MODE
 
 
 def strict_send_focus_guard_enabled() -> bool:

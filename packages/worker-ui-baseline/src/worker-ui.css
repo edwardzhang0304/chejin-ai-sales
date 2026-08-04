@@ -952,8 +952,59 @@
 }
 
 .cw-log-row p {
-  margin: 0;
+  display: grid;
+  gap: 2px;
+  margin: 7px 0;
   color: var(--cw-muted);
   overflow-wrap: anywhere;
   font-size: 11px;
+}
+
+.cw-log-row p b,
+.cw-log-row p span,
+.cw-log-row p small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.cw-log-row p b {
+  color: var(--cw-ink);
+}
+
+.cw-log-row p small {
+  color: var(--cw-subtle);
+  font-size: 9px;
+}
+
+.cw-incident-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  margin: 2px 0 8px;
+}
+
+.cw-incident-actions button,
+.cw-log-incident-export {
+  min-height: 36px;
+  padding: 6px;
+  color: #fff;
+  background: var(--cw-blue);
+  border: 0;
+  border-radius: var(--cw-radius);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.cw-log-incident-export {
+  width: fit-content;
+  min-height: 28px;
+  margin-top: 4px;
+  padding: 4px 8px;
+}
+
+.cw-incident-latest {
+  margin: 0 0 6px;
+  color: var(--cw-muted);
+  overflow-wrap: anywhere;
+  font-size: 10px;
 }

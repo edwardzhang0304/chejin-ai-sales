@@ -13,6 +13,9 @@ interface WorkerClientBaselineProps {
   onStartAccepting?: () => void;
   onPauseAccepting?: () => void;
   onUpdateAcceptSchedule?: (enabled: boolean, start: string, end: string) => void;
+  onExportLatestIncident?: () => void;
+  onExportIncident?: (incidentId: string) => void;
+  onOpenIncidentDirectory?: () => void;
   onBind?: (workerId: string, workerToken: string) => void;
   bindError?: string;
   onBack?: () => void;
@@ -450,7 +453,15 @@ function ScheduleSettingsScreen({
   );
 }
 
-function LogsScreen({ model }: { model: WorkerClientModel }) {
+function LogsScreen({
+  model,
+  onExportLatestIncident,
+  onExportIncident,
+  onOpenIncidentDirectory,
+}: Pick<
+  WorkerClientBaselineProps,
+  "model" | "onExportLatestIncident" | "onExportIncident" | "onOpenIncidentDirectory"
+>) {
   return (
     <section className="cw-screen screen active" data-screen-view="logs">
       <div className="cw-logs-page">
@@ -460,11 +471,37 @@ function LogsScreen({ model }: { model: WorkerClientModel }) {
             <h2>本机执行日志明细</h2>
           </div>
         </header>
+        <div className="cw-incident-actions">
+          <button type="button" onClick={onExportLatestIncident}>导出最近故障</button>
+          <button type="button" onClick={onOpenIncidentDirectory}>打开证据目录</button>
+        </div>
+        {model.latestIncident?.incident_id ? (
+          <p className="cw-incident-latest">最近故障：{model.latestIncident.incident_id}</p>
+        ) : null}
         <section className="cw-log-table log-table">
-          <div className="cw-log-head"><span>时间</span><span>级别</span><span>任务</span><span>内容</span></div>
+          <div className="cw-log-head"><span>时间</span><span>级别</span><span>任务</span><span>事件 / 故障证据</span></div>
           {model.logs.map((row, index) => (
             <div className="cw-log-row" key={`${row.time}-${index}`}>
-              <span>{row.time}</span><strong>{row.level}</strong><span>{row.task}</span><p>{row.content}</p>
+              <span>{row.time}</span>
+              <strong>{row.level}</strong>
+              <span>{row.task}</span>
+              <p>
+                <b>{row.event}</b>
+                <span>{row.content}</span>
+                <small>error_code: {row.errorCode}</small>
+                <small>incident_id: {row.incidentId}</small>
+                <small>sidecar_run_id: {row.sidecarRunId}</small>
+                <small>evidence: {row.evidencePath}</small>
+                {row.incidentId !== "-" ? (
+                  <button
+                    className="cw-log-incident-export"
+                    type="button"
+                    onClick={() => onExportIncident?.(row.incidentId)}
+                  >
+                    导出此故障
+                  </button>
+                ) : null}
+              </p>
             </div>
           ))}
         </section>
@@ -535,7 +572,14 @@ function renderScreen(props: WorkerClientBaselineProps) {
   if (screen === "failed") return <TaskScreen screen={screen} model={model} steps={model.failedSteps} statusText="失败" dockState={model.status.receiveState} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />;
   if (screen === "settings") return <SettingsScreen model={model} onScreenChange={onScreenChange} />;
   if (screen === "schedule-settings") return <ScheduleSettingsScreen model={model} onUpdateAcceptSchedule={onUpdateAcceptSchedule} />;
-  return <LogsScreen model={model} />;
+  return (
+    <LogsScreen
+      model={model}
+      onExportLatestIncident={props.onExportLatestIncident}
+      onExportIncident={props.onExportIncident}
+      onOpenIncidentDirectory={props.onOpenIncidentDirectory}
+    />
+  );
 }
 
 export function WorkerClientBaseline(props: WorkerClientBaselineProps) {

@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import json
 from pathlib import Path
+import subprocess
 import sys
 import unittest
+
+from tests.contract_artifacts import resolve_contract_artifact
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,6 +16,42 @@ ADAPTERS = ROOT / "omniauto-rpa" / "apps" / "wechat_ai_customer_service" / "adap
 
 
 class OmniAutoIntegrationContractTest(unittest.TestCase):
+    def test_generated_observation_schema_is_current_and_validates_shared_fixture(self):
+        check = subprocess.run(
+            [sys.executable, "scripts/generate-c2-observation-schema.py", "--check"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
+
+        sidecar_path = ADAPTERS / "wechat_win32_ocr_sidecar.py"
+        module_name = "chejin_generated_contract_sidecar"
+        spec = importlib.util.spec_from_file_location(module_name, sidecar_path)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+
+        fixture_path = resolve_contract_artifact(
+            "examples",
+            "c2_v3_mixed_roundtrip.json",
+        )
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        for observation in fixture["omniauto_output"]["observations"]:
+            self.assertEqual(
+                module.validate_message_observation_v3(observation),
+                [],
+                observation["observation_id"],
+            )
+
+        generated = json.loads(
+            (ADAPTERS / "chejin_c2_observation_schema.generated.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(module.C2_OBSERVATION_CONTRACT_REVISION, generated["contract_revision"])
+        self.assertEqual(module.C2_OBSERVATION_CONTRACT_SHA256, generated["contract_sha256"])
+
     def test_runner_connector_methods_share_conversation_type_contract(self):
         connector_path = ADAPTERS / "wechat_connector.py"
         source = connector_path.read_text(encoding="utf-8")

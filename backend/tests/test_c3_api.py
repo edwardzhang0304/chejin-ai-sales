@@ -1,11 +1,26 @@
 from fastapi.testclient import TestClient
+import pytest
+import time
+from datetime import timedelta
+from types import SimpleNamespace
+from sqlalchemy import select
 
 from app.contracts.c2 import c2_contract_v3, contract_revision, contract_sha256
 from app.core.database import Base, SessionLocal, engine
 from app.main import app
-from app.models.c3 import Conversation, MessageBatch, ReplyAction
-from app.models.wechat import WechatSessionBinding
-from app.services.wechat_service import _authorization_revision
+from app.models.c3 import Conversation, HandoffEvent, MessageBatch, ReplyAction, SentAck
+from app.models.task import Task
+from app.models.wechat import MessageEvent, WechatSessionBinding
+from app.services.wechat_service import _authorization_revision, _read_reason
+from app.errors import AppError
+from app.services import c3_service
+from app.services.c3_recovery import (
+    recover_due_message_batches_once,
+    recover_stale_reply_sends_once,
+)
+from app.services.ai_adapter import RealOmniAutoAIEngineAdapter
+from app.services.message_contract import canonical_reply_text, reply_text_hash
+from app.models.base import utcnow
 
 
 client = TestClient(app)
@@ -75,6 +90,15 @@ def _worker_headers(worker: dict) -> dict:
     return {"X-Worker-Token": worker["worker_token"], "X-Client-Instance-Id": "client-c3"}
 
 
+def _task_lease_headers(worker: dict, claim_response) -> dict:
+    token = int(claim_response.json()["data"]["lease_fencing_token"])
+    assert token > 0
+    return {
+        **_worker_headers(worker),
+        "X-Task-Lease-Fencing-Token": str(token),
+    }
+
+
 def _create_sales(worker_id: str) -> str:
     response = client.post(
         "/api/sales",
@@ -126,6 +150,11 @@ def _setup_bound_conversation() -> tuple[dict, dict]:
     _create_sales(worker["id"])
     _create_lead()
     binding = _scan(worker)
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        conversation.friend_state = "friend_active"
+        conversation.status = "waiting_sales_reply"
+        db.commit()
     return worker, binding
 
 
@@ -134,10 +163,41 @@ def _ingest(worker: dict, conversation_id: str, dedupe_key: str, content: str) -
 
 
 def _ingest_with_role(worker: dict, conversation_id: str, dedupe_key: str, content: str, role: str) -> str:
+    continuation: dict[str, str] = {}
     with SessionLocal() as db:
         binding = db.query(WechatSessionBinding).filter(WechatSessionBinding.conversation_id == conversation_id).one()
         remark_code = binding.remark_code
         authorization_revision = _authorization_revision(binding)
+        conversation = db.get(Conversation, conversation_id)
+        authorization_read_reason = _read_reason(binding, conversation) or "waiting_sales_reply"
+        continuation_batch = (
+            db.query(MessageBatch)
+            .filter(
+                MessageBatch.conversation_id == conversation_id,
+                MessageBatch.continuation_authorization_revision.is_not(None),
+            )
+            .order_by(MessageBatch.created_at.desc(), MessageBatch.id.desc())
+            .first()
+        )
+        continuation_batch_id = (
+            continuation_batch.id
+            if conversation.status == "ai_active" and continuation_batch is not None
+            else None
+        )
+    if continuation_batch_id:
+        batch_status = client.get(
+            f"/api/workers/{worker['id']}/wechat/message-batches/{continuation_batch_id}",
+            headers=_worker_headers(worker),
+        )
+        assert batch_status.status_code == 200
+        authorization = batch_status.json()["data"]["authorization"]
+        assert authorization["allowed"] is True
+        authorization_revision = authorization["authorization_revision"]
+        authorization_read_reason = authorization["read_reason"]
+        continuation = {
+            "continuation_batch_id": continuation_batch_id,
+            "continuation_token": authorization["continuation_token"],
+        }
     raw_payload = {
         "contract_version": 3,
         "contract_revision": contract_revision(),
@@ -177,7 +237,11 @@ def _ingest_with_role(worker: dict, conversation_id: str, dedupe_key: str, conte
                     "content": content,
                     "item_state": "completed",
                     "flow_state": "completed",
-                    "message_position": {"screen_order": 1, "frame_source": "final_read"},
+                    "message_position": {
+                        "screen_order": 1,
+                        "frame_source": "final_read",
+                        "order_source": "observation_index_fallback",
+                    },
                     "raw_payload": raw_payload,
                 }
             ],
@@ -187,6 +251,12 @@ def _ingest_with_role(worker: dict, conversation_id: str, dedupe_key: str, conte
                 "observation_schema_version": int(c2_contract_v3()["observation_schema_version"]),
                 "authoritative_frame_source": "final_read",
                 "observations": [raw_payload["observation"]],
+                "read_reason": authorization_read_reason,
+                "authorization_read_reason": authorization_read_reason,
+                **continuation,
+                "finished_at": utcnow().isoformat(),
+                "flow_gate_errors": [],
+                "flow_gate_details": [],
             },
         },
         headers=_worker_headers(worker),
@@ -214,7 +284,412 @@ def _generate(batch_id: str) -> dict:
     return response.json()["data"]
 
 
-def test_collect_merges_customer_messages_into_one_active_batch():
+def _reset_batch_to_generation_state(
+    batch_id: str,
+    *,
+    status: str,
+    generation_attempt_count: int,
+    generation_started_at=None,
+) -> None:
+    with SessionLocal() as db:
+        action_ids = list(
+            db.scalars(select(ReplyAction.id).where(ReplyAction.batch_id == batch_id))
+        )
+        if action_ids:
+            db.query(Task).filter(Task.reply_action_id.in_(action_ids)).delete(
+                synchronize_session=False
+            )
+            db.query(ReplyAction).filter(ReplyAction.id.in_(action_ids)).delete(
+                synchronize_session=False
+            )
+        row = db.get(MessageBatch, batch_id)
+        row.status = status
+        row.active = True
+        row.retryable = status == "retry_wait"
+        row.decision = None
+        row.error_code = None
+        row.generation_attempt_count = generation_attempt_count
+        row.generation_started_at = generation_started_at
+        db.commit()
+
+
+def test_real_adapter_uses_guard_approved_brain_text_without_rewriting(monkeypatch):
+    adapter = RealOmniAutoAIEngineAdapter()
+    brain_result = {
+        "rule_name": "customer_service_brain_reply",
+        "adoptable": True,
+        "visible_reply_source": "brain_plan.reply_segments",
+        "reply_text": "这是 Guard 批准的 Brain 原文。",
+        "guard_verdict": "pass",
+        "brain_plan": {
+            "recommended_action": "send_reply",
+            "confidence": 0.91,
+            "risk_flags": [],
+            "evidence_refs": ["rag:vehicle:001"],
+            "reply_segments": ["这是 Guard 批准的 Brain 原文。"],
+        },
+    }
+    monkeypatch.setattr(adapter, "_load_config", lambda: {"customer_service_brain": {"provider": "test", "model": "test", "api_key": "test-only"}})
+    monkeypatch.setattr(adapter, "_load_brain", lambda: object())
+    monkeypatch.setattr(adapter, "_run_brain_isolated", lambda **_kwargs: brain_result)
+
+    decision = adapter.generate_reply_decision(
+        conversation_context={"conversation_id": "conv-real-adapter", "remark_code": "CJREAL01"},
+        message_batch={"id": "batch-real-adapter", "messages": [{"content": "想看 SUV"}]},
+    )
+
+    assert decision.decision == "send_reply"
+    assert decision.reply_text == "这是 Guard 批准的 Brain 原文。"
+    assert decision.raw_payload["omniauto_brain_result"]["brain_plan"] == brain_result["brain_plan"]
+
+
+def test_real_adapter_provider_exception_is_explicit_retry_later(monkeypatch):
+    adapter = RealOmniAutoAIEngineAdapter()
+    monkeypatch.setattr(adapter, "_load_config", lambda: {"customer_service_brain": {"provider": "test", "model": "test", "api_key": "test-only"}})
+
+    def fail_brain(**_kwargs):
+        raise AppError(
+            "AI_ENGINE_PROVIDER_FAILED",
+            "OmniAuto Brain 调用失败",
+            503,
+            {"suggested_action": "retry_later"},
+        )
+
+    monkeypatch.setattr(adapter, "_load_brain", lambda: object())
+    monkeypatch.setattr(adapter, "_run_brain_isolated", fail_brain)
+
+    with pytest.raises(AppError) as exc:
+        adapter.generate_reply_decision(
+            conversation_context={"conversation_id": "conv-provider-fail"},
+            message_batch={"id": "batch-provider-fail", "messages": [{"content": "你好"}]},
+        )
+
+    assert exc.value.code == "AI_ENGINE_PROVIDER_FAILED"
+    assert exc.value.data["suggested_action"] == "retry_later"
+
+
+def test_real_adapter_provider_hard_timeout_kills_isolated_process(monkeypatch, tmp_path):
+    adapter = RealOmniAutoAIEngineAdapter()
+    monkeypatch.setattr(adapter, "_load_config", lambda: {"customer_service_brain": {"provider": "test", "model": "test", "api_key": "test-only"}})
+    monkeypatch.setattr(adapter, "_load_brain", lambda: object())
+    sleeper = tmp_path / "brain_sleeper.py"
+    sleeper.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    monkeypatch.setattr(adapter, "_provider_worker_script", sleeper)
+    monkeypatch.setattr(
+        "app.services.ai_adapter.get_settings",
+        lambda: SimpleNamespace(c3_brain_provider_timeout_seconds=1.0),
+    )
+
+    started_at = time.monotonic()
+    with pytest.raises(AppError) as exc:
+        adapter.generate_reply_decision(
+            conversation_context={"conversation_id": "conv-provider-timeout"},
+            message_batch={"id": "batch-provider-timeout", "messages": [{"content": "你好"}]},
+        )
+
+    assert time.monotonic() - started_at < 1.5
+    assert exc.value.code == "AI_ENGINE_PROVIDER_TIMEOUT"
+    assert exc.value.data["suggested_action"] == "retry_later"
+
+
+def test_real_adapter_maps_brain_no_visible_provider_result_to_retry_later(monkeypatch):
+    adapter = RealOmniAutoAIEngineAdapter()
+    monkeypatch.setattr(adapter, "_load_config", lambda: {"customer_service_brain": {"provider": "test", "model": "test", "api_key": "test-only"}})
+    monkeypatch.setattr(adapter, "_load_brain", lambda: object())
+    monkeypatch.setattr(
+        adapter,
+        "_run_brain_isolated",
+        lambda **_kwargs: {
+            "rule_name": "customer_service_brain_no_visible_reply",
+            "adoptable": False,
+            "visible_reply_source": "none",
+            "reply_text": "",
+            "reason": "customer_service_brain_llm_unavailable",
+            "no_visible_reply": {"class": "llm_unavailable", "retryable": True},
+            "brain_plan": {},
+            "duration_seconds": 0.21,
+        },
+    )
+
+    decision = adapter.generate_reply_decision(
+        conversation_context={"conversation_id": "conv-no-visible"},
+        message_batch={"id": "batch-no-visible", "messages": [{"content": "你好"}]},
+    )
+
+    assert decision.decision == "retry_later"
+    assert decision.error_code == "AI_ENGINE_PROVIDER_FAILED"
+    assert decision.suggested_action == "retry_later"
+    assert decision.raw_payload["omniauto_brain_result"]["no_visible_reply"]["retryable"] is True
+
+
+def test_real_adapter_preserves_brain_timeout_as_provider_timeout(monkeypatch):
+    adapter = RealOmniAutoAIEngineAdapter()
+    monkeypatch.setattr(
+        adapter,
+        "_load_config",
+        lambda: {
+            "customer_service_brain": {
+                "provider": "test",
+                "model": "test",
+                "api_key": "test-only",
+            }
+        },
+    )
+    monkeypatch.setattr(adapter, "_load_brain", lambda: object())
+    monkeypatch.setattr(
+        adapter,
+        "_run_brain_isolated",
+        lambda **_kwargs: {
+            "rule_name": "customer_service_brain_no_visible_reply",
+            "adoptable": False,
+            "visible_reply_source": "none",
+            "reply_text": "",
+            "reason": "customer_service_brain_llm_unavailable",
+            "no_visible_reply": {
+                "class": "llm_timeout",
+                "stage": "brain_llm",
+                "reason": "customer_service_brain_llm_unavailable",
+                "retryable": True,
+            },
+            "llm_status": {
+                "ok": False,
+                "status": 0,
+                "error": "llm_wall_timeout_after_12.0s",
+            },
+            "brain_plan": {},
+        },
+    )
+
+    decision = adapter.generate_reply_decision(
+        conversation_context={"conversation_id": "conv-timeout"},
+        message_batch={
+            "id": "batch-timeout",
+            "messages": [{"content": "你好"}],
+        },
+    )
+
+    assert decision.decision == "retry_later"
+    assert decision.error_code == "AI_ENGINE_PROVIDER_TIMEOUT"
+    assert decision.suggested_action == "retry_later"
+
+
+@pytest.mark.parametrize(
+    ("recommended_action", "expected_decision", "expected_suggested_action"),
+    [
+        ("no_action", "no_action", "no_action"),
+        ("pause", "pause", "sales_handoff"),
+        ("retry_later", "retry_later", "retry_later"),
+    ],
+)
+def test_real_adapter_maps_explicit_non_send_brain_decisions(
+    monkeypatch,
+    recommended_action,
+    expected_decision,
+    expected_suggested_action,
+):
+    adapter = RealOmniAutoAIEngineAdapter()
+    brain_result = {
+        "rule_name": f"customer_service_brain_{recommended_action}",
+        "brain_plan": {
+            "recommended_action": recommended_action,
+            "confidence": 0.73,
+            "risk_flags": ["explicit_non_send"],
+            "evidence_refs": ["brain:decision"],
+        },
+        "reason": "模型明确要求本轮不自动发送",
+        "error_code": (
+            "AI_ENGINE_PAUSED_FOR_MANUAL_REVIEW"
+            if recommended_action == "pause"
+            else "AI_ENGINE_RETRY_LATER"
+            if recommended_action == "retry_later"
+            else None
+        ),
+    }
+    monkeypatch.setattr(
+        adapter,
+        "_load_config",
+        lambda: {
+            "customer_service_brain": {
+                "provider": "test",
+                "model": "test",
+                "api_key": "test-only",
+            }
+        },
+    )
+    monkeypatch.setattr(adapter, "_load_brain", lambda: object())
+    monkeypatch.setattr(
+        adapter,
+        "_run_brain_isolated",
+        lambda **_kwargs: brain_result,
+    )
+
+    decision = adapter.generate_reply_decision(
+        conversation_context={"conversation_id": "conv-explicit-decision"},
+        message_batch={
+            "id": "batch-explicit-decision",
+            "messages": [{"content": "请按策略处理"}],
+        },
+    )
+
+    assert decision.decision == expected_decision
+    assert decision.suggested_action == expected_suggested_action
+    assert decision.raw_payload["omniauto_brain_result"] == brain_result
+
+
+def test_provider_failure_enters_durable_retry_wait(monkeypatch):
+    class FailingAdapter:
+        def generate_reply_decision(self, **_kwargs):
+            raise AppError("AI_ENGINE_PROVIDER_FAILED", "provider failed", 503)
+
+    monkeypatch.setattr(c3_service, "get_ai_engine_adapter", lambda: FailingAdapter())
+    worker, binding = _setup_bound_conversation()
+    message_event_id = _ingest(worker, binding["conversation_id"], "msg-provider-fail", "请介绍一下")
+    generated = _generate(_collect(binding["conversation_id"], message_event_id)["batch_id"])
+
+    assert generated["decision"] == "retry_later"
+    assert generated["error_code"] == "AI_ENGINE_PROVIDER_FAILED"
+    assert generated["batch"]["status"] == "retry_wait"
+    assert generated["batch"]["active"] is True
+    assert generated["batch"]["retryable"] is True
+    with SessionLocal() as db:
+        assert db.query(ReplyAction).count() == 0
+
+
+def test_brain_no_action_restores_conversation_to_listenable_state(monkeypatch):
+    class NoActionAdapter:
+        def generate_reply_decision(self, **_kwargs):
+            return c3_service.AIEngineDecision(
+                decision="no_action",
+                guard_result="pass",
+                suggested_action="wait_more",
+            )
+
+    monkeypatch.setattr(c3_service, "get_ai_engine_adapter", lambda: NoActionAdapter())
+    worker, binding = _setup_bound_conversation()
+    message_event_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-provider-no-action",
+        "暂时不用回复",
+    )
+    generated = _generate(_collect(binding["conversation_id"], message_event_id)["batch_id"])
+
+    assert generated["decision"] == "no_action"
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        batch = db.get(MessageBatch, generated["batch"]["id"])
+        assert conversation.status == "waiting_sales_reply"
+        assert batch.status == "no_action"
+        assert batch.active is False
+
+
+def test_brain_pause_disables_auto_reply_and_creates_manual_handoff(monkeypatch):
+    class PauseAdapter:
+        def generate_reply_decision(self, **_kwargs):
+            return c3_service.AIEngineDecision(
+                decision="pause",
+                confidence=0.8,
+                guard_result="pause",
+                error_code="AI_ENGINE_PAUSED_FOR_MANUAL_REVIEW",
+                suggested_action="sales_handoff",
+            )
+
+    worker, binding = _setup_bound_conversation()
+    message_event_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-provider-pause",
+        "这条需要进一步判断",
+    )
+    batch_id = _collect(binding["conversation_id"], message_event_id)["batch_id"]
+    _reset_batch_to_generation_state(
+        batch_id,
+        status="collecting",
+        generation_attempt_count=0,
+    )
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        conversation.status = "ai_active"
+        conversation.ai_enabled = True
+        db.commit()
+    monkeypatch.setattr(c3_service, "get_ai_engine_adapter", lambda: PauseAdapter())
+    generated = _generate(batch_id)
+
+    assert generated["decision"] == "pause"
+    assert generated["suggested_action"] == "sales_handoff"
+    assert generated["handoff_event"]["handoff_reason_code"] == (
+        "AI_ENGINE_PAUSED_FOR_MANUAL_REVIEW"
+    )
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        batch = db.get(MessageBatch, generated["batch"]["id"])
+        assert conversation.status == "waiting_sales_reply"
+        assert conversation.ai_enabled is False
+        assert batch.status == "paused"
+        assert batch.active is False
+        assert batch.decision == "pause"
+        assert db.query(HandoffEvent).filter(
+            HandoffEvent.batch_id == batch.id
+        ).count() == 1
+
+
+def test_reply_text_normalization_has_one_hash_for_whitespace_variants():
+    canonical = "第一行 第二行 第三行"
+    variants = [
+        "第一行\n第二行\t第三行",
+        "  第一行\u00a0第二行  第三行  ",
+        canonical,
+    ]
+
+    assert {canonical_reply_text(value) for value in variants} == {canonical}
+    assert len({reply_text_hash(value) for value in variants}) == 1
+
+
+def test_due_brain_retry_is_reclaimed_and_exhaustion_creates_handoff(monkeypatch):
+    class FailingAdapter:
+        def generate_reply_decision(self, **_kwargs):
+            raise AppError("AI_ENGINE_PROVIDER_FAILED", "provider failed", 503)
+
+    monkeypatch.setattr(c3_service, "get_ai_engine_adapter", lambda: FailingAdapter())
+    worker, binding = _setup_bound_conversation()
+    message_event_id = _ingest(worker, binding["conversation_id"], "msg-provider-retry", "请介绍一下")
+    batch = _collect(binding["conversation_id"], message_event_id)
+    with SessionLocal() as db:
+        row = db.get(MessageBatch, batch["batch_id"])
+        row.status = "retry_wait"
+        row.active = True
+        row.retryable = True
+        row.generation_attempt_count = 1
+        row.generated_at = utcnow() - timedelta(seconds=60)
+        db.commit()
+
+    with SessionLocal() as db:
+        claim = c3_service.claim_message_batch_generation(
+            db,
+            batch_id=batch["batch_id"],
+            stale_only=True,
+        )
+        assert claim["run"] is True
+        assert claim["attempt"] == 2
+        generated = c3_service.generate_for_batch(
+            db,
+            batch_id=batch["batch_id"],
+            expected_generation_attempt=2,
+        )
+        db.commit()
+
+    assert generated["decision"] == "handoff"
+    assert generated["error_code"] == "AI_ENGINE_RETRY_EXHAUSTED"
+    with SessionLocal() as db:
+        row = db.get(MessageBatch, batch["batch_id"])
+        assert row.status == "handoff_created"
+        assert row.retryable is False
+        assert db.query(HandoffEvent).filter(
+            HandoffEvent.batch_id == batch["batch_id"]
+        ).count() == 1
+
+
+def test_separate_ingest_calls_create_new_batch_after_prior_terminal_batch():
     worker, binding = _setup_bound_conversation()
     m1 = _ingest(worker, binding["conversation_id"], "msg-c3-001", "你好")
     m2 = _ingest(worker, binding["conversation_id"], "msg-c3-002", "预算 15 万")
@@ -222,9 +697,9 @@ def test_collect_merges_customer_messages_into_one_active_batch():
     first = _collect(binding["conversation_id"], m1)
     second = _collect(binding["conversation_id"], m2)
 
-    assert second["batch_id"] == first["batch_id"]
-    assert second["batch"]["message_count"] == 2
-    assert second["batch_status"] == "collecting"
+    assert second["batch_id"] != first["batch_id"]
+    assert first["batch"]["message_event_ids"] == [m1]
+    assert second["batch"]["message_event_ids"] == [m2]
 
 
 def test_generate_creates_one_reply_action_and_one_chat_reply_task_idempotently():
@@ -249,6 +724,606 @@ def test_generate_creates_one_reply_action_and_one_chat_reply_task_idempotently(
     assert detail["c3"]["reply_action"]["status"] == "queued"
     assert detail["c3"]["sent_ack"] is None
     assert detail["c3"]["handoff_event"] is None
+
+
+def test_c2_ingest_to_c3_sent_ack_complete_closure():
+    worker, binding = _setup_bound_conversation()
+    message_event_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-c2-c3-complete-closure",
+        "请帮我介绍一款十五万左右的 SUV",
+    )
+    with SessionLocal() as db:
+        batch = db.query(MessageBatch).filter(
+            MessageBatch.conversation_id == binding["conversation_id"]
+        ).one()
+        assert batch.message_event_ids == [message_event_id]
+        assert batch.status == "reply_action_created"
+        action = db.query(ReplyAction).filter(
+            ReplyAction.batch_id == batch.id,
+            ReplyAction.current.is_(True),
+        ).one()
+        task = db.query(Task).filter(Task.reply_action_id == action.id).one()
+        batch_id = batch.id
+        action_id = action.id
+        task_id = task.id
+
+    batch_status = client.get(
+        f"/api/workers/{worker['id']}/wechat/message-batches/{batch_id}",
+        headers=_worker_headers(worker),
+    )
+    assert batch_status.status_code == 200
+    assert batch_status.json()["data"]["decision"] == "send_reply"
+    assert batch_status.json()["data"]["task"]["id"] == task_id
+
+    claimed_task = client.post(
+        f"/api/tasks/{task_id}/claim",
+        json={
+            "worker_id": worker["id"],
+            "current_step": "chat_reply_claimed",
+            "claim_source": "c2_conversation_flow",
+            "conversation_id": binding["conversation_id"],
+        },
+        headers=_worker_headers(worker),
+    )
+    assert claimed_task.status_code == 200
+    send_claim = client.post(
+        f"/api/reply-actions/{action_id}/claim-send",
+        json={"task_id": task_id, "worker_id": worker["id"]},
+        headers=_task_lease_headers(worker, claimed_task),
+    )
+    assert send_claim.status_code == 200
+    send_data = send_claim.json()["data"]
+    assert send_data["reply_text"]
+
+    sent_ack = client.post(
+        f"/api/reply-actions/{action_id}/sent-ack",
+        json={
+            "send_token": send_data["send_token"],
+            "task_id": task_id,
+            "worker_id": worker["id"],
+            "client_instance_id": "client-c3",
+            "send_result": "sent",
+            "action_phase": "confirmed",
+            "reply_text_hash": send_data["reply_text_hash"],
+            "sidecar_run_id": "mac-closure-sidecar",
+        },
+        headers=_worker_headers(worker),
+    )
+    assert sent_ack.status_code == 200
+
+    with SessionLocal() as db:
+        batch = db.get(MessageBatch, batch_id)
+        action = db.get(ReplyAction, action_id)
+        task = db.get(Task, task_id)
+        ack = db.query(SentAck).filter(SentAck.reply_action_id == action_id).one()
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert batch.status == "reply_action_created"
+        assert action.status == "sent"
+        assert task.status == "completed"
+        assert ack.send_result == "sent"
+        assert conversation.status == "waiting_user_reply"
+        assert conversation.reply_count == 1
+
+
+def test_sent_ack_hash_conflict_becomes_triggered_unknown_not_false_failure():
+    worker, binding = _setup_bound_conversation()
+    message_event_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-c3-hash-conflict",
+        "请回复这条消息",
+    )
+    generated = _generate(
+        _collect(binding["conversation_id"], message_event_id)["batch_id"]
+    )
+    task_id = generated["task_id"]
+    action_id = generated["reply_action_id"]
+    claimed_task = client.post(
+        f"/api/tasks/{task_id}/claim",
+        json={
+            "worker_id": worker["id"],
+            "current_step": "chat_reply_claimed",
+            "claim_source": "c2_conversation_flow",
+            "conversation_id": binding["conversation_id"],
+        },
+        headers=_worker_headers(worker),
+    )
+    assert claimed_task.status_code == 200
+    send_claim = client.post(
+        f"/api/reply-actions/{action_id}/claim-send",
+        json={"task_id": task_id, "worker_id": worker["id"]},
+        headers=_task_lease_headers(worker, claimed_task),
+    )
+    assert send_claim.status_code == 200
+    send_data = send_claim.json()["data"]
+
+    response = client.post(
+        f"/api/reply-actions/{action_id}/sent-ack",
+        json={
+            "send_token": send_data["send_token"],
+            "task_id": task_id,
+            "worker_id": worker["id"],
+            "client_instance_id": "client-c3",
+            "send_result": "sent",
+            "action_phase": "confirmed",
+            "reply_text_hash": "0" * 64,
+            "sidecar_run_id": "sidecar-hash-conflict",
+        },
+        headers=_worker_headers(worker),
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["ack"]["send_result"] == "unknown"
+    assert data["ack"]["action_phase"] == "trigger_attempted"
+    assert data["ack"]["error_code"] == "SEND_TEXT_HASH_MISMATCH"
+    assert data["reply_action"]["status"] == "unknown_send_result"
+    assert data["task"]["status"] == "failed"
+
+
+def test_pending_chat_reply_remains_available_for_c2_context_recovery():
+    worker, binding = _setup_bound_conversation()
+    message_id = _ingest(worker, binding["conversation_id"], "msg-c3-pull-guard", "请回复我")
+    generated = _generate(_collect(binding["conversation_id"], message_id)["batch_id"])
+    with SessionLocal() as db:
+        db.query(Task).filter(
+            Task.worker_id == worker["id"],
+            Task.task_type != "chat_reply",
+            Task.status == "pending",
+        ).update({"status": "cancelled"})
+        db.commit()
+
+    pulled = client.get(
+        f"/api/workers/{worker['id']}/tasks/pull",
+        headers=_worker_headers(worker),
+    )
+
+    assert pulled.status_code == 200
+    pulled_task = pulled.json()["data"]["task"]
+    assert pulled.json()["data"]["mode"] == "pending"
+    assert pulled_task["task_type"] == "chat_reply"
+    assert pulled_task["c3"]["message_batch"]["id"] == generated["batch"]["id"]
+    task = client.get(f"/api/tasks/{generated['task_id']}", headers=HEADERS).json()["data"]
+    assert task["status"] == "pending"
+
+
+def test_pending_chat_reply_is_pulled_before_older_add_friend_task():
+    worker, binding = _setup_bound_conversation()
+    message_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-c3-reply-priority",
+        "请优先回复当前会话",
+    )
+    generated = _generate(_collect(binding["conversation_id"], message_id)["batch_id"])
+    with SessionLocal() as db:
+        older_add_friend = (
+            db.query(Task)
+            .filter(
+                Task.worker_id == worker["id"],
+                Task.task_type == "add_friend",
+                Task.status == "pending",
+            )
+            .order_by(Task.created_at.asc())
+            .first()
+        )
+        assert older_add_friend is not None
+        assert older_add_friend.created_at <= db.get(Task, generated["task_id"]).created_at
+
+    pulled = client.get(
+        f"/api/workers/{worker['id']}/tasks/pull",
+        headers=_worker_headers(worker),
+    )
+
+    assert pulled.status_code == 200
+    assert pulled.json()["data"]["task"]["id"] == generated["task_id"]
+    assert pulled.json()["data"]["task"]["task_type"] == "chat_reply"
+
+
+def test_worker_can_terminally_close_unclaimable_pending_chat_reply():
+    worker, binding = _setup_bound_conversation()
+    message_id = _ingest(worker, binding["conversation_id"], "msg-c3-pending-close", "请回复我")
+    generated = _generate(_collect(binding["conversation_id"], message_id)["batch_id"])
+
+    failed = client.post(
+        f"/api/tasks/{generated['task_id']}/fail",
+        json={
+            "error_code": "C2_REPLY_TARGET_NOT_AUTHORIZED",
+            "failure_step": "c2_reply_recovery",
+            "failure_remark": "目标授权已撤销",
+        },
+        headers=_worker_headers(worker),
+    )
+
+    assert failed.status_code == 200
+    assert failed.json()["data"]["status"] == "failed"
+    with SessionLocal() as db:
+        action = db.get(ReplyAction, generated["reply_action_id"])
+        batch = db.get(MessageBatch, generated["batch"]["id"])
+        assert action.status == "cancelled"
+        assert action.current is False
+        assert batch.status == "handoff_created"
+        assert batch.active is False
+        assert db.query(HandoffEvent).filter(
+            HandoffEvent.batch_id == batch.id,
+            HandoffEvent.handoff_reason_code == "C2_REPLY_TARGET_NOT_AUTHORIZED",
+        ).count() == 1
+
+
+def test_pending_chat_reply_cannot_be_closed_with_arbitrary_worker_error():
+    worker, binding = _setup_bound_conversation()
+    message_id = _ingest(worker, binding["conversation_id"], "msg-c3-pending-denied", "请回复我")
+    generated = _generate(_collect(binding["conversation_id"], message_id)["batch_id"])
+
+    failed = client.post(
+        f"/api/tasks/{generated['task_id']}/fail",
+        json={
+            "error_code": "OTHER",
+            "failure_step": "c2_reply_recovery",
+            "failure_remark": "任意失败不允许跳过领取",
+        },
+        headers=_worker_headers(worker),
+    )
+
+    assert failed.status_code == 409
+    assert failed.json()["code"] == "TASK_FAIL_NOT_ALLOWED"
+
+
+def test_pending_reply_context_recovery_failure_closes_task_and_hands_off():
+    worker, binding = _setup_bound_conversation()
+    message_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-c3-recovery-handoff",
+        "客户端重启后无法安全恢复会话",
+    )
+    generated = _generate(_collect(binding["conversation_id"], message_id)["batch_id"])
+
+    failed = client.post(
+        f"/api/tasks/{generated['task_id']}/fail",
+        json={
+            "error_code": "C2_REPLY_CONTEXT_RECOVERY_FAILED",
+            "failure_step": "pre_send_refresh",
+            "failure_remark": "无法确认原微信会话",
+        },
+        headers=_worker_headers(worker),
+    )
+
+    assert failed.status_code == 200
+    assert failed.json()["data"]["status"] == "failed"
+    with SessionLocal() as db:
+        action = db.get(ReplyAction, generated["reply_action_id"])
+        batch = db.get(MessageBatch, generated["batch"]["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        handoff = db.query(HandoffEvent).filter(
+            HandoffEvent.batch_id == batch.id,
+            HandoffEvent.handoff_reason_code == "C2_REPLY_CONTEXT_RECOVERY_FAILED",
+        ).one()
+        assert action.status == "cancelled"
+        assert batch.status == "handoff_created"
+        assert conversation.status == "waiting_sales_reply"
+        assert handoff.status == "created"
+
+
+def test_running_chat_reply_failure_cancels_unsent_action_and_batch():
+    worker, binding = _setup_bound_conversation()
+    message_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-c3-running-close",
+        "停止后不要再发送",
+    )
+    generated = _generate(_collect(binding["conversation_id"], message_id)["batch_id"])
+    claimed = client.post(
+        f"/api/tasks/{generated['task_id']}/claim",
+        json={
+            "worker_id": worker["id"],
+            "current_step": "chat_reply_claimed",
+            "claim_source": "c2_conversation_flow",
+            "conversation_id": binding["conversation_id"],
+        },
+        headers=_worker_headers(worker),
+    )
+    assert claimed.status_code == 200
+
+    failed = client.post(
+        f"/api/tasks/{generated['task_id']}/fail",
+        json={
+            "error_code": "CONVERSATION_NOT_ELIGIBLE",
+            "failure_step": "claim_send",
+            "failure_remark": "监听授权已撤销",
+        },
+        headers=_task_lease_headers(worker, claimed),
+    )
+
+    assert failed.status_code == 200
+    assert failed.json()["data"]["status"] == "failed"
+    with SessionLocal() as db:
+        action = db.get(ReplyAction, generated["reply_action_id"])
+        batch = db.get(MessageBatch, generated["batch"]["id"])
+        assert action.status == "cancelled"
+        assert action.current is False
+        assert batch.status == "cancelled"
+        assert batch.active is False
+
+
+def test_customer_messages_keep_worker_authoritative_batch_order():
+    worker, binding = _setup_bound_conversation()
+    first_id = _ingest(worker, binding["conversation_id"], "msg-order-first", "第一条")
+    second_id = _ingest(worker, binding["conversation_id"], "msg-order-second", "第二条")
+    with SessionLocal() as db:
+        batch = MessageBatch(
+            conversation_id=binding["conversation_id"],
+            status="collecting",
+            active=False,
+            message_event_ids=[second_id, first_id],
+            message_count=2,
+            generation_no=1,
+        )
+        db.add(batch)
+        db.flush()
+
+        messages = c3_service._customer_messages(db, batch)
+
+        assert [item.id for item in messages] == [second_id, first_id]
+        assert [item.content for item in messages] == ["第二条", "第一条"]
+
+
+def test_brain_history_uses_observed_order_when_old_fact_arrives_late():
+    worker, binding = _setup_bound_conversation()
+    newer_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-history-newer",
+        "画面里较新的消息",
+    )
+    delayed_older_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-history-delayed-older",
+        "网络延迟送达的旧消息",
+    )
+    with SessionLocal() as db:
+        newer = db.get(MessageEvent, newer_id)
+        delayed_older = db.get(MessageEvent, delayed_older_id)
+        delayed_older.observed_at = utcnow() - timedelta(minutes=2)
+        newer.observed_at = utcnow() - timedelta(minutes=1)
+        delayed_older.observation_order = 1
+        newer.observation_order = 1
+        batch = MessageBatch(
+            conversation_id=binding["conversation_id"],
+            status="collecting",
+            active=False,
+            message_event_ids=[newer_id],
+            message_count=1,
+            generation_no=99,
+        )
+        db.add(batch)
+        db.flush()
+        binding_row = db.query(WechatSessionBinding).filter(
+            WechatSessionBinding.conversation_id == binding["conversation_id"]
+        ).one()
+        conversation = db.get(Conversation, binding["conversation_id"])
+
+        context = c3_service._build_ai_context(
+            db,
+            binding_row,
+            conversation,
+            batch,
+        )
+
+        assert [
+            item["content"] for item in context["conversation"]["history"]
+        ] == [
+            "网络延迟送达的旧消息",
+            "画面里较新的消息",
+        ]
+
+
+def test_brain_history_preserves_structured_image_context_across_rounds():
+    worker, binding = _setup_bound_conversation()
+    image_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-history-image",
+        "[图片]",
+    )
+    with SessionLocal() as db:
+        image = db.get(MessageEvent, image_id)
+        image.message_type = "image"
+        image.content = None
+        image.item_state = "completed"
+        image.raw_payload = {
+            **dict(image.raw_payload or {}),
+            "item_state": "completed",
+            "customer_image_understanding": {
+                "schema_version": 1,
+                "vision_summary": "白色 SUV 外观，车头朝左",
+                "image_ocr_text": ["测试车牌"],
+                "classification": {
+                    "is_vehicle": True,
+                    "vehicle_confidence": 0.91,
+                    "unknown": False,
+                },
+                "entities": {
+                    "brand_candidates": ["测试品牌"],
+                    "series_candidates": [],
+                },
+                "bridge": {
+                    "normalized_vehicle_query": "白色 SUV",
+                },
+            },
+            "visual_bridge_input": {
+                "schema_version": 1,
+                "present": True,
+                "vision_summary": "白色 SUV 外观，车头朝左",
+                "catalog_assist": {
+                    "normalized_vehicle_query": "白色 SUV",
+                },
+            },
+            "server_validated_product_id": "server-product-001",
+        }
+        batch = MessageBatch(
+            conversation_id=binding["conversation_id"],
+            status="collecting",
+            active=False,
+            message_event_ids=[image_id],
+            message_count=1,
+            generation_no=100,
+        )
+        db.add(batch)
+        db.flush()
+        binding_row = db.query(WechatSessionBinding).filter(
+            WechatSessionBinding.conversation_id
+            == binding["conversation_id"]
+        ).one()
+        conversation = db.get(
+            Conversation,
+            binding["conversation_id"],
+        )
+
+        context = c3_service._build_ai_context(
+            db,
+            binding_row,
+            conversation,
+            batch,
+        )
+
+    history_image = next(
+        item
+        for item in context["conversation"]["history"]
+        if item["id"] == image_id
+    )
+    current_image = context["messages"][0]
+    for item in (history_image, current_image):
+        assert item["message_type"] == "image"
+        assert item["vision_summary"] == "白色 SUV 外观，车头朝左"
+        assert item["image_ocr_text"] == ["测试车牌"]
+        assert item["normalized_vehicle_query"] == "白色 SUV"
+        assert item["server_validated_product_id"] == ""
+
+
+def test_stale_message_batch_generation_is_reclaimed_once():
+    worker, binding = _setup_bound_conversation()
+    message_id = _ingest(worker, binding["conversation_id"], "msg-c3-stale-recovery", "恢复测试")
+    batch = _collect(binding["conversation_id"], message_id)
+    _reset_batch_to_generation_state(
+        batch["batch_id"],
+        status="generating",
+        generation_attempt_count=1,
+        generation_started_at=utcnow() - timedelta(seconds=600),
+    )
+
+    with SessionLocal() as db:
+        claim = c3_service.claim_message_batch_generation(
+            db,
+            batch_id=batch["batch_id"],
+            stale_only=True,
+        )
+        db.commit()
+
+    assert claim["run"] is True
+    assert claim["recovery"] is True
+    assert claim["attempt"] == 2
+    with SessionLocal() as db:
+        duplicate_claim = c3_service.claim_message_batch_generation(
+            db,
+            batch_id=batch["batch_id"],
+            stale_only=True,
+        )
+    assert duplicate_claim["run"] is False
+
+
+def test_durable_recovery_loop_finishes_stale_batch_without_worker_poll():
+    worker, binding = _setup_bound_conversation()
+    message_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-c3-autonomous-recovery",
+        "后端重启后继续生成回复",
+    )
+    batch = _collect(binding["conversation_id"], message_id)
+    _reset_batch_to_generation_state(
+        batch["batch_id"],
+        status="generating",
+        generation_attempt_count=1,
+        generation_started_at=utcnow() - timedelta(seconds=600),
+    )
+
+    result = recover_due_message_batches_once()
+
+    assert result == {"examined": 1, "claimed": 1, "generated": 1, "failed": 0}
+    with SessionLocal() as db:
+        row = db.get(MessageBatch, batch["batch_id"])
+        action = db.query(ReplyAction).filter(
+            ReplyAction.batch_id == batch["batch_id"],
+            ReplyAction.current.is_(True),
+        ).one()
+        assert row.status == "reply_action_created"
+        assert row.active is False
+        assert action.status == "queued"
+
+
+def test_durable_recovery_loop_starts_committed_collecting_batch_after_crash():
+    worker, binding = _setup_bound_conversation()
+    message_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-c3-collecting-crash",
+        "入库成功后后端立刻重启",
+    )
+    batch = _collect(binding["conversation_id"], message_id)
+    _reset_batch_to_generation_state(
+        batch["batch_id"],
+        status="collecting",
+        generation_attempt_count=0,
+    )
+
+    result = recover_due_message_batches_once()
+
+    assert result == {"examined": 1, "claimed": 1, "generated": 1, "failed": 0}
+    with SessionLocal() as db:
+        row = db.get(MessageBatch, batch["batch_id"])
+        assert row.status == "reply_action_created"
+        assert row.generation_attempt_count == 1
+        assert db.query(ReplyAction).filter(
+            ReplyAction.batch_id == batch["batch_id"]
+        ).count() == 1
+
+
+def test_stale_message_batch_recovery_exhaustion_becomes_terminal():
+    worker, binding = _setup_bound_conversation()
+    message_id = _ingest(worker, binding["conversation_id"], "msg-c3-stale-terminal", "恢复失败测试")
+    batch = _collect(binding["conversation_id"], message_id)
+    with SessionLocal() as db:
+        row = db.get(MessageBatch, batch["batch_id"])
+        row.status = "generating"
+        row.active = True
+        row.generation_attempt_count = 2
+        row.generation_started_at = utcnow() - timedelta(seconds=600)
+        db.commit()
+
+    with SessionLocal() as db:
+        claim = c3_service.claim_message_batch_generation(
+            db,
+            batch_id=batch["batch_id"],
+            stale_only=True,
+        )
+        db.commit()
+
+    assert claim["run"] is False
+    assert claim["terminal"] is True
+    assert claim["error_code"] == "AI_ENGINE_RETRY_EXHAUSTED"
+    with SessionLocal() as db:
+        row = db.get(MessageBatch, batch["batch_id"])
+        assert row.status == "handoff_created"
+        assert row.active is False
+        assert db.query(HandoffEvent).filter(
+            HandoffEvent.batch_id == batch["batch_id"],
+            HandoffEvent.handoff_reason_code == "AI_ENGINE_RETRY_EXHAUSTED",
+        ).count() == 1
 
 
 def test_c3_does_not_expose_duplicate_worker_task_claim_endpoint():
@@ -316,10 +1391,60 @@ def test_generating_batch_is_superseded_when_new_customer_message_arrives():
         assert old.status == "superseded"
         assert old.active is False
         assert old.error_code == "MESSAGE_BATCH_SUPERSEDED"
-        assert new.active is True
+        assert new.active is False
+        assert new.status == "reply_action_created"
 
 
-def test_sales_manual_reply_cancels_unsent_reply_action_and_disables_ai():
+def test_brain_provider_does_not_hold_batch_lock_and_stale_result_is_discarded(
+    monkeypatch,
+):
+    worker, binding = _setup_bound_conversation()
+    message_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-c3-provider-unlocked",
+        "模型思考期间又有新消息",
+    )
+    batch = _collect(binding["conversation_id"], message_id)
+    _reset_batch_to_generation_state(
+        batch["batch_id"],
+        status="collecting",
+        generation_attempt_count=0,
+    )
+
+    class SupersedingAdapter:
+        def generate_reply_decision(self, **_kwargs):
+            with SessionLocal() as other_db:
+                row = other_db.get(MessageBatch, batch["batch_id"])
+                row.status = "superseded"
+                row.active = False
+                row.error_code = "MESSAGE_BATCH_SUPERSEDED"
+                other_db.commit()
+            return c3_service.AIEngineDecision(
+                decision="send_reply",
+                reply_text="这条旧回复不能发送",
+                guard_result="pass",
+            )
+
+    monkeypatch.setattr(
+        c3_service,
+        "get_ai_engine_adapter",
+        lambda: SupersedingAdapter(),
+    )
+    with SessionLocal() as db:
+        result = c3_service.generate_for_batch(db, batch_id=batch["batch_id"])
+        db.commit()
+
+    assert result["error_code"] == "MESSAGE_BATCH_GENERATION_CLAIM_STALE"
+    with SessionLocal() as db:
+        row = db.get(MessageBatch, batch["batch_id"])
+        assert row.status == "superseded"
+        assert db.query(ReplyAction).filter(
+            ReplyAction.batch_id == batch["batch_id"]
+        ).count() == 0
+
+
+def test_sales_manual_reply_cancels_unsent_reply_action_without_disabling_ai():
     worker, binding = _setup_bound_conversation()
     m1 = _ingest(worker, binding["conversation_id"], "msg-c3-004-c", "我想看轿车")
     old = _generate(_collect(binding["conversation_id"], m1)["batch_id"])
@@ -333,7 +1458,7 @@ def test_sales_manual_reply_cancels_unsent_reply_action_and_disables_ai():
         conversation = db.get(Conversation, binding["conversation_id"])
         assert old_action.status == "cancelled"
         assert conversation.status == "sales_replied_waiting_user"
-        assert conversation.ai_enabled is False
+        assert conversation.ai_enabled is True
 
 
 def test_claim_send_is_single_owner_and_sent_ack_is_idempotent():
@@ -343,28 +1468,48 @@ def test_claim_send_is_single_owner_and_sent_ack_is_idempotent():
     task_id = generated["task_id"]
     reply_action_id = generated["reply_action_id"]
 
-    claim_task = client.post(
+    ordinary_thread_claim = client.post(
         f"/api/tasks/{task_id}/claim",
         json={"worker_id": worker["id"], "current_step": "chat_reply_claimed"},
         headers=_worker_headers(worker),
     )
+    assert ordinary_thread_claim.status_code == 409
+    assert ordinary_thread_claim.json()["code"] == "C2_REPLY_TASK_FLOW_OWNERSHIP_REQUIRED"
+
+    claim_task = client.post(
+        f"/api/tasks/{task_id}/claim",
+        json={
+            "worker_id": worker["id"],
+            "current_step": "chat_reply_claimed",
+            "claim_source": "c2_conversation_flow",
+            "conversation_id": binding["conversation_id"],
+        },
+        headers=_worker_headers(worker),
+    )
     assert claim_task.status_code == 200
+    lease_headers = _task_lease_headers(worker, claim_task)
 
     first_claim_send = client.post(
         f"/api/reply-actions/{reply_action_id}/claim-send",
         json={"task_id": task_id, "worker_id": worker["id"]},
-        headers=_worker_headers(worker),
+        headers=lease_headers,
     )
     assert first_claim_send.status_code == 200
     send_data = first_claim_send.json()["data"]
 
-    conflict = client.post(
+    duplicated_claim = client.post(
         f"/api/reply-actions/{reply_action_id}/claim-send",
         json={"task_id": task_id, "worker_id": worker["id"]},
-        headers=_worker_headers(worker),
+        headers=lease_headers,
     )
-    assert conflict.status_code == 409
-    assert conflict.json()["code"] == "REPLY_ACTION_CLAIM_CONFLICT"
+    assert duplicated_claim.status_code == 200
+    duplicated_data = duplicated_claim.json()["data"]
+    assert duplicated_data["duplicated"] is True
+    assert duplicated_data["send_token"] == send_data["send_token"]
+    assert (
+        duplicated_data["suggested_action"]
+        == "reconcile_sent_ack_without_resend"
+    )
 
     ack_payload = {
         "send_token": send_data["send_token"],
@@ -372,6 +1517,7 @@ def test_claim_send_is_single_owner_and_sent_ack_is_idempotent():
         "worker_id": worker["id"],
         "client_instance_id": "client-c3",
         "send_result": "sent",
+        "action_phase": "confirmed",
         "reply_text_hash": send_data["reply_text_hash"],
         "sidecar_run_id": "sidecar-send-001",
     }
@@ -395,7 +1541,7 @@ def test_claim_send_is_single_owner_and_sent_ack_is_idempotent():
     assert duplicated.json()["data"]["error_code"] == "SEND_ACK_DUPLICATED"
 
 
-def test_pre_send_refresh_new_customer_message_supersedes_sending_reply_action():
+def test_new_customer_message_during_sending_keeps_original_ack_valid():
     worker, binding = _setup_bound_conversation()
     m1 = _ingest(worker, binding["conversation_id"], "msg-c3-pre-send-001", "想了解 15 万 SUV")
     generated = _generate(_collect(binding["conversation_id"], m1)["batch_id"])
@@ -404,14 +1550,20 @@ def test_pre_send_refresh_new_customer_message_supersedes_sending_reply_action()
 
     claim_task = client.post(
         f"/api/tasks/{task_id}/claim",
-        json={"worker_id": worker["id"], "current_step": "chat_reply_claimed"},
+        json={
+            "worker_id": worker["id"],
+            "current_step": "chat_reply_claimed",
+            "claim_source": "c2_conversation_flow",
+            "conversation_id": binding["conversation_id"],
+        },
         headers=_worker_headers(worker),
     )
     assert claim_task.status_code == 200
+    lease_headers = _task_lease_headers(worker, claim_task)
     claim_send = client.post(
         f"/api/reply-actions/{reply_action_id}/claim-send",
         json={"task_id": task_id, "worker_id": worker["id"]},
-        headers=_worker_headers(worker),
+        headers=lease_headers,
     )
     assert claim_send.status_code == 200
     send_data = claim_send.json()["data"]
@@ -422,14 +1574,10 @@ def test_pre_send_refresh_new_customer_message_supersedes_sending_reply_action()
 
     with SessionLocal() as db:
         old_action = db.get(ReplyAction, reply_action_id)
-        assert old_action.status == "superseded"
+        assert old_action.status == "sending"
     old_task = client.get(f"/api/tasks/{task_id}", headers=HEADERS).json()["data"]
-    assert old_task["status"] == "cancelled"
+    assert old_task["status"] == "running"
     assert new_action["reply_action_id"] != reply_action_id
-    worker_detail = client.get(f"/api/workers/{worker['id']}", headers=HEADERS).json()["data"]
-    assert worker_detail["running_status"] == "idle"
-    assert worker_detail["current_task"] is None
-    assert worker_detail["current_step"] is None
 
     ack_payload = {
         "send_token": send_data["send_token"],
@@ -437,12 +1585,21 @@ def test_pre_send_refresh_new_customer_message_supersedes_sending_reply_action()
         "worker_id": worker["id"],
         "client_instance_id": "client-c3",
         "send_result": "sent",
+        "action_phase": "confirmed",
         "reply_text_hash": send_data["reply_text_hash"],
         "sidecar_run_id": "sidecar-send-stale",
     }
-    stale_ack = client.post(f"/api/reply-actions/{reply_action_id}/sent-ack", json=ack_payload, headers=_worker_headers(worker))
-    assert stale_ack.status_code == 409
-    assert stale_ack.json()["code"] == "REPLY_ACTION_CLAIM_CONFLICT"
+    acknowledged = client.post(
+        f"/api/reply-actions/{reply_action_id}/sent-ack",
+        json=ack_payload,
+        headers=_worker_headers(worker),
+    )
+    assert acknowledged.status_code == 200
+    assert acknowledged.json()["data"]["reply_action"]["status"] == "sent"
+    assert acknowledged.json()["data"]["task"]["status"] == "completed"
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert conversation.status == "ai_active"
 
     binding_after = client.get(f"/api/conversations/{binding['conversation_id']}/wechat-binding", headers=HEADERS).json()["data"]
     assert "conversation_status" not in binding_after
@@ -458,14 +1615,20 @@ def test_sent_ack_unknown_marks_unknown_result_and_prevents_auto_resend():
 
     claim_task = client.post(
         f"/api/tasks/{task_id}/claim",
-        json={"worker_id": worker["id"], "current_step": "chat_reply_claimed"},
+        json={
+            "worker_id": worker["id"],
+            "current_step": "chat_reply_claimed",
+            "claim_source": "c2_conversation_flow",
+            "conversation_id": binding["conversation_id"],
+        },
         headers=_worker_headers(worker),
     )
     assert claim_task.status_code == 200
+    lease_headers = _task_lease_headers(worker, claim_task)
     claim_send = client.post(
         f"/api/reply-actions/{reply_action_id}/claim-send",
         json={"task_id": task_id, "worker_id": worker["id"]},
-        headers=_worker_headers(worker),
+        headers=lease_headers,
     )
     assert claim_send.status_code == 200
     send_data = claim_send.json()["data"]
@@ -478,6 +1641,7 @@ def test_sent_ack_unknown_marks_unknown_result_and_prevents_auto_resend():
             "worker_id": worker["id"],
             "client_instance_id": "client-c3",
             "send_result": "unknown",
+            "action_phase": "trigger_attempted",
             "reply_text_hash": send_data["reply_text_hash"],
             "error_code": "SEND_RESULT_UNKNOWN",
         },
@@ -488,7 +1652,10 @@ def test_sent_ack_unknown_marks_unknown_result_and_prevents_auto_resend():
     assert data["reply_action"]["status"] == "unknown_send_result"
     assert data["task"]["status"] == "failed"
     assert data["task"]["error_code"] == "SEND_RESULT_UNKNOWN"
-    assert data["task"]["failure_remark"] == "发送结果未知，需人工确认"
+    assert data["task"]["failure_remark"] == (
+        "发送结果未知，原动作已终结且禁止补发；"
+        "会话已转销售正常接管。"
+    )
     assert data["task"]["available_actions"] == []
     worker_detail = client.get(f"/api/workers/{worker['id']}", headers=HEADERS).json()["data"]
     assert worker_detail["running_status"] == "idle"
@@ -504,11 +1671,115 @@ def test_sent_ack_unknown_marks_unknown_result_and_prevents_auto_resend():
     assert resend.json()["code"] == "REPLY_ACTION_CLAIM_CONFLICT"
     with SessionLocal() as db:
         conversation = db.get(Conversation, binding["conversation_id"])
-        assert conversation.status != "waiting_user_reply"
+        handoff = db.query(HandoffEvent).filter(
+            HandoffEvent.batch_id == generated["batch"]["id"],
+            HandoffEvent.handoff_reason_code == "SEND_RESULT_UNKNOWN",
+        ).one()
+        batch = db.get(MessageBatch, generated["batch"]["id"])
+        assert conversation.status == "waiting_sales_reply"
+        assert conversation.handoff_reason_code == "SEND_RESULT_UNKNOWN"
+        assert handoff.status == "created"
+        assert handoff.reason_detail == (
+            "发送结果未知，原动作已终结且禁止补发；"
+            "会话已转销售正常接管。"
+        )
+        assert batch.status == "handoff_created"
         assert conversation.reply_count == 0
 
 
-def test_handoff_decision_disables_ai_and_does_not_create_chat_reply_task():
+def test_stale_sending_reply_is_released_and_handed_off_without_resend():
+    worker, binding = _setup_bound_conversation()
+    message_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-c3-stale-send",
+        "请回复后模拟客户端崩溃",
+    )
+    generated = _generate(_collect(binding["conversation_id"], message_id)["batch_id"])
+    claimed_task = client.post(
+        f"/api/tasks/{generated['task_id']}/claim",
+        json={
+            "worker_id": worker["id"],
+            "current_step": "chat_reply_claimed",
+            "claim_source": "c2_conversation_flow",
+            "conversation_id": binding["conversation_id"],
+        },
+        headers=_worker_headers(worker),
+    )
+    claim_send = client.post(
+        f"/api/reply-actions/{generated['reply_action_id']}/claim-send",
+        json={"task_id": generated["task_id"], "worker_id": worker["id"]},
+        headers=_task_lease_headers(worker, claimed_task),
+    )
+    assert claim_send.status_code == 200
+    send_data = claim_send.json()["data"]
+    with SessionLocal() as db:
+        action = db.get(ReplyAction, generated["reply_action_id"])
+        action.sending_claimed_at = utcnow() - timedelta(seconds=600)
+        db.commit()
+
+    result = recover_stale_reply_sends_once()
+
+    assert result == {"examined": 1, "recovered": 1, "failed": 0}
+    with SessionLocal() as db:
+        action = db.get(ReplyAction, generated["reply_action_id"])
+        task = db.get(Task, generated["task_id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        handoff = db.query(HandoffEvent).filter(
+            HandoffEvent.batch_id == generated["batch"]["id"],
+            HandoffEvent.handoff_reason_code == "SEND_ACK_TIMEOUT",
+        ).one()
+        assert action.status == "unknown_send_result"
+        assert task.status == "failed"
+        assert task.error_code == "SEND_ACK_TIMEOUT"
+        assert conversation.status == "waiting_sales_reply"
+        assert handoff.status == "created"
+        assert db.query(SentAck).filter(
+            SentAck.reply_action_id == generated["reply_action_id"]
+        ).count() == 0
+
+    late_ack = client.post(
+        f"/api/reply-actions/{generated['reply_action_id']}/sent-ack",
+        json={
+            "send_token": send_data["send_token"],
+            "task_id": generated["task_id"],
+            "worker_id": worker["id"],
+            "client_instance_id": "client-c3",
+            "send_result": "sent",
+            "action_phase": "confirmed",
+            "reply_text_hash": send_data["reply_text_hash"],
+            "sidecar_run_id": "late-sidecar-run",
+        },
+        headers=_worker_headers(worker),
+    )
+    assert late_ack.status_code == 200
+    late_data = late_ack.json()["data"]
+    assert late_data["error_code"] == (
+        "SEND_ACK_RECONCILED_TO_UNKNOWN_TERMINAL"
+    )
+    assert late_data["reply_action"]["status"] == "unknown_send_result"
+    assert late_data["task"]["status"] == "failed"
+    assert late_data["ack"]["send_result"] == "unknown"
+    assert late_data["ack"]["evidence"]["reported_send_result"] == "sent"
+
+    duplicate_late_ack = client.post(
+        f"/api/reply-actions/{generated['reply_action_id']}/sent-ack",
+        json={
+            "send_token": send_data["send_token"],
+            "task_id": generated["task_id"],
+            "worker_id": worker["id"],
+            "client_instance_id": "client-c3",
+            "send_result": "sent",
+            "action_phase": "confirmed",
+            "reply_text_hash": send_data["reply_text_hash"],
+        },
+        headers=_worker_headers(worker),
+    )
+    assert duplicate_late_ack.status_code == 200
+    assert duplicate_late_ack.json()["data"]["duplicated"] is True
+
+
+def test_handoff_decision_uses_state_gate_without_disabling_ai():
     worker, binding = _setup_bound_conversation()
     m1 = _ingest(worker, binding["conversation_id"], "msg-c3-007", "你们最低价是多少")
     generated = _generate(_collect(binding["conversation_id"], m1)["batch_id"])
@@ -522,7 +1793,7 @@ def test_handoff_decision_disables_ai_and_does_not_create_chat_reply_task():
     assert "conversation_status" not in binding_after
     with SessionLocal() as db:
         conversation = db.get(Conversation, binding["conversation_id"])
-        assert conversation.ai_enabled is False
+        assert conversation.ai_enabled is True
         assert conversation.status == "waiting_sales_reply"
         assert conversation.handoff_reason_code == "HANDOFF_REQUIRED"
 

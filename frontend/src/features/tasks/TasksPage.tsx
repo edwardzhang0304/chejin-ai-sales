@@ -37,16 +37,14 @@ const statusMeta: Record<TaskStatus, { label: string; className: string }> = {
 const taskTypeMeta: Record<string, string> = {
   add_friend: "添加通讯录邀请",
   chat_reply: "AI 回复",
-  follow_up: "召回跟进",
 };
 
 const resultCodeMeta: Record<string, string> = {
   invite_sent: "已发送添加通讯录邀请",
   already_friend: "已是好友",
   chat_reply_sent: "AI 回复已发送",
-  follow_up_sent: "召回已发送",
   skipped_by_rule: "规则跳过",
-  send_unknown: "发送结果未知，需人工确认",
+  send_unknown: "自动发送已终止，已转销售接管",
 };
 
 const reasonCodeMeta: Record<string, string> = {
@@ -158,7 +156,9 @@ function formatDateTime(value?: string | null) {
 
 function aggregateResult(task: Pick<TaskListItem, "status" | "result_code" | "error_code" | "block_code">) {
   if (task.status === "completed") return formatCode(task.result_code);
-  if (task.status === "failed" && task.error_code === "SEND_RESULT_UNKNOWN") return "发送结果未知，需人工确认";
+  if (task.status === "failed" && task.error_code === "SEND_RESULT_UNKNOWN") {
+    return "自动发送已终止，禁止补发；会话已转销售正常接管";
+  }
   if (task.status === "failed") return formatCode(task.error_code);
   if (task.status === "blocked") return formatCode(task.block_code);
   if (task.status === "cancelled") return "运营取消任务";
@@ -203,7 +203,7 @@ function isLeadQualityFailure(task: Pick<TaskListItem, "task_type" | "error_code
 
 function isSendUnknownTask(task: Pick<TaskListItem, "task_type" | "error_code"> & { c3?: TaskDetail["c3"] }) {
   return (
-    (task.task_type === "chat_reply" || task.task_type === "follow_up") &&
+    task.task_type === "chat_reply" &&
     (task.error_code === "SEND_RESULT_UNKNOWN" ||
       task.c3?.reply_action?.status === "unknown_send_result" ||
       task.c3?.sent_ack?.send_result === "unknown")
@@ -216,7 +216,7 @@ function buildActions(task: TaskDetail | TaskListItem) {
   if (task.status === "pending") actions.push("取消任务", "补充备注");
   if (task.status === "running") actions.push("查看执行方", "取消任务", "补充备注");
   if (task.status === "completed") actions.push("查看执行结果", "查看执行方", "补充备注");
-  if (task.status === "failed") actions.push("需人工处理", "查看执行方", "补充备注");
+  if (task.status === "failed") actions.push("查看失败原因", "查看执行方", "补充备注");
   if (task.status === "cancelled") actions.push("查看取消信息", "补充备注");
   if (isLeadQualityFailure(task)) actions.push("标记线索无效");
   return actions;
@@ -241,9 +241,15 @@ function adviceForTask(task: TaskDetail | null) {
   }
   if (task.status === "failed" && task.error_code) {
     if (isSendUnknownTask(task)) {
-      return { title: "需人工处理", text: "发送结果未知，需人工确认。" };
+      return {
+        title: "销售接管",
+        text: "自动发送已终止，禁止补发；会话已转销售正常接管。",
+      };
     }
-    return { title: "需人工处理", text: `${formatCode(task.error_code)}。请根据失败原因复盘执行链路。` };
+    return {
+      title: "失败原因",
+      text: `${formatCode(task.error_code)}。可查看执行证据排查失败原因。`,
+    };
   }
   if (task.status === "cancelled") {
     return { title: "取消信息", text: task.cancel_reason || task.remark || "该任务已被取消。" };
@@ -408,8 +414,12 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
         setMessage(`取消信息：${display(detail.cancel_reason || detail.remark, "暂无取消备注")}。`);
         return;
       }
-      if (label === "需人工处理") {
-        setMessage(isSendUnknownTask(detail) ? "发送结果未知，需人工确认。" : "需人工处理，请根据失败原因和执行证据确认。");
+      if (label === "查看失败原因") {
+        setMessage(
+          isSendUnknownTask(detail)
+            ? "自动发送已终止，禁止补发；会话已转销售正常接管。"
+            : "请根据失败原因和执行证据排查。",
+        );
         return;
       }
       if (label === "标记线索无效") {
@@ -495,7 +505,6 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
                 <option value="all">全部类型</option>
                 <option value="add_friend">添加通讯录邀请</option>
                 <option value="chat_reply">AI 回复</option>
-                <option value="follow_up">召回跟进</option>
               </select>
             </label>
             <label>
@@ -514,8 +523,7 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
                 <option value="invite_sent">已发送添加通讯录邀请</option>
                 <option value="already_friend">已是好友</option>
                 <option value="chat_reply_sent">AI 回复已发送</option>
-                <option value="follow_up_sent">召回已发送</option>
-                <option value="send_unknown">发送结果未知，需人工确认</option>
+                <option value="send_unknown">自动发送已终止，已转销售接管</option>
               </select>
             </label>
             <label>
@@ -678,17 +686,19 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
                 <section className="drawer-section">
                   <h3>C3 发送链路</h3>
                   {hasUnknownSendResult(detail) ? (
-                    <div className="inline-alert warning">发送结果未知，需人工确认。</div>
+                    <div className="inline-alert warning">
+                      自动发送已终止，禁止补发；会话已转销售正常接管。
+                    </div>
                   ) : null}
                   <dl className="drawer-dl">
                     <div><dt>批次状态</dt><dd>{formatCode(detail.c3?.message_batch?.status)}</dd></div>
                     <div><dt>回复动作</dt><dd>{formatCode(detail.c3?.reply_action?.status)}</dd></div>
                     <div><dt>任务状态</dt><dd>{formatStatus(detail.status).label}</dd></div>
                     <div><dt>发送回执</dt><dd>{formatCode(detail.c3?.sent_ack?.send_result)}</dd></div>
-                    <div><dt>转人工</dt><dd>{formatCode(detail.c3?.handoff_event?.status)}</dd></div>
+                    <div><dt>销售接管</dt><dd>{formatCode(detail.c3?.handoff_event?.status)}</dd></div>
                     <div><dt>会话ID</dt><dd>{display(detail.c3?.reply_action?.conversation_id ?? detail.c3?.message_batch?.conversation_id)}</dd></div>
                     <div><dt>发送过期</dt><dd>{formatDateTime(detail.c3?.reply_action?.expire_at)}</dd></div>
-                    <div><dt>转人工原因</dt><dd>{formatCode(detail.c3?.handoff_event?.handoff_reason_code ?? detail.c3?.reply_action?.handoff_reason_code)}</dd></div>
+                    <div><dt>接管原因</dt><dd>{formatCode(detail.c3?.handoff_event?.handoff_reason_code ?? detail.c3?.reply_action?.handoff_reason_code)}</dd></div>
                     <div><dt>发送错误</dt><dd>{formatCode(detail.c3?.sent_ack?.error_code ?? detail.c3?.reply_action?.error_code)}</dd></div>
                   </dl>
                 </section>

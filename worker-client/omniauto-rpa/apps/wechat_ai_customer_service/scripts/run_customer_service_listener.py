@@ -41,6 +41,10 @@ from apps.wechat_ai_customer_service.admin_backend.services.customer_service_run
 from apps.wechat_ai_customer_service.admin_backend.services.customer_service_scheduler import (  # noqa: E402
     ManagedListenerSchedulerBridge,
 )
+from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.env_config import (  # noqa: E402
+    DEFAULT_SEND_TRIGGER_MODE,
+    normalize_send_trigger_mode,
+)
 from apps.wechat_ai_customer_service.cloud_gate import cloud_gate_status, cloud_required_enabled  # noqa: E402
 from apps.wechat_ai_customer_service.sync import VpsLocalSyncService  # noqa: E402
 
@@ -120,7 +124,7 @@ RPA_HUMANIZED_SEND_DEFAULTS = {
     "adaptive_speed_enabled": True,
     "fast_send_confirmation_enabled": True,
     "input_fast_visual_confirm_enabled": True,
-    "send_trigger_mode": "enter_only",
+    "send_trigger_mode": DEFAULT_SEND_TRIGGER_MODE,
     "send_input_confirm_attempts": 3,
     "send_rate_min_interval_seconds": 0,
     "send_rate_burst_window_seconds": 600,
@@ -178,17 +182,6 @@ def normalize_humanized_input_method(method: Any) -> str:
     )
     if enforce_intermittent and raw == "clipboard_once" and not allow_clipboard_once:
         return "clipboard_chunks"
-    return raw
-
-
-def normalize_send_trigger_mode(method: Any) -> str:
-    raw = str(method or RPA_HUMANIZED_SEND_DEFAULTS["send_trigger_mode"]).strip().lower()
-    if raw not in {"click_only", "enter_only", "enter_then_click"}:
-        return str(RPA_HUMANIZED_SEND_DEFAULTS["send_trigger_mode"])
-    if raw == "enter_then_click":
-        return "enter_only"
-    if raw == "click_only" and not env_bool("WECHAT_WIN32_OCR_ALLOW_CLICK_SEND_TRIGGER", default=False):
-        return "enter_only"
     return raw
 
 

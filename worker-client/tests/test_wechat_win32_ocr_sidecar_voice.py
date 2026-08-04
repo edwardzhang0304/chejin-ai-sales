@@ -28,7 +28,7 @@ assert spec and spec.loader
 spec.loader.exec_module(sidecar)
 
 from apps.wechat_ai_customer_service.adapters import wechat_connector
-from chejin_worker_client.task_runner import _messages_need_voice_transcribe
+from chejin_worker_client.task_runner import _untranscribed_voice_observations
 
 
 def ocr_item(text: str, left: int, top: int, right: int, bottom: int) -> dict:
@@ -197,6 +197,58 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         title_roi_ocr.assert_called_once()
         self.assertIs(title_roi_ocr.call_args.args[0], image)
         capture.assert_not_called()
+
+    def test_successful_messages_frame_writes_review_artifacts(self) -> None:
+        image = Image.new("RGB", (965, 852), (247, 247, 247))
+        items = [
+            ocr_item("CJR8S5K3 虾丸子大人", 430, 48, 650, 78),
+            ocr_item("测试消息", 470, 300, 570, 330),
+        ]
+        snapshot = {
+            "screenshot": image,
+            "screenshot_path": "messages.png",
+            "ocr_items": items,
+            "messages": [],
+            "visible_untranscribed_voice": {"detected": False},
+        }
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            sidecar,
+            "capture_message_history_snapshots",
+            return_value=[snapshot],
+        ), patch.object(
+            sidecar,
+            "get_window_geometry",
+            return_value={
+                "width": 965,
+                "height": 852,
+                "left": 0,
+                "top": 0,
+                "right": 965,
+                "bottom": 852,
+            },
+        ):
+            payload = sidecar.messages_payload(
+                101,
+                {},
+                target="CJR8S5K3 虾丸子大人",
+                history_load_times=0,
+                confirm_target="CJR8S5K3",
+                artifact_dir=tmp,
+            )
+
+            self.assertTrue(payload["ok"])
+            self.assertNotIn(
+                "review_error",
+                payload,
+                payload.get("review_error"),
+            )
+            self.assertTrue(Path(payload["review_path"]).is_file())
+            self.assertTrue(Path(payload["evidence_path"]).is_file())
+            self.assertTrue(
+                (Path(tmp) / "wechat_messages_frame_review.json").is_file()
+            )
+
 
     def test_reused_frame_skips_title_roi_when_full_ocr_already_matches(self) -> None:
         image = Image.new("RGB", (965, 852), (247, 247, 247))
@@ -411,6 +463,87 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         self.assertEqual(messages[0]["sender_role"], "self")
         self.assertEqual(messages[0]["avatar_alignment"]["role"], "self")
 
+    def test_image_internal_duration_text_cannot_trigger_voice_flow(self) -> None:
+        image = Image.new("RGB", (974, 853), (242, 242, 242))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((0, 0, 376, 852), fill=(238, 238, 238))
+        self.draw_avatar(draw, (408, 330, 453, 375))
+        for y in range(330, 550, 6):
+            for x in range(470, 700, 6):
+                tone = 35 if ((x + y) // 6) % 2 else 220
+                draw.rectangle((x, y, x + 5, y + 5), fill=(tone, 150, 80))
+
+        embedded_duration = ocr_item(":22", 500, 355, 516, 363)
+        raw_messages = sidecar.parse_messages_from_ocr(
+            [embedded_duration],
+            image.size,
+            target="CJR8S5K3",
+            screenshot=image,
+        )
+        self.assertEqual(raw_messages[0]["type"], "voice")
+        self.assertIn("untranscribed_voice_placeholder", raw_messages[0]["quality_flags"])
+
+        messages = sidecar.parse_current_chat_frame_messages(
+            [embedded_duration],
+            image.size,
+            target="CJR8S5K3",
+            screenshot=image,
+        )
+        hint = sidecar.visible_untranscribed_voice_hint(
+            image,
+            [embedded_duration],
+            image.size,
+            parsed_messages=messages,
+        )
+        voice_observations = [
+            observation
+            for observation in sidecar.build_unified_voice_observations_v3(
+                image,
+                [embedded_duration],
+                image.size,
+                parsed_messages=messages,
+            )
+            if observation.get("message_type") == "voice"
+        ]
+
+        self.assertEqual([message["type"] for message in messages], ["image"])
+        self.assertEqual(hint, {"detected": False})
+        self.assertEqual(voice_observations, [])
+
+    def test_real_voice_outside_image_remains_actionable(self) -> None:
+        image = Image.new("RGB", (974, 853), (242, 242, 242))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((0, 0, 376, 852), fill=(238, 238, 238))
+        self.draw_avatar(draw, (408, 330, 453, 375))
+        for y in range(330, 550, 6):
+            for x in range(470, 700, 6):
+                tone = 35 if ((x + y) // 6) % 2 else 220
+                draw.rectangle((x, y, x + 5, y + 5), fill=(tone, 150, 80))
+        draw.rounded_rectangle((772, 610, 919, 654), radius=8, fill=(140, 226, 146))
+        self.draw_avatar(draw, (900, 608, 946, 656))
+
+        items = [
+            ocr_item(":22", 500, 355, 516, 363),
+            ocr_item('4"', 812, 620, 862, 645),
+        ]
+        messages = sidecar.parse_current_chat_frame_messages(
+            items,
+            image.size,
+            target="CJR8S5K3",
+            screenshot=image,
+        )
+        hint = sidecar.visible_untranscribed_voice_hint(
+            image,
+            items,
+            image.size,
+            parsed_messages=messages,
+        )
+
+        self.assertEqual([message["type"] for message in messages], ["image", "voice"])
+        self.assertTrue(hint["detected"])
+        self.assertEqual(hint["sender_role"], "self")
+        self.assertGreater(float(hint["bubble_rect"][1]), 550.0)
+
     def test_v1685_right_voice_with_open_paren_ocr_noise_uses_unified_observation(self) -> None:
         image = Image.new("RGB", (981, 860), (247, 247, 247))
         draw = ImageDraw.Draw(image)
@@ -432,7 +565,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         self.assertEqual(messages[0]["type"], "voice")
         self.assertEqual(messages[0]["sender_role"], "self")
         self.assertTrue(hint["detected"])
-        self.assertTrue(_messages_need_voice_transcribe(payload))
+        self.assertGreaterEqual(len(_untranscribed_voice_observations(payload)), 1)
         self.assertEqual(observations[0]["row_kind"], "voice_bubble")
         self.assertEqual(observations[0]["voice_state"], "untranscribed")
         self.assertEqual(observations[0]["sender_role_source"], "same_row_avatar")
@@ -867,6 +1000,15 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             patch.object(sidecar, "run_ocr", return_value=[]),
             patch.object(sidecar, "parse_messages_from_ocr", side_effect=lambda *_args, **_kwargs: next(parsed_snapshots)),
             patch.object(sidecar, "get_window_geometry", return_value={"width": 965, "height": 852}),
+            patch.object(
+                sidecar,
+                "validate_active_send_target",
+                side_effect=[
+                    {"ok": True, "conversation_type": "private", "short_code_confirmed": True},
+                    {"ok": False, "reason": "target_title_not_confirmed"},
+                ],
+            ) as validate_target,
+            patch.object(sidecar, "c2_target_activation_confirmed", side_effect=lambda value: value.get("ok") is True),
             patch.object(sidecar, "find_unified_untranscribed_voice_observation", return_value=unified_voice_observation(anchor)),
             patch.object(sidecar, "has_remaining_voice_transcribe_candidate", return_value=False),
             patch.object(
@@ -882,7 +1024,12 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             patch.object(sidecar, "humanized_action_sleep", return_value=None),
             patch.object(sidecar, "scroll_chat_history", scroll_mock),
         ):
-            result = sidecar.voice_transcribe_payload(1, {}, target="CJR8S5K3")
+            result = sidecar.voice_transcribe_payload(
+                1,
+                {},
+                target="CJR8S5K3",
+                confirm_target="CJR8S5K3",
+            )
 
         self.assertEqual(result["state"], "voice_transcribe_completed")
         self.assertEqual([item["content"] for item in result["transcribed_messages"]], ["今天天气真不错"])
@@ -894,6 +1041,12 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         self.assertGreaterEqual(result["timing"]["capture_call_count"], 2)
         self.assertGreaterEqual(result["timing"]["wait_call_count"], 1)
         self.assertGreaterEqual(result["timing"]["total_duration_seconds"], 0)
+        self.assertTrue(result["initial_target_confirmation"]["ok"])
+        self.assertFalse(result["target_confirmation"]["ok"])
+        self.assertFalse(result["final_frame_validation"]["target_confirmed"])
+        self.assertFalse(result["final_frame_reusable"])
+        self.assertEqual(validate_target.call_count, 2)
+        self.assertEqual(validate_target.call_args_list[-1].kwargs["screenshot_path"], "recovered.png")
         scroll_mock.assert_not_called()
 
     def test_combined_voice_record_is_bound_to_clicked_row_with_duplicate_duration(self) -> None:
@@ -1870,6 +2023,94 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         ]
 
         self.assertEqual(sidecar.voice_transcribe_menu_texts_from_items(items), ["语音转文字", "收起文字"])
+
+    def test_context_menu_stable_wait_uses_shared_default(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "WECHAT_WIN32_OCR_CONTEXT_MENU_WAIT_MS": "1200",
+                    "WECHAT_WIN32_OCR_VOICE_CONTEXT_MENU_WAIT_MS": "600",
+                },
+                clear=False,
+            ),
+            patch.object(sidecar, "humanized_action_sleep") as sleep,
+        ):
+            wait_ms = sidecar.wait_for_wechat_context_menu_stable()
+
+        self.assertEqual(wait_ms, 1200)
+        sleep.assert_called_once_with(950, 1650)
+
+    def test_shared_context_menu_observer_captures_once_and_filters_near_anchor(self) -> None:
+        image = Image.new("RGB", (1920, 1080), "white")
+        near = ocr_item("复制", 430, 400, 500, 432)
+        companion = ocr_item("转发", 430, 444, 500, 476)
+        far = ocr_item("聊天正文", 1000, 50, 1120, 82)
+        with (
+            patch.object(sidecar, "capture_visible_screen", return_value=(image, "menu.png")) as capture,
+            patch.object(
+                sidecar,
+                "save_screenshot_artifact",
+                return_value="menu_roi.png",
+            ) as save_roi,
+            patch.object(sidecar, "run_ocr", return_value=[near, companion, far]) as ocr,
+        ):
+            result = sidecar.observe_wechat_context_menu(
+                1,
+                anchor_screen=(520, 460),
+                artifact_dir="evidence",
+                label="shared_menu",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            [item["text"] for item in result["local_ocr_items"]],
+            ["复制", "转发"],
+        )
+        self.assertEqual(result["screenshot_path"], "menu.png")
+        self.assertEqual(result["ocr_roi"], [140, 40, 900, 880])
+        self.assertEqual(
+            [item["text"] for item in result["menu_structure_evidence"]],
+            ["复制", "转发"],
+        )
+        capture.assert_called_once_with(artifact_dir="evidence", label="shared_menu")
+        self.assertEqual(result["roi_screenshot_path"], "menu_roi.png")
+        save_roi.assert_called_once()
+        self.assertEqual(ocr.call_args.args[0].size, (760, 840))
+        image.close()
+
+    def test_context_menu_stable_wait_uses_longer_production_default(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "WECHAT_WIN32_OCR_CONTEXT_MENU_WAIT_MS": "",
+                    "WECHAT_WIN32_OCR_VOICE_CONTEXT_MENU_WAIT_MS": "",
+                },
+                clear=False,
+            ),
+            patch.object(sidecar, "humanized_action_sleep") as sleep,
+        ):
+            wait_ms = sidecar.wait_for_wechat_context_menu_stable()
+
+        self.assertEqual(wait_ms, 1800)
+        sleep.assert_called_once_with(1550, 2250)
+
+    def test_each_context_menu_action_waits_independently(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {"WECHAT_WIN32_OCR_CONTEXT_MENU_WAIT_MS": "1800"},
+                clear=False,
+            ),
+            patch.object(sidecar, "humanized_action_sleep") as sleep,
+        ):
+            first_wait_ms = sidecar.wait_for_wechat_context_menu_stable()
+            second_wait_ms = sidecar.wait_for_wechat_context_menu_stable()
+
+        self.assertEqual([first_wait_ms, second_wait_ms], [1800, 1800])
+        self.assertEqual(sleep.call_count, 2)
+        sleep.assert_any_call(1550, 2250)
 
     def test_context_menu_prefers_nearby_collapse_over_far_inline_transcribe(self) -> None:
         image = Image.new("RGB", (1920, 1080), (247, 247, 247))

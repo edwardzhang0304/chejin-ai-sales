@@ -15,6 +15,7 @@ from app.schemas.task import (
     TaskCreate,
     TaskEvidenceRequest,
     TaskFailRequest,
+    TaskLeaseRenewRequest,
     TaskStepRequest,
 )
 from app.services import task_service, worker_service
@@ -162,6 +163,40 @@ def claim_task(
             payload.remark,
             actor,
             require_worker_ready=require_worker_ready,
+            claim_source=payload.claim_source,
+            conversation_id=payload.conversation_id,
+            client_instance_id=x_client_instance_id,
+        )
+        db.commit()
+        return ok(data)
+    except Exception:
+        db.rollback()
+        raise
+
+
+@router.post("/tasks/{task_id}/lease/renew")
+def renew_task_lease(
+    task_id: str,
+    payload: TaskLeaseRenewRequest,
+    db: Session = Depends(get_db),
+    x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
+    x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
+):
+    try:
+        task = task_service.get_task_or_404(db, task_id)
+        worker = worker_service.authenticate_worker_client(
+            db,
+            task.worker_id or "",
+            x_worker_token,
+            x_client_instance_id,
+        )
+        data = task_service.renew_task_lease(
+            db,
+            task_id,
+            worker_id=worker.id,
+            client_instance_id=x_client_instance_id,
+            lease_fencing_token=payload.lease_fencing_token,
+            current_step=payload.current_step,
         )
         db.commit()
         return ok(data)
@@ -179,12 +214,19 @@ def update_step(
     actor: ActorContext = Depends(get_actor_context),
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
+    x_task_lease_fencing_token: int | None = Header(default=None, alias="X-Task-Lease-Fencing-Token"),
     authorization: str | None = Header(default=None, alias="Authorization"),
 ):
     try:
         task = task_service.get_task_or_404(db, task_id)
         if x_worker_token:
-            worker_service.authenticate_worker_client(db, task.worker_id or "", x_worker_token, x_client_instance_id)
+            worker = worker_service.authenticate_worker_client(db, task.worker_id or "", x_worker_token, x_client_instance_id)
+            task_service.validate_task_lease(
+                task,
+                worker_id=worker.id,
+                client_instance_id=x_client_instance_id,
+                lease_fencing_token=x_task_lease_fencing_token,
+            )
         else:
             validate_admin_auth(request, authorization)
         data = task_service.update_step(db, task_id, payload.current_step, payload.remark, actor)
@@ -204,12 +246,19 @@ def invite_sent(
     actor: ActorContext = Depends(get_actor_context),
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
+    x_task_lease_fencing_token: int | None = Header(default=None, alias="X-Task-Lease-Fencing-Token"),
     authorization: str | None = Header(default=None, alias="Authorization"),
 ):
     try:
         task = task_service.get_task_or_404(db, task_id)
         if x_worker_token:
-            worker_service.authenticate_worker_client(db, task.worker_id or "", x_worker_token, x_client_instance_id)
+            worker = worker_service.authenticate_worker_client(db, task.worker_id or "", x_worker_token, x_client_instance_id)
+            task_service.validate_task_lease(
+                task,
+                worker_id=worker.id,
+                client_instance_id=x_client_instance_id,
+                lease_fencing_token=x_task_lease_fencing_token,
+            )
         else:
             validate_admin_auth(request, authorization)
         data = task_service.complete_task(db, task_id, TaskResultCode.invite_sent, payload.remark, actor)
@@ -229,12 +278,19 @@ def already_friend(
     actor: ActorContext = Depends(get_actor_context),
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
+    x_task_lease_fencing_token: int | None = Header(default=None, alias="X-Task-Lease-Fencing-Token"),
     authorization: str | None = Header(default=None, alias="Authorization"),
 ):
     try:
         task = task_service.get_task_or_404(db, task_id)
         if x_worker_token:
-            worker_service.authenticate_worker_client(db, task.worker_id or "", x_worker_token, x_client_instance_id)
+            worker = worker_service.authenticate_worker_client(db, task.worker_id or "", x_worker_token, x_client_instance_id)
+            task_service.validate_task_lease(
+                task,
+                worker_id=worker.id,
+                client_instance_id=x_client_instance_id,
+                lease_fencing_token=x_task_lease_fencing_token,
+            )
         else:
             validate_admin_auth(request, authorization)
         data = task_service.complete_task(db, task_id, TaskResultCode.already_friend, payload.remark, actor)
@@ -254,15 +310,34 @@ def fail_task(
     actor: ActorContext = Depends(get_actor_context),
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
+    x_task_lease_fencing_token: int | None = Header(default=None, alias="X-Task-Lease-Fencing-Token"),
     authorization: str | None = Header(default=None, alias="Authorization"),
 ):
     try:
         task = task_service.get_task_or_404(db, task_id)
         if x_worker_token:
-            worker_service.authenticate_worker_client(db, task.worker_id or "", x_worker_token, x_client_instance_id)
+            worker = worker_service.authenticate_worker_client(db, task.worker_id or "", x_worker_token, x_client_instance_id)
+            is_pending_reply_recovery = (
+                task.status == "pending" and task.task_type == "chat_reply"
+            )
+            if not is_pending_reply_recovery:
+                task_service.validate_task_lease(
+                    task,
+                    worker_id=worker.id,
+                    client_instance_id=x_client_instance_id,
+                    lease_fencing_token=x_task_lease_fencing_token,
+                )
         else:
             validate_admin_auth(request, authorization)
-        data = task_service.fail_task(db, task_id, payload.error_code, payload.failure_step, payload.failure_remark, actor)
+        data = task_service.fail_task(
+            db,
+            task_id,
+            payload.error_code,
+            payload.failure_step,
+            payload.failure_remark,
+            actor,
+            allow_pending_chat_reply_recovery=bool(x_worker_token),
+        )
         db.commit()
         return ok(data)
     except Exception:

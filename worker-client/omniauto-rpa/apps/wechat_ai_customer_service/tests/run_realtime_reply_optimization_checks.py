@@ -3870,7 +3870,7 @@ def check_listener_humanized_send_env_mapping() -> dict[str, Any]:
             "send_after_trigger_delay_min_ms": 880,
             "send_after_trigger_delay_max_ms": 240,
             "input_fast_visual_confirm_enabled": True,
-            "send_trigger_mode": "click_only",
+            "send_trigger_mode": "enter_only",
             "send_input_confirm_attempts": 1,
             "send_rate_min_interval_seconds": 90,
             "send_rate_burst_window_seconds": 600,
@@ -4533,7 +4533,7 @@ def check_sidecar_open_chat_avoids_ctrl_a_selection() -> dict[str, Any]:
     sidecar_path = ADAPTERS_ROOT / "wechat_win32_ocr_sidecar.py"
     source = sidecar_path.read_text(encoding="utf-8")
     start = source.find("def open_chat(")
-    end = source.find("def ensure_target_ready_for_send(", start if start >= 0 else 0)
+    end = source.find("def active_send_guard_is_strong(", start if start >= 0 else 0)
     snippet = source[start:end] if start >= 0 and end > start else ""
     helper_used = "clear_sidebar_search_box_without_select_all(" in snippet
     has_ctrl_a = 'hotkey(win32con.VK_CONTROL, ord("A"))' in snippet

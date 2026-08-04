@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 
 class UiLockTest(unittest.TestCase):
@@ -50,6 +51,30 @@ class UiLockTest(unittest.TestCase):
         second = self.ui_lock.acquire_ui_lock(operation_type="message_ingest", owner="owner-b", current_step="read", timeout_seconds=1)
         second.release()
         first.lock_id = "released-by-recovery"
+
+    def test_auto_renew_failure_is_visible_to_cancel_checks_and_steps(self):
+        lease = self.ui_lock.acquire_ui_lock(
+            operation_type="message_ingest",
+            owner="owner-a",
+            current_step="read",
+            timeout_seconds=1,
+        )
+        lease._renew_stop = mock.Mock()
+        lease._renew_stop.wait.return_value = False
+        renew_error = self.ui_lock.UiLockError(
+            self.ui_lock.UI_LOCK_RENEW_FAILED,
+            "unit renewal failure",
+        )
+
+        with mock.patch.object(lease, "renew", side_effect=renew_error):
+            lease._renew_loop(0.01)
+
+        self.assertTrue(lease.lease_lost)
+        self.assertTrue(lease.cancel_requested())
+        self.assertIs(lease.lease_error, renew_error)
+        with self.assertRaises(self.ui_lock.UiLockError) as raised:
+            lease.update_step("should_not_continue")
+        self.assertEqual(raised.exception.code, self.ui_lock.UI_LOCK_RENEW_FAILED)
 
 
 if __name__ == "__main__":

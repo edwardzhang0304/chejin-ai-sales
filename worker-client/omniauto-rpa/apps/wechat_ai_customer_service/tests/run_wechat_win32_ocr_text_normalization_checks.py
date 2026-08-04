@@ -146,6 +146,7 @@ def test_c2_conversation_title_admission_contract() -> None:
         ("销售讨论-CJ123（ 25 ）", "CJ123", "group", False),
         ("张三-CJ123(5", "CJ123", "unknown", False),
         ("张三-CJ123…", "CJ123", "unknown", False),
+        ("CJ123虾丸子大...11:05", "CJ123", "private", True),
         ("张三-CJ12", "CJ123", "unknown", False),
     ]
     for raw_title, remark_code, expected_type, expected_allowed in cases:

@@ -919,6 +919,33 @@ def test_sidecar_uses_flow_context_for_entry_click() -> None:
     )
 
 
+def test_add_friend_flow_forwards_action_journal_on_every_query_path() -> None:
+    import ast
+
+    flow_path = PROJECT_ROOT / "apps/wechat_ai_customer_service/adapters/add_friend_flow.py"
+    tree = ast.parse(flow_path.read_text(encoding="utf-8"))
+    query_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "input_add_friend_query_and_search"
+    ]
+    assert_true(
+        len(query_calls) == 2,
+        f"expected exactly two add_friend query paths, got {[node.lineno for node in query_calls]}",
+    )
+    missing = [
+        node.lineno
+        for node in query_calls
+        if "action_journal_path" not in {keyword.arg for keyword in node.keywords}
+    ]
+    assert_true(
+        not missing,
+        f"every add_friend query path must forward action_journal_path; missing at lines {missing}",
+    )
+
+
 def test_sidecar_uses_add_friend_payload_builders() -> None:
     sidecar = (
         PROJECT_ROOT / "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py"
@@ -1244,6 +1271,33 @@ def test_entry_click_task_outcome_contract() -> None:
     assert_true(invite_sent.get("task_status") == "completed", f"invite_sent task status mismatch: {invite_sent}")
     assert_true(invite_sent.get("result_code") == "invite_sent", f"invite_sent result mismatch: {invite_sent}")
 
+    contradictory = add_friend_entry_click_task_outcome(
+        {
+            "ok": True,
+            "task_status": "failed",
+            "result_code": "invite_sent",
+            "error_code": "ACCOUNT_RESTRICTED",
+            "current_step": "invite_confirm_clicked",
+        }
+    )
+    assert_true(
+        contradictory.get("ok") is False,
+        f"explicit failure must override a stale click-success flag: {contradictory}",
+    )
+    assert_true(
+        contradictory.get("task_status") == "failed",
+        f"contradictory result must normalize to failed: {contradictory}",
+    )
+    assert_true(
+        contradictory.get("result_code") == "",
+        f"failed result must not retain invite_sent: {contradictory}",
+    )
+    assert_true(
+        contradictory.get("server_report_payload", {}).get("task.status")
+        == "failed",
+        f"server report must use the same normalized terminal state: {contradictory}",
+    )
+
 
 def test_add_friend_actions_contract() -> None:
     from apps.wechat_ai_customer_service.adapters.add_friend_actions import (
@@ -1325,6 +1379,7 @@ def test_invite_form_locator_contract() -> None:
     semantic_targets = add_friend_invite_form_targets(
         (468, 834),
         [
+            ocr_item("申请添加朋友", 182, 21, 288, 43, confidence=0.999),
             ocr_item("发送添加朋友申请", 38, 82, 182, 108),
             ocr_item("备注", 38, 276, 82, 304),
             ocr_item("确定", 112, 770, 166, 802),
@@ -1333,6 +1388,15 @@ def test_invite_form_locator_contract() -> None:
     assert_true(
         semantic_targets["invite_greeting_textarea"].get("strategy") == "semantic_ocr_anchor_locator",
         f"greeting should use semantic locator: {semantic_targets}",
+    )
+    assert_true(
+        (semantic_targets["invite_greeting_textarea"].get("item") or {}).get("text")
+        == "发送添加朋友申请",
+        f"greeting must prefer the exact field label over the higher-confidence page title: {semantic_targets}",
+    )
+    assert_true(
+        semantic_targets["invite_greeting_textarea"]["point"][1] > 130,
+        f"greeting click must land inside the textarea, not on its top border: {semantic_targets}",
     )
     assert_true(
         semantic_targets["invite_remark_input"].get("fallback_used") is False,
@@ -1349,6 +1413,25 @@ def test_invite_form_locator_contract() -> None:
         ocr_items=[ocr_item("我是车金二手车张伟", 40, 122, 260, 152), ocr_item("客户-CJ8K2P", 40, 330, 180, 358)],
     )
     assert_true(field_check.get("ok") is True, f"field verification should pass visible OCR text: {field_check}")
+    multiline_check = invite_form_field_verification(
+        verify_message="您好，我是车金二手车的C2Window，您刚咨询过二手车",
+        remark_name="C1ADD01",
+        remark_code="C1ADD01",
+        ocr_items=[
+            ocr_item("您好，我是车金二手车的C2Window，", 40, 122, 350, 150),
+            ocr_item("您刚咨询过二手车", 40, 154, 220, 182),
+            ocr_item("C1ADD01", 40, 320, 150, 348),
+        ],
+        field_bounds={
+            "verify_message": [30, 110, 430, 210],
+            "remark_name": [30, 290, 430, 360],
+            "remark_code": [30, 290, 430, 360],
+        },
+    )
+    assert_true(
+        multiline_check.get("ok") is True,
+        f"multiline greeting OCR fragments should be joined inside the field: {multiline_check}",
+    )
 
 
 def test_invite_form_input_click_failure_blocks_keyboard_actions() -> None:
@@ -1404,6 +1487,69 @@ def test_invite_form_field_verification_blocks_confirm_click() -> None:
         '"confirm": {"ok": False, "skipped": True' in section
         or "'confirm': {'ok': False, 'skipped': True" in section,
         "failed field verification must skip confirm click",
+    )
+
+
+def test_invite_form_failed_field_retries_once_before_confirm() -> None:
+    source = (
+        PROJECT_ROOT
+        / "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/add_friend_windows.py"
+    ).read_text(encoding="utf-8")
+    section = source.split(
+        "def fill_add_friend_invite_form_and_confirm", 1
+    )[1].split("def type_add_friend_query_like_human_for_entry", 1)[0]
+    retry_index = section.find("action_name='invite_greeting_retry'")
+    final_gate_index = section.find("if not field_verification.get('ok')")
+    confirm_index = section.find("action_name='invite_confirm_button_click'")
+    assert_true(retry_index >= 0, "missing one-time greeting retry")
+    assert_true(final_gate_index >= 0, "missing final field verification gate")
+    assert_true(confirm_index >= 0, "missing invite confirm click")
+    assert_true(
+        retry_index < final_gate_index < confirm_index,
+        "retry and final verification must happen before confirm click",
+    )
+    assert_true(
+        "fill_retry_attempts" in section,
+        "retry evidence must be retained for diagnostics",
+    )
+
+
+def test_invite_confirm_uses_durable_action_journal_before_click() -> None:
+    source = (
+        PROJECT_ROOT
+        / "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/add_friend_windows.py"
+    ).read_text(encoding="utf-8")
+    section = source.split(
+        "def fill_add_friend_invite_form_and_confirm", 1
+    )[1].split("def type_add_friend_query_like_human_for_entry", 1)[0]
+    trigger_index = section.find("'trigger_attempted'")
+    click_index = section.find(
+        "action_name='invite_confirm_button_click'"
+    )
+    confirmed_index = section.find("'confirmed'", click_index)
+    post_click_capture_index = section.find(
+        "after_invite_confirm_click_before_capture",
+        click_index,
+    )
+    assert_true(
+        trigger_index >= 0,
+        "add_friend must persist trigger_attempted before confirm click",
+    )
+    assert_true(
+        click_index >= 0,
+        "add_friend final confirm click is missing",
+    )
+    assert_true(
+        trigger_index < click_index,
+        "trigger_attempted must be durable before the physical click",
+    )
+    assert_true(
+        confirmed_index > click_index,
+        "confirmed result must be persisted after the click function returns",
+    )
+    assert_true(
+        post_click_capture_index > confirmed_index,
+        "confirmed invite_sent must be durable before post-click screenshot/OCR",
     )
 
 
@@ -1873,6 +2019,7 @@ def main() -> int:
         test_add_friend_flow_context_contract,
         test_add_friend_already_friend_terminal_event_contract,
         test_sidecar_uses_flow_context_for_entry_click,
+        test_add_friend_flow_forwards_action_journal_on_every_query_path,
         test_sidecar_uses_add_friend_payload_builders,
         test_add_friend_uses_shared_operator_guard_module,
         test_add_friend_operator_guard_compat_wrapper_calls_shared_module,
@@ -1886,6 +2033,8 @@ def main() -> int:
         test_invite_form_locator_contract,
         test_invite_form_input_click_failure_blocks_keyboard_actions,
         test_invite_form_field_verification_blocks_confirm_click,
+        test_invite_form_failed_field_retries_once_before_confirm,
+        test_invite_confirm_uses_durable_action_journal_before_click,
         test_query_verify_invalid_dialog_handle_returns_structured_failure,
         test_add_friend_primary_locator_contract,
         test_add_friend_live_window_paths_pass_screenshot_to_plus_locator,

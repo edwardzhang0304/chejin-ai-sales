@@ -38,6 +38,15 @@ class ClientConfig:
     c2_message_failure_cooldown_seconds: float
     c2_voice_transcribe_max_duration_seconds: int
     c2_stop_guard_before_voice_seconds: float
+    c3_brain_no_progress_watchdog_seconds: float
+    c3_brain_poll_interval_seconds: float
+    artifact_success_retention_days: int
+    artifact_critical_retention_days: int
+    artifact_max_bytes: int
+    artifact_cleanup_interval_seconds: float
+    outbox_terminal_retention_days: int
+    outbox_max_terminal_rows: int
+    task_lease_renew_interval_seconds: float
 
     @classmethod
     def from_env(cls) -> "ClientConfig":
@@ -68,6 +77,34 @@ class ClientConfig:
             c2_message_failure_cooldown_seconds=float(os.environ.get("CHEJIN_C2_MESSAGE_FAILURE_COOLDOWN_SECONDS", "45")),
             c2_voice_transcribe_max_duration_seconds=int(os.environ.get("CHEJIN_C2_VOICE_TRANSCRIBE_MAX_DURATION_SECONDS", "240")),
             c2_stop_guard_before_voice_seconds=float(os.environ.get("CHEJIN_C2_STOP_GUARD_BEFORE_VOICE_SECONDS", "1.5")),
+            c3_brain_no_progress_watchdog_seconds=float(
+                os.environ.get(
+                    "CHEJIN_C3_BRAIN_NO_PROGRESS_WATCHDOG_SECONDS",
+                    os.environ.get("CHEJIN_C3_BRAIN_WAIT_TIMEOUT_SECONDS", "360"),
+                )
+            ),
+            c3_brain_poll_interval_seconds=float(os.environ.get("CHEJIN_C3_BRAIN_POLL_INTERVAL_SECONDS", "0.8")),
+            artifact_success_retention_days=int(
+                os.environ.get("CHEJIN_ARTIFACT_SUCCESS_RETENTION_DAYS", "7")
+            ),
+            artifact_critical_retention_days=int(
+                os.environ.get("CHEJIN_ARTIFACT_CRITICAL_RETENTION_DAYS", "30")
+            ),
+            artifact_max_bytes=int(
+                os.environ.get("CHEJIN_ARTIFACT_MAX_BYTES", str(2 * 1024 * 1024 * 1024))
+            ),
+            artifact_cleanup_interval_seconds=float(
+                os.environ.get("CHEJIN_ARTIFACT_CLEANUP_INTERVAL_SECONDS", "86400")
+            ),
+            outbox_terminal_retention_days=int(
+                os.environ.get("CHEJIN_OUTBOX_TERMINAL_RETENTION_DAYS", "30")
+            ),
+            outbox_max_terminal_rows=int(
+                os.environ.get("CHEJIN_OUTBOX_MAX_TERMINAL_ROWS", "5000")
+            ),
+            task_lease_renew_interval_seconds=float(
+                os.environ.get("CHEJIN_TASK_LEASE_RENEW_INTERVAL_SECONDS", "15")
+            ),
         )
 
 
