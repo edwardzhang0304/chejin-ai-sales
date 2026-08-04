@@ -72,8 +72,8 @@ def effective_customer_image_understanding_settings(config: dict[str, Any] | Non
         local_settings = dict((cfg.get("_local_customer_service_settings") or {}).get("customer_image_understanding") or {})
     settings = {**runtime_settings, **local_settings}
     image_contract = (
-        cfg.get("_chejin_image_contract")
-        if isinstance(cfg.get("_chejin_image_contract"), dict)
+        cfg.get("image_contract")
+        if isinstance(cfg.get("image_contract"), dict)
         else {}
     )
     provider_contract = (

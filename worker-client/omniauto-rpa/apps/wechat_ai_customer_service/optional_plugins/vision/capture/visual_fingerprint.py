@@ -1,9 +1,7 @@
 """In-memory visual fingerprints for current-screen image verification.
 
-The algorithm is integrated from meta-xucong/omniauto@2318bd8
-``capture/visual_collector.py``. It is intentionally isolated from the
-upstream scheduler and occurrence identity: Chejin uses it only to prove that
-the clipboard bitmap still matches the C2-authorized image bubble.
+The fingerprint is transaction evidence only. It never determines sender
+identity, conversation ownership, or scheduler occurrence identity.
 """
 
 from __future__ import annotations

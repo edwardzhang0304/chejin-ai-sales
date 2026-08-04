@@ -276,9 +276,15 @@ def build(
             "omniauto_selective_integrations": omniauto_provenance[
                 "selective_integrations"
             ],
-            "omniauto_chejin_integration_commit": omniauto_provenance[
-                "chejin_integration_commit"
-            ],
+            "omniauto_historical_integrations": omniauto_provenance.get(
+                "historical_integrations", []
+            ),
+            "omniauto_chejin_overlays": omniauto_provenance.get(
+                "chejin_overlays", []
+            ),
+            "omniauto_chejin_integration_commit": str(
+                build_source["git_commit"]
+            ),
             "omniauto_tree_sha256": omniauto_source_tree["tree_sha256"],
             "omniauto_file_count": omniauto_source_tree["file_count"],
             "packaged_omniauto_tree_sha256": omniauto_packaged_tree["tree_sha256"],

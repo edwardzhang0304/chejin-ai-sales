@@ -67,6 +67,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$OmniAutoSourcePath = Join-Path $Root "omniauto-rpa"', text)
         self.assertIn("omniauto_upstream_base_commit", text)
         self.assertIn("omniauto_selective_integrations", text)
+        self.assertIn("omniauto_historical_integrations", text)
+        self.assertIn("omniauto_chejin_overlays", text)
         self.assertIn("omniauto_chejin_integration_commit", text)
         self.assertIn("omniauto_source_sidecar_sha256", text)
         self.assertIn("packaged_sidecar_sha256", text)
@@ -117,6 +119,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('"omniauto_tree_sha256"', text)
         self.assertIn('"omniauto_upstream_base_commit"', text)
         self.assertIn('"omniauto_selective_integrations"', text)
+        self.assertIn('"omniauto_historical_integrations"', text)
+        self.assertIn('"omniauto_chejin_overlays"', text)
         self.assertIn('"omniauto_chejin_integration_commit"', text)
         self.assertIn('"generated_observation_schema_sha256"', text)
         self.assertIn('"canonical_contract_sha256"', text)
@@ -211,7 +215,7 @@ class PackagingScriptsTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "OMNIAUTO_TREE_MISMATCH"):
                 verify_same_tree(source, packaged)
 
-    def test_omniauto_provenance_requires_base_selective_and_chejin_commits(
+    def test_omniauto_provenance_records_merged_upstream_and_history(
         self,
     ):
         with tempfile.TemporaryDirectory() as temp:
@@ -224,16 +228,35 @@ class PackagingScriptsTest(unittest.TestCase):
 
         self.assertEqual(
             provenance["upstream_base_commit"],
-            "855c21881641cdb2f9fe69d3f2e1caa05e37d04d",
+            "e58b3d1d1bede298fe142494c731630eb6714867",
+        )
+        self.assertEqual(provenance["selective_integrations"], [])
+        self.assertIn(
+            "strict_current_screen_without_history_scroll",
+            provenance["chejin_overlays"],
         )
         self.assertEqual(
-            provenance["selective_integrations"][0]["source_commit"],
-            "2318bd8c5aa8d8ff2272a8decc285ef2ae9e01e7",
-        )
-        self.assertEqual(
-            provenance["chejin_integration_commit"],
+            provenance["historical_integrations"][0][
+                "chejin_integration_commit"
+            ],
             "ff9e0de00013ac51a2f2a05e3774748c43c846fb",
         )
+
+    def test_omniauto_v3_provenance_requires_declared_chejin_overlays(self):
+        source_path = ROOT / "omniauto-rpa" / ".chejin-source.json"
+        payload = json.loads(source_path.read_text(encoding="utf-8"))
+        payload.pop("chejin_overlays")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / ".chejin-source.json").write_text(
+                json.dumps(payload),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                ValueError,
+                "OMNIAUTO_CHEJIN_OVERLAYS_INVALID",
+            ):
+                load_source_provenance(root)
 
     def test_generated_schema_check_runs_from_packaged_layout(self):
         with tempfile.TemporaryDirectory() as temp:

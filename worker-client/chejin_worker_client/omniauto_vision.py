@@ -902,7 +902,7 @@ def explicit_vision_config() -> tuple[dict[str, Any] | None, list[str]]:
     if not api_key_env:
         return None, [required_api_key_env]
     return {
-        "_chejin_image_contract": image_contract(),
+        "image_contract": image_contract(),
         "customer_image_understanding": {
             "enabled": True,
             "provider": str(
@@ -1161,7 +1161,7 @@ def process_image_slot(
             )
         runtime_config = configured
     runtime_config.setdefault(
-        "_chejin_image_contract",
+        "image_contract",
         image_contract(),
     )
     vision_settings = runtime_config.get(

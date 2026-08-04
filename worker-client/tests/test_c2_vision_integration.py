@@ -588,7 +588,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
     def test_chejin_contract_limits_drive_omniauto_image_normalization(self):
         contract = image_contract()
         limits = resolve_image_source_limits(
-            {"_chejin_image_contract": contract}
+            {"image_contract": contract}
         )
         self.assertEqual(limits, contract["source_limits"])
 
@@ -1001,7 +1001,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
         settings = effective_customer_image_understanding_settings(
             {
                 "_chejin_c2_strict_adapter": True,
-                "_chejin_image_contract": image_contract(),
+                "image_contract": image_contract(),
                 "customer_image_understanding": {
                     "enabled": True,
                     "api_key_env": "ANTHROPIC_AUTH_TOKEN",
@@ -3725,7 +3725,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 result = maybe_run_customer_image_understanding(
                     config={
                         "_chejin_c2_strict_adapter": True,
-                        "_chejin_image_contract": image_contract(),
+                        "image_contract": image_contract(),
                         "customer_image_understanding": {
                             "enabled": True,
                             "api_key": "unit-only",
@@ -3821,7 +3821,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 result = maybe_run_customer_image_understanding(
                     config={
                         "_chejin_c2_strict_adapter": True,
-                        "_chejin_image_contract": image_contract(),
+                        "image_contract": image_contract(),
                         "customer_image_understanding": {
                             "enabled": True,
                             "api_key": "unit-only",
@@ -3879,7 +3879,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 result = maybe_run_customer_image_understanding(
                     config={
                         "_chejin_c2_strict_adapter": True,
-                        "_chejin_image_contract": image_contract(),
+                        "image_contract": image_contract(),
                         "customer_image_understanding": {
                             "enabled": True,
                             "api_key": "unit-only",

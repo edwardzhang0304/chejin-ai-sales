@@ -97,17 +97,13 @@ def tree_manifest(
 def load_source_provenance(root: Path) -> dict[str, object]:
     path = root / ".chejin-source.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
+    schema_version = int(payload.get("schema_version") or 0)
     base_commit = str(payload.get("upstream_base_commit") or "").strip()
     if len(base_commit) != 40:
         raise ValueError("OMNIAUTO_UPSTREAM_BASE_COMMIT_INVALID")
-    integration_commit = str(
-        payload.get("chejin_integration_commit") or ""
-    ).strip()
-    if len(integration_commit) != 40:
-        raise ValueError("OMNIAUTO_CHEJIN_INTEGRATION_COMMIT_INVALID")
     integrations = payload.get("selective_integrations")
-    if not isinstance(integrations, list) or not integrations:
-        raise ValueError("OMNIAUTO_SELECTIVE_INTEGRATIONS_REQUIRED")
+    if not isinstance(integrations, list):
+        raise ValueError("OMNIAUTO_SELECTIVE_INTEGRATIONS_INVALID")
     for item in integrations:
         if not isinstance(item, dict):
             raise ValueError("OMNIAUTO_SELECTIVE_INTEGRATION_INVALID")
@@ -122,6 +118,41 @@ def load_source_provenance(root: Path) -> dict[str, object]:
             for value in scope
         ):
             raise ValueError("OMNIAUTO_SELECTIVE_SCOPE_INVALID")
+    if schema_version < 3:
+        integration_commit = str(
+            payload.get("chejin_integration_commit") or ""
+        ).strip()
+        if len(integration_commit) != 40:
+            raise ValueError("OMNIAUTO_CHEJIN_INTEGRATION_COMMIT_INVALID")
+        if not integrations:
+            raise ValueError("OMNIAUTO_SELECTIVE_INTEGRATIONS_REQUIRED")
+        return payload
+
+    history = payload.get("historical_integrations")
+    if not isinstance(history, list) or not history:
+        raise ValueError("OMNIAUTO_HISTORICAL_INTEGRATIONS_REQUIRED")
+    overlays = payload.get("chejin_overlays")
+    if not isinstance(overlays, list) or not overlays or not all(
+        isinstance(value, str) and value.strip()
+        for value in overlays
+    ):
+        raise ValueError("OMNIAUTO_CHEJIN_OVERLAYS_INVALID")
+    for item in history:
+        if not isinstance(item, dict):
+            raise ValueError("OMNIAUTO_HISTORICAL_INTEGRATION_INVALID")
+        commits = (
+            item.get("upstream_base_commit"),
+            item.get("source_commit"),
+            item.get("chejin_integration_commit"),
+        )
+        if any(len(str(value or "").strip()) != 40 for value in commits):
+            raise ValueError("OMNIAUTO_HISTORICAL_COMMIT_INVALID")
+        scope = item.get("scope")
+        if not isinstance(scope, list) or not all(
+            isinstance(value, str) and value.strip()
+            for value in scope
+        ):
+            raise ValueError("OMNIAUTO_HISTORICAL_SCOPE_INVALID")
     return payload
 
 

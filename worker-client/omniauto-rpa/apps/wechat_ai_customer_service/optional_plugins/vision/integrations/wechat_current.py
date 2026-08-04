@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
+from ..capture.wechat import DEFAULT_MAX_VISIBLE_IMAGE_CANDIDATES
+
 
 _WORKER_MODULE = (
     "apps.wechat_ai_customer_service.optional_plugins.vision.integrations.wechat_worker"
@@ -150,7 +152,15 @@ def observe_current_surface(
         "--side-filter",
         clean_side,
         "--max-images",
-        str(max(1, min(int(max_images or 8), 8))),
+        str(
+            max(
+                1,
+                min(
+                    int(max_images or 8),
+                    DEFAULT_MAX_VISIBLE_IMAGE_CANDIDATES,
+                ),
+            )
+        ),
     ]
     if exact:
         worker_args.append("--exact")
