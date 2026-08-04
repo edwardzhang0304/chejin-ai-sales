@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
   "upstream_repository": "meta-xucong/omniauto",
-  "upstream_base_commit": "e58b3d1d1bede298fe142494c731630eb6714867",
+  "upstream_base_commit": "69dc871e8649773a921e8e50123116687a710bb5",
   "selective_integrations": [],
   "chejin_overlays": [
     "strict_current_screen_without_history_scroll",
@@ -23,5 +23,5 @@
       ]
     }
   ],
-  "integration_note": "当前内嵌副本以 e58b3d1 为上游基线并叠加车金专属适配；最终车金提交和完整目录 tree SHA 由打包 manifest 动态记录。"
+  "integration_note": "当前内嵌副本以 69dc871 为上游基线并叠加车金专属适配；最终车金提交和完整目录 tree SHA 由打包 manifest 动态记录。"
 }
