@@ -19,8 +19,8 @@ def resolve_image_source_limits(
 ) -> dict[str, int]:
     value = config_or_limits if isinstance(config_or_limits, dict) else {}
     image_contract = (
-        value.get("_chejin_image_contract")
-        if isinstance(value.get("_chejin_image_contract"), dict)
+        value.get("image_contract")
+        if isinstance(value.get("image_contract"), dict)
         else {}
     )
     declared = (

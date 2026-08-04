@@ -68,9 +68,9 @@ def image_result_schema(
     schema_name: str,
 ) -> dict[str, Any]:
     contract = (
-        config.get("_chejin_image_contract")
+        config.get("image_contract")
         if isinstance(config, dict)
-        and isinstance(config.get("_chejin_image_contract"), dict)
+        and isinstance(config.get("image_contract"), dict)
         else {}
     )
     schemas = (

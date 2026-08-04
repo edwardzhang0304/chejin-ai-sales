@@ -51,17 +51,17 @@ if (-not (Test-Path $OmniAutoProvenancePath)) {
   throw "打包失败：缺少 OmniAuto 来源说明 $OmniAutoProvenancePath"
 }
 $OmniAutoProvenance = Get-Content -Raw -Encoding UTF8 $OmniAutoProvenancePath | ConvertFrom-Json
+$OmniAutoProvenanceSchema = [int]$OmniAutoProvenance.schema_version
 $OmniAutoUpstreamBaseCommit = [string]$OmniAutoProvenance.upstream_base_commit
-$OmniAutoChejinIntegrationCommit = [string]$OmniAutoProvenance.chejin_integration_commit
+$OmniAutoChejinIntegrationCommit = $GitCommit.Trim()
 $OmniAutoSelectiveIntegrations = @($OmniAutoProvenance.selective_integrations)
+$OmniAutoHistoricalIntegrations = @($OmniAutoProvenance.historical_integrations)
+$OmniAutoChejinOverlays = @($OmniAutoProvenance.chejin_overlays)
 if ($OmniAutoUpstreamBaseCommit -notmatch '^[0-9a-fA-F]{40}$') {
   throw "打包失败：OmniAuto upstream base commit 不合法"
 }
 if ($OmniAutoChejinIntegrationCommit -notmatch '^[0-9a-fA-F]{40}$') {
   throw "打包失败：OmniAuto chejin integration commit 不合法"
-}
-if ($OmniAutoSelectiveIntegrations.Count -lt 1) {
-  throw "打包失败：OmniAuto selective integrations 不能为空"
 }
 foreach ($Integration in $OmniAutoSelectiveIntegrations) {
   if ([string]$Integration.source_commit -notmatch '^[0-9a-fA-F]{40}$') {
@@ -70,6 +70,26 @@ foreach ($Integration in $OmniAutoSelectiveIntegrations) {
   if (@($Integration.scope).Count -lt 1) {
     throw "打包失败：OmniAuto selective integration scope 不能为空"
   }
+}
+if ($OmniAutoProvenanceSchema -ge 3) {
+  if ($OmniAutoChejinOverlays.Count -lt 1) {
+    throw "打包失败：OmniAuto chejin overlays 不能为空"
+  }
+  if ($OmniAutoHistoricalIntegrations.Count -lt 1) {
+    throw "打包失败：OmniAuto historical integrations 不能为空"
+  }
+  foreach ($Integration in $OmniAutoHistoricalIntegrations) {
+    if ([string]$Integration.upstream_base_commit -notmatch '^[0-9a-fA-F]{40}$' -or
+        [string]$Integration.source_commit -notmatch '^[0-9a-fA-F]{40}$' -or
+        [string]$Integration.chejin_integration_commit -notmatch '^[0-9a-fA-F]{40}$') {
+      throw "打包失败：OmniAuto historical integration commit 不合法"
+    }
+    if (@($Integration.scope).Count -lt 1) {
+      throw "打包失败：OmniAuto historical integration scope 不能为空"
+    }
+  }
+} elseif ($OmniAutoSelectiveIntegrations.Count -lt 1) {
+  throw "打包失败：OmniAuto selective integrations 不能为空"
 }
 
 if (-not (Test-Path ".venv")) {
@@ -230,6 +250,8 @@ $Manifest = [ordered]@{
   packaged_generated_observation_schema_sha256 = $PackagedGeneratedSchemaHash.Hash
   omniauto_upstream_base_commit = $OmniAutoUpstreamBaseCommit
   omniauto_selective_integrations = $OmniAutoSelectiveIntegrations
+  omniauto_historical_integrations = $OmniAutoHistoricalIntegrations
+  omniauto_chejin_overlays = $OmniAutoChejinOverlays
   omniauto_chejin_integration_commit = $OmniAutoChejinIntegrationCommit
   omniauto_source_path = $OmniAutoSourcePath
   omniauto_source_tree_sha256 = $OmniAutoTreeVerification.source.tree_sha256
