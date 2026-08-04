@@ -624,13 +624,18 @@ def find_best_text_item(
     min_y_ratio: float = 0.0,
     max_y_ratio: float = 1.0,
 ) -> dict[str, Any] | None:
-    candidates: list[dict[str, Any]] = []
+    normalized_tokens = tuple(
+        token
+        for token in (compact_ocr_text(value) for value in tokens)
+        if token
+    )
+    candidates: list[tuple[dict[str, Any], tuple[int, int]]] = []
     for item in items:
         text = compact_ocr_text(item.get("text"))
         if not text:
             continue
-        matched = any(compact_ocr_text(token) in text for token in tokens)
-        if not matched:
+        matched_tokens = [token for token in normalized_tokens if token in text]
+        if not matched_tokens:
             continue
         center_x, center_y = item_center(item)
         image_height = int(image_size[1]) if image_size else int(item.get("image_height") or item.get("source_image_height") or 0)
@@ -639,15 +644,50 @@ def find_best_text_item(
         ratio = center_y / image_height
         if ratio < min_y_ratio or ratio > max_y_ratio:
             continue
-        candidates.append(item)
+        longest_match = max(matched_tokens, key=len)
+        candidates.append(
+            (
+                item,
+                (
+                    1 if text == longest_match else 0,
+                    len(longest_match),
+                ),
+            )
+        )
     if not candidates:
         return None
-    return max(candidates, key=lambda item: (float(item.get("confidence") or 0.0), len(str(item.get("text") or ""))))
+    return max(
+        candidates,
+        key=lambda candidate: (
+            candidate[1][0],
+            candidate[1][1],
+            float(candidate[0].get("confidence") or 0.0),
+            len(str(candidate[0].get("text") or "")),
+        ),
+    )[0]
 
 
-def field_text_visible(expected: str, ocr_items: list[dict[str, Any]] | None) -> dict[str, Any]:
+def field_text_visible(
+    expected: str,
+    ocr_items: list[dict[str, Any]] | None,
+    *,
+    bounds: list[int] | None = None,
+) -> dict[str, Any]:
     clean_expected = compact_ocr_text(expected)
-    surface = "\n".join(compact_ocr_text(item.get("text")) for item in (ocr_items or []) if isinstance(item, dict))
+    items = [item for item in (ocr_items or []) if isinstance(item, dict)]
+    if bounds:
+        items = [
+            item
+            for item in items
+            if point_in_bounds(*item_center(item), bounds)
+        ]
+    ordered_items = sorted(
+        items,
+        key=lambda item: (item_center(item)[1], item_center(item)[0]),
+    )
+    surface = compact_ocr_text(
+        "".join(str(item.get("text") or "") for item in ordered_items)
+    )
     digits_expected = "".join(ch for ch in str(expected or "") if ch.isdigit())
     digits_surface = "".join(ch for ch in surface if ch.isdigit())
     ok = bool(clean_expected and clean_expected in surface) or bool(digits_expected and digits_expected in digits_surface)
@@ -655,6 +695,8 @@ def field_text_visible(expected: str, ocr_items: list[dict[str, Any]] | None) ->
         "ok": ok,
         "expected_length": len(str(expected or "")),
         "matched_by": "ocr_text" if clean_expected and clean_expected in surface else "digits" if digits_expected and digits_expected in digits_surface else "",
+        "scoped_to_field": bool(bounds),
+        "ocr_fragment_count": len(ordered_items),
     }
 
 
@@ -664,10 +706,24 @@ def invite_form_field_verification(
     remark_name: str,
     remark_code: str,
     ocr_items: list[dict[str, Any]] | None,
+    field_bounds: dict[str, list[int]] | None = None,
 ) -> dict[str, Any]:
-    verify_result = field_text_visible(verify_message, ocr_items)
-    remark_result = field_text_visible(remark_name, ocr_items)
-    code_result = field_text_visible(remark_code, ocr_items)
+    scoped_bounds = field_bounds or {}
+    verify_result = field_text_visible(
+        verify_message,
+        ocr_items,
+        bounds=scoped_bounds.get("verify_message"),
+    )
+    remark_result = field_text_visible(
+        remark_name,
+        ocr_items,
+        bounds=scoped_bounds.get("remark_name"),
+    )
+    code_result = field_text_visible(
+        remark_code,
+        ocr_items,
+        bounds=scoped_bounds.get("remark_code"),
+    )
     return {
         "ok": bool(verify_result.get("ok")) and bool(remark_result.get("ok")) and bool(code_result.get("ok")),
         "verify_message": verify_result,

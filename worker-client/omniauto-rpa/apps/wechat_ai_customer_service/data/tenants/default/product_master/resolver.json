@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "category_id": "products",
+  "match_fields": [
+    "name",
+    "sku",
+    "category",
+    "aliases",
+    "specs",
+    "additional_details"
+  ],
+  "intent_fields": [
+    "reply_templates",
+    "risk_rules",
+    "shipping_policy",
+    "warranty_policy",
+    "additional_details"
+  ],
+  "risk_fields": [
+    "risk_rules"
+  ],
+  "reply_fields": [
+    "name",
+    "sku",
+    "category",
+    "price",
+    "unit",
+    "price_tiers",
+    "inventory",
+    "shipping_policy",
+    "warranty_policy",
+    "reply_templates",
+    "additional_details"
+  ],
+  "minimum_confidence": 0.45,
+  "default_action": "answer_from_product_master"
+}

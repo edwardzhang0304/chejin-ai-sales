@@ -35,6 +35,20 @@ def ocr_item(text: str, center_y: float, *, enhanced: bool = False) -> dict:
 
 
 class WechatWin32OcrSessionRowTest(unittest.TestCase):
+    def test_short_code_with_glued_ellipsis_time_suffix_is_admitted(self):
+        sessions = sidecar.parse_sessions_from_ocr(
+            [ocr_item("CJR8S5K3虾丸子大...11:05", 128.0)],
+            (980, 860),
+        )
+
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0]["name"], "CJR8S5K3虾丸子大")
+        self.assertEqual(
+            sessions[0]["c2_remark_code_candidates"],
+            ["CJR8S5K3"],
+        )
+        self.assertEqual(sessions[0]["conversation_type"], "private")
+
     def test_short_code_title_wins_over_same_row_pollution_regardless_of_order_or_offset(self):
         for pollution in ("2", "您好，什么时候方便"):
             for pollution_y in (120.0, 136.0):

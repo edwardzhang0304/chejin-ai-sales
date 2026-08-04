@@ -105,12 +105,15 @@ def input_text_region_bounds(geometry: dict[str, Any]) -> tuple[int, int, int, i
     width = int(geometry.get("width") or 0)
     height = int(geometry.get("height") or 0)
     left = max(session_split_x(width) + 24, int(width * 0.36))
-    top = max(int(height * 0.79), height - 180)
+    # Keep this ROI inside the editable text surface. The older range started
+    # above the input divider and ended inside the toolbar, so toolbar glyphs
+    # and the focused caret could be mistaken for an existing draft.
+    top = max(int(height * 0.81), height - 165)
     right = max(left + 20, width - 95)
-    bottom = min(height - 58, height)
+    bottom = min(height - 76, height)
     if bottom <= top:
-        top = max(0, int(height * 0.84))
-        bottom = max(top + 1, height - 58)
+        top = max(0, int(height * 0.82))
+        bottom = max(top + 1, height - 70)
     return (left, top, right, bottom)
 
 
@@ -144,12 +147,15 @@ def rect_in_input_area(rect: dict[str, int], geometry: dict[str, Any]) -> bool:
         return False
     bounds = input_text_region_bounds(geometry)
     left, top, right, bottom = bounds
-    draft_top = min(top, max(int(height * 0.79), height - 180))
+    draft_top = top
     center_y = (rel["top"] + rel["bottom"]) / 2.0
     horizontal_overlap = min(rel["right"], right) - max(rel["left"], left)
     if horizontal_overlap <= 0:
         return False
-    return rel["top"] >= draft_top - 6 and rel["bottom"] <= bottom + 10 and draft_top <= center_y <= bottom
+    # UIA may report the edit control's border box, which legitimately extends
+    # beyond the stricter visual text ROI. Its center must still be inside the
+    # editable surface, while a small border allowance keeps UIA authoritative.
+    return rel["top"] >= draft_top - 20 and rel["bottom"] <= bottom + 20 and draft_top <= center_y <= bottom
 
 
 def rect_in_input_toolbar(rect: dict[str, int], geometry: dict[str, Any]) -> bool:

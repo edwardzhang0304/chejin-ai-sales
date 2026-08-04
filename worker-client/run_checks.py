@@ -16,6 +16,13 @@ def main() -> int:
     env["CHEJIN_RPA_MODE"] = "mock"
     env["CHEJIN_RPA_MOCK_STEP_DELAY_SECONDS"] = "0"
     env["CHEJIN_WORKER_HOME"] = tempfile.mkdtemp(prefix="chejin-worker-checks-")
+    generated_contract = subprocess.run(
+        [sys.executable, "scripts/generate-c2-observation-schema.py", "--check"],
+        cwd=ROOT,
+        env=env,
+    )
+    if generated_contract.returncode:
+        return generated_contract.returncode
     test = subprocess.run(
         [sys.executable, "-W", "error::ResourceWarning", "-m", "unittest", "discover", "-s", "tests", "-v"],
         cwd=ROOT,
@@ -26,6 +33,7 @@ def main() -> int:
     omniauto_test_dir = ROOT / "omniauto-rpa" / "apps" / "wechat_ai_customer_service" / "tests"
     omniauto_check_scripts = (
         "run_wechat_win32_ocr_compat_checks.py",
+        "run_wechat_win32_ocr_env_config_checks.py",
         "run_wechat_win32_ocr_interaction_evidence_checks.py",
         "run_wechat_win32_ocr_humanized_input_checks.py",
         "run_wechat_win32_ocr_window_action_planning_checks.py",

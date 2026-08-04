@@ -1377,7 +1377,7 @@ def add_friend_virtual_key_for_digit(char: str) -> int:
     return ord(str(char))
 
 
-def click_add_contact_entry_from_search_result(hwnd: int, output_dir: Path, *, result_shot: Image.Image, result_path: str, result_items: list[dict[str, Any]], query: str, verify_message: str='', remark_name: str='', remark_code: str='') -> dict[str, Any]:
+def click_add_contact_entry_from_search_result(hwnd: int, output_dir: Path, *, result_shot: Image.Image, result_path: str, result_items: list[dict[str, Any]], query: str, verify_message: str='', remark_name: str='', remark_code: str='', action_journal_path: str='') -> dict[str, Any]:
     not_found = add_friend_phone_not_found_detected(result_items)
     if not_found.get('detected'):
         annotated_path = output_dir / 'add_friend_search_result_phone_not_found_annotated.png'
@@ -1410,10 +1410,10 @@ def click_add_contact_entry_from_search_result(hwnd: int, output_dir: Path, *, r
     after_annotated = draw_add_friend_screen_annotation(after_shot, ocr_items=after_items, targets=after_targets, output_path=after_annotated_path, window_rect=None)
     if not invite_hwnd:
         return add_friend_invite_form_window_not_found_payload(phone=query, before={'screenshot_path': result_path, 'annotated_path': annotated_before, 'targets': [target], 'ocr_items': add_friend_ocr_snapshots(result_items, result_shot.size)}, click=click_result, after={'screenshot_path': after_path, 'annotated_path': after_annotated, 'ocr_items': add_friend_ocr_snapshots(after_items, after_shot.size)}, invite_form_probe=invite_probe, timings=timings)
-    invite_result = _ops().fill_add_friend_invite_form_and_confirm(invite_hwnd, output_dir, verify_message=verify_message, remark_name=remark_name, remark_code=remark_code)
+    invite_result = _ops().fill_add_friend_invite_form_and_confirm(invite_hwnd, output_dir, verify_message=verify_message, remark_name=remark_name, remark_code=remark_code, action_journal_path=action_journal_path)
     invite_timings = list(invite_result.get('timings') or []) if isinstance(invite_result, dict) else []
     timings.extend(invite_timings)
-    return {'ok': bool(click_result.get('ok')) and bool(invite_result.get('ok')), 'state': str(invite_result.get('state') or 'add_contact_entry_clicked'), 'query': query, 'task_status': str(invite_result.get('task_status') or 'running'), 'result_code': str(invite_result.get('result_code') or ''), 'error_code': str(invite_result.get('error_code') or ''), 'current_step': str(invite_result.get('current_step') or 'invite_confirm_clicked'), 'server_report_payload': invite_result.get('server_report_payload'), 'before': {'screenshot_path': result_path, 'annotated_path': annotated_before, 'targets': [target], 'ocr_items': add_friend_ocr_snapshots(result_items, result_shot.size)}, 'click': click_result, 'after': {'screenshot_path': after_path, 'annotated_path': after_annotated, 'ocr_items': add_friend_ocr_snapshots(after_items, after_shot.size), 'targets': after_targets}, 'invite_form_probe': invite_probe, 'invite_form': invite_result, 'timings': timings}
+    return {'ok': bool(invite_result.get('ok')), 'state': str(invite_result.get('state') or 'add_contact_entry_clicked'), 'query': query, 'task_status': str(invite_result.get('task_status') or 'running'), 'result_code': str(invite_result.get('result_code') or ''), 'error_code': str(invite_result.get('error_code') or ''), 'current_step': str(invite_result.get('current_step') or 'invite_confirm_clicked'), 'server_report_payload': invite_result.get('server_report_payload'), 'before': {'screenshot_path': result_path, 'annotated_path': annotated_before, 'targets': [target], 'ocr_items': add_friend_ocr_snapshots(result_items, result_shot.size)}, 'click': click_result, 'after': {'screenshot_path': after_path, 'annotated_path': after_annotated, 'ocr_items': add_friend_ocr_snapshots(after_items, after_shot.size), 'targets': after_targets}, 'invite_form_probe': invite_probe, 'invite_form': invite_result, 'timings': timings}
 
 
 def paste_invite_form_text(hwnd: int, target: dict[str, Any], text: str, *, action_name: str) -> dict[str, Any]:
@@ -1438,7 +1438,66 @@ def paste_invite_form_text(hwnd: int, target: dict[str, Any], text: str, *, acti
     return {'ok': bool(click_result.get('ok')), 'method': 'click_ctrl_a_backspace_clipboard_paste', 'text_length': len(clean), 'click': click_result, 'action': make_action_result(action_id=action_name, action_type=ACTION_COMPOSITE_INPUT, status='completed' if bool(click_result.get('ok')) else 'failed', method='click_ctrl_a_backspace_clipboard_paste', target=target, text=clean, result={'click': click_result})}
 
 
-def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, verify_message: str, remark_name: str, remark_code: str) -> dict[str, Any]:
+def capture_invite_form_field_review(
+    hwnd: int,
+    output_dir: Path,
+    *,
+    label: str,
+    verify_message: str,
+    remark_name: str,
+    remark_code: str,
+) -> dict[str, Any]:
+    shot, screenshot_path = _ops().capture_wechat_window_visible_screen(
+        hwnd,
+        artifact_dir=str(output_dir),
+        label=label,
+    )
+    ocr_started_at = time.perf_counter()
+    ocr_items = _ops().run_ocr_on_screen_region(
+        shot,
+        [0, 0, shot.size[0], shot.size[1]],
+    )
+    ocr_seconds = round(time.perf_counter() - ocr_started_at, 3)
+    targets_map = add_friend_invite_form_targets(shot.size, ocr_items)
+    targets = list(targets_map.values())
+    greeting_bounds = list(
+        (targets_map.get('invite_greeting_textarea') or {}).get('bounds') or []
+    )
+    remark_bounds = list(
+        (targets_map.get('invite_remark_input') or {}).get('bounds') or []
+    )
+    field_verification = invite_form_field_verification(
+        verify_message=verify_message,
+        remark_name=remark_name,
+        remark_code=remark_code,
+        ocr_items=ocr_items,
+        field_bounds={
+            'verify_message': greeting_bounds,
+            'remark_name': remark_bounds,
+            'remark_code': remark_bounds,
+        },
+    )
+    annotated_path = output_dir / f'{label}_annotated.png'
+    annotated = draw_add_friend_screen_annotation(
+        shot,
+        ocr_items=ocr_items,
+        targets=targets,
+        output_path=annotated_path,
+        window_rect=None,
+    )
+    return {
+        'shot': shot,
+        'screenshot_path': screenshot_path,
+        'annotated_path': annotated,
+        'ocr_items': ocr_items,
+        'ocr_seconds': ocr_seconds,
+        'targets_map': targets_map,
+        'targets': targets,
+        'field_verification': field_verification,
+    }
+
+
+def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, verify_message: str, remark_name: str, remark_code: str, action_journal_path: str='') -> dict[str, Any]:
     clean_verify_message = str(verify_message or '').strip()
     clean_remark_name = str(remark_name or '').strip()
     clean_remark_code = str(remark_code or '').strip()
@@ -1462,33 +1521,156 @@ def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, veri
     timings.append({'name': 'fill_invite_remark_text', 'seconds': round(time.perf_counter() - remark_started_at, 3), 'result': remark_result})
     pause_seconds = _ops().add_friend_paced_pause('verify', reason='after_invite_form_fill_before_review_capture')
     timings.append({'name': 'after_invite_form_fill_before_review_capture_pause', 'seconds': round(pause_seconds, 3)})
-    filled_shot, filled_path = _ops().capture_wechat_window_visible_screen(hwnd, artifact_dir=str(output_dir), label='add_friend_invite_form_filled_before_confirm_window')
-    filled_ocr_started_at = time.perf_counter()
-    filled_items = _ops().run_ocr_on_screen_region(filled_shot, [0, 0, filled_shot.size[0], filled_shot.size[1]])
-    timings.append({'name': 'invite_form_filled_ocr', 'seconds': round(time.perf_counter() - filled_ocr_started_at, 3), 'ocr_count': len(filled_items)})
-    filled_targets_map = add_friend_invite_form_targets(filled_shot.size, filled_items)
-    filled_targets = list(filled_targets_map.values())
-    field_verification = invite_form_field_verification(verify_message=clean_verify_message, remark_name=clean_remark_name, remark_code=clean_remark_code, ocr_items=filled_items)
-    filled_annotated_path = output_dir / 'add_friend_invite_form_filled_before_confirm_window_annotated.png'
-    filled_annotated = draw_add_friend_screen_annotation(filled_shot, ocr_items=filled_items, targets=filled_targets, output_path=filled_annotated_path, window_rect=None)
+    field_review = _ops().capture_invite_form_field_review(
+        hwnd,
+        output_dir,
+        label='add_friend_invite_form_filled_before_confirm_window',
+        verify_message=clean_verify_message,
+        remark_name=clean_remark_name,
+        remark_code=clean_remark_code,
+    )
+    timings.append({
+        'name': 'invite_form_filled_ocr',
+        'seconds': field_review['ocr_seconds'],
+        'ocr_count': len(field_review['ocr_items']),
+    })
+    initial_field_verification = dict(field_review['field_verification'])
+    fill_retry_attempts: list[dict[str, Any]] = []
+    if not initial_field_verification.get('ok'):
+        if not (initial_field_verification.get('verify_message') or {}).get('ok'):
+            retry_started_at = time.perf_counter()
+            retry_result = _ops().paste_invite_form_text(
+                hwnd,
+                field_review['targets_map']['invite_greeting_textarea'],
+                clean_verify_message,
+                action_name='invite_greeting_retry',
+            )
+            fill_retry_attempts.append({
+                'field': 'verify_message',
+                'result': retry_result,
+            })
+            timings.append({
+                'name': 'retry_invite_greeting_text',
+                'seconds': round(time.perf_counter() - retry_started_at, 3),
+                'result': retry_result,
+            })
+        remark_check = initial_field_verification.get('remark_name') or {}
+        code_check = initial_field_verification.get('remark_code') or {}
+        if not remark_check.get('ok') or not code_check.get('ok'):
+            retry_started_at = time.perf_counter()
+            retry_result = _ops().paste_invite_form_text(
+                hwnd,
+                field_review['targets_map']['invite_remark_input'],
+                clean_remark_name,
+                action_name='invite_remark_retry',
+            )
+            fill_retry_attempts.append({
+                'field': 'remark_name',
+                'result': retry_result,
+            })
+            timings.append({
+                'name': 'retry_invite_remark_text',
+                'seconds': round(time.perf_counter() - retry_started_at, 3),
+                'result': retry_result,
+            })
+        if fill_retry_attempts:
+            pause_seconds = _ops().add_friend_paced_pause(
+                'verify',
+                reason='after_invite_form_retry_before_review_capture',
+            )
+            timings.append({
+                'name': 'after_invite_form_retry_before_review_capture_pause',
+                'seconds': round(pause_seconds, 3),
+            })
+            field_review = _ops().capture_invite_form_field_review(
+                hwnd,
+                output_dir,
+                label='add_friend_invite_form_retry_filled_before_confirm_window',
+                verify_message=clean_verify_message,
+                remark_name=clean_remark_name,
+                remark_code=clean_remark_code,
+            )
+            timings.append({
+                'name': 'invite_form_retry_filled_ocr',
+                'seconds': field_review['ocr_seconds'],
+                'ocr_count': len(field_review['ocr_items']),
+            })
+    filled_shot = field_review['shot']
+    filled_path = field_review['screenshot_path']
+    filled_items = field_review['ocr_items']
+    filled_targets_map = field_review['targets_map']
+    filled_targets = field_review['targets']
+    field_verification = field_review['field_verification']
+    filled_annotated = field_review['annotated_path']
+    greeting_result = {
+        **greeting_result,
+        'input_verified': bool(
+            (field_verification.get('verify_message') or {}).get('ok')
+        ),
+    }
+    remark_result = {
+        **remark_result,
+        'input_verified': bool(
+            (field_verification.get('remark_name') or {}).get('ok')
+        )
+        and bool((field_verification.get('remark_code') or {}).get('ok')),
+    }
     if not field_verification.get('ok'):
         final_status = mapped_add_friend_failed_result(state='invite_field_verification_failed', error_code=ERROR_INVITE_FIELD_VERIFICATION_FAILED, current_step='invite_fields_review', field_verification=field_verification)
         timings.append({'name': 'invite_field_verification_gate', 'seconds': 0.0, 'result': field_verification})
-        return {'ok': False, 'state': str(final_status.get('state') or 'invite_field_verification_failed'), 'task_status': str(final_status.get('task_status') or 'failed'), 'result_code': str(final_status.get('result_code') or ''), 'error_code': str(final_status.get('error_code') or ERROR_INVITE_FIELD_VERIFICATION_FAILED), 'current_step': str(final_status.get('current_step') or 'invite_fields_review'), 'verify_message': clean_verify_message, 'remark_name': clean_remark_name, 'remark_code': clean_remark_code, 'remark_code_valid': remark_code_valid, 'legacy_remark_fallback': False, 'validation_errors': [], 'before': {'screenshot_path': before_path, 'annotated_path': before_annotated, 'targets': before_targets, 'ocr_items': add_friend_ocr_snapshots(before_items, before_shot.size)}, 'filled': {'screenshot_path': filled_path, 'annotated_path': filled_annotated, 'targets': filled_targets, 'ocr_items': add_friend_ocr_snapshots(filled_items, filled_shot.size), 'field_verification': field_verification}, 'after': {'screenshot_path': '', 'annotated_path': '', 'ocr_items': [], 'final_status': final_status, 'skipped': True, 'reason': 'field_verification_failed_before_confirm'}, 'greeting': greeting_result, 'remark_fill': remark_result, 'field_verification': field_verification, 'confirm': {'ok': False, 'skipped': True, 'reason': 'field_verification_failed_before_confirm'}, 'server_report_payload': final_status.get('server_report_payload') or {'task.status': 'failed', 'task.error_code': ERROR_INVITE_FIELD_VERIFICATION_FAILED, 'task.current_step': 'invite_fields_review'}, 'timings': timings}
+        return {'ok': False, 'state': str(final_status.get('state') or 'invite_field_verification_failed'), 'task_status': str(final_status.get('task_status') or 'failed'), 'result_code': str(final_status.get('result_code') or ''), 'error_code': str(final_status.get('error_code') or ERROR_INVITE_FIELD_VERIFICATION_FAILED), 'current_step': str(final_status.get('current_step') or 'invite_fields_review'), 'verify_message': clean_verify_message, 'remark_name': clean_remark_name, 'remark_code': clean_remark_code, 'remark_code_valid': remark_code_valid, 'legacy_remark_fallback': False, 'validation_errors': [], 'before': {'screenshot_path': before_path, 'annotated_path': before_annotated, 'targets': before_targets, 'ocr_items': add_friend_ocr_snapshots(before_items, before_shot.size)}, 'filled': {'screenshot_path': filled_path, 'annotated_path': filled_annotated, 'targets': filled_targets, 'ocr_items': add_friend_ocr_snapshots(filled_items, filled_shot.size), 'initial_field_verification': initial_field_verification, 'field_verification': field_verification, 'retry_attempts': fill_retry_attempts}, 'after': {'screenshot_path': '', 'annotated_path': '', 'ocr_items': [], 'final_status': final_status, 'skipped': True, 'reason': 'field_verification_failed_before_confirm'}, 'greeting': greeting_result, 'remark_fill': remark_result, 'field_verification': field_verification, 'fill_retry_attempts': fill_retry_attempts, 'confirm': {'ok': False, 'skipped': True, 'reason': 'field_verification_failed_before_confirm'}, 'server_report_payload': final_status.get('server_report_payload') or {'task.status': 'failed', 'task.error_code': ERROR_INVITE_FIELD_VERIFICATION_FAILED, 'task.current_step': 'invite_fields_review'}, 'timings': timings}
     pause_seconds = _ops().add_friend_paced_pause('critical_click', reason='before_invite_confirm_click')
     timings.append({'name': 'before_invite_confirm_click_pause', 'seconds': round(pause_seconds, 3)})
+    if action_journal_path:
+        _ops().write_action_phase_journal(
+            action_journal_path,
+            'trigger_attempted',
+            business_state='invite_confirm_click_starting',
+        )
     confirm_started_at = time.perf_counter()
     confirm_target = filled_targets_map['invite_confirm_button']
     confirm_result = _ops().human_window_image_click_in_bounds(hwnd, int(confirm_target.get('x') or 0), int(confirm_target.get('y') or 0), bounds=list(confirm_target.get('click_bounds') or []), action_name='invite_confirm_button_click')
     timings.append({'name': 'invite_confirm_button_click', 'seconds': round(time.perf_counter() - confirm_started_at, 3), 'result': confirm_result})
+    if action_journal_path and confirm_result.get('ok'):
+        _ops().write_action_phase_journal(
+            action_journal_path,
+            'confirmed',
+            business_state='invite_sent',
+            business_result_confirmed=True,
+            terminal_payload={
+                'ok': True,
+                'state': 'invite_sent',
+                'task_status': 'completed',
+                'result_code': RESULT_INVITE_SENT,
+                'error_code': '',
+                'current_step': 'task_completed',
+            },
+        )
     pause_seconds = _ops().add_friend_paced_pause('verify', reason='after_invite_confirm_click_before_capture')
     timings.append({'name': 'after_invite_confirm_click_before_capture_pause', 'seconds': round(pause_seconds, 3)})
     after_shot, after_path = _ops().capture_wechat_window_visible_screen(hwnd, artifact_dir=str(output_dir), label='add_friend_invite_form_after_confirm_window')
     after_items = _ops().run_ocr_on_screen_region(after_shot, [0, 0, after_shot.size[0], after_shot.size[1]])
     final_status = classify_add_friend_after_confirm_surface(after_items, after_shot.size, confirm_ok=bool(confirm_result.get('ok')))
+    result_ok = bool(final_status.get('ok'))
+    if action_journal_path and confirm_result.get('ok'):
+        _ops().write_action_phase_journal(
+            action_journal_path,
+            'confirmed',
+            business_state=str(final_status.get('state') or 'invite_confirm_checked'),
+            business_result_confirmed=True,
+            error_code=str(final_status.get('error_code') or '') or None,
+            terminal_payload={
+                'ok': result_ok,
+                'state': str(final_status.get('state') or 'invite_confirm_clicked'),
+                'task_status': str(final_status.get('task_status') or 'running'),
+                'result_code': str(final_status.get('result_code') or ''),
+                'error_code': str(final_status.get('error_code') or ''),
+                'current_step': str(final_status.get('current_step') or 'invite_confirm_clicked'),
+            },
+        )
     after_annotated_path = output_dir / 'add_friend_invite_form_after_confirm_window_annotated.png'
     after_annotated = draw_add_friend_screen_annotation(after_shot, ocr_items=after_items, targets=[], output_path=after_annotated_path, window_rect=None)
-    return {'ok': bool(greeting_result.get('ok')) and bool(remark_result.get('ok')) and bool(confirm_result.get('ok')), 'state': str(final_status.get('state') or 'invite_confirm_clicked'), 'task_status': str(final_status.get('task_status') or 'running'), 'result_code': str(final_status.get('result_code') or ''), 'error_code': str(final_status.get('error_code') or ''), 'current_step': str(final_status.get('current_step') or 'invite_confirm_clicked'), 'verify_message': clean_verify_message, 'remark_name': clean_remark_name, 'remark_code': clean_remark_code, 'remark_code_valid': remark_code_valid, 'legacy_remark_fallback': False, 'validation_errors': [], 'before': {'screenshot_path': before_path, 'annotated_path': before_annotated, 'targets': before_targets, 'ocr_items': add_friend_ocr_snapshots(before_items, before_shot.size)}, 'filled': {'screenshot_path': filled_path, 'annotated_path': filled_annotated, 'targets': filled_targets, 'ocr_items': add_friend_ocr_snapshots(filled_items, filled_shot.size), 'field_verification': field_verification}, 'after': {'screenshot_path': after_path, 'annotated_path': after_annotated, 'ocr_items': add_friend_ocr_snapshots(after_items, after_shot.size), 'final_status': final_status}, 'greeting': greeting_result, 'remark_fill': remark_result, 'field_verification': field_verification, 'confirm': confirm_result, 'server_report_payload': final_status.get('server_report_payload') or {'task.current_step': 'invite_confirm_clicked'}, 'timings': timings}
+    return {'ok': result_ok, 'state': str(final_status.get('state') or 'invite_confirm_clicked'), 'task_status': str(final_status.get('task_status') or 'running'), 'result_code': str(final_status.get('result_code') or ''), 'error_code': str(final_status.get('error_code') or ''), 'current_step': str(final_status.get('current_step') or 'invite_confirm_clicked'), 'verify_message': clean_verify_message, 'remark_name': clean_remark_name, 'remark_code': clean_remark_code, 'remark_code_valid': remark_code_valid, 'legacy_remark_fallback': False, 'validation_errors': [], 'before': {'screenshot_path': before_path, 'annotated_path': before_annotated, 'targets': before_targets, 'ocr_items': add_friend_ocr_snapshots(before_items, before_shot.size)}, 'filled': {'screenshot_path': filled_path, 'annotated_path': filled_annotated, 'targets': filled_targets, 'ocr_items': add_friend_ocr_snapshots(filled_items, filled_shot.size), 'initial_field_verification': initial_field_verification, 'field_verification': field_verification, 'retry_attempts': fill_retry_attempts}, 'after': {'screenshot_path': after_path, 'annotated_path': after_annotated, 'ocr_items': add_friend_ocr_snapshots(after_items, after_shot.size), 'final_status': final_status}, 'greeting': greeting_result, 'remark_fill': remark_result, 'field_verification': field_verification, 'fill_retry_attempts': fill_retry_attempts, 'confirm': confirm_result, 'server_report_payload': final_status.get('server_report_payload') or {'task.current_step': 'invite_confirm_clicked'}, 'timings': timings}
 
 
 def type_add_friend_query_like_human_for_entry(query: str) -> dict[str, Any]:
@@ -1684,7 +1866,7 @@ def click_add_friend_menu_entry_and_capture(hwnd: int, output_dir: Path, *, menu
     return {'clicked': bool(click_result.get('ok')) and bool(dialog_probe.get('ok')) and (not dialog_handle_invalid), 'menu_clicked': bool(click_result.get('ok')), 'next_hwnd': next_hwnd, 'dialog_window': dialog_probe, 'reason': 'add_friend_dialog_window_handle_invalid_after_menu_click' if dialog_handle_invalid else 'add_friend_dialog_window_ready' if dialog_probe.get('ok') else 'add_friend_dialog_window_not_found_after_menu_click', 'target': target, 'hover': hover_result, 'click': click_result, 'timings': timings, 'error': capture_error, 'geometry': geometry, 'screenshot_path': screenshot_path, 'annotated_path': annotated, 'readiness': readiness, 'ocr_items': add_friend_ocr_snapshots(ocr_items, screenshot.size)}
 
 
-def input_add_friend_query_and_search(hwnd: int, output_dir: Path, *, query: str, verify_message: str='', remark_name: str='', remark_code: str='') -> dict[str, Any]:
+def input_add_friend_query_and_search(hwnd: int, output_dir: Path, *, query: str, verify_message: str='', remark_name: str='', remark_code: str='', action_journal_path: str='') -> dict[str, Any]:
     if not query:
         return {'ok': False, 'reason': 'empty_query'}
     timings: list[dict[str, Any]] = []
@@ -1796,7 +1978,7 @@ def input_add_friend_query_and_search(hwnd: int, output_dir: Path, *, query: str
     timings.append({'name': 'search_result_region_ocr', 'seconds': round(time.perf_counter() - result_ocr_started_at, 3), 'bounds': result_region, 'ocr_count': len(result_items)})
     result_annotated_path = output_dir / 'add_friend_search_result_window_annotated.png'
     result_annotated = draw_add_friend_screen_annotation(result_shot, ocr_items=result_items, targets=[button_target], output_path=result_annotated_path, window_rect=None)
-    add_contact_result = _ops().click_add_contact_entry_from_search_result(hwnd, output_dir, result_shot=result_shot, result_path=result_path, result_items=result_items, query=query, verify_message=verify_message, remark_name=remark_name, remark_code=remark_code)
+    add_contact_result = _ops().click_add_contact_entry_from_search_result(hwnd, output_dir, result_shot=result_shot, result_path=result_path, result_items=result_items, query=query, verify_message=verify_message, remark_name=remark_name, remark_code=remark_code, action_journal_path=action_journal_path)
     add_contact_timings = list(add_contact_result.get('timings') or []) if isinstance(add_contact_result, dict) else []
     timings.extend(add_contact_timings)
     return {'ok': bool(add_contact_result.get('ok')) if isinstance(add_contact_result, dict) else False, 'state': str(add_contact_result.get('state') or 'search_clicked') if isinstance(add_contact_result, dict) else 'search_clicked', 'query': query, 'task_status': add_contact_result.get('task_status') if isinstance(add_contact_result, dict) else None, 'result_code': add_contact_result.get('result_code') if isinstance(add_contact_result, dict) else '', 'error_code': add_contact_result.get('error_code') if isinstance(add_contact_result, dict) else '', 'current_step': add_contact_result.get('current_step') if isinstance(add_contact_result, dict) else 'searching_contact', 'server_report_payload': add_contact_result.get('server_report_payload') if isinstance(add_contact_result, dict) else None, 'geometry': geometry, 'page': {'screenshot_path': page_path, 'annotated_path': page_annotated, 'ocr_items': add_friend_ocr_snapshots(page_items, page_shot.size), 'targets': targets}, 'input_attempts': input_attempts, 'input_empty_before_clear': initial_empty, 'clear_result': clear_result, 'clear_verify': clear_verify_payload, 'result': {'screenshot_path': result_path, 'annotated_path': result_annotated, 'ocr_items': add_friend_ocr_snapshots(result_items, result_shot.size)}, 'add_contact_result': add_contact_result, 'timings': timings}
@@ -2122,7 +2304,7 @@ def add_friend_device_profile(hwnd: int, *, geometry: dict[str, Any] | None=None
     return win32_ocr_device_profile.build_device_profile(route=route, geometry=geometry, screenshot_size=screenshot_size, client_rect=client_rect, dpi_scale=dpi_scale, screen=screen, virtual_screen=virtual_screen, monitors=monitors, errors=errors)
 
 
-def add_friend_entry_click_plan_payload(hwnd: int, probe: dict[str, Any], *, route: str=ADD_FRIEND_MAIN_ROUTE, phone: str='', wechat: str='', verify_message: str='', remark_name: str='', remark_code: str='', artifact_dir: str | None=None, calibration_only: bool=False) -> dict[str, Any]:
+def add_friend_entry_click_plan_payload(hwnd: int, probe: dict[str, Any], *, route: str=ADD_FRIEND_MAIN_ROUTE, phone: str='', wechat: str='', verify_message: str='', remark_name: str='', remark_code: str='', artifact_dir: str | None=None, calibration_only: bool=False, action_journal_path: str='') -> dict[str, Any]:
     try:
         geometry = _ops().get_window_geometry(hwnd)
     except Exception as exc:
@@ -2184,7 +2366,7 @@ def add_friend_entry_click_plan_payload(hwnd: int, probe: dict[str, Any], *, rou
     flow_probe['operator_guard'] = operator_guard
     payload: dict[str, Any] = {}
     try:
-        payload = _ops().run_add_friend_entry_click_plan_flow(_ops(), hwnd, flow_probe, phone=phone, wechat=wechat, verify_message=verify_message, remark_name=remark_name, remark_code=remark_code, artifact_dir=str(output_dir), route=route)
+        payload = _ops().run_add_friend_entry_click_plan_flow(_ops(), hwnd, flow_probe, phone=phone, wechat=wechat, verify_message=verify_message, remark_name=remark_name, remark_code=remark_code, artifact_dir=str(output_dir), route=route, action_journal_path=action_journal_path)
         payload['operator_guard'] = operator_guard
     finally:
         release = _ops().stop_add_friend_operator_guard(operator_guard, reason='add_friend_entry_click_plan_finished')

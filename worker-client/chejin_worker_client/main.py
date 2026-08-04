@@ -4,8 +4,14 @@ import argparse
 import os
 import json
 from pathlib import Path
+import sys
 
 from .preflight import format_json, format_text, has_blocking_failures, run_preflight, write_report
+from .single_instance import (
+    SingleInstanceAlreadyRunning,
+    acquire_single_instance,
+    notify_already_running,
+)
 
 
 def bootstrap_qt_plugins() -> None:
@@ -24,7 +30,65 @@ def bootstrap_qt_plugins() -> None:
         return
 
 
+def run_bundled_omniauto_sidecar(argv: list[str]) -> int:
+    """Dispatch the packaged sidecar inside the same frozen executable."""
+    frozen_root = getattr(sys, "_MEIPASS", None)
+    if not frozen_root:
+        raise RuntimeError("bundled_omniauto_sidecar_requires_frozen_runtime")
+    omniauto_root = Path(frozen_root) / "omniauto-rpa"
+    if str(omniauto_root) not in sys.path:
+        sys.path.insert(0, str(omniauto_root))
+    from apps.wechat_ai_customer_service.adapters import (
+        wechat_win32_ocr_sidecar,
+    )
+
+    if "--daemon" in argv:
+        return int(wechat_win32_ocr_sidecar.run_daemon_loop())
+    try:
+        payload = wechat_win32_ocr_sidecar.run_sidecar_cli(argv)
+    except Exception as exc:
+        payload = wechat_win32_ocr_sidecar.exception_payload_for_sidecar(
+            exc,
+            state="win32_ocr_failed",
+        )
+    print(json.dumps(payload, ensure_ascii=True), flush=True)
+    return 0 if bool(payload.get("ok")) else 1
+
+
+def run_bundled_vision_provider_worker() -> int:
+    """Run the killable, stdin/stdout-only Vision provider child."""
+
+    from .vision_provider_worker import main as provider_main
+
+    return int(provider_main())
+
+
+def run_bundled_omniauto_ocr_worker() -> int:
+    """Run OmniAuto OCR outside the Qt GUI process."""
+
+    from .omniauto_ocr_worker import main as ocr_main
+
+    return int(ocr_main())
+
+
+def run_bundled_omniauto_ocr_probe() -> int:
+    from .omniauto_ocr_client import probe_omniauto_ocr_subprocess
+
+    result = probe_omniauto_ocr_subprocess()
+    print(json.dumps(result, ensure_ascii=False), flush=True)
+    return 0 if result.get("ok") is True else 1
+
+
 def main() -> int:
+    if len(sys.argv) >= 2 and sys.argv[1] == "--omniauto-sidecar":
+        return run_bundled_omniauto_sidecar(sys.argv[2:])
+    if len(sys.argv) >= 2 and sys.argv[1] == "--vision-provider-worker":
+        return run_bundled_vision_provider_worker()
+    if len(sys.argv) >= 2 and sys.argv[1] == "--omniauto-ocr-worker":
+        return run_bundled_omniauto_ocr_worker()
+    if len(sys.argv) >= 2 and sys.argv[1] == "--omniauto-ocr-probe":
+        return run_bundled_omniauto_ocr_probe()
+
     parser = argparse.ArgumentParser(prog="chejin-worker-client")
     parser.add_argument("--preflight", action="store_true", help="运行客户端环境预检后退出。")
     parser.add_argument("--preflight-format", choices=["text", "json"], default="text", help="预检输出格式。")
@@ -47,13 +111,30 @@ def main() -> int:
         print(format_json(checks) if args.preflight_format == "json" else format_text(checks))
         return 1 if has_blocking_failures(checks) else 0
 
-    bootstrap_qt_plugins()
-    if os.environ.get("CHEJIN_WORKER_UI_MODE") == "pyside":
-        from .ui import run_app
-    else:
-        from .web_ui import run_app
+    try:
+        instance_guard = acquire_single_instance()
+    except SingleInstanceAlreadyRunning:
+        notify_already_running()
+        return 2
 
-    return run_app()
+    bootstrap_qt_plugins()
+    from .runtime_supervision import (
+        install_runtime_supervision,
+        mark_runtime_clean_exit,
+    )
+
+    install_runtime_supervision()
+    try:
+        if os.environ.get("CHEJIN_WORKER_UI_MODE") == "pyside":
+            from .ui import run_app
+        else:
+            from .web_ui import run_app
+
+        exit_code = run_app()
+        mark_runtime_clean_exit(exit_code)
+        return exit_code
+    finally:
+        instance_guard.release()
 
 
 if __name__ == "__main__":

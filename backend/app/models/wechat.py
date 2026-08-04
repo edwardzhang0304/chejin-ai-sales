@@ -30,6 +30,10 @@ class WechatSessionBinding(Base, TimestampMixin):
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     last_ingested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_read_dispatched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     last_scan_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -78,13 +82,14 @@ class MessageEvent(Base):
     sender_role: Mapped[str] = mapped_column(String(32), nullable=False)
     message_type: Mapped[str] = mapped_column(String(32), nullable=False)
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
-    image_local_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     raw_payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     evidence: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     ocr_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     item_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
     flow_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
     occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    observation_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
@@ -99,6 +104,12 @@ class MessageEvent(Base):
 
 
 Index("idx_message_events_conversation_ingested", MessageEvent.conversation_id, MessageEvent.ingested_at.desc())
+Index(
+    "idx_message_events_conversation_observed",
+    MessageEvent.conversation_id,
+    MessageEvent.observed_at,
+    MessageEvent.observation_order,
+)
 Index("idx_message_events_worker_ingested", MessageEvent.worker_id, MessageEvent.ingested_at.desc())
 Index("idx_message_events_lead_ingested", MessageEvent.lead_id, MessageEvent.ingested_at.desc())
 

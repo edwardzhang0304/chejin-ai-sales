@@ -82,10 +82,9 @@ export const workerClientMock: WorkerClientModel = {
     },
   ],
   logs: [
-    { time: "10:27:05", level: "INFO", task: "TASK-1831", content: "回传执行结果。" },
-    { time: "10:26:46", level: "INFO", task: "TASK-1831", content: "写入备注短码。" },
-    { time: "10:26:18", level: "INFO", task: "TASK-1831", content: "搜索客户。" },
-    { time: "10:21:02", level: "INFO", task: "-", content: "开始接单。" },
+    { time: "10:27:05", level: "INFO", task: "TASK-1831", content: "回传执行结果。", event: "task_result_reported", errorCode: "-", incidentId: "-", sidecarRunId: "-", evidencePath: "-" },
+    { time: "10:26:46", level: "INFO", task: "TASK-1831", content: "写入备注短码。", event: "remark_written", errorCode: "-", incidentId: "-", sidecarRunId: "-", evidencePath: "-" },
+    { time: "10:26:18", level: "INFO", task: "TASK-1831", content: "搜索客户。", event: "customer_search_started", errorCode: "-", incidentId: "-", sidecarRunId: "-", evidencePath: "-" },
+    { time: "10:21:02", level: "INFO", task: "-", content: "开始接单。", event: "worker_started", errorCode: "-", incidentId: "-", sidecarRunId: "-", evidencePath: "-" },
   ],
 };
-

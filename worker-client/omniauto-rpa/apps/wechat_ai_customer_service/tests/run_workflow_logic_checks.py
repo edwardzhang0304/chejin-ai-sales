@@ -2095,7 +2095,7 @@ def check_live_safety_guard_enforces_single_allowed_target() -> None:
             0.0,
             "live guard should avoid random typo injection in customer-service sends",
         )
-        assert_equal(guarded.get("rpa_humanized_send", {}).get("send_trigger_mode"), "enter_only", "live guard should avoid clicking the send button")
+        assert_equal(guarded.get("rpa_humanized_send", {}).get("send_trigger_mode"), "enter_only", "live guard should use the operator-configured Enter trigger")
         assert_equal(guarded.get("rpa_humanized_send", {}).get("send_input_confirm_attempts"), 1, "live guard should avoid repeated input attempts")
         assert_true(
             guarded.get("rpa_humanized_send", {}).get("input_fast_visual_confirm_enabled") is True,

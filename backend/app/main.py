@@ -1,4 +1,6 @@
 import logging
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -10,18 +12,88 @@ from app.api.routes import assignment, c3, debug, leads, operation_logs, sales, 
 from app.core.config import get_settings
 from app.core.database import Base, SessionLocal, engine
 from app.core.request_id import new_request_id, reset_request_id, set_request_id
+from app.contracts.message_limits import C2_MESSAGE_INGEST_MAX_BYTES
 from app.errors import AppError
 from app import models  # noqa: F401
+from app.services.ai_adapter import check_ai_engine_readiness
+from app.services.c3_recovery import C3BatchRecoveryLoop
 
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
 
+class MessageIngestBodyTooLarge(Exception):
+    pass
+
+
+class C2IngestBodyLimitMiddleware:
+    """Reject an oversized ingest body while ASGI is still streaming it."""
+
+    def __init__(self, app: Callable[..., Awaitable[None]], *, max_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(
+        self,
+        scope: dict[str, Any],
+        receive: Callable[[], Awaitable[dict[str, Any]]],
+        send: Callable[[dict[str, Any]], Awaitable[None]],
+    ) -> None:
+        if scope.get("type") != "http" or not str(scope.get("path") or "").endswith(
+            "/wechat/messages/ingest"
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        headers = {
+            key.lower(): value
+            for key, value in scope.get("headers") or []
+        }
+        raw_length = headers.get(b"content-length", b"")
+        try:
+            content_length = int(raw_length or b"0")
+        except ValueError:
+            content_length = 0
+        if content_length > self.max_bytes:
+            await error_response(
+                413,
+                "MESSAGE_INGEST_REQUEST_TOO_LARGE",
+                "消息入库请求超过大小限制",
+                {"max_bytes": self.max_bytes},
+            )(scope, receive, send)
+            return
+
+        received = 0
+
+        async def limited_receive() -> dict[str, Any]:
+            nonlocal received
+            message = await receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body") or b"")
+                if received > self.max_bytes:
+                    raise MessageIngestBodyTooLarge
+            return message
+
+        try:
+            await self.app(scope, limited_receive, send)
+        except MessageIngestBodyTooLarge:
+            await error_response(
+                413,
+                "MESSAGE_INGEST_REQUEST_TOO_LARGE",
+                "消息入库请求超过大小限制",
+                {"max_bytes": self.max_bytes},
+            )(scope, receive, send)
+
+
 def create_app() -> FastAPI:
     docs_url = "/docs" if settings.docs_enabled else None
     openapi_url = "/openapi.json" if settings.docs_enabled else None
     app = FastAPI(title=settings.app_name, docs_url=docs_url, redoc_url=None, openapi_url=openapi_url)
+    app.add_middleware(
+        C2IngestBodyLimitMiddleware,
+        max_bytes=C2_MESSAGE_INGEST_MAX_BYTES,
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -47,6 +119,15 @@ def create_app() -> FastAPI:
         settings.assert_runtime_safe()
         if settings.auto_create_tables:
             Base.metadata.create_all(bind=engine)
+        recovery = C3BatchRecoveryLoop()
+        recovery.start()
+        app.state.c3_batch_recovery = recovery
+
+    @app.on_event("shutdown")
+    def stop_c3_batch_recovery() -> None:
+        recovery = getattr(app.state, "c3_batch_recovery", None)
+        if recovery is not None:
+            recovery.stop()
 
     @app.exception_handler(AppError)
     async def app_error_handler(request: Request, exc: AppError):
@@ -72,7 +153,8 @@ def create_app() -> FastAPI:
     def readyz():
         with SessionLocal() as db:
             db.execute(text("select 1"))
-        return {"status": "ok", "database": "ok"}
+        brain = check_ai_engine_readiness()
+        return {"status": "ok", "database": "ok", "brain": brain}
 
     app.include_router(leads.router, prefix=settings.api_prefix)
     app.include_router(sales.router, prefix=settings.api_prefix)

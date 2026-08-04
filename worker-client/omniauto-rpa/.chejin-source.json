@@ -1,0 +1,27 @@
+{
+  "schema_version": 3,
+  "upstream_repository": "meta-xucong/omniauto",
+  "upstream_base_commit": "e58b3d1d1bede298fe142494c731630eb6714867",
+  "selective_integrations": [],
+  "chejin_overlays": [
+    "strict_current_screen_without_history_scroll",
+    "c2_same_row_avatar_sender_role",
+    "c2_error_and_observation_contract",
+    "action_journal_authorization_and_cancel_checks",
+    "formal_vision_provider_security"
+  ],
+  "historical_integrations": [
+    {
+      "upstream_base_commit": "855c21881641cdb2f9fe69d3f2e1caa05e37d04d",
+      "source_repository": "meta-xucong/omniauto",
+      "source_commit": "2318bd8c5aa8d8ff2272a8decc285ef2ae9e01e7",
+      "chejin_integration_commit": "ff9e0de00013ac51a2f2a05e3774748c43c846fb",
+      "scope": [
+        "image_bubble_observation",
+        "visual_fingerprint",
+        "clipboard_copy_consistency_retry"
+      ]
+    }
+  ],
+  "integration_note": "当前内嵌副本以 e58b3d1 为上游基线并叠加车金专属适配；最终车金提交和完整目录 tree SHA 由打包 manifest 动态记录。"
+}

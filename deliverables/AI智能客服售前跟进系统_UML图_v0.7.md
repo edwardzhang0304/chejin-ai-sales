@@ -4,9 +4,9 @@
 
 日期：2026-07-20
 
-最近修订：2026-07-20，按技术方案 v0.8 和 Worker V16.98 调整 C2：首屏事实扫描与 read-target 授权分离；只准入有效短码 private 单聊；群聊/unknown 终止；消息使用 V3 合同和 authorization_revision；语音在同一读取 flow 内条件性转写；图片识别待定。
+最近修订：2026-07-25，按技术方案 v0.8 调整 C1/C2/C3：add_friend 以最终“确定”按钮物理点击成功作为完成点；C2-C3 保持单会话串行；文字、语音和图片使用统一 V3 合同；消息 Outbox 或 `sent_ack` 未获后端确认时阻断全部新会话扫描。
 
-口径：正式工程完整合并版。取消 AI 固定轮次限制，采用长期跟进状态机；备注短码作为系统托管开关；销售未绑定Worker时，add_friend任务进入blocked并在后续绑定Worker后恢复pending；统一任务中心采用 `task.status + task.result_code`。C2 是 Worker 运行时事实采集和消息入库能力，不进入统一任务中心；短码只是候选入口，读取还必须满足 private、当前 read-target 和 authorization_revision。图片 Vision 尚未进入本版架构。
+口径：正式工程完整合并版。取消 AI 固定轮次限制，采用长期跟进状态机；备注短码作为系统托管开关；销售未绑定Worker时，add_friend任务进入blocked并在后续绑定Worker后恢复pending；统一任务中心采用 `task.status + task.result_code`。C2 是 Worker 运行时事实采集和消息入库能力，不进入统一任务中心；短码只是候选入口，读取还必须满足 private、当前 read-target 和 authorization_revision。图片只对 `NEW_IMAGE` 在 Worker 当前进程内存中调用 OmniAuto Vision，原图不上传车金后端；真实 Windows/Vision/Brain UAT 通过前不得宣称正式发布。
 
 独立图文件：
 - 主业务时序图：`AI智能客服售前跟进系统_主业务时序图_C0-C4_v0.7.puml`
@@ -66,7 +66,7 @@ flowchart LR
     WeChatPC <--> SalesMobile
 
     Worker -- "session_scan_result / message_event / sales_reply_event / sent_ack / wechat_error" --> ConvSvc
-    TaskSvc -- "add_friend / chat_reply / follow_up" --> Worker
+    TaskSvc -- "add_friend / chat_reply" --> Worker
     ConvSvc --> DB
     Scheduler --> DB
     Scheduler --> TaskSvc
@@ -133,14 +133,14 @@ flowchart TD
     S1 -. "C3需要发送AI回复时" .-> T["创建chat_reply Task"]
 
     ScanDB["服务端定时扫描数据库"] --> RuleHit{命中业务规则?}
-    RuleHit -- 等待用户超过N天 --> Precheck["生成recall_precheck read-target<br/>不直接创建follow_up"]
+    RuleHit -- 等待用户超过N天 --> Precheck["生成recall_precheck read-target<br/>不直接创建chat_reply"]
     Precheck --> ST
     I -- precheck读到新客户消息 --> CancelRecall["取消召回<br/>进入AI/转人工判断"]
-    I -- precheck未读到新客户消息 --> FollowTask["创建follow_up任务"]
+    I -- precheck未读到新客户消息 --> RecallBatch["创建trigger_type=recall批次<br/>Brain/Guard批准后创建chat_reply"]
     RuleHit -- waiting_sales_reply销售超时 --> FeishuNotify["发送飞书通知销售"]
     RuleHit -- Worker离线/卡住 --> WorkerTodo["标记异常/生成待办"]
 
-    FollowTask --> W["Worker领取follow_up并操作微信"]
+    RecallBatch --> W["当前单会话Flow领取chat_reply并操作微信"]
     FeishuNotify --> L["记录HandoffEvent通知结果"]
     S -- 短码新增 --> M1["绑定线下好友并进入系统跟进"]
     S -- 短码移除 --> M2["status=closed<br/>停止AI/召回/飞书提醒"]
@@ -157,12 +157,10 @@ flowchart TD
     Lease --> Renew["持锁期间定时续租<br/>renew_ui_lock"]
     Renew --> A["add_friend<br/>手机号搜索/发送邀请/写备注"]
     Renew --> C["chat_reply<br/>打开会话/输入/发送"]
-    Renew --> S["session_scan/message_ingest<br/>C2扫描/读取文字语音<br/>图片启用后在同一会话事务内处理"]
-    Renew --> F["follow_up<br/>发送召回"]
+    Renew --> S["session_scan/message_ingest<br/>C2扫描/读取文字语音图片<br/>同一会话事务内处理"]
     Renew --> R["remark_code<br/>确认短码新增/移除"]
     A --> U["释放UI锁"]
     C --> U
-    F --> U
     R --> U
     S --> HasBatch{后端是否返回batch_id?}
     HasBatch -- 否 --> U
@@ -231,7 +229,11 @@ group C1 add_friend：搜索手机号、申请好友、写客户短码
   W -> TS: 拉取/领取 add_friend 任务
   W -> OA: 调用 add-friend-entry-click-plan-windows\nphone_or_wechat / verify_message / remark_code
   OA -> WX: 手机号搜索、提交好友申请、写入客户短码
-  alt 邀请发送成功
+  alt 最终“确定”按钮物理点击成功，且无明确风控/失败
+    note over OA,W
+    不等待微信成功页面或成功文案。
+    点击后诊断截图/OCR异常不得降级本次成功点击。
+    end note
     OA --> W: completed + result_code=invite_sent
     W -> TS: 上报 task 完成
     TS -> CP: conversation.status=add_friend_sent
@@ -338,11 +340,11 @@ group C4 召回与人工跟进：召回前先precheck，Worker只执行已批准
       else precheck确认无新客户消息
         CP -> AI: 创建trigger_type=recall批次
 Brain生成召回文案并通过Guard
-        CP -> TS: 创建 follow_up 任务
-        W -> TS: 领取 follow_up
+        CP -> TS: 创建trigger_type=recall的chat_reply任务
+        W -> TS: 当前单会话Flow领取chat_reply
         W -> OA: 发送Brain批准的召回文案
         OA -> WX: 发送召回
-        W -> CP: 上报 follow_up sent_ack
+        W -> CP: 上报chat_reply sent_ack
         CP -> CP: status=recalled_waiting_user
 recall_count+1
       else precheck失败/目标不确认
@@ -422,7 +424,7 @@ flowchart TD
     C -- "add_friend: invite_sent" --> D["Conversation.status=add_friend_sent"]
     C -- "add_friend: already_friend" --> E["Conversation.status=friend_added"]
     C -- "chat_reply: chat_reply_sent" --> F["Conversation.status=waiting_user_reply"]
-    C -- "follow_up: follow_up_sent" --> G["Conversation.status=recalled_waiting_user"]
+    C -- "chat_reply + trigger_type=recall: chat_reply_sent" --> G["Conversation.status=recalled_waiting_user"]
     B -- "failed" --> H["写入Task.error_code<br/>服务端判断重试/转人工/暂停/拒绝"]
     B -- "blocked" --> I["写入Task.block_code"]
     I -- "SALES_WORKER_NOT_BOUND" --> J["Conversation.status=add_friend_blocked"]
@@ -459,8 +461,9 @@ sequenceDiagram
             alt 读到客户新消息
                 CP->>CP: 取消召回，进入AI/转人工判断
             else 确认无新客户消息
-                CP->>TS: 创建follow_up任务
-                W->>TS: 领取follow_up
+                CP->>CP: 创建trigger_type=recall批次并经Brain/Guard批准
+                CP->>TS: 创建chat_reply任务
+                W->>TS: 当前单会话Flow领取chat_reply
                 W->>WX: 发送AI召回内容
                 W->>CP: sent_ack
                 CP->>CP: status=recalled_waiting_user, recall_count+1, last_recall_at=now
@@ -531,7 +534,7 @@ stateDiagram-v2
     sales_replied_waiting_user --> recall_precheck: 销售回复后客户N天未回，召回前确认
     recall_precheck --> ai_active: precheck读到客户新消息且AI仍负责
     recall_precheck --> waiting_sales_reply: precheck读到高意向/高风险/需人工
-    recall_precheck --> recalled_waiting_user: precheck确认无新客户消息且follow_up发送成功
+    recall_precheck --> recalled_waiting_user: precheck确认无新客户消息且recall chat_reply发送成功
     recall_precheck --> waiting_user_reply: precheck读取失败/目标不确认，暂不召回
 
     ai_active --> waiting_sales_reply: 高意向/高风险/模型失败/低置信/pause
@@ -543,7 +546,7 @@ stateDiagram-v2
     sales_replied_waiting_user --> ai_active: 客户再次回复，交回AI判断
 ```
 
-说明：`recall_precheck` 是召回前确认状态，不代表已经发送召回。只有定向读取确认没有新客户消息后，才允许创建并发送 `follow_up`。
+说明：`recall_precheck` 是召回前确认状态，不代表已经发送召回。只有定向读取确认没有新客户消息后，才允许创建 `trigger_type=recall` 的批次；Brain/Guard 批准后统一创建并发送 `chat_reply`，不再使用独立 `follow_up` 任务类型。
 
 ## 6.1 全局退出规则
 
@@ -714,15 +717,6 @@ classDiagram
         +datetime lease_expires_at
     }
 
-    class FollowUpTask {
-        +string follow_up_id
-        +string conversation_id
-        +string rule_id
-        +int recall_round
-        +string status
-        +datetime scheduled_at
-    }
-
     class HandoffEvent {
         +string handoff_event_id
         +string conversation_id
@@ -754,7 +748,6 @@ classDiagram
     Conversation "1" --> "0..1" WechatSessionBinding
     Conversation "1" --> "0..1" ListenState
     Conversation "1" --> "0..*" ReplyAction
-    Conversation "1" --> "0..*" FollowUpTask
     Conversation "1" --> "0..*" HandoffEvent
     Conversation "1" --> "0..*" Task
     Conversation "0..1" --> "1" RemarkCode
@@ -778,7 +771,7 @@ flowchart TD
     B["message_batch<br/>单会话一个active_batch"]
     R["reply_action<br/>当前有效action才可发送"]
     S["send_receipt<br/>unique(reply_action_id)"]
-    F["follow_up<br/>unique(conversation_id, rule_id, recall_round)"]
+    F["recall message_batch<br/>unique(conversation_id, recall_cycle_id)"]
     H["handoff_notify<br/>同一销售超时周期只通知一次"]
     C0["remark_code<br/>全局唯一，一个有效短码只绑定一个会话"]
 
@@ -788,7 +781,7 @@ flowchart TD
     M --> B
     B --> R
     R --> S
-    F --> R
+    F --> B
     H --> Notify["飞书一次通知<br/>记录sent/failed"]
     C0 --> RemarkBindingEffect["线下好友绑定/短码移除关闭自动跟进"]
 ```

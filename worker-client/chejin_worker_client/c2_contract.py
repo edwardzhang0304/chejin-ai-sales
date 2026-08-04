@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -83,13 +84,97 @@ def contract_row_rules() -> dict[str, dict[str, Any]]:
     return rules
 
 
+def observation_role_is_trusted(observation: dict[str, Any]) -> bool:
+    """Validate one observation's final role against the shared C2 contract."""
+
+    row_kind = str(observation.get("row_kind") or "").strip().lower()
+    rule = contract_row_rules().get(row_kind)
+    if not isinstance(rule, dict):
+        return False
+    role = str(observation.get("sender_role") or "").strip().lower()
+    role_source = str(
+        observation.get("sender_role_source") or ""
+    ).strip().lower()
+    return role in {
+        str(value).strip().lower()
+        for value in (rule.get("allowed_sender_roles") or [])
+    } and role_source in {
+        str(value).strip().lower()
+        for value in (rule.get("allowed_sender_role_sources") or [])
+    }
+
+
+def temporary_capability_gate_codes() -> frozenset[str]:
+    return contract_values("temporary_capability_gate_codes")
+
+
+def image_contract() -> dict[str, Any]:
+    value = c2_contract_v3().get("image_contract")
+    if not isinstance(value, dict):
+        raise RuntimeError("Invalid C2 contract image_contract")
+    return dict(value)
+
+
+def formal_image_failure_code(reason: Any) -> str:
+    clean = str(reason or "").strip()
+    contract = image_contract()
+    declared = {
+        str(value)
+        for value in (contract.get("error_codes") or [])
+    }
+    reason_map = contract.get("failure_reason_to_error_code")
+    if not isinstance(reason_map, dict):
+        raise RuntimeError("Invalid C2 image failure reason map")
+    code = str(
+        reason_map.get(clean)
+        or contract.get("default_failure_error_code")
+        or ""
+    ).strip()
+    if code not in declared:
+        raise RuntimeError(f"Undeclared C2 image error code: {code}")
+    return code
+
+
+def validate_image_result_schema(
+    value: Any,
+    schema_name: str,
+) -> list[str]:
+    schemas = image_contract().get("schemas")
+    schema = schemas.get(schema_name) if isinstance(schemas, dict) else None
+    if not isinstance(schema, dict):
+        raise RuntimeError(f"Invalid C2 image schema: {schema_name}")
+    errors: list[str] = []
+
+    def reject_non_finite(item: Any, path: str) -> None:
+        if isinstance(item, float) and not math.isfinite(item):
+            errors.append(f"{path}: non-finite number")
+            return
+        if isinstance(item, dict):
+            for key, child in item.items():
+                reject_non_finite(child, f"{path}.{key}")
+        elif isinstance(item, list):
+            for index, child in enumerate(item):
+                reject_non_finite(child, f"{path}[{index}]")
+
+    reject_non_finite(value, "$")
+    try:
+        from jsonschema import Draft7Validator
+    except ImportError as exc:
+        raise RuntimeError("jsonschema dependency is required") from exc
+    validator = Draft7Validator(schema)
+    for error in sorted(
+        validator.iter_errors(value),
+        key=lambda item: tuple(str(part) for part in item.absolute_path),
+    ):
+        path = "$" + "".join(
+            f"[{part}]" if isinstance(part, int) else f".{part}"
+            for part in error.absolute_path
+        )
+        errors.append(f"{path}: {error.message}")
+    return errors
+
+
 def sidecar_contract_error(payload: dict[str, Any], *, require_observations: bool = True) -> str:
-    if int(payload.get("contract_version") or 0) != 3:
-        return "C2_CONTRACT_VERSION_REQUIRED"
-    if str(payload.get("contract_revision") or "") != contract_revision():
-        return "C2_CONTRACT_REVISION_MISMATCH"
-    if str(payload.get("contract_sha256") or "") != contract_sha256():
-        return "C2_CONTRACT_SHA256_MISMATCH"
     if int(payload.get("observation_schema_version") or 0) != int(
         c2_contract_v3().get("observation_schema_version") or 0
     ):

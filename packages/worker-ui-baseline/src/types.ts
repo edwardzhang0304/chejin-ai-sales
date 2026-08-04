@@ -60,6 +60,11 @@ export interface WorkerLogRow {
   level: string;
   task: string;
   content: string;
+  event: string;
+  errorCode: string;
+  incidentId: string;
+  sidecarRunId: string;
+  evidencePath: string;
 }
 
 export interface WorkerClientModel {
@@ -71,6 +76,11 @@ export interface WorkerClientModel {
   completedSteps: TimelineStepModel[];
   failedSteps: TimelineStepModel[];
   logs: WorkerLogRow[];
+  latestIncident?: {
+    incident_id: string;
+    evidence_path: string;
+    created_at: string;
+  } | null;
   schedule: {
     enabled: boolean;
     start: string;

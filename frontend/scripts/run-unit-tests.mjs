@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
 import { ApiError, apiErrorFromResponse, buildOperatorHeaders, formatApiError, runtimeConfig } from "../src/shared/api/client.ts";
 
@@ -47,5 +48,13 @@ const forbidden = await apiErrorFromResponse(new Response("", { status: 403 }));
 assert.equal(forbidden.status, 403);
 assert.equal(forbidden.code, "ADMIN_FORBIDDEN");
 assert.equal(forbidden.message, "当前账号无权限访问该功能。");
+
+const tasksPageSource = await readFile(
+  new URL("../src/features/tasks/TasksPage.tsx", import.meta.url),
+  "utf8",
+);
+assert.equal(tasksPageSource.includes("需人工确认"), false);
+assert.equal(tasksPageSource.includes("需人工处理"), false);
+assert.equal(tasksPageSource.includes("禁止补发；会话已转销售正常接管"), true);
 
 console.log("frontend unit tests passed");

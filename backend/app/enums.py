@@ -38,7 +38,6 @@ class NoteType(StrEnum):
 class TaskType(StrEnum):
     add_friend = "add_friend"
     chat_reply = "chat_reply"
-    follow_up = "follow_up"
 
 
 class TaskStatus(StrEnum):
@@ -54,7 +53,6 @@ class TaskResultCode(StrEnum):
     invite_sent = "invite_sent"
     already_friend = "already_friend"
     chat_reply_sent = "chat_reply_sent"
-    follow_up_sent = "follow_up_sent"
     skipped_by_rule = "skipped_by_rule"
     manual_closed = "manual_closed"
 

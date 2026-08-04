@@ -55,19 +55,6 @@ _simulated_inbound_lock = threading.Lock()
 _simulated_inbound_cache: dict[str, list[dict[str, Any]]] = {}
 
 
-def _shared_context_var(name: str, *, default: bool = False) -> ContextVar[bool]:
-    store = getattr(builtins, "_omniauto_wechat_connector_contextvars", None)
-    if not isinstance(store, dict):
-        store = {}
-        setattr(builtins, "_omniauto_wechat_connector_contextvars", store)
-    existing = store.get(name)
-    if isinstance(existing, ContextVar):
-        return existing
-    created: ContextVar[bool] = ContextVar(name, default=default)
-    store[name] = created
-    return created
-
-
 def _shared_context_var_any(name: str, *, default: Any = None) -> ContextVar[Any]:
     store = getattr(builtins, "_omniauto_wechat_connector_contextvars", None)
     if not isinstance(store, dict):
@@ -81,10 +68,6 @@ def _shared_context_var_any(name: str, *, default: Any = None) -> ContextVar[Any
     return created
 
 
-_same_target_continuation_send_fast_path = _shared_context_var(
-    "same_target_continuation_send_fast_path",
-    default=False,
-)
 _send_rpa_batch_lock_meta = _shared_context_var_any(
     "send_rpa_batch_lock_meta",
     default=None,
@@ -101,34 +84,6 @@ class RPALockTimeoutError(TimeoutError):
     def __init__(self, message: str, *, meta: dict[str, Any]) -> None:
         super().__init__(message)
         self.meta = dict(meta)
-
-
-def same_target_continuation_send_active() -> bool:
-    return bool(_same_target_continuation_send_fast_path.get(False))
-
-
-@contextmanager
-def same_target_continuation_send_context(enabled: bool = True):
-    token = _same_target_continuation_send_fast_path.set(bool(enabled))
-    try:
-        yield
-    finally:
-        _same_target_continuation_send_fast_path.reset(token)
-
-
-def same_target_continuation_send_env(prevalidated_guard: dict[str, Any] | None = None) -> dict[str, str]:
-    if not same_target_continuation_send_active():
-        return {}
-    env = {"WECHAT_WIN32_OCR_CONTINUATION_SEND_FAST_PATH": "1"}
-    if isinstance(prevalidated_guard, dict) and prevalidated_guard:
-        try:
-            env["WECHAT_WIN32_OCR_CONTINUATION_PREVALIDATED_GUARD_JSON"] = json.dumps(
-                prevalidated_guard,
-                ensure_ascii=False,
-            )
-        except (TypeError, ValueError):
-            pass
-    return env
 
 
 def send_rpa_batch_lock_active() -> bool:
@@ -738,7 +693,6 @@ class WeChatConnector:
         artifact_dir: str | None = None,
         session_key: str = "",
         conversation_type: str = "",
-        continuation_prevalidated_guard: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not target:
             raise WeChatConnectorError("target is required")
@@ -778,7 +732,6 @@ class WeChatConnector:
 
         def _call_send_with_lock(lock_meta: dict[str, Any]) -> dict[str, Any]:
             env_overrides = send_rpa_env()
-            env_overrides.update(same_target_continuation_send_env(continuation_prevalidated_guard))
             primary = self.call_compat_sidecar(compat_args_list, allow_failure=True, env_overrides=env_overrides)
             if primary.get("ok"):
                 primary.setdefault("adapter", "win32_ocr")
@@ -853,7 +806,6 @@ class WeChatConnector:
         artifact_dir: str | None = None,
         session_key: str = "",
         conversation_type: str = "",
-        continuation_prevalidated_guard: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         verify_started_at = time.time()
         verify_started_iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(verify_started_at))
@@ -884,8 +836,6 @@ class WeChatConnector:
         clean_conversation_type = str(conversation_type or "").strip().lower()
         if clean_conversation_type:
             send_kwargs["conversation_type"] = clean_conversation_type
-        if isinstance(continuation_prevalidated_guard, dict) and continuation_prevalidated_guard:
-            send_kwargs["continuation_prevalidated_guard"] = continuation_prevalidated_guard
         send_result = self.send_text(
             target,
             text,

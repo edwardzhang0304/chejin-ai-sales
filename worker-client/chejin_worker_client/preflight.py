@@ -59,6 +59,8 @@ def run_preflight(*, check_backend: bool = True, check_wechat: bool = True) -> l
         ]
     )
     checks.append(sidecar_check(default_sidecar_script()))
+    if CONFIG.rpa_mode == "real" and sys.platform == "win32":
+        checks.append(omniauto_vision_ocr_check())
     checks.append(app_dir_check(APP_DIR))
     checks.append(binding_check())
 
@@ -87,6 +89,24 @@ def sidecar_check(path: Path) -> PreflightCheck:
         severity="error",
         message=f"sidecar 文件存在：{path}" if ok else f"sidecar 文件不存在：{path}",
         detail={"path": str(path)},
+    )
+
+
+def omniauto_vision_ocr_check() -> PreflightCheck:
+    from .omniauto_ocr_client import probe_omniauto_ocr_subprocess
+
+    result = probe_omniauto_ocr_subprocess()
+    ok = result.get("ok") is True
+    return PreflightCheck(
+        name="vision_ocr_subprocess",
+        ok=ok,
+        severity="error",
+        message=(
+            "图片复核 OCR 独立进程可用。"
+            if ok
+            else "图片复核 OCR 独立进程不可用。"
+        ),
+        detail=result,
     )
 
 
