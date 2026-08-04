@@ -15,6 +15,7 @@ MIN_MEDIA_COMPONENT_FILL_RATIO = 0.28
 TEXT_OVERLAP_REJECTION_RATIO = 0.42
 MEDIA_ROLE_EDGE_CONTINUITY_RATIO = 0.45
 MEDIA_EDGE_BACKGROUND_DISTANCE = 6.0
+MEDIA_CROP_EDGE_ACTIVE_RATIO = 0.15
 IMAGE_PREVIEW_TOKENS = ("[图片]", "[照片]", "[Image]", "图片", "照片", "发送了一张图片")
 SAVE_MENU_TOKENS = (
     "另存为",
@@ -136,6 +137,51 @@ def _chat_bounds(width: int, height: int) -> tuple[int, int, int, int]:
     right = width - 8
     bottom = height - max(DEFAULT_BOTTOM_EXCLUDE_PX, int(height * 0.10))
     return left, top, right, bottom
+
+
+def _bounds_continue_through_chat_crop_boundary(
+    screenshot: Image.Image,
+    bounds: tuple[int, int, int, int],
+    chat_bounds: tuple[int, int, int, int],
+    *,
+    background: list[float],
+) -> bool:
+    """Return true when visible media pixels continue through a crop edge."""
+
+    left, top, right, bottom = bounds
+    chat_left, chat_top, chat_right, chat_bottom = chat_bounds
+    strip_width = max(2, min(6, int(round(min(right - left, bottom - top) * 0.02))))
+    strips: list[tuple[int, int, int, int]] = []
+    if left <= chat_left:
+        strips.append((chat_left, top, chat_left + strip_width, bottom))
+    if top <= chat_top:
+        strips.append((left, chat_top, right, chat_top + strip_width))
+    if right >= chat_right:
+        strips.append((chat_right - strip_width, top, chat_right, bottom))
+    if bottom >= chat_bottom:
+        strips.append((left, chat_bottom - strip_width, right, chat_bottom))
+    for strip in strips:
+        edge = screenshot.crop(strip).convert("RGB")
+        try:
+            pixel_reader = getattr(edge, "get_flattened_data", edge.getdata)
+            pixels = list(pixel_reader())
+        finally:
+            edge.close()
+        if not pixels:
+            continue
+        active_ratio = sum(
+            1
+            for pixel in pixels
+            if sum(
+                abs(float(pixel[index]) - float(background[index]))
+                for index in range(3)
+            )
+            / 3.0
+            >= MEDIA_EDGE_BACKGROUND_DISTANCE
+        ) / len(pixels)
+        if active_ratio >= MEDIA_CROP_EDGE_ACTIVE_RATIO:
+            return True
+    return False
 
 
 def _maximum_text_overlap_ratio(
@@ -748,6 +794,17 @@ def detect_visual_image_bubbles(
                 left + int(min(crop.width, ((max_x + 1) * block) / scale)),
                 top + int(min(crop.height, ((max_y + 1) * block) / scale)),
             )
+            # A component continuing through the cropped chat boundary may have
+            # avatar or media pixels outside the current frame. It is not a
+            # complete current-screen message and must not become an
+            # actionable image target.
+            if _bounds_continue_through_chat_crop_boundary(
+                image,
+                bounds,
+                (left, top, right, bottom),
+                background=background,
+            ):
+                continue
             bw = bounds[2] - bounds[0]
             bh = bounds[3] - bounds[1]
             area = bw * bh
