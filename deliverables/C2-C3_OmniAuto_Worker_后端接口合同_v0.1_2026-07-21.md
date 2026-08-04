@@ -4,29 +4,25 @@
 
 日期：2026-07-21
 
-状态：接口命名和职责边界冻结。2026-07-31 增补 C1-C3 统一事务恢复与事实结算口径；客户端和后端完成三层整改、真实 Vision/Brain 联调和 Windows 故障注入验收前，不得宣称功能完成。
+状态：接口命名和职责边界冻结。C2 机器合同为 `3.12.4`；`v16.130.0 / 8ee53e1` 已完成 C2 正式 Windows 实机验收。OmniAuto 双仓统一已完成，上游固定提交为 `69dc871`，车金当前代码为 `v16.132.0 / 37139bfd`，受影响范围 Windows 回归通过。C3 自动回复沿用此前通过且当前无已知问题的证据。
 
 > 恢复流程以
 > `C1-C3_事务恢复与事实结算统一架构_v0.1_2026-07-31.md`
 > 为最高约束。旧实现中的图片专用恢复和“收到 `target_terminated` 后本地丢弃事实”
 > 不再属于正式合同。
-> 当前机器合同 `3.10.0` 是 `86b87f2` 候选实现快照；本轮删除PID硬门禁、删除五个
-> 专用失败原因并补三个观察失败映射时，客户端与后端必须连同 schema、共享样例和
-> 合同测试一次性升级到下一 revision，不能只改 JSON 枚举，也不得借合同升级重开
-> 其他状态机设计。
+> 当前机器合同为 `3.12.4`。PID 硬门禁、五个专用失败原因和三个观察失败映射已经
+> 按共享 schema、样例和合同测试收口；后续不得恢复，也不得借双仓统一重开其他
+> 状态机设计。
 >
 > 图片流程的状态矩阵、Windows 位图、剪贴板、Vision Provider、结果 schema、
 > 服务端产品权威、跨轮 Brain 上下文和 UAT 门禁，统一以
 > `AI智能客服售前跟进系统_技术方案手册_v0.8.md` 第 8 章为最高架构约束。
-> `C2_图片流程封版口径与一次性整改清单_v0.1_2026-07-31.md` 只保留为历史
-> 审计材料。
+> 原图片封版清单已归档为历史审计材料，不再属于现行交付文档。
 > 客户端实际代码以
 > `AI智能客服售前跟进系统_技术方案手册_v0.8.md` 第 8.5 至 8.8 节为最高实施
-> 约束：继续复用以 OmniAuto `855c218` 为共同基础、从 `2318bd8` 选择性接入的
-> 图片一致性能力，不新增第二套剪贴板接口；撤销
-> `claim_copy_ownership/微信窗口PID` 硬门禁，保留现有 sequence、位图、
-> 指纹辅助、Vision、终态和清理合同。来源元数据必须同时记录基础提交、选择性
-> 来源提交和最终目录 tree SHA，不得把选择性引入伪装成整个目录升级。
+> 约束。`v16.130.0` 的来源事实仍是 OmniAuto `855c218` 基础 + `2318bd8`
+> 选择性接入；这是已验收回滚基线。当前双仓已统一到独立 OmniAuto 固定提交
+> `69dc871`，车金只保留适配层；不得恢复第二套剪贴板接口或 PID 门禁。
 
 ## 0. 三层统一与职责边界（最高约束）
 
@@ -79,8 +75,8 @@ Worker 负责“当前获准处理哪个会话，以及如何把 OmniAuto 结果
 | 名称 | 源码依据 | 开发分支状态 |
 |---|---|---|
 | `sessions/open-chat/messages/voice-transcribe/send` | OmniAuto `wechat_win32_ocr_sidecar.py` 的现有 action | 是 |
-| `customer_service_brain/brain_plan/reply_segments` | OmniAuto `customer_service_brain.py`、`customer_service_brain_contract.py`、`layer_contracts.py` | 后端已通过唯一 OmniAuto Brain Adapter 调用；真实 Provider/RAG/Guard 凭据联调待完成 |
-| `customer_image_understanding/visual_bridge_input` | 正式 OmniAuto `customer_image_turn_router.py` 和 `BuiltinVisionPlugin` | 已通过 Worker 适配层进程内接入；真实模型凭据和 Windows 验收待完成 |
+| `customer_service_brain/brain_plan/reply_segments` | OmniAuto `customer_service_brain.py`、`customer_service_brain_contract.py`、`layer_contracts.py` | 后端已通过唯一 OmniAuto Brain Adapter 调用；C3 既有实机回归当前无已知问题 |
+| `customer_image_understanding/visual_bridge_input` | 正式 OmniAuto `customer_image_turn_router.py` 和 `BuiltinVisionPlugin` | 已通过 Worker 适配层进程内接入，并在 `v16.130.0` 完成真实豆包 Vision 与 Windows C2 验收 |
 | `message_batch/batch_id/reply_action/handoff_event` | 车金后端持久化和调度对象 | 已接通；Worker 按 `batch_id` 在原会话和同一 UI 锁内等待、刷新、发送并回执 |
 
 本文复用 OmniAuto 已有能力名。不得为图片另造 Sidecar action 或后端图片接口。
@@ -1096,7 +1092,8 @@ completed。持久化时剔除 Provider 原始响应/错误正文、图片字节
 | P0 | 已在当前候选收口；本轮回归保留 | Vision 父进程预算覆盖两次合法请求；Provider 使用 HTTPS/请求风格白名单；模型结果由共享完整 schema 校验。 |
 | P0 | 已在当前候选收口；本轮回归保留 | 图片观察不得静默截断 8 张；failed 图片门禁覆盖 customer/self；历史图片上下文保留结构化结果。 |
 | P0 | 已在当前候选收口；本轮回归保留 | 车金严格 Vision 入口不得使用客户端本地 KnowledgeRuntime 确认正式产品 ID；后端使用服务端权威车源验证。 |
-| P1 | 待实机 | 真实 Vision Provider 凭据、Windows 微信图文语音混合回归与进程重启 Outbox 回归尚未完成。 |
+| P0 | 已通过 | `v16.130.0 / 8ee53e1` 已完成真实豆包 Vision、Windows C2 图片、顺序、跨轮去重、多目标串行和停止监听验收；详见 `C2_Windows实机验收报告_2026-08-03.md`。 |
+| P0 | 已收口 | 通用改动已合入独立 OmniAuto 固定提交 `69dc871`，车金 `main@37139bfd` 已引用并保留适配层；活动选择性集成为空。 |
 
 ## 11. 联调验收门禁
 
@@ -1117,3 +1114,11 @@ completed。持久化时剔除 Provider 原始响应/错误正文、图片字节
 `AI智能客服售前跟进系统_技术方案手册_v0.8.md` 第 8.5 至 8.8 节；任何 P0
 未通过不得形成正式 UAT 结论。
 15. 允许在现有大函数周围提取上述集中判定器和阶段结果对象；本期不要求全面重写，但禁止继续增长重复分支。
+16. 双仓统一已按以下顺序完成并作为后续通用改动规则保留：OmniAuto 上游分支和
+    测试 → OmniAuto PR 固定提交 → 车金更新内嵌源码与来源记录 → 车金完整自动化
+    和必要 Windows 冒烟 → 车金 PR。
+17. OmniAuto PR 只含通用 RPA/Vision/证据能力；车金授权、业务状态、后端 API、
+    Outbox 和任务中心必须留在 Worker/后端适配层。
+18. 双仓统一后的来源 schema 为 v3：活动 `upstream_base_commit=69dc871`，活动
+    `selective_integrations=[]`，旧三段来源只放 `historical_integrations`；后续若
+    再出现活动选择性通用代码，不得宣称来源仍保持统一。

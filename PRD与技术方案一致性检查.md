@@ -1,92 +1,64 @@
 # PRD 与技术方案一致性检查
 
-日期：2026-07-31
+版本：v0.8.2
 
-检查对象：
+日期：2026-08-04
 
-- PRD：`deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.4.5.md`
-- UI/本地静态稿：`website/ops-admin.html`、`website/ops-admin.css`、`website/ops-admin.js`
+## 1. 检查对象
+
+- PRD：`deliverables/AI智能客服售前跟进系统_PRD_运营后台统一版_v0.4.6.md`
 - 技术方案：`deliverables/AI智能客服售前跟进系统_技术方案手册_v0.8.md`
-- UML/状态机：`deliverables/AI智能客服售前跟进系统_UML图_v0.7.md`
-- C2-C3 接口合同：`deliverables/C2-C3_OmniAuto_Worker_后端接口合同_v0.1_2026-07-21.md`
-- C2 已验收历史基线：V16.104；当前图片/C2-C3候选为
-  `codex/c2-omniauto-2318bd8-integration@86b87f2`，尚待最终PID整改包和Windows UAT
-- C2-C4 测试口径：`deliverables/C2-C4_v0.6测试口径调整说明_2026-06-24.md`
-- 后端接口说明：`deliverables/销售管理与Worker管理后端接口开发说明_2026-06-05.md`
+- 接口合同：`deliverables/C2-C3_OmniAuto_Worker_后端接口合同_v0.1_2026-07-21.md`
+- C2 实机报告：`deliverables/C2_Windows实机验收报告_2026-08-03.md`
+- 车金当前代码：`main@37139bfd`，客户端 `16.132.0`
+- 独立 OmniAuto：本地、Edward fork 与许聪上游均为 `master@69dc871`
+- 正式回滚证据：`v16.130.0 / 8ee53e1`
 
-## 1. 结论
+## 2. 结论
 
-P0 已完成并归档。当前有效阶段是 Worker 客户端 Windows 单应用第一版与运营后台配套能力。
+PRD v0.4.6 已同步三层职责、C2 private/V3 准入、文字/语音/图片统一事实、
+事实结算、C2-C3 单会话串行、C3 回复、任务中心发送和停止语义；未发现需要重开
+产品或架构决策的 P0 冲突。
 
-| 阶段 | PRD 口径 | UI 口径 | 技术方案 / UML 口径 | 当前判断 |
-|---|---|---|---|---|
-| P0 桌面运营后台 | 已完成 | 已完成 | 已完成 | 已归档，不再作为当前活跃排期 |
-| 销售管理升级 | 新增销售可选 Worker、销售详情抽屉原地编辑、绑定/更换/清空 Worker、展示阻塞任务 | 静态稿和 Vite 前端均已更新 | 后端销售接口已支持 Worker 绑定 | 一致，已进入维护/回归阶段 |
-| Worker 管理 | Worker 列表、详情、Token、启停、心跳、重置绑定 | 静态稿和 Vite 前端均已更新 | 后端 Worker 接口已完成并自测通过 | 一致，已进入维护/回归阶段 |
-| 任务中心 | 已明确统一任务列表、详情、状态、操作、事件和日志边界 | 本地静态稿已进入任务中心口径 | UML 已提供状态机参考，后端任务中心接口已实现 | 一致，复测通过，可按模块收口 |
-| 车金 Worker 客户端 Windows 单应用第一版 | PRD v0.4.5 保留 C0-C4 产品范围、短码托管和语音/图片事实语义；V3字段与准入细节由技术方案v0.8收口 | Windows Worker 草图不承担C2字段合同 | 技术方案v0.8明确首屏扫描/授权分离、private短码准入、群聊/unknown终止、V3授权、文字/语音/图片入库、单会话串行和停止语义；三层接口由C2-C3接口合同收口 | V16.104文字/语音已实机；图片和C2-C3串行候选代码已接入，最终PID整改、来源记录和Windows完整闭环UAT尚未完成 |
+双仓源码统一已完成：OmniAuto PR 已合并到固定提交 `69dc871`，车金 PR 已合并到
+`37139bfd`，活动选择性集成已清空。用户已确认 `v16.132.0` 受影响范围 Windows
+回归通过。当前产品与技术文档一致，下一阶段进入车辆信息/Product Master。
 
-## 2. 当前阶段做什么
+## 3. 一致性矩阵
 
-- 销售管理升级。
-- Worker 管理。
-- 销售与 Worker 一对一绑定。
-- 任务中心：任务列表、任务详情、任务状态、执行步骤、失败原因、结果记录。
-- 车金 Worker 客户端 Windows 单应用：启动/暂停、自动领取 add_friend 任务、调用内置 OmniAuto RPA 组件控制微信桌面客户端、执行过程可视化、结果和错误码回传；系统自动只写入客户短码，销售后续可在保留短码的前提下追加人工说明。
-- OmniAuto C2 会话绑定 / 微信监听：Worker 调用 `sessions / messages / voice-transcribe`。首屏扫描只发现事实；读取必须由当前 `read-targets` 授权。C2 不进入任务中心，不定义 `session_scan/message_ingest/wechat_binding/voice_transcribe` 任务。
-- C2 正式准入：有效短码 + 顶部标题明确 `conversation_type=private` + `conversation_id/remark_code` 匹配 + 当前 `authorization_revision`。group/unknown/歧义均为终止态，不再搜索、读取、转写或入库。
-- C2 语音：首次messages发现未转写语音才进入同一voice flow；每次页面变化后重新截图；最终转写正文绑定父语音，只入库一条voice，不产生重复text。
-- C2 V3合同：`contract_version=3 / authorization_revision / source_message_key / row_kind / sender_role_source / item_state / flow_state`；正式角色为 `customer/self/system/unknown`，销售侧归一为self。
-- C2 停止语义：`read-targets=[]` 时可继续首屏事实扫描，但必须清空本地读取队列；停止后不得定位目标、读消息、转写或入库。旧授权请求返回409。
-- C2 当前回归状态：V16.95已完成基础文字、语音、V3、角色、去重和停止Windows
-  实测；V16.98完成群聊终止与侧栏OCR收口；V16.104完成文字/语音统一顺序与
-  语音锚点Windows实机回归。图片和C2-C3串行候选代码已接入当前分支并有自动化
-  证据，但PID硬门禁删除后的不可变候选包、真实豆包Vision、Brain和发送闭环
-  Windows UAT尚未完成。
-- C3 正式执行口径：发送前必须 `pre_send_refresh`，发现客户新消息时旧 `reply_action` 置为 `superseded`，不得发送旧回复。
-- C4 正式执行口径：召回到期先进入 `recall_precheck`，读取微信事实后创建 `trigger_type=recall` 批次；Brain/Guard 通过后统一创建 `chat_reply`，不再存在独立 `follow_up` 任务。
-- OmniAuto/Worker/后端接口：复用 OmniAuto `sessions/open-chat/messages/voice-transcribe/send`、`customer_image_understanding/visual_bridge_input` 和 `customer_service_brain/brain_plan` 名称；车金只做明确适配，不建立第二套模型输出协议。
-- 销售回复状态：`ai_enabled` 只作为人工关闭全部自动化的硬开关；等待销售和销售已回复使用状态门禁，客户再次回复交回 AI，长期未回复仍可由 Brain 召回。
+| 检查项 | 产品/技术口径 | 当前实现与证据 | 判断 |
+|---|---|---|---|
+| C2 会话准入 | 有效短码 + private + 当前 read-target revision | 已实现并实机验证 | 一致 |
+| 首屏与定向 | 首屏可发现事实；未授权不读取，授权后才定向 | 多目标自动发现和串行实机通过 | 一致 |
+| 文字/语音/图片 | 统一角色、身份、顺序和 V3 ingest | `v16.130.0` 图片、顺序、去重实机通过 | 一致 |
+| 图片失败 | 结构化失败，不伪装零图片；PID 不是硬门禁 | PID 门禁已删除，错误合同已升级到 3.12.4 | 一致 |
+| C3 自动回复 | Brain/Guard → reply_action → 当前 C2 flow 发送 | 此前实机测试且当前无已知问题 | 一致 |
+| 召回任务类型 | recall_precheck → trigger_type=recall 批次 → chat_reply；无独立 follow_up | PRD 已删除 follow_up 当前任务口径 | 一致 |
+| 停止监听 | 可保留首屏事实扫描；不得定向、读取、识图、入库或发送 | C2 实机通过 | 一致 |
+| 事务恢复 | UI 授权、事实结算、状态推进分离 | media_fact、Outbox、ledger 已实现并回归 | 一致 |
+| 双仓来源 | OmniAuto 通用能力只有一个上游，车金只保留适配 | `69dc871` 上游固定提交，活动选择性集成为空 | 一致 |
 
-## 3. 当前阶段不做什么
+产品侧仍有一个 C4 配置待确认项：技术方案 v0.8 同时出现“可持续召回、次数配置化”
+和“第一期每客户最多 1 次”。该差异不影响当前 C2/C3 基线，但进入 C4 开发前必须
+统一单客户最大召回次数默认值。
 
-| 不做项 | 原因 |
-|---|---|
-| Mac Worker | 正式工程环境为商家侧 Windows 电脑，Mac 原型废弃 |
-| 新增第二套AI回复发送流程 | 当前候选已按`pre_send_refresh`、Guard、`reply_action`和Worker发送唯一链路实现；本轮只做图片整改和完整闭环回归，不新建任务类型、发送接口或回复状态机 |
-| AI 语音回复 / 语音智能总结 / 外部 ASR | 本轮只做 C2 语音事实采集，复用微信自带转文字，不做 AI 语音回复、不做智能总结、不接外部 ASR |
-| 飞书通知 | 依赖接管状态、销售飞书用户、通知配置 |
-| 自动召回 | 不进入当前 C2 checkpoint；后续 C4 正式开发 / 验收按 `recall_precheck -> trigger_type=recall -> chat_reply` 唯一链路执行 |
-| 抖音 API / 巨量引擎 / 小风车 | 已确认下一期再做 |
-| 批量导入 | 当前跳过，不作为下一里程碑 |
-| 销售移动端 | 当前无范围和设计 |
+## 4. 当前风险与处理
 
-## 4. 关键一致性结论
-
-| 检查项 | 结论 |
-|---|---|
-| PRD 与架构状态机 | 一致。PRD 保留业务状态语义；UML v0.7 新增的是C2准入和接口门禁，不新增会话主状态 |
-| PRD 与销售管理 UI | 一致。销售列表、Worker 绑定、详情抽屉编辑、阻塞任务均已在静态稿和 Vite 前端体现 |
-| PRD 与 Worker 管理 UI | 一致。Worker 列表、详情、Token、启停、心跳、重置绑定均已体现 |
-| PRD 与后端销售/Worker接口 | 一致。后端销售 + Worker 管理接口、任务中心基础链路、Windows Worker 客户端服务端能力、C2/C3/C4 相关接口和事件模型需以当前提测分支及开发自测说明为准；本文件只校验 PRD / 技术方案 / UML 口径一致性，不作为正式测试通过结论 |
-| 技术方案与当前阶段范围 | 一致。v0.8是当前唯一架构事实源；V16.104是文字/语音已验收历史基线；图片和C2-C3单会话串行已有候选实现但未被写成已通过Windows UAT能力 |
-
-## 5. 当前风险
-
-| 风险 | 说明 | 处理建议 |
+| 风险 | 小白解释 | 固定处理 |
 |---|---|---|
-| Worker 客户端定位变化 | 旧 Mac/人工传值草稿已废弃，团队可能仍按旧口径理解 | 统一对外说明：商家只安装和启动一个车金 Worker 客户端；OmniAuto 不作为商家侧独立产品出现，服务端复用 AI 大脑、RAG、Guard 和回复编排，Worker 端复用 RPA Sidecar 操作微信 |
-| 后续开发版本容易分叉 | V16.104是文字/语音已验收基线，当前图片候选集中在`codex/c2-omniauto-2318bd8-integration`；另起分支或从旧包修复会造成回归和排障混乱 | 客户端只在当前图片分支按技术手册8.5至8.8节实施一次性整改 |
-| 跳过会话绑定直接做AI回复 | 未确认客户归属和消息去重前直接自动发送，可能导致回错客户、重复回复或销售接管后仍回复 | 先验收 C2 会话绑定/微信监听，再进入 C3 AI 回复发送 |
-| 图片候选尚未验收 | 当前代码仍含误加PID硬门禁，错误映射和来源记录待修；真实Windows豆包Vision未完成 | 删除PID硬门禁、补合同和双来源记录，从干净提交打不可变候选包后执行Windows UAT |
-| C2-C3单会话串行尚未实机验收 | 候选代码和自动化闭环已存在，但图片、Brain、发送和sent_ack完整链尚未在最终包上验证 | 本轮不再改流程；与图片Windows UAT一起完成真实完整闭环验证 |
-| P0 / 旧版文档干扰当前阶段 | 旧版技术方案/UML不应作为当前阶段通过依据 | 当前只按PRD v0.4.5产品范围、技术方案v0.8、UMLv0.7和当前专项报告判断 |
+| 再次在车金内嵌副本独立修改通用 OmniAuto | 会重新制造两份源码 | 通用改动仍先上游，车金只更新固定提交与适配 |
+| 整目录覆盖 | 会把两边独有修复一起冲掉，表面能运行但历史能力可能退化 | 逐文件审查和移植，禁止复制整个目录 |
+| 把 UAT 结论套给新包 | `v16.130.0` 通过不代表后续源码统一包自动通过 | 新版本重新跑自动化；运行代码变化时做受影响范围 Windows 冒烟 |
+| 历史文档/ZIP 干扰 | 工程师可能从旧包或旧说明继续修改 | 活跃目录只留当前方案和验收元数据，旧物已移出 |
+| 用 skip 掩盖失败 | 测试看起来绿色，实际功能根本没执行 | 删除只针对已移除 V1/V2 流程的永久跳过测试；新增 skip 必须评审 |
 
-## 6. 下一步
+## 5. 后续车辆信息提交门禁
 
-1. 架构：技术手册第8.5至8.8节为唯一实施依据，不再增加平行方案或新门禁。
-2. 客户端/RPA：只删除PID硬门禁、补错误映射和双来源发布记录，保留其余图片、
-   文字、语音、Brain、发送与恢复主链。
-3. 后端：同步机器合同revision/SHA并执行C2/C3完整回归，不新增图片接口或状态机。
-4. 测试：自动化通过后只接受由干净Git提交构建的不可变Windows包；用户和测试人员
-   执行真实微信、豆包Vision、Brain、发送和sent_ack完整闭环，架构师判定结果。
+1. OmniAuto 通用改动只包含通用能力和通用测试，不含车金业务字段或后端流程。
+2. 车金固定引用已审核的 OmniAuto 提交，不引用浮动 `master`。
+3. 来源元数据、目录 SHA、合同 revision、生成 schema 和 manifest 与代码一致。
+4. Worker 全量检查、后端 C2/C3 回归和 `git diff --check` 全通过，且没有新增永久
+   skip。
+5. 新版本号高于 `16.130.0`；包、提交、manifest、SHA 一一对应。
+6. 任何回归无法在当前分支确定修复时，回滚到 `8ee53e1 / v16.130.0`，不从历史
+   ZIP 继续开发。
