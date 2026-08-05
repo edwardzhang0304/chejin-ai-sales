@@ -121,6 +121,7 @@ def run_contract_checks() -> int:
         check_brain_no_visible_payload_classifies_social_empty_reply(),
         check_social_brain_plan_clears_soft_no_evidence_guard(),
         check_brain_first_failure_blocks_visible_reply_without_legacy(),
+        check_brain_blocks_when_knowledge_runtime_is_unavailable(),
         check_kimi_fenced_json_is_parsed_without_structure_repair(),
         check_brain_json_structure_repair_recovers_plan(),
         check_brain_same_capture_retry_recovers_empty_response(),
@@ -243,7 +244,7 @@ def run_contract_checks() -> int:
         check_guard_v2_identity_question_uses_brain_reply(),
         check_guard_v2_rejects_internal_visible_handoff_marker(),
         check_guard_v2_rejects_brain_internal_visible_marker(),
-        check_guard_v2_rejects_explicit_visible_handoff_marker(),
+        check_guard_v2_allows_brain_planned_visible_handoff(),
         check_brain_runner_ignores_guard_visible_reply_source(),
         check_brain_repair_retry_recovers_guard_repair_non_json(),
         check_brain_product_ids_update_conversation_context_source(),
@@ -7514,7 +7515,7 @@ def check_guard_v2_rejects_brain_internal_visible_marker() -> CaseResult:
     return CaseResult("guard_v2_rejects_brain_internal_visible_marker", True, {"guard": guard})
 
 
-def check_guard_v2_rejects_explicit_visible_handoff_marker() -> CaseResult:
+def check_guard_v2_allows_brain_planned_visible_handoff() -> CaseResult:
     candidate = {
         "can_answer": False,
         "reply": (
@@ -7538,9 +7539,11 @@ def check_guard_v2_rejects_explicit_visible_handoff_marker() -> CaseResult:
         evidence_pack=pack,
         settings={"brain_first_guard": True, "identity_guard_enabled": True},
     )
-    assert_true(not guard.get("allowed"), f"explicit transfer wording must not be approved as visible handoff: {guard}")
-    assert_true(guard.get("action") == "repair", f"Brain should rewrite handoff without explicit transfer wording: {guard}")
-    return CaseResult("guard_v2_rejects_explicit_visible_handoff_marker", True, {"guard": guard})
+    assert_true(
+        guard.get("allowed") and guard.get("action") == "handoff",
+        f"Brain-planned hard-boundary handoff wording should remain Brain-owned: {guard}",
+    )
+    return CaseResult("guard_v2_allows_brain_planned_visible_handoff", True, {"guard": guard})
 
 
 def check_brain_runner_ignores_guard_visible_reply_source() -> CaseResult:
@@ -8651,6 +8654,38 @@ def check_process_target_shadow_does_not_adopt() -> CaseResult:
     assert_true(not event.get("customer_service_brain_legacy_generators"), f"shadow should not disable legacy generators: {event}")
     assert_true((event.get("decision") or {}).get("raw_reply_text") != "Brain回复", "shadow must not replace legacy reply")
     return CaseResult("process_target_shadow_does_not_adopt", True, {"action": event.get("action")})
+
+
+def check_brain_blocks_when_knowledge_runtime_is_unavailable() -> CaseResult:
+    pack = fake_evidence_pack(include_product=False)
+    pack["knowledge_error"] = "PostgreSQL connection unavailable"
+    config = base_config(base_plan())
+    config["customer_service_brain"]["mode"] = "brain_first"
+    with patched_evidence_pack(pack):
+        event = brain_module.maybe_run_customer_service_brain(
+            config=config,
+            target_name="许聪",
+            target_state={"conversation_context": {}},
+            batch=[{"id": "msg1", "sender": "许聪", "content": "秦plus多少钱"}],
+            combined="秦plus多少钱",
+            decision=ReplyDecision("", "", False, False, ""),
+            reply_text="",
+            intent_assist={},
+            rag_reply={},
+            llm_reply={},
+            product_knowledge={},
+            data_capture={},
+            raw_capture={"conversation": {"conversation_id": "c1", "chat_type": "private"}},
+            customer_profile=None,
+        )
+    assert_true(event.get("reason") == "KNOWLEDGE_RUNTIME_UNAVAILABLE", f"unexpected failure reason: {event}")
+    assert_true(event.get("needs_handoff") is True, f"knowledge failure must require handoff: {event}")
+    assert_true(not str(event.get("reply_text") or ""), f"knowledge failure must not emit a visible reply: {event}")
+    assert_true(
+        event.get("visible_reply_owner") == "none_knowledge_unavailable",
+        f"knowledge failure must be explicitly attributable: {event}",
+    )
+    return CaseResult("brain_blocks_when_knowledge_runtime_is_unavailable", True, {"reason": event.get("reason")})
 
 
 def assert_true(condition: Any, message: str) -> None:

@@ -154,8 +154,9 @@ class ProductMasterStore:
     def list_items(self, *, include_archived: bool = False) -> list[dict[str, Any]]:
         # PostgreSQL mode is authoritative even when the catalog is empty.
         # Falling back to bundled JSON here would resurrect retired/test items.
-        if postgres_store(self.tenant_id):
-            return self._list_db_items(include_archived=include_archived)
+        db = postgres_store(self.tenant_id)
+        if db:
+            return self._list_db_items(include_archived=include_archived, db=db)
         self.ensure_structure()
         items = self._list_file_items(self.items_dir, include_archived=include_archived)
         if items:
@@ -267,8 +268,8 @@ class ProductMasterStore:
             or compatibility.get("new_writes_to_legacy") is not False
         )
 
-    def _list_db_items(self, *, include_archived: bool) -> list[dict[str, Any]]:
-        db = postgres_store(self.tenant_id)
+    def _list_db_items(self, *, include_archived: bool, db: Any | None = None) -> list[dict[str, Any]]:
+        db = db or postgres_store(self.tenant_id)
         if not db:
             return []
         items = db.list_knowledge_items(

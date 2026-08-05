@@ -32,6 +32,7 @@ from apps.wechat_ai_customer_service.admin_backend.services.knowledge_schema_man
 from apps.wechat_ai_customer_service.knowledge_paths import SHARED_KNOWLEDGE_ROOT, default_admin_knowledge_base_root, shared_runtime_cache_root, shared_runtime_snapshot_path, tenant_context, tenant_knowledge_base_root, tenant_product_item_knowledge_root, tenant_root  # noqa: E402
 from apps.wechat_ai_customer_service.product_master import ProductMasterStore  # noqa: E402
 from evidence_resolver import EvidenceResolver  # noqa: E402
+import knowledge_runtime as knowledge_runtime_module  # noqa: E402
 from knowledge_runtime import KnowledgeRuntime  # noqa: E402
 
 SHARED_PRIORITY_ITEM = shared_runtime_cache_root() / "risk_control" / "items" / "shared_priority_sample_fee.json"
@@ -70,6 +71,40 @@ def check_product_alias_hits_products() -> None:
     assert_has_item(pack, "products", "commercial_fridge_bx_200")
     assert_in("products", pack["matched_categories"], "product category should be matched")
     assert_equal(pack["safety"]["must_handoff"], False, "normal product question should not hand off")
+
+
+def check_postgres_empty_category_is_authoritative() -> None:
+    class EmptyPostgresStore:
+        def list_knowledge_items(self, *_: Any, **__: Any) -> list[dict[str, Any]]:
+            return []
+
+    original = knowledge_runtime_module.postgres_store
+    knowledge_runtime_module.postgres_store = lambda _tenant_id: EmptyPostgresStore()
+    try:
+        items = KnowledgeRuntime().list_items("policies", include_archived=True, include_unacknowledged=True)
+    finally:
+        knowledge_runtime_module.postgres_store = original
+    assert_equal(items, [], "empty PostgreSQL category must not fall back to bundled JSON")
+
+
+def check_postgres_without_dsn_fails_closed() -> None:
+    previous = {name: os.environ.get(name) for name in ("WECHAT_STORAGE_BACKEND", "WECHAT_POSTGRES_DSN", "DATABASE_URL")}
+    os.environ["WECHAT_STORAGE_BACKEND"] = "postgres"
+    os.environ.pop("WECHAT_POSTGRES_DSN", None)
+    os.environ.pop("DATABASE_URL", None)
+    try:
+        try:
+            knowledge_runtime_module.postgres_store("knowledge_runtime_probe")
+        except RuntimeError as exc:
+            assert_contains(str(exc), "DSN", "missing DSN error should be explicit")
+        else:
+            raise AssertionError("PostgreSQL mode without DSN must fail closed")
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 def check_public_product_discount_not_blocked_by_chat_template() -> None:
@@ -860,6 +895,8 @@ def assert_contains(actual: str, expected: str, message: str) -> None:
 
 
 CHECKS = [
+    check_postgres_empty_category_is_authoritative,
+    check_postgres_without_dsn_fails_closed,
     check_product_alias_hits_products,
     check_public_product_discount_not_blocked_by_chat_template,
     check_invoice_hits_policies,
