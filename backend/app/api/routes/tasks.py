@@ -2,9 +2,9 @@ from fastapi import APIRouter, Depends, Header, Query, Request
 from sqlalchemy.orm import Session
 
 from app.api.response import ok
-from app.core.auth import require_admin_auth, validate_admin_auth
+from app.core.auth import require_admin_auth
 from app.core.database import get_db
-from app.core.request_context import ActorContext, get_actor_context
+from app.core.request_context import ActorContext, get_actor_context, worker_actor_context
 from app.enums import TaskResultCode, TaskType
 from app.errors import AppError
 from app.schemas.task import (
@@ -143,18 +143,14 @@ def claim_task(
     payload: TaskClaimRequest,
     request: Request,
     db: Session = Depends(get_db),
-    actor: ActorContext = Depends(get_actor_context),
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
-    authorization: str | None = Header(default=None, alias="Authorization"),
 ):
     try:
-        require_worker_ready = False
-        if x_worker_token:
-            worker_service.authenticate_worker_client(db, payload.worker_id, x_worker_token, x_client_instance_id)
-            require_worker_ready = True
-        else:
-            validate_admin_auth(request, authorization)
+        worker = worker_service.authenticate_worker_client(
+            db, payload.worker_id, x_worker_token, x_client_instance_id
+        )
+        actor = worker_actor_context(request, worker_id=worker.id, worker_name=worker.worker_name)
         data = task_service.claim_task(
             db,
             task_id,
@@ -162,7 +158,7 @@ def claim_task(
             payload.current_step,
             payload.remark,
             actor,
-            require_worker_ready=require_worker_ready,
+            require_worker_ready=True,
             claim_source=payload.claim_source,
             conversation_id=payload.conversation_id,
             client_instance_id=x_client_instance_id,
@@ -211,24 +207,20 @@ def update_step(
     payload: TaskStepRequest,
     request: Request,
     db: Session = Depends(get_db),
-    actor: ActorContext = Depends(get_actor_context),
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
     x_task_lease_fencing_token: int | None = Header(default=None, alias="X-Task-Lease-Fencing-Token"),
-    authorization: str | None = Header(default=None, alias="Authorization"),
 ):
     try:
         task = task_service.get_task_or_404(db, task_id)
-        if x_worker_token:
-            worker = worker_service.authenticate_worker_client(db, task.worker_id or "", x_worker_token, x_client_instance_id)
-            task_service.validate_task_lease(
-                task,
-                worker_id=worker.id,
-                client_instance_id=x_client_instance_id,
-                lease_fencing_token=x_task_lease_fencing_token,
-            )
-        else:
-            validate_admin_auth(request, authorization)
+        worker = worker_service.authenticate_worker_client(db, task.worker_id or "", x_worker_token, x_client_instance_id)
+        task_service.validate_task_lease(
+            task,
+            worker_id=worker.id,
+            client_instance_id=x_client_instance_id,
+            lease_fencing_token=x_task_lease_fencing_token,
+        )
+        actor = worker_actor_context(request, worker_id=worker.id, worker_name=worker.worker_name)
         data = task_service.update_step(db, task_id, payload.current_step, payload.remark, actor)
         db.commit()
         return ok(data)
@@ -243,24 +235,20 @@ def invite_sent(
     payload: TaskCompleteRequest,
     request: Request,
     db: Session = Depends(get_db),
-    actor: ActorContext = Depends(get_actor_context),
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
     x_task_lease_fencing_token: int | None = Header(default=None, alias="X-Task-Lease-Fencing-Token"),
-    authorization: str | None = Header(default=None, alias="Authorization"),
 ):
     try:
         task = task_service.get_task_or_404(db, task_id)
-        if x_worker_token:
-            worker = worker_service.authenticate_worker_client(db, task.worker_id or "", x_worker_token, x_client_instance_id)
-            task_service.validate_task_lease(
-                task,
-                worker_id=worker.id,
-                client_instance_id=x_client_instance_id,
-                lease_fencing_token=x_task_lease_fencing_token,
-            )
-        else:
-            validate_admin_auth(request, authorization)
+        worker = worker_service.authenticate_worker_client(db, task.worker_id or "", x_worker_token, x_client_instance_id)
+        task_service.validate_task_lease(
+            task,
+            worker_id=worker.id,
+            client_instance_id=x_client_instance_id,
+            lease_fencing_token=x_task_lease_fencing_token,
+        )
+        actor = worker_actor_context(request, worker_id=worker.id, worker_name=worker.worker_name)
         data = task_service.complete_task(db, task_id, TaskResultCode.invite_sent, payload.remark, actor)
         db.commit()
         return ok(data)
@@ -275,24 +263,20 @@ def already_friend(
     payload: TaskCompleteRequest,
     request: Request,
     db: Session = Depends(get_db),
-    actor: ActorContext = Depends(get_actor_context),
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
     x_task_lease_fencing_token: int | None = Header(default=None, alias="X-Task-Lease-Fencing-Token"),
-    authorization: str | None = Header(default=None, alias="Authorization"),
 ):
     try:
         task = task_service.get_task_or_404(db, task_id)
-        if x_worker_token:
-            worker = worker_service.authenticate_worker_client(db, task.worker_id or "", x_worker_token, x_client_instance_id)
-            task_service.validate_task_lease(
-                task,
-                worker_id=worker.id,
-                client_instance_id=x_client_instance_id,
-                lease_fencing_token=x_task_lease_fencing_token,
-            )
-        else:
-            validate_admin_auth(request, authorization)
+        worker = worker_service.authenticate_worker_client(db, task.worker_id or "", x_worker_token, x_client_instance_id)
+        task_service.validate_task_lease(
+            task,
+            worker_id=worker.id,
+            client_instance_id=x_client_instance_id,
+            lease_fencing_token=x_task_lease_fencing_token,
+        )
+        actor = worker_actor_context(request, worker_id=worker.id, worker_name=worker.worker_name)
         data = task_service.complete_task(db, task_id, TaskResultCode.already_friend, payload.remark, actor)
         db.commit()
         return ok(data)
@@ -307,28 +291,22 @@ def fail_task(
     payload: TaskFailRequest,
     request: Request,
     db: Session = Depends(get_db),
-    actor: ActorContext = Depends(get_actor_context),
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
     x_task_lease_fencing_token: int | None = Header(default=None, alias="X-Task-Lease-Fencing-Token"),
-    authorization: str | None = Header(default=None, alias="Authorization"),
 ):
     try:
         task = task_service.get_task_or_404(db, task_id)
-        if x_worker_token:
-            worker = worker_service.authenticate_worker_client(db, task.worker_id or "", x_worker_token, x_client_instance_id)
-            is_pending_reply_recovery = (
-                task.status == "pending" and task.task_type == "chat_reply"
+        worker = worker_service.authenticate_worker_client(db, task.worker_id or "", x_worker_token, x_client_instance_id)
+        actor = worker_actor_context(request, worker_id=worker.id, worker_name=worker.worker_name)
+        is_pending_reply_recovery = task.status == "pending" and task.task_type == "chat_reply"
+        if not is_pending_reply_recovery:
+            task_service.validate_task_lease(
+                task,
+                worker_id=worker.id,
+                client_instance_id=x_client_instance_id,
+                lease_fencing_token=x_task_lease_fencing_token,
             )
-            if not is_pending_reply_recovery:
-                task_service.validate_task_lease(
-                    task,
-                    worker_id=worker.id,
-                    client_instance_id=x_client_instance_id,
-                    lease_fencing_token=x_task_lease_fencing_token,
-                )
-        else:
-            validate_admin_auth(request, authorization)
         data = task_service.fail_task(
             db,
             task_id,
@@ -336,7 +314,7 @@ def fail_task(
             payload.failure_step,
             payload.failure_remark,
             actor,
-            allow_pending_chat_reply_recovery=bool(x_worker_token),
+            allow_pending_chat_reply_recovery=True,
         )
         db.commit()
         return ok(data)
@@ -353,16 +331,12 @@ def add_task_evidence(
     db: Session = Depends(get_db),
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
-    authorization: str | None = Header(default=None, alias="Authorization"),
 ):
     try:
         task = task_service.get_task_or_404(db, task_id)
         worker_id = task.worker_id
-        if x_worker_token:
-            worker = worker_service.authenticate_worker_client(db, worker_id or "", x_worker_token, x_client_instance_id)
-            worker_id = worker.id
-        else:
-            validate_admin_auth(request, authorization)
+        worker = worker_service.authenticate_worker_client(db, worker_id or "", x_worker_token, x_client_instance_id)
+        worker_id = worker.id
         data = task_service.add_evidence(
             db,
             task_id,

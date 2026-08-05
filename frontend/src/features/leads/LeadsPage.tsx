@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
-import { ApiError, formatApiError } from "../../shared/api/client";
+import { ApiError, formatBusinessError } from "../../shared/api/client";
+import { postMutationMessage, runPostMutationRefresh } from "../../shared/utils/postMutation";
 import { batchMarkInvalid, createLead, exportLeads, markLeadInvalid, restoreLead as restoreLeadApi, retryAutoAssign, revealContact } from "./api";
 import { CreateLeadModal } from "./components/CreateLeadModal";
 import { InvalidLeadModal } from "./components/InvalidLeadModal";
@@ -72,25 +73,25 @@ export function LeadsPage() {
 
     try {
       await createLead(payload);
-      if (!options?.continueAdding) {
-        setCreateOpen(false);
-      }
-      setActionMessage(options?.continueAdding ? "已保存，可继续新增客户。" : "已新增客户。");
-      await leads.refresh();
-      return true;
     } catch (err) {
       if (err instanceof ApiError && err.code === "LEAD_PHONE_DUPLICATED") {
         setDuplicateData(err.data as DuplicateLeadErrorData);
-        setCreateError(formatApiError(err, "新增客户失败，请稍后重试。"));
+        setCreateError(formatBusinessError(err, "新增客户失败，请稍后重试。"));
       } else if (err instanceof ApiError) {
-        setCreateError(formatApiError(err, "新增客户失败，请稍后重试。"));
+        setCreateError(formatBusinessError(err, "新增客户失败，请稍后重试。"));
       } else {
         setCreateError("新增客户失败，请稍后重试。");
       }
-      return false;
-    } finally {
       setSubmitting(false);
+      return false;
     }
+
+    if (!options?.continueAdding) setCreateOpen(false);
+    const refreshed = await runPostMutationRefresh(() => leads.refresh());
+    const successMessage = options?.continueAdding ? "已保存，可继续新增客户。" : "已新增客户。";
+    setActionMessage(postMutationMessage(successMessage, refreshed));
+    setSubmitting(false);
+    return true;
   }
 
   function selectedLeadIds() {
@@ -121,17 +122,20 @@ export function LeadsPage() {
       } else {
         await batchMarkInvalid(leadIds, payload);
       }
-      setInvalidLeadIds(null);
-      setActionMessage(`已标记 ${leadIds.length} 条线索为无效。`);
-      await leads.refresh();
-      if (leads.activeLeadId && leadIds.includes(leads.activeLeadId)) {
-        await leads.refreshDetail(leads.activeLeadId);
-      }
     } catch (err) {
-      setInvalidError(formatApiError(err, "标记无效失败，请稍后重试。"));
-    } finally {
+      setInvalidError(formatBusinessError(err, "标记无效失败，请稍后重试。"));
       setActionBusy(null);
+      return;
     }
+
+    setInvalidLeadIds(null);
+    const listRefreshed = await runPostMutationRefresh(() => leads.refresh());
+    const detailRefreshed = !leads.activeLeadId || !leadIds.includes(leads.activeLeadId)
+      ? true
+      : await runPostMutationRefresh(() => leads.refreshDetail(leads.activeLeadId));
+    const successMessage = `已标记 ${leadIds.length} 条线索为无效。`;
+    setActionMessage(postMutationMessage(successMessage, listRefreshed && detailRefreshed));
+    setActionBusy(null);
   }
 
   async function handleRestore(leadId: string) {
@@ -140,15 +144,19 @@ export function LeadsPage() {
     setRestoreError(null);
     try {
       await restoreLeadApi(leadId);
-      setRestoreLeadId(null);
-      setActionMessage("已恢复为有效线索。");
-      await leads.refresh();
-      await leads.refreshDetail(leadId);
     } catch (err) {
-      setRestoreError(formatApiError(err, "恢复有效失败，请稍后重试。"));
-    } finally {
+      setRestoreError(formatBusinessError(err, "恢复有效失败，请稍后重试。"));
       setActionBusy(null);
+      return;
     }
+
+    setRestoreLeadId(null);
+    const [listRefreshed, detailRefreshed] = await Promise.all([
+      runPostMutationRefresh(() => leads.refresh()),
+      runPostMutationRefresh(() => leads.refreshDetail(leadId)),
+    ]);
+    setActionMessage(postMutationMessage("已恢复为有效线索。", listRefreshed && detailRefreshed));
+    setActionBusy(null);
   }
 
   async function handleRetryAssign(leadIds: string[]) {
@@ -160,18 +168,22 @@ export function LeadsPage() {
 
     setActionBusy("retry-assign");
     setActionError(null);
+    let result: Awaited<ReturnType<typeof retryAutoAssign>>;
     try {
-      const result = await retryAutoAssign(ids);
-      setActionMessage(`重新分配完成：成功 ${result.succeeded} 条，失败 ${result.failed} 条。`);
-      await leads.refresh();
-      if (leads.activeLeadId && ids.includes(leads.activeLeadId)) {
-        await leads.refreshDetail(leads.activeLeadId);
-      }
+      result = await retryAutoAssign(ids);
     } catch (err) {
-      setActionError(formatApiError(err, "重新分配失败，请稍后重试。"));
-    } finally {
+      setActionError(formatBusinessError(err, "重新分配失败，请稍后重试。"));
       setActionBusy(null);
+      return;
     }
+
+    const listRefreshed = await runPostMutationRefresh(() => leads.refresh());
+    const detailRefreshed = !leads.activeLeadId || !ids.includes(leads.activeLeadId)
+      ? true
+      : await runPostMutationRefresh(() => leads.refreshDetail(leads.activeLeadId));
+    const successMessage = `重新分配完成：成功 ${result.succeeded} 条，失败 ${result.failed} 条。`;
+    setActionMessage(postMutationMessage(successMessage, listRefreshed && detailRefreshed));
+    setActionBusy(null);
   }
 
   async function handleExportSelected() {
@@ -193,7 +205,7 @@ export function LeadsPage() {
       URL.revokeObjectURL(url);
       setActionMessage(`已导出 ${leadIds.length} 条线索。`);
     } catch (err) {
-      setActionError(formatApiError(err, err instanceof Error ? err.message : "导出失败，请稍后重试。"));
+      setActionError(formatBusinessError(err, err instanceof Error ? err.message : "导出失败，请稍后重试。"));
     } finally {
       setActionBusy(null);
     }
@@ -215,7 +227,7 @@ export function LeadsPage() {
       setRevealedPhones((current) => ({ ...current, [revealed.contact_id]: revealed.value }));
       setActionMessage(`手机号明文：${revealed.value}。本次查看已写入审计日志。`);
     } catch (err) {
-      setActionError(formatApiError(err, "手机号明文查看失败，请稍后重试。"));
+      setActionError(formatBusinessError(err, "手机号明文查看失败，请稍后重试。"));
     } finally {
       setActionBusy(null);
     }

@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, apiErrorFromResponse, buildOperatorHeaders, formatApiError, runtimeConfig } from "./client";
+import { ApiError, apiErrorFromResponse, formatApiError, request, requestBlob, requestForm } from "./client";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("ApiError", () => {
   it("keeps backend business error metadata for UI handling", () => {
@@ -31,24 +35,38 @@ describe("ApiError", () => {
   });
 });
 
-describe("admin auth headers", () => {
-  it("adds bearer token without replacing operator audit headers", () => {
-    runtimeConfig.adminToken = "admin-token-001";
+describe("Cookie admin session requests", () => {
+  it("includes cookies and never sends legacy bearer or browser-asserted roles", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ code: "OK", data: {} }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
 
-    expect(buildOperatorHeaders()).toMatchObject({
-      Authorization: "Bearer admin-token-001",
-      "X-Operator-Id": runtimeConfig.operatorId,
-      "X-Operator-Name": runtimeConfig.operatorName,
-      "X-Operator-Role": runtimeConfig.operatorRole,
+    await request("/test", {
+      headers: {
+        Authorization: "Bearer legacy-token",
+        "X-Operator-Role": "admin",
+      },
     });
 
-    runtimeConfig.adminToken = "";
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(init.credentials).toBe("include");
+    const headers = new Headers(init.headers);
+    expect(headers.has("Authorization")).toBe(false);
+    expect(headers.has("X-Operator-Id")).toBe(false);
+    expect(headers.has("X-Operator-Name")).toBe(false);
+    expect(headers.has("X-Operator-Role")).toBe(false);
   });
 
-  it("does not send Authorization when admin token is empty", () => {
-    runtimeConfig.adminToken = "";
+  it("includes cookies for form and blob requests", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: "OK", data: {} }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(new Blob(["ok"]), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
 
-    expect(buildOperatorHeaders()).not.toHaveProperty("Authorization");
+    await requestForm("/form", new FormData());
+    await requestBlob("/blob");
+
+    expect((fetchMock.mock.calls[0][1] as RequestInit).credentials).toBe("include");
+    expect((fetchMock.mock.calls[1][1] as RequestInit).credentials).toBe("include");
   });
 });
 

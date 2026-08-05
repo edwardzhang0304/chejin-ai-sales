@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-import { ApiError, apiErrorFromResponse, buildOperatorHeaders, formatApiError, runtimeConfig } from "../src/shared/api/client.ts";
+import { ApiError, apiErrorFromResponse, formatApiError, request } from "../src/shared/api/client.ts";
 
 const duplicated = new ApiError({
   status: 409,
@@ -29,15 +29,17 @@ assert.equal(
   "服务内部错误（错误码：INTERNAL_SERVER_ERROR，Trace ID：req_test_002）",
 );
 
-runtimeConfig.adminToken = "admin-token-001";
-const headers = buildOperatorHeaders();
-assert.equal(headers.Authorization, "Bearer admin-token-001");
-assert.equal(headers["X-Operator-Id"], runtimeConfig.operatorId);
-assert.equal(headers["X-Operator-Name"], runtimeConfig.operatorName);
-assert.equal(headers["X-Operator-Role"], runtimeConfig.operatorRole);
-
-runtimeConfig.adminToken = "";
-assert.equal("Authorization" in buildOperatorHeaders(), false);
+const originalFetch = globalThis.fetch;
+let requestInit;
+globalThis.fetch = async (_url, init) => {
+  requestInit = init;
+  return new Response(JSON.stringify({ code: "OK", data: {} }), { status: 200 });
+};
+await request("/test");
+assert.equal(requestInit.credentials, "include");
+assert.equal(new Headers(requestInit.headers).has("Authorization"), false);
+assert.equal(new Headers(requestInit.headers).has("X-Operator-Role"), false);
+globalThis.fetch = originalFetch;
 
 const unauthorized = await apiErrorFromResponse(new Response("", { status: 401 }));
 assert.equal(unauthorized.status, 401);

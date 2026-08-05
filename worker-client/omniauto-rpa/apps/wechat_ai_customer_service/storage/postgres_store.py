@@ -21,6 +21,11 @@ from .config import StorageConfig, load_storage_config, validate_schema_name
 SCHEMA_SQL_PATH = Path(__file__).with_name("postgres_schema.sql")
 
 
+def render_schema_sql(schema: str) -> str:
+    validate_schema_name(schema)
+    return SCHEMA_SQL_PATH.read_text(encoding="utf-8").format(schema=schema)
+
+
 @dataclass
 class PostgresAvailability:
     ok: bool
@@ -53,7 +58,7 @@ class PostgresJsonStore:
 
     def initialize_schema(self) -> dict[str, Any]:
         self._require_available()
-        ddl = SCHEMA_SQL_PATH.read_text(encoding="utf-8").format(schema=self.schema)
+        ddl = render_schema_sql(self.schema)
         with self.connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(ddl)

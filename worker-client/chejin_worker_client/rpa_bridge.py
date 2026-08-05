@@ -835,6 +835,7 @@ class RpaBridge:
 
     def _emit_steps(self, payload: dict[str, Any], emit_step: Callable[[RpaStep], None]) -> None:
         events = payload.get("diagnostic_events") or payload.get("native_diagnostic_events") or []
+        sidecar_run_id = str(payload.get("sidecar_run_id") or "").strip() or None
         if isinstance(events, list):
             for item in events:
                 if not isinstance(item, dict):
@@ -848,13 +849,22 @@ class RpaBridge:
                         title=str(item.get("title") or step_id),
                         remark=str(item.get("status") or item.get("state_after") or ""),
                         evidence_path=self._event_artifact_path(item),
+                        error_code=str(item.get("error_code") or "").strip() or None,
+                        sidecar_run_id=str(item.get("sidecar_run_id") or "").strip() or sidecar_run_id,
                     )
                 )
         steps = payload.get("steps")
         if not events and isinstance(steps, list):
             for step in steps:
                 current_step = str(step.get("current_step") if isinstance(step, dict) else step)
-                emit_step(RpaStep(current_step=current_step, title=current_step, remark=""))
+                emit_step(
+                    RpaStep(
+                        current_step=current_step,
+                        title=current_step,
+                        remark="",
+                        sidecar_run_id=sidecar_run_id,
+                    )
+                )
 
     def _event_artifact_path(self, item: dict[str, Any]) -> str | None:
         artifacts = item.get("artifacts")
@@ -880,6 +890,7 @@ class RpaBridge:
             "error_code": payload.get("error_code"),
             "result_code": payload.get("result_code"),
             "current_step": payload.get("current_step"),
+            "sidecar_run_id": payload.get("sidecar_run_id"),
             "stdout_tail": payload.get("stdout_tail") or payload.get("stdout"),
             "stderr_tail": payload.get("stderr_tail") or payload.get("stderr"),
         }

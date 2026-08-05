@@ -143,6 +143,23 @@ Index(
 )
 
 
+class ReplyActionVehicleFact(Base):
+    __tablename__ = "reply_action_vehicle_facts"
+
+    reply_action_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    vehicle_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    fact_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    vehicle_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+Index(
+    "idx_reply_action_vehicle_facts_vehicle_action",
+    ReplyActionVehicleFact.vehicle_id,
+    ReplyActionVehicleFact.reply_action_id,
+)
+
+
 class SentAck(Base):
     __tablename__ = "sent_acks"
 

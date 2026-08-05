@@ -39,6 +39,7 @@ deliverables/*.zip
 deliverables/*.sha256
 deliverables/*.manifest.json
 deliverables/test_runs/
+deliverables/ui_audit_20260804*/
 deliverables/AI智能客服售前跟进系统_会话状态机图_v0.6.png
 
 # Local cloned upstream repositories used for review/sync only

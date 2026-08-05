@@ -15,13 +15,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def production_settings(**overrides):
-    return Settings(
-        environment="production",
-        auto_create_tables=False,
-        phone_hash_secret="production-phone-hash-secret",
-        contact_encryption_secret="production-contact-encryption-secret",
-        **overrides,
-    )
+    values = {
+        "environment": "production",
+        "auto_create_tables": False,
+        "phone_hash_secret": "production-phone-hash-secret",
+        "contact_encryption_secret": "production-contact-encryption-secret",
+        "internal_service_token": "production-internal-service-token-at-least-32-chars",
+        "admin_cookie_secure": True,
+        "cors_origins": ["https://ops.example.com"],
+    }
+    values.update(overrides)
+    return Settings(**values)
 
 
 def test_production_rejects_mock_brain_adapter():
@@ -34,6 +38,18 @@ def test_production_accepts_real_brain_adapter():
 
     assert settings.is_production is True
     assert settings.c3_ai_adapter_mode == "real"
+
+
+def test_production_requires_secure_admin_cookie_and_explicit_origin():
+    with pytest.raises(ValidationError, match="ADMIN_COOKIE_SECURE=true"):
+        production_settings(admin_cookie_secure=False)
+    with pytest.raises(ValidationError, match="CORS_ORIGINS"):
+        production_settings(cors_origins=["*"])
+
+
+def test_production_requires_strong_internal_service_token():
+    with pytest.raises(ValidationError, match="INTERNAL_SERVICE_TOKEN"):
+        production_settings(internal_service_token="short")
 
 
 def test_batch_stale_window_must_exceed_provider_timeout():
@@ -128,6 +144,9 @@ def test_env_example_declares_one_formal_brain_route_and_compose_injects_env_fil
     assert "OPENAI_MODEL" in keys
     assert "OPENAI_FLASH_REASONING_EFFORT" in keys
     assert "ANTHROPIC_AUTH_TOKEN" not in keys
+    assert "ADMIN_API_TOKEN" not in keys
+    assert "OPERATOR_API_CREDENTIALS" not in keys
+    assert "AUTH_ENFORCEMENT" not in keys
     compose = (PROJECT_ROOT / "backend" / "docker-compose.yml").read_text(encoding="utf-8")
     assert "env_file:" in compose
     assert "path: .env" in compose
