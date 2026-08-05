@@ -1,7 +1,10 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
-import { formatApiError } from "../../shared/api/client";
+import { formatBusinessError } from "../../shared/api/client";
 import { useLockBodyScroll } from "../../shared/hooks/useLockBodyScroll";
+import { CopyButton } from "../../shared/ui/CopyButton";
+import { CloseIcon } from "../../shared/ui/Icons";
+import { postMutationMessage, runPostMutationRefresh } from "../../shared/utils/postMutation";
 import { createWorker, getWorker, listWorkers, resetWorkerBinding, updateWorker } from "./api";
 import type { WorkerCreatePayload, WorkerItem, WorkerUpdatePayload } from "./types";
 
@@ -56,15 +59,17 @@ function statusClass(active: boolean) {
   return active ? "assigned" : "invalid";
 }
 
-function onlineClass(status: string) {
-  return status === "online" ? "assigned" : "unassigned";
-}
-
 function runningMeta(status: string, currentTask?: string | null) {
   if (currentTask || status === "running") {
     return { label: "忙碌", className: "unassigned" };
   }
   return { label: "空闲", className: "assigned" };
+}
+
+function currentStatus(worker: WorkerItem) {
+  if (worker.online_status !== "online") return { label: "离线", className: "unassigned" };
+  const running = runningMeta(worker.running_status, worker.current_task);
+  return { label: `在线 / ${running.label}`, className: running.className };
 }
 
 function bindingMeta(worker: WorkerItem) {
@@ -179,8 +184,10 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
         return data.items[0]?.id ?? null;
       });
       setDrawerOpen(Boolean(data.items[0]));
+      return true;
     } catch (err) {
-      if (!signal?.aborted) setError(formatApiError(err, "Worker 列表加载失败，请稍后重试。"));
+      if (!signal?.aborted) setError(formatBusinessError(err, "Worker 列表加载失败，请稍后重试。"));
+      return false;
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
@@ -213,7 +220,7 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
         setEditing(false);
       })
       .catch((err) => {
-        if (!controller.signal.aborted) setSaveError(formatApiError(err, "Worker 详情加载失败，请稍后重试。"));
+        if (!controller.signal.aborted) setSaveError(formatBusinessError(err, "Worker 详情加载失败，请稍后重试。"));
       })
       .finally(() => {
         if (!controller.signal.aborted) setDetailLoading(false);
@@ -253,21 +260,23 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
     setSubmitting(true);
     setCreateError(null);
     setMessage(null);
+    let created: WorkerItem;
     try {
-      const created = await createWorker(payload);
-      setMessage(`${created.worker_name} 已新增，Worker Token 已在详情抽屉展示。`);
-      await refresh();
-      setSelectedId(created.id);
-      setDetail(created);
-      setEditForm(toEditForm(created));
-      setDrawerOpen(true);
-      return true;
+      created = await createWorker(payload);
     } catch (err) {
-      setCreateError(formatApiError(err, "新增 Worker 失败，请稍后重试。"));
-      return false;
-    } finally {
+      setCreateError(formatBusinessError(err, "新增 Worker 失败，请稍后重试。"));
       setSubmitting(false);
+      return false;
     }
+
+    setSelectedId(created.id);
+    setDetail(created);
+    setEditForm(toEditForm(created));
+    setDrawerOpen(true);
+    const refreshed = await runPostMutationRefresh(() => refresh());
+    setMessage(postMutationMessage(`${created.worker_name} 已新增，Worker Token 已在详情抽屉展示。`, refreshed));
+    setSubmitting(false);
+    return true;
   }
 
   async function handleSave(event: FormEvent<HTMLFormElement>) {
@@ -283,19 +292,21 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
     setSubmitting(true);
     setSaveError(null);
     setMessage(null);
+    let updated: WorkerItem;
     try {
-      const updated = await updateWorker(detail.id, payload);
-      setMessage(`${updated.worker_name} 已保存。`);
-      await refresh();
-      const nextDetail = await getWorker(detail.id);
-      setDetail(nextDetail);
-      setEditForm(toEditForm(nextDetail));
-      setEditing(false);
+      updated = await updateWorker(detail.id, payload);
     } catch (err) {
-      setSaveError(formatApiError(err, "Worker 保存失败，请稍后重试。"));
-    } finally {
+      setSaveError(formatBusinessError(err, "Worker 保存失败，请稍后重试。"));
       setSubmitting(false);
+      return;
     }
+
+    setDetail(updated);
+    setEditForm(toEditForm(updated));
+    setEditing(false);
+    const refreshed = await runPostMutationRefresh(() => refresh());
+    setMessage(postMutationMessage(`${updated.worker_name} 已保存。`, refreshed));
+    setSubmitting(false);
   }
 
   async function handleResetBinding() {
@@ -303,18 +314,22 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
     setSubmitting(true);
     setSaveError(null);
     setMessage(null);
+    let result: Awaited<ReturnType<typeof resetWorkerBinding>>;
     try {
-      const result = await resetWorkerBinding(detail.id);
-      setDetail(result);
-      setEditForm(toEditForm(result));
-      setMessage(result.warning || "已重置客户端绑定，新的 Worker Token 已生成。");
-      setResetOpen(false);
-      await refresh();
+      result = await resetWorkerBinding(detail.id);
     } catch (err) {
-      setSaveError(formatApiError(err, "重置绑定失败，请稍后重试。"));
-    } finally {
+      setSaveError(formatBusinessError(err, "重置绑定失败，请稍后重试。"));
       setSubmitting(false);
+      return;
     }
+
+    setDetail(result);
+    setEditForm(toEditForm(result));
+    setResetOpen(false);
+    const refreshed = await runPostMutationRefresh(() => refresh());
+    const successMessage = result.warning || "已重置客户端绑定，新的 Worker Token 已生成。";
+    setMessage(postMutationMessage(successMessage, refreshed));
+    setSubmitting(false);
   }
 
   return (
@@ -401,8 +416,7 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
                   <th>Worker ID</th>
                   <th>状态</th>
                   <th>客户端</th>
-                  <th>在线</th>
-                  <th>运行</th>
+                  <th>当前状态</th>
                   <th>当前任务</th>
                   <th>绑定销售</th>
                   <th>最近心跳</th>
@@ -410,13 +424,13 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={9}>正在加载 Worker 列表...</td></tr>
+                  <tr><td colSpan={8}>正在加载 Worker 列表...</td></tr>
                 ) : filteredItems.length === 0 ? (
-                  <tr><td colSpan={9}>暂无 Worker，调整筛选条件后重试。</td></tr>
+                  <tr><td colSpan={8}>暂无 Worker，调整筛选条件后重试。</td></tr>
                 ) : (
                   filteredItems.map((item) => {
                     const binding = bindingMeta(item);
-                    const running = runningMeta(item.running_status, item.current_task);
+                    const current = currentStatus(item);
                     return (
                       <tr
                         key={item.id}
@@ -427,12 +441,11 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
                           if (event.key === "Enter" || event.key === " ") selectRow(item);
                         }}
                       >
-                        <td className="lead-cell"><strong>{item.worker_name}</strong><small>{display(item.device_name, "Windows 客户端")}</small></td>
-                        <td>{item.id}</td>
+                        <td className="lead-cell"><strong>{item.worker_name}</strong></td>
+                        <td className="copy-value"><span title={item.id}>{item.id}</span><CopyButton label="Worker ID" value={item.id} /></td>
                         <td className="status-cell"><span className={`status ${statusClass(item.enabled)}`}>{item.enabled ? "启用" : "停用"}</span></td>
                         <td className="status-cell"><span className={`status ${binding.className}`}>{binding.label}</span></td>
-                        <td className="status-cell"><span className={`status ${onlineClass(item.online_status)}`}>{item.online_status === "online" ? "在线" : "离线"}</span></td>
-                        <td className="status-cell"><span className={`status ${running.className}`}>{running.label}</span></td>
+                        <td className="status-cell"><span className={`status ${current.className}`}>{current.label}</span></td>
                         <td>{display(item.current_task)}</td>
                         <td>{display(item.bound_sales_name, "未绑定")}</td>
                         <td>{formatHeartbeat(item.last_heartbeat_at)}</td>
@@ -457,7 +470,7 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
                   <p><span className="read-value">Worker 详情</span><span className="edit-value">Worker 详情 · 编辑中</span></p>
                   <h2>{detail.worker_name}</h2>
                 </div>
-                <button className="icon-button" type="button" onClick={() => setDrawerOpen(false)} aria-label="关闭 Worker 详情">×</button>
+                <button className="icon-button drawer-close-button" type="button" onClick={() => setDrawerOpen(false)} aria-label="关闭 Worker 详情"><CloseIcon /></button>
               </div>
 
               {saveError ? <div className="inline-alert error">{saveError}</div> : null}
@@ -469,8 +482,8 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
                     <dt>Worker 名称</dt>
                     <dd><span className="read-value">{detail.worker_name}</span><input className="edit-value" value={editForm.worker_name} onChange={(event) => setEditForm({ ...editForm, worker_name: event.target.value })} required /></dd>
                   </div>
-                  <div><dt>Worker ID</dt><dd>{detail.id}</dd></div>
-                  <div><dt>Worker Token</dt><dd className="token-text">{display(detail.worker_token, "详情加载后展示")}</dd></div>
+                  <div><dt>Worker ID</dt><dd className="copy-value"><span>{detail.id}</span><CopyButton label="Worker ID" value={detail.id} /></dd></div>
+                  <div><dt>Worker Token</dt><dd className="copy-value token-text"><span>{display(detail.worker_token, "详情加载后展示")}</span><CopyButton label="Worker Token" value={detail.worker_token} /></dd></div>
                   <div>
                     <dt>状态</dt>
                     <dd>
@@ -493,7 +506,7 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
                     <dd><span className="read-value">{display(detail.device_name, "暂无")}</span><input className="edit-value" value={editForm.device_name} onChange={(event) => setEditForm({ ...editForm, device_name: event.target.value })} /></dd>
                   </div>
                   <div><dt>最近心跳</dt><dd>{formatHeartbeat(detail.last_heartbeat_at)}</dd></div>
-                  <div><dt>运行状态</dt><dd>{runningMeta(detail.running_status, detail.current_task).label}</dd></div>
+                  <div><dt>当前状态</dt><dd>{currentStatus(detail).label}</dd></div>
                 </dl>
               </section>
 

@@ -8,7 +8,17 @@ export type WorkerClientScreen =
   | "paused-running"
   | "paused-empty-2"
   | "offline"
+  | "offline-empty"
+  | "automation-unavailable"
+  | "wechat-disconnected"
   | "failed"
+  | "scan-running"
+  | "scan-completed"
+  | "target-read-running"
+  | "target-read-completed"
+  | "ai-reply-running"
+  | "ai-reply-completed"
+  | "ai-reply-failed"
   | "settings"
   | "schedule-settings"
   | "logs";
@@ -37,13 +47,17 @@ export interface WorkerTaskModel {
   phone: string;
   sellerName: string;
   noteCode: string;
+  type?: "add_friend" | "chat_reply";
+  triggerText?: string;
   metaText?: string;
 }
 
 export interface TimelineScreenshot {
-  searchText: string;
-  resultText: string;
+  imageUrl?: string;
   caption: string;
+  incidentId?: string;
+  sidecarRunId?: string;
+  evidencePath?: string;
 }
 
 export interface TimelineStepModel {
@@ -75,6 +89,13 @@ export interface WorkerClientModel {
   runningSteps: TimelineStepModel[];
   completedSteps: TimelineStepModel[];
   failedSteps: TimelineStepModel[];
+  scanRunningSteps: TimelineStepModel[];
+  scanCompletedSteps: TimelineStepModel[];
+  targetReadRunningSteps: TimelineStepModel[];
+  targetReadCompletedSteps: TimelineStepModel[];
+  replyRunningSteps: TimelineStepModel[];
+  replyCompletedSteps: TimelineStepModel[];
+  replyFailedSteps: TimelineStepModel[];
   logs: WorkerLogRow[];
   latestIncident?: {
     incident_id: string;

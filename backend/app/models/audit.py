@@ -15,7 +15,7 @@ class OperationLog(Base):
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     module: Mapped[str] = mapped_column(String(32), nullable=False)
     target_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    target_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    target_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     lead_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     operator_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     operator_name_snapshot: Mapped[str | None] = mapped_column(String(64), nullable=True)

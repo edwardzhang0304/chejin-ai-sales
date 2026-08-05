@@ -156,10 +156,21 @@ def guard_synthesized_reply(
                     ),
                 )
             elif settings.get("brain_first_guard") is True and candidate_requests_handoff(candidate):
-                if reply and handoff_reply_safe(
-                    reply,
-                    platform_rules,
-                    allow_ai_identity_exposure=bool(candidate.get("allow_ai_identity_exposure", False)),
+                allow_identity_exposure = bool(candidate.get("allow_ai_identity_exposure", False))
+                planned_visible_handoff_safe = bool(
+                    reply
+                    and has_explicit_customer_visible_handoff_marker(reply)
+                    and not has_internal_visible_marker(reply)
+                    and (allow_identity_exposure or not has_ai_identity_exposure(reply))
+                    and not has_unqualified_commitment(reply, platform_rules)
+                )
+                if reply and (
+                    handoff_reply_safe(
+                        reply,
+                        platform_rules,
+                        allow_ai_identity_exposure=allow_identity_exposure,
+                    )
+                    or planned_visible_handoff_safe
                 ):
                     return approved_handoff_decision(
                         "existing_safety_requires_handoff_brain_handoff_passed",
@@ -273,6 +284,15 @@ def guard_synthesized_reply(
                 "候选回复讨论了 AI/机器人/真人身份真假或暴露了自动化身份。请 Brain 自然改写："
                 "不要声明自己是/不是 AI、机器人或真人客服；内部信息只能概括拒绝外发，不能泄露具体内容。"
                 "guard 不提供客户可见替代话术。"
+            ),
+        )
+    if has_explicit_customer_visible_handoff_marker(reply) and not candidate_requests_handoff(candidate):
+        return repair_decision(
+            "explicit_handoff_marker_requires_brain_repair",
+            candidate,
+            repair_instruction=(
+                "候选回复暴露了转人工或人工客服链路。请 Brain 保留必要的边界说明和后续联系安排，"
+                "但改写为自然的客户可见表达；guard 不提供客户可见替代话术。"
             ),
         )
 

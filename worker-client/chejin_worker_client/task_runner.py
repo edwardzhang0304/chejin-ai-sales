@@ -1175,8 +1175,7 @@ class TaskRunner:
             evidence_path=result.evidence_path,
             metadata=result.evidence_metadata,
         )
-        self.on_result(result)
-        append_log(
+        log_result = append_log(
             "ERROR",
             "task_failed",
             result.message,
@@ -1187,6 +1186,12 @@ class TaskRunner:
                 "evidence_metadata": result.evidence_metadata or {},
             },
         )
+        result.evidence_metadata = {
+            **(result.evidence_metadata or {}),
+            "incident_id": str((log_result or {}).get("incident_id") or ""),
+            "incident_evidence_path": str((log_result or {}).get("evidence_path") or ""),
+        }
+        self.on_result(result)
         if result.error_code in ENV_STOP_ERRORS:
             self.set_run_status("paused")
             self.on_error("运行环境异常，已暂停接单。")

@@ -803,6 +803,29 @@ def maybe_run_customer_service_brain(
         )
     apply_server_validated_image_products(batch, evidence_pack)
     attach_conversation_runtime_hints_to_evidence_pack(evidence_pack, target_state)
+    if str(evidence_pack.get("knowledge_error") or "").strip():
+        payload.update(
+            {
+                "applied": True,
+                "adoptable": payload["mode"] == "brain_first",
+                "rule_name": "customer_service_brain_handoff",
+                "reason": "KNOWLEDGE_RUNTIME_UNAVAILABLE",
+                "needs_handoff": True,
+                "raw_reply_text": "",
+                "reply_text": "",
+                "visible_reply_owner": "none_knowledge_unavailable",
+                "visible_reply_source": "none",
+                "guard_verdict": "handoff",
+                "brain_plan": {
+                    "recommended_action": "handoff",
+                    "evidence_refs": [],
+                    "risk_flags": ["knowledge_runtime_unavailable"],
+                    "confidence": 0.0,
+                },
+            }
+        )
+        record_stage("evidence_pack", stage_started)
+        return finish(payload)
     routine_fast_profile = {"enabled": False, "reason": "low_authority_fast_already_selected" if fast_profile.get("enabled") else "not_evaluated"}
     if not fast_profile.get("enabled"):
         routine_fast_profile = routine_product_fast_profile_decision(

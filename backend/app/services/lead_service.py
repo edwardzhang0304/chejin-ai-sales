@@ -644,8 +644,6 @@ def restore_lead(db: Session, lead_id: str, actor: ActorContext) -> dict:
 
 
 def reveal_contact(db: Session, lead_id: str, contact_id: str, reason: str, actor: ActorContext) -> dict:
-    if actor.role not in {"admin", "operator"}:
-        raise AppError("CONTACT_REVEAL_FORBIDDEN", "无权查看联系方式明文", 403)
     contact = db.scalar(
         select(LeadContact).join(Lead).where(LeadContact.id == contact_id, LeadContact.lead_id == lead_id, Lead.deleted_at.is_(None))
     )

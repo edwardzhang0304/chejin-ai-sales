@@ -259,12 +259,13 @@ class KnowledgeRuntime:
                         for item in db.list_knowledge_items(self.tenant_id, layer="shared", category_id=category_id, include_archived=include_archived)
                     ]
                 )
-            if layer_items:
-                return filter_runtime_items(
-                    layer_items,
-                    include_archived=include_archived,
-                    include_unacknowledged=include_unacknowledged,
-                )
+            # PostgreSQL is the production source of truth. An empty category
+            # must remain empty instead of silently reading bundled JSON data.
+            return filter_runtime_items(
+                layer_items,
+                include_archived=include_archived,
+                include_unacknowledged=include_unacknowledged,
+            )
         if category_id in PRODUCT_SCOPED_SCHEMAS:
             return self.list_file_product_scoped_items(
                 category_id,
@@ -573,7 +574,12 @@ def postgres_store(tenant_id: str):
     if get_postgres_store is None or load_storage_config is None:
         return None
     config = load_storage_config()
-    if not config.use_postgres or not config.postgres_configured:
+    if not config.use_postgres:
         return None
+    if not config.postgres_configured:
+        raise RuntimeError("OmniAuto KnowledgeRuntime PostgreSQL DSN is not configured")
     store = get_postgres_store(tenant_id=tenant_id, config=config)
-    return store if store.available() else None
+    availability = store.availability()
+    if not availability.ok:
+        raise RuntimeError(f"OmniAuto KnowledgeRuntime PostgreSQL unavailable: {availability.reason}")
+    return store

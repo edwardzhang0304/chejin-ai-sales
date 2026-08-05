@@ -13,6 +13,9 @@ dependencies = [
   "python-multipart>=0.0.9",
   "cryptography>=42.0.0",
   "alembic>=1.13.0",
+  "argon2-cffi>=23.1.0,<26",
+  "openpyxl>=3.1.5,<4",
+  "Pillow>=11.0,<13",
 ]
 
 [project.optional-dependencies]
@@ -22,6 +25,7 @@ test = ["pytest>=8.2.0", "httpx>=0.27.0"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = ["real_auth: exercise the production admin session dependency without test overrides"]
 
 [tool.setuptools.packages.find]
 include = ["app*"]

@@ -8,7 +8,7 @@ export function EmptyWorkspace({ activeModule }: Props) {
       <div className="empty-panel">
         <span className="empty-icon">车</span>
         <h1>{activeModule ? "该模块正在迁移中" : "请选择左侧模块"}</h1>
-        <p>系统会根据当前账号权限展示可访问模块。选择线索管理后，可进行客户录入、去重、列表查看和自动分配结果追踪。</p>
+        <p>从左侧选择需要处理的业务模块。</p>
       </div>
     </div>
   );

@@ -48,10 +48,20 @@ const screens: WorkerClientScreen[] = [
   "paused-running",
   "paused-empty-2",
   "offline",
+  "offline-empty",
+  "automation-unavailable",
+  "wechat-disconnected",
   "failed",
   "settings",
   "schedule-settings",
   "logs",
+  "scan-running",
+  "scan-completed",
+  "target-read-running",
+  "target-read-completed",
+  "ai-reply-running",
+  "ai-reply-completed",
+  "ai-reply-failed",
 ];
 
 function initialScreen(): WorkerClientScreen {

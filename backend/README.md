@@ -80,6 +80,21 @@ cd backend
 alembic current
 ```
 
+### 数据迁移回滚安全
+
+`20260804_0019` 引入或接管 OmniAuto Product Master、KnowledgeRuntime、RAG、车辆和图片元数据；
+`20260805_0020` 引入后台账号、会话与登录限速数据。这两份迁移包含正式业务数据，禁止执行自动
+`downgrade`。当前 `20260806_0021` 同样设置了链路保护，防止 Alembic 在到达前述保护点之前先删除
+车辆回复事实表。
+
+需要回退应用版本时，数据库默认保持向前兼容的最新 schema。确需变更数据库结构时必须：
+
+1. 完成 PostgreSQL 和车辆图片存储备份，并实际验证可以恢复。
+2. 盘点车辆、知识库、账号、会话和待发送回复数据的保留及转换方案。
+3. 编写独立的前向迁移，经过代码审查和预发布恢复演练后再执行。
+
+禁止通过修改 Alembic 版本号、手工删除 schema，或临时恢复旧 `downgrade` 代码绕过保护。
+
 生成新迁移草稿：
 
 ```bash
@@ -93,17 +108,18 @@ alembic revision --autogenerate -m "change description"
 - `AUTO_CREATE_TABLES=false`
 - `PHONE_HASH_SECRET` 和 `CONTACT_ENCRYPTION_SECRET` 必须配置为安全随机值，禁止使用示例或开发默认值。
 
-## 操作人 Header
+## 后台账号与会话
 
-P0 临时通过 Header 模拟登录态：
+后台使用服务端预建账号和可撤销 HttpOnly Cookie 会话，不接受浏览器 Bearer Token。先执行迁移，再通过服务端命令创建账号：
 
-```text
-X-Operator-Id: 00000000-0000-0000-0000-000000000001
-X-Operator-Name: 运营小陈
-X-Operator-Role: admin
+```bash
+python scripts/admin_accounts.py create --username ops --display-name "运营人员"
+python scripts/admin_accounts.py reset-password --username ops
+python scripts/admin_accounts.py disable --username ops
+python scripts/admin_accounts.py enable --username ops
 ```
 
-后续接入真实鉴权后，由认证中间件填充操作人上下文。
+命令默认通过终端安全读取密码；自动化场景可使用 `--password-stdin`。不要把密码放入命令参数、Git、镜像或 `.env.example`。后台 Cookie 与 Worker Token 双向隔离，所有登录账号拥有相同后台权限。
 
 ## 已实现接口
 

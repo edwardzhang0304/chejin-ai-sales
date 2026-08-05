@@ -8,8 +8,16 @@ from sqlalchemy import select
 from app.contracts.c2 import c2_contract_v3, contract_revision, contract_sha256
 from app.core.database import Base, SessionLocal, engine
 from app.main import app
-from app.models.c3 import Conversation, HandoffEvent, MessageBatch, ReplyAction, SentAck
+from app.models.c3 import (
+    Conversation,
+    HandoffEvent,
+    MessageBatch,
+    ReplyAction,
+    ReplyActionVehicleFact,
+    SentAck,
+)
 from app.models.task import Task
+from app.models.vehicle import KnowledgeItem
 from app.models.wechat import MessageEvent, WechatSessionBinding
 from app.services.wechat_service import _authorization_revision, _read_reason
 from app.errors import AppError
@@ -29,6 +37,7 @@ HEADERS = {
     "X-Operator-Name": "Ops Tester",
     "X-Operator-Role": "admin",
 }
+INTERNAL_HEADERS = {"X-Internal-Service-Token": "dev-only-internal-service-token-change-before-production"}
 FORBIDDEN_RESPONSE_FIELDS = {
     "runtime_status",
     "current_task_id",
@@ -40,6 +49,9 @@ FORBIDDEN_RESPONSE_FIELDS = {
     "ingest_status",
     "notify_status",
 }
+PNG_1X1 = bytes.fromhex(
+    "89504e470d0a1a0a0000000d4948445200000001000000010804000000b51c0c020000000b4944415478da6364f80f00010501012718e3660000000049454e44ae426082"
+)
 
 
 def setup_function():
@@ -103,7 +115,7 @@ def _create_sales(worker_id: str) -> str:
     response = client.post(
         "/api/sales",
         json={"sales_name": "张伟", "enabled": True, "sort_order": 10, "worker_id": worker_id},
-        headers=HEADERS,
+        headers=INTERNAL_HEADERS,
     )
     assert response.status_code == 200
     return response.json()["data"]["id"]
@@ -272,16 +284,72 @@ def _collect(conversation_id: str, message_event_id: str) -> dict:
     response = client.post(
         f"/api/internal/conversations/{conversation_id}/message-batches/collect",
         json={"trigger_message_event_id": message_event_id, "trace_id": "trace-c3-test"},
-        headers=HEADERS,
+        headers=INTERNAL_HEADERS,
     )
     assert response.status_code == 200
     return response.json()["data"]
 
 
 def _generate(batch_id: str) -> dict:
-    response = client.post(f"/api/internal/message-batches/{batch_id}/generate", json={}, headers=HEADERS)
+    response = client.post(f"/api/internal/message-batches/{batch_id}/generate", json={}, headers=INTERNAL_HEADERS)
     assert response.status_code == 200
     return response.json()["data"]
+
+
+def _create_listed_vehicle() -> str:
+    created = client.post(
+        "/api/vehicles",
+        json={
+            "display_name": "2024款发送门禁测试车",
+            "brand": "车金测试",
+            "series": "发送门禁系列",
+            "public_price": 12.88,
+            "customer_description": "适合城市通勤。",
+        },
+        headers=HEADERS,
+    )
+    assert created.status_code == 200, created.text
+    vehicle_id = created.json()["data"]["vehicle_code"]
+    uploaded = client.post(
+        f"/api/vehicles/{vehicle_id}/images",
+        files={"files": ("vehicle.png", PNG_1X1, "image/png")},
+        headers=HEADERS,
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    listed = client.post(f"/api/vehicles/{vehicle_id}/list", headers=HEADERS)
+    assert listed.status_code == 200, listed.text
+    return vehicle_id
+
+
+class _VehicleFactReplyAdapter:
+    def __init__(self, vehicle_id: str):
+        self.vehicle_id = vehicle_id
+
+    def generate_reply_decision(self, **_kwargs):
+        return c3_service.AIEngineDecision(
+            decision="send_reply",
+            reply_text="这款车目前在售，公开售价是12.88万元。",
+            confidence=0.95,
+            guard_result="pass",
+            evidence_refs=[f"product_master:{self.vehicle_id}"],
+            raw_payload={
+                "omniauto_brain_result": {
+                    "brain_plan": {
+                        "recommended_action": "send_reply",
+                        "evidence_used": {"product_ids": [self.vehicle_id]},
+                        "facts_claimed": [
+                            {
+                                "fact_type": "price",
+                                "value": "12.88万元",
+                                "source_level": "product_master",
+                                "source_id": self.vehicle_id,
+                            }
+                        ],
+                        "reply_segments": ["这款车目前在售，公开售价是12.88万元。"],
+                    }
+                }
+            },
+        )
 
 
 def _reset_batch_to_generation_state(
@@ -724,6 +792,139 @@ def test_generate_creates_one_reply_action_and_one_chat_reply_task_idempotently(
     assert detail["c3"]["reply_action"]["status"] == "queued"
     assert detail["c3"]["sent_ack"] is None
     assert detail["c3"]["handoff_event"] is None
+
+
+@pytest.mark.parametrize("mutation", ["unlist", "update"])
+def test_vehicle_change_supersedes_old_reply_before_worker_claim(monkeypatch, mutation):
+    vehicle_id = _create_listed_vehicle()
+    monkeypatch.setattr(
+        c3_service,
+        "get_ai_engine_adapter",
+        lambda: _VehicleFactReplyAdapter(vehicle_id),
+    )
+    worker, binding = _setup_bound_conversation()
+    message_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        f"msg-vehicle-{mutation}",
+        "这款车多少钱？",
+    )
+    generated = _generate(_collect(binding["conversation_id"], message_id)["batch_id"])
+
+    with SessionLocal() as db:
+        snapshot = db.get(
+            ReplyActionVehicleFact,
+            {
+                "reply_action_id": generated["reply_action_id"],
+                "vehicle_id": vehicle_id,
+            },
+        )
+        assert snapshot is not None
+        assert len(snapshot.fact_fingerprint) == 64
+
+    if mutation == "unlist":
+        changed = client.post(f"/api/vehicles/{vehicle_id}/unlist", headers=HEADERS)
+    else:
+        changed = client.put(
+            f"/api/vehicles/{vehicle_id}",
+            json={"public_price": 11.66, "customer_description": "车辆资料已经更新。"},
+            headers=HEADERS,
+        )
+    assert changed.status_code == 200, changed.text
+
+    with SessionLocal() as db:
+        action = db.get(ReplyAction, generated["reply_action_id"])
+        task = db.get(Task, generated["task_id"])
+        batch = db.get(MessageBatch, generated["batch"]["id"])
+        assert action.status == "superseded"
+        assert action.current is False
+        assert action.error_code == "REPLY_ACTION_VEHICLE_FACT_STALE"
+        assert action.send_token is None
+        assert task.status == "cancelled"
+        assert vehicle_id in str(task.cancel_reason)
+        assert batch.status == "superseded"
+        assert batch.error_code == "MESSAGE_BATCH_VEHICLE_FACT_STALE"
+
+    rejected_claim = client.post(
+        f"/api/tasks/{generated['task_id']}/claim",
+        json={
+            "worker_id": worker["id"],
+            "current_step": "chat_reply_claimed",
+            "claim_source": "c2_conversation_flow",
+            "conversation_id": binding["conversation_id"],
+        },
+        headers=_worker_headers(worker),
+    )
+    assert rejected_claim.status_code == 409
+    assert rejected_claim.json()["code"] == "TASK_CLAIM_NOT_ALLOWED"
+
+
+@pytest.mark.parametrize("legacy_without_snapshot", [False, True])
+def test_claim_send_final_gate_persists_cancellation_for_out_of_band_vehicle_change(
+    monkeypatch,
+    legacy_without_snapshot,
+):
+    vehicle_id = _create_listed_vehicle()
+    monkeypatch.setattr(
+        c3_service,
+        "get_ai_engine_adapter",
+        lambda: _VehicleFactReplyAdapter(vehicle_id),
+    )
+    worker, binding = _setup_bound_conversation()
+    message_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-vehicle-final-send-gate",
+        "确认一下这辆车的价格",
+    )
+    generated = _generate(_collect(binding["conversation_id"], message_id)["batch_id"])
+    claimed_task = client.post(
+        f"/api/tasks/{generated['task_id']}/claim",
+        json={
+            "worker_id": worker["id"],
+            "current_step": "chat_reply_claimed",
+            "claim_source": "c2_conversation_flow",
+            "conversation_id": binding["conversation_id"],
+        },
+        headers=_worker_headers(worker),
+    )
+    assert claimed_task.status_code == 200, claimed_task.text
+
+    # Simulate a maintenance/import writer that bypassed vehicle_service. The
+    # final claim-send comparison must still catch the changed Product Master.
+    with SessionLocal() as db:
+        vehicle = db.scalar(select(KnowledgeItem).where(KnowledgeItem.item_id == vehicle_id))
+        if legacy_without_snapshot:
+            db.query(ReplyActionVehicleFact).filter(
+                ReplyActionVehicleFact.reply_action_id == generated["reply_action_id"]
+            ).delete(synchronize_session=False)
+        changed_payload = dict(vehicle.payload)
+        changed_data = dict(changed_payload["data"])
+        changed_data["price"] = 9.99
+        changed_payload["data"] = changed_data
+        vehicle.payload = changed_payload
+        vehicle.updated_at = utcnow()
+        db.commit()
+
+    rejected_send = client.post(
+        f"/api/reply-actions/{generated['reply_action_id']}/claim-send",
+        json={"task_id": generated["task_id"], "worker_id": worker["id"]},
+        headers=_task_lease_headers(worker, claimed_task),
+    )
+    assert rejected_send.status_code == 409
+    assert rejected_send.json()["code"] == "REPLY_ACTION_VEHICLE_FACT_STALE"
+    assert rejected_send.json()["data"]["vehicle_ids"] == [vehicle_id]
+    assert rejected_send.json()["data"]["suggested_action"] == "do_not_send"
+
+    with SessionLocal() as db:
+        action = db.get(ReplyAction, generated["reply_action_id"])
+        task = db.get(Task, generated["task_id"])
+        batch = db.get(MessageBatch, generated["batch"]["id"])
+        assert action.status == "superseded"
+        assert action.current is False
+        assert action.send_token is None
+        assert task.status == "cancelled"
+        assert batch.status == "superseded"
 
 
 def test_c2_ingest_to_c3_sent_ack_complete_closure():
@@ -1808,7 +2009,7 @@ def test_formal_api_responses_do_not_leak_deprecated_fields():
         client.get(f"/api/conversations/{binding['conversation_id']}/wechat-binding", headers=HEADERS),
         client.get(f"/api/conversations/{binding['conversation_id']}/messages", headers=HEADERS),
         client.get(f"/api/tasks/{generated['task_id']}", headers=HEADERS),
-        client.post(f"/api/internal/message-batches/{generated['batch']['id']}/generate", json={}, headers=HEADERS),
+        client.post(f"/api/internal/message-batches/{generated['batch']['id']}/generate", json={}, headers=INTERNAL_HEADERS),
     ]
     for response in responses:
         assert response.status_code == 200

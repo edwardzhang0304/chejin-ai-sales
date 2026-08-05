@@ -289,11 +289,11 @@ CREATE TABLE IF NOT EXISTS {schema}.customers (
   target_name text NOT NULL DEFAULT '',
   display_name text NOT NULL DEFAULT '',
   status text NOT NULL DEFAULT 'active',
-  tags jsonb NOT NULL DEFAULT '{}'::jsonb,
-  basic_info jsonb NOT NULL DEFAULT '{}'::jsonb,
+  tags jsonb NOT NULL DEFAULT '{{}}'::jsonb,
+  basic_info jsonb NOT NULL DEFAULT '{{}}'::jsonb,
   conversation_summary text NOT NULL DEFAULT '',
-  greeting_preference jsonb NOT NULL DEFAULT '{}'::jsonb,
-  payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+  greeting_preference jsonb NOT NULL DEFAULT '{{}}'::jsonb,
+  payload jsonb NOT NULL DEFAULT '{{}}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -316,7 +316,7 @@ CREATE TABLE IF NOT EXISTS {schema}.customer_conversations (
   last_message_at timestamptz NOT NULL DEFAULT now(),
   message_count integer NOT NULL DEFAULT 0,
   reply_count integer NOT NULL DEFAULT 0,
-  payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+  payload jsonb NOT NULL DEFAULT '{{}}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );

@@ -14,7 +14,7 @@ const result = spawnSync(
   [
     resolve(packageRoot, "preview.tsx"),
     "--bundle",
-    "--format=esm",
+    "--format=iife",
     "--platform=browser",
     "--jsx=automatic",
     `--outfile=${resolve(packageRoot, "dist/preview.js")}`,

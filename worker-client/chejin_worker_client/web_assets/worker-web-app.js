@@ -21753,6 +21753,7 @@ function Icon({ name }) {
   return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("svg", { className: "cw-chevron", viewBox: "0 0 24 24", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("path", { d: "m9 18 6-6-6-6" }) });
 }
 function clientTitle(screen) {
+  if (screen === "bind") return "\u7ED1\u5B9A Worker";
   if (screen === "settings") return "\u8BBE\u7F6E";
   if (screen === "schedule-settings") return "\u63A5\u5355\u65F6\u6BB5\u8BBE\u7F6E";
   if (screen === "logs") return "\u672C\u673A\u6267\u884C\u65E5\u5FD7";
@@ -21760,7 +21761,7 @@ function clientTitle(screen) {
 }
 function chipClass(text) {
   if (text.includes("\u5931\u8D25") || text.includes("\u79BB\u7EBF")) return "cw-chip-offline cw-chip-failed";
-  if (text.includes("\u5B8C\u6210") || text.includes("\u63A5\u5355\u4E2D")) return "cw-chip-accepting cw-chip-completed";
+  if (text.includes("\u5B8C\u6210") || text.includes("\u63A5\u5355\u4E2D") || text.includes("\u5904\u7406\u4E2D")) return "cw-chip-accepting cw-chip-completed";
   return "cw-chip-paused";
 }
 function Header({ screen, onScreenChange, onBack }) {
@@ -21802,7 +21803,7 @@ function Header({ screen, onScreenChange, onBack }) {
           className: "cw-icon-button",
           type: "button",
           "aria-label": "\u6253\u5F00\u8BBE\u7F6E",
-          style: { visibility: isSubPage ? "hidden" : "visible" },
+          style: { visibility: isSubPage || screen === "bind" ? "hidden" : "visible" },
           onClick: () => onScreenChange?.("settings"),
           children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Icon, { name: "gear" })
         }
@@ -21829,39 +21830,102 @@ function StatusSummary({ model, stateText }) {
       /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cw-status-item", children: [
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "\u81EA\u52A8\u5316\u7EC4\u4EF6" }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("i", { className: `cw-dot dot ${automationDanger ? "cw-dot-danger" : "online"}` }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("em", { className: "cw-status-pill", children: model.status.automationState })
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("em", { className: `cw-status-pill${automationDanger ? " is-danger" : ""}`, children: model.status.automationState })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cw-status-item", children: [
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "\u5FAE\u4FE1\u72B6\u6001" }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("i", { className: `cw-dot dot ${wechatDanger ? "cw-dot-danger" : "online"}` }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("em", { className: "cw-status-pill", children: model.status.wechatState })
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("em", { className: `cw-status-pill${wechatDanger ? " is-danger" : ""}`, children: model.status.wechatState })
       ] })
     ] })
   ] });
 }
-function TaskSummary({ model, statusText }) {
-  const task = model.task;
-  const meta = task.metaText || `${task.customerName} \xB7 ${task.phone} \xB7 ${task.sellerName} \xB7 \u5907\u6CE8\u77ED\u7801\uFF1A${task.noteCode}`;
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("article", { className: "cw-task-card task-summary task-summary-compact", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cw-task-title-row task-title-row", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "cw-task-id task-id", children: task.id }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { className: "cw-task-title", children: task.title })
-      ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: `cw-chip chip ${chipClass(statusText || task.statusText)}`, children: statusText || task.statusText })
+function maskClientPhone(phone) {
+  const normalized = phone.replace(/\s+/g, "");
+  if (normalized.length < 7) return normalized;
+  return `${normalized.slice(0, 3)}****${normalized.slice(-4)}`;
+}
+function ProcessTaskSummary({
+  task,
+  statusText
+}) {
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cw-process-task-summary", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: task.title }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", { children: [
+        task.customerName,
+        " \xB7 ",
+        maskClientPhone(task.phone)
+      ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "cw-task-meta task-mini-meta", children: meta })
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: `cw-chip chip ${chipClass(statusText)}`, children: statusText })
   ] });
 }
 function StepScreenshot({ step }) {
-  if (!step.screenshot) return null;
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("figure", { className: "cw-step-shot step-shot", "aria-label": "\u89C6\u89C9 RPA \u622A\u56FE", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cw-shot-window shot-window", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cw-shot-search shot-search", children: step.screenshot.searchText }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cw-shot-empty shot-empty", children: step.screenshot.resultText })
-    ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("figcaption", { children: step.screenshot.caption })
+  if (!step.screenshot?.imageUrl) return null;
+  const identifiers = [
+    step.screenshot.incidentId ? `\u6545\u969C\u7F16\u53F7\uFF1A${step.screenshot.incidentId}` : "",
+    step.screenshot.sidecarRunId ? `\u8FD0\u884C\u7F16\u53F7\uFF1A${step.screenshot.sidecarRunId}` : ""
+  ].filter(Boolean);
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("figure", { className: "cw-step-shot step-shot", "aria-label": "\u771F\u5B9E\u6267\u884C\u622A\u56FE", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("img", { className: "cw-shot-window shot-window", src: step.screenshot.imageUrl, alt: step.screenshot.caption }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("figcaption", { children: [step.screenshot.caption, ...identifiers].join("\xB7") })
   ] });
+}
+function friendlyText(value, fallback = "\u64CD\u4F5C\u672A\u5B8C\u6210\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002") {
+  const text = value?.trim();
+  if (!text) return fallback;
+  const withoutCode = text.replace(/^[A-Z][A-Z0-9_]+\s*[·:：-]\s*/, "");
+  if (/^[A-Z][A-Z0-9_]+$/.test(withoutCode)) return fallback;
+  return withoutCode;
+}
+var logEventLabels = {
+  task_result_reported: "\u56DE\u4F20\u4EFB\u52A1\u7ED3\u679C",
+  task_failed: "\u4EFB\u52A1\u6267\u884C\u5931\u8D25",
+  remark_written: "\u586B\u5199\u5BA2\u6237\u5907\u6CE8",
+  customer_search_started: "\u5F00\u59CB\u67E5\u627E\u5BA2\u6237",
+  worker_started: "\u5F00\u59CB\u63A5\u5355",
+  worker_bound: "\u7ED1\u5B9A Worker",
+  worker_bind_failed: "\u7ED1\u5B9A Worker \u5931\u8D25",
+  accept_schedule_changed: "\u8C03\u6574\u81EA\u52A8\u63A5\u5355\u65F6\u6BB5",
+  client_notice: "\u5BA2\u6237\u7AEF\u63D0\u9192",
+  incident_exported: "\u5BFC\u51FA\u6545\u969C\u8BC1\u636E",
+  incident_export_failed: "\u5BFC\u51FA\u6545\u969C\u8BC1\u636E\u5931\u8D25"
+};
+var workerErrorLabels = {
+  INCIDENT_EXPORT_FAILED: "\u6545\u969C\u8BC1\u636E\u5BFC\u51FA\u5931\u8D25",
+  INCIDENT_DIRECTORY_OPEN_FAILED: "\u65E0\u6CD5\u6253\u5F00\u6545\u969C\u8BC1\u636E\u76EE\u5F55",
+  PHONE_NOT_FOUND: "\u624B\u673A\u53F7\u672A\u627E\u5230\u5BA2\u6237",
+  WECHAT_WINDOW_NOT_FOUND: "\u672A\u627E\u5230\u5FAE\u4FE1\u7A97\u53E3",
+  RPA_COMPONENT_NOT_READY: "\u81EA\u52A8\u5316\u7EC4\u4EF6\u4E0D\u53EF\u7528",
+  SEND_RESULT_UNKNOWN: "\u53D1\u9001\u7ED3\u679C\u65E0\u6CD5\u786E\u8BA4",
+  OTHER: "\u4EFB\u52A1\u6267\u884C\u5F02\u5E38"
+};
+function logEventLabel(value) {
+  return logEventLabels[value] || "\u672C\u673A\u6267\u884C\u8BB0\u5F55";
+}
+function logLevelLabel(value) {
+  if (value === "ERROR") return "\u9519\u8BEF";
+  if (value === "WARN" || value === "WARNING") return "\u63D0\u9192";
+  return "\u4FE1\u606F";
+}
+function workerErrorLabel(value) {
+  if (!value || value === "-") return "";
+  return workerErrorLabels[value] || "\u6267\u884C\u672A\u5B8C\u6210\uFF0C\u8BF7\u67E5\u770B\u64CD\u4F5C\u8BF4\u660E";
+}
+function formatElapsed(seconds) {
+  const minutes = Math.floor(seconds / 60).toString().padStart(2, "0");
+  const remainder = (seconds % 60).toString().padStart(2, "0");
+  return `\u5DF2\u8FD0\u884C ${minutes}:${remainder}`;
+}
+function useElapsed(active) {
+  const [seconds, setSeconds] = (0, import_react.useState)(0);
+  (0, import_react.useEffect)(() => {
+    if (!active) return;
+    const timer = window.setInterval(() => setSeconds((current) => current + 1), 1e3);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  return formatElapsed(seconds);
 }
 function TimelineStep({ step }) {
   const final = Boolean(step.finalText);
@@ -21877,7 +21941,7 @@ function TimelineStep({ step }) {
     /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: step.title }),
       step.time ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: step.time }) : null,
-      step.description ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: step.description }) : null,
+      step.description ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: friendlyText(step.description, "\u5F53\u524D\u6B65\u9AA4\u672A\u5B8C\u6210\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5\u3002") }) : null,
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)(StepScreenshot, { step }),
       step.finalText ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("em", { className: "cw-step-final-text", children: step.finalText }) : null
     ] })
@@ -21891,13 +21955,30 @@ function TaskTimeline({ steps }) {
     const focusStep = viewport.querySelector(".final-step, .current, .error");
     const focusMarker = focusStep?.querySelector(":scope > span");
     if (!focusStep || !focusMarker) return;
-    const cardRect = viewport.parentElement?.getBoundingClientRect() || viewport.getBoundingClientRect();
+    const viewportRect = viewport.getBoundingClientRect();
     const markerRect = focusMarker.getBoundingClientRect();
-    const nextScrollTop = viewport.scrollTop + markerRect.top + markerRect.height / 2 - (cardRect.top + cardRect.height / 2) - 10;
+    const nextScrollTop = viewport.scrollTop + markerRect.top + markerRect.height / 2 - (viewportRect.top + viewportRect.height / 2);
     const maxScrollTop = viewport.scrollHeight - viewport.clientHeight;
     viewport.scrollTop = Math.max(0, Math.min(maxScrollTop, nextScrollTop));
   }, [steps]);
   return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("article", { className: "cw-timeline-card timeline-card focus-chain", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cw-chain-viewport chain-viewport", ref: viewportRef, children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("ol", { className: "cw-step-list step-list", children: steps.map((step, index) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TimelineStep, { step }, `${step.title}-${index}`)) }) }) });
+}
+function CurrentProcess({
+  steps,
+  state,
+  message,
+  duration,
+  task,
+  statusText
+}) {
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: `cw-process${task ? " cw-process-with-task" : ""}${state ? ` is-${state}` : ""}`, "aria-label": "\u5F53\u524D\u8FD0\u884C\u8FC7\u7A0B", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("header", { className: "cw-process-head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "\u5F53\u524D\u8FD0\u884C\u8FC7\u7A0B" }),
+      duration ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("em", { children: duration }) : null
+    ] }),
+    task && statusText ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ProcessTaskSummary, { task, statusText }) : null,
+    steps?.length ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskTimeline, { steps }) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cw-process-empty", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: message || "\u7B49\u5F85\u4E0B\u4E00\u8F6E\u68C0\u67E5" }) })
+  ] });
 }
 function Dock({
   state,
@@ -21906,25 +21987,21 @@ function Dock({
   onPauseAccepting
 }) {
   const accepting = state === "\u63A5\u5355\u4E2D";
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("footer", { className: "cw-dock dock-action", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: state }),
-    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-      "button",
-      {
-        className: `cw-button${accepting ? "" : " cw-button-primary"}`,
-        type: "button",
-        disabled,
-        onClick: accepting ? onPauseAccepting : onStartAccepting,
-        children: accepting ? "\u6682\u505C\u63A5\u5355" : "\u5F00\u59CB\u63A5\u5355"
-      }
-    )
-  ] });
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("footer", { className: "cw-dock dock-action", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+    "button",
+    {
+      className: `cw-button${accepting ? "" : " cw-button-primary"}`,
+      type: "button",
+      disabled,
+      onClick: accepting ? onPauseAccepting : onStartAccepting,
+      children: accepting ? "\u6682\u505C\u63A5\u5355" : "\u5F00\u59CB\u63A5\u5355"
+    }
+  ) });
 }
 function EmptyWorkbench({
   screen,
   model,
-  title,
-  description,
+  processText,
   stateText,
   dockState,
   disabled,
@@ -21934,10 +22011,7 @@ function EmptyWorkbench({
   return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("section", { className: "cw-screen screen active", "data-screen-view": screen, children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cw-workspace workspace", children: [
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)("header", { className: "cw-workspace-head workspace-head", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ConnectionLine, { model }) }),
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)(StatusSummary, { model, stateText }),
-    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("section", { className: "cw-empty-card empty-card", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { children: title }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: description })
-    ] }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CurrentProcess, { message: processText }),
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Dock, { state: dockState, disabled, onStartAccepting, onPauseAccepting })
   ] }) });
 }
@@ -21950,11 +22024,41 @@ function TaskScreen({
   onStartAccepting,
   onPauseAccepting
 }) {
+  const running = statusText === "\u5904\u7406\u4E2D" || statusText === "\u63A5\u5355\u4E2D" || statusText === "\u6682\u505C\u63A5\u5355";
+  const elapsed = useElapsed(running);
   return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("section", { className: "cw-screen cw-screen-task screen active", "data-screen-view": screen, children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cw-workspace workspace", children: [
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)("header", { className: "cw-workspace-head workspace-head", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ConnectionLine, { model }) }),
     /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "cw-task-layout task-layout", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskSummary, { model, statusText }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskTimeline, { steps })
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(StatusSummary, { model, stateText: dockState }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+        CurrentProcess,
+        {
+          steps,
+          state: statusText === "\u5931\u8D25" ? "error" : statusText === "\u5DF2\u5B8C\u6210" ? "success" : "neutral",
+          duration: running ? elapsed : void 0,
+          task: model.task,
+          statusText
+        }
+      )
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Dock, { state: dockState, onStartAccepting, onPauseAccepting })
+  ] }) });
+}
+function BackgroundProcessScreen({
+  screen,
+  model,
+  steps,
+  dockState = "\u63A5\u5355\u4E2D",
+  onStartAccepting,
+  onPauseAccepting
+}) {
+  const active = steps.some((step) => step.state === "current");
+  const elapsed = useElapsed(active);
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("section", { className: "cw-screen cw-screen-task screen active", "data-screen-view": screen, children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cw-workspace workspace", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("header", { className: "cw-workspace-head workspace-head", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ConnectionLine, { model }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "cw-task-layout task-layout", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(StatusSummary, { model, stateText: dockState }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CurrentProcess, { steps, state: "neutral", duration: active ? elapsed : void 0 })
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Dock, { state: dockState, onStartAccepting, onPauseAccepting })
   ] }) });
@@ -21966,6 +22070,8 @@ function BindScreen({
 }) {
   const [workerId, setWorkerId] = (0, import_react.useState)(model.workerId);
   const [workerToken, setWorkerToken] = (0, import_react.useState)(model.workerToken);
+  const [showToken, setShowToken] = (0, import_react.useState)(false);
+  const [binding, setBinding] = (0, import_react.useState)(false);
   (0, import_react.useEffect)(() => {
     setWorkerId(model.workerId);
     setWorkerToken(model.workerToken);
@@ -21976,36 +22082,82 @@ function BindScreen({
       className: "cw-form-panel",
       onSubmit: (event) => {
         event.preventDefault();
+        setBinding(true);
         onBind?.(workerId.trim(), workerToken.trim());
+        window.setTimeout(() => setBinding(false), 700);
       },
       children: [
-        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: "\u7ED1\u5B9A\u672C\u673A Worker" }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "cw-helper", children: "\u8F93\u5165\u540E\u53F0\u751F\u6210\u7684 Worker ID \u548C Token\u3002" })
-        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: "\u7ED1\u5B9A Worker" }) }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", { children: [
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Worker ID" }),
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", { className: "cw-input", value: workerId, onChange: (event) => setWorkerId(event.target.value) })
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", { children: [
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Worker Token" }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", { className: "cw-input", type: "password", value: workerToken, onChange: (event) => setWorkerToken(event.target.value) })
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cw-token-input", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("input", { className: "cw-input", type: showToken ? "text" : "password", value: workerToken, onChange: (event) => setWorkerToken(event.target.value) }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", onClick: () => setShowToken((current) => !current), children: showToken ? "\u9690\u85CF" : "\u663E\u793A" })
+          ] })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "cw-button cw-button-primary", type: "submit", children: "\u7ED1\u5B9A Worker" }),
-        bindError ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "cw-helper cw-bind-error", children: bindError }) : null
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "cw-button cw-button-primary", type: "submit", disabled: binding, children: binding ? "\u7ED1\u5B9A\u4E2D..." : "\u7ED1\u5B9A Worker" }),
+        bindError ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "cw-helper cw-bind-error", children: friendlyText(bindError, "\u7ED1\u5B9A\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5 Worker ID\u3001Worker Token \u548C\u7F51\u7EDC\u8FDE\u63A5\u540E\u91CD\u8BD5\u3002") }) : null
       ]
     }
   ) }) });
 }
-function OfflineScreen({ model }) {
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("section", { className: "cw-screen screen active", "data-screen-view": "offline", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cw-workspace workspace", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("header", { className: "cw-workspace-head workspace-head", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ConnectionLine, { model, danger: true }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "cw-chip chip cw-chip-offline", children: "\u79BB\u7EBF" })
+function OfflineScreen({ model, hasCurrentOperation = true }) {
+  const offlineModel = {
+    ...model,
+    status: { ...model.status, connectionState: "\u8FDE\u63A5\u5F02\u5E38" }
+  };
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("section", { className: "cw-screen cw-screen-task screen active", "data-screen-view": "offline", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cw-workspace workspace", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("header", { className: "cw-workspace-head workspace-head", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ConnectionLine, { model: offlineModel, danger: true }) }),
+    hasCurrentOperation ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "cw-task-layout task-layout", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(StatusSummary, { model: offlineModel }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+        CurrentProcess,
+        {
+          steps: [
+            { state: "done", title: "\u6B63\u5728\u6267\u884C\u5FAE\u4FE1\u52A0\u597D\u53CB", description: "\u672C\u673A\u64CD\u4F5C\u4FDD\u6301\u539F\u72B6\u6001\u3002" },
+            { state: "current", title: "\u6267\u884C\u5DF2\u5B8C\u6210\uFF0C\u7B49\u5F85\u6062\u590D\u540E\u56DE\u4F20", description: "\u8FDE\u63A5\u6062\u590D\u540E\u81EA\u52A8\u56DE\u4F20\u6267\u884C\u7ED3\u679C\u3002" }
+          ],
+          state: "error",
+          duration: "\u7B49\u5F85\u8FDE\u63A5",
+          task: model.task,
+          statusText: "\u5904\u7406\u4E2D"
+        }
+      )
+    ] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "cw-task-layout task-layout", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(StatusSummary, { model: offlineModel }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(CurrentProcess, { message: "\u670D\u52A1\u7AEF\u8FDE\u63A5\u4E2D\u65AD\uFF0C\u6B63\u5728\u5C1D\u8BD5\u6062\u590D", state: "error" })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskSummary, { model, statusText: "\u79BB\u7EBF" }),
-    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(StatusSummary, { model, stateText: "\u79BB\u7EBF" }),
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Dock, { state: "\u79BB\u7EBF", disabled: true })
+  ] }) });
+}
+function EnvironmentIssueScreen({
+  model,
+  type
+}) {
+  const issueModel = {
+    ...model,
+    status: {
+      ...model.status,
+      receiveState: "\u6682\u505C\u63A5\u5355",
+      automationState: type === "automation" ? "\u4E0D\u53EF\u7528" : model.status.automationState,
+      wechatState: type === "wechat" ? "\u672A\u8FDE\u63A5" : model.status.wechatState
+    }
+  };
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("section", { className: "cw-screen screen active", "data-screen-view": `${type}-unavailable`, children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cw-workspace workspace", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("header", { className: "cw-workspace-head workspace-head", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ConnectionLine, { model: issueModel }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(StatusSummary, { model: issueModel, stateText: "\u6682\u505C\u63A5\u5355" }),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+      CurrentProcess,
+      {
+        message: type === "automation" ? "\u81EA\u52A8\u5316\u7EC4\u4EF6\u4E0D\u53EF\u7528\uFF0C\u6682\u4E0D\u9886\u53D6\u4EFB\u52A1" : "\u5FAE\u4FE1\u672A\u8FDE\u63A5\uFF0C\u8BF7\u6253\u5F00\u6216\u767B\u5F55\u5FAE\u4FE1",
+        state: "error"
+      }
+    ),
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Dock, { state: "\u6682\u505C\u63A5\u5355", disabled: true })
   ] }) });
 }
 function SettingsScreen({ model, onScreenChange }) {
@@ -22118,33 +22270,36 @@ function LogsScreen({
     /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "cw-log-table log-table", children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cw-log-head", children: [
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "\u65F6\u95F4" }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "\u7EA7\u522B" }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "\u7ED3\u679C" }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "\u4EFB\u52A1" }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "\u4E8B\u4EF6 / \u6545\u969C\u8BC1\u636E" })
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "\u64CD\u4F5C\u8BB0\u5F55 / \u6545\u969C\u8BC1\u636E" })
       ] }),
       model.logs.map((row, index) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cw-log-row", children: [
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: row.time }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: row.level }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: logLevelLabel(row.level) }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: row.task }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("b", { children: row.event }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: row.content }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("small", { children: [
-            "error_code: ",
-            row.errorCode
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("small", { children: [
-            "incident_id: ",
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("b", { children: logEventLabel(row.event) }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: friendlyText(row.content, "\u672C\u673A\u5DF2\u8BB0\u5F55\u672C\u6B21\u64CD\u4F5C\u3002") }),
+          row.errorCode !== "-" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("small", { children: [
+            "error_code\uFF1A",
+            row.errorCode,
+            "\uFF08",
+            workerErrorLabel(row.errorCode) || "\u672A\u5F52\u7C7B\u6545\u969C",
+            "\uFF09"
+          ] }) : null,
+          row.incidentId !== "-" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("small", { children: [
+            "incident_id\uFF1A",
             row.incidentId
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("small", { children: [
-            "sidecar_run_id: ",
+          ] }) : null,
+          row.sidecarRunId !== "-" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("small", { children: [
+            "sidecar_run_id\uFF1A",
             row.sidecarRunId
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("small", { children: [
-            "evidence: ",
+          ] }) : null,
+          row.evidencePath !== "-" ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("small", { children: [
+            "evidence_path\uFF1A",
             row.evidencePath
-          ] }),
+          ] }) : null,
           row.incidentId !== "-" ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
             "button",
             {
@@ -22168,8 +22323,7 @@ function renderScreen(props) {
       {
         screen,
         model,
-        title: "\u6682\u65E0\u53EF\u9886\u53D6\u4EFB\u52A1",
-        description: "\u6682\u505C\u63A5\u5355\u540E\u4E0D\u4F1A\u9886\u53D6\u65B0\u7684\u4EFB\u52A1\u3002",
+        processText: "\u5DF2\u6682\u505C\u63A5\u5355",
         stateText: "\u6682\u505C\u63A5\u5355",
         dockState: "\u6682\u505C\u63A5\u5355",
         onStartAccepting
@@ -22182,8 +22336,7 @@ function renderScreen(props) {
       {
         screen,
         model,
-        title: "\u63A5\u5355\u4E2D\uFF0C\u7B49\u5F85\u670D\u52A1\u7AEF\u5206\u914D\u4EFB\u52A1",
-        description: "\u6709\u53EF\u6267\u884C\u4EFB\u52A1\u65F6\uFF0CWorker \u4F1A\u9886\u53D6\u5E76\u8FDB\u5165\u4EFB\u52A1\u94FE\u8DEF\u9875\u9762\u3002",
+        processText: "\u7B49\u5F85\u4E0B\u4E00\u8F6E\u68C0\u67E5",
         stateText: "\u63A5\u5355\u4E2D",
         dockState: "\u63A5\u5355\u4E2D",
         onPauseAccepting
@@ -22196,33 +22349,40 @@ function renderScreen(props) {
       {
         screen,
         model,
-        title: "\u5F53\u524D\u4E0D\u9886\u53D6\u65B0\u4EFB\u52A1",
-        description: "\u975E\u63A5\u5355\u65F6\u6BB5\u5BA2\u6237\u7AEF\u4FDD\u6301\u8FDE\u63A5\uFF0C\u4F46\u4E0D\u4F1A\u9886\u53D6\u65B0\u7684\u4EFB\u52A1\u3002",
+        processText: "\u5F53\u524D\u4E0D\u5728\u63A5\u5355\u65F6\u6BB5",
         stateText: "\u6682\u505C\u63A5\u5355",
         dockState: "\u6682\u505C\u63A5\u5355",
         disabled: true
       }
     );
   }
-  if (screen === "running") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskScreen, { screen, model, steps: model.runningSteps, statusText: "\u63A5\u5355\u4E2D", dockState: model.status.receiveState, onStartAccepting, onPauseAccepting });
+  if (screen === "running") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskScreen, { screen, model, steps: model.runningSteps, statusText: "\u5904\u7406\u4E2D", dockState: model.status.receiveState, onStartAccepting, onPauseAccepting });
   if (screen === "completed") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskScreen, { screen, model, steps: model.completedSteps, statusText: "\u5DF2\u5B8C\u6210", dockState: model.status.receiveState, onStartAccepting, onPauseAccepting });
-  if (screen === "paused-running") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskScreen, { screen, model, steps: model.runningSteps, statusText: "\u6682\u505C\u63A5\u5355", dockState: "\u6682\u505C\u63A5\u5355", onStartAccepting });
+  if (screen === "paused-running") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskScreen, { screen, model, steps: model.runningSteps, statusText: "\u5904\u7406\u4E2D", dockState: "\u6682\u505C\u63A5\u5355", onStartAccepting });
   if (screen === "paused-empty-2") {
-    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-      EmptyWorkbench,
-      {
-        screen,
-        model,
-        title: "\u6682\u65E0\u53EF\u9886\u53D6\u4EFB\u52A1",
-        description: "\u4E0A\u4E00\u6761\u4EFB\u52A1\u5DF2\u7ED3\u675F\uFF0C\u5F53\u524D\u6682\u505C\u63A5\u5355\uFF0C\u4E0D\u4F1A\u7EE7\u7EED\u9886\u53D6\u4E0B\u4E00\u6761\u4EFB\u52A1\u3002",
-        stateText: "\u6682\u505C\u63A5\u5355",
-        dockState: "\u6682\u505C\u63A5\u5355",
-        onStartAccepting
-      }
-    );
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskScreen, { screen, model, steps: model.completedSteps, statusText: "\u5DF2\u5B8C\u6210", dockState: "\u6682\u505C\u63A5\u5355", onStartAccepting });
   }
   if (screen === "offline") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(OfflineScreen, { model });
+  if (screen === "offline-empty") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(OfflineScreen, { model, hasCurrentOperation: false });
+  if (screen === "automation-unavailable") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(EnvironmentIssueScreen, { model, type: "automation" });
+  if (screen === "wechat-disconnected") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(EnvironmentIssueScreen, { model, type: "wechat" });
   if (screen === "failed") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskScreen, { screen, model, steps: model.failedSteps, statusText: "\u5931\u8D25", dockState: model.status.receiveState, onStartAccepting, onPauseAccepting });
+  if (screen === "scan-running") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BackgroundProcessScreen, { screen, model, steps: model.scanRunningSteps, dockState: model.status.receiveState, onPauseAccepting });
+  if (screen === "scan-completed") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BackgroundProcessScreen, { screen, model, steps: model.scanCompletedSteps, dockState: model.status.receiveState, onPauseAccepting });
+  if (screen === "target-read-running") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BackgroundProcessScreen, { screen, model, steps: model.targetReadRunningSteps, dockState: model.status.receiveState, onPauseAccepting });
+  if (screen === "target-read-completed") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BackgroundProcessScreen, { screen, model, steps: model.targetReadCompletedSteps, dockState: model.status.receiveState, onPauseAccepting });
+  if (screen === "ai-reply-running") {
+    const replyModel = { ...model, task: { ...model.task, id: "TASK-1842", title: "AI \u56DE\u590D", type: "chat_reply", statusText: "\u5904\u7406\u4E2D", metaText: "\u738B\u5148\u751F \xB7 \u5F20\u4F1F \xB7 \u5BA2\u6237\u54A8\u8BE2\u7EED\u4FDD\u4EF7\u683C" } };
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskScreen, { screen, model: replyModel, steps: model.replyRunningSteps, statusText: "\u5904\u7406\u4E2D", dockState: model.status.receiveState, onPauseAccepting });
+  }
+  if (screen === "ai-reply-completed") {
+    const replyModel = { ...model, task: { ...model.task, id: "TASK-1842", title: "AI \u56DE\u590D", type: "chat_reply", statusText: "\u5DF2\u5B8C\u6210", metaText: "\u738B\u5148\u751F \xB7 \u5F20\u4F1F \xB7 AI \u56DE\u590D\u5DF2\u53D1\u9001" } };
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskScreen, { screen, model: replyModel, steps: model.replyCompletedSteps, statusText: "\u5DF2\u5B8C\u6210", dockState: model.status.receiveState, onPauseAccepting });
+  }
+  if (screen === "ai-reply-failed") {
+    const replyModel = { ...model, task: { ...model.task, id: "TASK-1842", title: "AI \u56DE\u590D", type: "chat_reply", statusText: "\u5931\u8D25", metaText: "\u738B\u5148\u751F \xB7 \u5F20\u4F1F \xB7 \u81EA\u52A8\u53D1\u9001\u5DF2\u7EC8\u6B62" } };
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskScreen, { screen, model: replyModel, steps: model.replyFailedSteps, statusText: "\u5931\u8D25", dockState: model.status.receiveState, onPauseAccepting });
+  }
   if (screen === "settings") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(SettingsScreen, { model, onScreenChange });
   if (screen === "schedule-settings") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ScheduleSettingsScreen, { model, onUpdateAcceptSchedule });
   return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
@@ -22267,21 +22427,16 @@ var workerClientMock = {
     customerName: "\u738B\u5148\u751F",
     phone: "13812346678",
     sellerName: "\u5F20\u4F1F",
-    noteCode: "CJ-5739"
+    noteCode: "CJ-5739",
+    type: "add_friend"
   },
   runningSteps: [
     { state: "done", title: "\u4EFB\u52A1\u5DF2\u9886\u53D6", time: "10:26:10" },
-    { state: "done", title: "\u73AF\u5883\u68C0\u67E5\u5B8C\u6210", description: "\u81EA\u52A8\u5316\u7EC4\u4EF6\u53EF\u7528\uFF0C\u5FAE\u4FE1\u5DF2\u8FDE\u63A5\u3002" },
-    { state: "done", title: "\u6253\u5F00\u5FAE\u4FE1\u684C\u9762\u5BA2\u6237\u7AEF", time: "10:26:15" },
+    { state: "done", title: "\u6B63\u5728\u68C0\u67E5\u8FD0\u884C\u73AF\u5883", description: "\u81EA\u52A8\u5316\u7EC4\u4EF6\u53EF\u7528\uFF0C\u5FAE\u4FE1\u5DF2\u8FDE\u63A5\u3002" },
     {
       state: "current",
-      title: "\u6B63\u5728\u641C\u7D22\u5BA2\u6237",
-      description: "\u6309\u624B\u673A\u53F7 13812346678 \u641C\u7D22\u3002",
-      screenshot: {
-        searchText: "13812346678",
-        resultText: "\u6B63\u5728\u641C\u7D22",
-        caption: "\u5F53\u524D\u622A\u56FE \xB7 \u5FAE\u4FE1\u641C\u7D22\u7ED3\u679C"
-      }
+      title: "\u6B63\u5728\u6267\u884C\u5FAE\u4FE1\u52A0\u597D\u53CB",
+      description: "Worker \u6B63\u5728\u8C03\u7528\u81EA\u52A8\u5316\u7EC4\u4EF6\u6267\u884C\u5F53\u524D\u4EFB\u52A1\u3002"
     }
   ],
   completedSteps: [
@@ -22293,12 +22448,7 @@ var workerClientMock = {
     {
       state: "done",
       title: "\u53D1\u9001\u6DFB\u52A0\u901A\u8BAF\u5F55\u9080\u8BF7",
-      time: "10:27:02",
-      screenshot: {
-        searchText: "\u7533\u8BF7\u8BF4\u660E\u5DF2\u586B\u5199",
-        resultText: "\u6DFB\u52A0\u901A\u8BAF\u5F55\u9080\u8BF7\u5DF2\u53D1\u9001",
-        caption: "\u622A\u56FE \xB7 \u9080\u8BF7\u53D1\u9001\u7ED3\u679C"
-      }
+      time: "10:27:02"
     },
     {
       state: "done",
@@ -22315,16 +22465,45 @@ var workerClientMock = {
     {
       state: "error",
       title: "\u641C\u7D22\u5BA2\u6237\u5931\u8D25",
-      description: "PHONE_NOT_FOUND / \u624B\u673A\u53F7\u672A\u627E\u5230\u5BA2\u6237\u3002",
-      screenshot: {
-        searchText: "13812346678",
-        resultText: "\u672A\u627E\u5230\u5339\u914D\u8054\u7CFB\u4EBA",
-        caption: "\u622A\u56FE \xB7 \u641C\u7D22\u5931\u8D25\u7ED3\u679C"
-      },
+      description: "\u624B\u673A\u53F7\u672A\u627E\u5230\u5BA2\u6237\u3002",
       finalText: "\u4EFB\u52A1\u6267\u884C\u5931\u8D25"
     }
   ],
+  scanRunningSteps: [
+    { state: "current", title: "\u6B63\u5728\u626B\u63CF\u5FAE\u4FE1\u4F1A\u8BDD\u7B2C\u4E00\u5C4F", description: "\u5DF2\u8FD0\u884C 00:18" }
+  ],
+  scanCompletedSteps: [
+    { state: "done", title: "\u626B\u63CF\u5FAE\u4FE1\u4F1A\u8BDD\u7B2C\u4E00\u5C4F", time: "10:31:04" },
+    { state: "done", title: "\u626B\u63CF\u5B8C\u6210", description: "\u53D1\u73B0 12 \u4E2A\u4F1A\u8BDD\uFF0C\u547D\u4E2D 3 \u4E2A\u76EE\u6807\u3002", finalText: "\u7B49\u5F85\u4E0B\u4E00\u8F6E\u68C0\u67E5" }
+  ],
+  targetReadRunningSteps: [
+    { state: "current", title: "\u6B63\u5728\u5B9A\u4F4D\u5E76\u8BFB\u53D6\u76EE\u6807\u4F1A\u8BDD", description: "\u6B63\u5728\u8BFB\u53D6\u5BA2\u6237 CJ-5739 \u7684\u6700\u65B0\u6D88\u606F \xB7 \u5DF2\u8FD0\u884C 00:09" }
+  ],
+  targetReadCompletedSteps: [
+    { state: "done", title: "\u5B9A\u4F4D\u76EE\u6807\u4F1A\u8BDD", time: "10:32:16" },
+    { state: "done", title: "\u8BFB\u53D6\u5B8C\u6210", description: "\u53D1\u73B0 2 \u6761\u65B0\u6D88\u606F\u3002", finalText: "\u6D88\u606F\u5DF2\u56DE\u4F20" }
+  ],
+  replyRunningSteps: [
+    { state: "done", title: "\u8BFB\u53D6\u5BA2\u6237\u6700\u65B0\u6D88\u606F", time: "10:34:10" },
+    { state: "done", title: "\u7B49\u5F85\u670D\u52A1\u7AEF\u751F\u6210\u56DE\u590D", time: "10:34:13" },
+    { state: "done", title: "\u6267\u884C\u53D1\u9001\u524D\u590D\u6838", time: "10:34:16" },
+    { state: "current", title: "\u6B63\u5728\u53D1\u9001\u5FAE\u4FE1\u6D88\u606F", description: "Worker \u6B63\u5728\u53D1\u9001\u670D\u52A1\u7AEF\u6279\u51C6\u7684\u56DE\u590D \xB7 \u5DF2\u8FD0\u884C 00:07" }
+  ],
+  replyCompletedSteps: [
+    { state: "done", title: "\u8BFB\u53D6\u5BA2\u6237\u6700\u65B0\u6D88\u606F", time: "10:34:10" },
+    { state: "done", title: "\u7B49\u5F85\u670D\u52A1\u7AEF\u751F\u6210\u56DE\u590D", time: "10:34:13" },
+    { state: "done", title: "\u6267\u884C\u53D1\u9001\u524D\u590D\u6838", time: "10:34:16" },
+    { state: "done", title: "\u53D1\u9001\u5FAE\u4FE1\u6D88\u606F", time: "10:34:22" },
+    { state: "done", title: "\u786E\u8BA4\u5E76\u56DE\u4F20\u7ED3\u679C", time: "10:34:25", description: "AI \u56DE\u590D\u5DF2\u53D1\u9001\u3002", finalText: "\u4EFB\u52A1\u6267\u884C\u5B8C\u6210" }
+  ],
+  replyFailedSteps: [
+    { state: "done", title: "\u8BFB\u53D6\u5BA2\u6237\u6700\u65B0\u6D88\u606F", time: "10:34:10" },
+    { state: "done", title: "\u7B49\u5F85\u670D\u52A1\u7AEF\u751F\u6210\u56DE\u590D", time: "10:34:13" },
+    { state: "done", title: "\u6267\u884C\u53D1\u9001\u524D\u590D\u6838", time: "10:34:16" },
+    { state: "error", title: "\u53D1\u9001\u5FAE\u4FE1\u6D88\u606F\u5931\u8D25", description: "\u53D1\u9001\u7ED3\u679C\u65E0\u6CD5\u786E\u8BA4\uFF0C\u81EA\u52A8\u53D1\u9001\u5DF2\u7EC8\u6B62\u3002", finalText: "\u4EFB\u52A1\u6267\u884C\u5931\u8D25" }
+  ],
   logs: [
+    { time: "10:27:12", level: "ERROR", task: "TASK-1831", content: "\u5FAE\u4FE1\u7A97\u53E3\u5B9A\u4F4D\u5931\u8D25\u3002", event: "task_failed", errorCode: "WECHAT_WINDOW_NOT_FOUND", incidentId: "INC-20260805-001", sidecarRunId: "message-20260805-001", evidencePath: "artifacts/incidents/INC-20260805-001.zip" },
     { time: "10:27:05", level: "INFO", task: "TASK-1831", content: "\u56DE\u4F20\u6267\u884C\u7ED3\u679C\u3002", event: "task_result_reported", errorCode: "-", incidentId: "-", sidecarRunId: "-", evidencePath: "-" },
     { time: "10:26:46", level: "INFO", task: "TASK-1831", content: "\u5199\u5165\u5907\u6CE8\u77ED\u7801\u3002", event: "remark_written", errorCode: "-", incidentId: "-", sidecarRunId: "-", evidencePath: "-" },
     { time: "10:26:18", level: "INFO", task: "TASK-1831", content: "\u641C\u7D22\u5BA2\u6237\u3002", event: "customer_search_started", errorCode: "-", incidentId: "-", sidecarRunId: "-", evidencePath: "-" },
@@ -22344,10 +22523,20 @@ var screens = [
   "paused-running",
   "paused-empty-2",
   "offline",
+  "offline-empty",
+  "automation-unavailable",
+  "wechat-disconnected",
   "failed",
   "settings",
   "schedule-settings",
-  "logs"
+  "logs",
+  "scan-running",
+  "scan-completed",
+  "target-read-running",
+  "target-read-completed",
+  "ai-reply-running",
+  "ai-reply-completed",
+  "ai-reply-failed"
 ];
 function initialScreen() {
   const screen = new URLSearchParams(window.location.search).get("screen");

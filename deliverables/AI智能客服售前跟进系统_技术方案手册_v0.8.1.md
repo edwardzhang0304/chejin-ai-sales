@@ -1,14 +1,14 @@
 # AI智能客服售前跟进系统 技术方案
 
-版本：v0.8
+版本：v0.8.1
 
 日期：2026-07-21
 
-最后更新：2026-08-04
+最后更新：2026-08-05
 
-当前阶段：运营后台 + Windows Worker 客户端。C1 已形成稳定基线；C2 的文字、语音、图片、V3 授权、private 单聊准入、群聊阻断、统一顺序、跨轮去重、多目标串行和停止监听已在 `v16.130.0 / 8ee53e1` 完成正式 Windows 实机验收。C3 自动回复与 C4 自动召回均已实现并测试，当前无已知主链问题。OmniAuto 双仓统一已经完成：上游固定提交为 `69dc871`，车金当前代码为 `v16.132.0 / 37139bfd`，受影响范围 Windows 回归由用户确认通过。`2318bd8` 仅作为历史选择性来源保留。
+当前阶段：运营后台 + Windows Worker 客户端。C1 已形成稳定基线；C2 的文字、语音、图片、V3 授权、private 单聊准入、群聊阻断、统一顺序、跨轮去重、多目标串行和停止监听已在 `v16.130.0 / 8ee53e1` 完成正式 Windows 实机验收。C3 自动回复与 C4 自动召回均已实现并测试，当前无已知主链问题。OmniAuto 双仓统一已经完成：上游已前进到 PR #37 合并提交 `35b0eee`，车金内嵌副本已选择性同步；最近一次已做 Windows 受影响范围回归的 Worker 基线仍为 `v16.132.0 / 37139bfd`，本次同步不得冒充新的 Windows 安装包验收。`2318bd8` 仅作为历史选择性来源保留。
 
-一句话结论：当前技术方案统一收口到本文档；C0—C4 已有主链基线，不重开图片、语音、回复或召回流程设计。下一阶段唯一新主线是：复用 OmniAuto 的本地 Product Master、KnowledgeRuntime、RAG 与 Guard，将运营录入的真实车辆和审核通过的正式知识持久化到车金现有 PostgreSQL；不接大风车 API，不部署第二套后台，不将测试车辆或未审核知识带入生产。
+一句话结论：当前技术方案统一收口到本文档；C0—C4 已有主链基线，不重开图片、语音、回复或召回流程设计。当前新增主线是运营后台指定账号登录和车辆信息/Product Master：后台账号由服务端预先建立，登录成功即拥有全部后台权限，第一期不做 RBAC；车辆和正式知识复用 OmniAuto 的 Product Master、KnowledgeRuntime、RAG 与 Guard 并持久化到车金现有 PostgreSQL；不接大风车 API，不部署第二套后台，不将测试车辆或未审核知识带入生产。
 
 ## 文档治理规则
 
@@ -38,7 +38,7 @@
 > 文档；图片流程一律以本文第 8 章为准。
 >
 > **2026-08-04 当前实现状态：**图片模块已通过 OmniAuto 上游固定提交
-> `69dc871` 完成双仓统一，不重写剪贴板事务。
+> `35b0eee` 完成最新通用修复同步，不重写剪贴板事务。
 > `claim_copy_ownership/微信窗口PID` 错误硬门禁已经删除，错误映射、来源记录、
 > 自动化和 C2 Windows UAT 已在 `v16.130.0 / 8ee53e1` 收口；双仓统一后的
 > `v16.132.0 / 37139bfd` 受影响范围 Windows 回归已通过。
@@ -74,6 +74,7 @@
 
 | 日期 | 版本 | 原来是什么 | 变更成什么 |
 |---|---|---|---|
+| 2026-08-05 | v0.8.1 | 运营后台仍以预设 Bearer Token 作为灰度鉴权，车辆章节保留“角色权限/普通销售只读”，未定义账号密码登录、会话、退出和失效合同 | 固定服务端预建账号 + 密码登录；使用服务端可撤销会话和安全 HttpOnly Cookie；所有登录账号拥有全部后台权限，不做 RBAC；后台会话与 Worker Token 完全隔离；补齐登录接口、数据模型、审计、安全、迁移和验收门禁 |
 | 2026-08-04 | v0.8内部修订 | 车源仍依赖大风车 API，OmniAuto 本地车辆/知识能力和 C4 完成状态未收口 | 取消大风车 API；复用 OmniAuto Product Master、KnowledgeRuntime、RAG/Guard；使用车金现有 PostgreSQL 和持久化图片存储；明确 C4 已完成并测试，后续只做受影响回归 |
 | 2026-08-03 | v0.8内部修订 | 文档仍停留在 PID 整改和 Windows UAT 之前，且未定义 OmniAuto 双仓收口顺序 | 固定 `v16.130.0 / 8ee53e1` 为已验收回滚基线，补充 OmniAuto 上游 PR → 车金固定统一提交 → 必要回归 → 车金 PR 的唯一顺序 |
 | 2026-06-04 | v0.1 | 技术蓝图分散在多份历史方案中 | 整理为正式工程技术方案，覆盖线索、销售、任务、Worker、AI、召回等完整蓝图 |
@@ -95,7 +96,7 @@
 | 2026-07-01 | v0.7 | C2 已能处理文字读取和短码定向读取，但真实客户可能发送微信语音；若不识别语音，状态机会把“客户已回复”误判为“客户沉默” | 增补 C2 语音消息识别方案：Worker 先通过 OmniAuto `messages` 探测当前会话消息类型；只有发现未转写语音时才调用 `voice-transcribe` 点击微信自带语音转文字，再二次读取 `messages`；语音消息统一入 `message_events`，失败不得触发 AI 自动回复 |
 | 2026-07-20 | v0.8 | v0.7 仍停留在早期语音方案，未覆盖 V3 授权、稳定消息身份、角色门禁、private 单聊准入、群聊终止态、侧栏 OCR 同行聚合和长语音流程 | 以 V16.98 为 C2 当前冻结基线：首屏扫描与授权读取分离；只准入有效短码 private 单聊；群聊/unknown 不搜索、不读取、不转写、不入库；消息上报强制 V3 和 `authorization_revision`；语音转写使用同一 flow、同一 UI 锁和进展型 watchdog；图片识别留待下一版确认 |
 | 2026-07-21 | v0.8内部修订 | 自动召回仍写成 Worker 发送固定文案；销售人工回复与“等待销售回复”容易被混成同一状态 | 召回统一复用服务端 Brain，使用 `trigger_type=recall + recall_cycle_id`；Brain/Guard 产出批准文案后 Worker 才发送。销售已经发出人工回复时进入 `sales_replied_waiting_user`，停止当前AI回复但保留后续召回资格。 |
-| 2026-07-21 | v0.8内部修订 | OmniAuto RPA、Vision、Brain 与车金 Worker/后端存在同义接口和字段所有权不清风险 | 新增 `C2-C3_OmniAuto_Worker_后端接口合同_v0.1_2026-07-21.md`：固定 OmniAuto action/Brain/Vision 名称、三层字段所有权、C2-C3 单会话串行扩展和唯一映射；本手册只保留摘要，详细联调以接口合同为准。 |
+| 2026-07-21 | v0.8内部修订 | OmniAuto RPA、Vision、Brain 与车金 Worker/后端存在同义接口和字段所有权不清风险 | 新增 C2-C3 OmniAuto/Worker/后端接口合同，当前文件为 `C2-C3_OmniAuto_Worker_后端接口合同_v0.1.1_2026-08-05.md`：固定 OmniAuto action/Brain/Vision 名称、三层字段所有权、C2-C3 单会话串行扩展和唯一映射；本手册只保留摘要，详细联调以接口合同为准。 |
 | 2026-07-24 | v0.8内部修订 | 手册仍混有“等待 Brain 释放 UI 锁、chat_reply 到达后另行抢锁、180 秒固定持锁上限”的旧并发方案，销售回复解除人工接管也缺少可靠顺序口径 | 统一为 C2-C3 单会话串行事务：打开会话后保持当前会话和 UI 锁，完成文字/语音/图片、入库、Brain、回复前复查和发送终态后才释放；正常链路的 chat_reply 由当前 C2 Flow 领取，恢复线程只处理崩溃恢复；长动作使用租约续期和进展型 watchdog；销售回复以稳定消息身份和最终画面相对顺序为主证据，occurred_at 仅作辅助。 |
 | 2026-07-25 | v0.8内部修订 | add_friend 把点击后的诊断截图/OCR误写成成功前置条件，任务租约也未区分明确失效与暂时网络异常；C2 Outbox、发送回执的全局阻断口径不够集中 | add_friend 以最终“确定”按钮物理点击成功作为 `invite_sent` 完成点，不等待微信成功状态；点击后诊断只能发现明确失败，诊断异常不得降级成功点击。租约瞬时续租异常在本地到期前重试，明确失效或真实到期才停止。任何未获后端确认的消息 Outbox 或 `sent_ack` 均阻断全部新会话扫描和 UI 动作。 |
 | 2026-07-25 | v0.8内部修订 | Outbox `quarantine` 和发送回执 `abandoned` 被错误设计为需要人工修消息或人工确认，无法形成无人值守闭环 | 删除技术消息的人工处置终态：消息级识别失败以 `item_state=failed` 正常入库并阻断 Brain；临时故障按退避周期自动重试；请求级合同不兼容进入 `capability_paused` 并自动探测恢复；发送无法确认由后端持久化 `unknown_send_result`，禁止补发但自动结束原回复动作。 |
@@ -187,10 +188,117 @@ Worker 上报事实：
 
 - 不把 Dify 作为第一期核心对话运行时，只预留后续 Adapter。
 - 不使用 Kubernetes、服务网格、复杂微服务拆分。
-- 不在第一期做多商户 SaaS、复杂权限、计费和高可用集群。
+- 不在第一期做多商户 SaaS、RBAC/角色分级、计费和高可用集群；指定账号登录和服务端会话鉴权属于本期安全门禁，不得以“不做复杂权限”为由省略。
 - 不读取或破解微信数据库，不使用非公开微信协议。
 - 不做 Mac Worker 正式版本；此前 Mac 相关页面或人工传值流程仅作为原型/调试参考，不作为正式业务主链路。
 - 不把 OmniAuto 整体不加边界地揉进车金业务主程序；OmniAuto 按两类能力复用：服务端复用 AI Engine、RAG、Evidence Pack、Guard、回复编排能力，Worker 端复用本地 RPA Sidecar 操作微信。
+
+## 运营后台登录与会话鉴权
+
+本节是 PRD v0.5.2“指定账号登录、登录成功即全部权限”的唯一技术实现口径。
+鉴权只回答“是不是已登录的后台账号”，第一期不再回答“这个账号属于哪个权限角色”。
+
+### 登录职责与边界
+
+| 身份 | 正式凭证 | 允许访问 | 明确禁止 |
+|---|---|---|---|
+| 运营后台账号 | 账号密码换取的服务端会话 Cookie | 线索、车辆、销售、Worker 管理、任务中心、操作日志等全部后台功能 | 使用 Worker 身份接口或读取服务端密钥 |
+| Worker 客户端 | `Worker Token + client_instance_id` | 心跳、绑定、任务领取/回报、C2/C3 Worker 接口 | 访问运营后台管理接口 |
+| 服务内部调用 | 独立内部凭证或进程内调用 | 明确登记的内部接口 | 使用后台 Cookie 或 Worker Token 代替内部身份 |
+
+- 浏览器、Worker 和服务内部身份必须使用不同验证器，任何一种凭证都不能跨边界替代
+ 另一种凭证。
+- `/healthz`、`/readyz`、登录接口和静态资源不要求后台会话；所有运营后台业务
+  API 必须在服务端校验有效会话，不能只靠前端隐藏页面或按钮。
+- 后台账号与业务对象“销售”不是同一个概念。第一期不把销售记录自动变成登录账号，
+  也不根据销售身份生成只读权限。
+
+### 数据模型
+
+`admin_accounts` 至少包含：
+
+| 字段 | 说明 |
+|---|---|
+| `id` | 服务端生成的账号 ID。 |
+| `username_normalized` | 规范化后的唯一登录名；比较时不依赖前端大小写处理。 |
+| `display_name` | 操作日志和后台左下角展示名称。 |
+| `password_hash` | Argon2id 密码哈希；禁止保存、打印或返回明文密码。 |
+| `enabled` | 是否允许登录；停用后已有会话也必须失效。 |
+| `session_version` | 停用或重置密码时递增，用于统一作废旧会话。 |
+| `last_login_at / created_at / updated_at` | 登录和维护审计时间。 |
+
+`admin_sessions` 至少包含：
+
+| 字段 | 说明 |
+|---|---|
+| `id / account_id` | 会话及所属账号。 |
+| `token_hash` | 随机会话 Token 的不可逆摘要；数据库不保存可直接登录的原 Token。 |
+| `session_version` | 创建会话时的账号版本，必须与当前账号一致。 |
+| `created_at / last_seen_at` | 创建和最近使用时间。 |
+| `idle_expires_at / absolute_expires_at` | 默认空闲 12 小时、最长 7 天；允许部署配置缩短，不允许无限会话。 |
+| `revoked_at / revoke_reason` | 退出、停用、重置密码或安全处置时的撤销记录。 |
+| `ip_address / user_agent` | 安全审计快照，不作为唯一身份依据。 |
+
+账号由服务端管理命令创建、停用和重置密码；第一期不开发注册、账号管理、自助找回
+密码或修改权限页面。初始密码不得写入 Git、镜像、`.env.example` 或群文件。
+
+### 接口合同
+
+| 方法 | 路径 | 请求/响应与行为 |
+|---|---|---|
+| `POST` | `/api/auth/login` | 请求 `username + password`；成功后创建新会话、轮换 Token、设置 Cookie，并返回 `operator_id + operator_name`。失败统一返回“账号或密码错误”，不暴露账号是否存在或已停用。 |
+| `GET` | `/api/auth/session` | 校验会话后返回 `operator_id + operator_name`；不返回 `role/viewer/permissions`。无效、过期、撤销或账号停用统一返回 401。 |
+| `POST` | `/api/auth/logout` | 幂等撤销当前会话并清除 Cookie；无论会话是否已失效都可安全调用。 |
+
+正式 Cookie 名称固定为 `chejin_admin_session`，使用密码学安全随机数且至少 256 bit；
+设置 `HttpOnly`、生产环境 `Secure`、`SameSite=Strict` 和 `Path=/api`。生产部署优先
+同源反向代理 `/api`；开发环境如需跨端口，CORS 必须使用明确来源白名单并开启
+credentials，禁止 `allow_origins=["*"] + credentials`。
+
+浏览器请求统一使用 `credentials: "include"`。前端不得读取、保存或转发会话 Token，
+不得继续使用 `localStorage`、`VITE_ADMIN_TOKEN` 或 `Authorization: Bearer ...` 作为
+运营后台登录。所有非 GET/HEAD 的后台请求同时校验 `Origin`；不符合部署允许来源的
+请求直接拒绝，作为 Cookie `SameSite` 之外的 CSRF 防线。
+
+### 全权限与代码边界
+
+- 登录成功账号统一拥有全部后台功能权限；前后端删除 `admin/operator/viewer/只读`
+  权限集合、车辆只读分支和联系方式查看角色门禁。
+- `AuthSession` 对外合同只保留账号 ID 和显示名称。后端审计上下文可保留
+  `actor_type=admin_account/system/worker` 区分调用者类型，但不能据此对后台账号做
+  RBAC。
+- 不得批量删除微信业务字段 `sender_role`、`sender_role_source`、
+  `subject_sender_role`；这些字段证明消息由客户还是我方发送，与后台登录权限无关。
+- 敏感车辆字段是否允许进入 AI、手机号明文查看必须填写原因并写审计等规则继续有效；
+  “全部后台权限”不等于允许模型读取内部字段，也不等于取消操作审计。
+
+### 会话安全与审计
+
+- 登录成功后创建新会话，不接受客户端指定 session id；登录、提权边界变化时防止
+  session fixation。
+- 账号停用、密码重置、主动退出必须立即撤销相关会话；会话过期后不得静默降级为
+  开发身份或旧 Bearer Token。
+- 登录接口按规范化账号和来源 IP 双维度限速；连续失败使用渐进等待，不能无限尝试。
+- 登录成功、登录失败、退出、账号停用和密码重置必须写操作日志。失败日志允许
+  `operator_id=null`，记录规范化账号提示、IP、User-Agent、Request ID、结果和内部
+  原因分类；绝不记录密码、Cookie、会话原 Token 或密码哈希。
+- 正式环境必须强制启用会话鉴权；删除 `ADMIN_API_TOKEN`、
+  `OPERATOR_API_CREDENTIALS` 正式路径，禁止通过 `AUTH_ENFORCEMENT=false` 绕过。
+
+### 迁移、验收与回滚
+
+实施顺序固定为：数据库迁移和账号管理命令 -> 登录/会话/退出接口 -> 运营后台登录页
+和 Cookie 接入 -> 删除旧 Bearer 与角色门禁 -> 全量鉴权回归。迁移前先建立一个可用
+初始账号，但初始密码只通过安全渠道交付。
+
+至少覆盖以下自动化和联调用例：正确/错误密码、未知/停用账号、限速、刷新保持登录、
+空闲和绝对过期、退出、停用和重置密码使旧会话失效、未登录遍历全部后台路由、所有
+账号均可完成写操作、Cookie 安全属性、Origin 拒绝、日志脱敏、后台会话与 Worker
+Token 双向越权拒绝。
+
+回滚只能回滚应用代码，不能删除已产生的账号、会话和登录审计事实。若新登录链路
+故障，可回滚到上一应用版本并在受控维护窗口修复；不得重新开放共享 Admin Token
+作为生产旁路。
 
 ## 状态字段统一口径
 
@@ -1337,7 +1445,7 @@ classify_outbox_recovery(http_result)
 
 #### 6.0.0 接口名称与适配边界
 
-C2/C3 详细联调字段以 `C2-C3_OmniAuto_Worker_后端接口合同_v0.1_2026-07-21.md` 为唯一专项依据。本手册定义业务流程，专项合同定义可直接开发和测试的请求、响应、枚举、字段所有者及 OmniAuto 到车金后端的唯一映射。
+C2/C3 详细联调字段以 `C2-C3_OmniAuto_Worker_后端接口合同_v0.1.1_2026-08-05.md` 为唯一专项依据。本手册定义业务流程，专项合同定义可直接开发和测试的请求、响应、枚举、字段所有者及 OmniAuto 到车金后端的唯一映射。
 
 正式命名固定如下：
 
@@ -2505,7 +2613,7 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 | `next_action` | 兼容字段，固定为 `none`；发送动作不从消息入库响应直接下发。 |
 | `message_batch` | 可选。后端因本批事实启动 C3 时返回 `batch_id / batch_status`，Worker 只按该批次继续查询、领取任务和执行发送。 |
 
-兼容说明：原 C2 字段保持兼容，C2-C3 单会话串行链路只增加可选 `message_batch={batch_id,batch_status}`。具体等待和终态查询合同见 `C2-C3_OmniAuto_Worker_后端接口合同_v0.1_2026-07-21.md`，不得另建同义消息上报或回复接口。
+兼容说明：原 C2 字段保持兼容，C2-C3 单会话串行链路只增加可选 `message_batch={batch_id,batch_status}`。具体等待和终态查询合同见 `C2-C3_OmniAuto_Worker_后端接口合同_v0.1.1_2026-08-05.md`，不得另建同义消息上报或回复接口。
 
 ### 6.3 C2状态流转
 
@@ -3237,16 +3345,17 @@ OmniAuto AI Engine 在服务端通过 Adapter 接入，不允许运行 OmniAuto 
 OmniAuto共同基础：meta-xucong/omniauto@855c218
 图片一致性能力选择性来源：meta-xucong/omniauto@2318bd8
 首次集成提交：ff9e0de
-当前内嵌OmniAuto目录SHA256：e1fea61c6d4c0c5516f499e9767178317cd4fabf78f01a60abf6aa80d47e2dce
+该回滚包内嵌OmniAuto目录SHA256：e1fea61c6d4c0c5516f499e9767178317cd4fabf78f01a60abf6aa80d47e2dce
 ```
 
 这里的 `2318bd8` 是回滚包中图片气泡和复制后一致性能力的历史选择性来源，不表示
 当前 `worker-client/omniauto-rpa` 仍停留在该提交。当前双仓统一结果为：
 
 ```text
-OmniAuto 通用上游固定提交：69dc871e8649773a921e8e50123116687a710bb5
-车金 main 固定提交：37139bfd5663d1f06fd4ddc151624e6bdda1a8e4
-客户端版本：16.132.0
+OmniAuto 通用上游固定提交：35b0eee13c6423d56a0f15736f96a422e10d8d1c
+车金同步位置：PR #7 当前分支，最终提交以本次同步提交为准
+当前内嵌OmniAuto目录SHA256：15ad797348d2dd92050097a9dc04e69797cdb3cd991d923d1cf4a972b2e64234
+客户端版本：待定，正式候选必须高于16.132.0
 活动 selective_integrations：[]
 历史来源：855c218 + 2318bd8 + ff9e0de（只读追溯）
 ```
@@ -3301,7 +3410,7 @@ Vision 或结果返回主链。
    `default_failure_error_code` 掩盖漏配。
 
 `v16.130.0` 的历史发布来源元数据按下列方式保留；当前 schema v3 已把活动
-`upstream_base_commit` 更新为 `69dc871`，活动 `selective_integrations` 置空，
+`upstream_base_commit` 更新为 `35b0eee`，活动 `selective_integrations` 置空，
 旧三段来源迁入只读 `historical_integrations`。来源 schema、打包脚本和测试已同次
 升级，后续不得伪造目录来源：
 
@@ -3319,11 +3428,11 @@ tree SHA 必须由最终提交后的真实目录动态计算，不得把历史 t
 
 #### 8.5.1 双仓最终收口结果
 
-1. OmniAuto 通用改动已通过上游 PR 合并到固定提交 `69dc871`。
+1. OmniAuto 最新通用改动已通过上游 PR #37 合并到固定提交 `35b0eee`。
 2. 车金内嵌 `worker-client/omniauto-rpa` 已更新到该固定提交，车金业务适配仍留在
    Worker/后端边界，没有进入通用上游。
 3. `.chejin-source.json` 已使用 schema v3：活动
-   `upstream_base_commit=69dc871`、`selective_integrations=[]`，旧
+   `upstream_base_commit=35b0eee`、`selective_integrations=[]`，旧
    `855c218 + 2318bd8 + ff9e0de` 保留在 `historical_integrations`。
 4. 车金 PR 已合并到 `main@37139bfd`，客户端版本为 `16.132.0`。
 5. 自动化和受影响范围 Windows 回归已通过。正式回滚仍使用
@@ -3467,7 +3576,7 @@ Product Master、KnowledgeRuntime、RAG 与 Guard，但车金后台仍是唯一�
 维护，以及 Excel 模板下载、预览校验和确认导入。暂不新增知识规则、AI 工作台、
 转人工等独立页面。
 
-浏览器只调用车金后端 API。车金后端负责登录鉴权、角色权限、输入校验、审计日志，
+浏览器只调用车金后端 API。车金后端负责登录会话校验、输入校验、审计日志，
 再调用 OmniAuto 能力；前端不得直接读写 Product Master、KnowledgeRuntime 或数据库。
 
 ### 9.4 Brain 查询流程
@@ -3481,13 +3590,15 @@ Product Master、KnowledgeRuntime、RAG 与 Guard，但车金后台仍是唯一�
 - 数据库不可用或结果不可信：停止自动回答车辆事实，记录证据并转人工，不把
   “查询失败”说成“没有车”。
 
-### 9.5 安全、权限与审计
+### 9.5 安全、登录与审计
 
-- 运营可维护车辆；普通销售默认只读；敏感字段默认不进入 AI 可见投影。
+- 所有登录成功的后台账号均可维护车辆；第一期不设置普通销售只读账号或车辆角色权限。
+- 敏感字段默认不进入 AI 可见投影；AI 数据边界独立于后台账号权限，不能因账号拥有
+  全部后台权限而扩大模型可见字段。
 - 数据库凭据、模型密钥和存储凭据只保存在服务端，不下发 Worker 或浏览器。
 - 新增、编辑、上下架、批量导入、图片变更均记录操作人、时间、对象、结果和失败原因。
 - 采购价、底价、车主隐私、内部备注等字段默认禁止对客回答；需要开放时必须由
-  管理层明确字段和角色权限。
+  管理层明确调整 AI 对客字段白名单，不通过登录角色隐式开放。
 
 ### 9.6 发布门槛与回滚
 
@@ -3584,6 +3695,7 @@ Product Master、KnowledgeRuntime、RAG 与 Guard，但车金后台仍是唯一�
 
 | 测试阶段 | 内容 |
 |---|---|
+| P0后台登录 | 指定账号密码登录、Cookie 会话、刷新保持、失效/退出、全部后台接口门禁、所有账号同权限、审计脱敏、CSRF/限速和 Worker Token 双向隔离。 |
 | P1基础链路 | 线索接入、销售分配、Worker绑定、add_friend、客户短码写入和邀请结果回传。 |
 | P2会话绑定/微信监听 | OmniAuto sessions / messages / 条件性 voice-transcribe、短码 + private 准入、统一消息顺序、语音转写入库、稳定身份、Outbox、数据库最终去重。 |
 | P3文字回复 | 客户文字、RAG、真实 OmniAuto Brain、Guard、任务中心 `chat_reply/reply_action`、单会话持锁、pre_send_refresh、输入前/点击前复核、发送审计。 |
@@ -3614,6 +3726,8 @@ Product Master、KnowledgeRuntime、RAG 与 Guard，但车金后台仍是唯一�
 - 微信出现操作频繁/添加受限提示：验证 Worker 暂停、截图、告警、加好友不继续冲。
 - 飞书发送失败：验证 AI 仍停止，`HandoffEvent` 记录失败状态和错误日志，控制面/Worker 执行台可见。
 - Product Master 数据库不可用、无匹配或关键字段缺失：验证车辆事实问答安全转人工，不把查询失败说成无车，也不编造车源。
+- 未登录遍历后台接口、伪造/过期 Cookie、停用账号、退出后浏览器后退、Worker Token
+  访问后台和后台 Cookie 访问 Worker 接口：均必须被服务端阻断且留下脱敏审计。
 
 ### 13.4 无人值守故障证据
 
@@ -3636,12 +3750,16 @@ Product Master、KnowledgeRuntime、RAG 与 Guard，但车金后台仍是唯一�
 |---|---|
 | 日志审计与数据留痕 | 记录任务、消息、RAG召回、候选回复、Guard、风控、飞书通知、Worker错误、人工操作，敏感字段脱敏。 |
 | 配置中心与运维监控 | 集中管理模型、风控、召回、销售/Worker绑定、车辆/知识存储等配置，展示Worker在线和服务健康状态。 |
-| 数据安全与权限边界 | 第一期轻量权限；模型Key、数据库/存储凭据、飞书配置不下发Worker；AI只读白名单字段。 |
+| 数据安全与权限边界 | 指定账号登录成功即拥有全部后台权限，不做 RBAC；后台会话与 Worker Token 完全隔离；模型Key、数据库/存储凭据、飞书配置不下发Worker；AI只读白名单字段。 |
 | Worker兼容性管理 | 记录Windows、微信、Worker版本；每次微信升级前跑核心回归；支持暂停Worker和人工降级。 |
 | 异常恢复任务 | 定时扫描 `stale running`、未确认 Outbox 和车辆/知识迁移异常并按安全规则处理；`unknown_send_result` 是已确认终态，只用于防重复与后续气泡自动对账，不生成消息人工待办。 |
 
 ## 15. 剩余上线前确认清单
 
+- 发布阻塞项：完成账号/会话数据库迁移、初始账号安全创建、前后端 Cookie 登录联调，
+  并关闭旧 Admin Bearer Token 和生产鉴权绕过入口。
+- 发布阻塞项：登录、会话失效、退出、所有后台路由门禁、同权限、限速、审计脱敏和
+  Worker Token 双向隔离自动化通过。
 - 发布阻塞项：车辆/知识数据完成 PostgreSQL 全量迁移、校验和备份，生产数据中不含测试样本。
 - 发布阻塞项：车辆管理页由产品经理给出最小页面和验收口径，再由前后端实现；不新增第二套后台。
 - Gate 0 阻塞项：销售手机端人工回复同步到桌面端后的可读结构，需真实微信环境实测。

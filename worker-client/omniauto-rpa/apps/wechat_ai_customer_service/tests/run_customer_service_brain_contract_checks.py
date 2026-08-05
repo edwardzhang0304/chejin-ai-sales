@@ -28,6 +28,7 @@ os.environ.setdefault("WECHAT_CLOUD_STRICT_ONLINE", "0")
 import customer_service_brain as brain_module  # noqa: E402
 import customer_service_conversation_strategy as strategy_module  # noqa: E402
 import customer_service_quality_reviewer as reviewer_module  # noqa: E402
+import knowledge_runtime as knowledge_runtime_module  # noqa: E402
 import listen_and_reply as workflow_module  # noqa: E402
 from apps.wechat_ai_customer_service.knowledge_paths import tenant_context  # noqa: E402
 from listen_and_reply import (  # noqa: E402
@@ -72,6 +73,10 @@ class CaseResult:
 
 
 def main() -> int:
+    return run_contract_checks()
+
+
+def run_contract_checks() -> int:
     results = [
         check_normalize_and_candidate(),
         check_rejects_style_only_price_fact(),
@@ -116,6 +121,7 @@ def main() -> int:
         check_brain_no_visible_payload_classifies_social_empty_reply(),
         check_social_brain_plan_clears_soft_no_evidence_guard(),
         check_brain_first_failure_blocks_visible_reply_without_legacy(),
+        check_brain_blocks_when_knowledge_runtime_is_unavailable(),
         check_kimi_fenced_json_is_parsed_without_structure_repair(),
         check_brain_json_structure_repair_recovers_plan(),
         check_brain_same_capture_retry_recovers_empty_response(),
@@ -238,7 +244,7 @@ def main() -> int:
         check_guard_v2_identity_question_uses_brain_reply(),
         check_guard_v2_rejects_internal_visible_handoff_marker(),
         check_guard_v2_rejects_brain_internal_visible_marker(),
-        check_guard_v2_rejects_explicit_visible_handoff_marker(),
+        check_guard_v2_allows_brain_planned_visible_handoff(),
         check_brain_runner_ignores_guard_visible_reply_source(),
         check_brain_repair_retry_recovers_guard_repair_non_json(),
         check_brain_product_ids_update_conversation_context_source(),
@@ -248,25 +254,25 @@ def main() -> int:
         check_visible_reply_product_mentions_update_recent_context(),
         check_visible_reply_preference_marker_updates_primary_context(),
         check_identity_probe_detector_ignores_test_tokens(),
-        check_context_need_catalog_candidates_prefer_recent_mpv_need(),
-        check_catalog_list_request_prioritizes_explicit_preference(),
+        run_with_contract_catalog(check_context_need_catalog_candidates_prefer_recent_mpv_need),
+        run_with_contract_catalog(check_catalog_list_request_prioritizes_explicit_preference),
         check_followup_preference_context_preserves_previous_budget(),
-        check_context_budget_followup_catalog_candidates(),
-        check_around_budget_catalog_candidates_prefer_near_budget(),
-        check_context_feature_followup_catalog_candidates_prefer_recent_product(),
-        check_nonsemantic_runtime_marker_does_not_override_recent_context_products(),
-        check_cargo_budget_candidates_prioritize_nonsedan_fit(),
+        run_with_contract_catalog(check_context_budget_followup_catalog_candidates),
+        run_with_contract_catalog(check_around_budget_catalog_candidates_prefer_near_budget),
+        run_with_contract_catalog(check_context_feature_followup_catalog_candidates_prefer_recent_product),
+        run_with_contract_catalog(check_nonsemantic_runtime_marker_does_not_override_recent_context_products),
+        run_with_contract_catalog(check_cargo_budget_candidates_prioritize_nonsedan_fit),
         check_finance_process_question_relaxes_soft_handoff_with_formal_boundary(),
         check_specific_finance_commitment_question_keeps_handoff(),
         check_appointment_schedule_question_relaxes_to_bounded_auto_reply(),
-        check_catalog_recommendation_with_product_master_relaxes_soft_price_advisory(),
-        check_catalog_recommendation_stock_signal_relaxes_after_product_master_evidence(),
-        check_catalog_recommendation_hard_boundary_stays_handoff(),
+        run_with_contract_catalog(check_catalog_recommendation_with_product_master_relaxes_soft_price_advisory),
+        run_with_contract_catalog(check_catalog_recommendation_stock_signal_relaxes_after_product_master_evidence),
+        run_with_contract_catalog(check_catalog_recommendation_hard_boundary_stays_handoff),
         check_finance_promise_and_lowest_price_combo_keeps_handoff(),
         check_intent_evidence_finance_process_safety_softened(),
         check_intent_evidence_specific_finance_commitment_stays_handoff(),
-        check_recent_multi_product_context_candidates(),
-        check_compact_knowledge_prioritizes_recent_context_products(),
+        run_with_contract_catalog(check_recent_multi_product_context_candidates),
+        run_with_contract_catalog(check_compact_knowledge_prioritizes_recent_context_products),
         check_brain_adoption_gate(),
         check_brain_adoption_gate_rejects_nonadoptable_or_blocked_payloads(),
         check_process_target_brain_first_adopts(),
@@ -1989,6 +1995,7 @@ def check_kimi_fenced_json_is_parsed_without_structure_repair() -> CaseResult:
     config = base_config(base_plan())
     config["customer_service_brain"].update({"provider": "anthropic", "mode": "shadow", "model": "kimi-for-coding"})
     original_call = brain_module.call_llm_request_with_failover
+    original_resolve_key = brain_module.resolve_llm_api_key
     calls: list[dict[str, Any]] = []
 
     def fake_call(**kwargs: Any) -> dict[str, Any]:
@@ -2002,6 +2009,7 @@ def check_kimi_fenced_json_is_parsed_without_structure_repair() -> CaseResult:
 
     try:
         brain_module.call_llm_request_with_failover = fake_call
+        brain_module.resolve_llm_api_key = lambda **_: "offline-contract-transport"
         with patched_evidence_pack(fake_evidence_pack(include_product=True)):
             event = brain_module.maybe_run_customer_service_brain(
                 config=config,
@@ -2021,6 +2029,7 @@ def check_kimi_fenced_json_is_parsed_without_structure_repair() -> CaseResult:
             )
     finally:
         brain_module.call_llm_request_with_failover = original_call
+        brain_module.resolve_llm_api_key = original_resolve_key
     status = event.get("llm_status") if isinstance(event.get("llm_status"), dict) else {}
     assert_true(event.get("applied"), f"Kimi fenced JSON should parse as BrainPlan: {event}")
     assert_true(not status.get("json_structure_repaired"), f"fenced JSON should not need LLM structure repair: {status}")
@@ -6514,7 +6523,18 @@ def check_brain_rehydrates_context_product_fact_to_product_master() -> CaseResul
         "last_product_price": 8.68,
         "recent_product_ids": ["chejin_qinplus_2022_dmi55"],
     }
-    with tenant_context("chejin"):
+    product = {
+        "id": "chejin_qinplus_2022_dmi55",
+        "status": "active",
+        "data": {
+            "name": "2022款比亚迪秦PLUS DM-i 55KM",
+            "aliases": ["秦PLUS", "秦plus", "比亚迪秦PLUS"],
+            "price": 8.68,
+            "unit": "万",
+            "inventory": 1,
+        },
+    }
+    with patched_runtime_product(product), tenant_context("chejin"):
         hydrated = brain_module.augment_evidence_pack_with_plan_product_ids(pack, plan)
         changed = brain_module.canonicalize_conversation_product_fact_sources(plan, pack)
         validation = validate_brain_plan(plan, require_fact_claims=True)
@@ -7495,7 +7515,7 @@ def check_guard_v2_rejects_brain_internal_visible_marker() -> CaseResult:
     return CaseResult("guard_v2_rejects_brain_internal_visible_marker", True, {"guard": guard})
 
 
-def check_guard_v2_rejects_explicit_visible_handoff_marker() -> CaseResult:
+def check_guard_v2_allows_brain_planned_visible_handoff() -> CaseResult:
     candidate = {
         "can_answer": False,
         "reply": (
@@ -7519,9 +7539,11 @@ def check_guard_v2_rejects_explicit_visible_handoff_marker() -> CaseResult:
         evidence_pack=pack,
         settings={"brain_first_guard": True, "identity_guard_enabled": True},
     )
-    assert_true(not guard.get("allowed"), f"explicit transfer wording must not be approved as visible handoff: {guard}")
-    assert_true(guard.get("action") == "repair", f"Brain should rewrite handoff without explicit transfer wording: {guard}")
-    return CaseResult("guard_v2_rejects_explicit_visible_handoff_marker", True, {"guard": guard})
+    assert_true(
+        guard.get("allowed") and guard.get("action") == "handoff",
+        f"Brain-planned hard-boundary handoff wording should remain Brain-owned: {guard}",
+    )
+    return CaseResult("guard_v2_allows_brain_planned_visible_handoff", True, {"guard": guard})
 
 
 def check_brain_runner_ignores_guard_visible_reply_source() -> CaseResult:
@@ -7744,7 +7766,12 @@ def check_reply_event_context_update_prefers_visible_reply_products() -> CaseRes
             "reply_text": "那我直接给您挑两台：高尔夫和思域。高尔夫更好停，思域空间动力更均衡。"
         },
     }
-    with tenant_context("chejin"):
+    products = [
+        contract_product("chejin_golf_2020_280tsi", "2020款高尔夫280TSI", ["高尔夫"]),
+        contract_product("chejin_civic_2020_220turbo", "2020款思域220TURBO", ["思域"]),
+        contract_product("chejin_elantra_2019_14t", "2019款伊兰特1.4T", ["伊兰特"]),
+    ]
+    with patched_runtime_product(products), tenant_context("chejin"):
         ids = select_product_ids_from_reply_event(event)
     assert_true(
         ids[:2] == ["chejin_golf_2020_280tsi", "chejin_civic_2020_220turbo"],
@@ -7770,7 +7797,13 @@ def check_visible_reply_product_mentions_update_recent_context() -> CaseResult:
             "reply_text": "先看2021款凯美瑞2.0G豪华版和2018款奥迪A4L 40 TFSI，这两台一个偏省心，一个偏质感。"
         },
     }
-    with tenant_context("chejin"):
+    products = [
+        contract_product("chejin_camry_2021_20g", "2021款凯美瑞2.0G豪华版", ["凯美瑞"]),
+        contract_product("chejin_audi_a4l_2018_40tfsi", "2018款奥迪A4L 40 TFSI", ["奥迪A4L", "A4L"]),
+        contract_product("chejin_crider_2019_180turbo", "2019款凌派180TURBO", ["凌派"]),
+        contract_product("chejin_elantra_2019_14t", "2019款伊兰特1.4T", ["伊兰特"]),
+    ]
+    with patched_runtime_product(products), tenant_context("chejin"):
         ids = select_product_ids_from_reply_event(event)
     assert_true(
         ids[:2] == ["chejin_camry_2021_20g", "chejin_audi_a4l_2018_40tfsi"],
@@ -7801,7 +7834,11 @@ def check_visible_reply_preference_marker_updates_primary_context() -> CaseResul
         },
     }
     target_state: dict[str, Any] = {"conversation_context": {}}
-    with tenant_context("chejin"):
+    products = [
+        contract_product("chejin_xtrail_2020_25l", "2020款奇骏2.5L", ["奇骏"]),
+        contract_product("chejin_tiguanl_2021_330tsi", "2021款途观L 330TSI", ["途观L"]),
+    ]
+    with patched_runtime_product(products), tenant_context("chejin"):
         ids = select_product_ids_from_reply_event(event)
         workflow_module.update_conversation_context_from_reply_event(target_state, event)
     context = target_state.get("conversation_context") or {}
@@ -8214,7 +8251,7 @@ def build_appointment_probe_pack(message: str) -> dict[str, Any]:
 
 def build_catalog_recommendation_probe_pack(message: str) -> dict[str, Any]:
     with tenant_context("chejin"):
-        return build_reply_evidence_pack(
+        pack = build_reply_evidence_pack(
             config={},
             target_name="许聪",
             target_state={},
@@ -8230,12 +8267,34 @@ def build_catalog_recommendation_probe_pack(message: str) -> dict[str, Any]:
             customer_profile=None,
             raw_capture={"conversation": {"conversation_id": "catalog_recommendation_probe", "chat_type": "private"}},
         )
+    knowledge = pack["knowledge"]
+    advisory = {
+        "id": "contract_catalog_price_advisory",
+        "question": "车辆价格和优惠怎么确认？",
+        "answer": "可以按在售车源公开价格做选车推荐，具体优惠和最低价不得承诺。",
+        "matched_keywords": ["价格", "推荐", "优惠"],
+        "needs_handoff": True,
+        "auto_reply_allowed": False,
+        "authority_level": "formal_knowledge",
+    }
+    knowledge["evidence"]["faq"] = [copy.deepcopy(advisory)]
+    knowledge["formal_knowledge"]["faq"] = [copy.deepcopy(advisory)]
+    knowledge["safety"].update(
+        {
+            "must_handoff": True,
+            "allowed_auto_reply": False,
+            "reasons": ["matched_faq_requires_handoff"],
+        }
+    )
+    relax_soft_synthesis_safety(knowledge, text=message)
+    return pack
 
 
 def check_intent_evidence_finance_process_safety_softened() -> CaseResult:
     message = "我如果首付一半，剩下分期，你能大概说下怎么做吗？"
     with tenant_context("chejin"):
         pack = workflow_module.build_evidence_pack(message, context={})
+        inject_contract_finance_boundary(pack)
         workflow_module.clear_finance_process_handoff_for_intent_evidence(pack, combined=message)
     safety = pack.get("safety") or {}
     assert_true(safety.get("must_handoff") is False, f"outer intent safety should be softened: {safety}")
@@ -8261,7 +8320,7 @@ def build_finance_probe_pack(message: str) -> dict[str, Any]:
         }
     }
     with tenant_context("chejin"):
-        return build_reply_evidence_pack(
+        pack = build_reply_evidence_pack(
             config={},
             target_name="许聪",
             target_state=target_state,
@@ -8277,6 +8336,36 @@ def build_finance_probe_pack(message: str) -> dict[str, Any]:
             customer_profile=None,
             raw_capture={"conversation": {"conversation_id": "finance_probe", "chat_type": "private"}},
         )
+    inject_contract_finance_boundary(pack)
+    relax_soft_synthesis_safety(pack["knowledge"], text=message)
+    return pack
+
+
+def inject_contract_finance_boundary(pack: dict[str, Any]) -> None:
+    target = pack.get("knowledge") if isinstance(pack.get("knowledge"), dict) else pack
+    faq = {
+        "id": "contract_finance_process_boundary",
+        "question": "二手车贷款和分期怎么办？",
+        "answer": "贷款分期由资方审核，可以说明资料和基本流程，但不能承诺审批通过、具体利率或月供。",
+        "matched_keywords": ["贷款", "分期", "首付", "资方", "审核"],
+        "needs_handoff": True,
+        "auto_reply_allowed": False,
+        "authority_level": "formal_knowledge",
+    }
+    evidence = target.setdefault("evidence", {})
+    evidence["faq"] = [copy.deepcopy(faq)]
+    formal = target.setdefault("formal_knowledge", {})
+    formal["faq"] = [copy.deepcopy(faq)]
+    formal.setdefault("policies", {})
+    target["intent_tags"] = list(dict.fromkeys([*target.get("intent_tags", []), "finance", "payment"]))
+    safety = target.setdefault("safety", {})
+    safety.update(
+        {
+            "must_handoff": True,
+            "allowed_auto_reply": False,
+            "reasons": ["finance_details_need_human"],
+        }
+    )
 
 
 def check_recent_multi_product_context_candidates() -> CaseResult:
@@ -8567,6 +8656,38 @@ def check_process_target_shadow_does_not_adopt() -> CaseResult:
     return CaseResult("process_target_shadow_does_not_adopt", True, {"action": event.get("action")})
 
 
+def check_brain_blocks_when_knowledge_runtime_is_unavailable() -> CaseResult:
+    pack = fake_evidence_pack(include_product=False)
+    pack["knowledge_error"] = "PostgreSQL connection unavailable"
+    config = base_config(base_plan())
+    config["customer_service_brain"]["mode"] = "brain_first"
+    with patched_evidence_pack(pack):
+        event = brain_module.maybe_run_customer_service_brain(
+            config=config,
+            target_name="许聪",
+            target_state={"conversation_context": {}},
+            batch=[{"id": "msg1", "sender": "许聪", "content": "秦plus多少钱"}],
+            combined="秦plus多少钱",
+            decision=ReplyDecision("", "", False, False, ""),
+            reply_text="",
+            intent_assist={},
+            rag_reply={},
+            llm_reply={},
+            product_knowledge={},
+            data_capture={},
+            raw_capture={"conversation": {"conversation_id": "c1", "chat_type": "private"}},
+            customer_profile=None,
+        )
+    assert_true(event.get("reason") == "KNOWLEDGE_RUNTIME_UNAVAILABLE", f"unexpected failure reason: {event}")
+    assert_true(event.get("needs_handoff") is True, f"knowledge failure must require handoff: {event}")
+    assert_true(not str(event.get("reply_text") or ""), f"knowledge failure must not emit a visible reply: {event}")
+    assert_true(
+        event.get("visible_reply_owner") == "none_knowledge_unavailable",
+        f"knowledge failure must be explicitly attributable: {event}",
+    )
+    return CaseResult("brain_blocks_when_knowledge_runtime_is_unavailable", True, {"reason": event.get("reason")})
+
+
 def assert_true(condition: Any, message: str) -> None:
     if not condition:
         raise AssertionError(message)
@@ -8581,13 +8702,97 @@ class patched_evidence_pack:
     def __init__(self, pack: dict[str, Any]) -> None:
         self.pack = pack
         self.original = None
+        self.original_resolve_key = None
 
     def __enter__(self) -> None:
         self.original = brain_module.build_reply_evidence_pack
+        self.original_resolve_key = brain_module.resolve_llm_api_key
         brain_module.build_reply_evidence_pack = lambda **_: copy.deepcopy(self.pack)
+        brain_module.resolve_llm_api_key = lambda **_: "offline-contract-transport"
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         brain_module.build_reply_evidence_pack = self.original
+        brain_module.resolve_llm_api_key = self.original_resolve_key
+
+
+def contract_product(
+    product_id: str,
+    name: str,
+    aliases: list[str],
+    *,
+    price: float = 10.0,
+    category: str = "轿车",
+    specs: str = "",
+    recommendation: str = "",
+) -> dict[str, Any]:
+    return {
+        "id": product_id,
+        "status": "active",
+        "data": {
+            "name": name,
+            "aliases": list(aliases),
+            "category": category,
+            "specs": specs,
+            "recommendation": recommendation,
+            "price": price,
+            "unit": "万",
+            "inventory": 1,
+        },
+    }
+
+
+def contract_catalog_products() -> list[dict[str, Any]]:
+    return [
+        contract_product("chejin_qinplus_2022_dmi55", "2022款比亚迪秦PLUS DM-i 55KM", ["秦PLUS", "秦plus", "比亚迪秦PLUS"], price=8.68, specs="插混 自动挡 省油 家用"),
+        contract_product("chejin_golf_2020_280tsi", "2020款高尔夫280TSI", ["高尔夫"], price=8.88, specs="两厢 自动挡 代步 好停车"),
+        contract_product("chejin_civic_2020_220turbo", "2020款思域220TURBO", ["思域"], price=7.58, specs="轿车 自动挡 通勤"),
+        contract_product("chejin_camry_2021_20g", "2021款凯美瑞2.0G豪华版", ["凯美瑞"], price=9.5, specs="轿车 自动挡 省心 家用"),
+        contract_product("chejin_audi_a4l_2018_40tfsi", "2018款奥迪A4L 40 TFSI", ["奥迪A4L", "A4L"], price=15.8, specs="轿车 商务 质感"),
+        contract_product("chejin_crider_2019_180turbo", "2019款凌派180TURBO", ["凌派"], price=7.2, specs="轿车 自动挡 省油"),
+        contract_product("chejin_elantra_2019_14t", "2019款伊兰特1.4T", ["伊兰特"], price=7.0, specs="轿车 自动挡 通勤"),
+        contract_product("chejin_xtrail_2020_25l", "2020款奇骏2.5L", ["奇骏"], price=13.5, category="SUV", specs="SUV 后备厢 装载 家用"),
+        contract_product("chejin_tiguanl_2021_330tsi", "2021款途观L 330TSI", ["途观L"], price=15.8, category="SUV", specs="SUV 第二排放倒 后备厢 装载 商务"),
+        contract_product("chejin_haval_h6_2020_20t", "2020款哈弗H6 2.0T", ["哈弗H6", "H6"], price=8.2, category="SUV", specs="SUV 后备厢 物料 家用"),
+        contract_product("chejin_hengyi_2019_es6", "2019款蔚来ES6", ["蔚来ES6", "ES6"], price=18.8, category="纯电SUV", specs="纯电 电车 新能源 SUV"),
+        contract_product("chejin_model3_2021_srplus", "2021款特斯拉Model 3", ["特斯拉Model 3", "Model 3"], price=16.8, category="纯电轿车", specs="纯电 电车 新能源"),
+        contract_product("chejin_gl8_2020_es653t", "2020款别克GL8 ES 653T", ["别克GL8", "GL8"], price=19.8, category="MPV", specs="MPV 家用 七座 一家人"),
+    ]
+
+
+def run_with_contract_catalog(check: Any) -> CaseResult:
+    with patched_runtime_product(contract_catalog_products()):
+        return check()
+
+
+class patched_runtime_product:
+    def __init__(self, products: dict[str, Any] | list[dict[str, Any]]) -> None:
+        values = products if isinstance(products, list) else [products]
+        self.products = [copy.deepcopy(product) for product in values]
+        self.original_get_item = None
+        self.original_list_items = None
+
+    def __enter__(self) -> None:
+        self.original_get_item = knowledge_runtime_module.KnowledgeRuntime.get_item
+        self.original_list_items = knowledge_runtime_module.KnowledgeRuntime.list_items
+        products = [copy.deepcopy(product) for product in self.products]
+        products_by_id = {str(product.get("id") or ""): product for product in products}
+
+        def fake_get_item(_runtime: Any, category_id: str, item_id: str) -> dict[str, Any] | None:
+            if category_id == "products" and item_id in products_by_id:
+                return copy.deepcopy(products_by_id[item_id])
+            return None
+
+        def fake_list_items(_runtime: Any, category_id: str, **_: Any) -> list[dict[str, Any]]:
+            if category_id == "products":
+                return copy.deepcopy(products)
+            return []
+
+        knowledge_runtime_module.KnowledgeRuntime.get_item = fake_get_item
+        knowledge_runtime_module.KnowledgeRuntime.list_items = fake_list_items
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        knowledge_runtime_module.KnowledgeRuntime.get_item = self.original_get_item
+        knowledge_runtime_module.KnowledgeRuntime.list_items = self.original_list_items
 
 
 class patched_evidence_pack_failure:

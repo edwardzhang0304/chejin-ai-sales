@@ -1,4 +1,4 @@
-import { apiErrorFromResponse, buildOperatorHeaders, buildUrl, request } from "../../shared/api/client";
+import { request, requestBlob } from "../../shared/api/client";
 import type {
   BatchInvalidResult,
   CreateLeadResult,
@@ -62,20 +62,11 @@ export function retryAutoAssign(leadIds: string[]) {
 }
 
 export async function exportLeads(leadIds: string[]) {
-  const response = await fetch(buildUrl("/leads/export"), {
+  return requestBlob("/leads/export", {
     method: "POST",
-    headers: {
-      ...buildOperatorHeaders(),
-      "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ lead_ids: leadIds, fields: [] }),
   });
-
-  if (!response.ok) {
-    throw await apiErrorFromResponse(response);
-  }
-
-  return response.blob();
 }
 
 export function revealContact(leadId: string, contactId: string, reason: string) {

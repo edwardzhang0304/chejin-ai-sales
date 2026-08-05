@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { formatApiError } from "../../shared/api/client";
+import { formatBusinessError } from "../../shared/api/client";
+import { CopyButton } from "../../shared/ui/CopyButton";
+import { CloseIcon } from "../../shared/ui/Icons";
+import { postMutationMessage, runPostMutationRefresh } from "../../shared/utils/postMutation";
 import { listSales } from "../sales/api";
 import type { SalesItem } from "../sales/types";
 import { listWorkers } from "../workers/api";
@@ -105,6 +108,11 @@ const c3CodeMeta: Record<string, string> = {
   open: "待处理",
   closed: "已关闭",
   none: "无需动作",
+  online: "在线",
+  offline: "离线",
+  idle: "空闲",
+  worker: "Worker 客户端",
+  sales_replied_waiting_user: "销售已回复，等待客户消息",
 };
 
 function display(value: string | number | null | undefined, fallback = "-") {
@@ -121,7 +129,7 @@ function formatStatus(status: TaskStatus) {
 
 function formatCode(code?: string | null) {
   if (!code) return "-";
-  return resultCodeMeta[code] ?? reasonCodeMeta[code] ?? stepMeta[code] ?? eventTypeMeta[code] ?? c3CodeMeta[code] ?? code;
+  return resultCodeMeta[code] ?? reasonCodeMeta[code] ?? stepMeta[code] ?? eventTypeMeta[code] ?? c3CodeMeta[code] ?? "其他业务状态";
 }
 
 function formatMetric(value?: number | null) {
@@ -185,6 +193,7 @@ function taskWorkerStatus(task: TaskListItem | TaskDetail) {
   const worker = task.execution?.worker;
   if (!worker) return null;
   const online = worker.online_status ? formatCode(worker.online_status) : null;
+  if (worker.online_status === "offline") return online;
   const running = worker.running_status ? formatCode(worker.running_status) : null;
   return [online, running].filter(Boolean).join(" / ") || null;
 }
@@ -315,14 +324,16 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
         return taskData.items[0]?.id ?? null;
       });
       setDrawerOpen(Boolean(taskData.items[0]));
+      return true;
     } catch (err) {
       if (!signal?.aborted) {
         setItems([]);
         setTotal(0);
         setSelectedId(null);
         setDetail(null);
-        setError(formatApiError(err, "任务列表加载失败，请确认后端 /api/tasks 已可用后重试。"));
+        setError(formatBusinessError(err, "任务列表加载失败，请稍后重试。"));
       }
+      return false;
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
@@ -353,7 +364,7 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
         setEvents(eventData.items.length ? eventData.items : task.events ?? []);
       })
       .catch((err) => {
-        if (!controller.signal.aborted) setSaveError(formatApiError(err, "任务详情加载失败，请稍后重试。"));
+        if (!controller.signal.aborted) setSaveError(formatBusinessError(err, "任务详情加载失败，请稍后重试。"));
       })
       .finally(() => {
         if (!controller.signal.aborted) setDetailLoading(false);
@@ -376,6 +387,8 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
     setActionBusy(label);
     setSaveError(null);
     setMessage(null);
+    let updatedAfterMutation: TaskDetail | null = null;
+    let successMessage: string | null = null;
     try {
       if (label === "查看执行方") {
         const workerId = detail.execution?.worker?.id ?? null;
@@ -397,14 +410,14 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
       if (label === "取消任务") {
         const remark = window.prompt("请输入取消原因，可留空。");
         if (remark === null) return;
-        await cancelTask(detail.id, { reason: remark.trim() || undefined });
-        setMessage(`${detail.id} 已取消。`);
+        updatedAfterMutation = await cancelTask(detail.id, { reason: remark.trim() || undefined });
+        successMessage = `${detail.id} 已取消。`;
       }
       if (label === "补充备注") {
         const remark = window.prompt("请输入任务备注");
         if (!remark?.trim()) return;
-        await addTaskComment(detail.id, { content: remark.trim() });
-        setMessage("任务备注已补充。");
+        updatedAfterMutation = await addTaskComment(detail.id, { content: remark.trim() });
+        successMessage = "任务备注已补充。";
       }
       if (label === "查看执行结果") {
         setMessage(`执行结果：${formatCode(detail.result_code)}。`);
@@ -426,11 +439,21 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
         setMessage("请进入线索管理，对关联线索执行标记无效。");
         return;
       }
-      await refresh();
-      const updated = await getTask(detail.id);
-      setDetail(updated);
+      if (!updatedAfterMutation || !successMessage) return;
+
+      setDetail(updatedAfterMutation);
+      setEvents(updatedAfterMutation.events ?? events);
+      const [listRefreshed, detailRefreshed] = await Promise.all([
+        runPostMutationRefresh(() => refresh()),
+        runPostMutationRefresh(async () => {
+          const [nextDetail, eventData] = await Promise.all([getTask(detail.id), listTaskEvents(detail.id)]);
+          setDetail(nextDetail);
+          setEvents(eventData.items.length ? eventData.items : nextDetail.events ?? []);
+        }),
+      ]);
+      setMessage(postMutationMessage(successMessage, listRefreshed && detailRefreshed));
     } catch (err) {
-      setSaveError(formatApiError(err, `${label}失败，请稍后重试。`));
+      setSaveError(formatBusinessError(err, `${label}失败，请稍后重试。`));
     } finally {
       setActionBusy(null);
     }
@@ -590,13 +613,13 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
                           if (event.key === "Enter" || event.key === " ") selectRow(item);
                         }}
                       >
-                        <td>{item.id}</td>
+                        <td className="copy-value"><span title={item.id}>{item.id}</span><CopyButton label="任务 ID" value={item.id} /></td>
                         <td>{formatTaskType(item.task_type)}</td>
                         <td className="lead-cell"><strong>{display(taskCustomerName(item))}</strong><small>{display(taskCustomerPhone(item))}</small></td>
                         <td>{display(item.sales_name)}</td>
                         <td>{display(taskWorkerName(item), item.worker_id ? "Worker" : "未绑定")}</td>
                         <td className="status-cell"><span className={`status ${status.className}`}>{status.label}</span></td>
-                        <td>{aggregateResult(item)}</td>
+                        <td className="copy-value"><span title={aggregateResult(item)}>{aggregateResult(item)}</span><CopyButton label="业务结果或异常原因" value={aggregateResult(item)} /></td>
                         <td>{formatCode(item.current_step)}</td>
                         <td>{formatDate(item.updated_at)}</td>
                       </tr>
@@ -636,9 +659,9 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
               <div className="drawer-head">
                 <div>
                   <p>任务详情</p>
-                  <h2 title={detail.id}>{detail.id}</h2>
+                  <h2 className="copy-value" title={detail.id}><span>{detail.id}</span><CopyButton label="任务 ID" value={detail.id} /></h2>
                 </div>
-                <button className="icon-button" type="button" onClick={() => setDrawerOpen(false)} aria-label="关闭任务详情">×</button>
+                <button className="icon-button drawer-close-button" type="button" onClick={() => setDrawerOpen(false)} aria-label="关闭任务详情"><CloseIcon /></button>
               </div>
 
               <div className="task-status-row">
@@ -666,7 +689,7 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
                 <dl className="drawer-dl">
                   <div><dt>客户</dt><dd>{display(taskCustomerName(detail))}</dd></div>
                   <div><dt>手机号</dt><dd>{display(taskCustomerPhone(detail))}</dd></div>
-                  <div><dt>线索状态</dt><dd>{display(taskLeadStatus(detail))}</dd></div>
+                  <div><dt>线索状态</dt><dd>{formatCode(taskLeadStatus(detail))}</dd></div>
                   <div><dt>当前销售</dt><dd>{display(detail.sales_name)}</dd></div>
                 </dl>
               </section>
@@ -674,7 +697,7 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
               <section className="drawer-section">
                 <h3>执行信息</h3>
                 <dl className="drawer-dl">
-                  <div><dt>执行方类型</dt><dd>{display(detail.executor_type, "Worker")}</dd></div>
+                  <div><dt>执行方类型</dt><dd>{formatCode(detail.executor_type || "worker")}</dd></div>
                   <div><dt>执行方</dt><dd>{display(taskWorkerName(detail), detail.worker_id || detail.execution?.worker?.id ? "Worker" : "未绑定")}</dd></div>
                   <div><dt>执行方状态</dt><dd>{display(taskWorkerStatus(detail))}</dd></div>
                   <div><dt>最近心跳</dt><dd>{formatDate(taskLastHeartbeat(detail))}</dd></div>
