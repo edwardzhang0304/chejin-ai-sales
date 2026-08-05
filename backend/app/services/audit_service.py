@@ -1,4 +1,5 @@
 from datetime import datetime
+import logging
 from typing import Any
 
 from fastapi.encoders import jsonable_encoder
@@ -7,6 +8,8 @@ from sqlalchemy import Text
 from sqlalchemy.orm import Session
 
 from app.core.request_context import ActorContext
+from app.core.database import SessionLocal
+from app.errors import AppError
 from app.models.audit import OperationLog
 from app.models.lead import Lead
 
@@ -36,9 +39,26 @@ EVENT_NAMES: dict[str, str] = {
     "task_unblocked": "解除任务阻塞",
     "task_cancelled": "取消任务",
     "task_comment_added": "补充任务备注",
+    "vehicle_created": "新增车辆",
+    "vehicle_updated": "编辑车辆",
+    "vehicle_listed": "上架车辆",
+    "vehicle_unlisted": "下架车辆",
+    "vehicle_image_uploaded": "上传车辆图片",
+    "vehicle_image_reordered": "调整车辆图片顺序",
+    "vehicle_image_deleted": "删除车辆图片",
+    "vehicle_excel_import_confirmed": "确认导入车辆 Excel",
+    "vehicle_operation_failed": "车辆操作失败",
+    "admin_account_created": "创建后台账号",
+    "admin_account_enabled": "启用后台账号",
+    "admin_account_disabled": "停用后台账号",
+    "admin_password_reset": "重置后台账号密码",
+    "admin_login_succeeded": "后台登录成功",
+    "admin_login_failed": "后台登录失败",
+    "admin_logout": "退出后台",
 }
 
-FAILED_EVENTS = {"lead_assign_failed"}
+FAILED_EVENTS = {"lead_assign_failed", "admin_login_failed", "vehicle_operation_failed"}
+logger = logging.getLogger(__name__)
 
 
 def _parse_datetime(value: str | None) -> datetime | None:
@@ -126,6 +146,40 @@ def write_log(
     )
     db.add(log)
     return log
+
+
+def record_vehicle_operation_failure(
+    actor: ActorContext,
+    *,
+    operation: str,
+    target_id: str | None,
+    error: Exception,
+) -> None:
+    error_code = error.code if isinstance(error, AppError) else "INTERNAL_ERROR"
+    status_code = error.status_code if isinstance(error, AppError) else 500
+    try:
+        with SessionLocal() as audit_db:
+            write_log(
+                audit_db,
+                actor,
+                event_type="vehicle_operation_failed",
+                module="vehicles",
+                target_type="vehicle",
+                target_id=target_id,
+                metadata={
+                    "operation": operation,
+                    "error_code": error_code,
+                    "error_type": type(error).__name__,
+                    "status_code": status_code,
+                },
+            )
+            audit_db.commit()
+    except Exception:
+        logger.exception(
+            "vehicle failure audit persistence failed operation=%s request_id=%s",
+            operation,
+            actor.request_id,
+        )
 
 
 def build_log_query(

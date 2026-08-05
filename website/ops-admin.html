@@ -3,11 +3,53 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>车金 AI 运营后台 - 线索导入与分配</title>
-    <link rel="stylesheet" href="./ops-admin.css?v=design-audit-20260606a" />
+  <title>车金 AI 运营后台</title>
+    <link rel="stylesheet" href="./ops-admin.css?v=auth-design-20260805a" />
   </head>
   <body>
-    <div class="app-shell">
+    <main class="login-view" data-login-view>
+      <section class="login-panel" aria-labelledby="login-title">
+        <header class="login-brand">
+          <span class="brand-mark">车</span>
+          <span>
+            <strong>车金 AI</strong>
+            <small>运营后台</small>
+          </span>
+        </header>
+
+        <div class="login-heading">
+          <h1 id="login-title">登录运营后台</h1>
+          <p>使用已开通的运营账号登录</p>
+        </div>
+
+        <div class="login-alert" role="alert" data-login-alert hidden></div>
+
+        <form class="login-form" data-login-form novalidate>
+          <label>
+            <span>账号</span>
+            <input type="text" name="username" autocomplete="username" placeholder="请输入账号" data-login-username />
+          </label>
+          <label>
+            <span>密码</span>
+            <span class="password-field">
+              <input type="password" name="password" autocomplete="current-password" placeholder="请输入密码" data-login-password />
+              <button type="button" class="password-toggle" aria-label="显示密码" aria-pressed="false" data-password-toggle>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M2.1 12s3.6-6 9.9-6 9.9 6 9.9 6-3.6 6-9.9 6-9.9-6-9.9-6Z" />
+                  <circle cx="12" cy="12" r="2.7" />
+                </svg>
+              </button>
+            </span>
+          </label>
+          <button class="primary-button login-submit" type="submit" disabled data-login-submit>
+            <span data-login-submit-label>登录</span>
+            <span class="login-spinner" aria-hidden="true" data-login-spinner hidden></span>
+          </button>
+        </form>
+      </section>
+    </main>
+
+    <div class="app-shell" data-app-shell hidden>
       <aside class="sidebar" aria-label="运营后台导航">
         <a class="brand" href="./ops-admin.html" aria-label="车金 AI 运营后台">
           <span class="brand-mark">车</span>
@@ -21,6 +63,9 @@
           <button type="button" data-module="leads">
             <span>线索管理</span>
           </button>
+          <button type="button" data-module="vehicles">
+            <span>车辆管理</span>
+          </button>
           <button type="button" data-module="sales">
             <span>销售管理</span>
           </button>
@@ -30,13 +75,23 @@
           <button type="button" data-module="tasks">
             <span>任务中心</span>
           </button>
-          <a href="#logs">操作日志</a>
+          <button type="button" data-module="logs">
+            <span>操作日志</span>
+          </button>
         </nav>
 
-        <div class="phase-card">
-          <span>当前阶段</span>
-          <strong>人工录入 / 去重 / 轮询分配</strong>
-          <p>暂不开放 RPA 加好友、AI 自动回复、销售登录。</p>
+        <div class="account-area">
+          <div class="account-menu" data-account-menu hidden>
+            <button type="button" data-action="logout">退出登录</button>
+          </div>
+          <button class="account-button" type="button" aria-expanded="false" data-account-button>
+            <span class="account-avatar">运</span>
+            <span class="account-copy">
+              <strong>运营账号</strong>
+              <small>全部功能权限</small>
+            </span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
+          </button>
         </div>
       </aside>
 
@@ -45,7 +100,7 @@
           <div>
             <span class="empty-icon">车</span>
             <h1>请选择左侧模块</h1>
-            <p>系统会根据当前账号权限展示可访问模块。选择线索管理后，可进行客户录入、去重、列表查看和自动分配结果追踪。</p>
+            <p>从左侧选择需要处理的业务模块。</p>
           </div>
         </section>
 
@@ -53,7 +108,7 @@
           <header class="screen-header">
             <div>
               <p>线索运营</p>
-              <h1>客户线索导入与分配</h1>
+              <h1>线索管理</h1>
             </div>
             <button class="primary-button" type="button" data-open-modal="lead" data-action="reset-lead-form">新增客户</button>
           </header>
@@ -62,7 +117,7 @@
             <article data-stat="today_new_count">
               <span>今日新增</span>
               <strong>28</strong>
-              <p>人工录入 28 条</p>
+              <p>今日创建 28 条</p>
             </article>
             <article data-stat="assigned_count">
               <span>已分配</span>
@@ -146,7 +201,7 @@
                   <tbody data-leads-table>
                     <tr class="selected" data-lead-id="static-lead-1">
                       <td><input type="checkbox" checked aria-label="选择王先生" /></td>
-                      <td class="lead-cell"><strong>王先生</strong><small>人工录入 · 运营小陈</small></td>
+                      <td class="lead-cell"><strong>王先生</strong></td>
                       <td class="contact-cell"><strong>138****6678</strong><small>wx_car_2026</small></td>
                       <td><span class="status assigned">已分配</span></td>
                       <td>张伟</td>
@@ -156,7 +211,7 @@
                     </tr>
                     <tr data-lead-id="static-lead-2">
                       <td><input type="checkbox" aria-label="选择李女士" /></td>
-                      <td class="lead-cell"><strong>李女士</strong><small>小程序表单 · 门店预约</small></td>
+                      <td class="lead-cell"><strong>李女士</strong></td>
                       <td class="contact-cell"><strong>139****9081</strong><small>wx_li_auto</small></td>
                       <td><span class="status unassigned">未分配</span></td>
                       <td>暂无</td>
@@ -166,7 +221,7 @@
                     </tr>
                     <tr data-lead-id="static-lead-3">
                       <td><input type="checkbox" checked aria-label="选择刘先生" /></td>
-                      <td class="lead-cell"><strong>刘先生</strong><small>人工录入 · 运营小赵</small></td>
+                      <td class="lead-cell"><strong>刘先生</strong></td>
                       <td class="contact-cell"><strong>136****4210</strong><small>未填写微信</small></td>
                       <td><span class="status assigned">已分配</span></td>
                       <td>王敏</td>
@@ -176,7 +231,7 @@
                     </tr>
                     <tr data-lead-id="static-lead-4">
                       <td><input type="checkbox" aria-label="选择赵女士" /></td>
-                      <td class="lead-cell"><strong>赵女士</strong><small>人工录入 · 运营小陈</small></td>
+                      <td class="lead-cell"><strong>赵女士</strong></td>
                       <td class="contact-cell"><strong>137****2331</strong><small>wx_zhao_car</small></td>
                       <td><span class="status invalid">无效</span></td>
                       <td>李强</td>
@@ -209,7 +264,7 @@
               </div>
             </section>
 
-            <aside class="panel detail-drawer" data-drawer>
+            <aside class="panel detail-drawer closed" data-drawer>
               <div class="drawer-head">
                 <div>
                   <p>线索详情</p>
@@ -247,23 +302,24 @@
                 <button type="button">分配记录</button>
               </div>
 
-              <section class="detail-block" data-detail-contacts>
-                <h3>联系方式</h3>
-                <div class="contact-row">
-                  <span>手机</span>
-                  <strong>138****6678</strong>
-                  <button type="button">查看完整</button>
-                </div>
-                <div class="contact-row">
-                  <span>微信</span>
-                  <strong>wx_car_2026</strong>
-                  <button type="button">复制</button>
-                </div>
-                <div class="contact-row">
-                  <span>邮箱</span>
-                  <strong>未填写</strong>
-                </div>
-              </section>
+              <div class="detail-drawer-scroll">
+                <section class="detail-block" data-detail-contacts>
+                  <h3>联系方式</h3>
+                  <div class="contact-row">
+                    <span>手机</span>
+                    <strong>138****6678</strong>
+                    <button type="button">查看完整</button>
+                  </div>
+                  <div class="contact-row">
+                    <span>微信</span>
+                    <strong>wx_car_2026</strong>
+                    <button type="button">复制</button>
+                  </div>
+                  <div class="contact-row">
+                    <span>邮箱</span>
+                    <strong>未填写</strong>
+                  </div>
+                </section>
 
               <section class="detail-block" data-detail-flow>
                 <h3>任务链路</h3>
@@ -283,9 +339,255 @@
                 </ol>
               </section>
 
+                <section class="detail-block detail-compact-block">
+                  <h3>会话信息</h3>
+                  <dl class="drawer-dl detail-conversation-dl">
+                    <div><dt>会话绑定</dt><dd><span class="status assigned">已绑定</span></dd></div>
+                    <div><dt>最近消息</dt><dd>想了解周末到店试驾安排</dd></div>
+                    <div><dt>消息时间</dt><dd>06-02 14:42</dd></div>
+                  </dl>
+                </section>
+              </div>
+
               <section class="detail-actions" data-detail-actions>
                 <h3>操作</h3>
                 <button type="button" data-open-modal="invalid" data-invalid-mode="single">标记无效</button>
+              </section>
+            </aside>
+          </div>
+        </section>
+
+        <section class="screen screen-vehicles" data-module-content="vehicles" hidden>
+          <header class="screen-header vehicle-screen-header">
+            <div>
+              <p>车辆资料运营</p>
+              <h1>车辆管理</h1>
+            </div>
+            <div class="screen-actions" data-vehicle-edit-actions>
+              <button type="button" data-open-modal="vehicle-import">导入车辆</button>
+              <button class="primary-button" type="button" data-open-modal="vehicle-create">新增车辆</button>
+            </div>
+          </header>
+
+          <section class="metric-grid management-metrics vehicle-metrics" aria-label="车辆管理指标">
+            <article>
+              <span>车辆总数</span>
+              <strong>126</strong>
+              <p>近 30 天新增 18 辆</p>
+            </article>
+            <article>
+              <span>已上架</span>
+              <strong>86</strong>
+              <p>可用于客服查询与推荐</p>
+            </article>
+            <article>
+              <span>已下架</span>
+              <strong>40</strong>
+              <p>仍可在后台维护</p>
+            </article>
+            <article>
+              <span>待补充资料</span>
+              <strong class="warning-text">7</strong>
+              <p>缺价格或有效图片</p>
+            </article>
+          </section>
+
+          <div class="management-grid vehicle-management-grid">
+            <section class="panel management-list-panel vehicle-list-panel">
+              <div class="panel-header">
+                <div><h2>车辆列表</h2></div>
+              </div>
+
+              <div class="management-filter-card vehicle-filter-card">
+                <label>
+                  <span>搜索</span>
+                  <input type="search" placeholder="车辆名称、编号、品牌、车系" aria-label="搜索车辆" data-vehicle-search />
+                </label>
+                <label>
+                  <span>状态</span>
+                  <select aria-label="筛选车辆状态" data-vehicle-status-filter>
+                    <option value="all">全部状态</option>
+                    <option value="listed">已上架</option>
+                    <option value="unlisted">已下架</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="management-table-card vehicle-table-card" data-vehicle-table-card>
+                <table class="management-table vehicle-table">
+                  <thead>
+                    <tr>
+                      <th>主图</th>
+                      <th>车辆展示名称</th>
+                      <th>车辆编号</th>
+                      <th>品牌 / 车系</th>
+                      <th>首次上牌</th>
+                      <th>表显里程</th>
+                      <th>公开售价</th>
+                      <th>状态</th>
+                      <th>更新时间</th>
+                    </tr>
+                  </thead>
+                  <tbody data-vehicle-rows>
+                    <tr data-vehicle-id="VEH-202608-0126" data-vehicle-status="listed">
+                      <td><img class="vehicle-thumb" src="./assets/vehicles/vehicle-01.jpg" alt="2022 款白色跑车" /></td>
+                      <td class="lead-cell"><strong>2022 款 2.0T 运动版</strong></td>
+                      <td><span class="table-ellipsis" title="VEH-202608-0126">VEH-202608-0126</span></td>
+                      <td>雪佛兰 / 科迈罗</td>
+                      <td>2022-06</td>
+                      <td>2.8 万公里</td>
+                      <td><strong>22.80 万</strong></td>
+                      <td><span class="status assigned">已上架</span></td>
+                      <td>08-05 10:18</td>
+                    </tr>
+                    <tr data-vehicle-id="VEH-202608-0125" data-vehicle-status="listed">
+                      <td><img class="vehicle-thumb" src="./assets/vehicles/vehicle-02.jpg" alt="2021 款黑色轿车" /></td>
+                      <td class="lead-cell"><strong>2021 款 3.0T 豪华版</strong></td>
+                      <td><span class="table-ellipsis" title="VEH-202608-0125">VEH-202608-0125</span></td>
+                      <td>保时捷 / Panamera</td>
+                      <td>2021-09</td>
+                      <td>4.1 万公里</td>
+                      <td><strong>68.60 万</strong></td>
+                      <td><span class="status assigned">已上架</span></td>
+                      <td>08-05 09:42</td>
+                    </tr>
+                    <tr data-vehicle-id="VEH-202608-0124" data-vehicle-status="unlisted">
+                      <td><img class="vehicle-thumb" src="./assets/vehicles/vehicle-03.jpg" alt="2020 款蓝色小型车" /></td>
+                      <td class="lead-cell"><strong>2020 款 1.4L 城市版</strong></td>
+                      <td><span class="table-ellipsis" title="VEH-202608-0124">VEH-202608-0124</span></td>
+                      <td>菲亚特 / 500</td>
+                      <td>2020-03</td>
+                      <td>5.6 万公里</td>
+                      <td><strong>8.90 万</strong></td>
+                      <td><span class="status unassigned">已下架</span></td>
+                      <td>08-04 18:26</td>
+                    </tr>
+                    <tr data-vehicle-id="VEH-202608-0123" data-vehicle-status="unlisted">
+                      <td><img class="vehicle-thumb" src="./assets/vehicles/vehicle-04.jpg" alt="2019 款红色跑车" /></td>
+                      <td class="lead-cell"><strong>2019 款 4.0T 性能版</strong></td>
+                      <td><span class="table-ellipsis" title="VEH-202608-0123">VEH-202608-0123</span></td>
+                      <td>梅赛德斯-AMG / GT</td>
+                      <td>2019-11</td>
+                      <td>3.2 万公里</td>
+                      <td><strong>98.80 万</strong></td>
+                      <td><span class="status unassigned">已下架</span></td>
+                      <td>08-04 16:12</td>
+                    </tr>
+                  </tbody>
+                </table>
+
+                <div class="vehicle-state-panel" data-vehicle-state="loading" hidden>
+                  <span class="loading-spinner" aria-hidden="true"></span>
+                  <strong>正在加载车辆</strong>
+                  <p>请稍候。</p>
+                </div>
+                <div class="vehicle-state-panel" data-vehicle-state="empty" hidden>
+                  <strong>暂无车辆</strong>
+                  <p>新增车辆或使用 Excel 导入现有车源。</p>
+                  <div><button class="primary-button" type="button" data-open-modal="vehicle-create">新增车辆</button><button type="button" data-open-modal="vehicle-import">导入车辆</button></div>
+                </div>
+                <div class="vehicle-state-panel" data-vehicle-state="no-results" hidden>
+                  <strong>未找到匹配车辆</strong>
+                  <p>请调整搜索关键词或筛选条件。</p>
+                  <button type="button" data-action="clear-vehicle-filter">清空筛选</button>
+                </div>
+                <div class="vehicle-state-panel vehicle-state-error" data-vehicle-state="error" hidden>
+                  <strong>车辆列表加载失败</strong>
+                  <p>网络异常或服务暂时不可用。</p>
+                  <button type="button" data-action="retry-vehicle-list">重新加载</button>
+                </div>
+              </div>
+
+              <div class="pagination-row vehicle-pagination">
+                <div class="pagination-total">
+                  <span>共 <strong>126</strong> 辆</span>
+                  <select aria-label="车辆每页条数"><option>20 条/页</option><option>50 条/页</option></select>
+                </div>
+                <nav aria-label="车辆分页"><button disabled>上一页</button><strong>1</strong><button>2</button><button>3</button><span>…</span><button>7</button><button>下一页</button></nav>
+              </div>
+            </section>
+
+            <aside class="panel management-drawer vehicle-detail-drawer closed" data-vehicle-drawer>
+              <div class="drawer-head">
+                <div>
+                  <p><span class="read-value">车辆详情</span><span class="edit-value">车辆详情 · 编辑中</span></p>
+                  <h2 data-vehicle-drawer-title>2022 款 2.0T 运动版</h2>
+                </div>
+                <button class="icon-button" type="button" data-action="close-vehicle-drawer" aria-label="关闭车辆详情">×</button>
+              </div>
+
+              <section class="vehicle-gallery drawer-section">
+                <div class="vehicle-main-image-wrap">
+                  <img class="vehicle-main-image" src="./assets/vehicles/vehicle-01.jpg" alt="车辆主图" data-vehicle-main-image />
+                  <span class="vehicle-main-badge">主图</span>
+                  <div class="vehicle-gallery-state" data-gallery-state="empty" hidden><strong>暂无车辆图片</strong><p>保存车辆后可上传图片。</p></div>
+                  <div class="vehicle-gallery-state" data-gallery-state="uploading" hidden><span class="loading-spinner"></span><strong>正在上传 2 / 4</strong><p>已上传成功的图片将保留。</p></div>
+                </div>
+                <div class="vehicle-image-strip">
+                  <button class="is-current" type="button" data-image-src="./assets/vehicles/vehicle-01.jpg"><img src="./assets/vehicles/vehicle-01.jpg" alt="车辆图片 1" /></button>
+                  <button type="button" data-image-src="./assets/vehicles/vehicle-02.jpg"><img src="./assets/vehicles/vehicle-02.jpg" alt="车辆图片 2" /></button>
+                  <button type="button" data-image-src="./assets/vehicles/vehicle-04.jpg"><img src="./assets/vehicles/vehicle-04.jpg" alt="车辆图片 3" /></button>
+                </div>
+                <div class="vehicle-image-actions edit-value" data-vehicle-edit-actions>
+                  <div><button type="button" data-action="simulate-image-upload">上传图片</button><button type="button" data-open-modal="vehicle-image-delete">删除当前图片</button></div>
+                  <span>可拖动缩略图排序；JPEG / PNG / WebP，单张最大 10MB</span>
+                </div>
+                <div class="vehicle-upload-alert edit-value" data-image-upload-alert hidden>
+                  <strong>3 张上传成功，1 张失败</strong>
+                  <p>door-detail.tiff：不支持该文件格式，请上传 JPEG、PNG 或 WebP。</p>
+                </div>
+              </section>
+
+              <section class="drawer-section">
+                <h3>客户可用资料</h3>
+                <dl class="drawer-dl vehicle-dl">
+                  <div><dt>展示名称</dt><dd><span class="read-value">2022 款 2.0T 运动版</span><input class="edit-value" value="2022 款 2.0T 运动版" /></dd></div>
+                  <div><dt>品牌</dt><dd><span class="read-value">雪佛兰</span><input class="edit-value" value="雪佛兰" /></dd></div>
+                  <div><dt>车系</dt><dd><span class="read-value">科迈罗</span><input class="edit-value" value="科迈罗" /></dd></div>
+                  <div><dt>车型</dt><dd><span class="read-value">2.0T 运动版</span><input class="edit-value" value="2.0T 运动版" /></dd></div>
+                  <div><dt>公开售价</dt><dd><span class="read-value">22.80 万元</span><input class="edit-value" value="22.80" /></dd></div>
+                  <div><dt>首次上牌</dt><dd><span class="read-value">2022-06</span><input class="edit-value" type="month" value="2022-06" /></dd></div>
+                  <div><dt>表显里程</dt><dd><span class="read-value">2.8 万公里</span><input class="edit-value" value="2.8" /></dd></div>
+                  <div><dt>车身颜色</dt><dd><span class="read-value">珍珠白</span><input class="edit-value" value="珍珠白" /></dd></div>
+                  <div><dt>内饰颜色</dt><dd><span class="read-value">黑色</span><input class="edit-value" value="黑色" /></dd></div>
+                  <div><dt>车辆所在地</dt><dd><span class="read-value">深圳·南山</span><input class="edit-value" value="深圳·南山" /></dd></div>
+                  <div class="drawer-dl-wide"><dt>车辆描述</dt><dd><span class="read-value">原厂车漆，全程 4S 店保养，支持第三方检测。</span><textarea class="edit-value" rows="3">原厂车漆，全程 4S 店保养，支持第三方检测。</textarea></dd></div>
+                </dl>
+              </section>
+
+              <section class="drawer-section internal-section">
+                <div class="drawer-section-title"><h3>内部资料</h3><span>仅内部可见</span></div>
+                <dl class="drawer-dl vehicle-dl">
+                  <div><dt>VIN 码</dt><dd><span class="read-value">LSGPC52U9NF******</span><input class="edit-value" value="LSGPC52U9NF123456" /></dd></div>
+                  <div><dt>车牌号</dt><dd><span class="read-value">粤B·***62</span><input class="edit-value" value="粤B·A1262" /></dd></div>
+                  <div><dt>采购价格</dt><dd><span class="read-value">18.60 万元</span><input class="edit-value" value="18.60" /></dd></div>
+                  <div class="drawer-dl-wide"><dt>内部备注</dt><dd><span class="read-value">优先推荐给关注性能车的客户。</span><textarea class="edit-value" rows="3">优先推荐给关注性能车的客户。</textarea></dd></div>
+                </dl>
+              </section>
+
+              <section class="drawer-section">
+                <h3>状态与系统信息</h3>
+                <dl class="drawer-dl vehicle-dl">
+                  <div><dt>车辆编号</dt><dd data-vehicle-system-id>VEH-202608-0126</dd></div>
+                  <div><dt>上下架状态</dt><dd><span class="status assigned" data-vehicle-system-status>已上架</span></dd></div>
+                  <div><dt>创建时间</dt><dd>2026-08-02 15:20</dd></div>
+                  <div><dt>更新时间</dt><dd>2026-08-05 10:18</dd></div>
+                </dl>
+              </section>
+
+              <section class="vehicle-list-validation" data-vehicle-list-validation hidden>
+                <strong>当前车辆暂不能上架</strong>
+                <p>请先补充：公开售价、车辆图片。</p>
+              </section>
+
+              <section class="drawer-action-section" data-vehicle-edit-actions>
+                <h3>操作</h3>
+                <div class="drawer-actions">
+                  <button class="read-value" type="button" data-action="show-vehicle-edit">编辑车辆</button>
+                  <button class="read-value" type="button" data-action="toggle-vehicle-shelf" data-vehicle-shelf-button data-current-status="listed">下架</button>
+                  <button class="edit-value" type="button" data-action="cancel-vehicle-edit">取消</button>
+                  <button class="primary-button edit-value" type="button" data-action="save-vehicle-edit">保存</button>
+                </div>
               </section>
             </aside>
           </div>
@@ -328,7 +630,6 @@
               <div class="panel-header">
                 <div>
                   <h2>销售列表</h2>
-                  <p>维护销售启停、轮询排序，并在详情抽屉中绑定 Worker。</p>
                 </div>
               </div>
 
@@ -356,50 +657,42 @@
               </div>
 
               <div class="management-table-card">
-                <table class="management-table">
+                <table class="management-table sales-table">
                   <thead>
                     <tr>
                       <th>销售姓名</th>
-                      <th>手机号</th>
-                      <th>微信号</th>
                       <th>状态</th>
                       <th>当前 Worker</th>
                       <th>Worker 状态</th>
-                      <th>排序</th>
-                      <th>今日</th>
-                      <th>阻塞</th>
+                      <th>轮询排序</th>
+                      <th>今日分配</th>
+                      <th>阻塞任务</th>
                     </tr>
                   </thead>
                   <tbody>
-                    <tr class="selected" data-action="show-sales-detail">
-                      <td class="lead-cell"><strong>张伟</strong><small>一店销售</small></td>
-                      <td>138****1234</td>
-                      <td>wx_zhang</td>
+                    <tr data-action="show-sales-detail">
+                      <td class="lead-cell"><strong>张伟</strong></td>
                       <td><span class="status assigned">启用</span></td>
                       <td>Mac-01 展厅机</td>
-                      <td><span class="status assigned">在线 / 空闲</span></td>
+                      <td><span class="status assigned">在线 · 空闲</span></td>
                       <td>1</td>
                       <td>8</td>
                       <td>0</td>
                     </tr>
                     <tr data-action="show-sales-detail">
-                      <td class="lead-cell"><strong>王敏</strong><small>二店销售</small></td>
-                      <td>139****9081</td>
-                      <td>wx_wangmin</td>
+                      <td class="lead-cell"><strong>王敏</strong></td>
                       <td><span class="status assigned">启用</span></td>
                       <td>Mac-02 客服机</td>
-                      <td><span class="status unassigned">离线 / 空闲</span></td>
+                      <td><span class="status unassigned">离线</span></td>
                       <td>2</td>
                       <td>6</td>
                       <td>1</td>
                     </tr>
                     <tr data-action="show-sales-detail">
-                      <td class="lead-cell"><strong>李强</strong><small>备用销售</small></td>
-                      <td>136****4210</td>
-                      <td>wx_liqiang</td>
+                      <td class="lead-cell"><strong>李强</strong></td>
                       <td><span class="status invalid">停用</span></td>
                       <td>未绑定</td>
-                      <td>-</td>
+                      <td><span class="status unassigned">未绑定</span></td>
                       <td>3</td>
                       <td>0</td>
                       <td>0</td>
@@ -409,7 +702,7 @@
               </div>
             </section>
 
-            <aside class="panel management-drawer sales-detail-drawer" data-sales-drawer>
+            <aside class="panel management-drawer sales-detail-drawer closed" data-sales-drawer>
               <div class="drawer-mode is-active" data-sales-mode="detail">
                 <div class="drawer-head">
                   <div>
@@ -426,7 +719,7 @@
                     <div><dt>微信号</dt><dd><span class="read-value">wx_zhang</span><input class="edit-value" value="wx_zhang" /></dd></div>
                     <div>
                       <dt>
-                        <span class="field-label">状态 <span class="tip-icon" tabindex="0" data-tooltip="启用/关闭分配线索" aria-label="状态说明">!</span></span>
+                        <span class="field-label">状态 <span class="tip-icon" tabindex="0" data-tooltip="启用后参与线索轮询，停用后不再分配新线索" aria-label="状态说明">!</span></span>
                       </dt>
                       <dd><span class="read-value status assigned">启用</span><select class="edit-value"><option>启用</option><option>停用</option></select></dd>
                     </div>
@@ -436,8 +729,8 @@
                 <section class="drawer-section">
                   <h3>Worker 信息</h3>
                   <dl class="drawer-dl">
-                    <div><dt>当前 Worker</dt><dd><span class="read-value">Mac-01 展厅机</span><select class="edit-value"><option>Mac-01 展厅机</option><option>Mac-02 客服机（离线 / 启用）</option><option>清空 Worker</option></select></dd></div>
-                    <div><dt>Worker 状态</dt><dd>在线 / 空闲</dd></div>
+                    <div><dt>当前 Worker</dt><dd><span class="read-value">Mac-01 展厅机</span><select class="edit-value" data-sales-worker-select><option>Mac-01 展厅机</option><option>Mac-02 客服机（离线 · 启用）</option><option>清空 Worker</option></select></dd></div>
+                    <div><dt>Worker 状态</dt><dd>在线 · 空闲</dd></div>
                     <div><dt>最近心跳</dt><dd>刚刚</dd></div>
                   </dl>
                 </section>
@@ -499,7 +792,6 @@
               <div class="panel-header">
                 <div>
                   <h2>Worker 列表</h2>
-                  <p>Worker Token 不在列表展示，只在详情抽屉中查看。</p>
                 </div>
               </div>
 
@@ -524,46 +816,38 @@
                     <tr>
                       <th>Worker 名称</th>
                       <th>Worker ID</th>
-                      <th>状态</th>
-                      <th>客户端</th>
-                      <th>在线</th>
-                      <th>运行</th>
-                      <th>当前任务</th>
-                      <th>绑定销售</th>
+                      <th>启用状态</th>
+                      <th>客户端绑定</th>
+                      <th>当前状态</th>
+                      <th>当前销售</th>
                       <th>最近心跳</th>
                     </tr>
                   </thead>
                   <tbody>
-                    <tr class="selected" data-action="show-worker-detail">
-                      <td class="lead-cell"><strong>Mac-01 展厅机</strong><small>主接待电脑</small></td>
-                      <td>wk_20260605_8f3a2c9b</td>
+                    <tr data-action="show-worker-detail">
+                      <td class="lead-cell"><strong>Mac-01 展厅机</strong></td>
+                      <td><span class="table-copy"><span title="wk_20260605_8f3a2c9b">wk_20260605_8f3a2c9b</span><button type="button" data-action="copy-value" data-copy-value="wk_20260605_8f3a2c9b">复制</button></span></td>
                       <td><span class="status assigned">启用</span></td>
                       <td><span class="status assigned">已绑定</span></td>
-                      <td><span class="status assigned">在线</span></td>
-                      <td><span class="status assigned">空闲</span></td>
-                      <td>-</td>
+                      <td><span class="status assigned">在线 · 空闲</span></td>
                       <td>张伟</td>
                       <td>刚刚</td>
                     </tr>
                     <tr data-action="show-worker-detail">
-                      <td class="lead-cell"><strong>Mac-02 客服机</strong><small>客服区电脑</small></td>
-                      <td>wk_20260605_2a91bd45</td>
+                      <td class="lead-cell"><strong>Mac-02 客服机</strong></td>
+                      <td><span class="table-copy"><span title="wk_20260605_2a91bd45">wk_20260605_2a91bd45</span><button type="button" data-action="copy-value" data-copy-value="wk_20260605_2a91bd45">复制</button></span></td>
                       <td><span class="status assigned">启用</span></td>
                       <td><span class="status assigned">已绑定</span></td>
                       <td><span class="status unassigned">离线</span></td>
-                      <td><span class="status assigned">空闲</span></td>
-                      <td>-</td>
                       <td>王敏</td>
                       <td>12 分钟前</td>
                     </tr>
                     <tr data-action="show-worker-detail">
-                      <td class="lead-cell"><strong>Mac-03 备用机</strong><small>未投入使用</small></td>
-                      <td>wk_20260605_b7349c10</td>
+                      <td class="lead-cell"><strong>Mac-03 备用机</strong></td>
+                      <td><span class="table-copy"><span title="wk_20260605_b7349c10">wk_20260605_b7349c10</span><button type="button" data-action="copy-value" data-copy-value="wk_20260605_b7349c10">复制</button></span></td>
                       <td><span class="status invalid">停用</span></td>
                       <td><span class="status unassigned">未绑定</span></td>
                       <td><span class="status unassigned">离线</span></td>
-                      <td><span class="status assigned">空闲</span></td>
-                      <td>-</td>
                       <td>未绑定</td>
                       <td>暂无</td>
                     </tr>
@@ -572,7 +856,7 @@
               </div>
             </section>
 
-            <aside class="panel management-drawer worker-detail-drawer" data-worker-drawer>
+            <aside class="panel management-drawer worker-detail-drawer closed" data-worker-drawer>
               <div class="drawer-mode is-active" data-worker-mode="detail">
                 <div class="drawer-head">
                   <div>
@@ -585,8 +869,8 @@
                   <h3>基础信息</h3>
                   <dl class="drawer-dl">
                     <div><dt>Worker 名称</dt><dd><span class="read-value">Mac-01 展厅机</span><input class="edit-value" value="Mac-01 展厅机" /></dd></div>
-                    <div><dt>Worker ID</dt><dd>wk_20260605_8f3a2c9b</dd></div>
-                    <div><dt>Worker Token</dt><dd class="token-text">wkt_6f0a9d...c21b</dd></div>
+                    <div><dt>Worker ID</dt><dd class="copyable-value"><span>wk_20260605_8f3a2c9b</span><button type="button" data-action="copy-value" data-copy-value="wk_20260605_8f3a2c9b">复制</button></dd></div>
+                    <div><dt>Worker Token</dt><dd class="copyable-value token-text"><span>wkt_6f0a9d...c21b</span><button type="button" data-action="copy-value" data-copy-value="wkt_6f0a9d7e51c21b">复制</button></dd></div>
                     <div><dt>状态</dt><dd><span class="read-value status assigned">启用</span><select class="edit-value"><option>启用</option><option>停用</option></select></dd></div>
                   </dl>
                 </section>
@@ -596,7 +880,7 @@
                     <div><dt>绑定状态</dt><dd>已绑定</dd></div>
                     <div><dt>客户端实例</dt><dd>cli_9d2c...18a7</dd></div>
                     <div><dt>最近心跳</dt><dd>刚刚</dd></div>
-                    <div><dt>运行状态</dt><dd>空闲</dd></div>
+                    <div><dt>当前状态</dt><dd>在线 · 空闲</dd></div>
                   </dl>
                 </section>
                 <section class="drawer-section">
@@ -675,6 +959,7 @@
                   <select aria-label="筛选任务类型">
                     <option>全部类型</option>
                     <option>添加通讯录邀请</option>
+                    <option>AI 回复</option>
                   </select>
                 </label>
                 <label>
@@ -695,6 +980,7 @@
                     <option>全部结果</option>
                     <option>已发送添加通讯录邀请</option>
                     <option>已是好友</option>
+                    <option>回复已发送</option>
                   </select>
                 </label>
                 <label>
@@ -703,6 +989,7 @@
                     <option>全部原因</option>
                     <option>销售未绑定 Worker</option>
                     <option>手机号未找到客户</option>
+                    <option>未能恢复客户会话上下文</option>
                   </select>
                 </label>
                 <label>
@@ -741,16 +1028,49 @@
                     </tr>
                   </thead>
                   <tbody>
-                    <tr class="selected" data-task-id="TASK-1831">
-                      <td>TASK-1831</td>
+                    <tr data-task-id="TASK-1831">
+                      <td><span class="table-copy"><span>TASK-1831</span><button type="button" data-action="copy-value" data-copy-value="TASK-1831">复制</button></span></td>
                       <td>添加通讯录邀请</td>
                       <td class="lead-cell"><strong>王先生</strong><small>138****6678</small></td>
                       <td>张伟</td>
                       <td>Mac-01</td>
                       <td><span class="status running">处理中</span></td>
                       <td>-</td>
-                      <td>正在搜索手机号 / 微信号</td>
+                      <td>正在执行微信加好友</td>
                       <td>10:18</td>
+                    </tr>
+                    <tr data-task-id="TASK-1842">
+                      <td><span class="table-copy"><span>TASK-1842</span><button type="button" data-action="copy-value" data-copy-value="TASK-1842">复制</button></span></td>
+                      <td>AI 回复</td>
+                      <td class="lead-cell"><strong>林女士</strong><small>135****1086</small></td>
+                      <td>张伟</td>
+                      <td>Mac-01</td>
+                      <td><span class="status running">处理中</span></td>
+                      <td>-</td>
+                      <td>等待服务端生成回复</td>
+                      <td>10:20</td>
+                    </tr>
+                    <tr data-task-id="TASK-1841">
+                      <td><span class="table-copy"><span>TASK-1841</span><button type="button" data-action="copy-value" data-copy-value="TASK-1841">复制</button></span></td>
+                      <td>AI 回复</td>
+                      <td class="lead-cell"><strong>陈先生</strong><small>137****6028</small></td>
+                      <td>王敏</td>
+                      <td>Mac-02</td>
+                      <td><span class="status failed">失败</span></td>
+                      <td><span class="table-copy table-copy-wide"><span class="table-ellipsis" title="未能恢复客户会话上下文">未能恢复客户会话上下文</span><button type="button" data-action="copy-value" data-copy-value="未能恢复客户会话上下文">复制</button></span></td>
+                      <td>读取客户最新消息</td>
+                      <td>10:08</td>
+                    </tr>
+                    <tr data-task-id="TASK-1840">
+                      <td><span class="table-copy"><span>TASK-1840</span><button type="button" data-action="copy-value" data-copy-value="TASK-1840">复制</button></span></td>
+                      <td>AI 回复</td>
+                      <td class="lead-cell"><strong>吴先生</strong><small>138****4196</small></td>
+                      <td>张伟</td>
+                      <td>Mac-01</td>
+                      <td><span class="status completed">已完成</span></td>
+                      <td>回复已发送</td>
+                      <td>发送回执已记录</td>
+                      <td>09:53</td>
                     </tr>
                     <tr data-task-id="TASK-1830">
                       <td>TASK-1830</td>
@@ -844,11 +1164,11 @@
               </div>
             </section>
 
-            <aside class="panel management-drawer task-detail-drawer" data-task-drawer>
+            <aside class="panel management-drawer task-detail-drawer closed" data-task-drawer>
               <div class="drawer-head">
                 <div>
                   <p>任务详情</p>
-                  <h2 data-task-title>TASK-1831</h2>
+                  <div class="drawer-title-copy"><h2 data-task-title>TASK-1831</h2><button type="button" data-action="copy-task-id">复制</button></div>
                 </div>
                 <button class="icon-button" type="button" data-close-drawer data-action="close-task-drawer" aria-label="关闭任务详情">×</button>
               </div>
@@ -864,7 +1184,7 @@
                   <div><dt>执行状态</dt><dd>处理中</dd></div>
                   <div><dt>业务结果</dt><dd>-</dd></div>
                   <div><dt>异常原因</dt><dd>-</dd></div>
-                  <div><dt>当前步骤</dt><dd>正在搜索手机号 / 微信号</dd></div>
+                  <div><dt>当前步骤</dt><dd>正在执行微信加好友</dd></div>
                   <div><dt>创建时间</dt><dd>2026-06-05 10:12</dd></div>
                   <div><dt>更新时间</dt><dd>2026-06-05 10:18</dd></div>
                 </dl>
@@ -886,7 +1206,7 @@
                 <dl class="drawer-dl" data-task-executor>
                   <div><dt>执行方类型</dt><dd>Worker</dd></div>
                   <div><dt>执行方</dt><dd>Mac-01 展厅机</dd></div>
-                  <div><dt>执行方状态</dt><dd>在线 / 忙碌</dd></div>
+                  <div><dt>执行方状态</dt><dd>在线 · 忙碌</dd></div>
                   <div><dt>最近心跳</dt><dd>刚刚</dd></div>
                   <div><dt>领取时间</dt><dd>2026-06-05 10:18</dd></div>
                 </dl>
@@ -898,11 +1218,11 @@
               </section>
 
               <section class="drawer-section">
-                <h3>状态流转</h3>
+                <h3>任务链路</h3>
                 <ol class="flow-list task-flow-list" data-task-flow>
-                  <li><strong>任务已创建</strong><span>pending · 10:12 · 服务端</span></li>
-                  <li><strong>任务已领取</strong><span>running · 10:18 · Mac-01</span></li>
-                  <li><strong>正在搜索手机号</strong><span>current_step · 10:18 · Mac-01</span></li>
+                  <li><strong>任务已创建</strong><span>10:12 · 服务端</span></li>
+                  <li><strong>任务已领取</strong><span>10:18 · Mac-01</span></li>
+                  <li><strong>正在执行微信加好友</strong><span>10:18 · Mac-01</span></li>
                 </ol>
               </section>
 
@@ -922,6 +1242,61 @@
             </aside>
           </div>
         </section>
+
+        <section class="screen screen-logs" data-module-content="logs" hidden>
+          <header class="screen-header">
+            <div>
+              <p>审计追溯</p>
+              <h1>操作日志</h1>
+            </div>
+          </header>
+          <div class="management-grid log-management-grid">
+            <section class="panel log-panel">
+              <div class="panel-header"><div><h2>操作记录</h2></div></div>
+              <div class="log-filter-card">
+                <label><span>搜索</span><input type="search" placeholder="搜索操作人、对象名称" /></label>
+                <label><span>模块</span><select><option>全部模块</option><option>线索管理</option><option>销售管理</option><option>Worker 管理</option><option>任务中心</option></select></label>
+                <label><span>结果</span><select><option>全部结果</option><option>成功</option><option>失败</option></select></label>
+              </div>
+              <div class="management-table-card log-table-card">
+                <table class="log-management-table">
+                  <thead><tr><th>操作时间</th><th>操作人</th><th>操作类型</th><th>操作对象</th><th>对象名称</th><th>结果</th><th>说明</th></tr></thead>
+                  <tbody>
+                    <tr data-action="show-log-detail"><td>10:22</td><td>运营小陈</td><td>更换 Worker</td><td>销售</td><td>张伟</td><td><span class="status completed">成功</span></td><td>绑定至 Mac-01 展厅机</td></tr>
+                    <tr data-action="show-log-detail"><td>10:18</td><td>系统</td><td>创建任务</td><td>任务</td><td>TASK-1831</td><td><span class="status completed">成功</span></td><td>已创建添加通讯录邀请任务</td></tr>
+                    <tr data-action="show-log-detail"><td>09:58</td><td>运营小陈</td><td>重置绑定</td><td>Worker</td><td>Mac-02 客服机</td><td><span class="status completed">成功</span></td><td>新 Token 已生成，旧客户端失效</td></tr>
+                    <tr data-action="show-log-detail"><td>09:42</td><td>运营小陈</td><td>补充备注</td><td>任务</td><td>TASK-1830</td><td><span class="status completed">成功</span></td><td>补充邀请发送结果说明</td></tr>
+                    <tr data-action="show-log-detail"><td>09:15</td><td>运营小陈</td><td>解除阻塞</td><td>任务</td><td>TASK-1828</td><td><span class="status completed">成功</span></td><td>销售已绑定可用 Worker</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <aside class="panel management-drawer log-detail-drawer closed" data-log-drawer>
+              <div class="drawer-head">
+                <div><p>日志详情</p><h2>更换 Worker</h2></div>
+                <button class="icon-button" type="button" data-close-drawer aria-label="关闭日志详情">×</button>
+              </div>
+              <section class="drawer-section">
+                <h3>操作信息</h3>
+                <dl class="drawer-dl">
+                  <div><dt>操作人</dt><dd>运营小陈</dd></div>
+                  <div><dt>操作时间</dt><dd>2026-06-05 10:22</dd></div>
+                  <div><dt>操作对象</dt><dd>销售 · 张伟</dd></div>
+                  <div><dt>操作结果</dt><dd><span class="status completed">成功</span></dd></div>
+                </dl>
+              </section>
+              <section class="drawer-section">
+                <h3>变更内容</h3>
+                <dl class="drawer-dl">
+                  <div><dt>变更前</dt><dd>未绑定 Worker</dd></div>
+                  <div><dt>变更后</dt><dd>绑定 Mac-01 展厅机</dd></div>
+                  <div><dt>说明</dt><dd>销售后续可参与自动任务执行</dd></div>
+                </dl>
+              </section>
+            </aside>
+          </div>
+        </section>
       </main>
     </div>
 
@@ -935,7 +1310,8 @@
         <div class="modal-body">
           <div class="duplicate-alert" data-duplicate-note hidden>
             <strong>该手机号已存在，不能重复新建</strong>
-            <p>重复录入后，本次备注将追加到原线索。</p>
+            <p data-duplicate-summary>已重复录入 3 次 · 最近重复日期 2026-06-02 14:30</p>
+            <p>本次备注已追加到原线索，原分配关系保持不变。</p>
           </div>
 
           <section class="form-section">
@@ -950,11 +1326,11 @@
             <h3>联系方式</h3>
             <div class="contact-grid">
               <label>
-                <span>手机 <b>*</b></span>
+                <span>手机号 <b>*</b></span>
                 <input type="tel" value="13899996678" aria-required="true" data-lead-field="phone" />
               </label>
               <label>
-                <span>微信</span>
+                <span>微信号</span>
                 <input type="text" value="wx_car_2026" data-lead-field="wechat" />
               </label>
               <label>
@@ -1052,10 +1428,10 @@
               <label><span>手机号</span><input placeholder="请输入手机号" /></label>
               <label><span>微信号</span><input placeholder="请输入微信号" /></label>
               <label>
-                <span class="field-label">状态 <span class="tip-icon" tabindex="0" data-tooltip="启用/关闭分配线索" aria-label="状态说明">!</span></span>
+                <span class="field-label">状态 <span class="tip-icon" tabindex="0" data-tooltip="启用后参与线索轮询，停用后不再分配新线索" aria-label="状态说明">!</span></span>
                 <select><option>启用</option><option>停用</option></select>
               </label>
-              <label><span>选择 Worker</span><select><option>请选择 Worker，可暂不绑定</option><option>Mac-02 客服机（离线 / 启用）</option></select></label>
+              <label><span>选择 Worker</span><select><option>请选择 Worker，可暂不绑定</option><option>Mac-02 客服机（离线 · 启用）</option></select></label>
             </div>
             <p class="drawer-hint">如需后续绑定或更换 Worker，请进入销售详情抽屉，点击“编辑销售”处理。</p>
           </section>
@@ -1087,7 +1463,7 @@
         </div>
         <footer>
           <button type="button" data-close-modal>取消</button>
-          <button class="primary-button" type="button" data-close-modal>保存</button>
+          <button class="primary-button" type="button" data-action="save-worker-design">保存</button>
         </footer>
       </section>
     </div>
@@ -1120,7 +1496,122 @@
       </section>
     </div>
 
+    <div class="modal-backdrop" data-modal="vehicle-create" hidden>
+      <section class="modal vehicle-create-modal" aria-label="新增车辆">
+        <header><h2>新增车辆</h2></header>
+        <div class="form-stack">
+          <label><span>车辆展示名称 <b>*</b></span><input type="text" placeholder="例如：2022 款 2.0T 运动版" data-new-vehicle-name /></label>
+          <div class="generated-note vehicle-generated-note">
+            <strong>保存后由系统自动处理</strong>
+            <span>生成车辆编号</span>
+            <span>车辆默认为已下架</span>
+            <span>保存后在详情中上传图片和补充资料</span>
+          </div>
+        </div>
+        <footer>
+          <button type="button" data-close-modal>取消</button>
+          <button class="primary-button" type="button" data-action="save-new-vehicle">保存</button>
+        </footer>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" data-modal="vehicle-unsaved" hidden>
+      <section class="modal small-modal">
+        <header><h2>放弃未保存的修改？</h2></header>
+        <p class="modal-copy">当前修改尚未保存，是否放弃修改？</p>
+        <footer><button type="button" data-close-modal>继续编辑</button><button class="danger-button" type="button" data-action="discard-vehicle-edit">放弃修改</button></footer>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" data-modal="vehicle-list-confirm" hidden>
+      <section class="modal small-modal">
+        <header><h2>确认上架车辆</h2></header>
+        <p class="modal-copy">上架后，该车辆将进入客服查询和回复范围，是否确认上架？</p>
+        <footer><button type="button" data-close-modal>取消</button><button class="primary-button" type="button" data-action="confirm-vehicle-list">确认上架</button></footer>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" data-modal="vehicle-unlist" hidden>
+      <section class="modal small-modal">
+        <header><h2>确认下架车辆</h2></header>
+        <p class="modal-copy">下架后，该车辆将不再进入新的客服查询、推荐和回复，历史消息不受影响。是否确认下架？</p>
+        <footer><button type="button" data-close-modal>取消</button><button class="danger-button" type="button" data-action="confirm-vehicle-unlist">确认下架</button></footer>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" data-modal="vehicle-image-delete" hidden>
+      <section class="modal small-modal">
+        <header><h2>删除车辆图片</h2></header>
+        <p class="modal-copy" data-vehicle-image-delete-copy>删除后无法恢复，是否确认删除当前图片？</p>
+        <footer><button type="button" data-close-modal>取消</button><button class="danger-button" type="button" data-close-modal data-vehicle-image-delete-confirm>确认删除</button></footer>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" data-modal="vehicle-image-preview" hidden>
+      <section class="modal vehicle-image-preview-modal">
+        <header><h2>车辆图片预览</h2></header>
+        <img src="./assets/vehicles/vehicle-01.jpg" alt="车辆大图预览" data-vehicle-preview-image />
+        <footer><button type="button" data-close-modal>关闭</button></footer>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" data-modal="vehicle-import" hidden>
+      <section class="modal vehicle-import-modal" aria-label="Excel 导入车辆">
+        <header><div><h2>Excel 导入车辆</h2><p>仅接受系统最新模板</p></div></header>
+        <ol class="import-stepper" aria-label="导入步骤">
+          <li class="is-active" data-import-step-indicator="1"><span>1</span>上传文件</li>
+          <li data-import-step-indicator="2"><span>2</span>预览校验</li>
+          <li data-import-step-indicator="3"><span>3</span>确认结果</li>
+        </ol>
+
+        <div class="vehicle-import-body">
+          <section class="import-stage is-active" data-import-stage="1">
+            <div class="import-upload-zone">
+              <strong>上传车辆 Excel</strong>
+              <p>仅支持 .xlsx，最大 8MB，单次最多 2000 行</p>
+              <button class="primary-button" type="button" data-action="select-vehicle-import">选择文件</button>
+            </div>
+            <button class="text-button" type="button" data-action="download-vehicle-template">下载最新模板</button>
+            <p class="import-footnote">上传和解析阶段不会写入正式车辆数据，Excel 不导入车辆图片。</p>
+          </section>
+
+          <section class="import-stage" data-import-stage="2">
+            <div class="import-summary-grid">
+              <article><span>车辆总数</span><strong>126</strong></article>
+              <article><span>新增</span><strong>82</strong></article>
+              <article><span>更新</span><strong>44</strong></article>
+              <article><span>错误</span><strong data-import-error-count>0</strong></article>
+            </div>
+            <div class="import-preview-panel" data-import-preview="valid">
+              <div class="import-preview-head"><strong>校验通过</strong><span>更新车辆的 Excel 空白字段不会清空系统原值</span></div>
+              <table><thead><tr><th>类型</th><th>位置</th><th>车辆展示名称</th><th>车辆编号</th><th>公开售价</th></tr></thead><tbody><tr><td><span class="status assigned">新增</span></td><td>第 2 行</td><td>2023 款 精英版</td><td>导入后生成</td><td>18.60 万</td></tr><tr><td><span class="status running">更新</span></td><td>第 3 行</td><td>2022 款 运动版</td><td>VEH-202608-0126</td><td>22.80 万</td></tr></tbody></table>
+            </div>
+            <div class="import-preview-panel import-error-panel" data-import-preview="invalid" hidden>
+              <div class="import-preview-head"><strong>发现 3 个数据错误</strong><span>请修正文件后重新上传，不支持跳过错误继续导入</span></div>
+              <ul class="import-error-list"><li><b>第 12 行“公开售价”</b><span>格式错误，请填写数字。</span></li><li><b>第 18 行“车辆展示名称”</b><span>内容为空，请填写车辆展示名称。</span></li><li><b>第 18 行“首次上牌”</b><span>日期格式错误，请按 YYYY-MM 填写。</span></li></ul>
+            </div>
+          </section>
+
+          <section class="import-stage" data-import-stage="3">
+            <div class="import-result" data-import-result="success">
+              <span class="import-result-icon">✓</span><h3>导入成功</h3><p>新增 82 辆，更新 44 辆。</p>
+            </div>
+            <div class="import-result import-result-error" data-import-result="failed" hidden>
+              <span class="import-result-icon">!</span><h3>导入失败</h3><p>本次未写入任何数据，请稍后重试。</p><code>错误编号：IMPORT-20260805-4F8A</code>
+            </div>
+          </section>
+        </div>
+
+        <footer>
+          <button type="button" data-close-modal data-import-cancel>取消</button>
+          <button type="button" data-action="back-import-step" data-import-back hidden>上一步</button>
+          <button class="primary-button" type="button" data-action="confirm-vehicle-import" data-import-confirm hidden>确认导入</button>
+          <button class="primary-button" type="button" data-action="finish-vehicle-import" data-import-finish hidden>返回车辆列表</button>
+        </footer>
+      </section>
+    </div>
+
     <div class="app-toast" data-toast hidden></div>
-    <script src="./ops-admin.js?v=design-audit-20260605g"></script>
+    <script src="./ops-admin.js?v=auth-design-20260805a"></script>
   </body>
 </html>

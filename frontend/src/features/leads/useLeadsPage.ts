@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { ApiError, formatApiError } from "../../shared/api/client";
+import { ApiError, formatBusinessError } from "../../shared/api/client";
 import { getLeadDetail, getLeadStats, listLeads } from "./api";
 import type { LeadDetail, LeadListItem, LeadListQuery, LeadStats, LeadStatus } from "./types";
 
@@ -51,21 +51,23 @@ export function useLeadsPage() {
     try {
       const data = await listLeads(query, signal);
       if (signal?.aborted || requestId !== listRequestIdRef.current) {
-        return;
+        return false;
       }
       setItems(data.items);
       setTotal(data.total);
       setSelectedIds(new Set());
       setActiveLeadId((current) => current ?? data.items[0]?.id ?? null);
+      return true;
     } catch (err) {
       if (signal?.aborted || isAbortError(err) || requestId !== listRequestIdRef.current) {
-        return;
+        return false;
       }
       if (err instanceof ApiError) {
-        setError(formatApiError(err, "线索列表加载失败，请稍后重试。"));
+        setError(formatBusinessError(err, "线索列表加载失败，请稍后重试。"));
       } else {
         setError("线索列表加载失败，请稍后重试。");
       }
+      return false;
     } finally {
       if (!signal?.aborted && requestId === listRequestIdRef.current) {
         setLoading(false);
@@ -79,15 +81,18 @@ export function useLeadsPage() {
       if (!signal?.aborted) {
         setStats(data);
       }
+      return !signal?.aborted;
     } catch (err) {
       if (!signal?.aborted && !isAbortError(err)) {
         setStats(null);
       }
+      return false;
     }
   }, []);
 
   const refresh = useCallback(async () => {
-    await Promise.all([loadLeads(), loadStats()]);
+    const results = await Promise.all([loadLeads(), loadStats()]);
+    return results.every(Boolean);
   }, [loadLeads, loadStats]);
 
   useEffect(() => {
@@ -102,7 +107,7 @@ export function useLeadsPage() {
       setDetail(null);
       setDetailError(null);
       setDetailLoading(false);
-      return;
+      return true;
     }
 
     const requestId = ++detailRequestIdRef.current;
@@ -115,11 +120,13 @@ export function useLeadsPage() {
         setDetail(data);
         setDetailError(null);
       }
+      return !signal?.aborted && requestId === detailRequestIdRef.current;
     } catch (err) {
       if (!signal?.aborted && !isAbortError(err) && requestId === detailRequestIdRef.current) {
         setDetail(null);
-        setDetailError(formatApiError(err, "线索详情加载失败，请稍后重试。"));
+        setDetailError(formatBusinessError(err, "线索详情加载失败，请稍后重试。"));
       }
+      return false;
     } finally {
       if (!signal?.aborted && requestId === detailRequestIdRef.current) {
         setDetailLoading(false);

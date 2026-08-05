@@ -275,6 +275,15 @@ def guard_synthesized_reply(
                 "guard 不提供客户可见替代话术。"
             ),
         )
+    if has_explicit_customer_visible_handoff_marker(reply):
+        return repair_decision(
+            "explicit_handoff_marker_requires_brain_repair",
+            candidate,
+            repair_instruction=(
+                "候选回复暴露了转人工或人工客服链路。请 Brain 保留必要的边界说明和后续联系安排，"
+                "但改写为自然的客户可见表达；guard 不提供客户可见替代话术。"
+            ),
+        )
 
     has_structured = has_structured_evidence(evidence_pack)
     rag_used = bool(candidate.get("rag_used"))

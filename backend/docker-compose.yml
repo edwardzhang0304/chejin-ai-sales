@@ -15,11 +15,25 @@ services:
       AUTO_CREATE_TABLES: ${AUTO_CREATE_TABLES:-false}
       DOCS_ENABLED: ${DOCS_ENABLED:-true}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,null}
+      ADMIN_COOKIE_SECURE: ${ADMIN_COOKIE_SECURE:-false}
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:-dev-only-internal-service-token-change-before-production}
       C3_OMNIAUTO_CONFIG_PATH: ${C3_OMNIAUTO_CONFIG_PATH:-/app/configs/chejin_c3_brain.json}
+      WECHAT_KNOWLEDGE_TENANT: ${WECHAT_KNOWLEDGE_TENANT:-chejin}
+      WECHAT_STORAGE_BACKEND: postgres
+      WECHAT_POSTGRES_DSN: ${WECHAT_POSTGRES_DSN:-postgresql://chejin:chejin_password@db:5432/chejin_leads}
+      WECHAT_POSTGRES_SCHEMA: ${WECHAT_POSTGRES_SCHEMA:-wechat_ai_customer_service}
+      WECHAT_POSTGRES_MIRROR_FILES: "false"
+      OPENAI_FLASH_REASONING_EFFORT: ${OPENAI_FLASH_REASONING_EFFORT:-xhigh}
+      OPENAI_PRO_REASONING_EFFORT: ${OPENAI_PRO_REASONING_EFFORT:-xhigh}
+      OMNIAUTO_KNOWLEDGE_TENANT: ${WECHAT_KNOWLEDGE_TENANT:-chejin}
+      OMNIAUTO_KNOWLEDGE_SCHEMA: ${WECHAT_POSTGRES_SCHEMA:-wechat_ai_customer_service}
+      VEHICLE_IMAGE_STORAGE_ROOT: /app/data/vehicle-images
       WAIT_FOR_DB: "1"
       RUN_MIGRATIONS: "1"
     ports:
       - "${API_PORT:-8000}:8000"
+    volumes:
+      - chejin_vehicle_images:/app/data/vehicle-images
     depends_on:
       db:
         condition: service_healthy
@@ -57,3 +71,4 @@ services:
 
 volumes:
   chejin_leads_pgdata:
+  chejin_vehicle_images:

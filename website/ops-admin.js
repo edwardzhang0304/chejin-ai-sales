@@ -8,6 +8,93 @@ const OPERATOR_HEADERS = {
   "X-Operator-Role": "admin",
 };
 
+const STATIC_DESIGN_PREVIEW = window.location.port === "8790" || window.location.protocol === "file:";
+
+const authParams = new URLSearchParams(window.location.search);
+const loginView = document.querySelector("[data-login-view]");
+const appShell = document.querySelector("[data-app-shell]");
+const loginForm = document.querySelector("[data-login-form]");
+const loginUsername = document.querySelector("[data-login-username]");
+const loginPassword = document.querySelector("[data-login-password]");
+const loginSubmit = document.querySelector("[data-login-submit]");
+const loginSubmitLabel = document.querySelector("[data-login-submit-label]");
+const loginSpinner = document.querySelector("[data-login-spinner]");
+const loginAlert = document.querySelector("[data-login-alert]");
+const passwordToggle = document.querySelector("[data-password-toggle]");
+const accountButton = document.querySelector("[data-account-button]");
+const accountMenu = document.querySelector("[data-account-menu]");
+
+const setAuthenticatedView = (authenticated) => {
+  document.body.classList.toggle("is-login", !authenticated);
+  loginView.hidden = authenticated;
+  appShell.hidden = !authenticated;
+  if (authenticated) {
+    accountMenu.hidden = true;
+    accountButton?.setAttribute("aria-expanded", "false");
+  } else {
+    loginForm?.reset();
+    loginPassword.type = "password";
+    passwordToggle?.setAttribute("aria-label", "显示密码");
+    passwordToggle?.setAttribute("aria-pressed", "false");
+    loginSubmitLabel.textContent = "登录";
+    loginSpinner.hidden = true;
+    loginSubmit.disabled = true;
+  }
+};
+
+const loginMessages = {
+  invalid: "账号或密码错误",
+  disabled: "账号已停用，请联系管理员",
+  network: "暂时无法登录，请稍后重试",
+  expired: "登录已失效，请重新登录",
+};
+
+const setLoginMessage = (stateName) => {
+  const message = loginMessages[stateName];
+  loginAlert.hidden = !message;
+  loginAlert.textContent = message || "";
+  loginAlert.classList.toggle("is-session", stateName === "expired");
+};
+
+const syncLoginSubmit = () => {
+  loginSubmit.disabled = !(loginUsername.value.trim() && loginPassword.value);
+};
+
+const initialAuthState = authParams.get("auth");
+const showAppInitially = initialAuthState === "app" || (!initialAuthState && authParams.has("module"));
+setAuthenticatedView(showAppInitially);
+if (!showAppInitially) setLoginMessage(initialAuthState || "login");
+
+loginUsername?.addEventListener("input", syncLoginSubmit);
+loginPassword?.addEventListener("input", syncLoginSubmit);
+
+passwordToggle?.addEventListener("click", () => {
+  const reveal = loginPassword.type === "password";
+  loginPassword.type = reveal ? "text" : "password";
+  passwordToggle.setAttribute("aria-label", reveal ? "隐藏密码" : "显示密码");
+  passwordToggle.setAttribute("aria-pressed", String(reveal));
+});
+
+loginForm?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (loginSubmit.disabled) return;
+  loginSubmit.disabled = true;
+  loginSubmitLabel.textContent = "登录中";
+  loginSpinner.hidden = false;
+  loginAlert.hidden = true;
+  window.setTimeout(() => {
+    loginSubmitLabel.textContent = "登录";
+    loginSpinner.hidden = true;
+    setAuthenticatedView(true);
+  }, 650);
+});
+
+accountButton?.addEventListener("click", () => {
+  const nextExpanded = accountButton.getAttribute("aria-expanded") !== "true";
+  accountButton.setAttribute("aria-expanded", String(nextExpanded));
+  accountMenu.hidden = !nextExpanded;
+});
+
 const statusMeta = {
   assigned: { label: "已分配", className: "assigned" },
   unassigned: { label: "未分配", className: "unassigned" },
@@ -15,15 +102,20 @@ const statusMeta = {
 };
 
 const state = {
-  apiReady: true,
+  apiReady: !STATIC_DESIGN_PREVIEW,
   module: null,
-  leadsLoaded: false,
+  leadsLoaded: STATIC_DESIGN_PREVIEW,
   leads: [],
   sales: [],
   selectedIds: new Set(),
   activeLeadId: null,
   pendingRestoreLeadId: null,
   invalidMode: "single",
+  vehicleEditing: false,
+  vehicleImportStep: 1,
+  vehicleImportPreview: "valid",
+  vehicleImportResult: "success",
+  pendingVehicleClose: false,
   page: 1,
   pageSize: 20,
   total: 0,
@@ -127,7 +219,7 @@ const staticTaskDetails = {
       执行状态: "处理中",
       业务结果: "-",
       异常原因: "-",
-      当前步骤: "正在搜索手机号 / 微信号",
+      当前步骤: "正在执行微信加好友",
       创建时间: "2026-06-05 10:12",
       更新时间: "2026-06-05 10:18",
     },
@@ -141,14 +233,14 @@ const staticTaskDetails = {
     executor: {
       执行方类型: "Worker",
       执行方: "Mac-01 展厅机",
-      执行方状态: "在线 / 忙碌",
+      执行方状态: "在线 · 忙碌",
       最近心跳: "刚刚",
       领取时间: "2026-06-05 10:18",
     },
     flow: [
-      ["任务已创建", "pending · 10:12 · 服务端"],
-      ["任务已领取", "running · 10:18 · Mac-01"],
-      ["正在搜索手机号", "current_step · 10:18 · Mac-01"],
+      ["任务已创建", "10:12 · 服务端"],
+      ["任务已领取", "10:18 · Mac-01"],
+      ["正在执行微信加好友", "10:18 · Mac-01"],
     ],
     note: "暂无备注",
     actions: ["查看执行方", "取消任务", "补充备注"],
@@ -175,16 +267,16 @@ const staticTaskDetails = {
     executor: {
       执行方类型: "Worker",
       执行方: "Mac-02 客服机",
-      执行方状态: "在线 / 空闲",
+      执行方状态: "在线 · 空闲",
       最近心跳: "刚刚",
       领取时间: "2026-06-05 09:35",
     },
     advice: "已发送添加通讯录邀请，不代表客户已同意好友申请。",
     adviceTitle: "结果说明",
     flow: [
-      ["任务已创建", "pending · 09:30 · 服务端"],
-      ["任务已领取", "running · 09:35 · Mac-02"],
-      ["任务完成", "completed · 09:42 · invite_sent"],
+      ["任务已创建", "09:30 · 服务端"],
+      ["任务已领取", "09:35 · Mac-02"],
+      ["已发送添加通讯录邀请", "09:42 · Mac-02"],
     ],
     note: "暂无备注",
     actions: ["查看执行结果", "查看执行方", "补充备注"],
@@ -210,15 +302,15 @@ const staticTaskDetails = {
     executor: {
       执行方类型: "Worker",
       执行方: "Mac-01 展厅机",
-      执行方状态: "在线 / 空闲",
+      执行方状态: "在线 · 空闲",
       最近心跳: "刚刚",
       领取时间: "2026-06-05 09:12",
     },
     flow: [
-      ["任务已创建", "pending · 09:10 · 服务端"],
-      ["任务已领取", "running · 09:12 · Mac-01"],
-      ["搜索手机号", "current_step · 09:13 · Mac-01"],
-      ["执行失败", "failed · 09:18 · PHONE_NOT_FOUND"],
+      ["任务已创建", "09:10 · 服务端"],
+      ["任务已领取", "09:12 · Mac-01"],
+      ["执行微信加好友", "09:13 · Mac-01"],
+      ["执行失败：手机号未找到客户", "09:18 · Mac-01"],
     ],
     note: "微信搜索该手机号未找到客户。",
     actions: ["重新创建任务", "查看执行方", "补充备注", "标记线索无效"],
@@ -251,11 +343,11 @@ const staticTaskDetails = {
     advice: "该任务当前不可领取。阻塞原因：销售未绑定 Worker。建议进入销售详情，为该销售绑定可用 Worker。",
     adviceTitle: "处理建议",
     flow: [
-      ["任务已创建", "pending · 08:52 · 服务端"],
-      ["任务进入阻塞", "blocked · 08:55 · SALES_WORKER_NOT_BOUND"],
+      ["任务已创建", "08:52 · 服务端"],
+      ["任务阻塞：销售未绑定 Worker", "08:55 · 服务端"],
     ],
     note: "绑定 Worker 后，服务端可将任务恢复为待处理。",
-    actions: ["处理阻塞", "取消任务", "补充备注"],
+    actions: ["去绑定 Worker", "取消任务", "补充备注"],
   },
   "TASK-1827": {
     status: "completed",
@@ -279,16 +371,16 @@ const staticTaskDetails = {
     executor: {
       执行方类型: "Worker",
       执行方: "Mac-02 客服机",
-      执行方状态: "离线 / 空闲",
+      执行方状态: "离线",
       最近心跳: "12 分钟前",
       领取时间: "2026-06-04 16:24",
     },
     advice: "业务结果为已是好友，不代表本次重新发送了添加通讯录邀请。",
     adviceTitle: "结果说明",
     flow: [
-      ["任务已创建", "pending · 16:20 · 服务端"],
-      ["任务已领取", "running · 16:24 · Mac-02"],
-      ["任务完成", "completed · 16:33 · already_friend"],
+      ["任务已创建", "16:20 · 服务端"],
+      ["任务已领取", "16:24 · Mac-02"],
+      ["确认客户已是好友", "16:33 · Mac-02"],
     ],
     note: "客户与销售微信已存在好友关系。",
     actions: ["查看执行结果", "查看执行方", "补充备注"],
@@ -318,7 +410,7 @@ const staticTaskDetails = {
       最近心跳: "-",
       领取时间: "-",
     },
-    flow: [["任务已创建", "pending · 15:40 · 服务端"]],
+    flow: [["任务已创建，等待执行方领取", "15:40 · 服务端"]],
     note: "等待可用 Worker 领取。",
     actions: ["取消任务", "补充备注"],
   },
@@ -351,11 +443,117 @@ const staticTaskDetails = {
     advice: "任务已取消，终态不可继续回传。如仍需处理，应重新创建新任务，原取消记录保留用于追溯。",
     adviceTitle: "取消说明",
     flow: [
-      ["任务已创建", "pending · 14:20 · 服务端"],
-      ["任务已取消", "cancelled · 14:32 · 运营小陈"],
+      ["任务已创建", "14:20 · 服务端"],
+      ["任务已取消", "14:32 · 运营小陈"],
     ],
     note: "运营判断该线索暂不需要发送添加通讯录邀请。",
     actions: ["查看取消信息", "重新创建任务", "补充备注"],
+  },
+  "TASK-1842": {
+    status: "running",
+    basic: {
+      任务类型: "AI 回复",
+      执行状态: "处理中",
+      业务结果: "-",
+      异常原因: "-",
+      当前步骤: "等待服务端生成回复",
+      创建时间: "2026-06-05 10:17",
+      更新时间: "2026-06-05 10:20",
+    },
+    object: {
+      客户: "林女士",
+      手机号: "135****1086",
+      线索状态: "已分配",
+      当前销售: "张伟",
+      客户最新消息: "请问续保价格大概是多少？",
+    },
+    executor: {
+      执行方类型: "Worker",
+      执行方: "Mac-01 展厅机",
+      执行方状态: "在线 · 忙碌",
+      最近心跳: "刚刚",
+      领取时间: "2026-06-05 10:18",
+    },
+    flow: [
+      ["任务已创建", "10:17 · 服务端"],
+      ["读取客户最新消息", "10:18 · Mac-01"],
+      ["等待服务端生成回复", "10:20 · 服务端"],
+    ],
+    note: "回复生成后将进入发送前复核。",
+    actions: ["查看执行方", "取消任务", "补充备注"],
+  },
+  "TASK-1841": {
+    status: "failed",
+    basic: {
+      任务类型: "AI 回复",
+      执行状态: "失败",
+      业务结果: "-",
+      异常原因: "未能恢复客户会话上下文",
+      当前步骤: "读取客户最新消息",
+      创建时间: "2026-06-05 10:02",
+      更新时间: "2026-06-05 10:08",
+    },
+    object: {
+      客户: "陈先生",
+      手机号: "137****6028",
+      线索状态: "已分配",
+      当前销售: "王敏",
+    },
+    executor: {
+      执行方类型: "Worker",
+      执行方: "Mac-02 客服机",
+      执行方状态: "离线",
+      最近心跳: "12 分钟前",
+      领取时间: "2026-06-05 10:03",
+    },
+    advice: "未能确认目标客户会话，请核对销售绑定和客户识别信息后重新创建任务。",
+    adviceTitle: "处理建议",
+    flow: [
+      ["任务已创建", "10:02 · 服务端"],
+      ["读取客户最新消息", "10:03 · Mac-02"],
+      ["读取失败：未能恢复客户会话上下文", "10:08 · Mac-02"],
+    ],
+    note: "未发送任何回复。",
+    actions: ["重新创建任务", "查看执行方", "补充备注"],
+  },
+  "TASK-1840": {
+    status: "completed",
+    basic: {
+      任务类型: "AI 回复",
+      执行状态: "已完成",
+      业务结果: "回复已发送",
+      异常原因: "-",
+      当前步骤: "已完成",
+      创建时间: "2026-06-05 09:46",
+      更新时间: "2026-06-05 09:53",
+      完成时间: "2026-06-05 09:53",
+    },
+    object: {
+      客户: "吴先生",
+      手机号: "138****4196",
+      线索状态: "已分配",
+      当前销售: "张伟",
+      客户最新消息: "明天下午方便到店看车吗？",
+    },
+    executor: {
+      执行方类型: "Worker",
+      执行方: "Mac-01 展厅机",
+      执行方状态: "在线 · 空闲",
+      最近心跳: "刚刚",
+      领取时间: "2026-06-05 09:50",
+    },
+    advice: "回复已成功发送给客户。",
+    adviceTitle: "结果说明",
+    flow: [
+      ["客户消息已入库", "09:46 · 服务端"],
+      ["等待服务端生成回复", "09:47 · 服务端"],
+      ["执行发送前复核", "09:49 · 服务端"],
+      ["领取发送任务", "09:50 · Mac-01"],
+      ["发送微信消息", "09:52 · Mac-01"],
+      ["发送回执已记录", "09:53 · Mac-01"],
+    ],
+    note: "已按审核后的回复内容发送。",
+    actions: ["查看执行结果", "查看执行方", "补充备注"],
   },
 };
 
@@ -458,7 +656,7 @@ const buildLeadQuery = () => {
 
 const renderStats = (stats) => {
   const mapping = {
-    today_new_count: ["今日新增", "人工录入"],
+    today_new_count: ["今日新增", "今日创建"],
     assigned_count: ["已分配", "轮询完成"],
     unassigned_count: ["未分配", "待处理"],
     duplicate_event_count: ["重复录入", "备注已追加"],
@@ -501,7 +699,6 @@ const renderLeads = (data) => {
     .map((lead) => {
       const status = getStatus(lead.status);
       const checked = state.selectedIds.has(lead.id) ? "checked" : "";
-      const source = lead.source_name_snapshot || (lead.source_type === "manual" ? "人工录入" : lead.source_type || "未知来源");
       const contactSub = lead.primary_wechat_masked || "未填写微信";
       const duplicate =
         lead.duplicate_count > 0
@@ -511,7 +708,7 @@ const renderLeads = (data) => {
       return `
         <tr class="${checked ? "selected" : ""}" data-lead-id="${escapeHtml(lead.id)}">
           <td><input type="checkbox" ${checked} aria-label="选择${escapeHtml(lead.customer_name)}" data-select-lead="${escapeHtml(lead.id)}" /></td>
-          <td class="lead-cell"><strong>${escapeHtml(lead.customer_name)}</strong><small>${escapeHtml(source)} · ${escapeHtml(lead.created_by_name || "运营")}</small></td>
+          <td class="lead-cell"><strong>${escapeHtml(lead.customer_name)}</strong></td>
           <td class="contact-cell"><strong>${escapeHtml(lead.primary_phone_masked || "未填写")}</strong><small>${escapeHtml(contactSub)}</small></td>
           <td><span class="status ${status.className}">${status.label}</span></td>
           <td>${escapeHtml(lead.sales_name || "暂无")}</td>
@@ -562,7 +759,6 @@ const loadLeads = async () => {
     renderSalesFilter();
     renderLeads(leadsData);
     state.leadsLoaded = true;
-    if (state.leads[0]) await loadLeadDetail(state.activeLeadId || state.leads[0].id);
   } catch (error) {
     if (!state.leadsLoaded) markApiUnavailable(error);
     else showToast(error.message || "线索列表加载失败", "error");
@@ -636,8 +832,22 @@ const renderDefinitionList = (selector, values) => {
   const node = document.querySelector(selector);
   if (!node) return;
   node.innerHTML = Object.entries(values)
-    .map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`)
+    .map(([label, value]) => {
+      const safeLabel = escapeHtml(label);
+      const safeValue = escapeHtml(value);
+      const copyable = label === "异常原因" && value && value !== "-";
+      return `<div><dt>${safeLabel}</dt><dd${copyable ? ' class="copyable-value"' : ""}>${copyable ? `<span title="${safeValue}">${safeValue}</span><button type="button" data-action="copy-value" data-copy-value="${safeValue}">复制</button>` : safeValue}</dd></div>`;
+    })
     .join("");
+};
+
+const decorateTaskIdentifiers = () => {
+  document.querySelectorAll(".task-table tbody tr[data-task-id]").forEach((row) => {
+    const cell = row.querySelector("td:first-child");
+    if (!cell || cell.querySelector(".table-copy")) return;
+    const taskId = row.dataset.taskId || cell.textContent.trim();
+    cell.innerHTML = `<span class="table-copy"><span>${escapeHtml(taskId)}</span><button type="button" data-action="copy-value" data-copy-value="${escapeHtml(taskId)}">复制</button></span>`;
+  });
 };
 
 const renderTaskDetail = (taskId) => {
@@ -675,8 +885,14 @@ const renderTaskDetail = (taskId) => {
 
   const actions = document.querySelector("[data-task-actions]");
   if (actions) {
+    const actionMap = {
+      查看执行方: "task-jump-worker",
+      去绑定Worker: "task-jump-sales",
+      "去绑定 Worker": "task-jump-sales",
+      标记线索无效: "task-mark-lead-invalid",
+    };
     actions.innerHTML = detail.actions
-      .map((label) => `<button type="button" data-action="task-static-action">${escapeHtml(label)}</button>`)
+      .map((label) => `<button type="button" data-action="${actionMap[label] || "task-static-action"}">${escapeHtml(label)}</button>`)
       .join("");
   }
 
@@ -685,6 +901,7 @@ const renderTaskDetail = (taskId) => {
 
 const showModule = async (moduleName) => {
   state.module = moduleName;
+  window.scrollTo({ top: 0, behavior: "auto" });
   workspace.classList.remove("is-empty");
   emptyWorkspace.hidden = true;
 
@@ -695,6 +912,9 @@ const showModule = async (moduleName) => {
   moduleContents.forEach((content) => {
     content.hidden = content.dataset.moduleContent !== moduleName;
   });
+
+  document.querySelectorAll(".detail-drawer, .management-drawer").forEach((panel) => panel.classList.add("closed"));
+  document.querySelectorAll(".management-table tbody tr, .task-table tbody tr").forEach((row) => row.classList.remove("selected"));
 
   if (moduleName === "leads" && !state.leadsLoaded) await loadLeads();
 };
@@ -713,12 +933,126 @@ const setWorkerEditing = (isEditing) => {
   document.querySelector("[data-worker-drawer]")?.classList.toggle("is-editing", isEditing);
 };
 
+const setVehicleEditing = (isEditing) => {
+  state.vehicleEditing = isEditing;
+  document.querySelector("[data-vehicle-drawer]")?.classList.toggle("is-editing", isEditing);
+};
+
+const syncVehicleMainImage = (src) => {
+  const main = document.querySelector("[data-vehicle-main-image]");
+  const preview = document.querySelector("[data-vehicle-preview-image]");
+  if (main && src) main.src = src;
+  if (preview && src) preview.src = src;
+};
+
+const openVehicleDrawer = (row, editing = false) => {
+  const drawerEl = document.querySelector("[data-vehicle-drawer]");
+  if (!drawerEl) return;
+  const title = row?.querySelector(".lead-cell strong")?.textContent || "新增车辆";
+  const image = row?.querySelector("img")?.getAttribute("src") || "./assets/vehicles/vehicle-01.jpg";
+  const status = row?.dataset.vehicleStatus || "unlisted";
+  const shelfButton = drawerEl.querySelector("[data-vehicle-shelf-button]");
+  drawerEl.querySelector("[data-vehicle-drawer-title]").textContent = title;
+  syncVehicleMainImage(image);
+  shelfButton.dataset.currentStatus = status;
+  shelfButton.dataset.incomplete = "false";
+  shelfButton.textContent = status === "listed" ? "下架" : "上架";
+  const validation = drawerEl.querySelector("[data-vehicle-list-validation]");
+  if (validation) validation.hidden = true;
+  drawerEl.querySelectorAll("[data-gallery-state]").forEach((panel) => {
+    panel.hidden = true;
+  });
+  const uploadAlert = drawerEl.querySelector("[data-image-upload-alert]");
+  if (uploadAlert) uploadAlert.hidden = true;
+  drawerEl.querySelectorAll("[data-image-src]").forEach((button) => button.classList.remove("is-dragging"));
+  drawerEl.classList.remove("closed");
+  setVehicleEditing(editing);
+};
+
+const applyVehicleListState = (mode = "default") => {
+  const table = document.querySelector(".vehicle-table");
+  const pagination = document.querySelector(".vehicle-pagination");
+  document.querySelectorAll("[data-vehicle-state]").forEach((panel) => {
+    panel.hidden = panel.dataset.vehicleState !== mode;
+  });
+  const special = ["loading", "empty", "no-results", "error"].includes(mode);
+  if (table) table.hidden = special;
+  if (pagination) pagination.hidden = mode === "loading" || mode === "empty" || mode === "error";
+};
+
+const filterVehicles = () => {
+  const keyword = document.querySelector("[data-vehicle-search]")?.value.trim().toLowerCase() || "";
+  const status = document.querySelector("[data-vehicle-status-filter]")?.value || "all";
+  let visible = 0;
+  document.querySelectorAll("tr[data-vehicle-id]").forEach((row) => {
+    const matchedKeyword = !keyword || row.textContent.toLowerCase().includes(keyword);
+    const matchedStatus = status === "all" || row.dataset.vehicleStatus === status;
+    row.hidden = !(matchedKeyword && matchedStatus);
+    if (!row.hidden) visible += 1;
+  });
+  applyVehicleListState(visible ? "default" : "no-results");
+};
+
+const setVehicleImportStep = (step) => {
+  state.vehicleImportStep = step;
+  document.querySelectorAll("[data-import-stage]").forEach((stage) => {
+    stage.classList.toggle("is-active", Number(stage.dataset.importStage) === step);
+  });
+  document.querySelectorAll("[data-import-step-indicator]").forEach((indicator) => {
+    const index = Number(indicator.dataset.importStepIndicator);
+    indicator.classList.toggle("is-active", index === step);
+    indicator.classList.toggle("is-complete", index < step);
+  });
+  const cancel = document.querySelector("[data-import-cancel]");
+  const back = document.querySelector("[data-import-back]");
+  const confirm = document.querySelector("[data-import-confirm]");
+  const finish = document.querySelector("[data-import-finish]");
+  if (cancel) cancel.hidden = step === 3;
+  if (back) back.hidden = step !== 2;
+  if (confirm) {
+    confirm.hidden = step !== 2;
+    confirm.disabled = state.vehicleImportPreview === "invalid";
+  }
+  if (finish) finish.hidden = step !== 3;
+};
+
+const setVehicleImportPreview = (mode) => {
+  state.vehicleImportPreview = mode;
+  document.querySelectorAll("[data-import-preview]").forEach((panel) => {
+    panel.hidden = panel.dataset.importPreview !== mode;
+  });
+  const errorCount = document.querySelector("[data-import-error-count]");
+  if (errorCount) errorCount.textContent = mode === "invalid" ? "3" : "0";
+  setVehicleImportStep(2);
+};
+
+const setVehicleImportResult = (mode) => {
+  state.vehicleImportResult = mode;
+  document.querySelectorAll("[data-import-result]").forEach((panel) => {
+    panel.hidden = panel.dataset.importResult !== mode;
+  });
+  setVehicleImportStep(3);
+};
+
+const resetVehicleImport = () => {
+  state.vehicleImportPreview = "valid";
+  state.vehicleImportResult = "success";
+  setVehicleImportStep(1);
+};
+
 const closeModal = (modal) => {
   const backdrop = modal?.closest(".modal-backdrop") || modal;
   if (backdrop) backdrop.hidden = true;
 };
 
 const openModal = (name) => {
+  if (name === "vehicle-import") resetVehicleImport();
+  if (name === "vehicle-image-delete") {
+    const copy = document.querySelector("[data-vehicle-image-delete-copy]");
+    const confirm = document.querySelector("[data-vehicle-image-delete-confirm]");
+    if (copy) copy.textContent = "删除后无法恢复，是否确认删除当前图片？";
+    if (confirm) confirm.disabled = false;
+  }
   const modal = document.querySelector(`[data-modal="${name}"]`);
   if (modal) modal.hidden = false;
 };
@@ -799,7 +1133,7 @@ const saveLead = async (shouldContinue, button) => {
         const note = document.querySelector("[data-duplicate-note]");
         if (note) {
           note.hidden = false;
-          const text = note.querySelector("p");
+          const text = note.querySelector("[data-duplicate-summary]");
           if (text) text.textContent = error.message;
         }
       }
@@ -818,9 +1152,9 @@ const duplicatePreview = async () => {
     const note = document.querySelector("[data-duplicate-note]");
     if (note) {
       note.hidden = !hit;
-      const text = note.querySelector("p");
+      const text = note.querySelector("[data-duplicate-summary]");
       if (text) text.textContent = hit
-        ? `发现重复手机号：${hit.phone_masked}，原线索 ${hit.customer_name || hit.lead_id}，保存时会追加备注。`
+        ? `发现重复手机号：${hit.phone_masked} · 已重复录入 ${hit.duplicate_count ?? 3} 次 · 最近重复日期 ${formatDate(hit.latest_duplicate_at || hit.updated_at || "2026-06-02T14:30:00")}`
         : "";
     }
   } catch (error) {
@@ -941,6 +1275,9 @@ moduleButtons.forEach((button) => {
 
 let filterTimer;
 document.addEventListener("input", (event) => {
+  if (event.target.matches("[data-vehicle-search]")) {
+    filterVehicles();
+  }
   if (event.target.matches("[data-filter]")) {
     window.clearTimeout(filterTimer);
     filterTimer = window.setTimeout(() => {
@@ -953,6 +1290,9 @@ document.addEventListener("input", (event) => {
 document.addEventListener(
   "change",
   (event) => {
+    if (event.target.matches("[data-vehicle-status-filter]")) {
+      filterVehicles();
+    }
     if (event.target.matches("[data-filter], [data-page-size]")) {
       state.page = 1;
       loadLeads();
@@ -990,6 +1330,8 @@ document.addEventListener("click", (event) => {
   const openModalButton = target.closest("[data-open-modal]");
   const leadRow = target.closest("tr[data-lead-id]");
   const taskRow = target.closest("tr[data-task-id]");
+  const vehicleRow = target.closest("tr[data-vehicle-id]");
+  const vehicleImageButton = target.closest("[data-image-src]");
 
   if (openModalButton) {
     const modalName = openModalButton.dataset.openModal;
@@ -1025,11 +1367,35 @@ document.addEventListener("click", (event) => {
     renderTaskDetail(taskRow.dataset.taskId);
   }
 
+  if (vehicleRow && !target.closest("button, input, select, textarea, a")) {
+    vehicleRow.parentElement?.querySelectorAll("tr").forEach((row) => row.classList.toggle("selected", row === vehicleRow));
+    openVehicleDrawer(vehicleRow);
+  }
+
+  if (vehicleImageButton) {
+    document.querySelectorAll("[data-image-src]").forEach((button) => button.classList.toggle("is-current", button === vehicleImageButton));
+    syncVehicleMainImage(vehicleImageButton.dataset.imageSrc);
+  }
+
+  if (target.closest("[data-vehicle-main-image]")) {
+    syncVehicleMainImage(target.closest("[data-vehicle-main-image]").getAttribute("src"));
+    openModal("vehicle-image-preview");
+  }
+
+  if (!target.closest(".account-area") && accountMenu && !accountMenu.hidden) {
+    accountMenu.hidden = true;
+    accountButton?.setAttribute("aria-expanded", "false");
+  }
+
   if (!actionEl) return;
   const action = actionEl.dataset.action;
   const managementRow = actionEl.closest(".management-table tbody tr");
   if (managementRow) {
     managementRow.parentElement?.querySelectorAll("tr").forEach((row) => row.classList.toggle("selected", row === managementRow));
+  }
+  if (action === "logout") {
+    setAuthenticatedView(false);
+    setLoginMessage("login");
   }
   if (action === "open-detail") loadLeadDetail(actionEl.dataset.leadId);
   if (action === "save-lead") saveLead(false, actionEl);
@@ -1045,6 +1411,14 @@ document.addEventListener("click", (event) => {
     navigator.clipboard?.writeText(actionEl.dataset.copyValue || "");
     showToast("已复制", "success");
   }
+  if (action === "copy-value") {
+    navigator.clipboard?.writeText(actionEl.dataset.copyValue || "");
+    showToast("已复制", "success");
+  }
+  if (action === "copy-task-id") {
+    navigator.clipboard?.writeText(document.querySelector("[data-task-title]")?.textContent || "");
+    showToast("任务 ID 已复制", "success");
+  }
   if (action === "show-sales-detail") {
     document.querySelector("[data-sales-drawer]")?.classList.remove("closed");
     setSalesEditing(false);
@@ -1059,6 +1433,134 @@ document.addEventListener("click", (event) => {
   if (action === "show-worker-edit") setWorkerEditing(true);
   if (action === "close-worker-drawer") document.querySelector("[data-worker-drawer]")?.classList.add("closed");
   if (action === "close-task-drawer") document.querySelector("[data-task-drawer]")?.classList.add("closed");
+  if (action === "save-worker-design") {
+    closeModal(actionEl.closest(".modal-backdrop"));
+    document.querySelector("[data-worker-drawer]")?.classList.remove("closed");
+    setWorkerEditing(false);
+    showToast("Worker 已创建，ID 和 Token 已生成", "success");
+  }
+  if (action === "show-vehicle-edit") setVehicleEditing(true);
+  if (action === "cancel-vehicle-edit") {
+    state.pendingVehicleClose = false;
+    openModal("vehicle-unsaved");
+  }
+  if (action === "close-vehicle-drawer") {
+    if (state.vehicleEditing) {
+      state.pendingVehicleClose = true;
+      openModal("vehicle-unsaved");
+    } else {
+      document.querySelector("[data-vehicle-drawer]")?.classList.add("closed");
+    }
+  }
+  if (action === "discard-vehicle-edit") {
+    closeModal(actionEl.closest(".modal-backdrop"));
+    setVehicleEditing(false);
+    if (state.pendingVehicleClose) document.querySelector("[data-vehicle-drawer]")?.classList.add("closed");
+    state.pendingVehicleClose = false;
+  }
+  if (action === "save-vehicle-edit") {
+    setVehicleEditing(false);
+    showToast("车辆资料已保存", "success");
+  }
+  if (action === "save-new-vehicle") {
+    const name = document.querySelector("[data-new-vehicle-name]")?.value.trim();
+    if (!name) {
+      showToast("请填写车辆展示名称", "error");
+    } else {
+      closeModal(actionEl.closest(".modal-backdrop"));
+      openVehicleDrawer(null, true);
+      document.querySelector("[data-vehicle-drawer-title]").textContent = name;
+      const systemId = document.querySelector("[data-vehicle-system-id]");
+      const emptyGallery = document.querySelector('[data-gallery-state="empty"]');
+      if (systemId) systemId.textContent = "VEH-202608-0127";
+      if (emptyGallery) emptyGallery.hidden = false;
+      showToast("车辆已创建，编号已生成，请继续补充资料", "success");
+    }
+  }
+  if (action === "toggle-vehicle-shelf") {
+    if (actionEl.dataset.currentStatus === "listed") {
+      openModal("vehicle-unlist");
+    } else if (actionEl.dataset.incomplete === "true") {
+      const validation = document.querySelector("[data-vehicle-list-validation]");
+      if (validation) validation.hidden = false;
+    } else {
+      openModal("vehicle-list-confirm");
+    }
+  }
+  if (action === "confirm-vehicle-list") {
+    closeModal(actionEl.closest(".modal-backdrop"));
+    const button = document.querySelector("[data-vehicle-shelf-button]");
+    button.dataset.currentStatus = "listed";
+    button.textContent = "下架";
+    const status = document.querySelector("[data-vehicle-system-status]");
+    if (status) {
+      status.className = "status assigned";
+      status.textContent = "已上架";
+    }
+    showToast("车辆已上架", "success");
+  }
+  if (action === "confirm-vehicle-unlist") {
+    closeModal(actionEl.closest(".modal-backdrop"));
+    const button = document.querySelector("[data-vehicle-shelf-button]");
+    button.dataset.currentStatus = "unlisted";
+    button.textContent = "上架";
+    const status = document.querySelector("[data-vehicle-system-status]");
+    if (status) {
+      status.className = "status unassigned";
+      status.textContent = "已下架";
+    }
+    showToast("车辆已下架", "success");
+  }
+  if (action === "simulate-image-upload") {
+    const alert = document.querySelector("[data-image-upload-alert]");
+    if (alert) alert.hidden = false;
+  }
+  if (action === "select-vehicle-import") {
+    const mode = new URLSearchParams(window.location.search).get("importPreview") === "invalid" ? "invalid" : "valid";
+    setVehicleImportPreview(mode);
+  }
+  if (action === "back-import-step") setVehicleImportStep(1);
+  if (action === "confirm-vehicle-import") {
+    const mode = new URLSearchParams(window.location.search).get("importResult") === "failed" ? "failed" : "success";
+    setVehicleImportResult(mode);
+  }
+  if (action === "finish-vehicle-import") {
+    closeModal(actionEl.closest(".modal-backdrop"));
+    showToast("已返回车辆列表", "success");
+  }
+  if (action === "download-vehicle-template") showToast("已下载最新车辆导入模板", "success");
+  if (action === "clear-vehicle-filter") {
+    const keyword = document.querySelector("[data-vehicle-search]");
+    const status = document.querySelector("[data-vehicle-status-filter]");
+    if (keyword) keyword.value = "";
+    if (status) status.value = "all";
+    filterVehicles();
+  }
+  if (action === "retry-vehicle-list") {
+    applyVehicleListState("loading");
+    window.setTimeout(() => applyVehicleListState("default"), 600);
+  }
+  if (action === "show-log-detail") {
+    document.querySelector("[data-log-drawer]")?.classList.remove("closed");
+  }
+  if (action === "task-jump-worker") {
+    showModule("workers").then(() => {
+      document.querySelector("[data-worker-drawer]")?.classList.remove("closed");
+      setWorkerEditing(false);
+    });
+  }
+  if (action === "task-jump-sales") {
+    showModule("sales").then(() => {
+      const salesDrawer = document.querySelector("[data-sales-drawer]");
+      salesDrawer?.classList.remove("closed");
+      setSalesEditing(true);
+      salesDrawer?.querySelector("[data-sales-worker-select]")?.focus();
+    });
+  }
+  if (action === "task-mark-lead-invalid") {
+    state.invalidMode = "single";
+    openModal("invalid");
+  }
   if (action === "task-static-action") showToast("这是任务中心设计稿示意，具体操作由前端按 PRD 接口实现。", "info");
 });
 
@@ -1071,7 +1573,131 @@ document.addEventListener("keydown", (event) => {
   document.querySelectorAll(".management-drawer").forEach((panel) => panel.classList.add("closed"));
 });
 
-const initialModule = new URLSearchParams(window.location.search).get("module");
+let draggedVehicleImage = null;
+document.querySelectorAll("[data-image-src]").forEach((button) => {
+  button.draggable = true;
+  button.addEventListener("dragstart", () => {
+    draggedVehicleImage = button;
+    button.classList.add("is-dragging");
+  });
+  button.addEventListener("dragend", () => {
+    button.classList.remove("is-dragging");
+    draggedVehicleImage = null;
+    const first = document.querySelector(".vehicle-image-strip [data-image-src]");
+    if (first) {
+      document.querySelectorAll("[data-image-src]").forEach((item) => item.classList.toggle("is-current", item === first));
+      syncVehicleMainImage(first.dataset.imageSrc);
+      showToast("图片顺序已更新，第一张已作为主图", "success");
+    }
+  });
+});
+
+document.querySelector(".vehicle-image-strip")?.addEventListener("dragover", (event) => {
+  event.preventDefault();
+  const target = event.target.closest("[data-image-src]");
+  if (!draggedVehicleImage || !target || target === draggedVehicleImage) return;
+  const rect = target.getBoundingClientRect();
+  target.parentElement.insertBefore(draggedVehicleImage, event.clientX < rect.left + rect.width / 2 ? target : target.nextSibling);
+});
+
+const applyVehicleScenario = (scenario) => {
+  const screen = document.querySelector('[data-module-content="vehicles"]');
+  const firstRow = document.querySelector("tr[data-vehicle-id]");
+  if (!screen) return;
+  screen.classList.toggle("is-readonly", scenario === "readonly");
+  document.querySelector("[data-vehicle-drawer]")?.classList.toggle("is-readonly", scenario === "readonly");
+  applyVehicleListState(["loading", "empty", "no-results", "error"].includes(scenario) ? scenario : "default");
+
+  const drawerScenarios = [
+    "detail",
+    "edit",
+    "image-empty",
+    "image-uploading",
+    "image-single-failure",
+    "image-partial-failure",
+    "image-drag",
+    "readonly",
+    "list-missing",
+  ];
+  if (drawerScenarios.includes(scenario)) {
+    const editing = ["edit", "image-empty", "image-uploading", "image-single-failure", "image-partial-failure", "image-drag"].includes(scenario);
+    openVehicleDrawer(firstRow, editing);
+    if (scenario === "image-empty" || scenario === "image-uploading") {
+      const panel = document.querySelector(`[data-gallery-state="${scenario.replace("image-", "")}"]`);
+      if (panel) panel.hidden = false;
+    }
+    if (scenario === "image-single-failure" || scenario === "image-partial-failure") {
+      const alert = document.querySelector("[data-image-upload-alert]");
+      if (alert) {
+        alert.hidden = false;
+        alert.querySelector("strong").textContent = scenario === "image-single-failure" ? "图片上传失败" : "3 张上传成功，1 张失败";
+        alert.querySelector("p").textContent = "door-detail.tiff：不支持该文件格式，请上传 JPEG、PNG 或 WebP。";
+      }
+    }
+    if (scenario === "image-drag") {
+      document.querySelectorAll("[data-image-src]")[1]?.classList.add("is-dragging");
+    }
+    if (scenario === "list-missing") {
+      const shelfButton = document.querySelector("[data-vehicle-shelf-button]");
+      if (shelfButton) {
+        shelfButton.dataset.currentStatus = "unlisted";
+        shelfButton.dataset.incomplete = "true";
+        shelfButton.textContent = "上架";
+      }
+      const validation = document.querySelector("[data-vehicle-list-validation]");
+      if (validation) validation.hidden = false;
+    }
+  }
+  if (scenario === "list-confirm") {
+    openVehicleDrawer(document.querySelector('tr[data-vehicle-status="unlisted"]'));
+    openModal("vehicle-list-confirm");
+  }
+  if (scenario === "unlist-confirm") {
+    openVehicleDrawer(firstRow);
+    openModal("vehicle-unlist");
+  }
+  if (scenario === "create") openModal("vehicle-create");
+  if (scenario === "unsaved") {
+    openVehicleDrawer(firstRow, true);
+    openModal("vehicle-unsaved");
+  }
+  if (scenario === "image-delete") {
+    openVehicleDrawer(firstRow, true);
+    openModal("vehicle-image-delete");
+  }
+  if (scenario === "image-delete-last") {
+    openVehicleDrawer(firstRow, true);
+    openModal("vehicle-image-delete");
+    const copy = document.querySelector("[data-vehicle-image-delete-copy]");
+    const confirm = document.querySelector("[data-vehicle-image-delete-confirm]");
+    if (copy) copy.textContent = "当前车辆已上架，且仅剩这一张有效图片。请先上传其他图片或下架车辆后再删除。";
+    if (confirm) confirm.disabled = true;
+  }
+  if (scenario === "image-preview") {
+    openVehicleDrawer(firstRow);
+    openModal("vehicle-image-preview");
+  }
+  if (scenario.startsWith("import-")) {
+    openModal("vehicle-import");
+    if (scenario === "import-valid") setVehicleImportPreview("valid");
+    if (scenario === "import-invalid") setVehicleImportPreview("invalid");
+    if (scenario === "import-success") setVehicleImportResult("success");
+    if (scenario === "import-failed") setVehicleImportResult("failed");
+  }
+  if (scenario === "no-permission") {
+    document.querySelector('[data-module="vehicles"]')?.setAttribute("hidden", "");
+    screen.hidden = true;
+    workspace.classList.add("is-empty");
+    emptyWorkspace.hidden = false;
+    moduleButtons.forEach((button) => button.classList.remove("active"));
+  }
+};
+
+const initialParams = new URLSearchParams(window.location.search);
+const initialModule = initialParams.get("module");
+decorateTaskIdentifiers();
 if ([...moduleButtons].some((button) => button.dataset.module === initialModule)) {
-  showModule(initialModule);
+  showModule(initialModule).then(() => {
+    if (initialModule === "vehicles") applyVehicleScenario(initialParams.get("vehicleState") || "default");
+  });
 }

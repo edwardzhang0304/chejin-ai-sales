@@ -17,30 +17,37 @@ PROJECT_ROOT = APP_ROOT.parents[1]
 WORKFLOWS_ROOT = APP_ROOT / "workflows"
 TEST_ROOT = PROJECT_ROOT / "runtime" / "apps" / "wechat_ai_customer_service" / "test_artifacts" / "knowledge_runtime_checks"
 PRIORITY_TENANT_ID = "knowledge_priority_probe"
+TEST_TENANT_ID = "knowledge_runtime_checks"
 for path in (PROJECT_ROOT, WORKFLOWS_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 os.environ.setdefault("WECHAT_CLOUD_REQUIRED", "0")
 os.environ.setdefault("WECHAT_CLOUD_STRICT_ONLINE", "0")
+os.environ["WECHAT_KNOWLEDGE_TENANT"] = TEST_TENANT_ID
 
 from apps.wechat_ai_customer_service.admin_backend.services.knowledge_base_store import KnowledgeBaseStore  # noqa: E402
 from apps.wechat_ai_customer_service.admin_backend.services.formal_review_state import acknowledge_item  # noqa: E402
 from apps.wechat_ai_customer_service.admin_backend.services.knowledge_registry import KnowledgeRegistry  # noqa: E402
 from apps.wechat_ai_customer_service.admin_backend.services.knowledge_schema_manager import KnowledgeSchemaManager  # noqa: E402
-from apps.wechat_ai_customer_service.knowledge_paths import SHARED_KNOWLEDGE_ROOT, default_admin_knowledge_base_root, shared_runtime_cache_root, shared_runtime_snapshot_path, tenant_context, tenant_knowledge_base_root, tenant_root  # noqa: E402
+from apps.wechat_ai_customer_service.knowledge_paths import SHARED_KNOWLEDGE_ROOT, default_admin_knowledge_base_root, shared_runtime_cache_root, shared_runtime_snapshot_path, tenant_context, tenant_knowledge_base_root, tenant_product_item_knowledge_root, tenant_root  # noqa: E402
 from apps.wechat_ai_customer_service.product_master import ProductMasterStore  # noqa: E402
 from evidence_resolver import EvidenceResolver  # noqa: E402
 from knowledge_runtime import KnowledgeRuntime  # noqa: E402
 
 SHARED_PRIORITY_ITEM = shared_runtime_cache_root() / "risk_control" / "items" / "shared_priority_sample_fee.json"
 WINDOWS_FILE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0, 1.25)
+PRODUCT_FIXTURE_BACKUP: dict[Path, bytes | None] = {}
 
 
 def main() -> int:
     cleanup()
-    cache_had_previous = prepare_shared_runtime_cache_fixture()
+    cleanup_suite_tenant()
+    cache_had_previous = False
     results = []
     try:
+        prepare_formal_knowledge_fixtures()
+        prepare_product_master_fixtures()
+        cache_had_previous = prepare_shared_runtime_cache_fixture()
         for check in CHECKS:
             try:
                 check()
@@ -53,7 +60,9 @@ def main() -> int:
         return 1 if failures else 0
     finally:
         cleanup()
+        restore_product_master_fixtures()
         restore_shared_runtime_cache_fixture(cache_had_previous)
+        cleanup_suite_tenant()
 
 
 def check_product_alias_hits_products() -> None:
@@ -408,6 +417,241 @@ def cleanup() -> None:
     if TEST_ROOT.exists():
         remove_tree(TEST_ROOT)
     cleanup_priority_fixture()
+
+
+def cleanup_suite_tenant() -> None:
+    root = tenant_root(TEST_TENANT_ID)
+    if root.exists():
+        remove_tree(root)
+
+
+def prepare_formal_knowledge_fixtures() -> None:
+    root = tenant_knowledge_base_root(TEST_TENANT_ID)
+    categories = [
+        ("policies", "正式政策", ["title", "keywords", "question", "answer", "policy_type"]),
+        ("chats", "对话模板", ["title", "keywords", "customer_message", "service_reply", "intent_tags"]),
+        ("global_guidelines", "全局规范", ["title", "keywords", "guideline_text"]),
+        ("reply_style", "回复风格", ["title", "keywords", "guideline_text"]),
+    ]
+    registry = {
+        "schema_version": 1,
+        "categories": [
+            {
+                "id": category_id,
+                "name": name,
+                "kind": "classified",
+                "path": category_id,
+                "enabled": True,
+                "participates_in_reply": True,
+                "sort_order": 20 + index * 10,
+            }
+            for index, (category_id, name, _fields) in enumerate(categories)
+        ],
+    }
+    write_json_file(root / "registry.json", registry)
+    for category_id, name, fields in categories:
+        category_root = root / category_id
+        write_json_file(
+            category_root / "schema.json",
+            {
+                "schema_version": 1,
+                "category_id": category_id,
+                "display_name": name,
+                "item_title_field": "title",
+                "fields": [{"id": field, "type": "long_text"} for field in fields],
+            },
+        )
+        write_json_file(
+            category_root / "resolver.json",
+            {
+                "schema_version": 1,
+                "category_id": category_id,
+                "match_fields": fields,
+                "intent_fields": ["keywords", "intent_tags", "policy_type"],
+                "risk_fields": ["keywords", "answer", "guideline_text"],
+                "reply_fields": ["answer", "service_reply", "guideline_text"],
+                "minimum_confidence": 0.35,
+                "default_action": "answer_from_formal_knowledge",
+            },
+        )
+
+    fixtures = {
+        "policies": [
+            {
+                "id": "invoice",
+                "data": {
+                    "title": "增值税专用发票规则",
+                    "keywords": ["增值税专用发票", "专用发票", "发票"],
+                    "policy_type": "invoice",
+                    "answer": "可以按正式开票资料申请增值税专用发票。",
+                    "allow_auto_reply": True,
+                },
+            },
+            {
+                "id": "bank_account",
+                "data": {
+                    "title": "公开对公账户说明",
+                    "keywords": ["对公账户", "银行账号"],
+                    "policy_type": "payment",
+                    "answer": "公开对公账户信息可按后台正式资料提供。",
+                    "allow_auto_reply": True,
+                },
+            },
+        ],
+        "chats": [
+            {
+                "id": "discount_handoff",
+                "data": {
+                    "title": "未公开优惠转人工模板",
+                    "keywords": ["优惠", "折扣"],
+                    "customer_message": "还能优惠吗",
+                    "service_reply": "未进入商品主数据的优惠需人工确认。",
+                    "intent_tags": ["discount"],
+                    "requires_handoff": True,
+                },
+                "runtime": {"allow_auto_reply": False, "requires_handoff": True, "risk_level": "high"},
+            },
+            {
+                "id": "small_talk_service_pivot",
+                "data": {
+                    "title": "轻社交回业务",
+                    "keywords": ["哈哈", "随便看看", "辛苦了"],
+                    "customer_message": "哈哈我先随便看看，客服辛苦了",
+                    "service_reply": "不客气，您有需要随时说。",
+                    "intent_tags": ["small_talk"],
+                },
+            },
+        ],
+        "global_guidelines": [
+            {
+                "id": "customer_service_style_guidelines",
+                "data": {
+                    "title": "客服全局规范",
+                    "always_include": True,
+                    "guideline_text": "表达自然、准确，不编造商品和政策事实。",
+                },
+            }
+        ],
+        "reply_style": [
+            {
+                "id": "contextual_honorific_usage",
+                "data": {
+                    "title": "称呼使用规范",
+                    "keywords": ["称呼", "哥", "老板"],
+                    "guideline_text": "不要每条回复都在开头加称呼，应结合上下文自然表达。",
+                },
+            }
+        ],
+    }
+    for category_id, items in fixtures.items():
+        for item in items:
+            payload = acknowledge_item(
+                {
+                    "schema_version": 1,
+                    "category_id": category_id,
+                    "status": "active",
+                    "runtime": {"allow_auto_reply": True, "requires_handoff": False, "risk_level": "normal"},
+                    **item,
+                }
+            )
+            write_json_file(root / category_id / "items" / f"{item['id']}.json", payload)
+
+    scoped = acknowledge_item(
+        {
+            "schema_version": 1,
+            "category_id": "product_rules",
+            "id": "door-lock-installation",
+            "status": "active",
+            "data": {
+                "product_id": "fl-920",
+                "title": "FL-920 安装服务确认",
+                "keywords": ["安装服务", "安装"],
+                "answer": "安装条件需人工确认。",
+                "requires_handoff": True,
+                "handoff_reason": "installation_confirmation",
+            },
+            "runtime": {"allow_auto_reply": False, "requires_handoff": True, "risk_level": "high"},
+        }
+    )
+    write_json_file(
+        tenant_product_item_knowledge_root(TEST_TENANT_ID) / "fl-920" / "rules" / "door-lock-installation.json",
+        scoped,
+    )
+
+
+def prepare_product_master_fixtures() -> None:
+    """Create only the catalog facts owned by this test and restore them later."""
+    store = ProductMasterStore()
+    fixtures = [
+        {
+            "id": "commercial_fridge_bx_200",
+            "data": {
+                "name": "BX-200 商用冰箱",
+                "sku": "BX-200",
+                "category": "商用冰箱",
+                "aliases": ["商用冰箱", "BX-200"],
+                "specs": "200L 商用冷藏",
+                "price": 3999,
+                "unit": "台",
+                "price_tiers": [{"min_quantity": 10, "unit_price": 3699}],
+                "inventory": 20,
+                "shipping_policy": "江浙沪地区包邮，其他地区按实际物流核算。",
+            },
+        },
+        {
+            "id": "fl-920",
+            "data": {
+                "name": "FL-920 智能指纹门锁",
+                "sku": "FL-920",
+                "category": "智能门锁",
+                "aliases": ["智能指纹门锁", "FL-920"],
+                "price": 1299,
+                "unit": "套",
+                "inventory": 10,
+            },
+        },
+        {
+            "id": "packing_carton_ct_50",
+            "data": {
+                "name": "CT-50 包装纸箱",
+                "sku": "CT-50",
+                "category": "包装耗材",
+                "aliases": ["包装纸箱", "纸箱"],
+                "specs": "牛皮纸原色五层纸箱",
+                "price": 8.8,
+                "unit": "个",
+                "inventory": 500,
+                "additional_details": {"color": "牛皮纸原色"},
+            },
+        },
+    ]
+    tracked_paths = [store.manifest_path, *(store.item_path(item["id"]) for item in fixtures)]
+    for path in tracked_paths:
+        PRODUCT_FIXTURE_BACKUP[path] = path.read_bytes() if path.exists() else None
+    for item in fixtures:
+        result = store.save_item(
+            acknowledge_item(
+                {
+                    "schema_version": 1,
+                    "category_id": "products",
+                    "status": "active",
+                    "runtime": {"allow_auto_reply": True, "requires_handoff": False, "risk_level": "normal"},
+                    **item,
+                }
+            )
+        )
+        if not result.get("ok"):
+            raise AssertionError(f"product fixture save failed: {result}")
+
+
+def restore_product_master_fixtures() -> None:
+    for path, content in PRODUCT_FIXTURE_BACKUP.items():
+        if content is None:
+            remove_file(path)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+    PRODUCT_FIXTURE_BACKUP.clear()
 
 
 def prepare_shared_runtime_cache_fixture() -> bool:

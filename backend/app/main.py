@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.api.response import error_response
-from app.api.routes import assignment, c3, debug, leads, operation_logs, sales, tasks, wechat, workers
+from app.api.routes import assignment, auth_session, c3, debug, leads, operation_logs, sales, tasks, vehicles, wechat, workers
 from app.core.config import get_settings
 from app.core.database import Base, SessionLocal, engine
 from app.core.request_id import new_request_id, reset_request_id, set_request_id
@@ -17,6 +17,7 @@ from app.errors import AppError
 from app import models  # noqa: F401
 from app.services.ai_adapter import check_ai_engine_readiness
 from app.services.c3_recovery import C3BatchRecoveryLoop
+from app.services.vehicle_service import knowledge_runtime_readiness, retry_pending_vehicle_file_cleanups
 
 
 settings = get_settings()
@@ -97,7 +98,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
-        allow_credentials=False,
+        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -119,6 +120,9 @@ def create_app() -> FastAPI:
         settings.assert_runtime_safe()
         if settings.auto_create_tables:
             Base.metadata.create_all(bind=engine)
+        cleanup = retry_pending_vehicle_file_cleanups()
+        if cleanup["pending"]:
+            logger.warning("vehicle file cleanup remains pending count=%s", cleanup["pending"])
         recovery = C3BatchRecoveryLoop()
         recovery.start()
         app.state.c3_batch_recovery = recovery
@@ -153,10 +157,12 @@ def create_app() -> FastAPI:
     def readyz():
         with SessionLocal() as db:
             db.execute(text("select 1"))
+            knowledge = knowledge_runtime_readiness(db)
         brain = check_ai_engine_readiness()
-        return {"status": "ok", "database": "ok", "brain": brain}
+        return {"status": "ok", "database": "ok", "knowledge": knowledge, "brain": brain}
 
     app.include_router(leads.router, prefix=settings.api_prefix)
+    app.include_router(auth_session.router, prefix=settings.api_prefix)
     app.include_router(sales.router, prefix=settings.api_prefix)
     app.include_router(workers.router, prefix=settings.api_prefix)
     app.include_router(wechat.router, prefix=settings.api_prefix)
@@ -164,6 +170,7 @@ def create_app() -> FastAPI:
     app.include_router(tasks.router, prefix=settings.api_prefix)
     app.include_router(operation_logs.router, prefix=settings.api_prefix)
     app.include_router(assignment.router, prefix=settings.api_prefix)
+    app.include_router(vehicles.router, prefix=settings.api_prefix)
     if not settings.is_production:
         app.include_router(debug.router, prefix=settings.api_prefix)
     return app

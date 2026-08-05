@@ -235,6 +235,14 @@ class UiContractTest(unittest.TestCase):
 
     def test_task_timeline_has_visual_evidence_preview(self):
         text = (ROOT / "chejin_worker_client" / "ui.py").read_text(encoding="utf-8")
+        web_ui = (ROOT / "chejin_worker_client" / "web_ui.py").read_text(encoding="utf-8")
+        component = (
+            ROOT.parent
+            / "packages"
+            / "worker-ui-baseline"
+            / "src"
+            / "WorkerClientBaseline.tsx"
+        ).read_text(encoding="utf-8")
 
         self.assertIn('StepState = Literal["done", "current", "error", "final"]', text)
         self.assertIn("CHAIN_BOTTOM_FOCUS_PADDING = 170", text)
@@ -256,6 +264,14 @@ class UiContractTest(unittest.TestCase):
         self.assertIn("QDialog", text)
         self.assertIn("点击查看大图", text)
         self.assertNotIn("打开证据", text)
+        self.assertIn("def _timeline_image_url", web_ui)
+        self.assertIn('(CONFIG.app_dir / "artifacts")', web_ui)
+        self.assertIn('"sidecarRunId"', web_ui)
+        self.assertIn('"incidentId"', web_ui)
+        self.assertIn('"evidencePath"', web_ui)
+        self.assertIn("真实执行截图", component)
+        self.assertIn("故障编号", component)
+        self.assertIn("运行编号", component)
         self.assertNotIn("QDesktopServices", text)
 
     def test_scrollbar_uses_design_style(self):

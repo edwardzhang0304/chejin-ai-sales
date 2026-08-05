@@ -1,6 +1,8 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { formatApiError } from "../../shared/api/client";
+import { formatBusinessError } from "../../shared/api/client";
+import { CloseIcon } from "../../shared/ui/Icons";
+import { postMutationMessage, runPostMutationRefresh } from "../../shared/utils/postMutation";
 import { listWorkers } from "../workers/api";
 import type { WorkerItem } from "../workers/types";
 import { createSales, getSales, listSales, updateSales } from "./api";
@@ -46,9 +48,9 @@ function display(value: string | number | null | undefined, fallback = "-") {
 
 function formatWorkerRunning(worker?: SalesItem["current_worker"] | null) {
   if (!worker) return "-";
-  const online = worker.online_status === "online" ? "在线" : "离线";
+  if (worker.online_status !== "online") return "离线";
   const running = worker.running_status === "idle" ? "空闲" : "忙碌";
-  return `${online} / ${running}`;
+  return `在线 / ${running}`;
 }
 
 function formatHeartbeat(value?: string | null) {
@@ -113,8 +115,10 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
         return salesData.items[0]?.id ?? null;
       });
       setDrawerOpen(Boolean(salesData.items[0]));
+      return true;
     } catch (err) {
-      if (!signal?.aborted) setError(formatApiError(err, "销售列表加载失败，请稍后重试。"));
+      if (!signal?.aborted) setError(formatBusinessError(err, "销售列表加载失败，请稍后重试。"));
+      return false;
     } finally {
       if (!signal?.aborted) setLoading(false);
     }
@@ -148,7 +152,7 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
         setEditing(false);
       })
       .catch((err) => {
-        if (!controller.signal.aborted) setSaveError(formatApiError(err, "销售详情加载失败，请稍后重试。"));
+        if (!controller.signal.aborted) setSaveError(formatBusinessError(err, "销售详情加载失败，请稍后重试。"));
       })
       .finally(() => {
         if (!controller.signal.aborted) setDetailLoading(false);
@@ -199,19 +203,21 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
     setSubmitting(true);
     setCreateError(null);
     setMessage(null);
+    let result: Awaited<ReturnType<typeof createSales>>;
     try {
-      const result = await createSales(payload);
-      setMessage(`${payload.sales_name} 已新增。`);
-      await refresh();
-      setSelectedId(result.id);
-      setDrawerOpen(true);
-      return true;
+      result = await createSales(payload);
     } catch (err) {
-      setCreateError(formatApiError(err, "新增销售失败，请稍后重试。"));
-      return false;
-    } finally {
+      setCreateError(formatBusinessError(err, "新增销售失败，请稍后重试。"));
       setSubmitting(false);
+      return false;
     }
+
+    setSelectedId(result.id);
+    setDrawerOpen(true);
+    const refreshed = await runPostMutationRefresh(() => refresh());
+    setMessage(postMutationMessage(`${payload.sales_name} 已新增。`, refreshed));
+    setSubmitting(false);
+    return true;
   }
 
   function selectRow(item: SalesItem) {
@@ -241,17 +247,22 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
     setMessage(null);
     try {
       await updateSales(detail.id, payload);
-      setMessage(`${payload.sales_name || detail.sales_name} 已保存。`);
-      await refresh();
+    } catch (err) {
+      setSaveError(formatBusinessError(err, "销售保存失败，请稍后重试。"));
+      setSubmitting(false);
+      return;
+    }
+
+    setEditing(false);
+    const listRefreshed = await runPostMutationRefresh(() => refresh());
+    const detailRefreshed = await runPostMutationRefresh(async () => {
       const nextDetail = await getSales(detail.id);
       setDetail(nextDetail);
       setEditForm(toEditForm(nextDetail));
-      setEditing(false);
-    } catch (err) {
-      setSaveError(formatApiError(err, "销售保存失败，请稍后重试。"));
-    } finally {
-      setSubmitting(false);
-    }
+    });
+    const savedName = payload.sales_name || detail.sales_name;
+    setMessage(postMutationMessage(`${savedName} 已保存。`, listRefreshed && detailRefreshed));
+    setSubmitting(false);
   }
 
   return (
@@ -373,10 +384,7 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
                         if (event.key === "Enter" || event.key === " ") selectRow(item);
                       }}
                     >
-                      <td className="lead-cell">
-                        <strong>{item.sales_name}</strong>
-                        <small>{display(item.remark, "销售")}</small>
-                      </td>
+                      <td className="lead-cell"><strong>{item.sales_name}</strong></td>
                       <td>{display(item.phone)}</td>
                       <td>{display(item.wechat)}</td>
                       <td className="status-cell"><span className={`status ${statusClass(item.enabled)}`}>{item.enabled ? "启用" : "停用"}</span></td>
@@ -405,7 +413,7 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
                   <p><span className="read-value">销售详情</span><span className="edit-value">销售详情 · 编辑中</span></p>
                   <h2>{detail.sales_name}</h2>
                 </div>
-                <button className="icon-button" type="button" onClick={() => setDrawerOpen(false)} aria-label="关闭销售详情">×</button>
+                <button className="icon-button drawer-close-button" type="button" onClick={() => setDrawerOpen(false)} aria-label="关闭销售详情"><CloseIcon /></button>
               </div>
 
               {saveError ? <div className="inline-alert error">{saveError}</div> : null}

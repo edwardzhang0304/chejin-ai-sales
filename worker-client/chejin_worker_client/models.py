@@ -178,6 +178,9 @@ class RpaStep:
     title: str
     remark: str
     evidence_path: str | None = None
+    error_code: str | None = None
+    incident_id: str | None = None
+    sidecar_run_id: str | None = None
 
 
 @dataclass
