@@ -806,6 +806,7 @@ print(json.dumps({"ok": True, "task_status": "completed", "result_code": "invite
 
         bridge._emit_steps(
             {
+                "sidecar_run_id": "sidecar-run-001",
                 "diagnostic_events": [
                     {
                         "step_id": "invite_form",
@@ -823,6 +824,7 @@ print(json.dumps({"ok": True, "task_status": "completed", "result_code": "invite
 
         self.assertEqual(steps[0].current_step, "invite_form")
         self.assertEqual(steps[0].evidence_path, "C:/runtime/annotated.png")
+        self.assertEqual(steps[0].sidecar_run_id, "sidecar-run-001")
 
     def test_mock_bridge_wechat_diagnostics_is_noop(self):
         bridge = RpaBridge()

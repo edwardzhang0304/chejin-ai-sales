@@ -1,8 +1,8 @@
 # 后端 Rules
 
-版本：v0.3.1
+版本：v0.4
 
-日期：2026-06-23
+日期：2026-08-05
 
 适用对象：后端状态判断、接口、Docker、健康检查、pytest、镜像、接口契约。
 
@@ -42,7 +42,7 @@
 | Token | Worker Token 不在列表返回；新增/详情/重置后展示；旧 Token 重置后失效 |
 | 审计 | 销售变更、Worker 变更、绑定/解绑、重置绑定均写日志 |
 | 错误响应 | 所有错误响应包含 `trace_id`，响应头透传 `X-Request-Id` |
-| 鉴权边界 | 运营后台使用 Admin Token 灰度鉴权；Worker 客户端使用 Worker Token + Client Instance；Worker Token 不得访问后台管理接口 |
+| 鉴权边界 | 运营后台使用服务端预建账号 + 密码 + 可撤销 HttpOnly Cookie 会话，登录账号统一拥有全部后台权限；Worker 客户端使用 Worker Token + Client Instance；两类凭证双向不得互认 |
 | 测试 | 销售/Worker 和任务中心测试均需以最新 pytest/报告为准 |
 | 任务中心 | 已实现 add_friend 任务基础链路，状态、事件、备注、取消、重试、领取、步骤、完成/失败需按 PRD v0.3 校验 |
 | Windows Worker | 服务端已补客户端绑定、Worker Token 鉴权、接单状态、任务拉取/领取、RPA 步骤上报、结果/错误码回传、证据上传和心跳闭环；后续重点是客户端/RPA 联调和缺陷修复 |
@@ -55,10 +55,15 @@
 4. 当前后端已有C3 Brain/任务中心候选实现；本轮只同步图片机器合同revision/SHA
    并执行C2/C3完整回归，不新增AI架构、图片接口或状态机。飞书、召回扩展、
    抖音API、批量导入和Mac Worker不进入本轮。
-5. Windows Worker 客户端服务端能力已完成开发和自测，能力已并入技术方案 v2.6；不得再把阶段开发说明作为单独当前依据。
+5. Windows Worker 客户端服务端能力已完成开发和自测，能力已并入技术方案 v0.8.1；不得再把阶段开发说明作为单独当前依据。
 6. Windows Worker + 内置 OmniAuto RPA 是 P1a 剩余核心链路，不能再按 Mac/人工传值原型设计接口。
-7. 运营后台已接入 Admin Token + Worker Token 分离的灰度鉴权；`X-Operator-*` 只保留操作日志身份，不作为真实鉴权。
-8. 完整账号登录和角色权限体系仍是后续安全治理专项，不阻塞当前 Worker / C2 主链路联调，但必须作为后续风险项持续跟踪。
+7. 技术方案 v0.8.1 已固定正式后台登录：服务端预建账号、Argon2id 密码哈希、可撤销
+   HttpOnly Cookie 会话、登录即全部权限、不做 RBAC；所有后台业务接口必须校验会话。
+8. 当前静态 Admin Bearer Token、`OPERATOR_API_CREDENTIALS`、`X-Operator-*` 身份兜底、
+   viewer/只读门禁和生产 `AUTH_ENFORCEMENT=false` 绕过均是待删除旧实现，不能作为
+   登录功能完成依据。
+9. 后台 Cookie 与 Worker Token 使用独立验证器；后台会话不能调用 Worker 身份接口，
+   Worker Token 不能访问后台管理接口。
 
 ## 4. 后端提交说明
 

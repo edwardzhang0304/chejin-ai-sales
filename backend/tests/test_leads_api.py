@@ -180,17 +180,22 @@ def test_validation_error_includes_trace_id():
     assert payload["trace_id"] == "trace-test-001"
 
 
-def test_invalid_operator_id_returns_stable_error_code():
+def test_browser_operator_headers_are_ignored_in_favor_of_server_identity():
     response = client.post(
         "/api/leads",
         json={"customer_name": "王先生", "phones": ["13896676678"]},
-        headers={**HEADERS, "X-Operator-Id": "not-a-uuid"},
+        headers={
+            **HEADERS,
+            "X-Operator-Id": "not-a-uuid",
+            "X-Operator-Name": "Forged Browser Admin",
+            "X-Operator-Role": "admin",
+        },
     )
 
-    payload = response.json()
-    assert response.status_code == 400
-    assert payload["code"] == "OPERATOR_ID_INVALID"
-    assert payload["trace_id"]
+    assert response.status_code == 200
+    logs = client.get("/api/operation-logs?event_type=lead_created").json()["data"]
+    assert logs["total"] == 1
+    assert logs["items"][0]["operator_name"] != "Forged Browser Admin"
 
 
 def test_unhandled_exception_returns_stable_error_code(monkeypatch):

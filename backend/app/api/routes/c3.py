@@ -2,8 +2,9 @@ from fastapi import APIRouter, Depends, Header
 from sqlalchemy.orm import Session
 
 from app.api.response import ok
-from app.core.auth import require_admin_auth
+from app.core.auth import require_internal_service_auth
 from app.core.database import get_db
+from app.errors import AppError
 from app.schemas.c3 import (
     MessageBatchCollectRequest,
     MessageBatchGenerateRequest,
@@ -21,7 +22,7 @@ def collect_message_batch(
     conversation_id: str,
     payload: MessageBatchCollectRequest,
     db: Session = Depends(get_db),
-    _admin_auth: None = Depends(require_admin_auth),
+    _internal_auth: None = Depends(require_internal_service_auth),
 ):
     try:
         data = c3_service.collect_message_batch(
@@ -42,7 +43,7 @@ def generate_message_batch(
     batch_id: str,
     payload: MessageBatchGenerateRequest,
     db: Session = Depends(get_db),
-    _admin_auth: None = Depends(require_admin_auth),
+    _internal_auth: None = Depends(require_internal_service_auth),
 ):
     try:
         data = c3_service.generate_for_batch(db, batch_id=batch_id, force=payload.force)
@@ -74,6 +75,12 @@ def claim_send(
         )
         db.commit()
         return ok(data)
+    except AppError as exc:
+        if exc.code == c3_service.VEHICLE_FACT_STALE_CODE:
+            db.commit()
+        else:
+            db.rollback()
+        raise
     except Exception:
         db.rollback()
         raise

@@ -41,6 +41,7 @@ function Icon({ name }: { name: "min" | "max" | "close" | "gear" | "back" | "che
 }
 
 function clientTitle(screen: WorkerClientScreen) {
+  if (screen === "bind") return "绑定 Worker";
   if (screen === "settings") return "设置";
   if (screen === "schedule-settings") return "接单时段设置";
   if (screen === "logs") return "本机执行日志";
@@ -49,7 +50,7 @@ function clientTitle(screen: WorkerClientScreen) {
 
 function chipClass(text: string) {
   if (text.includes("失败") || text.includes("离线")) return "cw-chip-offline cw-chip-failed";
-  if (text.includes("完成") || text.includes("接单中")) return "cw-chip-accepting cw-chip-completed";
+  if (text.includes("完成") || text.includes("接单中") || text.includes("处理中")) return "cw-chip-accepting cw-chip-completed";
   return "cw-chip-paused";
 }
 
@@ -89,7 +90,7 @@ function Header({ screen, onScreenChange, onBack }: Pick<WorkerClientBaselinePro
           className="cw-icon-button"
           type="button"
           aria-label="打开设置"
-          style={{ visibility: isSubPage ? "hidden" : "visible" }}
+          style={{ visibility: isSubPage || screen === "bind" ? "hidden" : "visible" }}
           onClick={() => onScreenChange?.("settings")}
         >
           <Icon name="gear" />
@@ -120,46 +121,117 @@ function StatusSummary({ model, stateText }: { model: WorkerClientModel; stateTe
         <div className="cw-status-item">
           <span>自动化组件</span>
           <i className={`cw-dot dot ${automationDanger ? "cw-dot-danger" : "online"}`} />
-          <em className="cw-status-pill">{model.status.automationState}</em>
+          <em className={`cw-status-pill${automationDanger ? " is-danger" : ""}`}>{model.status.automationState}</em>
         </div>
         <div className="cw-status-item">
           <span>微信状态</span>
           <i className={`cw-dot dot ${wechatDanger ? "cw-dot-danger" : "online"}`} />
-          <em className="cw-status-pill">{model.status.wechatState}</em>
+          <em className={`cw-status-pill${wechatDanger ? " is-danger" : ""}`}>{model.status.wechatState}</em>
         </div>
       </div>
     </section>
   );
 }
 
-function TaskSummary({ model, statusText }: { model: WorkerClientModel; statusText?: string }) {
-  const task = model.task;
-  const meta = task.metaText || `${task.customerName} · ${task.phone} · ${task.sellerName} · 备注短码：${task.noteCode}`;
+function maskClientPhone(phone: string) {
+  const normalized = phone.replace(/\s+/g, "");
+  if (normalized.length < 7) return normalized;
+  return `${normalized.slice(0, 3)}****${normalized.slice(-4)}`;
+}
+
+function ProcessTaskSummary({
+  task,
+  statusText,
+}: {
+  task: WorkerClientModel["task"];
+  statusText: string;
+}) {
   return (
-    <article className="cw-task-card task-summary task-summary-compact">
-      <div className="cw-task-title-row task-title-row">
-        <div>
-          <p className="cw-task-id task-id">{task.id}</p>
-          <h3 className="cw-task-title">{task.title}</h3>
-        </div>
-        <span className={`cw-chip chip ${chipClass(statusText || task.statusText)}`}>{statusText || task.statusText}</span>
+    <div className="cw-process-task-summary">
+      <div>
+        <strong>{task.title}</strong>
+        <p>{task.customerName} · {maskClientPhone(task.phone)}</p>
       </div>
-      <p className="cw-task-meta task-mini-meta">{meta}</p>
-    </article>
+      <span className={`cw-chip chip ${chipClass(statusText)}`}>{statusText}</span>
+    </div>
   );
 }
 
 function StepScreenshot({ step }: { step: TimelineStepModel }) {
-  if (!step.screenshot) return null;
+  if (!step.screenshot?.imageUrl) return null;
+  const identifiers = [
+    step.screenshot.incidentId ? `故障编号：${step.screenshot.incidentId}` : "",
+    step.screenshot.sidecarRunId ? `运行编号：${step.screenshot.sidecarRunId}` : "",
+  ].filter(Boolean);
   return (
-    <figure className="cw-step-shot step-shot" aria-label="视觉 RPA 截图">
-      <div className="cw-shot-window shot-window">
-        <div className="cw-shot-search shot-search">{step.screenshot.searchText}</div>
-        <div className="cw-shot-empty shot-empty">{step.screenshot.resultText}</div>
-      </div>
-      <figcaption>{step.screenshot.caption}</figcaption>
+    <figure className="cw-step-shot step-shot" aria-label="真实执行截图">
+      <img className="cw-shot-window shot-window" src={step.screenshot.imageUrl} alt={step.screenshot.caption} />
+      <figcaption>{[step.screenshot.caption, ...identifiers].join("·")}</figcaption>
     </figure>
   );
+}
+
+function friendlyText(value: string | undefined, fallback = "操作未完成，请稍后重试。") {
+  const text = value?.trim();
+  if (!text) return fallback;
+  const withoutCode = text.replace(/^[A-Z][A-Z0-9_]+\s*[·:：-]\s*/, "");
+  if (/^[A-Z][A-Z0-9_]+$/.test(withoutCode)) return fallback;
+  return withoutCode;
+}
+
+const logEventLabels: Record<string, string> = {
+  task_result_reported: "回传任务结果",
+  task_failed: "任务执行失败",
+  remark_written: "填写客户备注",
+  customer_search_started: "开始查找客户",
+  worker_started: "开始接单",
+  worker_bound: "绑定 Worker",
+  worker_bind_failed: "绑定 Worker 失败",
+  accept_schedule_changed: "调整自动接单时段",
+  client_notice: "客户端提醒",
+  incident_exported: "导出故障证据",
+  incident_export_failed: "导出故障证据失败",
+};
+
+const workerErrorLabels: Record<string, string> = {
+  INCIDENT_EXPORT_FAILED: "故障证据导出失败",
+  INCIDENT_DIRECTORY_OPEN_FAILED: "无法打开故障证据目录",
+  PHONE_NOT_FOUND: "手机号未找到客户",
+  WECHAT_WINDOW_NOT_FOUND: "未找到微信窗口",
+  RPA_COMPONENT_NOT_READY: "自动化组件不可用",
+  SEND_RESULT_UNKNOWN: "发送结果无法确认",
+  OTHER: "任务执行异常",
+};
+
+function logEventLabel(value: string) {
+  return logEventLabels[value] || "本机执行记录";
+}
+
+function logLevelLabel(value: string) {
+  if (value === "ERROR") return "错误";
+  if (value === "WARN" || value === "WARNING") return "提醒";
+  return "信息";
+}
+
+function workerErrorLabel(value: string) {
+  if (!value || value === "-") return "";
+  return workerErrorLabels[value] || "执行未完成，请查看操作说明";
+}
+
+function formatElapsed(seconds: number) {
+  const minutes = Math.floor(seconds / 60).toString().padStart(2, "0");
+  const remainder = (seconds % 60).toString().padStart(2, "0");
+  return `已运行 ${minutes}:${remainder}`;
+}
+
+function useElapsed(active: boolean) {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    const timer = window.setInterval(() => setSeconds((current) => current + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  return formatElapsed(seconds);
 }
 
 function TimelineStep({ step }: { step: TimelineStepModel }) {
@@ -179,7 +251,7 @@ function TimelineStep({ step }: { step: TimelineStepModel }) {
       <div>
         <strong>{step.title}</strong>
         {step.time ? <p>{step.time}</p> : null}
-        {step.description ? <p>{step.description}</p> : null}
+        {step.description ? <p>{friendlyText(step.description, "当前步骤未完成，请稍后重试。")}</p> : null}
         <StepScreenshot step={step} />
         {step.finalText ? <em className="cw-step-final-text">{step.finalText}</em> : null}
       </div>
@@ -196,9 +268,9 @@ function TaskTimeline({ steps }: { steps: TimelineStepModel[] }) {
     const focusStep = viewport.querySelector(".final-step, .current, .error") as HTMLElement | null;
     const focusMarker = focusStep?.querySelector(":scope > span") as HTMLElement | null;
     if (!focusStep || !focusMarker) return;
-    const cardRect = viewport.parentElement?.getBoundingClientRect() || viewport.getBoundingClientRect();
+    const viewportRect = viewport.getBoundingClientRect();
     const markerRect = focusMarker.getBoundingClientRect();
-    const nextScrollTop = viewport.scrollTop + markerRect.top + markerRect.height / 2 - (cardRect.top + cardRect.height / 2) - 10;
+    const nextScrollTop = viewport.scrollTop + markerRect.top + markerRect.height / 2 - (viewportRect.top + viewportRect.height / 2);
     const maxScrollTop = viewport.scrollHeight - viewport.clientHeight;
     viewport.scrollTop = Math.max(0, Math.min(maxScrollTop, nextScrollTop));
   }, [steps]);
@@ -216,6 +288,39 @@ function TaskTimeline({ steps }: { steps: TimelineStepModel[] }) {
   );
 }
 
+function CurrentProcess({
+  steps,
+  state,
+  message,
+  duration,
+  task,
+  statusText,
+}: {
+  steps?: TimelineStepModel[];
+  state?: "neutral" | "success" | "error";
+  message?: string;
+  duration?: string;
+  task?: WorkerClientModel["task"];
+  statusText?: string;
+}) {
+  return (
+    <section className={`cw-process${task ? " cw-process-with-task" : ""}${state ? ` is-${state}` : ""}`} aria-label="当前运行过程">
+      <header className="cw-process-head">
+        <span>当前运行过程</span>
+        {duration ? <em>{duration}</em> : null}
+      </header>
+      {task && statusText ? <ProcessTaskSummary task={task} statusText={statusText} /> : null}
+      {steps?.length ? (
+        <TaskTimeline steps={steps} />
+      ) : (
+        <div className="cw-process-empty">
+          <strong>{message || "等待下一轮检查"}</strong>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function Dock({
   state,
   disabled = false,
@@ -230,7 +335,6 @@ function Dock({
   const accepting = state === "接单中";
   return (
     <footer className="cw-dock dock-action">
-      <span>{state}</span>
       <button
         className={`cw-button${accepting ? "" : " cw-button-primary"}`}
         type="button"
@@ -246,8 +350,7 @@ function Dock({
 function EmptyWorkbench({
   screen,
   model,
-  title,
-  description,
+  processText,
   stateText,
   dockState,
   disabled,
@@ -256,8 +359,7 @@ function EmptyWorkbench({
 }: {
   screen: WorkerClientScreen;
   model: WorkerClientModel;
-  title: string;
-  description: string;
+  processText: string;
   stateText: WorkerReceiveState;
   dockState: WorkerReceiveState;
   disabled?: boolean;
@@ -271,12 +373,7 @@ function EmptyWorkbench({
           <ConnectionLine model={model} />
         </header>
         <StatusSummary model={model} stateText={stateText} />
-        <section className="cw-empty-card empty-card">
-          <div>
-            <h3>{title}</h3>
-            <p>{description}</p>
-          </div>
-        </section>
+        <CurrentProcess message={processText} />
         <Dock state={dockState} disabled={disabled} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />
       </div>
     </section>
@@ -300,6 +397,8 @@ function TaskScreen({
   onStartAccepting?: () => void;
   onPauseAccepting?: () => void;
 }) {
+  const running = statusText === "处理中" || statusText === "接单中" || statusText === "暂停接单";
+  const elapsed = useElapsed(running);
   return (
     <section className="cw-screen cw-screen-task screen active" data-screen-view={screen}>
       <div className="cw-workspace workspace">
@@ -307,8 +406,47 @@ function TaskScreen({
           <ConnectionLine model={model} />
         </header>
         <section className="cw-task-layout task-layout">
-          <TaskSummary model={model} statusText={statusText} />
-          <TaskTimeline steps={steps} />
+          <StatusSummary model={model} stateText={dockState} />
+          <CurrentProcess
+            steps={steps}
+            state={statusText === "失败" ? "error" : statusText === "已完成" ? "success" : "neutral"}
+            duration={running ? elapsed : undefined}
+            task={model.task}
+            statusText={statusText}
+          />
+        </section>
+        <Dock state={dockState} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />
+      </div>
+    </section>
+  );
+}
+
+function BackgroundProcessScreen({
+  screen,
+  model,
+  steps,
+  dockState = "接单中",
+  onStartAccepting,
+  onPauseAccepting,
+}: {
+  screen: WorkerClientScreen;
+  model: WorkerClientModel;
+  steps: TimelineStepModel[];
+  dockState?: WorkerReceiveState;
+  onStartAccepting?: () => void;
+  onPauseAccepting?: () => void;
+}) {
+  const active = steps.some((step) => step.state === "current");
+  const elapsed = useElapsed(active);
+  return (
+    <section className="cw-screen cw-screen-task screen active" data-screen-view={screen}>
+      <div className="cw-workspace workspace">
+        <header className="cw-workspace-head workspace-head">
+          <ConnectionLine model={model} />
+        </header>
+        <section className="cw-task-layout task-layout">
+          <StatusSummary model={model} stateText={dockState} />
+          <CurrentProcess steps={steps} state="neutral" duration={active ? elapsed : undefined} />
         </section>
         <Dock state={dockState} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />
       </div>
@@ -327,6 +465,8 @@ function BindScreen({
 }) {
   const [workerId, setWorkerId] = useState(model.workerId);
   const [workerToken, setWorkerToken] = useState(model.workerToken);
+  const [showToken, setShowToken] = useState(false);
+  const [binding, setBinding] = useState(false);
 
   useEffect(() => {
     setWorkerId(model.workerId);
@@ -340,12 +480,13 @@ function BindScreen({
           className="cw-form-panel"
           onSubmit={(event) => {
             event.preventDefault();
+            setBinding(true);
             onBind?.(workerId.trim(), workerToken.trim());
+            window.setTimeout(() => setBinding(false), 700);
           }}
         >
           <div>
-            <h2>绑定本机 Worker</h2>
-            <p className="cw-helper">输入后台生成的 Worker ID 和 Token。</p>
+            <h2>绑定 Worker</h2>
           </div>
           <label>
             <span>Worker ID</span>
@@ -353,27 +494,82 @@ function BindScreen({
           </label>
           <label>
             <span>Worker Token</span>
-            <input className="cw-input" type="password" value={workerToken} onChange={(event) => setWorkerToken(event.target.value)} />
+            <div className="cw-token-input">
+              <input className="cw-input" type={showToken ? "text" : "password"} value={workerToken} onChange={(event) => setWorkerToken(event.target.value)} />
+              <button type="button" onClick={() => setShowToken((current) => !current)}>{showToken ? "隐藏" : "显示"}</button>
+            </div>
           </label>
-          <button className="cw-button cw-button-primary" type="submit">绑定 Worker</button>
-          {bindError ? <p className="cw-helper cw-bind-error">{bindError}</p> : null}
+          <button className="cw-button cw-button-primary" type="submit" disabled={binding}>{binding ? "绑定中..." : "绑定 Worker"}</button>
+          {bindError ? <p className="cw-helper cw-bind-error">{friendlyText(bindError, "绑定失败，请检查 Worker ID、Worker Token 和网络连接后重试。")}</p> : null}
         </form>
       </div>
     </section>
   );
 }
 
-function OfflineScreen({ model }: { model: WorkerClientModel }) {
+function OfflineScreen({ model, hasCurrentOperation = true }: { model: WorkerClientModel; hasCurrentOperation?: boolean }) {
+  const offlineModel = {
+    ...model,
+    status: { ...model.status, connectionState: "连接异常" as const },
+  };
   return (
-    <section className="cw-screen screen active" data-screen-view="offline">
+    <section className="cw-screen cw-screen-task screen active" data-screen-view="offline">
       <div className="cw-workspace workspace">
         <header className="cw-workspace-head workspace-head">
-          <ConnectionLine model={model} danger />
-          <span className="cw-chip chip cw-chip-offline">离线</span>
+          <ConnectionLine model={offlineModel} danger />
         </header>
-        <TaskSummary model={model} statusText="离线" />
-        <StatusSummary model={model} stateText="离线" />
+        {hasCurrentOperation ? (
+          <section className="cw-task-layout task-layout">
+            <StatusSummary model={offlineModel} />
+            <CurrentProcess
+              steps={[
+                { state: "done", title: "正在执行微信加好友", description: "本机操作保持原状态。" },
+                { state: "current", title: "执行已完成，等待恢复后回传", description: "连接恢复后自动回传执行结果。" },
+              ]}
+              state="error"
+              duration="等待连接"
+              task={model.task}
+              statusText="处理中"
+            />
+          </section>
+        ) : (
+          <section className="cw-task-layout task-layout">
+            <StatusSummary model={offlineModel} />
+            <CurrentProcess message="服务端连接中断，正在尝试恢复" state="error" />
+          </section>
+        )}
         <Dock state="离线" disabled />
+      </div>
+    </section>
+  );
+}
+
+function EnvironmentIssueScreen({
+  model,
+  type,
+}: {
+  model: WorkerClientModel;
+  type: "automation" | "wechat";
+}) {
+  const issueModel = {
+    ...model,
+    status: {
+      ...model.status,
+      receiveState: "暂停接单" as const,
+      automationState: type === "automation" ? "不可用" as const : model.status.automationState,
+      wechatState: type === "wechat" ? "未连接" as const : model.status.wechatState,
+    },
+  };
+  return (
+    <section className="cw-screen screen active" data-screen-view={`${type}-unavailable`}>
+      <div className="cw-workspace workspace">
+        <header className="cw-workspace-head workspace-head"><ConnectionLine model={issueModel} /></header>
+        <StatusSummary model={issueModel} stateText="暂停接单" />
+        <CurrentProcess
+          message={type === "automation" ? "自动化组件不可用，暂不领取任务" : "微信未连接，请打开或登录微信"}
+          state="error"
+        />
+        <Dock state="暂停接单" disabled />
       </div>
     </section>
   );
@@ -479,19 +675,19 @@ function LogsScreen({
           <p className="cw-incident-latest">最近故障：{model.latestIncident.incident_id}</p>
         ) : null}
         <section className="cw-log-table log-table">
-          <div className="cw-log-head"><span>时间</span><span>级别</span><span>任务</span><span>事件 / 故障证据</span></div>
+          <div className="cw-log-head"><span>时间</span><span>结果</span><span>任务</span><span>操作记录 / 故障证据</span></div>
           {model.logs.map((row, index) => (
             <div className="cw-log-row" key={`${row.time}-${index}`}>
               <span>{row.time}</span>
-              <strong>{row.level}</strong>
+              <strong>{logLevelLabel(row.level)}</strong>
               <span>{row.task}</span>
               <p>
-                <b>{row.event}</b>
-                <span>{row.content}</span>
-                <small>error_code: {row.errorCode}</small>
-                <small>incident_id: {row.incidentId}</small>
-                <small>sidecar_run_id: {row.sidecarRunId}</small>
-                <small>evidence: {row.evidencePath}</small>
+                <b>{logEventLabel(row.event)}</b>
+                <span>{friendlyText(row.content, "本机已记录本次操作。")}</span>
+                {row.errorCode !== "-" ? <small>error_code：{row.errorCode}（{workerErrorLabel(row.errorCode) || "未归类故障"}）</small> : null}
+                {row.incidentId !== "-" ? <small>incident_id：{row.incidentId}</small> : null}
+                {row.sidecarRunId !== "-" ? <small>sidecar_run_id：{row.sidecarRunId}</small> : null}
+                {row.evidencePath !== "-" ? <small>evidence_path：{row.evidencePath}</small> : null}
                 {row.incidentId !== "-" ? (
                   <button
                     className="cw-log-incident-export"
@@ -518,8 +714,7 @@ function renderScreen(props: WorkerClientBaselineProps) {
       <EmptyWorkbench
         screen={screen}
         model={model}
-        title="暂无可领取任务"
-        description="暂停接单后不会领取新的任务。"
+        processText="已暂停接单"
         stateText="暂停接单"
         dockState="暂停接单"
         onStartAccepting={onStartAccepting}
@@ -531,8 +726,7 @@ function renderScreen(props: WorkerClientBaselineProps) {
       <EmptyWorkbench
         screen={screen}
         model={model}
-        title="接单中，等待服务端分配任务"
-        description="有可执行任务时，Worker 会领取并进入任务链路页面。"
+        processText="等待下一轮检查"
         stateText="接单中"
         dockState="接单中"
         onPauseAccepting={onPauseAccepting}
@@ -544,32 +738,40 @@ function renderScreen(props: WorkerClientBaselineProps) {
       <EmptyWorkbench
         screen={screen}
         model={model}
-        title="当前不领取新任务"
-        description="非接单时段客户端保持连接，但不会领取新的任务。"
+        processText="当前不在接单时段"
         stateText="暂停接单"
         dockState="暂停接单"
         disabled
       />
     );
   }
-  if (screen === "running") return <TaskScreen screen={screen} model={model} steps={model.runningSteps} statusText="接单中" dockState={model.status.receiveState} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />;
+  if (screen === "running") return <TaskScreen screen={screen} model={model} steps={model.runningSteps} statusText="处理中" dockState={model.status.receiveState} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />;
   if (screen === "completed") return <TaskScreen screen={screen} model={model} steps={model.completedSteps} statusText="已完成" dockState={model.status.receiveState} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />;
-  if (screen === "paused-running") return <TaskScreen screen={screen} model={model} steps={model.runningSteps} statusText="暂停接单" dockState="暂停接单" onStartAccepting={onStartAccepting} />;
+  if (screen === "paused-running") return <TaskScreen screen={screen} model={model} steps={model.runningSteps} statusText="处理中" dockState="暂停接单" onStartAccepting={onStartAccepting} />;
   if (screen === "paused-empty-2") {
-    return (
-      <EmptyWorkbench
-        screen={screen}
-        model={model}
-        title="暂无可领取任务"
-        description="上一条任务已结束，当前暂停接单，不会继续领取下一条任务。"
-        stateText="暂停接单"
-        dockState="暂停接单"
-        onStartAccepting={onStartAccepting}
-      />
-    );
+    return <TaskScreen screen={screen} model={model} steps={model.completedSteps} statusText="已完成" dockState="暂停接单" onStartAccepting={onStartAccepting} />;
   }
   if (screen === "offline") return <OfflineScreen model={model} />;
+  if (screen === "offline-empty") return <OfflineScreen model={model} hasCurrentOperation={false} />;
+  if (screen === "automation-unavailable") return <EnvironmentIssueScreen model={model} type="automation" />;
+  if (screen === "wechat-disconnected") return <EnvironmentIssueScreen model={model} type="wechat" />;
   if (screen === "failed") return <TaskScreen screen={screen} model={model} steps={model.failedSteps} statusText="失败" dockState={model.status.receiveState} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />;
+  if (screen === "scan-running") return <BackgroundProcessScreen screen={screen} model={model} steps={model.scanRunningSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
+  if (screen === "scan-completed") return <BackgroundProcessScreen screen={screen} model={model} steps={model.scanCompletedSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
+  if (screen === "target-read-running") return <BackgroundProcessScreen screen={screen} model={model} steps={model.targetReadRunningSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
+  if (screen === "target-read-completed") return <BackgroundProcessScreen screen={screen} model={model} steps={model.targetReadCompletedSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
+  if (screen === "ai-reply-running") {
+    const replyModel = { ...model, task: { ...model.task, id: "TASK-1842", title: "AI 回复", type: "chat_reply" as const, statusText: "处理中", metaText: "王先生 · 张伟 · 客户咨询续保价格" } };
+    return <TaskScreen screen={screen} model={replyModel} steps={model.replyRunningSteps} statusText="处理中" dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
+  }
+  if (screen === "ai-reply-completed") {
+    const replyModel = { ...model, task: { ...model.task, id: "TASK-1842", title: "AI 回复", type: "chat_reply" as const, statusText: "已完成", metaText: "王先生 · 张伟 · AI 回复已发送" } };
+    return <TaskScreen screen={screen} model={replyModel} steps={model.replyCompletedSteps} statusText="已完成" dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
+  }
+  if (screen === "ai-reply-failed") {
+    const replyModel = { ...model, task: { ...model.task, id: "TASK-1842", title: "AI 回复", type: "chat_reply" as const, statusText: "失败", metaText: "王先生 · 张伟 · 自动发送已终止" } };
+    return <TaskScreen screen={screen} model={replyModel} steps={model.replyFailedSteps} statusText="失败" dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
+  }
   if (screen === "settings") return <SettingsScreen model={model} onScreenChange={onScreenChange} />;
   if (screen === "schedule-settings") return <ScheduleSettingsScreen model={model} onUpdateAcceptSchedule={onUpdateAcceptSchedule} />;
   return (

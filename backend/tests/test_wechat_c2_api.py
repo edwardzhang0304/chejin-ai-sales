@@ -2231,7 +2231,7 @@ def test_customer_v3_voice_is_deduped_and_collectable_for_c3():
     collected = client.post(
         f"/api/internal/conversations/{binding['conversation_id']}/message-batches/collect",
         json={"trigger_message_event_id": message_event_id, "trace_id": "trace-voice-customer"},
-        headers=HEADERS,
+        headers={"X-Internal-Service-Token": "dev-only-internal-service-token-change-before-production"},
     )
     assert collected.status_code == 200
     assert collected.json()["data"]["batch_status"] == "reply_action_created"

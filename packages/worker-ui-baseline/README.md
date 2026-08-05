@@ -40,6 +40,8 @@ packages/worker-ui-baseline/
 npm run build:preview --prefix packages/worker-ui-baseline
 ```
 
+构建后可直接打开 `preview.html`，不依赖本地 HTTP 服务。
+
 生成 Worker 客户端运行产物：
 
 ```bash
@@ -56,21 +58,31 @@ worker-client/chejin_worker_client/web_assets/
   worker-ui.tokens.css
 ```
 
-## 覆盖页面
+## 页面与验收状态
+
+产品页面统一为首次绑定、统一工作台、设置、接单时段设置和本机执行日志。下面的 id 是设计与验收状态，不代表独立产品页面。
 
 - `bind`：首次绑定页
-- `paused-empty`：暂停接单 + 无任务
-- `accepting-wait`：接单中 + 等待任务
-- `schedule-paused`：非接单时段 + 无任务
-- `running`：执行任务中
-- `completed`：任务执行完成
+- `paused-empty`：已暂停接单
+- `accepting-wait`：接单中，等待下一轮检查
+- `schedule-paused`：当前不在接单时段
+- `running`：加好友执行中
+- `completed`：加好友完成
 - `paused-running`：暂停接单 + 有任务执行中
-- `paused-empty-2`：上一条任务结束后的暂停接单 + 无任务
-- `offline`：服务端不可达 / 离线
-- `failed`：任务执行失败
+- `paused-empty-2`：暂停接单 + 上一条结果保留
+- `offline`：服务端离线 + 当前操作
+- `offline-empty`：服务端离线 + 无当前操作
+- `automation-unavailable`：自动化组件不可用
+- `wechat-disconnected`：微信未连接
+- `failed`：加好友失败
 - `settings`：设置页
 - `schedule-settings`：接单时段设置页
 - `logs`：本机执行日志明细页
+- `scan-running` / `scan-completed`：主动扫描运行过程
+- `target-read-running` / `target-read-completed`：定向读取运行过程
+- `ai-reply-running` / `ai-reply-completed` / `ai-reply-failed`：AI 回复运行过程
+
+统一工作台中间区域固定使用“当前运行过程”，优先级为：业务任务 > 定向读取 > 第一屏主动扫描 > 等待下一轮检查。运行中只展示 Worker 当前真实知道的粗阶段，详细链路只在执行结果返回后补充。
 
 ## 修改规则
 

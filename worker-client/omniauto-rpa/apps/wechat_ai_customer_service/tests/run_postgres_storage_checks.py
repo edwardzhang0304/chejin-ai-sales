@@ -18,8 +18,15 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from apps.wechat_ai_customer_service.storage.config import load_storage_config, validate_schema_name  # noqa: E402
-from apps.wechat_ai_customer_service.storage.postgres_store import SCHEMA_SQL_PATH, PostgresJsonStore, search_text  # noqa: E402
+from apps.wechat_ai_customer_service.storage.postgres_store import (  # noqa: E402
+    SCHEMA_SQL_PATH,
+    PostgresJsonStore,
+    render_schema_sql,
+    search_text,
+)
 from apps.wechat_ai_customer_service.admin_backend.services.knowledge_base_store import KnowledgeBaseStore  # noqa: E402
+from apps.wechat_ai_customer_service.knowledge_paths import tenant_product_master_root  # noqa: E402
+from apps.wechat_ai_customer_service.product_master import PRODUCT_MASTER_DB_LAYER  # noqa: E402
 
 
 Check = Callable[[], None]
@@ -43,6 +50,11 @@ def check_schema_contains_required_tables() -> None:
     ]
     missing = [name for name in required if f".{name}" not in sql]
     assert not missing, f"missing tables in schema: {missing}"
+    rendered = render_schema_sql("wechat_ai_customer_service_render_check")
+    assert "{schema}" not in rendered, "schema placeholder was not fully rendered"
+    assert "{{}}" not in rendered, "escaped JSON defaults were not normalized"
+    assert "DEFAULT '{}'::jsonb" in rendered, "rendered SQL lost JSON object defaults"
+    assert "wechat_ai_customer_service_render_check.customers" in rendered
 
 
 def check_schema_name_validation() -> None:
@@ -149,6 +161,10 @@ def check_optional_postgres_roundtrip(dsn: str) -> None:
         store.replace_rag_chunks("source_demo", [{"tenant_id": "pg_check", "chunk_id": "chunk_demo", "source_id": "source_demo", "text": "演示 RAG chunk", "status": "active"}])
         assert store.counts("pg_check")["rag_chunks"] == 1
     finally:
+        try:
+            PostgresJsonStore(tenant_id="pg_check").execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        except Exception:
+            pass
         restore_env("WECHAT_STORAGE_BACKEND", old_backend)
         restore_env("WECHAT_POSTGRES_DSN", old_dsn)
         restore_env("WECHAT_POSTGRES_SCHEMA", old_schema)
@@ -165,6 +181,7 @@ def check_optional_knowledge_store_mirrors_json(dsn: str) -> None:
     tenant_root = APP_ROOT / "data" / "tenants" / tenant_id
     kb_root = tenant_root / "knowledge_bases"
     category_root = kb_root / "products"
+    product_master_root = tenant_product_master_root(tenant_id)
     item_id = "mirror_demo"
     try:
         os.environ["WECHAT_STORAGE_BACKEND"] = "postgres"
@@ -220,9 +237,14 @@ def check_optional_knowledge_store_mirrors_json(dsn: str) -> None:
         }
         saved = KnowledgeBaseStore().save_item("products", item)
         assert saved.get("ok"), saved
-        json_path = category_root / "items" / f"{item_id}.json"
+        json_path = product_master_root / "items" / f"{item_id}.json"
         assert json_path.exists(), "PostgreSQL writes should mirror to JSON files by default"
-        loaded_db = store.get_knowledge_item(tenant_id, layer="tenant", category_id="products", item_id=item_id)
+        loaded_db = store.get_knowledge_item(
+            tenant_id,
+            layer=PRODUCT_MASTER_DB_LAYER,
+            category_id="products",
+            item_id=item_id,
+        )
         assert loaded_db and loaded_db["data"]["sku"] == "MIRROR-1"
         loaded_file = json.loads(json_path.read_text(encoding="utf-8"))
         assert loaded_file["data"]["sku"] == "MIRROR-1"

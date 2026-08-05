@@ -1,5 +1,13 @@
 from app.models.audit import ExportTask, OperationLog
-from app.models.c3 import Conversation, HandoffEvent, MessageBatch, ReplyAction, SentAck
+from app.models.auth import AdminAccount, AdminLoginThrottle, AdminSession
+from app.models.c3 import (
+    Conversation,
+    HandoffEvent,
+    MessageBatch,
+    ReplyAction,
+    ReplyActionVehicleFact,
+    SentAck,
+)
 from app.models.lead import (
     AssignmentRoundRobinState,
     Lead,
@@ -12,8 +20,19 @@ from app.models.sales import Sales
 from app.models.task import Task, TaskEvent, TaskEvidence, TaskNote
 from app.models.wechat import MessageEvent, WechatScanRun, WechatSessionBinding
 from app.models.worker import Worker, WorkerHeartbeatLog
+from app.models.vehicle import (
+    KnowledgeCategory,
+    KnowledgeItem,
+    KnowledgeTenant,
+    VehicleFileCleanup,
+    VehicleImage,
+    VehicleImportPreview,
+)
 
 __all__ = [
+    "AdminAccount",
+    "AdminLoginThrottle",
+    "AdminSession",
     "AssignmentRoundRobinState",
     "ExportTask",
     "Conversation",
@@ -27,6 +46,7 @@ __all__ = [
     "MessageBatch",
     "OperationLog",
     "ReplyAction",
+    "ReplyActionVehicleFact",
     "Sales",
     "Task",
     "TaskEvent",
@@ -37,4 +57,10 @@ __all__ = [
     "WechatSessionBinding",
     "Worker",
     "WorkerHeartbeatLog",
+    "KnowledgeCategory",
+    "KnowledgeItem",
+    "KnowledgeTenant",
+    "VehicleFileCleanup",
+    "VehicleImage",
+    "VehicleImportPreview",
 ]

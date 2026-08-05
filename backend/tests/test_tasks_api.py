@@ -33,7 +33,34 @@ def _create_worker(name: str = "Mac Worker A") -> dict:
         headers=HEADERS,
     )
     assert response.status_code == 200
-    return response.json()["data"]
+    worker = response.json()["data"]
+    bound = client.post(
+        f"/api/workers/{worker['id']}/client-bind",
+        json={"worker_token": worker["worker_token"], "client_instance_id": "task-test-client"},
+    )
+    assert bound.status_code == 200
+    heartbeat = client.post(
+        f"/api/workers/{worker['id']}/heartbeat",
+        json={
+            "client_instance_id": "task-test-client",
+            "run_status": "running",
+            "rpa_component_status": "ready",
+            "running_status": "idle",
+        },
+        headers=_worker_headers(worker),
+    )
+    assert heartbeat.status_code == 200
+    return worker
+
+
+def _worker_headers(worker: dict, claim: dict | None = None) -> dict[str, str]:
+    headers = {
+        "X-Worker-Token": worker["worker_token"],
+        "X-Client-Instance-Id": "task-test-client",
+    }
+    if claim:
+        headers["X-Task-Lease-Fencing-Token"] = str(claim["lease_fencing_token"])
+    return headers
 
 
 def _create_sales(name: str = "张伟", worker_id: str | None = None) -> str:
@@ -146,12 +173,12 @@ def test_task_list_metrics_are_calculated_from_full_filtered_result_not_current_
 
     failed_task = tasks[0]
     cancelled_task = tasks[1]
-    claim = client.post(f"/api/tasks/{failed_task['id']}/claim", json={"worker_id": worker["id"]}, headers=HEADERS)
+    claim = client.post(f"/api/tasks/{failed_task['id']}/claim", json={"worker_id": worker["id"]}, headers=_worker_headers(worker))
     assert claim.status_code == 200
     failed = client.post(
         f"/api/tasks/{failed_task['id']}/fail",
         json={"error_code": "WECHAT_WINDOW_NOT_FOUND", "failure_step": "opening_add_contact"},
-        headers=HEADERS,
+        headers=_worker_headers(worker, claim.json()["data"]),
     )
     assert failed.status_code == 200
     cancelled = client.post(f"/api/tasks/{cancelled_task['id']}/cancel", json={"reason": "运营取消"}, headers=HEADERS)
@@ -179,7 +206,7 @@ def test_running_task_can_update_step_complete_invite_sent_and_terminal_cannot_c
     claimed = client.post(
         f"/api/tasks/{task['id']}/claim",
         json={"worker_id": worker["id"], "current_step": "searching_contact"},
-        headers=HEADERS,
+        headers=_worker_headers(worker),
     )
     assert claimed.status_code == 200
     assert claimed.json()["data"]["status"] == "running"
@@ -187,12 +214,16 @@ def test_running_task_can_update_step_complete_invite_sent_and_terminal_cannot_c
     step = client.post(
         f"/api/tasks/{task['id']}/step",
         json={"current_step": "sending_invite", "remark": "已打开添加通讯录窗口"},
-        headers=HEADERS,
+        headers=_worker_headers(worker, claimed.json()["data"]),
     )
     assert step.status_code == 200
     assert step.json()["data"]["current_step"] == "sending_invite"
 
-    completed = client.post(f"/api/tasks/{task['id']}/invite-sent", json={"remark": "邀请已发送"}, headers=HEADERS)
+    completed = client.post(
+        f"/api/tasks/{task['id']}/invite-sent",
+        json={"remark": "邀请已发送"},
+        headers=_worker_headers(worker, claimed.json()["data"]),
+    )
     assert completed.status_code == 200
     data = completed.json()["data"]
     assert data["status"] == "completed"
@@ -220,11 +251,15 @@ def test_failed_task_has_no_retry_action_or_retry_endpoint_and_releases_worker()
     _create_lead()
     task = _first_task()
 
-    client.post(f"/api/tasks/{task['id']}/claim", json={"worker_id": worker["id"]}, headers=HEADERS)
+    claimed = client.post(
+        f"/api/tasks/{task['id']}/claim",
+        json={"worker_id": worker["id"]},
+        headers=_worker_headers(worker),
+    )
     failed = client.post(
         f"/api/tasks/{task['id']}/fail",
         json={"error_code": "WECHAT_WINDOW_NOT_FOUND", "failure_step": "opening_add_contact", "failure_remark": "窗口未出现"},
-        headers=HEADERS,
+        headers=_worker_headers(worker, claimed.json()["data"]),
     )
     assert failed.status_code == 200
     failed_data = failed.json()["data"]

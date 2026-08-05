@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
+import json
 import secrets
 from typing import Any
 
@@ -13,8 +14,16 @@ from app.core.config import get_settings
 from app.enums import TaskEventType, TaskResultCode, TaskStatus, TaskType
 from app.errors import AppError
 from app.models.base import utcnow
-from app.models.c3 import Conversation, HandoffEvent, MessageBatch, ReplyAction, SentAck
+from app.models.c3 import (
+    Conversation,
+    HandoffEvent,
+    MessageBatch,
+    ReplyAction,
+    ReplyActionVehicleFact,
+    SentAck,
+)
 from app.models.task import Task
+from app.models.vehicle import KnowledgeItem, VehicleImage
 from app.models.wechat import MessageEvent, WechatSessionBinding
 from app.models.worker import Worker
 from app.services.ai_adapter import AIEngineDecision, get_ai_engine_adapter
@@ -42,6 +51,141 @@ UNKNOWN_SEND_TERMINAL_REMARK = (
 FAILED_SEND_TERMINAL_REMARK = (
     "自动发送已终止，会话已转销售正常接管，禁止自动补发。"
 )
+VEHICLE_FACT_STALE_CODE = "REPLY_ACTION_VEHICLE_FACT_STALE"
+VEHICLE_FACT_STALE_REASON = "车辆资料或上下架状态已变化，旧回复动作作废"
+
+
+def _brain_plan_vehicle_ids(payload: dict[str, Any]) -> list[str]:
+    raw_payload = payload.get("raw_payload") if isinstance(payload.get("raw_payload"), dict) else {}
+    result = raw_payload.get("omniauto_brain_result") if isinstance(raw_payload.get("omniauto_brain_result"), dict) else {}
+    plan = result.get("brain_plan") if isinstance(result.get("brain_plan"), dict) else {}
+    evidence = plan.get("evidence_used") if isinstance(plan.get("evidence_used"), dict) else {}
+    values = evidence.get("product_ids") if isinstance(evidence.get("product_ids"), list) else []
+    vehicle_ids = {str(value).strip() for value in values if str(value).strip()}
+    for fact in plan.get("facts_claimed") or []:
+        if not isinstance(fact, dict) or str(fact.get("source_level") or "") != "product_master":
+            continue
+        source_id = str(fact.get("source_id") or "").strip()
+        if source_id and source_id != "multiple":
+            vehicle_ids.add(source_id)
+    return sorted(vehicle_ids)
+
+
+def _vehicle_fact_query(vehicle_ids: list[str]):
+    settings = get_settings()
+    return select(KnowledgeItem).where(
+        KnowledgeItem.tenant_id == settings.omniauto_knowledge_tenant,
+        KnowledgeItem.layer == "product_master",
+        KnowledgeItem.category_id == "products",
+        KnowledgeItem.product_id == "",
+        KnowledgeItem.item_id.in_(vehicle_ids),
+    )
+
+
+def _vehicle_fact_fingerprint(db: Session, vehicle: KnowledgeItem) -> str:
+    images = list(
+        db.scalars(
+            select(VehicleImage)
+            .where(
+                VehicleImage.tenant_id == vehicle.tenant_id,
+                VehicleImage.vehicle_id == vehicle.item_id,
+            )
+            .order_by(VehicleImage.sort_order, VehicleImage.id)
+        )
+    )
+    value = {
+        "status": vehicle.status,
+        "payload": vehicle.payload or {},
+        "images": [
+            {"sha256": image.sha256, "sort_order": image.sort_order}
+            for image in images
+        ],
+    }
+    serialized = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _lock_vehicle_facts_for_action(db: Session, reply_action_id: str) -> list[KnowledgeItem]:
+    vehicle_ids = list(
+        db.scalars(
+            select(ReplyActionVehicleFact.vehicle_id)
+            .where(ReplyActionVehicleFact.reply_action_id == reply_action_id)
+            .order_by(ReplyActionVehicleFact.vehicle_id)
+        )
+    )
+    if not vehicle_ids:
+        legacy_payload = db.scalar(
+            select(ReplyAction.ai_payload).where(
+                ReplyAction.id == reply_action_id,
+                ReplyAction.deleted_at.is_(None),
+            )
+        )
+        if isinstance(legacy_payload, dict):
+            vehicle_ids = _brain_plan_vehicle_ids(legacy_payload)
+    if not vehicle_ids:
+        return []
+    return list(db.scalars(_vehicle_fact_query(vehicle_ids).order_by(KnowledgeItem.item_id).with_for_update()))
+
+
+def _snapshot_action_vehicle_facts(
+    db: Session,
+    *,
+    action: ReplyAction,
+    payload: dict[str, Any],
+) -> list[str]:
+    vehicle_ids = _brain_plan_vehicle_ids(payload)
+    if not vehicle_ids:
+        return []
+    vehicles = list(db.scalars(_vehicle_fact_query(vehicle_ids).order_by(KnowledgeItem.item_id).with_for_update()))
+    by_id = {vehicle.item_id: vehicle for vehicle in vehicles}
+    unavailable = [vehicle_id for vehicle_id in vehicle_ids if vehicle_id not in by_id or by_id[vehicle_id].status != "active"]
+    if unavailable:
+        raise AppError(
+            VEHICLE_FACT_STALE_CODE,
+            "Brain 引用的车辆已不存在或已下架",
+            409,
+            {"vehicle_ids": unavailable, "suggested_action": "regenerate"},
+        )
+    for vehicle_id in vehicle_ids:
+        vehicle = by_id[vehicle_id]
+        db.add(
+            ReplyActionVehicleFact(
+                reply_action_id=action.id,
+                vehicle_id=vehicle_id,
+                fact_fingerprint=_vehicle_fact_fingerprint(db, vehicle),
+                vehicle_updated_at=vehicle.updated_at,
+            )
+        )
+    db.flush()
+    return vehicle_ids
+
+
+def _stale_action_vehicle_ids(
+    db: Session,
+    action: ReplyAction,
+    *,
+    locked_vehicles: list[KnowledgeItem] | None = None,
+) -> list[str]:
+    snapshots = list(
+        db.scalars(
+            select(ReplyActionVehicleFact)
+            .where(ReplyActionVehicleFact.reply_action_id == action.id)
+            .order_by(ReplyActionVehicleFact.vehicle_id)
+        )
+    )
+    if not snapshots:
+        return _brain_plan_vehicle_ids(action.ai_payload or {})
+    vehicles = locked_vehicles if locked_vehicles is not None else list(
+        db.scalars(_vehicle_fact_query([item.vehicle_id for item in snapshots]).order_by(KnowledgeItem.item_id))
+    )
+    by_id = {vehicle.item_id: vehicle for vehicle in vehicles}
+    return [
+        snapshot.vehicle_id
+        for snapshot in snapshots
+        if snapshot.vehicle_id not in by_id
+        or by_id[snapshot.vehicle_id].status != "active"
+        or _vehicle_fact_fingerprint(db, by_id[snapshot.vehicle_id]) != snapshot.fact_fingerprint
+    ]
 
 
 def _batch_continuation_token(
@@ -405,6 +549,91 @@ def _cancel_task_for_action(db: Session, action: ReplyAction, *, reason: str) ->
         task.cancelled_at = utcnow()
         finish_task_and_release_worker(task)
         _write_event(db, task, TaskEventType.cancelled, from_status=before, to_status=task.status, remark=reason)
+
+
+def _supersede_action_for_stale_vehicle_facts(
+    db: Session,
+    action: ReplyAction,
+    *,
+    vehicle_ids: list[str],
+) -> None:
+    action.status = "superseded"
+    action.current = False
+    action.error_code = VEHICLE_FACT_STALE_CODE
+    action.suggested_action = "regenerate"
+    batch = db.get(MessageBatch, action.batch_id)
+    if batch and batch.status not in {"superseded", "cancelled", "handoff_created"}:
+        batch.status = "superseded"
+        batch.active = False
+        batch.retryable = False
+        batch.error_code = "MESSAGE_BATCH_VEHICLE_FACT_STALE"
+        batch.suggested_action = "regenerate"
+    _cancel_task_for_action(
+        db,
+        action,
+        reason=f"{VEHICLE_FACT_STALE_REASON}：{','.join(vehicle_ids)}",
+    )
+
+
+def invalidate_vehicle_dependent_reply_actions(db: Session, vehicle_id: str) -> list[str]:
+    action_ids = set(
+        db.scalars(
+            select(ReplyActionVehicleFact.reply_action_id)
+            .join(ReplyAction, ReplyAction.id == ReplyActionVehicleFact.reply_action_id)
+            .where(
+                ReplyActionVehicleFact.vehicle_id == vehicle_id,
+                ReplyAction.status.in_(SUPERSEDABLE_ACTION_STATUSES),
+                ReplyAction.current.is_(True),
+                ReplyAction.deleted_at.is_(None),
+            )
+            .order_by(ReplyActionVehicleFact.reply_action_id)
+        )
+    )
+    legacy_candidates = list(
+        db.scalars(
+            select(ReplyAction).where(
+                ReplyAction.status.in_(SUPERSEDABLE_ACTION_STATUSES),
+                ReplyAction.current.is_(True),
+                ReplyAction.deleted_at.is_(None),
+            )
+        )
+    )
+    action_ids.update(
+        action.id
+        for action in legacy_candidates
+        if vehicle_id in _brain_plan_vehicle_ids(action.ai_payload or {})
+    )
+    if not action_ids:
+        return []
+    actions = list(
+        db.scalars(
+            select(ReplyAction)
+            .where(ReplyAction.id.in_(action_ids))
+            .order_by(ReplyAction.id)
+            .with_for_update()
+        )
+    )
+    for action in actions:
+        if action.status in SUPERSEDABLE_ACTION_STATUSES and action.current:
+            _supersede_action_for_stale_vehicle_facts(db, action, vehicle_ids=[vehicle_id])
+    db.flush()
+    return [action.id for action in actions if action.error_code == VEHICLE_FACT_STALE_CODE]
+
+
+def _reject_stale_vehicle_reply(
+    db: Session,
+    action: ReplyAction,
+    *,
+    stale_vehicle_ids: list[str],
+) -> None:
+    _supersede_action_for_stale_vehicle_facts(db, action, vehicle_ids=stale_vehicle_ids)
+    db.flush()
+    raise AppError(
+        VEHICLE_FACT_STALE_CODE,
+        "车辆资料或上下架状态已变化，禁止发送旧回复",
+        409,
+        {"vehicle_ids": stale_vehicle_ids, "suggested_action": "do_not_send"},
+    )
 
 
 def _supersede_open_actions(db: Session, conversation_id: str, *, reason: str) -> None:
@@ -1515,25 +1744,41 @@ def generate_for_batch(
             )
             db.add(action)
             db.flush()
-            task = _create_chat_reply_task(db, binding=binding, action=action)
-            batch.status = "reply_action_created"
-            batch.active = False
-            batch.retryable = False
-            batch.decision = "send_reply"
-            batch.error_code = None
-            batch.suggested_action = "claim_send"
-            batch.generated_at = utcnow()
-            db.flush()
-            return {
-                "decision": "send_reply",
-                "batch": _batch_to_dict(batch),
-                "reply_action_id": action.id,
-                "reply_action": _reply_action_to_dict(action),
-                "task_id": task.id,
-                "task": task_to_detail(get_task_or_404(db, task.id)),
-                "error_code": None,
-                "suggested_action": "claim_send",
-            }
+            try:
+                _snapshot_action_vehicle_facts(db, action=action, payload=payload)
+            except AppError as exc:
+                db.delete(action)
+                db.flush()
+                decision = AIEngineDecision(
+                    decision="retry_later",
+                    risk_flags=["vehicle_fact_stale"],
+                    guard_result="failed",
+                    error_code=exc.code,
+                    suggested_action="retry_later",
+                    raw_payload={"brain_decision": payload, "vehicle_ids": exc.data.get("vehicle_ids", [])},
+                )
+                payload = _decision_payload(decision)
+                batch.ai_response_snapshot = payload
+            else:
+                task = _create_chat_reply_task(db, binding=binding, action=action)
+                batch.status = "reply_action_created"
+                batch.active = False
+                batch.retryable = False
+                batch.decision = "send_reply"
+                batch.error_code = None
+                batch.suggested_action = "claim_send"
+                batch.generated_at = utcnow()
+                db.flush()
+                return {
+                    "decision": "send_reply",
+                    "batch": _batch_to_dict(batch),
+                    "reply_action_id": action.id,
+                    "reply_action": _reply_action_to_dict(action),
+                    "task_id": task.id,
+                    "task": task_to_detail(get_task_or_404(db, task.id)),
+                    "error_code": None,
+                    "suggested_action": "claim_send",
+                }
 
     if decision.decision in {"handoff", "handoff_for_approval"}:
         handoff_reason_code = decision.error_code or decision.handoff_reason_code or "HANDOFF_REQUIRED"
@@ -1653,6 +1898,10 @@ def claim_send(
     # the authorization algorithm owned by exactly one backend implementation.
     from app.services.wechat_service import _authorization_revision
 
+    # Vehicle mutations lock Product Master first and then dependent actions.
+    # Keep the same order here so a concurrent unlist/update cannot deadlock
+    # with the final send authorization check.
+    locked_vehicles = _lock_vehicle_facts_for_action(db, reply_action_id)
     action = db.scalar(select(ReplyAction).where(ReplyAction.id == reply_action_id, ReplyAction.deleted_at.is_(None)).with_for_update())
     if not action:
         raise AppError("REPLY_ACTION_NOT_FOUND", "reply_action 不存在", 404)
@@ -1696,6 +1945,9 @@ def claim_send(
         }
     if action.status != "queued":
         raise AppError("REPLY_ACTION_CLAIM_CONFLICT", "reply_action 已被领取或不可发送", 409, {"status": action.status, "suggested_action": "do_not_send"})
+    stale_vehicle_ids = _stale_action_vehicle_ids(db, action, locked_vehicles=locked_vehicles)
+    if stale_vehicle_ids:
+        _reject_stale_vehicle_reply(db, action, stale_vehicle_ids=stale_vehicle_ids)
     if _is_past(action.expire_at):
         action.status = "expired"
         action.current = False

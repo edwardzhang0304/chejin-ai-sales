@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { CloseIcon } from "../../../shared/ui/Icons";
 import type { LeadDetail } from "../types";
 
 type Props = {
@@ -71,7 +72,7 @@ export function LeadDetailDrawer({ detail, loading, error, onClose, onRetry, onM
           <h2>{loading ? "加载中" : detail?.customer_name}</h2>
         </div>
         <button type="button" className="icon-button" onClick={onClose} aria-label="关闭详情">
-          ×
+          <CloseIcon />
         </button>
       </div>
 
@@ -116,8 +117,9 @@ export function LeadDetailDrawer({ detail, loading, error, onClose, onRetry, onM
             ))}
           </div>
 
-          {activeTab === "overview" ? (
-            <>
+          <div className="drawer-scroll-area">
+            {activeTab === "overview" ? (
+              <>
               <section className="detail-block contact-block">
                 <h3>联系方式</h3>
                 {detail.contacts.map((contact) => (
@@ -152,25 +154,10 @@ export function LeadDetailDrawer({ detail, loading, error, onClose, onRetry, onM
                   ))}
                 </ol>
               </section>
+              </>
+            ) : null}
 
-              <section className="drawer-action-section detail-actions" aria-label="线索操作">
-                <h3>操作</h3>
-                <div className="drawer-actions">
-                {detail.status === "invalid" ? (
-                  <button type="button" className="secondary-button" onClick={() => onRestore(detail.id)}>
-                    恢复有效
-                  </button>
-                ) : (
-                  <button type="button" className="secondary-button" onClick={() => onMarkInvalid(detail.id)}>
-                    标记无效
-                  </button>
-                )}
-                </div>
-              </section>
-            </>
-          ) : null}
-
-          {activeTab === "notes" ? (
+            {activeTab === "notes" ? (
             <section className="detail-block">
               <h3>备注</h3>
               {detail.notes.length > 0 ? (
@@ -187,9 +174,9 @@ export function LeadDetailDrawer({ detail, loading, error, onClose, onRetry, onM
                 <p>暂无备注记录</p>
               )}
             </section>
-          ) : null}
+            ) : null}
 
-          {activeTab === "duplicates" ? (
+            {activeTab === "duplicates" ? (
             <section className="detail-block">
               <h3>重复记录</h3>
               {detail.duplicate_events.length > 0 ? (
@@ -206,9 +193,9 @@ export function LeadDetailDrawer({ detail, loading, error, onClose, onRetry, onM
                 <p>暂无重复记录</p>
               )}
             </section>
-          ) : null}
+            ) : null}
 
-          {activeTab === "assignments" ? (
+            {activeTab === "assignments" ? (
             <section className="detail-block">
               <h3>分配记录</h3>
               {detail.assignments?.length ? (
@@ -224,6 +211,20 @@ export function LeadDetailDrawer({ detail, loading, error, onClose, onRetry, onM
               ) : (
                 <p>暂无分配记录</p>
               )}
+            </section>
+            ) : null}
+          </div>
+
+          {activeTab === "overview" ? (
+            <section className="drawer-action-section detail-actions" aria-label="线索操作">
+              <h3>操作</h3>
+              <div className="drawer-actions">
+                {detail.status === "invalid" ? (
+                  <button type="button" className="secondary-button" onClick={() => onRestore(detail.id)}>恢复有效</button>
+                ) : (
+                  <button type="button" className="secondary-button" onClick={() => onMarkInvalid(detail.id)}>标记无效</button>
+                )}
+              </div>
             </section>
           ) : null}
         </div>

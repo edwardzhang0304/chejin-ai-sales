@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { formatApiError } from "../../shared/api/client";
+import { formatBusinessError } from "../../shared/api/client";
 import { useLockBodyScroll } from "../../shared/hooks/useLockBodyScroll";
+import { CopyButton } from "../../shared/ui/CopyButton";
 import { listOperationLogs } from "./api";
 import type { OperationLogItem, OperationLogQuery, OperationLogResult } from "./types";
 
@@ -34,6 +35,14 @@ const eventOptions = [
   { value: "task_comment_added", label: "补充任务备注" },
   { value: "phone_revealed", label: "查看完整手机号" },
   { value: "leads_exported", label: "导出选中线索" },
+  { value: "vehicle_created", label: "新增车辆" },
+  { value: "vehicle_updated", label: "编辑车辆" },
+  { value: "vehicle_listed", label: "上架车辆" },
+  { value: "vehicle_unlisted", label: "下架车辆" },
+  { value: "vehicle_image_uploaded", label: "上传车辆图片" },
+  { value: "vehicle_image_reordered", label: "调整车辆图片顺序" },
+  { value: "vehicle_image_deleted", label: "删除车辆图片" },
+  { value: "vehicle_excel_import_confirmed", label: "确认导入车辆" },
 ];
 
 const moduleOptions = [
@@ -43,6 +52,7 @@ const moduleOptions = [
   { value: "sales", label: "销售" },
   { value: "worker", label: "Worker" },
   { value: "task", label: "任务" },
+  { value: "vehicles", label: "车辆" },
   { value: "export", label: "导出" },
 ];
 
@@ -77,7 +87,7 @@ function formatDate(value: string | null | undefined) {
 }
 
 function eventLabel(item: OperationLogItem) {
-  return eventOptions.find((option) => option.value === item.event_type)?.label || item.event_label || item.event_name || item.event_type;
+  return eventOptions.find((option) => option.value === item.event_type)?.label || item.event_label || item.event_name || "其他业务操作";
 }
 
 function objectLabel(item: OperationLogItem) {
@@ -91,7 +101,9 @@ function objectLabel(item: OperationLogItem) {
   if (item.target_type === "export_task") {
     return "导出任务";
   }
-  return item.target_type || "-";
+  if (item.target_type === "vehicle") return "车辆";
+  if (item.target_type === "vehicle_import") return "车辆导入";
+  return "其他业务对象";
 }
 
 function stringFromMetadata(metadata: Record<string, unknown> | null | undefined, key: string) {
@@ -131,11 +143,8 @@ function summaryText(item: OperationLogItem) {
   return item.summary || stringFromMetadata(item.metadata, "reason") || eventLabel(item);
 }
 
-function compactJson(value: Record<string, unknown> | null | undefined) {
-  if (!value || Object.keys(value).length === 0) {
-    return "无";
-  }
-  return JSON.stringify(value, null, 2);
+function changeCount(value: Record<string, unknown> | null | undefined) {
+  return value ? Object.keys(value).length : 0;
 }
 
 export function LogsPage() {
@@ -175,7 +184,7 @@ export function LogsPage() {
       if (signal?.aborted || requestId !== requestIdRef.current) {
         return;
       }
-      setError(formatApiError(err, "操作日志加载失败，请稍后重试。"));
+      setError(formatBusinessError(err, "操作日志加载失败，请稍后重试。"));
     } finally {
       if (!signal?.aborted && requestId === requestIdRef.current) {
         setLoading(false);
@@ -389,8 +398,8 @@ export function LogsPage() {
                 <dd>{eventLabel(activeLog)}</dd>
                 <dt>操作对象</dt>
                 <dd>{objectLabel(activeLog)}</dd>
-                <dt>对象 ID</dt>
-                <dd>{activeLog.target_id || activeLog.lead_id || "-"}</dd>
+                <dt>对象编号</dt>
+                <dd className="copy-value"><span>{activeLog.target_id || activeLog.lead_id || "-"}</span><CopyButton label="对象编号" value={activeLog.target_id || activeLog.lead_id} /></dd>
                 <dt>操作结果</dt>
                 <dd>{resultLabel(activeLog)}</dd>
                 <dt>失败原因</dt>
@@ -398,21 +407,13 @@ export function LogsPage() {
                 <dt>IP / 设备信息</dt>
                 <dd>{[activeLog.ip_address, activeLog.user_agent].filter(Boolean).join(" / ") || "未记录"}</dd>
               </dl>
-              <section>
-                <h3>操作前摘要</h3>
-                <pre>{compactJson(activeLog.before_data)}</pre>
-              </section>
-              <section>
-                <h3>操作后摘要</h3>
-                <pre>{compactJson(activeLog.after_data)}</pre>
-              </section>
-              <section>
-                <h3>说明</h3>
-                <pre>{compactJson({ summary: summaryText(activeLog), metadata: activeLog.metadata || {} })}</pre>
+              <section className="log-business-summary">
+                <h3>操作说明</h3>
+                <p>{summaryText(activeLog)}</p>
+                <span>系统已记录操作前 {changeCount(activeLog.before_data)} 项、操作后 {changeCount(activeLog.after_data)} 项业务信息，用于审计追溯。</span>
               </section>
             </div>
             <footer className="modal-actions">
-              <span>{activeLog.request_id ? `Request ID：${activeLog.request_id}` : ""}</span>
               <button type="button" className="primary-button" onClick={() => setActiveLog(null)}>
                 关闭
               </button>

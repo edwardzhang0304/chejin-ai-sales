@@ -42,6 +42,7 @@ CLIENT_VERSION = "V16.125 · Worker C2/C3 客户端"
 TITLEBAR_HEIGHT = 28
 WINDOW_CONTROL_WIDTH = 90
 WINDOW_RADIUS = 10
+TIMELINE_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 
 
 def _format_time(value: str | None) -> str:
@@ -52,6 +53,40 @@ def _format_time(value: str | None) -> str:
         return parsed.astimezone().strftime("%H:%M:%S")
     except ValueError:
         return value[-8:] if len(value) >= 8 else value
+
+
+def _timeline_image_url(value: str | None) -> str:
+    """Return a local URL only for a real image inside Worker artifact storage."""
+
+    if not value:
+        return ""
+    try:
+        image_path = Path(value).expanduser().resolve(strict=True)
+        artifact_root = (CONFIG.app_dir / "artifacts").resolve(strict=False)
+        image_path.relative_to(artifact_root)
+    except (OSError, RuntimeError, ValueError):
+        return ""
+    if not image_path.is_file() or image_path.suffix.lower() not in TIMELINE_IMAGE_SUFFIXES:
+        return ""
+    return QUrl.fromLocalFile(str(image_path)).toString()
+
+
+def _timeline_screenshot(
+    evidence_path: str | None,
+    *,
+    incident_id: str | None = None,
+    sidecar_run_id: str | None = None,
+) -> dict[str, str] | None:
+    image_url = _timeline_image_url(evidence_path)
+    if not image_url:
+        return None
+    return {
+        "imageUrl": image_url,
+        "caption": "真实执行截图",
+        "evidencePath": str(evidence_path or ""),
+        "incidentId": str(incident_id or ""),
+        "sidecarRunId": str(sidecar_run_id or ""),
+    }
 
 
 def _task_model(task: Task | None) -> dict[str, str]:
@@ -463,7 +498,23 @@ class WorkerWebWindow(QMainWindow):
         steps = list(self.step_history)
         message = self.last_result.message if self.last_result else "任务执行失败。"
         code = self.last_result.error_code if self.last_result else "OTHER"
-        steps.append({"state": "error", "title": "任务执行失败", "description": f"{code} · {message}", "finalText": "任务执行失败"})
+        metadata = self.last_result.evidence_metadata if self.last_result else {}
+        incident_id = str(metadata.get("incident_id") or "")
+        sidecar_run_id = str(metadata.get("sidecar_run_id") or "")
+        screenshot = _timeline_screenshot(
+            self.last_result.evidence_path if self.last_result else None,
+            incident_id=incident_id,
+            sidecar_run_id=sidecar_run_id,
+        )
+        steps.append(
+            {
+                "state": "error",
+                "title": "任务执行失败",
+                "description": f"{code} · {message}",
+                "finalText": "任务执行失败",
+                **({"screenshot": screenshot} if screenshot else {}),
+            }
+        )
         return steps
 
     def _publish(self) -> None:
@@ -632,7 +683,19 @@ class WorkerWebWindow(QMainWindow):
 
     @Slot(object)
     def on_step(self, step: RpaStep) -> None:
-        self.step_history.append({"state": "done", "title": step.title, "description": step.remark or step.current_step})
+        screenshot = _timeline_screenshot(
+            step.evidence_path,
+            incident_id=step.incident_id,
+            sidecar_run_id=step.sidecar_run_id,
+        )
+        self.step_history.append(
+            {
+                "state": "done",
+                "title": step.title,
+                "description": step.remark or step.current_step,
+                **({"screenshot": screenshot} if screenshot else {}),
+            }
+        )
         self._publish()
 
     @Slot(object)
