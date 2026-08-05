@@ -6,7 +6,7 @@
 
 最后更新：2026-08-05
 
-当前阶段：运营后台 + Windows Worker 客户端。C1 已形成稳定基线；C2 的文字、语音、图片、V3 授权、private 单聊准入、群聊阻断、统一顺序、跨轮去重、多目标串行和停止监听已在 `v16.130.0 / 8ee53e1` 完成正式 Windows 实机验收。C3 自动回复与 C4 自动召回均已实现并测试，当前无已知主链问题。OmniAuto 双仓统一已经完成：上游固定提交为 `69dc871`，Worker 统一代码基线为 `v16.132.0 / 37139bfd`，受影响范围 Windows 回归由用户确认通过；车金仓库当前 `main` 为 `ad457c1`，其后未提交登录/车辆工作不得冒充已合并能力。`2318bd8` 仅作为历史选择性来源保留。
+当前阶段：运营后台 + Windows Worker 客户端。C1 已形成稳定基线；C2 的文字、语音、图片、V3 授权、private 单聊准入、群聊阻断、统一顺序、跨轮去重、多目标串行和停止监听已在 `v16.130.0 / 8ee53e1` 完成正式 Windows 实机验收。C3 自动回复与 C4 自动召回均已实现并测试，当前无已知主链问题。OmniAuto 双仓统一已经完成：上游已前进到 PR #37 合并提交 `35b0eee`，车金内嵌副本已选择性同步；最近一次已做 Windows 受影响范围回归的 Worker 基线仍为 `v16.132.0 / 37139bfd`，本次同步不得冒充新的 Windows 安装包验收。`2318bd8` 仅作为历史选择性来源保留。
 
 一句话结论：当前技术方案统一收口到本文档；C0—C4 已有主链基线，不重开图片、语音、回复或召回流程设计。当前新增主线是运营后台指定账号登录和车辆信息/Product Master：后台账号由服务端预先建立，登录成功即拥有全部后台权限，第一期不做 RBAC；车辆和正式知识复用 OmniAuto 的 Product Master、KnowledgeRuntime、RAG 与 Guard 并持久化到车金现有 PostgreSQL；不接大风车 API，不部署第二套后台，不将测试车辆或未审核知识带入生产。
 
@@ -38,7 +38,7 @@
 > 文档；图片流程一律以本文第 8 章为准。
 >
 > **2026-08-04 当前实现状态：**图片模块已通过 OmniAuto 上游固定提交
-> `69dc871` 完成双仓统一，不重写剪贴板事务。
+> `35b0eee` 完成最新通用修复同步，不重写剪贴板事务。
 > `claim_copy_ownership/微信窗口PID` 错误硬门禁已经删除，错误映射、来源记录、
 > 自动化和 C2 Windows UAT 已在 `v16.130.0 / 8ee53e1` 收口；双仓统一后的
 > `v16.132.0 / 37139bfd` 受影响范围 Windows 回归已通过。
@@ -3345,16 +3345,17 @@ OmniAuto AI Engine 在服务端通过 Adapter 接入，不允许运行 OmniAuto 
 OmniAuto共同基础：meta-xucong/omniauto@855c218
 图片一致性能力选择性来源：meta-xucong/omniauto@2318bd8
 首次集成提交：ff9e0de
-当前内嵌OmniAuto目录SHA256：e1fea61c6d4c0c5516f499e9767178317cd4fabf78f01a60abf6aa80d47e2dce
+该回滚包内嵌OmniAuto目录SHA256：e1fea61c6d4c0c5516f499e9767178317cd4fabf78f01a60abf6aa80d47e2dce
 ```
 
 这里的 `2318bd8` 是回滚包中图片气泡和复制后一致性能力的历史选择性来源，不表示
 当前 `worker-client/omniauto-rpa` 仍停留在该提交。当前双仓统一结果为：
 
 ```text
-OmniAuto 通用上游固定提交：69dc871e8649773a921e8e50123116687a710bb5
-车金 main 固定提交：37139bfd5663d1f06fd4ddc151624e6bdda1a8e4
-客户端版本：16.132.0
+OmniAuto 通用上游固定提交：35b0eee13c6423d56a0f15736f96a422e10d8d1c
+车金同步位置：PR #7 当前分支，最终提交以本次同步提交为准
+当前内嵌OmniAuto目录SHA256：15ad797348d2dd92050097a9dc04e69797cdb3cd991d923d1cf4a972b2e64234
+客户端版本：待定，正式候选必须高于16.132.0
 活动 selective_integrations：[]
 历史来源：855c218 + 2318bd8 + ff9e0de（只读追溯）
 ```
@@ -3409,7 +3410,7 @@ Vision 或结果返回主链。
    `default_failure_error_code` 掩盖漏配。
 
 `v16.130.0` 的历史发布来源元数据按下列方式保留；当前 schema v3 已把活动
-`upstream_base_commit` 更新为 `69dc871`，活动 `selective_integrations` 置空，
+`upstream_base_commit` 更新为 `35b0eee`，活动 `selective_integrations` 置空，
 旧三段来源迁入只读 `historical_integrations`。来源 schema、打包脚本和测试已同次
 升级，后续不得伪造目录来源：
 
@@ -3427,11 +3428,11 @@ tree SHA 必须由最终提交后的真实目录动态计算，不得把历史 t
 
 #### 8.5.1 双仓最终收口结果
 
-1. OmniAuto 通用改动已通过上游 PR 合并到固定提交 `69dc871`。
+1. OmniAuto 最新通用改动已通过上游 PR #37 合并到固定提交 `35b0eee`。
 2. 车金内嵌 `worker-client/omniauto-rpa` 已更新到该固定提交，车金业务适配仍留在
    Worker/后端边界，没有进入通用上游。
 3. `.chejin-source.json` 已使用 schema v3：活动
-   `upstream_base_commit=69dc871`、`selective_integrations=[]`，旧
+   `upstream_base_commit=35b0eee`、`selective_integrations=[]`，旧
    `855c218 + 2318bd8 + ff9e0de` 保留在 `historical_integrations`。
 4. 车金 PR 已合并到 `main@37139bfd`，客户端版本为 `16.132.0`。
 5. 自动化和受影响范围 Windows 回归已通过。正式回滚仍使用

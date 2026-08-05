@@ -156,10 +156,21 @@ def guard_synthesized_reply(
                     ),
                 )
             elif settings.get("brain_first_guard") is True and candidate_requests_handoff(candidate):
-                if reply and handoff_reply_safe(
-                    reply,
-                    platform_rules,
-                    allow_ai_identity_exposure=bool(candidate.get("allow_ai_identity_exposure", False)),
+                allow_identity_exposure = bool(candidate.get("allow_ai_identity_exposure", False))
+                planned_visible_handoff_safe = bool(
+                    reply
+                    and has_explicit_customer_visible_handoff_marker(reply)
+                    and not has_internal_visible_marker(reply)
+                    and (allow_identity_exposure or not has_ai_identity_exposure(reply))
+                    and not has_unqualified_commitment(reply, platform_rules)
+                )
+                if reply and (
+                    handoff_reply_safe(
+                        reply,
+                        platform_rules,
+                        allow_ai_identity_exposure=allow_identity_exposure,
+                    )
+                    or planned_visible_handoff_safe
                 ):
                     return approved_handoff_decision(
                         "existing_safety_requires_handoff_brain_handoff_passed",
@@ -275,7 +286,7 @@ def guard_synthesized_reply(
                 "guard 不提供客户可见替代话术。"
             ),
         )
-    if has_explicit_customer_visible_handoff_marker(reply):
+    if has_explicit_customer_visible_handoff_marker(reply) and not candidate_requests_handoff(candidate):
         return repair_decision(
             "explicit_handoff_marker_requires_brain_repair",
             candidate,

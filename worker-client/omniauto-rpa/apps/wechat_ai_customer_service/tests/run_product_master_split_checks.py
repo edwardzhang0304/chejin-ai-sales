@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 from datetime import datetime
@@ -21,6 +22,7 @@ from apps.wechat_ai_customer_service.admin_backend.services.source_authority_pol
     evaluate_candidate_source_authority,
     evaluate_experience_source_authority,
 )
+from apps.wechat_ai_customer_service import product_master as product_master_module  # noqa: E402
 from apps.wechat_ai_customer_service.knowledge_paths import tenant_context, tenant_knowledge_base_root, tenant_product_master_root, tenant_root  # noqa: E402
 from apps.wechat_ai_customer_service.product_master import (  # noqa: E402
     PRODUCT_MASTER_CATEGORY_ID,
@@ -41,6 +43,8 @@ def main() -> int:
             results = [
                 check_read_only_product_master_does_not_rewrite_manifest(),
                 check_migration_copies_legacy_product_master(),
+                check_postgres_empty_catalog_is_authoritative(),
+                check_postgres_without_dsn_fails_closed(),
                 check_store_writes_new_products_to_product_master_only(),
                 check_runtime_reads_product_master_but_excludes_formal_reply_iteration(),
                 check_schema_and_category_contract(),
@@ -150,6 +154,42 @@ def check_migration_copies_legacy_product_master() -> dict[str, Any]:
     assert_true((tenant_knowledge_base_root(TENANT_ID) / "products" / "items" / "legacy_car_001.json").exists(), "legacy product should remain as rollback evidence")
     assert_true("legacy_car_001" in result.get("copied", []), "migration should report copied product")
     return {"name": "migration_copies_legacy_product_master", "ok": True}
+
+
+def check_postgres_empty_catalog_is_authoritative() -> dict[str, Any]:
+    class EmptyPostgresStore:
+        def list_knowledge_items(self, *_: Any, **__: Any) -> list[dict[str, Any]]:
+            return []
+
+    original = product_master_module.postgres_store
+    product_master_module.postgres_store = lambda _tenant_id: EmptyPostgresStore()
+    try:
+        items = ProductMasterStore(tenant_id=TENANT_ID).list_items(include_archived=True)
+    finally:
+        product_master_module.postgres_store = original
+    assert_equal(items, [], "empty PostgreSQL catalog must not fall back to mirrored files")
+    return {"name": "postgres_empty_catalog_is_authoritative", "ok": True}
+
+
+def check_postgres_without_dsn_fails_closed() -> dict[str, Any]:
+    previous = {name: os.environ.get(name) for name in ("WECHAT_STORAGE_BACKEND", "WECHAT_POSTGRES_DSN", "DATABASE_URL")}
+    os.environ["WECHAT_STORAGE_BACKEND"] = "postgres"
+    os.environ.pop("WECHAT_POSTGRES_DSN", None)
+    os.environ.pop("DATABASE_URL", None)
+    try:
+        try:
+            product_master_module.postgres_store(TENANT_ID)
+        except RuntimeError as exc:
+            assert_true("DSN" in str(exc), f"missing DSN error should be explicit: {exc}")
+        else:
+            raise AssertionError("PostgreSQL mode without DSN must fail closed")
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+    return {"name": "postgres_without_dsn_fails_closed", "ok": True}
 
 
 def check_store_writes_new_products_to_product_master_only() -> dict[str, Any]:
