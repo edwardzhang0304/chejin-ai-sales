@@ -559,11 +559,15 @@ def stop_incident_worker(*, wait: bool = True) -> None:
 def wait_for_incident(incident_id: str, timeout: float = 10.0) -> Path | None:
     deadline = time.monotonic() + max(0.0, float(timeout))
     while time.monotonic() <= deadline:
+        pending = _pending_directory() / f"{incident_id}.json"
         for path in (
             incident_directory() / f"{incident_id}.zip",
             incident_directory() / f"{incident_id}.incident.json",
         ):
-            if path.is_file():
+            # The package becomes visible before completion bookkeeping updates
+            # latest.json and the originating log record.  Only expose it after
+            # the durable pending request has been cleared by the worker.
+            if path.is_file() and not pending.exists():
                 return path
         time.sleep(0.02)
     return None
