@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 import sys
 
+from PyInstaller.utils.hooks import collect_submodules
+
 ROOT = Path.cwd()
 sys.path.insert(0, str(ROOT / "scripts"))
 from build_source import resolve_contract_path
@@ -41,6 +43,7 @@ ALLOWED_OMNIAUTO_DATA_PREFIXES = (
     "apps/wechat_ai_customer_service/data/tenants/chejin/rag_index/",
 )
 OMNIAUTO_CLIENT_EXCLUDES = load_client_exclude_paths(OMNIAUTO_RPA_SOURCE)
+PIL_HIDDEN_IMPORTS = collect_submodules("PIL")
 
 
 def include_omniauto_file(path):
@@ -94,6 +97,7 @@ a = Analysis(
         "rapidocr_onnxruntime",
         "onnxruntime",
         "uiautomation",
+        *PIL_HIDDEN_IMPORTS,
     ],
     hookspath=[],
     hooksconfig={},
@@ -115,7 +119,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
-    disable_windowed_traceback=False,
+    disable_windowed_traceback=True,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
