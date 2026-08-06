@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import sys
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 ROOT = Path.cwd()
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -44,6 +44,11 @@ ALLOWED_OMNIAUTO_DATA_PREFIXES = (
 )
 OMNIAUTO_CLIENT_EXCLUDES = load_client_exclude_paths(OMNIAUTO_RPA_SOURCE)
 PIL_HIDDEN_IMPORTS = collect_submodules("PIL")
+(
+    RAPIDOCR_DATAS,
+    RAPIDOCR_BINARIES,
+    RAPIDOCR_HIDDEN_IMPORTS,
+) = collect_all("rapidocr_onnxruntime")
 
 
 def include_omniauto_file(path):
@@ -76,8 +81,9 @@ OMNIAUTO_DATAS = [
 a = Analysis(
     [str(ENTRY_PATH)],
     pathex=[str(ROOT)],
-    binaries=[],
+    binaries=[*RAPIDOCR_BINARIES],
     datas=[
+        *RAPIDOCR_DATAS,
         *OMNIAUTO_DATAS,
         (str(CONTRACT_PATH), "contracts"),
         (str(ROOT / "chejin_worker_client" / "web_assets"), "chejin_worker_client/web_assets"),
@@ -97,6 +103,7 @@ a = Analysis(
         "rapidocr_onnxruntime",
         "onnxruntime",
         "uiautomation",
+        *RAPIDOCR_HIDDEN_IMPORTS,
         *PIL_HIDDEN_IMPORTS,
     ],
     hookspath=[],

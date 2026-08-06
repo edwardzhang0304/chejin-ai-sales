@@ -211,11 +211,18 @@ def probe_omniauto_ocr_subprocess() -> dict[str, Any]:
         }
     except Exception as exc:  # noqa: BLE001
         message = str(exc or "").split(":", 1)[0].strip().lower()
-        return {
+        result = {
             "ok": False,
             "reason": message or "omniauto_ocr_worker_failed",
             "error_type": type(exc).__name__,
         }
+        if os.environ.get("CHEJIN_PACKAGING_DIAGNOSTIC_PATH"):
+            diagnostic_traceback = str(
+                getattr(exc, "diagnostic_traceback", "") or ""
+            ).strip()
+            if diagnostic_traceback:
+                result["diagnostic_traceback"] = diagnostic_traceback[-4000:]
+        return result
     finally:
         image.close()
         runner.close()
