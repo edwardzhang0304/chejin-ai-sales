@@ -103,6 +103,8 @@ a = Analysis(
         "rapidocr_onnxruntime",
         "onnxruntime",
         "uiautomation",
+        "pyperclip",
+        "pywinauto",
         *RAPIDOCR_HIDDEN_IMPORTS,
         *PIL_HIDDEN_IMPORTS,
     ],
