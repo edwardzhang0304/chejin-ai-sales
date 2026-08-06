@@ -111,6 +111,10 @@ if ($LASTEXITCODE -ne 0) {
 if ($LASTEXITCODE -ne 0) {
   throw "打包失败：uiautomation 导入失败"
 }
+$RapidOcrSourceProbe = & .\.venv\Scripts\python.exe -c "import json; import onnxruntime; from PIL import Image; from rapidocr_onnxruntime import RapidOCR; assert onnxruntime.__version__ == '1.20.1', onnxruntime.__version__; image = Image.new('RGB', (96, 48), 'white'); items, _ = RapidOCR()(image); image.close(); print(json.dumps({'ok': True, 'onnxruntime_version': onnxruntime.__version__, 'ocr_item_count': len(items or [])}))"
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：源码环境无法初始化固定版本的图片复核 OCR。$RapidOcrSourceProbe"
+}
 
 if (-not $SkipTests) {
   .\.venv\Scripts\python.exe run_checks.py
