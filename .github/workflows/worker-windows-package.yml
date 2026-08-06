@@ -126,11 +126,16 @@ jobs:
 
           $verifyDir = Join-Path $env:RUNNER_TEMP "chejin-worker-delivery-verify"
           Expand-Archive -LiteralPath $zipPath -DestinationPath $verifyDir -Force
-          $verifiedExePath = Join-Path $verifyDir "车金Worker客户端.exe"
-          $verifiedInternalPath = Join-Path $verifyDir "_internal"
-          if (-not (Test-Path $verifiedExePath)) {
-            throw "delivery ZIP does not contain the packaged executable"
+          $verifiedExeCandidates = @(
+            Get-ChildItem -Path $verifyDir -Filter "*.exe" -File -Recurse |
+              Where-Object { (Get-FileHash -Algorithm SHA256 $_.FullName).Hash -eq $manifest.exe_sha256 }
+          )
+          if ($verifiedExeCandidates.Count -ne 1) {
+            throw "delivery ZIP must contain exactly one executable matching the packaged SHA256; found $($verifiedExeCandidates.Count)"
           }
+          $verifiedExePath = $verifiedExeCandidates[0].FullName
+          $verifiedPackageRoot = Split-Path -Parent $verifiedExePath
+          $verifiedInternalPath = Join-Path $verifiedPackageRoot "_internal"
           if (-not (Test-Path $verifiedInternalPath)) {
             throw "delivery ZIP does not contain the packaged runtime directory"
           }
@@ -138,6 +143,8 @@ jobs:
           if ($verifiedExeHash -ne $manifest.exe_sha256) {
             throw "delivery ZIP executable SHA256 mismatch"
           }
+          $verifyRootPrefix = $verifyDir.TrimEnd("\") + "\"
+          $verifiedExeRelativePath = $verifiedExePath.Substring($verifyRootPrefix.Length)
 
           $zipHash = (Get-FileHash -Algorithm SHA256 $zipPath).Hash
           $deliveryManifest = [ordered]@{
@@ -152,7 +159,7 @@ jobs:
             workflow_run_id = $env:GITHUB_RUN_ID
             zip_name = $zipName
             zip_sha256 = $zipHash
-            exe_relative_path = "车金Worker客户端.exe"
+            exe_relative_path = $verifiedExeRelativePath
             exe_sha256 = [string]$manifest.exe_sha256
             file_count = [int]$manifest.file_count
             package_bytes = [long]$manifest.package_bytes
