@@ -71,10 +71,13 @@ jobs:
 
           $env:CHEJIN_RPA_MODE = "mock"
           $env:CHEJIN_WORKER_HOME = Join-Path $env:RUNNER_TEMP "chejin-worker-runtime-probe"
+          $preflightReport = Join-Path $env:RUNNER_TEMP "chejin-worker-packaged-preflight.json"
+          $runtimeDiagnostics = Join-Path $env:RUNNER_TEMP "chejin-worker-packaged-diagnostics.jsonl"
+          $env:CHEJIN_PACKAGING_DIAGNOSTIC_PATH = $runtimeDiagnostics
           foreach ($probeArgs in @(
             @("--omniauto-sidecar", "--help"),
             @("--omniauto-ocr-probe"),
-            @("--preflight", "--skip-backend", "--skip-wechat")
+            @("--preflight", "--skip-backend", "--skip-wechat", "--preflight-format", "json", "--write-report", $preflightReport)
           )) {
             $process = Start-Process -FilePath $exePath -ArgumentList $probeArgs -PassThru
             if (-not $process.WaitForExit(120000)) {
@@ -82,6 +85,12 @@ jobs:
               throw "packaged executable probe timed out: $($probeArgs -join ' ')"
             }
             if ($process.ExitCode -ne 0) {
+              if (Test-Path $preflightReport) {
+                Get-Content -Raw -Encoding UTF8 $preflightReport | Write-Host
+              }
+              if (Test-Path $runtimeDiagnostics) {
+                Get-Content -Raw -Encoding UTF8 $runtimeDiagnostics | Write-Host
+              }
               throw "packaged executable probe failed: $($probeArgs -join ' ')"
             }
           }

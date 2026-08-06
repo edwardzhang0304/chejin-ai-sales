@@ -26,6 +26,12 @@ class _FakeKernel32:
 
 
 class SingleInstanceTest(unittest.TestCase):
+    def test_cli_output_is_safe_without_console_stream(self):
+        from chejin_worker_client.main import emit_cli_output
+
+        with mock.patch("chejin_worker_client.main.sys.stdout", None):
+            emit_cli_output("不会写入窗口版控制台")
+
     def test_windows_first_instance_holds_mutex_until_release(self):
         kernel32 = _FakeKernel32()
         guard = acquire_single_instance(

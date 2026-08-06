@@ -14,6 +14,16 @@ from .single_instance import (
 )
 
 
+def emit_cli_output(value: str) -> None:
+    """Windowed PyInstaller builds may intentionally have no stdout stream."""
+
+    stream = getattr(sys, "stdout", None)
+    if stream is None:
+        return
+    stream.write(str(value) + "\n")
+    stream.flush()
+
+
 def bootstrap_qt_plugins() -> None:
     if os.environ.get("QT_QPA_PLATFORM_PLUGIN_PATH"):
         return
@@ -51,7 +61,7 @@ def run_bundled_omniauto_sidecar(argv: list[str]) -> int:
             exc,
             state="win32_ocr_failed",
         )
-    print(json.dumps(payload, ensure_ascii=True), flush=True)
+    emit_cli_output(json.dumps(payload, ensure_ascii=True))
     return 0 if bool(payload.get("ok")) else 1
 
 
@@ -92,7 +102,7 @@ def run_bundled_omniauto_ocr_probe() -> int:
                 )
         except Exception:
             pass
-    print(json.dumps(result, ensure_ascii=False), flush=True)
+    emit_cli_output(json.dumps(result, ensure_ascii=False))
     return 0 if result.get("ok") is True else 1
 
 
@@ -118,14 +128,20 @@ def main() -> int:
     if args.wechat_diagnostics:
         from .rpa_bridge import RpaBridge
 
-        print(json.dumps(RpaBridge().diagnose_wechat(), ensure_ascii=False, indent=2))
+        emit_cli_output(
+            json.dumps(RpaBridge().diagnose_wechat(), ensure_ascii=False, indent=2)
+        )
         return 0
 
     if args.preflight:
         checks = run_preflight(check_backend=not args.skip_backend, check_wechat=not args.skip_wechat)
         if args.write_report is not None:
             write_report(checks, args.write_report)
-        print(format_json(checks) if args.preflight_format == "json" else format_text(checks))
+        emit_cli_output(
+            format_json(checks)
+            if args.preflight_format == "json"
+            else format_text(checks)
+        )
         return 1 if has_blocking_failures(checks) else 0
 
     try:
