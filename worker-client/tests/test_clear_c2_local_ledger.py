@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import closing
 import json
 import os
 from pathlib import Path
@@ -19,7 +20,7 @@ class ClearC2LocalLedgerTest(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.app_dir = Path(self.temporary.name)
         self.database = self.app_dir / "worker_client.sqlite3"
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection:
             connection.executescript(
                 """
                 CREATE TABLE binding (
@@ -86,7 +87,7 @@ class ClearC2LocalLedgerTest(unittest.TestCase):
         self.assertTrue(result["binding_preserved"])
         self.assertEqual(result["deleted_message_identity_states"], 1)
 
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection:
             binding = connection.execute(
                 "SELECT worker_id, worker_token, client_instance_id FROM binding"
             ).fetchone()
@@ -168,7 +169,7 @@ class ClearC2LocalLedgerTest(unittest.TestCase):
         )
 
     def test_running_worker_is_not_modified(self) -> None:
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection:
             connection.execute(
                 "UPDATE binding SET run_status = 'running' WHERE id = 1"
             )
@@ -180,7 +181,7 @@ class ClearC2LocalLedgerTest(unittest.TestCase):
             "WORKER_MUST_BE_PAUSED_BEFORE_LEDGER_CLEAR",
             completed.stdout,
         )
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection:
             self.assertEqual(
                 connection.execute(
                     "SELECT COUNT(*) FROM c2_message_ledger"
