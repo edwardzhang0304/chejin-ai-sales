@@ -271,6 +271,8 @@ class IncidentEvidenceTest(unittest.TestCase):
     def test_zip_capture_is_async_and_does_not_block_log_caller(self) -> None:
         entered = threading.Event()
         release = threading.Event()
+        caller_done = threading.Event()
+        caller_result: dict[str, object] = {}
         original = self.incidents._create_incident_package
 
         def slow_capture(request):
@@ -278,18 +280,36 @@ class IncidentEvidenceTest(unittest.TestCase):
             release.wait(timeout=5.0)
             return original(request)
 
+        def append_error_log() -> None:
+            try:
+                caller_result["result"] = self.storage.append_log(
+                    "ERROR",
+                    "async_capture_failure",
+                    "capture must not block caller",
+                )
+            except BaseException as exc:  # pragma: no cover - asserted below
+                caller_result["error"] = exc
+            finally:
+                caller_done.set()
+
         with patch.object(self.incidents, "_create_incident_package", side_effect=slow_capture):
-            started = time.perf_counter()
-            result = self.storage.append_log(
-                "ERROR",
-                "async_capture_failure",
-                "capture must not block caller",
-            )
-            elapsed = time.perf_counter() - started
+            caller = threading.Thread(target=append_error_log, daemon=True)
+            caller.start()
             self.assertTrue(entered.wait(timeout=2.0))
-            self.assertLess(elapsed, 0.5)
+            try:
+                self.assertTrue(
+                    caller_done.wait(timeout=2.0),
+                    "append_log waited for the blocked incident package capture",
+                )
+            finally:
+                release.set()
+                caller.join(timeout=5.0)
+            self.assertFalse(caller.is_alive())
+            self.assertNotIn("error", caller_result)
+            result = caller_result.get("result")
+            self.assertIsInstance(result, dict)
+            assert isinstance(result, dict)
             self.assertFalse(Path(result["evidence_path"]).exists())
-            release.set()
             self.assertIsNotNone(
                 self.incidents.wait_for_incident(result["incident_id"], timeout=10.0)
             )
