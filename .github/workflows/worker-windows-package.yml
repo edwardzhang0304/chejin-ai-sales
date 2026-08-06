@@ -41,12 +41,17 @@ jobs:
         working-directory: worker-client
         run: |
           $ErrorActionPreference = "Stop"
-          $packageDir = Join-Path $PWD "dist\车金Worker客户端"
-          $exePath = Join-Path $packageDir "车金Worker客户端.exe"
-          $manifestPath = Join-Path $PWD "dist\reports\车金Worker客户端.manifest.json"
+          $reportsDir = Join-Path $PWD "dist\reports"
+          $manifestFiles = @(Get-ChildItem -Path $reportsDir -Filter "*.manifest.json" -File)
+          if ($manifestFiles.Count -ne 1) {
+            throw "expected exactly one package manifest, found $($manifestFiles.Count)"
+          }
+          $manifestPath = $manifestFiles[0].FullName
+          $manifest = Get-Content -Raw -Encoding UTF8 $manifestPath | ConvertFrom-Json
+          $packageDir = [string]$manifest.package_dir
+          $exePath = [string]$manifest.exe_path
 
           .\scripts\validate-package.ps1 -PackageDir $packageDir
-          $manifest = Get-Content -Raw -Encoding UTF8 $manifestPath | ConvertFrom-Json
           if ($manifest.version -ne "16.133.0") {
             throw "unexpected version: $($manifest.version)"
           }
