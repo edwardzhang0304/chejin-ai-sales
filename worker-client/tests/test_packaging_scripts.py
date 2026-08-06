@@ -470,6 +470,8 @@ class PackagingScriptsTest(unittest.TestCase):
             encoding="utf-8-sig"
         )
 
+        self.assertIn('$env:PYTHONUTF8 = "1"', text)
+        self.assertIn('$env:PYTHONIOENCODING = "utf-8"', text)
         self.assertIn("Worker 完整测试未通过", text)
         self.assertIn("PyInstaller 构建失败", text)
         self.assertIn('"PIL.ImageEnhance"', text)
@@ -600,6 +602,8 @@ class PackagingScriptsTest(unittest.TestCase):
     def test_run_checks_includes_omniauto_safety_suites(self):
         text = (ROOT / "run_checks.py").read_text(encoding="utf-8")
 
+        self.assertIn('env["PYTHONUTF8"] = "1"', text)
+        self.assertIn('env["PYTHONIOENCODING"] = "utf-8"', text)
         self.assertIn("generate-c2-observation-schema.py", text)
         self.assertIn('"--check"', text)
         required_scripts = (
