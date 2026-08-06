@@ -121,6 +121,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('Get-ChildItem -Path $verifyDir -Filter "*.exe" -File -Recurse', workflow)
         self.assertIn("matching the packaged SHA256", workflow)
         self.assertIn("delivery ZIP does not contain the packaged runtime directory", workflow)
+        self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
         self.assertIn("chejin-worker-v16.133.0-windows-x64.delivery.json", workflow)
         self.assertIn("client_delivery_boundary_check", workflow)
