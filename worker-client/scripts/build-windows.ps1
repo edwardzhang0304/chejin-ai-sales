@@ -97,11 +97,23 @@ if (-not (Test-Path ".venv")) {
 }
 
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：pip 升级失败"
+}
 .\.venv\Scripts\pip.exe install -r requirements.txt
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：依赖安装失败"
+}
 .\.venv\Scripts\python.exe -c "import uiautomation; print('uiautomation import passed')"
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：uiautomation 导入失败"
+}
 
 if (-not $SkipTests) {
   .\.venv\Scripts\python.exe run_checks.py
+  if ($LASTEXITCODE -ne 0) {
+    throw "打包失败：Worker 完整测试未通过"
+  }
   $TestsStatus = "passed"
 }
 
@@ -114,6 +126,9 @@ if (-not $SkipPreflight) {
     $env:CHEJIN_API_BASE_URL = $ApiBaseUrl
   }
   .\.venv\Scripts\python.exe -m chejin_worker_client.main --preflight --skip-backend --skip-wechat --preflight-format json --write-report $PreflightReportPath
+  if ($LASTEXITCODE -ne 0) {
+    throw "打包失败：Preflight 未通过"
+  }
   $PreflightStatus = "passed"
 }
 
@@ -124,12 +139,17 @@ if (-not (Test-Path $GeneratedObservationSchemaPath)) {
   throw "打包失败：缺少生成的 C2 observation schema"
 }
 .\.venv\Scripts\python.exe scripts\generate-c2-observation-schema.py --check
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：C2 observation schema 校验失败"
+}
 $env:CHEJIN_OMNIAUTO_RPA_SOURCE = $OmniAutoSourcePath
 $OmniAutoSourceSidecarHash = Get-FileHash -Algorithm SHA256 $OmniAutoSidecarPath
 $GeneratedObservationSchemaHash = Get-FileHash -Algorithm SHA256 $GeneratedObservationSchemaPath
-$OmniAutoSourceTree = (
-  .\.venv\Scripts\python.exe scripts\verify-omniauto-tree.py --source $OmniAutoSourcePath
-) | ConvertFrom-Json
+$OmniAutoSourceTreeJson = & .\.venv\Scripts\python.exe scripts\verify-omniauto-tree.py --source $OmniAutoSourcePath
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：OmniAuto 源码树校验失败"
+}
+$OmniAutoSourceTree = $OmniAutoSourceTreeJson | ConvertFrom-Json
 
 $Version = .\.venv\Scripts\python.exe -c "from chejin_worker_client import __version__; print(__version__)"
 $RuntimeBuildIdentityPath = Join-Path $ReportsDir "runtime-build-identity.json"
@@ -141,6 +161,9 @@ $RuntimeBuildIdentityPath = Join-Path $ReportsDir "runtime-build-identity.json"
 $env:CHEJIN_BUILD_IDENTITY_PATH = $RuntimeBuildIdentityPath
 
 .\.venv\Scripts\pyinstaller.exe --clean --noconfirm packaging\chejin-worker-client.spec
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：PyInstaller 构建失败"
+}
 
 if (-not (Test-Path $ExePath)) {
   throw "打包失败：未找到 $ExePath"
@@ -153,11 +176,21 @@ $BundledVisionOcrProbe = Start-Process -FilePath $ExePath -ArgumentList @("--omn
 if ($BundledVisionOcrProbe.ExitCode -ne 0) {
   throw "打包失败：最终 exe 无法启动图片复核 OCR 独立进程"
 }
-$PackagedPythonArchive = (
-  .\.venv\Scripts\pyi-archive_viewer.exe -l -r $ExePath
-) -join "`n"
-if ($PackagedPythonArchive -notmatch 'uiautomation') {
-  throw "打包失败：最终 exe 未包含 Windows UIA 诊断所需的 uiautomation"
+$PackagedPythonArchiveLines = & .\.venv\Scripts\pyi-archive_viewer.exe -l -r $ExePath
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：无法读取最终 exe 的 Python 归档"
+}
+$PackagedPythonArchive = $PackagedPythonArchiveLines -join "`n"
+$RequiredArchiveModules = @(
+  "uiautomation",
+  "PIL.ImageEnhance",
+  "PIL.ImageGrab",
+  "rapidocr_onnxruntime"
+)
+foreach ($RequiredArchiveModule in $RequiredArchiveModules) {
+  if ($PackagedPythonArchive -notmatch [regex]::Escape($RequiredArchiveModule)) {
+    throw "打包失败：最终 exe 未包含运行依赖 $RequiredArchiveModule"
+  }
 }
 
 $SidecarCandidates = @(
@@ -200,15 +233,23 @@ $ClientBoundary = $ClientBoundaryJson | ConvertFrom-Json
 if ($ClientBoundary.ok -ne $true) {
   throw "打包失败：客户端交付边界检查未通过。"
 }
-$OmniAutoTreeVerification = (
-  .\.venv\Scripts\python.exe scripts\verify-omniauto-tree.py --source $OmniAutoSourcePath --packaged $PackagedOmniAutoPath
-) | ConvertFrom-Json
+$OmniAutoTreeVerificationJson = & .\.venv\Scripts\python.exe scripts\verify-omniauto-tree.py --source $OmniAutoSourcePath --packaged $PackagedOmniAutoPath
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：最终产物 OmniAuto 树校验失败"
+}
+$OmniAutoTreeVerification = $OmniAutoTreeVerificationJson | ConvertFrom-Json
 
 $Hash = Get-FileHash -Algorithm SHA256 $ExePath
 $Files = Get-ChildItem $PackageDir -Recurse -File
 $TotalBytes = ($Files | Measure-Object -Property Length -Sum).Sum
 $ContractRevision = .\.venv\Scripts\python.exe -c "from chejin_worker_client.c2_contract import contract_revision; print(contract_revision())"
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：无法读取 C2 合同版本"
+}
 $ContractCanonicalSha256 = .\.venv\Scripts\python.exe -c "from chejin_worker_client.c2_contract import contract_sha256; print(contract_sha256())"
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：无法读取 C2 合同哈希"
+}
 $PackagedContractCandidates = @(
   (Join-Path $PackageDir "_internal\contracts\c2_contract_v3.json"),
   (Join-Path $PackageDir "contracts\c2_contract_v3.json")

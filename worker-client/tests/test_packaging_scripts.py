@@ -89,7 +89,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("pyi-archive_viewer.exe -l -r", text)
         self.assertIn("client_delivery_policy.py", text)
         self.assertIn("client_delivery_boundary_check", text)
-        self.assertIn("最终 exe 未包含 Windows UIA 诊断所需的 uiautomation", text)
+        self.assertIn("最终 exe 未包含运行依赖", text)
+        self.assertIn('"uiautomation"', text)
         self.assertIn('"--omniauto-sidecar", "--help"', text)
         self.assertIn("最终 exe 无法启动内置 OmniAuto sidecar", text)
         self.assertIn('"--omniauto-ocr-probe"', text)
@@ -449,6 +450,9 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('ENTRY_PATH = ROOT / "packaging" / "chejin_worker_client_entry.py"', text)
         self.assertIn("[str(ENTRY_PATH)]", text)
         self.assertNotIn('["chejin_worker_client/main.py"]', text)
+        self.assertIn('PIL_HIDDEN_IMPORTS = collect_submodules("PIL")', text)
+        self.assertIn("*PIL_HIDDEN_IMPORTS", text)
+        self.assertIn("disable_windowed_traceback=True", text)
         self.assertIn("from chejin_worker_client.main import main", entry_text)
         self.assertNotIn("from .", entry_text)
         self.assertIn("CONTRACT_PATH = resolve_contract_path(ROOT)", text)
@@ -459,6 +463,33 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("is_client_forbidden_path", text)
         self.assertIn('"uiautomation"', text)
         self.assertNotIn('(str(OMNIAUTO_RPA_SOURCE), "omniauto-rpa")', text)
+
+    def test_build_script_fails_closed_on_tests_and_required_frozen_modules(self):
+        text = (ROOT / "scripts" / "build-windows.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+
+        self.assertIn("Worker 完整测试未通过", text)
+        self.assertIn("PyInstaller 构建失败", text)
+        self.assertIn('"PIL.ImageEnhance"', text)
+        self.assertIn('"PIL.ImageGrab"', text)
+        self.assertIn('"rapidocr_onnxruntime"', text)
+
+    def test_windows_package_ci_builds_and_probes_the_frozen_executable(self):
+        workflow = (
+            ROOT.parent / ".github" / "workflows" / "worker-windows-package.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("runs-on: windows-latest", workflow)
+        self.assertIn("shell: powershell", workflow)
+        self.assertIn(".\\scripts\\build-windows.ps1", workflow)
+        self.assertIn("validate-package.ps1", workflow)
+        self.assertIn('version -ne "16.133.0"', workflow)
+        self.assertIn('tests_status -ne "passed"', workflow)
+        self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
+        self.assertIn('@("--omniauto-ocr-probe")', workflow)
+        self.assertIn("contents: read", workflow)
+        self.assertNotIn("contents: write", workflow)
 
     def test_packaging_entry_imports_main_with_package_context(self):
         result = subprocess.run(

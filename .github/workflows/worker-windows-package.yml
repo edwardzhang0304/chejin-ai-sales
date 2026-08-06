@@ -1,0 +1,84 @@
+name: Worker Windows package gate
+
+on:
+  push:
+    branches:
+      - codex/worker-v16.133.0
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.12.10
+          cache: pip
+          cache-dependency-path: worker-client/requirements.txt
+
+      - name: Build and run packaged runtime probes
+        shell: powershell
+        working-directory: worker-client
+        run: |
+          .\scripts\build-windows.ps1
+          if ($LASTEXITCODE -ne 0) {
+            throw "build-windows.ps1 exited with code $LASTEXITCODE"
+          }
+
+      - name: Validate manifest and packaged executable again
+        shell: powershell
+        working-directory: worker-client
+        run: |
+          $ErrorActionPreference = "Stop"
+          $packageDir = Join-Path $PWD "dist\车金Worker客户端"
+          $exePath = Join-Path $packageDir "车金Worker客户端.exe"
+          $manifestPath = Join-Path $PWD "dist\reports\车金Worker客户端.manifest.json"
+
+          .\scripts\validate-package.ps1 -PackageDir $packageDir
+          $manifest = Get-Content -Raw -Encoding UTF8 $manifestPath | ConvertFrom-Json
+          if ($manifest.version -ne "16.133.0") {
+            throw "unexpected version: $($manifest.version)"
+          }
+          if ($manifest.git_commit -ne $env:GITHUB_SHA) {
+            throw "manifest git commit does not match GitHub source"
+          }
+          if ($manifest.tests_status -ne "passed" -or $manifest.preflight_status -ne "passed") {
+            throw "manifest test gates are not passed"
+          }
+          if ($manifest.formal_release -ne $true) {
+            throw "manifest is not a formal release"
+          }
+          $exeHash = (Get-FileHash -Algorithm SHA256 $exePath).Hash
+          if ($exeHash -ne $manifest.exe_sha256) {
+            throw "manifest exe SHA256 mismatch"
+          }
+
+          $env:CHEJIN_RPA_MODE = "mock"
+          $env:CHEJIN_WORKER_HOME = Join-Path $env:RUNNER_TEMP "chejin-worker-runtime-probe"
+          foreach ($probeArgs in @(
+            @("--omniauto-sidecar", "--help"),
+            @("--omniauto-ocr-probe"),
+            @("--preflight", "--skip-backend", "--skip-wechat")
+          )) {
+            $process = Start-Process -FilePath $exePath -ArgumentList $probeArgs -PassThru
+            if (-not $process.WaitForExit(120000)) {
+              Stop-Process -Id $process.Id -Force
+              throw "packaged executable probe timed out: $($probeArgs -join ' ')"
+            }
+            if ($process.ExitCode -ne 0) {
+              throw "packaged executable probe failed: $($probeArgs -join ' ')"
+            }
+          }
+
+          Write-Host "Windows packaged executable validation passed."
