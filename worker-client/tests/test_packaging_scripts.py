@@ -510,6 +510,9 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)
+        self.assertIn("chejin-worker-packaged-preflight.json", workflow)
+        self.assertIn("chejin-worker-packaged-diagnostics.jsonl", workflow)
+        self.assertIn('"--preflight-format", "json", "--write-report"', workflow)
         self.assertIn("contents: read", workflow)
         self.assertNotIn("contents: write", workflow)
 
