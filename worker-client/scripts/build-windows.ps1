@@ -17,6 +17,7 @@ $PackageDir = Join-Path $Root "dist\车金Worker客户端"
 $ExePath = Join-Path $PackageDir "车金Worker客户端.exe"
 $ManifestPath = Join-Path $ReportsDir "车金Worker客户端.manifest.json"
 $PreflightReportPath = Join-Path $ReportsDir "preflight-build-report.json"
+$PackagingDiagnosticPath = Join-Path $ReportsDir "packaging-runtime-diagnostics.jsonl"
 $OmniAutoSourcePath = Join-Path $Root "omniauto-rpa"
 $OmniAutoProvenancePath = Join-Path $OmniAutoSourcePath ".chejin-source.json"
 $OmniAutoSidecarPath = Join-Path $OmniAutoSourcePath "apps\wechat_ai_customer_service\adapters\wechat_win32_ocr_sidecar.py"
@@ -170,12 +171,22 @@ if ($LASTEXITCODE -ne 0) {
 if (-not (Test-Path $ExePath)) {
   throw "打包失败：未找到 $ExePath"
 }
+$env:CHEJIN_PACKAGING_DIAGNOSTIC_PATH = $PackagingDiagnosticPath
+if (Test-Path $PackagingDiagnosticPath) {
+  Remove-Item -Force $PackagingDiagnosticPath
+}
 $BundledSidecarProbe = Start-Process -FilePath $ExePath -ArgumentList @("--omniauto-sidecar", "--help") -Wait -PassThru
 if ($BundledSidecarProbe.ExitCode -ne 0) {
+  if (Test-Path $PackagingDiagnosticPath) {
+    Get-Content -Raw -Encoding UTF8 $PackagingDiagnosticPath | Write-Host
+  }
   throw "打包失败：最终 exe 无法启动内置 OmniAuto sidecar"
 }
 $BundledVisionOcrProbe = Start-Process -FilePath $ExePath -ArgumentList @("--omniauto-ocr-probe") -Wait -PassThru
 if ($BundledVisionOcrProbe.ExitCode -ne 0) {
+  if (Test-Path $PackagingDiagnosticPath) {
+    Get-Content -Raw -Encoding UTF8 $PackagingDiagnosticPath | Write-Host
+  }
   throw "打包失败：最终 exe 无法启动图片复核 OCR 独立进程"
 }
 $PackagedPythonArchiveLines = & .\.venv\Scripts\pyi-archive_viewer.exe -l -r $ExePath
