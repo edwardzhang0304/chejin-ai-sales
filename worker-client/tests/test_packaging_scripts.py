@@ -456,6 +456,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("disable_windowed_traceback=True", text)
         self.assertIn("from chejin_worker_client.main import main", entry_text)
         self.assertNotIn("from .", entry_text)
+        self.assertIn("CHEJIN_PACKAGING_DIAGNOSTIC_PATH", entry_text)
+        self.assertIn("_write_packaging_diagnostic", entry_text)
         self.assertIn("CONTRACT_PATH = resolve_contract_path(ROOT)", text)
         self.assertIn('(str(CONTRACT_PATH), "contracts")', text)
         self.assertIn("EXCLUDED_OMNIAUTO_PARTS", text)
@@ -477,6 +479,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('"PIL.ImageEnhance"', text)
         self.assertIn('"PIL.ImageGrab"', text)
         self.assertIn('"rapidocr_onnxruntime"', text)
+        self.assertIn("packaging-runtime-diagnostics.jsonl", text)
+        self.assertIn("CHEJIN_PACKAGING_DIAGNOSTIC_PATH", text)
 
     def test_windows_package_ci_builds_and_probes_the_frozen_executable(self):
         workflow = (
