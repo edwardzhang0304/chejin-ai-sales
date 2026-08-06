@@ -119,18 +119,20 @@ jobs:
           $sha256Path = Join-Path $releaseDir "chejin-worker-v16.133.0-windows-x64.sha256.txt"
 
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
-          $packageParent = Split-Path -Parent $packageDir
-          $packageLeaf = Split-Path -Leaf $packageDir
-          & tar.exe -a -c -f $zipPath -C $packageParent $packageLeaf
-          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $zipPath)) {
-            throw "delivery ZIP was not created with its top-level package directory"
+          Compress-Archive -Path $packageDir -DestinationPath $zipPath -CompressionLevel Optimal -Force
+          if (-not (Test-Path $zipPath)) {
+            throw "delivery ZIP was not created"
           }
 
           $verifyDir = Join-Path $env:RUNNER_TEMP "chejin-worker-delivery-verify"
           Expand-Archive -LiteralPath $zipPath -DestinationPath $verifyDir -Force
-          $verifiedExePath = Join-Path $verifyDir "车金Worker客户端\车金Worker客户端.exe"
+          $verifiedExePath = Join-Path $verifyDir "车金Worker客户端.exe"
+          $verifiedInternalPath = Join-Path $verifyDir "_internal"
           if (-not (Test-Path $verifiedExePath)) {
             throw "delivery ZIP does not contain the packaged executable"
+          }
+          if (-not (Test-Path $verifiedInternalPath)) {
+            throw "delivery ZIP does not contain the packaged runtime directory"
           }
           $verifiedExeHash = (Get-FileHash -Algorithm SHA256 $verifiedExePath).Hash
           if ($verifiedExeHash -ne $manifest.exe_sha256) {
@@ -150,7 +152,7 @@ jobs:
             workflow_run_id = $env:GITHUB_RUN_ID
             zip_name = $zipName
             zip_sha256 = $zipHash
-            exe_relative_path = "车金Worker客户端\车金Worker客户端.exe"
+            exe_relative_path = "车金Worker客户端.exe"
             exe_sha256 = [string]$manifest.exe_sha256
             file_count = [int]$manifest.file_count
             package_bytes = [long]$manifest.package_bytes
