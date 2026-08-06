@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -492,6 +493,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertNotIn("contents: write", workflow)
 
     def test_packaging_entry_imports_main_with_package_context(self):
+        environment = dict(os.environ)
+        environment["PYTHONIOENCODING"] = "utf-8"
         result = subprocess.run(
             [
                 sys.executable,
@@ -499,7 +502,9 @@ class PackagingScriptsTest(unittest.TestCase):
                 "--help",
             ],
             cwd=ROOT,
+            env=environment,
             capture_output=True,
+            encoding="utf-8",
             text=True,
             check=False,
         )
