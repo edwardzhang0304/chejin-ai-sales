@@ -482,6 +482,9 @@ class PackagingScriptsTest(unittest.TestCase):
 
         self.assertIn('$env:PYTHONUTF8 = "1"', text)
         self.assertIn('$env:PYTHONIOENCODING = "utf-8"', text)
+        self.assertIn("onnxruntime.__version__ == '1.20.1'", text)
+        self.assertIn("RapidOCR()(image)", text)
+        self.assertIn("源码环境无法初始化固定版本的图片复核 OCR", text)
         self.assertIn("Worker 完整测试未通过", text)
         self.assertIn("PyInstaller 构建失败", text)
         self.assertIn('"PIL.ImageEnhance"', text)
@@ -603,11 +606,15 @@ class PackagingScriptsTest(unittest.TestCase):
             ],
         )
 
-    def test_windows_requirements_pin_uiautomation_for_diagnostics(self):
+    def test_windows_requirements_pin_native_runtime_dependencies(self):
         text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
 
         self.assertIn(
             'uiautomation==2.0.29; platform_system == "Windows"',
+            text,
+        )
+        self.assertIn(
+            'onnxruntime==1.20.1; platform_system == "Windows"',
             text,
         )
 
