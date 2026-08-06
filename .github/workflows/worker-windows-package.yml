@@ -149,7 +149,7 @@ jobs:
           $zipHash = (Get-FileHash -Algorithm SHA256 $zipPath).Hash
           $deliveryManifest = [ordered]@{
             schema_version = 1
-            app_name = "车金Worker客户端"
+            app_name = [string]$manifest.app_name
             version = [string]$manifest.version
             platform = "windows-x64"
             package_kind = "portable_zip"
