@@ -1,4 +1,4 @@
-param(
+﻿param(
   [switch]$SkipTests,
   [switch]$SkipPreflight,
   [switch]$DevelopmentBuild,
