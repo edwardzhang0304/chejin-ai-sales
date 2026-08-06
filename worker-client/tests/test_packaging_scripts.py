@@ -116,7 +116,8 @@ class PackagingScriptsTest(unittest.TestCase):
 
         self.assertIn("4998a5853154dde2c224a21a3eef66c7b6d7db99", workflow)
         self.assertIn("git merge-base --is-ancestor", workflow)
-        self.assertIn("Compress-Archive -Path $packageDir", workflow)
+        self.assertIn("tar.exe -a -c -f $zipPath", workflow)
+        self.assertIn("$packageLeaf = Split-Path -Leaf $packageDir", workflow)
         self.assertIn("Expand-Archive -LiteralPath $zipPath", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
         self.assertIn("chejin-worker-v16.133.0-windows-x64.delivery.json", workflow)
