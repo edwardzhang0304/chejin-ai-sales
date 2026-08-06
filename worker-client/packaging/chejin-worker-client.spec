@@ -70,7 +70,7 @@ OMNIAUTO_DATAS = [
 ]
 
 a = Analysis(
-    ["chejin_worker_client/main.py"],
+    [str(ROOT / "chejin_worker_client" / "main.py")],
     pathex=[str(ROOT)],
     binaries=[],
     datas=[
