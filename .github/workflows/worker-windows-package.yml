@@ -119,9 +119,11 @@ jobs:
           $sha256Path = Join-Path $releaseDir "chejin-worker-v16.133.0-windows-x64.sha256.txt"
 
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
-          Compress-Archive -Path $packageDir -DestinationPath $zipPath -CompressionLevel Optimal -Force
-          if (-not (Test-Path $zipPath)) {
-            throw "delivery ZIP was not created"
+          $packageParent = Split-Path -Parent $packageDir
+          $packageLeaf = Split-Path -Leaf $packageDir
+          & tar.exe -a -c -f $zipPath -C $packageParent $packageLeaf
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $zipPath)) {
+            throw "delivery ZIP was not created with its top-level package directory"
           }
 
           $verifyDir = Join-Path $env:RUNNER_TEMP "chejin-worker-delivery-verify"
