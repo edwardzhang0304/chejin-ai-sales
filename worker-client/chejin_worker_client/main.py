@@ -75,6 +75,23 @@ def run_bundled_omniauto_ocr_probe() -> int:
     from .omniauto_ocr_client import probe_omniauto_ocr_subprocess
 
     result = probe_omniauto_ocr_subprocess()
+    diagnostic_path = os.environ.get("CHEJIN_PACKAGING_DIAGNOSTIC_PATH")
+    if diagnostic_path:
+        try:
+            with Path(diagnostic_path).open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "pid": os.getpid(),
+                            "argv": list(sys.argv),
+                            "ocr_probe_result": result,
+                        },
+                        ensure_ascii=True,
+                    )
+                    + "\n"
+                )
+        except Exception:
+            pass
     print(json.dumps(result, ensure_ascii=False), flush=True)
     return 0 if result.get("ok") is True else 1
 
