@@ -4176,9 +4176,9 @@ def test_normalize_wechat_window_clamps_offscreen_when_size_is_already_safe() ->
         result = normalize_wechat_window(1001)
         assert_true(result.get("ok") is True, f"normalization should pass: {result}")
         assert_true(result.get("applied") is True, f"offscreen same-size window must be moved: {result}")
-        assert_true(calls == [(0, 0, 980, 860)], f"unexpected move call: {calls}")
+        assert_true(calls == [(0, 80, 980, 860)], f"unexpected move call: {calls}")
         assert_true((result.get("after") or {}).get("left") == 0, f"window should be clamped on-screen: {result}")
-        assert_true((result.get("after") or {}).get("top") == 0, f"window should use fixed top origin: {result}")
+        assert_true((result.get("after") or {}).get("top") == 80, f"window should preserve an already safe top: {result}")
     finally:
         if previous_fixed_origin is None:
             os.environ.pop("WECHAT_WIN32_OCR_WINDOW_FIXED_ORIGIN", None)
