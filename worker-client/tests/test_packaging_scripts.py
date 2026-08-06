@@ -442,12 +442,15 @@ class PackagingScriptsTest(unittest.TestCase):
 
     def test_pyinstaller_spec_packages_contract_and_filters_omniauto_runtime_data(self):
         text = (ROOT / "packaging" / "chejin-worker-client.spec").read_text(encoding="utf-8")
-
-        self.assertIn(
-            '[str(ROOT / "chejin_worker_client" / "main.py")]',
-            text,
+        entry_text = (ROOT / "packaging" / "chejin_worker_client_entry.py").read_text(
+            encoding="utf-8"
         )
+
+        self.assertIn('ENTRY_PATH = ROOT / "packaging" / "chejin_worker_client_entry.py"', text)
+        self.assertIn("[str(ENTRY_PATH)]", text)
         self.assertNotIn('["chejin_worker_client/main.py"]', text)
+        self.assertIn("from chejin_worker_client.main import main", entry_text)
+        self.assertNotIn("from .", entry_text)
         self.assertIn("CONTRACT_PATH = resolve_contract_path(ROOT)", text)
         self.assertIn('(str(CONTRACT_PATH), "contracts")', text)
         self.assertIn("EXCLUDED_OMNIAUTO_PARTS", text)
@@ -456,6 +459,23 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("is_client_forbidden_path", text)
         self.assertIn('"uiautomation"', text)
         self.assertNotIn('(str(OMNIAUTO_RPA_SOURCE), "omniauto-rpa")', text)
+
+    def test_packaging_entry_imports_main_with_package_context(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "packaging" / "chejin_worker_client_entry.py"),
+                "--help",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage: chejin-worker-client", result.stdout)
+        self.assertNotIn("attempted relative import", result.stderr)
 
     def test_client_delivery_policy_rejects_actual_server_private_paths(self):
         omniauto_root = ROOT / "omniauto-rpa"

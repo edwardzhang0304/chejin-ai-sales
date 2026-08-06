@@ -15,6 +15,7 @@ from client_delivery_policy import (
 OMNIAUTO_RPA_SOURCE = Path(os.environ.get("CHEJIN_OMNIAUTO_RPA_SOURCE") or ROOT / "omniauto-rpa")
 OMNIAUTO_SIDECAR = OMNIAUTO_RPA_SOURCE / "apps" / "wechat_ai_customer_service" / "adapters" / "wechat_win32_ocr_sidecar.py"
 CONTRACT_PATH = resolve_contract_path(ROOT)
+ENTRY_PATH = ROOT / "packaging" / "chejin_worker_client_entry.py"
 BUILD_IDENTITY_PATH = Path(
     os.environ.get("CHEJIN_BUILD_IDENTITY_PATH") or ""
 )
@@ -70,7 +71,7 @@ OMNIAUTO_DATAS = [
 ]
 
 a = Analysis(
-    [str(ROOT / "chejin_worker_client" / "main.py")],
+    [str(ENTRY_PATH)],
     pathex=[str(ROOT)],
     binaries=[],
     datas=[
