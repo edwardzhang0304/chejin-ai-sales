@@ -443,6 +443,11 @@ class PackagingScriptsTest(unittest.TestCase):
     def test_pyinstaller_spec_packages_contract_and_filters_omniauto_runtime_data(self):
         text = (ROOT / "packaging" / "chejin-worker-client.spec").read_text(encoding="utf-8")
 
+        self.assertIn(
+            '[str(ROOT / "chejin_worker_client" / "main.py")]',
+            text,
+        )
+        self.assertNotIn('["chejin_worker_client/main.py"]', text)
         self.assertIn("CONTRACT_PATH = resolve_contract_path(ROOT)", text)
         self.assertIn('(str(CONTRACT_PATH), "contracts")', text)
         self.assertIn("EXCLUDED_OMNIAUTO_PARTS", text)
