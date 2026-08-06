@@ -16,6 +16,8 @@ def main() -> int:
     env["CHEJIN_RPA_MODE"] = "mock"
     env["CHEJIN_RPA_MOCK_STEP_DELAY_SECONDS"] = "0"
     env["CHEJIN_WORKER_HOME"] = tempfile.mkdtemp(prefix="chejin-worker-checks-")
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     generated_contract = subprocess.run(
         [sys.executable, "scripts/generate-c2-observation-schema.py", "--check"],
         cwd=ROOT,
