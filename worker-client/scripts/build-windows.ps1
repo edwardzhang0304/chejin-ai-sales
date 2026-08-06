@@ -202,7 +202,9 @@ $RequiredArchiveModules = @(
   "uiautomation",
   "PIL.ImageEnhance",
   "PIL.ImageGrab",
-  "rapidocr_onnxruntime"
+  "rapidocr_onnxruntime",
+  "pyperclip",
+  "pywinauto"
 )
 foreach ($RequiredArchiveModule in $RequiredArchiveModules) {
   if ($PackagedPythonArchive -notmatch [regex]::Escape($RequiredArchiveModule)) {

@@ -92,6 +92,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("client_delivery_boundary_check", text)
         self.assertIn("最终 exe 未包含运行依赖", text)
         self.assertIn('"uiautomation"', text)
+        self.assertIn('"pyperclip"', text)
+        self.assertIn('"pywinauto"', text)
         self.assertIn('"--omniauto-sidecar", "--help"', text)
         self.assertIn("最终 exe 无法启动内置 OmniAuto sidecar", text)
         self.assertIn('"--omniauto-ocr-probe"', text)
@@ -490,6 +492,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('"PIL.ImageEnhance"', text)
         self.assertIn('"PIL.ImageGrab"', text)
         self.assertIn('"rapidocr_onnxruntime"', text)
+        self.assertIn('"pyperclip"', text)
+        self.assertIn('"pywinauto"', text)
         self.assertIn("packaging-runtime-diagnostics.jsonl", text)
         self.assertIn("CHEJIN_PACKAGING_DIAGNOSTIC_PATH", text)
 
