@@ -96,3 +96,85 @@ jobs:
           }
 
           Write-Host "Windows packaged executable validation passed."
+
+      - name: Prepare verified delivery ZIP
+        shell: powershell
+        working-directory: worker-client
+        run: |
+          $ErrorActionPreference = "Stop"
+          $sourceBaseCommit = "4998a5853154dde2c224a21a3eef66c7b6d7db99"
+          git merge-base --is-ancestor $sourceBaseCommit $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) {
+            throw "build commit is not based on required main@4998a58"
+          }
+
+          $reportsDir = Join-Path $PWD "dist\reports"
+          $manifestPath = (Get-ChildItem -Path $reportsDir -Filter "*.manifest.json" -File -ErrorAction Stop).FullName
+          $manifest = Get-Content -Raw -Encoding UTF8 $manifestPath | ConvertFrom-Json
+          $packageDir = [string]$manifest.package_dir
+          $releaseDir = Join-Path $PWD "dist\release"
+          $zipName = "chejin-worker-v16.133.0-windows-x64.zip"
+          $zipPath = Join-Path $releaseDir $zipName
+          $deliveryManifestPath = Join-Path $releaseDir "chejin-worker-v16.133.0-windows-x64.delivery.json"
+          $sha256Path = Join-Path $releaseDir "chejin-worker-v16.133.0-windows-x64.sha256.txt"
+
+          New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
+          Compress-Archive -Path $packageDir -DestinationPath $zipPath -CompressionLevel Optimal -Force
+          if (-not (Test-Path $zipPath)) {
+            throw "delivery ZIP was not created"
+          }
+
+          $verifyDir = Join-Path $env:RUNNER_TEMP "chejin-worker-delivery-verify"
+          Expand-Archive -LiteralPath $zipPath -DestinationPath $verifyDir -Force
+          $verifiedExePath = Join-Path $verifyDir "车金Worker客户端\车金Worker客户端.exe"
+          if (-not (Test-Path $verifiedExePath)) {
+            throw "delivery ZIP does not contain the packaged executable"
+          }
+          $verifiedExeHash = (Get-FileHash -Algorithm SHA256 $verifiedExePath).Hash
+          if ($verifiedExeHash -ne $manifest.exe_sha256) {
+            throw "delivery ZIP executable SHA256 mismatch"
+          }
+
+          $zipHash = (Get-FileHash -Algorithm SHA256 $zipPath).Hash
+          $deliveryManifest = [ordered]@{
+            schema_version = 1
+            app_name = "车金Worker客户端"
+            version = [string]$manifest.version
+            platform = "windows-x64"
+            package_kind = "portable_zip"
+            source_base_commit = $sourceBaseCommit
+            build_commit = $env:GITHUB_SHA
+            build_branch = $env:GITHUB_REF_NAME
+            workflow_run_id = $env:GITHUB_RUN_ID
+            zip_name = $zipName
+            zip_sha256 = $zipHash
+            exe_relative_path = "车金Worker客户端\车金Worker客户端.exe"
+            exe_sha256 = [string]$manifest.exe_sha256
+            file_count = [int]$manifest.file_count
+            package_bytes = [long]$manifest.package_bytes
+            tests_status = [string]$manifest.tests_status
+            preflight_status = [string]$manifest.preflight_status
+            client_delivery_boundary_check = [string]$manifest.client_delivery_boundary_check
+            c2_contract_revision = [string]$manifest.c2_contract_revision
+            c2_contract_sha256 = [string]$manifest.c2_contract_sha256
+            omniauto_tree_sha256 = [string]$manifest.packaged_omniauto_tree_sha256
+            created_at = (Get-Date).ToUniversalTime().ToString("o")
+          }
+          $deliveryManifest | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $deliveryManifestPath
+          "$($zipHash.ToLowerInvariant())  $zipName" | Set-Content -Encoding ASCII $sha256Path
+
+          Write-Host "Delivery ZIP: $zipPath"
+          Write-Host "Delivery ZIP SHA256: $zipHash"
+          Write-Host "Delivery manifest: $deliveryManifestPath"
+
+      - name: Upload verified Windows client
+        uses: actions/upload-artifact@v4
+        with:
+          name: chejin-worker-v16.133.0-windows-x64-${{ github.sha }}
+          path: |
+            worker-client/dist/release/chejin-worker-v16.133.0-windows-x64.zip
+            worker-client/dist/release/chejin-worker-v16.133.0-windows-x64.delivery.json
+            worker-client/dist/release/chejin-worker-v16.133.0-windows-x64.sha256.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
