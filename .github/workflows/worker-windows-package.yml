@@ -3,7 +3,7 @@ name: Worker Windows package gate
 on:
   push:
     branches:
-      - codex/worker-v16.135.0
+      - codex/worker-v16.136.0
   workflow_dispatch:
 
 permissions:
@@ -13,6 +13,8 @@ jobs:
   package:
     runs-on: windows-latest
     timeout-minutes: 90
+    env:
+      CHEJIN_VISION_CLIENT_API_KEY: ${{ secrets.CHEJIN_VISION_CLIENT_API_KEY }}
 
     steps:
       - name: Check out exact source
@@ -52,7 +54,7 @@ jobs:
           $exePath = [string]$manifest.exe_path
 
           .\scripts\validate-package.ps1 -PackageDir $packageDir
-          if ($manifest.version -ne "16.135.0") {
+          if ($manifest.version -ne "16.136.0") {
             throw "unexpected version: $($manifest.version)"
           }
           if ($manifest.git_commit -ne $env:GITHUB_SHA) {
@@ -63,6 +65,9 @@ jobs:
           }
           if ($manifest.formal_release -ne $true) {
             throw "manifest is not a formal release"
+          }
+          if ($manifest.vision_credential_embedded -ne $true -or $manifest.vision_configuration_locked -ne $true) {
+            throw "manifest does not confirm locked embedded Vision configuration"
           }
           $exeHash = (Get-FileHash -Algorithm SHA256 $exePath).Hash
           if ($exeHash -ne $manifest.exe_sha256) {
@@ -124,12 +129,21 @@ jobs:
             throw "packaged startup crash did not create the default diagnostic"
           }
           $startupCrash = Get-Content -Encoding UTF8 $defaultStartupDiagnostic | Select-Object -Last 1 | ConvertFrom-Json
-          if ($startupCrash.version -ne "16.135.0" -or $startupCrash.build_commit -ne $env:GITHUB_SHA) {
+          if ($startupCrash.version -ne "16.136.0" -or $startupCrash.build_commit -ne $env:GITHUB_SHA) {
             throw "startup crash diagnostic build identity mismatch"
           }
           foreach ($requiredField in @("timestamp", "windows_version", "exception_type", "traceback")) {
             if ([string]::IsNullOrWhiteSpace([string]$startupCrash.$requiredField)) {
               throw "startup crash diagnostic missing field: $requiredField"
+            }
+          }
+          $secretValue = [string]$env:CHEJIN_VISION_CLIENT_API_KEY
+          foreach ($safeOutput in @($manifestPath, $preflightReport, $runtimeDiagnostics, $defaultStartupDiagnostic)) {
+            if (Test-Path $safeOutput) {
+              $safeOutputText = Get-Content -Raw -Encoding UTF8 $safeOutput
+              if (-not [string]::IsNullOrWhiteSpace($secretValue) -and $safeOutputText.Contains($secretValue)) {
+                throw "diagnostic or manifest output leaked the Vision credential"
+              }
             }
           }
 
@@ -151,10 +165,10 @@ jobs:
           $manifest = Get-Content -Raw -Encoding UTF8 $manifestPath | ConvertFrom-Json
           $packageDir = [string]$manifest.package_dir
           $releaseDir = Join-Path $PWD "dist\release"
-          $zipName = "chejin-worker-v16.135.0-windows-x64.zip"
+          $zipName = "chejin-worker-v16.136.0-windows-x64.zip"
           $zipPath = Join-Path $releaseDir $zipName
-          $deliveryManifestPath = Join-Path $releaseDir "chejin-worker-v16.135.0-windows-x64.delivery.json"
-          $sha256Path = Join-Path $releaseDir "chejin-worker-v16.135.0-windows-x64.sha256.txt"
+          $deliveryManifestPath = Join-Path $releaseDir "chejin-worker-v16.136.0-windows-x64.delivery.json"
+          $sha256Path = Join-Path $releaseDir "chejin-worker-v16.136.0-windows-x64.sha256.txt"
 
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
           Compress-Archive -Path $packageDir -DestinationPath $zipPath -CompressionLevel Optimal -Force
@@ -211,6 +225,12 @@ jobs:
             package_bytes = [long]$manifest.package_bytes
             tests_status = [string]$manifest.tests_status
             preflight_status = [string]$manifest.preflight_status
+            vision_credential_embedded = [bool]$manifest.vision_credential_embedded
+            vision_configuration_locked = [bool]$manifest.vision_configuration_locked
+            vision_provider = [string]$manifest.vision_provider
+            vision_base_url = [string]$manifest.vision_base_url
+            vision_model = [string]$manifest.vision_model
+            vision_request_style = [string]$manifest.vision_request_style
             uat_launcher_utf8_bom_check = "passed"
             uat_launcher_powershell_5_1_parse_check = "passed"
             client_delivery_boundary_check = [string]$manifest.client_delivery_boundary_check
@@ -220,6 +240,10 @@ jobs:
             created_at = (Get-Date).ToUniversalTime().ToString("o")
           }
           $deliveryManifest | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $deliveryManifestPath
+          $deliveryManifestText = Get-Content -Raw -Encoding UTF8 $deliveryManifestPath
+          if (-not [string]::IsNullOrWhiteSpace([string]$env:CHEJIN_VISION_CLIENT_API_KEY) -and $deliveryManifestText.Contains([string]$env:CHEJIN_VISION_CLIENT_API_KEY)) {
+            throw "delivery manifest leaked the Vision credential"
+          }
           "$($zipHash.ToLowerInvariant())  $zipName" | Set-Content -Encoding ASCII $sha256Path
 
           Write-Host "Delivery ZIP: $zipPath"
@@ -229,11 +253,11 @@ jobs:
       - name: Upload verified Windows client
         uses: actions/upload-artifact@v4
         with:
-          name: chejin-worker-v16.135.0-windows-x64-${{ github.sha }}
+          name: chejin-worker-v16.136.0-windows-x64-${{ github.sha }}
           path: |
-            worker-client/dist/release/chejin-worker-v16.135.0-windows-x64.zip
-            worker-client/dist/release/chejin-worker-v16.135.0-windows-x64.delivery.json
-            worker-client/dist/release/chejin-worker-v16.135.0-windows-x64.sha256.txt
+            worker-client/dist/release/chejin-worker-v16.136.0-windows-x64.zip
+            worker-client/dist/release/chejin-worker-v16.136.0-windows-x64.delivery.json
+            worker-client/dist/release/chejin-worker-v16.136.0-windows-x64.sha256.txt
           if-no-files-found: error
           compression-level: 0
           retention-days: 14

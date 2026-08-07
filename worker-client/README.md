@@ -59,6 +59,18 @@ cd worker-client
 
 调试包 manifest 会标记 `formal_release=false`，不得作为正式发布包。
 
+正式 Windows 包的 Vision 凭据只允许由 CI Secret
+`CHEJIN_VISION_CLIENT_API_KEY` 注入，不得写入源码、提交记录、构建日志、
+manifest 或故障证据。正式包固定 Provider、HTTPS 接口地址、模型和请求格式，
+并忽略普通环境变量对这些配置及凭据的覆盖；只有源码开发包可以使用
+`CUSTOMER_IMAGE_UNDERSTANDING_*` 环境变量联调。新 Windows 电脑不需要安装
+Python，也不需要手工配置 Vision 环境变量。
+
+随客户端分发的凭据无法做到绝对不可提取。因此生产环境必须使用独立、低权限、
+仅允许指定 Vision 模型的客户端 Key，并在 Provider 侧设置额度、限流、监控、
+吊销和轮换。CI Secret 是否已采用这些外部控制属于正式发布门禁，客户端代码本身
+不能替代 Provider 侧权限配置。
+
 产物：
 
 ```text
@@ -127,7 +139,9 @@ cd worker-client
 .\scripts\run-preflight.ps1 -RpaMode mock -SkipWechat
 ```
 
-预检会检查 Windows/RPA 模式、依赖、OmniAuto sidecar 文件、本地数据目录、绑定状态、后端 `/readyz` 和微信桌面客户端探测结果。存在 `error` 级失败时命令返回非 0。
+预检会检查 Windows/RPA 模式、依赖、OmniAuto sidecar 文件、内置 Vision
+凭据配置、本地数据目录、绑定状态、后端 `/readyz` 和微信桌面客户端探测结果。
+报告只显示 Vision“已配置/未配置”，不输出凭据。存在 `error` 级失败时命令返回非 0。
 
 微信实机诊断：
 

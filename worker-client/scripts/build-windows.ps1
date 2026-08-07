@@ -21,6 +21,7 @@ $PackagingDiagnosticPath = Join-Path $ReportsDir "packaging-runtime-diagnostics.
 $UatLauncherSourcePath = Join-Path $Root "packaging\start-uat.ps1"
 $UatLauncherPath = Join-Path $PackageDir "start-uat.ps1"
 $UatLauncherValidatorPath = Join-Path $Root "scripts\validate-uat-launcher.ps1"
+$VisionCredentialPath = Join-Path $ReportsDir "vision-runtime.json"
 $OmniAutoSourcePath = Join-Path $Root "omniauto-rpa"
 $OmniAutoProvenancePath = Join-Path $OmniAutoSourcePath ".chejin-source.json"
 $OmniAutoSidecarPath = Join-Path $OmniAutoSourcePath "apps\wechat_ai_customer_service\adapters\wechat_win32_ocr_sidecar.py"
@@ -128,6 +129,32 @@ if (-not $SkipTests) {
 }
 
 New-Item -ItemType Directory -Force -Path $ReportsDir | Out-Null
+$env:CHEJIN_BUILD_KIND = if ($DevelopmentBuild) { "development" } else { "official" }
+if ($DevelopmentBuild) {
+  Remove-Item Env:CHEJIN_VISION_CREDENTIAL_PATH -ErrorAction SilentlyContinue
+  if (Test-Path $VisionCredentialPath) {
+    Remove-Item -LiteralPath $VisionCredentialPath -Force
+  }
+} else {
+  if ([string]$env:GITHUB_ACTIONS -ne "true") {
+    throw "正式打包失败：正式 Vision 凭据只能由 GitHub Actions CI Secret 注入。"
+  }
+  $VisionClientApiKey = [string]$env:CHEJIN_VISION_CLIENT_API_KEY
+  if ([string]::IsNullOrWhiteSpace($VisionClientApiKey)) {
+    throw "正式打包失败：CI 未注入客户端专用 Vision 凭据。"
+  }
+  $VisionCredentialJson = [ordered]@{
+    schema_version = 1
+    vision_api_key = $VisionClientApiKey.Trim()
+  } | ConvertTo-Json -Compress
+  [System.IO.File]::WriteAllText(
+    $VisionCredentialPath,
+    $VisionCredentialJson,
+    (New-Object System.Text.UTF8Encoding($false))
+  )
+  $env:CHEJIN_VISION_CREDENTIAL_PATH = $VisionCredentialPath
+  Remove-Item Env:CHEJIN_VISION_CLIENT_API_KEY -ErrorAction SilentlyContinue
+}
 
 if (-not $SkipPreflight) {
   $env:CHEJIN_RPA_MODE = "mock"
@@ -167,6 +194,8 @@ $RuntimeBuildIdentityPath = Join-Path $ReportsDir "runtime-build-identity.json"
   version = $Version.Trim()
   git_commit = $GitCommit.Trim()
   git_branch = $GitBranch.Trim()
+  build_kind = if ($DevelopmentBuild) { "development" } else { "official" }
+  formal_release = -not $DevelopmentBuild
 } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 $RuntimeBuildIdentityPath
 $env:CHEJIN_BUILD_IDENTITY_PATH = $RuntimeBuildIdentityPath
 
@@ -206,6 +235,19 @@ if ($BundledVisionOcrProbe.ExitCode -ne 0) {
     Get-Content -Raw -Encoding UTF8 $PackagingDiagnosticPath | Write-Host
   }
   throw "打包失败：最终 exe 无法启动图片复核 OCR 独立进程"
+}
+$BundledVisionPreflightReport = Join-Path $ReportsDir "packaged-vision-preflight.json"
+$BundledVisionPreflight = Start-Process -FilePath $ExePath -ArgumentList @(
+  "--preflight", "--skip-backend", "--skip-wechat", "--preflight-format", "json",
+  "--write-report", $BundledVisionPreflightReport
+) -Wait -PassThru
+if ($BundledVisionPreflight.ExitCode -ne 0) {
+  throw "打包失败：最终 exe 内置 Vision 能力预检未通过"
+}
+$BundledVisionPreflightPayload = Get-Content -Raw -Encoding UTF8 $BundledVisionPreflightReport | ConvertFrom-Json
+$BundledVisionCheck = @($BundledVisionPreflightPayload.checks | Where-Object { $_.name -eq "vision_credential" })
+if ($BundledVisionCheck.Count -ne 1 -or $BundledVisionCheck[0].ok -ne $true -or $BundledVisionCheck[0].detail.credential_source -ne "embedded") {
+  throw "打包失败：最终 exe 未使用内置 Vision 凭据"
 }
 $PackagedPythonArchiveLines = & .\.venv\Scripts\pyi-archive_viewer.exe -l -r $ExePath
 if ($LASTEXITCODE -ne 0) {
@@ -312,6 +354,12 @@ $Manifest = [ordered]@{
   git_dirty = $GitDirty
   build_kind = if ($DevelopmentBuild) { "development" } else { "official" }
   formal_release = -not $DevelopmentBuild
+  vision_credential_embedded = -not $DevelopmentBuild
+  vision_configuration_locked = -not $DevelopmentBuild
+  vision_provider = "anthropic_compatible"
+  vision_base_url = "https://aiself.vip/v1"
+  vision_model = "doubao-seed-2-0-lite-260428"
+  vision_request_style = "anthropic_messages_vision"
   tests_status = $TestsStatus
   preflight_status = $PreflightStatus
   c2_contract_revision = $ContractRevision.Trim()

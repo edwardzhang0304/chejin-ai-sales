@@ -15,12 +15,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-ENTRY_VERSION = "16.135.0"
+ENTRY_VERSION = "16.136.0"
 _REDACTED = "[REDACTED]"
 _SECRET_PATTERNS = (
     re.compile(r"(?i)(bearer\s+)[^\s'\"]+"),
     re.compile(
-        r"(?i)((?:worker[_ -]?token|token|password|secret)\s*[:=]\s*)"
+        r"(?i)((?:worker[_ -]?token|token|api[_ -]?key|password|secret)\s*[:=]\s*)"
         r"[^\s,;'\"]+"
     ),
 )
@@ -71,10 +71,36 @@ def _diagnostic_path() -> Path:
     return base / "CheJinWorker" / "diagnostics" / "startup-crash.jsonl"
 
 
+def _known_secret_values() -> set[str]:
+    values = {
+        str(value).strip()
+        for key, value in os.environ.items()
+        if re.search(r"(?i)(?:token|api[_-]?key|password|secret|cookie)", key)
+        and str(value).strip()
+        and len(str(value).strip()) >= 6
+    }
+    frozen_root = getattr(sys, "_MEIPASS", None)
+    if frozen_root:
+        try:
+            payload = json.loads(
+                (Path(frozen_root) / "vision-runtime.json").read_text(
+                    encoding="utf-8-sig"
+                )
+            )
+            api_key = str(payload.get("vision_api_key") or "").strip()
+        except (OSError, UnicodeError, json.JSONDecodeError, AttributeError):
+            api_key = ""
+        if api_key:
+            values.add(api_key)
+    return values
+
+
 def _redact_text(value: str) -> str:
     redacted = value
     for pattern in _SECRET_PATTERNS:
         redacted = pattern.sub(lambda match: match.group(1) + _REDACTED, redacted)
+    for secret in sorted(_known_secret_values(), key=len, reverse=True):
+        redacted = redacted.replace(secret, _REDACTED)
     return redacted
 
 

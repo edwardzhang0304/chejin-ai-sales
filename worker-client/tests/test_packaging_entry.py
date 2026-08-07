@@ -32,9 +32,9 @@ class PackagingEntryDiagnosticsTest(unittest.TestCase):
         path.write_text(
             json.dumps(
                 {
-                    "version": "16.135.0",
+                    "version": "16.136.0",
                     "git_commit": "a" * 40,
-                    "git_branch": "codex/worker-v16.135.0",
+                    "git_branch": "codex/worker-v16.136.0",
                 }
             ),
             encoding="utf-8",
@@ -64,7 +64,7 @@ class PackagingEntryDiagnosticsTest(unittest.TestCase):
 
             path = root / "CheJinWorker" / "diagnostics" / "startup-crash.jsonl"
             payload = json.loads(path.read_text(encoding="utf-8").strip())
-            self.assertEqual(payload["version"], "16.135.0")
+            self.assertEqual(payload["version"], "16.136.0")
             self.assertEqual(payload["build_commit"], "a" * 40)
             self.assertEqual(payload["exception_type"], "ImportError")
             self.assertTrue(payload["timestamp"])
@@ -108,6 +108,29 @@ class PackagingEntryDiagnosticsTest(unittest.TestCase):
 
             path = root / "CheJinWorker" / "diagnostics" / "startup-crash.jsonl"
             self.assertFalse(path.exists())
+
+    def test_frozen_startup_redaction_covers_embedded_vision_key(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            embedded_key = "embedded-startup-unit-key-never-export"
+            (root / "vision-runtime.json").write_text(
+                json.dumps(
+                    {"schema_version": 1, "vision_api_key": embedded_key}
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.object(self.entry.sys, "frozen", True, create=True), mock.patch.object(
+                self.entry.sys,
+                "_MEIPASS",
+                str(root),
+                create=True,
+            ):
+                redacted = self.entry._redact_text(
+                    f"startup provider error: {embedded_key}"
+                )
+
+        self.assertNotIn(embedded_key, redacted)
+        self.assertIn("[REDACTED]", redacted)
 
     def test_frozen_startup_failure_logs_and_exits_without_error_dialog(self):
         with tempfile.TemporaryDirectory() as temp:
