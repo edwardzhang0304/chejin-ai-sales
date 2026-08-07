@@ -3,7 +3,7 @@ name: Worker Windows package gate
 on:
   push:
     branches:
-      - codex/worker-v16.133.0
+      - codex/worker-v16.134.0
   workflow_dispatch:
 
 permissions:
@@ -52,7 +52,7 @@ jobs:
           $exePath = [string]$manifest.exe_path
 
           .\scripts\validate-package.ps1 -PackageDir $packageDir
-          if ($manifest.version -ne "16.133.0") {
+          if ($manifest.version -ne "16.134.0") {
             throw "unexpected version: $($manifest.version)"
           }
           if ($manifest.git_commit -ne $env:GITHUB_SHA) {
@@ -95,6 +95,36 @@ jobs:
             }
           }
 
+          Remove-Item Env:CHEJIN_PACKAGING_DIAGNOSTIC_PATH -ErrorAction SilentlyContinue
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "chejin-worker-default-diagnostic-probe"
+          $defaultStartupDiagnostic = Join-Path $env:LOCALAPPDATA "CheJinWorker\diagnostics\startup-crash.jsonl"
+          $normalStartupProbe = Start-Process -FilePath $exePath -ArgumentList @(
+            "--preflight", "--skip-backend", "--skip-wechat", "--preflight-format", "json"
+          ) -Wait -PassThru
+          if ($normalStartupProbe.ExitCode -ne 0) {
+            throw "normal packaged startup probe failed"
+          }
+          if (Test-Path $defaultStartupDiagnostic) {
+            throw "normal packaged startup produced a false crash diagnostic"
+          }
+
+          $crashProbe = Start-Process -FilePath $exePath -ArgumentList @("--startup-crash-probe") -Wait -PassThru
+          if ($crashProbe.ExitCode -eq 0) {
+            throw "intentional packaged startup crash unexpectedly succeeded"
+          }
+          if (-not (Test-Path $defaultStartupDiagnostic)) {
+            throw "packaged startup crash did not create the default diagnostic"
+          }
+          $startupCrash = Get-Content -Encoding UTF8 $defaultStartupDiagnostic | Select-Object -Last 1 | ConvertFrom-Json
+          if ($startupCrash.version -ne "16.134.0" -or $startupCrash.build_commit -ne $env:GITHUB_SHA) {
+            throw "startup crash diagnostic build identity mismatch"
+          }
+          foreach ($requiredField in @("timestamp", "windows_version", "exception_type", "traceback")) {
+            if ([string]::IsNullOrWhiteSpace([string]$startupCrash.$requiredField)) {
+              throw "startup crash diagnostic missing field: $requiredField"
+            }
+          }
+
           Write-Host "Windows packaged executable validation passed."
 
       - name: Prepare verified delivery ZIP
@@ -113,10 +143,10 @@ jobs:
           $manifest = Get-Content -Raw -Encoding UTF8 $manifestPath | ConvertFrom-Json
           $packageDir = [string]$manifest.package_dir
           $releaseDir = Join-Path $PWD "dist\release"
-          $zipName = "chejin-worker-v16.133.0-windows-x64.zip"
+          $zipName = "chejin-worker-v16.134.0-windows-x64.zip"
           $zipPath = Join-Path $releaseDir $zipName
-          $deliveryManifestPath = Join-Path $releaseDir "chejin-worker-v16.133.0-windows-x64.delivery.json"
-          $sha256Path = Join-Path $releaseDir "chejin-worker-v16.133.0-windows-x64.sha256.txt"
+          $deliveryManifestPath = Join-Path $releaseDir "chejin-worker-v16.134.0-windows-x64.delivery.json"
+          $sha256Path = Join-Path $releaseDir "chejin-worker-v16.134.0-windows-x64.sha256.txt"
 
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
           Compress-Archive -Path $packageDir -DestinationPath $zipPath -CompressionLevel Optimal -Force
@@ -181,11 +211,11 @@ jobs:
       - name: Upload verified Windows client
         uses: actions/upload-artifact@v4
         with:
-          name: chejin-worker-v16.133.0-windows-x64-${{ github.sha }}
+          name: chejin-worker-v16.134.0-windows-x64-${{ github.sha }}
           path: |
-            worker-client/dist/release/chejin-worker-v16.133.0-windows-x64.zip
-            worker-client/dist/release/chejin-worker-v16.133.0-windows-x64.delivery.json
-            worker-client/dist/release/chejin-worker-v16.133.0-windows-x64.sha256.txt
+            worker-client/dist/release/chejin-worker-v16.134.0-windows-x64.zip
+            worker-client/dist/release/chejin-worker-v16.134.0-windows-x64.delivery.json
+            worker-client/dist/release/chejin-worker-v16.134.0-windows-x64.sha256.txt
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
