@@ -109,6 +109,28 @@ class PackagingEntryDiagnosticsTest(unittest.TestCase):
             path = root / "CheJinWorker" / "diagnostics" / "startup-crash.jsonl"
             self.assertFalse(path.exists())
 
+    def test_frozen_startup_failure_logs_and_exits_without_error_dialog(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+
+            def crashing_main():
+                raise OSError("Qt DLL load failed")
+
+            with self._environment(root):
+                os.environ.pop("CHEJIN_PACKAGING_DIAGNOSTIC_PATH", None)
+                with mock.patch.object(self.entry.sys, "frozen", True, create=True):
+                    with mock.patch.object(
+                        self.entry,
+                        "_load_main",
+                        return_value=crashing_main,
+                    ):
+                        self.assertEqual(self.entry.run(), 1)
+
+            path = root / "CheJinWorker" / "diagnostics" / "startup-crash.jsonl"
+            payload = json.loads(path.read_text(encoding="utf-8").strip())
+            self.assertEqual(payload["exception_type"], "OSError")
+            self.assertIn("Qt DLL load failed", payload["traceback"])
+
 
 if __name__ == "__main__":
     unittest.main()

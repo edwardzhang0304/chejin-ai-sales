@@ -100,7 +100,11 @@ jobs:
           $defaultStartupDiagnostic = Join-Path $env:LOCALAPPDATA "CheJinWorker\diagnostics\startup-crash.jsonl"
           $normalStartupProbe = Start-Process -FilePath $exePath -ArgumentList @(
             "--preflight", "--skip-backend", "--skip-wechat", "--preflight-format", "json"
-          ) -Wait -PassThru
+          ) -PassThru
+          if (-not $normalStartupProbe.WaitForExit(120000)) {
+            Stop-Process -Id $normalStartupProbe.Id -Force
+            throw "normal packaged startup probe timed out"
+          }
           if ($normalStartupProbe.ExitCode -ne 0) {
             throw "normal packaged startup probe failed"
           }
@@ -108,7 +112,11 @@ jobs:
             throw "normal packaged startup produced a false crash diagnostic"
           }
 
-          $crashProbe = Start-Process -FilePath $exePath -ArgumentList @("--startup-crash-probe") -Wait -PassThru
+          $crashProbe = Start-Process -FilePath $exePath -ArgumentList @("--startup-crash-probe") -PassThru
+          if (-not $crashProbe.WaitForExit(30000)) {
+            Stop-Process -Id $crashProbe.Id -Force
+            throw "intentional packaged startup crash probe timed out"
+          }
           if ($crashProbe.ExitCode -eq 0) {
             throw "intentional packaged startup crash unexpectedly succeeded"
           }

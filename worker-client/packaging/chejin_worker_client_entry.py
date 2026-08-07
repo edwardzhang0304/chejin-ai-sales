@@ -137,6 +137,8 @@ def run() -> int:
         raise
     except BaseException as exc:
         _write_startup_diagnostic(exc)
+        if getattr(sys, "frozen", False):
+            return 1
         raise
 
 
