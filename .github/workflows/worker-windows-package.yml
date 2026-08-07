@@ -3,7 +3,7 @@ name: Worker Windows package gate
 on:
   push:
     branches:
-      - codex/worker-v16.134.0
+      - codex/worker-v16.135.0
   workflow_dispatch:
 
 permissions:
@@ -52,7 +52,7 @@ jobs:
           $exePath = [string]$manifest.exe_path
 
           .\scripts\validate-package.ps1 -PackageDir $packageDir
-          if ($manifest.version -ne "16.134.0") {
+          if ($manifest.version -ne "16.135.0") {
             throw "unexpected version: $($manifest.version)"
           }
           if ($manifest.git_commit -ne $env:GITHUB_SHA) {
@@ -124,7 +124,7 @@ jobs:
             throw "packaged startup crash did not create the default diagnostic"
           }
           $startupCrash = Get-Content -Encoding UTF8 $defaultStartupDiagnostic | Select-Object -Last 1 | ConvertFrom-Json
-          if ($startupCrash.version -ne "16.134.0" -or $startupCrash.build_commit -ne $env:GITHUB_SHA) {
+          if ($startupCrash.version -ne "16.135.0" -or $startupCrash.build_commit -ne $env:GITHUB_SHA) {
             throw "startup crash diagnostic build identity mismatch"
           }
           foreach ($requiredField in @("timestamp", "windows_version", "exception_type", "traceback")) {
@@ -151,10 +151,10 @@ jobs:
           $manifest = Get-Content -Raw -Encoding UTF8 $manifestPath | ConvertFrom-Json
           $packageDir = [string]$manifest.package_dir
           $releaseDir = Join-Path $PWD "dist\release"
-          $zipName = "chejin-worker-v16.134.0-windows-x64.zip"
+          $zipName = "chejin-worker-v16.135.0-windows-x64.zip"
           $zipPath = Join-Path $releaseDir $zipName
-          $deliveryManifestPath = Join-Path $releaseDir "chejin-worker-v16.134.0-windows-x64.delivery.json"
-          $sha256Path = Join-Path $releaseDir "chejin-worker-v16.134.0-windows-x64.sha256.txt"
+          $deliveryManifestPath = Join-Path $releaseDir "chejin-worker-v16.135.0-windows-x64.delivery.json"
+          $sha256Path = Join-Path $releaseDir "chejin-worker-v16.135.0-windows-x64.sha256.txt"
 
           New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
           Compress-Archive -Path $packageDir -DestinationPath $zipPath -CompressionLevel Optimal -Force
@@ -176,6 +176,14 @@ jobs:
           $verifiedInternalPath = Join-Path $verifiedPackageRoot "_internal"
           if (-not (Test-Path $verifiedInternalPath)) {
             throw "delivery ZIP does not contain the packaged runtime directory"
+          }
+          $verifiedUatLauncherPath = Join-Path $verifiedPackageRoot "start-uat.ps1"
+          if (-not (Test-Path $verifiedUatLauncherPath)) {
+            throw "delivery ZIP does not contain start-uat.ps1 beside the executable"
+          }
+          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\scripts\validate-uat-launcher.ps1 -ScriptPath $verifiedUatLauncherPath
+          if ($LASTEXITCODE -ne 0) {
+            throw "delivery ZIP UAT launcher failed Windows PowerShell 5.1 BOM/parse gate"
           }
           $verifiedExeHash = (Get-FileHash -Algorithm SHA256 $verifiedExePath).Hash
           if ($verifiedExeHash -ne $manifest.exe_sha256) {
@@ -203,6 +211,8 @@ jobs:
             package_bytes = [long]$manifest.package_bytes
             tests_status = [string]$manifest.tests_status
             preflight_status = [string]$manifest.preflight_status
+            uat_launcher_utf8_bom_check = "passed"
+            uat_launcher_powershell_5_1_parse_check = "passed"
             client_delivery_boundary_check = [string]$manifest.client_delivery_boundary_check
             c2_contract_revision = [string]$manifest.c2_contract_revision
             c2_contract_sha256 = [string]$manifest.c2_contract_sha256
@@ -219,11 +229,11 @@ jobs:
       - name: Upload verified Windows client
         uses: actions/upload-artifact@v4
         with:
-          name: chejin-worker-v16.134.0-windows-x64-${{ github.sha }}
+          name: chejin-worker-v16.135.0-windows-x64-${{ github.sha }}
           path: |
-            worker-client/dist/release/chejin-worker-v16.134.0-windows-x64.zip
-            worker-client/dist/release/chejin-worker-v16.134.0-windows-x64.delivery.json
-            worker-client/dist/release/chejin-worker-v16.134.0-windows-x64.sha256.txt
+            worker-client/dist/release/chejin-worker-v16.135.0-windows-x64.zip
+            worker-client/dist/release/chejin-worker-v16.135.0-windows-x64.delivery.json
+            worker-client/dist/release/chejin-worker-v16.135.0-windows-x64.sha256.txt
           if-no-files-found: error
           compression-level: 0
           retention-days: 14

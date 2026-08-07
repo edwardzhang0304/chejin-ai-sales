@@ -123,7 +123,12 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("delivery ZIP does not contain the packaged runtime directory", workflow)
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v16.134.0-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v16.135.0-windows-x64.delivery.json", workflow)
+        self.assertIn('Join-Path $verifiedPackageRoot "start-uat.ps1"', workflow)
+        self.assertIn("powershell.exe -NoProfile -NonInteractive", workflow)
+        self.assertIn("validate-uat-launcher.ps1", workflow)
+        self.assertIn('uat_launcher_utf8_bom_check = "passed"', workflow)
+        self.assertIn('uat_launcher_powershell_5_1_parse_check = "passed"', workflow)
         self.assertIn("client_delivery_boundary_check", workflow)
         self.assertIn("actions/upload-artifact@v4", workflow)
         self.assertIn("if-no-files-found: error", workflow)
@@ -518,9 +523,14 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("CHEJIN_PACKAGING_DIAGNOSTIC_PATH", text)
         self.assertIn('"packaging\\start-uat.ps1"', text)
         self.assertIn("Copy-Item -LiteralPath $UatLauncherSourcePath", text)
+        self.assertIn("validate-uat-launcher.ps1", text)
+        self.assertIn("powershell.exe -NoProfile -NonInteractive", text)
+        self.assertIn("Windows PowerShell 5.1 BOM/语法门禁", text)
 
     def test_uat_launcher_requires_api_runs_preflight_and_saves_report(self):
-        text = (ROOT / "packaging" / "start-uat.ps1").read_text(encoding="utf-8")
+        raw = (ROOT / "packaging" / "start-uat.ps1").read_bytes()
+        self.assertEqual(raw[:3], bytes.fromhex("EF BB BF"))
+        text = raw.decode("utf-8-sig")
 
         self.assertIn("[Parameter(Mandatory = $true)]", text)
         self.assertIn("CHEJIN_API_BASE_URL", text)
@@ -530,6 +540,22 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('"uat-preflight-$timestamp.json"', text)
         self.assertIn("if ($preflight.ExitCode -ne 0)", text)
         self.assertIn("Start-Process -FilePath $exePath", text)
+
+    def test_powershell_5_1_validator_checks_bom_and_real_parser(self):
+        text = (ROOT / "scripts" / "validate-uat-launcher.ps1").read_text(
+            encoding="ascii"
+        )
+
+        self.assertIn("PSVersionTable.PSVersion.Major -ne 5", text)
+        self.assertIn("PSVersionTable.PSVersion.Minor -ne 1", text)
+        self.assertIn('PSVersionTable.PSEdition -ne "Desktop"', text)
+        self.assertIn("[System.IO.File]::ReadAllBytes", text)
+        self.assertIn("$bytes[0] -ne 0xEF", text)
+        self.assertIn("$bytes[1] -ne 0xBB", text)
+        self.assertIn("$bytes[2] -ne 0xBF", text)
+        self.assertIn("Language.Parser]::ParseFile", text)
+        self.assertIn("parse_error_count", text)
+        self.assertIn("POWERSHELL_5_1_PARSE_GATE", text)
 
     def test_windows_package_ci_builds_and_probes_the_frozen_executable(self):
         workflow = (
@@ -544,7 +570,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "16.134.0"', workflow)
+        self.assertIn('version -ne "16.135.0"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)
