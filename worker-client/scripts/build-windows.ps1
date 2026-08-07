@@ -20,6 +20,7 @@ $PreflightReportPath = Join-Path $ReportsDir "preflight-build-report.json"
 $PackagingDiagnosticPath = Join-Path $ReportsDir "packaging-runtime-diagnostics.jsonl"
 $UatLauncherSourcePath = Join-Path $Root "packaging\start-uat.ps1"
 $UatLauncherPath = Join-Path $PackageDir "start-uat.ps1"
+$UatLauncherValidatorPath = Join-Path $Root "scripts\validate-uat-launcher.ps1"
 $OmniAutoSourcePath = Join-Path $Root "omniauto-rpa"
 $OmniAutoProvenancePath = Join-Path $OmniAutoSourcePath ".chejin-source.json"
 $OmniAutoSidecarPath = Join-Path $OmniAutoSourcePath "apps\wechat_ai_customer_service\adapters\wechat_win32_ocr_sidecar.py"
@@ -180,7 +181,14 @@ if (-not (Test-Path $ExePath)) {
 if (-not (Test-Path $UatLauncherSourcePath)) {
   throw "打包失败：未找到 UAT 启动脚本 $UatLauncherSourcePath"
 }
+if (-not (Test-Path $UatLauncherValidatorPath)) {
+  throw "打包失败：未找到 UAT 启动脚本校验器 $UatLauncherValidatorPath"
+}
 Copy-Item -LiteralPath $UatLauncherSourcePath -Destination $UatLauncherPath -Force
+& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $UatLauncherValidatorPath -ScriptPath $UatLauncherPath
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：UAT 启动脚本未通过 Windows PowerShell 5.1 BOM/语法门禁"
+}
 $env:CHEJIN_PACKAGING_DIAGNOSTIC_PATH = $PackagingDiagnosticPath
 if (Test-Path $PackagingDiagnosticPath) {
   Remove-Item -Force $PackagingDiagnosticPath
