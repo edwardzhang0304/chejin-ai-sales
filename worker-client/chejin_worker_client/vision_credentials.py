@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,11 @@ OFFICIAL_VISION_PROVIDER = "anthropic_compatible"
 OFFICIAL_VISION_BASE_URL = "https://aiself.vip/v1"
 OFFICIAL_VISION_MODEL = "doubao-seed-2-0-lite-260428"
 OFFICIAL_VISION_REQUEST_STYLE = "anthropic_messages_vision"
+_VISION_PROBE_PNG_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAN0lEQVR4nO3RwQ0A"
+    "MAjDwJT9d05HMB9+vgGCZF7bXJrT9XhgwR8gEyETIRMhEyETIRMhEyEThXzH8QM9O"
+    "MM6fAAAAABJRU5ErkJggg=="
+)
 
 
 def _runtime_build_identity() -> dict[str, Any]:
@@ -141,4 +147,71 @@ def vision_credential_status() -> dict[str, Any]:
         "credential_source": "embedded" if official else "development_environment",
         "configuration_locked": official,
         **settings,
+    }
+
+
+def _run_vision_provider_probe_request(
+    api_key: str,
+    *,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    omniauto_root = Path(__file__).resolve().parents[1] / "omniauto-rpa"
+    if str(omniauto_root) not in sys.path:
+        sys.path.insert(0, str(omniauto_root))
+    from apps.wechat_ai_customer_service.optional_plugins.vision.understanding.provider import (
+        run_customer_image_understanding_provider,
+    )
+
+    return run_customer_image_understanding_provider(
+        api_key=api_key,
+        base_url=OFFICIAL_VISION_BASE_URL,
+        model=OFFICIAL_VISION_MODEL,
+        request_style=OFFICIAL_VISION_REQUEST_STYLE,
+        prompt='Return exactly one JSON object: {"probe":"ok"}.',
+        image_paths=[],
+        timeout_seconds=max(3, min(60, int(timeout_seconds))),
+        max_tokens=64,
+        temperature=0.0,
+        image_payloads=[
+            {
+                "image_bytes": base64.b64decode(_VISION_PROBE_PNG_BASE64),
+                "mime_type": "image/png",
+            }
+        ],
+    )
+
+
+def probe_official_vision_provider(
+    *,
+    timeout_seconds: int = 30,
+) -> dict[str, Any]:
+    """Perform a synthetic, customer-data-free live capability probe.
+
+    The result is deliberately restricted to non-secret operational facts.
+    Provider response bodies and exception text are never returned.
+    """
+
+    api_key = resolve_vision_api_key()
+    if not is_official_vision_runtime() or not api_key:
+        return {
+            "ok": False,
+            "status": 0,
+            "failure_reason": "vision_credential_unavailable",
+            "model": OFFICIAL_VISION_MODEL,
+            "request_style": OFFICIAL_VISION_REQUEST_STYLE,
+        }
+    try:
+        result = _run_vision_provider_probe_request(
+            api_key,
+            timeout_seconds=timeout_seconds,
+        )
+    except Exception:
+        result = {}
+    ok = result.get("ok") is True and int(result.get("status") or 0) == 200
+    return {
+        "ok": ok,
+        "status": int(result.get("status") or 0),
+        "failure_reason": "" if ok else "vision_provider_probe_failed",
+        "model": OFFICIAL_VISION_MODEL,
+        "request_style": OFFICIAL_VISION_REQUEST_STYLE,
     }

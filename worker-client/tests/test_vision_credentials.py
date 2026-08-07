@@ -14,6 +14,7 @@ from chejin_worker_client.vision_credentials import (
     OFFICIAL_VISION_REQUEST_STYLE,
     resolve_vision_api_key,
     resolve_vision_runtime_settings,
+    probe_official_vision_provider,
     vision_credential_status,
 )
 
@@ -93,6 +94,45 @@ class VisionCredentialsTest(unittest.TestCase):
         self.assertTrue(payload["configuration_locked"])
         self.assertEqual(payload["credential_source"], "embedded")
         self.assertNotIn(embedded_key, json.dumps(payload))
+
+    def test_official_live_probe_returns_only_safe_operational_facts(self):
+        embedded_key = "official-live-probe-unit-key-never-export"
+        with tempfile.TemporaryDirectory() as temp:
+            credential_path = Path(temp) / "vision-runtime.json"
+            credential_path.write_text(
+                json.dumps(
+                    {"schema_version": 1, "vision_api_key": embedded_key}
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "CHEJIN_BUILD_KIND": "official",
+                    "CHEJIN_VISION_CREDENTIAL_PATH": str(credential_path),
+                },
+                clear=False,
+            ), patch(
+                "chejin_worker_client.vision_credentials._run_vision_provider_probe_request",
+                return_value={"ok": True, "status": 200, "response_text": embedded_key},
+            ):
+                payload = probe_official_vision_provider()
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["status"], 200)
+        self.assertNotIn(embedded_key, json.dumps(payload))
+
+    def test_official_live_probe_fails_closed_without_exposing_error(self):
+        with patch.dict(
+            os.environ,
+            {"CHEJIN_BUILD_KIND": "official"},
+            clear=False,
+        ):
+            os.environ.pop("CHEJIN_VISION_CREDENTIAL_PATH", None)
+            payload = probe_official_vision_provider()
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["failure_reason"], "vision_credential_unavailable")
 
 
 if __name__ == "__main__":
