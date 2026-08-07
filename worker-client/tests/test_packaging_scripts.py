@@ -555,6 +555,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('"--startup-crash-probe"', workflow)
         self.assertIn("startup-crash.jsonl", workflow)
         self.assertIn("normal packaged startup produced a false crash diagnostic", workflow)
+        self.assertIn("normal packaged startup probe timed out", workflow)
+        self.assertIn("intentional packaged startup crash probe timed out", workflow)
         self.assertIn("startup crash diagnostic build identity mismatch", workflow)
         self.assertIn("contents: read", workflow)
         self.assertNotIn("contents: write", workflow)
