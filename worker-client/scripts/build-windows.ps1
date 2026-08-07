@@ -18,6 +18,8 @@ $ExePath = Join-Path $PackageDir "车金Worker客户端.exe"
 $ManifestPath = Join-Path $ReportsDir "车金Worker客户端.manifest.json"
 $PreflightReportPath = Join-Path $ReportsDir "preflight-build-report.json"
 $PackagingDiagnosticPath = Join-Path $ReportsDir "packaging-runtime-diagnostics.jsonl"
+$UatLauncherSourcePath = Join-Path $Root "packaging\start-uat.ps1"
+$UatLauncherPath = Join-Path $PackageDir "start-uat.ps1"
 $OmniAutoSourcePath = Join-Path $Root "omniauto-rpa"
 $OmniAutoProvenancePath = Join-Path $OmniAutoSourcePath ".chejin-source.json"
 $OmniAutoSidecarPath = Join-Path $OmniAutoSourcePath "apps\wechat_ai_customer_service\adapters\wechat_win32_ocr_sidecar.py"
@@ -175,6 +177,10 @@ if ($LASTEXITCODE -ne 0) {
 if (-not (Test-Path $ExePath)) {
   throw "打包失败：未找到 $ExePath"
 }
+if (-not (Test-Path $UatLauncherSourcePath)) {
+  throw "打包失败：未找到 UAT 启动脚本 $UatLauncherSourcePath"
+}
+Copy-Item -LiteralPath $UatLauncherSourcePath -Destination $UatLauncherPath -Force
 $env:CHEJIN_PACKAGING_DIAGNOSTIC_PATH = $PackagingDiagnosticPath
 if (Test-Path $PackagingDiagnosticPath) {
   Remove-Item -Force $PackagingDiagnosticPath
