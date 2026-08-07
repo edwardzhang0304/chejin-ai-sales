@@ -382,7 +382,7 @@
   display: grid;
   gap: 11px;
   margin: 0;
-  padding: calc(50% - 12px) 0;
+  padding: var(--cw-timeline-center-padding, 100px) 0;
   list-style: none;
 }
 
