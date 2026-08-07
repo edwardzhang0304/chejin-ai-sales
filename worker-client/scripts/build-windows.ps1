@@ -246,8 +246,12 @@ if ($BundledVisionPreflight.ExitCode -ne 0) {
 }
 $BundledVisionPreflightPayload = Get-Content -Raw -Encoding UTF8 $BundledVisionPreflightReport | ConvertFrom-Json
 $BundledVisionCheck = @($BundledVisionPreflightPayload.checks | Where-Object { $_.name -eq "vision_credential" })
-if ($BundledVisionCheck.Count -ne 1 -or $BundledVisionCheck[0].ok -ne $true -or $BundledVisionCheck[0].detail.credential_source -ne "embedded") {
-  throw "打包失败：最终 exe 未使用内置 Vision 凭据"
+if ($BundledVisionCheck.Count -ne 1 -or
+    $BundledVisionCheck[0].ok -ne $true -or
+    $BundledVisionCheck[0].detail.credential_source -ne "embedded" -or
+    $BundledVisionCheck[0].detail.live_probe.ok -ne $true -or
+    $BundledVisionCheck[0].detail.live_probe.status -ne 200) {
+  throw "打包失败：最终 exe 内置 Vision 真实能力探针未通过"
 }
 $PackagedPythonArchiveLines = & .\.venv\Scripts\pyi-archive_viewer.exe -l -r $ExePath
 if ($LASTEXITCODE -ne 0) {
@@ -360,6 +364,7 @@ $Manifest = [ordered]@{
   vision_base_url = "https://aiself.vip/v1"
   vision_model = "doubao-seed-2-0-lite-260428"
   vision_request_style = "anthropic_messages_vision"
+  vision_live_probe_check = if ($DevelopmentBuild) { "not_required" } else { "passed" }
   tests_status = $TestsStatus
   preflight_status = $PreflightStatus
   c2_contract_revision = $ContractRevision.Trim()

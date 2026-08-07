@@ -114,26 +114,41 @@ def omniauto_vision_ocr_check() -> PreflightCheck:
 def vision_credential_check() -> PreflightCheck:
     from .vision_credentials import (
         is_official_vision_runtime,
+        probe_official_vision_provider,
         vision_credential_status,
     )
 
     status = vision_credential_status()
     configured = status.get("configured") is True
     official = is_official_vision_runtime()
+    live_probe = (
+        probe_official_vision_provider()
+        if configured and official
+        else None
+    )
+    capability_ready = configured and (
+        not official
+        or isinstance(live_probe, dict)
+        and live_probe.get("ok") is True
+    )
     safe_detail = {
         key: value
         for key, value in status.items()
         if key != "configured"
     }
+    if isinstance(live_probe, dict):
+        safe_detail["live_probe"] = live_probe
     return PreflightCheck(
         name="vision_credential",
-        ok=configured,
+        ok=capability_ready,
         severity="error" if official else "warning",
         message=(
-            "内置 Vision 凭据已配置。"
-            if configured and official
+            "内置 Vision 能力可用。"
+            if capability_ready and official
             else "Vision 开发凭据已配置。"
-            if configured
+            if capability_ready
+            else "内置 Vision 能力不可用。"
+            if configured and official
             else "内置 Vision 凭据未配置。"
             if official
             else "Vision 开发凭据未配置。"

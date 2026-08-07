@@ -166,7 +166,7 @@ class UiContractTest(unittest.TestCase):
 
         self.assertIn("QWebEngineView", web_ui)
         self.assertIn("QWebChannel", web_ui)
-        self.assertIn("CLIENT_VERSION = \"V16.136 · Worker C2/C3 客户端\"", web_ui)
+        self.assertIn("CLIENT_VERSION = \"V16.137 · Worker C2/C3 客户端\"", web_ui)
         self.assertFalse((ROOT / "web-ui-src").exists())
         self.assertTrue((ROOT / "chejin_worker_client" / "web_assets" / "index.html").exists())
         self.assertTrue((ROOT / "chejin_worker_client" / "web_assets" / "worker-ui.css").exists())

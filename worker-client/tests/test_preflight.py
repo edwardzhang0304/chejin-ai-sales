@@ -92,12 +92,53 @@ class PreflightTest(unittest.TestCase):
                 "model": "doubao-seed-2-0-lite-260428",
                 "request_style": "anthropic_messages_vision",
             },
+        ), patch(
+            "chejin_worker_client.vision_credentials.probe_official_vision_provider",
+            return_value={
+                "ok": True,
+                "status": 200,
+                "failure_reason": "",
+                "model": "doubao-seed-2-0-lite-260428",
+                "request_style": "anthropic_messages_vision",
+            },
         ):
             check = vision_credential_check()
 
         self.assertTrue(check.ok)
-        self.assertEqual(check.message, "内置 Vision 凭据已配置。")
+        self.assertEqual(check.message, "内置 Vision 能力可用。")
         self.assertNotIn(secret, json.dumps(check.detail, ensure_ascii=False))
+
+    def test_official_vision_preflight_blocks_when_live_probe_fails(self):
+        with patch(
+            "chejin_worker_client.vision_credentials.is_official_vision_runtime",
+            return_value=True,
+        ), patch(
+            "chejin_worker_client.vision_credentials.vision_credential_status",
+            return_value={
+                "configured": True,
+                "credential_source": "embedded",
+                "configuration_locked": True,
+                "provider": "anthropic_compatible",
+                "base_url": "https://aiself.vip/v1",
+                "model": "doubao-seed-2-0-lite-260428",
+                "request_style": "anthropic_messages_vision",
+            },
+        ), patch(
+            "chejin_worker_client.vision_credentials.probe_official_vision_provider",
+            return_value={
+                "ok": False,
+                "status": 401,
+                "failure_reason": "vision_provider_probe_failed",
+                "model": "doubao-seed-2-0-lite-260428",
+                "request_style": "anthropic_messages_vision",
+            },
+        ):
+            check = vision_credential_check()
+
+        self.assertFalse(check.ok)
+        self.assertEqual(check.severity, "error")
+        self.assertEqual(check.message, "内置 Vision 能力不可用。")
+        self.assertEqual(check.detail["live_probe"]["status"], 401)
 
 
 if __name__ == "__main__":
