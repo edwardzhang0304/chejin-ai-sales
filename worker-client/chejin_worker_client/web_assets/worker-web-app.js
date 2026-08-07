@@ -24,9 +24,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// frontend/node_modules/react/cjs/react.development.js
+// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/react/cjs/react.development.js
 var require_react_development = __commonJS({
-  "frontend/node_modules/react/cjs/react.development.js"(exports, module) {
+  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/react/cjs/react.development.js"(exports, module) {
     "use strict";
     (function() {
       function defineDeprecationWarning(methodName, info) {
@@ -996,9 +996,9 @@ var require_react_development = __commonJS({
   }
 });
 
-// frontend/node_modules/react/index.js
+// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/react/index.js
 var require_react = __commonJS({
-  "frontend/node_modules/react/index.js"(exports, module) {
+  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/react/index.js"(exports, module) {
     "use strict";
     if (false) {
       module.exports = null;
@@ -1008,9 +1008,9 @@ var require_react = __commonJS({
   }
 });
 
-// frontend/node_modules/scheduler/cjs/scheduler.development.js
+// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/scheduler/cjs/scheduler.development.js
 var require_scheduler_development = __commonJS({
-  "frontend/node_modules/scheduler/cjs/scheduler.development.js"(exports) {
+  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/scheduler/cjs/scheduler.development.js"(exports) {
     "use strict";
     (function() {
       function performWorkUntilDeadline() {
@@ -1267,9 +1267,9 @@ var require_scheduler_development = __commonJS({
   }
 });
 
-// frontend/node_modules/scheduler/index.js
+// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/scheduler/index.js
 var require_scheduler = __commonJS({
-  "frontend/node_modules/scheduler/index.js"(exports, module) {
+  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/scheduler/index.js"(exports, module) {
     "use strict";
     if (false) {
       module.exports = null;
@@ -1279,9 +1279,9 @@ var require_scheduler = __commonJS({
   }
 });
 
-// frontend/node_modules/react-dom/cjs/react-dom.development.js
+// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/react-dom/cjs/react-dom.development.js
 var require_react_dom_development = __commonJS({
-  "frontend/node_modules/react-dom/cjs/react-dom.development.js"(exports) {
+  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/react-dom/cjs/react-dom.development.js"(exports) {
     "use strict";
     (function() {
       function noop() {
@@ -1523,9 +1523,9 @@ var require_react_dom_development = __commonJS({
   }
 });
 
-// frontend/node_modules/react-dom/index.js
+// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/react-dom/index.js
 var require_react_dom = __commonJS({
-  "frontend/node_modules/react-dom/index.js"(exports, module) {
+  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/react-dom/index.js"(exports, module) {
     "use strict";
     if (false) {
       checkDCE();
@@ -1536,9 +1536,9 @@ var require_react_dom = __commonJS({
   }
 });
 
-// frontend/node_modules/react-dom/cjs/react-dom-client.development.js
+// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/react-dom/cjs/react-dom-client.development.js
 var require_react_dom_client_development = __commonJS({
-  "frontend/node_modules/react-dom/cjs/react-dom-client.development.js"(exports) {
+  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/react-dom/cjs/react-dom-client.development.js"(exports) {
     "use strict";
     (function() {
       function findHook(fiber, id) {
@@ -21435,9 +21435,9 @@ var require_react_dom_client_development = __commonJS({
   }
 });
 
-// frontend/node_modules/react-dom/client.js
+// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/react-dom/client.js
 var require_client = __commonJS({
-  "frontend/node_modules/react-dom/client.js"(exports, module) {
+  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/react-dom/client.js"(exports, module) {
     "use strict";
     if (false) {
       checkDCE();
@@ -21448,9 +21448,9 @@ var require_client = __commonJS({
   }
 });
 
-// frontend/node_modules/react/cjs/react-jsx-runtime.development.js
+// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/react/cjs/react-jsx-runtime.development.js
 var require_react_jsx_runtime_development = __commonJS({
-  "frontend/node_modules/react/cjs/react-jsx-runtime.development.js"(exports) {
+  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/react/cjs/react-jsx-runtime.development.js"(exports) {
     "use strict";
     (function() {
       function getComponentNameFromType(type) {
@@ -21705,9 +21705,9 @@ var require_react_jsx_runtime_development = __commonJS({
   }
 });
 
-// frontend/node_modules/react/jsx-runtime.js
+// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/react/jsx-runtime.js
 var require_jsx_runtime = __commonJS({
-  "frontend/node_modules/react/jsx-runtime.js"(exports, module) {
+  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/react/jsx-runtime.js"(exports, module) {
     "use strict";
     if (false) {
       module.exports = null;
@@ -21955,6 +21955,10 @@ function TaskTimeline({ steps }) {
     const focusStep = viewport.querySelector(".final-step, .current, .error");
     const focusMarker = focusStep?.querySelector(":scope > span");
     if (!focusStep || !focusMarker) return;
+    viewport.style.setProperty(
+      "--cw-timeline-center-padding",
+      `${Math.max(0, (viewport.clientHeight - focusMarker.offsetHeight) / 2)}px`
+    );
     const viewportRect = viewport.getBoundingClientRect();
     const markerRect = focusMarker.getBoundingClientRect();
     const nextScrollTop = viewport.scrollTop + markerRect.top + markerRect.height / 2 - (viewportRect.top + viewportRect.height / 2);
@@ -22110,6 +22114,16 @@ function OfflineScreen({ model, hasCurrentOperation = true }) {
     ...model,
     status: { ...model.status, connectionState: "\u8FDE\u63A5\u5F02\u5E38" }
   };
+  const hasBusinessTask = Boolean(model.task.id && model.task.id !== "-");
+  const retainedSteps = hasBusinessTask ? model.completedSteps.length ? model.completedSteps : model.runningSteps : model.targetReadRunningSteps.length ? model.targetReadRunningSteps : model.scanRunningSteps.length ? model.scanRunningSteps : [];
+  const offlineSteps = [
+    ...retainedSteps,
+    {
+      state: "current",
+      title: model.completedSteps.length ? "\u6267\u884C\u5DF2\u5B8C\u6210\uFF0C\u7B49\u5F85\u6062\u590D\u540E\u56DE\u4F20" : "\u670D\u52A1\u7AEF\u8FDE\u63A5\u4E2D\u65AD\uFF0C\u5F53\u524D\u64CD\u4F5C\u72B6\u6001\u5DF2\u4FDD\u7559",
+      description: "\u8FDE\u63A5\u6062\u590D\u540E\u5BA2\u6237\u7AEF\u4F1A\u81EA\u52A8\u7EE7\u7EED\u5904\u7406\u3002"
+    }
+  ];
   return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("section", { className: "cw-screen cw-screen-task screen active", "data-screen-view": "offline", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cw-workspace workspace", children: [
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)("header", { className: "cw-workspace-head workspace-head", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ConnectionLine, { model: offlineModel, danger: true }) }),
     hasCurrentOperation ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "cw-task-layout task-layout", children: [
@@ -22117,13 +22131,10 @@ function OfflineScreen({ model, hasCurrentOperation = true }) {
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
         CurrentProcess,
         {
-          steps: [
-            { state: "done", title: "\u6B63\u5728\u6267\u884C\u5FAE\u4FE1\u52A0\u597D\u53CB", description: "\u672C\u673A\u64CD\u4F5C\u4FDD\u6301\u539F\u72B6\u6001\u3002" },
-            { state: "current", title: "\u6267\u884C\u5DF2\u5B8C\u6210\uFF0C\u7B49\u5F85\u6062\u590D\u540E\u56DE\u4F20", description: "\u8FDE\u63A5\u6062\u590D\u540E\u81EA\u52A8\u56DE\u4F20\u6267\u884C\u7ED3\u679C\u3002" }
-          ],
+          steps: offlineSteps,
           state: "error",
           duration: "\u7B49\u5F85\u8FDE\u63A5",
-          task: model.task,
+          task: hasBusinessTask ? model.task : void 0,
           statusText: "\u5904\u7406\u4E2D"
         }
       )
@@ -22372,16 +22383,13 @@ function renderScreen(props) {
   if (screen === "target-read-running") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BackgroundProcessScreen, { screen, model, steps: model.targetReadRunningSteps, dockState: model.status.receiveState, onPauseAccepting });
   if (screen === "target-read-completed") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BackgroundProcessScreen, { screen, model, steps: model.targetReadCompletedSteps, dockState: model.status.receiveState, onPauseAccepting });
   if (screen === "ai-reply-running") {
-    const replyModel = { ...model, task: { ...model.task, id: "TASK-1842", title: "AI \u56DE\u590D", type: "chat_reply", statusText: "\u5904\u7406\u4E2D", metaText: "\u738B\u5148\u751F \xB7 \u5F20\u4F1F \xB7 \u5BA2\u6237\u54A8\u8BE2\u7EED\u4FDD\u4EF7\u683C" } };
-    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskScreen, { screen, model: replyModel, steps: model.replyRunningSteps, statusText: "\u5904\u7406\u4E2D", dockState: model.status.receiveState, onPauseAccepting });
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskScreen, { screen, model, steps: model.replyRunningSteps, statusText: "\u5904\u7406\u4E2D", dockState: model.status.receiveState, onPauseAccepting });
   }
   if (screen === "ai-reply-completed") {
-    const replyModel = { ...model, task: { ...model.task, id: "TASK-1842", title: "AI \u56DE\u590D", type: "chat_reply", statusText: "\u5DF2\u5B8C\u6210", metaText: "\u738B\u5148\u751F \xB7 \u5F20\u4F1F \xB7 AI \u56DE\u590D\u5DF2\u53D1\u9001" } };
-    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskScreen, { screen, model: replyModel, steps: model.replyCompletedSteps, statusText: "\u5DF2\u5B8C\u6210", dockState: model.status.receiveState, onPauseAccepting });
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskScreen, { screen, model, steps: model.replyCompletedSteps, statusText: "\u5DF2\u5B8C\u6210", dockState: model.status.receiveState, onPauseAccepting });
   }
   if (screen === "ai-reply-failed") {
-    const replyModel = { ...model, task: { ...model.task, id: "TASK-1842", title: "AI \u56DE\u590D", type: "chat_reply", statusText: "\u5931\u8D25", metaText: "\u738B\u5148\u751F \xB7 \u5F20\u4F1F \xB7 \u81EA\u52A8\u53D1\u9001\u5DF2\u7EC8\u6B62" } };
-    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskScreen, { screen, model: replyModel, steps: model.replyFailedSteps, statusText: "\u5931\u8D25", dockState: model.status.receiveState, onPauseAccepting });
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskScreen, { screen, model, steps: model.replyFailedSteps, statusText: "\u5931\u8D25", dockState: model.status.receiveState, onPauseAccepting });
   }
   if (screen === "settings") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(SettingsScreen, { model, onScreenChange });
   if (screen === "schedule-settings") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ScheduleSettingsScreen, { model, onUpdateAcceptSchedule });
@@ -22401,115 +22409,6 @@ function WorkerClientBaseline(props) {
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cw-app-body", children: renderScreen(props) })
   ] });
 }
-
-// packages/worker-ui-baseline/src/mockData.ts
-var workerClientMock = {
-  workerId: "wk_20260611_8f3a2c9b",
-  workerToken: "worker-token-value",
-  version: "v0.1.0",
-  schedule: {
-    enabled: false,
-    start: "09:00",
-    end: "21:00"
-  },
-  status: {
-    sellerName: "\u5F20\u4F1F",
-    receiveState: "\u63A5\u5355\u4E2D",
-    connectionState: "\u8FDE\u63A5\u6B63\u5E38",
-    lastHeartbeat: "10:24:18",
-    automationState: "\u53EF\u7528",
-    wechatState: "\u5DF2\u8FDE\u63A5"
-  },
-  task: {
-    id: "TASK-1831",
-    title: "\u6DFB\u52A0\u901A\u8BAF\u5F55\u9080\u8BF7",
-    statusText: "\u63A5\u5355\u4E2D",
-    customerName: "\u738B\u5148\u751F",
-    phone: "13812346678",
-    sellerName: "\u5F20\u4F1F",
-    noteCode: "CJ-5739",
-    type: "add_friend"
-  },
-  runningSteps: [
-    { state: "done", title: "\u4EFB\u52A1\u5DF2\u9886\u53D6", time: "10:26:10" },
-    { state: "done", title: "\u6B63\u5728\u68C0\u67E5\u8FD0\u884C\u73AF\u5883", description: "\u81EA\u52A8\u5316\u7EC4\u4EF6\u53EF\u7528\uFF0C\u5FAE\u4FE1\u5DF2\u8FDE\u63A5\u3002" },
-    {
-      state: "current",
-      title: "\u6B63\u5728\u6267\u884C\u5FAE\u4FE1\u52A0\u597D\u53CB",
-      description: "Worker \u6B63\u5728\u8C03\u7528\u81EA\u52A8\u5316\u7EC4\u4EF6\u6267\u884C\u5F53\u524D\u4EFB\u52A1\u3002"
-    }
-  ],
-  completedSteps: [
-    { state: "done", title: "\u4EFB\u52A1\u5DF2\u9886\u53D6", time: "10:26:10" },
-    { state: "done", title: "\u73AF\u5883\u68C0\u67E5\u5B8C\u6210", time: "10:26:13" },
-    { state: "done", title: "\u641C\u7D22\u5BA2\u6237", time: "10:26:18" },
-    { state: "done", title: "\u8FDB\u5165\u6DFB\u52A0\u901A\u8BAF\u5F55\u6D41\u7A0B", time: "10:26:31" },
-    { state: "done", title: "\u5199\u5165\u5907\u6CE8\u77ED\u7801\u4E0E\u7533\u8BF7\u8BF4\u660E", time: "10:26:46" },
-    {
-      state: "done",
-      title: "\u53D1\u9001\u6DFB\u52A0\u901A\u8BAF\u5F55\u9080\u8BF7",
-      time: "10:27:02"
-    },
-    {
-      state: "done",
-      title: "\u56DE\u4F20\u6267\u884C\u7ED3\u679C",
-      time: "10:27:05",
-      description: "\u5DF2\u53D1\u9001\u6DFB\u52A0\u901A\u8BAF\u5F55\u9080\u8BF7\uFF0C\u4E0D\u4EE3\u8868\u5BA2\u6237\u5DF2\u540C\u610F\u597D\u53CB\u7533\u8BF7\u3002",
-      finalText: "\u4EFB\u52A1\u6267\u884C\u5B8C\u6210"
-    }
-  ],
-  failedSteps: [
-    { state: "done", title: "\u4EFB\u52A1\u5DF2\u9886\u53D6", time: "10:26:10" },
-    { state: "done", title: "\u73AF\u5883\u68C0\u67E5\u5B8C\u6210", time: "10:26:13" },
-    { state: "done", title: "\u6253\u5F00\u5FAE\u4FE1\u684C\u9762\u5BA2\u6237\u7AEF", time: "10:26:15" },
-    {
-      state: "error",
-      title: "\u641C\u7D22\u5BA2\u6237\u5931\u8D25",
-      description: "\u624B\u673A\u53F7\u672A\u627E\u5230\u5BA2\u6237\u3002",
-      finalText: "\u4EFB\u52A1\u6267\u884C\u5931\u8D25"
-    }
-  ],
-  scanRunningSteps: [
-    { state: "current", title: "\u6B63\u5728\u626B\u63CF\u5FAE\u4FE1\u4F1A\u8BDD\u7B2C\u4E00\u5C4F", description: "\u5DF2\u8FD0\u884C 00:18" }
-  ],
-  scanCompletedSteps: [
-    { state: "done", title: "\u626B\u63CF\u5FAE\u4FE1\u4F1A\u8BDD\u7B2C\u4E00\u5C4F", time: "10:31:04" },
-    { state: "done", title: "\u626B\u63CF\u5B8C\u6210", description: "\u53D1\u73B0 12 \u4E2A\u4F1A\u8BDD\uFF0C\u547D\u4E2D 3 \u4E2A\u76EE\u6807\u3002", finalText: "\u7B49\u5F85\u4E0B\u4E00\u8F6E\u68C0\u67E5" }
-  ],
-  targetReadRunningSteps: [
-    { state: "current", title: "\u6B63\u5728\u5B9A\u4F4D\u5E76\u8BFB\u53D6\u76EE\u6807\u4F1A\u8BDD", description: "\u6B63\u5728\u8BFB\u53D6\u5BA2\u6237 CJ-5739 \u7684\u6700\u65B0\u6D88\u606F \xB7 \u5DF2\u8FD0\u884C 00:09" }
-  ],
-  targetReadCompletedSteps: [
-    { state: "done", title: "\u5B9A\u4F4D\u76EE\u6807\u4F1A\u8BDD", time: "10:32:16" },
-    { state: "done", title: "\u8BFB\u53D6\u5B8C\u6210", description: "\u53D1\u73B0 2 \u6761\u65B0\u6D88\u606F\u3002", finalText: "\u6D88\u606F\u5DF2\u56DE\u4F20" }
-  ],
-  replyRunningSteps: [
-    { state: "done", title: "\u8BFB\u53D6\u5BA2\u6237\u6700\u65B0\u6D88\u606F", time: "10:34:10" },
-    { state: "done", title: "\u7B49\u5F85\u670D\u52A1\u7AEF\u751F\u6210\u56DE\u590D", time: "10:34:13" },
-    { state: "done", title: "\u6267\u884C\u53D1\u9001\u524D\u590D\u6838", time: "10:34:16" },
-    { state: "current", title: "\u6B63\u5728\u53D1\u9001\u5FAE\u4FE1\u6D88\u606F", description: "Worker \u6B63\u5728\u53D1\u9001\u670D\u52A1\u7AEF\u6279\u51C6\u7684\u56DE\u590D \xB7 \u5DF2\u8FD0\u884C 00:07" }
-  ],
-  replyCompletedSteps: [
-    { state: "done", title: "\u8BFB\u53D6\u5BA2\u6237\u6700\u65B0\u6D88\u606F", time: "10:34:10" },
-    { state: "done", title: "\u7B49\u5F85\u670D\u52A1\u7AEF\u751F\u6210\u56DE\u590D", time: "10:34:13" },
-    { state: "done", title: "\u6267\u884C\u53D1\u9001\u524D\u590D\u6838", time: "10:34:16" },
-    { state: "done", title: "\u53D1\u9001\u5FAE\u4FE1\u6D88\u606F", time: "10:34:22" },
-    { state: "done", title: "\u786E\u8BA4\u5E76\u56DE\u4F20\u7ED3\u679C", time: "10:34:25", description: "AI \u56DE\u590D\u5DF2\u53D1\u9001\u3002", finalText: "\u4EFB\u52A1\u6267\u884C\u5B8C\u6210" }
-  ],
-  replyFailedSteps: [
-    { state: "done", title: "\u8BFB\u53D6\u5BA2\u6237\u6700\u65B0\u6D88\u606F", time: "10:34:10" },
-    { state: "done", title: "\u7B49\u5F85\u670D\u52A1\u7AEF\u751F\u6210\u56DE\u590D", time: "10:34:13" },
-    { state: "done", title: "\u6267\u884C\u53D1\u9001\u524D\u590D\u6838", time: "10:34:16" },
-    { state: "error", title: "\u53D1\u9001\u5FAE\u4FE1\u6D88\u606F\u5931\u8D25", description: "\u53D1\u9001\u7ED3\u679C\u65E0\u6CD5\u786E\u8BA4\uFF0C\u81EA\u52A8\u53D1\u9001\u5DF2\u7EC8\u6B62\u3002", finalText: "\u4EFB\u52A1\u6267\u884C\u5931\u8D25" }
-  ],
-  logs: [
-    { time: "10:27:12", level: "ERROR", task: "TASK-1831", content: "\u5FAE\u4FE1\u7A97\u53E3\u5B9A\u4F4D\u5931\u8D25\u3002", event: "task_failed", errorCode: "WECHAT_WINDOW_NOT_FOUND", incidentId: "INC-20260805-001", sidecarRunId: "message-20260805-001", evidencePath: "artifacts/incidents/INC-20260805-001.zip" },
-    { time: "10:27:05", level: "INFO", task: "TASK-1831", content: "\u56DE\u4F20\u6267\u884C\u7ED3\u679C\u3002", event: "task_result_reported", errorCode: "-", incidentId: "-", sidecarRunId: "-", evidencePath: "-" },
-    { time: "10:26:46", level: "INFO", task: "TASK-1831", content: "\u5199\u5165\u5907\u6CE8\u77ED\u7801\u3002", event: "remark_written", errorCode: "-", incidentId: "-", sidecarRunId: "-", evidencePath: "-" },
-    { time: "10:26:18", level: "INFO", task: "TASK-1831", content: "\u641C\u7D22\u5BA2\u6237\u3002", event: "customer_search_started", errorCode: "-", incidentId: "-", sidecarRunId: "-", evidencePath: "-" },
-    { time: "10:21:02", level: "INFO", task: "-", content: "\u5F00\u59CB\u63A5\u5355\u3002", event: "worker_started", errorCode: "-", incidentId: "-", sidecarRunId: "-", evidencePath: "-" }
-  ]
-};
 
 // packages/worker-ui-baseline/src/WorkerClientRuntimeApp.tsx
 var import_jsx_runtime2 = __toESM(require_jsx_runtime(), 1);
@@ -22538,6 +22437,41 @@ var screens = [
   "ai-reply-completed",
   "ai-reply-failed"
 ];
+var emptyRuntimeModel = {
+  workerId: "",
+  workerToken: "",
+  version: "",
+  schedule: { enabled: false, start: "09:00", end: "21:00" },
+  status: {
+    sellerName: "\u672A\u7ED1\u5B9A",
+    receiveState: "\u6682\u505C\u63A5\u5355",
+    connectionState: "\u8FDE\u63A5\u6B63\u5E38",
+    lastHeartbeat: "\u6682\u65E0",
+    automationState: "\u4E0D\u53EF\u7528",
+    wechatState: "\u672A\u8FDE\u63A5"
+  },
+  task: {
+    id: "-",
+    title: "\u6682\u65E0\u4EFB\u52A1",
+    statusText: "\u6682\u65E0\u4EFB\u52A1",
+    customerName: "\u6682\u65E0\u5BA2\u6237",
+    phone: "-",
+    sellerName: "-",
+    noteCode: "-"
+  },
+  runningSteps: [],
+  completedSteps: [],
+  failedSteps: [],
+  scanRunningSteps: [],
+  scanCompletedSteps: [],
+  targetReadRunningSteps: [],
+  targetReadCompletedSteps: [],
+  replyRunningSteps: [],
+  replyCompletedSteps: [],
+  replyFailedSteps: [],
+  logs: [],
+  latestIncident: null
+};
 function initialScreen() {
   const screen = new URLSearchParams(window.location.search).get("screen");
   return screens.includes(screen) ? screen : "bind";
@@ -22553,7 +22487,7 @@ function App() {
   const [bridge, setBridge] = (0, import_react2.useState)(null);
   const [state, setState] = (0, import_react2.useState)({
     screen: initialScreen(),
-    model: workerClientMock
+    model: emptyRuntimeModel
   });
   (0, import_react2.useEffect)(() => {
     if (!window.QWebChannel || !window.qt?.webChannelTransport) return;

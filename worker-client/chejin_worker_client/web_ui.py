@@ -16,6 +16,7 @@ from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QFileDialog, QMainWindow
 
+from . import __version__
 from .api import WorkerApiClient
 from .config import CONFIG
 from .incident_evidence import incident_by_id, incident_directory, latest_incident
@@ -35,10 +36,11 @@ from .storage import (
 )
 from .task_runner import TaskRunner
 from .ui_lock import lock_summary
+from .ui_state_mapping import runtime_process_screen, runtime_step_title
 
 WINDOW_WIDTH = 316
 WINDOW_HEIGHT = 628
-CLIENT_VERSION = "V16.137 · Worker C2/C3 客户端"
+CLIENT_VERSION = f"V{__version__} · Worker C2/C3 客户端"
 TITLEBAR_HEIGHT = 28
 WINDOW_CONTROL_WIDTH = 90
 WINDOW_RADIUS = 10
@@ -365,16 +367,31 @@ class WorkerWebWindow(QMainWindow):
         if self.active_page in {"settings", "schedule-settings", "logs"}:
             return self.active_page
         if self.connection_status == "offline":
-            return "offline"
+            has_local_process = bool(
+                self.current_task
+                or self.runner.current_step
+                or self.step_history
+                or self.last_result
+            )
+            return "offline" if has_local_process else "offline-empty"
         schedule_active = self.is_accept_schedule_active()
         if self.current_task and (self.binding.run_status == "paused" or not schedule_active):
             return "paused-running"
         if self.current_task:
-            return "running"
+            return "ai-reply-running" if self.current_task.task_type == "chat_reply" else "running"
+        background_screen = runtime_process_screen(self.runner.current_step)
+        if background_screen:
+            return background_screen
         if self.last_result and self.last_result.ok:
-            return "completed"
+            if self.last_task and self.last_task.task_type == "chat_reply":
+                return "ai-reply-completed"
+            return "paused-empty-2" if self.binding.run_status == "paused" else "completed"
         if self.last_result and not self.last_result.ok:
-            return "failed"
+            return "ai-reply-failed" if self.last_task and self.last_task.task_type == "chat_reply" else "failed"
+        if self.profile and self.profile.rpa_component_status != "ready":
+            return "automation-unavailable"
+        if self.profile and self.profile.wechat_status != "logged_in":
+            return "wechat-disconnected"
         if self.binding.run_status == "running" and schedule_active:
             return "accepting-wait"
         if self.binding.run_status == "running":
@@ -408,6 +425,13 @@ class WorkerWebWindow(QMainWindow):
             "runningSteps": self._running_steps(),
             "completedSteps": self._completed_steps(),
             "failedSteps": self._failed_steps(),
+            "scanRunningSteps": self._scan_running_steps(),
+            "scanCompletedSteps": self._scan_completed_steps(),
+            "targetReadRunningSteps": self._target_read_running_steps(),
+            "targetReadCompletedSteps": self._target_read_completed_steps(),
+            "replyRunningSteps": self._running_steps(),
+            "replyCompletedSteps": self._completed_steps(),
+            "replyFailedSteps": self._failed_steps(),
             "logs": _log_rows(),
             "latestIncident": latest_incident() or {},
         }
@@ -469,7 +493,8 @@ class WorkerWebWindow(QMainWindow):
     def _running_steps(self) -> list[dict[str, Any]]:
         steps = list(self.step_history)
         if self.current_task:
-            title = self.current_task.current_step or "正在执行任务"
+            raw_step = self.runner.current_step or self.current_task.current_step
+            title = runtime_step_title(raw_step, f"正在执行{task_type_title(self.current_task.task_type)}")
             steps.append(
                 {
                     "state": "current",
@@ -482,8 +507,60 @@ class WorkerWebWindow(QMainWindow):
             )
         return steps or [{"state": "current", "title": "等待任务", "description": "接单中，等待服务端分配任务。"}]
 
+    def _scan_running_steps(self) -> list[dict[str, Any]]:
+        if runtime_process_screen(self.runner.current_step) != "scan-running":
+            return []
+        return [
+            {
+                "state": "current",
+                "title": runtime_step_title(self.runner.current_step, "正在扫描微信会话第一屏"),
+                "description": "Worker 正在检查当前可见会话。",
+            }
+        ]
+
+    def _scan_completed_steps(self) -> list[dict[str, Any]]:
+        stats = dict(getattr(self.runner, "c2_stats", {}) or {})
+        if not stats.get("last_scan_at"):
+            return []
+        return [
+            {"state": "done", "title": "扫描微信会话第一屏", "time": _format_time(str(stats.get("last_scan_at") or ""))},
+            {
+                "state": "done",
+                "title": "扫描完成",
+                "description": f"发现 {int(stats.get('last_scan_sessions') or 0)} 个会话。",
+                "finalText": "等待下一轮检查",
+            },
+        ]
+
+    def _target_read_running_steps(self) -> list[dict[str, Any]]:
+        if runtime_process_screen(self.runner.current_step) != "target-read-running":
+            return []
+        return [
+            {
+                "state": "current",
+                "title": runtime_step_title(self.runner.current_step, "正在定位并读取目标会话"),
+                "description": "Worker 正在读取当前目标的最新消息。",
+            }
+        ]
+
+    def _target_read_completed_steps(self) -> list[dict[str, Any]]:
+        stats = dict(getattr(self.runner, "c2_stats", {}) or {})
+        if not stats.get("last_message_read_at"):
+            return []
+        return [
+            {"state": "done", "title": "读取目标会话", "time": _format_time(str(stats.get("last_message_read_at") or ""))},
+            {
+                "state": "done",
+                "title": "读取完成",
+                "description": f"已回传 {int(stats.get('last_ingested_count') or 0)} 条新消息。",
+                "finalText": "消息已回传",
+            },
+        ]
+
     def _completed_steps(self) -> list[dict[str, Any]]:
         steps = list(self.step_history)
+        if not self.last_result:
+            return steps
         steps.append(
             {
                 "state": "done",
@@ -496,6 +573,8 @@ class WorkerWebWindow(QMainWindow):
 
     def _failed_steps(self) -> list[dict[str, Any]]:
         steps = list(self.step_history)
+        if not self.last_result:
+            return steps
         message = self.last_result.message if self.last_result else "任务执行失败。"
         code = self.last_result.error_code if self.last_result else "OTHER"
         metadata = self.last_result.evidence_metadata if self.last_result else {}

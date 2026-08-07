@@ -268,6 +268,10 @@ function TaskTimeline({ steps }: { steps: TimelineStepModel[] }) {
     const focusStep = viewport.querySelector(".final-step, .current, .error") as HTMLElement | null;
     const focusMarker = focusStep?.querySelector(":scope > span") as HTMLElement | null;
     if (!focusStep || !focusMarker) return;
+    viewport.style.setProperty(
+      "--cw-timeline-center-padding",
+      `${Math.max(0, (viewport.clientHeight - focusMarker.offsetHeight) / 2)}px`,
+    );
     const viewportRect = viewport.getBoundingClientRect();
     const markerRect = focusMarker.getBoundingClientRect();
     const nextScrollTop = viewport.scrollTop + markerRect.top + markerRect.height / 2 - (viewportRect.top + viewportRect.height / 2);
@@ -512,6 +516,24 @@ function OfflineScreen({ model, hasCurrentOperation = true }: { model: WorkerCli
     ...model,
     status: { ...model.status, connectionState: "连接异常" as const },
   };
+  const hasBusinessTask = Boolean(model.task.id && model.task.id !== "-");
+  const retainedSteps = hasBusinessTask
+    ? model.completedSteps.length
+      ? model.completedSteps
+      : model.runningSteps
+    : model.targetReadRunningSteps.length
+      ? model.targetReadRunningSteps
+      : model.scanRunningSteps.length
+        ? model.scanRunningSteps
+        : [];
+  const offlineSteps: TimelineStepModel[] = [
+    ...retainedSteps,
+    {
+      state: "current",
+      title: model.completedSteps.length ? "执行已完成，等待恢复后回传" : "服务端连接中断，当前操作状态已保留",
+      description: "连接恢复后客户端会自动继续处理。",
+    },
+  ];
   return (
     <section className="cw-screen cw-screen-task screen active" data-screen-view="offline">
       <div className="cw-workspace workspace">
@@ -522,13 +544,10 @@ function OfflineScreen({ model, hasCurrentOperation = true }: { model: WorkerCli
           <section className="cw-task-layout task-layout">
             <StatusSummary model={offlineModel} />
             <CurrentProcess
-              steps={[
-                { state: "done", title: "正在执行微信加好友", description: "本机操作保持原状态。" },
-                { state: "current", title: "执行已完成，等待恢复后回传", description: "连接恢复后自动回传执行结果。" },
-              ]}
+              steps={offlineSteps}
               state="error"
               duration="等待连接"
-              task={model.task}
+              task={hasBusinessTask ? model.task : undefined}
               statusText="处理中"
             />
           </section>
@@ -761,16 +780,13 @@ function renderScreen(props: WorkerClientBaselineProps) {
   if (screen === "target-read-running") return <BackgroundProcessScreen screen={screen} model={model} steps={model.targetReadRunningSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
   if (screen === "target-read-completed") return <BackgroundProcessScreen screen={screen} model={model} steps={model.targetReadCompletedSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
   if (screen === "ai-reply-running") {
-    const replyModel = { ...model, task: { ...model.task, id: "TASK-1842", title: "AI 回复", type: "chat_reply" as const, statusText: "处理中", metaText: "王先生 · 张伟 · 客户咨询续保价格" } };
-    return <TaskScreen screen={screen} model={replyModel} steps={model.replyRunningSteps} statusText="处理中" dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
+    return <TaskScreen screen={screen} model={model} steps={model.replyRunningSteps} statusText="处理中" dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
   }
   if (screen === "ai-reply-completed") {
-    const replyModel = { ...model, task: { ...model.task, id: "TASK-1842", title: "AI 回复", type: "chat_reply" as const, statusText: "已完成", metaText: "王先生 · 张伟 · AI 回复已发送" } };
-    return <TaskScreen screen={screen} model={replyModel} steps={model.replyCompletedSteps} statusText="已完成" dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
+    return <TaskScreen screen={screen} model={model} steps={model.replyCompletedSteps} statusText="已完成" dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
   }
   if (screen === "ai-reply-failed") {
-    const replyModel = { ...model, task: { ...model.task, id: "TASK-1842", title: "AI 回复", type: "chat_reply" as const, statusText: "失败", metaText: "王先生 · 张伟 · 自动发送已终止" } };
-    return <TaskScreen screen={screen} model={replyModel} steps={model.replyFailedSteps} statusText="失败" dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
+    return <TaskScreen screen={screen} model={model} steps={model.replyFailedSteps} statusText="失败" dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
   }
   if (screen === "settings") return <SettingsScreen model={model} onScreenChange={onScreenChange} />;
   if (screen === "schedule-settings") return <ScheduleSettingsScreen model={model} onUpdateAcceptSchedule={onUpdateAcceptSchedule} />;

@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { WorkerClientBaseline } from "./WorkerClientBaseline";
-import { workerClientMock } from "./mockData";
 import type { WorkerClientModel, WorkerClientScreen } from "./types";
 
 interface BridgeState {
@@ -64,6 +63,42 @@ const screens: WorkerClientScreen[] = [
   "ai-reply-failed",
 ];
 
+const emptyRuntimeModel: WorkerClientModel = {
+  workerId: "",
+  workerToken: "",
+  version: "",
+  schedule: { enabled: false, start: "09:00", end: "21:00" },
+  status: {
+    sellerName: "未绑定",
+    receiveState: "暂停接单",
+    connectionState: "连接正常",
+    lastHeartbeat: "暂无",
+    automationState: "不可用",
+    wechatState: "未连接",
+  },
+  task: {
+    id: "-",
+    title: "暂无任务",
+    statusText: "暂无任务",
+    customerName: "暂无客户",
+    phone: "-",
+    sellerName: "-",
+    noteCode: "-",
+  },
+  runningSteps: [],
+  completedSteps: [],
+  failedSteps: [],
+  scanRunningSteps: [],
+  scanCompletedSteps: [],
+  targetReadRunningSteps: [],
+  targetReadCompletedSteps: [],
+  replyRunningSteps: [],
+  replyCompletedSteps: [],
+  replyFailedSteps: [],
+  logs: [],
+  latestIncident: null,
+};
+
 function initialScreen(): WorkerClientScreen {
   const screen = new URLSearchParams(window.location.search).get("screen");
   return screens.includes(screen as WorkerClientScreen) ? (screen as WorkerClientScreen) : "bind";
@@ -81,7 +116,7 @@ function App() {
   const [bridge, setBridge] = useState<CheJinBridge | null>(null);
   const [state, setState] = useState<BridgeState>({
     screen: initialScreen(),
-    model: workerClientMock,
+    model: emptyRuntimeModel,
   });
 
   useEffect(() => {
