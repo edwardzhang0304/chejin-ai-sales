@@ -34,16 +34,26 @@ from .subprocess_protocol import (
     require_unicode_protocol,
     subprocess_utf8_environment,
 )
+from .vision_credentials import (
+    OFFICIAL_VISION_BASE_URL,
+    OFFICIAL_VISION_MODEL,
+    OFFICIAL_VISION_PROVIDER,
+    OFFICIAL_VISION_REQUEST_STYLE,
+    VISION_API_KEY_ENV,
+    install_resolved_vision_api_key,
+    is_official_vision_runtime,
+    resolve_vision_runtime_settings,
+)
 
 
 OMNIAUTO_ROOT = Path(__file__).resolve().parents[1] / "omniauto-rpa"
 if str(OMNIAUTO_ROOT) not in sys.path:
     sys.path.insert(0, str(OMNIAUTO_ROOT))
 
-DEFAULT_VISION_PROVIDER = "anthropic_compatible"
-DEFAULT_VISION_BASE_URL = "https://aiself.vip/v1"
-DEFAULT_VISION_MODEL = "doubao-seed-2-0-lite-260428"
-DEFAULT_VISION_REQUEST_STYLE = "anthropic_messages_vision"
+DEFAULT_VISION_PROVIDER = OFFICIAL_VISION_PROVIDER
+DEFAULT_VISION_BASE_URL = OFFICIAL_VISION_BASE_URL
+DEFAULT_VISION_MODEL = OFFICIAL_VISION_MODEL
+DEFAULT_VISION_REQUEST_STYLE = OFFICIAL_VISION_REQUEST_STYLE
 DEFAULT_VISION_TIMEOUT_SECONDS = 60.0
 MAX_VISION_TIMEOUT_SECONDS = 300.0
 VISION_WINDOW_STABLE_FAILURE_REASONS = frozenset(
@@ -57,7 +67,7 @@ VISION_WINDOW_STABLE_FAILURE_REASONS = frozenset(
     }
 )
 VISION_API_KEY_ENV_NAMES = (
-    "CUSTOMER_IMAGE_UNDERSTANDING_API_KEY",
+    VISION_API_KEY_ENV,
 )
 
 
@@ -890,37 +900,19 @@ def explicit_vision_config() -> tuple[dict[str, Any] | None, list[str]]:
         provider_contract.get("api_key_env")
         or "CUSTOMER_IMAGE_UNDERSTANDING_API_KEY"
     ).strip()
-    api_key_env = next(
-        (
-            name
-            for name in VISION_API_KEY_ENV_NAMES
-            if name == required_api_key_env
-            and str(os.environ.get(name) or "").strip()
-        ),
-        "",
-    )
+    configured = install_resolved_vision_api_key()
+    api_key_env = required_api_key_env if configured else ""
     if not api_key_env:
         return None, [required_api_key_env]
+    runtime_settings = resolve_vision_runtime_settings()
     return {
         "image_contract": image_contract(),
         "customer_image_understanding": {
             "enabled": True,
-            "provider": str(
-                os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_PROVIDER")
-                or DEFAULT_VISION_PROVIDER
-            ).strip(),
-            "base_url": str(
-                os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_BASE_URL")
-                or DEFAULT_VISION_BASE_URL
-            ).strip(),
-            "model": str(
-                os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_MODEL")
-                or DEFAULT_VISION_MODEL
-            ).strip(),
-            "request_style": str(
-                os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_REQUEST_STYLE")
-                or DEFAULT_VISION_REQUEST_STYLE
-            ).strip(),
+            "provider": runtime_settings["provider"],
+            "base_url": runtime_settings["base_url"],
+            "model": runtime_settings["model"],
+            "request_style": runtime_settings["request_style"],
             "api_key_env": api_key_env,
             "timeout_seconds": _vision_timeout_seconds(),
         }
@@ -983,15 +975,13 @@ def vision_configuration_status() -> dict[str, Any]:
         if isinstance(config, dict) and isinstance(config.get("customer_image_understanding"), dict)
         else {}
     )
-    api_key_env = next(
-        (name for name in VISION_API_KEY_ENV_NAMES if str(os.environ.get(name) or "").strip()),
-        "",
-    )
+    runtime_settings = resolve_vision_runtime_settings()
+    api_key_env = str(settings.get("api_key_env") or "").strip()
     required_values = {
-        "provider": str(settings.get("provider") or os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_PROVIDER") or DEFAULT_VISION_PROVIDER).strip(),
-        "base_url": str(settings.get("base_url") or os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_BASE_URL") or DEFAULT_VISION_BASE_URL).strip(),
-        "model": str(settings.get("model") or os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_MODEL") or DEFAULT_VISION_MODEL).strip(),
-        "request_style": str(settings.get("request_style") or os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_REQUEST_STYLE") or DEFAULT_VISION_REQUEST_STYLE).strip(),
+        "provider": str(settings.get("provider") or runtime_settings["provider"]).strip(),
+        "base_url": str(settings.get("base_url") or runtime_settings["base_url"]).strip(),
+        "model": str(settings.get("model") or runtime_settings["model"]).strip(),
+        "request_style": str(settings.get("request_style") or runtime_settings["request_style"]).strip(),
         "api_key_env": str(settings.get("api_key_env") or api_key_env).strip(),
         "timeout_seconds": _vision_timeout_seconds(settings.get("timeout_seconds")),
     }
@@ -1169,6 +1159,18 @@ def process_image_slot(
     )
     if not isinstance(vision_settings, dict):
         vision_settings = {}
+    if is_official_vision_runtime():
+        if not install_resolved_vision_api_key():
+            return early_result(
+                "failed",
+                "vision_configuration_incomplete",
+                missing_configuration=[VISION_API_KEY_ENV],
+            )
+        vision_settings = {
+            **vision_settings,
+            **resolve_vision_runtime_settings(),
+            "api_key_env": VISION_API_KEY_ENV,
+        }
     vision_settings = {
         "enabled": True,
         "provider": str(

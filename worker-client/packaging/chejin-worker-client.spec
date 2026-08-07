@@ -21,6 +21,9 @@ ENTRY_PATH = ROOT / "packaging" / "chejin_worker_client_entry.py"
 BUILD_IDENTITY_PATH = Path(
     os.environ.get("CHEJIN_BUILD_IDENTITY_PATH") or ""
 )
+VISION_CREDENTIAL_PATH = Path(
+    os.environ.get("CHEJIN_VISION_CREDENTIAL_PATH") or ""
+)
 
 if not OMNIAUTO_SIDECAR.exists():
     raise SystemExit(f"OmniAuto sidecar not found: {OMNIAUTO_SIDECAR}")
@@ -90,6 +93,11 @@ a = Analysis(
         *(
             [(str(BUILD_IDENTITY_PATH), ".")]
             if BUILD_IDENTITY_PATH.is_file()
+            else []
+        ),
+        *(
+            [(str(VISION_CREDENTIAL_PATH), ".")]
+            if VISION_CREDENTIAL_PATH.is_file()
             else []
         ),
     ],

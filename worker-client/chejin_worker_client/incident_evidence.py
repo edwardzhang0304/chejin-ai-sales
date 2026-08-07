@@ -120,6 +120,14 @@ def _known_secret_values() -> set[str]:
         binding = None
     if binding and str(binding.worker_token or "").strip():
         values.add(str(binding.worker_token).strip())
+    try:
+        from .vision_credentials import resolve_vision_api_key
+
+        vision_key = resolve_vision_api_key()
+    except Exception:
+        vision_key = ""
+    if vision_key:
+        values.add(vision_key)
     return values
 
 

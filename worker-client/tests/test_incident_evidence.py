@@ -127,6 +127,32 @@ class IncidentEvidenceTest(unittest.TestCase):
         self.assertEqual(last_log["metadata"]["incident_id"], results[-1]["incident_id"])
         self.assertEqual(last_log["metadata"]["evidence_path"], results[-1]["evidence_path"])
 
+    def test_embedded_vision_key_is_redacted_without_environment_copy(self) -> None:
+        embedded_key = "embedded-vision-unit-key-never-export"
+        with tempfile.TemporaryDirectory() as credential_temp:
+            credential_path = Path(credential_temp) / "vision-runtime.json"
+            credential_path.write_text(
+                json.dumps(
+                    {"schema_version": 1, "vision_api_key": embedded_key}
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "CHEJIN_BUILD_KIND": "official",
+                    "CHEJIN_VISION_CREDENTIAL_PATH": str(credential_path),
+                },
+                clear=False,
+            ):
+                os.environ.pop("CUSTOMER_IMAGE_UNDERSTANDING_API_KEY", None)
+                redacted = self.incidents.redact_diagnostic(
+                    {"traceback": f"provider failed: {embedded_key}"}
+                )
+
+        self.assertNotIn(embedded_key, json.dumps(redacted))
+        self.assertIn("[REDACTED]", redacted["traceback"])
+
     def test_image_menu_failure_zip_contains_full_roi_and_ocr_evidence(self) -> None:
         artifact_dir = Path(self.tmp.name) / "artifacts" / "wechat_c2" / "messages" / "menu-run"
         artifact_dir.mkdir(parents=True)
