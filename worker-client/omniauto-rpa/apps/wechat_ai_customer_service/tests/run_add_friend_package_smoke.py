@@ -6,6 +6,7 @@ import sys
 import tempfile
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -1352,41 +1353,141 @@ def test_invite_form_failed_field_retries_once_before_confirm() -> None:
 
 
 def test_invite_confirm_uses_durable_action_journal_before_click() -> None:
-    source = (
-        PROJECT_ROOT
-        / "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/add_friend_windows.py"
-    ).read_text(encoding="utf-8")
-    section = source.split(
-        "def fill_add_friend_invite_form_and_confirm", 1
-    )[1].split("def type_add_friend_query_like_human_for_entry", 1)[0]
-    trigger_index = section.find("'trigger_attempted'")
-    click_index = section.find(
-        "action_name='invite_confirm_button_click'"
+    from PIL import Image
+
+    from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import (
+        add_friend_windows,
     )
-    confirmed_index = section.find("'confirmed'", click_index)
-    post_click_capture_index = section.find(
-        "after_invite_confirm_click_before_capture",
-        click_index,
+
+    image = Image.new("RGB", (468, 834), (255, 255, 255))
+    targets_map = {
+        "invite_greeting_textarea": {
+            "name": "invite_greeting_textarea",
+            "x": 120,
+            "y": 220,
+            "click_bounds": [40, 160, 428, 280],
+        },
+        "invite_remark_input": {
+            "name": "invite_remark_input",
+            "x": 120,
+            "y": 340,
+            "click_bounds": [40, 300, 428, 380],
+        },
+        "invite_confirm_button": {
+            "name": "invite_confirm_button",
+            "x": 360,
+            "y": 790,
+            "click_bounds": [300, 750, 430, 820],
+        },
+    }
+    field_verification = {
+        "ok": True,
+        "verify_message": {"ok": True},
+        "remark_name": {"ok": True},
+        "remark_code": {"ok": True},
+    }
+
+    class FakeOps:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, object]] = []
+            self.capture_count = 0
+
+        def add_friend_paced_pause(self, *_args, **_kwargs) -> float:
+            return 0.0
+
+        def capture_wechat_window_visible_screen(self, *_args, **_kwargs):
+            self.capture_count += 1
+            if self.capture_count == 1:
+                return image, "before.png"
+            self.events.append(("post_click_capture", None))
+            raise RuntimeError("simulated post-click capture failure")
+
+        def run_ocr_on_screen_region(self, *_args, **_kwargs):
+            return []
+
+        def paste_invite_form_text(self, *_args, **_kwargs):
+            return {"ok": True}
+
+        def capture_invite_form_field_review(self, *_args, **_kwargs):
+            return {
+                "shot": image,
+                "screenshot_path": "filled.png",
+                "annotated_path": "filled-annotated.png",
+                "ocr_items": [],
+                "ocr_seconds": 0.0,
+                "targets_map": targets_map,
+                "targets": list(targets_map.values()),
+                "field_verification": field_verification,
+            }
+
+        def write_action_phase_journal(self, _path, phase, **payload) -> None:
+            self.events.append(("journal", {"phase": phase, **payload}))
+
+        def human_window_image_click_in_bounds(self, *_args, **_kwargs):
+            self.events.append(("confirm_click", None))
+            return {"ok": True}
+
+    fake_ops = FakeOps()
+    original_ops = add_friend_windows._SIDECAR_OPS
+    try:
+        add_friend_windows.bind_sidecar_ops(fake_ops)
+        with (
+            patch.object(
+                add_friend_windows,
+                "add_friend_invite_form_targets",
+                return_value=targets_map,
+            ),
+            patch.object(
+                add_friend_windows,
+                "draw_add_friend_screen_annotation",
+                return_value="annotated.png",
+            ),
+        ):
+            try:
+                add_friend_windows.fill_add_friend_invite_form_and_confirm(
+                    1001,
+                    Path(tempfile.mkdtemp(prefix="add-friend-confirm-test-")),
+                    verify_message="您好",
+                    remark_name="客户-CJ8K2P",
+                    remark_code="CJ8K2P",
+                    action_journal_path="action-journal.json",
+                )
+            except RuntimeError as exc:
+                assert_true(
+                    "post-click capture failure" in str(exc),
+                    f"unexpected post-click failure: {exc!r}",
+                )
+            else:
+                raise AssertionError("post-click diagnostic failure was not raised")
+    finally:
+        add_friend_windows.bind_sidecar_ops(original_ops)
+
+    event_names = [name for name, _payload in fake_ops.events]
+    assert_true(
+        event_names == ["journal", "confirm_click", "journal", "post_click_capture"],
+        f"unexpected irreversible-action ordering: {fake_ops.events}",
+    )
+    trigger = fake_ops.events[0][1]
+    confirmed = fake_ops.events[2][1]
+    assert_true(
+        isinstance(trigger, dict) and trigger.get("phase") == "trigger_attempted",
+        f"trigger_attempted must be durable before click: {trigger}",
     )
     assert_true(
-        trigger_index >= 0,
-        "add_friend must persist trigger_attempted before confirm click",
+        isinstance(confirmed, dict) and confirmed.get("phase") == "confirmed",
+        f"confirmed must be durable after successful click: {confirmed}",
     )
     assert_true(
-        click_index >= 0,
-        "add_friend final confirm click is missing",
+        confirmed.get("business_state") == "invite_sent"
+        and confirmed.get("business_result_confirmed") is True,
+        f"successful click must confirm invite_sent: {confirmed}",
     )
+    terminal = confirmed.get("terminal_payload") or {}
     assert_true(
-        trigger_index < click_index,
-        "trigger_attempted must be durable before the physical click",
-    )
-    assert_true(
-        confirmed_index > click_index,
-        "confirmed result must be persisted after the click function returns",
-    )
-    assert_true(
-        post_click_capture_index > confirmed_index,
-        "confirmed invite_sent must be durable before post-click screenshot/OCR",
+        terminal.get("ok") is True
+        and terminal.get("task_status") == "completed"
+        and terminal.get("result_code") == "invite_sent",
+        f"post-click diagnostics must not downgrade invite_sent: {terminal}",
     )
 
 

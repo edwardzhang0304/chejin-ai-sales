@@ -51,6 +51,7 @@ def main() -> int:
         return runtime_ui_test.returncode
     omniauto_test_dir = ROOT / "omniauto-rpa" / "apps" / "wechat_ai_customer_service" / "tests"
     omniauto_check_scripts = (
+        "run_add_friend_package_smoke.py",
         "run_wechat_win32_ocr_compat_checks.py",
         "run_wechat_win32_ocr_env_config_checks.py",
         "run_wechat_win32_ocr_interaction_evidence_checks.py",
