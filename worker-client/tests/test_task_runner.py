@@ -1099,6 +1099,53 @@ class TaskRunnerTest(unittest.TestCase):
         runner.c2_vision_preflight_ready = True
         return runner, seen
 
+    def test_operator_guard_fault_rebuilds_only_once_until_user_restart(self):
+        runner, _seen = self.make_runner(
+            FakeApi(None),
+            FakeBridge(RpaResult(ok=True, result_code="unused", message="unused")),
+        )
+        runner.binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        fault = {
+            "ok": False,
+            "mode": "fault",
+            "reason": "operator_guard_heartbeat_expired",
+            "pid": 4321,
+            "state": {"control_epoch": 5},
+        }
+        with (
+            patch(
+                "chejin_worker_client.ui_operator_guard.worker_ui_operator_guard_health",
+                return_value=fault,
+            ) as health,
+            patch(
+                "chejin_worker_client.ui_operator_guard.start_worker_ui_operator_guard",
+                return_value={"ok": True, "pid": 5678, "mode": "idle"},
+            ) as rebuild,
+            patch(
+                "chejin_worker_client.ui_operator_guard.set_worker_ui_operator_guard_mode",
+                return_value={"ok": True, "mode": "stopped"},
+            ) as set_mode,
+            patch(
+                "chejin_worker_client.task_runner.append_log",
+                return_value={"incident_id": "INC-guard"},
+            ),
+        ):
+            runner._monitor_operator_guard()
+            runner._monitor_operator_guard()
+
+        self.assertTrue(runner.operator_guard_fault_latched)
+        self.assertEqual(health.call_count, 1)
+        rebuild.assert_called_once()
+        set_mode.assert_called_once_with(
+            "stopped",
+            reason="guard_rebuilt_after_fault",
+        )
+
     def make_chat_reply_task(self, *, task_id: str, status: str = "pending") -> Task:
         raw = {
             "id": task_id,

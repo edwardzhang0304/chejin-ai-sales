@@ -176,12 +176,24 @@ def empty_operator_control_state(
     }
 
 
-def read_json(path: Path) -> dict[str, Any]:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
+def read_json(
+    path: Path,
+    *,
+    attempts: int = 5,
+    retry_delay_seconds: float = 0.02,
+) -> dict[str, Any]:
+    """Read an atomically replaced runtime file without treating a read race as a fault."""
+
+    for attempt in range(max(1, int(attempts))):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            if attempt + 1 < max(1, int(attempts)):
+                time.sleep(max(0.0, float(retry_delay_seconds)))
+                continue
+            return {}
+        return payload if isinstance(payload, dict) else {}
+    return {}
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -190,8 +202,22 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(output, ensure_ascii=False, indent=2)
     temp = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
-    temp.write_text(text, encoding="utf-8")
-    os.replace(temp, path)
+    for attempt in range(4):
+        try:
+            temp.write_text(text, encoding="utf-8")
+            os.replace(temp, path)
+            return
+        except OSError:
+            try:
+                temp.unlink()
+            except OSError:
+                pass
+            if attempt >= 3:
+                raise
+            time.sleep(0.01 * (attempt + 1))
+            temp = path.with_name(
+                f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp"
+            )
 
 
 def clear_file(path: Path) -> None:
@@ -751,10 +777,16 @@ def transition_rpa_operator_guard(
         return {"ok": False, "mode": "fault", "reason": "operator_guard_instance_mismatch"}
     next_epoch = max(int(control.get("control_epoch") or 0), int(state.get("control_epoch") or 0)) + 1
     command = control.get("command") if isinstance(control.get("command"), dict) else {}
+    command_action = {
+        "active": "activate",
+        "ready": "deactivate",
+        "paused": "pause",
+        "stopped": "stop",
+    }.get(target_mode, target_mode)
     command.update(
         {
             "id": int(command.get("id") or 0) + 1,
-            "action": "activate" if target_mode == "active" else ("deactivate" if target_mode == "ready" else target_mode),
+            "action": command_action,
             "status": "pending",
             "source": "worker",
             "requested_at": now_iso(),
@@ -771,6 +803,9 @@ def transition_rpa_operator_guard(
             "current_step": current_step,
             "control_epoch": next_epoch,
             "command": command,
+            # A state transition never owns process shutdown. Only
+            # stop_rpa_operator_guard() may set this flag.
+            "shutdown_requested": False,
         }
     )
     write_json(control_path, control)
