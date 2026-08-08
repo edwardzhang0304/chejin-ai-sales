@@ -253,10 +253,8 @@ if ($BundledVisionCheck.Count -ne 1 -or
     $BundledVisionCheck[0].detail.live_probe.status -ne 200) {
   throw "打包失败：最终 exe 内置 Vision 真实能力探针未通过"
 }
+# The probe fails by throwing. $LASTEXITCODE may still belong to its packaged child process.
 & (Join-Path $Root "scripts\probe-packaged-operator-guard.ps1") -ExePath $ExePath -WorkingDirectory $PackageDir
-if ($LASTEXITCODE -ne 0) {
-  throw "打包失败：最终 exe Operator Guard 真实启动探针未通过"
-}
 $PackagedPythonArchiveLines = & .\.venv\Scripts\pyi-archive_viewer.exe -l -r $ExePath
 if ($LASTEXITCODE -ne 0) {
   throw "打包失败：无法读取最终 exe 的 Python 归档"
