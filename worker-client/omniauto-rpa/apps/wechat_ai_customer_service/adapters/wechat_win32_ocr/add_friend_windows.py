@@ -65,6 +65,7 @@ from apps.wechat_ai_customer_service.adapters.add_friend_result_mapping import (
     ERROR_PHONE_NOT_FOUND,
     ERROR_WECHAT_WINDOW_NOT_READY,
     RESULT_ALREADY_FRIEND,
+    RESULT_INVITE_SENT,
     add_friend_completed_result as mapped_add_friend_completed_result,
     add_friend_failed_result as mapped_add_friend_failed_result,
     add_friend_server_report_payload as mapped_add_friend_server_report_payload,
