@@ -625,6 +625,9 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("operator_guard.state.json", text)
         self.assertIn("PACKAGED_OPERATOR_GUARD_READY", text)
         self.assertIn("WaitForExit(20000)", text)
+        self.assertIn('finalState.reason -ne "guard_exit"', text)
+        self.assertIn('$null -ne $exitCode -and [int]$exitCode -ne 0', text)
+        self.assertIn("unavailable_on_powershell_5_1", text)
 
     def test_packaging_entry_imports_main_with_package_context(self):
         environment = dict(os.environ)
