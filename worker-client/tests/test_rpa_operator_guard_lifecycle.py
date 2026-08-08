@@ -42,6 +42,40 @@ class RpaOperatorGuardLifecycleTest(unittest.TestCase):
     def _write(self, key: str, payload: dict) -> None:
         self.paths[key].write_text(json.dumps(payload), encoding="utf-8")
 
+    def test_launcher_retries_transient_state_read_before_declaring_identity_fault(self) -> None:
+        state_path = self.paths["state_path"]
+        valid_state = json.dumps({"pid": 4321, "guard_instance_id": "guard-1"})
+        with (
+            mock.patch.object(
+                Path,
+                "read_text",
+                side_effect=(OSError("temporarily locked"), valid_state),
+            ) as read_text,
+            mock.patch.object(rpa_operator_guard.time, "sleep") as sleep,
+        ):
+            payload = rpa_operator_guard.read_json(state_path)
+
+        self.assertEqual(payload["guard_instance_id"], "guard-1")
+        self.assertEqual(read_text.call_count, 2)
+        sleep.assert_called_once()
+
+    def test_guard_state_writer_does_not_block_for_entire_heartbeat_budget(self) -> None:
+        state_path = self.paths["state_path"]
+        transient = PermissionError(13, "reader holds state file")
+        with (
+            mock.patch.object(
+                run_rpa_operator_guard.os,
+                "replace",
+                side_effect=(transient, transient, None),
+            ) as replace,
+            mock.patch.object(run_rpa_operator_guard.time, "sleep") as sleep,
+        ):
+            run_rpa_operator_guard.write_json(state_path, {"mode": "idle"})
+
+        self.assertEqual(replace.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertLess(sum(call.args[0] for call in sleep.call_args_list), 0.1)
+
     def test_add_friend_sidecar_only_attaches_and_never_spawns_or_stops_guard(self) -> None:
         with mock.patch.object(
             add_friend_operator_guard,
@@ -116,6 +150,64 @@ class RpaOperatorGuardLifecycleTest(unittest.TestCase):
         self.assertEqual(result["control_epoch"], 5)
         self.assertEqual(result["active_ui_lock_id"], "lock-1")
         self.assertEqual(result["active_fencing_token"], 7)
+
+    def test_transition_to_resident_stopped_never_requests_process_shutdown(self) -> None:
+        guard = {
+            "enabled": True,
+            "pid": 4321,
+            "guard_instance_id": "guard-1",
+            "paths": {key: str(value) for key, value in self.paths.items()},
+        }
+        self._write(
+            "control_path",
+            {
+                "guard_instance_id": "guard-1",
+                "control_epoch": 2,
+                "shutdown_requested": True,
+                "command": {},
+            },
+        )
+        ready = {
+            "ok": True,
+            "mode": "ready",
+            "state": {
+                "guard_instance_id": "guard-1",
+                "mode": "ready",
+                "control_epoch": 2,
+                "active_ui_lock_id": "",
+                "active_fencing_token": 0,
+                "hooks_installed": True,
+                "lock_enabled": False,
+            },
+        }
+        stopped = {
+            "ok": True,
+            "mode": "stopped",
+            "state": {
+                "guard_instance_id": "guard-1",
+                "mode": "stopped",
+                "control_epoch": 3,
+                "active_ui_lock_id": "",
+                "active_fencing_token": 0,
+                "hooks_installed": True,
+                "lock_enabled": False,
+            },
+        }
+        with mock.patch.object(
+            rpa_operator_guard,
+            "rpa_operator_guard_health",
+            side_effect=(ready, stopped),
+        ):
+            result = rpa_operator_guard.transition_rpa_operator_guard(
+                guard,
+                mode="stopped",
+                reason="guard_rebuilt_after_fault",
+            )
+
+        control = json.loads(self.paths["control_path"].read_text(encoding="utf-8"))
+        self.assertTrue(result["ok"])
+        self.assertFalse(control["shutdown_requested"])
+        self.assertEqual(control["command"]["action"], "stop")
 
     def test_first_f8_press_unlocks_immediately_and_second_press_stops(self) -> None:
         hooks = object.__new__(run_rpa_operator_guard.InputHookGuard)

@@ -260,7 +260,10 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     output["updated_at"] = now_iso()
     text = json.dumps(output, ensure_ascii=True, indent=2)
     path.parent.mkdir(parents=True, exist_ok=True)
-    for attempt in range(10):
+    # Never spend the full two-second heartbeat budget waiting for a reader
+    # (for example Compress-Archive or antivirus) to release the state file.
+    # The 15ms main loop will retry on the next heartbeat.
+    for attempt in range(4):
         temp = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
         try:
             temp.write_text(text, encoding="utf-8")
@@ -271,9 +274,9 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
                 temp.unlink()
             except OSError:
                 pass
-            if not transient_write_error(exc) or attempt >= 9:
+            if not transient_write_error(exc) or attempt >= 3:
                 raise
-            time.sleep(0.05 * (attempt + 1))
+            time.sleep(0.01 * (attempt + 1))
 
 
 def write_guard_state(path: Path | None, payload: dict[str, Any]) -> None:

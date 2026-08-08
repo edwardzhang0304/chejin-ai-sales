@@ -758,6 +758,13 @@ class TaskRunner:
             worker_ui_operator_guard_health,
         )
 
+        # A fault episode may rebuild at most once. The rebuilt guard remains
+        # red/stopped until the user explicitly starts accepting again; do not
+        # keep rebuilding it because a later evidence export briefly delays a
+        # heartbeat or state-file replacement.
+        if self.operator_guard_fault_latched:
+            return
+
         health = worker_ui_operator_guard_health()
         mode = str(health.get("mode") or "fault")
         if health.get("ok") is not True:
@@ -934,6 +941,7 @@ class TaskRunner:
             return False
         if run_status == "running":
             self.operator_guard_fault_latched = False
+            self._guard_fault_reported = False
         if run_status == "paused":
             # Pause is fail-safe: stop every new/in-flight UI action locally
             # before attempting to synchronize the server-side switch.

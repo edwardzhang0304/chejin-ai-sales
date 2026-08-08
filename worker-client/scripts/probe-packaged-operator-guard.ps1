@@ -233,6 +233,52 @@ try {
   }
   Write-Host "PACKAGED_OPERATOR_GUARD_READY $($unlockedState | ConvertTo-Json -Compress -Depth 8)"
 
+  # Reproduce the Windows UAT failure: evidence collection/antivirus may hold
+  # the state file open without FILE_SHARE_DELETE. The guard must keep running
+  # and publish a fresh heartbeat immediately after the reader releases it.
+  $heartbeatBeforeContention = [DateTimeOffset]::Parse([string]$unlockedState.heartbeat_at)
+  $stateReader = [System.IO.File]::Open(
+    $statePath,
+    [System.IO.FileMode]::Open,
+    [System.IO.FileAccess]::Read,
+    [System.IO.FileShare]::Read
+  )
+  try {
+    Start-Sleep -Milliseconds 2300
+    $guardProcess.Refresh()
+    if ($guardProcess.HasExited) {
+      throw "packaged Operator Guard exited while its state file was read-locked"
+    }
+  }
+  finally {
+    $stateReader.Dispose()
+  }
+  $contentionDeadline = [DateTime]::UtcNow.AddSeconds(5)
+  $contentionState = $null
+  while ([DateTime]::UtcNow -lt $contentionDeadline) {
+    try {
+      $candidate = Get-Content -Raw -Encoding UTF8 $statePath | ConvertFrom-Json
+      $candidateHeartbeat = [DateTimeOffset]::Parse([string]$candidate.heartbeat_at)
+      if (
+        [int]$candidate.pid -eq $guardPid -and
+        [string]$candidate.mode -eq "ready" -and
+        $candidateHeartbeat -gt $heartbeatBeforeContention
+      ) {
+        $contentionState = $candidate
+        break
+      }
+    }
+    catch {
+      # The writer may be in the middle of the first post-contention replace.
+    }
+    Start-Sleep -Milliseconds 50
+  }
+  if ($null -eq $contentionState) {
+    Write-ProbeEvidence
+    throw "packaged Operator Guard did not recover its heartbeat after state-file contention"
+  }
+  Write-Host "PACKAGED_OPERATOR_GUARD_STATE_CONTENTION_RECOVERED $($contentionState | ConvertTo-Json -Compress -Depth 8)"
+
   Write-ProbeJson -Path $controlPath -Payload @{
     version = 2
     tenant_id = $tenantId
