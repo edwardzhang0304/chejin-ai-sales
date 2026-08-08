@@ -1340,6 +1340,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--floating-indicator", action="store_true")
     parser.add_argument("--no-floating-indicator", action="store_true")
     parser.add_argument("--guard-state-path", type=Path)
+    parser.add_argument("--heartbeat-path-a", type=Path)
+    parser.add_argument("--heartbeat-path-b", type=Path)
     parser.add_argument("--local-safety-stop-path", default=DEFAULT_LOCAL_SAFETY_STOP_PATH)
     parser.add_argument("--guard-instance-id", required=True)
     parser.add_argument("--client-instance-id", default="")
@@ -1383,6 +1385,12 @@ def main(argv: list[str] | None = None) -> int:
     elif args.floating_indicator:
         floating_indicator = True
     guard_state_path = args.guard_state_path.resolve() if isinstance(args.guard_state_path, Path) else None
+    heartbeat_paths = tuple(
+        path.resolve()
+        for path in (args.heartbeat_path_a, args.heartbeat_path_b)
+        if isinstance(path, Path)
+    )
+    heartbeat_sequence = 0
 
     payload = load_control_payload(control_path, tenant_id=tenant_id)
     if (
@@ -1406,6 +1414,7 @@ def main(argv: list[str] | None = None) -> int:
         control: dict[str, Any] | None = None,
         reason: str = "",
     ) -> None:
+        nonlocal heartbeat_sequence
         control_snapshot = control or payload
         indicator_active = bool(indicator is not None and indicator.enabled and indicator.root is not None)
         indicator_backend = str((indicator.backend if indicator is not None else "") or "")
@@ -1416,43 +1425,55 @@ def main(argv: list[str] | None = None) -> int:
         indicator_render_error = str((indicator._last_render_error if indicator is not None else "") or "")
         indicator_fallback_reason = str((indicator.fallback_reason if indicator is not None else "") or "")
         indicator_error = str((indicator.init_error if indicator is not None else "") or "")
-        write_guard_state(
-            guard_state_path,
-            {
-                "phase": phase,
-                "pid": os.getpid(),
-                "parent_pid": parent_pid,
-                "guard_instance_id": guard_instance_id,
-                "client_instance_id": client_instance_id,
-                "owner_worker_pid": parent_pid,
-                "owner_process_create_time": owner_process_create_time,
-                "guard_process_create_time": float(psutil.Process(os.getpid()).create_time()),
-                "tenant_id": tenant_id,
-                "mode": mode,
-                "active_ui_lock_id": str(control_snapshot.get("active_ui_lock_id") or "") if mode == "active" else "",
-                "active_fencing_token": int(control_snapshot.get("active_fencing_token") or 0) if mode == "active" else 0,
-                "operation_type": str(control_snapshot.get("operation_type") or "") if mode == "active" else "",
-                "current_step": str(control_snapshot.get("current_step") or "") if mode == "active" else "",
-                "control_epoch": int(control_snapshot.get("control_epoch") or 0),
-                "command": control_snapshot.get("command") if isinstance(control_snapshot.get("command"), dict) else {},
-                "runtime_state": runtime_state,
-                "runtime_message": runtime_message,
-                "lock_enabled": bool(lock_enabled),
-                "block_manual_input": bool(block_manual_input),
-                "hooks_installed": bool(hooks_installed),
-                "floating_indicator_requested": bool(floating_indicator),
-                "floating_indicator_active": indicator_active,
-                "floating_indicator_backend": indicator_backend,
-                "floating_indicator_hwnd": indicator_hwnd,
-                "floating_indicator_render_ok": indicator_render_ok,
-                "floating_indicator_render_error": indicator_render_error,
-                "floating_indicator_fallback_reason": indicator_fallback_reason,
-                "floating_indicator_error": indicator_error,
-                "control_key": control_key_name,
-                "heartbeat_at": datetime.now().astimezone().isoformat(timespec="milliseconds"),
-                "reason": reason,
-            },
-        )
+        state_payload = {
+            "phase": phase,
+            "pid": os.getpid(),
+            "parent_pid": parent_pid,
+            "guard_instance_id": guard_instance_id,
+            "client_instance_id": client_instance_id,
+            "owner_worker_pid": parent_pid,
+            "owner_process_create_time": owner_process_create_time,
+            "guard_process_create_time": float(psutil.Process(os.getpid()).create_time()),
+            "tenant_id": tenant_id,
+            "mode": mode,
+            "active_ui_lock_id": str(control_snapshot.get("active_ui_lock_id") or "") if mode == "active" else "",
+            "active_fencing_token": int(control_snapshot.get("active_fencing_token") or 0) if mode == "active" else 0,
+            "operation_type": str(control_snapshot.get("operation_type") or "") if mode == "active" else "",
+            "current_step": str(control_snapshot.get("current_step") or "") if mode == "active" else "",
+            "control_epoch": int(control_snapshot.get("control_epoch") or 0),
+            "command": control_snapshot.get("command") if isinstance(control_snapshot.get("command"), dict) else {},
+            "runtime_state": runtime_state,
+            "runtime_message": runtime_message,
+            "lock_enabled": bool(lock_enabled),
+            "block_manual_input": bool(block_manual_input),
+            "hooks_installed": bool(hooks_installed),
+            "floating_indicator_requested": bool(floating_indicator),
+            "floating_indicator_active": indicator_active,
+            "floating_indicator_backend": indicator_backend,
+            "floating_indicator_hwnd": indicator_hwnd,
+            "floating_indicator_render_ok": indicator_render_ok,
+            "floating_indicator_render_error": indicator_render_error,
+            "floating_indicator_fallback_reason": indicator_fallback_reason,
+            "floating_indicator_error": indicator_error,
+            "control_key": control_key_name,
+            "heartbeat_at": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+            "reason": reason,
+        }
+        if heartbeat_paths:
+            heartbeat_sequence += 1
+            # Alternate between two independent files. A Windows antivirus or
+            # evidence reader may temporarily deny replacement of one file;
+            # the second slot keeps the liveness channel observable.
+            primary = heartbeat_paths[heartbeat_sequence % len(heartbeat_paths)]
+            secondary = heartbeat_paths[(heartbeat_sequence + 1) % len(heartbeat_paths)]
+            try:
+                write_json(primary, state_payload)
+            except Exception:
+                try:
+                    write_json(secondary, state_payload)
+                except Exception:
+                    pass
+        write_guard_state(guard_state_path, state_payload)
 
     emit_guard_state(
         "starting",

@@ -17,6 +17,8 @@ $probeRoot = Join-Path $env:TEMP ("chejin-operator-guard-probe-" + [guid]::NewGu
 $controlPath = Join-Path $probeRoot "operator_guard.control.json"
 $statusPath = Join-Path $probeRoot "runtime.status.json"
 $statePath = Join-Path $probeRoot "operator_guard.state.json"
+$heartbeatAPath = Join-Path $probeRoot "operator_guard.heartbeat.0.json"
+$heartbeatBPath = Join-Path $probeRoot "operator_guard.heartbeat.1.json"
 $stdoutPath = Join-Path $probeRoot "operator_guard.stdout.log"
 $stderrPath = Join-Path $probeRoot "operator_guard.stderr.log"
 $tenantId = "packaged-operator-guard-probe"
@@ -59,6 +61,27 @@ function Write-ProbeEvidence {
     Get-Content -Raw -Encoding UTF8 $stderrPath | Write-Host
     Write-Host "OPERATOR_GUARD_STDERR_END"
   }
+}
+
+function Get-LatestGuardHeartbeat {
+  $candidates = @()
+  foreach ($path in @($heartbeatAPath, $heartbeatBPath)) {
+    if (-not (Test-Path -LiteralPath $path)) {
+      continue
+    }
+    try {
+      $payload = Get-Content -Raw -Encoding UTF8 $path | ConvertFrom-Json
+      $heartbeatAt = [DateTimeOffset]::Parse([string]$payload.heartbeat_at)
+      $candidates += [PSCustomObject]@{
+        Payload = $payload
+        HeartbeatAt = $heartbeatAt
+      }
+    }
+    catch {
+      # Alternating files mean one slot may be replaced while it is read.
+    }
+  }
+  return $candidates | Sort-Object HeartbeatAt -Descending | Select-Object -First 1
 }
 
 function Wait-GuardState {
@@ -162,7 +185,9 @@ try {
     "--pause-poll-interval-ms", "120",
     "--block-manual-input",
     "--floating-indicator",
-    "--guard-state-path", $statePath
+    "--guard-state-path", $statePath,
+    "--heartbeat-path-a", $heartbeatAPath,
+    "--heartbeat-path-b", $heartbeatBPath
   )
   $guardProcess = Start-Process `
     -FilePath $ExePath `
@@ -249,6 +274,19 @@ try {
     if ($guardProcess.HasExited) {
       throw "packaged Operator Guard exited while its state file was read-locked"
     }
+    $liveHeartbeat = Get-LatestGuardHeartbeat
+    if ($null -eq $liveHeartbeat) {
+      throw "packaged Operator Guard did not publish an independent heartbeat"
+    }
+    $heartbeatAgeMs = ([DateTimeOffset]::UtcNow - $liveHeartbeat.HeartbeatAt).TotalMilliseconds
+    if (
+      $heartbeatAgeMs -ge 1000 -or
+      [int]$liveHeartbeat.Payload.pid -ne $guardPid -or
+      [string]$liveHeartbeat.Payload.guard_instance_id -ne $guardInstanceId
+    ) {
+      throw "packaged Operator Guard independent heartbeat became stale during state-file contention: $heartbeatAgeMs ms"
+    }
+    Write-Host "PACKAGED_OPERATOR_GUARD_INDEPENDENT_HEARTBEAT_FRESH $heartbeatAgeMs"
   }
   finally {
     $stateReader.Dispose()
