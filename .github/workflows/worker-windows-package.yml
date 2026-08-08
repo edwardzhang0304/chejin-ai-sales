@@ -109,10 +109,6 @@ jobs:
             throw "packaged Vision live capability probe did not pass"
           }
 
-          # This PowerShell script fails by throwing. Do not inspect $LASTEXITCODE here:
-          # the packaged child process may leave a stale native exit code in PowerShell 5.1.
-          & .\scripts\probe-packaged-operator-guard.ps1 -ExePath $exePath -WorkingDirectory $packageDir
-
           Remove-Item Env:CHEJIN_PACKAGING_DIAGNOSTIC_PATH -ErrorAction SilentlyContinue
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP "chejin-worker-default-diagnostic-probe"
           $defaultStartupDiagnostic = Join-Path $env:LOCALAPPDATA "CheJinWorker\diagnostics\startup-crash.jsonl"

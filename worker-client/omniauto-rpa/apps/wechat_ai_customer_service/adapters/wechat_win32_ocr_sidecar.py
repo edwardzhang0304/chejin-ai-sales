@@ -105,11 +105,6 @@ from apps.wechat_ai_customer_service.adapters.add_friend_locator import (
     make_locator_result,
     ocr_item_locator,
 )
-from apps.wechat_ai_customer_service.adapters.add_friend_operator_guard import (
-    add_friend_operator_guard_checkpoint,
-    start_add_friend_operator_guard,
-    stop_add_friend_operator_guard,
-)
 from apps.wechat_ai_customer_service.adapters.add_friend_ocr import (
     compact_ocr_text as mapped_compact_ocr_text,
     ocr_item_text as mapped_ocr_item_text,
@@ -127,7 +122,6 @@ from apps.wechat_ai_customer_service.adapters.add_friend_payloads import (
 from apps.wechat_ai_customer_service.adapters.add_friend_result_mapping import (
     ERROR_ACCOUNT_RESTRICTED,
     ERROR_INVITE_FIELD_VERIFICATION_FAILED,
-    ERROR_OPERATOR_GUARD_NOT_READY,
     ERROR_PHONE_NOT_FOUND,
     ERROR_TASK_PAYLOAD_INVALID,
     ERROR_WECHAT_WINDOW_NOT_READY,
@@ -7485,11 +7479,6 @@ def add_friend_pre_click_main_window_readiness(hwnd: int, geometry: dict[str, An
     return win32_ocr_add_friend_windows.add_friend_pre_click_main_window_readiness(hwnd, geometry, route=route, output_dir=output_dir)
 
 
-def persist_add_friend_operator_guard_release(payload: dict[str, Any], release: dict[str, Any]) -> None:
-    win32_ocr_add_friend_windows.bind_sidecar_ops(sys.modules[__name__])
-    return win32_ocr_add_friend_windows.persist_add_friend_operator_guard_release(payload, release)
-
-
 def add_friend_calibration_payload(hwnd: int, probe: dict[str, Any], *, geometry: dict[str, Any], route: str, phone: str, wechat: str, verify_message: str, remark_name: str, remark_code: str, output_dir: Path) -> dict[str, Any]:
     win32_ocr_add_friend_windows.bind_sidecar_ops(sys.modules[__name__])
     return win32_ocr_add_friend_windows.add_friend_calibration_payload(hwnd, probe, geometry=geometry, route=route, phone=phone, wechat=wechat, verify_message=verify_message, remark_name=remark_name, remark_code=remark_code, output_dir=output_dir)
@@ -7515,7 +7504,6 @@ def add_friend_human_pause(min_ms: int, max_ms: int | None = None, *, reason: st
     Keep mouse, keyboard and OCR phases strictly separated by visible human
     pauses so the flow does not look like a burst of synthetic operations.
     """
-    checkpoint = add_friend_operator_guard_checkpoint(reason=f"pause:{reason or 'add_friend'}")
     multiplier = bounded_float(
         os.getenv("WECHAT_WIN32_OCR_ADD_FRIEND_HUMAN_PACE_MULTIPLIER"),
         default=1.0,
@@ -7534,7 +7522,6 @@ def add_friend_human_pause(min_ms: int, max_ms: int | None = None, *, reason: st
             "max_ms": high,
             "delay_seconds": delay,
             "pace_multiplier": multiplier,
-            "operator_guard_checkpoint": checkpoint,
         },
     )
     return delay

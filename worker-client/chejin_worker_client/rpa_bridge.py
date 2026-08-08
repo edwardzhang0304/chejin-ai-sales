@@ -639,7 +639,6 @@ class RpaBridge:
         steps = [
             ("rpa_sidecar_starting", "启动 OmniAuto", "正在启动 OmniAuto 加好友主链路。"),
             ("wechat_preflight_starting", "检测微信窗口", f"正在检测微信窗口并准备搜索 {contact}。"),
-            ("operator_guard_starting", "启动键鼠守护", "正在启动悬浮球键鼠守护，执行期间请勿操作鼠标键盘。"),
         ]
         for current_step, title, remark in steps:
             emit_step(RpaStep(current_step=current_step, title=title, remark=remark))

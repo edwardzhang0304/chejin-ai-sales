@@ -116,15 +116,6 @@ def _bundled_omniauto_root() -> Path:
     return omniauto_root
 
 
-def run_bundled_rpa_operator_guard(argv: list[str]) -> int:
-    """Run the operator guard inside the frozen executable."""
-
-    _bundled_omniauto_root()
-    from apps.wechat_ai_customer_service.scripts import run_rpa_operator_guard
-
-    return int(run_rpa_operator_guard.main(argv))
-
-
 def run_bundled_omniauto_vision_wechat_worker(argv: list[str]) -> int:
     """Run the Vision-owned WeChat desktop worker in the frozen executable."""
 
@@ -145,8 +136,6 @@ def main() -> int:
         return run_bundled_omniauto_ocr_worker()
     if len(sys.argv) >= 2 and sys.argv[1] == "--omniauto-ocr-probe":
         return run_bundled_omniauto_ocr_probe()
-    if len(sys.argv) >= 2 and sys.argv[1] == "--rpa-operator-guard":
-        return run_bundled_rpa_operator_guard(sys.argv[2:])
     if len(sys.argv) >= 2 and sys.argv[1] == "--omniauto-vision-wechat-worker":
         return run_bundled_omniauto_vision_wechat_worker(sys.argv[2:])
 
@@ -191,46 +180,6 @@ def main() -> int:
     )
 
     install_runtime_supervision()
-    from .storage import append_log, load_binding
-    from .ui_operator_guard import (
-        operator_guard_audit_metadata,
-        shutdown_worker_ui_operator_guard,
-        start_worker_ui_operator_guard,
-    )
-
-    binding = load_binding()
-    try:
-        guard = start_worker_ui_operator_guard(
-            client_instance_id=binding.client_instance_id if binding else "",
-        )
-    except Exception as exc:
-        guard = {
-            "ok": False,
-            "mode": "fault",
-            "reason": f"operator_guard_start_exception:{type(exc).__name__}",
-        }
-    if guard.get("ok") is not True:
-        append_log(
-            "ERROR",
-            "ui_operator_guard_start_failed",
-            "常驻悬浮球安全守护启动失败，已禁止微信自动化。",
-            error_code="OPERATOR_GUARD_NOT_READY",
-            metadata=operator_guard_audit_metadata(
-                guard,
-                reason=str(guard.get("reason") or "operator_guard_start_failed"),
-            ),
-            force_incident=True,
-        )
-    else:
-        append_log(
-            "INFO",
-            "ui_operator_guard_started",
-            "常驻悬浮球安全守护已启动。",
-            metadata=operator_guard_audit_metadata(
-                guard,
-                reason="worker_started",
-            ),
-        )
     try:
         if os.environ.get("CHEJIN_WORKER_UI_MODE") == "pyside":
             from .ui import run_app
@@ -241,23 +190,7 @@ def main() -> int:
         mark_runtime_clean_exit(exit_code)
         return exit_code
     finally:
-        try:
-            release = shutdown_worker_ui_operator_guard(reason="worker_exiting")
-            append_log(
-                "INFO" if release.get("ok") is True else "ERROR",
-                "ui_operator_guard_stopped",
-                "常驻悬浮球安全守护已随 Worker 退出。" if release.get("ok") is True else "常驻悬浮球安全守护退出失败。",
-                error_code=None if release.get("ok") is True else "OPERATOR_GUARD_STOP_FAILED",
-                metadata={
-                    **operator_guard_audit_metadata(
-                        release,
-                        reason="worker_exiting",
-                    ),
-                    "guard_release": release,
-                },
-            )
-        finally:
-            instance_guard.release()
+        instance_guard.release()
 
 
 if __name__ == "__main__":

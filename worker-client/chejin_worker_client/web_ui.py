@@ -404,8 +404,6 @@ class WorkerWebWindow(QMainWindow):
         profile = self.profile
         offline = self.connection_status == "offline"
         schedule_active = self.is_accept_schedule_active()
-        guard_health = self.runner.operator_guard_health()
-        guard_fault = self.runner.operator_guard_fault_latched or guard_health.get("ok") is not True or str(guard_health.get("mode") or "") == "fault"
         receive_state = "接单中" if run_status == "running" and schedule_active else "暂停接单"
         return {
             "workerId": self.binding.worker_id if self.binding else "",
@@ -455,11 +453,6 @@ class WorkerWebWindow(QMainWindow):
 
     def _task_model_for_screen(self, task: Task | None, offline: bool, run_status: str) -> dict[str, str]:
         model = _task_model(task)
-        guard_health = self.runner.operator_guard_health()
-        if self.runner.operator_guard_fault_latched or guard_health.get("ok") is not True or str(guard_health.get("mode") or "") == "fault":
-            model["statusText"] = "守护故障"
-            model["metaText"] = "悬浮球安全守护异常，微信自动化已停止，请查看本机执行日志。"
-            return model
         if self.runner.run_status_sync_error and run_status == "paused":
             model["statusText"] = "暂停接单 · 同步失败"
             model["metaText"] = (

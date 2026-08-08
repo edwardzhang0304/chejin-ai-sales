@@ -9,8 +9,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
-import psutil
-
 from apps.wechat_ai_customer_service.adapters.wechat_connector import WeChatConnector
 from apps.wechat_ai_customer_service.admin_backend.services.customer_service_runtime import CustomerServiceRuntime
 from apps.wechat_ai_customer_service.admin_backend.services.recorder_runtime import RecorderRuntime
@@ -19,8 +17,6 @@ from apps.wechat_ai_customer_service.admin_backend.services.recorder_runtime imp
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_RUNTIME_ROOT = PROJECT_ROOT / "runtime" / "apps" / "wechat_ai_customer_service"
 
-RUNNING_STATES = {"idle", "thinking", "paused"}
-STOPPED_STATES = {"stopped", ""}
 RISK_CAPABILITY_STATES = {
     "blank_render_detected",
     "login_window_detected",
@@ -39,7 +35,6 @@ def collect_rpa_acceptance_report(
     env: Mapping[str, str] | None = None,
     wechat_probe: str = "none",
     connector: WeChatConnector | None = None,
-    require_guard_when_running: bool = True,
     allow_clipboard_once: bool = False,
 ) -> dict[str, Any]:
     """Collect a low-risk RPA acceptance snapshot.
@@ -61,14 +56,12 @@ def collect_rpa_acceptance_report(
         label="customer_service",
         raw_path=tenant_root / "customer_service" / "runtime_status.json",
     )
-    customer_guard = read_guard_runtime(tenant_root / "customer_service")
     recorder_status = read_effective_runtime_status(
         root,
         tenant_id=tenant_id,
         label="recorder",
         raw_path=tenant_root / "recorder" / "runtime_status.json",
     )
-    recorder_guard = read_guard_runtime(tenant_root / "recorder")
     send_guard_state = read_json(PROJECT_ROOT / "runtime" / "wechat_win32_ocr_send_guard.json")
 
     capability: dict[str, Any] = {}
@@ -84,22 +77,6 @@ def collect_rpa_acceptance_report(
     add_wechat_capability_checks(checks, capability, probe_mode=wechat_probe)
     add_window_normalization_policy_checks(checks, active_env)
     add_humanized_send_checks(checks, customer_config, active_env, allow_clipboard_once=allow_clipboard_once)
-    operator_guard_config = effective_operator_guard_config(customer_config, recorder_settings)
-    add_operator_guard_config_checks(checks, operator_guard_config)
-    add_runtime_guard_checks(
-        checks,
-        label="customer_service",
-        status_payload=customer_status,
-        guard_payload=customer_guard,
-        require_guard_when_running=require_guard_when_running,
-    )
-    add_runtime_guard_checks(
-        checks,
-        label="recorder",
-        status_payload=recorder_status,
-        guard_payload=recorder_guard,
-        require_guard_when_running=require_guard_when_running,
-    )
     add_rate_guard_checks(checks, active_env, send_guard_state)
 
     summary = summarize_checks(checks)
@@ -117,13 +94,10 @@ def collect_rpa_acceptance_report(
         "snapshots": {
             "wechat_capability": capability,
             "customer_service_status": customer_status,
-            "customer_service_operator_guard": customer_guard,
             "recorder_status": recorder_status,
-            "recorder_operator_guard": recorder_guard,
             "send_guard_state": compact_send_guard_state(send_guard_state),
             "listener_config": compact_listener_config(customer_config),
             "recorder_settings": compact_recorder_settings(recorder_settings),
-            "operator_guard_config": operator_guard_config,
         },
         "checks": checks,
     }
@@ -292,79 +266,6 @@ def add_window_normalization_policy_checks(checks: list[dict[str, Any]], env: Ma
     )
 
 
-def add_operator_guard_config_checks(checks: list[dict[str, Any]], config: dict[str, Any]) -> None:
-    failures = []
-    if not bool(config.get("enabled", False)):
-        failures.append("disabled")
-    if not bool(config.get("block_manual_input", False)):
-        failures.append("manual_input_not_blocked")
-    if not bool(config.get("floating_indicator_enabled", False)):
-        failures.append("floating_indicator_disabled")
-    if str(config.get("control_hotkey") or "").lower() != "f8":
-        failures.append("control_hotkey_not_f8")
-    if failures:
-        add_check(checks, "operator_guard_config", "fail", "RPA operator guard configuration is not acceptance-ready.", {"failures": failures, "config": config})
-        return
-    add_check(checks, "operator_guard_config", "pass", "Operator guard blocks manual input, shows floating indicator, and uses F8.", {"config": config})
-
-
-def effective_operator_guard_config(listener_config: dict[str, Any], recorder_settings: dict[str, Any]) -> dict[str, Any]:
-    listener_guard = listener_config.get("rpa_operator_guard") if isinstance(listener_config.get("rpa_operator_guard"), dict) else {}
-    if listener_guard:
-        return {**listener_guard, "_source": "customer_service.listener_config"}
-    recorder_guard = recorder_settings.get("rpa_operator_guard") if isinstance(recorder_settings.get("rpa_operator_guard"), dict) else {}
-    if recorder_settings:
-        return {
-            "enabled": True,
-            "block_manual_input": True,
-            "floating_indicator_enabled": True,
-            "control_hotkey": "f8",
-            **recorder_guard,
-            "_source": "recorder.effective_defaults",
-        }
-    return {}
-
-
-def add_runtime_guard_checks(
-    checks: list[dict[str, Any]],
-    *,
-    label: str,
-    status_payload: dict[str, Any],
-    guard_payload: dict[str, Any],
-    require_guard_when_running: bool,
-) -> None:
-    state = str(status_payload.get("state") or "")
-    running = bool(status_payload.get("running")) or state in RUNNING_STATES
-    if state in STOPPED_STATES and not status_payload.get("running"):
-        add_check(checks, f"{label}_runtime_guard", "pass", f"{label} is stopped; no active guard is required.", {"state": state})
-        return
-    if not running:
-        add_check(checks, f"{label}_runtime_guard", "warn", f"{label} runtime state is unknown.", {"state": state, "status": status_payload})
-        return
-    guard_running = bool(guard_payload.get("running"))
-    hooks_installed = bool((guard_payload.get("state") if isinstance(guard_payload.get("state"), dict) else {}).get("hooks_installed"))
-    phase = str((guard_payload.get("state") if isinstance(guard_payload.get("state"), dict) else {}).get("phase") or "")
-    if require_guard_when_running and (not guard_running or not hooks_installed):
-        add_check(
-            checks,
-            f"{label}_runtime_guard",
-            "fail",
-            f"{label} appears active but the operator guard is not fully running.",
-            {"state": state, "guard": guard_payload},
-        )
-        return
-    if state == "paused" and phase not in {"paused", "pause"}:
-        add_check(
-            checks,
-            f"{label}_runtime_guard",
-            "warn",
-            f"{label} is paused but guard phase is not paused.",
-            {"state": state, "guard_phase": phase},
-        )
-        return
-    add_check(checks, f"{label}_runtime_guard", "pass", f"{label} runtime and operator guard are aligned.", {"state": state, "guard_phase": phase})
-
-
 def add_rate_guard_checks(checks: list[dict[str, Any]], env: Mapping[str, str], send_guard_state: dict[str, Any]) -> None:
     if env_flag(env.get("WECHAT_WIN32_OCR_SEND_RATE_GUARD"), default=True) is False:
         add_check(checks, "send_rate_guard", "fail", "Send-rate guard is disabled.", {"WECHAT_WIN32_OCR_SEND_RATE_GUARD": env.get("WECHAT_WIN32_OCR_SEND_RATE_GUARD", "")})
@@ -379,19 +280,6 @@ def add_rate_guard_checks(checks: list[dict[str, Any]], env: Mapping[str, str], 
         "Send-rate guard is enabled.",
         {"recent_10m_events": len(recent), "total_events": len(events)},
     )
-
-
-def read_guard_runtime(runtime_dir: Path) -> dict[str, Any]:
-    pid_record = read_json(runtime_dir / "operator_guard.pid.json")
-    state = read_json(runtime_dir / "operator_guard.state.json")
-    pid = int(pid_record.get("pid") or state.get("pid") or 0)
-    running = process_alive(pid)
-    return {
-        "running": running,
-        "pid": pid if running else None,
-        "pid_record": pid_record,
-        "state": state if running or state else {},
-    }
 
 
 def read_effective_runtime_status(root: Path, *, tenant_id: str, label: str, raw_path: Path) -> dict[str, Any]:
@@ -430,15 +318,6 @@ def is_default_runtime_root(root: Path) -> bool:
         return False
 
 
-def process_alive(pid: int) -> bool:
-    if not pid:
-        return False
-    try:
-        return psutil.pid_exists(int(pid)) and psutil.Process(int(pid)).is_running()
-    except Exception:
-        return False
-
-
 def read_json(path: Path) -> dict[str, Any]:
     try:
         if not path.exists():
@@ -472,7 +351,6 @@ def summarize_checks(checks: list[dict[str, Any]]) -> dict[str, Any]:
 def compact_listener_config(config: dict[str, Any]) -> dict[str, Any]:
     return {
         "rpa_humanized_send": config.get("rpa_humanized_send") if isinstance(config.get("rpa_humanized_send"), dict) else {},
-        "rpa_operator_guard": config.get("rpa_operator_guard") if isinstance(config.get("rpa_operator_guard"), dict) else {},
         "transport_risk_guard": config.get("transport_risk_guard") if isinstance(config.get("transport_risk_guard"), dict) else {},
         "history_backfill": config.get("history_backfill") if isinstance(config.get("history_backfill"), dict) else {},
         "semantic_batch_planner": config.get("semantic_batch_planner") if isinstance(config.get("semantic_batch_planner"), dict) else {},
@@ -485,7 +363,6 @@ def compact_recorder_settings(settings: dict[str, Any]) -> dict[str, Any]:
         "enabled": settings.get("enabled"),
         "capture_interval_seconds": settings.get("capture_interval_seconds"),
         "history_backfill_enabled": settings.get("history_backfill_enabled"),
-        "rpa_operator_guard": settings.get("rpa_operator_guard") if isinstance(settings.get("rpa_operator_guard"), dict) else {},
     }
 
 

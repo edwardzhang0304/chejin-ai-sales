@@ -588,8 +588,6 @@ def test_search_by_remark_code_precheck_does_not_bypass_failed_foreground_recove
         sidecar.clear_sidebar_search_box_without_select_all = original_clear_sidebar_search_box_without_select_all
 
     assert_true(result.get("reason") == "window_guard_failed_before_search", f"failed foreground recovery must stop before C2 keyboard actions: {result}")
-    assert_true("operator_guard" not in result, f"C2 read-only targeting should not report floating operator guard: {result}")
-    assert_true(not any(item.get("step") == "operator_guard" for item in result.get("step_events", [])), f"C2 report should not include operator guard steps: {result}")
     assert_true(clear_called is False, f"C2 must not continue to search clear when foreground recovery failed: {result}")
     precheck = next((item for item in result.get("step_events", []) if item.get("step") == "wechat_window_precheck"), {})
     guard = precheck.get("guard") if isinstance(precheck.get("guard"), dict) else {}

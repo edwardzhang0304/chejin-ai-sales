@@ -55,14 +55,6 @@
     "send_rate_burst_limit": 20,
     "send_input_confirm_attempts": 1
   },
-  "rpa_operator_guard": {
-    "enabled": true,
-    "block_manual_input": true,
-    "floating_indicator_enabled": true,
-    "control_hotkey": "f8",
-    "esc_double_press_window_ms": 420,
-    "pause_poll_interval_ms": 550
-  },
   "state_lock": {
     "timeout_seconds": 120,
     "stale_seconds": 900

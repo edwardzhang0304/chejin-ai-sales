@@ -53,7 +53,6 @@ class PackagingScriptsTest(unittest.TestCase):
             ROOT / "scripts" / "collect-wechat-diagnostics.ps1",
             ROOT / "scripts" / "run-preflight.ps1",
             ROOT / "scripts" / "validate-package.ps1",
-            ROOT / "scripts" / "probe-packaged-operator-guard.ps1",
         ]
 
         for script in scripts:
@@ -101,7 +100,6 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("最终 exe 无法启动内置 OmniAuto sidecar", text)
         self.assertIn('"--omniauto-ocr-probe"', text)
         self.assertIn("最终 exe 无法启动图片复核 OCR 独立进程", text)
-        self.assertIn("probe-packaged-operator-guard.ps1", text)
         self.assertNotIn("最终 exe Operator Guard 真实启动探针未通过", text)
         self.assertIn("runtime-build-identity.json", text)
         self.assertIn("CHEJIN_BUILD_IDENTITY_PATH", text)
@@ -141,7 +139,6 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('uat_launcher_utf8_bom_check = "passed"', workflow)
         self.assertIn('uat_launcher_powershell_5_1_parse_check = "passed"', workflow)
         self.assertIn("client_delivery_boundary_check", workflow)
-        self.assertIn("probe-packaged-operator-guard.ps1", workflow)
         self.assertIn("actions/upload-artifact@v4", workflow)
         self.assertIn("if-no-files-found: error", workflow)
 
@@ -268,7 +265,7 @@ class PackagingScriptsTest(unittest.TestCase):
 
         self.assertEqual(
             provenance["upstream_base_commit"],
-            "35b0eee13c6423d56a0f15736f96a422e10d8d1c",
+            "4f0a33f42613bb99b69427d9cfb4174223acfcb2",
         )
         self.assertEqual(provenance["selective_integrations"], [])
         self.assertIn(
@@ -612,40 +609,6 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("contents: read", workflow)
         self.assertNotIn("contents: write", workflow)
 
-    def test_packaged_operator_guard_probe_requires_resident_lifecycle(self):
-        text = (ROOT / "scripts" / "probe-packaged-operator-guard.ps1").read_text(
-            encoding="ascii"
-        )
-
-        self.assertIn('"--rpa-operator-guard"', text)
-        self.assertIn('"--block-manual-input"', text)
-        self.assertIn('"--guard-instance-id"', text)
-        self.assertIn('"--owner-process-create-time"', text)
-        self.assertIn("hooks_installed", text)
-        self.assertIn("floating_indicator_active", text)
-        self.assertIn("floating_indicator_render_ok", text)
-        self.assertIn("operator_guard.state.json", text)
-        self.assertIn("PACKAGED_OPERATOR_GUARD_IDLE", text)
-        self.assertIn("PACKAGED_OPERATOR_GUARD_ACTIVE", text)
-        self.assertIn("PACKAGED_OPERATOR_GUARD_READY", text)
-        self.assertIn("PACKAGED_OPERATOR_GUARD_STATE_CONTENTION_RECOVERED", text)
-        self.assertIn("PACKAGED_OPERATOR_GUARD_INDEPENDENT_HEARTBEAT_FRESH", text)
-        self.assertIn("PACKAGED_OPERATOR_GUARD_STOPPED_RESIDENT", text)
-        self.assertIn('ExpectedMode "active" -ExpectedLocked $true', text)
-        self.assertIn('ExpectedMode "ready" -ExpectedLocked $false', text)
-        self.assertIn('ExpectedMode "stopped" -ExpectedLocked $false', text)
-        self.assertIn("did not remain resident in stopped mode", text)
-        self.assertIn("state-file contention", text)
-        self.assertIn("Start-Sleep -Milliseconds 2300", text)
-        self.assertIn('"--heartbeat-path-a"', text)
-        self.assertIn('"--heartbeat-path-b"', text)
-        self.assertIn("$heartbeatAgeMs -ge 1000", text)
-        self.assertIn("shutdown_requested = $true", text)
-        self.assertIn("WaitForExit(20000)", text)
-        self.assertIn('finalState.reason -ne "guard_exit"', text)
-        self.assertIn('$null -ne $exitCode -and [int]$exitCode -ne 0', text)
-        self.assertIn("unavailable_on_powershell_5_1", text)
-
     def test_package_includes_one_command_uat_evidence_collector(self):
         collector = ROOT / "packaging" / "collect-uat-evidence.ps1"
         raw = collector.read_bytes()
@@ -658,7 +621,6 @@ class PackagingScriptsTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertEqual(raw[:3], b"\xef\xbb\xbf")
-        self.assertIn("rpa_operator_guard", text)
         self.assertIn("CheJinWorker\\incidents", text)
         self.assertIn("CheJinWorker\\diagnostics", text)
         self.assertIn("collect-uat-evidence.ps1", build)
@@ -706,13 +668,6 @@ class PackagingScriptsTest(unittest.TestCase):
             is_client_forbidden_path(
                 "apps/wechat_ai_customer_service/scripts/"
                 "run_customer_service_listener.py",
-                excludes,
-            )
-        )
-        self.assertFalse(
-            is_client_forbidden_path(
-                "apps/wechat_ai_customer_service/scripts/"
-                "run_rpa_operator_guard.py",
                 excludes,
             )
         )

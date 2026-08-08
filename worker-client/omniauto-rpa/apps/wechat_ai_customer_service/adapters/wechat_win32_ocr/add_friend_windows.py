@@ -62,7 +62,6 @@ from apps.wechat_ai_customer_service.adapters.add_friend_pacing import pacing_me
 from apps.wechat_ai_customer_service.adapters.add_friend_result_mapping import (
     ERROR_ACCOUNT_RESTRICTED,
     ERROR_INVITE_FIELD_VERIFICATION_FAILED,
-    ERROR_OPERATOR_GUARD_NOT_READY,
     ERROR_PHONE_NOT_FOUND,
     ERROR_WECHAT_WINDOW_NOT_READY,
     RESULT_ALREADY_FRIEND,
@@ -2047,7 +2046,7 @@ def write_add_friend_entry_click_review(output_dir: Path, payload: dict[str, Any
     after = payload.get('after') if isinstance(payload.get('after'), dict) else {}
     if after:
         rows.append({'title': '99 最终判定', 'purpose': '确认本次脚本有没有识别到快捷操作弹出菜单，以及后续是否具备点击“添加朋友”的目标。', 'expected': 'popup_detection.detected=true，planned_targets 里应包含 add_friend_menu_entry；menu_click.clicked=true。', 'raw': after.get('screenshot_path'), 'annotated': after.get('annotated_path'), 'targets': after.get('planned_targets') or [], 'detection': after.get('popup_detection')})
-    summary = {'state': payload.get('state'), 'note': payload.get('note'), 'calibration_only': bool(payload.get('calibration_only')), 'no_clicks_performed': bool(payload.get('no_clicks_performed')), 'verify_message': payload.get('verify_message'), 'remark_name': payload.get('remark_name'), 'remark_code': payload.get('remark_code'), 'remark_code_valid': payload.get('remark_code_valid'), 'validation_errors': payload.get('validation_errors') or [], 'legacy_remark_fallback': payload.get('legacy_remark_fallback'), 'device_profile': payload.get('device_profile') or (payload.get('window_probe') or {}).get('device_profile'), 'operator_guard': payload.get('operator_guard') or (payload.get('window_probe') or {}).get('operator_guard'), 'operator_guard_release': payload.get('operator_guard_release') or {}, 'timings': payload.get('timings') or []}
+    summary = {'state': payload.get('state'), 'note': payload.get('note'), 'calibration_only': bool(payload.get('calibration_only')), 'no_clicks_performed': bool(payload.get('no_clicks_performed')), 'verify_message': payload.get('verify_message'), 'remark_name': payload.get('remark_name'), 'remark_code': payload.get('remark_code'), 'remark_code_valid': payload.get('remark_code_valid'), 'validation_errors': payload.get('validation_errors') or [], 'legacy_remark_fallback': payload.get('legacy_remark_fallback'), 'device_profile': payload.get('device_profile') or (payload.get('window_probe') or {}).get('device_profile'), 'timings': payload.get('timings') or []}
     diagnostic_events = payload.get('diagnostic_events')
     existing_events = [event for event in diagnostic_events if isinstance(event, dict)] if isinstance(diagnostic_events, list) else []
     events = add_friend_entry_click_events_from_payload(payload, existing_events=existing_events)
@@ -2111,30 +2110,6 @@ def add_friend_pre_click_main_window_readiness(hwnd: int, geometry: dict[str, An
     annotated = draw_add_friend_screen_annotation(screenshot, ocr_items=ocr_items, targets=[plus_target], output_path=annotated_path, window_rect=None)
     decision = _ops().add_friend_pre_click_readiness_decision(focus_guard=focus_guard, surface_readiness=surface_readiness)
     return {**decision, 'stage': 'formal_pre_click', 'focus_guard': focus_guard, 'screenshot_path': screenshot_path, 'annotated_path': annotated, 'ocr_count': len(ocr_items), 'ocr_seconds': ocr_seconds, 'planned_targets': [plus_target], 'ocr_items': add_friend_ocr_snapshots(ocr_items, screenshot.size), 'surface_readiness': surface_readiness}
-
-
-def persist_add_friend_operator_guard_release(payload: dict[str, Any], release: dict[str, Any]) -> None:
-    plan_path = Path(str(payload.get('plan_path') or ''))
-    if not str(plan_path):
-        return
-    try:
-        if plan_path.exists():
-            saved = json.loads(plan_path.read_text(encoding='utf-8'))
-            if isinstance(saved, dict):
-                if payload.get('operator_guard') and 'operator_guard' not in saved:
-                    saved['operator_guard'] = payload.get('operator_guard')
-                if payload.get('device_profile') and 'device_profile' not in saved:
-                    saved['device_profile'] = payload.get('device_profile')
-                saved['operator_guard_release'] = release
-                payload.update({'diagnostic_events': saved.get('diagnostic_events') or payload.get('diagnostic_events')})
-                plan_path.write_text(json.dumps(saved, ensure_ascii=False, indent=2), encoding='utf-8')
-                review_path = _ops().write_add_friend_entry_click_review(plan_path.parent, saved)
-                payload['review_path'] = review_path
-                return
-        plan_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
-        payload['review_path'] = _ops().write_add_friend_entry_click_review(plan_path.parent, payload)
-    except Exception as exc:
-        payload['operator_guard_release_persist_error'] = repr(exc)
 
 
 def add_friend_calibration_payload(hwnd: int, probe: dict[str, Any], *, geometry: dict[str, Any], route: str, phone: str, wechat: str, verify_message: str, remark_name: str, remark_code: str, output_dir: Path) -> dict[str, Any]:
@@ -2352,25 +2327,4 @@ def add_friend_entry_click_plan_payload(hwnd: int, probe: dict[str, Any], *, rou
         payload['review_path'] = _ops().write_add_friend_entry_click_review(output_dir, payload)
         Path(str(payload['plan_path'])).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
         return payload
-    operator_guard = _ops().start_add_friend_operator_guard(route=route, artifact_dir=str(output_dir))
-    if operator_guard.get('ok') is not True:
-        payload = add_friend_failure_payload(error_code=ERROR_OPERATOR_GUARD_NOT_READY, message='Add-friend RPA operator guard is not ready; the click flow was not started.', steps=['operator_guard_ready'], query=normalize_add_friend_query(phone=phone, wechat=wechat), phone=phone, wechat=wechat, probe=probe, evidence={'geometry': geometry, 'geometry_check': geometry_check, 'operator_guard': operator_guard, 'manual_action_required': 'check_rpa_floating_ball_operator_guard'}, state='operator_guard_not_ready')
-        payload['task_status'] = 'failed'
-        payload['current_step'] = 'operator_guard_ready'
-        payload['server_report_payload'] = mapped_add_friend_server_report_payload(task_status='failed', error_code=ERROR_OPERATOR_GUARD_NOT_READY, current_step='operator_guard_ready')
-        payload['plan_path'] = str(output_dir / ADD_FRIEND_ENTRY_CLICK_PLAN_JSON)
-        payload['review_path'] = _ops().write_add_friend_entry_click_review(output_dir, payload)
-        Path(str(payload['plan_path'])).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
-        return payload
-    flow_probe = dict(probe)
-    flow_probe['operator_guard'] = operator_guard
-    payload: dict[str, Any] = {}
-    try:
-        payload = _ops().run_add_friend_entry_click_plan_flow(_ops(), hwnd, flow_probe, phone=phone, wechat=wechat, verify_message=verify_message, remark_name=remark_name, remark_code=remark_code, artifact_dir=str(output_dir), route=route, action_journal_path=action_journal_path)
-        payload['operator_guard'] = operator_guard
-    finally:
-        release = _ops().stop_add_friend_operator_guard(operator_guard, reason='add_friend_entry_click_plan_finished')
-        if isinstance(payload, dict):
-            payload['operator_guard_release'] = release
-            _ops().persist_add_friend_operator_guard_release(payload, release)
-    return payload
+    return _ops().run_add_friend_entry_click_plan_flow(_ops(), hwnd, probe, phone=phone, wechat=wechat, verify_message=verify_message, remark_name=remark_name, remark_code=remark_code, artifact_dir=str(output_dir), route=route, action_journal_path=action_journal_path)

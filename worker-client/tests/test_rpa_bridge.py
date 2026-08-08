@@ -219,8 +219,8 @@ class RpaBridgeTest(unittest.TestCase):
 
         self.assertTrue(result.ok)
         self.assertEqual(
-            [step.current_step for step in steps[:3]],
-            ["rpa_sidecar_starting", "wechat_preflight_starting", "operator_guard_starting"],
+            [step.current_step for step in steps[:2]],
+            ["rpa_sidecar_starting", "wechat_preflight_starting"],
         )
         self.assertEqual(captured["args"][0], OMNIAUTO_ADD_FRIEND_ACTION)
         self.assertIn("--phone", captured["args"])
@@ -525,10 +525,8 @@ class RpaBridgeTest(unittest.TestCase):
         call_omniauto.assert_called_once()
         self.assertEqual(steps[0].current_step, "rpa_sidecar_starting")
         self.assertEqual(steps[1].current_step, "wechat_preflight_starting")
-        self.assertEqual(steps[2].current_step, "operator_guard_starting")
         self.assertIn("启动 OmniAuto", steps[0].title)
         self.assertIn("17368746889", steps[1].remark)
-        self.assertIn("键鼠守护", steps[2].title)
 
     def test_real_bridge_accepts_confirmed_journal_written_by_sidecar_process(self):
         bridge = RpaBridge(sidecar_script=Path(__file__))

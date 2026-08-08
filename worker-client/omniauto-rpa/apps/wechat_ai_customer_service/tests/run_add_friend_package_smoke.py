@@ -37,7 +37,6 @@ def test_required_files_exist() -> None:
         "apps/wechat_ai_customer_service/adapters/add_friend_layout.py",
         "apps/wechat_ai_customer_service/adapters/add_friend_locator.py",
         "apps/wechat_ai_customer_service/adapters/add_friend_ocr.py",
-        "apps/wechat_ai_customer_service/adapters/add_friend_operator_guard.py",
         "apps/wechat_ai_customer_service/adapters/add_friend_pacing.py",
         "apps/wechat_ai_customer_service/adapters/add_friend_payloads.py",
         "apps/wechat_ai_customer_service/adapters/add_friend_result_mapping.py",
@@ -970,114 +969,6 @@ def test_sidecar_uses_add_friend_payload_builders() -> None:
     )
 
 
-def test_add_friend_uses_shared_operator_guard_module() -> None:
-    guard_source = (
-        PROJECT_ROOT / "apps/wechat_ai_customer_service/adapters/add_friend_operator_guard.py"
-    ).read_text(encoding="utf-8")
-    rpa_guard_source = (
-        PROJECT_ROOT / "apps/wechat_ai_customer_service/adapters/rpa_operator_guard.py"
-    ).read_text(encoding="utf-8")
-    rpa_guard_script = (
-        PROJECT_ROOT / "apps/wechat_ai_customer_service/scripts/run_rpa_operator_guard.py"
-    ).read_text(encoding="utf-8")
-    sidecar = (
-        PROJECT_ROOT / "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py"
-    ).read_text(encoding="utf-8")
-    add_friend_windows = (
-        PROJECT_ROOT / "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/add_friend_windows.py"
-    ).read_text(encoding="utf-8")
-    implementation_source = sidecar + "\n" + add_friend_windows
-    flow_source = (PROJECT_ROOT / "apps/wechat_ai_customer_service/adapters/add_friend_flow.py").read_text(
-        encoding="utf-8"
-    )
-    assert_true("rpa_operator_guard" in guard_source, "add_friend guard must delegate to the shared RPA operator guard")
-    assert_true("attach_rpa_operator_guard(" in guard_source, "add_friend wrapper should attach to the Worker-owned guard")
-    assert_true("start_rpa_operator_guard(" not in guard_source, "Sidecar wrapper must not create a second guard process")
-    assert_true("stop_rpa_operator_guard(" not in guard_source, "Sidecar wrapper must not stop the Worker-owned guard")
-    assert_true("rpa_operator_guard_checkpoint(" in guard_source, "add_friend checkpoint wrapper should call shared checkpoint")
-    assert_true("subprocess.Popen" not in guard_source, "add_friend adapter must not own guard process launching")
-    assert_true("SetWindowsHookExW" not in guard_source, "add_friend adapter must not duplicate keyboard/mouse hook logic")
-    assert_true("run_rpa_operator_guard.py" in rpa_guard_source, "shared guard must reuse the floating-ball operator guard script")
-    assert_true("--block-manual-input" in rpa_guard_source, "operator guard should support locking/blocking manual keyboard and mouse input")
-    assert_true("block_manual_input" in rpa_guard_source, "operator guard settings should expose the manual-input lock flag")
-    assert_true("--floating-indicator" in rpa_guard_source, "shared guard should start the floating indicator")
-    assert_true("mode != \"active\"" in rpa_guard_source, "shared checkpoint should cancel whenever the Worker guard is no longer active")
-    assert_true("--block-manual-input" in rpa_guard_script, "guard runner must expose block-manual-input")
-    assert_true("--floating-indicator" in rpa_guard_script, "guard runner must expose floating-indicator")
-    assert_true("toggle_pause" in rpa_guard_script, "guard runner must support pause/resume")
-    assert_true("stop" in rpa_guard_script, "guard runner must support stop")
-    assert_true("start_add_friend_operator_guard(" in implementation_source, "add_friend Windows path should attach to the active Worker guard")
-    assert_true("stop_add_friend_operator_guard(" in implementation_source, "add_friend Windows path should release only its attachment")
-    assert_true("OPERATOR_GUARD_NOT_READY" in implementation_source, "operator guard failure should be a first-class add_friend failure")
-    assert_true("add_friend_operator_guard_checkpoint(" in flow_source, "flow should honor floating-ball pause/stop checkpoints")
-    assert_true("GetCursorPos" not in flow_source, "flow should not implement a separate mouse-idle guard")
-
-
-def test_add_friend_operator_guard_compat_wrapper_calls_shared_module() -> None:
-    import apps.wechat_ai_customer_service.adapters.add_friend_operator_guard as compat
-
-    expected_functions = [
-        "add_friend_operator_guard_settings",
-        "add_friend_operator_guard_dir",
-        "add_friend_operator_guard_paths",
-        "start_add_friend_operator_guard",
-        "stop_add_friend_operator_guard",
-        "add_friend_operator_guard_checkpoint",
-    ]
-    for name in expected_functions:
-        assert_true(callable(getattr(compat, name, None)), f"compat wrapper must expose add_friend API: {name}")
-
-    calls: list[tuple[str, object]] = []
-    original_attach = compat.attach_rpa_operator_guard
-    original_checkpoint = compat.rpa_operator_guard_checkpoint
-    try:
-        compat.attach_rpa_operator_guard = lambda: calls.append(("attach", {})) or {"ok": True}
-        compat.rpa_operator_guard_checkpoint = lambda **kwargs: calls.append(("checkpoint", kwargs)) or {"ok": True}
-
-        compat.start_add_friend_operator_guard(route="add-friend-entry-click-plan-windows", artifact_dir="artifact-dir")
-        compat.stop_add_friend_operator_guard({"enabled": True}, reason="finished")
-        compat.add_friend_operator_guard_checkpoint(reason="pause:add_friend")
-    finally:
-        compat.attach_rpa_operator_guard = original_attach
-        compat.rpa_operator_guard_checkpoint = original_checkpoint
-
-    assert_true(
-        calls[0] == ("attach", {}),
-        f"add_friend wrapper should attach to the Worker-owned guard: {calls}",
-    )
-    assert_true(
-        calls[1] == ("checkpoint", {"reason": "pause:add_friend"}),
-        f"checkpoint wrapper should call shared guard checkpoint: {calls}",
-    )
-    assert_true(
-        len(calls) == 2,
-        f"release must not stop the Worker-owned guard: {calls}",
-    )
-
-
-def test_c2_search_by_remark_code_has_no_add_friend_operator_guard_report_fields() -> None:
-    sidecar_source = (
-        PROJECT_ROOT / "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py"
-    ).read_text(encoding="utf-8")
-    function_source = sidecar_source.split("def open_chat_by_remark_code_search(", 1)[1].split(
-        "\ndef message_read_payload(",
-        1,
-    )[0]
-    assert_true('"target_mode": "search_by_remark_code"' in function_source, "C2 targeting must keep search_by_remark_code mode")
-    for forbidden in [
-        "start_add_friend_operator_guard",
-        "stop_add_friend_operator_guard",
-        "add_friend_operator_guard_checkpoint",
-        '"operator_guard"',
-        "'operator_guard'",
-        "operator_guard_release",
-    ]:
-        assert_true(
-            forbidden not in function_source,
-            f"C2 search_by_remark_code must not introduce add_friend operator guard report field: {forbidden}",
-        )
-
-
 def test_add_friend_preflight_blocks_unready_window() -> None:
     import apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar as sidecar_mod
 
@@ -1107,53 +998,6 @@ def test_add_friend_preflight_blocks_unready_window() -> None:
         assert_true(payload.get("error_code") == "WECHAT_WINDOW_NOT_READY", f"unexpected error: {payload}")
         assert_true(payload.get("current_step") == "preflight_window_ready", f"unexpected current step: {payload}")
         assert_true(calls["flow"] == 0, f"unready window must not enter click flow: {calls}")
-    finally:
-        for name, value in originals.items():
-            setattr(sidecar_mod, name, value)
-
-
-def test_add_friend_requires_operator_guard_before_click_flow() -> None:
-    import apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar as sidecar_mod
-
-    originals = {
-        "get_window_geometry": sidecar_mod.get_window_geometry,
-        "validate_capture_geometry": sidecar_mod.validate_capture_geometry,
-        "add_friend_pre_click_main_window_readiness": sidecar_mod.add_friend_pre_click_main_window_readiness,
-        "start_add_friend_operator_guard": sidecar_mod.start_add_friend_operator_guard,
-        "run_add_friend_entry_click_plan_flow": sidecar_mod.run_add_friend_entry_click_plan_flow,
-        "write_add_friend_entry_click_review": sidecar_mod.write_add_friend_entry_click_review,
-    }
-    calls = {"flow": 0}
-    try:
-        sidecar_mod.get_window_geometry = lambda _hwnd: {"left": 0, "top": 0, "right": 981, "bottom": 860, "width": 981, "height": 860}
-        sidecar_mod.validate_capture_geometry = lambda geometry: {"ok": True, "geometry": geometry}
-        sidecar_mod.add_friend_pre_click_main_window_readiness = lambda *_args, **_kwargs: {
-            "ok": True,
-            "state": "wechat_main_surface_ready",
-            "focus_guard": {"ok": True, "reason": "foreground_matches_target"},
-            "surface_readiness": {"ok": True, "main_surface": {"ok": True}},
-        }
-        sidecar_mod.start_add_friend_operator_guard = lambda **_kwargs: {
-            "ok": False,
-            "enabled": True,
-            "reason": "guard_hook_not_ready",
-        }
-        sidecar_mod.run_add_friend_entry_click_plan_flow = lambda *args, **kwargs: calls.__setitem__("flow", calls["flow"] + 1) or {"ok": True}
-        sidecar_mod.write_add_friend_entry_click_review = lambda output_dir, payload: str(Path(output_dir) / "review.html")
-        payload = sidecar_mod.add_friend_entry_click_plan_payload(
-            1001,
-            {"quick_login": {"detected": False}},
-            phone="17368746889",
-            verify_message="你好",
-            remark_name="客户-CJ8K2P",
-            remark_code="CJ8K2P",
-            artifact_dir=str(PROJECT_ROOT / "runtime" / "add_friend_operator_guard_test"),
-        )
-        assert_true(payload.get("ok") is False, f"operator guard failure should block add_friend: {payload}")
-        assert_true(payload.get("state") == "operator_guard_not_ready", f"unexpected state: {payload}")
-        assert_true(payload.get("error_code") == "OPERATOR_GUARD_NOT_READY", f"unexpected error: {payload}")
-        assert_true(payload.get("current_step") == "operator_guard_ready", f"unexpected current step: {payload}")
-        assert_true(calls["flow"] == 0, f"click flow must not run before operator guard is ready: {calls}")
     finally:
         for name, value in originals.items():
             setattr(sidecar_mod, name, value)
@@ -1209,7 +1053,6 @@ def test_add_friend_calibration_mode_contract() -> None:
     assert_true("calibration_only=bool" in sidecar, "run_action should pass calibration_only into add_friend payload")
     validation_call = implementation_source.split("validation = validate_add_friend_entry_click_contract(", 1)[-1].split(")", 1)[0]
     assert_true("calibration_only" not in validation_call, "calibration flag must not be passed to field contract validation")
-    assert_true("start_add_friend_operator_guard(" in implementation_source, "normal flow should attach to the Worker-owned floating-ball guard")
     calibration_section = add_friend_windows.split("def add_friend_calibration_payload", 1)[-1].split("def click_add_friend_ocr_item", 1)[0]
     assert_true("human_window_image_click" not in calibration_section, "calibration payload must not click")
     assert_true("paste_invite_form_text" not in calibration_section, "calibration payload must not type/paste")
@@ -1772,7 +1615,7 @@ def test_add_friend_primary_locator_contract() -> None:
 
 def test_add_friend_live_window_paths_pass_screenshot_to_plus_locator() -> None:
     source = (PROJECT_ROOT / "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/add_friend_windows.py").read_text(encoding="utf-8")
-    pre_click_section = source.split("def add_friend_pre_click_main_window_readiness", 1)[1].split("def persist_add_friend_operator_guard_release", 1)[0]
+    pre_click_section = source.split("def add_friend_pre_click_main_window_readiness", 1)[1].split("def add_friend_calibration_payload", 1)[0]
     calibration_section = source.split("def add_friend_calibration_payload", 1)[1].split("def click_add_friend_ocr_item", 1)[0]
     for name, section in [
         ("formal pre-click", pre_click_section),
@@ -2015,11 +1858,7 @@ def main() -> int:
         test_sidecar_uses_flow_context_for_entry_click,
         test_add_friend_flow_forwards_action_journal_on_every_query_path,
         test_sidecar_uses_add_friend_payload_builders,
-        test_add_friend_uses_shared_operator_guard_module,
-        test_add_friend_operator_guard_compat_wrapper_calls_shared_module,
-        test_c2_search_by_remark_code_has_no_add_friend_operator_guard_report_fields,
         test_add_friend_preflight_blocks_unready_window,
-        test_add_friend_requires_operator_guard_before_click_flow,
         test_add_friend_formal_preclick_requires_foreground_and_main_surface,
         test_add_friend_calibration_mode_contract,
         test_entry_click_task_outcome_contract,
