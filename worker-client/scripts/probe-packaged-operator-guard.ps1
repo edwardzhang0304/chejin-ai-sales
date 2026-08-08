@@ -20,6 +20,12 @@ $statePath = Join-Path $probeRoot "operator_guard.state.json"
 $stdoutPath = Join-Path $probeRoot "operator_guard.stdout.log"
 $stderrPath = Join-Path $probeRoot "operator_guard.stderr.log"
 $tenantId = "packaged-operator-guard-probe"
+$guardInstanceId = [guid]::NewGuid().ToString()
+$clientInstanceId = "packaged-probe-" + [guid]::NewGuid().ToString("N")
+$ownerStartUtc = (Get-Process -Id $PID).StartTime.ToUniversalTime()
+$unixEpochUtc = [DateTime]::SpecifyKind([DateTime]"1970-01-01", [DateTimeKind]::Utc)
+$ownerProcessCreateTime = ($ownerStartUtc - $unixEpochUtc).TotalSeconds
+$ownerProcessCreateTimeText = $ownerProcessCreateTime.ToString("R", [Globalization.CultureInfo]::InvariantCulture)
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $guardProcess = $null
 $readyState = $null
@@ -55,11 +61,75 @@ function Write-ProbeEvidence {
   }
 }
 
+function Wait-GuardState {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$ExpectedMode,
+    [Parameter(Mandatory = $true)]
+    [bool]$ExpectedLocked,
+    [Parameter(Mandatory = $true)]
+    [int]$ExpectedEpoch,
+    [string]$ExpectedLockId = "",
+    [int]$ExpectedFencingToken = 0,
+    [int]$TimeoutSeconds = 30
+  )
+
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  while ([DateTime]::UtcNow -lt $deadline) {
+    $guardProcess.Refresh()
+    if ($guardProcess.HasExited) {
+      Write-ProbeEvidence
+      throw "packaged Operator Guard exited while waiting for mode $ExpectedMode"
+    }
+    if (Test-Path -LiteralPath $statePath) {
+      try {
+        $candidate = Get-Content -Raw -Encoding UTF8 $statePath | ConvertFrom-Json
+        if ([string]$candidate.phase -eq "failed") {
+          Write-ProbeEvidence
+          throw "packaged Operator Guard reported failure: $([string]$candidate.reason)"
+        }
+        if (
+          [string]$candidate.phase -eq "running" -and
+          [string]$candidate.mode -eq $ExpectedMode -and
+          [bool]$candidate.lock_enabled -eq $ExpectedLocked -and
+          [int]$candidate.control_epoch -eq $ExpectedEpoch -and
+          [string]$candidate.active_ui_lock_id -eq $ExpectedLockId -and
+          [int]$candidate.active_fencing_token -eq $ExpectedFencingToken -and
+          [string]$candidate.guard_instance_id -eq $guardInstanceId -and
+          $candidate.hooks_installed -eq $true -and
+          $candidate.floating_indicator_active -eq $true -and
+          $candidate.floating_indicator_render_ok -eq $true
+        ) {
+          return $candidate
+        }
+      }
+      catch {
+        if ($_.Exception.Message -like "packaged Operator Guard reported failure:*") {
+          throw
+        }
+      }
+    }
+    Start-Sleep -Milliseconds 100
+  }
+  Write-ProbeEvidence
+  throw "packaged Operator Guard did not reach mode $ExpectedMode within $TimeoutSeconds seconds"
+}
+
 New-Item -ItemType Directory -Force -Path $probeRoot | Out-Null
 Write-ProbeJson -Path $controlPath -Payload @{
-  version = 1
+  version = 2
   tenant_id = $tenantId
-  mode = "running"
+  guard_instance_id = $guardInstanceId
+  client_instance_id = $clientInstanceId
+  owner_worker_pid = $PID
+  owner_process_create_time = $ownerProcessCreateTime
+  mode = "idle"
+  active_ui_lock_id = ""
+  active_fencing_token = 0
+  operation_type = ""
+  current_step = ""
+  control_epoch = 0
+  shutdown_requested = $false
   command = @{
     id = 0
     action = "none"
@@ -84,10 +154,13 @@ try {
     "--control-path", $controlPath,
     "--status-path", $statusPath,
     "--parent-pid", [string]$PID,
+    "--guard-instance-id", $guardInstanceId,
+    "--client-instance-id", $clientInstanceId,
+    "--owner-process-create-time", $ownerProcessCreateTimeText,
     "--control-key", "f8",
     "--control-double-window-ms", "420",
     "--pause-poll-interval-ms", "120",
-    "--allow-manual-input",
+    "--block-manual-input",
     "--floating-indicator",
     "--guard-state-path", $statePath
   )
@@ -99,45 +172,7 @@ try {
     -RedirectStandardError $stderrPath `
     -PassThru
 
-  $deadline = [DateTime]::UtcNow.AddSeconds(30)
-  while ([DateTime]::UtcNow -lt $deadline) {
-    $guardProcess.Refresh()
-    if ($guardProcess.HasExited) {
-      Write-ProbeEvidence
-      throw "packaged Operator Guard exited before becoming ready: exit_code=$($guardProcess.ExitCode)"
-    }
-
-    if (Test-Path -LiteralPath $statePath) {
-      try {
-        $candidate = Get-Content -Raw -Encoding UTF8 $statePath | ConvertFrom-Json
-        if ([string]$candidate.phase -eq "failed") {
-          Write-ProbeEvidence
-          throw "packaged Operator Guard reported failure: $([string]$candidate.reason)"
-        }
-        if (
-          [string]$candidate.phase -eq "running" -and
-          $candidate.hooks_installed -eq $true -and
-          $candidate.floating_indicator_requested -eq $true -and
-          $candidate.floating_indicator_active -eq $true -and
-          $candidate.floating_indicator_render_ok -eq $true
-        ) {
-          $readyState = $candidate
-          break
-        }
-      }
-      catch {
-        if ($_.Exception.Message -like "packaged Operator Guard reported failure:*") {
-          throw
-        }
-      }
-    }
-    Start-Sleep -Milliseconds 100
-  }
-
-  if ($null -eq $readyState) {
-    Write-ProbeEvidence
-    throw "packaged Operator Guard did not become ready within 30 seconds"
-  }
+  $readyState = Wait-GuardState -ExpectedMode "idle" -ExpectedLocked $false -ExpectedEpoch 0
   if ([int]$readyState.pid -ne [int]$guardProcess.Id) {
     throw "packaged Operator Guard state PID does not match the child process"
   }
@@ -147,18 +182,73 @@ try {
   if ([string]::IsNullOrWhiteSpace([string]$readyState.floating_indicator_backend)) {
     throw "packaged Operator Guard did not report a floating indicator backend"
   }
-  if ($readyState.block_manual_input -ne $false) {
-    throw "packaged Operator Guard probe unexpectedly enabled manual-input blocking"
+  if ($readyState.block_manual_input -ne $true) {
+    throw "packaged Operator Guard probe did not enable active-mode input protection"
   }
 
-  Write-Host "PACKAGED_OPERATOR_GUARD_READY $($readyState | ConvertTo-Json -Compress -Depth 8)"
+  $guardPid = [int]$guardProcess.Id
+  Write-Host "PACKAGED_OPERATOR_GUARD_IDLE $($readyState | ConvertTo-Json -Compress -Depth 8)"
 
   Write-ProbeJson -Path $controlPath -Payload @{
-    version = 1
+    version = 2
     tenant_id = $tenantId
+    guard_instance_id = $guardInstanceId
+    client_instance_id = $clientInstanceId
+    owner_worker_pid = $PID
+    owner_process_create_time = $ownerProcessCreateTime
+    mode = "active"
+    active_ui_lock_id = "packaged-probe-lock"
+    active_fencing_token = 1
+    operation_type = "packaged_probe"
+    current_step = "active_probe"
+    control_epoch = 1
+    shutdown_requested = $false
+    command = @{ id = 1; action = "activate"; status = "pending"; source = "packaged_probe"; requested_at = [DateTime]::UtcNow.ToString("o"); applied_at = ""; message = "verify_active_lock" }
+  }
+  $activeState = Wait-GuardState -ExpectedMode "active" -ExpectedLocked $true -ExpectedEpoch 1 -ExpectedLockId "packaged-probe-lock" -ExpectedFencingToken 1
+  if ([int]$activeState.pid -ne $guardPid) {
+    throw "packaged Operator Guard changed process during activation"
+  }
+  Write-Host "PACKAGED_OPERATOR_GUARD_ACTIVE $($activeState | ConvertTo-Json -Compress -Depth 8)"
+
+  Write-ProbeJson -Path $controlPath -Payload @{
+    version = 2
+    tenant_id = $tenantId
+    guard_instance_id = $guardInstanceId
+    client_instance_id = $clientInstanceId
+    owner_worker_pid = $PID
+    owner_process_create_time = $ownerProcessCreateTime
+    mode = "ready"
+    active_ui_lock_id = ""
+    active_fencing_token = 0
+    operation_type = ""
+    current_step = ""
+    control_epoch = 2
+    shutdown_requested = $false
+    command = @{ id = 2; action = "deactivate"; status = "pending"; source = "packaged_probe"; requested_at = [DateTime]::UtcNow.ToString("o"); applied_at = ""; message = "verify_unlock" }
+  }
+  $unlockedState = Wait-GuardState -ExpectedMode "ready" -ExpectedLocked $false -ExpectedEpoch 2
+  if ([int]$unlockedState.pid -ne $guardPid) {
+    throw "packaged Operator Guard changed process during deactivation"
+  }
+  Write-Host "PACKAGED_OPERATOR_GUARD_READY $($unlockedState | ConvertTo-Json -Compress -Depth 8)"
+
+  Write-ProbeJson -Path $controlPath -Payload @{
+    version = 2
+    tenant_id = $tenantId
+    guard_instance_id = $guardInstanceId
+    client_instance_id = $clientInstanceId
+    owner_worker_pid = $PID
+    owner_process_create_time = $ownerProcessCreateTime
     mode = "stopped"
+    active_ui_lock_id = ""
+    active_fencing_token = 0
+    operation_type = ""
+    current_step = ""
+    control_epoch = 3
+    shutdown_requested = $false
     command = @{
-      id = 1
+      id = 3
       action = "stop"
       status = "pending"
       source = "packaged_probe"
@@ -167,8 +257,20 @@ try {
       message = "packaged_probe_complete"
     }
   }
+  $stoppedState = Wait-GuardState -ExpectedMode "stopped" -ExpectedLocked $false -ExpectedEpoch 3
+  $guardProcess.Refresh()
+  if ($guardProcess.HasExited -or [int]$stoppedState.pid -ne $guardPid) {
+    throw "packaged Operator Guard did not remain resident in stopped mode"
+  }
+  Write-Host "PACKAGED_OPERATOR_GUARD_STOPPED_RESIDENT $($stoppedState | ConvertTo-Json -Compress -Depth 8)"
+
+  $shutdownControl = Get-Content -Raw -Encoding UTF8 $controlPath | ConvertFrom-Json
+  $shutdownControl.shutdown_requested = $true
+  $shutdownControl.control_epoch = 4
+  $shutdownControl.command = @{ id = 4; action = "shutdown"; status = "pending"; source = "packaged_probe"; requested_at = [DateTime]::UtcNow.ToString("o"); applied_at = ""; message = "worker_exit_probe" }
+  Write-ProbeJson -Path $controlPath -Payload $shutdownControl
   if (-not $guardProcess.WaitForExit(20000)) {
-    throw "packaged Operator Guard did not stop after the control file requested shutdown"
+    throw "packaged Operator Guard did not exit after explicit Worker shutdown"
   }
   $guardProcess.WaitForExit()
   $guardProcess.Refresh()
@@ -194,7 +296,7 @@ try {
   }
 
   $probePassed = $true
-  Write-Host "Packaged Operator Guard probe passed."
+  Write-Host "Packaged Operator Guard resident lifecycle probe passed."
 }
 finally {
   if ($null -ne $guardProcess) {

@@ -11,7 +11,8 @@ import os
 import subprocess
 import sys
 import time
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,14 +24,14 @@ from apps.wechat_ai_customer_service.knowledge_paths import active_tenant_id, te
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 APP_ROOT = PROJECT_ROOT / "apps" / "wechat_ai_customer_service"
 GUARD_SCRIPT = APP_ROOT / "scripts" / "run_rpa_operator_guard.py"
-CONTROL_MODES = {"running", "paused", "stopped"}
+CONTROL_MODES = {"idle", "ready", "active", "paused", "stopped", "fault"}
 CONTROL_HOTKEYS = {"f8", "esc"}
 
 _ACTIVE_GUARD: dict[str, Any] | None = None
 
 
 def now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 def env_bool(name: str, *, default: bool) -> bool:
@@ -101,9 +102,9 @@ def rpa_operator_guard_settings() -> dict[str, Any]:
         "pause_poll_interval_ms": bounded_int(
             os.getenv("WECHAT_RPA_OPERATOR_GUARD_PAUSE_POLL_INTERVAL_MS")
             or os.getenv("WECHAT_ADD_FRIEND_OPERATOR_GUARD_PAUSE_POLL_INTERVAL_MS"),
-            default=550,
-            minimum=120,
-            maximum=3000,
+            default=100,
+            minimum=50,
+            maximum=500,
         ),
         "bootstrap_timeout_seconds": bounded_float(
             os.getenv("WECHAT_RPA_OPERATOR_GUARD_BOOTSTRAP_TIMEOUT_SECONDS")
@@ -139,12 +140,29 @@ def rpa_operator_guard_paths(tenant_id: str | None = None) -> dict[str, Path]:
     }
 
 
-def empty_operator_control_state(tenant_id: str, *, mode: str = "running") -> dict[str, Any]:
-    normalized_mode = mode if mode in CONTROL_MODES else "running"
+def empty_operator_control_state(
+    tenant_id: str,
+    *,
+    mode: str = "idle",
+    guard_instance_id: str = "",
+    client_instance_id: str = "",
+    owner_worker_pid: int = 0,
+    owner_process_create_time: float = 0.0,
+) -> dict[str, Any]:
+    normalized_mode = mode if mode in CONTROL_MODES else "idle"
     return {
-        "version": 1,
+        "version": 2,
         "tenant_id": tenant_id,
+        "guard_instance_id": guard_instance_id,
+        "client_instance_id": client_instance_id,
+        "owner_worker_pid": int(owner_worker_pid or 0),
+        "owner_process_create_time": float(owner_process_create_time or 0.0),
         "mode": normalized_mode,
+        "active_ui_lock_id": "",
+        "active_fencing_token": 0,
+        "operation_type": "",
+        "current_step": "",
+        "control_epoch": 0,
         "command": {
             "id": 0,
             "action": "none",
@@ -213,7 +231,7 @@ def terminate_pid_tree(pid: int) -> None:
 def sync_operator_mode(path: Path, *, tenant_id: str, mode: str, message: str = "") -> dict[str, Any]:
     payload = read_json(path) or empty_operator_control_state(tenant_id)
     payload["tenant_id"] = tenant_id
-    payload["mode"] = mode if mode in CONTROL_MODES else "running"
+    payload["mode"] = mode if mode in CONTROL_MODES else "idle"
     command = payload.get("command") if isinstance(payload.get("command"), dict) else {}
     if message:
         command["message"] = message
@@ -237,7 +255,7 @@ def verify_rpa_operator_guard(
             last_state = snapshot
             state_parent = int(snapshot.get("parent_pid") or 0)
             state_pid = int(snapshot.get("pid") or 0)
-            if state_parent != int(expected_parent_pid) and state_pid != int(pid):
+            if state_parent != int(expected_parent_pid) or state_pid != int(pid):
                 time.sleep(0.08)
                 continue
             if str(snapshot.get("phase") or "").strip().lower() == "failed":
@@ -267,14 +285,23 @@ def verify_rpa_operator_guard(
         state_pid = int(last_state.get("pid") or 0)
     except (TypeError, ValueError):
         state_pid = 0
-    if not bool(last_state.get("lock_enabled")):
+    mode = str(last_state.get("mode") or "").strip().lower()
+    if mode not in CONTROL_MODES:
         return {
             "ok": False,
-            "reason": "guard_lock_not_enabled",
+            "reason": "guard_mode_invalid",
             "pid": pid,
             "state_pid": state_pid,
             "state": last_state,
             "timeout_seconds": float(timeout_seconds),
+        }
+    if bool(last_state.get("lock_enabled")) != (mode == "active"):
+        return {
+            "ok": False,
+            "reason": "guard_lock_mode_mismatch",
+            "pid": pid,
+            "state_pid": state_pid,
+            "state": last_state,
         }
     return {"ok": True, "reason": "guard_ready", "pid": pid, "state_pid": state_pid, "state": last_state}
 
@@ -285,12 +312,73 @@ def operator_guard_command(args: list[str]) -> list[str]:
     return [str(sys.executable), str(GUARD_SCRIPT), *args]
 
 
-def start_rpa_operator_guard(*, operation: str = "", route: str = "", artifact_dir: str | None = None) -> dict[str, Any]:
+def _process_create_time(pid: int) -> float:
+    try:
+        return float(psutil.Process(pid).create_time())
+    except (psutil.Error, OSError, ValueError):
+        return 0.0
+
+
+def _guard_process_identity_matches(
+    record: dict[str, Any],
+    state: dict[str, Any],
+) -> bool:
+    try:
+        pid = int(record.get("pid") or 0)
+        recorded_create_time = float(record.get("guard_process_create_time") or 0.0)
+        owner_pid = int(record.get("owner_worker_pid") or 0)
+        owner_create_time = float(record.get("owner_process_create_time") or 0.0)
+        state_pid = int(state.get("pid") or 0)
+        state_owner_pid = int(state.get("owner_worker_pid") or 0)
+        state_owner_create_time = float(state.get("owner_process_create_time") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    instance_id = str(record.get("guard_instance_id") or "").strip()
+    if pid <= 0 or not instance_id or recorded_create_time <= 0:
+        return False
+    if str(state.get("guard_instance_id") or "") != instance_id:
+        return False
+    if str(state.get("client_instance_id") or "") != str(record.get("client_instance_id") or ""):
+        return False
+    if state_pid != pid:
+        return False
+    if owner_pid <= 0 or owner_create_time <= 0:
+        return False
+    if state_owner_pid != owner_pid:
+        return False
+    if abs(state_owner_create_time - owner_create_time) > 0.01:
+        return False
+    if abs(_process_create_time(pid) - recorded_create_time) > 0.01:
+        return False
+    try:
+        process = psutil.Process(pid)
+        command = " ".join(process.cmdline()).lower()
+        parent_pid = int(process.ppid() or 0)
+    except psutil.Error:
+        return False
+    return (
+        parent_pid == owner_pid
+        and ("--rpa-operator-guard" in command or "run_rpa_operator_guard.py" in command)
+    )
+
+
+def start_rpa_operator_guard(
+    *,
+    operation: str = "worker_lifecycle",
+    route: str = "",
+    artifact_dir: str | None = None,
+    initial_mode: str = "idle",
+    client_instance_id: str = "",
+) -> dict[str, Any]:
     global _ACTIVE_GUARD
     settings = rpa_operator_guard_settings()
     tenant_id = active_tenant_id()
     paths = rpa_operator_guard_paths(tenant_id)
-    operation_name = str(operation or route or "").strip()
+    operation_name = str(operation or route or "worker_lifecycle").strip()
+    normalized_initial_mode = initial_mode if initial_mode in CONTROL_MODES else "idle"
+    guard_instance_id = f"guard_{uuid.uuid4()}"
+    owner_worker_pid = os.getpid()
+    owner_process_create_time = _process_create_time(owner_worker_pid)
     base = {
         "ok": True,
         "enabled": bool(settings.get("enabled")),
@@ -301,6 +389,10 @@ def start_rpa_operator_guard(*, operation: str = "", route: str = "", artifact_d
         "artifact_dir": str(artifact_dir or ""),
         "paths": {key: str(value) for key, value in paths.items()},
         "script_path": str(GUARD_SCRIPT),
+        "guard_instance_id": guard_instance_id,
+        "client_instance_id": str(client_instance_id or ""),
+        "owner_worker_pid": owner_worker_pid,
+        "owner_process_create_time": owner_process_create_time,
     }
     if os.name != "nt":
         result = {**base, "enabled": False, "started": False, "reason": "windows_only"}
@@ -318,46 +410,51 @@ def start_rpa_operator_guard(*, operation: str = "", route: str = "", artifact_d
     existing_record = read_json(paths["pid_path"])
     existing_pid = int(existing_record.get("pid") or 0)
     if existing_pid and pid_alive(existing_pid):
-        existing_verify = verify_rpa_operator_guard(
-            pid=existing_pid,
-            state_path=paths["state_path"],
-            expected_parent_pid=int(existing_record.get("parent_pid") or 0),
-            timeout_seconds=0.5,
-        )
-        existing_control = read_json(paths["control_path"])
-        existing_mode = str(existing_control.get("mode") or "running").strip().lower()
-        if existing_verify.get("ok") is True and existing_mode in {"running", "paused"}:
+        existing_state = read_json(paths["state_path"])
+        if not _guard_process_identity_matches(existing_record, existing_state):
             result = {
                 **base,
-                "ok": True,
-                "started": True,
-                "reused_existing": True,
-                "pid": existing_pid,
-                "verify": existing_verify,
-                "control_path": str(paths["control_path"]),
-                "owner_parent_pid": int(existing_record.get("parent_pid") or 0),
+                "ok": False,
+                "started": False,
+                "reason": "operator_guard_identity_mismatch",
+                "existing_pid": existing_pid,
             }
             _ACTIVE_GUARD = result
             return result
-        try:
-            sync_operator_mode(paths["control_path"], tenant_id=tenant_id, mode="stopped", message="replace_stale_rpa_guard")
-            started = time.monotonic()
-            while pid_alive(existing_pid) and time.monotonic() - started < 2.0:
-                time.sleep(0.08)
-        except Exception:
-            pass
+        existing_control = read_json(paths["control_path"])
+        existing_control["mode"] = "stopped"
+        existing_control["shutdown_requested"] = True
+        existing_control["control_epoch"] = int(existing_control.get("control_epoch") or 0) + 1
+        write_json(paths["control_path"], existing_control)
+        started = time.monotonic()
+        while pid_alive(existing_pid) and time.monotonic() - started < 3.0:
+            time.sleep(0.08)
         if pid_alive(existing_pid):
             terminate_pid_tree(existing_pid)
+        if pid_alive(existing_pid):
+            result = {**base, "ok": False, "started": False, "reason": "operator_guard_stop_failed"}
+            _ACTIVE_GUARD = result
+            return result
 
     clear_file(paths["state_path"])
     clear_file(paths["pid_path"])
-    write_json(paths["control_path"], empty_operator_control_state(tenant_id, mode="running"))
+    write_json(
+        paths["control_path"],
+        empty_operator_control_state(
+            tenant_id,
+            mode=normalized_initial_mode,
+            guard_instance_id=guard_instance_id,
+            client_instance_id=str(client_instance_id or ""),
+            owner_worker_pid=owner_worker_pid,
+            owner_process_create_time=owner_process_create_time,
+        ),
+    )
     write_json(
         paths["status_path"],
         {
             "ok": True,
-            "state": "thinking",
-            "message": "微信 RPA 正在运行，悬浮球键鼠守护已接管。",
+            "state": normalized_initial_mode,
+            "message": "Worker 安全守护正在启动。",
             "tenant_id": tenant_id,
         },
     )
@@ -371,13 +468,19 @@ def start_rpa_operator_guard(*, operation: str = "", route: str = "", artifact_d
         "--guard-state-path",
         str(paths["state_path"]),
         "--parent-pid",
-        str(os.getpid()),
+        str(owner_worker_pid),
+        "--guard-instance-id",
+        guard_instance_id,
+        "--client-instance-id",
+        str(client_instance_id or ""),
+        "--owner-process-create-time",
+        str(owner_process_create_time),
         "--control-key",
         str(settings.get("control_hotkey") or "f8"),
         "--esc-double-window-ms",
         str(int(settings.get("esc_double_press_window_ms") or 420)),
         "--pause-poll-interval-ms",
-        str(int(settings.get("pause_poll_interval_ms") or 550)),
+        str(int(settings.get("pause_poll_interval_ms") or 100)),
     ]
     guard_args.append("--block-manual-input" if settings.get("block_manual_input", True) else "--allow-manual-input")
     guard_args.append("--floating-indicator" if settings.get("floating_indicator_enabled", True) else "--no-floating-indicator")
@@ -422,28 +525,45 @@ def start_rpa_operator_guard(*, operation: str = "", route: str = "", artifact_d
         paths["pid_path"],
         {
             "pid": int(proc.pid),
+            "guard_instance_id": guard_instance_id,
+            "client_instance_id": str(client_instance_id or ""),
             "tenant_id": tenant_id,
             "started_at": now_iso(),
+            "guard_process_create_time": _process_create_time(int(proc.pid)),
+            "owner_worker_pid": owner_worker_pid,
+            "owner_process_create_time": owner_process_create_time,
             "control_path": str(paths["control_path"]),
             "status_path": str(paths["status_path"]),
             "state_path": str(paths["state_path"]),
-            "parent_pid": os.getpid(),
+            "parent_pid": owner_worker_pid,
         },
     )
     verify = verify_rpa_operator_guard(
         pid=int(proc.pid),
         state_path=paths["state_path"],
-        expected_parent_pid=os.getpid(),
+        expected_parent_pid=owner_worker_pid,
         timeout_seconds=float(settings.get("bootstrap_timeout_seconds") or 15.0),
+    )
+    verify_state = verify.get("state") if isinstance(verify.get("state"), dict) else {}
+    identity_verified = (
+        str(verify_state.get("guard_instance_id") or "") == guard_instance_id
+        and int(verify_state.get("owner_worker_pid") or 0) == owner_worker_pid
+        and abs(float(verify_state.get("owner_process_create_time") or 0.0) - owner_process_create_time) <= 0.01
     )
     result = {
         **base,
-        "ok": verify.get("ok") is True,
+        "ok": verify.get("ok") is True and identity_verified,
         "started": True,
         "reused_existing": False,
         "pid": int(proc.pid),
         "verify": verify,
         "control_path": str(paths["control_path"]),
+        "guard_instance_id": guard_instance_id,
+        "client_instance_id": str(client_instance_id or ""),
+        "owner_worker_pid": owner_worker_pid,
+        "owner_process_create_time": owner_process_create_time,
+        "guard_process_create_time": _process_create_time(int(proc.pid)),
+        "identity_verified": identity_verified,
     }
     if result["ok"]:
         _ACTIVE_GUARD = result
@@ -454,72 +574,80 @@ def start_rpa_operator_guard(*, operation: str = "", route: str = "", artifact_d
 
 
 def stop_rpa_operator_guard(guard: dict[str, Any] | None, *, reason: str = "rpa_operation_finished") -> dict[str, Any]:
+    """Shut down the Worker-owned guard only during Worker exit or verified rebuild."""
+
     global _ACTIVE_GUARD
     if not isinstance(guard, dict) or not guard.get("enabled"):
         _ACTIVE_GUARD = None
         return {"ok": True, "skipped": True, "reason": "operator_guard_not_enabled"}
-    if guard.get("reused_existing"):
-        _ACTIVE_GUARD = None
-        return {"ok": True, "skipped": True, "reason": "reused_existing_operator_guard_not_stopped"}
     paths = guard.get("paths") if isinstance(guard.get("paths"), dict) else {}
-    tenant_id = str(guard.get("tenant_id") or active_tenant_id())
     control_path = Path(str(paths.get("control_path") or ""))
-    status_path = Path(str(paths.get("status_path") or ""))
     pid_path = Path(str(paths.get("pid_path") or ""))
-    state_snapshot = read_json(Path(str(paths.get("state_path") or "")))
-    verify = guard.get("verify") if isinstance(guard.get("verify"), dict) else {}
-    verify_state = verify.get("state") if isinstance(verify.get("state"), dict) else {}
-    pid_candidates: set[int] = set()
-    for raw_pid in (
-        guard.get("pid"),
-        verify.get("state_pid"),
-        verify_state.get("pid"),
-        state_snapshot.get("pid"),
-        read_json(pid_path).get("pid"),
-    ):
-        try:
-            parsed_pid = int(raw_pid or 0)
-        except (TypeError, ValueError):
-            parsed_pid = 0
-        if parsed_pid > 0:
-            pid_candidates.add(parsed_pid)
-    pid = int(guard.get("pid") or 0)
-    try:
-        if str(control_path):
-            sync_operator_mode(control_path, tenant_id=tenant_id, mode="stopped", message=reason)
-        if str(status_path):
-            write_json(
-                status_path,
-                {
-                    "ok": True,
-                    "state": "stopped",
-                    "message": "微信 RPA 已结束，键鼠已释放。",
-                    "tenant_id": tenant_id,
-                },
-            )
-    except Exception as exc:
-        release = {"ok": False, "reason": "operator_guard_stop_signal_failed", "error": repr(exc), "pid": pid}
-    else:
-        started = time.monotonic()
-        while any(pid_alive(candidate) for candidate in pid_candidates) and time.monotonic() - started < 3.0:
-            time.sleep(0.08)
-        for candidate in sorted(pid_candidates):
-            if pid_alive(candidate):
-                terminate_pid_tree(candidate)
-        forced_stop_started = time.monotonic()
-        while any(pid_alive(candidate) for candidate in pid_candidates) and time.monotonic() - forced_stop_started < 2.0:
-            time.sleep(0.08)
-        alive_after = {str(candidate): pid_alive(candidate) for candidate in sorted(pid_candidates)}
-        process_alive_after_stop = any(alive_after.values())
-        release = {
-            "ok": not process_alive_after_stop,
-            "reason": reason if not process_alive_after_stop else "operator_guard_process_still_alive",
+    state_path = Path(str(paths.get("state_path") or ""))
+    pid_record = read_json(pid_path)
+    state = read_json(state_path)
+    pid = int(pid_record.get("pid") or guard.get("pid") or 0)
+    process_was_alive = pid_alive(pid)
+    if pid > 0 and pid_alive(pid) and not _guard_process_identity_matches(pid_record, state):
+        _ACTIVE_GUARD = guard
+        return {
+            "ok": False,
+            "reason": "operator_guard_identity_mismatch",
             "pid": pid,
-            "pid_candidates": sorted(pid_candidates),
-            "process_alive_after_stop": process_alive_after_stop,
-            "alive_after": alive_after,
         }
-    _ACTIVE_GUARD = None
+    try:
+        control = read_json(control_path)
+        control.update(
+            {
+                "mode": "stopped",
+                "active_ui_lock_id": "",
+                "active_fencing_token": 0,
+                "shutdown_requested": True,
+                "control_epoch": int(control.get("control_epoch") or 0) + 1,
+            }
+        )
+        command = control.get("command") if isinstance(control.get("command"), dict) else {}
+        command.update({"action": "shutdown", "status": "pending", "message": reason})
+        control["command"] = command
+        write_json(control_path, control)
+    except Exception as exc:
+        _ACTIVE_GUARD = guard
+        return {"ok": False, "reason": "operator_guard_stop_signal_failed", "error": repr(exc), "pid": pid}
+    started = time.monotonic()
+    while pid_alive(pid) and time.monotonic() - started < 3.0:
+        time.sleep(0.08)
+    if pid_alive(pid):
+        terminate_pid_tree(pid)
+    process_alive_after_stop = pid_alive(pid)
+    final_state = read_json(state_path)
+    try:
+        final_pid = int(final_state.get("pid") or 0)
+    except (TypeError, ValueError):
+        final_pid = 0
+    clean_guard_exit = bool(
+        str(final_state.get("phase") or "") == "stopped"
+        and str(final_state.get("reason") or "") == "guard_exit"
+        and bool(final_state.get("lock_enabled")) is False
+        and final_pid == pid
+        and str(final_state.get("guard_instance_id") or "")
+        == str(guard.get("guard_instance_id") or "")
+    )
+    release = {
+        "ok": process_was_alive and not process_alive_after_stop and clean_guard_exit,
+        "reason": (
+            reason
+            if process_was_alive and not process_alive_after_stop and clean_guard_exit
+            else "operator_guard_stop_not_verified"
+            if not process_alive_after_stop
+            else "operator_guard_process_still_alive"
+        ),
+        "pid": pid,
+        "process_alive_after_stop": process_alive_after_stop,
+        "clean_guard_exit": clean_guard_exit,
+        "final_state": final_state,
+    }
+    if release["ok"]:
+        _ACTIVE_GUARD = None
     return release
 
 
@@ -529,103 +657,196 @@ def rpa_operator_guard_health(guard: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(guard, dict) or not guard.get("enabled"):
         return {"ok": True, "mode": "not_enabled", "reason": "operator_guard_not_enabled"}
     paths = guard.get("paths") if isinstance(guard.get("paths"), dict) else {}
-    control = read_json(Path(str(paths.get("control_path") or "")))
     state = read_json(Path(str(paths.get("state_path") or "")))
     pid_record = read_json(Path(str(paths.get("pid_path") or "")))
-    verify = guard.get("verify") if isinstance(guard.get("verify"), dict) else {}
-    verify_state = verify.get("state") if isinstance(verify.get("state"), dict) else {}
-    pid_candidates: set[int] = set()
-    for raw_pid in (
-        guard.get("pid"),
-        verify.get("state_pid"),
-        verify_state.get("pid"),
-        state.get("pid"),
-        pid_record.get("pid"),
-    ):
-        try:
-            parsed_pid = int(raw_pid or 0)
-        except (TypeError, ValueError):
-            parsed_pid = 0
-        if parsed_pid > 0:
-            pid_candidates.add(parsed_pid)
-    alive = any(pid_alive(pid) for pid in pid_candidates)
-    mode = str(control.get("mode") or "running").strip().lower()
+    pid = int(pid_record.get("pid") or guard.get("pid") or 0)
+    mode = str(state.get("mode") or "fault").strip().lower()
     phase = str(state.get("phase") or "").strip().lower()
     hooks_installed = bool(state.get("hooks_installed"))
-    if not alive:
+    if not pid_alive(pid):
         return {
             "ok": False,
             "mode": mode,
             "reason": "guard_process_exited_early",
-            "pid_candidates": sorted(pid_candidates),
+            "pid": pid,
             "state": state,
         }
+    if not _guard_process_identity_matches(pid_record, state):
+        return {"ok": False, "mode": "fault", "reason": "operator_guard_identity_mismatch", "pid": pid, "state": state}
+    if str(state.get("guard_instance_id") or "") != str(guard.get("guard_instance_id") or ""):
+        return {"ok": False, "mode": "fault", "reason": "operator_guard_instance_mismatch", "pid": pid, "state": state}
+    heartbeat_text = str(state.get("heartbeat_at") or "")
+    try:
+        heartbeat_at = datetime.fromisoformat(heartbeat_text.replace("Z", "+00:00"))
+        if heartbeat_at.tzinfo is None:
+            heartbeat_at = heartbeat_at.replace(tzinfo=timezone.utc)
+        heartbeat_age = (datetime.now(timezone.utc) - heartbeat_at.astimezone(timezone.utc)).total_seconds()
+    except (TypeError, ValueError):
+        heartbeat_age = 9999.0
+    if heartbeat_age > 2.0:
+        return {"ok": False, "mode": "fault", "reason": "operator_guard_heartbeat_expired", "pid": pid, "heartbeat_age_seconds": heartbeat_age, "state": state}
     if phase == "failed" or not hooks_installed:
         return {
             "ok": False,
             "mode": mode,
             "reason": "guard_hook_not_ready",
-            "pid_candidates": sorted(pid_candidates),
+            "pid": pid,
             "state": state,
         }
-    if mode == "stopped":
+    if mode not in CONTROL_MODES or bool(state.get("lock_enabled")) != (mode == "active"):
         return {
             "ok": False,
-            "mode": mode,
-            "reason": "operator_guard_stopped",
-            "pid_candidates": sorted(pid_candidates),
+            "mode": "fault",
+            "reason": "operator_guard_state_invalid",
+            "pid": pid,
+            "state": state,
+        }
+    if mode == "fault":
+        return {
+            "ok": False,
+            "mode": "fault",
+            "reason": str(state.get("reason") or "operator_guard_fault"),
+            "pid": pid,
             "state": state,
         }
     return {
         "ok": True,
-        "mode": mode if mode in CONTROL_MODES else "running",
+        "mode": mode,
         "reason": "guard_ready",
-        "pid_candidates": sorted(pid_candidates),
+        "pid": pid,
+        "heartbeat_age_seconds": heartbeat_age,
         "state": state,
     }
 
 
-def rpa_operator_guard_checkpoint(*, reason: str = "") -> dict[str, Any]:
-    guard = _ACTIVE_GUARD
+def transition_rpa_operator_guard(
+    guard: dict[str, Any] | None,
+    *,
+    mode: str,
+    ui_lock_id: str = "",
+    fencing_token: int = 0,
+    operation_type: str = "",
+    current_step: str = "",
+    reason: str = "",
+    timeout_seconds: float = 2.0,
+) -> dict[str, Any]:
     if not isinstance(guard, dict) or not guard.get("enabled"):
-        return {"ok": True, "skipped": True, "reason": "operator_guard_not_enabled"}
+        return {"ok": True, "mode": "not_enabled", "skipped": True, "reason": "operator_guard_not_enabled"}
+    target_mode = mode if mode in CONTROL_MODES else "fault"
     paths = guard.get("paths") if isinstance(guard.get("paths"), dict) else {}
     control_path = Path(str(paths.get("control_path") or ""))
-    status_path = Path(str(paths.get("status_path") or ""))
-    settings = guard.get("settings") if isinstance(guard.get("settings"), dict) else {}
-    pause_max_seconds = float(settings.get("pause_max_seconds") or 600.0)
-    waited_seconds = 0.0
-    paused_seen = False
+    health = rpa_operator_guard_health(guard)
+    if health.get("ok") is not True:
+        return health
+    state = health.get("state") if isinstance(health.get("state"), dict) else {}
+    if target_mode == "active" and (not ui_lock_id or int(fencing_token or 0) <= 0):
+        return {"ok": False, "mode": "fault", "reason": "operator_guard_activation_identity_missing"}
+    if target_mode != "active":
+        ui_lock_id = ""
+        fencing_token = 0
+        operation_type = ""
+        current_step = ""
+    control = read_json(control_path)
+    if str(control.get("guard_instance_id") or "") != str(guard.get("guard_instance_id") or ""):
+        return {"ok": False, "mode": "fault", "reason": "operator_guard_instance_mismatch"}
+    next_epoch = max(int(control.get("control_epoch") or 0), int(state.get("control_epoch") or 0)) + 1
+    command = control.get("command") if isinstance(control.get("command"), dict) else {}
+    command.update(
+        {
+            "id": int(command.get("id") or 0) + 1,
+            "action": "activate" if target_mode == "active" else ("deactivate" if target_mode == "ready" else target_mode),
+            "status": "pending",
+            "source": "worker",
+            "requested_at": now_iso(),
+            "applied_at": "",
+            "message": reason,
+        }
+    )
+    control.update(
+        {
+            "mode": target_mode,
+            "active_ui_lock_id": ui_lock_id,
+            "active_fencing_token": int(fencing_token or 0),
+            "operation_type": operation_type,
+            "current_step": current_step,
+            "control_epoch": next_epoch,
+            "command": command,
+        }
+    )
+    write_json(control_path, control)
     started = time.monotonic()
-    while True:
-        control = read_json(control_path)
-        mode = str(control.get("mode") or "running").strip().lower()
-        if mode == "stopped":
-            raise RuntimeError(f"rpa_operator_guard_stopped:{reason}")
-        if mode != "paused":
-            if paused_seen:
-                raise RuntimeError(f"rpa_operator_guard_revalidation_required:{reason}")
+    last_health: dict[str, Any] = {}
+    while time.monotonic() - started <= max(0.2, timeout_seconds):
+        last_health = rpa_operator_guard_health(guard)
+        snapshot = last_health.get("state") if isinstance(last_health.get("state"), dict) else {}
+        if last_health.get("ok") is not True:
+            return last_health
+        if (
+            str(snapshot.get("mode") or "") == target_mode
+            and int(snapshot.get("control_epoch") or -1) == next_epoch
+            and str(snapshot.get("guard_instance_id") or "") == str(guard.get("guard_instance_id") or "")
+            and str(snapshot.get("active_ui_lock_id") or "") == ui_lock_id
+            and int(snapshot.get("active_fencing_token") or 0) == int(fencing_token or 0)
+            and bool(snapshot.get("lock_enabled")) == (target_mode == "active")
+        ):
             return {
                 "ok": True,
-                "mode": mode or "running",
-                "waited_seconds": round(waited_seconds, 3),
+                "mode": target_mode,
+                "guard_instance_id": guard.get("guard_instance_id"),
+                "active_ui_lock_id": ui_lock_id,
+                "active_fencing_token": int(fencing_token or 0),
+                "control_epoch": next_epoch,
+                "hooks_installed": bool(snapshot.get("hooks_installed")),
+                "lock_enabled": bool(snapshot.get("lock_enabled")),
+                "pid": guard.get("pid"),
+                "state": snapshot,
                 "reason": reason,
             }
-        if waited_seconds == 0.0:
-            paused_seen = True
-            try:
-                write_json(
-                    status_path,
-                    {
-                        "ok": True,
-                        "state": "paused",
-                        "message": "微信 RPA 已暂停，等待悬浮球恢复。",
-                        "tenant_id": str(guard.get("tenant_id") or active_tenant_id()),
-                    },
-                )
-            except Exception:
-                pass
-        if time.monotonic() - started >= pause_max_seconds:
-            raise RuntimeError(f"rpa_operator_guard_pause_timeout:{reason}")
-        time.sleep(0.2)
-        waited_seconds = time.monotonic() - started
+        time.sleep(0.04)
+    return {"ok": False, "mode": "fault", "reason": "operator_guard_transition_timeout", "expected_control_epoch": next_epoch, "last_health": last_health}
+
+
+def attach_rpa_operator_guard() -> dict[str, Any]:
+    """Attach a Sidecar to the Worker-owned guard without creating or stopping it."""
+
+    global _ACTIVE_GUARD
+    root = str(os.environ.get("CHEJIN_OPERATOR_GUARD_ROOT") or "").strip()
+    paths = rpa_operator_guard_paths()
+    if root:
+        root_path = Path(root)
+        paths = {
+            **paths,
+            "root": root_path,
+            "control_path": root_path / "operator_control.json",
+            "status_path": root_path / "runtime_status.json",
+            "state_path": root_path / "operator_guard.state.json",
+            "pid_path": root_path / "operator_guard.pid.json",
+        }
+    pid_record = read_json(paths["pid_path"])
+    guard = {
+        "ok": True,
+        "enabled": os.name == "nt",
+        "started": True,
+        "pid": int(pid_record.get("pid") or 0),
+        "guard_instance_id": str(os.environ.get("CHEJIN_OPERATOR_GUARD_INSTANCE_ID") or pid_record.get("guard_instance_id") or ""),
+        "tenant_id": active_tenant_id(),
+        "paths": {key: str(value) for key, value in paths.items()},
+    }
+    if os.name != "nt":
+        guard.update({"enabled": False, "started": False, "reason": "windows_only"})
+    _ACTIVE_GUARD = guard
+    health = rpa_operator_guard_health(guard)
+    return {**guard, **({"ok": False, "reason": health.get("reason")} if health.get("ok") is not True else {"health": health})}
+
+
+def rpa_operator_guard_checkpoint(*, reason: str = "") -> dict[str, Any]:
+    guard = _ACTIVE_GUARD or attach_rpa_operator_guard()
+    if not isinstance(guard, dict) or not guard.get("enabled"):
+        return {"ok": True, "skipped": True, "reason": "operator_guard_not_enabled"}
+    health = rpa_operator_guard_health(guard)
+    if health.get("ok") is not True:
+        raise RuntimeError(f"rpa_operator_guard_fault:{health.get('reason')}:{reason}")
+    mode = str(health.get("mode") or "fault")
+    if mode != "active":
+        raise RuntimeError(f"rpa_operator_guard_{mode}:{reason}")
+    return {"ok": True, "mode": mode, "reason": reason, "state": health.get("state")}

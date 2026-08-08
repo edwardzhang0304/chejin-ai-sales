@@ -404,6 +404,8 @@ class WorkerWebWindow(QMainWindow):
         profile = self.profile
         offline = self.connection_status == "offline"
         schedule_active = self.is_accept_schedule_active()
+        guard_health = self.runner.operator_guard_health()
+        guard_fault = self.runner.operator_guard_fault_latched or guard_health.get("ok") is not True or str(guard_health.get("mode") or "") == "fault"
         receive_state = "接单中" if run_status == "running" and schedule_active else "暂停接单"
         return {
             "workerId": self.binding.worker_id if self.binding else "",
@@ -415,12 +417,13 @@ class WorkerWebWindow(QMainWindow):
                 "receiveState": "离线" if offline else receive_state,
                 "connectionState": "连接异常" if offline else "连接正常",
                 "lastHeartbeat": _format_time(profile.last_heartbeat_at if profile else None),
-                "automationState": "可用" if profile and profile.rpa_component_status == "ready" else "不可用",
+                "automationState": "守护故障" if guard_fault else "可用" if profile and profile.rpa_component_status == "ready" else "不可用",
                 "wechatState": "已连接" if profile and profile.wechat_status == "logged_in" else "未连接",
                 "currentStep": self.runner.current_step or (profile.current_step if profile else None) or "",
             },
             "listener": self._listener_model(),
             "localLock": lock_summary(),
+            "operatorGuard": guard_health,
             "task": self._task_model_for_screen(display_task, offline, run_status),
             "runningSteps": self._running_steps(),
             "completedSteps": self._completed_steps(),
@@ -452,6 +455,11 @@ class WorkerWebWindow(QMainWindow):
 
     def _task_model_for_screen(self, task: Task | None, offline: bool, run_status: str) -> dict[str, str]:
         model = _task_model(task)
+        guard_health = self.runner.operator_guard_health()
+        if self.runner.operator_guard_fault_latched or guard_health.get("ok") is not True or str(guard_health.get("mode") or "") == "fault":
+            model["statusText"] = "守护故障"
+            model["metaText"] = "悬浮球安全守护异常，微信自动化已停止，请查看本机执行日志。"
+            return model
         if self.runner.run_status_sync_error and run_status == "paused":
             model["statusText"] = "暂停接单 · 同步失败"
             model["metaText"] = (

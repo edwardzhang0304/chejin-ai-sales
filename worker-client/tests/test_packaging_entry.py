@@ -32,9 +32,9 @@ class PackagingEntryDiagnosticsTest(unittest.TestCase):
         path.write_text(
             json.dumps(
                 {
-                    "version": "16.140.0",
+                    "version": "16.141.0",
                     "git_commit": "a" * 40,
-                    "git_branch": "codex/worker-v16.140.0",
+                    "git_branch": "codex/worker-v16.141.0",
                 }
             ),
             encoding="utf-8",
@@ -64,7 +64,7 @@ class PackagingEntryDiagnosticsTest(unittest.TestCase):
 
             path = root / "CheJinWorker" / "diagnostics" / "startup-crash.jsonl"
             payload = json.loads(path.read_text(encoding="utf-8").strip())
-            self.assertEqual(payload["version"], "16.140.0")
+            self.assertEqual(payload["version"], "16.141.0")
             self.assertEqual(payload["build_commit"], "a" * 40)
             self.assertEqual(payload["exception_type"], "ImportError")
             self.assertTrue(payload["timestamp"])

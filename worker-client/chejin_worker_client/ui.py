@@ -1105,8 +1105,12 @@ class WorkerWindow(QMainWindow):
         active_task = self.current_task
         display_task = active_task or self.last_task
         result = self.last_result
+        guard_health = self.runner.operator_guard_health()
+        guard_fault = self.runner.operator_guard_fault_latched or guard_health.get("ok") is not True or str(guard_health.get("mode") or "") == "fault"
 
-        if self.runner.run_status_sync_error and not is_running:
+        if guard_fault:
+            headline = "悬浮球守护故障，自动化已停止"
+        elif self.runner.run_status_sync_error and not is_running:
             headline = "已在本机暂停，后端同步失败"
         elif offline:
             headline = "服务端不可达"
@@ -1145,7 +1149,7 @@ class WorkerWindow(QMainWindow):
             ),
             kind=run_status_kind,
         )
-        self.rpa_tile.set_value("可用" if profile and profile.rpa_component_status == "ready" else "不可用", kind="ok" if profile and profile.rpa_component_status == "ready" else "danger")
+        self.rpa_tile.set_value("守护故障" if guard_fault else "可用" if profile and profile.rpa_component_status == "ready" else "不可用", kind="danger" if guard_fault else "ok" if profile and profile.rpa_component_status == "ready" else "danger")
         self.wechat_tile.set_value("已连接" if profile and profile.wechat_status == "logged_in" else "未检测到", kind="ok" if profile and profile.wechat_status == "logged_in" else "danger")
 
         run_text = "暂停接单" if is_running else "开始接单"
