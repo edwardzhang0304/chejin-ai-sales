@@ -1,10 +1,16 @@
 name: Worker Windows package gate
 
 on:
-  push:
-    branches:
-      - codex/worker-v16.145.0
   workflow_dispatch:
+    inputs:
+      release_approved:
+        description: C0-C4 Fast UAT passed and formal EXE build is approved
+        required: true
+        type: boolean
+        default: false
+      release_reason:
+        description: Reference to the completed UAT record
+        required: true
 
 permissions:
   contents: read
@@ -17,6 +23,16 @@ jobs:
       CHEJIN_VISION_CLIENT_API_KEY: ${{ secrets.CHEJIN_VISION_CLIENT_API_KEY }}
 
     steps:
+      - name: Enforce completed UAT approval
+        shell: powershell
+        run: |
+          if ("${{ inputs.release_approved }}" -ne "true") {
+            throw "Formal EXE build is blocked until Fast UAT C0-C4 is approved"
+          }
+          if ([string]::IsNullOrWhiteSpace("${{ inputs.release_reason }}")) {
+            throw "Formal EXE build requires a completed UAT record reference"
+          }
+
       - name: Check out exact source
         uses: actions/checkout@v4
         with:

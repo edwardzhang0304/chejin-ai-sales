@@ -5,6 +5,7 @@ import type {
   WorkerClientScreen,
   WorkerReceiveState,
 } from "./types";
+import { runtimePageKind } from "./runtimeBridgeState.mjs";
 
 interface WorkerClientBaselineProps {
   screen: WorkerClientScreen;
@@ -728,7 +729,7 @@ function LogsScreen({
 
 function renderScreen(props: WorkerClientBaselineProps) {
   const { screen, model, onScreenChange, onStartAccepting, onPauseAccepting, onUpdateAcceptSchedule } = props;
-  if (screen === "bind") return <BindScreen model={model} onBind={props.onBind} bindError={props.bindError} />;
+  if (runtimePageKind(screen) === "bind") return <BindScreen model={model} onBind={props.onBind} bindError={props.bindError} />;
   if (screen === "paused-empty") {
     return (
       <EmptyWorkbench

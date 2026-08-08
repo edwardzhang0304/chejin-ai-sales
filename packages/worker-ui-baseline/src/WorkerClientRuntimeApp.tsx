@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { WorkerClientBaseline } from "./WorkerClientBaseline";
+import { connectRuntimeBridge } from "./runtimeBridgeState.mjs";
 import type { WorkerClientModel, WorkerClientScreen } from "./types";
 
 interface BridgeState {
@@ -106,18 +107,9 @@ function initialScreen(): WorkerClientScreen {
   return screens.includes(screen as WorkerClientScreen) ? (screen as WorkerClientScreen) : "bind";
 }
 
-function parseState(payload: string): BridgeState | null {
-  try {
-    return JSON.parse(payload) as BridgeState;
-  } catch {
-    return null;
-  }
-}
-
 function App() {
   const [bridge, setBridge] = useState<CheJinBridge | null>(null);
   const [notice, setNotice] = useState("");
-  const latestRevision = useRef(-1);
   const [state, setState] = useState<BridgeState>({
     screen: initialScreen(),
     model: emptyRuntimeModel,
@@ -128,16 +120,7 @@ function App() {
     new window.QWebChannel(window.qt.webChannelTransport, (channel) => {
       const nextBridge = channel.objects.chejinBridge;
       setBridge(nextBridge);
-      const applyBridgeState = (payload: string) => {
-        const parsed = parseState(payload);
-        if (!parsed) return;
-        const revision = Number.isFinite(parsed.revision) ? Number(parsed.revision) : 0;
-        if (revision < latestRevision.current) return;
-        latestRevision.current = revision;
-        setState(parsed);
-      };
-      nextBridge.stateChanged?.connect(applyBridgeState);
-      nextBridge.initialState(applyBridgeState);
+      connectRuntimeBridge(nextBridge, (nextState: BridgeState) => setState(nextState));
     });
   }, []);
 

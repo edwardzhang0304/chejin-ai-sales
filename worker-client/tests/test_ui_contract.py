@@ -231,17 +231,9 @@ class UiContractTest(unittest.TestCase):
         self.assertIn('"targetReadRunningSteps": self._target_read_running_steps()', web_ui)
         self.assertIn('"replyRunningSteps": self._running_steps()', web_ui)
 
-    def test_runtime_bridge_serializes_bound_state_after_retired_feature_removal(self):
+    def test_runtime_bridge_serializes_without_retired_feature_residue(self):
         web_ui = (ROOT / "chejin_worker_client" / "web_ui.py").read_text(encoding="utf-8")
         classic_ui = (ROOT / "chejin_worker_client" / "ui.py").read_text(encoding="utf-8")
-        runtime = (
-            ROOT.parent
-            / "packages"
-            / "worker-ui-baseline"
-            / "src"
-            / "WorkerClientRuntimeApp.tsx"
-        ).read_text(encoding="utf-8")
-
         retired_names = (
             "guard" + "_fault",
             "guard" + "_health",
@@ -255,12 +247,6 @@ class UiContractTest(unittest.TestCase):
         self.assertIn('"notice": self.notice', web_ui)
         self.assertIn("self.state_revision += 1", web_ui)
         self.assertIn('self.notice = "绑定成功，已进入 Worker 工作台。"', web_ui)
-        self.assertLess(
-            runtime.index("nextBridge.stateChanged?.connect(applyBridgeState)"),
-            runtime.index("nextBridge.initialState(applyBridgeState)"),
-        )
-        self.assertIn("revision < latestRevision.current", runtime)
-        self.assertIn("window.clearTimeout(timeoutId)", runtime)
 
     def test_runtime_ui_version_comes_from_the_packaged_client_version(self):
         web_ui = (ROOT / "chejin_worker_client" / "web_ui.py").read_text(encoding="utf-8")

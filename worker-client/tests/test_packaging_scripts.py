@@ -10,6 +10,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +38,19 @@ from tests.contract_artifacts import resolve_contract_artifact
 
 class PackagingScriptsTest(unittest.TestCase):
     @staticmethod
+    def _load_fast_uat_package_module():
+        path = ROOT / "scripts" / "build-fast-uat-package.py"
+        spec = importlib.util.spec_from_file_location(
+            "chejin_build_fast_uat_package_test",
+            path,
+        )
+        if spec is None or spec.loader is None:
+            raise AssertionError("fast UAT package module unavailable")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    @staticmethod
     def _load_source_package_module():
         path = ROOT / "scripts" / "build-source-package.py"
         spec = importlib.util.spec_from_file_location(
@@ -51,9 +66,11 @@ class PackagingScriptsTest(unittest.TestCase):
     def test_powershell_param_block_precedes_executable_statements(self):
         scripts = [
             ROOT / "scripts" / "build-windows.ps1",
+            ROOT / "scripts" / "build-fast-uat-runtime.ps1",
             ROOT / "scripts" / "collect-wechat-diagnostics.ps1",
             ROOT / "scripts" / "run-preflight.ps1",
             ROOT / "scripts" / "validate-package.ps1",
+            ROOT / "packaging" / "start-fast-uat.ps1",
         ]
 
         for script in scripts:
@@ -182,6 +199,135 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("client_delivery_boundary_check", workflow)
         self.assertIn("actions/upload-artifact@v4", workflow)
         self.assertIn("if-no-files-found: error", workflow)
+
+    def test_formal_exe_workflow_is_manual_and_requires_completed_uat(self):
+        workflow = (
+            ROOT.parent / ".github" / "workflows" / "worker-windows-package.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertNotIn("\n  push:", workflow)
+        self.assertIn("release_approved:", workflow)
+        self.assertIn("release_reason:", workflow)
+        self.assertIn("Formal EXE build is blocked until Fast UAT C0-C4 is approved", workflow)
+
+    def test_fast_uat_workflow_reuses_runtime_and_probes_extracted_zip(self):
+        workflow = (
+            ROOT.parent / ".github" / "workflows" / "worker-windows-fast-uat.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("actions/cache@v4", workflow)
+        self.assertIn("build-fast-uat-runtime.ps1", workflow)
+        self.assertIn("python run_checks.py", workflow)
+        self.assertIn("build-fast-uat-package.py", workflow)
+        self.assertIn("debug_uat", workflow)
+        self.assertIn("not_for_customer_release", workflow)
+        self.assertIn("Expand-Archive -LiteralPath $zip.FullName", workflow)
+        self.assertIn("start-fast-uat.ps1", workflow)
+        self.assertIn("-PreflightOnly -SkipBackend -SkipWechat", workflow)
+        self.assertIn("actions/upload-artifact@v4", workflow)
+
+    def test_fast_uat_launcher_uses_locked_runtime_and_shared_worker_data(self):
+        launcher = (ROOT / "packaging" / "start-fast-uat.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+
+        self.assertIn('$env:CHEJIN_BUILD_KIND = "debug_uat_locked"', launcher)
+        self.assertIn("CHEJIN_VISION_CREDENTIAL_PATH", launcher)
+        self.assertIn("CHEJIN_OMNIAUTO_RPA_SOURCE", launcher)
+        self.assertIn('Join-Path $localAppData "CheJinWorker\\diagnostics"', launcher)
+        self.assertNotIn("CHEJIN_WORKER_HOME", launcher)
+        self.assertIn('"-m", "chejin_worker_client.main"', launcher)
+
+    def test_fast_uat_zip_is_portable_traceable_and_explicitly_non_formal(self):
+        module = self._load_fast_uat_package_module()
+        commit = "a" * 40
+        provenance = {
+            "schema_version": 2,
+            "upstream_base_commit": "b" * 40,
+            "chejin_integration_commit": "c" * 40,
+        }
+
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ,
+            {"CHEJIN_VISION_CLIENT_API_KEY": "fast-uat-secret-never-public"},
+            clear=False,
+        ):
+            root = Path(temp)
+            runtime = root / "runtime-base"
+            output = root / "release"
+            runtime.mkdir()
+            (runtime / "python.exe").write_bytes(b"portable-python")
+            (runtime / "pythonw.exe").write_bytes(b"portable-pythonw")
+            (runtime / "fast-uat-runtime-base.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "runtime_kind": "chejin_worker_fast_uat_base",
+                        "python_version": "3.12.10",
+                        "platform": "windows-x64",
+                        "reusable": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            def copy_worker(destination):
+                target = destination / "chejin_worker_client" / "__init__.py"
+                target.parent.mkdir(parents=True)
+                target.write_text('__version__ = "test"\n', encoding="utf-8")
+
+            def copy_omniauto(destination):
+                target = destination / "omniauto-rpa" / "apps" / "sidecar.py"
+                target.parent.mkdir(parents=True)
+                target.write_text("# packaged OmniAuto\n", encoding="utf-8")
+
+            with patch.object(module, "_copy_worker_app", side_effect=copy_worker), patch.object(
+                module, "_copy_omniauto", side_effect=copy_omniauto
+            ), patch.object(
+                module, "load_source_provenance", return_value=provenance
+            ), patch.object(
+                module,
+                "tree_manifest",
+                return_value={"tree_sha256": "d" * 64, "file_count": 1},
+            ):
+                result = module.build(
+                    runtime_root=runtime,
+                    output_dir=output,
+                    git_commit=commit,
+                    git_branch="codex/worker-fast-uat-test",
+                )
+
+            zip_path = Path(str(result["zip_path"]))
+            self.assertTrue(zip_path.is_file())
+            with zipfile.ZipFile(zip_path) as archive:
+                members = set(archive.namelist())
+                manifest = json.loads(
+                    archive.read("CheJinWorkerDebug/fast-uat-manifest.json")
+                )
+                credential = json.loads(
+                    archive.read("CheJinWorkerDebug/app/vision-runtime.json")
+                )
+                public_manifest_bytes = archive.read(
+                    "CheJinWorkerDebug/fast-uat-manifest.json"
+                )
+
+            self.assertIn("CheJinWorkerDebug/runtime/python.exe", members)
+            self.assertIn("CheJinWorkerDebug/runtime/pythonw.exe", members)
+            self.assertIn("CheJinWorkerDebug/start-fast-uat.ps1", members)
+            self.assertTrue(manifest["debug_uat"])
+            self.assertFalse(manifest["formal_release"])
+            self.assertTrue(manifest["not_for_customer_release"])
+            self.assertEqual(manifest["git_commit"], commit)
+            self.assertEqual(manifest["omniauto_source"], provenance)
+            self.assertEqual(
+                manifest["runtime_base"]["runtime_kind"],
+                "chejin_worker_fast_uat_base",
+            )
+            self.assertEqual(
+                credential["vision_api_key"], "fast-uat-secret-never-public"
+            )
+            self.assertNotIn(b"fast-uat-secret-never-public", public_manifest_bytes)
 
     def test_source_package_script_excludes_local_env_and_runtime_state(self):
         text = (ROOT / "scripts" / "build-source-package.py").read_text(encoding="utf-8")
