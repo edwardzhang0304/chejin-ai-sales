@@ -1035,7 +1035,12 @@ class WeChatConnector:
                 payload.setdefault("error", "compat_sidecar_missing")
             return payload
 
-        use_daemon = os.getenv("WECHAT_WIN32_OCR_DAEMON_ENABLED", "").strip().lower() not in {"0", "false", "no", "off"}
+        use_daemon = os.getenv("WECHAT_WIN32_OCR_DAEMON_ENABLED", "").strip().lower() not in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }
         if use_daemon:
             payload = self._call_compat_daemon(args, allow_failure=allow_failure, env_overrides=env_overrides)
             if payload.get("ok") or payload.get("state") not in {"compat_daemon_call_failed", "compat_daemon_invalid_response"}:
@@ -1061,8 +1066,11 @@ class WeChatConnector:
         allow_failure: bool,
         env_overrides: dict[str, str] | None,
     ) -> dict[str, Any]:
-        python = self.compat_sidecar_python if self.compat_sidecar_python.exists() else Path(sys.executable)
-        cmd = [str(python), str(self.compat_sidecar_script), *compat_args(args)]
+        cmd = compat_sidecar_command(
+            self.compat_sidecar_python,
+            self.compat_sidecar_script,
+            args,
+        )
         env = os.environ.copy()
         env["PYTHONUTF8"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
@@ -1494,10 +1502,14 @@ def _ensure_compat_daemon(
             return _compat_daemon_proc
         _kill_compat_daemon()
 
-    python = compat_sidecar_python if compat_sidecar_python.exists() else Path(sys.executable)
     env = _compat_daemon_env(root=root)
+    command = compat_sidecar_command(
+        compat_sidecar_python,
+        compat_sidecar_script,
+        ["--daemon"],
+    )
     _compat_daemon_proc = subprocess.Popen(
-        [str(python), str(compat_sidecar_script), "--daemon"],
+        command,
         cwd=str(root),
         env=env,
         stdin=subprocess.PIPE,
@@ -1505,6 +1517,18 @@ def _ensure_compat_daemon(
         stderr=subprocess.PIPE,
     )
     return _compat_daemon_proc
+
+
+def compat_sidecar_command(
+    compat_sidecar_python: Path,
+    compat_sidecar_script: Path,
+    args: list[str],
+) -> list[str]:
+    normalized_args = compat_args(args)
+    if bool(getattr(sys, "frozen", False)):
+        return [str(sys.executable), "--omniauto-sidecar", *normalized_args]
+    python = compat_sidecar_python if compat_sidecar_python.exists() else Path(sys.executable)
+    return [str(python), str(compat_sidecar_script), *normalized_args]
 
 
 def _kill_compat_daemon() -> None:

@@ -53,6 +53,7 @@ class PackagingScriptsTest(unittest.TestCase):
             ROOT / "scripts" / "collect-wechat-diagnostics.ps1",
             ROOT / "scripts" / "run-preflight.ps1",
             ROOT / "scripts" / "validate-package.ps1",
+            ROOT / "scripts" / "probe-packaged-operator-guard.ps1",
         ]
 
         for script in scripts:
@@ -94,10 +95,14 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('"uiautomation"', text)
         self.assertIn('"pyperclip"', text)
         self.assertIn('"pywinauto"', text)
+        self.assertIn('"psutil"', text)
+        self.assertIn('"tkinter"', text)
         self.assertIn('"--omniauto-sidecar", "--help"', text)
         self.assertIn("最终 exe 无法启动内置 OmniAuto sidecar", text)
         self.assertIn('"--omniauto-ocr-probe"', text)
         self.assertIn("最终 exe 无法启动图片复核 OCR 独立进程", text)
+        self.assertIn("probe-packaged-operator-guard.ps1", text)
+        self.assertIn("最终 exe Operator Guard 真实启动探针未通过", text)
         self.assertIn("runtime-build-identity.json", text)
         self.assertIn("CHEJIN_BUILD_IDENTITY_PATH", text)
         self.assertNotIn('$OmniAutoUpstreamCommit = "855c218', text)
@@ -123,7 +128,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("delivery ZIP does not contain the packaged runtime directory", workflow)
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v16.138.0-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v16.139.0-windows-x64.delivery.json", workflow)
         self.assertIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn("vision_credential_embedded", workflow)
         self.assertIn("vision_configuration_locked", workflow)
@@ -136,6 +141,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('uat_launcher_utf8_bom_check = "passed"', workflow)
         self.assertIn('uat_launcher_powershell_5_1_parse_check = "passed"', workflow)
         self.assertIn("client_delivery_boundary_check", workflow)
+        self.assertIn("probe-packaged-operator-guard.ps1", workflow)
         self.assertIn("actions/upload-artifact@v4", workflow)
         self.assertIn("if-no-files-found: error", workflow)
 
@@ -498,6 +504,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("_restore_frozen_worker_stdio", entry_text)
         self.assertIn('"--omniauto-ocr-worker"', entry_text)
         self.assertIn('"--vision-provider-worker"', entry_text)
+        self.assertIn('"--rpa-operator-guard"', entry_text)
+        self.assertIn('"--omniauto-vision-wechat-worker"', entry_text)
         self.assertIn("GetStdHandle", entry_text)
         self.assertIn("CONTRACT_PATH = resolve_contract_path(ROOT)", text)
         self.assertIn('(str(CONTRACT_PATH), "contracts")', text)
@@ -525,6 +533,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('"rapidocr_onnxruntime"', text)
         self.assertIn('"pyperclip"', text)
         self.assertIn('"pywinauto"', text)
+        self.assertIn('"psutil"', text)
+        self.assertIn('"tkinter"', text)
         self.assertIn("packaging-runtime-diagnostics.jsonl", text)
         self.assertIn("CHEJIN_PACKAGING_DIAGNOSTIC_PATH", text)
         self.assertIn('"packaging\\start-uat.ps1"', text)
@@ -583,7 +593,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "16.138.0"', workflow)
+        self.assertIn('version -ne "16.139.0"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)
@@ -591,6 +601,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("chejin-worker-packaged-diagnostics.jsonl", workflow)
         self.assertIn('"--preflight-format", "json", "--write-report"', workflow)
         self.assertIn("packaged Vision live capability probe did not pass", workflow)
+        self.assertIn("packaged Operator Guard probe failed", workflow)
         self.assertIn('Remove-Item Env:CHEJIN_PACKAGING_DIAGNOSTIC_PATH', workflow)
         self.assertIn('"--startup-crash-probe"', workflow)
         self.assertIn("startup-crash.jsonl", workflow)
@@ -600,6 +611,20 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("startup crash diagnostic build identity mismatch", workflow)
         self.assertIn("contents: read", workflow)
         self.assertNotIn("contents: write", workflow)
+
+    def test_packaged_operator_guard_probe_requires_real_ready_state(self):
+        text = (ROOT / "scripts" / "probe-packaged-operator-guard.ps1").read_text(
+            encoding="ascii"
+        )
+
+        self.assertIn('"--rpa-operator-guard"', text)
+        self.assertIn('"--allow-manual-input"', text)
+        self.assertIn("hooks_installed", text)
+        self.assertIn("floating_indicator_active", text)
+        self.assertIn("floating_indicator_render_ok", text)
+        self.assertIn("operator_guard.state.json", text)
+        self.assertIn("PACKAGED_OPERATOR_GUARD_READY", text)
+        self.assertIn("WaitForExit(20000)", text)
 
     def test_packaging_entry_imports_main_with_package_context(self):
         environment = dict(os.environ)

@@ -106,6 +106,36 @@ def run_bundled_omniauto_ocr_probe() -> int:
     return 0 if result.get("ok") is True else 1
 
 
+def _bundled_omniauto_root() -> Path:
+    frozen_root = getattr(sys, "_MEIPASS", None)
+    if not frozen_root:
+        raise RuntimeError("bundled_omniauto_worker_requires_frozen_runtime")
+    omniauto_root = Path(frozen_root) / "omniauto-rpa"
+    if str(omniauto_root) not in sys.path:
+        sys.path.insert(0, str(omniauto_root))
+    return omniauto_root
+
+
+def run_bundled_rpa_operator_guard(argv: list[str]) -> int:
+    """Run the operator guard inside the frozen executable."""
+
+    _bundled_omniauto_root()
+    from apps.wechat_ai_customer_service.scripts import run_rpa_operator_guard
+
+    return int(run_rpa_operator_guard.main(argv))
+
+
+def run_bundled_omniauto_vision_wechat_worker(argv: list[str]) -> int:
+    """Run the Vision-owned WeChat desktop worker in the frozen executable."""
+
+    _bundled_omniauto_root()
+    from apps.wechat_ai_customer_service.optional_plugins.vision.integrations import (
+        wechat_worker,
+    )
+
+    return int(wechat_worker.main(argv))
+
+
 def main() -> int:
     if len(sys.argv) >= 2 and sys.argv[1] == "--omniauto-sidecar":
         return run_bundled_omniauto_sidecar(sys.argv[2:])
@@ -115,6 +145,10 @@ def main() -> int:
         return run_bundled_omniauto_ocr_worker()
     if len(sys.argv) >= 2 and sys.argv[1] == "--omniauto-ocr-probe":
         return run_bundled_omniauto_ocr_probe()
+    if len(sys.argv) >= 2 and sys.argv[1] == "--rpa-operator-guard":
+        return run_bundled_rpa_operator_guard(sys.argv[2:])
+    if len(sys.argv) >= 2 and sys.argv[1] == "--omniauto-vision-wechat-worker":
+        return run_bundled_omniauto_vision_wechat_worker(sys.argv[2:])
 
     parser = argparse.ArgumentParser(prog="chejin-worker-client")
     parser.add_argument("--preflight", action="store_true", help="运行客户端环境预检后退出。")

@@ -113,6 +113,8 @@ a = Analysis(
         "uiautomation",
         "pyperclip",
         "pywinauto",
+        "psutil",
+        "tkinter",
         *RAPIDOCR_HIDDEN_IMPORTS,
         *PIL_HIDDEN_IMPORTS,
     ],

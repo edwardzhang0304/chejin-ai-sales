@@ -35,8 +35,14 @@ def _worker_root(connector: Any) -> Path:
     return Path(configured) if configured else Path(__file__).resolve().parents[5]
 
 
+def _worker_command(connector: Any, args: list[str]) -> list[str]:
+    if bool(getattr(sys, "frozen", False)):
+        return [sys.executable, "--omniauto-vision-wechat-worker", *args]
+    return [_worker_python(connector), "-m", _WORKER_MODULE, *args]
+
+
 def _run_vision_worker(connector: Any, args: list[str]) -> dict[str, Any]:
-    command = [_worker_python(connector), "-m", _WORKER_MODULE, *args]
+    command = _worker_command(connector, args)
     timeout = max(5.0, float(getattr(connector, "timeout_seconds", 90.0) or 90.0))
     creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
     worker_env = os.environ.copy()

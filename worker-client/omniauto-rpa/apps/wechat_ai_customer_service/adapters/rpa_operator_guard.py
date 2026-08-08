@@ -279,6 +279,12 @@ def verify_rpa_operator_guard(
     return {"ok": True, "reason": "guard_ready", "pid": pid, "state_pid": state_pid, "state": last_state}
 
 
+def operator_guard_command(args: list[str]) -> list[str]:
+    if bool(getattr(sys, "frozen", False)):
+        return [str(sys.executable), "--rpa-operator-guard", *args]
+    return [str(sys.executable), str(GUARD_SCRIPT), *args]
+
+
 def start_rpa_operator_guard(*, operation: str = "", route: str = "", artifact_dir: str | None = None) -> dict[str, Any]:
     global _ACTIVE_GUARD
     settings = rpa_operator_guard_settings()
@@ -333,9 +339,7 @@ def start_rpa_operator_guard(*, operation: str = "", route: str = "", artifact_d
             "tenant_id": tenant_id,
         },
     )
-    command = [
-        str(sys.executable),
-        str(GUARD_SCRIPT),
+    guard_args = [
         "--tenant-id",
         tenant_id,
         "--control-path",
@@ -353,8 +357,9 @@ def start_rpa_operator_guard(*, operation: str = "", route: str = "", artifact_d
         "--pause-poll-interval-ms",
         str(int(settings.get("pause_poll_interval_ms") or 550)),
     ]
-    command.append("--block-manual-input" if settings.get("block_manual_input", True) else "--allow-manual-input")
-    command.append("--floating-indicator" if settings.get("floating_indicator_enabled", True) else "--no-floating-indicator")
+    guard_args.append("--block-manual-input" if settings.get("block_manual_input", True) else "--allow-manual-input")
+    guard_args.append("--floating-indicator" if settings.get("floating_indicator_enabled", True) else "--no-floating-indicator")
+    command = operator_guard_command(guard_args)
     creationflags = 0
     if os.name == "nt":
         creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
