@@ -462,6 +462,149 @@ def _trim_sparse_vertical_whiskers(
     return trimmed, len(trimmed) != len(cells)
 
 
+def _media_surface_cell_active(
+    stat: ImageStat.Stat,
+    background: list[float],
+) -> bool:
+    mean = stat.mean or [0.0, 0.0, 0.0]
+    spread = sum(
+        float(value) for value in (stat.stddev or [0.0, 0.0, 0.0])
+    ) / 3.0
+    delta = max(mean) - min(mean)
+    brightness = sum(float(value) for value in mean) / 3.0
+    dark_low_texture_surface = brightness <= 58.0 and spread <= 20.0
+    background_distance = sum(
+        abs(float(value) - background[index])
+        for index, value in enumerate(mean[:3])
+    ) / 3.0
+    pale_rectangular_surface = (
+        background_distance >= 6.0 and spread <= 24.0
+    )
+    return (
+        spread >= 16.0
+        or delta >= 24.0
+        or dark_low_texture_surface
+        or pale_rectangular_surface
+    )
+
+
+def _fine_grid_confirms_separate_stacked_surfaces(
+    small: Image.Image,
+    *,
+    coarse_cells: list[tuple[int, int]],
+    coarse_block: int,
+    background: list[float],
+    side: str,
+    minimum_media_height: float,
+) -> bool:
+    """Confirm that one coarse L-component is really two fine components."""
+
+    if not coarse_cells or side not in {"customer", "self"}:
+        return False
+    fine_block = 2
+    min_x = min(x for x, _ in coarse_cells) * coarse_block
+    max_x = (max(x for x, _ in coarse_cells) + 1) * coarse_block
+    min_y = min(y for _, y in coarse_cells) * coarse_block
+    max_y = (max(y for _, y in coarse_cells) + 1) * coarse_block
+    padding = coarse_block
+    start_gx = max(0, (min_x - padding) // fine_block)
+    end_gx = min(
+        small.width // fine_block - 1,
+        (max_x + padding - 1) // fine_block,
+    )
+    start_gy = max(0, (min_y - padding) // fine_block)
+    end_gy = min(
+        small.height // fine_block - 1,
+        (max_y + padding - 1) // fine_block,
+    )
+    active: set[tuple[int, int]] = set()
+    for gy in range(start_gy, end_gy + 1):
+        for gx in range(start_gx, end_gx + 1):
+            box = (
+                gx * fine_block,
+                gy * fine_block,
+                min(small.width, (gx + 1) * fine_block),
+                min(small.height, (gy + 1) * fine_block),
+            )
+            if _media_surface_cell_active(
+                ImageStat.Stat(small.crop(box)),
+                background,
+            ):
+                active.add((gx, gy))
+
+    components: list[dict[str, float]] = []
+    visited: set[tuple[int, int]] = set()
+    candidate_width = max_x - min_x
+    candidate_height = max_y - min_y
+    for seed in sorted(active, key=lambda item: (item[1], item[0])):
+        if seed in visited:
+            continue
+        stack = [seed]
+        visited.add(seed)
+        cells: list[tuple[int, int]] = []
+        while stack:
+            cx, cy = stack.pop()
+            cells.append((cx, cy))
+            for neighbour in (
+                (cx - 1, cy),
+                (cx + 1, cy),
+                (cx, cy - 1),
+                (cx, cy + 1),
+            ):
+                if neighbour in active and neighbour not in visited:
+                    visited.add(neighbour)
+                    stack.append(neighbour)
+        left = min(x for x, _ in cells) * fine_block
+        right = (max(x for x, _ in cells) + 1) * fine_block
+        top = min(y for _, y in cells) * fine_block
+        bottom = (max(y for _, y in cells) + 1) * fine_block
+        width = right - left
+        height = bottom - top
+        cell_area = max(1, (width // fine_block) * (height // fine_block))
+        density = len(cells) / cell_area
+        if (
+            width >= max(8.0, candidate_width * 0.35)
+            and height >= max(6.0, candidate_height * 0.25)
+            and density >= 0.72
+        ):
+            components.append(
+                {
+                    "left": float(left),
+                    "right": float(right),
+                    "top": float(top),
+                    "bottom": float(bottom),
+                    "width": float(width),
+                    "height": float(height),
+                    "density": float(density),
+                }
+            )
+
+    components.sort(key=lambda item: (item["top"], item["left"]))
+    for index, upper in enumerate(components):
+        for lower in components[index + 1 :]:
+            gap = lower["top"] - upper["bottom"]
+            if gap < 0 or gap > max(4.0, candidate_height * 0.18):
+                continue
+            # Two separate short chat-row surfaces are not one media object.
+            # This covers voice-duration + expanded-transcript rows even when
+            # their widths are similar. Two real stacked image thumbnails are
+            # intentionally not suppressed: each is tall enough to remain a
+            # standalone media candidate on the next observation frame.
+            if (
+                upper["height"] >= minimum_media_height
+                or lower["height"] >= minimum_media_height
+            ):
+                continue
+            edge_delta = (
+                abs(upper["left"] - lower["left"])
+                if side == "customer"
+                else abs(upper["right"] - lower["right"])
+            )
+            if edge_delta <= fine_block:
+                return True
+    return False
+
+
 def image_bubble_visual_fingerprint(
     screenshot: Image.Image,
     bounds: Any,
@@ -704,6 +847,7 @@ def detect_visual_image_bubbles(
     max_images: int = DEFAULT_MAX_VISIBLE_IMAGE_CANDIDATES,
     side_filter: str = "customer",
     time_markers: list[dict[str, Any]] | None = None,
+    diagnostics: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     image = screenshot.convert("RGB")
     width, height = image.size
@@ -730,34 +874,9 @@ def detect_visual_image_bubbles(
                 min(small.width, (gx + 1) * block),
                 min(small.height, (gy + 1) * block),
             )
-            stat = ImageStat.Stat(small.crop(box))
-            mean = stat.mean or [0.0, 0.0, 0.0]
-            spread = sum(float(value) for value in (stat.stddev or [0.0, 0.0, 0.0])) / 3.0
-            delta = max(mean) - min(mean)
-            brightness = sum(float(value) for value in mean) / 3.0
-            # A screenshot/document image can be almost monochrome (for
-            # example a dark terminal screenshot), so it has neither colour
-            # delta nor enough local texture for the original detector. Keep
-            # sufficiently large dark surfaces as candidates; the later
-            # connected-component size and text-overlap checks still reject
-            # avatars, glyphs and ordinary UI chrome.
-            dark_low_texture_surface = brightness <= 58.0 and spread <= 20.0
-            background_distance = sum(
-                abs(float(value) - background[index])
-                for index, value in enumerate(mean[:3])
-            ) / 3.0
-            # Pale documents and screenshots often have almost no texture or
-            # colour spread. Their rectangular surface still differs from the
-            # surrounding chat canvas. The downstream lane, avatar-row, size
-            # and text-surface checks remain authoritative structural gates.
-            pale_rectangular_surface = (
-                background_distance >= 6.0 and spread <= 24.0
-            )
-            active[gy][gx] = (
-                spread >= 16.0
-                or delta >= 24.0
-                or dark_low_texture_surface
-                or pale_rectangular_surface
+            active[gy][gx] = _media_surface_cell_active(
+                ImageStat.Stat(small.crop(box)),
+                background,
             )
     visited: set[tuple[int, int]] = set()
     candidates: list[dict[str, Any]] = []
@@ -826,6 +945,44 @@ def detect_visual_image_bubbles(
                 continue
             side, structural_score, structure_evidence = structural_side
             if clean_side_filter != "all" and side != clean_side_filter:
+                continue
+            if _fine_grid_confirms_separate_stacked_surfaces(
+                small,
+                coarse_cells=cells,
+                coarse_block=block,
+                background=background,
+                side=side,
+                minimum_media_height=90.0 * scale,
+            ):
+                if diagnostics is not None:
+                    diagnostics.append(
+                        {
+                            "event": "image_candidate_rejected_by_fine_grid",
+                            "reason": "separate_stacked_chat_row_surfaces",
+                            "bounds": list(bounds),
+                            "side": side,
+                            "component_fill_ratio": round(
+                                component_fill_ratio,
+                                6,
+                            ),
+                            "text_overlap_ratio": round(
+                                _maximum_text_overlap_ratio(
+                                    bounds,
+                                    messages or [],
+                                ),
+                                6,
+                            ),
+                            "role_facing_edge_surface_continuity": round(
+                                _role_facing_edge_surface_continuity(
+                                    image,
+                                    bounds,
+                                    side=side,
+                                    background=background,
+                                ),
+                                6,
+                            ),
+                        }
+                    )
                 continue
             bounds, avatar_column_excluded = _exclude_avatar_column_from_media_bounds(
                 image,

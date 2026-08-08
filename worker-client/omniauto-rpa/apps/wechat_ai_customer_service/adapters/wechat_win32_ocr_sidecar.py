@@ -2343,12 +2343,47 @@ def voice_transcribe_payload(
             not confirm_target or c2_target_activation_confirmed(final_target_confirmation)
         )
         image_observation_errors: list[dict[str, Any]] = []
+        image_candidate_diagnostics: list[dict[str, Any]] = []
+
+        def binding_occurrence_key(item: dict[str, Any]) -> str:
+            for key in (
+                "id",
+                "message_id",
+                "canonical_input_id",
+                "original_message_id",
+            ):
+                value = str(item.get(key) or "").strip()
+                if value:
+                    return f"id:{value}"
+            rect = item.get("bubble_rect")
+            rect_key = json.dumps(rect, ensure_ascii=False, sort_keys=True)
+            content = str(
+                item.get("content_clean") or item.get("content") or ""
+            ).strip()
+            role = str(item.get("sender_role") or item.get("sender") or "").strip()
+            return f"visual:{role}:{rect_key}:{content}"
+
+        bound_by_occurrence = {
+            binding_occurrence_key(item): dict(item)
+            for item in transcribed_messages
+            if isinstance(item, dict)
+        }
+        messages_with_bound_transcripts: list[dict[str, Any]] = []
+        for message in after_messages:
+            if not isinstance(message, dict):
+                continue
+            key = binding_occurrence_key(message)
+            messages_with_bound_transcripts.append(
+                bound_by_occurrence.pop(key, dict(message))
+            )
         authoritative_messages = merge_structural_image_messages(
             final_screenshot,
             final_ocr_items,
-            after_messages,
+            messages_with_bound_transcripts,
             target=target,
             observation_validation_errors=image_observation_errors,
+            voice_action_attempts=voice_attempts,
+            image_candidate_diagnostics=image_candidate_diagnostics,
         )
         observations = build_message_observations_v3(authoritative_messages)
         observation_validation_errors = [
@@ -2457,6 +2492,7 @@ def voice_transcribe_payload(
             "observations": observations,
             "send_context_guard": build_send_context_guard(observations),
             "observation_validation_errors": observation_validation_errors,
+            "image_candidate_diagnostics": image_candidate_diagnostics,
             "final_frame_reusable": final_frame_reusable,
             "final_frame_validation": {
                 "target_confirmed": final_target_confirmed,
@@ -5316,6 +5352,8 @@ def merge_structural_image_messages(
     *,
     target: str,
     observation_validation_errors: list[dict[str, Any]] | None = None,
+    voice_action_attempts: list[dict[str, Any]] | None = None,
+    image_candidate_diagnostics: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     merged = [dict(item) for item in messages if isinstance(item, dict)]
     if screenshot is None:
@@ -5359,6 +5397,8 @@ def merge_structural_image_messages(
                     64,
                 )
             ),
+            voice_action_attempts=voice_action_attempts,
+            diagnostics=image_candidate_diagnostics,
         )
     except Exception as exc:
         return image_observation_failed(

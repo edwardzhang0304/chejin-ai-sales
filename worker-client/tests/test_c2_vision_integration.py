@@ -4239,6 +4239,210 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertEqual(merged, [text_message])
         self.assertEqual(errors, [])
 
+    def test_confirmed_voice_action_suppresses_overlapping_image_candidate(self):
+        """Regression for the Windows frame captured at 2026-08-08 18:58."""
+        from apps.wechat_ai_customer_service.adapters import (
+            wechat_win32_ocr_sidecar as sidecar,
+        )
+        from apps.wechat_ai_customer_service.optional_plugins.vision.capture import (
+            surface,
+        )
+
+        screenshot = Image.new("RGB", (974, 853), "white")
+        confirmed_voice = {
+            "id": "voice-expanded-customer-3s",
+            "type": "voice",
+            "sender_role": "customer",
+            "content": "我们吃完啦，准备回家。",
+            "bubble_rect": [486, 619, 690, 653],
+            "parent_voice_anchor_key": "voice-stable:real-3s",
+            "voice_anchor": {
+                "anchor_key": "voice-anchor:real-3s",
+                "anchor_stable_key": "voice-stable:real-3s",
+                "anchor_structural_key": "voice-structural:real-3s",
+                "item": {
+                    "sender_role": "customer",
+                    "parser_bubble_rect": [486, 619, 534, 645],
+                },
+            },
+        }
+        voice_attempts = [{
+            "attempt_index": 1,
+            "action_phase": "confirmed",
+            "effective_success": True,
+            "click": {"ok": True},
+            "processed_anchor_keys": ["voice-stable:real-3s"],
+            "context_anchor": {
+                "anchor_stable_key": "voice-stable:real-3s",
+            },
+        }]
+        false_candidate = {
+            "bounds": [476, 559, 690, 653],
+            "side": "customer",
+            "component_fill_ratio": 0.678571,
+            "text_overlap_ratio": 0.0,
+        }
+        diagnostics = []
+        try:
+            with patch.object(
+                surface,
+                "detect_visual_image_bubbles",
+                return_value=[false_candidate],
+            ):
+                merged = sidecar.merge_structural_image_messages(
+                    screenshot,
+                    [],
+                    [confirmed_voice],
+                    target="CJR8S5K3",
+                    voice_action_attempts=voice_attempts,
+                    image_candidate_diagnostics=diagnostics,
+                )
+        finally:
+            screenshot.close()
+
+        self.assertEqual([(item["type"], item["content"]) for item in merged], [
+            ("voice", "我们吃完啦，准备回家。"),
+        ])
+        self.assertFalse(any(item.get("type") == "image" for item in merged))
+        self.assertEqual(
+            diagnostics[0]["event"],
+            "image_candidate_suppressed_by_confirmed_voice_action",
+        )
+
+    def test_voice_image_arbitration_requires_every_action_and_binding_proof(self):
+        from apps.wechat_ai_customer_service.optional_plugins.vision.capture import (
+            surface,
+        )
+
+        image = {"bounds": [476, 559, 690, 653], "side": "customer"}
+        voice = {
+            "type": "voice",
+            "sender_role": "customer",
+            "content": "我们吃完啦，准备回家。",
+            "parent_voice_anchor_key": "voice-stable:strict",
+            "voice_anchor": {
+                "anchor_key": "voice-anchor:strict",
+                "anchor_stable_key": "voice-stable:strict",
+                "anchor_structural_key": "voice-structural:strict",
+                "item": {
+                    "sender_role": "customer",
+                    "parser_bubble_rect": [486, 619, 534, 645],
+                },
+            },
+        }
+        attempt = {
+            "attempt_index": 1,
+            "action_phase": "confirmed",
+            "effective_success": True,
+            "click": {"ok": True},
+            "processed_anchor_keys": ["voice-stable:strict"],
+            "context_anchor": {"anchor_stable_key": "voice-stable:strict"},
+        }
+        self.assertEqual(
+            surface.image_candidates_without_confirmed_voice_action_conflicts(
+                [image],
+                [voice],
+                [attempt],
+            ),
+            [],
+        )
+
+        invalid_cases = {
+            "missing_stable_position": ({
+                **voice,
+                "voice_anchor": {**voice["voice_anchor"], "item": {"sender_role": "customer"}},
+            }, attempt, image),
+            "click_not_confirmed": (voice, {**attempt, "click": {"ok": False}}, image),
+            "placeholder_content": ({**voice, "content": '[语音] 3"'}, attempt, image),
+            "parent_mismatch": ({**voice, "parent_voice_anchor_key": "voice-stable:other"}, attempt, image),
+            "different_anchor": (voice, {**attempt, "processed_anchor_keys": ["voice-stable:other"]}, image),
+            "different_sender": (voice, attempt, {**image, "side": "self"}),
+            "no_height_overlap": (voice, attempt, {**image, "bounds": [476, 300, 690, 400]}),
+        }
+        for name, (candidate_voice, candidate_attempt, candidate_image) in invalid_cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(
+                    surface.image_candidates_without_confirmed_voice_action_conflicts(
+                        [candidate_image],
+                        [candidate_voice],
+                        [candidate_attempt],
+                    ),
+                    [candidate_image],
+                )
+
+    def test_detector_fine_grid_splits_stacked_voice_surfaces(self):
+        """Lock the detector root cause from the real 2026-08-08 C2 frame."""
+        coarse_cells = []
+        for y, width in enumerate([7, 7, 7, 7, 16, 16, 16], start=34):
+            coarse_cells.extend((x, y) for x in range(7, 7 + width))
+
+        # At block=5 the two separate pale surfaces become one L-shaped
+        # component.  At block=2 their original pixel gap is visible again.
+        small = Image.new("RGB", (220, 246), (250, 250, 250))
+        draw = ImageDraw.Draw(small)
+        draw.rectangle((35, 170, 69, 188), fill=(242, 242, 242))
+        draw.rectangle((35, 191, 114, 204), fill=(242, 242, 242))
+        try:
+            self.assertTrue(
+                wechat_capture._fine_grid_confirms_separate_stacked_surfaces(
+                    small,
+                    coarse_cells=coarse_cells,
+                    coarse_block=5,
+                    background=[250.0, 250.0, 250.0],
+                    side="customer",
+                    minimum_media_height=34.0,
+                )
+            )
+        finally:
+            small.close()
+
+    def test_detector_fine_grid_splits_equal_width_stacked_chat_surfaces(self):
+        coarse_cells = [
+            (x, y)
+            for y in range(34, 41)
+            for x in range(7, 18)
+        ]
+        small = Image.new("RGB", (220, 246), (250, 250, 250))
+        draw = ImageDraw.Draw(small)
+        draw.rectangle((35, 170, 89, 188), fill=(242, 242, 242))
+        draw.rectangle((35, 191, 89, 204), fill=(242, 242, 242))
+        try:
+            self.assertTrue(
+                wechat_capture._fine_grid_confirms_separate_stacked_surfaces(
+                    small,
+                    coarse_cells=coarse_cells,
+                    coarse_block=5,
+                    background=[250.0, 250.0, 250.0],
+                    side="customer",
+                    minimum_media_height=34.0,
+                )
+            )
+        finally:
+            small.close()
+
+        tall_media_cells = [
+            (x, y)
+            for y in range(20, 41)
+            for x in range(7, 23)
+        ]
+        tall_media = Image.new("RGB", (220, 246), (250, 250, 250))
+        tall_draw = ImageDraw.Draw(tall_media)
+        tall_draw.rectangle((35, 100, 114, 139), fill=(242, 242, 242))
+        tall_draw.rectangle((35, 142, 114, 181), fill=(242, 242, 242))
+        try:
+            self.assertFalse(
+                wechat_capture._fine_grid_confirms_separate_stacked_surfaces(
+                    tall_media,
+                    coarse_cells=tall_media_cells,
+                    coarse_block=5,
+                    background=[250.0, 250.0, 250.0],
+                    side="customer",
+                    minimum_media_height=34.0,
+                )
+            )
+        finally:
+            tall_media.close()
+
     def test_structural_detector_returns_nine_visible_images_without_silent_cap(self):
         screenshot = Image.new("RGB", (1200, 2300), (242, 242, 242))
         draw = ImageDraw.Draw(screenshot)

@@ -22,6 +22,205 @@ class ImageSurfaceObservationError(RuntimeError):
         )
 
 
+def _surface_bounds(value: Any) -> tuple[float, float, float, float] | None:
+    if isinstance(value, dict):
+        raw = (
+            value.get("left"),
+            value.get("top"),
+            value.get("right"),
+            value.get("bottom"),
+        )
+    elif isinstance(value, (list, tuple)) and len(value) >= 4:
+        raw = value[:4]
+    else:
+        return None
+    try:
+        left, top, right, bottom = (float(item) for item in raw)
+    except (TypeError, ValueError):
+        return None
+    if right <= left or bottom <= top:
+        return None
+    return left, top, right, bottom
+
+
+def _contained_area_ratio(
+    inner: tuple[float, float, float, float],
+    outer: tuple[float, float, float, float],
+) -> float:
+    left, top, right, bottom = inner
+    outer_left, outer_top, outer_right, outer_bottom = outer
+    overlap_width = max(0.0, min(right, outer_right) - max(left, outer_left))
+    overlap_height = max(0.0, min(bottom, outer_bottom) - max(top, outer_top))
+    inner_area = max(1.0, (right - left) * (bottom - top))
+    return (overlap_width * overlap_height) / inner_area
+
+
+def _axis_overlap_ratio(
+    inner_start: float,
+    inner_end: float,
+    outer_start: float,
+    outer_end: float,
+) -> float:
+    overlap = max(0.0, min(inner_end, outer_end) - max(inner_start, outer_start))
+    return overlap / max(1.0, inner_end - inner_start)
+
+
+def image_candidates_without_confirmed_voice_action_conflicts(
+    image_candidates: list[dict[str, Any]] | None,
+    transcribed_messages: list[dict[str, Any]] | None,
+    voice_action_attempts: list[dict[str, Any]] | None,
+    *,
+    diagnostics: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Arbitrate image/voice conflicts using a confirmed physical action chain."""
+
+    attempts = [
+        item
+        for item in (voice_action_attempts or [])
+        if isinstance(item, dict)
+        and item.get("action_phase") == "confirmed"
+        and item.get("effective_success") is True
+        and isinstance(item.get("click"), dict)
+        and item["click"].get("ok") is True
+    ]
+    proven_voices: list[dict[str, Any]] = []
+    for message in transcribed_messages or []:
+        if not isinstance(message, dict):
+            continue
+        if str(
+            message.get("type") or message.get("message_type") or ""
+        ).strip().lower() != "voice":
+            continue
+        content = str(
+            message.get("content_clean") or message.get("content") or ""
+        ).strip()
+        if not content or content.startswith("[语音]"):
+            continue
+        anchor = message.get("voice_anchor")
+        if not isinstance(anchor, dict):
+            continue
+        anchor_item = anchor.get("item")
+        if not isinstance(anchor_item, dict):
+            continue
+        anchor_stable_key = str(anchor.get("anchor_stable_key") or "").strip()
+        parent_key = str(message.get("parent_voice_anchor_key") or "").strip()
+        if not anchor_stable_key or parent_key != anchor_stable_key:
+            continue
+        voice_rect = _surface_bounds(
+            anchor_item.get("parser_bubble_rect")
+            or {
+                "left": anchor_item.get("left"),
+                "top": anchor_item.get("top"),
+                "right": anchor_item.get("right"),
+                "bottom": anchor_item.get("bottom"),
+            }
+        )
+        if voice_rect is None:
+            continue
+        role = str(
+            message.get("sender_role") or message.get("sender") or ""
+        ).strip().lower()
+        anchor_role = str(anchor_item.get("sender_role") or "").strip().lower()
+        if role not in {"customer", "self"} or anchor_role != role:
+            continue
+        aliases = {
+            str(value).strip()
+            for value in (
+                anchor.get("anchor_key"),
+                anchor_stable_key,
+                anchor.get("anchor_structural_key"),
+                parent_key,
+            )
+            if str(value or "").strip()
+        }
+        matching_attempt = next(
+            (
+                attempt
+                for attempt in attempts
+                if aliases
+                & {
+                    str(value).strip()
+                    for value in (attempt.get("processed_anchor_keys") or [])
+                    if str(value).strip()
+                }
+                and str(
+                    ((attempt.get("context_anchor") or {}).get("anchor_stable_key"))
+                    if isinstance(attempt.get("context_anchor"), dict)
+                    else ""
+                ).strip()
+                == anchor_stable_key
+            ),
+            None,
+        )
+        if matching_attempt is None:
+            continue
+        proven_voices.append(
+            {
+                "bounds": voice_rect,
+                "role": role,
+                "anchor_stable_key": anchor_stable_key,
+                "parent_voice_anchor_key": parent_key,
+                "attempt_index": matching_attempt.get("attempt_index"),
+            }
+        )
+
+    if not proven_voices:
+        return [
+            dict(item)
+            for item in image_candidates or []
+            if isinstance(item, dict)
+        ]
+
+    kept: list[dict[str, Any]] = []
+    for candidate in image_candidates or []:
+        if not isinstance(candidate, dict):
+            continue
+        image_rect = _surface_bounds(
+            candidate.get("bubble_rect") or candidate.get("bounds")
+        )
+        image_role = str(
+            candidate.get("sender_role")
+            or candidate.get("sender")
+            or candidate.get("visual_side")
+            or candidate.get("side")
+            or ""
+        ).strip().lower()
+        conflict: dict[str, Any] | None = None
+        if image_rect is not None and image_role in {"customer", "self"}:
+            for voice in proven_voices:
+                voice_rect = voice["bounds"]
+                vertical_overlap = _axis_overlap_ratio(
+                    voice_rect[1], voice_rect[3], image_rect[1], image_rect[3]
+                )
+                horizontal_overlap = _axis_overlap_ratio(
+                    voice_rect[0], voice_rect[2], image_rect[0], image_rect[2]
+                )
+                if (
+                    image_role == voice["role"]
+                    and vertical_overlap >= 0.90
+                    and horizontal_overlap >= 0.50
+                ):
+                    conflict = {
+                        "event": "image_candidate_suppressed_by_confirmed_voice_action",
+                        "reason": "confirmed_voice_action_same_anchor_overlap",
+                        "image_bounds": list(image_rect),
+                        "voice_bounds": list(voice_rect),
+                        "sender_role": image_role,
+                        "voice_anchor_stable_key": voice["anchor_stable_key"],
+                        "parent_voice_anchor_key": voice["parent_voice_anchor_key"],
+                        "attempt_index": voice["attempt_index"],
+                        "vertical_overlap_ratio": round(vertical_overlap, 6),
+                        "horizontal_overlap_ratio": round(horizontal_overlap, 6),
+                        "candidate": dict(candidate),
+                    }
+                    break
+        if conflict is None:
+            kept.append(dict(candidate))
+        elif diagnostics is not None:
+            diagnostics.append(conflict)
+    return kept
+
+
 def messages_outside_image_bubbles(
     messages: list[dict[str, Any]] | None,
     image_messages: list[dict[str, Any]] | None,
@@ -32,31 +231,11 @@ def messages_outside_image_bubbles(
     that image and must reach the system through Vision, not the chat parser.
     """
 
-    def bounds(value: Any) -> tuple[float, float, float, float] | None:
-        if isinstance(value, dict):
-            raw = (
-                value.get("left"),
-                value.get("top"),
-                value.get("right"),
-                value.get("bottom"),
-            )
-        elif isinstance(value, (list, tuple)) and len(value) >= 4:
-            raw = value[:4]
-        else:
-            return None
-        try:
-            left, top, right, bottom = (float(item) for item in raw)
-        except (TypeError, ValueError):
-            return None
-        if right <= left or bottom <= top:
-            return None
-        return left, top, right, bottom
-
     image_bounds = [
         rect
         for item in image_messages or []
         if isinstance(item, dict)
-        for rect in [bounds(item.get("bubble_rect") or item.get("bounds"))]
+        for rect in [_surface_bounds(item.get("bubble_rect") or item.get("bounds"))]
         if rect is not None
     ]
     if not image_bounds:
@@ -69,17 +248,17 @@ def messages_outside_image_bubbles(
         if str(item.get("type") or item.get("message_type") or "").lower() == "image":
             kept.append(dict(item))
             continue
-        rect = bounds(item.get("bubble_rect"))
+        rect = _surface_bounds(item.get("bubble_rect"))
         if rect is None:
             kept.append(dict(item))
             continue
         left, top, right, bottom = rect
-        row_area = max(1.0, (right - left) * (bottom - top))
         embedded = False
         for image_left, image_top, image_right, image_bottom in image_bounds:
-            overlap_width = max(0.0, min(right, image_right) - max(left, image_left))
-            overlap_height = max(0.0, min(bottom, image_bottom) - max(top, image_top))
-            if (overlap_width * overlap_height) / row_area >= 0.90:
+            if _contained_area_ratio(
+                (left, top, right, bottom),
+                (image_left, image_top, image_right, image_bottom),
+            ) >= 0.90:
                 embedded = True
                 break
         if not embedded:
@@ -235,6 +414,8 @@ def visual_image_messages_from_current_surface(
     target: str,
     side_filter: str,
     max_images: int,
+    voice_action_attempts: list[dict[str, Any]] | None = None,
+    diagnostics: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     if screenshot is None:
         return []
@@ -248,12 +429,19 @@ def visual_image_messages_from_current_surface(
                 list(ocr_items or []),
                 tuple(getattr(screenshot, "size", (0, 0))),
             ),
+            diagnostics=diagnostics,
         )
     except Exception as exc:
         raise ImageSurfaceObservationError(
             "detect_visual_image_bubbles",
             exc,
         ) from exc
+    bubbles = image_candidates_without_confirmed_voice_action_conflicts(
+        bubbles,
+        existing_messages,
+        voice_action_attempts,
+        diagnostics=diagnostics,
+    )
     anchor_messages = messages_outside_image_bubbles(
         existing_messages,
         bubbles,
@@ -273,6 +461,8 @@ def observe_structural_image_messages(
     target: str,
     role_resolver: Callable[[Any, Any, Any], dict[str, Any]],
     max_images: int = 64,
+    voice_action_attempts: list[dict[str, Any]] | None = None,
+    diagnostics: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Run the one formal C2 image observation pipeline for the current frame."""
 
@@ -289,6 +479,8 @@ def observe_structural_image_messages(
             target=target,
             side_filter="all",
             max_images=max_images,
+            voice_action_attempts=voice_action_attempts,
+            diagnostics=diagnostics,
         )
     except ImageSurfaceObservationError:
         raise

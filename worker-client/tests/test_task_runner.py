@@ -82,6 +82,7 @@ class FakeApi:
         self.message_batch_statuses: list[dict] = []
         self.message_batch_result: dict | None = None
         self.heartbeat_payloads: list[dict] = []
+        self.heartbeat_run_status: str | None = None
         self.message_ingest_error: Exception | None = None
         self.read_authorization_overrides: dict[str, dict] = {}
         self.claim_reply_text = "您好，可以继续沟通这台车。"
@@ -90,7 +91,11 @@ class FakeApi:
     def heartbeat(self, binding: Binding, **kwargs):
         self.heartbeat_payloads.append(dict(kwargs))
         self.events.append(f"heartbeat:{kwargs['rpa_component_status']}:{kwargs['wechat_status']}")
-        return WorkerProfile(id=binding.worker_id, worker_name="测试 Worker", run_status=binding.run_status)
+        return WorkerProfile(
+            id=binding.worker_id,
+            worker_name="测试 Worker",
+            run_status=self.heartbeat_run_status or binding.run_status,
+        )
 
     def pull_task(self, binding: Binding):
         self.events.append("pull")
@@ -1715,6 +1720,27 @@ class TaskRunnerTest(unittest.TestCase):
         runner.tick_once()
 
         self.assertIn("heartbeat:ready:logged_in", api.events)
+        self.assertNotIn("pull", api.events)
+
+    def test_backend_pause_returned_by_heartbeat_stops_task_pull_immediately(self):
+        task = Task(id="task-server-paused", task_type="add_friend", status="pending", phone="13800000000")
+        api = FakeApi(task)
+        api.heartbeat_run_status = "paused"
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused")),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+
+        runner.tick_once()
+
+        self.assertEqual(binding.run_status, "paused")
         self.assertNotIn("pull", api.events)
 
     def test_paused_worker_does_not_run_c2_scan_or_read(self):
@@ -6071,14 +6097,17 @@ class TaskRunnerTest(unittest.TestCase):
             row_fingerprint={"title_text": "CJTEST01 许聪"},
             ocr_confidence=0.98,
             read_reason="visible_hit",
-            raw={"visible_session_source": "first_screen_session_scan"},
+            raw={
+                "visible_session_source": "first_screen_session_scan",
+                "local_unread_hint": True,
+            },
         )
         authorized_target = WechatReadTarget(
             conversation_id="conv-1",
             rpa_session_key="wx:rpa:v1:backend",
             display_name="CJTEST01 许聪",
             remark_code="CJTEST01",
-            read_reason="waiting_user_reply",
+            read_reason="visible_unread",
             authorization_revision="revision-current",
             raw={"authorization_revision": "revision-current"},
         )
@@ -6104,7 +6133,9 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(len(captured), 1)
         self.assertEqual(captured[0].authorization_revision, "revision-current")
         self.assertEqual(captured[0].rpa_session_key, "wx:rpa:v1:visible")
-        self.assertEqual(captured[0].raw["authorization_read_reason"], "waiting_user_reply")
+        self.assertEqual(captured[0].read_reason, "visible_unread")
+        self.assertEqual(captured[0].raw["authorization_read_reason"], "visible_unread")
+        self.assertTrue(captured[0].raw["visible_hit"])
 
     def test_c2_visible_hit_v3_ingest_carries_current_authorization_revision(self):
         api = FakeApi(None)
@@ -6114,7 +6145,7 @@ class TaskRunnerTest(unittest.TestCase):
                 rpa_session_key="wx:rpa:v1:backend",
                 display_name="CJTEST01 许聪",
                 remark_code="CJTEST01",
-                read_reason="waiting_user_reply",
+                read_reason="visible_unread",
                 authorization_revision="revision-current",
             )
         ]
@@ -6146,6 +6177,131 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(len(api.message_payloads), 1)
         self.assertEqual(api.message_payloads[0]["contract_version"], 3)
         self.assertEqual(api.message_payloads[0]["authorization_revision"], "revision-current")
+        self.assertEqual(api.message_payloads[0]["evidence"]["read_reason"], "visible_unread")
+        self.assertEqual(api.message_payloads[0]["evidence"]["authorization_read_reason"], "visible_unread")
+
+    def test_c2_visible_unread_without_current_local_unread_fact_never_opens_wechat(self):
+        api = FakeApi(None)
+        api.read_targets = [
+            WechatReadTarget(
+                conversation_id="conv-1",
+                rpa_session_key="wx:rpa:v1:a",
+                display_name="CJTEST01 许聪",
+                remark_code="CJTEST01",
+                read_reason="visible_unread",
+                authorization_revision="revision-visible-unread",
+            )
+        ]
+        bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"))
+
+        def list_visible_but_read_session(**_kwargs):
+            bridge.c2_operation_order.append("sessions")
+            bridge.session_scans.append({})
+            return {
+                "ok": True,
+                "adapter": "mock",
+                "state": "sessions_mock",
+                "sidecar_run_id": "session-run-read",
+                "sessions": [
+                    {
+                        "name": "CJTEST01 许聪",
+                        "session_key": "wx:rpa:v1:a",
+                        "row_fingerprint": {"title_text": "CJTEST01 许聪"},
+                        "content": "没有未读标记",
+                        "unread_signal": False,
+                        "ocr_confidence": 0.98,
+                    }
+                ],
+            }
+
+        bridge.list_sessions = list_visible_but_read_session  # type: ignore[method-assign]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(worker_id="worker-1", worker_token="token", client_instance_id="client-1", run_status="running")
+
+        runner._run_c2_scan_round(binding, reason="unit")
+
+        self.assertEqual(bridge.locate_chats, [])
+        self.assertEqual(bridge.message_reads, [])
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(runner.visible_hit_queue, [])
+
+    def test_c2_visible_unread_requires_exact_backend_and_local_target_intersection(self):
+        api = FakeApi(None)
+        api.read_targets = [
+            WechatReadTarget(
+                conversation_id="conv-other",
+                rpa_session_key="wx:rpa:v1:other",
+                display_name="CJOTHER1 其他客户",
+                remark_code="CJOTHER1",
+                read_reason="visible_unread",
+                authorization_revision="revision-other",
+            )
+        ]
+        bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"))
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(worker_id="worker-1", worker_token="token", client_instance_id="client-1", run_status="running")
+
+        runner._run_c2_scan_round(binding, reason="unit")
+
+        self.assertEqual(bridge.locate_chats, [])
+        self.assertEqual(bridge.message_reads, [])
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(runner.visible_hit_queue, [])
+
+    def test_c2_visible_unread_target_cannot_bypass_queue_through_direct_read(self):
+        api = FakeApi(None)
+        bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"))
+        runner, _ = self.make_runner(api, bridge)
+        target = WechatReadTarget(
+            conversation_id="conv-1",
+            rpa_session_key="wx:rpa:v1:a",
+            display_name="CJTEST01 许聪",
+            remark_code="CJTEST01",
+            read_reason="visible_unread",
+            authorization_revision="revision-current",
+        )
+
+        self.assertEqual(runner._validate_read_target(target), "C2_VISIBLE_UNREAD_LOCAL_FACT_MISSING")
+        target.raw["visible_hit"] = True
+        self.assertIsNone(runner._validate_read_target(target))
+
+    def test_c2_visible_unread_failure_retries_only_after_cooldown_with_new_unread_scan(self):
+        api = FakeApi(None)
+        api.read_targets = [
+            WechatReadTarget(
+                conversation_id="conv-1",
+                rpa_session_key="wx:rpa:v1:a",
+                display_name="CJTEST01 许聪",
+                remark_code="CJTEST01",
+                read_reason="visible_unread",
+                authorization_revision="revision-visible-unread",
+            )
+        ]
+        bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"))
+
+        def failing_get_messages(*, display_name: str, rpa_session_key: str, **kwargs):
+            bridge.message_reads.append({"display_name": display_name, "rpa_session_key": rpa_session_key, **kwargs})
+            return {
+                "ok": False,
+                "error_code": "TARGET_NOT_CONFIRMED_FOR_MESSAGES",
+                "sidecar_run_id": f"message-failed-{len(bridge.message_reads)}",
+            }
+
+        bridge.get_messages = failing_get_messages  # type: ignore[method-assign]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(worker_id="worker-1", worker_token="token", client_instance_id="client-1", run_status="running")
+
+        runner._run_c2_scan_round(binding, reason="first")
+        runner._run_c2_scan_round(binding, reason="cooldown")
+        self.assertEqual(len(bridge.message_reads), 1)
+        self.assertTrue(runner.c2_read_failure_cooldowns)
+        self.assertTrue(all(payload["sessions"][0]["unread_hint"] for payload in api.scan_payloads))
+
+        runner.c2_read_failure_cooldowns.clear()
+        runner._run_c2_scan_round(binding, reason="retry")
+
+        self.assertEqual(len(bridge.message_reads), 2)
+        self.assertEqual(api.message_payloads, [])
 
     def test_c2_backend_ignored_message_is_not_reported_as_success(self):
         api = FakeApi(None)
@@ -8954,7 +9110,7 @@ class TaskRunnerTest(unittest.TestCase):
         )
         process_images.assert_not_called()
 
-    def test_confirmed_message_filter_keeps_full_slot_order_but_removes_old_observation(self):
+    def test_confirmed_local_ledger_does_not_hide_visible_fact_from_backend(self):
         api = FakeApi(None)
         runner, _ = self.make_runner(
             api,
@@ -9009,14 +9165,14 @@ class TaskRunnerTest(unittest.TestCase):
 
         self.assertEqual(
             [item["source_message_key"] for item in filtered["messages"]],
-            ["new-sales"],
+            ["old-trigger", "new-sales"],
         )
         self.assertEqual(
             [
                 item["observation_id"]
                 for item in filtered["evidence"]["observations"]
             ],
-            ["observation-new-sales"],
+            ["observation-old-trigger", "observation-new-sales"],
         )
         self.assertEqual(
             [
@@ -9025,6 +9181,40 @@ class TaskRunnerTest(unittest.TestCase):
             ],
             ["old-trigger", "new-sales"],
         )
+
+    def test_backend_terminal_local_ledger_still_filters_visible_fact(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(RpaResult(ok=True, result_code="ok", message="unused")),
+        )
+        payload = {
+            "conversation_id": "conv-filter-terminal",
+            "messages": [
+                {
+                    "source_message_key": "terminal-fact",
+                    "raw_payload": {
+                        "observation": {
+                            "observation_id": "terminal-observation",
+                        }
+                    },
+                }
+            ],
+            "evidence": {
+                "observations": [
+                    {"observation_id": "terminal-observation"}
+                ]
+            },
+        }
+
+        with patch(
+            "chejin_worker_client.task_runner.load_c2_ledger_entry",
+            return_value={"ingest_state": "not_required"},
+        ):
+            filtered = runner._filter_confirmed_messages(payload)
+
+        self.assertEqual(filtered["messages"], [])
+        self.assertEqual(filtered["evidence"]["observations"], [])
 
     def test_c2_history_gap_blocks_brain_but_still_terminalizes_image(self):
         api = FakeApi(None)
