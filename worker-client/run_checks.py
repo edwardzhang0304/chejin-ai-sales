@@ -32,6 +32,23 @@ def main() -> int:
     )
     if test.returncode:
         return test.returncode
+    runtime_ui_test = subprocess.run(
+        [
+            "node",
+            "--test",
+            str(
+                ROOT.parent
+                / "packages"
+                / "worker-ui-baseline"
+                / "tests"
+                / "runtime-bridge-state.test.mjs"
+            ),
+        ],
+        cwd=ROOT.parent,
+        env=env,
+    )
+    if runtime_ui_test.returncode:
+        return runtime_ui_test.returncode
     omniauto_test_dir = ROOT / "omniauto-rpa" / "apps" / "wechat_ai_customer_service" / "tests"
     omniauto_check_scripts = (
         "run_wechat_win32_ocr_compat_checks.py",

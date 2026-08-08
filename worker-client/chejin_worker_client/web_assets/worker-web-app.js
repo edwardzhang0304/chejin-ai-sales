@@ -21723,6 +21723,38 @@ var import_client = __toESM(require_client(), 1);
 
 // packages/worker-ui-baseline/src/WorkerClientBaseline.tsx
 var import_react = __toESM(require_react(), 1);
+
+// packages/worker-ui-baseline/src/runtimeBridgeState.mjs
+function connectRuntimeBridge(bridge, onState) {
+  let latestRevision = -1;
+  let currentState = null;
+  const applyBridgeState = (payload) => {
+    let parsed;
+    try {
+      parsed = JSON.parse(payload);
+    } catch {
+      return;
+    }
+    if (!parsed || typeof parsed.screen !== "string" || !parsed.model) return;
+    const revision = Number.isFinite(parsed.revision) ? Number(parsed.revision) : 0;
+    if (revision < latestRevision) return;
+    latestRevision = revision;
+    currentState = parsed;
+    onState(parsed);
+  };
+  bridge.stateChanged?.connect(applyBridgeState);
+  bridge.initialState(applyBridgeState);
+  return {
+    applyBridgeState,
+    getCurrentState: () => currentState,
+    getLatestRevision: () => latestRevision
+  };
+}
+function runtimePageKind(screen) {
+  return screen === "bind" ? "bind" : "workbench";
+}
+
+// packages/worker-ui-baseline/src/WorkerClientBaseline.tsx
 var import_jsx_runtime = __toESM(require_jsx_runtime(), 1);
 function Icon({ name }) {
   if (name === "min") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("path", { d: "M5 12h14" }) });
@@ -22327,7 +22359,7 @@ function LogsScreen({
 }
 function renderScreen(props) {
   const { screen, model, onScreenChange, onStartAccepting, onPauseAccepting, onUpdateAcceptSchedule } = props;
-  if (screen === "bind") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BindScreen, { model, onBind: props.onBind, bindError: props.bindError });
+  if (runtimePageKind(screen) === "bind") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BindScreen, { model, onBind: props.onBind, bindError: props.bindError });
   if (screen === "paused-empty") {
     return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
       EmptyWorkbench,
@@ -22477,17 +22509,9 @@ function initialScreen() {
   const screen = new URLSearchParams(window.location.search).get("screen");
   return screens.includes(screen) ? screen : "bind";
 }
-function parseState(payload) {
-  try {
-    return JSON.parse(payload);
-  } catch {
-    return null;
-  }
-}
 function App() {
   const [bridge, setBridge] = (0, import_react2.useState)(null);
   const [notice, setNotice] = (0, import_react2.useState)("");
-  const latestRevision = (0, import_react2.useRef)(-1);
   const [state, setState] = (0, import_react2.useState)({
     screen: initialScreen(),
     model: emptyRuntimeModel
@@ -22497,16 +22521,7 @@ function App() {
     new window.QWebChannel(window.qt.webChannelTransport, (channel) => {
       const nextBridge = channel.objects.chejinBridge;
       setBridge(nextBridge);
-      const applyBridgeState = (payload) => {
-        const parsed = parseState(payload);
-        if (!parsed) return;
-        const revision = Number.isFinite(parsed.revision) ? Number(parsed.revision) : 0;
-        if (revision < latestRevision.current) return;
-        latestRevision.current = revision;
-        setState(parsed);
-      };
-      nextBridge.stateChanged?.connect(applyBridgeState);
-      nextBridge.initialState(applyBridgeState);
+      connectRuntimeBridge(nextBridge, (nextState) => setState(nextState));
     });
   }, []);
   (0, import_react2.useEffect)(() => {

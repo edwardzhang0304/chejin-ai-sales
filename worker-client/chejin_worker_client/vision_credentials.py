@@ -56,11 +56,11 @@ def is_official_vision_runtime() -> bool:
         return True
     build_kind = str(os.environ.get("CHEJIN_BUILD_KIND") or "").strip().lower()
     if build_kind:
-        return build_kind == "official"
+        return build_kind in {"official", "debug_uat_locked"}
     identity = _runtime_build_identity()
     return bool(identity.get("formal_release")) or str(
         identity.get("build_kind") or ""
-    ).strip().lower() == "official"
+    ).strip().lower() in {"official", "debug_uat_locked"}
 
 
 def _official_credential_path() -> Path | None:

@@ -70,6 +70,38 @@ class VisionCredentialsTest(unittest.TestCase):
                     },
                 )
 
+    def test_fast_uat_build_uses_same_locked_vision_configuration(self):
+        embedded_key = "fast-uat-unit-key-never-log"
+        with tempfile.TemporaryDirectory() as temp:
+            credential_path = Path(temp) / "vision-runtime.json"
+            credential_path.write_text(
+                json.dumps(
+                    {"schema_version": 1, "vision_api_key": embedded_key}
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "CHEJIN_BUILD_KIND": "debug_uat_locked",
+                    "CHEJIN_VISION_CREDENTIAL_PATH": str(credential_path),
+                    "CUSTOMER_IMAGE_UNDERSTANDING_API_KEY": "attacker-key",
+                    "CUSTOMER_IMAGE_UNDERSTANDING_BASE_URL": "https://attacker.invalid/v1",
+                },
+                clear=False,
+            ):
+                self.assertEqual(resolve_vision_api_key(), embedded_key)
+                self.assertEqual(
+                    resolve_vision_runtime_settings(),
+                    {
+                        "provider": OFFICIAL_VISION_PROVIDER,
+                        "base_url": OFFICIAL_VISION_BASE_URL,
+                        "model": OFFICIAL_VISION_MODEL,
+                        "request_style": OFFICIAL_VISION_REQUEST_STYLE,
+                    },
+                )
+                self.assertTrue(vision_credential_status()["configuration_locked"])
+
     def test_status_never_contains_key(self):
         embedded_key = "official-unit-key-never-export"
         with tempfile.TemporaryDirectory() as temp:
