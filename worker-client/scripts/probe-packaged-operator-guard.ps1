@@ -170,9 +170,27 @@ try {
   if (-not $guardProcess.WaitForExit(20000)) {
     throw "packaged Operator Guard did not stop after the control file requested shutdown"
   }
-  if ($guardProcess.ExitCode -ne 0) {
+  $guardProcess.WaitForExit()
+  $guardProcess.Refresh()
+  $finalState = Get-Content -Raw -Encoding UTF8 $statePath | ConvertFrom-Json
+  if (
+    [string]$finalState.phase -ne "stopped" -or
+    [string]$finalState.reason -ne "guard_exit" -or
+    [int]$finalState.pid -ne [int]$guardProcess.Id
+  ) {
     Write-ProbeEvidence
-    throw "packaged Operator Guard exited with code $($guardProcess.ExitCode)"
+    throw "packaged Operator Guard did not leave a clean final state"
+  }
+  $exitCode = $guardProcess.ExitCode
+  if ($null -ne $exitCode -and [int]$exitCode -ne 0) {
+    Write-ProbeEvidence
+    throw "packaged Operator Guard exited with code $exitCode"
+  }
+  if ($null -eq $exitCode) {
+    Write-Host "PACKAGED_OPERATOR_GUARD_EXIT_CODE unavailable_on_powershell_5_1; clean guard_exit state verified"
+  }
+  else {
+    Write-Host "PACKAGED_OPERATOR_GUARD_EXIT_CODE $exitCode"
   }
 
   $probePassed = $true
