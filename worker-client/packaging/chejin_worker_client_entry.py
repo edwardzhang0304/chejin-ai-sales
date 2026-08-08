@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
-ENTRY_VERSION = "16.138.0"
+ENTRY_VERSION = "16.139.0"
 _REDACTED = "[REDACTED]"
 _SECRET_PATTERNS = (
     re.compile(r"(?i)(bearer\s+)[^\s'\"]+"),
@@ -29,10 +29,18 @@ _SECRET_PATTERNS = (
 def _restore_frozen_worker_stdio() -> None:
     if os.name != "nt" or not getattr(sys, "frozen", False):
         return
-    if len(sys.argv) < 2 or sys.argv[1] not in {
+    if len(sys.argv) < 2:
+        return
+    mode = sys.argv[1]
+    supported_modes = {
         "--omniauto-ocr-worker",
         "--vision-provider-worker",
-    }:
+        "--rpa-operator-guard",
+        "--omniauto-vision-wechat-worker",
+    }
+    if mode == "--omniauto-sidecar" and "--daemon" in sys.argv[2:]:
+        supported_modes.add("--omniauto-sidecar")
+    if mode not in supported_modes:
         return
 
     import ctypes
@@ -60,6 +68,7 @@ def _restore_frozen_worker_stdio() -> None:
 
     sys.stdin = text_stream(-10, os.O_RDONLY, "rb")
     sys.stdout = text_stream(-11, os.O_WRONLY, "wb")
+    sys.stderr = text_stream(-12, os.O_WRONLY, "wb")
 
 
 def _diagnostic_path() -> Path:

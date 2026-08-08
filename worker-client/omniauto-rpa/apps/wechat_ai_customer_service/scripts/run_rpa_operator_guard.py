@@ -190,8 +190,9 @@ class MSG(ctypes.Structure):
     ]
 
 
-LowLevelKeyboardProc = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
-LowLevelMouseProc = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+_windows_callback_factory = getattr(ctypes, "WINFUNCTYPE", ctypes.CFUNCTYPE)
+LowLevelKeyboardProc = _windows_callback_factory(LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+LowLevelMouseProc = _windows_callback_factory(LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
 
 
 def now_iso() -> str:
@@ -1297,7 +1298,7 @@ def normalize_control_key_name(value: Any) -> str:
     return key
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tenant-id", required=True)
     parser.add_argument("--control-path", type=Path, required=True)
@@ -1314,7 +1315,7 @@ def main() -> int:
     parser.add_argument("--no-floating-indicator", action="store_true")
     parser.add_argument("--guard-state-path", type=Path)
     parser.add_argument("--local-safety-stop-path", default=DEFAULT_LOCAL_SAFETY_STOP_PATH)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     tenant_id = str(args.tenant_id).strip() or "default"
     control_path = args.control_path.resolve()
