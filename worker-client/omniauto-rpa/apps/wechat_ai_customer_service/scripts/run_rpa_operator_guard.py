@@ -1,6 +1,6 @@
 """Global operator guard for WeChat RPA with configurable pause/stop hotkeys.
 
-This process runs alongside ``run_customer_service_listener.py`` and provides:
+This process runs only while an owning WeChat UI lease is active and provides:
 1. Input lock in running mode (blocks manual keyboard/mouse).
 2. Hotkey single press command (pause/resume toggle).
 3. Hotkey double press command (stop).

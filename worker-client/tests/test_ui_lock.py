@@ -76,6 +76,128 @@ class UiLockTest(unittest.TestCase):
             lease.update_step("should_not_continue")
         self.assertEqual(raised.exception.code, self.ui_lock.UI_LOCK_RENEW_FAILED)
 
+    def test_every_ui_lock_operation_starts_and_stops_the_shared_guard(self):
+        operations = (
+            "add_friend",
+            "session_scan",
+            "message_ingest",
+            "c3_send",
+            "voice_transcribe",
+            "image_copy",
+        )
+        with (
+            mock.patch(
+                "chejin_worker_client.ui_operator_guard.start_ui_operator_guard",
+                side_effect=lambda **kwargs: {
+                    "ok": True,
+                    "enabled": True,
+                    "started": True,
+                    "pid": 4312,
+                    **kwargs,
+                },
+            ) as start_guard,
+            mock.patch(
+                "chejin_worker_client.ui_operator_guard.stop_ui_operator_guard",
+                return_value={"ok": True, "process_alive_after_stop": False},
+            ) as stop_guard,
+        ):
+            for operation in operations:
+                lease = self.ui_lock.acquire_ui_lock(
+                    operation_type=operation,
+                    owner=f"owner:{operation}",
+                    current_step="starting",
+                    timeout_seconds=1,
+                )
+                self.assertEqual(lease.operator_guard_pid, 4312)
+                lease.release()
+
+        self.assertEqual(
+            [call.kwargs["operation_type"] for call in start_guard.call_args_list],
+            list(operations),
+        )
+        self.assertEqual(stop_guard.call_count, len(operations))
+
+    def test_guard_start_failure_removes_lock_and_blocks_ui_action(self):
+        with mock.patch(
+            "chejin_worker_client.ui_operator_guard.start_ui_operator_guard",
+            return_value={
+                "ok": False,
+                "enabled": True,
+                "started": False,
+                "reason": "guard_process_exited_early",
+            },
+        ):
+            with self.assertRaises(self.ui_lock.UiLockError) as raised:
+                self.ui_lock.acquire_ui_lock(
+                    operation_type="session_scan",
+                    owner="owner-a",
+                    current_step="scan",
+                    timeout_seconds=1,
+                )
+
+        self.assertEqual(raised.exception.code, self.ui_lock.OPERATOR_GUARD_NOT_READY)
+        self.assertFalse(self.ui_lock.lock_summary()["locked"])
+
+    def test_guard_unexpected_exit_cancels_current_lease(self):
+        with (
+            mock.patch(
+                "chejin_worker_client.ui_operator_guard.start_ui_operator_guard",
+                return_value={"ok": True, "enabled": True, "started": True, "pid": 4312},
+            ),
+            mock.patch(
+                "chejin_worker_client.ui_operator_guard.ui_operator_guard_health",
+                return_value={"ok": False, "reason": "guard_process_exited_early"},
+            ),
+            mock.patch(
+                "chejin_worker_client.ui_operator_guard.stop_ui_operator_guard",
+                return_value={"ok": True},
+            ),
+        ):
+            lease = self.ui_lock.acquire_ui_lock(
+                operation_type="message_ingest",
+                owner="owner-a",
+                current_step="read",
+                timeout_seconds=1,
+            )
+            self.assertTrue(lease.cancel_requested())
+            self.assertEqual(lease.lease_error.code, self.ui_lock.OPERATOR_GUARD_EXITED)
+            lease.release()
+
+    def test_resume_after_f8_requires_fresh_window_and_conversation_validation(self):
+        health = mock.Mock(
+            side_effect=(
+                {"ok": True, "mode": "paused", "reason": "guard_ready"},
+                {"ok": True, "mode": "running", "reason": "guard_ready"},
+            )
+        )
+        with (
+            mock.patch(
+                "chejin_worker_client.ui_operator_guard.start_ui_operator_guard",
+                return_value={"ok": True, "enabled": True, "started": True, "pid": 4312},
+            ),
+            mock.patch(
+                "chejin_worker_client.ui_operator_guard.ui_operator_guard_health",
+                health,
+            ),
+            mock.patch(
+                "chejin_worker_client.ui_operator_guard.stop_ui_operator_guard",
+                return_value={"ok": True},
+            ),
+        ):
+            lease = self.ui_lock.acquire_ui_lock(
+                operation_type="c3_send",
+                owner="owner-a",
+                current_step="brain_waiting",
+                timeout_seconds=1,
+            )
+            self.assertFalse(lease.cancel_requested())
+            self.assertTrue(lease.cancel_requested())
+            self.assertEqual(
+                lease.lease_error.code,
+                self.ui_lock.OPERATOR_GUARD_REVALIDATION_REQUIRED,
+            )
+            lease.release()
+
 
 if __name__ == "__main__":
     unittest.main()

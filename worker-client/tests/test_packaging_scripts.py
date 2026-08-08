@@ -128,7 +128,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("delivery ZIP does not contain the packaged runtime directory", workflow)
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v16.139.0-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v16.140.0-windows-x64.delivery.json", workflow)
         self.assertIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn("vision_credential_embedded", workflow)
         self.assertIn("vision_configuration_locked", workflow)
@@ -593,7 +593,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "16.139.0"', workflow)
+        self.assertIn('version -ne "16.140.0"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)
@@ -664,6 +664,20 @@ class PackagingScriptsTest(unittest.TestCase):
             is_client_forbidden_path(
                 "apps/wechat_ai_customer_service/deploy/aliyun1/"
                 "vps_admin_control_plane.enc.json",
+                excludes,
+            )
+        )
+        self.assertTrue(
+            is_client_forbidden_path(
+                "apps/wechat_ai_customer_service/scripts/"
+                "run_customer_service_listener.py",
+                excludes,
+            )
+        )
+        self.assertFalse(
+            is_client_forbidden_path(
+                "apps/wechat_ai_customer_service/scripts/"
+                "run_rpa_operator_guard.py",
                 excludes,
             )
         )
