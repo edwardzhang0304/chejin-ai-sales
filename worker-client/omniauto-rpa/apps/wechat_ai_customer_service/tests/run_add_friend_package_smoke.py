@@ -991,8 +991,9 @@ def test_add_friend_uses_shared_operator_guard_module() -> None:
         encoding="utf-8"
     )
     assert_true("rpa_operator_guard" in guard_source, "add_friend guard must delegate to the shared RPA operator guard")
-    assert_true("start_rpa_operator_guard(" in guard_source, "add_friend start wrapper should call shared guard start")
-    assert_true("stop_rpa_operator_guard(" in guard_source, "add_friend stop wrapper should call shared guard stop")
+    assert_true("attach_rpa_operator_guard(" in guard_source, "add_friend wrapper should attach to the Worker-owned guard")
+    assert_true("start_rpa_operator_guard(" not in guard_source, "Sidecar wrapper must not create a second guard process")
+    assert_true("stop_rpa_operator_guard(" not in guard_source, "Sidecar wrapper must not stop the Worker-owned guard")
     assert_true("rpa_operator_guard_checkpoint(" in guard_source, "add_friend checkpoint wrapper should call shared checkpoint")
     assert_true("subprocess.Popen" not in guard_source, "add_friend adapter must not own guard process launching")
     assert_true("SetWindowsHookExW" not in guard_source, "add_friend adapter must not duplicate keyboard/mouse hook logic")
@@ -1000,14 +1001,13 @@ def test_add_friend_uses_shared_operator_guard_module() -> None:
     assert_true("--block-manual-input" in rpa_guard_source, "operator guard should support locking/blocking manual keyboard and mouse input")
     assert_true("block_manual_input" in rpa_guard_source, "operator guard settings should expose the manual-input lock flag")
     assert_true("--floating-indicator" in rpa_guard_source, "shared guard should start the floating indicator")
-    assert_true("mode == \"stopped\"" in rpa_guard_source, "shared checkpoint should honor stop requests")
-    assert_true("mode != \"paused\"" in rpa_guard_source, "shared checkpoint should honor pause/resume requests")
+    assert_true("mode != \"active\"" in rpa_guard_source, "shared checkpoint should cancel whenever the Worker guard is no longer active")
     assert_true("--block-manual-input" in rpa_guard_script, "guard runner must expose block-manual-input")
     assert_true("--floating-indicator" in rpa_guard_script, "guard runner must expose floating-indicator")
     assert_true("toggle_pause" in rpa_guard_script, "guard runner must support pause/resume")
     assert_true("stop" in rpa_guard_script, "guard runner must support stop")
-    assert_true("start_add_friend_operator_guard(" in implementation_source, "add_friend Windows path should start operator guard before click flow")
-    assert_true("stop_add_friend_operator_guard(" in implementation_source, "add_friend Windows path should stop operator guard after click flow")
+    assert_true("start_add_friend_operator_guard(" in implementation_source, "add_friend Windows path should attach to the active Worker guard")
+    assert_true("stop_add_friend_operator_guard(" in implementation_source, "add_friend Windows path should release only its attachment")
     assert_true("OPERATOR_GUARD_NOT_READY" in implementation_source, "operator guard failure should be a first-class add_friend failure")
     assert_true("add_friend_operator_guard_checkpoint(" in flow_source, "flow should honor floating-ball pause/stop checkpoints")
     assert_true("GetCursorPos" not in flow_source, "flow should not implement a separate mouse-idle guard")
@@ -1028,36 +1028,30 @@ def test_add_friend_operator_guard_compat_wrapper_calls_shared_module() -> None:
         assert_true(callable(getattr(compat, name, None)), f"compat wrapper must expose add_friend API: {name}")
 
     calls: list[tuple[str, object]] = []
-    original_start = compat.start_rpa_operator_guard
-    original_stop = compat.stop_rpa_operator_guard
+    original_attach = compat.attach_rpa_operator_guard
     original_checkpoint = compat.rpa_operator_guard_checkpoint
     try:
-        compat.start_rpa_operator_guard = lambda **kwargs: calls.append(("start", kwargs)) or {"ok": True}
-        compat.stop_rpa_operator_guard = lambda guard, **kwargs: calls.append(("stop", {"guard": guard, **kwargs})) or {"ok": True}
+        compat.attach_rpa_operator_guard = lambda: calls.append(("attach", {})) or {"ok": True}
         compat.rpa_operator_guard_checkpoint = lambda **kwargs: calls.append(("checkpoint", kwargs)) or {"ok": True}
 
         compat.start_add_friend_operator_guard(route="add-friend-entry-click-plan-windows", artifact_dir="artifact-dir")
         compat.stop_add_friend_operator_guard({"enabled": True}, reason="finished")
         compat.add_friend_operator_guard_checkpoint(reason="pause:add_friend")
     finally:
-        compat.start_rpa_operator_guard = original_start
-        compat.stop_rpa_operator_guard = original_stop
+        compat.attach_rpa_operator_guard = original_attach
         compat.rpa_operator_guard_checkpoint = original_checkpoint
 
     assert_true(
-        calls[0] == (
-            "start",
-            {"operation": "add-friend-entry-click-plan-windows", "artifact_dir": "artifact-dir"},
-        ),
-        f"start wrapper should call shared guard start: {calls}",
+        calls[0] == ("attach", {}),
+        f"add_friend wrapper should attach to the Worker-owned guard: {calls}",
     )
     assert_true(
-        calls[1] == ("stop", {"guard": {"enabled": True}, "reason": "finished"}),
-        f"stop wrapper should call shared guard stop: {calls}",
-    )
-    assert_true(
-        calls[2] == ("checkpoint", {"reason": "pause:add_friend"}),
+        calls[1] == ("checkpoint", {"reason": "pause:add_friend"}),
         f"checkpoint wrapper should call shared guard checkpoint: {calls}",
+    )
+    assert_true(
+        len(calls) == 2,
+        f"release must not stop the Worker-owned guard: {calls}",
     )
 
 
@@ -1215,7 +1209,7 @@ def test_add_friend_calibration_mode_contract() -> None:
     assert_true("calibration_only=bool" in sidecar, "run_action should pass calibration_only into add_friend payload")
     validation_call = implementation_source.split("validation = validate_add_friend_entry_click_contract(", 1)[-1].split(")", 1)[0]
     assert_true("calibration_only" not in validation_call, "calibration flag must not be passed to field contract validation")
-    assert_true("start_add_friend_operator_guard(" in implementation_source, "normal flow should still start the floating-ball guard")
+    assert_true("start_add_friend_operator_guard(" in implementation_source, "normal flow should attach to the Worker-owned floating-ball guard")
     calibration_section = add_friend_windows.split("def add_friend_calibration_payload", 1)[-1].split("def click_add_friend_ocr_item", 1)[0]
     assert_true("human_window_image_click" not in calibration_section, "calibration payload must not click")
     assert_true("paste_invite_form_text" not in calibration_section, "calibration payload must not type/paste")

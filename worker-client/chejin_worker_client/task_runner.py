@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import re
 import threading
 import time
@@ -131,6 +132,9 @@ ENV_STOP_ERRORS = {
     "OPERATOR_GUARD_NOT_READY",
     "OPERATOR_GUARD_EXITED",
     "OPERATOR_GUARD_REVALIDATION_REQUIRED",
+    "OPERATOR_GUARD_PAUSED",
+    "OPERATOR_GUARD_STOPPED",
+    "OPERATOR_GUARD_IDENTITY_MISMATCH",
     "OTHER",
 }
 
@@ -627,31 +631,32 @@ class TaskRunner:
         self._pending_run_status_sync: str | None = None
         self._last_run_status_sync_attempt = 0.0
         self.run_status_sync_error: str | None = None
+        self._guard_fault_reported = False
+        self.operator_guard_fault_latched = False
+        self._guard_pause_latched = False
 
     def start(self, binding: Binding) -> None:
         self.binding = binding
         self.stop_event.clear()
         with self._thread_health_lock:
             self._thread_failure_reported.clear()
-        try:
-            from .ui_operator_guard import cleanup_orphaned_ui_operator_guard
+        from .ui_operator_guard import (
+            set_worker_ui_operator_guard_mode,
+            worker_ui_operator_guard_health,
+        )
 
-            guard_cleanup = cleanup_orphaned_ui_operator_guard(
-                reason="worker_startup_orphan_cleanup",
+        guard_health = worker_ui_operator_guard_health()
+        if guard_health.get("ok") is not True:
+            self.on_error("悬浮球安全守护未就绪，微信自动化已禁止。")
+            append_log("ERROR", "ui_operator_guard_not_ready", "常驻悬浮球安全守护未就绪。", error_code="OPERATOR_GUARD_NOT_READY", metadata={"guard_health": guard_health}, force_incident=True)
+        elif binding.run_status == "running":
+            transition = set_worker_ui_operator_guard_mode(
+                "ready",
+                reason="task_runner_started_accepting",
             )
-            append_log(
-                "INFO",
-                "ui_operator_guard_startup_cleanup",
-                "Worker 启动时已检查残留悬浮球守护。",
-                metadata={"guard_cleanup": guard_cleanup},
-            )
-        except Exception as exc:
-            append_log(
-                "WARN",
-                "ui_operator_guard_startup_cleanup_failed",
-                str(exc),
-                error_code=type(exc).__name__,
-            )
+            if transition.get("ok") is not True:
+                self._apply_local_run_status("paused")
+                self.on_error("悬浮球未能进入接单状态，客户端仍保持暂停。")
         self._maybe_cleanup_artifacts(force=True)
         if not (self.thread and self.thread.is_alive()):
             self.thread = threading.Thread(
@@ -681,9 +686,23 @@ class TaskRunner:
     def stop(self) -> None:
         self.stop_event.set()
         self.c2_manual_scan_requested.set()
+        try:
+            from .ui_operator_guard import set_worker_ui_operator_guard_mode
+
+            set_worker_ui_operator_guard_mode("idle", reason="task_runner_stopped")
+        except Exception:
+            pass
 
     def request_immediate_scan(self) -> None:
         self.c2_manual_scan_requested.set()
+
+    def operator_guard_health(self) -> dict[str, Any]:
+        try:
+            from .ui_operator_guard import worker_ui_operator_guard_health
+
+            return worker_ui_operator_guard_health()
+        except Exception as exc:
+            return {"ok": False, "mode": "fault", "reason": type(exc).__name__}
 
     def _run_supervised_loop(
         self,
@@ -711,7 +730,8 @@ class TaskRunner:
             )
 
     def _monitor_background_threads(self) -> None:
-        while not self.stop_event.wait(1.0):
+        while not self.stop_event.wait(0.25):
+            self._monitor_operator_guard()
             if (
                 self._pending_run_status_sync == "paused"
                 and not (self.thread and self.thread.is_alive())
@@ -729,6 +749,63 @@ class TaskRunner:
                     message=f"线程监控发现 {thread_kind} 已停止运行。",
                     traceback_text="",
                 )
+
+    def _monitor_operator_guard(self) -> None:
+        from .ui_operator_guard import (
+            operator_guard_audit_metadata,
+            set_worker_ui_operator_guard_mode,
+            start_worker_ui_operator_guard,
+            worker_ui_operator_guard_health,
+        )
+
+        health = worker_ui_operator_guard_health()
+        mode = str(health.get("mode") or "fault")
+        if health.get("ok") is not True:
+            if self._guard_fault_reported:
+                return
+            self._guard_fault_reported = True
+            self.operator_guard_fault_latched = True
+            if self.binding:
+                self._apply_local_run_status("paused")
+                self._pending_run_status_sync = "paused"
+            rebuilt = start_worker_ui_operator_guard(
+                client_instance_id=self.binding.client_instance_id if self.binding else "",
+            )
+            if rebuilt.get("ok") is True:
+                set_worker_ui_operator_guard_mode("stopped", reason="guard_rebuilt_after_fault")
+            result = append_log(
+                "ERROR",
+                "ui_operator_guard_fault",
+                "悬浮球安全守护异常，已停止微信自动化。",
+                error_code="OPERATOR_GUARD_EXITED",
+                metadata={
+                    **operator_guard_audit_metadata(
+                        health,
+                        reason=str(health.get("reason") or "operator_guard_fault"),
+                    ),
+                    "guard_health": health,
+                    "guard_rebuild": rebuilt,
+                },
+                force_incident=True,
+            )
+            incident_id = str((result or {}).get("incident_id") or "")
+            self.on_error(f"悬浮球守护故障，已停止自动化{f'，故障编号 {incident_id}' if incident_id else ''}。")
+            return
+        self._guard_fault_reported = False
+        state = health.get("state") if isinstance(health.get("state"), dict) else {}
+        command = state.get("command") if isinstance(state.get("command"), dict) else {}
+        source = str(command.get("source") or "")
+        if mode in {"paused", "stopped"} and self.binding and self.binding.run_status == "running":
+            self._apply_local_run_status("paused")
+            self._pending_run_status_sync = "paused"
+            self._guard_pause_latched = mode == "paused" and source.endswith("_single")
+            self.on_profile(self.binding)
+        elif mode == "ready" and self._guard_pause_latched and self.binding:
+            self._guard_pause_latched = False
+            # F8 resumes the local scheduler intent, but backend confirmation is
+            # still required before any new UI action becomes eligible.
+            self._pending_run_status_sync = "running"
+            self.on_profile(self.binding)
 
     def _handle_background_thread_failure(
         self,
@@ -774,11 +851,22 @@ class TaskRunner:
 
     def _ui_actions_enabled(self, binding: Binding | None = None) -> bool:
         active = binding or self.binding
+        if CONFIG.rpa_mode == "mock" or os.name != "nt":
+            guard_allows_ui = True
+        else:
+            try:
+                from .ui_operator_guard import worker_ui_operator_guard_health
+
+                guard_health = worker_ui_operator_guard_health()
+                guard_allows_ui = guard_health.get("ok") is True and str(guard_health.get("mode") or "") in {"ready", "active"}
+            except Exception:
+                guard_allows_ui = False
         return bool(
             active
             and not self.stop_event.is_set()
             and not emergency_stop_requested()
             and active.run_status == "running"
+            and guard_allows_ui
         )
 
     def _apply_local_run_status(self, run_status: str) -> None:
@@ -832,6 +920,20 @@ class TaskRunner:
         if run_status == "running" and emergency_stop_requested():
             self.on_error("客户端已触发紧急停止，请重启后再开始接单。")
             return False
+        from .ui_operator_guard import set_worker_ui_operator_guard_mode
+
+        guard_mode = "ready" if run_status == "running" else "paused"
+        guard_transition = set_worker_ui_operator_guard_mode(
+            guard_mode,
+            reason=f"worker_run_status:{run_status}",
+        )
+        if guard_transition.get("ok") is not True:
+            self._apply_local_run_status("paused")
+            self.on_error("悬浮球安全守护状态切换失败，已禁止开始接单。")
+            append_log("ERROR", "ui_operator_guard_run_status_failed", "悬浮球状态切换失败。", error_code="OPERATOR_GUARD_NOT_READY", metadata={"run_status": run_status, "guard_transition": guard_transition}, force_incident=True)
+            return False
+        if run_status == "running":
+            self.operator_guard_fault_latched = False
         if run_status == "paused":
             # Pause is fail-safe: stop every new/in-flight UI action locally
             # before attempting to synchronize the server-side switch.
@@ -861,6 +963,10 @@ class TaskRunner:
                     metadata={"error": str(exc)},
                 )
             else:
+                set_worker_ui_operator_guard_mode(
+                    "paused",
+                    reason="worker_run_status_start_not_confirmed",
+                )
                 self._apply_local_run_status("paused")
                 self.on_error(f"开始接单失败，仍保持暂停：{exc}")
                 append_log(
@@ -2236,7 +2342,7 @@ class TaskRunner:
             return
         try:
             lease.release()
-            append_log("INFO", "ui_lock_released", f"已释放微信 UI 锁：{reason}", task_id=task_id, metadata={"lock_id": lease.lock_id, "operation_type": getattr(lease, "operation_type", ""), "guard_pid": getattr(lease, "operator_guard_pid", None), "close_reason": reason})
+            append_log("INFO", "ui_lock_released", f"已释放微信 UI 锁：{reason}", task_id=task_id, metadata={"lock_id": lease.lock_id, "fencing_token": lease.fencing_token, "operation_type": getattr(lease, "operation_type", ""), "guard_pid": getattr(lease, "operator_guard_pid", None), "guard_process_kept_alive": True, "deactivate_reason": reason})
         except UiLockError as exc:
             append_log("ERROR", "ui_lock_release_failed", str(exc), task_id=task_id, error_code=exc.code, metadata=exc.data)
 

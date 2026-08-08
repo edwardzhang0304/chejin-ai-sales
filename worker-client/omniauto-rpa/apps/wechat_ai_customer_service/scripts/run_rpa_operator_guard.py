@@ -1,10 +1,7 @@
 """Global operator guard for WeChat RPA with configurable pause/stop hotkeys.
 
-This process runs only while an owning WeChat UI lease is active and provides:
-1. Input lock in running mode (blocks manual keyboard/mouse).
-2. Hotkey single press command (pause/resume toggle).
-3. Hotkey double press command (stop).
-4. A topmost floating status indicator.
+This process is owned by the Worker process and stays alive for the full Worker
+lifecycle. UI locks only activate/deactivate manual input blocking.
 """
 
 from __future__ import annotations
@@ -67,14 +64,22 @@ LLMHF_INJECTED = 0x01
 LLMHF_LOWER_IL_INJECTED = 0x02
 
 
-CONTROL_MODES = {"running", "paused", "stopped"}
-COMMAND_ACTIONS = {"pause", "resume", "stop"}
+CONTROL_MODES = {"idle", "ready", "active", "paused", "stopped", "fault"}
+COMMAND_ACTIONS = {"activate", "deactivate", "idle", "ready", "pause", "resume", "stop", "fault", "shutdown"}
 CONTROL_KEY_CHOICES = {"f8": VK_F8, "esc": VK_ESCAPE}
 DEFAULT_CONTROL_KEY = "f8"
 DEFAULT_INDICATOR_BACKEND = "layered"
 DEFAULT_LOCAL_SAFETY_STOP_PATH = "/api/customer-service/runtime/stop"
-INDICATOR_THEMES = ("blue", "yellow", "red")
+INDICATOR_THEMES = ("gray", "green", "blue", "yellow", "red")
 INDICATOR_PALETTES: dict[str, dict[str, str]] = {
+    "gray": {
+        "label_bg": "#111827", "label_outline": "#9ca3af", "label_accent": "#9ca3af",
+        "state": "#f3f4f6", "key": "#d1d5db", "shadow": "#030712", "core": "#9ca3af", "ring": "#e5e7eb",
+    },
+    "green": {
+        "label_bg": "#052e1b", "label_outline": "#34d399", "label_accent": "#10b981",
+        "state": "#ecfdf5", "key": "#a7f3d0", "shadow": "#022c22", "core": "#34d399", "ring": "#d1fae5",
+    },
     "blue": {
         "label_bg": "#031523",
         "label_outline": "#2dd4ff",
@@ -281,9 +286,9 @@ def write_guard_state(path: Path | None, payload: dict[str, Any]) -> None:
 
 
 def normalize_control_payload(payload: dict[str, Any], *, tenant_id: str) -> dict[str, Any]:
-    mode = str(payload.get("mode") or "running").strip().lower()
+    mode = str(payload.get("mode") or "idle").strip().lower()
     if mode not in CONTROL_MODES:
-        mode = "running"
+        mode = "fault"
     command = payload.get("command") if isinstance(payload.get("command"), dict) else {}
     try:
         command_id = max(0, int(command.get("id") or 0))
@@ -296,9 +301,19 @@ def normalize_control_payload(payload: dict[str, Any], *, tenant_id: str) -> dic
     if status not in {"idle", "pending", "applied", "ignored", "rejected"}:
         status = "idle"
     return {
-        "version": 1,
+        "version": 2,
         "tenant_id": tenant_id,
+        "guard_instance_id": str(payload.get("guard_instance_id") or ""),
+        "client_instance_id": str(payload.get("client_instance_id") or ""),
+        "owner_worker_pid": int(payload.get("owner_worker_pid") or 0),
+        "owner_process_create_time": float(payload.get("owner_process_create_time") or 0.0),
         "mode": mode,
+        "active_ui_lock_id": str(payload.get("active_ui_lock_id") or ""),
+        "active_fencing_token": int(payload.get("active_fencing_token") or 0),
+        "operation_type": str(payload.get("operation_type") or ""),
+        "current_step": str(payload.get("current_step") or ""),
+        "control_epoch": int(payload.get("control_epoch") or 0),
+        "shutdown_requested": bool(payload.get("shutdown_requested")),
         "command": {
             "id": command_id,
             "action": action,
@@ -396,16 +411,20 @@ def request_local_safety_stop(
 
 
 def indicator_state_snapshot(*, mode: str, runtime_state: str, locked: bool) -> tuple[str, str, dict[str, str]]:
-    """Return the compact three-color desktop indicator state."""
-    mode_value = str(mode or "running").strip().lower()
-    runtime_value = str(runtime_state or "idle").strip().lower()
-    if mode_value == "stopped" or runtime_value == "stopped":
-        return "red", "已停止 · 键鼠释放", INDICATOR_PALETTES["red"]
-    if mode_value == "paused" or runtime_value == "paused":
-        return "yellow", "已暂停 · 等待继续", INDICATOR_PALETTES["yellow"]
-    if locked:
-        return "blue", "运行中 · 键鼠锁定", INDICATOR_PALETTES["blue"]
-    return "blue", "运行中 · 可操作", INDICATOR_PALETTES["blue"]
+    """Return the fixed v0.8.3 five-color desktop indicator state."""
+    mode_value = str(mode or "idle").strip().lower()
+    if mode_value in {"stopped", "fault"}:
+        label = "守护故障 · 键鼠释放" if mode_value == "fault" else "已停止 · 键鼠释放"
+        return "red", label, INDICATOR_PALETTES["red"]
+    if mode_value == "idle":
+        return "gray", "未开始 · 键鼠可用", INDICATOR_PALETTES["gray"]
+    if mode_value == "ready":
+        return "green", "接单中 · 键鼠可用", INDICATOR_PALETTES["green"]
+    if mode_value == "paused":
+        return "yellow", "人工暂停 · 键鼠可用", INDICATOR_PALETTES["yellow"]
+    if mode_value == "active" and locked:
+        return "blue", "操作中 · 键鼠锁定", INDICATOR_PALETTES["blue"]
+    return "red", "守护故障 · 键鼠释放", INDICATOR_PALETTES["red"]
 
 
 def process_alive(pid: int) -> bool:
@@ -1254,7 +1273,6 @@ class InputHookGuard:
         if self.pending_single and time.monotonic() >= self.pending_single_deadline:
             self.pending_single = False
             self.pending_single_deadline = 0.0
-            return "toggle_pause"
         return ""
 
     def _keyboard_proc(self, n_code: int, w_param: int, l_param: int) -> int:
@@ -1283,12 +1301,17 @@ class InputHookGuard:
     def _on_control_keydown(self) -> None:
         now = time.monotonic()
         if self.pending_single and now <= self.pending_single_deadline:
+            self.lock_enabled = False
             self.pending_single = False
             self.pending_single_deadline = 0.0
             self.queued_action = "stop"
             return
         self.pending_single = True
         self.pending_single_deadline = now + self.control_double_window_seconds
+        self.lock_enabled = False
+        # The first press must release the user's keyboard and mouse immediately;
+        # it cannot wait for the double-click window to expire.
+        self.queued_action = "toggle_pause"
 
 
 def normalize_control_key_name(value: Any) -> str:
@@ -1308,19 +1331,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--control-double-window-ms", type=int, default=420)
     # Backward-compatible alias kept for existing launchers/configs.
     parser.add_argument("--esc-double-window-ms", type=int, default=None)
-    parser.add_argument("--pause-poll-interval-ms", type=int, default=550)
+    parser.add_argument("--pause-poll-interval-ms", type=int, default=100)
     parser.add_argument("--block-manual-input", action="store_true")
     parser.add_argument("--allow-manual-input", action="store_true")
     parser.add_argument("--floating-indicator", action="store_true")
     parser.add_argument("--no-floating-indicator", action="store_true")
     parser.add_argument("--guard-state-path", type=Path)
     parser.add_argument("--local-safety-stop-path", default=DEFAULT_LOCAL_SAFETY_STOP_PATH)
+    parser.add_argument("--guard-instance-id", required=True)
+    parser.add_argument("--client-instance-id", default="")
+    parser.add_argument("--owner-process-create-time", type=float, required=True)
     args = parser.parse_args(argv)
 
     tenant_id = str(args.tenant_id).strip() or "default"
     control_path = args.control_path.resolve()
     status_path = args.status_path.resolve()
     parent_pid = int(args.parent_pid or 0)
+    guard_instance_id = str(args.guard_instance_id or "").strip()
+    client_instance_id = str(args.client_instance_id or "").strip()
+    owner_process_create_time = float(args.owner_process_create_time or 0.0)
     control_key_name = normalize_control_key_name(args.control_key)
     control_vk = CONTROL_KEY_CHOICES[control_key_name]
     control_key_label = control_key_name.upper()
@@ -1336,9 +1365,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     control_poll_interval = bounded_int(
         args.pause_poll_interval_ms,
-        default=550,
-        minimum=120,
-        maximum=3000,
+        default=100,
+        minimum=50,
+        maximum=500,
     ) / 1000.0
     block_manual_input = True
     if args.allow_manual_input:
@@ -1352,21 +1381,29 @@ def main(argv: list[str] | None = None) -> int:
         floating_indicator = True
     guard_state_path = args.guard_state_path.resolve() if isinstance(args.guard_state_path, Path) else None
 
-    control_exists = control_path.exists()
     payload = load_control_payload(control_path, tenant_id=tenant_id)
-    mode_before = str(payload.get("mode") or "").strip().lower()
-    if mode_before == "stopped":
-        payload["mode"] = "running"
-    # Avoid rewriting an already-initialized control file on startup unless
-    # we need to recover mode from "stopped". This narrows the race window
-    # where an early external command could be overwritten.
-    if (not control_exists) or mode_before == "stopped":
-        write_json(control_path, payload)
+    if (
+        not guard_instance_id
+        or str(payload.get("guard_instance_id") or "") != guard_instance_id
+        or int(payload.get("owner_worker_pid") or 0) != parent_pid
+        or abs(float(payload.get("owner_process_create_time") or 0.0) - owner_process_create_time) > 0.01
+    ):
+        return 2
 
     hooks_installed = False
     indicator: FloatingIndicator | None = None
 
-    def emit_guard_state(phase: str, *, mode: str, runtime_state: str, runtime_message: str, lock_enabled: bool, reason: str = "") -> None:
+    def emit_guard_state(
+        phase: str,
+        *,
+        mode: str,
+        runtime_state: str,
+        runtime_message: str,
+        lock_enabled: bool,
+        control: dict[str, Any] | None = None,
+        reason: str = "",
+    ) -> None:
+        control_snapshot = control or payload
         indicator_active = bool(indicator is not None and indicator.enabled and indicator.root is not None)
         indicator_backend = str((indicator.backend if indicator is not None else "") or "")
         indicator_hwnd = int((indicator.hwnd if indicator is not None else 0) or 0)
@@ -1382,8 +1419,19 @@ def main(argv: list[str] | None = None) -> int:
                 "phase": phase,
                 "pid": os.getpid(),
                 "parent_pid": parent_pid,
+                "guard_instance_id": guard_instance_id,
+                "client_instance_id": client_instance_id,
+                "owner_worker_pid": parent_pid,
+                "owner_process_create_time": owner_process_create_time,
+                "guard_process_create_time": float(psutil.Process(os.getpid()).create_time()),
                 "tenant_id": tenant_id,
                 "mode": mode,
+                "active_ui_lock_id": str(control_snapshot.get("active_ui_lock_id") or "") if mode == "active" else "",
+                "active_fencing_token": int(control_snapshot.get("active_fencing_token") or 0) if mode == "active" else 0,
+                "operation_type": str(control_snapshot.get("operation_type") or "") if mode == "active" else "",
+                "current_step": str(control_snapshot.get("current_step") or "") if mode == "active" else "",
+                "control_epoch": int(control_snapshot.get("control_epoch") or 0),
+                "command": control_snapshot.get("command") if isinstance(control_snapshot.get("command"), dict) else {},
                 "runtime_state": runtime_state,
                 "runtime_message": runtime_message,
                 "lock_enabled": bool(lock_enabled),
@@ -1398,13 +1446,14 @@ def main(argv: list[str] | None = None) -> int:
                 "floating_indicator_fallback_reason": indicator_fallback_reason,
                 "floating_indicator_error": indicator_error,
                 "control_key": control_key_name,
+                "heartbeat_at": datetime.now().astimezone().isoformat(timespec="milliseconds"),
                 "reason": reason,
             },
         )
 
     emit_guard_state(
         "starting",
-        mode="running",
+        mode="idle",
         runtime_state="idle",
         runtime_message="guard_process_started",
         lock_enabled=False,
@@ -1420,8 +1469,8 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         emit_guard_state(
             "failed",
-            mode="stopped",
-            runtime_state="stopped",
+            mode="fault",
+            runtime_state="fault",
             runtime_message="hook_guard_init_failed",
             lock_enabled=False,
             reason=f"hook_guard_init_failed:{repr(exc)}",
@@ -1429,7 +1478,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     emit_guard_state(
         "starting",
-        mode="running",
+        mode="idle",
         runtime_state="idle",
         runtime_message="indicator_initializing",
         lock_enabled=False,
@@ -1444,8 +1493,8 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         emit_guard_state(
             "failed",
-            mode="stopped",
-            runtime_state="stopped",
+            mode="fault",
+            runtime_state="fault",
             runtime_message="floating_indicator_init_failed",
             lock_enabled=False,
             reason=f"floating_indicator_init_failed:{repr(exc)}",
@@ -1453,7 +1502,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     emit_guard_state(
         "starting",
-        mode="running",
+        mode="idle",
         runtime_state="idle",
         runtime_message="hooks_installing",
         lock_enabled=False,
@@ -1465,8 +1514,8 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         emit_guard_state(
             "failed",
-            mode="stopped",
-            runtime_state="stopped",
+            mode="fault",
+            runtime_state="fault",
             runtime_message="hook_install_failed",
             lock_enabled=False,
             reason=f"hook_install_failed:{repr(exc)}",
@@ -1485,10 +1534,10 @@ def main(argv: list[str] | None = None) -> int:
         cached_runtime = load_runtime_status(status_path)
     except Exception:
         cached_runtime = {"state": "idle", "message": "守护已启动"}
-    initial_mode = str(cached_control.get("mode") or "running").strip().lower()
+    initial_mode = str(cached_control.get("mode") or "idle").strip().lower()
     if initial_mode not in CONTROL_MODES:
-        initial_mode = "running"
-    initial_locked = initial_mode == "running"
+        initial_mode = "fault"
+    initial_locked = initial_mode == "active"
     hooks.set_lock_enabled(initial_locked)
     indicator.update(
         mode=initial_mode,
@@ -1503,6 +1552,7 @@ def main(argv: list[str] | None = None) -> int:
         runtime_state=str(cached_runtime.get("state") or "stopped"),
         runtime_message=str(cached_runtime.get("message") or ""),
         lock_enabled=initial_locked,
+        control=cached_control,
         reason="hooks_installed",
     )
 
@@ -1514,48 +1564,69 @@ def main(argv: list[str] | None = None) -> int:
             now = time.monotonic()
             action = hooks.poll_action()
             if action == "stop":
-                issue_command(
-                    control_path,
-                    tenant_id=tenant_id,
-                    action="stop",
-                    source=f"{control_key_name}_double",
-                    message=f"double_{control_key_name}_stop_requested",
+                latest = load_control_payload(control_path, tenant_id=tenant_id)
+                latest.update(
+                    {
+                        "mode": "stopped",
+                        "active_ui_lock_id": "",
+                        "active_fencing_token": 0,
+                        "operation_type": "",
+                        "current_step": "",
+                        "control_epoch": int(latest.get("control_epoch") or 0) + 1,
+                    }
                 )
+                command = latest.get("command") if isinstance(latest.get("command"), dict) else {}
+                command.update({"id": int(command.get("id") or 0) + 1, "action": "stop", "status": "applied", "source": f"{control_key_name}_double", "requested_at": now_iso(), "applied_at": now_iso(), "message": f"double_{control_key_name}_stop_requested"})
+                latest["command"] = command
+                write_json(control_path, latest)
                 write_runtime_status_hint(status_path, tenant_id=tenant_id, state="stopped", message="已停止。")
+                # Local stop is already effective; backend notification is best effort only.
                 request_local_safety_stop(tenant_id=tenant_id, stop_path=local_safety_stop_path)
             elif action == "toggle_pause":
                 latest = load_control_payload(control_path, tenant_id=tenant_id)
-                current_mode = str(latest.get("mode") or "running").strip().lower()
+                current_mode = str(latest.get("mode") or "idle").strip().lower()
                 if current_mode == "paused":
-                    issue_command(
-                        control_path,
-                        tenant_id=tenant_id,
-                        action="resume",
-                        source=f"{control_key_name}_single",
-                        message=f"single_{control_key_name}_resume_requested",
-                    )
+                    latest["mode"] = "ready"
+                    action_name = "resume"
                     write_runtime_status_hint(status_path, tenant_id=tenant_id, state="idle", message="监听运行中。")
-                elif current_mode == "running":
-                    issue_command(
-                        control_path,
-                        tenant_id=tenant_id,
-                        action="pause",
-                        source=f"{control_key_name}_single",
-                        message=f"single_{control_key_name}_pause_requested",
-                    )
+                elif current_mode in {"ready", "active"}:
+                    latest["mode"] = "paused"
+                    action_name = "pause"
                     write_runtime_status_hint(status_path, tenant_id=tenant_id, state="paused", message="已暂停，等待继续。")
+                else:
+                    action_name = ""
+                if action_name:
+                    latest.update({"active_ui_lock_id": "", "active_fencing_token": 0, "operation_type": "", "current_step": "", "control_epoch": int(latest.get("control_epoch") or 0) + 1})
+                    command = latest.get("command") if isinstance(latest.get("command"), dict) else {}
+                    command.update({"id": int(command.get("id") or 0) + 1, "action": action_name, "status": "applied", "source": f"{control_key_name}_single", "requested_at": now_iso(), "applied_at": now_iso(), "message": f"single_{control_key_name}_{action_name}_requested"})
+                    latest["command"] = command
+                    write_json(control_path, latest)
 
             if now - last_control_refresh_at >= max(0.08, control_poll_interval):
                 cached_control = load_control_payload(control_path, tenant_id=tenant_id)
+                if (
+                    str(cached_control.get("guard_instance_id") or "") != guard_instance_id
+                    or int(cached_control.get("owner_worker_pid") or 0) != parent_pid
+                    or abs(float(cached_control.get("owner_process_create_time") or 0.0) - owner_process_create_time) > 0.01
+                ):
+                    cached_control.update(
+                        {
+                            "mode": "fault",
+                            "active_ui_lock_id": "",
+                            "active_fencing_token": 0,
+                            "operation_type": "",
+                            "current_step": "",
+                        }
+                    )
                 last_control_refresh_at = now
             if now - last_runtime_refresh_at >= 0.20:
                 cached_runtime = load_runtime_status(status_path)
                 last_runtime_refresh_at = now
 
-            mode = str(cached_control.get("mode") or "running").strip().lower()
+            mode = str(cached_control.get("mode") or "idle").strip().lower()
             if mode not in CONTROL_MODES:
-                mode = "running"
-            locked = mode == "running"
+                mode = "fault"
+            locked = mode == "active"
             hooks.set_lock_enabled(locked)
             indicator.update(
                 mode=mode,
@@ -1564,19 +1635,22 @@ def main(argv: list[str] | None = None) -> int:
                 locked=locked,
             )
             indicator.pump()
-            if now - last_state_emit_at >= 0.45:
+            if now - last_state_emit_at >= 0.10:
                 emit_guard_state(
                     "running",
                     mode=mode,
                     runtime_state=str(cached_runtime.get("state") or "stopped"),
                     runtime_message=str(cached_runtime.get("message") or ""),
                     lock_enabled=locked,
+                    control=cached_control,
                 )
                 last_state_emit_at = now
 
             if not process_alive(parent_pid):
                 final_payload = load_control_payload(control_path, tenant_id=tenant_id)
                 final_payload["mode"] = "stopped"
+                final_payload["active_ui_lock_id"] = ""
+                final_payload["active_fencing_token"] = 0
                 final_command = final_payload.get("command") if isinstance(final_payload.get("command"), dict) else {}
                 if str(final_command.get("status") or "").strip().lower() != "pending":
                     final_command["message"] = "listener_parent_exited"
@@ -1588,18 +1662,20 @@ def main(argv: list[str] | None = None) -> int:
                     runtime_state="stopped",
                     runtime_message="listener_parent_exited",
                     lock_enabled=False,
+                    control=final_payload,
                     reason="listener_parent_exited",
                 )
                 break
 
-            if mode == "stopped":
+            if bool(cached_control.get("shutdown_requested")):
                 emit_guard_state(
                     "stopped",
                     mode="stopped",
                     runtime_state=str(cached_runtime.get("state") or "stopped"),
                     runtime_message=str(cached_runtime.get("message") or ""),
                     lock_enabled=False,
-                    reason="mode_stopped",
+                    control=cached_control,
+                    reason="worker_shutdown_requested",
                 )
                 break
 
@@ -1615,6 +1691,7 @@ def main(argv: list[str] | None = None) -> int:
             runtime_state="stopped",
             runtime_message="guard_exit",
             lock_enabled=False,
+            control=load_control_payload(control_path, tenant_id=tenant_id),
             reason="guard_exit",
         )
     return 0

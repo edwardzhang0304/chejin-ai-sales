@@ -76,7 +76,7 @@ class UiLockTest(unittest.TestCase):
             lease.update_step("should_not_continue")
         self.assertEqual(raised.exception.code, self.ui_lock.UI_LOCK_RENEW_FAILED)
 
-    def test_every_ui_lock_operation_starts_and_stops_the_shared_guard(self):
+    def test_every_ui_lock_operation_activates_and_deactivates_the_persistent_guard(self):
         operations = (
             "add_friend",
             "session_scan",
@@ -95,11 +95,11 @@ class UiLockTest(unittest.TestCase):
                     "pid": 4312,
                     **kwargs,
                 },
-            ) as start_guard,
+            ) as activate_guard,
             mock.patch(
                 "chejin_worker_client.ui_operator_guard.stop_ui_operator_guard",
                 return_value={"ok": True, "process_alive_after_stop": False},
-            ) as stop_guard,
+            ) as deactivate_guard,
         ):
             for operation in operations:
                 lease = self.ui_lock.acquire_ui_lock(
@@ -112,10 +112,10 @@ class UiLockTest(unittest.TestCase):
                 lease.release()
 
         self.assertEqual(
-            [call.kwargs["operation_type"] for call in start_guard.call_args_list],
+            [call.kwargs["operation_type"] for call in activate_guard.call_args_list],
             list(operations),
         )
-        self.assertEqual(stop_guard.call_count, len(operations))
+        self.assertEqual(deactivate_guard.call_count, len(operations))
 
     def test_guard_start_failure_removes_lock_and_blocks_ui_action(self):
         with mock.patch(
@@ -163,13 +163,8 @@ class UiLockTest(unittest.TestCase):
             self.assertEqual(lease.lease_error.code, self.ui_lock.OPERATOR_GUARD_EXITED)
             lease.release()
 
-    def test_resume_after_f8_requires_fresh_window_and_conversation_validation(self):
-        health = mock.Mock(
-            side_effect=(
-                {"ok": True, "mode": "paused", "reason": "guard_ready"},
-                {"ok": True, "mode": "running", "reason": "guard_ready"},
-            )
-        )
+    def test_first_f8_pause_cancels_current_lease_without_waiting_for_resume(self):
+        health = mock.Mock(return_value={"ok": True, "mode": "paused", "reason": "guard_ready"})
         with (
             mock.patch(
                 "chejin_worker_client.ui_operator_guard.start_ui_operator_guard",
@@ -190,11 +185,10 @@ class UiLockTest(unittest.TestCase):
                 current_step="brain_waiting",
                 timeout_seconds=1,
             )
-            self.assertFalse(lease.cancel_requested())
             self.assertTrue(lease.cancel_requested())
             self.assertEqual(
                 lease.lease_error.code,
-                self.ui_lock.OPERATOR_GUARD_REVALIDATION_REQUIRED,
+                self.ui_lock.OPERATOR_GUARD_PAUSED,
             )
             lease.release()
 

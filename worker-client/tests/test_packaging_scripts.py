@@ -128,7 +128,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("delivery ZIP does not contain the packaged runtime directory", workflow)
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v16.140.0-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v16.141.0-windows-x64.delivery.json", workflow)
         self.assertIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn("vision_credential_embedded", workflow)
         self.assertIn("vision_configuration_locked", workflow)
@@ -593,7 +593,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "16.140.0"', workflow)
+        self.assertIn('version -ne "16.141.0"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)
@@ -612,18 +612,28 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("contents: read", workflow)
         self.assertNotIn("contents: write", workflow)
 
-    def test_packaged_operator_guard_probe_requires_real_ready_state(self):
+    def test_packaged_operator_guard_probe_requires_resident_lifecycle(self):
         text = (ROOT / "scripts" / "probe-packaged-operator-guard.ps1").read_text(
             encoding="ascii"
         )
 
         self.assertIn('"--rpa-operator-guard"', text)
-        self.assertIn('"--allow-manual-input"', text)
+        self.assertIn('"--block-manual-input"', text)
+        self.assertIn('"--guard-instance-id"', text)
+        self.assertIn('"--owner-process-create-time"', text)
         self.assertIn("hooks_installed", text)
         self.assertIn("floating_indicator_active", text)
         self.assertIn("floating_indicator_render_ok", text)
         self.assertIn("operator_guard.state.json", text)
+        self.assertIn("PACKAGED_OPERATOR_GUARD_IDLE", text)
+        self.assertIn("PACKAGED_OPERATOR_GUARD_ACTIVE", text)
         self.assertIn("PACKAGED_OPERATOR_GUARD_READY", text)
+        self.assertIn("PACKAGED_OPERATOR_GUARD_STOPPED_RESIDENT", text)
+        self.assertIn('ExpectedMode "active" -ExpectedLocked $true', text)
+        self.assertIn('ExpectedMode "ready" -ExpectedLocked $false', text)
+        self.assertIn('ExpectedMode "stopped" -ExpectedLocked $false', text)
+        self.assertIn("did not remain resident in stopped mode", text)
+        self.assertIn("shutdown_requested = $true", text)
         self.assertIn("WaitForExit(20000)", text)
         self.assertIn('finalState.reason -ne "guard_exit"', text)
         self.assertIn('$null -ne $exitCode -and [int]$exitCode -ne 0', text)

@@ -191,6 +191,46 @@ def main() -> int:
     )
 
     install_runtime_supervision()
+    from .storage import append_log, load_binding
+    from .ui_operator_guard import (
+        operator_guard_audit_metadata,
+        shutdown_worker_ui_operator_guard,
+        start_worker_ui_operator_guard,
+    )
+
+    binding = load_binding()
+    try:
+        guard = start_worker_ui_operator_guard(
+            client_instance_id=binding.client_instance_id if binding else "",
+        )
+    except Exception as exc:
+        guard = {
+            "ok": False,
+            "mode": "fault",
+            "reason": f"operator_guard_start_exception:{type(exc).__name__}",
+        }
+    if guard.get("ok") is not True:
+        append_log(
+            "ERROR",
+            "ui_operator_guard_start_failed",
+            "常驻悬浮球安全守护启动失败，已禁止微信自动化。",
+            error_code="OPERATOR_GUARD_NOT_READY",
+            metadata=operator_guard_audit_metadata(
+                guard,
+                reason=str(guard.get("reason") or "operator_guard_start_failed"),
+            ),
+            force_incident=True,
+        )
+    else:
+        append_log(
+            "INFO",
+            "ui_operator_guard_started",
+            "常驻悬浮球安全守护已启动。",
+            metadata=operator_guard_audit_metadata(
+                guard,
+                reason="worker_started",
+            ),
+        )
     try:
         if os.environ.get("CHEJIN_WORKER_UI_MODE") == "pyside":
             from .ui import run_app
@@ -201,7 +241,23 @@ def main() -> int:
         mark_runtime_clean_exit(exit_code)
         return exit_code
     finally:
-        instance_guard.release()
+        try:
+            release = shutdown_worker_ui_operator_guard(reason="worker_exiting")
+            append_log(
+                "INFO" if release.get("ok") is True else "ERROR",
+                "ui_operator_guard_stopped",
+                "常驻悬浮球安全守护已随 Worker 退出。" if release.get("ok") is True else "常驻悬浮球安全守护退出失败。",
+                error_code=None if release.get("ok") is True else "OPERATOR_GUARD_STOP_FAILED",
+                metadata={
+                    **operator_guard_audit_metadata(
+                        release,
+                        reason="worker_exiting",
+                    ),
+                    "guard_release": release,
+                },
+            )
+        finally:
+            instance_guard.release()
 
 
 if __name__ == "__main__":

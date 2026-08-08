@@ -22,6 +22,9 @@ UI_STEP_TIMEOUT = "UI_STEP_TIMEOUT"
 OPERATOR_GUARD_NOT_READY = "OPERATOR_GUARD_NOT_READY"
 OPERATOR_GUARD_EXITED = "OPERATOR_GUARD_EXITED"
 OPERATOR_GUARD_REVALIDATION_REQUIRED = "OPERATOR_GUARD_REVALIDATION_REQUIRED"
+OPERATOR_GUARD_PAUSED = "OPERATOR_GUARD_PAUSED"
+OPERATOR_GUARD_STOPPED = "OPERATOR_GUARD_STOPPED"
+OPERATOR_GUARD_IDENTITY_MISMATCH = "OPERATOR_GUARD_IDENTITY_MISMATCH"
 
 LOCK_FILE = CONFIG.app_dir / "runtime" / "worker" / "ui_lock.json"
 _PROCESS_LOCK = threading.Lock()
@@ -165,10 +168,14 @@ class UiLockLease:
     def start_operator_guard(self) -> dict[str, Any]:
         if self._operator_guard is not None:
             return self._operator_guard
-        from .ui_operator_guard import start_ui_operator_guard
+        from .ui_operator_guard import (
+            operator_guard_audit_metadata,
+            start_ui_operator_guard,
+        )
 
         guard = start_ui_operator_guard(
             lock_id=self.lock_id,
+            fencing_token=self.fencing_token,
             operation_type=self.operation_type,
             owner=self.owner,
             current_step=self.current_step,
@@ -187,13 +194,18 @@ class UiLockLease:
             )
         _append_guard_audit(
             "INFO",
-            "ui_lock_operator_guard_started",
-            "微信 UI 锁守护已就绪。",
+            "ui_lock_operator_guard_activated",
+            "常驻悬浮球已进入蓝色操作状态。",
             metadata={
-                "lock_id": self.lock_id,
-                "operation_type": self.operation_type,
+                **operator_guard_audit_metadata(
+                    guard,
+                    reason="ui_lock_activated",
+                    active_ui_lock_id=self.lock_id,
+                    fencing_token=self.fencing_token,
+                    operation_type=self.operation_type,
+                    current_step=self.current_step,
+                ),
                 "owner": self.owner,
-                "guard_pid": self.operator_guard_pid,
                 "guard_started": bool(guard.get("started")),
                 "guard_enabled": bool(guard.get("enabled")),
             },
@@ -206,7 +218,7 @@ class UiLockLease:
         from .ui_operator_guard import ui_operator_guard_health
 
         health = ui_operator_guard_health(self._operator_guard)
-        mode = str(health.get("mode") or "running")
+        mode = str(health.get("mode") or "fault")
         if health.get("ok") is not True:
             error = UiLockError(
                 OPERATOR_GUARD_EXITED,
@@ -222,17 +234,32 @@ class UiLockLease:
             self._lease_lost.set()
             raise error
         if mode == "paused":
-            self._guard_paused_seen = True
-            return
-        if self._guard_paused_seen:
             error = UiLockError(
-                OPERATOR_GUARD_REVALIDATION_REQUIRED,
-                "人工暂停后必须重新确认微信窗口和客户会话，当前操作已安全中止。",
+                OPERATOR_GUARD_PAUSED,
+                "操作人员已按 F8 暂停，当前微信操作已立即中止。",
                 data={
                     "lock_id": self.lock_id,
                     "operation_type": self.operation_type,
                     "guard_pid": self.operator_guard_pid,
                 },
+            )
+            self._lease_error = error
+            self._lease_lost.set()
+            raise error
+        if mode == "stopped":
+            error = UiLockError(
+                OPERATOR_GUARD_STOPPED,
+                "操作人员已在本机停止自动化，当前微信操作已中止。",
+                data={"lock_id": self.lock_id, "operation_type": self.operation_type, "guard_pid": self.operator_guard_pid},
+            )
+            self._lease_error = error
+            self._lease_lost.set()
+            raise error
+        if mode != "active":
+            error = UiLockError(
+                OPERATOR_GUARD_REVALIDATION_REQUIRED,
+                "悬浮球不再持有当前微信 UI 锁，当前操作必须重新排队并复核。",
+                data={"lock_id": self.lock_id, "operation_type": self.operation_type, "guard_mode": mode},
             )
             self._lease_error = error
             self._lease_lost.set()
@@ -328,25 +355,40 @@ class UiLockLease:
             self._renew_thread.join(timeout=1.0)
         guard_release: dict[str, Any] = {"ok": True, "skipped": True}
         if self._operator_guard is not None:
-            from .ui_operator_guard import stop_ui_operator_guard
+            from .ui_operator_guard import (
+                operator_guard_audit_metadata,
+                stop_ui_operator_guard,
+            )
 
             guard_release = stop_ui_operator_guard(
-                self._operator_guard,
+                {**self._operator_guard, "lock_id": self.lock_id, "fencing_token": self.fencing_token},
                 reason=f"ui_lock_released:{self.operation_type}",
             )
             _append_guard_audit(
                 "INFO" if guard_release.get("ok") is True else "ERROR",
-                "ui_lock_operator_guard_stopped",
-                "微信 UI 锁守护已关闭。" if guard_release.get("ok") is True else "微信 UI 锁守护关闭失败。",
+                "ui_lock_operator_guard_deactivated",
+                "常驻悬浮球已恢复非操作状态。" if guard_release.get("ok") is True else "常驻悬浮球解除键鼠锁失败。",
                 metadata={
-                    "lock_id": self.lock_id,
-                    "operation_type": self.operation_type,
+                    **operator_guard_audit_metadata(
+                        guard_release,
+                        reason=f"ui_lock_released:{self.operation_type}",
+                        active_ui_lock_id=self.lock_id,
+                        fencing_token=self.fencing_token,
+                        operation_type=self.operation_type,
+                        current_step=self.current_step,
+                        guard_pid=self.operator_guard_pid,
+                    ),
                     "owner": self.owner,
-                    "guard_pid": self.operator_guard_pid,
                     "close_reason": f"ui_lock_released:{self.operation_type}",
                     "guard_release": guard_release,
                 },
                 error_code=None if guard_release.get("ok") is True else OPERATOR_GUARD_EXITED,
+            )
+        if guard_release.get("ok") is not True:
+            raise UiLockError(
+                OPERATOR_GUARD_EXITED,
+                "悬浮球未确认解除键鼠锁，已保留 UI 锁并禁止后续自动化。",
+                data={"lock_id": self.lock_id, "guard_release": guard_release},
             )
         with _PROCESS_LOCK:
             payload = _read_lock(self.path)
@@ -354,12 +396,6 @@ class UiLockLease:
                 if payload.get("lock_id") != self.lock_id or payload.get("owner") != self.owner:
                     raise UiLockError(UI_LOCK_OWNER_MISMATCH, "释放微信 UI 锁失败：锁归属不匹配。", data={"lock": payload})
                 _delete_lock(self.path)
-        if guard_release.get("ok") is not True:
-            raise UiLockError(
-                OPERATOR_GUARD_EXITED,
-                "微信 UI 锁已释放，但悬浮球守护关闭结果异常。",
-                data={"lock_id": self.lock_id, "guard_release": guard_release},
-            )
 
 
 def acquire_ui_lock(
