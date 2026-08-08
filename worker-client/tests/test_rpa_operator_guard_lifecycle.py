@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 import tempfile
@@ -29,6 +30,8 @@ class RpaOperatorGuardLifecycleTest(unittest.TestCase):
             "control_path": root / "operator_control.json",
             "status_path": root / "runtime_status.json",
             "state_path": root / "operator_guard.state.json",
+            "heartbeat_a_path": root / "operator_guard.heartbeat.0.json",
+            "heartbeat_b_path": root / "operator_guard.heartbeat.1.json",
             "pid_path": root / "operator_guard.pid.json",
             "stdout_log_path": root / "operator_guard.stdout.log",
             "stderr_log_path": root / "operator_guard.stderr.log",
@@ -75,6 +78,80 @@ class RpaOperatorGuardLifecycleTest(unittest.TestCase):
         self.assertEqual(replace.call_count, 3)
         self.assertEqual(sleep.call_count, 2)
         self.assertLess(sum(call.args[0] for call in sleep.call_args_list), 0.1)
+
+    def test_health_uses_independent_heartbeat_when_state_file_is_stale(self) -> None:
+        guard = {
+            "enabled": True,
+            "pid": 4321,
+            "guard_instance_id": "guard-1",
+            "paths": {key: str(value) for key, value in self.paths.items()},
+        }
+        identity = {
+            "pid": 4321,
+            "guard_instance_id": "guard-1",
+            "client_instance_id": "client-1",
+            "owner_worker_pid": 1234,
+            "owner_process_create_time": 90.0,
+        }
+        self._write("pid_path", identity)
+        self._write(
+            "state_path",
+            {
+                **identity,
+                "phase": "running",
+                "mode": "idle",
+                "hooks_installed": True,
+                "lock_enabled": False,
+                "heartbeat_at": (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat(),
+            },
+        )
+        self._write(
+            "heartbeat_a_path",
+            {
+                **identity,
+                "phase": "running",
+                "mode": "idle",
+                "hooks_installed": True,
+                "lock_enabled": False,
+                "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+        with (
+            mock.patch.object(rpa_operator_guard, "pid_alive", return_value=True),
+            mock.patch.object(
+                rpa_operator_guard,
+                "_guard_process_identity_matches",
+                return_value=True,
+            ),
+        ):
+            health = rpa_operator_guard.rpa_operator_guard_health(guard)
+
+        self.assertTrue(health["ok"])
+        self.assertEqual(health["reason"], "guard_ready")
+        self.assertLess(health["heartbeat_age_seconds"], 2.0)
+
+    def test_wait_for_pid_exit_rechecks_after_slow_windows_teardown(self) -> None:
+        with (
+            mock.patch.object(
+                rpa_operator_guard,
+                "pid_alive",
+                side_effect=(True, True, True, False, False),
+            ),
+            mock.patch.object(
+                rpa_operator_guard.time,
+                "monotonic",
+                side_effect=(0.0, 0.1, 1.0, 3.5),
+            ),
+            mock.patch.object(rpa_operator_guard.time, "sleep") as sleep,
+        ):
+            exited = rpa_operator_guard.wait_for_pid_exit(
+                4321,
+                timeout_seconds=8.0,
+            )
+
+        self.assertTrue(exited)
+        self.assertEqual(sleep.call_count, 3)
 
     def test_add_friend_sidecar_only_attaches_and_never_spawns_or_stops_guard(self) -> None:
         with mock.patch.object(

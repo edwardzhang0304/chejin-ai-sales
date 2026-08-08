@@ -128,7 +128,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("delivery ZIP does not contain the packaged runtime directory", workflow)
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v16.142.0-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v16.143.0-windows-x64.delivery.json", workflow)
         self.assertIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn("vision_credential_embedded", workflow)
         self.assertIn("vision_configuration_locked", workflow)
@@ -593,7 +593,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "16.142.0"', workflow)
+        self.assertIn('version -ne "16.143.0"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)
@@ -629,6 +629,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("PACKAGED_OPERATOR_GUARD_ACTIVE", text)
         self.assertIn("PACKAGED_OPERATOR_GUARD_READY", text)
         self.assertIn("PACKAGED_OPERATOR_GUARD_STATE_CONTENTION_RECOVERED", text)
+        self.assertIn("PACKAGED_OPERATOR_GUARD_INDEPENDENT_HEARTBEAT_FRESH", text)
         self.assertIn("PACKAGED_OPERATOR_GUARD_STOPPED_RESIDENT", text)
         self.assertIn('ExpectedMode "active" -ExpectedLocked $true', text)
         self.assertIn('ExpectedMode "ready" -ExpectedLocked $false', text)
@@ -636,11 +637,32 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("did not remain resident in stopped mode", text)
         self.assertIn("state-file contention", text)
         self.assertIn("Start-Sleep -Milliseconds 2300", text)
+        self.assertIn('"--heartbeat-path-a"', text)
+        self.assertIn('"--heartbeat-path-b"', text)
+        self.assertIn("$heartbeatAgeMs -ge 1000", text)
         self.assertIn("shutdown_requested = $true", text)
         self.assertIn("WaitForExit(20000)", text)
         self.assertIn('finalState.reason -ne "guard_exit"', text)
         self.assertIn('$null -ne $exitCode -and [int]$exitCode -ne 0', text)
         self.assertIn("unavailable_on_powershell_5_1", text)
+
+    def test_package_includes_one_command_uat_evidence_collector(self):
+        collector = ROOT / "packaging" / "collect-uat-evidence.ps1"
+        raw = collector.read_bytes()
+        text = raw.decode("utf-8-sig")
+        build = (ROOT / "scripts" / "build-windows.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+        workflow = (
+            ROOT.parent / ".github" / "workflows" / "worker-windows-package.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertEqual(raw[:3], b"\xef\xbb\xbf")
+        self.assertIn("rpa_operator_guard", text)
+        self.assertIn("CheJinWorker\\incidents", text)
+        self.assertIn("CheJinWorker\\diagnostics", text)
+        self.assertIn("collect-uat-evidence.ps1", build)
+        self.assertIn("collect-uat-evidence.ps1", workflow)
 
     def test_packaging_entry_imports_main_with_package_context(self):
         environment = dict(os.environ)

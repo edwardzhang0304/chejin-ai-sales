@@ -134,10 +134,36 @@ def rpa_operator_guard_paths(tenant_id: str | None = None) -> dict[str, Path]:
         "control_path": root / "operator_control.json",
         "status_path": root / "runtime_status.json",
         "state_path": root / "operator_guard.state.json",
+        "heartbeat_a_path": root / "operator_guard.heartbeat.0.json",
+        "heartbeat_b_path": root / "operator_guard.heartbeat.1.json",
         "pid_path": root / "operator_guard.pid.json",
         "stdout_log_path": root / "operator_guard.stdout.log",
         "stderr_log_path": root / "operator_guard.stderr.log",
     }
+
+
+def read_latest_guard_heartbeat(paths: dict[str, Any]) -> dict[str, Any]:
+    """Read the newest valid heartbeat from the alternating heartbeat files."""
+
+    newest: dict[str, Any] = {}
+    newest_at = datetime.min.replace(tzinfo=timezone.utc)
+    for key in ("heartbeat_a_path", "heartbeat_b_path"):
+        raw_path = str(paths.get(key) or "").strip()
+        if not raw_path:
+            continue
+        candidate = read_json(Path(raw_path), attempts=2, retry_delay_seconds=0.01)
+        heartbeat_text = str(candidate.get("heartbeat_at") or "")
+        try:
+            heartbeat_at = datetime.fromisoformat(heartbeat_text.replace("Z", "+00:00"))
+            if heartbeat_at.tzinfo is None:
+                heartbeat_at = heartbeat_at.replace(tzinfo=timezone.utc)
+            heartbeat_at = heartbeat_at.astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            continue
+        if heartbeat_at > newest_at:
+            newest = candidate
+            newest_at = heartbeat_at
+    return newest
 
 
 def empty_operator_control_state(
@@ -345,6 +371,17 @@ def _process_create_time(pid: int) -> float:
         return 0.0
 
 
+def wait_for_pid_exit(pid: int, *, timeout_seconds: float) -> bool:
+    """Wait for a Windows child to disappear, including post-signal teardown."""
+
+    if pid <= 0:
+        return True
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    while pid_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.08)
+    return not pid_alive(pid)
+
+
 def _guard_process_identity_matches(
     record: dict[str, Any],
     state: dict[str, Any],
@@ -437,6 +474,9 @@ def start_rpa_operator_guard(
     existing_pid = int(existing_record.get("pid") or 0)
     if existing_pid and pid_alive(existing_pid):
         existing_state = read_json(paths["state_path"])
+        existing_heartbeat = read_latest_guard_heartbeat(paths)
+        if existing_heartbeat:
+            existing_state = {**existing_state, **existing_heartbeat}
         if not _guard_process_identity_matches(existing_record, existing_state):
             result = {
                 **base,
@@ -452,18 +492,20 @@ def start_rpa_operator_guard(
         existing_control["shutdown_requested"] = True
         existing_control["control_epoch"] = int(existing_control.get("control_epoch") or 0) + 1
         write_json(paths["control_path"], existing_control)
-        started = time.monotonic()
-        while pid_alive(existing_pid) and time.monotonic() - started < 3.0:
-            time.sleep(0.08)
-        if pid_alive(existing_pid):
+        # Real Windows teardown can exceed three seconds while hooks and the
+        # layered window are being released. Do not declare a rebuild failure
+        # just before the old guard finishes its clean exit.
+        if not wait_for_pid_exit(existing_pid, timeout_seconds=8.0):
             terminate_pid_tree(existing_pid)
-        if pid_alive(existing_pid):
+        if not wait_for_pid_exit(existing_pid, timeout_seconds=5.0):
             result = {**base, "ok": False, "started": False, "reason": "operator_guard_stop_failed"}
             _ACTIVE_GUARD = result
             return result
 
     clear_file(paths["state_path"])
     clear_file(paths["pid_path"])
+    clear_file(paths["heartbeat_a_path"])
+    clear_file(paths["heartbeat_b_path"])
     write_json(
         paths["control_path"],
         empty_operator_control_state(
@@ -493,6 +535,10 @@ def start_rpa_operator_guard(
         str(paths["status_path"]),
         "--guard-state-path",
         str(paths["state_path"]),
+        "--heartbeat-path-a",
+        str(paths["heartbeat_a_path"]),
+        "--heartbeat-path-b",
+        str(paths["heartbeat_b_path"]),
         "--parent-pid",
         str(owner_worker_pid),
         "--guard-instance-id",
@@ -561,6 +607,8 @@ def start_rpa_operator_guard(
             "control_path": str(paths["control_path"]),
             "status_path": str(paths["status_path"]),
             "state_path": str(paths["state_path"]),
+            "heartbeat_a_path": str(paths["heartbeat_a_path"]),
+            "heartbeat_b_path": str(paths["heartbeat_b_path"]),
             "parent_pid": owner_worker_pid,
         },
     )
@@ -612,6 +660,9 @@ def stop_rpa_operator_guard(guard: dict[str, Any] | None, *, reason: str = "rpa_
     state_path = Path(str(paths.get("state_path") or ""))
     pid_record = read_json(pid_path)
     state = read_json(state_path)
+    heartbeat = read_latest_guard_heartbeat(paths)
+    if heartbeat:
+        state = {**state, **heartbeat}
     pid = int(pid_record.get("pid") or guard.get("pid") or 0)
     process_was_alive = pid_alive(pid)
     if pid > 0 and pid_alive(pid) and not _guard_process_identity_matches(pid_record, state):
@@ -639,13 +690,13 @@ def stop_rpa_operator_guard(guard: dict[str, Any] | None, *, reason: str = "rpa_
     except Exception as exc:
         _ACTIVE_GUARD = guard
         return {"ok": False, "reason": "operator_guard_stop_signal_failed", "error": repr(exc), "pid": pid}
-    started = time.monotonic()
-    while pid_alive(pid) and time.monotonic() - started < 3.0:
-        time.sleep(0.08)
-    if pid_alive(pid):
+    if not wait_for_pid_exit(pid, timeout_seconds=8.0):
         terminate_pid_tree(pid)
-    process_alive_after_stop = pid_alive(pid)
+    process_alive_after_stop = not wait_for_pid_exit(pid, timeout_seconds=5.0)
     final_state = read_json(state_path)
+    final_heartbeat = read_latest_guard_heartbeat(paths)
+    if final_heartbeat:
+        final_state = {**final_state, **final_heartbeat}
     try:
         final_pid = int(final_state.get("pid") or 0)
     except (TypeError, ValueError):
@@ -683,9 +734,20 @@ def rpa_operator_guard_health(guard: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(guard, dict) or not guard.get("enabled"):
         return {"ok": True, "mode": "not_enabled", "reason": "operator_guard_not_enabled"}
     paths = guard.get("paths") if isinstance(guard.get("paths"), dict) else {}
-    state = read_json(Path(str(paths.get("state_path") or "")))
     pid_record = read_json(Path(str(paths.get("pid_path") or "")))
     pid = int(pid_record.get("pid") or guard.get("pid") or 0)
+    state = read_json(Path(str(paths.get("state_path") or "")))
+    heartbeat = read_latest_guard_heartbeat(paths)
+    if (
+        heartbeat
+        and int(heartbeat.get("pid") or 0) == pid
+        and str(heartbeat.get("guard_instance_id") or "")
+        == str(guard.get("guard_instance_id") or "")
+    ):
+        # The state JSON is deliberately replaceable and can be held by
+        # antivirus/evidence readers. Health must use the independent heartbeat
+        # channel so a live guard is not killed because that one file is busy.
+        state = {**state, **heartbeat}
     mode = str(state.get("mode") or "fault").strip().lower()
     phase = str(state.get("phase") or "").strip().lower()
     hooks_installed = bool(state.get("hooks_installed"))
