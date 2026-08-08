@@ -398,6 +398,8 @@ def _v3_ingest_payload(
                 conversation.status = "friend_activation_reading"
             elif read_reason == "recall_precheck":
                 conversation.status = "recall_precheck"
+            elif read_reason == "visible_unread":
+                pass
             elif read_reason in {"waiting_user_reply", "recent_ai_sent"}:
                 conversation.status = "waiting_user_reply"
             else:
@@ -656,7 +658,7 @@ def _scan_payload(remark_code: str | None, *, rpa_session_key: str = "wx-row-1")
     }
 
 
-def test_scan_result_binds_unique_remark_code_and_read_targets_waits_for_state_machine_reason():
+def test_scan_result_binds_unique_remark_code_and_visible_unread_enters_read_targets():
     worker = _create_worker()
     _create_sales(worker["id"])
     _create_lead("王先生", "13896676678")
@@ -679,7 +681,11 @@ def test_scan_result_binds_unique_remark_code_and_read_targets_waits_for_state_m
     targets = client.get(f"/api/workers/{worker['id']}/wechat/sessions/read-targets", headers=_worker_headers(worker))
     assert targets.status_code == 200
     assert targets.json()["data"]["next_action"] == "none"
-    assert targets.json()["data"]["targets"] == []
+    visible_targets = targets.json()["data"]["targets"]
+    assert len(visible_targets) == 1
+    assert visible_targets[0]["conversation_id"] == binding["conversation_id"]
+    assert visible_targets[0]["read_reason"] == "visible_unread"
+    assert visible_targets[0]["authorization_revision"]
 
     with SessionLocal() as db:
         conversation = db.get(Conversation, binding["conversation_id"])
@@ -738,9 +744,105 @@ def test_scan_result_binds_unique_remark_code_and_read_targets_waits_for_state_m
         ],
     }
 
+
+def test_visible_unread_ingest_consumes_stale_scan_hint():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("首屏新消息客户", "13896676679")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    assert scan.status_code == 200, scan.text
+    binding = scan.json()["data"]["bindings"][0]
+
+    visible_ingest = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=_v3_ingest_payload(
+            binding,
+            remark_code,
+            read_run_id="read-visible-unread",
+            read_reason="visible_unread",
+            messages=[
+                _v3_message(
+                    "visible-unread-message",
+                    role="customer",
+                    message_type="text",
+                    content="首屏新消息",
+                    screen_order=1,
+                )
+            ],
+        ),
+        headers=_worker_headers(worker),
+    )
+    assert visible_ingest.status_code == 200, visible_ingest.text
+    with SessionLocal() as db:
+        refreshed_binding = db.get(WechatSessionBinding, binding["id"])
+        assert refreshed_binding is not None
+        assert refreshed_binding.unread_hint is False
+
     admin_binding = client.get(f"/api/conversations/{binding['conversation_id']}/wechat-binding", headers=HEADERS)
     assert admin_binding.status_code == 200
     assert admin_binding.json()["data"]["remark_code"] == remark_code
+
+
+def test_visible_unread_is_revoked_by_read_scan_and_can_be_issued_again_for_new_unread_fact():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("首屏未读再次发生客户", "13896676680")
+    remark_code = _pull_remark_code(worker)
+
+    first_scan = _scan_payload(remark_code)
+    first_scan["scan_id"] = "scan-visible-unread-first"
+    first = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=first_scan,
+        headers=_worker_headers(worker),
+    )
+    assert first.status_code == 200, first.text
+    first_targets = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+    assert first_targets.status_code == 200, first_targets.text
+    first_target = first_targets.json()["data"]["targets"][0]
+    assert first_target["read_reason"] == "visible_unread"
+
+    read_scan = _scan_payload(remark_code)
+    read_scan["scan_id"] = "scan-visible-unread-cleared"
+    read_scan["sessions"][0]["unread_hint"] = False
+    cleared = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=read_scan,
+        headers=_worker_headers(worker),
+    )
+    assert cleared.status_code == 200, cleared.text
+    cleared_targets = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+    assert cleared_targets.status_code == 200, cleared_targets.text
+    assert cleared_targets.json()["data"]["targets"] == []
+
+    unread_again_scan = _scan_payload(remark_code)
+    unread_again_scan["scan_id"] = "scan-visible-unread-again"
+    unread_again = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=unread_again_scan,
+        headers=_worker_headers(worker),
+    )
+    assert unread_again.status_code == 200, unread_again.text
+    targets_again = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+    assert targets_again.status_code == 200, targets_again.text
+    again_target = targets_again.json()["data"]["targets"][0]
+    assert again_target["read_reason"] == "visible_unread"
+    assert again_target["conversation_id"] == first_target["conversation_id"]
+    assert again_target["authorization_revision"] == first_target["authorization_revision"]
 
 
 def test_read_targets_always_returns_versioned_empty_identity_transition():
@@ -4932,7 +5034,7 @@ def test_read_targets_excludes_closed_and_rejected_conversations_but_allows_degr
     assert rejected.json()["data"]["targets"] == []
 
 
-def test_read_targets_only_returns_v06_state_machine_reasons_and_recall_precheck_creates_no_follow_up():
+def test_read_targets_only_returns_formal_reasons_and_recall_precheck_creates_no_follow_up():
     worker = _create_worker()
     _create_sales(worker["id"])
     _create_lead("王先生", "13896676678")
@@ -4940,7 +5042,7 @@ def test_read_targets_only_returns_v06_state_machine_reasons_and_recall_precheck
     scan = client.post(f"/api/workers/{worker['id']}/wechat/sessions/scan-result", json=_scan_payload(remark_code), headers=_worker_headers(worker))
     binding = scan.json()["data"]["bindings"][0]
 
-    allowed = {"recall_precheck", "recent_ai_sent", "waiting_user_reply", "waiting_sales_reply"}
+    allowed = {"visible_unread", "recall_precheck", "recent_ai_sent", "waiting_user_reply", "waiting_sales_reply"}
 
     with SessionLocal() as db:
         conversation = db.get(Conversation, binding["conversation_id"])

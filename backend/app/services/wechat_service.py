@@ -126,9 +126,10 @@ READ_TARGET_FAILURE_RESULTS = {"target_not_confirmed", "search_not_found", "sear
 READ_REASON_PRIORITY = {
     "recall_precheck": 0,
     "friend_acceptance_visible_hit": 0,
-    "recent_ai_sent": 1,
-    "waiting_user_reply": 2,
-    "waiting_sales_reply": 3,
+    "visible_unread": 1,
+    "recent_ai_sent": 2,
+    "waiting_user_reply": 3,
+    "waiting_sales_reply": 4,
 }
 VOICE_DURATION_RE = re.compile(
     r"^\s*(?:\[?语音\]?\s*)?\d{1,3}(?:\.\d+)?\s*(?:\"|”|″|秒|s|S)\s*$"
@@ -998,6 +999,12 @@ def _read_reason(binding: WechatSessionBinding, conversation: Conversation) -> s
         return "friend_acceptance_visible_hit"
     if conversation.status == "recall_precheck":
         return "recall_precheck"
+    # A current first-screen unread fact is itself a reason to issue a
+    # short-lived server authorization. Without this explicit reason, a newly
+    # bound ai_active conversation can be discovered forever but can never be
+    # opened to ingest its first customer message.
+    if binding.unread_hint and conversation.status == "ai_active":
+        return "visible_unread"
     if conversation.status == "waiting_user_reply" and conversation.last_ai_reply_at:
         return "recent_ai_sent"
     if conversation.status in {"waiting_user_reply", "recalled_waiting_user", "sales_replied_waiting_user"}:
@@ -2552,6 +2559,11 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             conversation.recall_daily_count += 1
             conversation.status = "ai_active"
             conversation.next_recall_at = None
+    if not partitioned or partition_final:
+        # Opening and reading the authorized chat consumes the current visible
+        # unread fact. A later scan may set it again if WeChat shows new unread
+        # content, but the same stale hint must not dispatch the chat forever.
+        binding.unread_hint = False
     db.flush()
     response = {
         "ingested_count": ingested_count,

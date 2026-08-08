@@ -78,7 +78,6 @@ class WorkerApiClient:
             json={
                 "client_instance_id": binding.client_instance_id,
                 "client_binding_state": "bound",
-                "run_status": binding.run_status,
                 "running_status": running_status,
                 "current_task": current_task,
                 "rpa_component_status": rpa_component_status,
