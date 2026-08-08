@@ -1144,7 +1144,10 @@ class WorkerWindow(QMainWindow):
             ),
             kind=run_status_kind,
         )
-        self.rpa_tile.set_value("守护故障" if guard_fault else "可用" if profile and profile.rpa_component_status == "ready" else "不可用", kind="danger" if guard_fault else "ok" if profile and profile.rpa_component_status == "ready" else "danger")
+        self.rpa_tile.set_value(
+            "可用" if profile and profile.rpa_component_status == "ready" else "不可用",
+            kind="ok" if profile and profile.rpa_component_status == "ready" else "danger",
+        )
         self.wechat_tile.set_value("已连接" if profile and profile.wechat_status == "logged_in" else "未检测到", kind="ok" if profile and profile.wechat_status == "logged_in" else "danger")
 
         run_text = "暂停接单" if is_running else "开始接单"

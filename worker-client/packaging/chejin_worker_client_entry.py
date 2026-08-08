@@ -35,7 +35,6 @@ def _restore_frozen_worker_stdio() -> None:
     supported_modes = {
         "--omniauto-ocr-worker",
         "--vision-provider-worker",
-        "--rpa-operator-guard",
         "--omniauto-vision-wechat-worker",
     }
     if mode == "--omniauto-sidecar" and "--daemon" in sys.argv[2:]:

@@ -4,6 +4,7 @@ from pathlib import Path
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -60,6 +61,47 @@ class PackagingScriptsTest(unittest.TestCase):
             if "param(" in text:
                 self.assertTrue(text.startswith("param("), f"{script.name} 的 param 块必须在脚本最前面")
 
+    def test_retired_desktop_input_feature_has_no_active_source_residue(self):
+        source_roots = (
+            ROOT / "chejin_worker_client",
+            ROOT / "packaging",
+            ROOT / "scripts",
+            ROOT / "omniauto-rpa" / "apps" / "wechat_ai_customer_service",
+            ROOT.parent / "packages" / "worker-ui-baseline" / "src",
+            ROOT.parent / ".github",
+        )
+        source_suffixes = {".py", ".ps1", ".yml", ".yaml", ".json", ".ts", ".tsx", ".js", ".css"}
+        skipped_parts = {"__pycache__", "node_modules", "dist", "web_assets"}
+        retired_patterns = (
+            "ui_" + "operator_" + "guard",
+            "rpa_" + "operator_" + "guard",
+            "rpa-" + "operator-" + "guard",
+            "operator" + "Guard",
+            "guard" + "_fault",
+            "guard" + "_health",
+            "floating_" + "indicator",
+            "block_" + "manual_input",
+            "OPERATOR_" + "GUARD",
+            "悬浮" + "球",
+            "守护" + "故障",
+        )
+        shortcut_pattern = re.compile(r"(?<![A-Za-z0-9])" + "F" + "8" + r"(?![A-Za-z0-9])", re.IGNORECASE)
+        residue: list[str] = []
+
+        for source_root in source_roots:
+            for path in source_root.rglob("*"):
+                if not path.is_file() or path.suffix.lower() not in source_suffixes:
+                    continue
+                if skipped_parts.intersection(path.parts):
+                    continue
+                text = path.read_text(encoding="utf-8-sig", errors="ignore")
+                lowered = text.lower()
+                matches = [pattern for pattern in retired_patterns if pattern.lower() in lowered]
+                if matches or shortcut_pattern.search(text):
+                    residue.append(f"{path}: {', '.join(matches) or 'retired shortcut'}")
+
+        self.assertEqual([], residue, "\n".join(residue))
+
     def test_build_script_writes_manifest_and_checks_sidecar(self):
         text = (ROOT / "scripts" / "build-windows.ps1").read_text(encoding="utf-8-sig")
 
@@ -100,7 +142,6 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("最终 exe 无法启动内置 OmniAuto sidecar", text)
         self.assertIn('"--omniauto-ocr-probe"', text)
         self.assertIn("最终 exe 无法启动图片复核 OCR 独立进程", text)
-        self.assertNotIn("最终 exe Operator Guard 真实启动探针未通过", text)
         self.assertIn("runtime-build-identity.json", text)
         self.assertIn("CHEJIN_BUILD_IDENTITY_PATH", text)
         self.assertNotIn('$OmniAutoUpstreamCommit = "855c218', text)
@@ -501,7 +542,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("_restore_frozen_worker_stdio", entry_text)
         self.assertIn('"--omniauto-ocr-worker"', entry_text)
         self.assertIn('"--vision-provider-worker"', entry_text)
-        self.assertIn('"--rpa-operator-guard"', entry_text)
+        retired_mode = '"--rpa-' + 'operator-' + 'guard"'
+        self.assertNotIn(retired_mode, entry_text)
         self.assertIn('"--omniauto-vision-wechat-worker"', entry_text)
         self.assertIn("GetStdHandle", entry_text)
         self.assertIn("CONTRACT_PATH = resolve_contract_path(ROOT)", text)
@@ -598,7 +640,6 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("chejin-worker-packaged-diagnostics.jsonl", workflow)
         self.assertIn('"--preflight-format", "json", "--write-report"', workflow)
         self.assertIn("packaged Vision live capability probe did not pass", workflow)
-        self.assertNotIn("packaged Operator Guard probe failed", workflow)
         self.assertIn('Remove-Item Env:CHEJIN_PACKAGING_DIAGNOSTIC_PATH', workflow)
         self.assertIn('"--startup-crash-probe"', workflow)
         self.assertIn("startup-crash.jsonl", workflow)

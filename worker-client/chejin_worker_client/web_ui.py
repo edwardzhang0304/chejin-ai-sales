@@ -256,6 +256,8 @@ class WorkerWebWindow(QMainWindow):
         self.connection_status = "connecting"
         self.active_page = "workbench"
         self.bind_error = ""
+        self.notice = ""
+        self.state_revision = 0
         self.step_history: list[dict[str, Any]] = []
         self._drag_origin: QPoint | None = None
 
@@ -356,9 +358,11 @@ class WorkerWebWindow(QMainWindow):
 
     def _state(self) -> dict[str, Any]:
         return {
+            "revision": self.state_revision,
             "screen": self._screen(),
             "model": self._model(),
             "bindError": self.bind_error,
+            "notice": self.notice,
         }
 
     def _screen(self) -> str:
@@ -415,13 +419,12 @@ class WorkerWebWindow(QMainWindow):
                 "receiveState": "离线" if offline else receive_state,
                 "connectionState": "连接异常" if offline else "连接正常",
                 "lastHeartbeat": _format_time(profile.last_heartbeat_at if profile else None),
-                "automationState": "守护故障" if guard_fault else "可用" if profile and profile.rpa_component_status == "ready" else "不可用",
+                "automationState": "可用" if profile and profile.rpa_component_status == "ready" else "不可用",
                 "wechatState": "已连接" if profile and profile.wechat_status == "logged_in" else "未连接",
                 "currentStep": self.runner.current_step or (profile.current_step if profile else None) or "",
             },
             "listener": self._listener_model(),
             "localLock": lock_summary(),
-            "operatorGuard": guard_health,
             "task": self._task_model_for_screen(display_task, offline, run_status),
             "runningSteps": self._running_steps(),
             "completedSteps": self._completed_steps(),
@@ -598,6 +601,7 @@ class WorkerWebWindow(QMainWindow):
         return steps
 
     def _publish(self) -> None:
+        self.state_revision += 1
         self.bridge.emit_state()
 
     def change_screen(self, screen: str) -> None:
@@ -616,6 +620,7 @@ class WorkerWebWindow(QMainWindow):
         worker_token = worker_token.strip()
         if not worker_id or not worker_token:
             self.bind_error = "Worker ID 和 Worker Token 必填。"
+            self.notice = ""
             self._publish()
             return
         client_instance_id = self.binding.client_instance_id if self.binding else new_client_instance_id()
@@ -625,11 +630,13 @@ class WorkerWebWindow(QMainWindow):
             save_binding(self.binding)
             append_log("INFO", "worker_bound", "绑定 Worker 成功。")
             self.bind_error = ""
+            self.notice = "绑定成功，已进入 Worker 工作台。"
             self.active_page = "workbench"
             self.on_profile(profile)
             self.runner.start(self.binding)
         except Exception as exc:
             self.bind_error = str(exc)
+            self.notice = ""
             append_log("ERROR", "worker_bind_failed", str(exc))
             self._publish()
 
@@ -737,6 +744,7 @@ class WorkerWebWindow(QMainWindow):
             self.binding = None
             self.runner.stop()
             self.bind_error = "绑定已失效，请重新绑定。"
+            self.notice = ""
             self.active_page = "workbench"
         self._publish()
 

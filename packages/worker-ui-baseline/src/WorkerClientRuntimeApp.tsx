@@ -1,12 +1,14 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { WorkerClientBaseline } from "./WorkerClientBaseline";
 import type { WorkerClientModel, WorkerClientScreen } from "./types";
 
 interface BridgeState {
+  revision?: number;
   screen: WorkerClientScreen;
   model: WorkerClientModel;
   bindError?: string;
+  notice?: string;
 }
 
 interface CheJinBridge {
@@ -114,6 +116,8 @@ function parseState(payload: string): BridgeState | null {
 
 function App() {
   const [bridge, setBridge] = useState<CheJinBridge | null>(null);
+  const [notice, setNotice] = useState("");
+  const latestRevision = useRef(-1);
   const [state, setState] = useState<BridgeState>({
     screen: initialScreen(),
     model: emptyRuntimeModel,
@@ -124,16 +128,26 @@ function App() {
     new window.QWebChannel(window.qt.webChannelTransport, (channel) => {
       const nextBridge = channel.objects.chejinBridge;
       setBridge(nextBridge);
-      nextBridge.initialState((payload) => {
+      const applyBridgeState = (payload: string) => {
         const parsed = parseState(payload);
-        if (parsed) setState(parsed);
-      });
-      nextBridge.stateChanged?.connect((payload) => {
-        const parsed = parseState(payload);
-        if (parsed) setState(parsed);
-      });
+        if (!parsed) return;
+        const revision = Number.isFinite(parsed.revision) ? Number(parsed.revision) : 0;
+        if (revision < latestRevision.current) return;
+        latestRevision.current = revision;
+        setState(parsed);
+      };
+      nextBridge.stateChanged?.connect(applyBridgeState);
+      nextBridge.initialState(applyBridgeState);
     });
   }, []);
+
+  useEffect(() => {
+    const message = state.notice?.trim() || "";
+    if (!message) return;
+    setNotice(message);
+    const timeoutId = window.setTimeout(() => setNotice(""), 3000);
+    return () => window.clearTimeout(timeoutId);
+  }, [state.notice]);
 
   useEffect(() => {
     if (!bridge) return;
@@ -229,6 +243,7 @@ function App() {
       screen={state.screen}
       model={appModel}
       bindError={state.bindError}
+      notice={notice}
       onScreenChange={changeScreen}
       onBack={() => {
         if (bridge) {

@@ -22406,6 +22406,7 @@ function renderScreen(props) {
 function WorkerClientBaseline(props) {
   return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "cw-window app-window", "data-active-screen": props.screen, "aria-label": "\u8F66\u91D1 Worker \u5BA2\u6237\u7AEF", children: [
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Header, { screen: props.screen, onScreenChange: props.onScreenChange, onBack: props.onBack }),
+    props.notice ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cw-toast cw-toast-success", role: "status", "aria-live": "polite", children: props.notice }) : null,
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cw-app-body", children: renderScreen(props) })
   ] });
 }
@@ -22485,6 +22486,8 @@ function parseState(payload) {
 }
 function App() {
   const [bridge, setBridge] = (0, import_react2.useState)(null);
+  const [notice, setNotice] = (0, import_react2.useState)("");
+  const latestRevision = (0, import_react2.useRef)(-1);
   const [state, setState] = (0, import_react2.useState)({
     screen: initialScreen(),
     model: emptyRuntimeModel
@@ -22494,16 +22497,25 @@ function App() {
     new window.QWebChannel(window.qt.webChannelTransport, (channel) => {
       const nextBridge = channel.objects.chejinBridge;
       setBridge(nextBridge);
-      nextBridge.initialState((payload) => {
+      const applyBridgeState = (payload) => {
         const parsed = parseState(payload);
-        if (parsed) setState(parsed);
-      });
-      nextBridge.stateChanged?.connect((payload) => {
-        const parsed = parseState(payload);
-        if (parsed) setState(parsed);
-      });
+        if (!parsed) return;
+        const revision = Number.isFinite(parsed.revision) ? Number(parsed.revision) : 0;
+        if (revision < latestRevision.current) return;
+        latestRevision.current = revision;
+        setState(parsed);
+      };
+      nextBridge.stateChanged?.connect(applyBridgeState);
+      nextBridge.initialState(applyBridgeState);
     });
   }, []);
+  (0, import_react2.useEffect)(() => {
+    const message = state.notice?.trim() || "";
+    if (!message) return;
+    setNotice(message);
+    const timeoutId = window.setTimeout(() => setNotice(""), 3e3);
+    return () => window.clearTimeout(timeoutId);
+  }, [state.notice]);
   (0, import_react2.useEffect)(() => {
     if (!bridge) return;
     const titlebar = document.querySelector(".cw-titlebar");
@@ -22587,6 +22599,7 @@ function App() {
       screen: state.screen,
       model: appModel,
       bindError: state.bindError,
+      notice,
       onScreenChange: changeScreen,
       onBack: () => {
         if (bridge) {

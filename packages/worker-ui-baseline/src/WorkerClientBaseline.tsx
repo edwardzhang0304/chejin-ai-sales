@@ -18,6 +18,7 @@ interface WorkerClientBaselineProps {
   onOpenIncidentDirectory?: () => void;
   onBind?: (workerId: string, workerToken: string) => void;
   bindError?: string;
+  notice?: string;
   onBack?: () => void;
 }
 
@@ -804,6 +805,11 @@ export function WorkerClientBaseline(props: WorkerClientBaselineProps) {
   return (
     <section className="cw-window app-window" data-active-screen={props.screen} aria-label="车金 Worker 客户端">
       <Header screen={props.screen} onScreenChange={props.onScreenChange} onBack={props.onBack} />
+      {props.notice ? (
+        <div className="cw-toast cw-toast-success" role="status" aria-live="polite">
+          {props.notice}
+        </div>
+      ) : null}
       <div className="cw-app-body">
         {renderScreen(props)}
       </div>
