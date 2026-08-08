@@ -315,8 +315,30 @@ def start_rpa_operator_guard(*, operation: str = "", route: str = "", artifact_d
         _ACTIVE_GUARD = None
         return result
 
-    existing_pid = int(read_json(paths["pid_path"]).get("pid") or 0)
+    existing_record = read_json(paths["pid_path"])
+    existing_pid = int(existing_record.get("pid") or 0)
     if existing_pid and pid_alive(existing_pid):
+        existing_verify = verify_rpa_operator_guard(
+            pid=existing_pid,
+            state_path=paths["state_path"],
+            expected_parent_pid=int(existing_record.get("parent_pid") or 0),
+            timeout_seconds=0.5,
+        )
+        existing_control = read_json(paths["control_path"])
+        existing_mode = str(existing_control.get("mode") or "running").strip().lower()
+        if existing_verify.get("ok") is True and existing_mode in {"running", "paused"}:
+            result = {
+                **base,
+                "ok": True,
+                "started": True,
+                "reused_existing": True,
+                "pid": existing_pid,
+                "verify": existing_verify,
+                "control_path": str(paths["control_path"]),
+                "owner_parent_pid": int(existing_record.get("parent_pid") or 0),
+            }
+            _ACTIVE_GUARD = result
+            return result
         try:
             sync_operator_mode(paths["control_path"], tenant_id=tenant_id, mode="stopped", message="replace_stale_rpa_guard")
             started = time.monotonic()
@@ -484,17 +506,83 @@ def stop_rpa_operator_guard(guard: dict[str, Any] | None, *, reason: str = "rpa_
         for candidate in sorted(pid_candidates):
             if pid_alive(candidate):
                 terminate_pid_tree(candidate)
+        forced_stop_started = time.monotonic()
+        while any(pid_alive(candidate) for candidate in pid_candidates) and time.monotonic() - forced_stop_started < 2.0:
+            time.sleep(0.08)
         alive_after = {str(candidate): pid_alive(candidate) for candidate in sorted(pid_candidates)}
+        process_alive_after_stop = any(alive_after.values())
         release = {
-            "ok": True,
-            "reason": reason,
+            "ok": not process_alive_after_stop,
+            "reason": reason if not process_alive_after_stop else "operator_guard_process_still_alive",
             "pid": pid,
             "pid_candidates": sorted(pid_candidates),
-            "process_alive_after_stop": any(alive_after.values()),
+            "process_alive_after_stop": process_alive_after_stop,
             "alive_after": alive_after,
         }
     _ACTIVE_GUARD = None
     return release
+
+
+def rpa_operator_guard_health(guard: dict[str, Any] | None) -> dict[str, Any]:
+    """Return a non-blocking health snapshot for the UI-lock owner."""
+
+    if not isinstance(guard, dict) or not guard.get("enabled"):
+        return {"ok": True, "mode": "not_enabled", "reason": "operator_guard_not_enabled"}
+    paths = guard.get("paths") if isinstance(guard.get("paths"), dict) else {}
+    control = read_json(Path(str(paths.get("control_path") or "")))
+    state = read_json(Path(str(paths.get("state_path") or "")))
+    pid_record = read_json(Path(str(paths.get("pid_path") or "")))
+    verify = guard.get("verify") if isinstance(guard.get("verify"), dict) else {}
+    verify_state = verify.get("state") if isinstance(verify.get("state"), dict) else {}
+    pid_candidates: set[int] = set()
+    for raw_pid in (
+        guard.get("pid"),
+        verify.get("state_pid"),
+        verify_state.get("pid"),
+        state.get("pid"),
+        pid_record.get("pid"),
+    ):
+        try:
+            parsed_pid = int(raw_pid or 0)
+        except (TypeError, ValueError):
+            parsed_pid = 0
+        if parsed_pid > 0:
+            pid_candidates.add(parsed_pid)
+    alive = any(pid_alive(pid) for pid in pid_candidates)
+    mode = str(control.get("mode") or "running").strip().lower()
+    phase = str(state.get("phase") or "").strip().lower()
+    hooks_installed = bool(state.get("hooks_installed"))
+    if not alive:
+        return {
+            "ok": False,
+            "mode": mode,
+            "reason": "guard_process_exited_early",
+            "pid_candidates": sorted(pid_candidates),
+            "state": state,
+        }
+    if phase == "failed" or not hooks_installed:
+        return {
+            "ok": False,
+            "mode": mode,
+            "reason": "guard_hook_not_ready",
+            "pid_candidates": sorted(pid_candidates),
+            "state": state,
+        }
+    if mode == "stopped":
+        return {
+            "ok": False,
+            "mode": mode,
+            "reason": "operator_guard_stopped",
+            "pid_candidates": sorted(pid_candidates),
+            "state": state,
+        }
+    return {
+        "ok": True,
+        "mode": mode if mode in CONTROL_MODES else "running",
+        "reason": "guard_ready",
+        "pid_candidates": sorted(pid_candidates),
+        "state": state,
+    }
 
 
 def rpa_operator_guard_checkpoint(*, reason: str = "") -> dict[str, Any]:
@@ -507,6 +595,7 @@ def rpa_operator_guard_checkpoint(*, reason: str = "") -> dict[str, Any]:
     settings = guard.get("settings") if isinstance(guard.get("settings"), dict) else {}
     pause_max_seconds = float(settings.get("pause_max_seconds") or 600.0)
     waited_seconds = 0.0
+    paused_seen = False
     started = time.monotonic()
     while True:
         control = read_json(control_path)
@@ -514,6 +603,8 @@ def rpa_operator_guard_checkpoint(*, reason: str = "") -> dict[str, Any]:
         if mode == "stopped":
             raise RuntimeError(f"rpa_operator_guard_stopped:{reason}")
         if mode != "paused":
+            if paused_seen:
+                raise RuntimeError(f"rpa_operator_guard_revalidation_required:{reason}")
             return {
                 "ok": True,
                 "mode": mode or "running",
@@ -521,6 +612,7 @@ def rpa_operator_guard_checkpoint(*, reason: str = "") -> dict[str, Any]:
                 "reason": reason,
             }
         if waited_seconds == 0.0:
+            paused_seen = True
             try:
                 write_json(
                     status_path,

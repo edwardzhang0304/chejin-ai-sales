@@ -128,8 +128,18 @@ ENV_STOP_ERRORS = {
     "TASK_LEASE_FENCING_STALE",
     "TASK_LEASE_OWNER_MISMATCH",
     "UI_LOCK_RENEW_FAILED",
+    "OPERATOR_GUARD_NOT_READY",
+    "OPERATOR_GUARD_EXITED",
+    "OPERATOR_GUARD_REVALIDATION_REQUIRED",
     "OTHER",
 }
+
+
+def _ui_lock_cancel_reason(lease: UiLockLease | None) -> bool | str:
+    if lease is None or not lease.cancel_requested():
+        return False
+    error = getattr(lease, "lease_error", None)
+    return str(error.code if error is not None else "UI_LOCK_RENEW_FAILED")
 
 C2_RECENT_VISIBLE_CACHE_TTL_SECONDS = 90.0
 LEGACY_FOLLOW_UP_REMOVAL_CONDITION = (
@@ -623,6 +633,25 @@ class TaskRunner:
         self.stop_event.clear()
         with self._thread_health_lock:
             self._thread_failure_reported.clear()
+        try:
+            from .ui_operator_guard import cleanup_orphaned_ui_operator_guard
+
+            guard_cleanup = cleanup_orphaned_ui_operator_guard(
+                reason="worker_startup_orphan_cleanup",
+            )
+            append_log(
+                "INFO",
+                "ui_operator_guard_startup_cleanup",
+                "Worker 启动时已检查残留悬浮球守护。",
+                metadata={"guard_cleanup": guard_cleanup},
+            )
+        except Exception as exc:
+            append_log(
+                "WARN",
+                "ui_operator_guard_startup_cleanup_failed",
+                str(exc),
+                error_code=type(exc).__name__,
+            )
         self._maybe_cleanup_artifacts(force=True)
         if not (self.thread and self.thread.is_alive()):
             self.thread = threading.Thread(
@@ -1284,12 +1313,14 @@ class TaskRunner:
             return
         last_authorization_check = 0.0
 
-        def recovery_cancel_requested() -> bool:
+        def recovery_cancel_requested() -> bool | str:
             nonlocal last_authorization_check
+            ui_lock_reason = _ui_lock_cancel_reason(self.current_ui_lock)
+            if ui_lock_reason:
+                return ui_lock_reason
             if (
                 self.stop_event.is_set()
                 or binding.run_status != "running"
-                or (self.current_ui_lock is not None and self.current_ui_lock.cancel_requested())
                 or (
                     self.current_task_lease is not None
                     and self.current_task_lease.cancel_requested()
@@ -2166,7 +2197,7 @@ class TaskRunner:
             lease.start_auto_renew()
             self.current_ui_lock = lease
             self.current_step = "add_friend_starting"
-            append_log("INFO", "ui_lock_acquired", "已获取微信 UI 锁，开始执行加好友。", task_id=task.id, metadata={"lock_id": lease.lock_id, "fencing_token": lease.fencing_token})
+            append_log("INFO", "ui_lock_acquired", "已获取微信 UI 锁，开始执行加好友。", task_id=task.id, metadata={"lock_id": lease.lock_id, "fencing_token": lease.fencing_token, "operation_type": getattr(lease, "operation_type", "add_friend"), "guard_pid": getattr(lease, "operator_guard_pid", None)})
         except UiLockError as exc:
             append_log("ERROR", "ui_lock_acquire_failed", str(exc), task_id=task.id, error_code=exc.code, metadata=exc.data)
             return RpaResult(ok=False, error_code=exc.code, failure_step="ui_lock_acquire", message=str(exc), evidence_metadata={"ui_lock": exc.data})
@@ -2182,8 +2213,9 @@ class TaskRunner:
                         self.current_task_lease.error_code
                         or "TASK_LEASE_RENEW_FAILED"
                     )
-                if lease.cancel_requested():
-                    return "UI_LOCK_RENEW_FAILED"
+                ui_lock_reason = _ui_lock_cancel_reason(lease)
+                if ui_lock_reason:
+                    return ui_lock_reason
                 return False
 
             return self.bridge.run_add_friend(
@@ -2204,7 +2236,7 @@ class TaskRunner:
             return
         try:
             lease.release()
-            append_log("INFO", "ui_lock_released", f"已释放微信 UI 锁：{reason}", task_id=task_id, metadata={"lock_id": lease.lock_id})
+            append_log("INFO", "ui_lock_released", f"已释放微信 UI 锁：{reason}", task_id=task_id, metadata={"lock_id": lease.lock_id, "operation_type": getattr(lease, "operation_type", ""), "guard_pid": getattr(lease, "operator_guard_pid", None), "close_reason": reason})
         except UiLockError as exc:
             append_log("ERROR", "ui_lock_release_failed", str(exc), task_id=task_id, error_code=exc.code, metadata=exc.data)
 
@@ -4683,7 +4715,7 @@ class TaskRunner:
         payload: dict[str, Any],
         observation: dict[str, Any],
         source_key: str,
-        cancel_check: Callable[[], bool] | None,
+        cancel_check: Callable[[], bool | str] | None,
         flow_outcomes: FlowOutcomeAccumulator | None,
     ) -> dict[str, Any]:
         image_action_journal: Path | None = None
@@ -5040,7 +5072,7 @@ class TaskRunner:
         target: WechatReadTarget,
         sidecar_payload: dict[str, Any],
         enforce_read_targets: bool,
-        cancel_check: Callable[[], bool] | None = None,
+        cancel_check: Callable[[], bool | str] | None = None,
         allowed_new_source_keys: set[str] | None = None,
         flow_outcomes: FlowOutcomeAccumulator | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -5371,7 +5403,7 @@ class TaskRunner:
         binding: Binding,
         target: WechatReadTarget,
         batch_id: str,
-        cancel_check: Callable[[], bool],
+        cancel_check: Callable[[], bool | str],
         recovered_task: Task | None = None,
     ) -> dict[str, Any]:
         previous_task = self.current_task
@@ -5398,7 +5430,7 @@ class TaskRunner:
         binding: Binding,
         target: WechatReadTarget,
         batch_id: str,
-        cancel_check: Callable[[], bool],
+        cancel_check: Callable[[], bool | str],
         recovered_task: Task | None = None,
     ) -> dict[str, Any]:
         """Wait for Brain and send under the C2 lease already held by the caller."""
@@ -5408,12 +5440,7 @@ class TaskRunner:
         current_batch_id = batch_id
         while True:
             if cancel_check():
-                error_code = (
-                    "UI_LOCK_RENEW_FAILED"
-                    if self.current_ui_lock is not None
-                    and self.current_ui_lock.cancel_requested()
-                    else "WORKER_INTERRUPTED"
-                )
+                error_code = _ui_lock_cancel_reason(self.current_ui_lock) or "WORKER_INTERRUPTED"
                 return {"ok": False, "error_code": error_code, "batch_id": current_batch_id}
             try:
                 status = self.api.get_wechat_message_batch(binding, current_batch_id)
@@ -5720,14 +5747,13 @@ class TaskRunner:
                 }
             last_send_authorization_check = 0.0
 
-            def send_cancel_requested() -> bool:
+            def send_cancel_requested() -> bool | str:
                 nonlocal last_send_authorization_check
+                ui_lock_reason = _ui_lock_cancel_reason(self.current_ui_lock)
+                if ui_lock_reason:
+                    return ui_lock_reason
                 if (
                     not self._ui_actions_enabled(binding)
-                    or (
-                        self.current_ui_lock is not None
-                        and self.current_ui_lock.cancel_requested()
-                    )
                     or (
                         self.current_task_lease is not None
                         and self.current_task_lease.cancel_requested()
@@ -6891,12 +6917,14 @@ class TaskRunner:
 
         last_authorization_check = 0.0
 
-        def action_cancel_requested() -> bool:
+        def action_cancel_requested() -> bool | str:
             nonlocal last_authorization_check
+            ui_lock_reason = _ui_lock_cancel_reason(lease)
+            if ui_lock_reason:
+                return ui_lock_reason
             if (
                 self.stop_event.is_set()
                 or not self._ui_actions_enabled(binding)
-                or (lease is not None and lease.cancel_requested())
                 or (
                     self.current_task_lease is not None
                     and self.current_task_lease.cancel_requested()
