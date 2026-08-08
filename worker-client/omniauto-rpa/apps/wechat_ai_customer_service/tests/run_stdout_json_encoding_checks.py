@@ -26,7 +26,6 @@ STDOUT_JSON_ROOTS = [
 TEXT_JSON_STDOUT_FILES = {
     APP_ROOT / "scripts" / "audit_rag_experience_governance.py",
     APP_ROOT / "scripts" / "run_rpa_acceptance_report.py",
-    APP_ROOT / "scripts" / "run_rpa_operator_guard.py",
 }
 
 LAUNCH_ENV_FILES = [

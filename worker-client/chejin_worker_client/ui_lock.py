@@ -19,12 +19,6 @@ UI_LOCK_LEASE_EXPIRED = "UI_LOCK_LEASE_EXPIRED"
 UI_LOCK_RENEW_FAILED = "UI_LOCK_RENEW_FAILED"
 UI_LOCK_OWNER_MISMATCH = "UI_LOCK_OWNER_MISMATCH"
 UI_STEP_TIMEOUT = "UI_STEP_TIMEOUT"
-OPERATOR_GUARD_NOT_READY = "OPERATOR_GUARD_NOT_READY"
-OPERATOR_GUARD_EXITED = "OPERATOR_GUARD_EXITED"
-OPERATOR_GUARD_REVALIDATION_REQUIRED = "OPERATOR_GUARD_REVALIDATION_REQUIRED"
-OPERATOR_GUARD_PAUSED = "OPERATOR_GUARD_PAUSED"
-OPERATOR_GUARD_STOPPED = "OPERATOR_GUARD_STOPPED"
-OPERATOR_GUARD_IDENTITY_MISMATCH = "OPERATOR_GUARD_IDENTITY_MISMATCH"
 
 LOCK_FILE = CONFIG.app_dir / "runtime" / "worker" / "ui_lock.json"
 _PROCESS_LOCK = threading.Lock()
@@ -96,7 +90,6 @@ def lock_summary() -> dict[str, Any]:
         "lease_expires_at": payload.get("lease_expires_at"),
         "owner": payload.get("owner"),
         "expired": _is_expired(payload),
-        "operator_guard": payload.get("operator_guard") if isinstance(payload.get("operator_guard"), dict) else {},
     }
 
 
@@ -118,28 +111,6 @@ def _next_fencing_token(previous: dict[str, Any] | None) -> int:
         return 1
 
 
-def _append_guard_audit(
-    level: str,
-    event: str,
-    message: str,
-    *,
-    metadata: dict[str, Any],
-    error_code: str | None = None,
-) -> None:
-    try:
-        from .storage import append_log
-
-        append_log(
-            level,
-            event,
-            message,
-            error_code=error_code,
-            metadata=metadata,
-        )
-    except Exception:
-        pass
-
-
 @dataclass
 class UiLockLease:
     lock_id: str
@@ -153,117 +124,6 @@ class UiLockLease:
     _last_step_started_at: float = 0.0
     _lease_lost: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _lease_error: UiLockError | None = field(default=None, init=False, repr=False)
-    _operator_guard: dict[str, Any] | None = field(default=None, init=False, repr=False)
-    _guard_paused_seen: bool = field(default=False, init=False, repr=False)
-
-    @property
-    def operator_guard_pid(self) -> int | None:
-        if not isinstance(self._operator_guard, dict):
-            return None
-        try:
-            return int(self._operator_guard.get("pid") or 0) or None
-        except (TypeError, ValueError):
-            return None
-
-    def start_operator_guard(self) -> dict[str, Any]:
-        if self._operator_guard is not None:
-            return self._operator_guard
-        from .ui_operator_guard import (
-            operator_guard_audit_metadata,
-            start_ui_operator_guard,
-        )
-
-        guard = start_ui_operator_guard(
-            lock_id=self.lock_id,
-            fencing_token=self.fencing_token,
-            operation_type=self.operation_type,
-            owner=self.owner,
-            current_step=self.current_step,
-        )
-        self._operator_guard = guard
-        if guard.get("ok") is not True:
-            raise UiLockError(
-                OPERATOR_GUARD_NOT_READY,
-                "悬浮球键鼠守护未就绪，已禁止执行微信操作。",
-                data={
-                    "lock_id": self.lock_id,
-                    "operation_type": self.operation_type,
-                    "guard_pid": self.operator_guard_pid,
-                    "guard_reason": guard.get("reason"),
-                },
-            )
-        _append_guard_audit(
-            "INFO",
-            "ui_lock_operator_guard_activated",
-            "常驻悬浮球已进入蓝色操作状态。",
-            metadata={
-                **operator_guard_audit_metadata(
-                    guard,
-                    reason="ui_lock_activated",
-                    active_ui_lock_id=self.lock_id,
-                    fencing_token=self.fencing_token,
-                    operation_type=self.operation_type,
-                    current_step=self.current_step,
-                ),
-                "owner": self.owner,
-                "guard_started": bool(guard.get("started")),
-                "guard_enabled": bool(guard.get("enabled")),
-            },
-        )
-        return guard
-
-    def _check_operator_guard(self) -> None:
-        if not isinstance(self._operator_guard, dict):
-            return
-        from .ui_operator_guard import ui_operator_guard_health
-
-        health = ui_operator_guard_health(self._operator_guard)
-        mode = str(health.get("mode") or "fault")
-        if health.get("ok") is not True:
-            error = UiLockError(
-                OPERATOR_GUARD_EXITED,
-                "悬浮球键鼠守护意外退出，当前微信操作已停止。",
-                data={
-                    "lock_id": self.lock_id,
-                    "operation_type": self.operation_type,
-                    "guard_pid": self.operator_guard_pid,
-                    "guard_reason": health.get("reason"),
-                },
-            )
-            self._lease_error = error
-            self._lease_lost.set()
-            raise error
-        if mode == "paused":
-            error = UiLockError(
-                OPERATOR_GUARD_PAUSED,
-                "操作人员已按 F8 暂停，当前微信操作已立即中止。",
-                data={
-                    "lock_id": self.lock_id,
-                    "operation_type": self.operation_type,
-                    "guard_pid": self.operator_guard_pid,
-                },
-            )
-            self._lease_error = error
-            self._lease_lost.set()
-            raise error
-        if mode == "stopped":
-            error = UiLockError(
-                OPERATOR_GUARD_STOPPED,
-                "操作人员已在本机停止自动化，当前微信操作已中止。",
-                data={"lock_id": self.lock_id, "operation_type": self.operation_type, "guard_pid": self.operator_guard_pid},
-            )
-            self._lease_error = error
-            self._lease_lost.set()
-            raise error
-        if mode != "active":
-            error = UiLockError(
-                OPERATOR_GUARD_REVALIDATION_REQUIRED,
-                "悬浮球不再持有当前微信 UI 锁，当前操作必须重新排队并复核。",
-                data={"lock_id": self.lock_id, "operation_type": self.operation_type, "guard_mode": mode},
-            )
-            self._lease_error = error
-            self._lease_lost.set()
-            raise error
 
     def start_auto_renew(self, interval_seconds: float | None = None) -> None:
         interval = max(1.0, float(interval_seconds or CONFIG.ui_lock_renew_interval_seconds))
@@ -293,11 +153,6 @@ class UiLockLease:
         return self._lease_error
 
     def cancel_requested(self) -> bool:
-        if not self.lease_lost:
-            try:
-                self._check_operator_guard()
-            except UiLockError:
-                pass
         return self.lease_lost
 
     def raise_if_lost(self) -> None:
@@ -313,7 +168,6 @@ class UiLockLease:
 
     def renew(self) -> dict[str, Any]:
         self.raise_if_lost()
-        self._check_operator_guard()
         with _PROCESS_LOCK:
             payload = _read_lock(self.path)
             if not payload or payload.get("lock_id") != self.lock_id or payload.get("owner") != self.owner:
@@ -353,43 +207,6 @@ class UiLockLease:
             self._renew_stop.set()
         if self._renew_thread and self._renew_thread.is_alive():
             self._renew_thread.join(timeout=1.0)
-        guard_release: dict[str, Any] = {"ok": True, "skipped": True}
-        if self._operator_guard is not None:
-            from .ui_operator_guard import (
-                operator_guard_audit_metadata,
-                stop_ui_operator_guard,
-            )
-
-            guard_release = stop_ui_operator_guard(
-                {**self._operator_guard, "lock_id": self.lock_id, "fencing_token": self.fencing_token},
-                reason=f"ui_lock_released:{self.operation_type}",
-            )
-            _append_guard_audit(
-                "INFO" if guard_release.get("ok") is True else "ERROR",
-                "ui_lock_operator_guard_deactivated",
-                "常驻悬浮球已恢复非操作状态。" if guard_release.get("ok") is True else "常驻悬浮球解除键鼠锁失败。",
-                metadata={
-                    **operator_guard_audit_metadata(
-                        guard_release,
-                        reason=f"ui_lock_released:{self.operation_type}",
-                        active_ui_lock_id=self.lock_id,
-                        fencing_token=self.fencing_token,
-                        operation_type=self.operation_type,
-                        current_step=self.current_step,
-                        guard_pid=self.operator_guard_pid,
-                    ),
-                    "owner": self.owner,
-                    "close_reason": f"ui_lock_released:{self.operation_type}",
-                    "guard_release": guard_release,
-                },
-                error_code=None if guard_release.get("ok") is True else OPERATOR_GUARD_EXITED,
-            )
-        if guard_release.get("ok") is not True:
-            raise UiLockError(
-                OPERATOR_GUARD_EXITED,
-                "悬浮球未确认解除键鼠锁，已保留 UI 锁并禁止后续自动化。",
-                data={"lock_id": self.lock_id, "guard_release": guard_release},
-            )
         with _PROCESS_LOCK:
             payload = _read_lock(self.path)
             if payload:
@@ -438,31 +255,6 @@ def acquire_ui_lock(
                     current_step=current_step,
                     _last_step_started_at=time.monotonic(),
                 )
-                try:
-                    lease.start_operator_guard()
-                except UiLockError as exc:
-                    _delete_lock()
-                    _append_guard_audit(
-                        "ERROR",
-                        "ui_lock_operator_guard_start_failed",
-                        str(exc),
-                        metadata={
-                            "lock_id": lock_id,
-                            "operation_type": operation_type,
-                            "owner": owner,
-                            **exc.data,
-                        },
-                        error_code=exc.code,
-                    )
-                    raise
-                guard = lease._operator_guard if isinstance(lease._operator_guard, dict) else {}
-                record["operator_guard"] = {
-                    "enabled": bool(guard.get("enabled")),
-                    "started": bool(guard.get("started")),
-                    "pid": lease.operator_guard_pid,
-                    "reason": guard.get("reason"),
-                }
-                _write_lock(record)
                 return lease
         time.sleep(0.2)
     code = UI_LOCK_BUSY if last_payload and not _is_expired(last_payload) else UI_LOCK_ACQUIRE_TIMEOUT

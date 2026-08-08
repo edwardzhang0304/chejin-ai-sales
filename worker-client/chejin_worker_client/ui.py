@@ -1105,12 +1105,7 @@ class WorkerWindow(QMainWindow):
         active_task = self.current_task
         display_task = active_task or self.last_task
         result = self.last_result
-        guard_health = self.runner.operator_guard_health()
-        guard_fault = self.runner.operator_guard_fault_latched or guard_health.get("ok") is not True or str(guard_health.get("mode") or "") == "fault"
-
-        if guard_fault:
-            headline = "悬浮球守护故障，自动化已停止"
-        elif self.runner.run_status_sync_error and not is_running:
+        if self.runner.run_status_sync_error and not is_running:
             headline = "已在本机暂停，后端同步失败"
         elif offline:
             headline = "服务端不可达"

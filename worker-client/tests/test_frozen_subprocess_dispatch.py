@@ -11,7 +11,6 @@ OMNIAUTO_ROOT = ROOT / "omniauto-rpa"
 if str(OMNIAUTO_ROOT) not in sys.path:
     sys.path.insert(0, str(OMNIAUTO_ROOT))
 
-from apps.wechat_ai_customer_service.adapters import rpa_operator_guard
 from apps.wechat_ai_customer_service.adapters import wechat_connector
 from apps.wechat_ai_customer_service.optional_plugins.vision.integrations import (
     wechat_current,
@@ -19,29 +18,6 @@ from apps.wechat_ai_customer_service.optional_plugins.vision.integrations import
 
 
 class FrozenSubprocessDispatchTest(unittest.TestCase):
-    def test_operator_guard_uses_frozen_dispatch_in_packaged_client(self):
-        with (
-            mock.patch.object(rpa_operator_guard.sys, "frozen", True, create=True),
-            mock.patch.object(rpa_operator_guard.sys, "executable", r"C:\CheJin\worker.exe"),
-        ):
-            command = rpa_operator_guard.operator_guard_command(["--tenant-id", "default"])
-
-        self.assertEqual(
-            command,
-            [r"C:\CheJin\worker.exe", "--rpa-operator-guard", "--tenant-id", "default"],
-        )
-        self.assertFalse(any(item.lower().endswith(".py") for item in command))
-
-    def test_operator_guard_keeps_python_script_command_in_source_mode(self):
-        with (
-            mock.patch.object(rpa_operator_guard.sys, "frozen", False, create=True),
-            mock.patch.object(rpa_operator_guard.sys, "executable", "/usr/bin/python3"),
-        ):
-            command = rpa_operator_guard.operator_guard_command(["--tenant-id", "default"])
-
-        self.assertEqual(command[0], "/usr/bin/python3")
-        self.assertTrue(command[1].endswith("run_rpa_operator_guard.py"))
-
     def test_win32_ocr_compat_uses_frozen_sidecar_dispatch(self):
         with (
             mock.patch.object(wechat_connector.sys, "frozen", True, create=True),

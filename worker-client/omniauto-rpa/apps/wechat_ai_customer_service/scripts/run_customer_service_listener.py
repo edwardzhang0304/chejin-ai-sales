@@ -32,8 +32,6 @@ from apps.wechat_ai_customer_service.admin_backend.services.customer_service_run
     runtime_dir,
     runtime_log_path,
     runtime_operator_control_path,
-    runtime_operator_guard_pid_path,
-    runtime_operator_guard_state_path,
     stop_customer_service_support_processes,
     summarize_listener_result,
     write_runtime_status,
@@ -129,15 +127,6 @@ RPA_HUMANIZED_SEND_DEFAULTS = {
     "send_rate_min_interval_seconds": 0,
     "send_rate_burst_window_seconds": 600,
     "send_rate_burst_limit": 20,
-}
-OPERATOR_GUARD_DEFAULTS = {
-    "enabled": False,
-    "block_manual_input": True,
-    "floating_indicator_enabled": True,
-    "control_hotkey": "f8",
-    "esc_double_press_window_ms": 420,
-    "pause_poll_interval_ms": 550,
-    "bootstrap_timeout_seconds": 15.0,
 }
 OPERATOR_COMMAND_ACTIONS = {"pause", "resume", "stop"}
 OPERATOR_CONTROL_MODES = {"running", "paused", "stopped"}
@@ -847,109 +836,6 @@ def apply_rpa_humanized_send_runtime_env(settings: dict[str, Any]) -> None:
         os.environ[env_name] = str(value)
 
 
-def normalize_operator_guard_settings(settings: dict[str, Any] | None) -> dict[str, Any]:
-    source = settings if isinstance(settings, dict) else {}
-    control_hotkey = str(source.get("control_hotkey") or OPERATOR_GUARD_DEFAULTS["control_hotkey"]).strip().lower()
-    if control_hotkey not in {"f8", "esc"}:
-        control_hotkey = str(OPERATOR_GUARD_DEFAULTS["control_hotkey"])
-    normalized = {
-        "enabled": bool(source.get("enabled", OPERATOR_GUARD_DEFAULTS["enabled"])),
-        "block_manual_input": bool(source.get("block_manual_input", OPERATOR_GUARD_DEFAULTS["block_manual_input"])),
-        "floating_indicator_enabled": bool(
-            source.get("floating_indicator_enabled", OPERATOR_GUARD_DEFAULTS["floating_indicator_enabled"])
-        ),
-        "control_hotkey": control_hotkey,
-        "esc_double_press_window_ms": bounded_int(
-            source.get("esc_double_press_window_ms"),
-            default=int(OPERATOR_GUARD_DEFAULTS["esc_double_press_window_ms"]),
-            minimum=180,
-            maximum=1200,
-        ),
-        "pause_poll_interval_ms": bounded_int(
-            source.get("pause_poll_interval_ms"),
-            default=int(OPERATOR_GUARD_DEFAULTS["pause_poll_interval_ms"]),
-            minimum=120,
-            maximum=3000,
-        ),
-        "bootstrap_timeout_seconds": min(
-            60.0,
-            max(
-                3.0,
-                float(
-                    non_negative_float(
-                        source.get("bootstrap_timeout_seconds"),
-                        float(OPERATOR_GUARD_DEFAULTS["bootstrap_timeout_seconds"]),
-                    )
-                ),
-            ),
-        ),
-    }
-    return normalized
-
-
-def load_operator_guard_settings(config_path: Path) -> dict[str, Any]:
-    payload: dict[str, Any] = {}
-    try:
-        raw = json.loads(config_path.read_text(encoding="utf-8"))
-    except Exception:
-        raw = {}
-    if isinstance(raw, dict):
-        candidate = raw.get("rpa_operator_guard")
-        if isinstance(candidate, dict):
-            payload = dict(candidate)
-    settings = normalize_operator_guard_settings(payload)
-    settings["enabled"] = env_bool(
-        "WECHAT_RPA_OPERATOR_GUARD_ENABLED",
-        default=bool(settings.get("enabled", OPERATOR_GUARD_DEFAULTS["enabled"])),
-    )
-    settings["block_manual_input"] = env_bool(
-        "WECHAT_RPA_OPERATOR_GUARD_BLOCK_MANUAL_INPUT",
-        default=bool(settings.get("block_manual_input", OPERATOR_GUARD_DEFAULTS["block_manual_input"])),
-    )
-    settings["floating_indicator_enabled"] = env_bool(
-        "WECHAT_RPA_OPERATOR_GUARD_FLOATING_INDICATOR_ENABLED",
-        default=bool(
-            settings.get("floating_indicator_enabled", OPERATOR_GUARD_DEFAULTS["floating_indicator_enabled"])
-        ),
-    )
-    control_hotkey = str(
-        os.getenv("WECHAT_RPA_OPERATOR_GUARD_CONTROL_HOTKEY")
-        or settings.get("control_hotkey")
-        or OPERATOR_GUARD_DEFAULTS["control_hotkey"]
-    ).strip().lower()
-    if control_hotkey not in {"f8", "esc"}:
-        control_hotkey = str(OPERATOR_GUARD_DEFAULTS["control_hotkey"])
-    settings["control_hotkey"] = control_hotkey
-    settings["esc_double_press_window_ms"] = bounded_int(
-        os.getenv("WECHAT_RPA_OPERATOR_GUARD_ESC_DOUBLE_WINDOW_MS"),
-        default=int(settings.get("esc_double_press_window_ms") or OPERATOR_GUARD_DEFAULTS["esc_double_press_window_ms"]),
-        minimum=180,
-        maximum=1200,
-    )
-    settings["pause_poll_interval_ms"] = bounded_int(
-        os.getenv("WECHAT_RPA_OPERATOR_GUARD_PAUSE_POLL_INTERVAL_MS"),
-        default=int(settings.get("pause_poll_interval_ms") or OPERATOR_GUARD_DEFAULTS["pause_poll_interval_ms"]),
-        minimum=120,
-        maximum=3000,
-    )
-    settings["bootstrap_timeout_seconds"] = min(
-        60.0,
-        max(
-            3.0,
-            float(
-                non_negative_float(
-                    os.getenv("WECHAT_RPA_OPERATOR_GUARD_BOOTSTRAP_TIMEOUT_SECONDS"),
-                    float(
-                        settings.get("bootstrap_timeout_seconds")
-                        or OPERATOR_GUARD_DEFAULTS["bootstrap_timeout_seconds"]
-                    ),
-                )
-            ),
-        ),
-    )
-    return settings
-
-
 def empty_operator_control_state(tenant_id: str, *, mode: str = "running") -> dict[str, Any]:
     normalized_mode = mode if mode in OPERATOR_CONTROL_MODES else "running"
     return {
@@ -1051,269 +937,6 @@ def bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
     except (TypeError, ValueError):
         parsed = default
     return max(minimum, min(maximum, parsed))
-
-
-def launch_operator_guard(
-    *,
-    tenant_id: str,
-    settings: dict[str, Any],
-    control_path: Path,
-    status_path: Path,
-    state_path: Path,
-    pid_path: Path,
-    parent_pid: int | None = None,
-    local_safety_stop_path: str | None = None,
-) -> dict[str, Any]:
-    if os.name != "nt":
-        return {"ok": False, "enabled": False, "reason": "windows_only"}
-    script_path = APP_ROOT / "scripts" / "run_rpa_operator_guard.py"
-    if not script_path.exists():
-        return {"ok": False, "enabled": True, "reason": "guard_script_missing", "script_path": str(script_path)}
-    command = [
-        str(sys.executable),
-        str(script_path),
-        "--tenant-id",
-        tenant_id,
-        "--control-path",
-        str(control_path),
-        "--status-path",
-        str(status_path),
-        "--guard-state-path",
-        str(state_path),
-        "--parent-pid",
-        str(int(parent_pid or os.getpid())),
-        "--control-key",
-        str(settings.get("control_hotkey") or OPERATOR_GUARD_DEFAULTS["control_hotkey"]),
-        "--esc-double-window-ms",
-        str(int(settings.get("esc_double_press_window_ms") or OPERATOR_GUARD_DEFAULTS["esc_double_press_window_ms"])),
-        "--pause-poll-interval-ms",
-        str(int(settings.get("pause_poll_interval_ms") or OPERATOR_GUARD_DEFAULTS["pause_poll_interval_ms"])),
-    ]
-    if local_safety_stop_path:
-        command.extend(["--local-safety-stop-path", str(local_safety_stop_path)])
-    if settings.get("block_manual_input", True):
-        command.append("--block-manual-input")
-    else:
-        command.append("--allow-manual-input")
-    if settings.get("floating_indicator_enabled", True):
-        command.append("--floating-indicator")
-    else:
-        command.append("--no-floating-indicator")
-    creationflags = 0
-    if os.name == "nt":
-        creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        creationflags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    stdout_log_path = pid_path.with_name("operator_guard.stdout.log")
-    stderr_log_path = pid_path.with_name("operator_guard.stderr.log")
-    stdout_log_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        stdout_handle = stdout_log_path.open("ab")
-        stderr_handle = stderr_log_path.open("ab")
-    except OSError as exc:
-        return {
-            "ok": False,
-            "enabled": True,
-            "reason": "guard_log_open_failed",
-            "error": repr(exc),
-            "stdout_log_path": str(stdout_log_path),
-            "stderr_log_path": str(stderr_log_path),
-        }
-    try:
-        proc = subprocess.Popen(
-            command,
-            cwd=str(PROJECT_ROOT),
-            env=dict(os.environ),
-            stdin=subprocess.DEVNULL,
-            stdout=stdout_handle,
-            stderr=stderr_handle,
-            creationflags=creationflags,
-        )
-    except Exception as exc:
-        return {
-            "ok": False,
-            "enabled": True,
-            "reason": "guard_process_launch_failed",
-            "error": repr(exc),
-            "stdout_log_path": str(stdout_log_path),
-            "stderr_log_path": str(stderr_log_path),
-        }
-    finally:
-        try:
-            stdout_handle.close()
-        except Exception:
-            pass
-        try:
-            stderr_handle.close()
-        except Exception:
-            pass
-    record = {
-        "pid": proc.pid,
-        "tenant_id": tenant_id,
-        "started_at": datetime.now().isoformat(timespec="seconds"),
-        "control_path": str(control_path),
-        "status_path": str(status_path),
-        "state_path": str(state_path),
-        "stdout_log_path": str(stdout_log_path),
-        "stderr_log_path": str(stderr_log_path),
-        "parent_pid": int(parent_pid or os.getpid()),
-    }
-    atomic_write_json(pid_path, record)
-    return {
-        "ok": True,
-        "enabled": True,
-        "pid": proc.pid,
-        "script_path": str(script_path),
-        "stdout_log_path": str(stdout_log_path),
-        "stderr_log_path": str(stderr_log_path),
-    }
-
-
-def read_operator_guard_pid(path: Path) -> int:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return 0
-    if not isinstance(payload, dict):
-        return 0
-    try:
-        return max(0, int(payload.get("pid") or 0))
-    except (TypeError, ValueError):
-        return 0
-
-
-def pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        proc = psutil.Process(pid)
-    except psutil.NoSuchProcess:
-        return False
-    if not proc.is_running():
-        return False
-    try:
-        return proc.status() != psutil.STATUS_ZOMBIE
-    except Exception:
-        return True
-
-
-def pid_is_descendant_of(pid: int, ancestor_pid: int) -> bool:
-    if pid <= 0 or ancestor_pid <= 0 or pid == ancestor_pid:
-        return pid == ancestor_pid and pid > 0
-    try:
-        current = psutil.Process(pid)
-        return any(parent.pid == ancestor_pid for parent in current.parents())
-    except Exception:
-        return False
-
-
-def read_operator_guard_state(path: Path) -> dict[str, Any]:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def verify_operator_guard_bootstrap(
-    pid: int,
-    state_path: Path,
-    *,
-    timeout_seconds: float = float(OPERATOR_GUARD_DEFAULTS["bootstrap_timeout_seconds"]),
-    expected_parent_pid: int | None = None,
-) -> dict[str, Any]:
-    def _state_matches_current_launch(snapshot: dict[str, Any]) -> tuple[bool, int, int]:
-        try:
-            state_pid = int(snapshot.get("pid") or 0)
-        except (TypeError, ValueError):
-            state_pid = 0
-        try:
-            state_parent_pid = int(snapshot.get("parent_pid") or 0)
-        except (TypeError, ValueError):
-            state_parent_pid = 0
-        expected_parent = int(expected_parent_pid or 0)
-        matches = (
-            state_pid == pid
-            or (expected_parent > 0 and state_parent_pid == expected_parent)
-            or pid_is_descendant_of(state_pid, pid)
-        )
-        return matches, state_pid, state_parent_pid
-
-    started = time.monotonic()
-    last_state: dict[str, Any] = {}
-    while time.monotonic() - started <= max(0.2, float(timeout_seconds)):
-        snapshot = read_operator_guard_state(state_path)
-        if snapshot:
-            last_state = snapshot
-            matches_launch, _, _ = _state_matches_current_launch(snapshot)
-            if not matches_launch:
-                time.sleep(0.08)
-                continue
-            phase = str(snapshot.get("phase") or "").strip().lower()
-            hooks_installed = bool(snapshot.get("hooks_installed"))
-            if phase == "failed" or hooks_installed:
-                break
-        if not pid_alive(pid):
-            matches_launch, _, _ = _state_matches_current_launch(snapshot) if snapshot else (False, 0, 0)
-            if not matches_launch:
-                return {"ok": False, "reason": "guard_process_exited_early", "pid": pid, "state": last_state}
-        time.sleep(0.08)
-    if not last_state:
-        return {
-            "ok": False,
-            "reason": "guard_state_missing",
-            "pid": pid,
-            "state": last_state,
-            "process_alive": pid_alive(pid),
-            "timeout_seconds": float(timeout_seconds),
-        }
-    matches_launch, final_state_pid, final_parent_pid = _state_matches_current_launch(last_state)
-    if not matches_launch:
-        return {
-            "ok": False,
-            "reason": "guard_state_pid_mismatch",
-            "pid": pid,
-            "state_pid": final_state_pid,
-            "state_parent_pid": final_parent_pid,
-            "expected_parent_pid": int(expected_parent_pid or 0),
-            "state": last_state,
-        }
-    phase = str(last_state.get("phase") or "").strip().lower()
-    hooks_installed = bool(last_state.get("hooks_installed"))
-    if phase == "failed" or not hooks_installed:
-        return {
-            "ok": False,
-            "reason": "guard_hook_not_ready",
-            "pid": pid,
-            "state": last_state,
-            "timeout_seconds": float(timeout_seconds),
-        }
-    return {
-        "ok": True,
-        "reason": "guard_ready",
-        "pid": pid,
-        "state_pid": final_state_pid,
-        "state_parent_pid": final_parent_pid,
-        "state": last_state,
-    }
-
-
-def terminate_pid(pid: int) -> None:
-    if pid <= 0:
-        return
-    if os.name == "nt":
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return
-    try:
-        os.kill(pid, 15)
-    except OSError:
-        pass
-
-
-def clear_file(path: Path) -> None:
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
 
 
 def transport_risk_state_path(tenant_id: str) -> Path:
@@ -2189,32 +1812,10 @@ def main() -> int:
     phase_log_path.parent.mkdir(parents=True, exist_ok=True)
     env["WECHAT_LISTENER_PHASE_LOG_PATH"] = str(phase_log_path)
     workflow = APP_ROOT / "workflows" / "listen_and_reply.py"
-    operator_settings = load_operator_guard_settings(config_path)
     operator_control_file = runtime_operator_control_path(tenant_id)
-    operator_guard_pid_file = runtime_operator_guard_pid_path(tenant_id)
-    operator_guard_state_file = runtime_operator_guard_state_path(tenant_id)
-    operator_guard_enabled = bool(operator_settings.get("enabled")) and os.name == "nt"
     last_operator_command_id = 0
     listener_paused = False
     scheduler_bridge: ManagedListenerSchedulerBridge | None = None
-
-    def _shutdown_operator_guard(reason: str) -> None:
-        if not operator_guard_enabled:
-            return
-        try:
-            sync_operator_mode(
-                operator_control_file,
-                tenant_id=tenant_id,
-                mode="stopped",
-                message=reason,
-            )
-        except Exception:
-            pass
-        guard_pid = read_operator_guard_pid(operator_guard_pid_file)
-        if guard_pid > 0:
-            terminate_pid(guard_pid)
-        clear_file(operator_guard_pid_file)
-        clear_file(operator_guard_state_file)
 
     # --- VPS console is required only in cloud-authoritative mode ---
     from apps.wechat_ai_customer_service.auth.vps_client import discover_vps_base_url
@@ -2266,98 +1867,13 @@ def main() -> int:
             pass
         if scheduler_bridge is not None:
             scheduler_bridge.shutdown()
-        _shutdown_operator_guard("listener_process_exit")
 
     atexit.register(_cleanup_pid)
 
-    if operator_guard_enabled:
-        clear_file(operator_guard_state_file)
-        clear_file(operator_guard_pid_file)
-        control_payload = empty_operator_control_state(tenant_id, mode="running")
-        write_operator_control_state(operator_control_file, control_payload)
-        guard_launch = launch_operator_guard(
-            tenant_id=tenant_id,
-            settings=operator_settings,
-            control_path=operator_control_file,
-            status_path=runtime_dir(tenant_id) / "runtime_status.json",
-            state_path=operator_guard_state_file,
-            pid_path=operator_guard_pid_file,
-        )
-        append_log(
-            log_path,
-            {
-                "event": "managed_listener_operator_guard_launch",
-                "tenant_id": tenant_id,
-                "operator_guard": {
-                    "enabled": True,
-                    "settings": operator_settings,
-                    "launch": guard_launch,
-                },
-            },
-        )
-        if not guard_launch.get("ok"):
-            message = "RPA防误触守护启动失败，已停止监听启动。请检查 run_rpa_operator_guard.py。"
-            write_runtime_status("stopped", message, tenant_id=tenant_id)
-            print(message, file=sys.stderr)
-            return 5
-        guard_verify = verify_operator_guard_bootstrap(
-            int(guard_launch.get("pid") or 0),
-            operator_guard_state_file,
-            timeout_seconds=float(
-                operator_settings.get("bootstrap_timeout_seconds")
-                or OPERATOR_GUARD_DEFAULTS["bootstrap_timeout_seconds"]
-            ),
-            expected_parent_pid=os.getpid(),
-        )
-        append_log(
-            log_path,
-            {
-                "event": "managed_listener_operator_guard_verify",
-                "tenant_id": tenant_id,
-                "operator_guard_verify": guard_verify,
-            },
-        )
-        if guard_verify.get("ok") is not True:
-            message = "RPA防误触守护未就绪（悬浮窗/键鼠拦截初始化失败），已停止监听启动。请检查守护状态。"
-            write_runtime_status(
-                "stopped",
-                message,
-                tenant_id=tenant_id,
-                operator_guard=guard_verify,
-            )
-            _shutdown_operator_guard("operator_guard_verify_failed")
-            print(message, file=sys.stderr)
-            return 5
-        try:
-            guard_state_pid = int(guard_verify.get("state_pid") or 0)
-        except (TypeError, ValueError):
-            guard_state_pid = 0
-        if guard_state_pid > 0:
-            atomic_write_json(
-                operator_guard_pid_file,
-                {
-                    "pid": guard_state_pid,
-                    "launcher_pid": int(guard_launch.get("pid") or 0),
-                    "tenant_id": tenant_id,
-                    "started_at": datetime.now().isoformat(timespec="seconds"),
-                    "control_path": str(operator_control_file),
-                    "status_path": str(runtime_dir(tenant_id) / "runtime_status.json"),
-                    "state_path": str(operator_guard_state_file),
-                    "parent_pid": os.getpid(),
-                },
-            )
-    else:
-        clear_file(operator_guard_pid_file)
-        if operator_control_file.exists():
-            try:
-                sync_operator_mode(
-                    operator_control_file,
-                    tenant_id=tenant_id,
-                    mode="stopped",
-                    message="operator_guard_disabled",
-                )
-            except Exception:
-                pass
+    write_operator_control_state(
+        operator_control_file,
+        empty_operator_control_state(tenant_id, mode="running"),
+    )
 
     scheduler_requested = load_concurrency_scheduler_enabled(config_path)
     if scheduler_requested:
@@ -2389,10 +1905,6 @@ def main() -> int:
             "tenant_id": tenant_id,
             "config": str(config_path),
             "rpa_humanized_send": humanized_send_settings,
-            "operator_guard": {
-                "enabled": operator_guard_enabled,
-                "settings": operator_settings if operator_guard_enabled else {"enabled": False},
-            },
             "concurrency_scheduler": {
                 "enabled": bool(scheduler_bridge and scheduler_bridge.enabled),
                 "requested": bool(scheduler_requested),
@@ -2557,7 +2069,6 @@ def main() -> int:
             transport_risk={"interactive_calibration": stop_verdict},
             runtime_handoff=runtime_handoff,
         )
-        _shutdown_operator_guard(f"interactive_calibration_failed:{reason}")
         print(stop_message, file=sys.stderr)
         return 4
 
@@ -2573,82 +2084,61 @@ def main() -> int:
             return startup_stop
     fast_followup_ticks_remaining = 0
     while True:
-        if operator_guard_enabled:
-            hotkey_label = str(operator_settings.get("control_hotkey") or OPERATOR_GUARD_DEFAULTS["control_hotkey"]).upper()
-            operator_control = read_operator_control_state(operator_control_file, tenant_id=tenant_id)
-            operator_command = operator_control.get("command") if isinstance(operator_control.get("command"), dict) else {}
-            try:
-                command_id = int(operator_command.get("id") or 0)
-            except (TypeError, ValueError):
-                command_id = 0
-            command_status = str(operator_command.get("status") or "").strip().lower()
-            command_action = str(operator_command.get("action") or "").strip().lower()
-            if command_id > last_operator_command_id and command_status == "pending" and command_action in OPERATOR_COMMAND_ACTIONS:
-                if command_action == "pause":
-                    listener_paused = True
-                    message = f"{hotkey_label} 已暂停，单击恢复，双击停止。"
-                    operator_control = apply_operator_command(operator_control, action="pause", message=message)
-                    write_operator_control_state(operator_control_file, operator_control)
-                    write_runtime_status("paused", message, tenant_id=tenant_id)
-                    append_log(
-                        log_path,
-                        {
-                            "event": "managed_listener_operator_guard_command_applied",
-                            "tenant_id": tenant_id,
-                            "action": "pause",
-                            "command_id": command_id,
-                        },
-                    )
-                elif command_action == "resume":
-                    listener_paused = False
-                    message = f"已恢复（{hotkey_label} 双击可停止）。"
-                    operator_control = apply_operator_command(operator_control, action="resume", message=message)
-                    write_operator_control_state(operator_control_file, operator_control)
-                    write_runtime_status("idle", message, tenant_id=tenant_id)
-                    append_log(
-                        log_path,
-                        {
-                            "event": "managed_listener_operator_guard_command_applied",
-                            "tenant_id": tenant_id,
-                            "action": "resume",
-                            "command_id": command_id,
-                        },
-                    )
-                    if bool(risk_settings.get("resume_interactive_calibration_enabled", True)):
-                        resume_stop = _interactive_calibration_or_stop("resume")
-                        if resume_stop is not None:
-                            return resume_stop
-                elif command_action == "stop":
-                    message = "已停止。"
-                    operator_control = apply_operator_command(operator_control, action="stop", message=message)
-                    write_operator_control_state(operator_control_file, operator_control)
-                    write_runtime_status("stopped", message, tenant_id=tenant_id)
-                    stop_customer_service_support_processes(tenant_id, include_operator_guard=False)
-                    append_log(
-                        log_path,
-                        {
-                            "event": "managed_listener_operator_guard_command_applied",
-                            "tenant_id": tenant_id,
-                            "action": "stop",
-                            "command_id": command_id,
-                        },
-                    )
-                    _shutdown_operator_guard("operator_guard_stop_hotkey")
-                    return 0
-                last_operator_command_id = command_id
-            elif command_id > last_operator_command_id:
-                last_operator_command_id = command_id
-            current_mode = "paused" if listener_paused else "running"
-            if (
-                str(operator_control.get("mode") or "").strip().lower() != current_mode
-                and command_status != "pending"
-            ):
-                sync_operator_mode(
-                    operator_control_file,
-                    tenant_id=tenant_id,
-                    mode=current_mode,
-                    message="listener_mode_sync",
-                )
+        operator_control = read_operator_control_state(operator_control_file, tenant_id=tenant_id)
+        operator_command = operator_control.get("command") if isinstance(operator_control.get("command"), dict) else {}
+        try:
+            command_id = int(operator_command.get("id") or 0)
+        except (TypeError, ValueError):
+            command_id = 0
+        command_status = str(operator_command.get("status") or "").strip().lower()
+        command_action = str(operator_command.get("action") or "").strip().lower()
+        if command_id > last_operator_command_id and command_status == "pending" and command_action in OPERATOR_COMMAND_ACTIONS:
+            if command_action == "pause":
+                listener_paused = True
+                message = "已暂停。"
+                operator_control = apply_operator_command(operator_control, action="pause", message=message)
+                write_operator_control_state(operator_control_file, operator_control)
+                write_runtime_status("paused", message, tenant_id=tenant_id)
+            elif command_action == "resume":
+                listener_paused = False
+                message = "已恢复。"
+                operator_control = apply_operator_command(operator_control, action="resume", message=message)
+                write_operator_control_state(operator_control_file, operator_control)
+                write_runtime_status("idle", message, tenant_id=tenant_id)
+                if bool(risk_settings.get("resume_interactive_calibration_enabled", True)):
+                    resume_stop = _interactive_calibration_or_stop("resume")
+                    if resume_stop is not None:
+                        return resume_stop
+            elif command_action == "stop":
+                message = "已停止。"
+                operator_control = apply_operator_command(operator_control, action="stop", message=message)
+                write_operator_control_state(operator_control_file, operator_control)
+                write_runtime_status("stopped", message, tenant_id=tenant_id)
+                stop_customer_service_support_processes(tenant_id)
+                return 0
+            append_log(
+                log_path,
+                {
+                    "event": "managed_listener_control_command_applied",
+                    "tenant_id": tenant_id,
+                    "action": command_action,
+                    "command_id": command_id,
+                },
+            )
+            last_operator_command_id = command_id
+        elif command_id > last_operator_command_id:
+            last_operator_command_id = command_id
+        current_mode = "paused" if listener_paused else "running"
+        if (
+            str(operator_control.get("mode") or "").strip().lower() != current_mode
+            and command_status != "pending"
+        ):
+            sync_operator_mode(
+                operator_control_file,
+                tenant_id=tenant_id,
+                mode=current_mode,
+                message="listener_mode_sync",
+            )
         now_wall = time.time()
         if passive_probe_enabled and (
             passive_probe_last_at <= 0.0 or (now_wall - passive_probe_last_at) >= passive_probe_interval_seconds
@@ -2722,7 +2212,6 @@ def main() -> int:
                         transport_risk={"passive_probe": passive_verdict},
                         runtime_handoff=runtime_handoff,
                     )
-                    _shutdown_operator_guard("passive_logout_stop")
                     print(message, file=sys.stderr)
                     return 4
                 calibration_due = passive_probe_recalibration_due(
@@ -2757,18 +2246,15 @@ def main() -> int:
                         },
                     )
                     write_runtime_status("stopped", message, tenant_id=tenant_id, cloud_sync=refresh)
-                    _shutdown_operator_guard("cloud_refresh_failed")
                     return 2
             gate = cloud_gate_status()
             if not gate.get("ok"):
                 message = "云端授权未通过。请连接服务端并刷新共享行业知识库。"
                 append_log(log_path, {"event": "managed_listener_cloud_gate_stop", "tenant_id": tenant_id, "cloud_gate": gate})
                 write_runtime_status("stopped", message, tenant_id=tenant_id, cloud_gate=gate)
-                _shutdown_operator_guard("cloud_gate_stop")
                 return 2
         if listener_paused:
-            pause_sleep = max(0.12, float(operator_settings.get("pause_poll_interval_ms") or 550) / 1000.0)
-            time.sleep(pause_sleep)
+            time.sleep(0.55)
             continue
         started = time.time()
         if scheduler_bridge is not None and scheduler_bridge.enabled:
@@ -2866,7 +2352,6 @@ def main() -> int:
                 runtime_handoff=runtime_handoff,
                 **summary,
             )
-            _shutdown_operator_guard("runtime_target_guard_stop")
             print(message, file=sys.stderr)
             return 4
         risk_verdict = evaluate_transport_risk(
@@ -2918,7 +2403,6 @@ def main() -> int:
                 runtime_handoff=runtime_handoff,
                 **summary,
             )
-            _shutdown_operator_guard("transport_risk_stop")
             print(message, file=sys.stderr)
             return 4
         message = status_message_from_result(result, duration)

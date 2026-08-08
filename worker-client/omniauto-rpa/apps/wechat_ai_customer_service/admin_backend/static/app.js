@@ -1876,7 +1876,6 @@ function renderCustomerServiceRuntime() {
       <div class="float-header float-drag-handle" title="按住拖动浮窗位置">
         <span class="float-orb" aria-hidden="true">${customerServiceSpinnerSvg()}</span>
         <strong>运行控制台</strong>
-        <span class="float-hotkey-inline">按F8启动/停止</span>
       </div>
       <div class="float-runtime-list">
         <div class="float-runtime-row">
@@ -6970,9 +6969,6 @@ async function stopRecorderRuntime() {
     running: false,
     state: "stopped",
     message: "AI智能记录员正在停止。",
-    operator_guard_running: false,
-    operator_guard_pid: null,
-    operator_guard_state: {},
   };
   renderCustomerServiceRuntime();
   try {

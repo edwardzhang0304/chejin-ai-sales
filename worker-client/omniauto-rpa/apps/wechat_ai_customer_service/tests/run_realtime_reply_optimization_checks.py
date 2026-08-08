@@ -63,7 +63,6 @@ from run_customer_service_listener import (  # noqa: E402
     evaluate_transport_risk,
     estimate_managed_once_timeout_seconds,
     managed_once_timeout_seconds,
-    normalize_operator_guard_settings,
     normalize_rpa_humanized_send_settings,
     normalize_runtime_target_guard_settings,
     normalize_transport_risk_settings,
@@ -73,18 +72,8 @@ from run_customer_service_listener import (  # noqa: E402
     startup_interactive_calibration_can_defer,
     status_payload_confirms_wechat_readable,
     sync_operator_mode,
-    verify_operator_guard_bootstrap,
     write_operator_control_state,
 )
-from run_rpa_operator_guard import (  # noqa: E402
-    INDICATOR_THEMES,
-    indicator_state_snapshot,
-    normalize_indicator_backend,
-    normalize_local_safety_stop_path,
-    write_runtime_status_hint,
-)
-
-
 TENANT_ID = "chejin"
 
 
@@ -230,18 +219,9 @@ def main() -> int:
         check_runtime_target_guard_blocks_disallowed_event(),
         check_runtime_target_guard_allows_allowed_scheduler_event(),
         check_listener_humanized_send_env_mapping(),
-        check_listener_operator_guard_settings_normalization(),
-        check_operator_guard_indicator_three_color_mapping(),
-        check_operator_guard_indicator_backend_defaults_to_layered(),
-        check_operator_guard_local_safety_stop_path_normalization(),
-        check_operator_guard_runtime_status_hint(),
-        check_listener_operator_guard_control_flow(),
-        check_listener_operator_guard_waits_for_delayed_ready_state(),
-        check_listener_operator_guard_rejects_stale_state(),
-        check_customer_service_status_suppresses_stale_operator_guard(),
+        check_listener_operator_control_flow(),
         check_runtime_worker_cmdline_tenant_exact_match(),
         check_recorder_runtime_status_accepts_paused(),
-        check_recorder_operator_guard_launch_flow(),
         check_recorder_runtime_liveness_status(),
         check_recorder_loop_operator_control_commands(),
         check_frontend_recorder_runtime_uses_actual_state(),
@@ -3903,118 +3883,7 @@ def check_listener_humanized_send_env_mapping() -> dict[str, Any]:
     }
 
 
-def check_listener_operator_guard_settings_normalization() -> dict[str, Any]:
-    normalized = normalize_operator_guard_settings(
-        {
-            "enabled": True,
-            "block_manual_input": True,
-            "floating_indicator_enabled": False,
-            "esc_double_press_window_ms": 10,
-            "pause_poll_interval_ms": 99999,
-            "bootstrap_timeout_seconds": 1,
-        }
-    )
-    ok = (
-        normalized.get("enabled") is True
-        and normalized.get("block_manual_input") is True
-        and normalized.get("floating_indicator_enabled") is False
-        and normalized.get("esc_double_press_window_ms") == 180
-        and normalized.get("pause_poll_interval_ms") == 3000
-        and normalized.get("bootstrap_timeout_seconds") == 3.0
-    )
-    return {"name": "listener_operator_guard_settings_normalization", "ok": ok, "normalized": normalized}
-
-
-def check_operator_guard_indicator_three_color_mapping() -> dict[str, Any]:
-    cases = [
-        indicator_state_snapshot(mode="running", runtime_state="idle", locked=True),
-        indicator_state_snapshot(mode="running", runtime_state="idle", locked=False),
-        indicator_state_snapshot(mode="paused", runtime_state="idle", locked=False),
-        indicator_state_snapshot(mode="running", runtime_state="thinking", locked=True),
-        indicator_state_snapshot(mode="stopped", runtime_state="stopped", locked=False),
-    ]
-    themes = [item[0] for item in cases]
-    ok = (
-        tuple(INDICATOR_THEMES) == ("blue", "yellow", "red")
-        and themes == ["blue", "blue", "yellow", "blue", "red"]
-        and "green" not in set(themes)
-    )
-    return {"name": "operator_guard_indicator_three_color_mapping", "ok": ok, "themes": themes}
-
-
-def check_operator_guard_indicator_backend_defaults_to_layered() -> dict[str, Any]:
-    values = {
-        "default": normalize_indicator_backend(None),
-        "empty": normalize_indicator_backend(""),
-        "invalid": normalize_indicator_backend("classic"),
-        "explicit_tk": normalize_indicator_backend("tk"),
-        "explicit_auto": normalize_indicator_backend("auto"),
-    }
-    ok = (
-        values["default"] == "layered"
-        and values["empty"] == "layered"
-        and values["invalid"] == "layered"
-        and values["explicit_tk"] == "tk"
-        and values["explicit_auto"] == "auto"
-    )
-    return {"name": "operator_guard_indicator_backend_defaults_to_layered", "ok": ok, "values": values}
-
-
-def check_operator_guard_local_safety_stop_path_normalization() -> dict[str, Any]:
-    values = {
-        "default": normalize_local_safety_stop_path(""),
-        "recorder_without_slash": normalize_local_safety_stop_path("api/recorder/runtime/stop"),
-        "recorder": normalize_local_safety_stop_path("/api/recorder/runtime/stop"),
-        "absolute_url_rejected": normalize_local_safety_stop_path("http://127.0.0.1:8765/api/recorder/runtime/stop"),
-        "non_stop_rejected": normalize_local_safety_stop_path("/api/recorder/runtime/start"),
-    }
-    ok = (
-        values["default"] == "/api/customer-service/runtime/stop"
-        and values["recorder_without_slash"] == "/api/recorder/runtime/stop"
-        and values["recorder"] == "/api/recorder/runtime/stop"
-        and values["absolute_url_rejected"] == "/api/customer-service/runtime/stop"
-        and values["non_stop_rejected"] == "/api/customer-service/runtime/stop"
-    )
-    return {"name": "operator_guard_local_safety_stop_path_normalization", "ok": ok, "values": values}
-
-
-def check_operator_guard_runtime_status_hint() -> dict[str, Any]:
-    tenant_id = "operator_guard_runtime_status_hint_test"
-    with tempfile.TemporaryDirectory() as tmp:
-        status_path = Path(tmp) / "runtime_status.json"
-        customer_service_runtime.atomic_write_json(
-            status_path,
-            {
-                "ok": True,
-                "state": "idle",
-                "message": "running",
-                "tenant_id": tenant_id,
-                "kept": "value",
-            },
-        )
-        write_runtime_status_hint(status_path, tenant_id=tenant_id, state="paused", message="已暂停，等待继续。")
-        paused = json.loads(status_path.read_text(encoding="utf-8"))
-        write_runtime_status_hint(status_path, tenant_id=tenant_id, state="idle", message="监听运行中。")
-        resumed = json.loads(status_path.read_text(encoding="utf-8"))
-        write_runtime_status_hint(status_path, tenant_id=tenant_id, state="stopped", message="已停止。")
-        stopped = json.loads(status_path.read_text(encoding="utf-8"))
-    ok = (
-        paused.get("state") == "paused"
-        and resumed.get("state") == "idle"
-        and stopped.get("state") == "stopped"
-        and stopped.get("kept") == "value"
-    )
-    return {
-        "name": "operator_guard_runtime_status_hint",
-        "ok": ok,
-        "paused_state": paused.get("state"),
-        "resumed_state": resumed.get("state"),
-        "stopped_state": stopped.get("state"),
-        "kept": stopped.get("kept"),
-    }
-
-
-def check_listener_operator_guard_control_flow() -> dict[str, Any]:
+def check_listener_operator_control_flow() -> dict[str, Any]:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "operator_control.json"
         state = read_operator_control_state(path, tenant_id="listener_test")
@@ -4040,165 +3909,11 @@ def check_listener_operator_guard_control_flow() -> dict[str, Any]:
         and final_state.get("mode") == "running"
     )
     return {
-        "name": "listener_operator_guard_control_flow",
+        "name": "listener_operator_control_flow",
         "ok": ok,
         "initial_mode": state.get("mode"),
         "paused_mode": paused.get("mode"),
         "final_mode": final_state.get("mode"),
-    }
-
-
-def check_listener_operator_guard_waits_for_delayed_ready_state() -> dict[str, Any]:
-    with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / "operator_guard.state.json"
-        current_pid = os.getpid()
-
-        def writer() -> None:
-            time.sleep(0.08)
-            customer_service_runtime.atomic_write_json(
-                path,
-                {
-                    "phase": "starting",
-                    "pid": current_pid,
-                    "parent_pid": current_pid,
-                    "hooks_installed": False,
-                    "reason": "indicator_initializing",
-                },
-            )
-            time.sleep(0.18)
-            customer_service_runtime.atomic_write_json(
-                path,
-                {
-                    "phase": "running",
-                    "pid": current_pid,
-                    "parent_pid": current_pid,
-                    "hooks_installed": True,
-                    "reason": "hooks_installed",
-                },
-            )
-
-        thread = threading.Thread(target=writer, daemon=True)
-        thread.start()
-        result = verify_operator_guard_bootstrap(
-            current_pid,
-            path,
-            timeout_seconds=1.2,
-            expected_parent_pid=current_pid,
-        )
-        thread.join(timeout=1.0)
-    ok = result.get("ok") is True and result.get("reason") == "guard_ready"
-    return {
-        "name": "listener_operator_guard_waits_for_delayed_ready_state",
-        "ok": ok,
-        "result": result,
-    }
-
-
-def check_listener_operator_guard_rejects_stale_state() -> dict[str, Any]:
-    with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / "operator_guard.state.json"
-        current_pid = os.getpid()
-        customer_service_runtime.atomic_write_json(
-            path,
-            {
-                "phase": "running",
-                "pid": current_pid + 99999,
-                "hooks_installed": True,
-            },
-        )
-        stale = verify_operator_guard_bootstrap(current_pid, path, timeout_seconds=0.22)
-        customer_service_runtime.atomic_write_json(
-            path,
-            {
-                "phase": "running",
-                "pid": current_pid + 99998,
-                "parent_pid": current_pid,
-                "hooks_installed": True,
-            },
-        )
-        child_wrapper = verify_operator_guard_bootstrap(
-            current_pid + 99997,
-            path,
-            timeout_seconds=0.22,
-            expected_parent_pid=current_pid,
-        )
-        customer_service_runtime.atomic_write_json(
-            path,
-            {
-                "phase": "running",
-                "pid": current_pid,
-                "hooks_installed": True,
-            },
-        )
-        fresh = verify_operator_guard_bootstrap(current_pid, path, timeout_seconds=0.22)
-    ok = (
-        stale.get("ok") is False
-        and stale.get("reason") == "guard_state_pid_mismatch"
-        and child_wrapper.get("ok") is True
-        and fresh.get("ok") is True
-    )
-    return {
-        "name": "listener_operator_guard_rejects_stale_state",
-        "ok": ok,
-        "stale": stale,
-        "child_wrapper": child_wrapper,
-        "fresh": fresh,
-    }
-
-
-def check_customer_service_status_suppresses_stale_operator_guard() -> dict[str, Any]:
-    tenant_id = "customer_service_guard_stale_status_test"
-    runtime_root = tenant_runtime_root(tenant_id) / "customer_service"
-    try:
-        if runtime_root.exists():
-            shutil.rmtree(runtime_root)
-        runtime_root.mkdir(parents=True, exist_ok=True)
-        customer_service_runtime.atomic_write_json(
-            customer_service_runtime.runtime_status_path(tenant_id),
-            {
-                "ok": True,
-                "state": "stopped",
-                "message": "已停止。",
-                "tenant_id": tenant_id,
-            },
-        )
-        customer_service_runtime.atomic_write_json(
-            customer_service_runtime.runtime_operator_guard_pid_path(tenant_id),
-            {
-                "pid": os.getpid() + 99999,
-                "tenant_id": tenant_id,
-            },
-        )
-        customer_service_runtime.atomic_write_json(
-            customer_service_runtime.runtime_operator_guard_state_path(tenant_id),
-            {
-                "phase": "running",
-                "pid": os.getpid() + 99999,
-                "hooks_installed": True,
-                "floating_indicator_active": True,
-            },
-        )
-        status = customer_service_runtime.CustomerServiceRuntime(tenant_id=tenant_id).status()
-        pid_path_exists = customer_service_runtime.runtime_operator_guard_pid_path(tenant_id).exists()
-        state_path_exists = customer_service_runtime.runtime_operator_guard_state_path(tenant_id).exists()
-    finally:
-        if runtime_root.exists():
-            shutil.rmtree(runtime_root)
-    ok = (
-        status.get("operator_guard_running") is False
-        and status.get("operator_guard_pid") is None
-        and status.get("operator_guard_state") == {}
-        and not pid_path_exists
-        and not state_path_exists
-    )
-    return {
-        "name": "customer_service_status_suppresses_stale_operator_guard",
-        "ok": ok,
-        "operator_guard_running": status.get("operator_guard_running"),
-        "operator_guard_pid": status.get("operator_guard_pid"),
-        "operator_guard_state": status.get("operator_guard_state"),
-        "pid_path_exists": pid_path_exists,
-        "state_path_exists": state_path_exists,
     }
 
 
@@ -4246,62 +3961,6 @@ def check_runtime_worker_cmdline_tenant_exact_match() -> dict[str, Any]:
         is True
     )
     return {"name": "runtime_worker_cmdline_tenant_exact_match", "ok": ok}
-
-
-def check_recorder_operator_guard_launch_flow() -> dict[str, Any]:
-    from unittest.mock import patch
-
-    tenant_id = "recorder_operator_guard_test"
-    parent_pid = os.getpid()
-    runtime_root = tenant_runtime_root(tenant_id) / "recorder"
-    try:
-        if runtime_root.exists():
-            shutil.rmtree(runtime_root)
-        runtime = recorder_runtime.RecorderRuntime(tenant_id=tenant_id)
-        with patch.object(
-            recorder_runtime,
-            "launch_operator_guard",
-            return_value={"ok": True, "enabled": True, "pid": parent_pid + 10, "script_path": "guard.py"},
-        ) as launch_mock, patch.object(
-            recorder_runtime,
-            "verify_operator_guard_bootstrap",
-            return_value={
-                "ok": True,
-                "reason": "guard_ready",
-                "pid": parent_pid + 10,
-                "state_pid": parent_pid + 11,
-                "state_parent_pid": parent_pid,
-                "state": {"phase": "running", "pid": parent_pid + 11, "parent_pid": parent_pid, "hooks_installed": True},
-            },
-        ) as verify_mock:
-            result = runtime._launch_operator_guard_for_loop(
-                parent_pid=parent_pid,
-                settings={"rpa_operator_guard": {"bootstrap_timeout_seconds": 17}},
-            )
-        pid_record_path = recorder_runtime.recorder_operator_guard_pid_path(tenant_id)
-        pid_record = json.loads(pid_record_path.read_text(encoding="utf-8"))
-        launch_stop_path = str(launch_mock.call_args.kwargs.get("local_safety_stop_path") or "")
-        verify_timeout = float(verify_mock.call_args.kwargs.get("timeout_seconds") or 0.0)
-    finally:
-        if runtime_root.exists():
-            shutil.rmtree(runtime_root)
-    ok = (
-        result.get("ok") is True
-        and result.get("enabled") is True
-        and (result.get("settings") or {}).get("enabled") is True
-        and pid_record.get("pid") == parent_pid + 11
-        and pid_record.get("launcher_pid") == parent_pid + 10
-        and launch_stop_path == "/api/recorder/runtime/stop"
-        and verify_timeout == 17.0
-    )
-    return {
-        "name": "recorder_operator_guard_launch_flow",
-        "ok": ok,
-        "result": result,
-        "pid_record": pid_record,
-        "launch_stop_path": launch_stop_path,
-        "verify_timeout": verify_timeout,
-    }
 
 
 def check_recorder_runtime_status_accepts_paused() -> dict[str, Any]:

@@ -125,29 +125,6 @@ class SingleInstanceTest(unittest.TestCase):
         acquire.assert_not_called()
         bootstrap.assert_not_called()
 
-    def test_operator_guard_dispatch_runs_before_qt_and_instance_guard(self):
-        guard_args = ["--tenant-id", "default"]
-        with (
-            mock.patch.object(
-                main.sys,
-                "argv",
-                ["chejin-worker-client", "--rpa-operator-guard", *guard_args],
-            ),
-            mock.patch.object(
-                main,
-                "run_bundled_rpa_operator_guard",
-                return_value=0,
-            ) as guard,
-            mock.patch.object(main, "acquire_single_instance") as acquire,
-            mock.patch.object(main, "bootstrap_qt_plugins") as bootstrap,
-        ):
-            result = main.main()
-
-        self.assertEqual(result, 0)
-        guard.assert_called_once_with(guard_args)
-        acquire.assert_not_called()
-        bootstrap.assert_not_called()
-
     def test_vision_wechat_worker_dispatch_runs_before_qt_and_instance_guard(self):
         worker_args = ["observe-current-surface", "--target", "CJ123456"]
         with (
