@@ -20,7 +20,9 @@ from chejin_worker_client.action_journal import (
     action_journal_path,
     action_journal_phase,
     initialize_action_journal,
+    list_action_journals,
     read_action_journal,
+    remove_action_journal,
     update_action_journal_item,
 )
 from chejin_worker_client.c2_contract import contract_revision, contract_sha256
@@ -77,6 +79,7 @@ class FakeApi:
         self.sent_ack_error: Exception | None = None
         self.scan_payloads: list[dict] = []
         self.message_payloads: list[dict] = []
+        self.settlement_tokens: list[str | None] = []
         self.read_targets: list[WechatReadTarget] = []
         self.message_ingest_result = "ingested"
         self.friend_activation_payloads: list[dict] = []
@@ -234,6 +237,10 @@ class FakeApi:
         *,
         continuation_batch_id: str | None = None,
         continuation_token: str | None = None,
+        recovery_transaction_id: str | None = None,
+        action_kind: str | None = None,
+        source_message_key_digest: str | None = None,
+        original_authorization_revision: str | None = None,
     ):
         self.events.append(f"read_authorization:{conversation_id}")
         if conversation_id in self.read_authorization_overrides:
@@ -258,6 +265,32 @@ class FakeApi:
             }
         if not target.authorization_revision:
             target.authorization_revision = f"revision-{target.conversation_id}"
+        if recovery_transaction_id:
+            return {
+                "allowed": False,
+                "recovery_decision": "settle_without_ui",
+                "settlement_mode": "fact_only",
+                "settlement_token": "test-settlement-token",
+                "conversation_id": target.conversation_id,
+                "authorization_revision": (
+                    original_authorization_revision
+                    or target.authorization_revision
+                ),
+                "read_reason": "fact_settlement",
+                "target": {
+                    "conversation_id": target.conversation_id,
+                    "rpa_session_key": target.rpa_session_key,
+                    "display_name": target.display_name,
+                    "remark_code": target.remark_code,
+                    "lead_id": target.lead_id,
+                    "sales_id": target.sales_id,
+                    "read_reason": "fact_settlement",
+                    "authorization_revision": (
+                        original_authorization_revision
+                        or target.authorization_revision
+                    ),
+                },
+            }
         return {
             "allowed": True,
             "recovery_decision": "allowed",
@@ -318,9 +351,16 @@ class FakeApi:
             "next_action": "read_current_chat",
         }
 
-    def post_wechat_messages_ingest(self, binding: Binding, payload: dict):
+    def post_wechat_messages_ingest(
+        self,
+        binding: Binding,
+        payload: dict,
+        *,
+        settlement_token: str | None = None,
+    ):
         if self.message_ingest_error is not None:
             raise self.message_ingest_error
+        self.settlement_tokens.append(settlement_token)
         self.message_payloads.append(payload)
         self.events.append(f"ingest:{len(payload.get('messages') or [])}")
         messages = payload.get("messages") or []
@@ -727,6 +767,8 @@ class TaskRunnerTest(unittest.TestCase):
             LOCK_FILE.unlink()
         except FileNotFoundError:
             pass
+        for path, _payload in list_action_journals():
+            remove_action_journal(path)
         with db_connection() as conn:
             conn.execute("DELETE FROM c2_action_journal")
             conn.execute("DELETE FROM c2_message_ledger")
@@ -734,6 +776,10 @@ class TaskRunnerTest(unittest.TestCase):
             conn.execute("DELETE FROM reply_send_ack_outbox")
             conn.execute("DELETE FROM c2_runtime_state")
             conn.commit()
+
+    def tearDown(self):
+        for path, _payload in list_action_journals():
+            remove_action_journal(path)
 
     def test_action_journal_vertical_c1_add_friend_reaches_task_completion(self):
         task = Task(
@@ -977,6 +1023,18 @@ class TaskRunnerTest(unittest.TestCase):
             ledger["result"]["action_outcome"]["action_phase"],
             "trigger_attempted",
         )
+        self.assertEqual(ledger["ingest_state"], "waiting")
+        self.assertTrue(path.exists())
+        save_c2_ledger_terminal(
+            conversation_id=target.conversation_id,
+            source_message_key="voice-triggered-before-crash",
+            dedupe_key=None,
+            message_type="voice",
+            terminal_state="failed",
+            ingest_state="confirmed",
+            result=ledger["result"],
+        )
+        runner._recover_physical_action_journals(target)
         self.assertFalse(path.exists())
 
     def test_c2_flow_drops_not_attempted_journal_without_terminalizing(
@@ -1089,6 +1147,18 @@ class TaskRunnerTest(unittest.TestCase):
             "trigger_attempted",
         )
         self.assertTrue(created_paths)
+        self.assertEqual(ledger["ingest_state"], "waiting")
+        self.assertTrue(created_paths[0].exists())
+        save_c2_ledger_terminal(
+            conversation_id=target.conversation_id,
+            source_message_key="voice-sidecar-crashed",
+            dedupe_key=None,
+            message_type="voice",
+            terminal_state="failed",
+            ingest_state="confirmed",
+            result=ledger["result"],
+        )
+        runner._recover_physical_action_journals(target)
         self.assertFalse(created_paths[0].exists())
 
     def test_c2_flow_finalizer_enriches_existing_terminal_ledger(self):
@@ -4551,7 +4621,7 @@ class TaskRunnerTest(unittest.TestCase):
             if item["message_type"] == "voice"
         )
         self.assertEqual(
-            failed_voice["raw_payload"]["voice_processing_reason"],
+            failed_voice["raw_payload"]["error_code"],
             "VOICE_TRANSCRIPT_BINDING_INCONSISTENT",
         )
         self.assertEqual(
@@ -5067,7 +5137,7 @@ class TaskRunnerTest(unittest.TestCase):
         )
         self.assertEqual(failed_voice["item_state"], "failed")
         self.assertEqual(
-            failed_voice["raw_payload"]["voice_processing_reason"],
+            failed_voice["raw_payload"]["error_code"],
             "VOICE_TRANSCRIBE_CLICK_FAILED",
         )
 
@@ -5160,7 +5230,7 @@ class TaskRunnerTest(unittest.TestCase):
         )
         self.assertEqual(failed_voice["item_state"], "failed")
         self.assertEqual(
-            failed_voice["raw_payload"]["voice_processing_reason"],
+            failed_voice["raw_payload"]["error_code"],
             "RPA_SIDECAR_TIMEOUT",
         )
 
@@ -7665,7 +7735,7 @@ class TaskRunnerTest(unittest.TestCase):
             "confirmed",
         )
 
-    def test_backend_confirmed_target_terminal_stops_outbox_retry(self):
+    def test_backend_target_terminal_keeps_fact_until_settlement(self):
         api = FakeApi(None)
 
         def reject_unbound(_binding, _payload):
@@ -7675,7 +7745,6 @@ class TaskRunnerTest(unittest.TestCase):
                 409,
                 {
                     "recovery_action": "target_terminated",
-                    "terminal_confirmed": True,
                 },
             )
 
@@ -7715,17 +7784,17 @@ class TaskRunnerTest(unittest.TestCase):
             }
         )
 
-        self.assertTrue(runner._replay_c2_outbox(binding))
+        self.assertFalse(runner._replay_c2_outbox(binding))
         self.assertEqual(
             load_c2_outbox_entry(outbox_id)["status"],
-            "target_terminated",
+            "capability_paused",
         )
         self.assertEqual(
             load_c2_ledger_entry(
                 conversation_id,
                 source_key,
             )["ingest_state"],
-            "not_required",
+            "waiting",
         )
 
     def test_validation_error_pauses_outbox_without_rejecting_ledger(self):
@@ -8302,8 +8371,10 @@ class TaskRunnerTest(unittest.TestCase):
             api.read_authorization_overrides[
                 target.conversation_id
             ] = {
-                "allowed": True,
-                "recovery_decision": "allowed",
+                "allowed": False,
+                "recovery_decision": "settle_without_ui",
+                "settlement_mode": "fact_only",
+                "settlement_token": "restart-settlement-token",
                 "conversation_id": target.conversation_id,
                 "authorization_revision": (
                     target.authorization_revision
@@ -8349,10 +8420,13 @@ class TaskRunnerTest(unittest.TestCase):
             def confirm_ingest_then_stop(
                 current_binding,
                 payload,
+                *,
+                settlement_token=None,
             ):
                 result = post_messages_ingest(
                     current_binding,
                     payload,
+                    settlement_token=settlement_token,
                 )
                 restarted_runner.stop_event.set()
                 return result
@@ -8375,7 +8449,7 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertNotIn("sessions", recovery_bridge.c2_operation_order)
         self.assertEqual(
             [item["display_name"] for item in recovery_bridge.locate_chats],
-            [target.remark_code],
+            [],
         )
         self.assertNotIn(
             second_target.remark_code,
@@ -8458,6 +8532,116 @@ class TaskRunnerTest(unittest.TestCase):
             api.events,
         )
 
+    def test_not_attempted_journal_with_failed_fact_is_never_discarded(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="ok", message="unused")
+            ),
+        )
+        conversation_id = f"conv-not-attempted-fact-{time.time_ns()}"
+        binding = Binding(
+            worker_id="worker-not-attempted-fact",
+            worker_token="token",
+            client_instance_id="client-not-attempted-fact",
+            run_status="running",
+        )
+        target = WechatReadTarget(
+            conversation_id=conversation_id,
+            rpa_session_key="wx:rpa:v1:not-attempted-fact",
+            display_name="CJFACT001 客户",
+            remark_code="CJFACT001",
+            read_reason="waiting_user_reply",
+            authorization_revision="revision-not-attempted-fact",
+        )
+        api.read_targets = [target]
+        transaction_id = f"image-not-attempted-fact-{time.time_ns()}"
+        path = action_journal_path("image", transaction_id)
+        physical_anchor = {
+            "sender_role": "customer",
+            "preceding_stable_message": "before-failed-menu",
+            "following_stable_message": "after-failed-menu",
+            "bubble_visual_fingerprint": "failed-menu-fingerprint",
+            "occurrence_index": 0,
+        }
+        observation = {
+            "schema_version": 3,
+            "observation_id": "not-attempted-failed-observation",
+            "row_kind": "image_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "image",
+            "voice_state": "not_voice",
+            "item_state": "failed",
+            "image_physical_anchor": physical_anchor,
+            "error_code": "C2_IMAGE_SOURCE_INVALID",
+            "reason_detail": "text_context_menu_rejected",
+            "source_message": {
+                "sender_role": "customer",
+                "type": "image",
+                "image_physical_anchor": physical_anchor,
+            },
+        }
+        source_key = image_observation_source_key(target, observation)
+        initialize_action_journal(
+            path,
+            action_kind="image",
+            transaction_id=transaction_id,
+            conversation_id=conversation_id,
+            items=[
+                {
+                    "source_message_key": source_key,
+                    "physical_anchor_keys": ["image-anchor"],
+                    "replayable_observation": observation,
+                }
+            ],
+        )
+        update_action_journal_item(
+            path,
+            source_message_key=source_key,
+            action_phase="not_attempted",
+            business_state="failed",
+            business_result_confirmed=False,
+            error_code="C2_IMAGE_SOURCE_INVALID",
+            terminal_payload={
+                "error_code": "C2_IMAGE_SOURCE_INVALID",
+                "reason_detail": "text_context_menu_rejected",
+            },
+        )
+
+        self.assertEqual(
+            runner._discard_not_attempted_image_action_journals(),
+            0,
+        )
+        self.assertTrue(path.exists())
+        self.assertIsNone(
+            load_c2_ledger_entry(conversation_id, source_key)
+        )
+        recovered = runner._recover_pending_image_transaction(binding)
+        self.assertTrue(
+            recovered,
+            json.dumps(
+                {
+                    "ledger": load_c2_ledger_entry(
+                        conversation_id,
+                        source_key,
+                    ),
+                    "payloads": api.message_payloads,
+                    "logs": read_logs(limit=20),
+                },
+                ensure_ascii=False,
+                default=str,
+            ),
+        )
+        self.assertEqual(
+            load_c2_ledger_entry(conversation_id, source_key)[
+                "ingest_state"
+            ],
+            "confirmed",
+        )
+        self.assertFalse(path.exists())
+
     def test_image_recovery_retry_later_keeps_exact_transaction_blocking(self):
         api = FakeApi(None)
         runner, _ = self.make_runner(
@@ -8517,7 +8701,7 @@ class TaskRunnerTest(unittest.TestCase):
             )
         )
 
-    def test_invalid_image_recovery_reports_handoff_without_reopening_wechat(self):
+    def test_ledger_before_outbox_crash_recovers_full_facts_without_ui(self):
         api = FakeApi(None)
         bridge = FakeBridge(
             RpaResult(ok=True, result_code="ok", message="unused")
@@ -8549,6 +8733,7 @@ class TaskRunnerTest(unittest.TestCase):
             ),
         )
         source_keys = []
+        journal_items = []
         for index, (formal_reason, reason_detail) in enumerate(cases):
             physical_anchor = {
                 "sender_role": "self",
@@ -8567,8 +8752,8 @@ class TaskRunnerTest(unittest.TestCase):
                 "voice_state": "not_voice",
                 "item_state": "failed",
                 "image_physical_anchor": physical_anchor,
-                "image_processing_reason": formal_reason,
-                "image_processing_reason_detail": reason_detail,
+                "error_code": formal_reason,
+                "reason_detail": reason_detail,
                 "source_message": {
                     "sender_role": "self",
                     "type": "image",
@@ -8577,6 +8762,15 @@ class TaskRunnerTest(unittest.TestCase):
             }
             source_key = image_observation_source_key(target, observation)
             source_keys.append(source_key)
+            journal_items.append(
+                {
+                    "source_message_key": source_key,
+                    "physical_anchor_keys": [
+                        physical_anchor["bubble_visual_fingerprint"]
+                    ],
+                    "replayable_observation": observation,
+                }
+            )
             save_c2_ledger_terminal(
                 conversation_id=conversation_id,
                 source_message_key=source_key,
@@ -8590,19 +8784,64 @@ class TaskRunnerTest(unittest.TestCase):
                     "reason_detail": reason_detail,
                     "transaction": {
                         "status": reason_detail,
-                        "failure_settlement": "handoff_without_ui_recovery",
                     },
                     "replayable_observation": observation,
                 },
             )
 
-        self.assertTrue(
-            runner._recover_pending_image_transaction(binding)
+        transaction_id = f"image-ledger-before-outbox-{time.time_ns()}"
+        journal_path = action_journal_path("image", transaction_id)
+        initialize_action_journal(
+            journal_path,
+            action_kind="image",
+            transaction_id=transaction_id,
+            conversation_id=conversation_id,
+            items=journal_items,
         )
+        for index, source_key in enumerate(source_keys):
+            update_action_journal_item(
+                journal_path,
+                source_message_key=source_key,
+                action_phase=(
+                    "trigger_attempted" if index == 3 else "not_attempted"
+                ),
+                business_state="failed",
+                business_result_confirmed=False,
+                error_code=cases[index][0],
+                terminal_payload={
+                    "error_code": cases[index][0],
+                    "reason_detail": cases[index][1],
+                },
+            )
+        self.assertEqual(
+            [
+                item
+                for item in list_c2_outbox_waiting()
+                if item.get("conversation_id") == conversation_id
+            ],
+            [],
+        )
+
+        with patch(
+            "chejin_worker_client.task_runner.TaskRunner._execute_one_image_slot_vision",
+            side_effect=AssertionError("recovery must not call Vision"),
+        ):
+            self.assertTrue(
+                runner._recover_pending_image_transaction(binding)
+            )
         self.assertEqual(bridge.locate_chats, [])
         self.assertEqual(bridge.message_reads, [])
+        self.assertEqual(api.settlement_tokens, ["test-settlement-token"])
         self.assertEqual(len(api.message_payloads), 1)
         payload = api.message_payloads[0]
+        self.assertEqual(payload["authorization_scope"], "fact_settlement")
+        self.assertEqual(
+            payload["evidence"]["recovery_transaction_id"],
+            transaction_id,
+        )
+        self.assertFalse(payload["evidence"]["wechat_reopened"])
+        self.assertFalse(payload["evidence"]["clipboard_repeated"])
+        self.assertFalse(payload["evidence"]["vision_repeated"])
         self.assertEqual(
             sorted(
                 message["source_message_key"]
@@ -8612,18 +8851,18 @@ class TaskRunnerTest(unittest.TestCase):
         )
         self.assertEqual(
             {
-                message["raw_payload"]["image_processing_reason_detail"]
+                message["raw_payload"]["reason_detail"]
                 for message in payload["messages"]
             },
             {reason_detail for _formal, reason_detail in cases},
         )
         self.assertEqual(
             payload["evidence"]["flow_gate_errors"],
-            ["C2_IMAGE_UNDERSTANDING_FAILED"],
+            [],
         )
-        self.assertEqual(
-            payload["evidence"]["failed_image_source_keys"],
-            sorted(source_keys),
+        self.assertNotIn(
+            "failed_image_source_keys",
+            payload["evidence"],
         )
         for source_key in source_keys:
             self.assertEqual(
@@ -8632,6 +8871,7 @@ class TaskRunnerTest(unittest.TestCase):
                 ],
                 "confirmed",
             )
+        self.assertFalse(journal_path.exists())
         self.assertTrue(
             runner._worker_transaction_barrier_ready(
                 binding,
@@ -8678,8 +8918,8 @@ class TaskRunnerTest(unittest.TestCase):
             "voice_state": "not_voice",
             "item_state": "failed",
             "image_physical_anchor": physical_anchor,
-            "image_processing_reason": "C2_IMAGE_SOURCE_INVALID",
-            "image_processing_reason_detail": "text_context_menu_rejected",
+            "error_code": "C2_IMAGE_SOURCE_INVALID",
+            "reason_detail": "text_context_menu_rejected",
             "source_message": {
                 "sender_role": "customer",
                 "type": "image",
@@ -8700,7 +8940,6 @@ class TaskRunnerTest(unittest.TestCase):
                 "reason_detail": "text_context_menu_rejected",
                 "transaction": {
                     "status": "text_context_menu_rejected",
-                    "failure_settlement": "handoff_without_ui_recovery",
                 },
                 "replayable_observation": observation,
             },
@@ -8716,7 +8955,7 @@ class TaskRunnerTest(unittest.TestCase):
             "waiting",
         )
 
-    def test_backend_terminated_image_target_closes_only_local_recovery(self):
+    def test_legacy_target_terminated_cannot_delete_image_fact(self):
         api = FakeApi(None)
         bridge = FakeBridge(
             RpaResult(ok=True, result_code="ok", message="unused")
@@ -8780,18 +9019,14 @@ class TaskRunnerTest(unittest.TestCase):
             "read_reason": "",
         }
 
-        self.assertTrue(
+        self.assertFalse(
             runner._recover_pending_image_transaction(binding)
         )
         ledger = load_c2_ledger_entry(conversation_id, source_key)
         self.assertEqual(ledger["terminal_state"], "completed")
-        self.assertEqual(ledger["ingest_state"], "not_required")
-        self.assertEqual(
-            ledger["result"]["recovery"]["state"],
-            "target_terminated",
-        )
-        self.assertFalse(journal_path.exists())
-        self.assertTrue(
+        self.assertEqual(ledger["ingest_state"], "waiting")
+        self.assertTrue(journal_path.exists())
+        self.assertFalse(
             runner._worker_transaction_barrier_ready(
                 binding,
                 reason="image_recovery_target_terminated",
@@ -9058,7 +9293,8 @@ class TaskRunnerTest(unittest.TestCase):
                 business_result_confirmed=True,
                 terminal_payload={
                     "state": "completed",
-                    "reason": "vision_ready",
+                    "error_code": None,
+                    "reason_detail": None,
                     "customer_image_understanding": {
                         "schema_version": 1,
                         "vision_summary": "进程退出前已识别的车辆图片",
@@ -9136,7 +9372,11 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertNotIn("sessions", recovery_bridge.c2_operation_order)
         self.assertEqual(
             [item["display_name"] for item in recovery_bridge.locate_chats],
-            [target.remark_code],
+            [],
+        )
+        self.assertEqual(
+            api.settlement_tokens,
+            ["test-settlement-token"],
         )
         self.assertEqual(len(api.message_payloads), 1)
         image_messages = [

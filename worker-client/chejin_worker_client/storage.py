@@ -976,7 +976,44 @@ def has_pending_c2_outbox() -> bool:
             LIMIT 1
             """
         ).fetchone()
-    return row is not None
+        return row is not None
+
+
+def has_c2_outbox_for_source_keys(
+    conversation_id: str,
+    source_message_keys: list[str] | set[str] | tuple[str, ...],
+) -> bool:
+    """Return whether any durable Outbox contains one of the exact facts."""
+
+    expected = {
+        str(value).strip()
+        for value in source_message_keys
+        if str(value).strip()
+    }
+    if not expected:
+        return False
+    with db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT payload_json
+            FROM c2_ingest_outbox
+            WHERE conversation_id = ?
+            """,
+            (str(conversation_id),),
+        ).fetchall()
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return True
+        actual = {
+            str(item.get("source_message_key") or "").strip()
+            for item in (payload.get("messages") or [])
+            if isinstance(item, dict)
+        }
+        if expected & actual:
+            return True
+    return False
 
 
 def load_c2_outbox_entry(outbox_id: str) -> dict[str, Any] | None:

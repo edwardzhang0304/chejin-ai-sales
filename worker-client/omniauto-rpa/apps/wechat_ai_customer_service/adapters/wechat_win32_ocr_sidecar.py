@@ -5674,7 +5674,7 @@ def resolve_wechat_context_menu_bounds(
     return {
         "ok": True,
         "reason": "context_menu_popup_window_confirmed",
-        "menu_bounds": list(selected["bounds"]),
+        "menu_panel_bounds": list(selected["bounds"]),
         "menu_hwnd": int(selected["hwnd"]),
         "menu_class_name": str(selected["class_name"]),
     }
@@ -5703,7 +5703,9 @@ def observe_wechat_context_menu(
     )
     if popup.get("ok") is not True:
         return popup
-    menu_bounds = [int(value) for value in popup.get("menu_bounds") or []]
+    menu_bounds = [
+        int(value) for value in popup.get("menu_panel_bounds") or []
+    ]
     if len(menu_bounds) != 4:
         return {"ok": False, "reason": "context_menu_popup_bounds_invalid"}
     screenshot = None
@@ -5781,7 +5783,7 @@ def observe_wechat_context_menu(
         "image": screenshot,
         "image_size": (int(width), int(height)),
         "screen_origin": [0, 0],
-        "menu_bounds": menu_bounds,
+        "menu_panel_bounds": menu_bounds,
         "menu_window_evidence": {
             "hwnd": int(popup.get("menu_hwnd") or 0),
             "class_name": str(popup.get("menu_class_name") or ""),
@@ -6073,7 +6075,7 @@ def dismiss_voice_transcribe_context_menu(
                 "ocr_items_count": len(items),
                 "visible_menu_texts": visible_menu_texts,
                 "visible_panel_texts": visible_panel_texts,
-                "menu_bounds": menu_bounds or [],
+                "menu_panel_bounds": menu_bounds or [],
                 "ok": bool(click_result.get("ok")) and not bool(visible_menu_texts) and not bool(visible_panel_texts),
                 "reason": "menu_closed" if not visible_menu_texts and not visible_panel_texts else "menu_or_panel_still_visible",
             })
@@ -12167,9 +12169,8 @@ def write_messages_frame_review(output_dir: Path, payload: dict[str, Any]) -> st
                         "sender_role_source": item.get("sender_role_source"),
                         "bubble_rect": item.get("bubble_rect"),
                         "item_state": item.get("item_state"),
-                        "image_processing_reason": item.get(
-                            "image_processing_reason"
-                        ),
+                        "error_code": item.get("error_code"),
+                        "reason_detail": item.get("reason_detail"),
                     }
                     for item in observations
                 ]

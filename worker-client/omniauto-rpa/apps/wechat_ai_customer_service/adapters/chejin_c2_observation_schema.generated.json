@@ -2,7 +2,7 @@
   "generated_file": true,
   "source": "contracts/c2_contract_v3.json",
   "contract_revision": "3.12.5",
-  "contract_sha256": "00311982a26dc019a3795646ea52d67b62b2b959a5550506968c219b14144dba",
+  "contract_sha256": "8a5353cb3a6e686677e49e508f9d7f41d31bd8c660fcd8597f084117b9790f11",
   "observation_schema_version": 3,
   "action_phases": [
     "not_attempted",
@@ -83,7 +83,8 @@
         "voice_state",
         "item_state",
         "voice_anchor_key",
-        "voice_processing_reason",
+        "error_code",
+        "reason_detail",
         "source_message"
       ]
     },
@@ -121,7 +122,8 @@
         "voice_state",
         "item_state",
         "parent_voice_anchor_key",
-        "voice_processing_reason",
+        "error_code",
+        "reason_detail",
         "source_message"
       ]
     },
@@ -172,7 +174,8 @@
         "voice_state",
         "item_state",
         "image_physical_anchor",
-        "image_processing_reason",
+        "error_code",
+        "reason_detail",
         "source_message"
       ],
       "terminal_non_ingestible_item_states": []

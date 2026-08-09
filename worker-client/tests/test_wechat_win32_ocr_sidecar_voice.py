@@ -2053,7 +2053,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
                 return_value={
                     "ok": True,
                     "reason": "context_menu_popup_window_confirmed",
-                    "menu_bounds": [410, 380, 520, 500],
+                    "menu_panel_bounds": [410, 380, 520, 500],
                     "menu_hwnd": 2,
                     "menu_class_name": "WeChatMenuWnd",
                 },
@@ -2086,7 +2086,9 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         )
         capture.assert_called_once_with(artifact_dir="evidence", label="shared_menu")
         self.assertEqual(result["roi_screenshot_path"], "menu_roi.png")
-        self.assertEqual(result["menu_bounds"], [410, 380, 520, 500])
+        self.assertEqual(
+            result["menu_panel_bounds"], [410, 380, 520, 500]
+        )
         save_roi.assert_called_once()
         self.assertEqual(ocr.call_args.args[0].size, (110, 120))
         image.close()
@@ -2120,7 +2122,9 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(result["menu_bounds"], [600, 300, 820, 690])
+        self.assertEqual(
+            result["menu_panel_bounds"], [600, 300, 820, 690]
+        )
         self.assertEqual(result["menu_hwnd"], 2)
 
     def test_context_menu_bounds_fail_closed_without_distinct_popup(self) -> None:
@@ -2196,7 +2200,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
                 return_value={
                     "ok": True,
                     "reason": "context_menu_popup_window_confirmed",
-                    "menu_bounds": [530, 430, 680, 530],
+                    "menu_panel_bounds": [530, 430, 680, 530],
                     "menu_hwnd": 2,
                     "menu_class_name": "WeChatMenuWnd",
                 },
