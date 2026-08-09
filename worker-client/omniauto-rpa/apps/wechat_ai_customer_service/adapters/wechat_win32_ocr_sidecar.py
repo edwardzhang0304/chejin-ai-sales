@@ -5576,6 +5576,110 @@ def wait_for_wechat_context_menu_stable() -> int:
     return menu_wait_ms
 
 
+def resolve_wechat_context_menu_bounds(
+    hwnd: int,
+    *,
+    anchor_screen: tuple[int, int] | list[int],
+) -> dict[str, Any]:
+    """Resolve the real popup window nearest the right-click anchor.
+
+    OCR coordinates are deliberately not used to invent a menu boundary.
+    Without a distinct visible WeChat-owned popup window, image-menu
+    classification must fail closed.
+    """
+
+    if win32gui is None or win32process is None or int(hwnd or 0) <= 0:
+        return {"ok": False, "reason": "context_menu_window_probe_unavailable"}
+    try:
+        anchor_x = int(anchor_screen[0])
+        anchor_y = int(anchor_screen[1])
+        main_rect = tuple(int(value) for value in win32gui.GetWindowRect(hwnd))
+        main_pid = int(win32process.GetWindowThreadProcessId(hwnd)[1] or 0)
+    except (AttributeError, TypeError, ValueError, IndexError):
+        return {"ok": False, "reason": "context_menu_window_probe_invalid"}
+    if main_pid <= 0 or len(main_rect) != 4:
+        return {"ok": False, "reason": "context_menu_window_probe_invalid"}
+
+    candidates: list[dict[str, Any]] = []
+
+    def point_distance(rect: tuple[int, int, int, int]) -> float:
+        left, top, right, bottom = rect
+        dx = max(left - anchor_x, 0, anchor_x - right)
+        dy = max(top - anchor_y, 0, anchor_y - bottom)
+        return float((dx * dx + dy * dy) ** 0.5)
+
+    def collect(candidate_hwnd: int, _extra: Any) -> bool:
+        try:
+            candidate_hwnd = int(candidate_hwnd or 0)
+            if candidate_hwnd <= 0 or candidate_hwnd == int(hwnd):
+                return True
+            if not bool(win32gui.IsWindowVisible(candidate_hwnd)):
+                return True
+            if int(
+                win32process.GetWindowThreadProcessId(candidate_hwnd)[1] or 0
+            ) != main_pid:
+                return True
+            rect = tuple(
+                int(value) for value in win32gui.GetWindowRect(candidate_hwnd)
+            )
+            if len(rect) != 4:
+                return True
+            left, top, right, bottom = rect
+            width = right - left
+            height = bottom - top
+            main_width = max(1, main_rect[2] - main_rect[0])
+            main_height = max(1, main_rect[3] - main_rect[1])
+            distance = point_distance(rect)
+            if (
+                width < 72
+                or height < 36
+                or width > min(640, main_width)
+                or height > min(960, main_height)
+                or width * height >= main_width * main_height * 0.5
+                or distance > 48.0
+            ):
+                return True
+            candidates.append(
+                {
+                    "hwnd": candidate_hwnd,
+                    "bounds": [left, top, right, bottom],
+                    "distance": distance,
+                    "contains_anchor": (
+                        left <= anchor_x <= right and top <= anchor_y <= bottom
+                    ),
+                    "class_name": str(
+                        win32gui.GetClassName(candidate_hwnd) or ""
+                    ),
+                }
+            )
+        except Exception:
+            return True
+        return True
+
+    try:
+        win32gui.EnumWindows(collect, None)
+    except Exception:
+        return {"ok": False, "reason": "context_menu_window_enumeration_failed"}
+    if not candidates:
+        return {"ok": False, "reason": "context_menu_popup_window_not_found"}
+    selected = min(
+        candidates,
+        key=lambda item: (
+            not bool(item["contains_anchor"]),
+            float(item["distance"]),
+            (item["bounds"][2] - item["bounds"][0])
+            * (item["bounds"][3] - item["bounds"][1]),
+        ),
+    )
+    return {
+        "ok": True,
+        "reason": "context_menu_popup_window_confirmed",
+        "menu_bounds": list(selected["bounds"]),
+        "menu_hwnd": int(selected["hwnd"]),
+        "menu_class_name": str(selected["class_name"]),
+    }
+
+
 def observe_wechat_context_menu(
     hwnd: int,
     *,
@@ -5593,6 +5697,15 @@ def observe_wechat_context_menu(
         anchor_y = int(anchor_screen[1])
     except (TypeError, ValueError, IndexError):
         return {"ok": False, "reason": "context_menu_anchor_missing"}
+    popup = resolve_wechat_context_menu_bounds(
+        hwnd,
+        anchor_screen=(anchor_x, anchor_y),
+    )
+    if popup.get("ok") is not True:
+        return popup
+    menu_bounds = [int(value) for value in popup.get("menu_bounds") or []]
+    if len(menu_bounds) != 4:
+        return {"ok": False, "reason": "context_menu_popup_bounds_invalid"}
     screenshot = None
     ocr_image = None
     roi_screenshot_path = ""
@@ -5602,14 +5715,12 @@ def observe_wechat_context_menu(
             label=label,
         )
         width, height = getattr(screenshot, "size", (0, 0))
-        roi = [0, 0, int(width), int(height)]
-        if anchor_x > 0 and anchor_y > 0:
-            roi = [
-                max(0, anchor_x - 380),
-                max(0, anchor_y - 420),
-                min(int(width), anchor_x + 380),
-                min(int(height), anchor_y + 420),
-            ]
+        roi = [
+            max(0, menu_bounds[0]),
+            max(0, menu_bounds[1]),
+            min(int(width), menu_bounds[2]),
+            min(int(height), menu_bounds[3]),
+        ]
         if roi[2] <= roi[0] or roi[3] <= roi[1]:
             raise RuntimeError("context_menu_ocr_roi_invalid")
         ocr_image = screenshot.crop(tuple(roi))
@@ -5653,19 +5764,15 @@ def observe_wechat_context_menu(
         if not isinstance(item, dict):
             continue
         try:
-            center_x = float(
-                item.get("center_x")
-                or (float(item.get("left") or 0) + float(item.get("right") or 0)) / 2
-            )
-            center_y = float(
-                item.get("center_y")
-                or (float(item.get("top") or 0) + float(item.get("bottom") or 0)) / 2
-            )
+            item_left = float(item.get("left") or 0)
+            item_top = float(item.get("top") or 0)
+            item_right = float(item.get("right") or 0)
+            item_bottom = float(item.get("bottom") or 0)
         except (TypeError, ValueError):
             continue
         if (
-            (not anchor_x or abs(center_x - anchor_x) <= 360)
-            and (not anchor_y or abs(center_y - anchor_y) <= 420)
+            menu_bounds[0] <= item_left < item_right <= menu_bounds[2]
+            and menu_bounds[1] <= item_top < item_bottom <= menu_bounds[3]
         ):
             local_items.append(item)
     return {
@@ -5674,6 +5781,12 @@ def observe_wechat_context_menu(
         "image": screenshot,
         "image_size": (int(width), int(height)),
         "screen_origin": [0, 0],
+        "menu_bounds": menu_bounds,
+        "menu_window_evidence": {
+            "hwnd": int(popup.get("menu_hwnd") or 0),
+            "class_name": str(popup.get("menu_class_name") or ""),
+            "reason": str(popup.get("reason") or ""),
+        },
         "ocr_items": ocr_items,
         "local_ocr_items": local_items,
         "ocr_item_count": len(ocr_items),
@@ -5693,7 +5806,8 @@ def observe_wechat_context_menu(
             for item in local_items
             if normalize_ocr_text(item.get("text"))
             in {
-                "复制", "复制图片", "转发", "收藏", "多选", "删除", "引用",
+                "复制", "复制图片", "编辑", "用窗口打开", "另存为", "打开方式",
+                "放大阅读", "翻译", "搜一搜", "转发", "收藏", "多选", "删除", "引用",
                 "语音转文字", "转文字", "收起文字",
             }
         ][:16],

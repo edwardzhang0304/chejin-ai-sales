@@ -436,6 +436,10 @@ class _WindowFrame:
                 ocr_item_count=int(observation.get("ocr_item_count") or 0),
                 local_ocr_item_count=int(observation.get("local_ocr_item_count") or 0),
                 ocr_roi=list(observation.get("ocr_roi") or []),
+                menu_bounds=list(observation.get("menu_bounds") or []),
+                menu_window_evidence=dict(
+                    observation.get("menu_window_evidence") or {}
+                ),
                 ocr_execution=str(observation.get("ocr_execution") or ""),
                 menu_structure_evidence=list(observation.get("menu_structure_evidence") or []),
                 local_ocr_evidence=list(observation.get("local_ocr_evidence") or []),
@@ -456,6 +460,7 @@ class _WindowFrame:
                 "messages": [],
                 "time_markers": [],
                 "screen_origin": [0, 0],
+                "menu_bounds": list(observation.get("menu_bounds") or []),
                 "screenshot_path": str(observation.get("screenshot_path") or ""),
                 "roi_screenshot_path": str(
                     observation.get("roi_screenshot_path") or ""
