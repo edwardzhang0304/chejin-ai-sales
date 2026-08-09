@@ -41,6 +41,7 @@ from .image_phase import (
     finalize_image_phase_result,
     mark_image_action,
     mark_image_removed_from_final_screen,
+    mark_image_settled_without_refresh,
     mark_image_terminal,
     merge_image_phase_results,
     new_image_phase_result,
@@ -418,6 +419,10 @@ def _safe_c2_image_transaction(value: Any) -> dict[str, Any]:
             "clipboard_sequence_changed",
             "clipboard_sequence_before",
             "clipboard_sequence_after",
+            "clipboard_content_read",
+            "clipboard_image_valid",
+            "failure_settlement",
+            "strong_text_menu_item_count",
             "image_sha256",
             "image_width",
             "image_height",
@@ -2539,6 +2544,12 @@ class TaskRunner:
                 },
             )
             return False
+        settlement = self._settle_invalid_image_facts_without_ui(
+            binding=binding,
+            target=target,
+        )
+        if settlement is not None:
+            return settlement
         append_log(
             "INFO",
             "c2_image_fact_recovery_started",
@@ -2596,6 +2607,143 @@ class TaskRunner:
             },
         )
         return recovered
+
+    def _settle_invalid_image_facts_without_ui(
+        self,
+        *,
+        binding: Binding,
+        target: WechatReadTarget,
+    ) -> bool | None:
+        """Report deterministic invalid-image facts without reopening WeChat.
+
+        Older clients could leave ``C2_IMAGE_SOURCE_INVALID`` in the waiting
+        ledger after a text menu or non-bitmap clipboard result.  Those facts
+        are already terminal: reopening the chat cannot improve them and can
+        starve every other target.  A backend-confirmed flow gate is therefore
+        the only recovery action.
+        """
+
+        entries = list_c2_ledger_entries(
+            target.conversation_id,
+            message_type="image",
+            ingest_state="waiting",
+        )
+        if not entries:
+            return None
+        source_keys: list[str] = []
+        for entry in entries:
+            result = (
+                dict(entry.get("result") or {})
+                if isinstance(entry.get("result"), dict)
+                else {}
+            )
+            replayable = (
+                result.get("replayable_observation")
+                if isinstance(result.get("replayable_observation"), dict)
+                else {}
+            )
+            transaction = (
+                result.get("transaction")
+                if isinstance(result.get("transaction"), dict)
+                else {}
+            )
+            reason = str(
+                result.get("reason")
+                or result.get("error_code")
+                or replayable.get("image_processing_reason")
+                or ""
+            ).strip()
+            if (
+                str(entry.get("terminal_state") or "") != "failed"
+                or (
+                    reason != "C2_IMAGE_SOURCE_INVALID"
+                    and str(transaction.get("failure_settlement") or "")
+                    != "handoff_without_ui_recovery"
+                )
+            ):
+                return None
+            source_key = str(
+                entry.get("source_message_key") or ""
+            ).strip()
+            if source_key:
+                source_keys.append(source_key)
+        source_keys = sorted(set(source_keys))
+        if not source_keys:
+            return None
+        stable_gate_key = _c2_text_fingerprint(
+            json.dumps(
+                {
+                    "conversation_id": target.conversation_id,
+                    "error_code": "C2_IMAGE_SOURCE_INVALID",
+                    "source_message_keys": source_keys,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        payload = build_flow_gate_ingest_payload(
+            target,
+            error_code="C2_IMAGE_UNDERSTANDING_FAILED",
+            evidence={
+                "flow_gate_identity_key": stable_gate_key,
+                "failed_image_source_keys": source_keys,
+                "image_failure": {
+                    "error_code": "C2_IMAGE_SOURCE_INVALID",
+                    "settlement": "handoff_without_ui_recovery",
+                },
+                "flow_gate_details": [
+                    {
+                        "error_code": "C2_IMAGE_UNDERSTANDING_FAILED",
+                        "position_source": "position_unavailable",
+                    }
+                ],
+            },
+        )
+        delivery = self._submit_c2_outbox_payload(
+            binding=binding,
+            payload=payload,
+            operation="invalid_image_failure_gate",
+        )
+        if not delivery.get("ok"):
+            append_log(
+                "WARN",
+                "c2_invalid_image_failure_gate_waiting",
+                "无效图片失败事实尚未得到后端确认；仅重传本地事实，不重新打开微信。",
+                error_code=str(delivery.get("error_code") or ""),
+                metadata={
+                    "conversation_id": target.conversation_id,
+                    "remark_code": target.remark_code,
+                    "source_message_keys": source_keys,
+                },
+            )
+            return False
+        mark_c2_ledger_ingested(
+            target.conversation_id,
+            source_keys,
+        )
+        removed_journal_count = 0
+        for path, _payload in list_action_journals(
+            conversation_id=target.conversation_id,
+            action_kinds=("image",),
+        ):
+            remove_action_journal(path)
+            removed_journal_count += 1
+        append_log(
+            "WARN",
+            "c2_invalid_image_failure_gate_reported",
+            "无效图片失败已由后端确认并转人工；本地等待和全局门禁已释放。",
+            error_code="C2_IMAGE_SOURCE_INVALID",
+            metadata={
+                "conversation_id": target.conversation_id,
+                "remark_code": target.remark_code,
+                "source_message_keys": source_keys,
+                "removed_journal_count": removed_journal_count,
+                "wechat_reopened": False,
+                "vision_repeated": False,
+            },
+        )
+        return True
 
     def _c2_dependencies_ready(self) -> bool:
         return all(
@@ -5255,6 +5403,10 @@ class TaskRunner:
         ledger_result: dict[str, Any] = {
             "state": terminal_state,
             "reason": terminal_reason,
+            "reason_detail": str(result.get("reason_detail") or ""),
+            "transaction": _safe_c2_image_transaction(
+                result.get("transaction")
+            ),
             "replayable_observation": replayable_image_observation(
                 terminal_observation,
                 source_message_key=source_key,
@@ -5272,9 +5424,6 @@ class TaskRunner:
                     "visual_bridge_input": dict(
                         terminal_observation.get("visual_bridge_input")
                         or {}
-                    ),
-                    "transaction": _safe_c2_image_transaction(
-                        result.get("transaction")
                     ),
                 }
             )
@@ -5600,6 +5749,14 @@ class TaskRunner:
             action_was_attempted = normalized["action_was_attempted"]
             if action_was_attempted:
                 mark_image_action(stats, source_key)
+                if (
+                    str(transaction.get("failure_settlement") or "")
+                    == "handoff_without_ui_recovery"
+                ):
+                    mark_image_settled_without_refresh(
+                        stats,
+                        source_key,
+                    )
             if (
                 flow_outcomes is not None
                 and (

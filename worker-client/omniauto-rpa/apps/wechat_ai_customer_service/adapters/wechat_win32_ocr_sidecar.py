@@ -214,6 +214,7 @@ VOICE_TRANSCRIBE_TEXT_TOKENS = ("转文字", "语音转文字", "转为文字", 
 VOICE_TRANSCRIBE_COLLAPSE_TEXT_TOKENS = ("收起文字", "收起")
 CHAT_INFO_PANEL_TEXT_TOKENS = ("查找聊天内容", "消息免打扰", "置顶聊天", "清空聊天记录")
 TEXT_MESSAGE_CONTEXT_MENU_TOKENS = ("复制", "放大阅读", "翻译", "搜一搜", "转发")
+TEXT_MESSAGE_CONTEXT_MENU_STRONG_TOKENS = ("放大阅读", "翻译", "搜一搜")
 AVATAR_CONTEXT_MENU_TOKENS = ("拍一拍",)
 DEFAULT_RENDER_RECOVERY_MIN_INTERVAL_SECONDS = 180
 DEFAULT_QUICK_LOGIN_AUTO_ENTER = False
@@ -3365,6 +3366,16 @@ def voice_transcribe_collapse_text_like(text: str) -> bool:
 def text_message_context_menu_text_like(text: str) -> bool:
     compact = voice_transcribe_compact_text(text)
     return bool(compact) and any(voice_transcribe_compact_text(token) in compact for token in TEXT_MESSAGE_CONTEXT_MENU_TOKENS)
+
+
+def text_message_context_menu_strong_text_like(text: str) -> bool:
+    """Recognize entries that cannot belong to an image copy menu."""
+
+    compact = voice_transcribe_compact_text(text)
+    return bool(compact) and any(
+        voice_transcribe_compact_text(token) in compact
+        for token in TEXT_MESSAGE_CONTEXT_MENU_STRONG_TOKENS
+    )
 
 
 def avatar_context_menu_text_like(text: str) -> bool:

@@ -62,6 +62,56 @@ def _cancelled(data: dict[str, Any]) -> bool:
         return True
 
 
+def _item_center(item: dict[str, Any]) -> tuple[float, float] | None:
+    bounds = item.get("bounds")
+    try:
+        if isinstance(bounds, (list, tuple)) and len(bounds) >= 4:
+            return (
+                (float(bounds[0]) + float(bounds[2])) / 2.0,
+                (float(bounds[1]) + float(bounds[3])) / 2.0,
+            )
+        return (
+            float(item.get("center_x")),
+            float(item.get("center_y")),
+        )
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def _strong_text_menu_evidence(
+    strong_items: list[dict[str, Any]],
+    copy_item: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Keep only strong text markers that form the copy menu's stack."""
+
+    candidates = [
+        dict(item)
+        for item in strong_items
+        if isinstance(item, dict) and _item_center(item) is not None
+    ]
+    if not candidates:
+        return []
+    copy_center = _item_center(copy_item or {})
+    if copy_center is not None:
+        return [
+            item
+            for item in candidates
+            if (
+                abs((_item_center(item) or (0.0, 0.0))[0] - copy_center[0])
+                <= 140.0
+                and -20.0
+                <= (_item_center(item) or (0.0, 0.0))[1] - copy_center[1]
+                <= 420.0
+            )
+        ]
+    if len(candidates) < 2:
+        return []
+    centers = [_item_center(item) for item in candidates]
+    xs = [center[0] for center in centers if center is not None]
+    ys = [center[1] for center in centers if center is not None]
+    return candidates if max(xs) - min(xs) <= 140.0 and max(ys) - min(ys) <= 420.0 else []
+
+
 def acquire_current_image_via_ports(
     ports: VisionHostPorts,
     request: dict[str, Any] | None,
@@ -322,6 +372,32 @@ def _acquire_current_image_via_ports(
                 tuple(menu_size),
                 anchor=anchor_in_menu_frame,
             )
+            strong_text_items = _strong_text_menu_evidence(
+                [
+                    item
+                    for item in (
+                        menu_frame.get("strong_text_menu_items") or []
+                    )
+                    if isinstance(item, dict)
+                ],
+                copy_item,
+            )
+            if strong_text_items:
+                _dismiss_menu_safely(ports.ui_action)
+                menu_opened = False
+                return fail(
+                    "C2_IMAGE_SOURCE_INVALID",
+                    transaction={
+                        "status": "text_context_menu_rejected",
+                        "right_click_ok": True,
+                        "menu_copy_confirmed": False,
+                        "clipboard_content_read": False,
+                        "failure_settlement": "handoff_without_ui_recovery",
+                        "strong_text_menu_item_count": len(
+                            strong_text_items
+                        ),
+                    },
+                )
             if not copy_item:
                 _dismiss_menu_safely(ports.ui_action)
                 menu_opened = False
@@ -437,6 +513,19 @@ def _acquire_current_image_via_ports(
                         clipboard_reason = "clipboard_sequence_changed_during_read"
                 time.sleep(poll_interval)
             if payload is None or sequence_after is None:
+                if clipboard_reason == "clipboard_current_content_not_bitmap":
+                    return fail(
+                        clipboard_reason,
+                        transaction={
+                            "status": "clipboard_non_bitmap_rejected",
+                            "right_click_ok": True,
+                            "menu_copy_confirmed": True,
+                            "clipboard_sequence_changed": True,
+                            "clipboard_content_read": True,
+                            "clipboard_image_valid": False,
+                            "failure_settlement": "handoff_without_ui_recovery",
+                        },
+                    )
                 return fail(clipboard_reason)
             if _cancelled(data):
                 payload.release()

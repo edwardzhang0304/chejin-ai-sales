@@ -8517,6 +8517,82 @@ class TaskRunnerTest(unittest.TestCase):
             )
         )
 
+    def test_invalid_image_recovery_reports_handoff_without_reopening_wechat(self):
+        api = FakeApi(None)
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="ok", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-invalid-image-recovery",
+            worker_token="token",
+            client_instance_id="client-invalid-image-recovery",
+            run_status="running",
+        )
+        conversation_id = f"conv-invalid-image-{time.time_ns()}"
+        source_key = "invalid-image-source"
+        target = WechatReadTarget(
+            conversation_id=conversation_id,
+            rpa_session_key="wx:rpa:v1:invalid-image",
+            display_name="CJONE001 客户",
+            remark_code="CJONE001",
+            read_reason="waiting_user_reply",
+            authorization_revision="revision-invalid-image",
+        )
+        api.read_targets = [target]
+        save_c2_ledger_terminal(
+            conversation_id=conversation_id,
+            source_message_key=source_key,
+            dedupe_key="invalid-image-dedupe",
+            message_type="image",
+            terminal_state="failed",
+            ingest_state="waiting",
+            result={
+                "state": "failed",
+                "reason": "C2_IMAGE_SOURCE_INVALID",
+                "replayable_observation": {
+                    "schema_version": 3,
+                    "observation_id": "invalid-image-observation",
+                    "row_kind": "image_bubble",
+                    "sender_role": "self",
+                    "sender_role_source": "same_row_avatar",
+                    "message_type": "image",
+                    "voice_state": "not_voice",
+                    "item_state": "failed",
+                    "image_processing_reason": "C2_IMAGE_SOURCE_INVALID",
+                },
+            },
+        )
+
+        self.assertTrue(
+            runner._recover_pending_image_transaction(binding)
+        )
+        self.assertEqual(bridge.locate_chats, [])
+        self.assertEqual(bridge.message_reads, [])
+        self.assertEqual(len(api.message_payloads), 1)
+        payload = api.message_payloads[0]
+        self.assertEqual(payload["messages"], [])
+        self.assertEqual(
+            payload["evidence"]["flow_gate_errors"],
+            ["C2_IMAGE_UNDERSTANDING_FAILED"],
+        )
+        self.assertEqual(
+            payload["evidence"]["failed_image_source_keys"],
+            [source_key],
+        )
+        self.assertEqual(
+            load_c2_ledger_entry(conversation_id, source_key)[
+                "ingest_state"
+            ],
+            "confirmed",
+        )
+        self.assertTrue(
+            runner._worker_transaction_barrier_ready(
+                binding,
+                reason="invalid_image_failure_settled",
+            )
+        )
+
     def test_backend_terminated_image_target_closes_only_local_recovery(self):
         api = FakeApi(None)
         bridge = FakeBridge(
