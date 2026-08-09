@@ -18,7 +18,12 @@ from app.models.lead import (
 )
 from app.models.sales import Sales
 from app.models.task import Task, TaskEvent, TaskEvidence, TaskNote
-from app.models.wechat import MessageEvent, WechatScanRun, WechatSessionBinding
+from app.models.wechat import (
+    MessageEvent,
+    WechatRecoverySettlement,
+    WechatScanRun,
+    WechatSessionBinding,
+)
 from app.models.worker import Worker, WorkerHeartbeatLog
 from app.models.vehicle import (
     KnowledgeCategory,
@@ -54,6 +59,7 @@ __all__ = [
     "TaskNote",
     "SentAck",
     "WechatScanRun",
+    "WechatRecoverySettlement",
     "WechatSessionBinding",
     "Worker",
     "WorkerHeartbeatLog",

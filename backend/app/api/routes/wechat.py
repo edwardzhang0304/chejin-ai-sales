@@ -4,7 +4,6 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query
 from sqlalchemy.orm import Session
 
 from app.api.response import ok
-from app.contracts.c2 import recovery_action_for_error
 from app.core.auth import require_admin_auth
 from app.core.config import get_settings
 from app.core.database import get_db
@@ -66,6 +65,13 @@ def read_authorization(
     worker_id: str,
     conversation_id: str,
     continuation_batch_id: str | None = Query(default=None, max_length=36),
+    recovery_transaction_id: str | None = Query(default=None, max_length=128),
+    action_kind: str | None = Query(default=None, max_length=16),
+    source_message_key_digest: str | None = Query(default=None, max_length=64),
+    original_authorization_revision: str | None = Query(
+        default=None,
+        max_length=128,
+    ),
     db: Session = Depends(get_db),
     continuation_token: str | None = Header(
         default=None,
@@ -91,6 +97,10 @@ def read_authorization(
             conversation_id=conversation_id,
             continuation_batch_id=continuation_batch_id,
             continuation_token=continuation_token,
+            recovery_transaction_id=recovery_transaction_id,
+            action_kind=action_kind,
+            source_message_key_digest=source_message_key_digest,
+            original_authorization_revision=original_authorization_revision,
         )
         db.commit()
         return ok(data)
@@ -126,14 +136,28 @@ def ingest_messages(
     db: Session = Depends(get_db),
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
+    x_c2_settlement_token: str | None = Header(
+        default=None,
+        alias="X-C2-Settlement-Token",
+    ),
 ):
     worker = worker_service.authenticate_worker_client(db, worker_id, x_worker_token, x_client_instance_id)
     try:
-        data = wechat_service.ingest_messages(db, worker, payload)
+        data = (
+            wechat_service.settle_messages_without_ui(
+                db,
+                worker,
+                payload,
+                settlement_token=x_c2_settlement_token,
+            )
+            if payload.authorization_scope == "fact_settlement"
+            else wechat_service.ingest_messages(db, worker, payload)
+        )
         db.commit()
         message_batch = data.get("message_batch") if isinstance(data, dict) else None
         if (
-            isinstance(message_batch, dict)
+            payload.authorization_scope == "active_read"
+            and isinstance(message_batch, dict)
             and message_batch.get("batch_id")
             and str(message_batch.get("batch_status") or "") in {"collecting", "generating"}
         ):
@@ -155,18 +179,6 @@ def ingest_messages(
         return ok(data)
     except AppError as exc:
         db.rollback()
-        if (
-            recovery_action_for_error(exc.code, exc.status_code)
-            == "conversation_terminated"
-        ):
-            terminal = wechat_service.record_ingest_technical_terminal(
-                db,
-                worker=worker,
-                payload=payload,
-                error_code=exc.code,
-            )
-            db.commit()
-            exc.data.update(terminal)
         raise
     except Exception:
         db.rollback()

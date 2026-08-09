@@ -20,11 +20,9 @@ def error_response(status_code: int, code: str, message: str, data: Any = None, 
     details["retryable"] = error_retryable(status_code)
     recovery_action = recovery_action_for_error(code, status_code)
     details["recovery_action"] = recovery_action
-    # A payload terminal is safe only after the owning route/service has
-    # persisted its technical terminal and explicitly supplied confirmation.
-    # Target termination is itself confirmed by the backend binding check.
-    if recovery_action == "target_terminated":
-        details["terminal_confirmed"] = True
+    # Authorization termination never proves that a previously formed local
+    # fact was persisted.  Only the explicit fact-settlement response may
+    # confirm individual source_message_key values.
     content = jsonable_encoder({"code": code, "message": message, "data": details, "trace_id": trace_id or get_request_id()})
     return JSONResponse(
         status_code=status_code,

@@ -104,12 +104,9 @@
       "observation",
       "voice_transcription",
       "voice_transcription_meta",
-      "voice_processing_reason",
-      "voice_error_code",
-      "transcribe_error_code",
-      "voice_transcription_error_code",
+      "error_code",
+      "reason_detail",
       "ai_reply_receipt",
-      "image_processing_reason",
       "customer_image_understanding",
       "visual_bridge_input"
     ],
@@ -127,9 +124,9 @@
       "action_phase",
       "voice_anchor_key",
       "parent_voice_anchor_key",
-      "voice_processing_reason",
+      "error_code",
+      "reason_detail",
       "image_physical_anchor",
-      "image_processing_reason",
       "customer_image_understanding",
       "visual_bridge_input",
       "bubble_rect",
@@ -175,7 +172,7 @@
       "allowed_sender_role_sources": ["same_row_avatar"],
       "allowed_voice_states": ["untranscribed", "transcribed"],
       "required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state"],
-      "failed_required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state", "item_state", "voice_anchor_key", "voice_processing_reason", "source_message"]
+      "failed_required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state", "item_state", "voice_anchor_key", "error_code", "reason_detail", "source_message"]
     },
     "voice_transcript": {
       "ingestible": true,
@@ -185,7 +182,7 @@
       "allowed_sender_role_sources": ["parent_voice"],
       "allowed_voice_states": ["transcribed"],
       "required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state", "content_clean", "parent_voice_anchor_key", "source_message"],
-      "failed_required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state", "item_state", "parent_voice_anchor_key", "voice_processing_reason", "source_message"]
+      "failed_required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state", "item_state", "parent_voice_anchor_key", "error_code", "reason_detail", "source_message"]
     },
     "image_bubble": {
       "ingestible": true,
@@ -196,7 +193,7 @@
       "allowed_voice_states": ["not_voice"],
       "discovery_required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state", "bubble_rect", "image_physical_anchor", "source_message"],
       "required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state", "content_clean", "image_physical_anchor", "customer_image_understanding", "visual_bridge_input", "source_message"],
-      "failed_required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state", "item_state", "image_physical_anchor", "image_processing_reason", "source_message"],
+      "failed_required_fields": ["observation_id", "row_kind", "sender_role", "sender_role_source", "message_type", "voice_state", "item_state", "image_physical_anchor", "error_code", "reason_detail", "source_message"],
       "terminal_non_ingestible_item_states": []
     },
     "system_message": {
