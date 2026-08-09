@@ -5612,6 +5612,222 @@ class TaskRunnerTest(unittest.TestCase):
         )
         self.assertTrue(artifact_dir.is_dir())
 
+    def test_real_menu_failure_pipeline_releases_barrier_for_next_target(self):
+        api = FakeApi(None)
+        unique = str(time.time_ns())
+        first = WechatReadTarget(
+            conversation_id=f"conv-menu-failed-{unique}",
+            rpa_session_key="wx:rpa:v1:menu-failed",
+            display_name="CJP0A001 客户",
+            remark_code="CJP0A001",
+            read_reason="waiting_user_reply",
+            authorization_revision=f"revision-menu-failed-{unique}",
+        )
+        second = WechatReadTarget(
+            conversation_id=f"conv-after-menu-failed-{unique}",
+            rpa_session_key="wx:rpa:v1:after-menu-failed",
+            display_name="CJP0B001 客户",
+            remark_code="CJP0B001",
+            read_reason="waiting_user_reply",
+            authorization_revision=f"revision-after-menu-failed-{unique}",
+        )
+        api.read_targets = [first, second]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        image_observation = {
+            "schema_version": 3,
+            "observation_id": f"image-menu-failed-{unique}",
+            "row_kind": "image_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "image",
+            "voice_state": "not_voice",
+            "item_state": "discovered",
+            "bubble_rect": [420, 180, 650, 320],
+            "image_physical_anchor": {
+                "sender_role": "customer",
+                "bubble_visual_fingerprint": "dhash64:0123456789abcdef",
+                "preceding_stable_message": "",
+                "following_stable_message": "",
+                "occurrence_index": 0,
+                "occurrence_count": 1,
+            },
+            "source_message": {
+                "id": f"image-menu-failed-source-{unique}",
+                "type": "image",
+                "sender_role": "customer",
+            },
+        }
+        first_snapshot = bridge._contractual_message_payload({
+            "ok": True,
+            "state": "messages_ocr",
+            "sidecar_run_id": f"menu-failed-run-{unique}",
+            "observations": [image_observation],
+        })
+        second_snapshot = bridge._contractual_message_payload({
+            "ok": True,
+            "state": "messages_ocr",
+            "sidecar_run_id": f"after-menu-failed-run-{unique}",
+            "messages": [{
+                "id": f"after-menu-text-{unique}",
+                "sender_role": "customer",
+                "type": "text",
+                "content": "前一个目标失败后我仍被读取",
+            }],
+        })
+        artifact_dirs = [
+            Path(tempfile.mkdtemp(prefix="chejin-menu-failed-a-")),
+            Path(tempfile.mkdtemp(prefix="chejin-menu-failed-b-")),
+        ]
+        bridge.locate_payloads = []
+        for index, snapshot in enumerate((first_snapshot, second_snapshot)):
+            review_path = (
+                artifact_dirs[index]
+                / "wechat_messages_targeting_review.json"
+            )
+            review_path.write_text("{}", encoding="utf-8")
+            bridge.locate_payloads.append({
+                "ok": True,
+                "state": "chat_target_confirmed",
+                "initial_messages_frame_reused": True,
+                "initial_messages_snapshot": snapshot,
+                "artifact_dir": str(artifact_dirs[index]),
+                "review_path": str(review_path),
+                "window_context": {
+                    "hwnd": 31415,
+                    "source": "sidecar_selected_main_window",
+                },
+            })
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-p0-next-target",
+            worker_token="token",
+            client_instance_id="client-p0-next-target",
+            run_status="running",
+        )
+
+        class MenuFailurePlugin:
+            def __init__(self, *, ports, config):
+                pass
+
+            def run(self, context):
+                return {
+                    "applied": False,
+                    "reason": "C2_IMAGE_MENU_OPERATION_FAILED",
+                    "clipboard_transaction": {
+                        "action_phase": "not_attempted",
+                        "status": "menu_evidence_conflict",
+                    },
+                }
+
+        with patch(
+            "chejin_worker_client.omniauto_vision.vision_configuration_status",
+            return_value={
+                "ready": True,
+                "config": {
+                    "customer_image_understanding": {"enabled": True}
+                },
+            },
+        ), patch(
+            "apps.wechat_ai_customer_service.optional_plugins."
+            "vision.plugin.BuiltinVisionPlugin",
+            MenuFailurePlugin,
+        ):
+            first_result = runner._read_one_wechat_target(binding, first)
+            self.assertTrue(first_result.get("ok"), first_result)
+            self.assertEqual(
+                list_action_journals(conversation_id=first.conversation_id),
+                [],
+            )
+            self.assertTrue(
+                runner._worker_transaction_barrier_ready(
+                    binding,
+                    reason="after_real_menu_failure",
+                )
+            )
+            second_result = runner._read_one_wechat_target(binding, second)
+
+        self.assertTrue(second_result.get("ok"), second_result)
+        self.assertEqual(len(bridge.locate_chats), 2)
+        self.assertTrue(
+            any(
+                item.get("content") == "前一个目标失败后我仍被读取"
+                for payload in api.message_payloads
+                for item in (payload.get("messages") or [])
+            )
+        )
+
+    def test_adapter_exception_after_trigger_writes_terminal_before_recovery(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        unique = str(time.time_ns())
+        target = WechatReadTarget(
+            conversation_id=f"conv-adapter-exception-{unique}",
+            rpa_session_key="wx:rpa:v1:adapter-exception",
+            display_name="CJP0EX01 客户",
+            remark_code="CJP0EX01",
+            authorization_revision=f"revision-adapter-exception-{unique}",
+        )
+        source_key = f"image-adapter-exception-{unique}"
+        observation = {
+            "schema_version": 3,
+            "observation_id": source_key,
+            "row_kind": "image_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "image",
+            "voice_state": "not_voice",
+            "bubble_rect": [420, 180, 650, 320],
+            "image_physical_anchor": {
+                "sender_role": "customer",
+                "bubble_visual_fingerprint": "dhash64:0123456789abcdef",
+            },
+        }
+
+        def crash_after_trigger(**kwargs):
+            update_action_journal_item(
+                kwargs["action_journal_path"],
+                source_message_key=kwargs["source_message_key"],
+                action_phase="trigger_attempted",
+                business_state=None,
+                business_result_confirmed=False,
+            )
+            raise RuntimeError("adapter_crashed_after_trigger")
+
+        with patch(
+            "chejin_worker_client.omniauto_vision.process_image_slot",
+            side_effect=crash_after_trigger,
+        ):
+            result = runner._execute_one_image_slot_vision(
+                target=target,
+                payload={},
+                observation=observation,
+                source_key=source_key,
+                cancel_check=None,
+                flow_outcomes=FlowOutcomeAccumulator(),
+            )
+
+        self.assertEqual(result["state"], "failed")
+        self.assertEqual(result["reason"], "vision_adapter_failed")
+        journals = list_action_journals(
+            conversation_id=target.conversation_id,
+        )
+        self.assertEqual(len(journals), 1)
+        item = journals[0][1]["items"][source_key]
+        self.assertEqual(item["action_phase"], "trigger_attempted")
+        self.assertEqual(item["business_state"], "failed")
+        self.assertEqual(item["error_code"], "vision_adapter_failed")
+        self.assertEqual(
+            item["terminal_payload"]["state"],
+            "failed",
+        )
+
     def test_c2_recent_visible_hit_survives_one_ocr_miss(self):
         api = FakeApi(None)
         api.read_targets = [
@@ -8531,6 +8747,72 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertNotIn(
             "read_authorization:conv-image-not-attempted",
             api.events,
+        )
+
+    def test_legacy_empty_journal_with_confirmed_fact_releases_global_barrier(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="ok", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-legacy-confirmed-image",
+            worker_token="token",
+            client_instance_id="client-legacy-confirmed-image",
+            run_status="running",
+        )
+        conversation_id = f"conv-legacy-confirmed-{time.time_ns()}"
+        source_key = "image-legacy-confirmed-source"
+        transaction_id = f"image-legacy-confirmed-{time.time_ns()}"
+        path = action_journal_path("image", transaction_id)
+        initialize_action_journal(
+            path,
+            action_kind="image",
+            transaction_id=transaction_id,
+            conversation_id=conversation_id,
+            items=[{
+                "source_message_key": source_key,
+                "physical_anchor_keys": ["image-anchor-legacy"],
+                "replayable_observation": {
+                    "schema_version": 3,
+                    "observation_id": "image-legacy-confirmed-observation",
+                    "row_kind": "image_bubble",
+                    "sender_role": "customer",
+                    "sender_role_source": "same_row_avatar",
+                    "message_type": "image",
+                    "voice_state": "not_voice",
+                },
+            }],
+        )
+        save_c2_ledger_terminal(
+            conversation_id=conversation_id,
+            source_message_key=source_key,
+            dedupe_key=None,
+            message_type="image",
+            terminal_state="failed",
+            ingest_state="confirmed",
+            result={
+                "state": "failed",
+                "reason": "C2_IMAGE_MENU_OPERATION_FAILED",
+                "reason_detail": "menu_evidence_conflict",
+            },
+        )
+
+        self.assertTrue(path.exists())
+        self.assertTrue(
+            runner._worker_transaction_barrier_ready(
+                binding,
+                reason="legacy_confirmed_image_journal",
+            )
+        )
+        self.assertFalse(path.exists())
+        self.assertEqual(
+            load_c2_ledger_entry(conversation_id, source_key)[
+                "ingest_state"
+            ],
+            "confirmed",
         )
 
     def test_not_attempted_journal_with_failed_fact_is_never_discarded(self):

@@ -314,7 +314,16 @@ loop Worker运行中；每次循环最多完成一个会话事务
               OA -> OA: OCR并更新current_valid_frame
             end
             OA -> OA: current_valid_frame成为final_read权威画面
-            OA -> OA: OCR文字/语音转写行\nVision像素算法只检测图片bubble_rect
+            OA -> OA: 先解析文字、语音条、转写正文和父语音关系
+            OA -> OA: 合并explained_voice_region并在候选生成前排除高重叠已解释区域
+            OA -> OA: 只对剩余未解释表面生成structural_image_candidate
+            note right of OA
+            任一可靠文字/语音类型证据即可否决冲突图片候选；
+            action_phase、业务成功、click.ok、后端确认和全部alias
+            只决定恢复/结算，不决定消息类型。
+            弱图片候选不得先删除已解析文字/语音；
+            禁止简化成“有文字就不是图片”。
+            end note
             alt 图片检测/物理锚点代码异常或候选被截断
               OA --> W: C2_IMAGE_OBSERVATION_FAILED\n结构化observation contract error
               W -> W: 入库和Brain前失败关闭\n不得当成image_count=0
@@ -506,6 +515,12 @@ loop Worker运行中；每次循环最多完成一个会话事务
           end
 
           group 7. 收齐终态并构建一次V3增量批次
+            W -> L: 结果收口器对completed/failed原子写terminal payload\n唯一可重入投递器幂等推进Ledger/Outbox
+            note right of L
+            action_phase=not_attempted也不得跳过；
+            任一边界崩溃从最后已落盘状态续传；
+            恢复端和测试不得补造生产端没有写出的终态。
+            end note
             W -> W: 检查所有已建立稳定身份的“新槽位”\n图片只能是completed / failed
             alt 仍存在pending
               W -> W: 视为C2_FLOW_CONTRACT_INVALID\n转为failed，禁止结束为pending
@@ -536,6 +551,10 @@ loop Worker运行中；每次循环最多完成一个会话事务
               Ingest -> Ingest: 校验Worker/绑定/短码/private/revision\n校验row_kind/sender_role_source/item_state
               Ingest -> DB: unique(conversation_id,dedupe_key)
               DB --> Ingest: 每条ingested / duplicated / ignored\nfailed语音/图片事实也返回ingested
+              note over W,Ingest
+              目标A失败逐source key确认并清理本地事务后，
+              必须释放全局门禁并继续目标B。
+              end note
 
               alt recovery_action=retry
                 Ingest --> W: 暂时性technical_error

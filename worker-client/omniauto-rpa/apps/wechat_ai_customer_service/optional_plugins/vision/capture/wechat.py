@@ -418,6 +418,169 @@ def _visual_bounds(value: Any) -> tuple[int, int, int, int] | None:
     return left, top, right, bottom
 
 
+def explained_non_image_regions(
+    messages: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Return regions whose parsed type is reliable enough to veto image.
+
+    Arbitrary OCR text inside a real photograph is deliberately not enough.
+    Text requires trusted row-role evidence. Voice requires a bound transcript
+    or a size-checked visual/duration voice structure; a bare duration-like OCR
+    token inside a real image is not reliable. Physical action success is
+    intentionally absent because it settles a transaction, not a message type.
+    """
+
+    regions: list[dict[str, Any]] = []
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+        message_type = str(
+            message.get("type")
+            or message.get("message_type")
+            or ""
+        ).strip().lower()
+        if message_type not in {"text", "voice"}:
+            continue
+        role = str(
+            message.get("sender_role") or message.get("sender") or ""
+        ).strip().lower()
+        if role == "contact":
+            role = "customer"
+        if role not in {"customer", "self"}:
+            continue
+        anchor = (
+            message.get("voice_anchor")
+            if isinstance(message.get("voice_anchor"), dict)
+            else {}
+        )
+        anchor_item = (
+            anchor.get("item")
+            if isinstance(anchor.get("item"), dict)
+            else {}
+        )
+        bounds = _visual_bounds(
+            message.get("bubble_rect")
+            or message.get("bounds")
+            or anchor_item.get("parser_bubble_rect")
+            or anchor_item
+        )
+        if bounds is None:
+            continue
+
+        avatar = (
+            message.get("avatar_alignment")
+            if isinstance(message.get("avatar_alignment"), dict)
+            else {}
+        )
+        role_source = str(
+            message.get("sender_role_source") or ""
+        ).strip().lower()
+        row_role_trusted = bool(
+            role_source in {"same_row_avatar", "parent_voice"}
+            or str(avatar.get("role") or "").strip().lower() == role
+            or "avatar_row_structure_confirmed"
+            in {
+                str(value).strip()
+                for value in (message.get("sender_role_evidence") or [])
+            }
+        )
+        voice_anchor_key = str(
+            message.get("parent_voice_anchor_key")
+            or message.get("voice_anchor_stable_key")
+            or message.get("voice_anchor_structural_key")
+            or message.get("voice_anchor_key")
+            or anchor.get("anchor_stable_key")
+            or anchor.get("anchor_structural_key")
+            or anchor.get("anchor_key")
+            or ""
+        ).strip()
+        content = str(
+            message.get("content_clean") or message.get("content") or ""
+        ).strip()
+        quality_flags = {
+            str(value).strip()
+            for value in (message.get("quality_flags") or [])
+        }
+        region_width = bounds[2] - bounds[0]
+        region_height = bounds[3] - bounds[1]
+        bound_transcript = bool(
+            message_type == "voice"
+            and str(message.get("parent_voice_anchor_key") or "").strip()
+            and content
+            and not content.startswith("[语音]")
+        )
+        visual_voice = bool(
+            message_type == "voice"
+            and "visual_voice_hint" in quality_flags
+            and row_role_trusted
+        )
+        duration_voice = bool(
+            message_type == "voice"
+            and "untranscribed_voice_placeholder" in quality_flags
+            and row_role_trusted
+            and region_width >= 36
+            and region_height >= 16
+        )
+        if message_type == "text" and not row_role_trusted:
+            continue
+        if message_type == "voice" and not (
+            bound_transcript or visual_voice or duration_voice
+        ):
+            continue
+        regions.append(
+            {
+                "bounds": bounds,
+                "message_type": message_type,
+                "sender_role": role,
+                "voice_anchor_key": voice_anchor_key,
+                "evidence": (
+                    "bound_voice_transcript"
+                    if bound_transcript
+                    else (
+                        "visual_voice_structure"
+                        if visual_voice
+                        else (
+                            "duration_voice_structure"
+                            if duration_voice
+                            else "trusted_row_type"
+                        )
+                    )
+                ),
+            }
+        )
+    return regions
+
+
+def explained_non_image_conflict(
+    bounds: tuple[int, int, int, int],
+    *,
+    side: str,
+    regions: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Return reliable typed evidence contained by a structural candidate."""
+
+    left, top, right, bottom = bounds
+    for region in regions:
+        region_bounds = region.get("bounds")
+        if (
+            not isinstance(region_bounds, tuple)
+            or len(region_bounds) != 4
+            or str(region.get("sender_role") or "") != side
+        ):
+            continue
+        rl, rt, rr, rb = region_bounds
+        overlap_width = max(0, min(right, rr) - max(left, rl))
+        overlap_height = max(0, min(bottom, rb) - max(top, rt))
+        region_area = max(1, (rr - rl) * (rb - rt))
+        contained_ratio = (overlap_width * overlap_height) / region_area
+        if contained_ratio >= 0.80:
+            return {
+                **region,
+                "contained_ratio": round(contained_ratio, 6),
+            }
+    return None
+
+
 def _trim_sparse_vertical_whiskers(
     cells: list[tuple[int, int]],
 ) -> tuple[list[tuple[int, int]], bool]:
@@ -865,6 +1028,7 @@ def detect_visual_image_bubbles(
     block = 5
     grid_w = max(1, small.width // block)
     grid_h = max(1, small.height // block)
+    protected_regions = explained_non_image_regions(messages)
     active = [[False for _ in range(grid_w)] for _ in range(grid_h)]
     for gy in range(grid_h):
         for gx in range(grid_w):
@@ -1004,6 +1168,52 @@ def detect_visual_image_bubbles(
                 side=side,
                 background=background,
             )
+            typed_conflict = explained_non_image_conflict(
+                bounds,
+                side=side,
+                regions=protected_regions,
+            )
+            reliable_type_veto = bool(
+                typed_conflict is not None
+                and (
+                    typed_conflict["message_type"] == "voice"
+                    or role_edge_continuity
+                    < MEDIA_ROLE_EDGE_CONTINUITY_RATIO
+                )
+            )
+            if reliable_type_veto:
+                if diagnostics is not None:
+                    diagnostics.append(
+                        {
+                            "event": (
+                                "structural_image_candidate_rejected_by_"
+                                "reliable_message_type"
+                            ),
+                            "reason": "reliable_non_image_region_overlap",
+                            "bounds": list(bounds),
+                            "side": side,
+                            "message_type": typed_conflict[
+                                "message_type"
+                            ],
+                            "protected_bounds": list(
+                                typed_conflict["bounds"]
+                            ),
+                            "protected_evidence": typed_conflict[
+                                "evidence"
+                            ],
+                            "voice_anchor_key": typed_conflict[
+                                "voice_anchor_key"
+                            ],
+                            "contained_ratio": typed_conflict[
+                                "contained_ratio"
+                            ],
+                            "role_facing_edge_surface_continuity": round(
+                                role_edge_continuity,
+                                6,
+                            ),
+                        }
+                    )
+                continue
             if (
                 text_overlap_ratio >= TEXT_OVERLAP_REJECTION_RATIO
                 and role_edge_continuity < MEDIA_ROLE_EDGE_CONTINUITY_RATIO

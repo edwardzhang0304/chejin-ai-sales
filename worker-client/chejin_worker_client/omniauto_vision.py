@@ -1070,10 +1070,31 @@ def process_image_slot(
             or "not_attempted"
         ).strip()
         result["action_phase"] = phase
-        if phase != "not_attempted":
+        # ``not_attempted`` means the irreversible Copy click did not run. It
+        # does not erase an explicit business failure already produced by the
+        # menu/clipboard/Vision pipeline. Persist every completed/failed
+        # terminal first so recovery can only move the same fact forward.
+        terminal_formed = state in {"completed", "failed"} or (
+            phase != "not_attempted"
+        )
+        if terminal_formed:
+            terminal_error_code = None if completed else str(
+                result.get("reason") or "IMAGE_RESULT_UNCONFIRMED"
+            )
+            transaction = (
+                result.get("transaction")
+                if isinstance(result.get("transaction"), dict)
+                else {}
+            )
             terminal_payload = {
                 "state": state or "failed",
-                "reason": str(result.get("reason") or ""),
+                "error_code": terminal_error_code,
+                "reason_detail": str(
+                    transaction.get("status")
+                    or result.get("reason_detail")
+                    or terminal_error_code
+                    or ""
+                ),
                 "customer_image_understanding": (
                     dict(result.get("customer_image_understanding") or {})
                     if isinstance(
@@ -1098,9 +1119,7 @@ def process_image_slot(
                 business_result_confirmed=result[
                     "business_result_confirmed"
                 ],
-                error_code=None if completed else str(
-                    result.get("reason") or "IMAGE_RESULT_UNCONFIRMED"
-                ),
+                error_code=terminal_error_code,
                 terminal_payload=terminal_payload,
             )
         return result
@@ -1114,7 +1133,7 @@ def process_image_slot(
             "reason": reason,
             "image_persisted": False,
         }
-        return {
+        return finish_result({
             "state": state,
             "reason": reason,
             "action_phase": "not_attempted",
@@ -1126,7 +1145,7 @@ def process_image_slot(
                 "events": [event],
                 "image_persisted": False,
             },
-        }
+        })
 
     role = str(observation.get("sender_role") or "").strip().lower()
     role_source = str(
