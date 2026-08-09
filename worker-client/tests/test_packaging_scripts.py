@@ -454,7 +454,20 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["upstream_base_commit"],
             "a563e6688c47a8922510794101967823fe1389d7",
         )
-        self.assertEqual(provenance["selective_integrations"], [])
+        self.assertEqual(
+            provenance["selective_integrations"],
+            [
+                {
+                    "source_commit": (
+                        "34d7d5a46f240347eb57a7a3f03f74b9fbba6e10"
+                    ),
+                    "scope": [
+                        "text_message_context_menu_brake",
+                        "clipboard_non_bitmap_failure_settlement",
+                    ],
+                }
+            ],
+        )
         self.assertIn(
             "strict_current_screen_without_history_scroll",
             provenance["chejin_overlays"],

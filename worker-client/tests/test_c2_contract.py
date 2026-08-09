@@ -28,6 +28,7 @@ from chejin_worker_client.transaction_outcomes import (
 )
 from chejin_worker_client.image_phase import (
     mark_image_action,
+    mark_image_settled_without_refresh,
     mark_image_terminal,
     merge_image_phase_results,
     new_image_phase_result,
@@ -531,6 +532,21 @@ class C2ContractTests(unittest.TestCase):
             first["completed_source_keys"],
             ["image-1", "image-2"],
         )
+
+    def test_definitive_non_bitmap_failure_does_not_require_chat_refresh(self):
+        result = new_image_phase_result()
+        mark_image_action(result, "invalid-image")
+        mark_image_settled_without_refresh(result, "invalid-image")
+        mark_image_terminal(
+            result,
+            "invalid-image",
+            terminal_state="failed",
+        )
+
+        self.assertEqual(result["new_action_count"], 1)
+        self.assertEqual(result["failed"], 1)
+        self.assertFalse(result["requires_final_refresh"])
+        self.assertEqual(result["refresh_source_keys"], [])
 
     def test_role_trust_is_derived_from_each_contract_row_rule(self):
         self.assertTrue(

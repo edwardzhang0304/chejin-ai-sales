@@ -2178,6 +2178,23 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         self.assertTrue(sidecar.text_message_context_menu_text_like("搜一搜"))
         self.assertFalse(sidecar.text_message_context_menu_text_like("语音转文字"))
 
+    def test_strong_text_menu_evidence_excludes_ambiguous_image_actions(self) -> None:
+        self.assertFalse(
+            sidecar.text_message_context_menu_strong_text_like("复制")
+        )
+        self.assertFalse(
+            sidecar.text_message_context_menu_strong_text_like("转发")
+        )
+        self.assertTrue(
+            sidecar.text_message_context_menu_strong_text_like("放大阅读")
+        )
+        self.assertTrue(
+            sidecar.text_message_context_menu_strong_text_like("翻译")
+        )
+        self.assertTrue(
+            sidecar.text_message_context_menu_strong_text_like("搜一搜")
+        )
+
     def test_avatar_context_menu_text_is_detected(self) -> None:
         self.assertTrue(sidecar.avatar_context_menu_text_like("拍一拍"))
         self.assertFalse(sidecar.avatar_context_menu_text_like("语音转文字"))
