@@ -1,21 +1,22 @@
 # AI智能客服售前跟进系统 技术方案
 
-版本：v0.8.1
+版本：v0.8.5
 
 日期：2026-07-21
 
-最后更新：2026-08-05
+最后更新：2026-08-09
 
-当前阶段：运营后台 + Windows Worker 客户端。C1 已形成稳定基线；C2 的文字、语音、图片、V3 授权、private 单聊准入、群聊阻断、统一顺序、跨轮去重、多目标串行和停止监听已在 `v16.130.0 / 8ee53e1` 完成正式 Windows 实机验收。C3 自动回复与 C4 自动召回均已实现并测试，当前无已知主链问题。OmniAuto 双仓统一已经完成：上游已前进到 PR #37 合并提交 `35b0eee`，车金内嵌副本已选择性同步；最近一次已做 Windows 受影响范围回归的 Worker 基线仍为 `v16.132.0 / 37139bfd`，本次同步不得冒充新的 Windows 安装包验收。`2318bd8` 仅作为历史选择性来源保留。
+当前阶段：运营后台 + Windows Worker 客户端。C1 已形成稳定基线；C2 的文字、语音、图片、V3 授权、private 单聊准入、群聊阻断、统一顺序、跨轮去重、多目标串行和停止监听曾在 `v16.130.0 / 8ee53e1` 完成正式 Windows 实机验收，C3 自动回复与 C4 自动召回也已实现并测试。2026-08-09 的当前未发布代码基线为 Worker `d6e44680d339b8613b0435afce140d39f673b7a8`、OmniAuto `99d0070517a0976dc47661f4b6564e9f6e1f1b1a`、机器合同 `3.12.5`。前一候选 `21d8619… / a561fb4…` 暴露的“真实弹窗边界”和“跨重启完整失败事实”两项 P0 已有修复提交，但当前只能标记为“等待架构复审”，不得提前写成通过；复审通过前不得生成新的快速 UAT ZIP 或正式 EXE。OmniAuto 当前内嵌基础为包含 `35b0eee` 的 `a563e668…`，活动选择性集成为 `99d0070…`；`2318bd8` 仅作为历史选择性来源保留。本版继续以主流程稳定为目标：不启动悬浮球、不安装键盘鼠标 Hook、不锁定人工输入，也不以守护状态门禁任务。
 
-一句话结论：当前技术方案统一收口到本文档；C0—C4 已有主链基线，不重开图片、语音、回复或召回流程设计。当前新增主线是运营后台指定账号登录和车辆信息/Product Master：后台账号由服务端预先建立，登录成功即拥有全部后台权限，第一期不做 RBAC；车辆和正式知识复用 OmniAuto 的 Product Master、KnowledgeRuntime、RAG 与 Guard 并持久化到车金现有 PostgreSQL；不接大风车 API，不部署第二套后台，不将测试车辆或未审核知识带入生产。
+一句话结论：当前技术方案统一收口到本文档；C0—C4 已有历史主链基线，不重写图片探测器或重开语音、回复、召回流程，但当前必须完成“真实菜单弹窗边界内分类 + 失败事实完整入库与逐条确认 + 按消息角色和当前授权决定状态”的 P0 修复。运营后台指定账号登录和车辆信息/Product Master 继续沿用既定方案：后台账号由服务端预先建立，登录成功即拥有全部后台权限，第一期不做 RBAC；车辆和正式知识复用 OmniAuto 的 Product Master、KnowledgeRuntime、RAG 与 Guard 并持久化到车金现有 PostgreSQL；不接大风车 API，不部署第二套后台，不将测试车辆或未审核知识带入生产。
 
 ## 文档治理规则
 
 1. 本手册是业务流程、架构边界和技术决策的唯一事实源。后续架构变更只能先修改
    本手册，不得新建平行“最终方案”“封版方案”或用聊天记录代替正式口径。
 2. `C2-C3_OmniAuto_Worker_后端接口合同` 是本手册的派生接口合同，只定义字段、
-   枚举、所有者和三层映射；与本手册冲突时以本手册为准。
+   枚举、所有者和三层映射；不得修改本文固定的接口编号、HTTP 方法或完整路径，
+   与本手册冲突时以本手册为准。
 3. PUML 是本手册的派生图示，只展示流程，不新增业务规则；图文冲突时先修本手册，
    再同步图。
 4. 测试报告、审计报告、版本交付说明和历史整改清单只记录当时证据，不作为现行
@@ -24,6 +25,12 @@
    修改代码 -> 自动化 -> 形成干净且可追溯的 Git 提交 -> 构建不可变候选包 ->
    Windows UAT -> 通过后合并。不得由代码审计意见直接创造新业务流程，也不得用
    dirty 工作区构建的包形成正式 UAT 结论。
+6. 对外 HTTP 接口的唯一正式名称固定为“接口编号 + HTTP 方法 + 从 `/api` 开始的
+   完整路径”。前端或 Worker 因 `base_url` 已包含 `/api` 而使用的相对路径、Python/
+   TypeScript 函数名、中文简称都不是第二个接口名；URL 路径使用 kebab-case，JSON
+   字段和领域对象字段使用 snake_case，两者不得被误认为两个接口。新增、改名或废弃
+   接口必须先修改本文的权威目录和接口编号，不允许在代码、聊天记录或派生合同中另起
+   同义名称。
 
 > **2026-07-31 事务恢复唯一口径**
 >
@@ -42,6 +49,93 @@
 > `claim_copy_ownership/微信窗口PID` 错误硬门禁已经删除，错误映射、来源记录、
 > 自动化和 C2 Windows UAT 已在 `v16.130.0 / 8ee53e1` 收口；双仓统一后的
 > `v16.132.0 / 37139bfd` 受影响范围 Windows 回归已通过。
+
+> **2026-08-07 Vision 部署与凭据唯一口径：**Vision 保持在 Windows Worker
+> 客户端执行，客户原图由客户端内存直接发送给服务端批准的 Vision Provider，
+> 不经过、不上传车金后端，也不新增图片上传接口。正式 Worker 安装包必须内置
+> 一个仅限指定 Vision Provider、接口、模型和额度的客户端专用 Key；Key 由 CI
+> Secret 在正式构建时注入，不提交 Git，不放入独立 `.env`、启动脚本或明文配置
+> 文件。正式用户和新 Windows 电脑只输入 Worker ID/Token，不再手工配置 Vision
+> 环境变量。Brain、RAG、Product Master 和回复生成仍在服务端运行。随客户端分发
+> 的凭据客观上可被有能力的攻击者提取，本项目明确接受该边界，并通过专用低权限
+> Key、模型/接口白名单、额度、限流、监控、吊销、轮换及全链路日志脱敏控制风险；
+> 不得以“保护 Key”为由擅自改成上传原图到车金后端。
+
+> **2026-08-08 当前版本悬浮球与键鼠锁最终口径：**本轮以主流程稳定运行和 Windows
+> 实机验证为第一目标，完全取消悬浮球、键盘鼠标 Hook、F8 守护状态机、守护进程健康
+> 监控和所有 `OPERATOR_GUARD_*` 运行门禁。Worker 不得启动或附着
+> `OperatorGuardService`，OmniAuto/Sidecar 也不得自行启动第二套守护。当前只保留
+> Worker 内部逻辑 UI 锁来防止自动化任务互相并发；该锁不会拦截用户鼠标键盘。测试和
+> 正式使用期间由操作人员自行保证自动化运行时不操作微信窗口。发生人工干扰时，系统
+> 依靠窗口、会话、授权、消息顺序和 ActionJournal 复核安全取消，不允许猜测继续。
+> 悬浮球与输入锁整体列入后续独立优化版本，必须在不影响主流程后另行设计、开发和验收。
+
+> **2026-08-08 首屏首次未读授权唯一口径：**第一屏扫描到有效短码会话的
+> `unread_hint=true` 时，该事实必须先上报后端，不得由 Worker 直接点击。
+> 后端完成短码绑定、Worker 归属、监听状态和当前授权版本校验后，对
+> `conversation.status=ai_active` 且当前仍有未读证据的会话以
+> `read_reason=visible_unread` 签发服务端读取许可。`visible_unread` 不是新的长期
+> 会话主状态，只是由当前首屏未读事实触发的临时 `read_reason`。Worker 仍必须用
+> 本轮 `read-targets + authorization_revision` 与本地 `visible_hit_queue` 取交集，
+> 进入会话后再同步确认有效短码和 `private`，才能读取。完整读取入库被后端
+> 确认，或新一轮扫描已明确 `unread_hint=false` 后，该未读事实失效；读取失败不得
+> 伪造消费或丢弃证据。
+
+> **2026-08-09 加好友与首次激活读取唯一口径：**`Task.status` 和
+> `Conversation.status` 必须分离。`add_friend` 返回 `invite_sent` 或
+> `already_friend` 时，只能证明 C1 加好友任务已完成，不得未经首屏绑定和
+> `private` 复核就直接进入 AI 会话。后续 C2 首屏发现并成功绑定短码后，
+> `invite_sent` 路径为 `friend_state/status=friend_request_sent`，
+> `already_friend` 路径为 `friend_state/status=friend_active`；两者都必须由后端签发
+> `read_reason=friend_acceptance_visible_hit`。Worker 确认有效短码、`private` 和会话可用后，
+> 后端统一进入 `friend_state=friend_active + status=friend_activation_reading`，
+> 再允许首次读取。有客户消息创建 `customer_message` 批次；有销售人工消息进入
+> `sales_replied_waiting_user`；双方都无消息才创建唯一 `friend_welcome` 批次。
+
+> **2026-08-09 C2 消息身份、读取退避与监听恢复唯一口径：**消息身份不能只依赖
+> Windows 本地从 1 开始的序号。后端必须把本会话的身份检查点和最近消息身份返回给
+> Worker，Worker 本地状态丢失或重装后先恢复检查点再分配新编号；后端命中相同去重键
+> 时必须比较角色、类型、规范化正文及媒体锚点，只有完全一致才可判重，任何冲突必须
+> 返回明确错误并保留原 Outbox，禁止静默丢消息。一次完整读取即使为空或全是重复消息，
+> 后端也必须记录“已读无变化”并生成下次允许读取时间；连续无变化按 2 分钟、5 分钟、
+> 10 分钟退避，新未读、首次激活、状态变化或召回到期可立即解除。`paused` 表示临时暂停，
+> 开始接单后可恢复；`disabled` 只允许表示有明确来源的永久停用，不能与 `paused` 混用。
+> 会话仍有效、AI 仍启用且没有关闭原因，却处于 `disabled + paused` 的历史数据属于不一致
+> 状态，必须迁移为临时暂停绑定并在唯一短码重新扫描后恢复；无法唯一判定时才进入人工复核。明确拒绝、关闭、人工
+> 永久停用和已被替代的旧绑定不得自动恢复。
+
+> **2026-08-09 引用文字误判为图片的最小整改口径：**当图片探测器把
+> 引用文字区域列为疑似图片后，右键菜单是最后的操作准入证据。菜单明确出现
+> 哪些项目必须按以下唯一规则判断。文字菜单确认条件固定为：精确出现“放大阅读”，
+> 或“翻译”与“搜一搜”同时精确出现。
+> 图片菜单确认条件固定为：精确出现“复制”，并且“编辑、用窗口打开、另存为、打开方式”
+> 至少精确出现一项。语音菜单只以“语音转文字”或“收起文字”精确确认。
+> “复制、转发、收藏、多选、提醒、引用、删除”是公共项，不得单独参与类型判定。
+> 所有证据必须来自同一次右键截图中唯一确认的真实弹窗边界 `menu_panel_bounds`，并位于
+> 该边界内的同一竖直菜单列；“右键点周围的大区域”不能冒充菜单边界。用于分类和点击的
+> 每个菜单项 bounds 都必须完整位于 `menu_panel_bounds` 内，`复制` 与专属项也必须来自同一
+> 弹窗。弹窗边界无法唯一确认、所需菜单项落在边界外、命中多类专属项或只看到公共项时均为
+> `unknown/conflict`，必须关闭菜单且零点击。只去除菜单项末尾省略号，禁止子串包含式模糊匹配。
+> 确认为文字或语音菜单时，必须关闭菜单，不点击复制、不读取剪贴板、不调用
+> Vision；统一以 `error_code=C2_IMAGE_SOURCE_INVALID` failed 事实收口，其
+> `reason_detail` 只允许 `text_context_menu_rejected / voice_context_menu_rejected`，
+> 此时固定 `action_phase=not_attempted`。
+> 如已点击复制且剪贴板稳定确认不是位图，以 `C2_IMAGE_SOURCE_INVALID` 明确
+> failed 事实收口，`reason_detail=clipboard_current_content_not_bitmap`，此时固定
+> `action_phase=trigger_attempted`；不得百次级空转或再次操作微信。上述 failed 事实都必须立即
+> 以完整可重放 V3 消息进入现有 `messages/ingest` Outbox。`action_phase` 只证明目标
+> 不可逆动作是否触发，不能决定业务事实是否删除：只有“纯动作意图、没有 terminal payload、
+> 没有 completed/failed Ledger、没有 Outbox”的 `not_attempted` 才能本地清理；已经形成
+> completed/failed 事实时，无论 action_phase 为何都必须由后端逐 source key 确认。
+> 当前有效授权下正常入库时，customer 失败进入 `waiting_sales_reply` 并创建 handoff；self
+> 失败按销售已回复处理，在没有更晚客户消息时进入 `sales_replied_waiting_user`，存在更晚客户
+> 消息时仍保留门禁并进入 `waiting_sales_reply`；unknown 不建立图片消息，只进入身份门禁。
+> 跨重启恢复时，当前授权仍有效则重传原完整 V3 消息并执行相同角色规则；只能使用
+> `fact_settlement` 时只补录事实、不改变当前会话状态；身份不可信时使用
+> `technical_terminal` 且不伪造 message_event。三种路径都必须得到每个 source key 的
+> `ingested / duplicated / technical_terminal` 后才能清理本地 Ledger、ActionJournal 和
+> Outbox。Worker 解除原事务门禁后必须继续处理其他短码。本轮不重写矩形探测算法，引用文字
+> 专项 OCR 优化后置；但明确终态不得被图片后最终画面收敛步骤拦在后端确认之前。
 
 截至当前已验收基线 `8ee53e1`，下列统一整改项已经进入实现，本轮不得重新设计或
 再次拆分；双仓统一时必须把它们作为回归保留项：
@@ -74,6 +168,16 @@
 
 | 日期 | 版本 | 原来是什么 | 变更成什么 |
 |---|---|---|---|
+| 2026-08-09 | v0.8.5内部修订 | 图片候选右键后只要看到“复制”就继续，未使用真实弹窗边界和完整菜单区分文字/图片/语音；剪贴板已明确不是位图时，failed 事实仍可被最终画面收敛或跨重启空流程门禁拦截，形成 `C2_IMAGE_FACT_PENDING` 并饿死其他短码 | 不重写图片矩形探测器；依据三张真实微信菜单固定三类唯一特征和公共项，且所有证据必须完整位于同一 `menu_panel_bounds`；所有无效图片源使用 `error_code=C2_IMAGE_SOURCE_INVALID` 及精确 `reason_detail`，以原始完整 V3 消息进入 Outbox；正常读取按消息角色和最终顺序决定状态，事实补录不改业务状态；逐 source key 确认后释放全局门禁并继续其他短码 |
+| 2026-08-09 | v0.8.5内部修订 | Worker 消息序号只在本地延续且后端排除该类历史身份，状态丢失后可能复用旧编号；`duplicated` 不校验角色和正文；读取成功仅本地冷却 20 秒而 30 秒扫描会再次派发；临时暂停、永久停用和被替代旧绑定缺少可恢复的来源区分 | 后端下发身份检查点和全部最近身份，Worker 原子恢复/分配编号；后端以完整身份不变量判重并对碰撞执行刷新身份后原 Outbox 重传；后端记录读取完成并按 2/5/10 分钟退避；固定 `paused/disabled/retired history` 边界、停用来源、历史不一致数据迁移及人工恢复接口 |
+| 2026-08-09 | v0.8.5内部修订 | 主手册允许接口路径按后端风格调整，且未列出单会话授权、首次激活确认和批次查询三个已实现接口；相对路径、内部函数名和中文简称容易被误解为多套接口 | 固定“接口编号 + HTTP 方法 + `/api` 完整路径”为唯一正式接口名；补齐 C2/C3 权威目录，禁止派生合同和实现自行改名；同步 `hard_opt_out` 的证据、终态和不发送规则 |
+| 2026-08-09 | v0.8.5内部修订 | 把 C1 任务结果 `invite_sent/already_friend`、产品业务阶段和 `Conversation.status` 混成 `add_friend_sent/friend_added`；同时 `already_friend` 缺少首次读取授权，可能绑定后停在 `friend_active` | 分离 Task、好友事实和会话主状态；`invite_sent` 不在未绑定时强行写 Conversation；首屏绑定后 `invite_sent` 进入 `friend_request_sent`、`already_friend` 进入 `friend_active`，两者均通过 `friend_acceptance_visible_hit -> friend_activation_reading` 执行同一首读；再按客户消息、销售消息或空会话分流 |
+| 2026-08-08 | v0.8.5内部修订 | 文档已要求“首屏未读加入 `visible_hit_queue`”和“必须等待 `read-targets`授权”，但后端 `read_reason` 没有首屏未读分支，导致无其他业务状态的首次未读会话可被发现却永远无法取得读取许可 | 新增 `read_reason=visible_unread` 临时授权闭环：首屏未读事实先上报，后端校验绑定、归属、监听状态和授权版本后返回 `read-target`；Worker 只按授权交集读取；成功入库或新扫描明确已读后消费未读事实，失败时保留重试与证据 |
+| 2026-08-08 | v0.8.5 | v0.8.4 仍试图在当前版本保留常驻悬浮球、Hook/F8、显示与输入健康拆分、有界重建和物理步骤门禁，安全组件自身复杂度已连续影响主流程、发包和实机测试 | 当前版本完全移除悬浮球、键盘鼠标锁、F8 守护和全部 `OPERATOR_GUARD_*` 门禁；只保留 Worker 内部逻辑 UI 串行锁、窗口/会话/授权/消息顺序复核、取消回调和 ActionJournal；人工负责自动化期间不操作微信；悬浮球与防误触输入锁整体转入后续独立优化版本，不作为本轮 UAT 和发布阻塞项 |
+| 2026-08-08 | v0.8.4 | v0.8.3 把常驻悬浮球显示、Hook/心跳、UI 锁和整个 Worker 接单状态绑定得过紧；显示或状态文件瞬时异常可能暂停后续所有微信动作，等待 Vision/Brain 时还会长期锁住整机键鼠 | 保留常驻守护/F8/身份校验，拆分“非 UI 业务与事实层、Worker 逻辑 UI 互斥层、物理输入安全守护层”；守护只门禁实际物理微信 UI 子步骤；纯网络/AI/数据库/Outbox 不受显示故障影响；Provider 等待期间释放人工键鼠，继续物理操作前重新激活并完整复核；守护准入固定超时、每次故障最多自动重建一次，失败立即释放锁并安全重新排队或人工恢复，永久等待列为 P0 |
+| 2026-08-08 | v0.8.3 | v0.8.2 仍让悬浮球守护随每把 UI 锁反复启动和关闭，人工暂停时还需要把守护所有权从 UI 锁转移给 Worker，增加启动耗时、Hook 抖动、F8 连续控制和残留进程复杂度 | 固定悬浮球守护进程随 Worker 客户端常驻：客户端启动即启动灰色守护；开始接单为绿色且不锁键鼠；取得 UI 锁变蓝并锁键鼠；释放 UI 锁恢复绿色并解锁；单击 F8 变黄色、取消当前事务并阻断新 UI 动作；双击 F8 变红并停止；只有 Worker 退出才关闭守护进程。UI 锁只申请/释放守护控制权，不负责创建或销毁守护进程 |
+| 2026-08-08 | v0.8.2 | 悬浮球仅在加好友链路出现，后续候选虽尝试绑定 UI 锁，但 F8 命令仍依赖旧监听程序消费，暂停时当前自动化是否立即停止、守护进程归属、残留 PID 清理和恢复语义没有形成唯一合同 | 固定“UI 锁持有期蓝色守护 + F8 本机人工暂停 + 双击 F8 本机紧急停止”的唯一状态机；单击 F8 必须立即释放人工键鼠并取消当前 UI 事务，暂停期间禁止任何新微信动作；再次 F8 只恢复调度，不续跑旧步骤；双击 F8 不依赖后端即可停止；守护进程使用实例身份和锁身份校验，禁止只凭 PID 复用或强杀；补齐错误码、证据和 Windows 发布门禁 |
+| 2026-08-07 | v0.8.1内部修订 | Vision 虽已在客户端运行，但正式凭据来源仍依赖 Windows 环境变量，容易被误改成服务端图片上传或要求每台电脑手工配置 Key | 固定客户端直连 Vision Provider；正式包通过 CI Secret 内置客户端专用 Key，新电脑只输入 Worker ID/Token；原图不经过车金后端；Brain 继续在服务端；接受客户端凭据可提取边界并使用低权限、白名单、限额、监控、吊销、轮换和脱敏控制风险 |
 | 2026-08-05 | v0.8.1 | 运营后台仍以预设 Bearer Token 作为灰度鉴权，车辆章节保留“角色权限/普通销售只读”，未定义账号密码登录、会话、退出和失效合同 | 固定服务端预建账号 + 密码登录；使用服务端可撤销会话和安全 HttpOnly Cookie；所有登录账号拥有全部后台权限，不做 RBAC；后台会话与 Worker Token 完全隔离；补齐登录接口、数据模型、审计、安全、迁移和验收门禁 |
 | 2026-08-04 | v0.8内部修订 | 车源仍依赖大风车 API，OmniAuto 本地车辆/知识能力和 C4 完成状态未收口 | 取消大风车 API；复用 OmniAuto Product Master、KnowledgeRuntime、RAG/Guard；使用车金现有 PostgreSQL 和持久化图片存储；明确 C4 已完成并测试，后续只做受影响回归 |
 | 2026-08-03 | v0.8内部修订 | 文档仍停留在 PID 整改和 Windows UAT 之前，且未定义 OmniAuto 双仓收口顺序 | 固定 `v16.130.0 / 8ee53e1` 为已验收回滚基线，补充 OmniAuto 上游 PR → 车金固定统一提交 → 必要回归 → 车金 PR 的唯一顺序 |
@@ -96,7 +200,7 @@
 | 2026-07-01 | v0.7 | C2 已能处理文字读取和短码定向读取，但真实客户可能发送微信语音；若不识别语音，状态机会把“客户已回复”误判为“客户沉默” | 增补 C2 语音消息识别方案：Worker 先通过 OmniAuto `messages` 探测当前会话消息类型；只有发现未转写语音时才调用 `voice-transcribe` 点击微信自带语音转文字，再二次读取 `messages`；语音消息统一入 `message_events`，失败不得触发 AI 自动回复 |
 | 2026-07-20 | v0.8 | v0.7 仍停留在早期语音方案，未覆盖 V3 授权、稳定消息身份、角色门禁、private 单聊准入、群聊终止态、侧栏 OCR 同行聚合和长语音流程 | 以 V16.98 为 C2 当前冻结基线：首屏扫描与授权读取分离；只准入有效短码 private 单聊；群聊/unknown 不搜索、不读取、不转写、不入库；消息上报强制 V3 和 `authorization_revision`；语音转写使用同一 flow、同一 UI 锁和进展型 watchdog；图片识别留待下一版确认 |
 | 2026-07-21 | v0.8内部修订 | 自动召回仍写成 Worker 发送固定文案；销售人工回复与“等待销售回复”容易被混成同一状态 | 召回统一复用服务端 Brain，使用 `trigger_type=recall + recall_cycle_id`；Brain/Guard 产出批准文案后 Worker 才发送。销售已经发出人工回复时进入 `sales_replied_waiting_user`，停止当前AI回复但保留后续召回资格。 |
-| 2026-07-21 | v0.8内部修订 | OmniAuto RPA、Vision、Brain 与车金 Worker/后端存在同义接口和字段所有权不清风险 | 新增 C2-C3 OmniAuto/Worker/后端接口合同，当前文件为 `C2-C3_OmniAuto_Worker_后端接口合同_v0.1.1_2026-08-05.md`：固定 OmniAuto action/Brain/Vision 名称、三层字段所有权、C2-C3 单会话串行扩展和唯一映射；本手册只保留摘要，详细联调以接口合同为准。 |
+| 2026-07-21 | v0.8内部修订 | OmniAuto RPA、Vision、Brain 与车金 Worker/后端存在同义接口和字段所有权不清风险 | 新增 C2-C3 OmniAuto/Worker/后端派生接口合同，当前文件为 `C2-C3_OmniAuto_Worker_后端接口合同_v0.1.1_2026-08-05.md`：细化 OmniAuto action/Brain/Vision、三层字段所有权和唯一映射；HTTP 接口编号、方法、完整路径及业务流程仍以本手册为唯一事实源。 |
 | 2026-07-24 | v0.8内部修订 | 手册仍混有“等待 Brain 释放 UI 锁、chat_reply 到达后另行抢锁、180 秒固定持锁上限”的旧并发方案，销售回复解除人工接管也缺少可靠顺序口径 | 统一为 C2-C3 单会话串行事务：打开会话后保持当前会话和 UI 锁，完成文字/语音/图片、入库、Brain、回复前复查和发送终态后才释放；正常链路的 chat_reply 由当前 C2 Flow 领取，恢复线程只处理崩溃恢复；长动作使用租约续期和进展型 watchdog；销售回复以稳定消息身份和最终画面相对顺序为主证据，occurred_at 仅作辅助。 |
 | 2026-07-25 | v0.8内部修订 | add_friend 把点击后的诊断截图/OCR误写成成功前置条件，任务租约也未区分明确失效与暂时网络异常；C2 Outbox、发送回执的全局阻断口径不够集中 | add_friend 以最终“确定”按钮物理点击成功作为 `invite_sent` 完成点，不等待微信成功状态；点击后诊断只能发现明确失败，诊断异常不得降级成功点击。租约瞬时续租异常在本地到期前重试，明确失效或真实到期才停止。任何未获后端确认的消息 Outbox 或 `sent_ack` 均阻断全部新会话扫描和 UI 动作。 |
 | 2026-07-25 | v0.8内部修订 | Outbox `quarantine` 和发送回执 `abandoned` 被错误设计为需要人工修消息或人工确认，无法形成无人值守闭环 | 删除技术消息的人工处置终态：消息级识别失败以 `item_state=failed` 正常入库并阻断 Brain；临时故障按退避周期自动重试；请求级合同不兼容进入 `capability_paused` 并自动探测恢复；发送无法确认由后端持久化 `unknown_send_result`，禁止补发但自动结束原回复动作。 |
@@ -145,7 +249,7 @@ Worker = 微信事实采集器 + 微信动作执行器
 Worker 上报事实：
 
 - 客户新文字消息。
-- 客户或我方新图片消息（客户端内存中调用 OmniAuto Vision，不上传原图、不保存图片文件；已形成 Windows 实机基线，后续仅做受影响回归）。
+- 客户或我方新图片消息（客户端内存中调用 OmniAuto Vision，并由客户端直接把临时图片载荷发送给服务端批准的 Vision Provider；原图不上传车金后端、不保存图片文件；已形成 Windows 实机基线，后续仅做受影响回归）。
 - 销售手机端同步到桌面端的人工回复。
 - AI/召回发送成功或失败。
 - 图片处理成功或失败；只上报允许持久化的文字结果、错误码和事务审计，不上报原图。
@@ -176,7 +280,7 @@ Worker 上报事实：
 | Worker 本地存储 | SQLite + 本地文件目录 | 保存本地配置、运行日志、ActionJournal、Ledger、Outbox 和未确认发送记录；不保存图片原始字节或图片临时文件，服务端仍是最终事实源。 |
 | 通信方式 | HTTPS REST + Worker 主动轮询/心跳 | 商家电脑不暴露公网端口；Worker 主动拉任务、上报事实和心跳。 |
 | AI 文本 | OmniAuto AI Engine + 服务端可配置模型 Provider | OmniAuto 负责上下文、RAG、Guard、编排；模型密钥和主备路由服务端配置，不下发 Worker。 |
-| 图片理解 | OmniAuto Vision + 服务端批准的视觉 Provider | 识别图片内容、截图信息、车型线索和置信度；原图不上传车金后端，低置信转人工。 |
+| 图片理解 | Worker 内置 OmniAuto Vision + 服务端批准的视觉 Provider | Vision 在 Windows 客户端执行并直接调用批准的外部 Provider；正式包内置 CI 注入的客户端专用低权限 Key，用户不手工配置；原图不上传车金后端、不落盘，低置信转人工。 |
 | 知识检索 | OmniAuto RAG + 关键词/规则混合检索 | 先基于现有能力工程化；Dify/FastGPT 仅预留 Adapter，不作为第一期核心运行时。 |
 | 车辆主数据 | OmniAuto Product Master | 本地手工 V2 车辆是唯一车辆事实源；运营通过车辆页面或 Excel 录入真实数据。不同步、不读写大风车 API。 |
 | 文件存储 | 服务端持久化文件卷（首期） | 车辆库图片允许运营上传并持久化；微信客户图片仍只在 Worker 内存处理，不上传、不落盘。两类图片不得混用。 |
@@ -352,24 +456,28 @@ Token 双向越权拒绝。
 | `reason_code` | `error_code` 或 `handoff_reason_code` | C2 绑定/监听失败统一用 `error_code`；转人工原因用 `handoff_reason_code`。 |
 | `message_event.ingest_status` | 接口响应 `results[].ingest_result` | 消息表只保存已入库事实；重复、忽略等属于本次接口处理结果。 |
 
-## 3. 会话主状态
+## 3. 业务阶段、任务状态与会话主状态
 
-| 状态 | 含义 | 当前等待谁 | 允许动作 |
-|---|---|---|---|
-| `new` | 线索刚进入系统。 | 系统分配 | 分配销售、绑定Worker。 |
-| `assigned` | 已分配销售；Worker可能已绑定，也可能未绑定。 | 系统生成任务 | 若销售已绑定Worker，创建可执行加好友任务；若未绑定Worker，创建阻塞任务。 |
-| `add_friend_blocked` | 加好友任务已创建但不可执行。 | 销售/运营绑定Worker | 仅允许绑定Worker后解除阻塞，不允许Worker领取。 |
-| `add_friend_pending` | 待加好友。 | Worker执行 | 手机号搜索、发送添加通讯录邀请、写初始备注。 |
-| `add_friend_sent` | 已发送添加通讯录邀请，不代表客户已同意。 | Worker扫描会话列表识别新会话 | 等待后续会话绑定。 |
-| `friend_added` | C2首屏发现后，经后端许可点击并确认有效短码、private和输入区可用。 | Worker读取首次会话事实 | 有客户消息则进入AI接待；有销售人工消息则进入 `sales_replied_waiting_user`；双方均无消息才创建主动开场候选。 |
-| `ai_active` | AI正常接待。 | 客户/AI | 客户来消息后AI可持续回复，不设轮次上限。 |
-| `waiting_user_reply` | 我方已经回复，等待客户回。 | 客户 | 服务端到期生成召回任务；Worker监听客户是否回复。 |
-| `recall_precheck` | 召回前读取确认中。 | Worker读取微信事实 / 服务端复核 | 不发送召回；确认无新客户消息后才允许创建 `chat_reply`。 |
-| `recalled_waiting_user` | AI已发过召回，继续等待客户回。 | 客户 | 到下一轮召回周期后可再次召回。 |
-| `waiting_sales_reply` | AI已转人工，等待销售回复客户。 | 销售 | 超过N天销售未回，服务端飞书通知销售。 |
-| `sales_replied_waiting_user` | 销售已回复，等待客户回。 | 客户 / 召回到期 | 客户回复后重新进入 `ai_active`；长期未回复可进入 `recall_precheck`，由 Brain 生成召回。 |
-| `rejected` | 客户明确拒绝或黑名单。 | 无 | 不加好友、不回复、不召回。 |
-| `closed` | 系统停止自动跟进。常见原因包括销售移除备注短码、销售线下接手、人工确认结束。 | 无 | 不自动回复、不召回、不飞书提醒、不主动关注。 |
+`new / assigned / add_friend_blocked / add_friend_pending / add_friend_sent` 是线索或加好友任务的业务阶段，不得在尚未建立微信绑定时伪造 `Conversation.status`。`Conversation.status` 从 C2 成功绑定短码会话后开始成为权威会话状态。
+
+| 状态/阶段 | 归属对象 | 含义 | 当前等待谁 | 允许动作 |
+|---|---|---|---|---|
+| `new` | Lead/业务阶段 | 线索刚进入系统。 | 系统分配 | 分配销售、绑定Worker。 |
+| `assigned` | Lead/业务阶段 | 已分配销售；Worker可能已绑定，也可能未绑定。 | 系统生成任务 | 若销售已绑定Worker，创建可执行加好友任务；否则创建阻塞任务。 |
+| `add_friend_blocked` | Task/业务阶段 | 加好友任务已创建但不可执行。 | 销售/运营绑定Worker | 仅允许绑定Worker后将原任务恢复为 `pending`。 |
+| `add_friend_pending` | Task/业务阶段 | 待加好友。 | Worker执行 | 手机号搜索、发送邀请、写初始短码备注。 |
+| `add_friend_sent` | Task结果投影 | `task.status=completed + result_code=invite_sent`，只证明邀请已发送，不代表客户已同意。 | C2首屏发现 | 只扫描和绑定；未见到短码会话时不读取、不开场。 |
+| `friend_request_sent` | Conversation.status + friend_state | 已绑定首屏短码会话，且 C1 结果为 `invite_sent`；尚未完成 `private` 激活确认。 | 后端授权/Worker复核 | 只允许签发和执行 `friend_acceptance_visible_hit`。 |
+| `friend_active` | friend_state；并可作为 already_friend 路径的过渡 Conversation.status | C1 已确认原本就是好友，或 C2 激活确认已通过；不代表首次消息已读取。 | 后端授权/Worker复核 | `already_friend` 绑定后必须同样进入 `friend_acceptance_visible_hit`，不得卡在本状态。 |
+| `friend_activation_reading` | Conversation.status | Worker 已确认有效短码、`private` 和会话可用，正在执行好友后首读。 | Worker读取/后端入库 | 有客户消息进入 `ai_active`；有销售人工消息进入 `sales_replied_waiting_user`；双方均无消息创建唯一 `friend_welcome`。 |
+| `ai_active` | Conversation.status | AI正常接待。 | 客户/AI | 客户来消息后AI可持续回复，不设轮次上限。 |
+| `waiting_user_reply` | Conversation.status | 我方已经回复，等待客户回。 | 客户 | 服务端到期进入召回前复核；Worker监听客户是否回复。 |
+| `recall_precheck` | Conversation.status | 召回前读取确认中。 | Worker读取微信事实 / 服务端复核 | 不发送召回；确认无新客户消息后才允许创建 `chat_reply`。 |
+| `recalled_waiting_user` | Conversation.status | AI已发过召回，继续等待客户回。 | 客户 | 到下一轮召回周期后可再次召回。 |
+| `waiting_sales_reply` | Conversation.status | AI已转人工，等待销售回复客户。 | 销售 | 保持人工接管门禁，监听销售回复。 |
+| `sales_replied_waiting_user` | Conversation.status | 销售已回复，等待客户回。 | 客户 / 召回到期 | 客户回复后按人工接管是否已解除决定进入 `ai_active`或继续 `waiting_sales_reply`；长期未回复可进入 `recall_precheck`。 |
+| `rejected` | Conversation.status | 客户明确拒绝或黑名单。 | 无 | 不加好友、不回复、不召回。 |
+| `closed` | Conversation.status | 系统停止自动跟进。常见原因包括销售移除备注短码、销售线下接手、人工确认结束。 | 无 | 不自动回复、不召回、不主动关注。 |
 
 ## 4. 状态流转规则
 
@@ -390,7 +498,8 @@ Token 双向越权拒绝。
 创建add_friend任务
 task.status=pending
 task.worker_id=已绑定Worker
-conversation.status=add_friend_pending
+业务展示阶段=add_friend_pending
+尚未C2绑定时不要求存在Conversation
 ```
 
 若销售未绑定Worker：
@@ -400,7 +509,8 @@ conversation.status=add_friend_pending
 task.status=blocked
 task.block_code=SALES_WORKER_NOT_BOUND
 task.block_reason=销售未绑定Worker，无法自动加好友
-conversation.status=add_friend_blocked
+业务展示阶段=add_friend_blocked
+尚未C2绑定时不要求存在Conversation
 ```
 
 Worker只领取 `pending` 任务，不领取 `blocked` 任务。
@@ -412,27 +522,74 @@ task.status=blocked -> pending
 task.worker_id=新绑定Worker
 task.block_code=null
 task.block_reason=null
-conversation.status=add_friend_pending
+业务展示阶段=add_friend_pending
 ```
 
 这不是重新创建任务，而是恢复已有阻塞任务，避免重复加好友任务。
 
 ### 4.1 首次好友激活与主动开场
 
+#### 4.1.1 C1任务结果不直接等于会话已激活
+
 ```text
-C1只确认好友申请已发送
--> C2首屏扫描发现短码并上报
--> 后端签发visible-only点击许可
--> Worker打开并确认有效短码 + private + 输入区可用
--> 后端确认friend_added
+C1 add_friend任务完成
+-> result_code=invite_sent或already_friend
+-> 只结算加好友任务，不直接读取微信，不直接创建friend_welcome
 ```
+
+任务结果与首屏绑定的统一映射：
+
+| C1结果 | C2首屏未见到短码会话 | C2首屏见到并成功绑定后 | 必须产生的后续授权 |
+|---|---|---|---|
+| `invite_sent` | 继续等待；不读取、不开场。 | `friend_state=friend_request_sent` + `conversation.status=friend_request_sent` | 当前短码行在有效可见窗口内时，后端签发 `friend_acceptance_visible_hit`。 |
+| `already_friend` | 继续扫描和绑定；不得凭 C1 结果直接搜索或读取。 | `friend_state=friend_active` + 过渡 `conversation.status=friend_active` | 后端也必须签发 `friend_acceptance_visible_hit`，不得因已是好友而跳过首读或卡住。 |
+
+#### 4.1.2 两条C1路径统一汇入首次激活读取
+
+```text
+后端read-targets返回read_reason=friend_acceptance_visible_hit
+-> Worker使用当前authorization_revision打开当前可见会话
+-> Worker同步确认标题含正确remark_code
+-> Worker确认conversation_type=private且会话表面可用
+-> Worker调用activation-confirm
+-> 后端进入friend_state=friend_active
+-> 后端进入conversation.status=friend_activation_reading
+-> Worker才允许读取文字、语音和图片
+```
+
+后端 `activation-confirm` 必须接受两个合法起点：
+
+```text
+friend_state/status=friend_request_sent
+或
+friend_state/status=friend_active（already_friend过渡路径）
+```
+
+无当前 `read-target`、授权版本过期、短码不匹配、群聊、类型不明或会话表面不可用时，必须保持原过渡状态并安全重试，不读取、不转写、不识图、不开场。
+
+#### 4.1.3 首次读取结果分流
 
 首次读取分支：
 
-- 存在客户消息：取消主动开场，按普通 C2/C3 客户消息流程处理。
+- 存在客户消息：状态进入 `ai_active`，取消主动开场，创建 `trigger_type=customer_message` 批次，按普通 C2/C3 处理。
 - 存在未关联既有 AI `reply_action` 的 `self` 消息：视为销售人工回复，消息入库，取消主动开场，状态进入 `sales_replied_waiting_user`；当前不调用 Brain，但后续长期未回复仍可召回。
-- 没有客户消息和销售消息：创建一次性 `trigger_type=friend_welcome` 批次；同一会话只允许成功创建/发送一次。
+- 没有客户消息和销售消息：状态进入 `ai_active`，创建一次性 `trigger_type=friend_welcome` 批次；同一会话只允许成功创建/发送一次。
 - `self` 消息若能与既有 AI `reply_action/sent_ack` 对应，不得误判为销售人工回复。
+- 同屏同时有客户和销售消息时，必须以 Worker 上报的最终画面顺序判断；后出现的可确认人工销售回复优先取消它之前的 AI 回复批次，其后又有客户新消息时才重新开启客户消息批次。
+
+任一路径完成首读后都不得停留在 `friend_active` 或 `friend_activation_reading`；必须进入 `ai_active / sales_replied_waiting_user / waiting_sales_reply`之一，或以带证据的可重试失败保留原过渡状态。
+
+#### 4.1.4 发布前必须通过的状态机门禁
+
+1. `invite_sent` 完成后首屏未出现短码：不创建会话读取授权，不产生 `friend_welcome`。
+2. `invite_sent` 后首屏出现唯一有效短码：绑定为 `friend_request_sent`，返回 `friend_acceptance_visible_hit`。
+3. `already_friend` 后首屏出现唯一有效短码：绑定为过渡 `friend_active`，也返回 `friend_acceptance_visible_hit`，不得出现 `read-targets=[]`。
+4. 两条路径的 `activation-confirm` 都必须要求当前 `authorization_revision`、正确短码、`private` 和会话可用；任一缺失都不进入 `friend_activation_reading`。
+5. 首读为空：不伪造客户消息；只创建一个 `trigger_type=friend_welcome + trigger_key=friend_welcome` 控制批次。
+6. 首读存在客户消息：不创建 `friend_welcome`；客户消息去重入库并创建 `customer_message` 批次。
+7. 首读只存在可证明的销售人工消息：不创建 `friend_welcome/customer_message` AI 批次，进入 `sales_replied_waiting_user`。
+8. 同一会话重复扫描、重复 `activation-confirm`、重复首读上报均必须幂等，不重复开场、不重复入库、不重复发送。
+9. 首读完整入库/结算后，`friend_request_sent / friend_active / friend_activation_reading` 不得成为永久卡死状态。
 
 ### 4.2 AI持续接待
 
@@ -675,7 +832,7 @@ Worker不判断业务规则。
 - 飞书通知。
 - 日志写入、任务排队、错误记录。
 
-这里的“异步”只表示计算或网络调用可以在服务端/子进程中执行，不表示当前会话释放 UI 锁，也不表示 Worker 可以转去操作另一个微信会话。单会话 Flow 调用 Vision 或等待 Brain 时，仍保留当前会话事务和本地 UI 锁；只有与微信 UI 完全无关的后台服务工作可以并行。
+这里的“异步”只表示计算或网络调用可以在服务端/子进程中执行，不表示 Worker 可以转去操作另一个微信会话。单会话 Flow 调用 Vision 或等待 Brain 时仍保留当前会话的逻辑事务所有权和本地 UI 互斥；本版没有悬浮球或人工键鼠锁。网络返回后必须重新复核窗口、会话、授权和消息顺序。与微信 UI 完全无关的后台服务工作可以并行。
 
 执行规则：
 
@@ -738,23 +895,25 @@ Task.status = blocked / pending / running / completed / failed / cancelled
 | `task.result_code` | 任务完成后的业务结果 | invite_sent、already_friend、chat_reply_sent、skipped_by_rule |
 | `task.error_code` | 任务失败原因 | WECHAT_WINDOW_NOT_FOUND、PHONE_NOT_FOUND、WORKER_INTERRUPTED |
 | `task.block_code` | 任务阻塞原因 | SALES_WORKER_NOT_BOUND、DAILY_LIMIT_REACHED |
-| `conversation.status` | 客户/会话业务生命周期 | add_friend_sent、waiting_user_reply、recalled_waiting_user |
+| `conversation.status` | C2成功绑定后的客户会话生命周期 | friend_request_sent、friend_active、friend_activation_reading、ai_active、waiting_user_reply、recalled_waiting_user |
 
 核心映射规则：
 
 | 任务结果 | 会话状态更新 |
 |---|---|
-| `task_type=add_friend` 且 `task.status=completed` 且 `result_code=invite_sent` | `conversation.status=add_friend_sent` |
-| `task_type=add_friend` 且 `task.status=completed` 且 `result_code=already_friend` | `conversation.status=friend_added`，并立即尝试绑定会话 |
+| `task_type=add_friend` 且 `task.status=completed` 且 `result_code=invite_sent` | 只记录 C1 任务结果和 `add_friend_sent` 业务展示阶段；未经 C2 首屏绑定时不强行创建/更新 Conversation。后续首屏成功绑定时才进入 `friend_state/status=friend_request_sent`。 |
+| `task_type=add_friend` 且 `task.status=completed` 且 `result_code=already_friend` | 只记录 C1 任务结果；后续首屏成功绑定时进入 `friend_state/status=friend_active`，并必须签发 `friend_acceptance_visible_hit`完成首读，不得直接进入 AI 或停留不动。 |
 | `task_type=chat_reply`、`trigger_type=customer_message/friend_welcome` 且发送完成 | `conversation.status=waiting_user_reply` |
 | `task_type=chat_reply`、`trigger_type=recall` 且发送完成 | `conversation.status=recalled_waiting_user` |
-| `task_type=add_friend` 且 `task.status=blocked` 且 `block_code=SALES_WORKER_NOT_BOUND` | `conversation.status=add_friend_blocked` |
+| `task_type=add_friend` 且 `task.status=blocked` 且 `block_code=SALES_WORKER_NOT_BOUND` | 只保持原 Task 为 `blocked` 并投影业务展示阶段 `add_friend_blocked`；未绑定微信会话时不伪造 Conversation.status。 |
 | `task.status=failed` | 不直接等于业务终态，由服务端按 `error_code` 判断可重试、转人工、暂停或拒绝 |
 
 工程约束：
 
 - `invite_sent` 不允许作为 `task.status`。
 - `already_friend` 不允许作为失败状态；它表示任务已完成，结果是不需要发送好友申请。
+- `invite_sent/already_friend` 都不是消息读取授权；Worker 必须等待后端 `friend_acceptance_visible_hit + authorization_revision`。
+- `add_friend_sent` 只是 C1 业务展示阶段，不是当前权威 `Conversation.status`；`friend_added` 作为含义模糊的旧会话状态名称退出正式枚举。
 - `Conversation.status` 不允许用于 Worker 领取任务；Worker 只能按 `Task.status=pending` 领取任务。
 - `Task.status=completed/failed/cancelled` 为任务终态；终态任务不得被 Worker 再次领取。
 - `blocked` 恢复为 `pending` 时必须复用原任务，不得新建重复任务。
@@ -892,7 +1051,7 @@ SEND_RESULT_UNKNOWN
 ### 2.4 核心流程
 
 ```text
-线索入库 -> 轮询分配销售 -> 创建add_friend任务 -> 若销售未绑定Worker则blocked -> 后续绑定Worker后恢复pending -> Worker执行 -> task.status=completed且result_code=invite_sent/already_friend等 -> 更新线索/会话业务状态
+线索入库 -> 轮询分配销售 -> 创建add_friend任务 -> 若销售未绑定Worker则blocked -> 后续绑定Worker后恢复pending -> Worker执行 -> task.status=completed且result_code=invite_sent/already_friend -> 只结算C1任务 -> C2首屏发现有效短码后才绑定/创建Conversation并进入首次激活读取
 ```
 
 ```text
@@ -923,7 +1082,7 @@ Worker上报客户消息 -> 控制面检查会话和风控 -> AI/RAG/Guard -> �
 - 对商家交付形态为一个安装包、一个桌面入口、一个 Worker 客户端；OmniAuto 不作为第二个应用暴露给商家。
 - 工程内部采用 `Worker 主进程 + OmniAuto RPA Sidecar 子进程`。Worker 主进程负责 UI、任务领取、任务调度、状态展示、日志上传和错误处理；OmniAuto RPA Sidecar 负责实际操作本机微信桌面客户端。
 - Worker 执行台必须呈现为本地可视化窗口，交互效果参照附件视频：微信桌面客户端旁边展示任务步骤、截图证据、AI 结果、运行状态和控制按钮。
-- Worker 不保存业务主状态，不直接调用文本大模型，不持有服务端 Brain、飞书或数据库密钥。Vision Provider 凭据只能按当前已验收的 Worker 安全配置和脱敏日志规则使用。
+- Worker 不保存业务主状态，不直接调用文本大模型，不持有服务端 Brain、飞书或数据库密钥。Worker 正式包持有的唯一模型凭据是客户端直连图片理解所需的 Vision 客户端专用 Key：由 CI Secret 注入安装包，固定 Provider/接口/模型白名单，限制额度与调用频率，可监控、吊销和轮换；不得写入 Git、独立 `.env`、启动脚本、manifest、日志或故障证据。正式包不依赖用户手工设置 `CUSTOMER_IMAGE_UNDERSTANDING_API_KEY`；该环境变量只允许开发包显式覆盖。
 - Worker 不需要开机自启，通过执行台启动按钮操作。
 - Worker RPA 能力优先复用 OmniAuto 仓库的微信 Win32/OCR sidecar、RPA 全局锁、输入/点击节流、截图证据和验收门禁；本项目新增 Worker 任务桥接层、RPA Sidecar 调用协议和 `add_friend` 执行器。`add_friend` 字段契约、结果码和验收口径统一写入本文档模块4，不再另设独立集成方案作为当前有效入口。
 - OmniAuto 原 checkpoint 已进入维护基线：C1 `add_friend`、C2 会话绑定/文字/语音/图片事实链、C3 AI 回复发送和 C4 召回均已实现；后续只做双仓源码统一和受影响回归。车辆库/知识库接入是服务端新主线，不改 Worker 微信事实采集和发送合同。
@@ -982,21 +1141,22 @@ Worker RPA链路：
 - 任务证据上传：错误日志、截图 URL、日志片段等写入 `task_evidences`。
 - running 任务不因 Worker 离线自动失败；任务详情中 Worker 离线超过 10 分钟应提示运营介入。
 
-已实现接口：
+已实现接口（下列编号、方法和完整路径是唯一正式名称）：
 
-| 方法 | 路径 | 用途 |
-|---|---|---|
-| POST | `/api/workers/{id}/client-bind` | Worker 客户端绑定 |
-| POST | `/api/workers/{id}/reset-client-bind` | 后台重置客户端绑定 |
-| POST | `/api/workers/{id}/run-status` | Worker 开始接单 / 暂停接单 |
-| GET | `/api/workers/{id}/tasks/pull` | Worker 拉取当前可处理任务 |
-| POST | `/api/workers/{id}/heartbeat` | Worker 心跳 |
-| POST | `/api/tasks/{id}/claim` | Worker 领取任务 |
-| POST | `/api/tasks/{id}/step` | Worker 上报步骤 |
-| POST | `/api/tasks/{id}/invite-sent` | Worker 上报已发送邀请 |
-| POST | `/api/tasks/{id}/already-friend` | Worker 上报已是好友 |
-| POST | `/api/tasks/{id}/fail` | Worker 上报失败 |
-| POST | `/api/tasks/{id}/evidences` | Worker 上传执行证据 |
+| 接口编号 | 方法 | 路径 | 用途 |
+|---|---|---|---|
+| `API-WORKER-01` | POST | `/api/workers/{worker_id}/client-bind` | Worker 客户端绑定 |
+| `API-WORKER-02` | POST | `/api/workers/{worker_id}/reset-client-bind` | 后台重置客户端绑定 |
+| `API-WORKER-03` | POST | `/api/workers/{worker_id}/run-status` | Worker 开始接单 / 暂停接单 |
+| `API-WORKER-04` | GET | `/api/workers/{worker_id}/tasks/pull` | Worker 拉取当前可处理任务 |
+| `API-WORKER-05` | POST | `/api/workers/{worker_id}/heartbeat` | Worker 心跳 |
+| `API-TASK-01` | POST | `/api/tasks/{task_id}/claim` | Worker 领取任务 |
+| `API-TASK-02` | POST | `/api/tasks/{task_id}/lease/renew` | Worker 续租运行中的任务 |
+| `API-TASK-03` | POST | `/api/tasks/{task_id}/step` | Worker 上报步骤 |
+| `API-TASK-04` | POST | `/api/tasks/{task_id}/invite-sent` | Worker 上报已发送邀请 |
+| `API-TASK-05` | POST | `/api/tasks/{task_id}/already-friend` | Worker 上报已是好友 |
+| `API-TASK-06` | POST | `/api/tasks/{task_id}/fail` | Worker 上报失败 |
+| `API-TASK-07` | POST | `/api/tasks/{task_id}/evidences` | Worker 上传执行证据 |
 
 认证规则：
 
@@ -1100,7 +1260,7 @@ runtime/worker/ui_lock.json
 | `ui_step_timeout_seconds` | 120 | 单个 UI 步骤默认超时。 |
 | `ui_lock_acquire_timeout_seconds` | 20 | 等待获取锁的默认超时。 |
 
-以上默认值可配置，不作为性能承诺。单会话 C2-C3 Flow 不设置固定总持锁时长；文字读取通常是短动作，多条语音、Vision、Brain 和发送确认属于允许持续推进的长动作。系统依靠租约续期、阶段进展、授权复核、停止信号和硬安全 watchdog 判断异常，不能用固定 180 秒打断正常业务流程。
+以上默认值可配置，不作为性能承诺。单会话 C2-C3 Flow 不设置固定总逻辑事务时长；文字读取通常是短动作，多条语音、Vision、Brain 和发送确认属于允许持续推进的长动作。本版全程不锁人工键鼠。系统依靠租约续期、阶段进展、授权复核、停止信号和硬安全 watchdog 判断异常，不能用固定 180 秒打断正常业务流程。
 
 #### 3.2.3 本地锁接口
 
@@ -1143,7 +1303,72 @@ force_recover_stale_lock(reason)
 - 所有可能长时间占用微信 UI 的 OmniAuto 调用都必须接收取消回调，并在每个安全步骤边界检查本地 UI 锁、服务端任务租约和停止信号；至少包括 C1 `add_friend`、语音转写、图片剪贴板事务和消息发送。
 - 续租失败时必须停止后续 UI 操作，截图取证，返回 `UI_LOCK_RENEW_FAILED`。
 
-#### 3.2.4 超时恢复
+#### 3.2.4 当前版本不使用悬浮球和人工键鼠锁
+
+##### 3.2.4.1 当前发布边界
+
+当前版本完全不提供防误触悬浮球和人工键盘鼠标锁定能力。Worker、OmniAuto 和
+Sidecar 必须满足：
+
+1. 从当前源码、安装包和运行入口彻底删除 `OperatorGuardService` 及其启动、附着、
+   切换、重建、监控和退出代码。
+2. 不创建悬浮球窗口，不显示灰/绿/蓝/黄/红状态灯。
+3. 不安装键盘或鼠标 Hook，不屏蔽任何人工输入。
+4. 不注册或监听 F8 守护快捷键；暂停、继续、停止只使用 Worker 客户端已有按钮和
+   运行状态接口。
+5. 不读取、写入或门禁 `operator_guard` 控制、状态、心跳和 PID 文件。
+6. 不因为 `OPERATOR_GUARD_*` 状态暂停任务、拒绝扫描、终止读取或阻断回复。
+7. 删除专用守护适配器、脚本、兼容包装、配置项、环境变量、错误码、状态字段、日志
+   事件、单元测试、打包探针、PowerShell 检查和 CI 条件；不得保留 disabled 开关、
+   no-op/mock 空实现或“以后可能复用”的死代码。
+8. Windows 安装包不得包含守护脚本或相关资源，启动探针不得再检查悬浮球、Hook、
+   心跳和守护进程。
+
+悬浮球、防误触 Hook、快捷键接管、身份校验、心跳和故障恢复整体退出当前发布范围，
+转入后续独立优化版本。后续重新引入前，必须证明该能力可以独立关闭、不会改变主流程
+业务状态、不会持有 UI 锁、不会让任务永久 executing，并另行完成 Windows 安全验收。
+
+##### 3.2.4.2 当前仍保留的安全能力
+
+取消人工键鼠锁不等于取消业务安全校验。当前版本继续保留：
+
+- Worker 本地逻辑 UI 锁：只防止 Worker 自己的扫描、读取、加好友和发送动作并行操作
+  同一个微信客户端；该锁不会拦截用户鼠标键盘。
+- 服务端任务租约、fencing token、取消回调、超时、ActionJournal 和 Outbox。
+- 每次不可逆动作前的窗口、目标会话/短码、`authorization_revision`、最终消息顺序和
+  `reply_action` 有效性复核。
+- `not_attempted` 可安全重排；`trigger_attempted` 按结果未知且禁止自动重放；
+  `confirmed` 保留已经完成的物理事实。
+- 用户点击 Worker 的暂停或停止后，禁止开始新的微信动作；当前动作在安全步骤边界收到
+  取消并按 ActionJournal 收口。恢复后必须取得新 UI 锁并重新确认现场，不续跑旧坐标。
+
+##### 3.2.4.3 人工使用约束和干扰处理
+
+本版明确接受“自动化运行时由操作人员自行不操作微信”的现实约束：
+
+- 点击“开始接单”前，操作人员应打开并登录正确微信；Worker 执行期间不要移动鼠标、
+  输入键盘、切换微信会话或遮挡/最小化微信窗口。
+- 系统不阻止用户操作电脑，也不承诺用户干扰时继续完成当前动作。
+- 检测到窗口、会话、短码、授权或消息顺序与预期不一致时，必须安全取消当前动作、
+  保留日志和截图并重新排队或提示重试；不得猜测目标后继续点击或发送。
+- 发送等不可逆动作已进入 `trigger_attempted` 后受到人工干扰时，结果按未知收口并禁止
+  自动补发，防止重复回复。
+- 人工误操作属于可定位的运行干扰，不得造成线程无限等待、逻辑 UI 锁永久占用或任务
+  永久 running；这些情况仍属于 P0。
+
+##### 3.2.4.4 当前版本验收要求
+
+- Worker 从启动、开始接单到停止，全流程不得出现悬浮球窗口。
+- 全流程人工键盘鼠标始终可用，不得安装或启用输入拦截 Hook。
+- 不按 F8、按 F8 或操作其他普通按键，均不得触发 Worker 守护暂停/停止状态。
+- 加好友、主动扫描、定向读取、文字/语音/图片、Vision、Brain、自动回复和召回均不得
+  依赖守护进程、守护文件或 `OPERATOR_GUARD_*` 门禁。
+- 连续运行时进程列表不得出现独立 `rpa_operator_guard` 守护进程；故障证据和日志不得
+  再产生悬浮球心跳、身份、重建或故障灯错误。
+- 人工切换窗口或会话的干扰用例必须证明动作安全取消、不发错客户、不重复发送，并且
+  逻辑 UI 锁和任务可以正常收口。
+
+#### 3.2.5 超时恢复
 
 Worker 启动、心跳或每次获取锁前都必须执行本地锁恢复检查：
 
@@ -1168,12 +1393,12 @@ Worker 启动、心跳或每次获取锁前都必须执行本地锁恢复检查�
 | 本地锁过期但动作仍尝试操作微信 | 禁止继续点击/输入/发送，返回 `UI_LOCK_LEASE_EXPIRED`。 |
 | 发送动作结果未知 | 不自动补发；Worker 上报 `unknown`，后端持久化 `unknown_send_result` 后自动结束原回复动作。 |
 
-#### 3.2.5 服务端任务租约
+#### 3.2.6 服务端任务租约
 
 `add_friend / chat_reply` 是服务端任务，但两者进入本地 UI 锁的方式不同：
 
 - `add_friend`：先领取任务租约，再获取本地 UI 锁，执行完成后释放。
-- 正常 `chat_reply`：由已经持有当前会话 UI 锁的 C2 Flow 等待 Brain 终态，在回复前复查通过后领取当前会话的 `chat_reply` 任务和发送许可，不重复释放/获取本地锁。
+- 正常 `chat_reply`：由已经持有当前会话逻辑 UI 锁的 C2 Flow 等待 Brain 终态；本版没有物理键鼠守护。回复前重新确认窗口、会话、授权和消息顺序，通过后领取当前会话的 `chat_reply` 任务和发送许可，不另开第二套会话事务。
 - 崩溃恢复 `chat_reply`：仅当本机没有仍在执行的原 C2 Flow 时，恢复线程才获取本地 UI 锁，重建原会话上下文并执行完整回复前复查；不得直接跳到输入发送。
 
 任务租约字段：
@@ -1229,7 +1454,7 @@ Worker 启动、心跳或每次获取锁前都必须执行本地锁恢复检查�
   心跳上报 `running_status=running + current_task=task_id`；任务终态在
   统一 `finally` 清理，不得中途显示空闲。
 
-#### 3.2.6 本地多任务优先级
+#### 3.2.7 本地多任务优先级
 
 同一台电脑的微信 UI 操作不可并行，也不做中途抢占。高优先级动作只能等待当前锁释放或超时恢复。
 
@@ -1241,7 +1466,7 @@ Worker 启动、心跳或每次获取锁前都必须执行本地锁恢复检查�
 | 95 | `pre_send_refresh` | 发送前短读目标会话，确认 reply_action 未被新客户消息 supersede。 |
 | 90 | `session_scan_visible` | 第一屏主动扫描，优先发现当前微信第一屏新消息、短码和未读变化。 |
 | 85 | `message_ingest_visible_hit` | 第一屏命中的会话优先读取消息。 |
-| 80 | `chat_reply` | 当前 C2 单会话 Flow 内的发送阶段；等待 Brain 时保持原会话和 UI 锁，发送前必须完成 pre_send_refresh。独立队列项只用于崩溃恢复。 |
+| 80 | `chat_reply` | 当前 C2 单会话 Flow 内的发送阶段；等待 Brain 时保持原会话的逻辑事务所有权，本版不锁人工键鼠；发送前完成窗口、会话、授权、消息顺序和 pre_send_refresh 复核。独立队列项只用于崩溃恢复。 |
 | 75 | `add_friend` | 加好友任务；优先级高于普通定向读取和召回。 |
 | 70 | `message_ingest_state_target` | 状态机驱动定向读取，读取非第一屏的已知重点客户。 |
 | 65 | `recall_precheck_read` | 召回前确认读取；确认没有新客户消息后才允许 chat_reply。 |
@@ -1260,16 +1485,16 @@ Worker 启动、心跳或每次获取锁前都必须执行本地锁恢复检查�
 - 不生成滚动兜底类扫描动作；非第一屏已知客户通过状态机定向读取补齐。
 - 同一 `conversation_id` 的发送动作必须按服务端 `reply_action` 顺序执行。
 
-#### 3.2.7 各动作接入方式
+#### 3.2.8 各动作接入方式
 
 | 动作 | 是否进入任务中心 | 是否使用服务端任务租约 | 是否使用本地 UI 锁 | 接入方式 |
 |---|---|---|---|---|
 | `add_friend` | 是 | 是 | 是 | claim `add_friend` 任务 -> 获取本地锁 -> 调用 OmniAuto `add-friend-entry-click-plan-windows` -> 上报结果 -> 释放锁 -> 完成任务。 |
 | `session_scan` | 否 | 否 | 视实现而定 | 若扫描会话列表需要切换/读取微信 UI，则获取本地锁；上报 `session_scan_result`；响应 `next_action=none`。 |
 | `message_ingest` | 否 | 否 | 视实现而定 | 若读取消息需要打开/切换会话，则获取本地锁；读取已绑定会话消息；按 `dedupe_key` 上报；响应 `next_action=none`。 |
-| `chat_reply` | 是 | 是 | 是 | 正常链路：当前 C2 Flow 持锁等待 Brain -> pre_send_refresh -> claim 当前会话 `chat_reply` 和 `reply_action` -> claim-send -> 输入前/点击前复核消息序列 -> 发送 -> 上报 `sent_ack` -> 当前会话终态后释放锁。恢复链路：获取锁并重建原会话上下文后执行同一套复核，不允许另一套直接发送路径。召回批次还必须先由 `recall_precheck_read` 放行。 |
+| `chat_reply` | 是 | 是 | 是 | 正常链路：当前 C2 Flow 保持逻辑事务所有权等待 Brain，本版不锁人工键鼠 -> Brain 返回后重认窗口/会话/授权/消息顺序 -> pre_send_refresh -> claim 当前会话 `chat_reply` 和 `reply_action` -> claim-send -> 输入前/点击前再复核 -> 发送 -> 上报 `sent_ack` -> 当前会话终态后释放逻辑锁。恢复链路必须取得新锁并重建上下文，不允许另一套直接发送路径。召回批次还必须先由 `recall_precheck_read` 放行。 |
 
-#### 3.2.8 错误码
+#### 3.2.9 错误码
 
 | 错误码 | 含义 | 处理 |
 |---|---|---|
@@ -1285,15 +1510,25 @@ Worker 启动、心跳或每次获取锁前都必须执行本地锁恢复检查�
 | `UI_STEP_TIMEOUT` | 单个 UI 步骤超时。 | 截图、记录窗口标题和当前步骤，上报失败。 |
 | `UI_OPERATION_CANCELLED` | 动作被暂停、人工停止或风控中断。 | 释放锁，按业务状态处理。 |
 
-#### 3.2.9 验收口径
+#### 3.2.10 验收口径
 
 - 同一台 Worker 上同时存在 `add_friend`、`session_scan`、`chat_reply` 时，微信 UI 操作必须串行，不允许并行点击或输入。
-- 正常 C2-C3 单会话 Flow 等待 Brain 期间继续持有当前会话 UI 锁，不处理其他微信会话；只有纯服务端计算并行，Worker 不释放会话所有权。
+- 正常 C2-C3 单会话 Flow 等待 Brain/Vision Provider 期间继续保有当前会话逻辑事务所有权，不处理其他微信会话；本版全程不锁人工键鼠。网络返回后完整复核现场，不能沿用旧坐标。
 - 消息 Outbox 未确认或发送 `sent_ack` 未确认时，整个 C2 调度必须保持阻断；自动恢复只能重传既有事实/回执，不能进入新会话，也不能重复执行微信动作。
 - C2 `session_scan/message_ingest` 不进入任务中心，但需要操作微信 UI 时必须获取本地锁。
 - Worker 崩溃重启后，过期本地锁能自动恢复，不重复发送消息。
 - 服务端任务租约过期后，发送类任务不得自动补发。
 - 所有锁相关失败必须有错误码、`trace_id`、本地日志和必要截图证据。
+- Worker、Sidecar 和内嵌 OmniAuto 源码、测试及安装包内不得再包含悬浮球、人工输入
+  Hook、F8 守护、守护进程、守护文件和 `OPERATOR_GUARD_*` 门禁或兼容空壳。
+- 从 Worker 启动、开始接单、加好友、扫描、读取、语音、图片、Vision、Brain、发送、
+  召回到停止，全流程键盘鼠标始终由用户正常使用，系统不得拦截。
+- 人工切换窗口、切换会话或出现新消息时，系统必须在动作前复核失败并取消/重排，不能
+  把回复发到错误会话；干扰后不得永久占用逻辑 UI 锁或任务租约。
+- Worker 页面暂停/停止仍必须进入现有取消回调；恢复后使用新逻辑 UI 锁并重新确认
+  窗口、会话、授权和消息顺序，不能续跑旧坐标、旧 Sidecar 或旧发送步骤。
+- `not_attempted / trigger_attempted / confirmed` 仍分别按可重排、未知禁止重放、保留
+  已完成事实处理；删除输入守护不得削弱防重复发送和 ActionJournal。
 
 ### 3.3 不重复发送硬约束
 
@@ -1321,8 +1556,8 @@ sent_ack用于确认Worker已发送。
 
 | `action_phase` | 含义 | 允许的后续处理 |
 |---|---|---|
-| `not_attempted` | 尚未触发可能改变微信状态的物理动作。 | 可以安全取消或按规则重试。 |
-| `trigger_attempted` | 已经触发点击、右键、复制或发送，结果可能已经发生。 | 不得按“肯定没发生”处理；必须继续取证或进入未知结果。 |
+| `not_attempted` | 尚未触发本事务的目标不可逆业务动作；仅打开并关闭可判定的右键菜单不算目标动作已触发。 | 只说明目标动作可安全取消或按规则重试，不表示已经形成的 completed/failed 业务事实可以删除。 |
+| `trigger_attempted` | 已经触发目标业务动作的物理点击、复制或发送，结果可能已经发生。仅打开并关闭可判定的右键菜单、且未点击目标菜单项，不等于目标业务动作已触发。 | 不得按“肯定没发生”处理；必须继续取证或进入未知结果。 |
 | `confirmed` | 已取得足以证明目标动作/结果的执行器返回、UI、剪贴板或服务端证据。 | 可以提交对应 completed/sent 终态；add_friend 的物理点击确认与点击后业务失败仍须分层记录。 |
 
 统一不变量：
@@ -1347,9 +1582,11 @@ sent_ack用于确认Worker已发送。
    `state_transition_applied=false`、`message_batch=null`；身份无法安全确认时，
    后端持久化 `technical_terminal`。两种情况都必须逐条确认
    `source_message_key` 后，Worker 才能清理本地记录。
-9. 语音或图片动作日志的全部条目均明确为 `not_attempted` 时，证明昂贵动作未
-   发生，Worker 可以在全局门禁前本地清理；只要存在 `trigger_attempted` 或
-   `confirmed`，就必须进入统一恢复协议，客户端不得自行猜测终态。
+9. `action_phase` 只判断动作重放安全，不判断事实是否需要结算。只有语音或图片
+   ActionJournal 是纯动作意图，并且不存在 terminal payload、completed/failed Ledger
+   和对应 Outbox 时，全部 `not_attempted` 才允许在全局门禁前本地清理。只要已经形成
+   completed/failed 事实，无论 action_phase 为何都必须进入统一恢复协议；只要存在
+   `trigger_attempted` 或 `confirmed` 也必须进入统一恢复协议，客户端不得自行猜测终态。
 10. 恢复顺序固定为 `sent_ack Outbox -> messages Outbox -> media ActionJournal/
     Ledger -> 任务中心恢复 -> 本轮能力预检 -> 新 UI 动作`。Vision 配置缺失不得
     阻断无需 Vision 的历史回执和事实结算。
@@ -1393,7 +1630,8 @@ classify_outbox_recovery(http_result)
 
 | 状态/规则 | 说明 |
 |---|---|
-| Lead/Conversation状态 | new、assigned、add_friend_blocked、add_friend_pending、add_friend_sent、friend_added、ai_active、waiting_user_reply、recalled_waiting_user、waiting_sales_reply、sales_replied_waiting_user、rejected、closed。 |
+| Lead/Task业务阶段 | new、assigned、add_friend_blocked、add_friend_pending、add_friend_sent；其中 `add_friend_sent` 是 `completed + invite_sent` 的展示投影，不是 Conversation.status。 |
+| Conversation状态 | friend_request_sent、friend_active（仅 already_friend 首读前过渡）、friend_activation_reading、ai_active、waiting_user_reply、recall_precheck、recalled_waiting_user、waiting_sales_reply、sales_replied_waiting_user、rejected、closed。`friend_added` 退出正式枚举。 |
 | 任务生成条件 | 手机号有效、销售启用、未超上限、不在黑名单、不存在未完成 add_friend 任务；销售未绑定Worker时仍创建任务，但状态为blocked，block_code=SALES_WORKER_NOT_BOUND。 |
 | 重复手机号 | 同手机号未关闭线索不重复新建有效线索，追加来源记录。 |
 | 销售Worker | 一对一绑定，允许换绑；后续绑定Worker时，服务端自动把该销售名下 SALES_WORKER_NOT_BOUND 的 add_friend 任务从 blocked 恢复为 pending；运行中任务换绑需人工确认。 |
@@ -1423,7 +1661,7 @@ classify_outbox_recovery(http_result)
 |---|---|
 | 执行状态 | 主状态：blocked、pending、running、completed、failed、cancelled；running 内部步骤：searching_contact、contact_found、opening_add_contact、filling_remark、sending_invite。最终“确定”按钮点击函数返回成功后立即退出 running；不设置 `waiting_ui_response`。邀请已发送表达为 `task.status=completed` 且 `result_code=invite_sent`。 |
 | 可重试失败 | wechat_not_login、wechat_window_not_found、ui_element_not_found、network_error、worker_interrupted、unknown_error。 |
-| 完成结果 | `already_friend` 表示已是好友，任务应记为 `task.status=completed` 且 `result_code=already_friend`，随后立即尝试绑定会话。 |
+| 完成结果 | `already_friend` 表示 C1 已确认原本就是好友，任务记为 `task.status=completed` 且 `result_code=already_friend`。它不授权直接读取；必须等待 C2 首屏发现并绑定有效短码，再通过 `friend_acceptance_visible_hit -> activation-confirm -> friend_activation_reading` 执行首读。 |
 | 不建议自动重试 | phone_invalid、phone_not_found、customer_privacy_blocked、wechat_rate_limit、operation_too_frequent、account_restricted、blacklist_hit、daily_limit_reached。 |
 | 微信风险提示 | 操作频繁、环境异常、添加受限等出现后暂停 add_friend 并上报，不自动连续重试。 |
 | 幂等 | 同一 task_id 多次上报成功只记录一次；同手机号不生成多个未完成加好友任务。 |
@@ -1445,7 +1683,7 @@ classify_outbox_recovery(http_result)
 
 #### 6.0.0 接口名称与适配边界
 
-C2/C3 详细联调字段以 `C2-C3_OmniAuto_Worker_后端接口合同_v0.1.1_2026-08-05.md` 为唯一专项依据。本手册定义业务流程，专项合同定义可直接开发和测试的请求、响应、枚举、字段所有者及 OmniAuto 到车金后端的唯一映射。
+C2/C3 详细联调字段由 `C2-C3_OmniAuto_Worker_后端接口合同_v0.1.1_2026-08-05.md` 细化。本手册是接口编号、HTTP 方法、完整路径和业务流程的唯一事实源；派生合同只定义可直接开发和测试的请求、响应、枚举、字段所有者及 OmniAuto 到车金后端的映射，不得覆盖或重命名主手册接口。
 
 正式命名固定如下：
 
@@ -1462,7 +1700,7 @@ OmniAuto Brain：customer_service_brain / brain_plan / brain_plan.recommended_ac
 - Worker 校验 `observation_schema_version`，生成车金 V3 合同指纹、稳定消息身份、统一顺序和后端请求。
 - 后端下发 `conversation_id/authorization_revision`，执行状态机、合同校验、最终去重和持久化，不重做 OCR 左右侧、消息类型或语音父子归属判断。
 - OmniAuto Brain 的 `brain_plan.recommended_action` 是业务语义；车金 `batch_status` 是持久化流程状态。二者只能按接口合同映射，不能互相替代。
-- V16.104 的 `messages/ingest` 仍只完成 C2 入库；后续单会话串行实现是在原响应中增加可选 `message_batch`，Worker 按 `batch_id` 保持原会话和 UI 锁等待 Brain 终态，不新建另一套“上报并问 Brain”接口。
+- V16.104 的 `messages/ingest` 仍只完成 C2 入库；后续单会话串行实现是在原响应中增加可选 `message_batch`，Worker 按 `batch_id` 保持原会话的逻辑事务所有权等待 Brain 终态；本版全程不锁人工键鼠，也不新建另一套“上报并问 Brain”接口。
 
 ```text
 Worker运行时扫描
@@ -1510,7 +1748,7 @@ V16 系列主链路固定为：
 
 | 对象 | 说明 | 后续动作 |
 |---|---|---|
-| 当前第一屏疑似未读/红点会话 | 最新消息通常会被微信顶到第一屏。 | 加入 `visible_hit_queue`。 |
+| 当前第一屏疑似未读/红点会话 | 最新消息通常会被微信顶到第一屏。 | 上报 `unread_hint` 并加入 `visible_hit_queue`；后端满足本节门禁时返回 `read_reason=visible_unread` 的 `read-target`。 |
 | 当前第一屏预览文本变化会话 | 可能有客户新消息或销售同步消息。 | 加入 `visible_hit_queue`。 |
 | 当前第一屏包含短码但未绑定会话 | 线下短码好友或新绑定候选。 | 上报 `session_scan_result` 走绑定。 |
 | 当前第一屏已绑定且近期活跃会话 | 需要确认是否有新消息。 | 加入 `visible_hit_queue`。 |
@@ -1524,6 +1762,9 @@ V16 系列主链路固定为：
 - 只上报会话事实，不直接判断是否回复，不直接创建 `reply_action`。
 - `read-targets=[]` 时仍允许执行第一屏事实发现和 `scan-result` 上报，但必须清空本地 `visible_hit_queue`，不得点击会话、读取消息、转写语音或上报消息。
 - 发现短码命中后，只有该目标也存在于本轮 `read-targets` 且携带当前 `authorization_revision`，才允许进入消息读取。
+- `unread_hint` 只是申请读取许可的观察事实，不是 Worker 的自授权，也不是“必须回复”的业务结论。
+- 后端必须在处理本次 `scan-result` 后立即重算 `read_reason`；若已有效绑定、当前 Worker 归属和监听授权都有效，且 `conversation.status=ai_active` 、`unread_hint=true`，必须返回 `visible_unread` 读取目标，不得再要求会话预先具有“等待客户回复/召回”状态。
+- 无有效短码、短码多义、绑定冲突、非当前 Worker、监听暂停/禁用、会话已关闭/拒绝或授权版本无效时，不得生成 `visible_unread` 许可。
 
 #### 6.0.1.2 第一屏命中优先读取
 
@@ -1534,7 +1775,8 @@ V16 系列主链路固定为：
 ```text
 第一屏扫描
 -> 上报scan-result
--> 拉取并复核read-targets授权
+-> 后端对满足门禁的首屏未读签发read_reason=visible_unread
+-> 拉取并复核read-targets + authorization_revision
 -> 授权命中进入visible_hit_queue
 -> 点击会话并同步确认有效短码 + private
 -> OmniAuto messages读取
@@ -1548,6 +1790,7 @@ V16 系列主链路固定为：
 | 规则 | 说明 |
 |---|---|
 | 授权后优先读取 | 第一屏命中优先于普通状态机定向读取，但短码命中本身不是读取授权。 |
+| 首次未读闭环 | 会话没有“等待客户回复/召回”等既有状态时，只要当前首屏扫描事实满足 `visible_unread` 门禁，后端也必须签发一次可重试的读取许可，不能让“未读事实”和“等待 read-target”互相卡住。 |
 | 批量上限 | 每轮最多读取配置化数量，第一期建议 3-5 个，避免长期占用微信。 |
 | 去重 | 同一轮按 `conversation_id + remark_code` 身份键去重；`remark_code` 是非第一屏微信搜索定位主锚点，`rpa_session_key / display_name / row_fingerprint` 只用于第一屏快速定位和排查证据。 |
 | 失败处理 | 找不到目标、OCR低置信、类型为 group/unknown、微信异常或授权已变化时记录错误码，不乱滚、不乱点。 |
@@ -1571,10 +1814,25 @@ V16 系列主链路固定为：
 
 | read_reason | 场景 | 说明 |
 |---|---|---|
+| `friend_acceptance_visible_hit` | `invite_sent` 后好友通过，或 C1 返回 `already_friend`后的首次受控读取 | 仅在有效短码会话最近可见、已绑定且未完成首读时使用；不要求 `unread_hint=true`。 |
+| `visible_unread` | 首屏扫描发现已绑定 `ai_active` 会话当前未读 | 为无其他业务状态的首次未读签发临时读取许可；不改写会话主状态。 |
 | `recent_ai_sent` | AI 刚发送过回复 | 客户可能马上回复，短期提高读取优先级。 |
 | `waiting_user_reply` | 我方已回复，等待客户回 | 定期读取确认客户是否回复。 |
 | `waiting_sales_reply` | 已转人工，等待销售回复 | 监听销售手机端回复是否同步到桌面端。 |
 | `recall_precheck` | 召回到期前确认 | 召回前必须读取一次，确认客户没有新消息。 |
+
+`friend_acceptance_visible_hit` 的后端判定顺序固定为：
+
+```text
+1. friend_state/status=friend_request_sent，且该绑定在有效时间内被首屏看到
+   -> 返回friend_acceptance_visible_hit
+2. friend_state/status=friend_active，且来源为already_friend首读过渡，该绑定在有效时间内被首屏看到
+   -> 返回friend_acceptance_visible_hit
+3. conversation.status=friend_activation_reading
+   -> 继续返回friend_acceptance_visible_hit，直到首读完整入库/结算
+```
+
+上述判定优先于 `visible_unread`。`unread_hint` 只用于已进入 `ai_active` 后、没有其他业务读取原因的当前首屏未读；不得用它取代好友首次激活读取。
 
 定向读取前必须去重掉本轮第一屏已处理对象：
 
@@ -1619,7 +1877,7 @@ Worker 本地调度不是简单优先级表，而是闭环调度：
 7. 若 Brain 返回 send_reply，Worker 在原会话内执行 pre_send_refresh；通过后再领取当前 chat_reply 和发送许可，输入前、点击前均复核消息序列。
 8. 若 Brain 返回 no_action / handoff / technical_failed，或发送结果已经可靠收口，当前会话事务到达终态并释放 UI 锁。
 9. 当前会话结束并释放锁后，才处理未被第一屏读取覆盖的 state_target_queue。
-10. 召回到期先执行 recall_precheck_read，确认无新客户消息后创建召回 batch；同样保持该会话和 UI 锁等待 Brain 与发送终态。
+10. 召回到期先执行 recall_precheck_read，确认无新客户消息后创建召回 batch；同样保持该会话的逻辑事务所有权等待 Brain 与发送终态，本版不使用物理键鼠守护。
 11. chat_reply 发送完成后按 trigger_type 进入 waiting_user_reply 或 recalled_waiting_user。
 12. 不执行旧滚动兜底方案。
 ```
@@ -1712,6 +1970,11 @@ read-targets拉取：5-15秒一轮，配置化
 
 服务端 `/wechat/sessions/read-targets` 只返回允许读取的已绑定会话。
 
+`read-targets` 必须同时支持两类授权来源：
+
+1. 长期业务状态驱动，例如等待客户回复、等待销售回复和召回前复核。
+2. 当前首屏事实驱动，即已绑定的 `ai_active` 会话在最新成功扫描中为 `unread_hint=true`。此时使用临时 `read_reason=visible_unread`，不改写 `conversation.status`。
+
 必须满足：
 
 ```text
@@ -1724,27 +1987,78 @@ worker_id匹配当前Worker
 authorization_revision非空且代表当前监听授权版本
 ```
 
+`visible_unread` 还必须同时满足：
+
+```text
+最新成功scan-result对该绑定上报unread_hint=true
+本轮只有一个有效remark_code且不存在同码多会话冲突
+conversation.status=ai_active
+会话不属于closed/rejected，且没有更高安全优先级的recall_precheck或好友通过后首读状态
+```
+
+其生命周期固定为：
+
+```text
+首屏未读事实上报
+-> 后端生成visible_unread read-target
+-> Worker按授权交集读取
+-> 后端确认本次active_read完整入库/结算：消费unread_hint
+-> 或新扫描明确unread_hint=false：撤销该事实
+```
+
+定位失败、窗口不可控、类型无法确认、读取失败或入库未被后端确认时，不得消费 `unread_hint`；保留证据并按现有冷却/重试规则处理。新的成功扫描事实可以将其改为 `false`，防止用过期红点无限次读取。
+
+长期状态不能等于“每轮都要打开微信”。后端必须区分“这个会话仍需监听”和“现在已经
+到下一次读取时间”。一次完整 `messages/ingest` 即使 `messages=[]` 或全部返回
+`duplicated`，只要授权匹配且读取流程完整，就必须结算本轮读取完成并更新：
+
+```text
+last_read_completed_at = 本轮完成时间
+last_read_result = new_facts / no_change / failed
+no_change_read_count = 连续无变化次数
+next_read_due_at = 下次允许定向读取时间
+```
+
+读取失败不增加“已读无变化”次数，仍按失败退避安全重试。读取成功且没有新事实时，
+服务端退避固定为：第 1 次 2 分钟、第 2 次 5 分钟、第 3 次及以后 10 分钟。出现以下
+任一事件时清零无变化次数并允许立即重新读取：
+
+```text
+最新首屏扫描从无未读变为有未读
+首次好友激活待首读
+conversation.status 或授权版本发生有效变化
+召回到期进入 recall_precheck
+上一批读取/Brain要求同会话继续读取
+```
+
+`waiting_sales_reply` 仍需低频轮询，因为销售从同一微信账号发出的消息不一定产生未读
+红点；它同样遵守 2/5/10 分钟退避，不能每 30 秒切换会话。`waiting_user_reply` 优先由
+首屏未读事实立即唤醒，无未读变化时也按退避低频复核。Worker 的本地成功冷却只是
+防止同一进程瞬时重复点击，不能代替后端的 `next_read_due_at` 调度门禁。
+
 服务端先按 `last_read_dispatched_at` 从旧到新公平轮询，再以
 `read_reason` 优先级和最近可见时间作为同轮排序依据。每次下发目标后必须持久化
-派发时间；超过 20 个有效目标时，后续轮次必须覆盖上轮未返回目标，禁止固定截断
-导致永久饥饿。长动作的授权复核使用单会话轻量授权接口，不受本轮 20 条发现窗口
-影响。
+派发时间；长期状态目标只有 `next_read_due_at <= 当前时间` 才能进入候选，单纯更新
+`last_read_dispatched_at` 不能视为读取完成。超过 20 个有效目标时，后续轮次必须覆盖
+上轮未返回目标，禁止固定截断导致永久饥饿。长动作的授权复核使用单会话轻量授权
+接口，不受本轮 20 条发现窗口影响。
 
 业务优先级：
 
 | 优先级 | read_reason | 说明 |
 |---|---|---|
-| 1 | `recall_precheck` | 召回到期前确认读取；读取后仍无新消息才允许 chat_reply。 |
-| 2 | `recent_ai_sent` | AI 刚发送过，正在等待客户回复。 |
-| 3 | `waiting_user_reply` | 我方已回复，等待客户回。 |
-| 4 | `waiting_sales_reply` | 已转人工，监听销售是否回复。 |
+| 1 | `recall_precheck` / `friend_acceptance_visible_hit` | 安全前置复核，或好友通过后的首次受控读取；原业务状态优先于普通未读事实。 |
+| 2 | `visible_unread` | 最新首屏扫描证明已绑定 `ai_active` 会话当前未读；用于闭环第一条客户消息和无其他待处理状态的新消息。 |
+| 3 | `recent_ai_sent` | AI 刚发送过，正在等待客户回复。 |
+| 4 | `waiting_user_reply` | 我方已回复，等待客户回。 |
+| 5 | `waiting_sales_reply` | 已转人工，监听销售是否回复。 |
 
 服务端不得返回：
 
 ```text
 bind_status != bound 的会话
 remark_code为空的会话
-listen_status=disabled/paused/error 且未人工恢复的会话
+listen_status=disabled/paused/error 且尚未满足各自恢复条件的会话
 conversation.status=closed/rejected 的会话
 非当前 Worker 负责的会话
 ```
@@ -1763,7 +2077,7 @@ conversation.status=closed/rejected 的会话
 | 微信窗口不可控 | 停止本轮扫描，上报 `WECHAT_WINDOW_NOT_READY`。 |
 | OmniAuto 超时 | 停止本轮扫描，上报 `RPA_SIDECAR_TIMEOUT`。 |
 | Worker 退出/重启 | 不补发、不重复入库；重启后继续按状态机 `read-targets` 读取。 |
-| `read-targets=[]` | 允许继续上报第一屏扫描事实；清空本地命中读取队列，不点击会话、不读取、不转写、不入库。 |
+| `read-targets=[]` | 允许继续上报第一屏扫描事实；清空本地命中读取队列，不点击会话、不读取、不转写、不入库。但后端必须已正确计算 `visible_unread`；对满足门禁的首屏未读仍返回空列表属于后端调度错误，不得由 Worker 绕过授权补救。 |
 | `authorization_revision` 变化 | 当前读取许可失效；停止开始后续动作，旧请求由后端返回 409，不得绕过授权重试入库。 |
 
 主动扫描只能上报事实，不能自己补发消息、不能自己创建 `reply_action`、不能直接改变 `conversation.status`。
@@ -1771,6 +2085,44 @@ conversation.status=closed/rejected 的会话
 ### 6.0.3 C2消息去重入库工程规则
 
 Worker 负责生成稳定 `source_message_key` 和候选 `dedupe_key`，服务端负责授权复核和最终去重。后续可以在 Worker 本地按 `conversation_id` 维护最近已上报的 `dedupe_key/content_hash` 小缓存减少重复请求，但该缓存只能是前置优化，不能取消服务端数据库唯一约束。
+
+#### 6.0.3.0 本地身份丢失后的服务端恢复
+
+Windows 本地 `next_sequence` 不是消息身份的唯一事实源。`API-C2-02` 和
+`API-C2-03` 必须为每个会话返回 `identity_checkpoint`：
+
+| 字段 | 说明 |
+|---|---|
+| `version` | 身份检查点版本。 |
+| `next_sequence_floor` | 后端从历史 `worker-message-*` 计算出的下一编号下限；Worker 本地只能取更大值，禁止回到 1。 |
+| `recent_messages[]` | 最近消息身份；必须包含 Worker 序号消息，不得再排除。 |
+| `recent_messages[].stable_id` | 历史 Worker 稳定编号。 |
+| `recent_messages[].source_message_key / dedupe_key` | 已入库的正式身份键。 |
+| `recent_messages[].sender_role / message_type` | 历史发送方和类型。 |
+| `recent_messages[].normalized_content_hash` | 规范化正文摘要，不返回不必要的完整敏感正文。 |
+| `recent_messages[].alignment_signature` | 用于把当前可见消息序列与历史连续片段对齐的结构签名。 |
+
+Worker 每次读取目标时固定执行：
+
+```text
+读取本地身份状态
+-> 合并服务端identity_checkpoint
+-> next_sequence取本地值和服务端下限中的较大值
+-> 用最近消息身份恢复当前画面中的历史消息编号
+-> 只给无法匹配的新消息分配新编号
+-> 在同一个SQLite事务中保存新编号和新next_sequence
+-> 再构建Outbox并上报
+```
+
+本地数据库缺失、版本过旧或被清理都只能触发“从服务端恢复”，不得默认从 1 开始。
+同一会话的编号分配必须受单写者锁和 SQLite 事务保护；并发线程不能各自读取同一个
+旧 `next_sequence`。历史画面无法唯一对齐时返回
+`MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS`，不猜编号、不启动 Brain。
+
+如果后端仍发现相同 `dedupe_key` 对应的角色、类型、规范化正文或媒体稳定锚点不一致，
+返回 `409 + MESSAGE_IDENTITY_COLLISION + recovery_action=refresh_identity_and_retry`。
+Worker 必须保留已经读取完成的原 Outbox，刷新检查点，为冲突项分配高于服务端下限的
+新编号后只重建身份外壳并重传；不得重新打开微信、重新转写语音或重新调用 Vision。
 
 #### 6.0.3.1 dedupe_key生成规则
 
@@ -1820,9 +2172,11 @@ Worker 负责生成稳定 `source_message_key` 和候选 `dedupe_key`，服务�
 5. 校验conversation.status和监听状态允许入库。
 6. 对每条消息执行数据库唯一键写入。
 7. 写入成功：创建message_event，返回ingested。
-8. 唯一键冲突：不创建新message_event，返回duplicated。
-9. 状态不允许、发送方不明确、目标未确认、群聊/unknown或合同门禁失败：不创建message_event，返回ignored或拒绝整批。
-10. 只有ingested且sender_role=customer的消息，才允许触发后续message_batch收集。
+8. 唯一键命中：重新读取已有事件，比较sender_role、message_type、规范化content和媒体稳定锚点；全部一致才返回duplicated。
+9. 唯一键相同但任一身份不变量不同：返回MESSAGE_IDENTITY_COLLISION和refresh_identity_and_retry，禁止静默duplicated，禁止推进状态机。
+10. 数据库IntegrityError补偿分支也必须重新查询并执行同一身份比较，不能直接吞成duplicated。
+11. 状态不允许、发送方不明确、目标未确认、群聊/unknown或合同门禁失败：不创建message_event，返回ignored或拒绝整批。
+12. 只有ingested且sender_role=customer的消息，才允许触发后续message_batch收集。
 ```
 
 推荐唯一约束：
@@ -1844,8 +2198,13 @@ unique(worker_id, conversation_id, dedupe_key)
 | ingest_result | 是否写入 message_events | 是否触发 message_batch | 说明 |
 |---|---|---|---|
 | `ingested` | 是 | 仅 `sender_role=customer` 时允许 | 新客户消息进入后续 AI 编排。 |
-| `duplicated` | 否 | 否 | 已处理过，不重复触发。 |
+| `duplicated` | 否 | 否 | 已有消息与本次角色、类型、正文和稳定锚点全部一致，确认为同一条。 |
 | `ignored` | 否 | 否 | 系统消息、自发消息、状态不允许或低价值消息。 |
+
+`MESSAGE_IDENTITY_COLLISION` 不是 `duplicated`，也不是可以忽略的普通错误。后端必须
+写入可诊断事件，至少记录会话、冲突键、已有/新消息的角色、类型和脱敏正文摘要；
+Worker 必须保留 Outbox 并执行身份刷新重传。在冲突解决前不得把该消息标记为本地
+已入库，也不得把残缺上下文交给 Brain。
 
 同一个 `read_run_id` 重复上报时，服务端必须返回同样或等价的处理结果，不得重复入库。
 
@@ -1897,7 +2256,8 @@ Outbox 保存已经完成昂贵处理后的完整结构化 V3 JSON，不保存�
 |---|---|---|
 | `retry` | 网络中断、连接超时、服务端暂时不可用。 | 按有上限的指数退避间隔原样重传同一 JSON 和幂等键；不按固定次数放弃，不得重新读微信、转语音或调用 Vision。 |
 | `refresh_and_rebuild` | 授权版本过期或续行票失效，但消息事实本身仍合法。 | 重新取得当前授权，只重建授权/续行外壳；原消息身份、正文、观察时间和证据保持不变，不重复昂贵动作。后端可补录事实，但只有新授权允许时才能推进状态机或 Brain。 |
-| `settle_without_ui` | 当前 UI 授权、短码托管或会话状态已变化，但原事实仍可由后端确认归属。 | 取得 settlement token，把同一 JSON 改为 `authorization_scope=fact_settlement`；只结算事实，固定不推进状态机、不启动 Brain。 |
+| `refresh_identity_and_retry` | 相同去重键对应的角色、类型、正文或媒体锚点不同，服务端确认发生身份碰撞。 | 保留原 Outbox，刷新服务端身份检查点，只为冲突项分配高于服务端下限的新编号并重建身份键后重传；不重新读取微信，不重复语音/Vision，不把冲突项记为 duplicated。 |
+| `settle_without_ui` | 当前 UI 授权、短码托管或会话状态已变化，但原事实仍可由后端确认归属。 | 取得 settlement token，把包含原完整 messages 的同一 V3 JSON 改为 `authorization_scope=fact_settlement`；只结算事实，固定不推进状态机、不创建 handoff、不启动 Brain。禁止使用 `messages=[]` 的空门禁替代原失败消息。 |
 | `rebuild_failed_facts` | 请求中个别语音/图片的失败事实结构不合法，后端能精确指出 source key。 | 只重建指定 failed 事实，不改变其他 completed 事实，不重复媒体动作。 |
 | `split_and_retry` | 请求体超过合同上限。 | 按原 read_run 和 source key 清单确定性拆分；最后一片确认前不启动 Brain。 |
 | `capability_paused` | 请求级合同、身份或版本整体不兼容，后端无法安全接收整个请求。 | 冻结原 Outbox 和 ledger，阻断新 UI 动作，按退避周期自动探测合同/能力恢复；恢复后转回 `retry`，不建立人工消息处理队列。 |
@@ -1916,6 +2276,12 @@ Outbox 是 Worker 级全局调度门禁，不只是当前会话的小缓存。�
 对应的正式恢复动作，不得继续首屏扫描、定向读取、切换会话或执行新微信动作。
 网络恢复、授权刷新、事实结算或合同能力恢复后自动续传；不存在按次数放弃、
 本地 `not_required` 丢弃或人工修消息的出口。
+
+恢复结果必须与授权范围分层：当前 `active_read` 授权仍有效时，重传原完整 V3
+消息并按 sender_role 和最终画面顺序正常应用状态机；只有 `fact_settlement` 授权时，
+保存相同消息事实但固定 `state_transition_applied=false`。两种路径都必须返回逐
+`source_message_key` 结果，Worker 不得用一个空 `flow_gate` 成功响应替代消息确认，
+也不得在逐条确认前把 Ledger 改为 confirmed。
 
 ### 6.0.4 V16状态机定向读取工程方案
 
@@ -1954,7 +2320,7 @@ V16 是 C2 会话监听的修复 checkpoint。修复目标不是扩展旧滚动�
 10. 再调用 messages 二次读取
 11. ingest
 12. 没有 message_batch 或 batch 已终态：释放 Local WeChat UI Lock
-13. 返回处理中 batch_id：保持原会话和 UI 锁等待 Brain
+13. 返回处理中 batch_id：保持原会话的逻辑事务所有权等待 Brain；本版没有物理键鼠锁
 14. send_reply：原会话 pre_send_refresh -> claim chat_reply/reply_action -> claim-send -> 输入前/点击前复核 -> 发送 -> sent_ack
 15. no_action/handoff/technical_failed 或发送已收口：释放 Local WeChat UI Lock
 ```
@@ -2018,7 +2384,7 @@ action=messages
 target_mode=auto | visible | search_by_remark_code
 conversation_id=<服务端会话ID>
 remark_code=<客户短码>
-read_reason=waiting_user_reply | recent_ai_sent | recall_precheck | pre_send_refresh | waiting_sales_reply
+read_reason=friend_acceptance_visible_hit | visible_unread | waiting_user_reply | recent_ai_sent | recall_precheck | pre_send_refresh | waiting_sales_reply
 last_ingested_at=<服务端最后入库时间，可选>
 display_name=<最近一次绑定展示名，可选>
 rpa_session_key=<第一屏最近一次定位键，可选>
@@ -2337,6 +2703,7 @@ AND authorization_revision仍有效
 
 - `first_screen_session_scan` 是事实发现，可以在 `read-targets=[]` 时继续运行并上报 `scan-result`。
 - `read-targets` 是读取许可；为空时必须清空本地 visible hit 队列。
+- 上一条不允许后端忽略未读事实：已绑定 `ai_active` 会话的最新 `unread_hint=true` 必须通过 `visible_unread` 进入 `read-targets`；只有未满足绑定/授权/安全门禁时才可不下发。
 - 暂停监听或重新授权会产生新的 `authorization_revision`；旧 Worker ingest 必须返回 409。
 - 停止后的验收重点是不得再定位目标、读取、转写或入库；常驻首屏事实扫描本身不等于尾随读取。
 
@@ -2380,6 +2747,9 @@ V16.98 通过标准：
 1. Worker 能优先扫描微信当前第一屏并上报 session_scan_result。
 2. 第一屏命中会话能优先读取并上报 message_event。
 3. 第一屏扫描结果不能直接授权读取；Worker 必须用当前 read-targets 和 authorization_revision 复核。
+3a. 已绑定 `ai_active` 会话首次上报 `unread_hint=true` 时，后端即使没有其他业务状态，也必须下发 `read_reason=visible_unread` 的当前授权；Worker 可以在授权交集内读取第一条客户消息。
+3b. 仅有 `unread_hint` 但无有效短码、绑定冲突、非当前 Worker、监听暂停/禁用、授权过期或会话已关闭/拒绝时，后端不得下发 `visible_unread`。
+3c. `visible_unread` 读取入库被后端完整确认后必须消费当前未读事实；读取/入库失败时保留事实供冷却后重试；新扫描明确 `unread_hint=false` 后不再重复下发。
 4. Worker 执行 read-target 前必须在 UI 锁内重新调用 `sessions` 做当前实时首屏解析；首屏唯一命中则走 visible 路径，不再搜索短码。
 5. 当前实时首屏没有命中时，才允许通过微信搜索框搜索 remark_code，并在标题/备注二次确认短码后读取。
 6. 当前实时首屏同一短码多条命中时，不读取并返回 `C2_VISIBLE_TARGET_AMBIGUOUS`。
@@ -2418,9 +2788,17 @@ V16.98 通过标准：
 | `listen_status` | `not_started / listening / paused / degraded / error / disabled`。 |
 | `allow_listening` | 是否允许 Worker 读取该会话消息。 |
 | `error_code` | 绑定、监听或读取失败原因；C2 不再使用 `reason_code`。 |
+| `disable_reason` | 永久停用或历史替代原因；临时暂停不得填写。正式值至少包括 `customer_hard_opt_out / conversation_closed / remark_code_removed_confirmed / admin_disabled / replaced_binding`。 |
+| `disabled_at / disabled_by` | 永久停用时间和操作者/系统来源；缺少来源的旧 `disabled` 不得直接当作有效永久停用。 |
+| `replacement_binding_id` | 旧绑定被替代时指向当前绑定；被替代记录必须退出正常扫描候选。 |
 | `first_seen_at` | 首次扫描到时间。 |
 | `last_seen_at` | 最近扫描到时间。 |
 | `last_scan_snapshot` | 最近一次扫描摘要或截图证据引用。 |
+| `last_read_dispatched_at` | 最近一次被调度下发时间，只用于租约和公平排序，不代表读取完成。 |
+| `last_read_completed_at` | 最近一次完整读取并被后端结算的时间。 |
+| `last_read_result` | `new_facts / no_change / failed`。 |
+| `no_change_read_count` | 连续完整读取但没有新事实的次数。 |
+| `next_read_due_at` | 后端允许下一次状态机定向读取的最早时间。 |
 
 说明：V16.98 的 `conversation_type=private/group/unknown` 是 Worker 每次点击后根据顶部标题生成的准入证据，放在扫描/定位原始证据中即可；当前不要求为它新增独立数据库状态机字段，也不允许它改变 `conversation_id` 或消息去重身份。
 
@@ -2449,13 +2827,22 @@ V3 结构化证据还必须保存在 `raw_payload`：`source_message_key / row_k
 
 C2 消息接口只接收 Worker 上报的微信事实，不接收 Worker 生成的 AI 回复内容，也不直接下发发送动作。消息入库后，后端状态机可以基于同一批事实启动 Brain、创建 `reply_action` 和任务中心 `chat_reply`；当前持锁的 C2 单会话流程再按批次合同领取并执行该任务。
 
-| 方法 | 路径 | 用途 |
-|---|---|---|
-| POST | `/api/workers/{worker_id}/wechat/sessions/scan-result` | Worker 上报会话扫描结果。 |
-| GET | `/api/workers/{worker_id}/wechat/sessions/read-targets?limit=20` | Worker 拉取需要读取消息的已绑定会话。 |
-| POST | `/api/workers/{worker_id}/wechat/messages/ingest` | Worker 上报已绑定会话的消息事件。 |
-| GET | `/api/conversations/{conversation_id}/wechat-binding` | 后台查询微信绑定状态。 |
-| GET | `/api/conversations/{conversation_id}/messages` | 后台查询消息入库记录。 |
+| 接口编号 | 方法 | 路径 | 用途 |
+|---|---|---|---|
+| `API-C2-01` | POST | `/api/workers/{worker_id}/wechat/sessions/scan-result` | Worker 上报会话扫描结果。 |
+| `API-C2-02` | GET | `/api/workers/{worker_id}/wechat/sessions/read-targets` | Worker 拉取需要读取消息的已绑定会话；`limit` 是查询参数，不属于路径名。 |
+| `API-C2-03` | GET | `/api/workers/{worker_id}/wechat/conversations/{conversation_id}/read-authorization` | Worker 在实际读取前复核当前授权；批次续读时携带 continuation 参数与 Header。 |
+| `API-C2-04` | POST | `/api/workers/{worker_id}/wechat/conversations/{conversation_id}/activation-confirm` | Worker 上报有效短码、private 单聊和可读取会话的首次激活证据。 |
+| `API-C2-05` | POST | `/api/workers/{worker_id}/wechat/messages/ingest` | Worker 上报已绑定会话的消息事实或受控空读结算。 |
+| `API-C2-06` | GET | `/api/workers/{worker_id}/wechat/message-batches/{batch_id}` | 当前单会话事务查询 Brain 批次、发送任务和续读授权。 |
+| `API-C2-ADMIN-01` | GET | `/api/conversations/{conversation_id}/wechat-binding` | 后台查询微信绑定状态。 |
+| `API-C2-ADMIN-02` | GET | `/api/conversations/{conversation_id}/messages` | 后台查询消息入库记录。 |
+| `API-C2-ADMIN-03` | GET | `/api/leads/{lead_id}/wechat-bindings` | 后台按线索查询微信绑定历史。 |
+| `API-C2-ADMIN-04` | POST | `/api/conversations/{conversation_id}/wechat-binding/restore` | 后台对非永久终止会话执行可审计的监听恢复；明确拒绝、关闭或短码移除时拒绝恢复。 |
+
+本节中的查询参数和 Header 是同一接口的调用参数，不产生新的接口名。例如 Worker
+代码中的相对路径 `/workers/...` 只是因为其 `base_url` 已包含 `/api`；正式接口仍为
+上表从 `/api` 开始的完整路径。
 
 所有 Worker 接口必须携带：
 
@@ -2491,7 +2878,7 @@ POST /api/workers/{worker_id}/wechat/sessions/scan-result
 | `display_name` | string | 是 | 微信会话列表展示名。 |
 | `remark_code_candidates` | array | 是 | 从展示名/备注中识别出的短码候选。 |
 | `row_fingerprint` | string | 否 | 会话列表行特征，仅作辅助证据，不作为绑定或定向读取必填条件。 |
-| `unread_hint` | boolean | 否 | 是否疑似未读。 |
+| `unread_hint` | boolean | 否 | 当前首屏是否存在未读/红点观察事实，缺省按 `false` 处理。该字段只能触发后端重算 `visible_unread` 读取许可，不能被 Worker 直接当作点击、入库或回复授权。 |
 | `last_message_preview` | string | 否 | 列表预览文本。 |
 | `ocr_confidence` | number | 否 | OCR 置信度。 |
 
@@ -2513,9 +2900,18 @@ V16.98 不在 `sessions[]` 中新增 `conversation_type` 字段：群聊/unknown
 | `rpa_session_key` | 本机会话定位键。 |
 | `conversation_id` | 绑定成功时返回。 |
 | `lead_id` | 绑定成功时返回。 |
-| `bind_status` | `bound / already_bound / unbound / needs_review / binding_failed`。 |
+| `bind_status` | `bound / already_bound / unbound / needs_review / binding_failed / disabled`。被替代的旧绑定不作为当前绑定状态返回，以 `recovery_state=retired` 表示。 |
 | `error_code` | 未绑定、绑定失败或需要人工检查的原因。 |
 | `can_ingest_messages` | 是否允许 Worker 后续读取并上报消息。 |
+| `disable_reason` | 当前绑定为永久停用时返回停用来源；临时暂停不得返回该字段。 |
+| `recovery_state` | `none / paused_waiting_worker / needs_review / permanently_disabled / retired`，用于说明为什么本次扫描后没有恢复监听。 |
+
+扫描结果处理必须遵守以下边界：
+
+- 当前绑定为明确永久停用时，仍记录本次扫描事实，但不得仅凭重新看见短码自动恢复。
+- 当前绑定是历史遗留的 `disabled + paused`，且会话仍有效、无明确停用来源、没有被新绑定替代时，不得在更新扫描时间后直接早退；必须先按 6.3.4 迁移，再返回 `paused_waiting_worker` 或正常绑定结果。
+- `deleted_at` 非空或存在 `replacement_binding_id` 的旧绑定只作为历史证据，固定返回 `retired`，不得重新成为当前绑定。
+- 同一短码命中多个活动绑定、归属错误或永久停用来源不完整时返回 `needs_review`，不得猜测恢复。
 
 #### 6.2.2 拉取需读取消息的会话
 
@@ -2542,20 +2938,68 @@ GET /api/workers/{worker_id}/wechat/sessions/read-targets?limit=20
 | `row_fingerprint` | 会话列表行特征，用于辅助定位和变更检测；可选。 |
 | `ocr_confidence` | 最近一次绑定/扫描的 OCR 置信度。 |
 | `last_ingested_at` | 服务端最后入库消息时间。 |
-| `read_reason` | `recall_precheck / recent_ai_sent / waiting_user_reply / waiting_sales_reply`。 |
+| `read_reason` | `friend_acceptance_visible_hit / recall_precheck / visible_unread / recent_ai_sent / waiting_user_reply / waiting_sales_reply`。其中 `visible_unread` 是由最新首屏未读事实触发的临时读取原因，不是会话主状态。 |
 | `authorization_revision` | 当前监听授权版本；必填。停止监听或重新授权后会变化，旧版本请求不得入库。 |
+| `identity_checkpoint` | 本会话服务端身份检查点；包含下一编号下限和最近消息身份，Worker 本地状态丢失后必须先合并。 |
+| `next_read_due_at` | 本次目标的服务端到期时间；未到期的长期状态目标原则上不应出现在列表中，Worker 即使收到也不得提前点击。 |
 
 契约要求：
 
 - 正常 `read-targets.targets[]` 必须包含 `conversation_id + remark_code + authorization_revision`。
+- `read_reason=visible_unread` 时，后端必须能证明当前绑定的最新成功扫描事实为 `unread_hint=true`，且会话为 `ai_active`。Worker 不得自行把本地 `visible_hit` 改写成该服务端 `read_reason`。
+- 后端确认 `visible_unread` 的完整 `active_read` 入库/结算后消费当前 `unread_hint`；中途失败、未确认入库或仅写本地 ledger 不得消费。后续首屏扫描可以根据微信当前事实重新置 `true/false`。
 - 已绑定会话如果缺少 `remark_code`，不得出现在正常 `read-targets` 中，应进入 `needs_review / degraded` 并记录 `C2_TARGET_REMARK_CODE_MISSING`。
 - Worker 收到缺少 `remark_code` 的读取目标时，必须跳过读取，不得继续打开微信会话或上报消息。
 - Worker 本轮读取去重以 `conversation_id + remark_code` 作为身份键；服务端身份收口必须满足 `conversation_id + remark_code`。
 - `authorization_revision` 只代表本轮读取许可，不参与会话身份和消息 `dedupe_key`。
+- `identity_checkpoint.recent_messages` 必须覆盖最近 Worker 序号消息，不得因其来源为 `worker_sequence` 而排除；`next_sequence_floor` 必须大于历史最大已用序号。
 - 微信定位分两段：第一屏可见目标可用 `rpa_session_key / display_name / remark_code` 快速定位；第一屏未命中或非第一屏目标必须通过微信搜索框搜索 `remark_code`，并在进入会话后再次确认标题/备注包含该短码。
 - `rpa_session_key`、`display_name`、`row_fingerprint` 仅作辅助定位和排查证据，不能替代 `remark_code` 做非第一屏定向读取。
 
-#### 6.2.3 上报消息事件
+`visible_unread` 发布前必须具备的自动化门禁：
+
+1. 新绑定 `ai_active` 会话首次上报 `unread_hint=true`，立即进入 `read-targets`，`read_reason=visible_unread`。
+2. 已绑定但无其他待处理状态的 `ai_active` 会话再次发生未读，同样能获得读取许可。
+3. 完整入库/结算确认后 `unread_hint` 被消费，同一过期事实不再重复派发。
+4. 定位、类型确认、读取或入库中途失败时不消费，冷却后可安全重试。
+5. 后续成功扫描上报 `unread_hint=false` 后不再派发 `visible_unread`。
+6. 无短码、多短码、同码多会话、绑定冲突、错 Worker、监听暂停/禁用、授权过期和关闭/拒绝会话均不得获得该授权。
+7. Worker 本地仅有 `visible_hit` 而服务端没有同一会话的当前 `read-target` 时，必须不点击、不读取、不转写、不入库。
+8. 重复上报同一 `scan_id` 不得创建新绑定、改变授权版本或制造第二份未读事实。
+
+#### 6.2.3 单会话读取前复核授权
+
+```http
+GET /api/workers/{worker_id}/wechat/conversations/{conversation_id}/read-authorization
+```
+
+该接口是 `API-C2-03`，不是 `read-targets` 的别名。`read-targets` 负责调度候选，
+本接口负责 Worker 已定位到具体会话后、每个实际微信 UI 读取动作之前复核当前授权。
+普通读取必须与当前 `conversation_id + remark_code + authorization_revision + read_reason`
+一致；批次续读可增加查询参数 `continuation_batch_id` 和 Header
+`X-C2-Continuation-Token`，两者仍属于 `API-C2-03`。
+
+授权撤销、版本过期、Worker/会话不匹配或 continuation 不匹配时必须返回不允许，
+Worker 不得继续点击、转写、图片读取或消息入库。
+
+允许读取时响应还必须返回当前 `identity_checkpoint`。身份碰撞后的 Outbox 恢复可以
+通过本接口刷新检查点，不依赖目标再次进入 `read-targets` 的前 20 条，也不得为了刷新
+身份重新打开微信。
+
+#### 6.2.4 首次激活确认
+
+```http
+POST /api/workers/{worker_id}/wechat/conversations/{conversation_id}/activation-confirm
+```
+
+该接口是 `API-C2-04`。仅用于 `invite_sent / already_friend` 首屏绑定后的首次激活读取，
+请求必须携带当前 `authorization_revision`、正确 `remark_code`、
+`conversation_type=private`、`chat_surface_ready=true`，并在 `title_evidence` 中证明
+短码已确认且单聊准入通过。成功后统一进入
+`friend_state=friend_active + status=friend_activation_reading`；重复提交同一有效证据必须
+幂等。群聊、未知会话、短码不符、授权过期或好友事实/会话状态组合不一致时不得推进。
+
+#### 6.2.5 上报消息事件
 
 ```http
 POST /api/workers/{worker_id}/wechat/messages/ingest
@@ -2609,11 +3053,53 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 | `ingested_count` | 新入库消息数量。 |
 | `duplicated_count` | 被去重跳过数量。 |
 | `ignored_count` | 因状态不允许或发送方不明确跳过数量。 |
-| `results[]` | 每条消息的处理结果，包含 `dedupe_key`、`ingest_result=ingested/duplicated/ignored`、`message_event_id`、`error_code`。 |
+| `results[]` | 每条消息的处理结果，包含 `dedupe_key`、`ingest_result=ingested/duplicated/ignored`、`message_event_id`、`error_code`；身份碰撞不得伪装成其中任一成功结果。 |
 | `next_action` | 兼容字段，固定为 `none`；发送动作不从消息入库响应直接下发。 |
 | `message_batch` | 可选。后端因本批事实启动 C3 时返回 `batch_id / batch_status`，Worker 只按该批次继续查询、领取任务和执行发送。 |
+| `read_completion` | 完整读取结算；包含 `result=new_facts/no_change/failed`、`completed_at`、`no_change_read_count` 和 `next_read_due_at`。空消息和全重复的完整读取也必须返回。 |
 
-兼容说明：原 C2 字段保持兼容，C2-C3 单会话串行链路只增加可选 `message_batch={batch_id,batch_status}`。具体等待和终态查询合同见 `C2-C3_OmniAuto_Worker_后端接口合同_v0.1.1_2026-08-05.md`，不得另建同义消息上报或回复接口。
+发生身份碰撞时固定返回 HTTP 409，错误码 `MESSAGE_IDENTITY_COLLISION`，并在安全脱敏的
+错误数据中返回 `recovery_action=refresh_identity_and_retry`、冲突项来源键和新的
+`next_sequence_floor`。该响应不得消费未读事实、不得更新读取完成退避、不得推进
+Conversation 或创建 Brain 批次。
+
+兼容说明：原 C2 字段保持兼容，C2-C3 单会话串行链路只增加可选 `message_batch={batch_id,batch_status}`。派生接口合同只可细化本手册字段，不得修改 `API-C2-05` 的方法、路径或另建同义消息上报接口。
+
+#### 6.2.6 查询当前消息批次
+
+```http
+GET /api/workers/{worker_id}/wechat/message-batches/{batch_id}
+```
+
+该接口是 `API-C2-06`，由仍持有当前 C2 单会话事务的 Worker 轮询。响应必须返回
+`batch_id / batch_status / processing / terminal / decision / error_code`；需要发送时还可
+返回唯一 `reply_action` 和 `chat_reply task`，需要继续读取时返回 continuation 授权。
+`decision=hard_opt_out`、`handoff`、`no_action`、失败或取消等非发送终态均必须以
+`processing=false + terminal=true` 返回；Worker 将其作为“本次正常结束、不发送”，
+不得继续等待、领取发送任务或自行生成回复。
+
+#### 6.2.7 后台恢复微信监听
+
+```http
+POST /api/conversations/{conversation_id}/wechat-binding/restore
+```
+
+该接口是 `API-C2-ADMIN-04`。它只恢复“业务会话仍有效但绑定被临时暂停或历史错误
+禁用”的情况，必须写操作日志、恢复原因、操作者和恢复前后状态。以下任一条件存在时
+固定拒绝：
+
+```text
+客户已明确要求停止联系
+conversation.status=closed/rejected
+短码已按双证据确认移除
+绑定已被replacement_binding_id替代或deleted_at非空
+当前短码对应多个会话或归属其他Worker
+```
+
+恢复成功后先进入 `bound + paused + allow_listening=false`，增加
+`authorization_revision`；只有当前 Worker 已开始接单且后续扫描再次证明唯一有效短码，
+才进入 `bound + listening + allow_listening=true`。恢复接口本身不点击微信、不读取消息、
+不启动 Brain。
 
 ### 6.3 C2状态流转
 
@@ -2626,7 +3112,7 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 | `bound` | 已绑定唯一会话。 | 短码唯一匹配 lead/conversation/sales/worker。 | 允许进入消息读取。 |
 | `needs_review` | 需要人工检查。 | 短码冲突、低置信度、会话特征异常。 | 不自动回复，可后台查看原因。 |
 | `binding_failed` | 本次绑定失败。 | 微信不可控、扫描失败、短码无效等。 | 等待下次扫描或人工处理。 |
-| `disabled` | 不再由系统监听。 | 客户拒绝、会话关闭、短码被销售移除。 | 停止读取，不自动回复。 |
+| `disabled` | 有明确来源的永久停用，不是临时暂停。 | 客户明确永久拒绝联系、会话关闭、短码双证据确认移除或后台人工永久停用。 | 停止读取，不自动回复；只允许满足安全条件的人工恢复接口处理。 |
 
 #### 6.3.2 微信会话监听状态 `wechat_session_binding.listen_status`
 
@@ -2637,15 +3123,33 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 | `paused` | 暂停监听。 | Worker 暂停、全局开关关闭、静默规则要求。 | 已暂停。 |
 | `degraded` | 降级监听。 | OCR 低置信、读取失败但未完全不可用。 | 监听异常。 |
 | `error` | 监听失败。 | 连续扫描/读取失败或微信不可控。 | 失败，需处理。 |
-| `disabled` | 不再监听。 | 会话关闭、拒绝、短码移除。 | 已停止。 |
+| `disabled` | 永久停止监听。 | `bind_status=disabled` 且具备 `disable_reason/disabled_at/disabled_by`，或属于有替代记录的历史绑定。 | 已停止。 |
 
 #### 6.3.3 消息入库响应结果 `results[].ingest_result`
 
 | 结果 | 含义 |
 |---|---|
 | `ingested` | 新消息已入库，并生成 `message_event_id`。 |
-| `duplicated` | `dedupe_key` 已存在，跳过；不新增 `message_event`。 |
+| `duplicated` | `dedupe_key` 已存在，且已有消息与本次消息的发送方、类型、规范化正文和媒体稳定锚点全部相同，确认为同一条；不新增 `message_event`。 |
 | `ignored` | 系统消息、低价值消息或状态不允许处理；不新增 `message_event`。 |
+
+同一 `dedupe_key` 对应的任一身份内容不同都不是重复，而是
+`MESSAGE_IDENTITY_COLLISION`。后端必须返回 409 并要求刷新身份后重传，不能把新消息
+静默算成 `duplicated`。
+
+#### 6.3.4 历史监听状态迁移
+
+上线前对现有绑定执行一次可审计、可重复运行的数据迁移，逐条按以下顺序分类：
+
+1. `deleted_at` 非空或存在 `replacement_binding_id`：标记为历史绑定，保持不可监听，所有当前绑定查询固定排除。
+2. 存在客户明确拒绝、会话关闭/拒绝、短码双证据确认移除或后台人工永久停用来源：保持 `disabled + disabled + allow_listening=false`，补齐可追溯的 `disable_reason / disabled_at / disabled_by`，不得自动恢复。
+3. 会话仍可联系、`ai_enabled=true`、线索仍已分配、`close_reason` 为空，同时记录为 `disabled + paused` 且无永久停用来源：判定为历史不一致，迁移为 `bound + paused + allow_listening=false`，授权版本加一。
+4. 无法唯一判断当前绑定、短码对应多个会话或证据互相冲突：进入 `needs_review`，禁止自动读取和自动回复。
+
+第 3 类数据迁移后不立即操作微信。只有当前 Worker 已开始接单，并且后续最新扫描再次
+证明该短码唯一、会话归属正确时，才能恢复为 `bound + listening +
+allow_listening=true`。迁移脚本必须输出每类数量和记录 ID，支持事务回滚；重复执行不得
+再次增加授权版本或改变已经正确的记录。
 
 状态原则：
 
@@ -2655,7 +3159,11 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
   暂不可判定，不是媒体恢复的永久终止证明；存在已触发语音/图片动作或待确认
   Outbox 时，原事务身份可信则直接 `fact_only` 结算，身份暂不可证才
   `retry_later`，两者都不能丢弃本地记录。
-- `disabled` 优先级最高；会话关闭、拒绝或短码移除后，后续扫描不得重新开启监听，除非人工重新生成/恢复短码并重新绑定。
+- Worker 暂停、接单时段暂停和维护暂停只能写 `bind_status=bound + listen_status=paused`；点击开始接单后，在 Worker 归属、会话有效和授权版本一致时恢复为 `listening`。临时暂停不得写成 `bind_status=disabled`。
+- `disabled` 优先级最高，但只有具备明确永久来源时才有效；会话关闭、客户明确永久拒绝、短码移除或后台人工永久停用后，后续扫描不得自动开启监听。
+- `bind_status=disabled + listen_status=paused` 是非法组合；`conversation` 仍为可联系状态、`ai_enabled=true`、线索仍 assigned、`close_reason` 为空且绑定无明确停用来源时，属于历史不一致数据，不得继续用 `SESSION_BINDING_DISABLED` 永久早退。
+- 历史不一致数据迁移为 `bound + paused + allow_listening=false`，增加授权版本；后续唯一短码扫描和 Worker 运行状态同时满足后才恢复监听。迁移不得修改明确永久停用或已被替代的历史记录。
+- 被新绑定替代的旧记录必须具备 `deleted_at + replacement_binding_id`，查询 canonical binding 时固定排除，不能因为旧记录已有消息历史就重新成为当前绑定。
 - `disabled` 只终止新的 UI 和业务自动化；禁用前已经产生的消息事实仍须通过
   `fact_settlement` 或 `technical_terminal` 得到后端逐条确认。
 - 已有 bound 会话单次首屏未识别到短码时进入 `degraded`。只有后台明确关闭，
@@ -2679,7 +3187,9 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 | `SESSION_REMARK_CODE_INVALID` | 短码格式非法或不存在。 | `bind_status=binding_failed`。 |
 | `SESSION_REMARK_CODE_DUPLICATED` | 一个短码匹配多条活动线索。 | `bind_status=needs_review`。 |
 | `SESSION_BINDING_CONFLICT` | 短码匹配到其他销售或 Worker。 | `bind_status=needs_review`。 |
-| `SESSION_BINDING_DISABLED` | 会话已关闭、拒绝或短码已移除。 | `bind_status=disabled`。 |
+| `SESSION_BINDING_DISABLED` | 绑定具备明确的永久停用来源。 | 保持 `bind_status=disabled`，不得因扫描再次看见短码而自动恢复。 |
+| `SESSION_BINDING_STATE_INCONSISTENT` | 活动业务会话落入 `disabled + paused`，但没有永久停用来源或状态证据互相冲突。 | 唯一可判定时按 6.3.4 迁移；无法唯一判定时进入 `needs_review`，不得永久早退或直接恢复。 |
+| `SESSION_BINDING_RESTORE_FORBIDDEN` | 后台恢复请求命中永久拒绝、关闭、短码移除、历史替代、错 Worker 或多会话冲突。 | 返回 409，不修改绑定，不操作微信。 |
 | `C2_TARGET_REMARK_CODE_MISSING` | 已绑定会话缺少 `remark_code`，不能作为定向读取目标。 | 不返回正常 read-target；进入 `degraded/needs_review` 并提示修复绑定数据。 |
 | `C2_TARGET_CONVERSATION_ID_MISSING` | 已绑定会话缺少 `conversation_id`，不能作为定向读取目标。 | 不返回正常 read-target；进入 `degraded/needs_review` 并提示修复绑定数据。 |
 | `C2_VISIBLE_TARGET_AMBIGUOUS` | 执行 read-target 前实时首屏解析发现同一 `remark_code` 命中多条会话。 | 不点击、不读取、不入库，记录首屏截图和候选列表。 |
@@ -2690,10 +3200,12 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 | `MESSAGE_READ_FAILED` | 已绑定会话读取消息失败。 | 记录证据，不改变业务状态。 |
 | `MESSAGE_CONVERSATION_NOT_BOUND` | 上报消息的会话未绑定。 | 拒绝入库。 |
 | `MESSAGE_DEDUPE_KEY_MISSING` | 消息缺少去重键。 | 拒绝入库。 |
-| `MESSAGE_INGEST_DUPLICATED` | 去重键已存在。 | 返回 duplicated，不算失败。 |
+| `MESSAGE_INGEST_DUPLICATED` | 去重键已存在且角色、类型、规范化正文和媒体稳定锚点全部相同。 | 返回 duplicated，不算失败。 |
+| `MESSAGE_IDENTITY_COLLISION` | 去重键已存在，但角色、类型、正文或媒体稳定锚点至少一项不同。 | 返回 409；保留原 Outbox，刷新服务端身份检查点，重新分配身份后重传，不重新读取微信。 |
 | `C2_VISION_NOT_READY` | 新 C2 UI 流程启动前发现真实 Vision Provider 的 API Key、模型或地址缺失。 | 不开始新扫描、不打开会话；已有回执、Outbox 和 `settle_without_ui` 仍先恢复。 |
 | `C2_IMAGE_SLOT_RECONFIRM_FAILED` | 图片仍在最终当前屏，但动作前无法用稳定身份唯一确认原槽位。 | 不右键、不调用 Vision；以 failed 图片事实入库并阻断 Brain，不跨轮重试。 |
-| `C2_IMAGE_MENU_OPERATION_FAILED` | 图片槽位已确认且右键已执行，但菜单未准备好、未识别到“复制”或菜单项无法安全点击。 | 关闭菜单，不读取剪贴板、不调用 Vision；以 failed 图片事实入库并阻断 Brain。 |
+| `C2_IMAGE_MENU_OPERATION_FAILED` | 图片槽位已确认且右键已执行，但真实弹窗边界未确认、只有公共项、证据不足、多类特征冲突，或无法安全点击已确认的图片菜单项。 | 关闭菜单，不读取剪贴板、不调用 Vision，固定 `action_phase=not_attempted`；`reason_detail` 只允许 `menu_panel_unconfirmed / menu_evidence_incomplete / menu_evidence_conflict / menu_copy_item_unsafe`。以 failed 图片事实入库并按 sender_role 处理状态。 |
+| `C2_IMAGE_SOURCE_INVALID` | 图片候选的完整菜单被精确确认为文字/语音，或已点击复制但剪贴板经有界检查稳定确认不是可解码位图。 | `reason_detail` 只允许 `text_context_menu_rejected / voice_context_menu_rejected / clipboard_current_content_not_bitmap`。前两者固定 `action_phase=not_attempted`、零剪贴板读取/零 Vision；后者固定 `action_phase=trigger_attempted`。均立即以完整 failed 事实进入现有 Outbox；后端逐 source key 确认后按 sender_role、最终画面顺序和授权范围决定状态，释放全局门禁并继续其他短码。 |
 | `VOICE_TRANSCRIBE_FAILED` | 语音转文字整体失败，无法确认有效转写文本。 | 记录证据，不触发 C3，不生成 `reply_action`。 |
 | `VOICE_TRANSCRIBE_CLICK_FAILED` | OmniAuto 找到疑似语音转文字入口，但点击或转写动作失败。 | 记录截图和 OCR 证据，不自动重试发送，不触发 AI。 |
 | `VOICE_TRANSCRIBE_LOCK_TIMEOUT` | 语音转写等待 Local WeChat UI Lock 超时。 | 本轮跳过，保持会话原状态，后续扫描可再尝试。 |
@@ -2720,6 +3232,13 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 - 图片动作前重建最终画面后已经出屏的图片本轮不处理；仍在屏幕但无法唯一确认时形成 failed 事实，不允许反复右键或跨轮 Vision。
 - 语音只识别到时长、转写失败、目标客户未确认、UI 锁超时或微信窗口不可控时，不得触发 C3 自动回复，不得把语音时长当作客户正文。
 - 同一消息在 Worker 重启、断网恢复、重复扫描时不会重复入库和重复触发后续动作。
+- 删除或损坏 Worker 本地身份状态后，Worker 必须先用服务端身份检查点恢复编号下限和最近身份；新消息不得从 1 重新编号，也不得撞上历史消息。
+- 相同去重键且角色、类型、正文、媒体锚点都相同才返回 duplicated；故意构造相同键但不同角色或正文时必须返回 `MESSAGE_IDENTITY_COLLISION`，数据库并发冲突补偿分支结果相同。
+- 身份碰撞恢复必须复用原 Outbox 和原始消息事实，只刷新身份后重传；不得重新打开微信、重复语音转写或重复调用 Vision。
+- 完整读取没有新消息时，服务端按 2 分钟、5 分钟、10 分钟递增下一次读取时间；未到时间不得再次派发。新未读、首次激活、召回前复核或业务状态变化必须立即清零退避。
+- `waiting_sales_reply` 仍需低频检查销售人工回复，但不能被 30 秒首屏扫描反复打开同一会话；读取调度以服务端 `next_read_due_at` 为准。
+- 历史 `disabled + paused` 活动绑定必须按 6.3.4 迁移；明确永久停用、已删除或已被替代的历史绑定必须保持不可恢复。迁移重复执行应幂等，并输出可核对的分类清单。
+- 点击开始接单只能恢复 `bound + paused` 且最新扫描唯一确认的当前绑定，不能恢复客户明确拒绝、已关闭、短码移除、多会话冲突或被替代的旧绑定。
 - 会话绑定失败、消息读取失败、微信窗口不可控、Sidecar 超时均有错误码、trace_id 和可查看证据。
 - 后端、Worker/RPA、前端均按本模块接口字段、状态枚举和错误码实现，不允许各自新增同义状态。
 
@@ -2912,10 +3431,11 @@ message_event
 | 状态 | 含义 | 允许流转 |
 |---|---|---|
 | `collecting` | 正在收集同一会话短时间内连续客户消息 | `generating / cancelled` |
-| `generating` | 已冻结本批消息，正在构建上下文、RAG 和模型回复 | `reply_action_created / handoff_created / no_action / superseded / failed` |
+| `generating` | 已冻结本批消息，正在构建上下文、RAG 和模型回复 | `reply_action_created / handoff_created / no_action / rejected / superseded / failed` |
 | `reply_action_created` | 已生成可发送回复，并创建 `reply_action` | 终态 |
 | `handoff_created` | 已判断需要转人工，并创建 `handoff_event` | 终态 |
 | `no_action` | 判断无需回复，例如客户无效闲聊、静默、策略跳过 | 终态 |
+| `rejected` | 当前批次内客户消息经结构化证据确认明确要求永久停止联系；会话同时进入 `rejected` | 终态，不创建回复动作，不发送礼貌性确认。 |
 | `superseded` | 生成期间来了新消息，本批被新 batch 取代 | 终态 |
 | `cancelled` | 会话关闭、拒绝、人工接管或短码移除导致取消 | 终态 |
 | `failed` | 上下文、RAG、模型或 Guard 异常 | 终态，默认转人工或记录错误。 |
@@ -2964,7 +3484,20 @@ message_event
 
 ### 7.3 C3接口定义
 
-接口路径可按后端现有路由风格调整，但语义、入参、出参和幂等规则必须保持一致。
+下表接口编号、HTTP 方法和从 `/api` 开始的完整路径是 C3 唯一正式名称，不得再按
+“现有路由风格”自行调整。中文描述、内部服务函数名和省略 `/api` 的客户端相对路径
+只用于解释或实现，不构成别名。
+
+| 接口编号 | 方法 | 路径 | 调用方 |
+|---|---|---|---|
+| `API-C3-01` | POST | `/api/internal/conversations/{conversation_id}/message-batches/collect` | 后端内部收集消息批次 |
+| `API-C3-02` | POST | `/api/internal/message-batches/{batch_id}/generate` | 后端内部运行 Brain/Guard |
+| `API-TASK-01` | POST | `/api/tasks/{task_id}/claim` | Worker 领取统一任务中心的 `chat_reply`；复用前文同一接口编号 |
+| `API-C3-03` | POST | `/api/reply-actions/{reply_action_id}/claim-send` | Worker 发送前原子领取回复动作 |
+| `API-C3-04` | POST | `/api/reply-actions/{reply_action_id}/sent-ack` | Worker 上报唯一发送终态 |
+
+当前消息批次的 Worker 查询固定复用 `API-C2-06`，不再为 C3 创建第二个“批次状态”
+接口。
 
 #### 7.3.1 C2消息入库后触发批处理
 
@@ -3015,10 +3548,19 @@ POST /api/internal/message-batches/{batch_id}/generate
 
 | 字段 | 说明 |
 |---|---|
-| `decision` | `send_reply / handoff / no_action / retry_later / pause`。 |
+| `decision` | `send_reply / handoff / no_action / retry_later / pause / hard_opt_out`。 |
 | `reply_action_id` | `decision=send_reply` 时返回。 |
 | `handoff_event_id` | `decision=handoff` 时返回。 |
 | `error_code` | 失败时返回。 |
+
+`hard_opt_out` 只允许在当前冻结批次内存在可核验的客户消息证据时成立：
+`message_event_id` 必须属于当前 batch，消息归属当前会话且 `sender_role=customer`，
+`source_message_key` 和规范化后的 `customer_text` 必须与入库事实完全一致。它只用于
+“不要再联系我”等明确永久停止要求；“暂时不需要”“现在没空”“价格不合适”等软拒绝
+不得进入该终态。证据有效时后端必须在同一事务中取消当前会话未发送的批次、回复动作
+和任务，清空召回计划，设置 `conversation.status=rejected`、`ai_enabled=false`、
+`message_batch.status=rejected`，且不生成任何礼貌回复。证据缺失或不匹配时固定降级为
+`retry_later`，不得拒绝会话，也不得发送。
 
 #### 7.3.3 Worker领取chat_reply任务
 
@@ -3228,7 +3770,12 @@ OmniAuto AI Engine 在服务端通过 Adapter 接入，不允许运行 OmniAuto 
 
 ## 8. 模块7：图片理解与图文回复
 
-本模块已完成开发和 Windows 实机验收，并进入当前可回滚基线。后续源码统一或相关代码变更只做受影响回归，不重开图片流程设计；任何新 Provider 或微信版本仍须按本章门禁验证后再发布。
+本模块有可回滚的历史 Windows 实机基线，但 `v16.145.0 / 5870c056…`
+已确认“引用文字被误判为图片 + 明确失败未及时收尾”会形成全局
+`C2_IMAGE_FACT_PENDING`，因此该候选包不得继续完整 UAT 或制作正式 EXE。
+本轮只做受限 P0 整改：不重写矩形图片探测算法，只复用现有文字菜单识别作为
+复制前否决，并保证明确 failed 事实立即结算、原会话转人工、其他短码
+继续运行。引用文字 OCR 识别率优化进入后续版本，不阻塞本轮最小修复。
 
 本章是图片流程的唯一现行技术口径。图片状态矩阵、内存/剪贴板、真实 Provider、
 跨轮上下文、产品权威边界和 UAT 门禁均以本章为准；已归档的历史审计材料不得
@@ -3237,6 +3784,8 @@ OmniAuto AI Engine 在服务端通过 Adapter 接入，不允许运行 OmniAuto 
 ### 8.1 唯一职责边界
 
 - 图片与文字、语音属于同一个 C2 单会话 Flow，不另建图片扫描任务、图片上传接口或平行准入链路。
+- Vision 的运行代码、Provider 网络请求和临时图片载荷均在 Windows Worker 客户端侧；车金后端不接收原图、不提供图片上传或 Vision 代理接口。正式客户端通过安装包内置的 Vision 客户端专用 Key 直接调用批准的 Provider，新电脑只需完成 Worker ID/Token 绑定。
+- Brain 固定在服务端运行，只消费通过共享 schema 的图片文字化结果和服务端权威车辆/知识证据；Brain 不接收原图，也不持有客户端 Vision Key。
 - 图片复用有效短码、`conversation_type=private`、`read-targets` 和 `authorization_revision` 门禁。
 - OmniAuto 负责发现 `image_bubble`、返回 `bubble_rect`、执行当前剪贴板图片事务和 Vision 文字化理解。
 - 图片、文字、语音只使用一套 C2 `sender_role` 规则：同行左头像为 `customer`，同行右头像为 `self`；两侧同时成立或都不成立为 `unknown`。Vision 的 `side / visual_side` 只能作诊断证据，不得参与角色定案。
@@ -3259,11 +3808,21 @@ OmniAuto AI Engine 在服务端通过 Adapter 接入，不允许运行 OmniAuto 
 -> 再次确认图片bubble_rect、同行头像角色、当前短码、private和authorization_revision
 -> 刷新后的同行头像角色必须与初始C2角色一致；另一角色或unknown时零点击并failed
 -> 页面已经变化时先重建完整final_read；图片已出屏则从本轮候选删除，仍可见但无法唯一匹配则failed
--> 右键图片，OCR确认菜单，点击复制
+-> 右键疑似图片并OCR识别完整菜单
+-> 从同一次右键截图唯一确认真实menu_panel_bounds；右键点周围的大区域不得充当弹窗边界
+-> 只使用bounds完整位于同一menu_panel_bounds、同一纵向菜单列内的菜单项精确分类；仅允许去掉菜单文字末尾省略号，不做包含式或模糊匹配
+-> 精确出现“放大阅读”，或“翻译”与“搜一搜”同时出现，确认为文字菜单
+-> 精确出现“语音转文字”或“收起文字”，确认为语音菜单
+-> 精确出现“复制”，并至少出现“编辑/用窗口打开/另存为/打开方式”之一，才确认为图片菜单
+-> “复制/转发/收藏/多选/提醒/引用/删除”均为公共项，不能单独证明消息类型
+-> 文字或语音菜单：关闭菜单、零复制、零剪贴板读取、零Vision，以error_code=C2_IMAGE_SOURCE_INVALID及精确reason_detail明确failed收口
+-> 只有公共项、证据不足或多类特征冲突：关闭菜单，以C2_IMAGE_MENU_OPERATION_FAILED且action_phase=not_attempted收口，不点击任何菜单项
+-> 只有确认为图片菜单后，才按已验证的图片菜单口径点击复制
 -> 从Windows剪贴板把位图读入当前进程内存
+-> 剪贴板稳定确认不是位图时，以C2_IMAGE_SOURCE_INVALID明确failed收口，不调用Vision
 -> 按原始位图内存上限解码，再缩放和自适应编码到Provider载荷上限
 -> 校验image_hash/视觉指纹后清除本次Windows剪贴板内容
--> Worker进程内调用OmniAuto BuiltinVisionPlugin和真实模型
+-> Worker进程内调用OmniAuto BuiltinVisionPlugin，并使用正式包内置的客户端专用Key直接请求批准的真实Vision Provider
 -> 使用共享JSON Schema校验结果，得到completed / failed明确终态
 -> 释放该图片内存
 -> 把文字化结果回填原图片slot，不在批次末尾另行追加
@@ -3285,9 +3844,29 @@ OmniAuto AI Engine 在服务端通过 Adapter 接入，不允许运行 OmniAuto 
   缺失时 Worker 进入 `vision_not_ready`，不得首屏扫描、定向读取或打开会话；
   配置恢复并重新预检通过后才能启动新 C2。已有 `sent_ack`、消息 Outbox 和
   `settle_without_ui` 必须先恢复，不受该能力门禁影响。不得用 mock 冒充真实能力完成。
+- 正式包的 Vision 预检必须验证“内置凭据存在且可用、Provider/HTTPS 接口/模型/
+  request_style 与批准白名单一致”，但输出只能包含 `configured=true/false`、凭据
+  来源类型、Provider、模型和稳定错误码，禁止输出 Key、Authorization 头或可还原
+  片段。正式包不得因新电脑缺少 Windows 环境变量而进入 `vision_not_ready`；开发
+  包才允许通过环境变量替换凭据。当前仍只读取
+  `CUSTOMER_IMAGE_UNDERSTANDING_API_KEY` 的实现属于待整改过渡实现，不满足正式包
+  和新电脑开箱可用要求。
 - Provider 地址必须为 HTTPS（显式本地开发模式除外），请求风格使用白名单。一次
   非 JSON 格式纠正重试属于合法流程，父进程安全预算必须覆盖两次请求，不能用
   `单次timeout + 5秒` 提前杀死第二次请求。
+
+Vision 正式凭据交付规则：
+
+1. Git 仓库、源码压缩包、PR、Actions 日志和普通构建产物中不得出现真实 Key。
+2. 正式 Windows 构建从受控 CI Secret 注入一个客户端专用 Key；开发构建不得冒充正式包。
+3. 内置 Key 只能访问批准的 Vision Provider、HTTPS 接口、模型和请求类型，并配置单机/全局额度、限流、异常用量告警、立即吊销和版本轮换能力。
+4. Key 不得作为包根目录下可编辑的 `.env`、配置说明、`.txt` 或 PowerShell 参数
+   交给用户配置；允许作为正式包 `_internal` 内部运行资源由凭据解析器读取并提供给
+   Vision 子进程。该资源仍属于客户端可提取边界，不得宣传为加密保险箱；运行日志、
+   子进程协议、预检报告、manifest、Actions 日志和故障 ZIP 必须脱敏。
+5. 由于客户端必须能够使用该 Key，无法承诺绝对不可提取；本项目不使用虚假“本地加密即绝对安全”的表述，安全目标是降低普通泄露、限制被盗后的权限和损失，并能快速吊销轮换。
+6. Key 轮换形成新客户端候选版本、新提交和新安装包 SHA；旧 Key 在迁移窗口结束后吊销。
+7. Windows UAT 必须从干净新电脑验证：不预设 Vision 环境变量，只输入 Worker ID/Token，也能通过 Vision 预检并完成真实图片识别。
 
 ### 8.4 成功、失败与重试口径
 
@@ -3295,6 +3874,13 @@ OmniAuto AI Engine 在服务端通过 Adapter 接入，不允许运行 OmniAuto 
 |---|---|
 | 新图片识别成功 | `message_type=image + item_state=completed`，保存文字白名单结果并按原槽位顺序入库。 |
 | 单张图片技术失败 | `message_type=image + item_state=failed + content=null + error_code/reason` 入库；不得伪装为文字，不自动重复 Vision。 |
+| 图片候选右键后确认为文字菜单 | 仅当真实弹窗边界内精确出现“放大阅读”，或“翻译”与“搜一搜”同时出现时成立。关闭菜单，不点击复制、不读取剪贴板、不调用 Vision；以 `error_code=C2_IMAGE_SOURCE_INVALID + reason_detail=text_context_menu_rejected + action_phase=not_attempted` failed 事实进入现有 Outbox。 |
+| 图片候选右键后确认为语音菜单 | 仅当真实弹窗边界内精确出现“语音转文字”或“收起文字”时成立。关闭菜单，不点击复制、不读取剪贴板、不调用 Vision；以 `error_code=C2_IMAGE_SOURCE_INVALID + reason_detail=voice_context_menu_rejected + action_phase=not_attempted` failed 事实进入现有 Outbox。 |
+| 图片候选右键后确认为图片菜单 | 必须同时精确出现“复制”和至少一项“编辑/用窗口打开/另存为/打开方式”，才允许点击复制并继续剪贴板、指纹及 Vision 证明链。 |
+| 右键菜单边界未确认、只有公共项、证据不足、分类冲突或复制项坐标不安全 | “复制/转发/收藏/多选/提醒/引用/删除”不能单独证明类型；复制项边界和点击坐标必须完整落在同一真实弹窗内。任一条件不满足都关闭菜单，以 `error_code=C2_IMAGE_MENU_OPERATION_FAILED + reason_detail=menu_panel_unconfirmed/menu_evidence_incomplete/menu_evidence_conflict/menu_copy_item_unsafe + action_phase=not_attempted` failed 收口，不点击任何菜单项。 |
+| 已点复制但剪贴板稳定确认不是位图 | 停止剪贴板轮询且不调用 Vision；以 `error_code=C2_IMAGE_SOURCE_INVALID + reason_detail=clipboard_current_content_not_bitmap + action_phase=trigger_attempted` failed 图片事实立即进入现有 Outbox，不得等待图片后最终画面收敛才上报。 |
+| 上述明确 failed 事实已获后端逐 source key 确认 | 本地 ledger/ActionJournal 改为 confirmed 并释放 `C2_IMAGE_FACT_PENDING`。正常 `active_read` 下：customer 失败转 `waiting_sales_reply`；self 失败且没有更晚客户消息时转 `sales_replied_waiting_user`，有更晚客户消息时仍转 `waiting_sales_reply`；unknown 不建立图片事实。`fact_settlement` 只补录事实，不改变当前状态。完成后 Worker 立即继续下一个短码。 |
+| 上述事实因后端暂时无法确认 | 保留 Outbox 并按退避重传，不重复右键、复制或 Vision；这是可观测的临时事务等待，不得因确定性代码错误永久卡住。 |
 | 图片在动作前已被顶出最终当前屏 | 重建 final_read 后本轮不建立该图片槽位，不上滚、不追踪、不产生失败事实或 Brain 门禁；后续自然可见时重新观察。 |
 | 图片仍在最终当前屏但无法唯一确认原稳定身份 | `message_type=image + item_state=failed + content=null + error_code=C2_IMAGE_SLOT_RECONFIRM_FAILED` 入库；不右键、不调用 Vision、不跨轮重试。 |
 | 初次图片观察无法确认同行头像角色 | 尚未建立业务图片身份；返回帧级 `MESSAGE_IDENTITY_UNCONFIRMED`，零点击、零 Vision、零 terminal ledger，并阻断本批 Brain。 |
@@ -3349,15 +3935,25 @@ OmniAuto共同基础：meta-xucong/omniauto@855c218
 ```
 
 这里的 `2318bd8` 是回滚包中图片气泡和复制后一致性能力的历史选择性来源，不表示
-当前 `worker-client/omniauto-rpa` 仍停留在该提交。当前双仓统一结果为：
+当前 `worker-client/omniauto-rpa` 仍停留在该提交。历史 `v16.132.0` 双仓统一结果为：
 
 ```text
 OmniAuto 通用上游固定提交：35b0eee13c6423d56a0f15736f96a422e10d8d1c
-车金同步位置：PR #7 当前分支，最终提交以本次同步提交为准
-当前内嵌OmniAuto目录SHA256：15ad797348d2dd92050097a9dc04e69797cdb3cd991d923d1cf4a972b2e64234
-客户端版本：待定，正式候选必须高于16.132.0
+车金同步位置：历史 PR #7
+历史内嵌OmniAuto目录SHA256：15ad797348d2dd92050097a9dc04e69797cdb3cd991d923d1cf4a972b2e64234
+客户端版本：16.132.0
 活动 selective_integrations：[]
 历史来源：855c218 + 2318bd8 + ff9e0de（只读追溯）
+```
+
+当前未发布候选来源固定为：
+
+```text
+Worker代码基线提交：d6e44680d339b8613b0435afce140d39f673b7a8
+内嵌OmniAuto基础：a563e6688c47a8922510794101967823fe1389d7（包含35b0eee）
+活动选择性来源：99d0070517a0976dc47661f4b6564e9f6e1f1b1a
+机器合同revision：3.12.5
+发布状态：两项P0已有修复提交、等待架构复审；复审通过前禁止生成ZIP/EXE
 ```
 
 当前主链完整复用：
@@ -3374,8 +3970,11 @@ OmniAuto 通用上游固定提交：35b0eee13c6423d56a0f15736f96a422e10d8d1c
 ```
 
 `claim_copy_ownership/微信窗口PID` 硬门禁已经撤销。后续双仓统一不得恢复该门禁，
-也不得借机改写 OmniAuto 的图片检测、重新定位、复制、指纹辅助、内存图片、
-Vision 或结果返回主链。
+也不得借机重写 OmniAuto 的图片矩形探测、重新定位、指纹辅助、内存图片、
+Vision 或结果返回主链。唯一允许的当前 P0 例外是：在已有右键菜单 OCR 结果上
+按本节唯一判据精确区分文字、图片、语音和未知菜单，对文字/语音菜单做复制前硬否决；同时修复 Worker 明确
+failed 事实的 Outbox 结算与全局门禁释放。本例外不恢复旧图片入口，不改变
+sequence、可解码位图、稳定读取、指纹和 Vision 证明链。
 
 下列整改已完成，并作为双仓统一的必保合同：
 
@@ -3409,10 +4008,11 @@ Vision 或结果返回主链。
    完整性测试必须证明运行时可产生的图片失败原因全部显式映射，不得用
    `default_failure_error_code` 掩盖漏配。
 
-`v16.130.0` 的历史发布来源元数据按下列方式保留；当前 schema v3 已把活动
-`upstream_base_commit` 更新为 `35b0eee`，活动 `selective_integrations` 置空，
-旧三段来源迁入只读 `historical_integrations`。来源 schema、打包脚本和测试已同次
-升级，后续不得伪造目录来源：
+`v16.130.0` 的历史发布来源元数据按下列方式保留。`v16.132.0` 曾使用
+`upstream_base_commit=35b0eee + selective_integrations=[]`；当前未发布候选已前进为
+`upstream_base_commit=a563e668…`（包含 `35b0eee`）并活动选择性同步
+`99d0070…`。旧三段来源继续位于只读 `historical_integrations`。来源 schema、打包脚本
+和测试必须同步，后续不得把历史来源或上一发布来源伪装成当前候选来源：
 
 ```text
 upstream_base_commit = 855c218...
@@ -3426,17 +4026,19 @@ OmniAuto 基础提交、选择性来源提交、完整目录 tree SHA256、包�
 合同 revision/SHA、生成 observation schema SHA 和自动化/preflight 结果。
 tree SHA 必须由最终提交后的真实目录动态计算，不得把历史 tree SHA 手工写成当前值。
 
-#### 8.5.1 双仓最终收口结果
+#### 8.5.1 双仓历史收口与当前候选
 
 1. OmniAuto 最新通用改动已通过上游 PR #37 合并到固定提交 `35b0eee`。
-2. 车金内嵌 `worker-client/omniauto-rpa` 已更新到该固定提交，车金业务适配仍留在
-   Worker/后端边界，没有进入通用上游。
-3. `.chejin-source.json` 已使用 schema v3：活动
-   `upstream_base_commit=35b0eee`、`selective_integrations=[]`，旧
-   `855c218 + 2318bd8 + ff9e0de` 保留在 `historical_integrations`。
-4. 车金 PR 已合并到 `main@37139bfd`，客户端版本为 `16.132.0`。
-5. 自动化和受影响范围 Windows 回归已通过。正式回滚仍使用
-   `8ee53e1 / v16.130.0`，不得在旧安装包上继续打补丁。
+2. 历史 `v16.132.0 / main@37139bfd` 的车金内嵌副本固定到 `35b0eee`，当时活动
+   `selective_integrations=[]`，该来源状态只描述已回归历史版本。
+3. 当前未发布代码基线 Worker 为 `d6e4468…`，内嵌基础为 `a563e668…`，活动
+   `selective_integrations[0].source_commit=99d0070…`，scope 为真实弹窗边界内的精确菜单
+   分类、非位图失败结算、正式菜单失败原因和复制点击前安全落盘顺序；旧 `855c218 + 2318bd8 + ff9e0de` 仍保留在
+   `historical_integrations`。
+4. 前一候选暴露的“真实弹窗边界”和“跨重启完整失败事实”两项 P0 已有修复提交，
+   当前状态为等待架构复审；复审通过前不能标记为已收口、不能构建 UAT 包，也不能合并
+   为正式发布。
+5. 正式回滚仍使用 `8ee53e1 / v16.130.0`，不得在旧安装包上继续打补丁。
 
 ### 8.6 证据层级与不得回退项
 
@@ -3450,11 +4052,26 @@ OmniAuto 当前事务只负责证明：
 ```text
 动作前原slot仍在当前屏
 -> 记录sequence_before
--> 右键并点击局部“复制”
+-> 右键并识别完整局部菜单
+-> 唯一确认真实menu_panel_bounds，菜单外OCR文字全部排除
+-> 文字=(“放大阅读”或“翻译+搜一搜”)、语音=(“语音转文字/收起文字”)时否决候选并零复制
+-> 图片=(“复制”且至少一个“编辑/用窗口打开/另存为/打开方式”)时才点击“复制”
+-> 只有公共项、证据不足或分类冲突时关闭菜单并以菜单操作失败收口
 -> sequence_after != sequence_before
 -> 当前图片位图可解码
 -> 读取前后sequence_after稳定
 ```
+
+图片流程只有在复制菜单项物理点击前才把动作日志推进为 `trigger_attempted`；
+右键并完成菜单分类时仍为 `not_attempted`。完整菜单已证明文字/语音误判，
+菜单证据不足或冲突，或复制后剪贴板已稳定证明非位图时，结果已经是明确
+failed；Worker 必须先把可重放的原始完整 V3 failed 消息持久化到 ledger/Outbox，再做图片后
+最终画面复核。后端确认后必须清理对应 ActionJournal，不得要求重新打开微信
+才能收尾。
+
+这里的“后端确认”必须是原完整失败消息的逐 source key 确认，不能用
+`messages=[]` 的空 flow gate 代替。重启恢复仍有有效 `active_read` 授权时重传原完整
+V3 消息并正常应用角色状态机；只有 `fact_settlement` 时才固定只补录、不改变状态。
 
 保留现有图片指纹作为复制一致性辅助检查。指纹不生成消息身份、不判断角色；
 指纹匹配不能单独授权点击、Vision 或覆盖 Worker 身份。首次不匹配沿用现有同 Flow
@@ -3492,6 +4109,21 @@ OmniAuto 当前事务只负责证明：
    `git diff --check` 全部通过。
 10. 来源元数据能同时表达 `855c218` 基础和 `2318bd8` 选择性集成，打包脚本及
     manifest 测试覆盖新增字段。
+11. 正式包不依赖 Windows 预设 Vision 环境变量；从最终 ZIP 解压到干净电脑后，
+    只输入 Worker ID/Token 即可通过真实 Vision 配置预检。
+12. 最终包扫描、运行日志、故障 ZIP 和 Actions 日志均不得出现 Vision Key、
+    Authorization 头或可还原片段；Provider/接口/模型白名单、额度和吊销状态可审计。
+13. 使用 `v16.145.0` 真实复现截图回归：即使矩形探测器仍返回该候选，明确
+    文字菜单也必须在复制前拦截，剪贴板读取次数为 0，Vision 调用次数为 0。
+14. 剪贴板已稳定证明非位图时，只产生一份 `C2_IMAGE_SOURCE_INVALID` failed
+    事实；不百次级轮询、不重新操作微信、不重复 Vision。
+15. 明确 failed 事实必须在不依赖新 UI 动作的情况下获得后端逐 source key 确认；
+    正常 `active_read` 下按消息角色和最终画面顺序处理：客户失败媒体转
+    `waiting_sales_reply` 并交人工；销售自己发送的失败媒体且其下没有更新客户消息时
+    保持 `sales_replied_waiting_user`；角色未知时不伪造图片消息。`fact_settlement`
+    只补录事实、不改变状态。以上路径完成后，同一 Worker 均可继续处理其他短码。
+16. 从 `v16.145.0` 留下的同类 waiting ledger/ActionJournal 必须可由新版本原样重传并
+    在后端确认后自动清理；不得要求测试人员手工删库、重新绑定或重装。
 
 当前 C2 Windows 实机验收结果见
 `C2_Windows实机验收报告_2026-08-03.md`，结论为通过，P0/P1 均为 0。C3 自动回复
@@ -3515,6 +4147,24 @@ Windows UAT 包；不得先用 dirty 包测试、UAT 后再修改来源文件重
   sequence、可解码位图、稳定读取和指纹链成立，正常图片不得被额外PID规则拒绝。
 - 图片读取期间其他程序或用户复制新图片时，错图必须被指纹/sequence门禁拒绝；
   用户后来产生的新剪贴板代次不得被清除。
+- 引用文字区域被矩形探测器列为图片候选时，必须由“放大阅读”或“翻译+搜一搜”
+  精确确认文字菜单并在复制前拦截；只有“翻译”或只有“搜一搜”不得单独下结论。
+  原会话形成一次可查的人工接管，不得形成永久 `C2_IMAGE_FACT_PENDING`。
+- 真实图片菜单必须同时出现“复制”和至少一项“编辑/用窗口打开/另存为/打开方式”
+  才允许复制；只有公共项或多类特征冲突时不得点击。
+- 菜单内只有“复制”、但菜单外聊天区域存在“编辑/放大阅读/翻译/搜一搜”时，
+  菜单外文字必须被排除，结果为证据不足且零点击；测试必须断言所有分类和点击证据
+  bounds 均完整位于同一个 `menu_panel_bounds`。
+- 真实语音菜单出现“语音转文字”或“收起文字”时必须在图片复制前拦截，且零
+  剪贴板读取、零 Vision。
+- 在 failed Ledger 已落盘、完整消息 Outbox 尚未落盘的故障点模拟进程退出；重启后
+  必须上报包含原失败图片的完整 V3 messages，后端产生对应 MessageEvent 和逐 source
+  key 确认后才能清理 Ledger，禁止用空 flow gate 代替。
+- 对 customer/self/unknown 三种角色分别验收失败后的状态：customer 转
+  `waiting_sales_reply`；self 无更晚客户消息时转 `sales_replied_waiting_user`；unknown
+  不建立图片消息。仅 `fact_settlement` 恢复时三者都不得倒推改变当前会话状态。
+- 该会话转 `waiting_sales_reply` 后，Worker 必须在同一轮或下一调度周期继续处理
+  其他已授权短码；销售回复后按既有状态机进入 `sales_replied_waiting_user`。
 
 UAT 责任固定为：架构师维护方案和判定门禁，客户端工程师按本节实现，后端工程师
 同步机器合同并回归，用户与测试人员在真实 Windows 微信执行用例并提供证据，
@@ -3530,6 +4180,9 @@ UAT 责任固定为：架构师维护方案和判定门禁，客户端工程师�
 - 同一图片动作跨轮重复执行。
 - 原图进入文件、日志、后端或安装包。
 - 图片终态丢失或错误触发Brain。
+- 已按唯一判据确认为文字/语音菜单仍点击复制，图片证据不足或冲突仍点击菜单项，
+  或明确非位图后仍持续轮询、重复 UI 动作。
+- 单个图片 failed 事实未能进入 Outbox/后端确认，导致其他短码长期饿死。
 - 修改导致文字、语音、回复、召回或停止流程回归。
 - OmniAuto 通用能力再次只存在车金内嵌副本、来源记录与真实代码不一致，或引用
   浮动分支而不是固定提交。
@@ -3756,6 +4409,10 @@ Product Master、KnowledgeRuntime、RAG 与 Guard，但车金后台仍是唯一�
 
 ## 15. 剩余上线前确认清单
 
+- Windows UAT 阻塞项：按 3.2.4 从当前源码、测试、打包、CI 和运行时彻底删除悬浮球、
+  键盘鼠标 Hook、F8 守护、守护进程/文件/错误码及全部兼容尾巴；保留独立逻辑 UI 锁、
+  动作前复核、取消回调和 ActionJournal。自动化证明全流程不出现悬浮球、不拦截人工
+  输入、主流程正常后，重新构建新候选并进入 Windows 实机测试。
 - 发布阻塞项：完成账号/会话数据库迁移、初始账号安全创建、前后端 Cookie 登录联调，
   并关闭旧 Admin Bearer Token 和生产鉴权绕过入口。
 - 发布阻塞项：登录、会话失效、退出、所有后台路由门禁、同权限、限速、审计脱敏和

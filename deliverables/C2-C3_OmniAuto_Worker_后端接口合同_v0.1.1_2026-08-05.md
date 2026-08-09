@@ -1,30 +1,37 @@
 # C2-C3 OmniAuto / Worker / 后端接口合同
 
-版本：v0.1.1
+版本：v0.1.2
 
 日期：2026-07-21
 
-最后更新：2026-08-05（仅同步唯一技术方案版本引用，不改变 C2/C3 机器合同）
+最后更新：2026-08-09（统一真实弹窗边界、失败事实恢复、正式菜单原因和点击落盘顺序）
 
-状态：接口命名和职责边界冻结。C2 机器合同为 `3.12.4`；`v16.130.0 / 8ee53e1` 已完成 C2 正式 Windows 实机验收。OmniAuto 上游已前进到 PR #37 合并提交 `35b0eee`，车金内嵌副本已选择性同步；最近一次已做 Windows 受影响范围回归的代码仍为 `v16.132.0 / 37139bfd`。C3 自动回复沿用此前通过且当前无已知问题的证据。
+状态：接口命名和职责边界保持唯一。当前 C2 机器合同为 `3.12.5`。当前未发布候选为
+Worker代码基线 `d6e4468…`、OmniAuto `99d0070…`。前一候选暴露的“真实弹窗边界”和“跨重启
+完整失败事实”两项 P0 已有修复提交，但仍须架构复审。本次不新增同义顶层错误码：文字、语音或非位图造成的无效图片源统一
+使用 `error_code=C2_IMAGE_SOURCE_INVALID`，并以本合同规定的精确 `reason_detail`
+区分。修复、共享 schema 和三层合同测试全部通过前，不得继续完整 Windows UAT，
+不得生成新的 ZIP/EXE。
 
 > 恢复流程以
 > `C1-C3_事务恢复与事实结算统一架构_v0.1_2026-07-31.md`
 > 为最高约束。旧实现中的图片专用恢复和“收到 `target_terminated` 后本地丢弃事实”
 > 不再属于正式合同。
-> 当前机器合同为 `3.12.4`。PID 硬门禁、五个专用失败原因和三个观察失败映射已经
+> 当前机器合同为 `3.12.5`。PID 硬门禁、五个专用失败原因和三个观察失败映射已经
 > 按共享 schema、样例和合同测试收口；后续不得恢复，也不得借双仓统一重开其他
 > 状态机设计。
 >
 > 图片流程的状态矩阵、Windows 位图、剪贴板、Vision Provider、结果 schema、
 > 服务端产品权威、跨轮 Brain 上下文和 UAT 门禁，统一以
-> `AI智能客服售前跟进系统_技术方案手册_v0.8.1.md` 第 8 章为最高架构约束。
+> `AI智能客服售前跟进系统_技术方案手册_v0.8.5.md` 第 8 章为最高架构约束。
 > 原图片封版清单已归档为历史审计材料，不再属于现行交付文档。
 > 客户端实际代码以
-> `AI智能客服售前跟进系统_技术方案手册_v0.8.1.md` 第 8.5 至 8.8 节为最高实施
+> `AI智能客服售前跟进系统_技术方案手册_v0.8.5.md` 第 8.5 至 8.8 节为最高实施
 > 约束。`v16.130.0` 的来源事实仍是 OmniAuto `855c218` 基础 + `2318bd8`
 > 选择性接入；这是已验收回滚基线。当前双仓已统一到独立 OmniAuto 固定提交
-> `35b0eee`，车金只保留适配层；不得恢复第二套剪贴板接口或 PID 门禁。
+> 历史 `v16.132.0` 曾统一到 `35b0eee`；当前候选内嵌基础为 `a563e668…`
+> （包含 `35b0eee`），并选择性接入 `99d0070…` 的真实弹窗边界菜单分类、正式失败原因和点击前安全落盘能力。车金只保留适配层；
+> 不得恢复第二套剪贴板接口或 PID 门禁。
 
 ## 0. 三层统一与职责边界（最高约束）
 
@@ -482,10 +489,13 @@ X-Request-Id: ...     # 可选
 重建后图片仍可见但身份不唯一 -> item_state=failed
 ```
 
-Vision 配置必须在 Worker 开始“新的 C2 UI 流程”前完成预检。配置缺失属于客户端
-`vision_not_ready`，不是单张图片状态，也不得复用后端请求级
+Vision 配置必须在 Worker 开始“新的 C2 UI 流程”前完成预检。正式 Worker 包的
+凭据来源固定为 CI Secret 注入的客户端专用 Vision Key；正式用户和新 Windows
+电脑不配置 `CUSTOMER_IMAGE_UNDERSTANDING_API_KEY`，该环境变量只允许开发包覆盖。
+配置缺失属于客户端 `vision_not_ready`，不是单张图片状态，也不得复用后端请求级
 `capability_paused`。全局事务恢复必须排在该预检之前：已有 `sent_ack`、消息
-Outbox 和 `settle_without_ui` 事实结算不需要 Vision，不能被一起阻断。
+Outbox 和 `settle_without_ui` 事实结算不需要 Vision，不能被一起阻断。预检和任何
+三层合同只允许暴露凭据是否已配置，不得包含 Key 或 Authorization 内容。
 
 图片归属的唯一业务结论来自 C2 同行头像规则。复制前重新定位得到的
 `visual_side` 只能记录为物理一致性证据，不得否决或覆盖已经确认的
@@ -500,7 +510,49 @@ Outbox 和 `settle_without_ui` 事实结算不需要 Vision，不能被一起阻
 `C2_IMAGE_SLOT_RECONFIRM_FAILED + action_phase=not_attempted`。这项比较是
 两次 C2 正式结论的一致性校验，不是使用 `visual_side` 重新判断角色。
 
-图片槽位已完成上述确认后，如右键菜单未准备好、未识别到“复制”或菜单项无法安全点击，正式错误必须为 `C2_IMAGE_MENU_OPERATION_FAILED`，不得伪装成槽位复核失败。复制后的 sequence、位图或指纹一致性失败继续使用 `C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED`。
+图片槽位已完成上述确认后，OmniAuto 必须从右键后的同一张截图中唯一确定真实弹窗边界
+`menu_panel_bounds`。候选锚点周围的大范围搜索区不等于弹窗边界。参与分类的每个菜单项
+边界以及准备点击的“复制”边界，必须完整落在同一个 `menu_panel_bounds` 内并属于同一
+纵向菜单列；弹窗边界无法唯一确认、所需菜单项越界、只有公共项或多类证据冲突时，
+一律零点击。OCR 结果仅允许去掉菜单文字末尾省略号，禁止包含式或模糊匹配。唯一判据为：
+
+跨层失败字段固定为：`error_code` 保存正式顶层错误码，`reason_detail` 保存精确原因；
+不得再使用含义不清的顶层 `reason`。`C2_IMAGE_MENU_OPERATION_FAILED` 的
+`reason_detail` 只允许 `menu_panel_unconfirmed / menu_evidence_incomplete /
+menu_evidence_conflict / menu_copy_item_unsafe`。
+
+- 文字菜单：精确出现“放大阅读”，或“翻译”与“搜一搜”同时精确出现；
+- 语音菜单：精确出现“语音转文字”或“收起文字”；
+- 图片菜单：精确出现“复制”，并至少精确出现一项“编辑/用窗口打开/另存为/打开方式”；
+- 公共项：“复制/转发/收藏/多选/提醒/引用/删除”均不能单独证明类型。
+
+确认为文字菜单时，必须关闭菜单并返回
+`error_code=C2_IMAGE_SOURCE_INVALID + reason_detail=text_context_menu_rejected + item_state=failed + action_phase=not_attempted`；
+确认为语音菜单时，必须关闭菜单并返回
+`error_code=C2_IMAGE_SOURCE_INVALID + reason_detail=voice_context_menu_rejected + item_state=failed + action_phase=not_attempted`。
+两者均为零复制、零剪贴板读取、零 Vision。弹窗边界无法确认时使用
+`reason_detail=menu_panel_unconfirmed`；只有公共项或证据不足时使用
+`menu_evidence_incomplete`；同时命中多类特征时使用 `menu_evidence_conflict`；已经确认
+图片菜单但“复制”项边界不能安全点击时使用 `menu_copy_item_unsafe`。以上均返回
+`error_code=C2_IMAGE_MENU_OPERATION_FAILED + item_state=failed + action_phase=not_attempted`，
+关闭菜单且不得点击任何菜单项。只有确认为图片菜单且“复制”边界安全时，才允许点击。
+
+复制后的 sequence、位图或指纹一致性失败继续使用
+`C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED`。剪贴板经有界轮询已稳定证明不是可解码位图时，
+精确映射为
+`error_code=C2_IMAGE_SOURCE_INVALID + reason_detail=clipboard_current_content_not_bitmap + item_state=failed + action_phase=trigger_attempted`；
+不得继续百次级轮询，不得再次右键、复制或调用 Vision。
+
+上述明确 failed 结果必须先以完整可重放 V3 消息进入 Worker ledger 和现有
+`POST /api/workers/{worker_id}/wechat/messages/ingest` Outbox，不得先等待图片后
+最终画面收敛。正常 `active_read` 下，后端逐 source key 返回 `ingested/duplicated`
+确认后，Worker 将 ledger 置为 confirmed 并删除对应 ActionJournal；客户失败媒体转
+`waiting_sales_reply` 并创建唯一 handoff；销售自己发送的失败媒体在其下方没有更新客户
+消息时保持 `sales_replied_waiting_user`，若下方已有更新客户消息则按最终顺序进入
+`waiting_sales_reply`；角色为 `unknown` 时不伪造图片消息，进入身份门禁。确认完成后
+该会话不再占用
+`C2_IMAGE_FACT_PENDING`，Worker 必须继续其他已授权短码。后端网络暂时不可用时
+保留 Outbox 并退避重传，但重传只能发送原 JSON，不得重复 UI/Vision。
 
 图片观察入口必须区分：
 
@@ -584,13 +636,29 @@ Worker 必须同时匹配 `conversation_id + authorization_revision + read_reaso
 | `fact_only` | 原身份仍可证明；幂等保存消息事实，固定 `state_transition_applied=false`、`message_batch=null`。 |
 | `technical_terminal` | 原身份无法安全映射；持久化恢复终结审计和精确 source key 结果，不写入错误会话。 |
 
-缺失或未知决定必须按 `retry_later` 失败关闭。语音/图片动作日志中所有条目均明确
-为 `not_attempted` 时，Worker 在全局门禁前本地清理，不需要请求后端。
+缺失或未知决定必须按 `retry_later` 失败关闭。`action_phase` 只判断微信动作能否安全
+取消或重放，不能决定业务事实是否删除。只有纯 ActionJournal 动作意图、所有条目均为
+`not_attempted`，并且不存在 terminal payload、completed/failed Ledger 和 Outbox 时，
+Worker 才能在全局门禁前本地清理。任何已形成的 completed/failed 事实都必须进入统一
+结算，不得因 `not_attempted` 被删除。
+图片流程只有在复制菜单项物理点击前才将动作日志推进为 `trigger_attempted`；右键并完成
+菜单分类时仍为 `not_attempted`。不得将 `trigger_attempted` 单独解释为“必须再次打开原会话
+才能收尾”。如果完整菜单已按唯一判据证明当前候选是文字或语音、菜单证据不足或冲突，
+或复制后剪贴板已稳定证明非位图，该条目已是明确 failed 终态；Worker 必须使用原可重放
+JSON 进入现有 `messages/ingest` Outbox，后端确认
+后清理，不再签发 `resume_current_target` 要求重复 UI 操作。
 `unbound / binding_failed / needs_review / degraded / paused` 不得返回永久终结。
 后端仍能证明原 Worker、原绑定、原 conversation 和原短码身份时，返回
 `settle_without_ui + fact_only`，但不改变当前绑定状态；身份暂不可证时才
 `retry_later`。会话关闭、拒绝、可靠确认短码移除或绑定禁用时，已经产生的事实
 仍返回 `settle_without_ui`，不能要求 Worker 本地改成 `not_required`。
+
+恢复时必须重放原始完整 V3 消息，禁止使用 `messages=[]` 的空流程门禁代替 failed 或
+completed 消息。原 `active_read` 授权仍有效时，按消息角色和最终画面顺序执行正常状态机；
+`fact_settlement` 固定 `state_transition_applied=false`，不得创建 handoff、Brain、回复或
+召回；身份无法可信映射时只写 `technical_terminal` 审计，不伪造 MessageEvent。只有每个
+`source_message_key` 都得到 `ingested / duplicated / technical_terminal` 之一的逐条确认，
+Worker 才能确认 Ledger 并清理对应 ActionJournal 和 Outbox。
 
 `settlement_token` 使用请求头 `X-C2-Settlement-Token`，建议有效期 5 分钟，并
 绑定 Worker、conversation、`recovery_transaction_id` 和 source key 摘要。同一
@@ -1009,6 +1077,12 @@ maybe_route_customer_image_turn(
 5. 插件释放图片内存并返回通过共享 schema 的文字化 `customer_image_understanding`、`visual_bridge_input`。
 6. Worker 只把允许持久化的文字结果映射进现有 `messages/ingest`。
 
+Provider 调用边界固定为：临时图片载荷由 Windows Worker 客户端直接发送给批准的
+Vision Provider，车金后端不接收原图、不新增 `/images/upload` 或 Vision 代理接口；
+服务端 Brain 只消费 `customer_image_understanding/visual_bridge_input`。正式机器
+合同应以 `credential_source=bundled_client_credential` 表达凭据来源，不再把
+`api_key_env` 作为正式包必填项；现有仅支持环境变量的实现属于待整改过渡实现。
+
 如果新版 OmniAuto 尚未同步进 Worker 打包目录，本能力必须保持关闭，不允许用临时接口代替。
 
 硬约束：
@@ -1086,8 +1160,8 @@ completed。持久化时剔除 Provider 原始响应/错误正文、图片字节
 | P0 | 已在当前候选收口；本轮回归保留 | 删除 `C2_IMAGE_PROCESSING_DEFERRED` 和图片跨轮未收口项；出屏图片本轮不存在，仍可见但不能唯一确认则 failed；当前屏 NEW_IMAGE 必须在同一 Flow 内终态。 |
 | P0 | 已收口 | 图片角色只采用 C2 同行头像结论；复制前几何侧仅记录物理一致性证据，不再作为第二套准入规则。 |
 | P0 | 已收口 | 后端失败外壳与 Worker Outbox 统一使用 `retry / refresh_and_rebuild / capability_paused`；旧 `quarantine/abandoned` 仅作为启动迁移输入，不再是运行时终态。 |
-| P0 | 已在当前候选收口；本轮回归保留 | 图片专用恢复必须改为 voice/image 共用 `media_fact` 协调器；语音日志补齐 replayable observation，并进入同一 Worker 级全局门禁。 |
-| P0 | 已在当前候选收口；本轮回归保留 | 废弃新合同中的 `target_terminated -> 本地not_required`；实现 `resume_current_target / settle_without_ui / retry_later` 与 `fact_settlement`。 |
+| P0 | 修复已提交，等待复审 | voice/image 共用 `media_fact` 协调器；恢复必须重放原始完整 V3 消息，禁止用 `messages=[]` 空门禁提前确认 Ledger。 |
+| P0 | 修复已提交，等待复审 | 废弃 `target_terminated -> 本地not_required`；实现 `resume_current_target / settle_without_ui / retry_later` 与 `fact_settlement`，并逐 source key 确认后才允许清理。 |
 | P0 | 已在当前候选收口；本轮回归保留 | `unbound/binding_failed/needs_review/degraded/paused` 不得作为永久终止；原事务身份可信时 fact_only 结算，暂不可证时 retry_later；单次短码 OCR 缺失不得覆盖已有 bound 绑定。 |
 | P0 | 已在当前候选收口；本轮回归保留 | 技术恢复终态不得创建 handoff 冒充结算；改用通用 recovery settlement 持久化，并支持绑定已不存在时仍安全终结原事务。 |
 | P0 | 已在当前候选收口；本轮回归保留 | 分离 Windows 原始位图和 Provider 载荷上限，支持普通 1080p DIB/HBITMAP 自适应压缩，并在取入内存后清除系统剪贴板。 |
@@ -1095,7 +1169,8 @@ completed。持久化时剔除 Provider 原始响应/错误正文、图片字节
 | P0 | 已在当前候选收口；本轮回归保留 | 图片观察不得静默截断 8 张；failed 图片门禁覆盖 customer/self；历史图片上下文保留结构化结果。 |
 | P0 | 已在当前候选收口；本轮回归保留 | 车金严格 Vision 入口不得使用客户端本地 KnowledgeRuntime 确认正式产品 ID；后端使用服务端权威车源验证。 |
 | P0 | 已通过 | `v16.130.0 / 8ee53e1` 已完成真实豆包 Vision、Windows C2 图片、顺序、跨轮去重、多目标串行和停止监听验收；详见 `C2_Windows实机验收报告_2026-08-03.md`。 |
-| P0 | 已收口 | 最新通用改动已合入独立 OmniAuto 固定提交 `35b0eee`，车金内嵌副本已同步并保留适配层；活动选择性集成为空。 |
+| P0 | 历史基线已收口；当前候选待复审 | 历史 `v16.132.0` 固定到 `35b0eee` 且活动选择性集成为空；当前候选基础为 `a563e668…`，活动选择性接入 `99d0070…`。 |
+| P0 | 修复已提交，等待复审 | 右键后的分类和点击证据必须全部完整落在同一真实 `menu_panel_bounds`；大范围锚点搜索区不得当成弹窗边界。 |
 
 ## 11. 联调验收门禁
 
@@ -1113,7 +1188,7 @@ completed。持久化时剔除 Provider 原始响应/错误正文、图片字节
 12. 状态转换测试必须表驱动覆盖全部枚举组合，并至少验证：完成事实不丢失、失败集合不缩小、未知发送不重发、隔离 Outbox 不循环重建。
 13. 同一业务规则只能在一层拥有：OmniAuto 提供观察证据，Worker 映射执行结果，后端持久化业务真相。
 14. 图片专项自动化、来源追溯、不可变候选包和 Windows UAT 必须逐项通过
-`AI智能客服售前跟进系统_技术方案手册_v0.8.1.md` 第 8.5 至 8.8 节；任何 P0
+`AI智能客服售前跟进系统_技术方案手册_v0.8.5.md` 第 8.5 至 8.8 节；任何 P0
 未通过不得形成正式 UAT 结论。
 15. 允许在现有大函数周围提取上述集中判定器和阶段结果对象；本期不要求全面重写，但禁止继续增长重复分支。
 16. 双仓统一已按以下顺序完成并作为后续通用改动规则保留：OmniAuto 上游分支和
@@ -1121,6 +1196,8 @@ completed。持久化时剔除 Provider 原始响应/错误正文、图片字节
     和必要 Windows 冒烟 → 车金 PR。
 17. OmniAuto PR 只含通用 RPA/Vision/证据能力；车金授权、业务状态、后端 API、
     Outbox 和任务中心必须留在 Worker/后端适配层。
-18. 双仓统一后的来源 schema 为 v3：活动 `upstream_base_commit=35b0eee`，活动
-    `selective_integrations=[]`，旧三段来源只放 `historical_integrations`；后续若
-    再出现活动选择性通用代码，不得宣称来源仍保持统一。
+18. 来源 schema 为 v3。历史 `v16.132.0` 的活动来源为
+    `upstream_base_commit=35b0eee + selective_integrations=[]`；当前未发布候选为
+    `upstream_base_commit=a563e668…`（包含 `35b0eee`）并活动选择性接入
+    `99d0070…`。旧三段来源只放 `historical_integrations`；来源记录必须描述实际候选，
+    不得把历史发布状态伪装成当前状态。
