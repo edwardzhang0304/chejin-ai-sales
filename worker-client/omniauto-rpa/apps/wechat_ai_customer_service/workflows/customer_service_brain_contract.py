@@ -34,10 +34,17 @@ ANSWER_MODES = {
     "quote_product_fact",
     "collect_customer_info",
     "handoff",
+    "stop_contact",
     "fallback_existing",
 }
 
-GUARD_ACTIONS = {"send_reply", "handoff", "handoff_for_approval", "fallback_existing"}
+GUARD_ACTIONS = {
+    "send_reply",
+    "handoff",
+    "handoff_for_approval",
+    "hard_opt_out",
+    "fallback_existing",
+}
 
 PRODUCT_FACT_TYPES = {
     "product",
@@ -1063,6 +1070,7 @@ def normalize_brain_plan(raw_plan: dict[str, Any] | None, *, max_segments: int =
         "confidence": confidence,
         "reason": str(plan.get("reason") or "").strip(),
         "self_check": normalize_mapping(plan.get("self_check")),
+        "hard_opt_out": normalize_mapping(plan.get("hard_opt_out")),
     }
     return normalized
 
@@ -1088,6 +1096,16 @@ def validate_brain_plan(plan: dict[str, Any], *, require_fact_claims: bool = Fal
         errors.append("invalid_answer_mode")
     if plan.get("recommended_action") not in GUARD_ACTIONS:
         errors.append("invalid_recommended_action")
+    if plan.get("recommended_action") == "hard_opt_out":
+        opt_out = plan.get("hard_opt_out") if isinstance(plan.get("hard_opt_out"), dict) else {}
+        if opt_out.get("detected") is not True:
+            errors.append("hard_opt_out_not_detected")
+        if not str(opt_out.get("message_event_id") or "").strip():
+            errors.append("hard_opt_out_missing_message_event_id")
+        if not str(opt_out.get("customer_text") or "").strip():
+            errors.append("hard_opt_out_missing_customer_text")
+        if plan.get("reply_segments"):
+            errors.append("hard_opt_out_must_not_reply")
     facts = plan.get("facts_claimed", []) or []
     if require_fact_claims and plan_requires_fact_claims(plan) and not facts:
         errors.append("missing_fact_claims")

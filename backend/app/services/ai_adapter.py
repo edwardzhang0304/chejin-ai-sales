@@ -24,6 +24,7 @@ class AIEngineDecision:
     rewrite_required: bool = False
     error_code: str | None = None
     suggested_action: str | None = None
+    hard_opt_out_evidence: dict | None = None
     raw_payload: dict | None = None
 
 
@@ -330,6 +331,34 @@ class RealOmniAutoAIEngineAdapter:
         risk_flags = list(plan.get("risk_flags") or [])
         confidence = plan.get("confidence")
         raw_payload = {"omniauto_brain_result": result}
+
+        hard_opt_out = result.get("hard_opt_out") if isinstance(result.get("hard_opt_out"), dict) else {}
+        if (
+            rule_name == "customer_service_brain_hard_opt_out"
+            or recommended_action == "hard_opt_out"
+        ):
+            if (
+                not result.get("adoptable")
+                or hard_opt_out.get("detected") is not True
+                or not str(hard_opt_out.get("message_event_id") or "").strip()
+                or not str(hard_opt_out.get("customer_text") or "").strip()
+            ):
+                return AIEngineDecision(
+                    decision="retry_later",
+                    guard_result="failed",
+                    error_code="AI_ENGINE_HARD_OPT_OUT_EVIDENCE_INVALID",
+                    suggested_action="retry_later",
+                    raw_payload=raw_payload,
+                )
+            return AIEngineDecision(
+                decision="hard_opt_out",
+                confidence=confidence,
+                risk_flags=risk_flags,
+                evidence_refs=evidence_refs,
+                guard_result="pass",
+                hard_opt_out_evidence=dict(hard_opt_out),
+                raw_payload=raw_payload,
+            )
 
         if rule_name == "customer_service_brain_reply" and recommended_action == "send_reply":
             reply_text = str(result.get("reply_text") or "").strip()

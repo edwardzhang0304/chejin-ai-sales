@@ -703,6 +703,82 @@ def cancel_active_batches_for_conversation_change(db: Session, conversation_id: 
     cancel_open_reply_actions_for_conversation_change(db, conversation_id, reason=reason)
 
 
+def _validated_hard_opt_out_event(
+    db: Session,
+    *,
+    batch: MessageBatch,
+    evidence: dict | None,
+) -> MessageEvent | None:
+    payload = evidence if isinstance(evidence, dict) else {}
+    event_id = str(payload.get("message_event_id") or "").strip()
+    source_key = str(payload.get("source_message_key") or "").strip()
+    customer_text = " ".join(str(payload.get("customer_text") or "").split())
+    if not event_id or event_id not in set(batch.message_event_ids or []) or not customer_text:
+        return None
+    event = db.scalar(
+        select(MessageEvent)
+        .where(
+            MessageEvent.id == event_id,
+            MessageEvent.conversation_id == batch.conversation_id,
+            MessageEvent.sender_role == "customer",
+        )
+        .with_for_update()
+    )
+    if not event:
+        return None
+    event_source_key = str(
+        event.source_message_key
+        or ((event.raw_payload or {}).get("source_message_key") if isinstance(event.raw_payload, dict) else "")
+        or ""
+    ).strip()
+    event_text = " ".join(str(event.content or "").split())
+    if source_key != event_source_key or customer_text != event_text:
+        return None
+    return event
+
+
+def _reject_conversation_for_hard_opt_out(
+    db: Session,
+    *,
+    binding: WechatSessionBinding,
+    conversation: Conversation,
+    batch: MessageBatch,
+    decision: AIEngineDecision,
+    evidence_event: MessageEvent,
+) -> dict[str, Any]:
+    reason = "客户明确要求停止自动联系"
+    cancel_active_batches_for_conversation_change(
+        db,
+        binding.conversation_id,
+        reason=reason,
+    )
+    conversation.status = "rejected"
+    conversation.ai_enabled = False
+    conversation.next_recall_at = None
+    conversation.recall_cycle_id = None
+    conversation.recall_origin_status = None
+    conversation.close_reason = f"customer_hard_opt_out:{evidence_event.id}"
+    binding.unread_hint = False
+
+    batch.status = "rejected"
+    batch.active = False
+    batch.retryable = False
+    batch.decision = "hard_opt_out"
+    batch.error_code = None
+    batch.suggested_action = "do_not_contact"
+    batch.ai_response_snapshot = _decision_payload(decision)
+    batch.generated_at = utcnow()
+    db.flush()
+    return {
+        "decision": "hard_opt_out",
+        "batch": _batch_to_dict(batch),
+        "error_code": None,
+        "suggested_action": "do_not_contact",
+        "conversation_status": conversation.status,
+        "evidence_message_event_id": evidence_event.id,
+    }
+
+
 def create_control_message_batch(
     db: Session,
     *,
@@ -884,7 +960,11 @@ def _build_ai_context(db: Session, binding: WechatSessionBinding, conversation: 
         raw = item.raw_payload if isinstance(item.raw_payload, dict) else {}
         result: dict[str, Any] = {
             "id": item.id,
-            "source_message_key": str(raw.get("source_message_key") or ""),
+            "source_message_key": str(
+                item.source_message_key
+                or raw.get("source_message_key")
+                or ""
+            ),
             "sender_role": item.sender_role,
             "message_type": item.message_type,
             "content": item.content,
@@ -979,6 +1059,7 @@ def _decision_payload(decision: AIEngineDecision) -> dict[str, Any]:
         "rewrite_required": decision.rewrite_required,
         "error_code": decision.error_code,
         "suggested_action": decision.suggested_action,
+        "hard_opt_out_evidence": decision.hard_opt_out_evidence or {},
         "raw_payload": decision.raw_payload or {},
     }
 
@@ -1597,7 +1678,7 @@ def generate_for_batch(
 
     existing_action = db.scalar(select(ReplyAction).where(ReplyAction.batch_id == batch.id, ReplyAction.current.is_(True)))
     existing_handoff = db.scalar(select(HandoffEvent).where(HandoffEvent.batch_id == batch.id, HandoffEvent.deleted_at.is_(None)))
-    if not force and batch.status in {"reply_action_created", "handoff_created", "no_action", "failed"}:
+    if not force and batch.status in {"reply_action_created", "handoff_created", "no_action", "failed", "rejected"}:
         existing_task = db.scalar(select(Task).where(Task.reply_action_id == existing_action.id, Task.deleted_at.is_(None))) if existing_action else None
         return {
             "decision": batch.decision,
@@ -1711,6 +1792,32 @@ def generate_for_batch(
 
     payload = _decision_payload(decision)
     batch.ai_response_snapshot = payload
+
+    if decision.decision == "hard_opt_out":
+        evidence_event = _validated_hard_opt_out_event(
+            db,
+            batch=batch,
+            evidence=decision.hard_opt_out_evidence,
+        )
+        if evidence_event is not None:
+            return _reject_conversation_for_hard_opt_out(
+                db,
+                binding=binding,
+                conversation=conversation,
+                batch=batch,
+                decision=decision,
+                evidence_event=evidence_event,
+            )
+        decision = AIEngineDecision(
+            decision="retry_later",
+            risk_flags=["hard_opt_out_evidence_invalid"],
+            guard_result="failed",
+            error_code="AI_ENGINE_HARD_OPT_OUT_EVIDENCE_INVALID",
+            suggested_action="retry_later",
+            raw_payload=payload,
+        )
+        payload = _decision_payload(decision)
+        batch.ai_response_snapshot = payload
 
     if decision.decision == "send_reply":
         final_reply_text = _final_send_text(decision.reply_text)
