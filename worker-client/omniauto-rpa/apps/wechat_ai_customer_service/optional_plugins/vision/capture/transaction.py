@@ -30,6 +30,16 @@ from .slot_identity import (
 
 CLIPBOARD_WAIT_TIMEOUT_SECONDS = 15.0
 CLIPBOARD_POLL_INTERVAL_SECONDS = 0.08
+_TEXT_MENU_LABELS = frozenset({"放大阅读", "翻译", "搜一搜"})
+_IMAGE_MENU_LABELS = frozenset({"编辑", "用窗口打开", "另存为", "打开方式"})
+_VOICE_MENU_LABELS = frozenset({"语音转文字", "收起文字"})
+_PUBLIC_MENU_LABELS = frozenset({"复制", "转发", "收藏", "多选", "提醒", "引用", "删除"})
+_KNOWN_MENU_LABELS = (
+    _TEXT_MENU_LABELS
+    | _IMAGE_MENU_LABELS
+    | _VOICE_MENU_LABELS
+    | _PUBLIC_MENU_LABELS
+)
 
 
 def _failure(reason: str, **extra: Any) -> dict[str, Any]:
@@ -71,45 +81,90 @@ def _item_center(item: dict[str, Any]) -> tuple[float, float] | None:
                 (float(bounds[1]) + float(bounds[3])) / 2.0,
             )
         return (
-            float(item.get("center_x")),
-            float(item.get("center_y")),
+            float(item.get("center_x", item.get("x"))),
+            float(item.get("center_y", item.get("y"))),
         )
     except (TypeError, ValueError, IndexError):
         return None
 
 
-def _strong_text_menu_evidence(
-    strong_items: list[dict[str, Any]],
-    copy_item: dict[str, Any] | None,
-) -> list[dict[str, Any]]:
-    """Keep only strong text markers that form the copy menu's stack."""
+def _exact_menu_label(text: Any) -> str:
+    label = str(text or "").strip()
+    for base in ("转发", "另存为"):
+        if label in {f"{base}...", f"{base}…"}:
+            return base
+    return label
 
-    candidates = [
-        dict(item)
-        for item in strong_items
-        if isinstance(item, dict) and _item_center(item) is not None
-    ]
-    if not candidates:
-        return []
+
+def _classify_context_menu(
+    ocr_items: list[dict[str, Any]],
+    copy_item: dict[str, Any] | None,
+    *,
+    anchor: tuple[int, int],
+) -> dict[str, Any]:
+    """Classify one exact, single-column WeChat context menu."""
+
+    candidates: list[tuple[dict[str, Any], str, tuple[float, float]]] = []
+    for item in ocr_items:
+        if not isinstance(item, dict):
+            continue
+        label = _exact_menu_label(item.get("text"))
+        center = _item_center(item)
+        if label in _KNOWN_MENU_LABELS and center is not None:
+            candidates.append((dict(item), label, center))
     copy_center = _item_center(copy_item or {})
-    if copy_center is not None:
-        return [
-            item
-            for item in candidates
-            if (
-                abs((_item_center(item) or (0.0, 0.0))[0] - copy_center[0])
-                <= 140.0
-                and -20.0
-                <= (_item_center(item) or (0.0, 0.0))[1] - copy_center[1]
-                <= 420.0
-            )
-        ]
-    if len(candidates) < 2:
-        return []
-    centers = [_item_center(item) for item in candidates]
-    xs = [center[0] for center in centers if center is not None]
-    ys = [center[1] for center in centers if center is not None]
-    return candidates if max(xs) - min(xs) <= 140.0 and max(ys) - min(ys) <= 420.0 else []
+    if (
+        copy_center is not None
+        and _exact_menu_label((copy_item or {}).get("text")) != "复制"
+    ):
+        copy_center = None
+        copy_item = None
+    reference = copy_center
+    if reference is None and candidates:
+        reference = min(
+            candidates,
+            key=lambda row: (
+                (row[2][0] - anchor[0]) ** 2
+                + (row[2][1] - anchor[1]) ** 2
+            ),
+        )[2]
+    if (
+        reference is None
+        or abs(reference[0] - anchor[0]) > 360.0
+        or abs(reference[1] - anchor[1]) > 520.0
+    ):
+        return {"kind": "unknown", "labels": [], "copy_item": None}
+    column = [
+        row
+        for row in candidates
+        if abs(row[2][0] - reference[0]) <= 140.0
+        and abs(row[2][1] - reference[1]) <= 520.0
+        and abs(row[2][0] - anchor[0]) <= 360.0
+        and abs(row[2][1] - anchor[1]) <= 520.0
+    ]
+    labels = {row[1] for row in column}
+    is_text = "放大阅读" in labels or {"翻译", "搜一搜"} <= labels
+    is_image = "复制" in labels and bool(labels & _IMAGE_MENU_LABELS)
+    is_voice = bool(labels & _VOICE_MENU_LABELS)
+    kinds = [
+        kind
+        for kind, matched in (
+            ("text", is_text),
+            ("image", is_image),
+            ("voice", is_voice),
+        )
+        if matched
+    ]
+    kind = (
+        kinds[0]
+        if len(kinds) == 1
+        else ("conflict" if kinds else "unknown")
+    )
+    return {
+        "kind": kind,
+        "labels": sorted(labels),
+        "copy_item": copy_item if kind == "image" else None,
+    }
 
 
 def acquire_current_image_via_ports(
@@ -367,41 +422,59 @@ def _acquire_current_image_via_ports(
                 anchor_screen_x - origin_x,
                 anchor_screen_y - origin_y,
             )
+            menu_ocr_items = [
+                item
+                for item in (menu_frame.get("ocr_items") or [])
+                if isinstance(item, dict)
+            ]
             copy_item = find_copy_menu_item(
-                [item for item in (menu_frame.get("ocr_items") or []) if isinstance(item, dict)],
+                menu_ocr_items,
                 tuple(menu_size),
                 anchor=anchor_in_menu_frame,
             )
-            strong_text_items = _strong_text_menu_evidence(
-                [
-                    item
-                    for item in (
-                        menu_frame.get("strong_text_menu_items") or []
-                    )
-                    if isinstance(item, dict)
-                ],
+            classification = _classify_context_menu(
+                menu_ocr_items,
                 copy_item,
+                anchor=anchor_in_menu_frame,
             )
-            if strong_text_items:
+            menu_kind = str(classification.get("kind") or "unknown")
+            if menu_kind in {"text", "voice"}:
                 _dismiss_menu_safely(ports.ui_action)
                 menu_opened = False
                 return fail(
                     "C2_IMAGE_SOURCE_INVALID",
                     transaction={
-                        "status": "text_context_menu_rejected",
+                        "status": f"{menu_kind}_context_menu_rejected",
                         "right_click_ok": True,
                         "menu_copy_confirmed": False,
                         "clipboard_content_read": False,
                         "failure_settlement": "handoff_without_ui_recovery",
-                        "strong_text_menu_item_count": len(
-                            strong_text_items
-                        ),
+                        "menu_labels": classification.get("labels") or [],
                     },
                 )
-            if not copy_item:
+            if menu_kind != "image":
                 _dismiss_menu_safely(ports.ui_action)
                 menu_opened = False
-                return fail("image_context_menu_copy_item_missing")
+                return fail(
+                    "C2_IMAGE_MENU_OPERATION_FAILED",
+                    transaction={
+                        "status": (
+                            "menu_evidence_conflict"
+                            if menu_kind == "conflict"
+                            else "menu_evidence_incomplete"
+                        ),
+                        "right_click_ok": True,
+                        "menu_copy_confirmed": False,
+                        "clipboard_content_read": False,
+                        "failure_settlement": "handoff_without_ui_recovery",
+                        "menu_labels": classification.get("labels") or [],
+                    },
+                )
+            copy_item = classification.get("copy_item")
+            if not isinstance(copy_item, dict):
+                _dismiss_menu_safely(ports.ui_action)
+                menu_opened = False
+                return fail("C2_IMAGE_MENU_OPERATION_FAILED")
             if _cancelled(data):
                 return fail("vision_cancelled")
             screen_click = getattr(ports.ui_action, "click_screen", None)
@@ -517,7 +590,7 @@ def _acquire_current_image_via_ports(
                     return fail(
                         clipboard_reason,
                         transaction={
-                            "status": "clipboard_non_bitmap_rejected",
+                            "status": "clipboard_current_content_not_bitmap",
                             "right_click_ok": True,
                             "menu_copy_confirmed": True,
                             "clipboard_sequence_changed": True,

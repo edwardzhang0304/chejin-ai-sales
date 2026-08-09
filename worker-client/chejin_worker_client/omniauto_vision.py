@@ -446,37 +446,16 @@ class _WindowFrame:
                     or observation.get("roi_screenshot_path")
                 ),
             )
-            local_ocr_items = list(
-                observation.get("local_ocr_items") or []
-            )
-            strong_text_like = getattr(
-                self.state.host,
-                "text_message_context_menu_strong_text_like",
-                None,
-            )
-            strong_text_menu_items = [
-                dict(item)
-                for item in local_ocr_items
-                if isinstance(item, dict)
-                and callable(strong_text_like)
-                and strong_text_like(
-                    str(item.get("text") or "")
-                )
-            ]
             return {
                 "ok": True,
                 "image": observation.get("image"),
                 "image_size": tuple(observation.get("image_size") or (0, 0)),
-                "ocr_items": local_ocr_items,
+                "ocr_items": list(
+                    observation.get("local_ocr_items") or []
+                ),
                 "messages": [],
                 "time_markers": [],
                 "screen_origin": [0, 0],
-                "menu_state": (
-                    "text_message_context_menu"
-                    if strong_text_menu_items
-                    else "unknown"
-                ),
-                "strong_text_menu_items": strong_text_menu_items,
                 "screenshot_path": str(observation.get("screenshot_path") or ""),
                 "roi_screenshot_path": str(
                     observation.get("roi_screenshot_path") or ""
