@@ -1088,6 +1088,17 @@ def apply_image_terminal_result(observation: dict[str, Any], result: dict[str, A
         state = "failed"
     enriched["item_state"] = state
     enriched["image_processing_reason"] = str(result.get("reason") or "")
+    reason_detail = str(
+        result.get("reason_detail")
+        or (
+            result.get("transaction", {}).get("status")
+            if isinstance(result.get("transaction"), dict)
+            else ""
+        )
+        or ""
+    ).strip()
+    if reason_detail:
+        enriched["image_processing_reason_detail"] = reason_detail
     enriched.pop("contract_errors", None)
     if state != "completed":
         return enriched
@@ -1549,6 +1560,9 @@ def _build_message_ingest_payload_v3(
         if msg_type == "image":
             observation = source.get("observation") if isinstance(source.get("observation"), dict) else {}
             raw_payload["image_processing_reason"] = str(observation.get("image_processing_reason") or "")
+            raw_payload["image_processing_reason_detail"] = str(
+                observation.get("image_processing_reason_detail") or ""
+            )
             if item_state == "completed":
                 raw_payload["customer_image_understanding"] = _project_customer_image_understanding(
                     observation.get("customer_image_understanding")

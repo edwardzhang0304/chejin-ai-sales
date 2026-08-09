@@ -2043,10 +2043,21 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
 
     def test_shared_context_menu_observer_captures_once_and_filters_near_anchor(self) -> None:
         image = Image.new("RGB", (1920, 1080), "white")
-        near = ocr_item("复制", 430, 400, 500, 432)
-        companion = ocr_item("转发", 430, 444, 500, 476)
-        far = ocr_item("聊天正文", 1000, 50, 1120, 82)
+        near = ocr_item("复制", 20, 20, 90, 52)
+        companion = ocr_item("转发", 20, 64, 90, 96)
+        far = ocr_item("聊天正文", 600, 50, 720, 82)
         with (
+            patch.object(
+                sidecar,
+                "resolve_wechat_context_menu_bounds",
+                return_value={
+                    "ok": True,
+                    "reason": "context_menu_popup_window_confirmed",
+                    "menu_bounds": [410, 380, 520, 500],
+                    "menu_hwnd": 2,
+                    "menu_class_name": "WeChatMenuWnd",
+                },
+            ),
             patch.object(sidecar, "capture_visible_screen", return_value=(image, "menu.png")) as capture,
             patch.object(
                 sidecar,
@@ -2068,16 +2079,72 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             ["复制", "转发"],
         )
         self.assertEqual(result["screenshot_path"], "menu.png")
-        self.assertEqual(result["ocr_roi"], [140, 40, 900, 880])
+        self.assertEqual(result["ocr_roi"], [410, 380, 520, 500])
         self.assertEqual(
             [item["text"] for item in result["menu_structure_evidence"]],
             ["复制", "转发"],
         )
         capture.assert_called_once_with(artifact_dir="evidence", label="shared_menu")
         self.assertEqual(result["roi_screenshot_path"], "menu_roi.png")
+        self.assertEqual(result["menu_bounds"], [410, 380, 520, 500])
         save_roi.assert_called_once()
-        self.assertEqual(ocr.call_args.args[0].size, (760, 840))
+        self.assertEqual(ocr.call_args.args[0].size, (110, 120))
         image.close()
+
+    def test_context_menu_bounds_use_distinct_same_process_popup(self) -> None:
+        rects = {
+            1: (100, 100, 1100, 900),
+            2: (600, 300, 820, 690),
+            3: (580, 280, 900, 760),
+        }
+        pids = {1: 700, 2: 700, 3: 999}
+        gui = Mock()
+        gui.GetWindowRect.side_effect = lambda hwnd: rects[hwnd]
+        gui.IsWindowVisible.return_value = True
+        gui.GetClassName.side_effect = lambda hwnd: f"WindowClass{hwnd}"
+        gui.EnumWindows.side_effect = lambda callback, extra: [
+            callback(candidate, extra) for candidate in (1, 2, 3)
+        ]
+        process = Mock()
+        process.GetWindowThreadProcessId.side_effect = (
+            lambda hwnd: (123, pids[hwnd])
+        )
+
+        with (
+            patch.object(sidecar, "win32gui", gui),
+            patch.object(sidecar, "win32process", process),
+        ):
+            result = sidecar.resolve_wechat_context_menu_bounds(
+                1,
+                anchor_screen=(610, 320),
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["menu_bounds"], [600, 300, 820, 690])
+        self.assertEqual(result["menu_hwnd"], 2)
+
+    def test_context_menu_bounds_fail_closed_without_distinct_popup(self) -> None:
+        gui = Mock()
+        gui.GetWindowRect.return_value = (100, 100, 1100, 900)
+        gui.IsWindowVisible.return_value = True
+        gui.EnumWindows.side_effect = lambda callback, extra: callback(1, extra)
+        process = Mock()
+        process.GetWindowThreadProcessId.return_value = (123, 700)
+
+        with (
+            patch.object(sidecar, "win32gui", gui),
+            patch.object(sidecar, "win32process", process),
+        ):
+            result = sidecar.resolve_wechat_context_menu_bounds(
+                1,
+                anchor_screen=(610, 320),
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["reason"],
+            "context_menu_popup_window_not_found",
+        )
 
     def test_context_menu_stable_wait_uses_longer_production_default(self) -> None:
         with (
@@ -2119,11 +2186,21 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             "click_bounds": [429, 449, 601, 483],
             "item": {"center_y": 466, "sender_role": "customer"},
         }
-        items = [
-            ocr_item("转文字", 611, 223, 664, 244),
-            ocr_item("收起文字", 552, 459, 632, 490),
-        ]
+        # OCR now receives only the confirmed popup crop, so the far inline
+        # chat label is structurally unavailable to menu classification.
+        items = [ocr_item("收起文字", 22, 29, 102, 60)]
         with (
+            patch.object(
+                sidecar,
+                "resolve_wechat_context_menu_bounds",
+                return_value={
+                    "ok": True,
+                    "reason": "context_menu_popup_window_confirmed",
+                    "menu_bounds": [530, 430, 680, 530],
+                    "menu_hwnd": 2,
+                    "menu_class_name": "WeChatMenuWnd",
+                },
+            ),
             patch.object(sidecar, "human_window_image_right_click_in_bounds", return_value={"ok": True, "screen_y": 449}),
             patch.object(sidecar, "capture_visible_screen", return_value=(image, "menu.png")),
             patch.object(sidecar, "run_ocr", return_value=items),

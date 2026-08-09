@@ -8530,7 +8530,6 @@ class TaskRunnerTest(unittest.TestCase):
             run_status="running",
         )
         conversation_id = f"conv-invalid-image-{time.time_ns()}"
-        source_key = "invalid-image-source"
         target = WechatReadTarget(
             conversation_id=conversation_id,
             rpa_session_key="wx:rpa:v1:invalid-image",
@@ -8540,29 +8539,62 @@ class TaskRunnerTest(unittest.TestCase):
             authorization_revision="revision-invalid-image",
         )
         api.read_targets = [target]
-        save_c2_ledger_terminal(
-            conversation_id=conversation_id,
-            source_message_key=source_key,
-            dedupe_key="invalid-image-dedupe",
-            message_type="image",
-            terminal_state="failed",
-            ingest_state="waiting",
-            result={
-                "state": "failed",
-                "reason": "C2_IMAGE_SOURCE_INVALID",
-                "replayable_observation": {
-                    "schema_version": 3,
-                    "observation_id": "invalid-image-observation",
-                    "row_kind": "image_bubble",
-                    "sender_role": "self",
-                    "sender_role_source": "same_row_avatar",
-                    "message_type": "image",
-                    "voice_state": "not_voice",
-                    "item_state": "failed",
-                    "image_processing_reason": "C2_IMAGE_SOURCE_INVALID",
-                },
-            },
+        cases = (
+            ("C2_IMAGE_SOURCE_INVALID", "text_context_menu_rejected"),
+            ("C2_IMAGE_SOURCE_INVALID", "voice_context_menu_rejected"),
+            ("C2_IMAGE_MENU_OPERATION_FAILED", "menu_evidence_incomplete"),
+            (
+                "C2_IMAGE_SOURCE_INVALID",
+                "clipboard_current_content_not_bitmap",
+            ),
         )
+        source_keys = []
+        for index, (formal_reason, reason_detail) in enumerate(cases):
+            physical_anchor = {
+                "sender_role": "self",
+                "preceding_stable_message": f"before-{index}",
+                "following_stable_message": f"after-{index}",
+                "bubble_visual_fingerprint": f"fingerprint-{index}",
+                "occurrence_index": index,
+            }
+            observation = {
+                "schema_version": 3,
+                "observation_id": f"invalid-image-observation-{index}",
+                "row_kind": "image_bubble",
+                "sender_role": "self",
+                "sender_role_source": "same_row_avatar",
+                "message_type": "image",
+                "voice_state": "not_voice",
+                "item_state": "failed",
+                "image_physical_anchor": physical_anchor,
+                "image_processing_reason": formal_reason,
+                "image_processing_reason_detail": reason_detail,
+                "source_message": {
+                    "sender_role": "self",
+                    "type": "image",
+                    "image_physical_anchor": physical_anchor,
+                },
+            }
+            source_key = image_observation_source_key(target, observation)
+            source_keys.append(source_key)
+            save_c2_ledger_terminal(
+                conversation_id=conversation_id,
+                source_message_key=source_key,
+                dedupe_key=f"invalid-image-dedupe-{index}",
+                message_type="image",
+                terminal_state="failed",
+                ingest_state="waiting",
+                result={
+                    "state": "failed",
+                    "reason": formal_reason,
+                    "reason_detail": reason_detail,
+                    "transaction": {
+                        "status": reason_detail,
+                        "failure_settlement": "handoff_without_ui_recovery",
+                    },
+                    "replayable_observation": observation,
+                },
+            )
 
         self.assertTrue(
             runner._recover_pending_image_transaction(binding)
@@ -8571,26 +8603,117 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(bridge.message_reads, [])
         self.assertEqual(len(api.message_payloads), 1)
         payload = api.message_payloads[0]
-        self.assertEqual(payload["messages"], [])
+        self.assertEqual(
+            sorted(
+                message["source_message_key"]
+                for message in payload["messages"]
+            ),
+            sorted(source_keys),
+        )
+        self.assertEqual(
+            {
+                message["raw_payload"]["image_processing_reason_detail"]
+                for message in payload["messages"]
+            },
+            {reason_detail for _formal, reason_detail in cases},
+        )
         self.assertEqual(
             payload["evidence"]["flow_gate_errors"],
             ["C2_IMAGE_UNDERSTANDING_FAILED"],
         )
         self.assertEqual(
             payload["evidence"]["failed_image_source_keys"],
-            [source_key],
+            sorted(source_keys),
         )
-        self.assertEqual(
-            load_c2_ledger_entry(conversation_id, source_key)[
-                "ingest_state"
-            ],
-            "confirmed",
-        )
+        for source_key in source_keys:
+            self.assertEqual(
+                load_c2_ledger_entry(conversation_id, source_key)[
+                    "ingest_state"
+                ],
+                "confirmed",
+            )
         self.assertTrue(
             runner._worker_transaction_barrier_ready(
                 binding,
                 reason="invalid_image_failure_settled",
             )
+        )
+
+    def test_invalid_image_recovery_requires_per_message_backend_confirmation(self):
+        api = FakeApi(None)
+        api.message_ingest_result = "ignored"
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="ok", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-invalid-image-unconfirmed",
+            worker_token="token",
+            client_instance_id="client-invalid-image-unconfirmed",
+            run_status="running",
+        )
+        target = WechatReadTarget(
+            conversation_id=f"conv-invalid-unconfirmed-{time.time_ns()}",
+            rpa_session_key="wx:rpa:v1:invalid-unconfirmed",
+            display_name="CJONE001 客户",
+            remark_code="CJONE001",
+            read_reason="waiting_user_reply",
+            authorization_revision="revision-invalid-unconfirmed",
+        )
+        api.read_targets = [target]
+        physical_anchor = {
+            "sender_role": "customer",
+            "preceding_stable_message": "before",
+            "following_stable_message": "after",
+            "bubble_visual_fingerprint": "invalid-unconfirmed",
+            "occurrence_index": 0,
+        }
+        observation = {
+            "schema_version": 3,
+            "observation_id": "invalid-unconfirmed-observation",
+            "row_kind": "image_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "image",
+            "voice_state": "not_voice",
+            "item_state": "failed",
+            "image_physical_anchor": physical_anchor,
+            "image_processing_reason": "C2_IMAGE_SOURCE_INVALID",
+            "image_processing_reason_detail": "text_context_menu_rejected",
+            "source_message": {
+                "sender_role": "customer",
+                "type": "image",
+                "image_physical_anchor": physical_anchor,
+            },
+        }
+        source_key = image_observation_source_key(target, observation)
+        save_c2_ledger_terminal(
+            conversation_id=target.conversation_id,
+            source_message_key=source_key,
+            dedupe_key="invalid-unconfirmed-dedupe",
+            message_type="image",
+            terminal_state="failed",
+            ingest_state="waiting",
+            result={
+                "state": "failed",
+                "reason": "C2_IMAGE_SOURCE_INVALID",
+                "reason_detail": "text_context_menu_rejected",
+                "transaction": {
+                    "status": "text_context_menu_rejected",
+                    "failure_settlement": "handoff_without_ui_recovery",
+                },
+                "replayable_observation": observation,
+            },
+        )
+
+        self.assertFalse(runner._recover_pending_image_transaction(binding))
+        self.assertEqual(bridge.locate_chats, [])
+        self.assertEqual(bridge.message_reads, [])
+        self.assertEqual(
+            load_c2_ledger_entry(target.conversation_id, source_key)[
+                "ingest_state"
+            ],
+            "waiting",
         )
 
     def test_backend_terminated_image_target_closes_only_local_recovery(self):

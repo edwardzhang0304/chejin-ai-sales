@@ -72,20 +72,48 @@ def _cancelled(data: dict[str, Any]) -> bool:
         return True
 
 
-def _item_center(item: dict[str, Any]) -> tuple[float, float] | None:
+def _item_bounds(item: dict[str, Any]) -> tuple[float, float, float, float] | None:
     bounds = item.get("bounds")
     try:
         if isinstance(bounds, (list, tuple)) and len(bounds) >= 4:
-            return (
-                (float(bounds[0]) + float(bounds[2])) / 2.0,
-                (float(bounds[1]) + float(bounds[3])) / 2.0,
+            result = tuple(float(value) for value in bounds[:4])
+        else:
+            result = (
+                float(item.get("left")),
+                float(item.get("top")),
+                float(item.get("right")),
+                float(item.get("bottom")),
             )
-        return (
-            float(item.get("center_x", item.get("x"))),
-            float(item.get("center_y", item.get("y"))),
-        )
     except (TypeError, ValueError, IndexError):
         return None
+    if result[2] <= result[0] or result[3] <= result[1]:
+        return None
+    return result
+
+
+def _menu_bounds(value: Any) -> tuple[float, float, float, float] | None:
+    try:
+        bounds = tuple(float(item) for item in list(value)[:4])
+    except (TypeError, ValueError):
+        return None
+    if len(bounds) != 4 or bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
+        return None
+    return bounds
+
+
+def _inside_menu(
+    item: dict[str, Any],
+    menu_bounds: tuple[float, float, float, float],
+) -> bool:
+    bounds = _item_bounds(item)
+    if bounds is None:
+        return False
+    return (
+        menu_bounds[0] <= bounds[0]
+        and menu_bounds[1] <= bounds[1]
+        and bounds[2] <= menu_bounds[2]
+        and bounds[3] <= menu_bounds[3]
+    )
 
 
 def _exact_menu_label(text: Any) -> str:
@@ -100,49 +128,27 @@ def _classify_context_menu(
     ocr_items: list[dict[str, Any]],
     copy_item: dict[str, Any] | None,
     *,
-    anchor: tuple[int, int],
+    menu_bounds: Any,
 ) -> dict[str, Any]:
-    """Classify one exact, single-column WeChat context menu."""
+    """Classify exact labels contained by one confirmed popup window."""
 
-    candidates: list[tuple[dict[str, Any], str, tuple[float, float]]] = []
+    confirmed_bounds = _menu_bounds(menu_bounds)
+    if confirmed_bounds is None:
+        return {"kind": "unknown", "labels": [], "copy_item": None}
+    candidates: list[tuple[dict[str, Any], str]] = []
     for item in ocr_items:
         if not isinstance(item, dict):
             continue
         label = _exact_menu_label(item.get("text"))
-        center = _item_center(item)
-        if label in _KNOWN_MENU_LABELS and center is not None:
-            candidates.append((dict(item), label, center))
-    copy_center = _item_center(copy_item or {})
+        if label in _KNOWN_MENU_LABELS and _inside_menu(item, confirmed_bounds):
+            candidates.append((dict(item), label))
     if (
-        copy_center is not None
-        and _exact_menu_label((copy_item or {}).get("text")) != "复制"
+        not isinstance(copy_item, dict)
+        or _exact_menu_label(copy_item.get("text")) != "复制"
+        or not _inside_menu(copy_item, confirmed_bounds)
     ):
-        copy_center = None
         copy_item = None
-    reference = copy_center
-    if reference is None and candidates:
-        reference = min(
-            candidates,
-            key=lambda row: (
-                (row[2][0] - anchor[0]) ** 2
-                + (row[2][1] - anchor[1]) ** 2
-            ),
-        )[2]
-    if (
-        reference is None
-        or abs(reference[0] - anchor[0]) > 360.0
-        or abs(reference[1] - anchor[1]) > 520.0
-    ):
-        return {"kind": "unknown", "labels": [], "copy_item": None}
-    column = [
-        row
-        for row in candidates
-        if abs(row[2][0] - reference[0]) <= 140.0
-        and abs(row[2][1] - reference[1]) <= 520.0
-        and abs(row[2][0] - anchor[0]) <= 360.0
-        and abs(row[2][1] - anchor[1]) <= 520.0
-    ]
-    labels = {row[1] for row in column}
+    labels = {row[1] for row in candidates}
     is_text = "放大阅读" in labels or {"翻译", "搜一搜"} <= labels
     is_image = "复制" in labels and bool(labels & _IMAGE_MENU_LABELS)
     is_voice = bool(labels & _VOICE_MENU_LABELS)
@@ -427,15 +433,27 @@ def _acquire_current_image_via_ports(
                 for item in (menu_frame.get("ocr_items") or [])
                 if isinstance(item, dict)
             ]
+            confirmed_menu_bounds = _menu_bounds(
+                menu_frame.get("menu_bounds")
+            )
+            bounded_menu_items = (
+                [
+                    item
+                    for item in menu_ocr_items
+                    if _inside_menu(item, confirmed_menu_bounds)
+                ]
+                if confirmed_menu_bounds is not None
+                else []
+            )
             copy_item = find_copy_menu_item(
-                menu_ocr_items,
+                bounded_menu_items,
                 tuple(menu_size),
                 anchor=anchor_in_menu_frame,
             )
             classification = _classify_context_menu(
                 menu_ocr_items,
                 copy_item,
-                anchor=anchor_in_menu_frame,
+                menu_bounds=confirmed_menu_bounds,
             )
             menu_kind = str(classification.get("kind") or "unknown")
             if menu_kind in {"text", "voice"}:

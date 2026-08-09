@@ -376,6 +376,8 @@ _C2_IMAGE_DIAGNOSTIC_FIELDS = {
     "local_ocr_item_count",
     "ocr_roi",
     "ocr_execution",
+    "menu_bounds",
+    "menu_window_evidence",
     "menu_structure_evidence",
     "local_ocr_evidence",
     "parsed_message_count",
@@ -2619,8 +2621,9 @@ class TaskRunner:
         Older clients could leave ``C2_IMAGE_SOURCE_INVALID`` in the waiting
         ledger after a text menu or non-bitmap clipboard result.  Those facts
         are already terminal: reopening the chat cannot improve them and can
-        starve every other target.  A backend-confirmed flow gate is therefore
-        the only recovery action.
+        starve every other target.  Recovery therefore rebuilds the original
+        failed message observations and waits for per-message backend
+        confirmation without repeating any WeChat or Vision action.
         """
 
         entries = list_c2_ledger_entries(
@@ -2630,6 +2633,7 @@ class TaskRunner:
         )
         if not entries:
             return None
+        recovery_observations: list[dict[str, Any]] = []
         source_keys: list[str] = []
         for entry in entries:
             result = (
@@ -2667,31 +2671,41 @@ class TaskRunner:
             ).strip()
             if source_key:
                 source_keys.append(source_key)
+                restored = dict(replayable)
+                restored_source = (
+                    dict(restored.get("source_message"))
+                    if isinstance(restored.get("source_message"), dict)
+                    else {}
+                )
+                restored["source_message"] = {
+                    **restored_source,
+                    "source_message_key": source_key,
+                }
+                formal_reason = str(
+                    restored.get("image_processing_reason") or reason
+                ).strip()
+                reason_detail = str(
+                    restored.get("image_processing_reason_detail")
+                    or transaction.get("status")
+                    or result.get("reason_detail")
+                    or formal_reason
+                ).strip()
+                restored["image_processing_reason"] = formal_reason
+                restored["image_processing_reason_detail"] = reason_detail
+                recovery_observations.append(restored)
         source_keys = sorted(set(source_keys))
         if not source_keys:
             return None
-        stable_gate_key = _c2_text_fingerprint(
-            json.dumps(
-                {
-                    "conversation_id": target.conversation_id,
-                    "error_code": "C2_IMAGE_SOURCE_INVALID",
-                    "source_message_keys": source_keys,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-        )
-        payload = build_flow_gate_ingest_payload(
+        payload = build_message_ingest_payload(
             target,
-            error_code="C2_IMAGE_UNDERSTANDING_FAILED",
-            evidence={
-                "flow_gate_identity_key": stable_gate_key,
-                "failed_image_source_keys": source_keys,
-                "image_failure": {
-                    "error_code": "C2_IMAGE_SOURCE_INVALID",
-                    "settlement": "handoff_without_ui_recovery",
-                },
+            {
+                "observation_schema_version": 3,
+                "authoritative_frame_source": "initial_read",
+                "adapter": "local_failed_image_recovery",
+                "state": "failed_image_fact_recovery",
+                "sidecar_run_id": "",
+                "observations": recovery_observations,
+                "flow_gate_errors": ["C2_IMAGE_UNDERSTANDING_FAILED"],
                 "flow_gate_details": [
                     {
                         "error_code": "C2_IMAGE_UNDERSTANDING_FAILED",
@@ -2700,6 +2714,37 @@ class TaskRunner:
                 ],
             },
         )
+        payload_source_keys = sorted(
+            str(item.get("source_message_key") or "").strip()
+            for item in (payload.get("messages") or [])
+            if isinstance(item, dict)
+            and str(item.get("source_message_key") or "").strip()
+        )
+        if payload_source_keys != source_keys:
+            append_log(
+                "ERROR",
+                "c2_invalid_image_recovery_identity_mismatch",
+                "失败图片恢复后的消息身份与本地账本不一致；保持等待且不操作微信。",
+                error_code="MESSAGE_SOURCE_IDENTITY_MISMATCH",
+                metadata={
+                    "conversation_id": target.conversation_id,
+                    "remark_code": target.remark_code,
+                    "ledger_source_keys": source_keys,
+                    "payload_source_keys": payload_source_keys,
+                },
+            )
+            return False
+        payload_evidence = dict(payload.get("evidence") or {})
+        payload_evidence.update(
+            {
+                "failed_image_source_keys": source_keys,
+                "recovery_requires_per_message_confirmation": True,
+                "wechat_reopened": False,
+                "clipboard_repeated": False,
+                "vision_repeated": False,
+            }
+        )
+        payload["evidence"] = payload_evidence
         delivery = self._submit_c2_outbox_payload(
             binding=binding,
             payload=payload,
@@ -2718,10 +2763,32 @@ class TaskRunner:
                 },
             )
             return False
-        mark_c2_ledger_ingested(
-            target.conversation_id,
-            source_keys,
+        remaining_source_keys = {
+            str(entry.get("source_message_key") or "").strip()
+            for entry in list_c2_ledger_entries(
+                target.conversation_id,
+                message_type="image",
+                ingest_state="waiting",
+            )
+        }
+        unconfirmed_source_keys = sorted(
+            source_key
+            for source_key in source_keys
+            if source_key in remaining_source_keys
         )
+        if unconfirmed_source_keys:
+            append_log(
+                "WARN",
+                "c2_invalid_image_recovery_unconfirmed",
+                "后端未逐条确认全部失败图片事实；未确认记录继续等待且不操作微信。",
+                error_code="C2_IMAGE_FACT_RECOVERY_PENDING",
+                metadata={
+                    "conversation_id": target.conversation_id,
+                    "remark_code": target.remark_code,
+                    "unconfirmed_source_keys": unconfirmed_source_keys,
+                },
+            )
+            return False
         removed_journal_count = 0
         for path, _payload in list_action_journals(
             conversation_id=target.conversation_id,
@@ -3902,27 +3969,35 @@ class TaskRunner:
         append_log("INFO", "c2_read_success_cooldown_started", "C2 读取完成，已进入短冷却，避免服务端状态更新前重复读取同一目标。", metadata={"target_key": dedupe_key, "cooldown_seconds": cooldown})
 
     def _mark_ingest_ledger_confirmed(self, payload: dict[str, Any], result: dict[str, Any]) -> None:
-        accepted = {
-            str(item.get("source_message_key") or "").strip()
-            for item in (result.get("results") or [])
-            if isinstance(item, dict) and item.get("ingest_result") in {"ingested", "duplicated"}
-        }
-        if not result.get("results") and int(result.get("ignored_count") or 0) == 0:
-            accepted = {
-                str(item.get("source_message_key") or "").strip()
-                for item in (payload.get("messages") or [])
-                if isinstance(item, dict)
-            }
         evidence = (
             payload.get("evidence")
             if isinstance(payload.get("evidence"), dict)
             else {}
         )
-        accepted.update(
-            str(value).strip()
-            for value in (evidence.get("failed_voice_source_keys") or [])
-            if str(value).strip()
+        requires_per_message_confirmation = bool(
+            evidence.get("recovery_requires_per_message_confirmation")
         )
+        accepted = {
+            str(item.get("source_message_key") or "").strip()
+            for item in (result.get("results") or [])
+            if isinstance(item, dict) and item.get("ingest_result") in {"ingested", "duplicated"}
+        }
+        if (
+            not requires_per_message_confirmation
+            and not result.get("results")
+            and int(result.get("ignored_count") or 0) == 0
+        ):
+            accepted = {
+                str(item.get("source_message_key") or "").strip()
+                for item in (payload.get("messages") or [])
+                if isinstance(item, dict)
+            }
+        if not requires_per_message_confirmation:
+            accepted.update(
+                str(value).strip()
+                for value in (evidence.get("failed_voice_source_keys") or [])
+                if str(value).strip()
+            )
         mark_c2_ledger_ingested(
             str(payload.get("conversation_id") or ""),
             sorted(value for value in accepted if value),
@@ -3932,10 +4007,11 @@ class TaskRunner:
             for item in (result.get("results") or [])
             if isinstance(item, dict) and item.get("ingest_result") == "ignored"
         }
-        mark_c2_ledger_rejected(
-            str(payload.get("conversation_id") or ""),
-            sorted(value for value in rejected if value),
-        )
+        if not requires_per_message_confirmation:
+            mark_c2_ledger_rejected(
+                str(payload.get("conversation_id") or ""),
+                sorted(value for value in rejected if value),
+            )
 
     def _attempt_c2_outbox_delivery(
         self,
@@ -5335,11 +5411,16 @@ class TaskRunner:
                 or normalized.get("reason")
                 or ""
             )
+            reason_detail = str(
+                transaction.get("status")
+                or normalized.get("reason_detail")
+                or raw_reason
+            )
             normalized = {
                 **normalized,
                 "state": "failed",
                 "reason": formal_image_failure_code(raw_reason),
-                "reason_detail": raw_reason,
+                "reason_detail": reason_detail,
                 "action_outcome": action_outcome,
             }
         return {

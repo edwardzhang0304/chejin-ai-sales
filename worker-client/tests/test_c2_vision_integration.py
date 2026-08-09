@@ -107,9 +107,9 @@ def confirmed_image_menu_for_downstream_test(
     _ocr_items,
     copy_item,
     *,
-    anchor,
+    menu_bounds,
 ):
-    del anchor
+    del menu_bounds
     return {
         "kind": "image",
         "labels": ["复制", "编辑"],
@@ -1205,6 +1205,12 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         "local_ocr_item_count": 1,
                         "ocr_roi": [520, 80, 1200, 900],
                         "ocr_execution": "isolated_runner",
+                        "menu_bounds": [560, 250, 680, 350],
+                        "menu_window_evidence": {
+                            "hwnd": 2718,
+                            "class_name": "WeChatMenuWnd",
+                            "reason": "context_menu_popup_window_confirmed",
+                        },
                         "menu_structure_evidence": [
                             {"text": "复制", "bounds": [580, 280, 640, 312]}
                         ],
@@ -1231,6 +1237,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["screen_origin"], [0, 0])
+        self.assertEqual(result["menu_bounds"], [560, 250, 680, 350])
         self.assertEqual(result["messages"], [])
         self.assertEqual(result["screenshot_path"], "evidence-dir/vision_image_context_menu.png")
         self.assertEqual(calls[0]["anchor_screen"], [900, 500])
@@ -1259,7 +1266,19 @@ class C2VisionIntegrationTests(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory(
             prefix="chejin-real-menu-evidence-"
-        ) as artifact_dir, patch.object(
+        ) as artifact_dir, (
+            patch.object(
+                wechat_win32_ocr_sidecar,
+                "resolve_wechat_context_menu_bounds",
+                return_value={
+                    "ok": True,
+                    "reason": "context_menu_popup_window_confirmed",
+                    "menu_bounds": [480, 220, 650, 340],
+                    "menu_hwnd": 2718,
+                    "menu_class_name": "WeChatMenuWnd",
+                },
+            )
+        ), patch.object(
             wechat_win32_ocr_sidecar.ImageGrab,
             "grab",
             return_value=full_screen.copy(),
@@ -1405,6 +1424,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                             "bounds": [600, 350, 650, 390],
                         },
                     ],
+                    "menu_bounds": [580, 280, 720, 510],
                     "screen_origin": [0, 0],
                 }
             ),
@@ -1547,6 +1567,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         {"text": "翻译", "bounds": [600, 400, 680, 440]},
                         {"text": "搜一搜", "bounds": [600, 450, 680, 490]},
                     ],
+                    "menu_bounds": [580, 280, 720, 510],
                     "screen_origin": [0, 0],
                 }
             return {
@@ -1620,7 +1641,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             return transaction._classify_context_menu(
                 items,
                 copy_item,
-                anchor=(500, 320),
+                menu_bounds=[580, 280, 720, 560],
             )["kind"]
 
         self.assertEqual(classify("复制", "放大阅读"), "text")
@@ -1637,6 +1658,117 @@ class C2VisionIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(classify("复制", "翻译此消息", "搜一搜"), "unknown")
         self.assertEqual(classify("复制", "编辑", "放大阅读"), "conflict")
+
+    def test_context_menu_classifier_ignores_exclusive_labels_outside_popup(self):
+        copy_item = {
+            "text": "复制",
+            "bounds": [620, 320, 680, 352],
+        }
+        result = transaction._classify_context_menu(
+            [
+                copy_item,
+                {"text": "编辑", "bounds": [300, 200, 360, 232]},
+                {"text": "放大阅读", "bounds": [300, 245, 390, 277]},
+                {"text": "搜一搜", "bounds": [300, 290, 370, 322]},
+            ],
+            copy_item,
+            menu_bounds=[600, 300, 700, 400],
+        )
+
+        self.assertEqual(result["kind"], "unknown")
+        self.assertEqual(result["labels"], ["复制"])
+        self.assertIsNone(result["copy_item"])
+
+    def test_menu_only_copy_with_chat_exclusive_labels_never_clicks(self):
+        image = Image.new("RGB", (800, 600), "white")
+        observed = self.observed_image_messages(
+            image,
+            [
+                {
+                    "bounds": [420, 180, 650, 320],
+                    "sender_role": "customer",
+                    "side": "customer",
+                    "anchor": {"x": 500, "y": 240},
+                }
+            ],
+        )[0]
+        copy_item = {
+            "text": "复制",
+            "x": 650,
+            "y": 336,
+            "bounds": [620, 320, 680, 352],
+        }
+        copy_clicks = []
+        clipboard_reads = []
+
+        def capture_frame(context):
+            if context.get("phase") == "image_context_menu":
+                return {
+                    "ok": True,
+                    "image": image.copy(),
+                    "image_size": image.size,
+                    "ocr_items": [
+                        copy_item,
+                        {"text": "编辑", "bounds": [300, 200, 360, 232]},
+                        {
+                            "text": "放大阅读",
+                            "bounds": [300, 245, 390, 277],
+                        },
+                        {"text": "搜一搜", "bounds": [300, 290, 370, 322]},
+                    ],
+                    "menu_bounds": [600, 300, 700, 400],
+                    "screen_origin": [0, 0],
+                }
+            return {
+                "ok": True,
+                "image": image.copy(),
+                "image_size": image.size,
+                "messages": [dict(observed)],
+                "time_markers": [],
+            }
+
+        with patch.object(
+            transaction,
+            "find_copy_menu_item",
+            return_value=copy_item,
+        ):
+            result = transaction.acquire_current_image_via_ports(
+                VisionHostPorts(
+                    rpa_lease=SimpleNamespace(
+                        lease=lambda *_args, **_kwargs: nullcontext()
+                    ),
+                    conversation_target=SimpleNamespace(
+                        confirm_target=lambda _context: {"ok": True}
+                    ),
+                    window_frame=SimpleNamespace(capture_frame=capture_frame),
+                    ui_action=SimpleNamespace(
+                        right_click=lambda *_args, **_kwargs: {
+                            "screen_x": 500,
+                            "screen_y": 240,
+                        },
+                        click_screen=lambda *_args, **_kwargs: copy_clicks.append(1),
+                        dismiss_menu_safely=lambda: None,
+                    ),
+                    clipboard=SimpleNamespace(
+                        sequence_number=lambda: 10,
+                        read_current_bitmap=lambda: clipboard_reads.append(1),
+                    ),
+                ),
+                {
+                    "sender_role": "customer",
+                    "bubble_rect": [420, 180, 650, 320],
+                    "image_physical_anchor": observed[
+                        "image_physical_anchor"
+                    ],
+                },
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "C2_IMAGE_MENU_OPERATION_FAILED")
+        self.assertEqual(result["transaction"]["status"], "menu_evidence_incomplete")
+        self.assertEqual(copy_clicks, [])
+        self.assertEqual(clipboard_reads, [])
+        image.close()
 
     def test_non_image_incomplete_and_conflicting_menus_never_click(self):
         image = Image.new("RGB", (800, 600), "white")
@@ -1686,6 +1818,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         "image": image.copy(),
                         "image_size": image.size,
                         "ocr_items": menu_items,
+                        "menu_bounds": [580, 280, 720, 560],
                         "screen_origin": [0, 0],
                     }
                 return {
@@ -1811,6 +1944,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                             "bounds": [600, 350, 650, 390],
                         },
                     ],
+                    "menu_bounds": [580, 280, 700, 420],
                     "screen_origin": [0, 0],
                 }
             ),
