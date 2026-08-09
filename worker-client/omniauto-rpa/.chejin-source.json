@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
   "upstream_repository": "meta-xucong/omniauto",
-  "upstream_base_commit": "7abd76b32fc16c4a128e9b17250101bea96fab26",
+  "upstream_base_commit": "a563e6688c47a8922510794101967823fe1389d7",
   "selective_integrations": [],
   "chejin_overlays": [
     "strict_current_screen_without_history_scroll",
@@ -23,5 +23,5 @@
       ]
     }
   ],
-  "integration_note": "当前内嵌副本已同步 OmniAuto 提交 7abd76b32fc16c4a128e9b17250101bea96fab26，彻底删除 Windows RPA 悬浮球、F8 与键鼠守护，修复语音表面被图片探测器误框问题，并叠加车金专属适配；最终车金提交和完整目录 tree SHA 由打包 manifest 动态记录。"
+  "integration_note": "当前内嵌副本已同步 OmniAuto 提交 a563e6688c47a8922510794101967823fe1389d7，彻底删除 Windows RPA 悬浮球、F8 与键鼠守护，修复语音表面被图片探测器误框问题，新增带当前客户消息证据的 hard_opt_out 结构化结论，并叠加车金专属适配；最终车金提交和完整目录 tree SHA 由打包 manifest 动态记录。"
 }

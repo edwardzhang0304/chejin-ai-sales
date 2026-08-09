@@ -6180,6 +6180,100 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(api.message_payloads[0]["evidence"]["read_reason"], "visible_unread")
         self.assertEqual(api.message_payloads[0]["evidence"]["authorization_read_reason"], "visible_unread")
 
+    def test_c2_visible_unread_empty_result_is_reported_to_consume_backend_unread_fact(self):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-visible-unread-empty",
+            rpa_session_key="wx:rpa:v1:visible-unread-empty",
+            display_name="CJEMPTY01 客户",
+            remark_code="CJEMPTY01",
+            row_fingerprint={"title_text": "CJEMPTY01 客户"},
+            ocr_confidence=0.98,
+            read_reason="visible_unread",
+            authorization_revision="revision-visible-unread-empty",
+        )
+        api.read_targets = [target]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            {
+                "ok": True,
+                "observation_schema_version": 3,
+                "observations": [],
+                "state": "messages_ocr",
+                "sidecar_run_id": "visible-unread-empty-run",
+            }
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        result = runner._read_one_wechat_target(
+            binding,
+            target,
+            current_step="state_target_message_read",
+            enforce_read_targets=False,
+        )
+
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(api.message_payloads[0]["messages"], [])
+        self.assertEqual(
+            api.message_payloads[0]["evidence"]["authorization_read_reason"],
+            "visible_unread",
+        )
+        self.assertIn("ingest:0", api.events)
+
+    def test_c2_visible_unread_all_duplicate_result_still_reports_completion(self):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-visible-unread-duplicates",
+            rpa_session_key="wx:rpa:v1:visible-unread-duplicates",
+            display_name="CJDUP001 客户",
+            remark_code="CJDUP001",
+            row_fingerprint={"title_text": "CJDUP001 客户"},
+            ocr_confidence=0.98,
+            read_reason="visible_unread",
+            authorization_revision="revision-visible-unread-duplicates",
+        )
+        api.read_targets = [target]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused"),
+            message_sender_role="customer",
+        )
+        runner, _ = self.make_runner(api, bridge)
+        original_filter = runner._filter_confirmed_messages
+
+        def filter_all_as_confirmed(payload):
+            filtered = original_filter(payload)
+            filtered["messages"] = []
+            return filtered
+
+        runner._filter_confirmed_messages = filter_all_as_confirmed  # type: ignore[method-assign]
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        result = runner._read_one_wechat_target(
+            binding,
+            target,
+            current_step="state_target_message_read",
+            enforce_read_targets=False,
+        )
+
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(api.message_payloads[0]["messages"], [])
+        self.assertIn("ingest:0", api.events)
+
     def test_c2_visible_unread_without_current_local_unread_fact_never_opens_wechat(self):
         api = FakeApi(None)
         api.read_targets = [

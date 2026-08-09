@@ -114,6 +114,26 @@ from .wechat_c2 import (
 )
 
 
+CONTROL_READ_REASONS = frozenset(
+    {
+        "friend_acceptance_visible_hit",
+        "recall_precheck",
+        "visible_unread",
+    }
+)
+
+
+def should_submit_c2_ingest_payload(
+    *,
+    read_reason: str,
+    messages: list[Any] | None,
+    has_flow_gate: bool,
+) -> bool:
+    """Return whether an opened authorized chat must be acknowledged by C2."""
+
+    return bool(messages) or read_reason in CONTROL_READ_REASONS or has_flow_gate
+
+
 ENV_STOP_ERRORS = {
     "RPA_COMPONENT_NOT_READY",
     "WECHAT_WINDOW_NOT_FOUND",
@@ -8393,12 +8413,15 @@ class TaskRunner:
                 }
                 payload["evidence"]["timing"] = json.loads(json.dumps(evidence_timing, ensure_ascii=False, default=str))
             payload = self._filter_confirmed_messages(payload)
-            control_read = target.read_reason in {"friend_acceptance_visible_hit", "recall_precheck"}
             has_flow_gate = bool(
                 isinstance(payload.get("evidence"), dict)
                 and payload["evidence"].get("flow_gate_errors")
             )
-            if not payload.get("messages") and not control_read and not has_flow_gate:
+            if not should_submit_c2_ingest_payload(
+                read_reason=target.read_reason,
+                messages=payload.get("messages"),
+                has_flow_gate=has_flow_gate,
+            ):
                 record_phase("messages_ingest_skipped", time.perf_counter(), reason="all_messages_already_confirmed")
                 return {
                     "ok": True,

@@ -411,6 +411,41 @@ def test_real_adapter_uses_guard_approved_brain_text_without_rewriting(monkeypat
     assert decision.raw_payload["omniauto_brain_result"]["brain_plan"] == brain_result["brain_plan"]
 
 
+def test_real_adapter_emits_structured_hard_opt_out_without_customer_reply(monkeypatch):
+    adapter = RealOmniAutoAIEngineAdapter()
+    brain_result = {
+        "rule_name": "customer_service_brain_hard_opt_out",
+        "adoptable": True,
+        "guard_verdict": "pass",
+        "hard_opt_out": {
+            "detected": True,
+            "message_event_id": "event-opt-out-1",
+            "source_message_key": "source-opt-out-1",
+            "customer_text": "请不要再联系我",
+            "reason": "explicit_stop_contact",
+        },
+        "brain_plan": {
+            "recommended_action": "hard_opt_out",
+            "confidence": 0.99,
+            "risk_flags": [],
+            "evidence_refs": ["message:event-opt-out-1"],
+            "reply_segments": [],
+        },
+    }
+    monkeypatch.setattr(adapter, "_load_config", lambda: {"customer_service_brain": {"provider": "test", "model": "test", "api_key": "test-only"}})
+    monkeypatch.setattr(adapter, "_load_brain", lambda: object())
+    monkeypatch.setattr(adapter, "_run_brain_isolated", lambda **_kwargs: brain_result)
+
+    decision = adapter.generate_reply_decision(
+        conversation_context={"conversation_id": "conv-opt-out"},
+        message_batch={"id": "batch-opt-out", "messages": [{"content": "请不要再联系我"}]},
+    )
+
+    assert decision.decision == "hard_opt_out"
+    assert decision.reply_text is None
+    assert decision.hard_opt_out_evidence == brain_result["hard_opt_out"]
+
+
 def test_real_adapter_provider_exception_is_explicit_retry_later(monkeypatch):
     adapter = RealOmniAutoAIEngineAdapter()
     monkeypatch.setattr(adapter, "_load_config", lambda: {"customer_service_brain": {"provider": "test", "model": "test", "api_key": "test-only"}})
@@ -1660,6 +1695,119 @@ def test_sales_manual_reply_cancels_unsent_reply_action_without_disabling_ai():
         assert old_action.status == "cancelled"
         assert conversation.status == "sales_replied_waiting_user"
         assert conversation.ai_enabled is True
+
+
+def test_verified_hard_opt_out_atomically_rejects_and_cancels_unsent_actions(monkeypatch):
+    worker, binding = _setup_bound_conversation()
+    first_event_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-before-hard-opt-out",
+        "我想看看轿车",
+    )
+    old = _generate(_collect(binding["conversation_id"], first_event_id)["batch_id"])
+    opt_out_event_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-hard-opt-out",
+        "请不要再联系我",
+    )
+    opt_out_batch = _collect(binding["conversation_id"], opt_out_event_id)
+    _reset_batch_to_generation_state(
+        opt_out_batch["batch_id"],
+        status="collecting",
+        generation_attempt_count=0,
+    )
+    with SessionLocal() as db:
+        event = db.get(MessageEvent, opt_out_event_id)
+        conversation = db.get(Conversation, binding["conversation_id"])
+        conversation.next_recall_at = utcnow() + timedelta(days=1)
+        conversation.recall_cycle_id = "recall-cycle-before-opt-out"
+        conversation.recall_origin_status = "waiting_user_reply"
+        source_key = event.source_message_key
+        db.commit()
+
+    class HardOptOutAdapter:
+        def generate_reply_decision(self, **_kwargs):
+            return c3_service.AIEngineDecision(
+                decision="hard_opt_out",
+                confidence=0.99,
+                guard_result="pass",
+                evidence_refs=[f"message:{opt_out_event_id}"],
+                hard_opt_out_evidence={
+                    "detected": True,
+                    "message_event_id": opt_out_event_id,
+                    "source_message_key": source_key,
+                    "customer_text": "请不要再联系我",
+                    "reason": "explicit_stop_contact",
+                },
+            )
+
+    monkeypatch.setattr(c3_service, "get_ai_engine_adapter", lambda: HardOptOutAdapter())
+    with SessionLocal() as db:
+        generated = c3_service.generate_for_batch(db, batch_id=opt_out_batch["batch_id"])
+        db.commit()
+
+    assert generated["decision"] == "hard_opt_out"
+    assert generated["suggested_action"] == "do_not_contact"
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        old_action = db.get(ReplyAction, old["reply_action_id"])
+        old_task = db.get(Task, old["task_id"])
+        batch = db.get(MessageBatch, opt_out_batch["batch_id"])
+        assert conversation.status == "rejected"
+        assert conversation.ai_enabled is False
+        assert conversation.next_recall_at is None
+        assert conversation.recall_cycle_id is None
+        assert conversation.recall_origin_status is None
+        assert conversation.close_reason == f"customer_hard_opt_out:{opt_out_event_id}"
+        assert old_action.status in {"superseded", "cancelled"}
+        assert old_action.current is False
+        assert old_task.status == "cancelled"
+        assert batch.status == "rejected"
+        assert batch.active is False
+        assert db.query(ReplyAction).filter(ReplyAction.batch_id == batch.id).count() == 0
+
+
+def test_hard_opt_out_with_unmatched_evidence_never_rejects_or_sends(monkeypatch):
+    worker, binding = _setup_bound_conversation()
+    event_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-hard-opt-out-invalid",
+        "请不要再联系我",
+    )
+    batch = _collect(binding["conversation_id"], event_id)
+    _reset_batch_to_generation_state(
+        batch["batch_id"],
+        status="collecting",
+        generation_attempt_count=0,
+    )
+
+    class InvalidHardOptOutAdapter:
+        def generate_reply_decision(self, **_kwargs):
+            return c3_service.AIEngineDecision(
+                decision="hard_opt_out",
+                guard_result="pass",
+                hard_opt_out_evidence={
+                    "detected": True,
+                    "message_event_id": "not-the-current-event",
+                    "source_message_key": "not-the-current-source",
+                    "customer_text": "请不要再联系我",
+                },
+            )
+
+    monkeypatch.setattr(c3_service, "get_ai_engine_adapter", lambda: InvalidHardOptOutAdapter())
+    with SessionLocal() as db:
+        generated = c3_service.generate_for_batch(db, batch_id=batch["batch_id"])
+        db.commit()
+
+    assert generated["decision"] in {"retry_later", "handoff"}
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert conversation.status != "rejected"
+        assert conversation.ai_enabled is True
+        assert db.query(ReplyAction).filter(ReplyAction.batch_id == batch["batch_id"]).count() == 0
 
 
 def test_claim_send_is_single_owner_and_sent_ack_is_idempotent():

@@ -452,7 +452,7 @@ class PackagingScriptsTest(unittest.TestCase):
 
         self.assertEqual(
             provenance["upstream_base_commit"],
-            "7abd76b32fc16c4a128e9b17250101bea96fab26",
+            "a563e6688c47a8922510794101967823fe1389d7",
         )
         self.assertEqual(provenance["selective_integrations"], [])
         self.assertIn(

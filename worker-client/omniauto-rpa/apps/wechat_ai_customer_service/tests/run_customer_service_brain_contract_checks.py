@@ -78,6 +78,8 @@ def main() -> int:
 
 def run_contract_checks() -> int:
     results = [
+        check_hard_opt_out_requires_exact_current_customer_evidence(),
+        check_soft_refusal_is_not_a_hard_opt_out(),
         check_normalize_and_candidate(),
         check_rejects_style_only_price_fact(),
         check_requires_fact_claims_for_factual_modes(),
@@ -340,6 +342,78 @@ def base_plan() -> dict[str, Any]:
         "confidence": 0.86,
         "reason": "商品库命中具体车型和价格。",
     }
+
+
+def check_hard_opt_out_requires_exact_current_customer_evidence() -> CaseResult:
+    plan = normalize_brain_plan(
+        {
+            **base_plan(),
+            "answer_mode": "stop_contact",
+            "recommended_action": "hard_opt_out",
+            "reply_segments": [],
+            "facts_claimed": [],
+            "hard_opt_out": {
+                "detected": True,
+                "message_event_id": "event-stop-1",
+                "source_message_key": "source-stop-1",
+                "customer_text": "请不要再联系我",
+                "reason": "explicit_stop_contact",
+            },
+        }
+    )
+    brain_input = {
+        "current_message": {
+            "message_evidence": [
+                {
+                    "message_event_id": "event-stop-1",
+                    "source_message_key": "source-stop-1",
+                    "sender_role": "customer",
+                    "customer_text": "请不要再联系我",
+                }
+            ]
+        }
+    }
+    contract = validate_brain_plan(plan)
+    exact = brain_module.validate_hard_opt_out_evidence(plan, brain_input)
+    mismatched = brain_module.validate_hard_opt_out_evidence(
+        plan,
+        {
+            "current_message": {
+                "message_evidence": [
+                    {
+                        "message_event_id": "event-stop-1",
+                        "source_message_key": "source-stop-1",
+                        "sender_role": "customer",
+                        "customer_text": "暂时不考虑",
+                    }
+                ]
+            }
+        },
+    )
+    return CaseResult(
+        "hard_opt_out_requires_exact_current_customer_evidence",
+        bool(contract.get("ok") and exact.get("ok") and not mismatched.get("ok")),
+        {"contract": contract, "exact": exact, "mismatched": mismatched},
+    )
+
+
+def check_soft_refusal_is_not_a_hard_opt_out() -> CaseResult:
+    plan = normalize_brain_plan(
+        {
+            **base_plan(),
+            "reply_segments": ["没问题，您后面想继续了解时再找我。"],
+            "facts_claimed": [],
+            "recommended_action": "send_reply",
+            "hard_opt_out": {"detected": False},
+            "reason": "temporary_or_price_objection",
+        }
+    )
+    validation = validate_brain_plan(plan)
+    return CaseResult(
+        "soft_refusal_is_not_a_hard_opt_out",
+        bool(validation.get("ok") and plan.get("recommended_action") == "send_reply"),
+        {"validation": validation, "recommended_action": plan.get("recommended_action")},
+    )
 
 
 def check_normalize_and_candidate() -> CaseResult:

@@ -28,6 +28,7 @@ from chejin_worker_client.c2_outbox_recovery import (
 from chejin_worker_client.wechat_c2 import (
     build_message_ingest_payload as build_worker_message_ingest_payload,
 )
+from chejin_worker_client.task_runner import should_submit_c2_ingest_payload
 
 from app.contracts.c2 import c2_contract_v3, contract_revision, contract_sha256
 from app.contracts.message_limits import (
@@ -786,6 +787,54 @@ def test_visible_unread_ingest_consumes_stale_scan_hint():
     admin_binding = client.get(f"/api/conversations/{binding['conversation_id']}/wechat-binding", headers=HEADERS)
     assert admin_binding.status_code == 200
     assert admin_binding.json()["data"]["remark_code"] == remark_code
+
+
+def test_worker_visible_unread_empty_ack_crosses_api_and_consumes_hint_only_after_success():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("首屏空结果客户", "13896676670")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    assert scan.status_code == 200, scan.text
+    binding = scan.json()["data"]["bindings"][0]
+    empty_payload = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id="read-visible-unread-empty-cross-layer",
+        read_reason="visible_unread",
+        messages=[],
+    )
+
+    assert should_submit_c2_ingest_payload(
+        read_reason="visible_unread",
+        messages=empty_payload["messages"],
+        has_flow_gate=False,
+    ) is True
+
+    invalid_payload = dict(empty_payload)
+    invalid_payload["authorization_revision"] = "stale-authorization"
+    failed = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=invalid_payload,
+        headers=_worker_headers(worker),
+    )
+    assert failed.status_code == 409
+    with SessionLocal() as db:
+        assert db.get(WechatSessionBinding, binding["id"]).unread_hint is True
+
+    succeeded = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=empty_payload,
+        headers=_worker_headers(worker),
+    )
+    assert succeeded.status_code == 200, succeeded.text
+    assert succeeded.json()["data"]["ingested_count"] == 0
+    with SessionLocal() as db:
+        assert db.get(WechatSessionBinding, binding["id"]).unread_hint is False
 
 
 def test_visible_unread_is_revoked_by_read_scan_and_can_be_issued_again_for_new_unread_fact():
