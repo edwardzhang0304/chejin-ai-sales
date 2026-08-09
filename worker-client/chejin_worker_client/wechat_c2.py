@@ -802,32 +802,75 @@ def reconcile_v16104_identity_transition(
         sequence_floor,
         int(existing_state.get("next_sequence") or 1),
     )
-    if not existing_state.get("last_frame"):
-        recent_messages = [
-            item
-            for item in (checkpoint.get("recent_messages") or [])
-            if isinstance(item, dict)
-            and str(item.get("stable_id") or "").strip()
-            and str(item.get("alignment_signature") or "").strip()
-        ]
-        checkpoint_frame = [
+    recent_messages = [
+        item
+        for item in (checkpoint.get("recent_messages") or [])
+        if isinstance(item, dict)
+        and str(item.get("stable_id") or "").strip()
+        and str(item.get("alignment_signature") or "").strip()
+    ]
+    checkpoint_frame = [
+        {
+            "signature": str(item["alignment_signature"]),
+            "alignment_signature": str(item["alignment_signature"]),
+            "stable_id": str(item["stable_id"]),
+        }
+        for item in recent_messages
+    ]
+    checkpoint_digest = hashlib.sha256(
+        json.dumps(
             {
-                "signature": str(item["alignment_signature"]),
-                "alignment_signature": str(item["alignment_signature"]),
-                "stable_id": str(item["stable_id"]),
-            }
-            for item in recent_messages
+                "version": checkpoint.get("version"),
+                "next_sequence_floor": sequence_floor,
+                "recent_messages": recent_messages,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+    if (
+        checkpoint_frame
+        and existing_state.get("server_checkpoint_digest")
+        != checkpoint_digest
+    ):
+        previous_frame = [
+            item
+            for item in (existing_state.get("last_frame") or [])
+            if isinstance(item, dict)
         ]
-        if checkpoint_frame:
+        local_next_sequence = int(
+            existing_state.get("next_sequence") or 1
+        )
+        if not previous_frame or sequence_floor >= local_next_sequence:
+            if previous_frame:
+                existing_state["recent_frames"] = [
+                    previous_frame,
+                    *(existing_state.get("recent_frames") or []),
+                ][:5]
             existing_state["last_frame"] = checkpoint_frame
-            existing_state["catalog"] = {
-                str(item["alignment_signature"]): [str(item["stable_id"])]
-                for item in recent_messages
-            }
+        else:
+            existing_state["recent_frames"] = [
+                checkpoint_frame,
+                *(existing_state.get("recent_frames") or []),
+            ][:5]
+    existing_state["server_checkpoint_digest"] = checkpoint_digest
+    existing_state["server_next_sequence_floor"] = sequence_floor
+
+    def attach_checkpoint_state(
+        result: tuple[list[Any], dict[str, Any], list[dict[str, Any]]],
+    ) -> tuple[list[Any], dict[str, Any], list[dict[str, Any]]]:
+        enriched, state, errors = result
+        state = dict(state)
+        state["server_checkpoint_digest"] = checkpoint_digest
+        state["server_next_sequence_floor"] = sequence_floor
+        return enriched, state, errors
     if existing_state.get("legacy_transition_completed") is True:
-        return reconcile_cross_round_observation_identities(
-            observations,
-            existing_state,
+        return attach_checkpoint_state(
+            reconcile_cross_round_observation_identities(
+                observations,
+                existing_state,
+            )
         )
     transition = target.raw.get("identity_transition") if isinstance(target.raw, dict) else {}
     try:
@@ -838,9 +881,11 @@ def reconcile_v16104_identity_transition(
         )
     except (TypeError, ValueError):
         transition_version = 0
-    enriched, state, errors = reconcile_cross_round_observation_identities(
-        observations,
-        existing_state,
+    enriched, state, errors = attach_checkpoint_state(
+        reconcile_cross_round_observation_identities(
+            observations,
+            existing_state,
+        )
     )
     if errors or transition_version != 1:
         return enriched, state, errors

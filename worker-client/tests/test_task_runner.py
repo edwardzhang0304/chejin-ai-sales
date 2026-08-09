@@ -216,6 +216,15 @@ class FakeApi:
         for target in targets:
             if target.conversation_id and target.remark_code and not target.authorization_revision:
                 target.authorization_revision = f"revision-{target.conversation_id}"
+            if isinstance(target.raw, dict):
+                target.raw.setdefault(
+                    "identity_checkpoint",
+                    {
+                        "version": 1,
+                        "next_sequence_floor": 1,
+                        "recent_messages": [],
+                    },
+                )
         return targets
 
     def get_wechat_read_authorization(
@@ -255,6 +264,23 @@ class FakeApi:
             "conversation_id": target.conversation_id,
             "authorization_revision": target.authorization_revision,
             "read_reason": target.read_reason,
+            "identity_checkpoint": (
+                target.raw.get("identity_checkpoint")
+                if isinstance(target.raw, dict)
+                and isinstance(
+                    target.raw.get("identity_checkpoint"), dict
+                )
+                else {
+                    "version": 1,
+                    "next_sequence_floor": 1,
+                    "recent_messages": [],
+                }
+            ),
+            "next_read_due_at": (
+                target.raw.get("next_read_due_at")
+                if isinstance(target.raw, dict)
+                else None
+            ),
             "target": {
                 "conversation_id": target.conversation_id,
                 "rpa_session_key": target.rpa_session_key,
@@ -619,6 +645,29 @@ class FakeBridge:
 
 
 class TaskRunnerTest(unittest.TestCase):
+    @staticmethod
+    def _identity_text_observation(
+        observation_id: str,
+        content: str,
+        top: int,
+    ) -> dict:
+        return {
+            "schema_version": 3,
+            "observation_id": observation_id,
+            "row_kind": "text_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "text",
+            "voice_state": "not_voice",
+            "content_clean": content,
+            "bubble_rect": [420, top, 650, top + 56],
+            "source_message": {
+                "id": observation_id,
+                "type": "text",
+                "sender_role": "customer",
+            },
+        }
+
     def test_phase_metadata_is_frozen_before_later_image_merges(self):
         source_key = "source:image-1"
         mutable = {
@@ -1103,6 +1152,25 @@ class TaskRunnerTest(unittest.TestCase):
         runner.c2_stop_guard_before_voice_seconds = 0
         runner.last_c2_vision_preflight_at = time.monotonic()
         runner.c2_vision_preflight_ready = True
+        production_reconcile = runner._reconcile_message_identities
+
+        def reconcile_with_contract_fixture(target, observations):
+            # Direct unit tests bypass FakeApi.read-targets. Supply the field
+            # that backend C2 3.12.5 always returns in production.
+            if isinstance(target.raw, dict):
+                target.raw.setdefault(
+                    "identity_checkpoint",
+                    {
+                        "version": 1,
+                        "next_sequence_floor": 1,
+                        "recent_messages": [],
+                    },
+                )
+            return production_reconcile(target, observations)
+
+        runner._reconcile_message_identities = (  # type: ignore[method-assign]
+            reconcile_with_contract_fixture
+        )
         return runner, seen
 
     def make_chat_reply_task(self, *, task_id: str, status: str = "pending") -> Task:
@@ -6230,6 +6298,54 @@ class TaskRunnerTest(unittest.TestCase):
         )
         self.assertIn("ingest:0", api.events)
 
+    def test_c2_every_authorized_empty_read_reports_completion(self):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-waiting-empty",
+            rpa_session_key="wx:rpa:v1:waiting-empty",
+            display_name="CJEMPTY02 客户",
+            remark_code="CJEMPTY02",
+            read_reason="waiting_user_reply",
+            authorization_revision="revision-waiting-empty",
+        )
+        api.read_targets = [target]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            {
+                "ok": True,
+                "observation_schema_version": 3,
+                "observations": [],
+                "state": "messages_ocr",
+                "sidecar_run_id": "waiting-empty-run",
+            }
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        result = runner._read_one_wechat_target(
+            binding,
+            target,
+            current_step="state_target_message_read",
+            enforce_read_targets=False,
+        )
+
+        self.assertTrue(result.get("ok"), result)
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(api.message_payloads[0]["messages"], [])
+        self.assertEqual(
+            api.message_payloads[0]["evidence"][
+                "authorization_read_reason"
+            ],
+            "waiting_user_reply",
+        )
+
     def test_c2_visible_unread_all_duplicate_result_still_reports_completion(self):
         api = FakeApi(None)
         target = WechatReadTarget(
@@ -7118,7 +7234,18 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertIsNone(
             load_c2_ledger_entry("conv-collision", old_source_key)
         )
+        self.assertGreaterEqual(
+            int(
+                load_c2_state(
+                    "message_identity:conv-collision"
+                ).get("next_sequence")
+                or 0
+            ),
+            9,
+        )
         self.assertEqual(bridge.message_reads, [])
+        self.assertEqual(bridge.locate_chats, [])
+        self.assertEqual(bridge.voice_transcribes, [])
 
         self.assertTrue(runner._replay_c2_outbox(binding))
         self.assertEqual(attempts, 2)
@@ -7128,6 +7255,210 @@ class TaskRunnerTest(unittest.TestCase):
                 replacement["source_message_key"],
             )["ingest_state"],
             "confirmed",
+        )
+
+    def test_missing_local_identity_database_uses_server_sequence_floor(self):
+        from chejin_worker_client import storage
+
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(RpaResult(ok=True, result_code="unused")),
+        )
+        target = WechatReadTarget(
+            conversation_id="conv-missing-local-db",
+            rpa_session_key="wx:missing-local-db",
+            display_name="CJMISS01 测试客户",
+            remark_code="CJMISS01",
+            read_reason="waiting_user_reply",
+            authorization_revision="revision-missing-db",
+            raw={
+                "identity_checkpoint": {
+                    "version": 1,
+                    "next_sequence_floor": 31,
+                    "recent_messages": [],
+                }
+            },
+        )
+        with tempfile.TemporaryDirectory(
+            prefix="chejin-missing-identity-db-"
+        ) as temp_dir:
+            app_dir = Path(temp_dir)
+            missing_db = app_dir / "worker_client.sqlite3"
+            self.assertFalse(missing_db.exists())
+            with patch.object(storage, "APP_DIR", app_dir), patch.object(
+                storage,
+                "DB_FILE",
+                missing_db,
+            ):
+                reconciled, state, errors = (
+                    runner._reconcile_message_identities(
+                        target,
+                        [
+                            self._identity_text_observation(
+                                "new-after-db-loss",
+                                "本地数据库删除后的新消息",
+                                220,
+                            )
+                        ],
+                    )
+                )
+                self.assertTrue(missing_db.exists())
+
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            reconciled[0]["_worker_stable_id"],
+            "worker-message-31",
+        )
+        self.assertEqual(state["next_sequence"], 32)
+
+    def test_concurrent_identity_allocation_is_unique_and_transactional(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(RpaResult(ok=True, result_code="unused")),
+        )
+        target = WechatReadTarget(
+            conversation_id="conv-concurrent-identity",
+            rpa_session_key="wx:concurrent-identity",
+            display_name="CJCONC01 测试客户",
+            remark_code="CJCONC01",
+            read_reason="waiting_user_reply",
+            authorization_revision="revision-concurrent",
+            raw={
+                "identity_checkpoint": {
+                    "version": 1,
+                    "next_sequence_floor": 41,
+                    "recent_messages": [],
+                }
+            },
+        )
+        barrier = threading.Barrier(3)
+        assigned: list[str] = []
+        errors: list[list[dict]] = []
+        result_lock = threading.Lock()
+
+        def allocate(index: int) -> None:
+            barrier.wait()
+            reconciled, _state, identity_errors = (
+                runner._reconcile_message_identities(
+                    target,
+                    [
+                        self._identity_text_observation(
+                            f"concurrent-{index}",
+                            f"并发新消息-{index}",
+                            180 + index * 180,
+                        )
+                    ],
+                )
+            )
+            with result_lock:
+                assigned.append(reconciled[0]["_worker_stable_id"])
+                errors.append(identity_errors)
+
+        threads = [
+            threading.Thread(target=allocate, args=(index,))
+            for index in (1, 2)
+        ]
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join(timeout=5)
+
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertEqual(errors, [[], []])
+        self.assertEqual(len(set(assigned)), 2)
+        self.assertEqual(set(assigned), {"worker-message-41", "worker-message-42"})
+
+    def test_future_server_read_due_blocks_repeated_poll_ui_actions(self):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-read-not-due",
+            rpa_session_key="wx:read-not-due",
+            display_name="CJDUE001 测试客户",
+            remark_code="CJDUE001",
+            read_reason="waiting_user_reply",
+            authorization_revision="revision-not-due",
+            raw={
+                "next_read_due_at": (
+                    datetime.now(timezone.utc) + timedelta(minutes=2)
+                ).isoformat(),
+                "identity_checkpoint": {
+                    "version": 1,
+                    "next_sequence_floor": 1,
+                    "recent_messages": [],
+                },
+            },
+        )
+        bridge = FakeBridge(RpaResult(ok=True, result_code="unused"))
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        runner._read_state_target_queue(binding, targets=[target])
+        runner._read_state_target_queue(binding, targets=[target])
+
+        self.assertEqual(bridge.locate_chats, [])
+        self.assertEqual(bridge.message_reads, [])
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(
+            runner.c2_stats["last_error"],
+            "C2_READ_TARGET_NOT_DUE",
+        )
+
+    def test_latest_authorization_checkpoint_is_merged_before_ui_read(self):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-refresh-checkpoint",
+            rpa_session_key="wx:refresh-checkpoint",
+            display_name="CJREF001 测试客户",
+            remark_code="CJREF001",
+            read_reason="waiting_user_reply",
+            authorization_revision="revision-refresh-checkpoint",
+            raw={
+                "identity_checkpoint": {
+                    "version": 1,
+                    "next_sequence_floor": 2,
+                    "recent_messages": [],
+                }
+            },
+        )
+        api.read_targets = [target]
+        api.read_authorization_overrides[target.conversation_id] = {
+            "allowed": True,
+            "recovery_decision": "allowed",
+            "conversation_id": target.conversation_id,
+            "authorization_revision": target.authorization_revision,
+            "read_reason": target.read_reason,
+            "identity_checkpoint": {
+                "version": 1,
+                "next_sequence_floor": 50,
+                "recent_messages": [],
+            },
+            "next_read_due_at": None,
+        }
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(RpaResult(ok=True, result_code="unused")),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        self.assertTrue(
+            runner._backend_still_allows_read_target(binding, target)
+        )
+        self.assertEqual(
+            target.raw["identity_checkpoint"]["next_sequence_floor"],
+            50,
         )
 
     def test_collision_identity_and_outbox_refresh_are_one_sqlite_transaction(self):
@@ -7166,7 +7497,11 @@ class TaskRunnerTest(unittest.TestCase):
                     "old_source_message_key": old_source_key,
                     "new_source_message_key": new_source_key,
                     "new_dedupe_key": "dedupe-new",
+                    "new_stable_id": "worker-message-12",
                 },
+                identity_state_key=(
+                    "message_identity:conv-collision-rollback"
+                ),
             )
 
         self.assertIsNotNone(

@@ -137,6 +137,48 @@ class C2ContractTests(unittest.TestCase):
             "capability_paused",
         )
 
+    def test_identity_collision_refuses_shared_stable_id(self):
+        payload = {
+            "conversation_id": "conv-1",
+            "messages": [
+                {
+                    "source_message_key": "source-conflict",
+                    "dedupe_key": "dedupe-conflict",
+                    "message_type": "text",
+                    "content": "冲突消息",
+                    "raw_payload": {
+                        "dedupe_basis": {
+                            "source": "worker_cross_round_sequence",
+                            "worker_stable_id": "worker-message-7",
+                        }
+                    },
+                },
+                {
+                    "source_message_key": "source-other",
+                    "dedupe_key": "dedupe-other",
+                    "message_type": "text",
+                    "content": "另一条消息",
+                    "raw_payload": {
+                        "dedupe_basis": {
+                            "source": "worker_cross_round_sequence",
+                            "worker_stable_id": "worker-message-7",
+                        }
+                    },
+                },
+            ],
+        }
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "MESSAGE_IDENTITY_COLLISION_ITEM_AMBIGUOUS",
+        ):
+            rebuild_identity_collision(
+                payload,
+                source_message_key="source-conflict",
+                dedupe_key="dedupe-conflict",
+                next_sequence_floor=8,
+            )
+
     def test_action_result_matrix_is_contract_driven(self):
         cases = (
             ("send", "not_attempted", None, False, "failed"),
