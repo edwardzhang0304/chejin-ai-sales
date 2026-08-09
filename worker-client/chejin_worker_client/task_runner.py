@@ -23,6 +23,7 @@ from .action_journal import (
     list_action_journals,
     remove_action_journal,
     read_action_journal,
+    update_action_journal_item,
 )
 from .artifact_retention import cleanup_artifacts, record_artifact_outcome
 from .c2_contract import (
@@ -1763,37 +1764,8 @@ class TaskRunner:
             ),
         )
         for path, payload in journal_entries:
-            items = (
-                payload.get("items")
-                if isinstance(payload.get("items"), dict)
-                else {}
-            )
-            source_keys = {
-                str(value).strip()
-                for value in items
-                if str(value).strip()
-            }
-            conversation_id = str(
-                payload.get("conversation_id") or ""
-            ).strip()
-            ledger_has_fact = any(
-                str(entry.get("source_message_key") or "").strip()
-                in source_keys
-                and str(entry.get("terminal_state") or "")
-                in {"completed", "failed"}
-                for entry in list_c2_ledger_entries(
-                    conversation_id,
-                    message_type="image",
-                )
-            )
-            outbox_has_fact = has_c2_outbox_for_source_keys(
-                conversation_id,
-                source_keys,
-            )
-            if (
-                action_journal_is_strictly_not_attempted(payload)
-                and not ledger_has_fact
-                and not outbox_has_fact
+            if TaskRunner._strict_not_attempted_journal_can_be_removed(
+                payload
             ):
                 try:
                     remove_action_journal(path)
@@ -1826,6 +1798,51 @@ class TaskRunner:
                     )
                     removed_count += 1
         return removed_count
+
+    @staticmethod
+    def _strict_not_attempted_journal_can_be_removed(
+        payload: dict[str, Any],
+    ) -> bool:
+        """Allow pure intents to settle only when no durable work remains.
+
+        A legacy producer could leave an empty ``not_attempted`` journal even
+        after the same source fact reached a confirmed Ledger/Outbox. That
+        residue is safe to remove; waiting/retry facts remain a hard barrier.
+        """
+
+        if not action_journal_is_strictly_not_attempted(payload):
+            return False
+        conversation_id = str(
+            payload.get("conversation_id") or ""
+        ).strip()
+        items = (
+            payload.get("items")
+            if isinstance(payload.get("items"), dict)
+            else {}
+        )
+        for raw_source_key in items:
+            source_key = str(raw_source_key or "").strip()
+            if not source_key:
+                continue
+            ledger = load_c2_ledger_entry(
+                conversation_id,
+                source_key,
+            )
+            if ledger:
+                if (
+                    str(ledger.get("terminal_state") or "")
+                    in {"completed", "failed"}
+                    and str(ledger.get("ingest_state") or "")
+                    == "confirmed"
+                ):
+                    continue
+                return False
+            if has_c2_outbox_for_source_keys(
+                conversation_id,
+                {source_key},
+            ):
+                return False
+        return True
 
     @staticmethod
     def _pending_image_recovery_conversation_ids() -> list[str]:
@@ -5462,7 +5479,7 @@ class TaskRunner:
         try:
             from .omniauto_vision import process_image_slot
 
-            return process_image_slot(
+            result = process_image_slot(
                 observation=observation,
                 remark_code=str(target.remark_code or ""),
                 session_key=str(target.rpa_session_key or ""),
@@ -5478,7 +5495,7 @@ class TaskRunner:
                 artifact_dir=str(payload.get("artifact_dir") or "") or None,
             )
         except Exception as exc:
-            return {
+            result = {
                 "state": "failed",
                 "reason": "vision_adapter_failed",
                 "error_type": type(exc).__name__,
@@ -5487,6 +5504,85 @@ class TaskRunner:
                     "image_persisted": False,
                 },
             }
+        if image_action_journal is not None and str(
+            result.get("state") or ""
+        ).strip() in {"completed", "failed"}:
+            journal_payload = read_action_journal(image_action_journal)
+            journal_item = (
+                (journal_payload.get("items") or {}).get(source_key)
+                if isinstance(journal_payload.get("items"), dict)
+                else None
+            )
+            journal_terminal = bool(
+                isinstance(journal_item, dict)
+                and (
+                    str(journal_item.get("business_state") or "")
+                    in {"completed", "failed"}
+                    or str(journal_item.get("error_code") or "").strip()
+                    or (
+                        isinstance(
+                            journal_item.get("terminal_payload"), dict
+                        )
+                        and bool(journal_item.get("terminal_payload"))
+                    )
+                )
+            )
+            if not journal_terminal:
+                completed = str(result.get("state") or "") == "completed"
+                transaction = (
+                    result.get("transaction")
+                    if isinstance(result.get("transaction"), dict)
+                    else {}
+                )
+                error_code = None if completed else str(
+                    result.get("reason") or "IMAGE_RESULT_UNCONFIRMED"
+                )
+                update_action_journal_item(
+                    image_action_journal,
+                    source_message_key=source_key,
+                    action_phase=str(
+                        result.get("action_phase") or "not_attempted"
+                    ),
+                    business_state=(
+                        "completed" if completed else "failed"
+                    ),
+                    business_result_confirmed=completed,
+                    error_code=error_code,
+                    terminal_payload={
+                        "state": str(result.get("state") or "failed"),
+                        "error_code": error_code,
+                        "reason_detail": str(
+                            transaction.get("status")
+                            or result.get("reason_detail")
+                            or error_code
+                            or ""
+                        ),
+                        "customer_image_understanding": (
+                            dict(
+                                result.get(
+                                    "customer_image_understanding"
+                                )
+                                or {}
+                            )
+                            if isinstance(
+                                result.get(
+                                    "customer_image_understanding"
+                                ),
+                                dict,
+                            )
+                            else None
+                        ),
+                        "visual_bridge_input": (
+                            result.get("visual_bridge_input")
+                            if isinstance(
+                                result.get("visual_bridge_input"),
+                                (dict, list, str),
+                            )
+                            else None
+                        ),
+                    },
+                )
+        return result
 
     @staticmethod
     def _normalize_one_image_slot_result(
@@ -7380,12 +7476,10 @@ class TaskRunner:
             else {}
         )
         formed_source_keys: set[str] = set()
-        all_source_keys: set[str] = set()
         for source_key, item in items.items():
             source_key = str(source_key or "").strip()
             if not source_key or not isinstance(item, dict):
                 continue
-            all_source_keys.add(source_key)
             if action_journal_item_has_formed_fact(item):
                 formed_source_keys.add(source_key)
         if formed_source_keys:
@@ -7400,16 +7494,8 @@ class TaskRunner:
                 == "confirmed"
                 for source_key in formed_source_keys
             )
-        return bool(
-            action_journal_is_strictly_not_attempted(payload)
-            and not has_c2_outbox_for_source_keys(
-                conversation_id,
-                all_source_keys,
-            )
-            and not any(
-                load_c2_ledger_entry(conversation_id, source_key)
-                for source_key in all_source_keys
-            )
+        return TaskRunner._strict_not_attempted_journal_can_be_removed(
+            payload
         )
 
     @staticmethod

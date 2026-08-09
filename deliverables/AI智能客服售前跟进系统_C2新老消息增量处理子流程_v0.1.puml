@@ -119,7 +119,17 @@ partition "B. final_read：复用最后有效画面" {
   endif
   :current_valid_frame成为final_read唯一权威画面;
   :再次确认顶部短码和private;
-  :同时识别文字行、语音转写行、图片bubble_rect;
+  :先识别文字行、语音条、语音转写行及父子关系;
+  :同一父语音合并为explained_voice_region;
+  :在结构图片候选生成前排除被可靠文字/语音结构解释的高重叠区域;
+  :仅对未解释表面生成structural_image_candidate;
+  :任一可靠文字/语音类型证据均否决冲突图片候选;
+  note right
+    action_phase / effective_success / click.ok /
+    后端确认 / 全部alias只决定结算，不决定消息是不是语音。
+    禁止用弱图片候选先删除已解析文字/语音。
+    也禁止简化为“有文字就不是图片”。
+  end note
   if (图片检测/物理锚点异常或候选被截断?) then (是)
     :C2_IMAGE_OBSERVATION_FAILED;
     :不得伪装成0张图片\n入库和Brain前失败关闭;
@@ -323,10 +333,18 @@ partition "E. 只对NEW_IMAGE执行一次Vision" {
       endif
     endif
   endwhile (否)
+  :结果收口器对completed/failed原子写terminal payload;
+  :唯一可重入投递器幂等推进Ledger/Outbox;
+  note right
+    action_phase=not_attempted也不得跳过。
+    任一边界崩溃从最后已落盘状态续传。
+    恢复端和测试不得补造生产端缺失终态。
+  end note
   :active_read逐source key确认后按角色和最终顺序处理：\n客户失败媒体->waiting_sales_reply；\n销售失败媒体且下方无新客户消息->sales_replied_waiting_user；\nunknown->身份门禁、不伪造图片消息;
   :fact_settlement逐source key确认，\n固定不改状态、不建Brain/交接;
   :completed集合和failed集合只增不减;
   :禁止会话内图片pending/deferred;
+  :目标A失败完成逐source key确认和本地结算后\n释放全局门禁并继续目标B;
 }
 
 partition "F. 构建并上报增量批次" {

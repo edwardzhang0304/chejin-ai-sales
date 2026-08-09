@@ -7,8 +7,11 @@ import json
 from typing import Any, Callable
 
 from .wechat import (
+    MEDIA_ROLE_EDGE_CONTINUITY_RATIO,
     attach_image_physical_anchors,
     detect_visual_image_bubbles,
+    explained_non_image_conflict,
+    explained_non_image_regions,
     extract_chat_time_markers,
 )
 
@@ -55,121 +58,22 @@ def _contained_area_ratio(
     return (overlap_width * overlap_height) / inner_area
 
 
-def _axis_overlap_ratio(
-    inner_start: float,
-    inner_end: float,
-    outer_start: float,
-    outer_end: float,
-) -> float:
-    overlap = max(0.0, min(inner_end, outer_end) - max(inner_start, outer_start))
-    return overlap / max(1.0, inner_end - inner_start)
-
-
-def image_candidates_without_confirmed_voice_action_conflicts(
+def image_candidates_without_reliable_typed_message_conflicts(
     image_candidates: list[dict[str, Any]] | None,
     transcribed_messages: list[dict[str, Any]] | None,
     voice_action_attempts: list[dict[str, Any]] | None,
     *,
     diagnostics: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Arbitrate image/voice conflicts using a confirmed physical action chain."""
+    """Let reliable parsed type evidence veto weak structural image geometry.
 
-    attempts = [
-        item
-        for item in (voice_action_attempts or [])
-        if isinstance(item, dict)
-        and item.get("action_phase") == "confirmed"
-        and item.get("effective_success") is True
-        and isinstance(item.get("click"), dict)
-        and item["click"].get("ok") is True
-    ]
-    proven_voices: list[dict[str, Any]] = []
-    for message in transcribed_messages or []:
-        if not isinstance(message, dict):
-            continue
-        if str(
-            message.get("type") or message.get("message_type") or ""
-        ).strip().lower() != "voice":
-            continue
-        content = str(
-            message.get("content_clean") or message.get("content") or ""
-        ).strip()
-        if not content or content.startswith("[语音]"):
-            continue
-        anchor = message.get("voice_anchor")
-        if not isinstance(anchor, dict):
-            continue
-        anchor_item = anchor.get("item")
-        if not isinstance(anchor_item, dict):
-            continue
-        anchor_stable_key = str(anchor.get("anchor_stable_key") or "").strip()
-        parent_key = str(message.get("parent_voice_anchor_key") or "").strip()
-        if not anchor_stable_key or parent_key != anchor_stable_key:
-            continue
-        voice_rect = _surface_bounds(
-            anchor_item.get("parser_bubble_rect")
-            or {
-                "left": anchor_item.get("left"),
-                "top": anchor_item.get("top"),
-                "right": anchor_item.get("right"),
-                "bottom": anchor_item.get("bottom"),
-            }
-        )
-        if voice_rect is None:
-            continue
-        role = str(
-            message.get("sender_role") or message.get("sender") or ""
-        ).strip().lower()
-        anchor_role = str(anchor_item.get("sender_role") or "").strip().lower()
-        if role not in {"customer", "self"} or anchor_role != role:
-            continue
-        aliases = {
-            str(value).strip()
-            for value in (
-                anchor.get("anchor_key"),
-                anchor_stable_key,
-                anchor.get("anchor_structural_key"),
-                parent_key,
-            )
-            if str(value or "").strip()
-        }
-        matching_attempt = next(
-            (
-                attempt
-                for attempt in attempts
-                if aliases
-                & {
-                    str(value).strip()
-                    for value in (attempt.get("processed_anchor_keys") or [])
-                    if str(value).strip()
-                }
-                and str(
-                    ((attempt.get("context_anchor") or {}).get("anchor_stable_key"))
-                    if isinstance(attempt.get("context_anchor"), dict)
-                    else ""
-                ).strip()
-                == anchor_stable_key
-            ),
-            None,
-        )
-        if matching_attempt is None:
-            continue
-        proven_voices.append(
-            {
-                "bounds": voice_rect,
-                "role": role,
-                "anchor_stable_key": anchor_stable_key,
-                "parent_voice_anchor_key": parent_key,
-                "attempt_index": matching_attempt.get("attempt_index"),
-            }
-        )
+    ``voice_action_attempts`` remains in the internal call signature for
+    compatibility with older callers, but action success is intentionally not
+    consulted: it belongs to transaction settlement, not type arbitration.
+    """
 
-    if not proven_voices:
-        return [
-            dict(item)
-            for item in image_candidates or []
-            if isinstance(item, dict)
-        ]
+    _ = voice_action_attempts
+    protected_regions = explained_non_image_regions(transcribed_messages)
 
     kept: list[dict[str, Any]] = []
     for candidate in image_candidates or []:
@@ -185,39 +89,53 @@ def image_candidates_without_confirmed_voice_action_conflicts(
             or candidate.get("side")
             or ""
         ).strip().lower()
-        conflict: dict[str, Any] | None = None
+        typed_conflict = None
         if image_rect is not None and image_role in {"customer", "self"}:
-            for voice in proven_voices:
-                voice_rect = voice["bounds"]
-                vertical_overlap = _axis_overlap_ratio(
-                    voice_rect[1], voice_rect[3], image_rect[1], image_rect[3]
+            typed_conflict = explained_non_image_conflict(
+                tuple(int(value) for value in image_rect),
+                side=image_role,
+                regions=protected_regions,
+            )
+            if (
+                typed_conflict is not None
+                and typed_conflict["message_type"] == "text"
+                and (
+                    candidate.get(
+                        "role_facing_edge_surface_continuity"
+                    )
+                    is None
+                    or float(
+                        candidate.get(
+                            "role_facing_edge_surface_continuity"
+                        )
+                    )
+                    >= MEDIA_ROLE_EDGE_CONTINUITY_RATIO
                 )
-                horizontal_overlap = _axis_overlap_ratio(
-                    voice_rect[0], voice_rect[2], image_rect[0], image_rect[2]
-                )
-                if (
-                    image_role == voice["role"]
-                    and vertical_overlap >= 0.90
-                    and horizontal_overlap >= 0.50
-                ):
-                    conflict = {
-                        "event": "image_candidate_suppressed_by_confirmed_voice_action",
-                        "reason": "confirmed_voice_action_same_anchor_overlap",
-                        "image_bounds": list(image_rect),
-                        "voice_bounds": list(voice_rect),
-                        "sender_role": image_role,
-                        "voice_anchor_stable_key": voice["anchor_stable_key"],
-                        "parent_voice_anchor_key": voice["parent_voice_anchor_key"],
-                        "attempt_index": voice["attempt_index"],
-                        "vertical_overlap_ratio": round(vertical_overlap, 6),
-                        "horizontal_overlap_ratio": round(horizontal_overlap, 6),
-                        "candidate": dict(candidate),
-                    }
-                    break
-        if conflict is None:
+            ):
+                typed_conflict = None
+        if typed_conflict is None:
             kept.append(dict(candidate))
         elif diagnostics is not None:
-            diagnostics.append(conflict)
+            diagnostics.append(
+                {
+                    "event": (
+                        "image_candidate_suppressed_by_reliable_message_type"
+                    ),
+                    "reason": "reliable_non_image_region_overlap",
+                    "image_bounds": list(image_rect or []),
+                    "protected_bounds": list(typed_conflict["bounds"]),
+                    "sender_role": image_role,
+                    "message_type": typed_conflict["message_type"],
+                    "voice_anchor_key": typed_conflict[
+                        "voice_anchor_key"
+                    ],
+                    "protected_evidence": typed_conflict["evidence"],
+                    "contained_ratio": typed_conflict[
+                        "contained_ratio"
+                    ],
+                    "candidate": dict(candidate),
+                }
+            )
     return kept
 
 
@@ -436,7 +354,7 @@ def visual_image_messages_from_current_surface(
             "detect_visual_image_bubbles",
             exc,
         ) from exc
-    bubbles = image_candidates_without_confirmed_voice_action_conflicts(
+    bubbles = image_candidates_without_reliable_typed_message_conflicts(
         bubbles,
         existing_messages,
         voice_action_attempts,

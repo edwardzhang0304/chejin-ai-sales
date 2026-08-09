@@ -6,9 +6,9 @@
 
 最后更新：2026-08-09
 
-当前阶段：运营后台 + Windows Worker 客户端。C1 已形成稳定基线；C2 的文字、语音、图片、V3 授权、private 单聊准入、群聊阻断、统一顺序、跨轮去重、多目标串行和停止监听曾在 `v16.130.0 / 8ee53e1` 完成正式 Windows 实机验收，C3 自动回复与 C4 自动召回也已实现并测试。2026-08-09 的当前未发布代码基线为 Worker `4352f5e35d69eeea5898a57eb39d00e07372c403`、OmniAuto `99d0070517a0976dc47661f4b6564e9f6e1f1b1a`、机器合同 `3.12.6`。前一候选 `21d8619… / a561fb4…` 暴露的“真实弹窗边界”和“跨重启完整失败事实”两项 P0 已有修复提交，但当前只能标记为“等待架构复审”，不得提前写成通过；复审通过前不得生成新的快速 UAT ZIP 或正式 EXE。OmniAuto 当前内嵌基础为包含 `35b0eee` 的 `a563e668…`，活动选择性集成为 `99d0070…`；`2318bd8` 仅作为历史选择性来源保留。本版继续以主流程稳定为目标：不启动悬浮球、不安装键盘鼠标 Hook、不锁定人工输入，也不以守护状态门禁任务。
+当前阶段：运营后台 + Windows Worker 客户端。C1 已形成稳定基线；C2 的文字、语音、图片、V3 授权、private 单聊准入、群聊阻断、统一顺序、跨轮去重、多目标串行和停止监听曾在 `v16.130.0 / 8ee53e1` 完成正式 Windows 实机验收，C3 自动回复与 C4 自动召回也已实现并测试。2026-08-09 以车金 `3f65660fb712a14527ea1307715a8c2dacb9c8b1`（运行代码父基线 Worker `4352f5e35d69eeea5898a57eb39d00e07372c403`）、OmniAuto `99d0070517a0976dc47661f4b6564e9f6e1f1b1a`、机器合同 `3.12.6` 为整改父基线。复审确认的三项相互关联 P0 已在隔离整改分支实现：可靠语音/文字证据在图片候选输出前否决冲突候选；类型仲裁不依赖业务动作成功；`action_phase=not_attempted` 的明确失败由真实生产端先写 terminal，再幂等推进 Ledger/Outbox、后端确认并释放全局门禁。自动门禁已通过，当前等待架构复审；复审通过前仍不得生成快速 UAT ZIP、正式 EXE 或进入 Windows UAT。OmniAuto 当前内嵌基础为包含 `35b0eee` 的 `a563e668…`，活动选择性集成为 `99d0070…`；`2318bd8` 仅作为历史选择性来源保留。本版继续以主流程稳定为目标：不启动悬浮球、不安装键盘鼠标 Hook、不锁定人工输入，也不以守护状态门禁任务。
 
-一句话结论：当前技术方案统一收口到本文档；C0—C4 已有历史主链基线，不重写图片探测器或重开语音、回复、召回流程，但当前必须完成“真实菜单弹窗边界内分类 + 失败事实完整入库与逐条确认 + 按消息角色和当前授权决定状态”的 P0 修复。运营后台指定账号登录和车辆信息/Product Master 继续沿用既定方案：后台账号由服务端预先建立，登录成功即拥有全部后台权限，第一期不做 RBAC；车辆和正式知识复用 OmniAuto 的 Product Master、KnowledgeRuntime、RAG 与 Guard 并持久化到车金现有 PostgreSQL；不接大风车 API，不部署第二套后台，不将测试车辆或未审核知识带入生产。
+一句话结论：当前技术方案统一收口到本文档；C0—C4 已有历史主链基线，不重开回复或召回流程，但图片候选生成与语音类型仲裁必须按“先用强消息结构解释画面，再对剩余区域生成弱图片候选”整改；任何媒体明确失败，不论 `action_phase` 为何，都必须由真实生产链写入终态并经后端逐条确认后释放全局门禁。运营后台指定账号登录和车辆信息/Product Master 继续沿用既定方案：后台账号由服务端预先建立，登录成功即拥有全部后台权限，第一期不做 RBAC；车辆和正式知识复用 OmniAuto 的 Product Master、KnowledgeRuntime、RAG 与 Guard 并持久化到车金现有 PostgreSQL；不接大风车 API，不部署第二套后台，不将测试车辆或未审核知识带入生产。
 
 ## 文档治理规则
 
@@ -134,8 +134,9 @@
 > `fact_settlement` 时只补录事实、不改变当前会话状态；身份不可信时使用
 > `technical_terminal` 且不伪造 message_event。三种路径都必须得到每个 source key 的
 > `ingested / duplicated / technical_terminal` 后才能清理本地 Ledger、ActionJournal 和
-> Outbox。Worker 解除原事务门禁后必须继续处理其他短码。本轮不重写矩形探测算法，引用文字
-> 专项 OCR 优化后置；但明确终态不得被图片后最终画面收敛步骤拦在后端确认之前。
+> Outbox。Worker 解除原事务门禁后必须继续处理其他短码。矩形探测器必须增加“已由可靠
+> 文字/语音结构解释区域”的候选生成前负向排除；引用文字专项 OCR 精度优化仍可后置，但
+> 已转写语音不得再次成为图片候选，明确终态也不得被图片后最终画面收敛步骤拦在后端确认之前。
 
 截至当前已验收基线 `8ee53e1`，下列统一整改项已经进入实现，本轮不得重新设计或
 再次拆分；双仓统一时必须把它们作为回归保留项：
@@ -1588,6 +1589,10 @@ sent_ack用于确认Worker已发送。
    和对应 Outbox 时，全部 `not_attempted` 才允许在全局门禁前本地清理。只要已经形成
    completed/failed 事实，无论 action_phase 为何都必须进入统一恢复协议；只要存在
    `trigger_attempted` 或 `confirmed` 也必须进入统一恢复协议，客户端不得自行猜测终态。
+   生产端一旦得到 completed/failed 业务结果，必须不受 `action_phase` 分支影响地
+   先原子写入 terminal payload，再由可重入投递器幂等推进到 Ledger/Outbox；任一步
+   崩溃都从上一个已落盘状态续传。禁止消费者假设 terminal 必然存在，也禁止依靠恢复端
+   或测试代码补造生产端没有写出的终态。
 10. 恢复顺序固定为 `sent_ack Outbox -> messages Outbox -> media ActionJournal/
     Ledger -> 任务中心恢复 -> 本轮能力预检 -> 新 UI 动作`。Vision 配置缺失不得
     阻断无需 Vision 的历史回执和事实结算。
@@ -3771,12 +3776,13 @@ OmniAuto AI Engine 在服务端通过 Adapter 接入，不允许运行 OmniAuto 
 
 ## 8. 模块7：图片理解与图文回复
 
-本模块有可回滚的历史 Windows 实机基线，但 `v16.145.0 / 5870c056…`
-已确认“引用文字被误判为图片 + 明确失败未及时收尾”会形成全局
-`C2_IMAGE_FACT_PENDING`，因此该候选包不得继续完整 UAT 或制作正式 EXE。
-本轮只做受限 P0 整改：不重写矩形图片探测算法，只复用现有文字菜单识别作为
-复制前否决，并保证明确 failed 事实立即结算、原会话转人工、其他短码
-继续运行。引用文字 OCR 识别率优化进入后续版本，不阻塞本轮最小修复。
+本模块有可回滚的历史 Windows 实机基线，但最新实机证据进一步确认：矩形表面
+探测器既会把引用文字误判为图片，也会把“语音条 + 展开转写正文”形成的连续浅色
+区域误判为图片。后置语音仲裁又把动作成功、锚点完全匹配等业务结算证据错误地
+当成消息类型成立的必要条件；一旦误判后的菜单失败仍为 `not_attempted`，真实生产端
+还可能不写失败 terminal，最终形成永久 `C2_IMAGE_FACT_PENDING`。因此当前候选不得
+继续 UAT 或制作 ZIP/EXE。本轮 P0 必须同时修正候选生成、类型仲裁和失败事务闭环，
+不能只在菜单层增加补丁。
 
 本章是图片流程的唯一现行技术口径。图片状态矩阵、内存/剪贴板、真实 Provider、
 跨轮上下文、产品权威边界和 UAT 门禁均以本章为准；已归档的历史审计材料不得
@@ -3788,7 +3794,7 @@ OmniAuto AI Engine 在服务端通过 Adapter 接入，不允许运行 OmniAuto 
 - Vision 的运行代码、Provider 网络请求和临时图片载荷均在 Windows Worker 客户端侧；车金后端不接收原图、不提供图片上传或 Vision 代理接口。正式客户端通过安装包内置的 Vision 客户端专用 Key 直接调用批准的 Provider，新电脑只需完成 Worker ID/Token 绑定。
 - Brain 固定在服务端运行，只消费通过共享 schema 的图片文字化结果和服务端权威车辆/知识证据；Brain 不接收原图，也不持有客户端 Vision Key。
 - 图片复用有效短码、`conversation_type=private`、`read-targets` 和 `authorization_revision` 门禁。
-- OmniAuto 负责发现 `image_bubble`、返回 `bubble_rect`、执行当前剪贴板图片事务和 Vision 文字化理解。
+- OmniAuto 负责先生成结构图片候选、与已解析文字/语音完成类型仲裁，只对最终确认的 `image_bubble` 返回 `bubble_rect`，并执行当前剪贴板图片事务和 Vision 文字化理解。
 - 图片、文字、语音只使用一套 C2 `sender_role` 规则：同行左头像为 `customer`，同行右头像为 `self`；两侧同时成立或都不成立为 `unknown`。Vision 的 `side / visual_side` 只能作诊断证据，不得参与角色定案。
 - Worker 负责最终画面统一槽位、`screen_order`、跨轮 `source_message_key/dedupe_key`、本地 ledger、Outbox 和 V3 映射。
 - 后端负责授权、消息事实持久化、数据库最终去重、服务端权威车源匹配、跨轮图片上下文、`message_batch`、状态机、Brain/Guard、handoff 和 `chat_reply`。
@@ -3796,11 +3802,40 @@ OmniAuto AI Engine 在服务端通过 Adapter 接入，不允许运行 OmniAuto 
 - 会话内不存在图片 `pending/deferred`。全局能力未就绪在进入 C2 前阻断；具有可信角色和稳定身份的当前屏 `NEW_IMAGE` 必须在同一 Flow 内结束为 `completed/failed`。`ignored` 只允许在建立业务图片身份前表示已经明确证明不是聊天图片消息。
 - 车金正式产品 ID 和车辆事实只由服务端 Product Master 确认；RAG 和 Vision 只能形成检索线索，不能独立认定价格、库存或车型。服务端允许通过 OmniAuto `KnowledgeRuntime` 读取已过 customer-safe projection 的 Product Master 证据；Worker/客户端本地知识不得成为正式事实源。
 
+### 8.1.1 消息类型解释与图片候选仲裁
+
+图片探测器输出的“大矩形、非背景表面、位于消息列、邻近头像”只能叫
+`structural_image_candidate`，不能直接成为 `image_bubble` 业务事实。唯一处理顺序为：
+
+1. 先解析文字、语音条、语音转写正文、父语音锚点、角色和画面顺序。
+2. 将同一父语音的 `voice_bubble + voice_transcript` 合并为受保护的
+   `explained_voice_region`。稳定父锚点优先；锚点暂不完整时，可使用同一角色、空间
+   邻接、语音时长或语音菜单证据证明同一语音，但不得仅凭“区域里有文字”排除图片。
+3. 在结构图片候选生成前，对与已证明文字/语音区域高重叠的视觉表面做负向排除；
+   只对不能被现有消息结构解释的剩余区域生成图片候选。
+4. 后置仲裁只作为安全兜底。任一可靠的类型证据已经证明该区域属于文字或语音，
+   就必须保护原消息、否决图片候选；不得要求 `action_phase=confirmed`、转写业务成功、
+   物理点击 `ok=true`、父锚点和全部 alias 同时满足。
+5. `action_phase / effective_success / click.ok / 后端确认 / 精确 alias` 只决定动作是否
+   可重放、事实如何结算，不决定消息在画面上是不是语音。
+6. 弱几何候选与已解析消息冲突时，不得先用候选范围删除原文字或语音结果。只有完成
+   类型仲裁并得到可靠图片证据后，才允许清理真正位于图片内部的 OCR 行。
+7. “有 OCR 文字就不是图片”不是合法规则，避免把聊天截图、商品图等含文字真图片
+   错误排除。
+
+`structural_image_candidate / explained_voice_region` 是 OmniAuto 内部仲裁对象，不新增
+后端接口字段，因此本次按现方案整改可保持机器合同 `3.12.6`。若实现确需把它们暴露到
+Worker/后端共享 schema，必须先升级机器合同 revision，再同步三层合同测试。
+
 ### 8.2 单会话图片处理流程
 
 ```text
 语音处理完成后的最终有效画面
--> 同时建立文字、语音、图片slots并按画面自上而下生成screen_order
+-> 先建立文字、语音条、语音转写正文及父子关系
+-> 合并并保护explained_voice_region，先排除能被强消息结构解释的视觉区域
+-> 仅对剩余未解释表面生成structural_image_candidate
+-> 以任一可靠文字/语音类型证据否决冲突图片候选；业务成功证据不参与类型定案
+-> 完成类型仲裁后建立最终文字、语音、图片slots并按画面自上而下生成screen_order
 -> 为全部slot生成稳定source_message_key
 -> 查询Worker本地ledger和Outbox，判定NEW / OLD_COMPLETED / OLD_FAILED / OUTBOX_WAITING / IDENTITY_CONFLICT
 -> 初次图片角色不可信时形成帧级MESSAGE_IDENTITY_UNCONFIRMED，不建立图片消息、不写ignored Ledger
@@ -3825,6 +3860,7 @@ OmniAuto AI Engine 在服务端通过 Adapter 接入，不允许运行 OmniAuto 
 -> 校验image_hash/视觉指纹后清除本次Windows剪贴板内容
 -> Worker进程内调用OmniAuto BuiltinVisionPlugin，并使用正式包内置的客户端专用Key直接请求批准的真实Vision Provider
 -> 使用共享JSON Schema校验结果，得到completed / failed明确终态
+-> 不论action_phase为何，真实生产端先原子写terminal payload，再幂等投递到Ledger/Outbox
 -> 释放该图片内存
 -> 把文字化结果回填原图片slot，不在批次末尾另行追加
 -> 按最终screen_order与本轮新文字、语音共同调用现有messages/ingest
@@ -3881,6 +3917,8 @@ Vision 正式凭据交付规则：
 | 右键菜单边界未确认、只有公共项、证据不足、分类冲突或复制项坐标不安全 | “复制/转发/收藏/多选/提醒/引用/删除”不能单独证明类型；复制项边界和点击坐标必须完整落在同一真实弹窗内。任一条件不满足都关闭菜单，以 `error_code=C2_IMAGE_MENU_OPERATION_FAILED + reason_detail=menu_panel_unconfirmed/menu_evidence_incomplete/menu_evidence_conflict/menu_copy_item_unsafe + action_phase=not_attempted` failed 收口，不点击任何菜单项。 |
 | 已点复制但剪贴板稳定确认不是位图 | 停止剪贴板轮询且不调用 Vision；以 `error_code=C2_IMAGE_SOURCE_INVALID + reason_detail=clipboard_current_content_not_bitmap + action_phase=trigger_attempted` failed 图片事实立即进入现有 Outbox，不得等待图片后最终画面收敛才上报。 |
 | 上述明确 failed 事实已获后端逐 source key 确认 | 本地 ledger/ActionJournal 改为 confirmed 并释放 `C2_IMAGE_FACT_PENDING`。正常 `active_read` 下：customer 失败转 `waiting_sales_reply`；self 失败且没有更晚客户消息时转 `sales_replied_waiting_user`，有更晚客户消息时仍转 `waiting_sales_reply`；unknown 不建立图片事实。`fact_settlement` 只补录事实，不改变当前状态。完成后 Worker 立即继续下一个短码。 |
+| 展开后的已转写语音与结构图片候选重叠 | 先以语音条、转写正文、父子关系和角色/空间证据形成 `explained_voice_region` 并否决图片候选；不得再次右键、复制或调用 Vision，不得删除原语音/正文。 |
+| 语音类型证据已成立，但动作成功、父锚点或 alias 证据不完整 | 保持语音类型，按语音自身失败/恢复规则结算；不得降级成图片。业务结算证据缺失不能反向推翻已经成立的消息类型。 |
 | 上述事实因后端暂时无法确认 | 保留 Outbox 并按退避重传，不重复右键、复制或 Vision；这是可观测的临时事务等待，不得因确定性代码错误永久卡住。 |
 | 图片在动作前已被顶出最终当前屏 | 重建 final_read 后本轮不建立该图片槽位，不上滚、不追踪、不产生失败事实或 Brain 门禁；后续自然可见时重新观察。 |
 | 图片仍在最终当前屏但无法唯一确认原稳定身份 | `message_type=image + item_state=failed + content=null + error_code=C2_IMAGE_SLOT_RECONFIRM_FAILED` 入库；不右键、不调用 Vision、不跨轮重试。 |
@@ -3950,11 +3988,12 @@ OmniAuto 通用上游固定提交：35b0eee13c6423d56a0f15736f96a422e10d8d1c
 当前未发布候选来源固定为：
 
 ```text
-Worker代码基线提交：4352f5e35d69eeea5898a57eb39d00e07372c403
+车金审计基线提交：3f65660fb712a14527ea1307715a8c2dacb9c8b1
+Worker运行代码父基线：4352f5e35d69eeea5898a57eb39d00e07372c403
 内嵌OmniAuto基础：a563e6688c47a8922510794101967823fe1389d7（包含35b0eee）
 活动选择性来源：99d0070517a0976dc47661f4b6564e9f6e1f1b1a
 机器合同revision：3.12.6
-发布状态：两项P0已有修复提交、等待架构复审；复审通过前禁止生成ZIP/EXE
+发布状态：三项P0整改与真实生产链门禁已通过，等待架构复审；复审前禁止生成ZIP/EXE
 ```
 
 当前主链完整复用：
@@ -4042,9 +4081,10 @@ tree SHA 必须由最终提交后的真实目录动态计算，不得把历史 t
 
    中文 `integration_note`、上述机器字段与来源记录测试必须同时保持一致；旧
    `855c218 + 2318bd8 + ff9e0de` 仍保留在 `historical_integrations`。
-4. 前一候选暴露的“真实弹窗边界”和“跨重启完整失败事实”两项 P0 已有修复提交，
-   当前状态为等待架构复审；复审通过前不能标记为已收口、不能构建 UAT 包，也不能合并
-   为正式发布。
+4. 当前隔离整改分支已闭环三项 P0：连续展开语音在候选输出前由可靠类型证据否决；
+   类型仲裁不再把业务动作成功当作消息类型必要条件；`not_attempted` 明确失败由真实
+   生产端先写 terminal。第 8.7 节真实生产链门禁已通过，当前等待架构复审；复审通过前
+   不能构建 UAT 包、正式 EXE，也不能合并为正式发布。
 5. 正式回滚仍使用 `8ee53e1 / v16.130.0`，不得在旧安装包上继续打补丁。
 
 ### 8.6 证据层级与不得回退项
@@ -4075,6 +4115,12 @@ OmniAuto 当前事务只负责证明：
 failed；Worker 必须先把可重放的原始完整 V3 failed 消息持久化到 ledger/Outbox，再做图片后
 最终画面复核。后端确认后必须清理对应 ActionJournal，不得要求重新打开微信
 才能收尾。
+
+以上 terminal 写入是生产者硬义务：`finish_result()` 或等价唯一结果收口器一旦得到
+completed/failed，必须无条件、原子地写入 terminal payload；随后由同一唯一协调器把该
+终态幂等投递到 Ledger 和待发送 Outbox。`action_phase=not_attempted` 不能跳过这一流程。
+若进程在任意两步之间退出，重启必须从最后一个已落盘状态续传；恢复端不负责猜测或
+制造缺失终态。不得为了表面原子性强耦合三份存储，使用单调状态和幂等投递实现可靠衔接。
 
 这里的“后端确认”必须是原完整失败消息的逐 source key 确认，不能用
 `messages=[]` 的空 flow gate 代替。重启恢复仍有有效 `active_read` 授权时重传原完整
@@ -4131,9 +4177,21 @@ V3 消息并正常应用角色状态机；只有 `fact_settlement` 时才固定�
     只补录事实、不改变状态。以上路径完成后，同一 Worker 均可继续处理其他短码。
 16. 从 `v16.145.0` 留下的同类 waiting ledger/ActionJournal 必须可由新版本原样重传并
     在后端确认后自动清理；不得要求测试人员手工删库、重新绑定或重装。
+17. 使用真实连续大表面的展开语音截图回放：两条语音均已转写时结果必须是两条语音、
+    零图片、零图片右键、零 Vision；即使某条动作成功或锚点 alias 证据不完整，只要可靠
+    语音类型证据成立，也不得重新归类为图片。
+18. 使用真实含文字车辆图、聊天截图和普通图片回放，证明前置负向排除没有退化为
+    “有文字就不是图片”，真实图片仍能进入图片流程。
+19. 不可删除的跨目标端到端门禁必须调用真实生产代码，不得在测试中直接构造 terminal：
+    目标 A 在菜单分类、复制、剪贴板、Vision、结果映射或入库任一步失败 -> 生产端持久化
+    完整 failed terminal -> Ledger/Outbox -> 后端逐 source key 确认 -> 本地
+    ActionJournal/Ledger/Outbox 正确结算 -> 全局门禁释放 -> 目标 B 必须继续执行。
+20. 上一项在每个落盘边界分别注入崩溃并重启，仍不得重复 UI/Vision、丢失失败事实或
+    永久饥饿其他短码。只测试菜单、Ledger、Outbox、恢复端各自通过不算满足发布门禁。
 
-当前 C2 Windows 实机验收结果见
-`C2_Windows实机验收报告_2026-08-03.md`，结论为通过，P0/P1 均为 0。C3 自动回复
+历史回滚基线的 C2 Windows 实机验收结果见
+`C2_Windows实机验收报告_2026-08-03.md`，当时结论为通过，P0/P1 均为 0；该结论
+不能证明当前待复审候选通过。C3 自动回复
 沿用此前实机通过且当前无已知问题的证据，不混写成此次 C2 报告的新测试。
 
 后续构建必须先形成唯一 Git 提交并确认工作区干净，再由该提交构建

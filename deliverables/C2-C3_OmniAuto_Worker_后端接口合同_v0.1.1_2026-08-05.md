@@ -4,14 +4,15 @@
 
 日期：2026-07-21
 
-最后更新：2026-08-09（统一真实弹窗边界、失败事实恢复、正式菜单原因、点击落盘顺序和来源清单）
+最后更新：2026-08-09（补齐语音前置排除、类型仲裁方向、生产端终态和跨目标发布门禁）
 
-状态：接口命名和职责边界保持唯一。当前 C2 机器合同为 `3.12.6`。当前未发布候选为
-Worker代码基线 `4352f5e…`、OmniAuto `99d0070…`。前一候选暴露的“真实弹窗边界”和“跨重启
-完整失败事实”两项 P0 已有修复提交，但仍须架构复审。本次不新增同义顶层错误码：文字、语音或非位图造成的无效图片源统一
+状态：接口命名和职责边界保持唯一。当前 C2 机器合同为 `3.12.6`。本轮整改父基线为
+车金 `3f65660…`（Worker 运行代码父基线 `4352f5e…`）、OmniAuto `99d0070…`。复审曾确认
+“展开语音再次成为图片候选、类型仲裁方向错误、`not_attempted` 失败终态未由真实生产端
+生成”三项 P0。本次不新增同义顶层错误码：文字、语音或非位图造成的无效图片源统一
 使用 `error_code=C2_IMAGE_SOURCE_INVALID`，并以本合同规定的精确 `reason_detail`
-区分。修复、共享 schema 和三层合同测试全部通过前，不得继续完整 Windows UAT，
-不得生成新的 ZIP/EXE。
+区分。三项整改及共享 schema、真实生产链门禁现已通过，等待架构复审；复审通过前
+不得继续完整 Windows UAT，不得生成新的 ZIP/EXE。
 
 > 恢复流程以
 > `C1-C3_事务恢复与事实结算统一架构_v0.1_2026-07-31.md`
@@ -188,6 +189,10 @@ not_attempted / trigger_attempted / confirmed
   `confirmed`。
 - `ActionJournal` 只有在 Worker 已将对应终态写入本地 ledger/可靠回执后才能
   删除。进程重启和 Sidecar 异常收尾必须先恢复日志，再允许新的物理动作。
+- 真实结果收口器一旦得到 completed/failed，必须不受 `action_phase` 分支影响地先原子
+  写入 terminal payload，再由唯一可重入投递器幂等推进 Ledger/Outbox。任一步崩溃均从
+  最后已落盘状态续传；恢复消费者不得假设终态必然存在，测试不得直接构造 terminal
+  掩盖生产端漏写。
 - 语音和图片 ActionJournal 必须在物理动作前保存完整的文字化
   `replayable_observation`，至少包含消息身份、角色证据、稳定 anchor、观察时间和
   顺序；图片原始位图仍禁止持久化。只保存坐标的语音日志不满足跨重启恢复合同。
@@ -510,6 +515,19 @@ Outbox 和 `settle_without_ui` 事实结算不需要 Vision，不能被一起阻
 `C2_IMAGE_SLOT_RECONFIRM_FAILED + action_phase=not_attempted`。这项比较是
 两次 C2 正式结论的一致性校验，不是使用 `visual_side` 重新判断角色。
 
+结构图片探测的几何结果只允许命名为 `structural_image_candidate`。OmniAuto 必须先
+解析文字、语音条、语音转写正文和父语音关系，将可靠证明为同一语音的区域合并为
+`explained_voice_region`，并在图片候选生成前排除高重叠区域。后置仲裁仅为兜底：任一
+可靠文字或语音类型证据成立即否决图片候选；不得要求 `action_phase=confirmed`、
+`effective_success=true`、物理点击成功、稳定父锚点和全部 alias 同时满足。上述动作和
+锚点证据只决定恢复/结算，不决定消息类型。弱几何候选不得先删除与其重叠的已解析文字
+或语音；只有类型仲裁后确认的图片才可清理图片内部 OCR 行。禁止使用“有文字就不是图片”
+这种宽泛规则，以免漏掉聊天截图和含文字车辆图。
+
+`structural_image_candidate / explained_voice_region` 默认仅为 OmniAuto 内部对象，不进入
+V3 请求，故当前机器合同保持 `3.12.6`；若跨进程暴露字段，必须先升 revision 和共享 schema，
+不得由实现临时扩散字段。
+
 图片槽位已完成上述确认后，OmniAuto 必须从右键后的同一张截图中唯一确定真实弹窗边界
 `menu_panel_bounds`。候选锚点周围的大范围搜索区不等于弹窗边界。参与分类的每个菜单项
 边界以及准备点击的“复制”边界，必须完整落在同一个 `menu_panel_bounds` 内并属于同一
@@ -641,6 +659,8 @@ Worker 必须同时匹配 `conversation_id + authorization_revision + read_reaso
 `not_attempted`，并且不存在 terminal payload、completed/failed Ledger 和 Outbox 时，
 Worker 才能在全局门禁前本地清理。任何已形成的 completed/failed 事实都必须进入统一
 结算，不得因 `not_attempted` 被删除。
+生产者已经形成 completed/failed 时必须先持久化 terminal/Ledger/Outbox；消费者只做
+重传、确认和清理，不能生成生产者遗漏的业务结果。
 图片流程只有在复制菜单项物理点击前才将动作日志推进为 `trigger_attempted`；右键并完成
 菜单分类时仍为 `not_attempted`。不得将 `trigger_attempted` 单独解释为“必须再次打开原会话
 才能收尾”。如果完整菜单已按唯一判据证明当前候选是文字或语音、菜单证据不足或冲突，
@@ -709,8 +729,8 @@ V3 请求顶层字段：
 ```json
 {
   "contract_version": 3,
-  "contract_revision": "3.4.8",
-  "contract_sha256": "1805645ca709d6cd38c54bd637a808e7536608e635ca1cdba07ba3c311c36de2",
+  "contract_revision": "3.12.6",
+  "contract_sha256": "a706d4308f90fde6dfcd3382712fececb926b465ff94e8e1df1cee22babb3d00",
   "observation_schema_version": 3,
   "authorization_scope": "active_read",
   "read_run_id": "read-...",
@@ -1171,6 +1191,8 @@ completed。持久化时剔除 Provider 原始响应/错误正文、图片字节
 | P0 | 已通过 | `v16.130.0 / 8ee53e1` 已完成真实豆包 Vision、Windows C2 图片、顺序、跨轮去重、多目标串行和停止监听验收；详见 `C2_Windows实机验收报告_2026-08-03.md`。 |
 | P0 | 历史基线已收口；当前候选待复审 | 历史 `v16.132.0` 固定到 `35b0eee` 且活动选择性集成为空；当前候选基础为 `a563e668…`，活动选择性接入 `99d0070…`。 |
 | P0 | 修复已提交，等待复审 | 右键后的分类和点击证据必须全部完整落在同一真实 `menu_panel_bounds`；大范围锚点搜索区不得当成弹窗边界。 |
+| P0 | 已实现，待架构复审 | 展开语音在结构图片候选输出前由可靠语音结构负向排除；后置仲裁采用“任一可靠类型证据即可保护”，不要求业务动作成功。 |
+| P0 | 已实现，待架构复审 | `not_attempted` 明确失败由真实生产端写 terminal 并推进 Ledger/Outbox；跨目标门禁调用真实生产入口，不再由测试手工构造 terminal。 |
 
 ## 11. 联调验收门禁
 
@@ -1201,3 +1223,9 @@ completed。持久化时剔除 Provider 原始响应/错误正文、图片字节
     `upstream_base_commit=a563e668…`（包含 `35b0eee`）并活动选择性接入
     `99d0070…`。旧三段来源只放 `historical_integrations`；来源记录必须描述实际候选，
     不得把历史发布状态伪装成当前状态。
+19. 不可删除的跨目标端到端发布门禁必须使用真实生产入口：目标 A 任一图片步骤失败
+    -> 生产端写完整 failed terminal -> Ledger/Outbox -> 后端逐 source key 确认 -> 本地
+    ActionJournal/Ledger/Outbox 结算 -> 全局门禁释放 -> 目标 B 继续执行。测试不得跳过
+    生产者并直接构造 terminal。
+20. 上一链路须覆盖菜单分类、复制、剪贴板、Vision、结果映射、入库，以及各落盘边界
+    崩溃重启；分别测试各组件通过不能替代跨层串联门禁。

@@ -3478,6 +3478,69 @@ class C2VisionIntegrationTests(unittest.TestCase):
             self.assertEqual(item["business_state"], "failed")
             self.assertFalse(item["business_result_confirmed"])
 
+    def test_not_attempted_menu_failure_is_terminalized_by_production_result_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            journal_path = Path(tmp) / "image-menu-failure.json"
+            initialize_action_journal(
+                journal_path,
+                action_kind="image",
+                transaction_id="image-menu-failure",
+                conversation_id="conversation-image-menu-failure",
+                items=[{
+                    "source_message_key": "image-source-menu-failure",
+                    "physical_anchor_keys": ["image-anchor-menu-failure"],
+                    "replayable_observation": self.image_observation(),
+                }],
+            )
+
+            class FakePlugin:
+                def __init__(self, *, ports, config):
+                    pass
+
+                def run(self, context):
+                    return {
+                        "applied": False,
+                        "reason": "C2_IMAGE_MENU_OPERATION_FAILED",
+                        "clipboard_transaction": {
+                            "action_phase": "not_attempted",
+                            "status": "menu_evidence_conflict",
+                        },
+                    }
+
+            with patch(
+                "apps.wechat_ai_customer_service.optional_plugins."
+                "vision.plugin.BuiltinVisionPlugin",
+                FakePlugin,
+            ):
+                result = process_image_slot(
+                    observation=self.image_observation(),
+                    remark_code="CJTEST01",
+                    session_key="wx-row-1",
+                    window_context=self.window_context(),
+                    config={
+                        "customer_image_understanding": {"enabled": True}
+                    },
+                    action_journal_path=journal_path,
+                    source_message_key="image-source-menu-failure",
+                )
+
+            self.assertEqual(result["state"], "failed")
+            self.assertEqual(result["action_phase"], "not_attempted")
+            item = read_action_journal(journal_path)["items"][
+                "image-source-menu-failure"
+            ]
+            self.assertEqual(item["action_phase"], "not_attempted")
+            self.assertEqual(item["business_state"], "failed")
+            self.assertFalse(item["business_result_confirmed"])
+            self.assertEqual(
+                item["error_code"],
+                "C2_IMAGE_MENU_OPERATION_FAILED",
+            )
+            self.assertEqual(
+                item["terminal_payload"]["reason_detail"],
+                "menu_evidence_conflict",
+            )
+
     def test_empty_vision_result_never_conflicts_with_action_journal(self):
         with tempfile.TemporaryDirectory() as tmp:
             journal_path = Path(tmp) / "image-empty-result.json"
@@ -4913,7 +4976,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertEqual(merged, [text_message])
         self.assertEqual(errors, [])
 
-    def test_confirmed_voice_action_suppresses_overlapping_image_candidate(self):
+    def test_reliable_voice_type_suppresses_overlapping_image_candidate(self):
         """Regression for the Windows frame captured at 2026-08-08 18:58."""
         from apps.wechat_ai_customer_service.adapters import (
             wechat_win32_ocr_sidecar as sidecar,
@@ -4980,10 +5043,59 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertFalse(any(item.get("type") == "image" for item in merged))
         self.assertEqual(
             diagnostics[0]["event"],
-            "image_candidate_suppressed_by_confirmed_voice_action",
+            "image_candidate_suppressed_by_reliable_message_type",
         )
 
-    def test_voice_image_arbitration_requires_every_action_and_binding_proof(self):
+    def test_expanded_voice_surface_is_rejected_before_image_candidate_output(self):
+        screenshot = Image.new("RGB", (974, 853), (242, 242, 242))
+        draw = ImageDraw.Draw(screenshot)
+        surface_bounds = (476, 559, 690, 653)
+        draw.rectangle(surface_bounds, fill=(255, 255, 255))
+        for y in range(571, 642, 18):
+            draw.rectangle((492, y, 660, y + 5), fill=(220, 226, 232))
+        for y in range(559, 604, 5):
+            for x in range(408, 453, 5):
+                tone = 55 if ((x + y) // 5) % 2 else 205
+                draw.rectangle(
+                    (x, y, x + 4, y + 4),
+                    fill=(tone, 110, 170),
+                )
+        reliable_voice = {
+            "type": "voice",
+            "sender_role": "customer",
+            "content": "我们吃完啦，准备回家。",
+            "bubble_rect": [486, 619, 690, 653],
+            "parent_voice_anchor_key": "voice-stable:connected-surface",
+        }
+        diagnostics = []
+        try:
+            self.assertEqual(
+                len(
+                    detect_visual_image_bubbles(
+                        screenshot,
+                        messages=[],
+                        side_filter="all",
+                    )
+                ),
+                1,
+            )
+            candidates = detect_visual_image_bubbles(
+                screenshot,
+                messages=[reliable_voice],
+                side_filter="all",
+                diagnostics=diagnostics,
+            )
+        finally:
+            screenshot.close()
+
+        self.assertEqual(candidates, [])
+        self.assertEqual(
+            diagnostics[0]["event"],
+            "structural_image_candidate_rejected_by_reliable_message_type",
+        )
+        self.assertEqual(diagnostics[0]["message_type"], "voice")
+
+    def test_voice_image_arbitration_does_not_depend_on_action_success(self):
         from apps.wechat_ai_customer_service.optional_plugins.vision.capture import (
             surface,
         )
@@ -5012,37 +5124,86 @@ class C2VisionIntegrationTests(unittest.TestCase):
             "processed_anchor_keys": ["voice-stable:strict"],
             "context_anchor": {"anchor_stable_key": "voice-stable:strict"},
         }
+        action_variants = {
+            "confirmed": [attempt],
+            "click_failed": [{**attempt, "click": {"ok": False}}],
+            "action_not_attempted": [{
+                **attempt,
+                "action_phase": "not_attempted",
+                "effective_success": False,
+                "processed_anchor_keys": [],
+            }],
+            "no_action_evidence": [],
+        }
+        for name, attempts in action_variants.items():
+            with self.subTest(name=name):
+                self.assertEqual(
+                    surface.image_candidates_without_reliable_typed_message_conflicts(
+                        [image],
+                        [voice],
+                        attempts,
+                    ),
+                    [],
+                )
+
+        untranscribed_voice = {
+            "type": "voice",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "content": '[语音] 3"',
+            "bubble_rect": [486, 619, 534, 645],
+            "quality_flags": ["untranscribed_voice_placeholder"],
+        }
         self.assertEqual(
-            surface.image_candidates_without_confirmed_voice_action_conflicts(
+            surface.image_candidates_without_reliable_typed_message_conflicts(
                 [image],
-                [voice],
-                [attempt],
+                [untranscribed_voice],
+                [],
             ),
             [],
         )
 
         invalid_cases = {
-            "missing_stable_position": ({
+            "missing_geometry": {
                 **voice,
-                "voice_anchor": {**voice["voice_anchor"], "item": {"sender_role": "customer"}},
-            }, attempt, image),
-            "click_not_confirmed": (voice, {**attempt, "click": {"ok": False}}, image),
-            "placeholder_content": ({**voice, "content": '[语音] 3"'}, attempt, image),
-            "parent_mismatch": ({**voice, "parent_voice_anchor_key": "voice-stable:other"}, attempt, image),
-            "different_anchor": (voice, {**attempt, "processed_anchor_keys": ["voice-stable:other"]}, image),
-            "different_sender": (voice, attempt, {**image, "side": "self"}),
-            "no_height_overlap": (voice, attempt, {**image, "bounds": [476, 300, 690, 400]}),
+                "voice_anchor": {
+                    **voice["voice_anchor"],
+                    "item": {"sender_role": "customer"},
+                },
+            },
+            "untrusted_type": {
+                "type": "voice",
+                "sender_role": "customer",
+                "content": "疑似语音但没有结构证据",
+            },
         }
-        for name, (candidate_voice, candidate_attempt, candidate_image) in invalid_cases.items():
+        for name, candidate_voice in invalid_cases.items():
             with self.subTest(name=name):
                 self.assertEqual(
-                    surface.image_candidates_without_confirmed_voice_action_conflicts(
-                        [candidate_image],
+                    surface.image_candidates_without_reliable_typed_message_conflicts(
+                        [image],
                         [candidate_voice],
-                        [candidate_attempt],
+                        [],
                     ),
-                    [candidate_image],
+                    [image],
                 )
+        self.assertEqual(
+            surface.image_candidates_without_reliable_typed_message_conflicts(
+                [{**image, "side": "self"}],
+                [voice],
+                [],
+            ),
+            [{**image, "side": "self"}],
+        )
+        far_image = {**image, "bounds": [476, 300, 690, 400]}
+        self.assertEqual(
+            surface.image_candidates_without_reliable_typed_message_conflicts(
+                [far_image],
+                [voice],
+                [],
+            ),
+            [far_image],
+        )
 
     def test_detector_fine_grid_splits_stacked_voice_surfaces(self):
         """Lock the detector root cause from the real 2026-08-08 C2 frame."""
