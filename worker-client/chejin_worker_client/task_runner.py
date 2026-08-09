@@ -5975,8 +5975,10 @@ class TaskRunner:
                     in {
                         "text_context_menu_rejected",
                         "voice_context_menu_rejected",
+                        "menu_panel_unconfirmed",
                         "menu_evidence_conflict",
                         "menu_evidence_incomplete",
+                        "menu_copy_item_unsafe",
                         "clipboard_current_content_not_bitmap",
                     }
                 ):

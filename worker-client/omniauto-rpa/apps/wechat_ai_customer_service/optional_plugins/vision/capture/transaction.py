@@ -173,6 +173,52 @@ def _classify_context_menu(
     }
 
 
+def _safe_copy_click_geometry(
+    copy_item: Any,
+    *,
+    menu_panel_bounds: Any,
+) -> dict[str, Any] | None:
+    """Return click geometry only when one Copy item is fully inside the popup."""
+
+    confirmed_bounds = _menu_panel_bounds(menu_panel_bounds)
+    if (
+        not isinstance(copy_item, dict)
+        or confirmed_bounds is None
+        or not _inside_menu(copy_item, confirmed_bounds)
+    ):
+        return None
+    item_bounds = _item_bounds(copy_item)
+    if item_bounds is None:
+        return None
+    try:
+        raw_x = copy_item.get("x", copy_item.get("center_x"))
+        raw_y = copy_item.get("y", copy_item.get("center_y"))
+        click_x = int(
+            raw_x
+            if raw_x is not None
+            else (item_bounds[0] + item_bounds[2]) / 2
+        )
+        click_y = int(
+            raw_y
+            if raw_y is not None
+            else (item_bounds[1] + item_bounds[3]) / 2
+        )
+    except (TypeError, ValueError):
+        return None
+    if not (
+        item_bounds[0] <= click_x <= item_bounds[2]
+        and item_bounds[1] <= click_y <= item_bounds[3]
+        and confirmed_bounds[0] <= click_x <= confirmed_bounds[2]
+        and confirmed_bounds[1] <= click_y <= confirmed_bounds[3]
+    ):
+        return None
+    return {
+        "x": click_x,
+        "y": click_y,
+        "bounds": [int(value) for value in item_bounds],
+    }
+
+
 def acquire_current_image_via_ports(
     ports: VisionHostPorts,
     request: dict[str, Any] | None,
@@ -417,7 +463,15 @@ def _acquire_current_image_via_ports(
             if not isinstance(menu_frame, dict) or menu_frame.get("ok") is not True:
                 _dismiss_menu_safely(ports.ui_action)
                 menu_opened = False
-                return fail("image_context_menu_unavailable")
+                return fail(
+                    "C2_IMAGE_MENU_OPERATION_FAILED",
+                    transaction={
+                        "status": "menu_panel_unconfirmed",
+                        "right_click_ok": True,
+                        "menu_copy_confirmed": False,
+                        "clipboard_content_read": False,
+                    },
+                )
             menu_surface = menu_frame.get("image")
             menu_size = getattr(menu_surface, "size", None) or tuple(menu_frame.get("image_size") or image_size)
             screen_origin = list(menu_frame.get("screen_origin") or [0, 0])
@@ -477,9 +531,13 @@ def _acquire_current_image_via_ports(
                     "C2_IMAGE_MENU_OPERATION_FAILED",
                     transaction={
                         "status": (
-                            "menu_evidence_conflict"
-                            if menu_kind == "conflict"
-                            else "menu_evidence_incomplete"
+                            "menu_panel_unconfirmed"
+                            if confirmed_menu_bounds is None
+                            else (
+                                "menu_evidence_conflict"
+                                if menu_kind == "conflict"
+                                else "menu_evidence_incomplete"
+                            )
                         ),
                         "right_click_ok": True,
                         "menu_copy_confirmed": False,
@@ -492,15 +550,48 @@ def _acquire_current_image_via_ports(
             if not isinstance(copy_item, dict):
                 _dismiss_menu_safely(ports.ui_action)
                 menu_opened = False
-                return fail("C2_IMAGE_MENU_OPERATION_FAILED")
+                return fail(
+                    "C2_IMAGE_MENU_OPERATION_FAILED",
+                    transaction={
+                        "status": "menu_copy_item_unsafe",
+                        "right_click_ok": True,
+                        "menu_copy_confirmed": False,
+                        "clipboard_content_read": False,
+                    },
+                )
             if _cancelled(data):
                 return fail("vision_cancelled")
             screen_click = getattr(ports.ui_action, "click_screen", None)
             if not callable(screen_click):
                 _dismiss_menu_safely(ports.ui_action)
                 menu_opened = False
-                return fail("image_context_menu_screen_click_unavailable")
+                return fail(
+                    "C2_IMAGE_MENU_OPERATION_FAILED",
+                    transaction={
+                        "status": "menu_copy_item_unsafe",
+                        "right_click_ok": True,
+                        "menu_copy_confirmed": False,
+                        "clipboard_content_read": False,
+                    },
+                )
             journal_update = data.get("action_journal_update")
+            copy_geometry = _safe_copy_click_geometry(
+                copy_item,
+                menu_panel_bounds=confirmed_menu_bounds,
+            )
+            if copy_geometry is None:
+                _dismiss_menu_safely(ports.ui_action)
+                menu_opened = False
+                return fail(
+                    "C2_IMAGE_MENU_OPERATION_FAILED",
+                    transaction={
+                        "status": "menu_copy_item_unsafe",
+                        "right_click_ok": True,
+                        "menu_copy_confirmed": False,
+                        "clipboard_content_read": False,
+                    },
+                )
+            local_bounds = list(copy_geometry["bounds"])
             if callable(journal_update):
                 journal_update(
                     action_phase="trigger_attempted",
@@ -508,15 +599,9 @@ def _acquire_current_image_via_ports(
                     business_result_confirmed=False,
                 )
             action_phase = "trigger_attempted"
-            local_bounds = [
-                int(value)
-                for value in list(copy_item.get("bounds") or [])[:4]
-            ]
-            if len(local_bounds) != 4:
-                return fail("image_context_menu_copy_bounds_missing")
             screen_click(
-                origin_x + int(copy_item.get("x") or 0),
-                origin_y + int(copy_item.get("y") or 0),
+                origin_x + int(copy_geometry["x"]),
+                origin_y + int(copy_geometry["y"]),
                 bounds=[
                     origin_x + local_bounds[0],
                     origin_y + local_bounds[1],
