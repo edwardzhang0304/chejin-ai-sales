@@ -400,7 +400,7 @@ def _v3_ingest_payload(
             elif read_reason == "recall_precheck":
                 conversation.status = "recall_precheck"
             elif read_reason == "visible_unread":
-                pass
+                conversation.status = "ai_active"
             elif read_reason in {"waiting_user_reply", "recent_ai_sent"}:
                 conversation.status = "waiting_user_reply"
             else:
@@ -636,6 +636,27 @@ def _pull_remark_code(worker: dict) -> str:
     return pull.json()["data"]["task"]["remark_code"]
 
 
+def _complete_add_friend_task_result(worker: dict, result_code: str) -> Task:
+    with SessionLocal() as db:
+        task = (
+            db.query(Task)
+            .filter(
+                Task.worker_id == worker["id"],
+                Task.task_type == "add_friend",
+            )
+            .order_by(Task.created_at.desc())
+            .first()
+        )
+        assert task is not None
+        task.status = "completed"
+        task.result_code = result_code
+        task.completed_at = utcnow()
+        db.commit()
+        db.refresh(task)
+        db.expunge(task)
+        return task
+
+
 def _scan_payload(remark_code: str | None, *, rpa_session_key: str = "wx-row-1") -> dict:
     candidates = [remark_code] if remark_code else []
     return {
@@ -659,7 +680,7 @@ def _scan_payload(remark_code: str | None, *, rpa_session_key: str = "wx-row-1")
     }
 
 
-def test_scan_result_binds_unique_remark_code_and_visible_unread_enters_read_targets():
+def test_scan_result_binds_unique_remark_code_and_authorizes_visible_unread():
     worker = _create_worker()
     _create_sales(worker["id"])
     _create_lead("王先生", "13896676678")
@@ -682,11 +703,14 @@ def test_scan_result_binds_unique_remark_code_and_visible_unread_enters_read_tar
     targets = client.get(f"/api/workers/{worker['id']}/wechat/sessions/read-targets", headers=_worker_headers(worker))
     assert targets.status_code == 200
     assert targets.json()["data"]["next_action"] == "none"
-    visible_targets = targets.json()["data"]["targets"]
-    assert len(visible_targets) == 1
-    assert visible_targets[0]["conversation_id"] == binding["conversation_id"]
-    assert visible_targets[0]["read_reason"] == "visible_unread"
-    assert visible_targets[0]["authorization_revision"]
+    visible_target = targets.json()["data"]["targets"][0]
+    assert visible_target["conversation_id"] == binding["conversation_id"]
+    assert visible_target["remark_code"] == remark_code
+    assert visible_target["read_reason"] == "visible_unread"
+    assert visible_target["authorization_revision"]
+    worker_target = WorkerWechatReadTarget.from_api(visible_target)
+    assert worker_target.read_reason == "visible_unread"
+    assert worker_target.authorization_revision == visible_target["authorization_revision"]
 
     with SessionLocal() as db:
         conversation = db.get(Conversation, binding["conversation_id"])
@@ -745,153 +769,197 @@ def test_scan_result_binds_unique_remark_code_and_visible_unread_enters_read_tar
         ],
     }
 
-
-def test_visible_unread_ingest_consumes_stale_scan_hint():
-    worker = _create_worker()
-    _create_sales(worker["id"])
-    _create_lead("首屏新消息客户", "13896676679")
-    remark_code = _pull_remark_code(worker)
-    scan = client.post(
-        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
-        json=_scan_payload(remark_code),
-        headers=_worker_headers(worker),
-    )
-    assert scan.status_code == 200, scan.text
-    binding = scan.json()["data"]["bindings"][0]
-
-    visible_ingest = client.post(
-        f"/api/workers/{worker['id']}/wechat/messages/ingest",
-        json=_v3_ingest_payload(
-            binding,
-            remark_code,
-            read_run_id="read-visible-unread",
-            read_reason="visible_unread",
-            messages=[
-                _v3_message(
-                    "visible-unread-message",
-                    role="customer",
-                    message_type="text",
-                    content="首屏新消息",
-                    screen_order=1,
-                )
-            ],
-        ),
-        headers=_worker_headers(worker),
-    )
-    assert visible_ingest.status_code == 200, visible_ingest.text
-    with SessionLocal() as db:
-        refreshed_binding = db.get(WechatSessionBinding, binding["id"])
-        assert refreshed_binding is not None
-        assert refreshed_binding.unread_hint is False
-
     admin_binding = client.get(f"/api/conversations/{binding['conversation_id']}/wechat-binding", headers=HEADERS)
     assert admin_binding.status_code == 200
     assert admin_binding.json()["data"]["remark_code"] == remark_code
 
 
-def test_worker_visible_unread_empty_ack_crosses_api_and_consumes_hint_only_after_success():
+def test_visible_unread_successful_ingest_consumes_current_scan_fact():
     worker = _create_worker()
     _create_sales(worker["id"])
-    _create_lead("首屏空结果客户", "13896676670")
+    _create_lead("首次未读客户", "13896676681")
     remark_code = _pull_remark_code(worker)
     scan = client.post(
         f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
         json=_scan_payload(remark_code),
         headers=_worker_headers(worker),
     )
-    assert scan.status_code == 200, scan.text
     binding = scan.json()["data"]["bindings"][0]
     empty_payload = _v3_ingest_payload(
         binding,
         remark_code,
-        read_run_id="read-visible-unread-empty-cross-layer",
-        read_reason="visible_unread",
+        read_run_id="read-visible-unread-complete",
         messages=[],
+        read_reason="visible_unread",
     )
 
+    # This assertion crosses the Worker/backend boundary: the Worker must not
+    # skip an authorized empty read before the backend can consume the unread
+    # fact.
     assert should_submit_c2_ingest_payload(
         read_reason="visible_unread",
         messages=empty_payload["messages"],
         has_flow_gate=False,
     ) is True
 
-    invalid_payload = dict(empty_payload)
-    invalid_payload["authorization_revision"] = "stale-authorization"
-    failed = client.post(
-        f"/api/workers/{worker['id']}/wechat/messages/ingest",
-        json=invalid_payload,
-        headers=_worker_headers(worker),
-    )
-    assert failed.status_code == 409
-    with SessionLocal() as db:
-        assert db.get(WechatSessionBinding, binding["id"]).unread_hint is True
-
-    succeeded = client.post(
+    response = client.post(
         f"/api/workers/{worker['id']}/wechat/messages/ingest",
         json=empty_payload,
         headers=_worker_headers(worker),
     )
-    assert succeeded.status_code == 200, succeeded.text
-    assert succeeded.json()["data"]["ingested_count"] == 0
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["state_transition_applied"] is True
     with SessionLocal() as db:
-        assert db.get(WechatSessionBinding, binding["id"]).unread_hint is False
+        binding_row = db.get(WechatSessionBinding, binding["id"])
+        assert binding_row is not None
+        assert binding_row.unread_hint is False
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert conversation is not None
+        assert conversation.status == "ai_active"
+
+    targets = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+    assert targets.status_code == 200
+    assert all(
+        item["read_reason"] != "visible_unread"
+        for item in targets.json()["data"]["targets"]
+    )
 
 
-def test_visible_unread_is_revoked_by_read_scan_and_can_be_issued_again_for_new_unread_fact():
+def test_visible_unread_failed_ingest_preserves_fact_for_retry():
     worker = _create_worker()
     _create_sales(worker["id"])
-    _create_lead("首屏未读再次发生客户", "13896676680")
+    _create_lead("未读失败重试客户", "13896676682")
     remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    failed_message = _v3_message(
+        "visible-unread-read-failed",
+        role="customer",
+        message_type="text",
+        content="这条不应入库",
+        screen_order=1,
+        raw_extra={"read_result": "target_not_confirmed"},
+    )
 
-    first_scan = _scan_payload(remark_code)
-    first_scan["scan_id"] = "scan-visible-unread-first"
+    failed = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=_v3_ingest_payload(
+            binding,
+            remark_code,
+            read_run_id="read-visible-unread-failed",
+            messages=[failed_message],
+            read_reason="visible_unread",
+        ),
+        headers=_worker_headers(worker),
+    )
+
+    assert failed.status_code == 409
+    assert failed.json()["code"] == "TARGET_NOT_CONFIRMED"
+    with SessionLocal() as db:
+        binding_row = db.get(WechatSessionBinding, binding["id"])
+        assert binding_row is not None
+        assert binding_row.unread_hint is True
+        assert db.query(MessageEvent).count() == 0
+
+    retry_targets = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+    assert retry_targets.status_code == 200
+    assert retry_targets.json()["data"]["targets"][0]["read_reason"] == "visible_unread"
+
+
+def test_visible_unread_false_scan_revokes_temporary_read_reason():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("未读撤销客户", "13896676683")
+    remark_code = _pull_remark_code(worker)
     first = client.post(
         f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
-        json=first_scan,
+        json=_scan_payload(remark_code),
         headers=_worker_headers(worker),
     )
-    assert first.status_code == 200, first.text
-    first_targets = client.get(
-        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
-        headers=_worker_headers(worker),
-    )
-    assert first_targets.status_code == 200, first_targets.text
-    first_target = first_targets.json()["data"]["targets"][0]
-    assert first_target["read_reason"] == "visible_unread"
+    assert first.status_code == 200
 
-    read_scan = _scan_payload(remark_code)
-    read_scan["scan_id"] = "scan-visible-unread-cleared"
-    read_scan["sessions"][0]["unread_hint"] = False
+    cleared_payload = _scan_payload(remark_code)
+    cleared_payload["scan_id"] = "scan-visible-unread-cleared"
+    cleared_payload["sessions"][0]["unread_hint"] = False
     cleared = client.post(
         f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
-        json=read_scan,
+        json=cleared_payload,
         headers=_worker_headers(worker),
     )
-    assert cleared.status_code == 200, cleared.text
-    cleared_targets = client.get(
-        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
-        headers=_worker_headers(worker),
-    )
-    assert cleared_targets.status_code == 200, cleared_targets.text
-    assert cleared_targets.json()["data"]["targets"] == []
+    assert cleared.status_code == 200
 
-    unread_again_scan = _scan_payload(remark_code)
-    unread_again_scan["scan_id"] = "scan-visible-unread-again"
-    unread_again = client.post(
-        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
-        json=unread_again_scan,
-        headers=_worker_headers(worker),
-    )
-    assert unread_again.status_code == 200, unread_again.text
-    targets_again = client.get(
+    targets = client.get(
         f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
         headers=_worker_headers(worker),
     )
-    assert targets_again.status_code == 200, targets_again.text
-    again_target = targets_again.json()["data"]["targets"][0]
-    assert again_target["read_reason"] == "visible_unread"
-    assert again_target["conversation_id"] == first_target["conversation_id"]
-    assert again_target["authorization_revision"] == first_target["authorization_revision"]
+    assert targets.status_code == 200
+    assert targets.json()["data"]["targets"] == []
+
+
+def test_duplicate_scan_id_cannot_restore_consumed_visible_unread_but_new_scan_can():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("未读去重客户", "13896676684")
+    remark_code = _pull_remark_code(worker)
+    first_payload = _scan_payload(remark_code)
+    first = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=first_payload,
+        headers=_worker_headers(worker),
+    )
+    binding = first.json()["data"]["bindings"][0]
+    original_revision = _binding_authorization_revision(binding["id"])
+    consumed = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=_v3_ingest_payload(
+            binding,
+            remark_code,
+            read_run_id="read-visible-unread-before-duplicate-scan",
+            messages=[],
+            read_reason="visible_unread",
+        ),
+        headers=_worker_headers(worker),
+    )
+    assert consumed.status_code == 200
+
+    duplicate = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=first_payload,
+        headers=_worker_headers(worker),
+    )
+    assert duplicate.status_code == 200
+    assert _binding_authorization_revision(binding["id"]) == original_revision
+    after_duplicate = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+    assert after_duplicate.json()["data"]["targets"] == []
+
+    new_scan_payload = _scan_payload(remark_code)
+    new_scan_payload["scan_id"] = "scan-visible-unread-new-fact"
+    new_scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=new_scan_payload,
+        headers=_worker_headers(worker),
+    )
+    assert new_scan.status_code == 200
+    assert _binding_authorization_revision(binding["id"]) == original_revision
+    targets = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+    assert targets.json()["data"]["targets"][0]["read_reason"] == "visible_unread"
 
 
 def test_read_targets_always_returns_versioned_empty_identity_transition():
@@ -1716,6 +1784,221 @@ def test_image_text_whitelist_rejects_forbidden_field_hidden_in_observation_sour
     assert getattr(exc.value, "code", None) == "IMAGE_PERSISTENCE_FIELD_FORBIDDEN"
 
 
+@pytest.mark.parametrize(
+    ("result_code", "expected_transition_status"),
+    [
+        ("invite_sent", "friend_request_sent"),
+        ("already_friend", "friend_active"),
+    ],
+)
+def test_completed_add_friend_results_share_guarded_first_activation_flow(
+    result_code,
+    expected_transition_status,
+):
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead(f"好友激活-{result_code}", "13896676685")
+    remark_code = _pull_remark_code(worker)
+    completed_task = _complete_add_friend_task_result(worker, result_code)
+
+    with SessionLocal() as db:
+        assert db.query(Conversation).count() == 0
+        assert db.query(MessageBatch).count() == 0
+        task = db.get(Task, completed_task.id)
+        assert task is not None
+        assert task.status == "completed"
+        assert task.result_code == result_code
+    before_binding_targets = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+    assert before_binding_targets.status_code == 200
+    assert before_binding_targets.json()["data"]["targets"] == []
+
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    assert scan.status_code == 200
+    binding = scan.json()["data"]["bindings"][0]
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert conversation is not None
+        assert conversation.friend_state == expected_transition_status
+        assert conversation.status == expected_transition_status
+
+    targets = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    ).json()["data"]["targets"]
+    assert len(targets) == 1
+    assert targets[0]["read_reason"] == "friend_acceptance_visible_hit"
+
+    invalid = client.post(
+        f"/api/workers/{worker['id']}/wechat/conversations/{binding['conversation_id']}/activation-confirm",
+        json={
+            "authorization_revision": targets[0]["authorization_revision"],
+            "remark_code": remark_code,
+            "conversation_type": "group",
+            "chat_surface_ready": True,
+            "title_evidence": {
+                "short_code_confirmed": True,
+                "admission_allowed": False,
+                "conversation_type": "group",
+            },
+        },
+        headers=_worker_headers(worker),
+    )
+    assert invalid.status_code == 409
+    assert invalid.json()["code"] == "C2_FRIEND_ACTIVATION_EVIDENCE_INVALID"
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert conversation is not None
+        assert conversation.status == expected_transition_status
+
+    activation_payload = {
+        "authorization_revision": targets[0]["authorization_revision"],
+        "remark_code": remark_code,
+        "conversation_type": "private",
+        "chat_surface_ready": True,
+        "title_evidence": {
+            "short_code_confirmed": True,
+            "admission_allowed": True,
+            "conversation_type": "private",
+        },
+    }
+    activation = client.post(
+        f"/api/workers/{worker['id']}/wechat/conversations/{binding['conversation_id']}/activation-confirm",
+        json=activation_payload,
+        headers=_worker_headers(worker),
+    )
+    repeated = client.post(
+        f"/api/workers/{worker['id']}/wechat/conversations/{binding['conversation_id']}/activation-confirm",
+        json=activation_payload,
+        headers=_worker_headers(worker),
+    )
+    assert activation.status_code == 200
+    assert repeated.status_code == 200
+    assert activation.json()["data"]["friend_state"] == "friend_active"
+    assert activation.json()["data"]["conversation_status"] == "friend_activation_reading"
+    assert repeated.json()["data"]["conversation_status"] == "friend_activation_reading"
+    continued_targets = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    ).json()["data"]["targets"]
+    assert continued_targets[0]["read_reason"] == "friend_acceptance_visible_hit"
+
+
+@pytest.mark.parametrize(
+    ("invalid_field", "expected_error"),
+    [
+        ("authorization_revision", "MESSAGE_AUTHORIZATION_REVISION_EXPIRED"),
+        ("remark_code", "MESSAGE_TARGET_IDENTITY_MISMATCH"),
+        ("conversation_type", "C2_FRIEND_ACTIVATION_EVIDENCE_INVALID"),
+        ("chat_surface_ready", "C2_FRIEND_ACTIVATION_EVIDENCE_INVALID"),
+        ("short_code_confirmed", "C2_FRIEND_ACTIVATION_EVIDENCE_INVALID"),
+        ("admission_allowed", "C2_FRIEND_ACTIVATION_EVIDENCE_INVALID"),
+    ],
+)
+def test_friend_activation_requires_current_authorization_and_private_ready_chat(
+    invalid_field,
+    expected_error,
+):
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead(f"激活安全门禁-{invalid_field}", "13896676687")
+    remark_code = _pull_remark_code(worker)
+    _complete_add_friend_task_result(worker, "already_friend")
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    target = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    ).json()["data"]["targets"][0]
+    payload = {
+        "authorization_revision": target["authorization_revision"],
+        "remark_code": remark_code,
+        "conversation_type": "private",
+        "chat_surface_ready": True,
+        "title_evidence": {
+            "short_code_confirmed": True,
+            "admission_allowed": True,
+            "conversation_type": "private",
+        },
+    }
+    if invalid_field == "authorization_revision":
+        payload[invalid_field] = "stale-authorization-revision"
+    elif invalid_field == "remark_code":
+        payload[invalid_field] = "CJWRONG01"
+    elif invalid_field == "conversation_type":
+        payload[invalid_field] = "group"
+        payload["title_evidence"]["conversation_type"] = "group"
+    elif invalid_field in {"short_code_confirmed", "admission_allowed"}:
+        payload["title_evidence"][invalid_field] = False
+    else:
+        payload[invalid_field] = False
+
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/conversations/{binding['conversation_id']}/activation-confirm",
+        json=payload,
+        headers=_worker_headers(worker),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == expected_error
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert conversation is not None
+        assert conversation.friend_state == "friend_active"
+        assert conversation.status == "friend_active"
+
+
+@pytest.mark.parametrize(
+    ("friend_state", "conversation_status"),
+    [
+        ("friend_active", "friend_request_sent"),
+        ("friend_request_sent", "friend_active"),
+    ],
+)
+def test_inconsistent_friend_state_and_status_do_not_authorize_first_read(
+    friend_state,
+    conversation_status,
+):
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("好友状态不一致", "13896676688")
+    remark_code = _pull_remark_code(worker)
+    _complete_add_friend_task_result(worker, "already_friend")
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        binding_row = db.get(WechatSessionBinding, binding["id"])
+        assert conversation is not None
+        assert binding_row is not None
+        conversation.friend_state = friend_state
+        conversation.status = conversation_status
+        binding_row.unread_hint = False
+        db.commit()
+
+    targets = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+
+    assert targets.status_code == 200
+    assert targets.json()["data"]["targets"] == []
+
+
 def test_friend_acceptance_empty_read_creates_one_welcome_batch_without_fake_message():
     worker = _create_worker()
     _create_sales(worker["id"])
@@ -1776,7 +2059,13 @@ def test_friend_acceptance_empty_read_creates_one_welcome_batch_without_fake_mes
         json=payload,
         headers=_worker_headers(worker),
     )
+    repeated = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers=_worker_headers(worker),
+    )
     assert response.status_code == 200
+    assert repeated.status_code == 200
     assert response.json()["data"]["ingested_count"] == 0
     assert response.json()["data"]["message_batch"]["batch_id"]
     with SessionLocal() as db:
@@ -1786,6 +2075,104 @@ def test_friend_acceptance_empty_read_creates_one_welcome_batch_without_fake_mes
         assert batch.message_event_ids == []
         assert db.query(MessageEvent).count() == 0
         assert conversation.friend_state == "friend_active"
+        assert conversation.status not in {
+            "friend_request_sent",
+            "friend_active",
+            "friend_activation_reading",
+        }
+
+
+@pytest.mark.parametrize(
+    ("sender_role", "expected_batch_type", "expected_status"),
+    [
+        ("customer", "customer_message", "ai_active"),
+        ("self", None, "sales_replied_waiting_user"),
+    ],
+)
+def test_already_friend_first_read_routes_customer_and_sales_without_welcome(
+    sender_role,
+    expected_batch_type,
+    expected_status,
+):
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead(f"首读分流-{sender_role}", "13896676686")
+    remark_code = _pull_remark_code(worker)
+    _complete_add_friend_task_result(worker, "already_friend")
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    target = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    ).json()["data"]["targets"][0]
+    activation = client.post(
+        f"/api/workers/{worker['id']}/wechat/conversations/{binding['conversation_id']}/activation-confirm",
+        json={
+            "authorization_revision": target["authorization_revision"],
+            "remark_code": remark_code,
+            "conversation_type": "private",
+            "chat_surface_ready": True,
+            "title_evidence": {
+                "short_code_confirmed": True,
+                "admission_allowed": True,
+                "conversation_type": "private",
+            },
+        },
+        headers=_worker_headers(worker),
+    )
+    assert activation.status_code == 200
+    payload = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id=f"already-friend-first-read-{sender_role}",
+        messages=[
+            _v3_message(
+                f"already-friend-{sender_role}-message",
+                role=sender_role,
+                message_type="text",
+                content=(
+                    "客户首次发来的消息"
+                    if sender_role == "customer"
+                    else "销售已经人工回复"
+                ),
+                screen_order=1,
+            )
+        ],
+        read_reason="friend_acceptance_visible_hit",
+    )
+    payload["authorization_revision"] = activation.json()["data"][
+        "authorization_revision"
+    ]
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers=_worker_headers(worker),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["ingested_count"] == 1
+    with SessionLocal() as db:
+        batches = db.query(MessageBatch).all()
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert conversation is not None
+        assert all(batch.trigger_type != "friend_welcome" for batch in batches)
+        if expected_batch_type:
+            assert [batch.trigger_type for batch in batches] == [
+                expected_batch_type
+            ]
+        else:
+            assert batches == []
+        if expected_status:
+            assert conversation.status == expected_status
+        assert conversation.status not in {
+            "friend_request_sent",
+            "friend_active",
+            "friend_activation_reading",
+        }
 
 
 def test_stale_friend_request_does_not_occupy_read_targets_until_seen_again():
@@ -5083,7 +5470,7 @@ def test_read_targets_excludes_closed_and_rejected_conversations_but_allows_degr
     assert rejected.json()["data"]["targets"] == []
 
 
-def test_read_targets_only_returns_formal_reasons_and_recall_precheck_creates_no_follow_up():
+def test_read_targets_only_returns_v06_state_machine_reasons_and_recall_precheck_creates_no_follow_up():
     worker = _create_worker()
     _create_sales(worker["id"])
     _create_lead("王先生", "13896676678")
@@ -5091,7 +5478,7 @@ def test_read_targets_only_returns_formal_reasons_and_recall_precheck_creates_no
     scan = client.post(f"/api/workers/{worker['id']}/wechat/sessions/scan-result", json=_scan_payload(remark_code), headers=_worker_headers(worker))
     binding = scan.json()["data"]["bindings"][0]
 
-    allowed = {"visible_unread", "recall_precheck", "recent_ai_sent", "waiting_user_reply", "waiting_sales_reply"}
+    allowed = {"recall_precheck", "visible_unread", "recent_ai_sent", "waiting_user_reply", "waiting_sales_reply"}
 
     with SessionLocal() as db:
         conversation = db.get(Conversation, binding["conversation_id"])
