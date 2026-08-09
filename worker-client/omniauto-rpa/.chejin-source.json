@@ -4,13 +4,14 @@
   "upstream_base_commit": "a563e6688c47a8922510794101967823fe1389d7",
   "selective_integrations": [
     {
-      "source_commit": "99d0070517a0976dc47661f4b6564e9f6e1f1b1a",
+      "source_commit": "75a85ac825eb563f59e40062c5986a52c41b919c",
       "scope": [
         "exact_wechat_context_menu_classification",
         "same_popup_menu_panel_evidence_contract",
         "clipboard_non_bitmap_failure_settlement",
         "formal_image_menu_failure_reason_contract",
-        "copy_click_precommit_safety_order"
+        "copy_click_precommit_safety_order",
+        "reliable_message_type_before_structural_image_arbitration"
       ]
     }
   ],
@@ -34,5 +35,5 @@
       ]
     }
   ],
-  "integration_note": "当前内嵌副本基于 OmniAuto a563e6688c47a8922510794101967823fe1389d7，并选择性同步 99d0070517a0976dc47661f4b6564e9f6e1f1b1a 的微信菜单精确分类、同一真实弹窗边界证据合同、非图片剪贴板失败结算、正式菜单失败原因与复制点击前安全落盘顺序；同时保留悬浮球/F8/键鼠守护删除、语音与图片冲突仲裁、hard_opt_out 以及车金专属适配。最终车金提交和完整目录 tree SHA 由打包 manifest 动态记录。"
+  "integration_note": "当前内嵌副本基于 OmniAuto a563e6688c47a8922510794101967823fe1389d7，并选择性同步 75a85ac825eb563f59e40062c5986a52c41b919c 的微信菜单精确分类、同一真实弹窗边界证据合同、非图片剪贴板失败结算、正式菜单失败原因、复制点击前安全落盘顺序，以及可靠消息类型优先于结构图片且不依赖动作成功的仲裁能力；同时保留悬浮球/F8/键鼠守护删除、hard_opt_out 以及车金专属适配。最终车金提交和完整目录 tree SHA 由打包 manifest 动态记录。"
 }
