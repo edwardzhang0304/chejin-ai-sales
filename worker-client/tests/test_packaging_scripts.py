@@ -459,7 +459,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "99d0070517a0976dc47661f4b6564e9f6e1f1b1a"
+                        "75a85ac825eb563f59e40062c5986a52c41b919c"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -467,6 +467,10 @@ class PackagingScriptsTest(unittest.TestCase):
                         "clipboard_non_bitmap_failure_settlement",
                         "formal_image_menu_failure_reason_contract",
                         "copy_click_precommit_safety_order",
+                        (
+                            "reliable_message_type_before_structural_"
+                            "image_arbitration"
+                        ),
                     ],
                 }
             ],
@@ -474,6 +478,14 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn(
             "strict_current_screen_without_history_scroll",
             provenance["chejin_overlays"],
+        )
+        self.assertIn(
+            "75a85ac825eb563f59e40062c5986a52c41b919c",
+            provenance["integration_note"],
+        )
+        self.assertIn(
+            "可靠消息类型优先于结构图片且不依赖动作成功",
+            provenance["integration_note"],
         )
         self.assertEqual(
             provenance["historical_integrations"][0][

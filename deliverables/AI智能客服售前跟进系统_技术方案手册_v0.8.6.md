@@ -6,7 +6,7 @@
 
 最后更新：2026-08-09
 
-当前阶段：运营后台 + Windows Worker 客户端。C1 已形成稳定基线；C2 的文字、语音、图片、V3 授权、private 单聊准入、群聊阻断、统一顺序、跨轮去重、多目标串行和停止监听曾在 `v16.130.0 / 8ee53e1` 完成正式 Windows 实机验收，C3 自动回复与 C4 自动召回也已实现并测试。2026-08-09 以车金 `3f65660fb712a14527ea1307715a8c2dacb9c8b1`（运行代码父基线 Worker `4352f5e35d69eeea5898a57eb39d00e07372c403`）、OmniAuto `99d0070517a0976dc47661f4b6564e9f6e1f1b1a`、机器合同 `3.12.6` 为整改父基线。复审确认的三项相互关联 P0 已在隔离整改分支实现：可靠语音/文字证据在图片候选输出前否决冲突候选；类型仲裁不依赖业务动作成功；`action_phase=not_attempted` 的明确失败由真实生产端先写 terminal，再幂等推进 Ledger/Outbox、后端确认并释放全局门禁。自动门禁已通过，当前等待架构复审；复审通过前仍不得生成快速 UAT ZIP、正式 EXE 或进入 Windows UAT。OmniAuto 当前内嵌基础为包含 `35b0eee` 的 `a563e668…`，活动选择性集成为 `99d0070…`；`2318bd8` 仅作为历史选择性来源保留。本版继续以主流程稳定为目标：不启动悬浮球、不安装键盘鼠标 Hook、不锁定人工输入，也不以守护状态门禁任务。
+当前阶段：运营后台 + Windows Worker 客户端。C1 已形成稳定基线；C2 的文字、语音、图片、V3 授权、private 单聊准入、群聊阻断、统一顺序、跨轮去重、多目标串行和停止监听曾在 `v16.130.0 / 8ee53e1` 完成正式 Windows 实机验收，C3 自动回复与 C4 自动召回也已实现并测试。2026-08-09 以车金 `3f65660fb712a14527ea1307715a8c2dacb9c8b1`（运行代码父基线 Worker `4352f5e35d69eeea5898a57eb39d00e07372c403`）、OmniAuto `99d0070517a0976dc47661f4b6564e9f6e1f1b1a`、机器合同 `3.12.6` 为整改父基线；语音/图片仲裁通用修复已先在独立 OmniAuto 固定并推送为 `75a85ac825eb563f59e40062c5986a52c41b919c`。复审确认的三项相互关联 P0 已在隔离整改分支实现：可靠语音/文字证据在图片候选输出前否决冲突候选；类型仲裁不依赖业务动作成功；`action_phase=not_attempted` 的明确失败由真实生产端先写 terminal，再幂等推进 Ledger/Outbox、后端确认并释放全局门禁。自动门禁已通过，当前等待架构复审；复审通过前仍不得生成快速 UAT ZIP、正式 EXE 或进入 Windows UAT。OmniAuto 当前内嵌基础为包含 `35b0eee` 的 `a563e668…`，活动选择性集成为 `75a85ac…`；`2318bd8` 仅作为历史选择性来源保留。本版继续以主流程稳定为目标：不启动悬浮球、不安装键盘鼠标 Hook、不锁定人工输入，也不以守护状态门禁任务。
 
 一句话结论：当前技术方案统一收口到本文档；C0—C4 已有历史主链基线，不重开回复或召回流程，但图片候选生成与语音类型仲裁必须按“先用强消息结构解释画面，再对剩余区域生成弱图片候选”整改；任何媒体明确失败，不论 `action_phase` 为何，都必须由真实生产链写入终态并经后端逐条确认后释放全局门禁。运营后台指定账号登录和车辆信息/Product Master 继续沿用既定方案：后台账号由服务端预先建立，登录成功即拥有全部后台权限，第一期不做 RBAC；车辆和正式知识复用 OmniAuto 的 Product Master、KnowledgeRuntime、RAG 与 Guard 并持久化到车金现有 PostgreSQL；不接大风车 API，不部署第二套后台，不将测试车辆或未审核知识带入生产。
 
@@ -3991,7 +3991,7 @@ OmniAuto 通用上游固定提交：35b0eee13c6423d56a0f15736f96a422e10d8d1c
 车金审计基线提交：3f65660fb712a14527ea1307715a8c2dacb9c8b1
 Worker运行代码父基线：4352f5e35d69eeea5898a57eb39d00e07372c403
 内嵌OmniAuto基础：a563e6688c47a8922510794101967823fe1389d7（包含35b0eee）
-活动选择性来源：99d0070517a0976dc47661f4b6564e9f6e1f1b1a
+活动选择性来源：75a85ac825eb563f59e40062c5986a52c41b919c
 机器合同revision：3.12.6
 发布状态：三项P0整改与真实生产链门禁已通过，等待架构复审；复审前禁止生成ZIP/EXE
 ```
@@ -4051,7 +4051,7 @@ sequence、可解码位图、稳定读取、指纹和 Vision 证明链。
 `v16.130.0` 的历史发布来源元数据按下列方式保留。`v16.132.0` 曾使用
 `upstream_base_commit=35b0eee + selective_integrations=[]`；当前未发布候选已前进为
 `upstream_base_commit=a563e668…`（包含 `35b0eee`）并活动选择性同步
-`99d0070…`。旧三段来源继续位于只读 `historical_integrations`。来源 schema、打包脚本
+`75a85ac…`。旧三段来源继续位于只读 `historical_integrations`。来源 schema、打包脚本
 和测试必须同步，后续不得把历史来源或上一发布来源伪装成当前候选来源：
 
 ```text
@@ -4072,14 +4072,17 @@ tree SHA 必须由最终提交后的真实目录动态计算，不得把历史 t
 2. 历史 `v16.132.0 / main@37139bfd` 的车金内嵌副本固定到 `35b0eee`，当时活动
    `selective_integrations=[]`，该来源状态只描述已回归历史版本。
 3. 当前未发布代码基线 Worker 为 `4352f5e…`，内嵌基础为 `a563e668…`，
-   `selective_integrations[0].source_commit=99d0070…`。机器 `scope` 必须登记以下五项：
+   `selective_integrations[0].source_commit=75a85ac…`。机器 `scope` 必须登记以下六项：
    - `exact_wechat_context_menu_classification`
    - `same_popup_menu_panel_evidence_contract`
    - `clipboard_non_bitmap_failure_settlement`
    - `formal_image_menu_failure_reason_contract`
    - `copy_click_precommit_safety_order`
+   - `reliable_message_type_before_structural_image_arbitration`
 
-   中文 `integration_note`、上述机器字段与来源记录测试必须同时保持一致；旧
+   最后一项表示可靠文字/语音证据必须在结构图片候选输出前参与否决，且消息类型
+   仲裁不得依赖点击、转写结算或后端确认是否成功。中文 `integration_note`、上述
+   机器字段与来源记录测试必须同时保持一致；旧
    `855c218 + 2318bd8 + ff9e0de` 仍保留在 `historical_integrations`。
 4. 当前隔离整改分支已闭环三项 P0：连续展开语音在候选输出前由可靠类型证据否决；
    类型仲裁不再把业务动作成功当作消息类型必要条件；`not_attempted` 明确失败由真实
