@@ -556,6 +556,7 @@ def _bind_one_session(
                 Task.lead_id == lead.id,
                 Task.worker_id == worker.id,
                 Task.task_type == "add_friend",
+                Task.status == "completed",
                 Task.result_code.in_(["invite_sent", "already_friend"]),
                 Task.deleted_at.is_(None),
             )
@@ -919,12 +920,20 @@ def confirm_friend_activation(
             409,
         )
     conversation = _upsert_conversation_for_binding(db, binding)
-    if conversation.friend_state == "friend_request_sent":
+    if (
+        conversation.friend_state == "friend_request_sent"
+        and conversation.status == "friend_request_sent"
+    ):
         conversation.friend_state = "friend_active"
+        conversation.status = "friend_activation_reading"
+    elif (
+        conversation.friend_state == "friend_active"
+        and conversation.status == "friend_active"
+    ):
         conversation.status = "friend_activation_reading"
     elif not (
         conversation.friend_state == "friend_active"
-        and conversation.status in {"friend_activation_reading", "ai_active"}
+        and conversation.status == "friend_activation_reading"
     ):
         raise AppError("C2_FRIEND_ACTIVATION_STATE_INVALID", "当前好友状态不允许执行激活确认", 409)
     db.flush()
@@ -989,21 +998,32 @@ def _friend_acceptance_recently_visible(binding: WechatSessionBinding) -> bool:
 
 
 def _read_reason(binding: WechatSessionBinding, conversation: Conversation) -> str | None:
-    if conversation.friend_state == "friend_request_sent":
+    if (
+        conversation.friend_state == "friend_request_sent"
+        and conversation.status == "friend_request_sent"
+    ):
         return (
             "friend_acceptance_visible_hit"
             if _friend_acceptance_recently_visible(binding)
             else None
         )
-    if conversation.status == "friend_activation_reading":
+    if (
+        conversation.friend_state == "friend_active"
+        and conversation.status == "friend_active"
+    ):
+        return (
+            "friend_acceptance_visible_hit"
+            if _friend_acceptance_recently_visible(binding)
+            else None
+        )
+    if (
+        conversation.friend_state == "friend_active"
+        and conversation.status == "friend_activation_reading"
+    ):
         return "friend_acceptance_visible_hit"
     if conversation.status == "recall_precheck":
         return "recall_precheck"
-    # A current first-screen unread fact is itself a reason to issue a
-    # short-lived server authorization. Without this explicit reason, a newly
-    # bound ai_active conversation can be discovered forever but can never be
-    # opened to ingest its first customer message.
-    if binding.unread_hint and conversation.status == "ai_active":
+    if conversation.status == "ai_active" and binding.unread_hint:
         return "visible_unread"
     if conversation.status == "waiting_user_reply" and conversation.last_ai_reply_at:
         return "recent_ai_sent"
@@ -1877,21 +1897,22 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
                     presented_token=continuation_token,
                 )
             )
+    current_authorization_matches = bool(
+        current_authorization.get("allowed") is True
+        and str(current_authorization.get("read_reason") or "")
+        == incoming_read_reason
+    )
+    continuation_authorization_matches = bool(
+        continuation_authorization.get("allowed") is True
+        and str(continuation_authorization.get("read_reason") or "")
+        == incoming_read_reason
+    )
     state_transition_allowed = bool(
-        (
-            current_authorization.get("allowed") is True
-            and str(current_authorization.get("read_reason") or "")
-            == incoming_read_reason
-        )
-        or (
-            continuation_authorization.get("allowed") is True
-            and str(continuation_authorization.get("read_reason") or "")
-            == incoming_read_reason
-        )
+        current_authorization_matches or continuation_authorization_matches
     )
     state_transition_reason = (
         "batch_continuation_matches"
-        if continuation_authorization.get("allowed") is True
+        if continuation_authorization_matches
         else "authorization_state_matches"
         if state_transition_allowed
         else (
@@ -2307,6 +2328,13 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             "next_action": NEXT_ACTION_NONE,
         }
 
+    if (
+        current_authorization_matches
+        and binding.unread_hint
+        and (not partitioned or partition_final)
+    ):
+        binding.unread_hint = False
+
     message_batch = None
     flow_gate_errors = list(flow_gate_error_codes)
     failed_images = [
@@ -2559,11 +2587,6 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             conversation.recall_daily_count += 1
             conversation.status = "ai_active"
             conversation.next_recall_at = None
-    if not partitioned or partition_final:
-        # Opening and reading the authorized chat consumes the current visible
-        # unread fact. A later scan may set it again if WeChat shows new unread
-        # content, but the same stale hint must not dispatch the chat forever.
-        binding.unread_hint = False
     db.flush()
     response = {
         "ingested_count": ingested_count,
