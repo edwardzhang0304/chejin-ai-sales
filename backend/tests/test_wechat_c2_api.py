@@ -45,7 +45,11 @@ from app.models.audit import OperationLog
 from app.models.c3 import Conversation, HandoffEvent, MessageBatch, ReplyAction
 from app.models.sales import Sales
 from app.models.task import Task
-from app.models.wechat import MessageEvent, WechatSessionBinding
+from app.models.wechat import (
+    MessageEvent,
+    WechatRecoverySettlement,
+    WechatSessionBinding,
+)
 from app.models.worker import Worker
 from app.core.database import SessionLocal
 from app.schemas.wechat import WechatMessageIngestRequest
@@ -292,7 +296,8 @@ def _v3_failed_image_message(
         "voice_state": "not_voice",
         "item_state": "failed",
         "image_physical_anchor": image_anchor,
-        "image_processing_reason": reason,
+        "error_code": reason,
+        "reason_detail": reason,
         "source_message": {
             "id": source_key,
             "type": "image",
@@ -324,7 +329,8 @@ def _v3_failed_image_message(
         "raw_payload": {
             **_v3_raw_fields(source_key),
             "observation": observation,
-            "image_processing_reason": reason,
+            "error_code": reason,
+            "reason_detail": reason,
         },
     }
 
@@ -348,7 +354,8 @@ def _v3_failed_voice_message(
         "voice_state": "untranscribed",
         "item_state": "failed",
         "voice_anchor_key": voice_anchor_key,
-        "voice_processing_reason": reason,
+        "error_code": reason,
+        "reason_detail": reason,
         "source_message": {
             "id": source_key,
             "type": "voice",
@@ -380,7 +387,8 @@ def _v3_failed_voice_message(
         "raw_payload": {
             **_v3_raw_fields(source_key),
             "observation": observation,
-            "voice_processing_reason": reason,
+            "error_code": reason,
+            "reason_detail": reason,
         },
     }
 
@@ -436,6 +444,81 @@ def _v3_ingest_payload(
             "flow_gate_details": [],
         },
     }
+
+
+def _authorize_fact_settlement(
+    worker: dict,
+    binding: dict,
+    *,
+    transaction_id: str,
+    source_keys: list[str],
+    action_kind: str = "image",
+) -> dict:
+    digest = hashlib.sha256(
+        "\n".join(sorted(source_keys)).encode("utf-8")
+    ).hexdigest()
+    response = client.get(
+        (
+            f"/api/workers/{worker['id']}/wechat/conversations/"
+            f"{binding['conversation_id']}/read-authorization"
+        ),
+        params={
+            "recovery_transaction_id": transaction_id,
+            "action_kind": action_kind,
+            "source_message_key_digest": digest,
+            "original_authorization_revision": (
+                _binding_authorization_revision(binding["id"])
+            ),
+        },
+        headers=_worker_headers(worker),
+    )
+    assert response.status_code == 200, response.text
+    authorization = response.json()["data"]
+    assert authorization["recovery_decision"] == "settle_without_ui"
+    return authorization
+
+
+def _fact_settlement_payload(
+    binding: dict,
+    remark_code: str,
+    *,
+    transaction_id: str,
+    source_keys: list[str],
+    settlement_mode: str,
+    messages: list[dict],
+    action_kind: str = "image",
+) -> dict:
+    payload = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id=f"recovery:{transaction_id}",
+        messages=messages,
+    )
+    for message in payload["messages"]:
+        message["message_position"]["frame_source"] = (
+            "action_journal_recovery"
+        )
+    evidence = payload["evidence"]
+    evidence.update(
+        {
+            "authoritative_frame_source": "action_journal_recovery",
+            "read_reason": "fact_settlement",
+            "authorization_read_reason": "fact_settlement",
+            "recovery_transaction_id": transaction_id,
+            "action_kind": action_kind,
+            "source_message_key_digest": hashlib.sha256(
+                "\n".join(sorted(source_keys)).encode("utf-8")
+            ).hexdigest(),
+            "settlement_mode": settlement_mode,
+            "settlement_source_message_keys": sorted(source_keys),
+            "recovery_requires_per_message_confirmation": True,
+            "wechat_reopened": False,
+            "clipboard_repeated": False,
+            "vision_repeated": False,
+        }
+    )
+    payload["authorization_scope"] = "fact_settlement"
+    return payload
 
 
 def _simulate_worker_incremental_filter(
@@ -2255,7 +2338,7 @@ def test_recall_precheck_empty_read_creates_unique_recall_batch_and_customer_can
         recall = db.query(MessageBatch).one()
         assert recall.trigger_type == "recall"
         assert recall.recall_cycle_id == "recall-cycle-1"
-        assert db.get(Conversation, binding["conversation_id"]).recall_count == 1
+        assert db.get(Conversation, binding["conversation_id"]).recall_count == 0
 
     customer = _v3_ingest_payload(
         binding,
@@ -2319,6 +2402,8 @@ def test_recall_no_action_restores_exact_origin_status(
         conversation.status = origin_status
         conversation.ai_enabled = True
         conversation.next_recall_at = utcnow() - timedelta(minutes=1)
+        conversation.recall_count = 1
+        conversation.recall_daily_count = 0
         db.commit()
 
     targets = client.get(
@@ -2356,6 +2441,15 @@ def test_recall_no_action_restores_exact_origin_status(
         assert conversation.status == origin_status
         assert conversation.recall_origin_status is None
         assert conversation.recall_cycle_id is None
+        assert conversation.recall_count == 1
+        assert conversation.recall_daily_count == 0
+        assert conversation.next_recall_at is not None
+        comparison_now = (
+            utcnow()
+            if conversation.next_recall_at.tzinfo is not None
+            else utcnow().replace(tzinfo=None)
+        )
+        assert conversation.next_recall_at > comparison_now
 
 
 def test_message_batch_status_rejects_other_worker_and_returns_terminal_state():
@@ -5014,7 +5108,7 @@ def test_worker_split_batch_is_atomic_for_brain_and_completes_once():
         assert len(batches[0].message_event_ids) == 100
 
 
-def test_unbound_target_error_is_confirmed_terminal_not_infinite_retry():
+def test_unbound_active_read_requires_explicit_fact_settlement():
     worker = _create_worker()
     _create_sales(worker["id"])
     _create_lead("解绑客户", "13896676690")
@@ -5053,10 +5147,10 @@ def test_unbound_target_error_is_confirmed_terminal_not_infinite_retry():
     assert response.status_code == 409
     assert response.json()["code"] == "MESSAGE_CONVERSATION_NOT_BOUND"
     assert response.json()["data"]["recovery_action"] == "target_terminated"
-    assert response.json()["data"]["terminal_confirmed"] is True
+    assert "terminal_confirmed" not in response.json()["data"]
 
 
-def test_identity_conflict_creates_backend_terminal_before_rejecting_outbox():
+def test_identity_conflict_does_not_create_handoff_or_fake_terminal():
     worker = _create_worker()
     _create_sales(worker["id"])
     _create_lead("身份冲突客户", "13896676691")
@@ -5092,12 +5186,170 @@ def test_identity_conflict_creates_backend_terminal_before_rejecting_outbox():
     assert response.status_code == 409
     assert response.json()["code"] == "MESSAGE_TARGET_IDENTITY_MISMATCH"
     assert response.json()["data"]["recovery_action"] == "conversation_terminated"
-    assert response.json()["data"]["terminal_confirmed"] is True
+    assert "terminal_confirmed" not in response.json()["data"]
     with SessionLocal() as db:
         conversation = db.get(Conversation, binding["conversation_id"])
         assert conversation.status == "waiting_sales_reply"
-        handoff = db.query(HandoffEvent).one()
-        assert handoff.handoff_reason_code == "MESSAGE_TARGET_IDENTITY_MISMATCH"
+        assert db.query(HandoffEvent).count() == 0
+
+
+def test_fact_settlement_persists_full_failed_fact_without_state_side_effects():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("崩溃恢复客户", "13896676693")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    source_key = "recovery-text-menu-image"
+    transaction_id = "image-ledger-before-outbox-crash"
+    authorization = _authorize_fact_settlement(
+        worker,
+        binding,
+        transaction_id=transaction_id,
+        source_keys=[source_key],
+    )
+    assert authorization["settlement_mode"] == "fact_only"
+    payload = _fact_settlement_payload(
+        binding,
+        remark_code,
+        transaction_id=transaction_id,
+        source_keys=[source_key],
+        settlement_mode="fact_only",
+        messages=[
+            _v3_failed_image_message(
+                source_key,
+                role="customer",
+                screen_order=1,
+                reason="C2_IMAGE_SOURCE_INVALID",
+            )
+        ],
+    )
+    payload["messages"][0]["raw_payload"]["reason_detail"] = (
+        "text_context_menu_rejected"
+    )
+    payload["messages"][0]["raw_payload"]["observation"][
+        "reason_detail"
+    ] = "text_context_menu_rejected"
+
+    rejected = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers={
+            **_worker_headers(worker),
+            "X-C2-Settlement-Token": "wrong-token",
+        },
+    )
+    assert rejected.status_code == 409
+    assert rejected.json()["code"] == "C2_SETTLEMENT_TOKEN_INVALID"
+    with SessionLocal() as db:
+        assert db.query(MessageEvent).count() == 0
+
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers={
+            **_worker_headers(worker),
+            "X-C2-Settlement-Token": authorization["settlement_token"],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["state_transition_applied"] is False
+    assert data["state_transition_reason"] == "fact_settlement"
+    assert data["results"][0]["source_message_key"] == source_key
+    assert data["results"][0]["ingest_result"] == "ingested"
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        message = db.query(MessageEvent).one()
+        settlement = db.query(WechatRecoverySettlement).one()
+        assert conversation.status == "waiting_sales_reply"
+        assert message.source_message_key == source_key
+        assert message.item_state == "failed"
+        assert message.error_code == "C2_IMAGE_SOURCE_INVALID"
+        assert message.raw_payload["reason_detail"] == (
+            "text_context_menu_rejected"
+        )
+        assert settlement.status == "settled"
+        assert db.query(MessageBatch).count() == 0
+        assert db.query(HandoffEvent).count() == 0
+        assert db.query(ReplyAction).count() == 0
+
+    repeated = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers={
+            **_worker_headers(worker),
+            "X-C2-Settlement-Token": authorization["settlement_token"],
+        },
+    )
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["data"]["state_transition_reason"] == (
+        "fact_settlement_idempotent"
+    )
+    with SessionLocal() as db:
+        assert db.query(MessageEvent).count() == 1
+
+
+def test_fact_settlement_technical_terminal_confirms_keys_without_fake_message():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("失去身份客户", "13896676694")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    other_worker = _create_worker()
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        row.worker_id = other_worker["id"]
+        db.commit()
+    source_key = "recovery-identity-untrusted"
+    transaction_id = "image-identity-untrusted"
+    authorization = _authorize_fact_settlement(
+        worker,
+        binding,
+        transaction_id=transaction_id,
+        source_keys=[source_key],
+    )
+    assert authorization["settlement_mode"] == "technical_terminal"
+    payload = _fact_settlement_payload(
+        binding,
+        remark_code,
+        transaction_id=transaction_id,
+        source_keys=[source_key],
+        settlement_mode="technical_terminal",
+        messages=[],
+    )
+
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers={
+            **_worker_headers(worker),
+            "X-C2-Settlement-Token": authorization["settlement_token"],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()["data"]["results"][0]
+    assert result == {
+        "source_message_key": source_key,
+        "ingest_result": "technical_terminal",
+        "error_code": "C2_RECOVERY_IDENTITY_UNTRUSTED",
+    }
+    with SessionLocal() as db:
+        assert db.query(MessageEvent).count() == 0
+        assert db.query(MessageBatch).count() == 0
+        assert db.query(HandoffEvent).count() == 0
+        assert db.query(ReplyAction).count() == 0
 
 
 def test_safety_gate_after_human_sales_reply_is_not_cleared():

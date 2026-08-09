@@ -144,6 +144,47 @@ Index("idx_message_events_worker_ingested", MessageEvent.worker_id, MessageEvent
 Index("idx_message_events_lead_ingested", MessageEvent.lead_id, MessageEvent.ingested_at.desc())
 
 
+class WechatRecoverySettlement(Base):
+    """Backend-owned terminal record for UI-free media fact recovery."""
+
+    __tablename__ = "wechat_recovery_settlements"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    worker_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("workers.id"), nullable=False
+    )
+    conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    recovery_transaction_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    action_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_message_key_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    settlement_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="authorized")
+    source_results_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    trace_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    settled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    worker: Mapped["Worker"] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint(
+            "worker_id",
+            "recovery_transaction_id",
+            name="uq_wechat_recovery_settlement_worker_transaction",
+        ),
+    )
+
+
+Index(
+    "idx_wechat_recovery_settlement_conversation",
+    WechatRecoverySettlement.conversation_id,
+    WechatRecoverySettlement.settled_at.desc(),
+)
+
+
 class WechatScanRun(Base):
     __tablename__ = "wechat_scan_runs"
 

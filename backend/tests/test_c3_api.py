@@ -1003,7 +1003,7 @@ def test_c2_ingest_to_c3_sent_ack_complete_closure():
         },
         headers=_worker_headers(worker),
     )
-    assert claimed_task.status_code == 200
+    assert claimed_task.status_code == 200, claimed_task.text
     send_claim = client.post(
         f"/api/reply-actions/{action_id}/claim-send",
         json={"task_id": task_id, "worker_id": worker["id"]},
@@ -1041,6 +1041,92 @@ def test_c2_ingest_to_c3_sent_ack_complete_closure():
         assert ack.send_result == "sent"
         assert conversation.status == "waiting_user_reply"
         assert conversation.reply_count == 1
+
+
+def test_recall_counts_only_after_confirmed_send_and_ack_is_idempotent():
+    worker, binding = _setup_bound_conversation()
+    message_event_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-recall-confirmed-send",
+        "召回前确认没有新消息",
+    )
+    collected = _collect(binding["conversation_id"], message_event_id)
+    batch_id = collected["batch_id"]
+    with SessionLocal() as db:
+        batch = db.get(MessageBatch, batch_id)
+        conversation = db.get(Conversation, binding["conversation_id"])
+        batch.trigger_type = "recall"
+        batch.recall_cycle_id = "recall-confirmed-cycle"
+        batch.origin_conversation_status = "waiting_user_reply"
+        conversation.status = "recall_precheck"
+        conversation.recall_cycle_id = "recall-confirmed-cycle"
+        conversation.recall_origin_status = "waiting_user_reply"
+        conversation.recall_count = 1
+        conversation.recall_daily_count = 0
+        db.commit()
+    generated = _generate(batch_id)
+    action_id = generated["reply_action_id"]
+    task_id = generated["task_id"]
+
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert conversation.recall_count == 1
+        assert conversation.recall_daily_count == 0
+
+    claimed_task = client.post(
+        f"/api/tasks/{task_id}/claim",
+        json={
+            "worker_id": worker["id"],
+            "current_step": "chat_reply_claimed",
+            "claim_source": "c2_conversation_flow",
+            "conversation_id": binding["conversation_id"],
+        },
+        headers=_worker_headers(worker),
+    )
+    assert claimed_task.status_code == 200, claimed_task.text
+    send_claim = client.post(
+        f"/api/reply-actions/{action_id}/claim-send",
+        json={"task_id": task_id, "worker_id": worker["id"]},
+        headers=_task_lease_headers(worker, claimed_task),
+    )
+    assert send_claim.status_code == 200
+    send_data = send_claim.json()["data"]
+    ack_payload = {
+        "send_token": send_data["send_token"],
+        "task_id": task_id,
+        "worker_id": worker["id"],
+        "client_instance_id": "client-c3",
+        "send_result": "sent",
+        "action_phase": "confirmed",
+        "reply_text_hash": send_data["reply_text_hash"],
+        "sidecar_run_id": "recall-confirmed-sidecar",
+    }
+    sent_ack = client.post(
+        f"/api/reply-actions/{action_id}/sent-ack",
+        json=ack_payload,
+        headers=_worker_headers(worker),
+    )
+    assert sent_ack.status_code == 200
+    repeated_ack = client.post(
+        f"/api/reply-actions/{action_id}/sent-ack",
+        json=ack_payload,
+        headers=_worker_headers(worker),
+    )
+    assert repeated_ack.status_code == 200
+
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert conversation.status == "recalled_waiting_user"
+        assert conversation.recall_count == 2
+        assert conversation.recall_daily_count == 1
+        assert conversation.next_recall_at is not None
+        comparison_now = (
+            utcnow()
+            if conversation.next_recall_at.tzinfo is not None
+            else utcnow().replace(tzinfo=None)
+        )
+        assert conversation.next_recall_at > comparison_now
 
 
 def test_sent_ack_hash_conflict_becomes_triggered_unknown_not_false_failure():

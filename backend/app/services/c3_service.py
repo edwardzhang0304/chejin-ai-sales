@@ -6,6 +6,7 @@ import hmac
 import json
 import secrets
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -351,6 +352,9 @@ def _restore_conversation_after_no_action(
     if batch.trigger_type == "recall":
         conversation.recall_origin_status = None
         conversation.recall_cycle_id = None
+        conversation.next_recall_at = utcnow() + timedelta(
+            hours=get_settings().c3_recall_after_hours
+        )
 
 
 def _final_send_text(value: str | None) -> str:
@@ -970,8 +974,7 @@ def _build_ai_context(db: Session, binding: WechatSessionBinding, conversation: 
             "content": item.content,
             "item_state": str(raw.get("item_state") or ""),
             "error_code": str(
-                raw.get("image_processing_reason")
-                or raw.get("voice_processing_reason")
+                raw.get("error_code")
                 or ""
             ),
             "occurred_at": (
@@ -2211,6 +2214,16 @@ def sent_ack(db: Session, *, reply_action_id: str, payload: Any) -> dict[str, An
                 conversation.status = "recalled_waiting_user"
                 conversation.recall_origin_status = None
                 conversation.recall_cycle_id = None
+                local_today = action.sent_at.astimezone(
+                    ZoneInfo("Asia/Shanghai")
+                ).date()
+                if conversation.recall_daily_date != local_today:
+                    conversation.recall_daily_date = local_today
+                    conversation.recall_daily_count = 0
+                conversation.recall_count = int(conversation.recall_count or 0) + 1
+                conversation.recall_daily_count = int(
+                    conversation.recall_daily_count or 0
+                ) + 1
             conversation.next_recall_at = action.sent_at + timedelta(
                 hours=get_settings().c3_recall_after_hours
             )

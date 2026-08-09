@@ -179,6 +179,10 @@ class WechatMessageIngestRequest(BaseModel):
     contract_revision: str = Field(min_length=1, max_length=32)
     contract_sha256: str = Field(min_length=64, max_length=64)
     observation_schema_version: int = Field(ge=1)
+    authorization_scope: str = Field(
+        default="active_read",
+        pattern="^(active_read|fact_settlement)$",
+    )
     read_run_id: str = Field(min_length=1, max_length=128)
     conversation_id: str = Field(min_length=1, max_length=36)
     remark_code: str = Field(min_length=1, max_length=64)
@@ -189,6 +193,43 @@ class WechatMessageIngestRequest(BaseModel):
         max_length=C2_MESSAGE_BATCH_MAX_ITEMS,
     )
     evidence: WechatMessageEvidence
+
+    @model_validator(mode="after")
+    def validate_settlement_envelope(self):
+        evidence = self.evidence.model_dump(mode="json")
+        settlement_fields = {
+            "recovery_transaction_id": str(
+                evidence.get("recovery_transaction_id") or ""
+            ).strip(),
+            "action_kind": str(evidence.get("action_kind") or "").strip(),
+            "source_message_key_digest": str(
+                evidence.get("source_message_key_digest") or ""
+            ).strip(),
+            "settlement_mode": str(
+                evidence.get("settlement_mode") or ""
+            ).strip(),
+        }
+        if self.authorization_scope == "active_read":
+            if any(settlement_fields.values()):
+                raise ValueError("普通读取不能携带事实结算字段")
+            return self
+        if not all(settlement_fields.values()):
+            raise ValueError("事实结算缺少恢复事务字段")
+        if settlement_fields["action_kind"] not in {"voice", "image"}:
+            raise ValueError("事实结算 action_kind 不合法")
+        if settlement_fields["settlement_mode"] not in {
+            "fact_only",
+            "technical_terminal",
+        }:
+            raise ValueError("事实结算 settlement_mode 不合法")
+        digest = settlement_fields["source_message_key_digest"]
+        if len(digest) != 64 or any(
+            char not in "0123456789abcdef" for char in digest.lower()
+        ):
+            raise ValueError("事实结算 source_message_key_digest 不合法")
+        if self.evidence.authoritative_frame_source != "action_journal_recovery":
+            raise ValueError("事实结算必须使用 action_journal_recovery 证据")
+        return self
 
     @model_validator(mode="after")
     def validate_request_size(self):
