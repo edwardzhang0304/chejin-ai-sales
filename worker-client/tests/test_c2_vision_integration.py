@@ -657,6 +657,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         "ok": True,
                         "image": image.copy(),
                         "ocr_items": [{"text": "复制"}],
+                        "menu_panel_bounds": [580, 280, 680, 360],
                         "screen_origin": [0, 0],
                     }
                 frame_image = image.copy()
@@ -771,6 +772,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "time_markers": [],
                     "ocr_items": (
                         [{"text": "复制"}]
+                        if context.get("phase") == "image_context_menu"
+                        else []
+                    ),
+                    "menu_panel_bounds": (
+                        [580, 280, 680, 360]
                         if context.get("phase") == "image_context_menu"
                         else []
                     ),
@@ -965,6 +971,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     ],
                     "time_markers": [],
                     "ocr_items": [{"text": "复制"}] if context.get("phase") == "image_context_menu" else [],
+                    "menu_panel_bounds": (
+                        [580, 280, 680, 360]
+                        if context.get("phase") == "image_context_menu"
+                        else []
+                    ),
                     "screen_origin": [0, 0],
                 }
             ),
@@ -974,7 +985,12 @@ class C2VisionIntegrationTests(unittest.TestCase):
         with patch.object(
             transaction,
             "find_copy_menu_item",
-            return_value={"x": 620, "y": 320, "bounds": [600, 300, 650, 340]},
+            return_value={
+                "text": "复制",
+                "x": 620,
+                "y": 320,
+                "bounds": [600, 300, 650, 340],
+            },
         ):
             result = transaction.acquire_current_image_via_ports(
                 ports,
@@ -1681,6 +1697,172 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertEqual(result["labels"], ["复制"])
         self.assertIsNone(result["copy_item"])
 
+    def test_copy_geometry_failure_stays_not_attempted_and_never_clicks(self):
+        image = Image.new("RGB", (800, 600), "white")
+        observed = self.observed_image_messages(
+            image,
+            [
+                {
+                    "bounds": [420, 180, 650, 320],
+                    "sender_role": "customer",
+                    "side": "customer",
+                    "anchor": {"x": 500, "y": 240},
+                }
+            ],
+        )[0]
+        copy_item = {
+            "text": "复制",
+            "x": 740,
+            "y": 336,
+            "bounds": [620, 320, 680, 352],
+        }
+        journal_updates = []
+        clicks = []
+
+        def capture_frame(context):
+            if context.get("phase") == "image_context_menu":
+                return {
+                    "ok": True,
+                    "image": image.copy(),
+                    "image_size": image.size,
+                    "ocr_items": [
+                        copy_item,
+                        {"text": "编辑", "bounds": [620, 360, 680, 392]},
+                    ],
+                    "menu_panel_bounds": [600, 300, 700, 420],
+                    "screen_origin": [0, 0],
+                }
+            return {
+                "ok": True,
+                "image": image.copy(),
+                "image_size": image.size,
+                "messages": [dict(observed)],
+                "time_markers": [],
+            }
+
+        with patch.object(
+            transaction,
+            "find_copy_menu_item",
+            return_value=copy_item,
+        ):
+            result = transaction.acquire_current_image_via_ports(
+                VisionHostPorts(
+                    rpa_lease=SimpleNamespace(
+                        lease=lambda *_args, **_kwargs: nullcontext()
+                    ),
+                    conversation_target=SimpleNamespace(
+                        confirm_target=lambda _context: {"ok": True}
+                    ),
+                    window_frame=SimpleNamespace(capture_frame=capture_frame),
+                    ui_action=SimpleNamespace(
+                        right_click=lambda *_args, **_kwargs: {
+                            "screen_x": 500,
+                            "screen_y": 240,
+                        },
+                        click_screen=lambda *_args, **_kwargs: clicks.append(True),
+                        dismiss_menu_safely=lambda: None,
+                    ),
+                    clipboard=SimpleNamespace(sequence_number=lambda: 10),
+                ),
+                {
+                    "sender_role": "customer",
+                    "bubble_rect": [420, 180, 650, 320],
+                    "image_physical_anchor": observed["image_physical_anchor"],
+                    "action_journal_update": lambda **update: journal_updates.append(update),
+                },
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "C2_IMAGE_MENU_OPERATION_FAILED")
+        self.assertEqual(result["action_phase"], "not_attempted")
+        self.assertEqual(result["transaction"]["status"], "menu_copy_item_unsafe")
+        self.assertEqual(journal_updates, [])
+        self.assertEqual(clicks, [])
+        image.close()
+
+    def test_trigger_attempted_is_persisted_immediately_before_copy_click(self):
+        image = Image.new("RGB", (800, 600), "white")
+        observed = self.observed_image_messages(
+            image,
+            [
+                {
+                    "bounds": [420, 180, 650, 320],
+                    "sender_role": "customer",
+                    "side": "customer",
+                    "anchor": {"x": 500, "y": 240},
+                }
+            ],
+        )[0]
+        copy_item = {
+            "text": "复制",
+            "x": 650,
+            "y": 336,
+            "bounds": [620, 320, 680, 352],
+        }
+        events = []
+
+        def capture_frame(context):
+            if context.get("phase") == "image_context_menu":
+                return {
+                    "ok": True,
+                    "image": image.copy(),
+                    "image_size": image.size,
+                    "ocr_items": [
+                        copy_item,
+                        {"text": "编辑", "bounds": [620, 360, 680, 392]},
+                    ],
+                    "menu_panel_bounds": [600, 300, 700, 420],
+                    "screen_origin": [0, 0],
+                }
+            return {
+                "ok": True,
+                "image": image.copy(),
+                "image_size": image.size,
+                "messages": [dict(observed)],
+                "time_markers": [],
+            }
+
+        def copy_click(*_args, **_kwargs):
+            events.append("click")
+            raise RuntimeError("injected_after_click")
+
+        with patch.object(
+            transaction,
+            "find_copy_menu_item",
+            return_value=copy_item,
+        ):
+            result = transaction.acquire_current_image_via_ports(
+                VisionHostPorts(
+                    rpa_lease=SimpleNamespace(
+                        lease=lambda *_args, **_kwargs: nullcontext()
+                    ),
+                    conversation_target=SimpleNamespace(
+                        confirm_target=lambda _context: {"ok": True}
+                    ),
+                    window_frame=SimpleNamespace(capture_frame=capture_frame),
+                    ui_action=SimpleNamespace(
+                        right_click=lambda *_args, **_kwargs: {
+                            "screen_x": 500,
+                            "screen_y": 240,
+                        },
+                        click_screen=copy_click,
+                        dismiss_menu_safely=lambda: None,
+                    ),
+                    clipboard=SimpleNamespace(sequence_number=lambda: 10),
+                ),
+                {
+                    "sender_role": "customer",
+                    "bubble_rect": [420, 180, 650, 320],
+                    "image_physical_anchor": observed["image_physical_anchor"],
+                    "action_journal_update": lambda **_update: events.append("journal"),
+                },
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["action_phase"], "trigger_attempted")
+        self.assertEqual(events, ["journal", "click"])
+        image.close()
+
     def test_menu_only_copy_with_chat_exclusive_labels_never_clicks(self):
         image = Image.new("RGB", (800, 600), "white")
         observed = self.observed_image_messages(
@@ -2046,6 +2228,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "messages": [dict(item) for item in observed],
                     "time_markers": [],
                     "ocr_items": [],
+                    "menu_panel_bounds": [580, 280, 680, 360],
                     "screen_origin": [0, 0],
                 }
             ),
@@ -2142,6 +2325,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "messages": [dict(item) for item in observed],
                     "time_markers": [],
                     "ocr_items": [],
+                    "menu_panel_bounds": [580, 280, 680, 360],
                     "screen_origin": [0, 0],
                 }
             ),
@@ -2277,6 +2461,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     ],
                     "time_markers": [],
                     "ocr_items": [],
+                    "menu_panel_bounds": [580, 280, 680, 360],
                     "screen_origin": [0, 0],
                 }
             ),
@@ -2449,6 +2634,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "messages": current_messages,
                     "time_markers": [],
                     "ocr_items": [],
+                    "menu_panel_bounds": [580, 280, 680, 360],
                     "screen_origin": [0, 0],
                 }
             ),
@@ -2487,6 +2673,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             ],
             "time_markers": [],
             "ocr_items": [],
+            "menu_panel_bounds": [580, 280, 680, 360],
             "screen_origin": [0, 0],
         }
         with patch.object(
@@ -2682,6 +2869,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "image": frame_image.copy(),
                     "image_size": frame_image.size,
                     "ocr_items": [{"text": "复制"}],
+                    "menu_panel_bounds": [580, 280, 680, 360],
                     "screen_origin": [0, 0],
                 }
 
@@ -2815,6 +3003,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "time_markers": [],
                     "ocr_items": (
                         [{"text": "复制"}]
+                        if context.get("phase") == "image_context_menu"
+                        else []
+                    ),
+                    "menu_panel_bounds": (
+                        [580, 280, 680, 360]
                         if context.get("phase") == "image_context_menu"
                         else []
                     ),

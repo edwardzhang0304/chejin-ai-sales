@@ -8726,7 +8726,10 @@ class TaskRunnerTest(unittest.TestCase):
         cases = (
             ("C2_IMAGE_SOURCE_INVALID", "text_context_menu_rejected"),
             ("C2_IMAGE_SOURCE_INVALID", "voice_context_menu_rejected"),
+            ("C2_IMAGE_MENU_OPERATION_FAILED", "menu_panel_unconfirmed"),
             ("C2_IMAGE_MENU_OPERATION_FAILED", "menu_evidence_incomplete"),
+            ("C2_IMAGE_MENU_OPERATION_FAILED", "menu_evidence_conflict"),
+            ("C2_IMAGE_MENU_OPERATION_FAILED", "menu_copy_item_unsafe"),
             (
                 "C2_IMAGE_SOURCE_INVALID",
                 "clipboard_current_content_not_bitmap",
