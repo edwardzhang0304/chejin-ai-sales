@@ -103,6 +103,20 @@ from apps.wechat_ai_customer_service.workflows import (
 from tests.contract_artifacts import resolve_contract_artifact
 
 
+def confirmed_image_menu_for_downstream_test(
+    _ocr_items,
+    copy_item,
+    *,
+    anchor,
+):
+    del anchor
+    return {
+        "kind": "image",
+        "labels": ["复制", "编辑"],
+        "copy_item": copy_item,
+    }
+
+
 class C2VisionIntegrationTests(unittest.TestCase):
     @staticmethod
     def strict_provider_payload(
@@ -605,6 +619,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertLessEqual(max(payload.width, payload.height), 128)
         payload.release()
 
+    @patch.object(
+        transaction,
+        "_classify_context_menu",
+        new=confirmed_image_menu_for_downstream_test,
+    )
     def test_image_candidate_frame_is_reused_for_target_confirmation(self):
         image = Image.new("RGB", (800, 600), "white")
 
@@ -705,6 +724,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertIs(target.context["candidate_frame"]["image"], frames.candidate_image)
         result["_ephemeral_clipboard_image"].release()
 
+    @patch.object(
+        transaction,
+        "_classify_context_menu",
+        new=confirmed_image_menu_for_downstream_test,
+    )
     def test_copy_journal_is_persisted_before_physical_click(self):
         image = Image.new("RGB", (800, 600), "white")
         events: list[str] = []
@@ -894,6 +918,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertEqual(events, ["shared_context_menu_wait"])
         screenshot.close()
 
+    @patch.object(
+        transaction,
+        "_classify_context_menu",
+        new=confirmed_image_menu_for_downstream_test,
+    )
     def test_copy_click_exception_always_dismisses_context_menu(self):
         image = Image.new("RGB", (800, 600), "white")
         observed_images = self.observed_image_messages(
@@ -1254,63 +1283,6 @@ class C2VisionIntegrationTests(unittest.TestCase):
             result["image"].close()
         full_screen.close()
 
-    def test_menu_frame_marks_strong_text_menu_evidence(self):
-        full_screen = Image.new("RGB", (1200, 900), "white")
-
-        class State:
-            window_context = {"hwnd": 31415}
-            window_context_validated = True
-            events = []
-            artifact_dir = "evidence-dir"
-
-            class Host:
-                @staticmethod
-                def observe_wechat_context_menu(_hwnd, **_kwargs):
-                    return {
-                        "ok": True,
-                        "image": full_screen.copy(),
-                        "image_size": full_screen.size,
-                        "local_ocr_items": [
-                            {"text": "复制"},
-                            {"text": "翻译"},
-                            {"text": "搜一搜"},
-                        ],
-                    }
-
-                text_message_context_menu_strong_text_like = staticmethod(
-                    wechat_win32_ocr_sidecar.text_message_context_menu_strong_text_like
-                )
-
-            host = Host()
-
-            @staticmethod
-            def ensure_window():
-                return 31415
-
-            @staticmethod
-            def run_ocr(_image):
-                return []
-
-            @staticmethod
-            def record(*_args, **_kwargs):
-                return None
-
-        result = _WindowFrame(State()).capture_frame(
-            {
-                "phase": "image_context_menu",
-                "menu_anchor_screen": [900, 500],
-            }
-        )
-
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["menu_state"], "text_message_context_menu")
-        self.assertEqual(
-            [item["text"] for item in result["strong_text_menu_items"]],
-            ["翻译", "搜一搜"],
-        )
-        result["image"].close()
-        full_screen.close()
-
     def test_menu_click_uses_screen_port_without_window_reactivation(self):
         calls = []
 
@@ -1357,6 +1329,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
             ],
         )
 
+    @patch.object(
+        transaction,
+        "_classify_context_menu",
+        new=confirmed_image_menu_for_downstream_test,
+    )
     def test_delayed_clipboard_update_is_polled_after_one_copy_click(self):
         image = Image.new("RGB", (800, 600), "white")
         observed_images = self.observed_image_messages(
@@ -1418,7 +1395,16 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         dict(item) for item in observed_images
                     ],
                     "time_markers": [],
-                    "ocr_items": [],
+                    "ocr_items": [
+                        {
+                            "text": "复制",
+                            "bounds": [600, 300, 650, 340],
+                        },
+                        {
+                            "text": "编辑",
+                            "bounds": [600, 350, 650, 390],
+                        },
+                    ],
                     "screen_origin": [0, 0],
                 }
             ),
@@ -1429,6 +1415,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             transaction,
             "find_copy_menu_item",
             return_value={
+                "text": "复制",
                 "x": 620,
                 "y": 320,
                 "bounds": [600, 300, 650, 340],
@@ -1560,12 +1547,6 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         {"text": "翻译", "bounds": [600, 400, 680, 440]},
                         {"text": "搜一搜", "bounds": [600, 450, 680, 490]},
                     ],
-                    "menu_state": "text_message_context_menu",
-                    "strong_text_menu_items": [
-                        {"text": "放大阅读", "bounds": [600, 350, 680, 390]},
-                        {"text": "翻译", "bounds": [600, 400, 680, 440]},
-                        {"text": "搜一搜", "bounds": [600, 450, 680, 490]},
-                    ],
                     "screen_origin": [0, 0],
                 }
             return {
@@ -1582,6 +1563,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             transaction,
             "find_copy_menu_item",
             return_value={
+                "text": "复制",
                 "x": 640,
                 "y": 320,
                 "bounds": [600, 300, 680, 340],
@@ -1622,37 +1604,154 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertEqual(clipboard.read_count, 0)
         image.close()
 
-    def test_chat_text_outside_copy_menu_stack_does_not_trigger_text_brake(self):
-        copy_item = {
-            "text": "复制",
-            "bounds": [600, 300, 680, 340],
-        }
-        self.assertEqual(
-            transaction._strong_text_menu_evidence(
-                [
-                    {
-                        "text": "翻译",
-                        "bounds": [240, 400, 320, 440],
-                    }
-                ],
+    def test_context_menu_classifier_uses_exact_exclusive_combinations(self):
+        def classify(*labels):
+            items = [
+                {
+                    "text": label,
+                    "bounds": [600, 300 + index * 48, 700, 340 + index * 48],
+                }
+                for index, label in enumerate(labels)
+            ]
+            copy_item = next(
+                (item for item in items if item["text"] == "复制"),
+                None,
+            )
+            return transaction._classify_context_menu(
+                items,
                 copy_item,
-            ),
-            [],
-        )
+                anchor=(500, 320),
+            )["kind"]
+
+        self.assertEqual(classify("复制", "放大阅读"), "text")
+        self.assertEqual(classify("复制", "翻译", "搜一搜"), "text")
+        self.assertEqual(classify("复制", "翻译"), "unknown")
+        self.assertEqual(classify("复制", "搜一搜"), "unknown")
+        self.assertEqual(classify("复制", "编辑"), "image")
+        self.assertEqual(classify("复制", "另存为..."), "image")
+        self.assertEqual(classify("语音转文字", "收藏"), "voice")
+        self.assertEqual(classify("收起文字", "多选"), "voice")
         self.assertEqual(
-            len(
-                transaction._strong_text_menu_evidence(
-                    [
-                        {
-                            "text": "翻译",
-                            "bounds": [600, 400, 680, 440],
-                        }
-                    ],
-                    copy_item,
-                )
-            ),
-            1,
+            classify("复制", "转发...", "收藏", "多选", "提醒", "引用", "删除"),
+            "unknown",
         )
+        self.assertEqual(classify("复制", "翻译此消息", "搜一搜"), "unknown")
+        self.assertEqual(classify("复制", "编辑", "放大阅读"), "conflict")
+
+    def test_non_image_incomplete_and_conflicting_menus_never_click(self):
+        image = Image.new("RGB", (800, 600), "white")
+        observed = self.observed_image_messages(
+            image,
+            [
+                {
+                    "bounds": [420, 180, 650, 320],
+                    "sender_role": "customer",
+                    "side": "customer",
+                    "anchor": {"x": 500, "y": 240},
+                }
+            ],
+        )[0]
+
+        for labels, expected_reason, expected_status in (
+            (
+                ["语音转文字", "收藏"],
+                "C2_IMAGE_SOURCE_INVALID",
+                "voice_context_menu_rejected",
+            ),
+            (
+                ["复制", "收藏", "删除"],
+                "C2_IMAGE_MENU_OPERATION_FAILED",
+                "menu_evidence_incomplete",
+            ),
+            (
+                ["复制", "编辑", "放大阅读"],
+                "C2_IMAGE_MENU_OPERATION_FAILED",
+                "menu_evidence_conflict",
+            ),
+        ):
+            clicks = []
+            clipboard_reads = []
+            menu_items = [
+                {
+                    "text": label,
+                    "bounds": [600, 300 + index * 48, 700, 340 + index * 48],
+                }
+                for index, label in enumerate(labels)
+            ]
+
+            def capture_frame(context):
+                if context.get("phase") == "image_context_menu":
+                    return {
+                        "ok": True,
+                        "image": image.copy(),
+                        "image_size": image.size,
+                        "ocr_items": menu_items,
+                        "screen_origin": [0, 0],
+                    }
+                return {
+                    "ok": True,
+                    "image": image.copy(),
+                    "image_size": image.size,
+                    "messages": [dict(observed)],
+                    "time_markers": [],
+                    "ocr_items": [],
+                    "screen_origin": [0, 0],
+                }
+
+            copy_item = next(
+                (item for item in menu_items if item["text"] == "复制"),
+                None,
+            )
+            if copy_item is not None:
+                copy_item = {
+                    **copy_item,
+                    "x": 650,
+                    "y": 320,
+                }
+            with patch.object(
+                transaction,
+                "find_copy_menu_item",
+                return_value=copy_item,
+            ):
+                result = transaction.acquire_current_image_via_ports(
+                    VisionHostPorts(
+                        rpa_lease=SimpleNamespace(
+                            lease=lambda *_args, **_kwargs: nullcontext()
+                        ),
+                        conversation_target=SimpleNamespace(
+                            confirm_target=lambda _context: {"ok": True}
+                        ),
+                        window_frame=SimpleNamespace(
+                            capture_frame=capture_frame
+                        ),
+                        ui_action=SimpleNamespace(
+                            right_click=lambda *_args, **_kwargs: {
+                                "screen_x": 500,
+                                "screen_y": 240,
+                            },
+                            click_screen=lambda *_args, **_kwargs: clicks.append(True),
+                            dismiss_menu_safely=lambda: None,
+                        ),
+                        clipboard=SimpleNamespace(
+                            sequence_number=lambda: 10,
+                            read_current_bitmap=lambda: clipboard_reads.append(True),
+                        ),
+                    ),
+                    {
+                        "sender_role": "customer",
+                        "bubble_rect": [420, 180, 650, 320],
+                        "image_physical_anchor": observed[
+                            "image_physical_anchor"
+                        ],
+                    },
+                )
+
+            self.assertEqual(result["reason"], expected_reason)
+            self.assertEqual(result["action_phase"], "not_attempted")
+            self.assertEqual(result["transaction"]["status"], expected_status)
+            self.assertEqual(clicks, [])
+            self.assertEqual(clipboard_reads, [])
+        image.close()
 
     def test_invalid_copied_bitmap_is_not_claimed_or_cleared(self):
         image = Image.new("RGB", (800, 600), "white")
@@ -1702,7 +1801,16 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         dict(item) for item in observed_images
                     ],
                     "time_markers": [],
-                    "ocr_items": [],
+                    "ocr_items": [
+                        {
+                            "text": "复制",
+                            "bounds": [600, 300, 650, 340],
+                        },
+                        {
+                            "text": "编辑",
+                            "bounds": [600, 350, 650, 390],
+                        },
+                    ],
                     "screen_origin": [0, 0],
                 }
             ),
@@ -1719,6 +1827,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             transaction,
             "find_copy_menu_item",
             return_value={
+                "text": "复制",
                 "x": 620,
                 "y": 320,
                 "bounds": [600, 300, 650, 340],
@@ -1753,6 +1862,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertFalse(hasattr(ClipboardPort, "claim_copy_ownership"))
         self.assertFalse(hasattr(_Clipboard, "claim_copy_ownership"))
 
+    @patch.object(
+        transaction,
+        "_classify_context_menu",
+        new=confirmed_image_menu_for_downstream_test,
+    )
     def test_unchanged_clipboard_sequence_never_reads_old_bitmap(self):
         image = Image.new("RGB", (800, 600), "white")
         observed = self.observed_image_messages(
@@ -1842,6 +1956,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertEqual(clipboard.clear_count, 0)
         image.close()
 
+    @patch.object(
+        transaction,
+        "_classify_context_menu",
+        new=confirmed_image_menu_for_downstream_test,
+    )
     def test_clipboard_sequence_change_during_read_releases_every_candidate(
         self,
     ):
@@ -1951,6 +2070,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertEqual(clipboard.clear_count, 0)
         image.close()
 
+    @patch.object(
+        transaction,
+        "_classify_context_menu",
+        new=confirmed_image_menu_for_downstream_test,
+    )
     def test_two_visible_images_are_reconfirmed_and_copied_by_requested_slot(self):
         image = Image.new("RGB", (800, 700), "white")
 
@@ -2057,6 +2181,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
             result["_ephemeral_clipboard_image"].release()
         image.close()
 
+    @patch.object(
+        transaction,
+        "_classify_context_menu",
+        new=confirmed_image_menu_for_downstream_test,
+    )
     def test_shifted_second_image_is_matched_by_identity_not_old_coordinates(self):
         initial = Image.new("RGB", (800, 700), "white")
         current = Image.new("RGB", (800, 700), "white")
@@ -2364,6 +2493,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
         initial.close()
         current.close()
 
+    @patch.object(
+        transaction,
+        "_classify_context_menu",
+        new=confirmed_image_menu_for_downstream_test,
+    )
     def test_clipboard_fingerprint_retry_reanchors_once_then_succeeds(self):
         frame_image = Image.new("RGB", (800, 600), "white")
         bubble_image = Image.new("RGB", (200, 140), (30, 120, 210))
@@ -2502,6 +2636,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
         bubble_image.close()
         frame_image.close()
 
+    @patch.object(
+        transaction,
+        "_classify_context_menu",
+        new=confirmed_image_menu_for_downstream_test,
+    )
     def test_clipboard_fingerprint_mismatch_twice_never_reaches_vision(self):
         frame_image = Image.new("RGB", (800, 600), "white")
         bubble_image = Image.new("RGB", (200, 140), (30, 120, 210))

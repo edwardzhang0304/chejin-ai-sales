@@ -459,10 +459,10 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "34d7d5a46f240347eb57a7a3f03f74b9fbba6e10"
+                        "a561fb4f45f8975717ac9b3c38ffbb48b854a50e"
                     ),
                     "scope": [
-                        "text_message_context_menu_brake",
+                        "exact_wechat_context_menu_classification",
                         "clipboard_non_bitmap_failure_settlement",
                     ],
                 }

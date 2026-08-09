@@ -422,7 +422,7 @@ def _safe_c2_image_transaction(value: Any) -> dict[str, Any]:
             "clipboard_content_read",
             "clipboard_image_valid",
             "failure_settlement",
-            "strong_text_menu_item_count",
+            "menu_labels",
             "image_sha256",
             "image_width",
             "image_height",
