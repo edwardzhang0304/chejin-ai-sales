@@ -1226,7 +1226,7 @@ class TaskRunnerTest(unittest.TestCase):
 
         def reconcile_with_contract_fixture(target, observations):
             # Direct unit tests bypass FakeApi.read-targets. Supply the field
-            # that backend C2 3.12.5 always returns in production.
+            # that backend C2 3.12.6 always returns in production.
             if isinstance(target.raw, dict):
                 target.raw.setdefault(
                     "identity_checkpoint",
@@ -5584,7 +5584,8 @@ class TaskRunnerTest(unittest.TestCase):
         failed_before_copy = {
             "state": "failed",
             "action_phase": "not_attempted",
-            "reason": "image_context_menu_copy_item_missing",
+            "reason": "C2_IMAGE_MENU_OPERATION_FAILED",
+            "transaction": {"status": "menu_evidence_incomplete"},
             "diagnostics": {"events": [], "image_persisted": False},
         }
 
@@ -10403,7 +10404,7 @@ class TaskRunnerTest(unittest.TestCase):
         payload["artifact_dir"] = str(artifact_dir)
         failure_reasons = [
             "image_bubble_not_visible_after_refresh",
-            "image_context_menu_copy_item_missing",
+            "C2_IMAGE_MENU_OPERATION_FAILED",
             "clipboard_image_fingerprint_mismatch",
             "customer_image_understanding_provider_failed",
         ]
@@ -10438,7 +10439,7 @@ class TaskRunnerTest(unittest.TestCase):
         results = []
         for index, reason in enumerate(failure_reasons):
             diagnostics_events = []
-            if reason == "image_context_menu_copy_item_missing":
+            if reason == "C2_IMAGE_MENU_OPERATION_FAILED":
                 diagnostics_events = [
                     {
                         "sequence": 8,

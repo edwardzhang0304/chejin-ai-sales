@@ -260,10 +260,7 @@ class C2ContractTests(unittest.TestCase):
 
     def test_image_failure_reason_mapping_is_exact_and_contract_driven(self):
         expected = {
-            "image_context_menu_copy_item_missing": (
-                "C2_IMAGE_MENU_OPERATION_FAILED"
-            ),
-            "image_context_menu_copy_click_failed": (
+            "C2_IMAGE_MENU_OPERATION_FAILED": (
                 "C2_IMAGE_MENU_OPERATION_FAILED"
             ),
             "clipboard_sequence_missing_before_copy": (
@@ -361,6 +358,13 @@ class C2ContractTests(unittest.TestCase):
             "clipboard_owner_check_failed",
         }
         self.assertTrue(retired_owner_reasons.isdisjoint(reason_map))
+        retired_menu_reasons = {
+            "image_context_menu_unavailable",
+            "image_context_menu_copy_item_missing",
+            "image_context_menu_copy_bounds_missing",
+            "image_context_menu_copy_click_failed",
+        }
+        self.assertTrue(retired_menu_reasons.isdisjoint(reason_map))
 
     def test_send_confirmation_requires_a_physical_trigger(self):
         classified = classify_action_result(

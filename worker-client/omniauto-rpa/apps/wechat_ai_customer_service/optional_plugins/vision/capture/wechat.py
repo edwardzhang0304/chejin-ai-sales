@@ -1451,13 +1451,13 @@ def execute_wechat_clipboard_image_copy(
             "online": True,
             "adapter": "win32_ocr",
             "state": "image_clipboard_copy_failed",
-            "reason": "image_context_menu_unavailable",
+            "reason": "C2_IMAGE_MENU_OPERATION_FAILED",
             "target": target_name,
             "session_key": session_key,
             "assets": [],
             "messages": [],
             "transaction": {
-                "status": "failed",
+                "status": "menu_panel_unconfirmed",
                 "captured_at": captured_at,
                 "right_click_ok": bool(right_click.get("ok")),
                 "menu_copy_confirmed": False,
@@ -1503,13 +1503,17 @@ def execute_wechat_clipboard_image_copy(
             "online": True,
             "adapter": "win32_ocr",
             "state": "image_clipboard_copy_failed",
-            "reason": "image_context_menu_copy_item_missing",
+            "reason": "C2_IMAGE_MENU_OPERATION_FAILED",
             "target": target_name,
             "session_key": session_key,
             "assets": [],
             "messages": [],
             "transaction": {
-                "status": "failed",
+                "status": (
+                    "menu_evidence_incomplete"
+                    if bool(right_click.get("ok"))
+                    else "menu_panel_unconfirmed"
+                ),
                 "captured_at": captured_at,
                 "right_click_ok": bool(right_click.get("ok")),
                 "menu_copy_confirmed": False,
@@ -1531,13 +1535,13 @@ def execute_wechat_clipboard_image_copy(
             "online": True,
             "adapter": "win32_ocr",
             "state": "image_clipboard_copy_failed",
-            "reason": "image_context_menu_copy_click_failed",
+            "reason": "C2_IMAGE_MENU_OPERATION_FAILED",
             "target": target_name,
             "session_key": session_key,
             "assets": [],
             "messages": [],
             "transaction": {
-                "status": "failed",
+                "status": "menu_copy_item_unsafe",
                 "captured_at": captured_at,
                 "right_click_ok": True,
                 "menu_copy_confirmed": False,

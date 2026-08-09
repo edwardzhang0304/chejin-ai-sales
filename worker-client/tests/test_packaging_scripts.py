@@ -465,6 +465,8 @@ class PackagingScriptsTest(unittest.TestCase):
                         "exact_wechat_context_menu_classification",
                         "same_popup_menu_panel_evidence_contract",
                         "clipboard_non_bitmap_failure_settlement",
+                        "formal_image_menu_failure_reason_contract",
+                        "copy_click_precommit_safety_order",
                     ],
                 }
             ],
