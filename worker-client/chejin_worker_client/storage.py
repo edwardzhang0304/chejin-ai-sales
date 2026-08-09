@@ -992,6 +992,7 @@ def refresh_c2_outbox_payload(
     payload: dict[str, Any],
     *,
     next_status: str,
+    identity_replacement: dict[str, str] | None = None,
 ) -> None:
     _assert_outbox_text_only(payload)
     encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -1003,6 +1004,53 @@ def refresh_c2_outbox_payload(
     if str(next_status) not in _c2_outbox_states():
         raise ValueError("C2_OUTBOX_TARGET_STATE_INVALID")
     with db_connection() as conn:
+        if isinstance(identity_replacement, dict):
+            conversation_id = str(
+                payload.get("conversation_id") or ""
+            ).strip()
+            old_source_message_key = str(
+                identity_replacement.get("old_source_message_key") or ""
+            ).strip()
+            new_source_message_key = str(
+                identity_replacement.get("new_source_message_key") or ""
+            ).strip()
+            new_dedupe_key = str(
+                identity_replacement.get("new_dedupe_key") or ""
+            ).strip()
+            if not all(
+                (
+                    conversation_id,
+                    old_source_message_key,
+                    new_source_message_key,
+                    new_dedupe_key,
+                )
+            ):
+                raise ValueError("C2_LEDGER_REPLACEMENT_IDENTITY_INVALID")
+            existing = conn.execute(
+                """
+                SELECT 1 FROM c2_message_ledger
+                WHERE conversation_id = ? AND source_message_key = ?
+                """,
+                (conversation_id, new_source_message_key),
+            ).fetchone()
+            if existing:
+                raise ValueError("C2_LEDGER_REPLACEMENT_IDENTITY_EXISTS")
+            ledger_cursor = conn.execute(
+                """
+                UPDATE c2_message_ledger
+                SET source_message_key = ?, dedupe_key = ?, updated_at = ?
+                WHERE conversation_id = ? AND source_message_key = ?
+                """,
+                (
+                    new_source_message_key,
+                    new_dedupe_key,
+                    utc_now_iso(),
+                    conversation_id,
+                    old_source_message_key,
+                ),
+            )
+            if ledger_cursor.rowcount != 1:
+                raise ValueError("C2_LEDGER_COLLISION_SOURCE_NOT_FOUND")
         cursor = conn.execute(
             """
             UPDATE c2_ingest_outbox

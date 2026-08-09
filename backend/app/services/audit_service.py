@@ -55,6 +55,7 @@ EVENT_NAMES: dict[str, str] = {
     "admin_login_succeeded": "后台登录成功",
     "admin_login_failed": "后台登录失败",
     "admin_logout": "退出后台",
+    "wechat_binding_restored": "恢复微信监听",
 }
 
 FAILED_EVENTS = {"lead_assign_failed", "admin_login_failed", "vehicle_operation_failed"}

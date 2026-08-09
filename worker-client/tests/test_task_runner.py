@@ -38,6 +38,7 @@ from chejin_worker_client.storage import (
     load_c2_outbox_entry,
     load_reply_send_ack_outbox,
     read_logs,
+    refresh_c2_outbox_payload,
     save_c2_state,
     save_c2_ledger_terminal,
     save_reply_send_intent,
@@ -7009,6 +7010,170 @@ class TaskRunnerTest(unittest.TestCase):
                 source_key,
             )["ingest_state"],
             "confirmed",
+        )
+
+    def test_c2_outbox_rekeys_identity_collision_without_repeating_ui_work(self):
+        api = FakeApi(None)
+        attempts = 0
+        old_source_key = "source-old-collision"
+        old_dedupe_key = "dedupe-old-collision"
+
+        def authorize(_binding, conversation_id, **kwargs):
+            return {
+                "allowed": True,
+                "conversation_id": conversation_id,
+                "authorization_revision": "fresh-revision",
+                "read_reason": "waiting_user_reply",
+                "identity_checkpoint": {
+                    "version": 1,
+                    "next_sequence_floor": 8,
+                    "recent_messages": [],
+                },
+            }
+
+        def collide_once(_binding, payload):
+            nonlocal attempts
+            attempts += 1
+            item = payload["messages"][0]
+            if attempts == 1:
+                raise ApiError(
+                    "MESSAGE_IDENTITY_COLLISION",
+                    "collision",
+                    409,
+                    {
+                        "recovery_action": "refresh_identity_and_retry",
+                        "source_message_key": old_source_key,
+                        "dedupe_key": old_dedupe_key,
+                        "next_sequence_floor": 8,
+                    },
+                )
+            return {
+                "results": [
+                    {
+                        "source_message_key": item["source_message_key"],
+                        "ingest_result": "ingested",
+                    }
+                ]
+            }
+
+        api.get_wechat_read_authorization = authorize  # type: ignore[method-assign]
+        api.post_wechat_messages_ingest = collide_once  # type: ignore[method-assign]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="ok", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        save_c2_ledger_terminal(
+            conversation_id="conv-collision",
+            source_message_key=old_source_key,
+            dedupe_key=old_dedupe_key,
+            message_type="text",
+            terminal_state="completed",
+            ingest_state="waiting",
+            result={"state": "completed"},
+        )
+        outbox_id = enqueue_c2_outbox(
+            {
+                "read_run_id": f"read-collision-{time.time_ns()}",
+                "conversation_id": "conv-collision",
+                "authorization_revision": "old-revision",
+                "messages": [
+                    {
+                        "source_message_key": old_source_key,
+                        "dedupe_key": old_dedupe_key,
+                        "sender_role_hint": "customer",
+                        "message_type": "text",
+                        "content": "不会重新读取微信",
+                        "raw_payload": {
+                            "source_message_key": old_source_key,
+                            "dedupe_basis": {
+                                "source": "worker_cross_round_sequence",
+                                "worker_stable_id": "worker-message-1",
+                            },
+                        },
+                    }
+                ],
+            }
+        )
+
+        self.assertFalse(runner._replay_c2_outbox(binding))
+        waiting = next(
+            item
+            for item in list_c2_outbox_waiting(limit=100)
+            if item["outbox_id"] == outbox_id
+        )
+        replacement = waiting["payload"]["messages"][0]
+        self.assertNotEqual(replacement["source_message_key"], old_source_key)
+        self.assertEqual(
+            replacement["raw_payload"]["dedupe_basis"][
+                "worker_stable_id"
+            ],
+            "worker-message-8",
+        )
+        self.assertIsNone(
+            load_c2_ledger_entry("conv-collision", old_source_key)
+        )
+        self.assertEqual(bridge.message_reads, [])
+
+        self.assertTrue(runner._replay_c2_outbox(binding))
+        self.assertEqual(attempts, 2)
+        self.assertEqual(
+            load_c2_ledger_entry(
+                "conv-collision",
+                replacement["source_message_key"],
+            )["ingest_state"],
+            "confirmed",
+        )
+
+    def test_collision_identity_and_outbox_refresh_are_one_sqlite_transaction(self):
+        conversation_id = "conv-collision-rollback"
+        old_source_key = "source-collision-rollback-old"
+        new_source_key = "source-collision-rollback-new"
+        save_c2_ledger_terminal(
+            conversation_id=conversation_id,
+            source_message_key=old_source_key,
+            dedupe_key="dedupe-old",
+            message_type="text",
+            terminal_state="completed",
+            ingest_state="waiting",
+            result={"state": "completed"},
+        )
+        outbox_id = enqueue_c2_outbox(
+            {
+                "read_run_id": f"read-rollback-{time.time_ns()}",
+                "conversation_id": conversation_id,
+                "authorization_revision": "revision-1",
+                "messages": [],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "C2_OUTBOX_NOT_WAITING"):
+            refresh_c2_outbox_payload(
+                outbox_id,
+                {
+                    "read_run_id": "read-rollback-refreshed",
+                    "conversation_id": conversation_id,
+                    "authorization_revision": "revision-2",
+                    "messages": [],
+                },
+                next_status="waiting",
+                identity_replacement={
+                    "old_source_message_key": old_source_key,
+                    "new_source_message_key": new_source_key,
+                    "new_dedupe_key": "dedupe-new",
+                },
+            )
+
+        self.assertIsNotNone(
+            load_c2_ledger_entry(conversation_id, old_source_key)
+        )
+        self.assertIsNone(
+            load_c2_ledger_entry(conversation_id, new_source_key)
         )
 
     def test_c2_outbox_rebuilds_invalid_voice_as_failed_fact(self):

@@ -12,6 +12,7 @@ from chejin_worker_client.wechat_c2 import (
     extract_remark_codes,
     message_dedupe_metadata,
     message_type,
+    observation_alignment_signature,
     reconcile_cross_round_observation_identities,
     reconcile_v16104_identity_transition,
     sender_role_hint,
@@ -90,6 +91,50 @@ class WechatC2Test(unittest.TestCase):
                 "image_physical_anchor": anchor,
             },
         }
+
+    def test_server_checkpoint_recovers_sequence_after_local_state_loss(self):
+        historical = self._identity_text("historical", "历史消息", 180)
+        target = WechatReadTarget(
+            conversation_id="conv-checkpoint",
+            rpa_session_key="wx:checkpoint",
+            display_name="张三-CJCP0001",
+            remark_code="CJCP0001",
+            authorization_revision="rev-checkpoint",
+            raw={
+                "identity_checkpoint": {
+                    "version": 1,
+                    "next_sequence_floor": 8,
+                    "recent_messages": [
+                        {
+                            "stable_id": "worker-message-7",
+                            "alignment_signature": (
+                                observation_alignment_signature(historical)
+                            ),
+                        }
+                    ],
+                }
+            },
+        )
+
+        reconciled, state, errors = reconcile_v16104_identity_transition(
+            target,
+            [
+                historical,
+                self._identity_text("new", "新消息", 260),
+            ],
+            None,
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            reconciled[0]["_worker_stable_id"],
+            "worker-message-7",
+        )
+        self.assertEqual(
+            reconciled[1]["_worker_stable_id"],
+            "worker-message-8",
+        )
+        self.assertEqual(state["next_sequence"], 9)
 
     def test_cross_round_identity_survives_page_shift(self):
         first, state, errors = reconcile_cross_round_observation_identities(

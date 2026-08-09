@@ -134,6 +134,7 @@ def recovery_action_for_error(error_code: str, status_code: int) -> str:
         raise RuntimeError("Invalid C2 outbox_recovery_contract")
     code = str(error_code or "").strip()
     code_groups = (
+        ("refresh_identity_and_retry_codes", "refresh_identity_and_retry"),
         ("refresh_and_rebuild_codes", "refresh_and_rebuild"),
         ("rebuild_failed_fact_codes", "rebuild_failed_facts"),
         ("split_and_retry_codes", "split_and_retry"),

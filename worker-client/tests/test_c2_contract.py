@@ -18,6 +18,7 @@ from chejin_worker_client.c2_contract import (
     temporary_capability_gate_codes,
 )
 from chejin_worker_client.api import ApiError
+from chejin_worker_client.c2_outbox_recovery import rebuild_identity_collision
 from chejin_worker_client.transaction_outcomes import (
     FlowOutcomeAccumulator,
     classify_action_result,
@@ -43,6 +44,7 @@ class C2ContractTests(unittest.TestCase):
     def test_outbox_recovery_uses_only_backend_action(self):
         for recovery_action in (
             "retry",
+            "refresh_identity_and_retry",
             "refresh_and_rebuild",
             "rebuild_failed_facts",
             "split_and_retry",
@@ -78,6 +80,57 @@ class C2ContractTests(unittest.TestCase):
         self.assertEqual(
             classify_outbox_recovery(None),
             "capability_paused",
+        )
+
+    def test_identity_collision_rebuilds_only_the_identity_envelope(self):
+        payload = {
+            "conversation_id": "conv-1",
+            "messages": [
+                {
+                    "source_message_key": "source-old",
+                    "dedupe_key": "dedupe-old",
+                    "sender_role_hint": "customer",
+                    "message_type": "text",
+                    "content": "原消息正文",
+                    "raw_payload": {
+                        "source_message_key": "source-old",
+                        "dedupe_basis": {
+                            "source": "worker_cross_round_sequence",
+                            "worker_stable_id": "worker-message-1",
+                        },
+                        "observation": {"content_clean": "原消息正文"},
+                    },
+                }
+            ],
+            "evidence": {
+                "ingest_partition": {
+                    "expected_source_message_keys": ["source-old"]
+                }
+            },
+        }
+
+        rebuilt, replacement = rebuild_identity_collision(
+            payload,
+            source_message_key="source-old",
+            dedupe_key="dedupe-old",
+            next_sequence_floor=8,
+        )
+
+        item = rebuilt["messages"][0]
+        self.assertEqual(item["content"], "原消息正文")
+        self.assertEqual(item["sender_role_hint"], "customer")
+        self.assertEqual(replacement["new_stable_id"], "worker-message-8")
+        self.assertNotEqual(item["source_message_key"], "source-old")
+        self.assertNotEqual(item["dedupe_key"], "dedupe-old")
+        self.assertEqual(
+            item["raw_payload"]["dedupe_basis"]["worker_stable_id"],
+            "worker-message-8",
+        )
+        self.assertEqual(
+            rebuilt["evidence"]["ingest_partition"][
+                "expected_source_message_keys"
+            ],
+            [item["source_message_key"]],
         )
         self.assertEqual(
             classify_outbox_recovery("unrecognized_action"),

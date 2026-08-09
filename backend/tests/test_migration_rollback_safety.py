@@ -2,6 +2,7 @@ from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 import pytest
+from sqlalchemy import create_engine, text
 
 
 VERSIONS_DIR = Path(__file__).resolve().parents[1] / "alembic" / "versions"
@@ -35,6 +36,10 @@ def _load_migration(filename: str):
             "20260807_0022_vehicle_file_cleanup_outbox.py",
             "IRREVERSIBLE_MIGRATION_20260807_0022",
         ),
+        (
+            "20260809_0023_c2_identity_read_recovery.py",
+            "IRREVERSIBLE_MIGRATION_20260809_0023",
+        ),
     ],
 )
 def test_data_bearing_migrations_refuse_automatic_downgrade(
@@ -67,3 +72,99 @@ def test_data_bearing_migrations_refuse_automatic_downgrade(
     assert "backup" in str(exc.value).lower()
     assert "forward migration" in str(exc.value).lower()
     assert destructive_calls == []
+
+
+def test_legacy_disabled_paused_repair_is_idempotent_and_preserves_terminals():
+    migration = _load_migration(
+        "20260809_0023_c2_identity_read_recovery.py"
+    )
+    engine = create_engine("sqlite:///:memory:", future=True)
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE conversations (
+                conversation_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                ai_enabled BOOLEAN NOT NULL,
+                close_reason TEXT,
+                deleted_at TIMESTAMP
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE wechat_session_bindings (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                bind_status TEXT NOT NULL,
+                listen_status TEXT NOT NULL,
+                allow_listening BOOLEAN NOT NULL,
+                authorization_revision INTEGER NOT NULL,
+                error_code TEXT,
+                disable_reason TEXT,
+                replacement_binding_id TEXT,
+                deleted_at TIMESTAMP,
+                updated_at TIMESTAMP
+            )
+            """
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO conversations
+                    (conversation_id, status, ai_enabled, close_reason, deleted_at)
+                VALUES
+                    ('valid', 'waiting_user_reply', true, NULL, NULL),
+                    ('closed', 'closed', true, 'closed', NULL),
+                    ('rejected', 'rejected', false, NULL, NULL)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO wechat_session_bindings
+                    (id, conversation_id, bind_status, listen_status,
+                     allow_listening, authorization_revision, error_code,
+                     disable_reason, replacement_binding_id, deleted_at, updated_at)
+                VALUES
+                    ('repair', 'valid', 'disabled', 'paused', false, 2, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP),
+                    ('permanent', 'valid', 'disabled', 'paused', false, 2, NULL, 'admin_disabled', NULL, NULL, CURRENT_TIMESTAMP),
+                    ('history', 'valid', 'disabled', 'paused', false, 2, NULL, NULL, 'repair', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                    ('closed-binding', 'closed', 'disabled', 'paused', false, 2, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP),
+                    ('rejected-binding', 'rejected', 'disabled', 'paused', false, 2, NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP)
+                """
+            )
+        )
+
+        first_count = migration.repair_legacy_bindings(connection)
+        second_count = migration.repair_legacy_bindings(connection)
+        rows = connection.execute(
+            text(
+                """
+                SELECT id, bind_status, listen_status, allow_listening,
+                       authorization_revision
+                  FROM wechat_session_bindings
+                 ORDER BY id
+                """
+            )
+        ).mappings().all()
+
+    assert first_count == 1
+    assert second_count == 0
+    by_id = {row["id"]: row for row in rows}
+    assert dict(by_id["repair"]) == {
+        "id": "repair",
+        "bind_status": "bound",
+        "listen_status": "paused",
+        "allow_listening": False,
+        "authorization_revision": 3,
+    }
+    for protected_id in (
+        "permanent",
+        "history",
+        "closed-binding",
+        "rejected-binding",
+    ):
+        assert by_id[protected_id]["bind_status"] == "disabled"
+        assert by_id[protected_id]["authorization_revision"] == 2

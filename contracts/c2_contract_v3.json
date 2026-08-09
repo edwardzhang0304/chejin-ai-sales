@@ -1,6 +1,6 @@
 {
   "contract_version": 3,
-  "contract_revision": "3.12.4",
+  "contract_revision": "3.12.5",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "sender_roles": ["customer", "self", "system", "unknown"],
@@ -771,6 +771,7 @@
   "outbox_recovery_contract": {
     "actions": [
       "retry",
+      "refresh_identity_and_retry",
       "refresh_and_rebuild",
       "rebuild_failed_facts",
       "split_and_retry",
@@ -779,6 +780,9 @@
       "conversation_terminated"
     ],
     "response_field": "data.recovery_action",
+    "refresh_identity_and_retry_codes": [
+      "MESSAGE_IDENTITY_COLLISION"
+    ],
     "refresh_and_rebuild_codes": [
       "MESSAGE_AUTHORIZATION_REVISION_EXPIRED"
     ],
@@ -941,6 +945,7 @@
       "max_retry_interval_seconds": 60,
       "transitions": {
         "retry": "retry_waiting",
+        "refresh_identity_and_retry": "refresh_pending",
         "refresh_and_rebuild": "refresh_pending",
         "rebuild_failed_facts": "rebuild_pending",
         "split_and_retry": "split_pending",
@@ -961,7 +966,38 @@
   "message_identity_contract": {
     "source_message_key_owner": "worker",
     "dedupe_key_owner": "worker",
-    "backend_behavior": "validate_and_persist_only",
+    "backend_behavior": "persist_and_compare_full_identity_invariants",
+    "identity_checkpoint": {
+      "version": 1,
+      "outputs": [
+        "read-targets.targets[].identity_checkpoint",
+        "read-authorization.identity_checkpoint"
+      ],
+      "required_fields": [
+        "version",
+        "next_sequence_floor",
+        "recent_messages"
+      ],
+      "recent_message_fields": [
+        "stable_id",
+        "source_message_key",
+        "dedupe_key",
+        "sender_role",
+        "message_type",
+        "normalized_content_hash",
+        "media_identity_hash",
+        "alignment_signature"
+      ],
+      "worker_sequence_messages_must_be_included": true
+    },
+    "duplicate_identity_invariants": [
+      "sender_role",
+      "message_type",
+      "normalized_content_hash",
+      "media_identity_hash"
+    ],
+    "collision_error_code": "MESSAGE_IDENTITY_COLLISION",
+    "collision_recovery_action": "refresh_identity_and_retry",
     "omniauto_inputs": [
       "observation",
       "physical_anchor",

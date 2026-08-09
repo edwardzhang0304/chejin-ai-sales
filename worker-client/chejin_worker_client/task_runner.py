@@ -31,6 +31,7 @@ from .c2_contract import (
 )
 from .c2_outbox_recovery import (
     encoded_payload_size,
+    rebuild_identity_collision,
     rebuild_invalid_media_as_failed,
     split_ingest_payload,
 )
@@ -3840,6 +3841,13 @@ class TaskRunner:
                     binding=binding,
                     payload=payload,
                     outbox_id=outbox_id,
+                    identity_collision=(
+                        exc.data
+                        if recovery_action == "refresh_identity_and_retry"
+                        and isinstance(exc, ApiError)
+                        and isinstance(exc.data, dict)
+                        else None
+                    ),
                 )
                 return {
                     "ok": False,
@@ -3905,6 +3913,7 @@ class TaskRunner:
         binding: Binding,
         payload: dict[str, Any],
         outbox_id: str,
+        identity_collision: dict[str, Any] | None = None,
     ) -> bool:
         evidence = (
             payload.get("evidence")
@@ -3941,6 +3950,32 @@ class TaskRunner:
         refreshed = json.loads(
             json.dumps(payload, ensure_ascii=False, default=str)
         )
+        identity_replacement = None
+        if isinstance(identity_collision, dict):
+            checkpoint = authorization.get("identity_checkpoint")
+            checkpoint = checkpoint if isinstance(checkpoint, dict) else {}
+            try:
+                sequence_floor = max(
+                    int(
+                        identity_collision.get("next_sequence_floor")
+                        or 1
+                    ),
+                    int(checkpoint.get("next_sequence_floor") or 1),
+                )
+                refreshed, replacement = rebuild_identity_collision(
+                    refreshed,
+                    source_message_key=str(
+                        identity_collision.get("source_message_key") or ""
+                    ),
+                    dedupe_key=str(
+                        identity_collision.get("dedupe_key") or ""
+                    ),
+                    next_sequence_floor=sequence_floor,
+                )
+                identity_replacement = replacement
+            except (TypeError, ValueError) as exc:
+                set_c2_outbox_error(outbox_id, str(exc))
+                return False
         refreshed["authorization_revision"] = str(
             authorization.get("authorization_revision") or ""
         )
@@ -3955,15 +3990,24 @@ class TaskRunner:
             attempt_count=0,
             refresh_attempt_count=0,
         )
-        refresh_c2_outbox_payload(
-            outbox_id,
-            refreshed,
-            next_status=refreshed_state,
-        )
+        try:
+            refresh_c2_outbox_payload(
+                outbox_id,
+                refreshed,
+                next_status=refreshed_state,
+                identity_replacement=identity_replacement,
+            )
+        except ValueError as exc:
+            set_c2_outbox_error(outbox_id, str(exc))
+            return False
         append_log(
             "INFO",
             "c2_outbox_authorization_refreshed",
-            "C2 Outbox 只刷新了授权外壳，消息身份、内容和动作证据保持不变。",
+            (
+                "C2 Outbox 已按服务端检查点原子重建冲突身份；消息内容和动作证据保持不变。"
+                if identity_replacement
+                else "C2 Outbox 只刷新了授权外壳，消息身份、内容和动作证据保持不变。"
+            ),
             metadata={
                 "outbox_id": outbox_id,
                 "conversation_id": refreshed.get("conversation_id"),
@@ -4173,7 +4217,10 @@ class TaskRunner:
                         },
                     )
                     return False
-                if recovery_action == "refresh_and_rebuild":
+                if recovery_action in {
+                    "refresh_and_rebuild",
+                    "refresh_identity_and_retry",
+                }:
                     append_log(
                         "INFO",
                         "c2_outbox_refresh_waiting",

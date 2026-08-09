@@ -1,13 +1,156 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import re
 from typing import Any
 
 from .c2_contract import c2_contract_v3
 
 
 PARTITION_GATE_CODE = "C2_INGEST_PARTITION_INCOMPLETE"
+
+
+def _stable_digest(payload: Any, *, length: int) -> str:
+    raw = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:length]
+
+
+def _replace_identity_value(value: Any, replacements: dict[str, str]) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _replace_identity_value(child, replacements)
+            for key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _replace_identity_value(child, replacements)
+            for child in value
+        ]
+    if isinstance(value, str):
+        return replacements.get(value, value)
+    return value
+
+
+def rebuild_identity_collision(
+    payload: dict[str, Any],
+    *,
+    source_message_key: str,
+    dedupe_key: str,
+    next_sequence_floor: int,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Rekey one persisted Worker-sequence fact without repeating UI work."""
+
+    rebuilt = copy.deepcopy(payload)
+    messages = [
+        item
+        for item in (rebuilt.get("messages") or [])
+        if isinstance(item, dict)
+    ]
+    matching = [
+        item
+        for item in messages
+        if (
+            source_message_key
+            and str(item.get("source_message_key") or "")
+            == source_message_key
+        )
+        or (
+            dedupe_key
+            and str(item.get("dedupe_key") or "") == dedupe_key
+        )
+    ]
+    if len(matching) != 1:
+        raise ValueError("MESSAGE_IDENTITY_COLLISION_ITEM_AMBIGUOUS")
+    item = matching[0]
+    raw_payload = item.get("raw_payload")
+    raw_payload = raw_payload if isinstance(raw_payload, dict) else {}
+    basis = raw_payload.get("dedupe_basis")
+    basis = basis if isinstance(basis, dict) else {}
+    old_stable_id = str(basis.get("worker_stable_id") or "").strip()
+    if (
+        str(basis.get("source") or "") != "worker_cross_round_sequence"
+        or not re.fullmatch(r"worker-message-\d+", old_stable_id)
+    ):
+        raise ValueError("MESSAGE_IDENTITY_COLLISION_NOT_REKEYABLE")
+    used_sequences = []
+    for message in messages:
+        candidate_raw = message.get("raw_payload")
+        candidate_raw = candidate_raw if isinstance(candidate_raw, dict) else {}
+        candidate_basis = candidate_raw.get("dedupe_basis")
+        candidate_basis = (
+            candidate_basis if isinstance(candidate_basis, dict) else {}
+        )
+        match = re.fullmatch(
+            r"worker-message-(\d+)",
+            str(candidate_basis.get("worker_stable_id") or "").strip(),
+        )
+        if match:
+            used_sequences.append(int(match.group(1)))
+    sequence = max(
+        1,
+        int(next_sequence_floor),
+        max(used_sequences, default=0) + 1,
+    )
+    new_stable_id = f"worker-message-{sequence}"
+    conversation_id = str(rebuilt.get("conversation_id") or "").strip()
+    if not conversation_id:
+        raise ValueError("MESSAGE_CONVERSATION_ID_MISSING")
+    new_dedupe_key = (
+        f"{conversation_id}:"
+        + _stable_digest(
+            {
+                "conversation_id": conversation_id,
+                "worker_stable_id": new_stable_id,
+            },
+            length=32,
+        )
+    )[:255]
+    identity_kind = (
+        "worker_sequence"
+        if str(item.get("message_type") or "") == "image"
+        else "worker_dedupe_key"
+    )
+    identity = (
+        new_stable_id
+        if identity_kind == "worker_sequence"
+        else new_dedupe_key
+    )
+    new_source_message_key = (
+        "source:"
+        + _stable_digest(
+            {
+                "conversation_id": conversation_id,
+                "identity_kind": identity_kind,
+                "identity": identity,
+            },
+            length=40,
+        )
+    )[:255]
+    old_source_message_key = str(item.get("source_message_key") or "")
+    old_dedupe_key = str(item.get("dedupe_key") or "")
+    rebuilt = _replace_identity_value(
+        rebuilt,
+        {
+            old_source_message_key: new_source_message_key,
+            old_dedupe_key: new_dedupe_key,
+            old_stable_id: new_stable_id,
+        },
+    )
+    return rebuilt, {
+        "old_source_message_key": old_source_message_key,
+        "new_source_message_key": new_source_message_key,
+        "old_dedupe_key": old_dedupe_key,
+        "new_dedupe_key": new_dedupe_key,
+        "old_stable_id": old_stable_id,
+        "new_stable_id": new_stable_id,
+    }
 
 
 def encoded_payload_size(payload: dict[str, Any]) -> int:
