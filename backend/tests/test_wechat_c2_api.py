@@ -5931,7 +5931,7 @@ def test_same_remark_code_session_key_change_retires_stale_binding_with_messages
         assert message.content == "旧 binding 已经被消息引用"
 
 
-def test_scan_result_reuses_disabled_binding_with_messages_instead_of_recreating():
+def test_scan_result_moves_unproven_disabled_binding_to_review_and_restores_safely():
     worker = _create_worker()
     _create_sales(worker["id"])
     _create_lead("许聪", "13896676680", {"remark_code": "CJTEST01"})
@@ -5971,7 +5971,10 @@ def test_scan_result_reuses_disabled_binding_with_messages_instead_of_recreating
     assert rescan.status_code == 200
     binding = rescan.json()["data"]["bindings"][0]
     assert binding["id"] == first_binding["id"]
-    assert binding["bind_status"] == "disabled"
+    assert binding["bind_status"] == "needs_review"
+    assert binding["listen_status"] == "paused"
+    assert binding["error_code"] == "SESSION_BINDING_STATE_INCONSISTENT"
+    assert binding["recovery_state"] == "needs_review"
     assert binding["can_ingest_messages"] is False
 
     with SessionLocal() as db:
@@ -5979,6 +5982,76 @@ def test_scan_result_reuses_disabled_binding_with_messages_instead_of_recreating
         assert len(rows) == 1
         message = db.query(MessageEvent).filter(MessageEvent.binding_id == first_binding["id"]).one()
         assert message.content == "已有消息引用这条 binding"
+
+    restored = client.post(
+        f"/api/conversations/{first_binding['conversation_id']}/wechat-binding/restore",
+        json={"reason": "历史状态缺少永久停用证据，人工核实客户仍有效"},
+        headers=HEADERS,
+    )
+    assert restored.status_code == 200, restored.text
+    restored_binding = restored.json()["data"]
+    assert restored_binding["id"] == first_binding["id"]
+    assert restored_binding["bind_status"] == "bound"
+    assert restored_binding["listen_status"] == "paused"
+    assert restored_binding["allow_listening"] is False
+    assert restored_binding["error_code"] == "SESSION_BINDING_RESTORE_PENDING_SCAN"
+    assert restored_binding["recovery_state"] == "paused_waiting_worker"
+
+    final_scan_payload = _scan_payload("CJTEST01", rpa_session_key="wx-row-new")
+    final_scan_payload["scan_id"] = "scan-disabled-after-manual-restore"
+    final_scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=final_scan_payload,
+        headers=_worker_headers(worker),
+    )
+    assert final_scan.status_code == 200
+    final_binding = final_scan.json()["data"]["bindings"][0]
+    assert final_binding["id"] == first_binding["id"]
+    assert final_binding["listen_status"] == "listening"
+    assert final_binding["can_ingest_messages"] is True
+    with SessionLocal() as db:
+        assert db.query(MessageEvent).filter(
+            MessageEvent.binding_id == first_binding["id"]
+        ).one().content == "已有消息引用这条 binding"
+
+
+def test_scan_keeps_complete_permanent_disable_evidence_blocked():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("明确永久停用客户", "13896676679")
+    remark_code = _pull_remark_code(worker)
+    first = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = first.json()["data"]["bindings"][0]
+    with SessionLocal() as db:
+        row = db.get(WechatSessionBinding, binding["id"])
+        assert row is not None
+        row.bind_status = "disabled"
+        row.listen_status = "disabled"
+        row.allow_listening = False
+        row.disable_reason = "admin_disabled"
+        row.disabled_at = utcnow()
+        row.disabled_by = "operator:admin-disable"
+        db.commit()
+
+    rescan_payload = _scan_payload(remark_code)
+    rescan_payload["scan_id"] = "scan-complete-permanent-disable"
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=rescan_payload,
+        headers=_worker_headers(worker),
+    )
+
+    assert response.status_code == 200
+    blocked = response.json()["data"]["bindings"][0]
+    assert blocked["id"] == binding["id"]
+    assert blocked["bind_status"] == "disabled"
+    assert blocked["error_code"] == "SESSION_BINDING_DISABLED"
+    assert blocked["recovery_state"] == "permanently_disabled"
+    assert blocked["can_ingest_messages"] is False
 
 
 def test_same_remark_code_duplicate_active_binding_is_rejected_and_history_stays_canonical():
@@ -6647,9 +6720,13 @@ def test_permanent_conflicting_and_historical_bindings_cannot_restore(
         elif blocked_case == "remark_removed":
             binding_row.bind_status = "disabled"
             binding_row.disable_reason = "remark_code_removed_confirmed"
+            binding_row.disabled_at = utcnow()
+            binding_row.disabled_by = "operator:remark-removal"
         elif blocked_case == "admin_disabled":
             binding_row.bind_status = "disabled"
             binding_row.disable_reason = "admin_disabled"
+            binding_row.disabled_at = utcnow()
+            binding_row.disabled_by = "operator:admin-disable"
         elif blocked_case == "wrong_worker":
             assert other_worker is not None
             conversation.worker_id = other_worker["id"]

@@ -743,6 +743,45 @@ def _conversation_allows_binding_recovery(
     )
 
 
+def _conversation_is_permanently_terminated(
+    conversation: Conversation | None,
+) -> bool:
+    return bool(
+        conversation
+        and (
+            conversation.deleted_at is not None
+            or not conversation.ai_enabled
+            or conversation.status in CONVERSATION_CLOSED_STATUSES
+            or str(conversation.close_reason or "").strip()
+        )
+    )
+
+
+def _binding_has_permanent_disable_evidence(
+    binding: WechatSessionBinding,
+) -> bool:
+    return bool(
+        str(binding.disable_reason or "").strip()
+        in PERMANENT_BINDING_DISABLE_REASONS
+        and binding.disabled_at is not None
+        and str(binding.disabled_by or "").strip()
+    )
+
+
+def _disabled_binding_needs_review(
+    db: Session,
+    binding: WechatSessionBinding,
+) -> bool:
+    conversation = db.get(Conversation, binding.conversation_id)
+    return bool(
+        binding.bind_status == BIND_STATUS_DISABLED
+        and binding.deleted_at is None
+        and not binding.replacement_binding_id
+        and not _binding_has_permanent_disable_evidence(binding)
+        and not _conversation_is_permanently_terminated(conversation)
+    )
+
+
 def _legacy_disabled_pause_is_recoverable(
     db: Session,
     binding: WechatSessionBinding,
@@ -818,6 +857,21 @@ def _bind_one_session(
     if binding.bind_status == BIND_STATUS_DISABLED:
         if _legacy_disabled_pause_is_recoverable(db, binding):
             _normalize_legacy_disabled_pause(binding)
+        elif _disabled_binding_needs_review(db, binding):
+            _set_binding_state(
+                binding,
+                status=BIND_STATUS_NEEDS_REVIEW,
+                listen_status=LISTEN_STATUS_PAUSED,
+                allow_listening=False,
+                error_code="SESSION_BINDING_STATE_INCONSISTENT",
+                remark_code=binding.remark_code,
+                preserve_lead=True,
+            )
+            return {
+                **_binding_to_dict(binding),
+                "can_ingest_messages": False,
+                "recovery_state": "needs_review",
+            }
         else:
             return {
                 **_binding_to_dict(binding),
@@ -3166,7 +3220,7 @@ def restore_binding(
             409,
         )
     disable_reason = str(binding.disable_reason or "").strip()
-    if disable_reason in PERMANENT_BINDING_DISABLE_REASONS:
+    if _binding_has_permanent_disable_evidence(binding):
         raise AppError(
             "WECHAT_BINDING_RESTORE_PERMANENTLY_DISABLED",
             "永久停用的微信绑定不能恢复",
@@ -3221,7 +3275,17 @@ def restore_binding(
     recoverable_state = bool(
         binding.bind_status == BIND_STATUS_BOUND
         and binding.listen_status == LISTEN_STATUS_PAUSED
-    ) or _legacy_disabled_pause_is_recoverable(db, binding)
+    ) or _legacy_disabled_pause_is_recoverable(
+        db,
+        binding,
+    ) or _disabled_binding_needs_review(
+        db,
+        binding,
+    ) or bool(
+        binding.bind_status == BIND_STATUS_NEEDS_REVIEW
+        and binding.listen_status == LISTEN_STATUS_PAUSED
+        and binding.error_code == "SESSION_BINDING_STATE_INCONSISTENT"
+    )
     if not recoverable_state:
         raise AppError(
             "WECHAT_BINDING_RESTORE_STATE_INVALID",
