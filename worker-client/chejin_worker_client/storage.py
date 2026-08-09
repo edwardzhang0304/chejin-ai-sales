@@ -10,7 +10,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 from .config import CONFIG
 from .c2_contract import c2_contract_v3
@@ -24,6 +24,7 @@ RETENTION_DAYS = 30
 MAX_C2_LEDGER_ROWS_PER_CONVERSATION = 2000
 DEFAULT_ACCEPT_SCHEDULE = {"enabled": False, "start": "09:00", "end": "21:00"}
 TIME_RE = re.compile(r"^\d{2}:\d{2}$")
+T = TypeVar("T")
 
 
 def _c2_outbox_states() -> set[str]:
@@ -415,6 +416,54 @@ def load_c2_state(key: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def update_c2_state_atomic(
+    key: str,
+    updater: Callable[[dict[str, Any]], tuple[dict[str, Any], T]],
+) -> T:
+    """Read, update and persist one C2 state row under one write lock.
+
+    Identity sequence allocation uses this path so concurrent reader threads
+    cannot observe the same ``next_sequence`` value.
+    """
+
+    clean_key = str(key or "").strip()
+    if not clean_key:
+        raise ValueError("C2_STATE_KEY_MISSING")
+    with db_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT value FROM c2_runtime_state WHERE key = ?",
+            (clean_key,),
+        ).fetchone()
+        current: dict[str, Any] = {}
+        if row:
+            try:
+                decoded = json.loads(row["value"])
+            except (TypeError, json.JSONDecodeError):
+                decoded = {}
+            if isinstance(decoded, dict):
+                current = decoded
+        updated, result = updater(current)
+        if not isinstance(updated, dict):
+            raise ValueError("C2_STATE_UPDATE_INVALID")
+        conn.execute(
+            """
+            INSERT INTO c2_runtime_state (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+              value = excluded.value,
+              updated_at = excluded.updated_at
+            """,
+            (
+                clean_key,
+                json.dumps(updated, ensure_ascii=False),
+                utc_now_iso(),
+            ),
+        )
+        conn.commit()
+        return result
 
 
 def clear_c2_state(key: str) -> None:
@@ -993,6 +1042,7 @@ def refresh_c2_outbox_payload(
     *,
     next_status: str,
     identity_replacement: dict[str, str] | None = None,
+    identity_state_key: str | None = None,
 ) -> None:
     _assert_outbox_text_only(payload)
     encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -1051,6 +1101,43 @@ def refresh_c2_outbox_payload(
             )
             if ledger_cursor.rowcount != 1:
                 raise ValueError("C2_LEDGER_COLLISION_SOURCE_NOT_FOUND")
+            clean_state_key = str(identity_state_key or "").strip()
+            stable_id_match = re.fullmatch(
+                r"worker-message-(\d+)",
+                str(identity_replacement.get("new_stable_id") or "").strip(),
+            )
+            if not clean_state_key or stable_id_match is None:
+                raise ValueError("C2_IDENTITY_REPLACEMENT_STATE_INVALID")
+            state_row = conn.execute(
+                "SELECT value FROM c2_runtime_state WHERE key = ?",
+                (clean_state_key,),
+            ).fetchone()
+            identity_state: dict[str, Any] = {}
+            if state_row:
+                try:
+                    decoded_state = json.loads(state_row["value"])
+                except (TypeError, json.JSONDecodeError):
+                    decoded_state = {}
+                if isinstance(decoded_state, dict):
+                    identity_state = decoded_state
+            identity_state["next_sequence"] = max(
+                int(identity_state.get("next_sequence") or 1),
+                int(stable_id_match.group(1)) + 1,
+            )
+            conn.execute(
+                """
+                INSERT INTO c2_runtime_state (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                  value = excluded.value,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    clean_state_key,
+                    json.dumps(identity_state, ensure_ascii=False),
+                    utc_now_iso(),
+                ),
+            )
         cursor = conn.execute(
             """
             UPDATE c2_ingest_outbox

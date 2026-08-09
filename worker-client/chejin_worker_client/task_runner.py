@@ -87,6 +87,7 @@ from .storage import (
     set_reply_send_ack_error,
     transition_c2_outbox,
     terminate_waiting_c2_image_ledger,
+    update_c2_state_atomic,
 )
 from .transaction_outcomes import (
     FlowOutcomeAccumulator,
@@ -115,15 +116,6 @@ from .wechat_c2 import (
 )
 
 
-CONTROL_READ_REASONS = frozenset(
-    {
-        "friend_acceptance_visible_hit",
-        "recall_precheck",
-        "visible_unread",
-    }
-)
-
-
 def should_submit_c2_ingest_payload(
     *,
     read_reason: str,
@@ -132,7 +124,11 @@ def should_submit_c2_ingest_payload(
 ) -> bool:
     """Return whether an opened authorized chat must be acknowledged by C2."""
 
-    return bool(messages) or read_reason in CONTROL_READ_REASONS or has_flow_gate
+    return (
+        bool(messages)
+        or bool(str(read_reason or "").strip())
+        or has_flow_gate
+    )
 
 
 ENV_STOP_ERRORS = {
@@ -2014,15 +2010,11 @@ class TaskRunner:
         ).strip()
         if not observations or not confirmed_observation_id:
             return False
-        identity_state_key = f"message_identity:{target.conversation_id}"
-        reconciled, identity_state, errors = reconcile_v16104_identity_transition(
-            target,
-            observations,
-            load_c2_state(identity_state_key),
+        reconciled, _identity_state, errors = (
+            self._reconcile_message_identities(target, observations)
         )
         if errors:
             return False
-        save_c2_state(identity_state_key, identity_state)
         matched = next(
             (
                 item
@@ -2065,6 +2057,116 @@ class TaskRunner:
             },
         )
         return True
+
+    def _reconcile_message_identities(
+        self,
+        target: WechatReadTarget,
+        observations: list[Any],
+    ) -> tuple[list[Any], dict[str, Any], list[dict[str, Any]]]:
+        """Merge the server floor and allocate identities in one transaction."""
+
+        state_key = f"message_identity:{target.conversation_id}"
+        checkpoint = (
+            target.raw.get("identity_checkpoint")
+            if isinstance(target.raw, dict)
+            and isinstance(target.raw.get("identity_checkpoint"), dict)
+            else {}
+        )
+        try:
+            checkpoint_version = int(checkpoint.get("version") or 0)
+            server_floor = int(checkpoint.get("next_sequence_floor") or 0)
+        except (TypeError, ValueError):
+            checkpoint_version = 0
+            server_floor = 0
+
+        def reconcile_under_lock(
+            previous_state: dict[str, Any],
+        ) -> tuple[
+            dict[str, Any],
+            tuple[
+                list[Any],
+                dict[str, Any],
+                list[dict[str, Any]],
+                int,
+            ],
+        ]:
+            try:
+                local_floor = int(previous_state.get("next_sequence") or 0)
+                local_version = int(previous_state.get("version") or 0)
+            except (TypeError, ValueError):
+                local_floor = 0
+                local_version = 0
+            local_is_usable = local_version >= 3 and local_floor >= 1
+            checkpoint_is_usable = (
+                checkpoint_version == 1 and server_floor >= 1
+            )
+            if not local_is_usable and not checkpoint_is_usable:
+                error = {
+                    "error_code": "MESSAGE_IDENTITY_CHECKPOINT_MISSING",
+                    "reason": "local_identity_state_unusable_and_server_checkpoint_missing",
+                }
+                return previous_state, (
+                    list(observations),
+                    previous_state,
+                    [error],
+                    local_floor,
+                )
+            effective_previous_state = (
+                previous_state if local_is_usable else {}
+            )
+            reconciled, updated_state, errors = (
+                reconcile_v16104_identity_transition(
+                    target,
+                    observations,
+                    effective_previous_state,
+                )
+            )
+            return updated_state, (
+                reconciled,
+                updated_state,
+                errors,
+                local_floor,
+            )
+
+        reconciled, state, errors, local_floor = update_c2_state_atomic(
+            state_key,
+            reconcile_under_lock,
+        )
+        assigned_numbers = sorted(
+            {
+                int(match.group(1))
+                for item in reconciled
+                if isinstance(item, dict)
+                and (
+                    match := re.fullmatch(
+                        r"worker-message-(\d+)",
+                        str(item.get("_worker_stable_id") or "").strip(),
+                    )
+                )
+            }
+        )
+        append_log(
+            "WARN" if errors else "INFO",
+            "c2_message_identity_checkpoint_merged",
+            (
+                "消息编号检查点无效，已禁止从编号 1 猜测分配。"
+                if errors
+                else "已合并本地与服务端消息编号检查点并原子保存编号。"
+            ),
+            error_code=(
+                str(errors[0].get("error_code") or "")
+                if errors and isinstance(errors[0], dict)
+                else None
+            ),
+            metadata={
+                "conversation_id": target.conversation_id,
+                "local_next_sequence": local_floor,
+                "server_next_sequence_floor": server_floor,
+                "final_assigned_sequences": assigned_numbers,
+                "saved_next_sequence": state.get("next_sequence"),
+            },
+        )
+        return reconciled, state, errors
 
     def _attach_confirmed_ai_reply_receipts(
         self,
@@ -2873,6 +2975,50 @@ class TaskRunner:
             self.c2_last_visible_sessions_monotonic = time.monotonic()
             self._remember_recent_visible_hits(self.c2_last_visible_sessions)
             result = self.api.post_wechat_session_scan_result(binding, payload)
+            for binding_result in (
+                result.get("bindings")
+                if isinstance(result, dict)
+                and isinstance(result.get("bindings"), list)
+                else []
+            ):
+                if not isinstance(binding_result, dict):
+                    continue
+                server_allowed = bool(
+                    binding_result.get("can_ingest_messages")
+                )
+                append_log(
+                    "INFO" if server_allowed else "WARN",
+                    (
+                        "c2_scan_binding_server_authorized"
+                        if server_allowed
+                        else "c2_scan_binding_server_rejected"
+                    ),
+                    (
+                        "最新唯一扫描已由后端授权；Worker 未自行恢复暂停绑定。"
+                        if server_allowed
+                        else "最新扫描未获后端授权，Worker 不会点击该会话。"
+                    ),
+                    error_code=(
+                        str(binding_result.get("error_code") or "") or None
+                    ),
+                    metadata={
+                        "conversation_id": binding_result.get(
+                            "conversation_id"
+                        ),
+                        "remark_code": binding_result.get("remark_code"),
+                        "bind_status": binding_result.get("bind_status"),
+                        "listen_status": binding_result.get(
+                            "listen_status"
+                        ),
+                        "allow_listening": binding_result.get(
+                            "allow_listening"
+                        ),
+                        "recovery_state": binding_result.get(
+                            "recovery_state"
+                        ),
+                        "server_authorized": server_allowed,
+                    },
+                )
             self._enqueue_visible_hits(payload, result, sidecar_payload=sidecar_payload)
             self.c2_stats.update(
                 {
@@ -3123,7 +3269,7 @@ class TaskRunner:
                 continue
             cooldown_remaining = self._c2_read_cooldown_remaining(dedupe_key)
             if cooldown_remaining > 0:
-                append_log("INFO", "c2_visible_hit_cooldown", "C2 第一屏命中目标刚失败过，冷却期内跳过本轮重试。", metadata={"conversation_id": target.conversation_id, "remark_code": target.remark_code, "cooldown_remaining_seconds": round(cooldown_remaining, 1)})
+                append_log("INFO", "c2_visible_hit_cooldown", "C2 第一屏命中目标刚失败过，冷却期内跳过本轮重试。", metadata={"conversation_id": target.conversation_id, "remark_code": target.remark_code, "read_reason": target.read_reason, "next_read_due_at": target.raw.get("next_read_due_at") if isinstance(target.raw, dict) else None, "cooldown_remaining_seconds": round(cooldown_remaining, 1)})
                 continue
             validation_error = self._validate_read_target(target)
             if validation_error:
@@ -3133,7 +3279,7 @@ class TaskRunner:
                     "c2_visible_hit_skipped",
                     "C2 第一屏命中目标校验未通过，已跳过。",
                     error_code=validation_error,
-                    metadata={"conversation_id": target.conversation_id, "remark_code": target.remark_code, "read_reason": target.read_reason},
+                    metadata={"conversation_id": target.conversation_id, "remark_code": target.remark_code, "read_reason": target.read_reason, "next_read_due_at": target.raw.get("next_read_due_at") if isinstance(target.raw, dict) else None},
                 )
                 continue
             self.c2_round_processed_conversation_ids.add(dedupe_key)
@@ -3183,7 +3329,7 @@ class TaskRunner:
                 continue
             cooldown_remaining = self._c2_read_cooldown_remaining(dedupe_key)
             if cooldown_remaining > 0:
-                append_log("INFO", "c2_state_target_cooldown", "C2 定向读取刚失败过，冷却期内跳过本轮重试。", metadata={"conversation_id": target.conversation_id, "remark_code": target.remark_code, "cooldown_remaining_seconds": round(cooldown_remaining, 1)})
+                append_log("INFO", "c2_state_target_cooldown", "C2 定向读取刚失败过，冷却期内跳过本轮重试。", metadata={"conversation_id": target.conversation_id, "remark_code": target.remark_code, "read_reason": target.read_reason, "next_read_due_at": target.raw.get("next_read_due_at") if isinstance(target.raw, dict) else None, "cooldown_remaining_seconds": round(cooldown_remaining, 1)})
                 continue
             success_cooldown_remaining = self._c2_read_success_cooldown_remaining(dedupe_key)
             if success_cooldown_remaining > 0:
@@ -3192,7 +3338,7 @@ class TaskRunner:
             validation_error = self._validate_read_target(target)
             if validation_error:
                 self.c2_stats["last_error"] = validation_error
-                append_log("WARN", "c2_read_target_skipped", "C2 读取目标校验未通过，已跳过。", error_code=validation_error, metadata={"conversation_id": target.conversation_id, "remark_code": target.remark_code, "read_reason": target.read_reason})
+                append_log("WARN", "c2_read_target_skipped", "C2 读取目标校验未通过，已跳过。", error_code=validation_error, metadata={"conversation_id": target.conversation_id, "remark_code": target.remark_code, "read_reason": target.read_reason, "next_read_due_at": target.raw.get("next_read_due_at") if isinstance(target.raw, dict) else None})
                 continue
             if self._high_priority_active():
                 append_log("INFO", "c2_message_read_interrupted", "C2 消息读取被高优先级微信动作中断。", error_code="SCAN_INTERRUPTED_BY_HIGH_PRIORITY_ACTION", metadata={"conversation_id": target.conversation_id})
@@ -3345,9 +3491,49 @@ class TaskRunner:
                 },
             )
             return False
-        return self._batch_authorization_allows_target(
+        allowed = self._batch_authorization_allows_target(
             {"authorization": authorization},
             target,
+        )
+        if allowed:
+            self._merge_read_authorization_checkpoint(target, authorization)
+        else:
+            append_log(
+                "INFO",
+                "c2_read_authorization_backed_off",
+                "后端当前未授权读取，未执行微信操作。",
+                metadata={
+                    "conversation_id": target.conversation_id,
+                    "read_reason": target.read_reason,
+                    "recovery_decision": authorization.get(
+                        "recovery_decision"
+                    ),
+                    "next_read_due_at": authorization.get(
+                        "next_read_due_at"
+                    ),
+                },
+            )
+        return allowed
+
+    @staticmethod
+    def _merge_read_authorization_checkpoint(
+        target: WechatReadTarget,
+        authorization: dict[str, Any],
+    ) -> None:
+        """Merge the latest backend-owned identity floor before a UI read."""
+
+        if not isinstance(target.raw, dict):
+            target.raw = {}
+        checkpoint = authorization.get("identity_checkpoint")
+        if isinstance(checkpoint, dict):
+            target.raw["identity_checkpoint"] = json.loads(
+                json.dumps(checkpoint, ensure_ascii=False, default=str)
+            )
+        target.raw["next_read_due_at"] = authorization.get(
+            "next_read_due_at"
+        )
+        target.raw["read_authorization_refreshed_at"] = (
+            datetime.now(timezone.utc).isoformat()
         )
 
     def _target_batch_continuation(
@@ -3521,6 +3707,22 @@ class TaskRunner:
             isinstance(target.raw, dict) and target.raw.get("visible_hit") is True
         ):
             return "C2_VISIBLE_UNREAD_LOCAL_FACT_MISSING"
+        next_read_due_at = (
+            target.raw.get("next_read_due_at")
+            if isinstance(target.raw, dict)
+            else None
+        )
+        if next_read_due_at:
+            try:
+                due_at = datetime.fromisoformat(
+                    str(next_read_due_at).replace("Z", "+00:00")
+                )
+                if due_at.tzinfo is None:
+                    due_at = due_at.replace(tzinfo=timezone.utc)
+                if due_at > datetime.now(timezone.utc):
+                    return "C2_READ_TARGET_NOT_DUE"
+            except ValueError:
+                return "C2_READ_TARGET_DUE_AT_INVALID"
         return None
 
     def _c2_read_cooldown_remaining(self, dedupe_key: str) -> float:
@@ -3901,6 +4103,34 @@ class TaskRunner:
             outbox_id,
             status=confirmed_state,
         )
+        recovery_evidence = (
+            payload.get("evidence", {}).get("identity_collision_recovery")
+            if isinstance(payload.get("evidence"), dict)
+            and isinstance(
+                payload.get("evidence", {}).get(
+                    "identity_collision_recovery"
+                ),
+                dict,
+            )
+            else None
+        )
+        if recovery_evidence:
+            append_log(
+                "INFO",
+                "c2_identity_collision_retransmit_confirmed",
+                "身份冲突消息已使用原 Outbox 和新编号重传成功。",
+                metadata={
+                    "outbox_id": outbox_id,
+                    "conversation_id": payload.get("conversation_id"),
+                    "old_stable_id": recovery_evidence.get(
+                        "old_stable_id"
+                    ),
+                    "new_stable_id": recovery_evidence.get(
+                        "new_stable_id"
+                    ),
+                    "retransmit_result": "confirmed",
+                },
+            )
         return {
             "ok": True,
             "outbox_id": outbox_id,
@@ -3973,6 +4203,19 @@ class TaskRunner:
                     next_sequence_floor=sequence_floor,
                 )
                 identity_replacement = replacement
+                refreshed_evidence = dict(refreshed.get("evidence") or {})
+                refreshed_evidence["identity_collision_recovery"] = {
+                    "old_stable_id": replacement.get("old_stable_id"),
+                    "new_stable_id": replacement.get("new_stable_id"),
+                    "old_source_message_key": replacement.get(
+                        "old_source_message_key"
+                    ),
+                    "new_source_message_key": replacement.get(
+                        "new_source_message_key"
+                    ),
+                    "state": "waiting_retransmit",
+                }
+                refreshed["evidence"] = refreshed_evidence
             except (TypeError, ValueError) as exc:
                 set_c2_outbox_error(outbox_id, str(exc))
                 return False
@@ -3996,6 +4239,11 @@ class TaskRunner:
                 refreshed,
                 next_status=refreshed_state,
                 identity_replacement=identity_replacement,
+                identity_state_key=(
+                    f"message_identity:{refreshed.get('conversation_id')}"
+                    if identity_replacement
+                    else None
+                ),
             )
         except ValueError as exc:
             set_c2_outbox_error(outbox_id, str(exc))
@@ -4013,6 +4261,21 @@ class TaskRunner:
                 "conversation_id": refreshed.get("conversation_id"),
                 "authorization_revision": refreshed.get(
                     "authorization_revision"
+                ),
+                "old_stable_id": (
+                    identity_replacement.get("old_stable_id")
+                    if identity_replacement
+                    else None
+                ),
+                "new_stable_id": (
+                    identity_replacement.get("new_stable_id")
+                    if identity_replacement
+                    else None
+                ),
+                "retransmit_result": (
+                    "waiting"
+                    if identity_replacement
+                    else None
                 ),
             },
         )
@@ -6306,12 +6569,10 @@ class TaskRunner:
                     "payload": current_payload,
                 }
 
-            identity_state_key = f"message_identity:{target.conversation_id}"
-            observations, identity_state, identity_errors = (
-                reconcile_v16104_identity_transition(
+            observations, _identity_state, identity_errors = (
+                self._reconcile_message_identities(
                     target,
                     list(final_payload.get("observations") or []),
-                    load_c2_state(identity_state_key),
                 )
             )
             if identity_errors:
@@ -6323,7 +6584,6 @@ class TaskRunner:
                     ),
                     "payload": current_payload,
                 }
-            save_c2_state(identity_state_key, identity_state)
             final_payload["observations"] = observations
             final_payload["voice_transcription"] = voice_payload
             final_payload["initial_messages"] = current_payload
@@ -6410,14 +6670,10 @@ class TaskRunner:
                     "image_stats": aggregate_image_stats,
                 }
 
-            identity_state_key = (
-                f"message_identity:{target.conversation_id}"
-            )
-            observations, identity_state, identity_errors = (
-                reconcile_v16104_identity_transition(
+            observations, _identity_state, identity_errors = (
+                self._reconcile_message_identities(
                     target,
                     list(refreshed.get("observations") or []),
-                    load_c2_state(identity_state_key),
                 )
             )
             if identity_errors:
@@ -6430,7 +6686,6 @@ class TaskRunner:
                     "payload": current_payload,
                     "image_stats": aggregate_image_stats,
                 }
-            save_c2_state(identity_state_key, identity_state)
             refreshed["observations"] = observations
             refreshed = self._merge_waiting_image_facts(
                 target=target,
@@ -7923,16 +8178,13 @@ class TaskRunner:
                     target=target,
                     sidecar_payload=sidecar_payload,
                 )
-            identity_state_key = f"message_identity:{target.conversation_id}"
-            reconciled_observations, identity_state, cross_round_identity_errors = (
-                reconcile_v16104_identity_transition(
+            reconciled_observations, _identity_state, cross_round_identity_errors = (
+                self._reconcile_message_identities(
                     target,
                     list(sidecar_payload.get("observations") or []),
-                    load_c2_state(identity_state_key),
                 )
             )
             sidecar_payload["observations"] = reconciled_observations
-            save_c2_state(identity_state_key, identity_state)
             if cross_round_identity_errors:
                 code = str(
                     cross_round_identity_errors[0].get("error_code")
@@ -8630,6 +8882,28 @@ class TaskRunner:
                     "ignored_results": ignored_results,
                 },
             )
+            read_completion = (
+                result.get("read_completion")
+                if isinstance(result.get("read_completion"), dict)
+                else {}
+            )
+            if read_completion:
+                append_log(
+                    "INFO",
+                    "c2_read_completion_confirmed",
+                    "后端已确认本次完整读取结果和下次允许读取时间。",
+                    metadata={
+                        "conversation_id": target.conversation_id,
+                        "read_reason": target.read_reason,
+                        "read_result": read_completion.get("result"),
+                        "no_change_read_count": read_completion.get(
+                            "no_change_read_count"
+                        ),
+                        "next_read_due_at": read_completion.get(
+                            "next_read_due_at"
+                        ),
+                    },
+                )
             brain_result = None
             message_batch = result.get("message_batch") if isinstance(result, dict) else None
             if wait_for_brain and isinstance(message_batch, dict) and message_batch.get("batch_id"):

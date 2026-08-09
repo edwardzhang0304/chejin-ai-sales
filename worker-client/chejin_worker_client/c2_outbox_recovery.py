@@ -79,6 +79,21 @@ def rebuild_identity_collision(
         or not re.fullmatch(r"worker-message-\d+", old_stable_id)
     ):
         raise ValueError("MESSAGE_IDENTITY_COLLISION_NOT_REKEYABLE")
+    same_stable_id_items = []
+    for message in messages:
+        candidate_raw = message.get("raw_payload")
+        candidate_raw = candidate_raw if isinstance(candidate_raw, dict) else {}
+        candidate_basis = candidate_raw.get("dedupe_basis")
+        candidate_basis = (
+            candidate_basis if isinstance(candidate_basis, dict) else {}
+        )
+        if (
+            str(candidate_basis.get("worker_stable_id") or "").strip()
+            == old_stable_id
+        ):
+            same_stable_id_items.append(message)
+    if same_stable_id_items != [item]:
+        raise ValueError("MESSAGE_IDENTITY_COLLISION_ITEM_AMBIGUOUS")
     used_sequences = []
     for message in messages:
         candidate_raw = message.get("raw_payload")
