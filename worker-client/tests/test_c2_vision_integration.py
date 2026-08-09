@@ -107,9 +107,9 @@ def confirmed_image_menu_for_downstream_test(
     _ocr_items,
     copy_item,
     *,
-    menu_bounds,
+    menu_panel_bounds,
 ):
-    del menu_bounds
+    del menu_panel_bounds
     return {
         "kind": "image",
         "labels": ["复制", "编辑"],
@@ -1205,7 +1205,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         "local_ocr_item_count": 1,
                         "ocr_roi": [520, 80, 1200, 900],
                         "ocr_execution": "isolated_runner",
-                        "menu_bounds": [560, 250, 680, 350],
+                        "menu_panel_bounds": [560, 250, 680, 350],
                         "menu_window_evidence": {
                             "hwnd": 2718,
                             "class_name": "WeChatMenuWnd",
@@ -1237,7 +1237,9 @@ class C2VisionIntegrationTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["screen_origin"], [0, 0])
-        self.assertEqual(result["menu_bounds"], [560, 250, 680, 350])
+        self.assertEqual(
+            result["menu_panel_bounds"], [560, 250, 680, 350]
+        )
         self.assertEqual(result["messages"], [])
         self.assertEqual(result["screenshot_path"], "evidence-dir/vision_image_context_menu.png")
         self.assertEqual(calls[0]["anchor_screen"], [900, 500])
@@ -1273,7 +1275,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 return_value={
                     "ok": True,
                     "reason": "context_menu_popup_window_confirmed",
-                    "menu_bounds": [480, 220, 650, 340],
+                    "menu_panel_bounds": [480, 220, 650, 340],
                     "menu_hwnd": 2718,
                     "menu_class_name": "WeChatMenuWnd",
                 },
@@ -1424,7 +1426,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                             "bounds": [600, 350, 650, 390],
                         },
                     ],
-                    "menu_bounds": [580, 280, 720, 510],
+                    "menu_panel_bounds": [580, 280, 720, 510],
                     "screen_origin": [0, 0],
                 }
             ),
@@ -1567,7 +1569,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         {"text": "翻译", "bounds": [600, 400, 680, 440]},
                         {"text": "搜一搜", "bounds": [600, 450, 680, 490]},
                     ],
-                    "menu_bounds": [580, 280, 720, 510],
+                    "menu_panel_bounds": [580, 280, 720, 510],
                     "screen_origin": [0, 0],
                 }
             return {
@@ -1641,7 +1643,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             return transaction._classify_context_menu(
                 items,
                 copy_item,
-                menu_bounds=[580, 280, 720, 560],
+                menu_panel_bounds=[580, 280, 720, 560],
             )["kind"]
 
         self.assertEqual(classify("复制", "放大阅读"), "text")
@@ -1672,7 +1674,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 {"text": "搜一搜", "bounds": [300, 290, 370, 322]},
             ],
             copy_item,
-            menu_bounds=[600, 300, 700, 400],
+            menu_panel_bounds=[600, 300, 700, 400],
         )
 
         self.assertEqual(result["kind"], "unknown")
@@ -1716,7 +1718,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         },
                         {"text": "搜一搜", "bounds": [300, 290, 370, 322]},
                     ],
-                    "menu_bounds": [600, 300, 700, 400],
+                    "menu_panel_bounds": [600, 300, 700, 400],
                     "screen_origin": [0, 0],
                 }
             return {
@@ -1818,7 +1820,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         "image": image.copy(),
                         "image_size": image.size,
                         "ocr_items": menu_items,
-                        "menu_bounds": [580, 280, 720, 560],
+                        "menu_panel_bounds": [580, 280, 720, 560],
                         "screen_origin": [0, 0],
                     }
                 return {
@@ -1944,7 +1946,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                             "bounds": [600, 350, 650, 390],
                         },
                     ],
-                    "menu_bounds": [580, 280, 700, 420],
+                    "menu_panel_bounds": [580, 280, 700, 420],
                     "screen_origin": [0, 0],
                 }
             ),
@@ -1985,10 +1987,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             result["reason"],
             "clipboard_current_content_not_bitmap",
         )
-        self.assertEqual(
-            result["transaction"]["failure_settlement"],
-            "handoff_without_ui_recovery",
-        )
+        self.assertNotIn("failure_settlement", result["transaction"])
         self.assertEqual(clipboard.cleared_sequences, [])
         image.close()
 

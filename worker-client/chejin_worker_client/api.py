@@ -276,14 +276,30 @@ class WorkerApiClient:
         *,
         continuation_batch_id: str | None = None,
         continuation_token: str | None = None,
+        recovery_transaction_id: str | None = None,
+        action_kind: str | None = None,
+        source_message_key_digest: str | None = None,
+        original_authorization_revision: str | None = None,
     ) -> dict[str, Any]:
-        query = ""
+        query_values: dict[str, str] = {}
         if continuation_batch_id and continuation_token:
-            query = "?" + urlencode(
-                {
-                    "continuation_batch_id": continuation_batch_id,
-                }
-            )
+            query_values["continuation_batch_id"] = continuation_batch_id
+        recovery_values = {
+            "recovery_transaction_id": recovery_transaction_id,
+            "action_kind": action_kind,
+            "source_message_key_digest": source_message_key_digest,
+            "original_authorization_revision": (
+                original_authorization_revision
+            ),
+        }
+        query_values.update(
+            {
+                key: str(value)
+                for key, value in recovery_values.items()
+                if str(value or "").strip()
+            }
+        )
+        query = f"?{urlencode(query_values)}" if query_values else ""
         payload = self._request(
             "GET",
             (
@@ -321,8 +337,24 @@ class WorkerApiClient:
             },
         )
 
-    def post_wechat_messages_ingest(self, binding: Binding, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._request("POST", f"/workers/{binding.worker_id}/wechat/messages/ingest", binding=binding, json=payload)
+    def post_wechat_messages_ingest(
+        self,
+        binding: Binding,
+        payload: dict[str, Any],
+        *,
+        settlement_token: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/workers/{binding.worker_id}/wechat/messages/ingest",
+            binding=binding,
+            json=payload,
+            extra_headers=(
+                {"X-C2-Settlement-Token": settlement_token}
+                if settlement_token
+                else None
+            ),
+        )
 
     def get_wechat_message_batch(self, binding: Binding, batch_id: str) -> dict[str, Any]:
         return self._request(

@@ -228,10 +228,28 @@ def action_journal_phase(path: str | Path) -> str:
     )
 
 
+def action_journal_item_has_formed_fact(item: dict[str, Any]) -> bool:
+    """Return whether an item contains a result that must be settled."""
+
+    terminal_payload = item.get("terminal_payload")
+    return bool(
+        str(item.get("action_phase") or "not_attempted").strip()
+        != "not_attempted"
+        or str(item.get("business_state") or "").strip()
+        in {"completed", "failed"}
+        or str(item.get("error_code") or "").strip()
+        or (
+            isinstance(terminal_payload, dict)
+            and terminal_payload
+        )
+        or item.get("business_result_confirmed") is True
+    )
+
+
 def action_journal_is_strictly_not_attempted(
     payload: dict[str, Any],
 ) -> bool:
-    """True only when every persisted item proves no action was triggered."""
+    """True only for a pure UI intent with no persisted business fact."""
 
     items = payload.get("items")
     if (
@@ -244,5 +262,6 @@ def action_journal_is_strictly_not_attempted(
     return all(
         isinstance(item, dict)
         and str(item.get("action_phase") or "").strip() == "not_attempted"
+        and not action_journal_item_has_formed_fact(item)
         for item in items.values()
     )

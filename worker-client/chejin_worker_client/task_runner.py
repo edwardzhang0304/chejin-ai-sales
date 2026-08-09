@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from .api import ApiError, WorkerApiClient
 from .action_journal import (
+    action_journal_item_has_formed_fact,
     action_journal_is_strictly_not_attempted,
     action_journal_path,
     action_journal_phase,
@@ -59,6 +60,7 @@ from .storage import (
     finalize_reply_send_ack,
     discard_reply_send_intent,
     has_pending_c2_outbox,
+    has_c2_outbox_for_source_keys,
     has_pending_reply_send_ack_outbox,
     list_c2_outbox_waiting,
     list_c2_action_journal,
@@ -376,7 +378,7 @@ _C2_IMAGE_DIAGNOSTIC_FIELDS = {
     "local_ocr_item_count",
     "ocr_roi",
     "ocr_execution",
-    "menu_bounds",
+    "menu_panel_bounds",
     "menu_window_evidence",
     "menu_structure_evidence",
     "local_ocr_evidence",
@@ -423,8 +425,8 @@ def _safe_c2_image_transaction(value: Any) -> dict[str, Any]:
             "clipboard_sequence_after",
             "clipboard_content_read",
             "clipboard_image_valid",
-            "failure_settlement",
             "menu_labels",
+            "menu_panel_bounds",
             "image_sha256",
             "image_width",
             "image_height",
@@ -1761,7 +1763,38 @@ class TaskRunner:
             ),
         )
         for path, payload in journal_entries:
-            if action_journal_is_strictly_not_attempted(payload):
+            items = (
+                payload.get("items")
+                if isinstance(payload.get("items"), dict)
+                else {}
+            )
+            source_keys = {
+                str(value).strip()
+                for value in items
+                if str(value).strip()
+            }
+            conversation_id = str(
+                payload.get("conversation_id") or ""
+            ).strip()
+            ledger_has_fact = any(
+                str(entry.get("source_message_key") or "").strip()
+                in source_keys
+                and str(entry.get("terminal_state") or "")
+                in {"completed", "failed"}
+                for entry in list_c2_ledger_entries(
+                    conversation_id,
+                    message_type="image",
+                )
+            )
+            outbox_has_fact = has_c2_outbox_for_source_keys(
+                conversation_id,
+                source_keys,
+            )
+            if (
+                action_journal_is_strictly_not_attempted(payload)
+                and not ledger_has_fact
+                and not outbox_has_fact
+            ):
                 try:
                     remove_action_journal(path)
                 except OSError as exc:
@@ -2443,10 +2476,87 @@ class TaskRunner:
         if not pending_conversations:
             return True
         conversation_id = pending_conversations[0]
+        journal_entries = list_action_journals(
+            conversation_id=conversation_id,
+            action_kinds=("image",),
+        )
+        transaction_id = next(
+            (
+                str(payload.get("transaction_id") or "").strip()
+                for _path, payload in journal_entries
+                if str(payload.get("transaction_id") or "").strip()
+            ),
+            "",
+        )
+        journal_outcomes = self._physical_action_journal_outcomes(
+            journal_entries
+        )
+        missing_ledger_outcomes = [
+            outcome
+            for outcome in journal_outcomes
+            if not load_c2_ledger_entry(
+                conversation_id,
+                str(outcome.get("source_message_key") or "").strip(),
+            )
+        ]
+        if missing_ledger_outcomes:
+            self._persist_c2_flow_outcomes(
+                WechatReadTarget(
+                    conversation_id=conversation_id,
+                    rpa_session_key="",
+                    display_name="",
+                ),
+                missing_ledger_outcomes,
+            )
+        entries = list_c2_ledger_entries(
+            conversation_id,
+            message_type="image",
+            ingest_state="waiting",
+        )
+        source_keys = sorted(
+            {
+                str(entry.get("source_message_key") or "").strip()
+                for entry in entries
+                if str(entry.get("source_message_key") or "").strip()
+            }
+        )
+        if not source_keys:
+            return False
+        source_digest = hashlib.sha256(
+            "\n".join(source_keys).encode("utf-8")
+        ).hexdigest()
+        if not transaction_id:
+            transaction_id = f"media-fact-{source_digest[:32]}"
+        original_revision = next(
+            (
+                str(
+                    (
+                        entry.get("result")
+                        if isinstance(entry.get("result"), dict)
+                        else {}
+                    ).get("authorization_revision")
+                    or ""
+                ).strip()
+                for entry in entries
+                if str(
+                    (
+                        entry.get("result")
+                        if isinstance(entry.get("result"), dict)
+                        else {}
+                    ).get("authorization_revision")
+                    or ""
+                ).strip()
+            ),
+            f"recovery-{source_digest[:16]}",
+        )
         try:
             authorization = self.api.get_wechat_read_authorization(
                 binding,
                 conversation_id,
+                recovery_transaction_id=transaction_id,
+                action_kind="image",
+                source_message_key_digest=source_digest,
+                original_authorization_revision=original_revision,
             )
         except Exception as exc:
             append_log(
@@ -2463,46 +2573,20 @@ class TaskRunner:
         recovery_decision = str(
             authorization.get("recovery_decision") or ""
         ).strip()
-        if recovery_decision == "target_terminated":
-            try:
-                terminated_ledger_count = (
-                    terminate_waiting_c2_image_ledger(
-                        conversation_id,
-                        reason="backend_confirmed_target_terminated",
-                    )
-                )
-                journal_count = 0
-                for path, _payload in list_action_journals(
+        if recovery_decision == "settle_without_ui":
+            return bool(
+                self._settle_invalid_image_facts_without_ui(
+                    binding=binding,
                     conversation_id=conversation_id,
-                    action_kinds=("image",),
-                ):
-                    remove_action_journal(path)
-                    journal_count += 1
-            except (OSError, ValueError) as exc:
-                append_log(
-                    "WARN",
-                    "c2_image_fact_recovery_termination_failed",
-                    "后端已确认目标结束，但本地恢复事务尚未安全终结，继续保持门禁。",
-                    error_code="C2_IMAGE_FACT_RECOVERY_TERMINATION_FAILED",
-                    metadata={
-                        "conversation_id": conversation_id,
-                        "error_type": type(exc).__name__,
-                    },
+                    authorization=authorization,
+                    entries=entries,
+                    source_keys=source_keys,
+                    transaction_id=transaction_id,
+                    source_digest=source_digest,
+                    original_revision=original_revision,
                 )
-                return False
-            append_log(
-                "INFO",
-                "c2_image_fact_recovery_target_terminated",
-                "后端确认原会话永久结束，已终结该会话的本地图片恢复事务。",
-                error_code="C2_IMAGE_FACT_RECOVERY_TARGET_TERMINATED",
-                metadata={
-                    "conversation_id": conversation_id,
-                    "terminated_ledger_count": terminated_ledger_count,
-                    "removed_journal_count": journal_count,
-                },
             )
-            return True
-        if recovery_decision != "allowed":
+        if recovery_decision != "resume_current_target":
             append_log(
                 "WARN",
                 "c2_image_fact_recovery_waiting_authorization",
@@ -2546,12 +2630,6 @@ class TaskRunner:
                 },
             )
             return False
-        settlement = self._settle_invalid_image_facts_without_ui(
-            binding=binding,
-            target=target,
-        )
-        if settlement is not None:
-            return settlement
         append_log(
             "INFO",
             "c2_image_fact_recovery_started",
@@ -2614,8 +2692,14 @@ class TaskRunner:
         self,
         *,
         binding: Binding,
-        target: WechatReadTarget,
-    ) -> bool | None:
+        conversation_id: str,
+        authorization: dict[str, Any],
+        entries: list[dict[str, Any]],
+        source_keys: list[str],
+        transaction_id: str,
+        source_digest: str,
+        original_revision: str,
+    ) -> bool:
         """Report deterministic invalid-image facts without reopening WeChat.
 
         Older clients could leave ``C2_IMAGE_SOURCE_INVALID`` in the waiting
@@ -2626,15 +2710,7 @@ class TaskRunner:
         confirmation without repeating any WeChat or Vision action.
         """
 
-        entries = list_c2_ledger_entries(
-            target.conversation_id,
-            message_type="image",
-            ingest_state="waiting",
-        )
-        if not entries:
-            return None
         recovery_observations: list[dict[str, Any]] = []
-        source_keys: list[str] = []
         for entry in entries:
             result = (
                 dict(entry.get("result") or {})
@@ -2651,26 +2727,22 @@ class TaskRunner:
                 if isinstance(result.get("transaction"), dict)
                 else {}
             )
-            reason = str(
-                result.get("reason")
-                or result.get("error_code")
-                or replayable.get("image_processing_reason")
+            error_code = str(
+                result.get("error_code")
+                or result.get("reason")
+                or replayable.get("error_code")
                 or ""
             ).strip()
             if (
-                str(entry.get("terminal_state") or "") != "failed"
-                or (
-                    reason != "C2_IMAGE_SOURCE_INVALID"
-                    and str(transaction.get("failure_settlement") or "")
-                    != "handoff_without_ui_recovery"
-                )
+                str(entry.get("terminal_state") or "")
+                not in {"completed", "failed"}
+                or not replayable
             ):
-                return None
+                return False
             source_key = str(
                 entry.get("source_message_key") or ""
             ).strip()
             if source_key:
-                source_keys.append(source_key)
                 restored = dict(replayable)
                 restored_source = (
                     dict(restored.get("source_message"))
@@ -2681,37 +2753,69 @@ class TaskRunner:
                     **restored_source,
                     "source_message_key": source_key,
                 }
-                formal_reason = str(
-                    restored.get("image_processing_reason") or reason
-                ).strip()
                 reason_detail = str(
-                    restored.get("image_processing_reason_detail")
-                    or transaction.get("status")
+                    restored.get("reason_detail")
                     or result.get("reason_detail")
-                    or formal_reason
+                    or transaction.get("status")
+                    or error_code
                 ).strip()
-                restored["image_processing_reason"] = formal_reason
-                restored["image_processing_reason_detail"] = reason_detail
-                recovery_observations.append(restored)
-        source_keys = sorted(set(source_keys))
-        if not source_keys:
-            return None
+                if str(entry.get("terminal_state") or "") == "failed":
+                    restored["error_code"] = error_code
+                    restored["reason_detail"] = reason_detail
+                sender_role = str(
+                    restored.get("sender_role")
+                    or restored_source.get("sender_role")
+                    or ""
+                ).strip().lower()
+                if sender_role in {"customer", "self"}:
+                    recovery_observations.append(restored)
+                else:
+                    append_log(
+                        "WARN",
+                        "c2_fact_settlement_sender_identity_untrusted",
+                        "恢复事实的发送方身份无法证明；保留本地事实并等待后端可安全终结。",
+                        error_code="MESSAGE_IDENTITY_UNCONFIRMED",
+                        metadata={
+                            "conversation_id": conversation_id,
+                            "source_message_key": source_key,
+                        },
+                    )
+                    return False
+        settlement_mode = str(
+            authorization.get("settlement_mode") or ""
+        ).strip()
+        target_payload = authorization.get("target")
+        target = (
+            WechatReadTarget.from_api(target_payload)
+            if isinstance(target_payload, dict)
+            else None
+        )
+        if settlement_mode == "fact_only" and target is None:
+            return False
+        if target is None:
+            target = WechatReadTarget(
+                conversation_id=conversation_id,
+                rpa_session_key="",
+                display_name="",
+                remark_code="RECOVERY",
+                read_reason="fact_settlement",
+                authorization_revision=original_revision,
+            )
         payload = build_message_ingest_payload(
             target,
             {
                 "observation_schema_version": 3,
-                "authoritative_frame_source": "initial_read",
+                "authoritative_frame_source": "action_journal_recovery",
                 "adapter": "local_failed_image_recovery",
                 "state": "failed_image_fact_recovery",
                 "sidecar_run_id": "",
-                "observations": recovery_observations,
-                "flow_gate_errors": ["C2_IMAGE_UNDERSTANDING_FAILED"],
-                "flow_gate_details": [
-                    {
-                        "error_code": "C2_IMAGE_UNDERSTANDING_FAILED",
-                        "position_source": "position_unavailable",
-                    }
-                ],
+                "observations": (
+                    recovery_observations
+                    if settlement_mode == "fact_only"
+                    else []
+                ),
+                "flow_gate_errors": [],
+                "flow_gate_details": [],
             },
         )
         payload_source_keys = sorted(
@@ -2720,14 +2824,17 @@ class TaskRunner:
             if isinstance(item, dict)
             and str(item.get("source_message_key") or "").strip()
         )
-        if payload_source_keys != source_keys:
+        if (
+            settlement_mode == "fact_only"
+            and payload_source_keys != source_keys
+        ):
             append_log(
                 "ERROR",
                 "c2_invalid_image_recovery_identity_mismatch",
                 "失败图片恢复后的消息身份与本地账本不一致；保持等待且不操作微信。",
                 error_code="MESSAGE_SOURCE_IDENTITY_MISMATCH",
                 metadata={
-                    "conversation_id": target.conversation_id,
+                    "conversation_id": conversation_id,
                     "remark_code": target.remark_code,
                     "ledger_source_keys": source_keys,
                     "payload_source_keys": payload_source_keys,
@@ -2737,7 +2844,11 @@ class TaskRunner:
         payload_evidence = dict(payload.get("evidence") or {})
         payload_evidence.update(
             {
-                "failed_image_source_keys": source_keys,
+                "recovery_transaction_id": transaction_id,
+                "action_kind": "image",
+                "source_message_key_digest": source_digest,
+                "settlement_mode": settlement_mode,
+                "settlement_source_message_keys": source_keys,
                 "recovery_requires_per_message_confirmation": True,
                 "wechat_reopened": False,
                 "clipboard_repeated": False,
@@ -2745,6 +2856,8 @@ class TaskRunner:
             }
         )
         payload["evidence"] = payload_evidence
+        payload["authorization_scope"] = "fact_settlement"
+        payload["authorization_revision"] = original_revision
         delivery = self._submit_c2_outbox_payload(
             binding=binding,
             payload=payload,
@@ -2757,7 +2870,7 @@ class TaskRunner:
                 "无效图片失败事实尚未得到后端确认；仅重传本地事实，不重新打开微信。",
                 error_code=str(delivery.get("error_code") or ""),
                 metadata={
-                    "conversation_id": target.conversation_id,
+                    "conversation_id": conversation_id,
                     "remark_code": target.remark_code,
                     "source_message_keys": source_keys,
                 },
@@ -2791,7 +2904,7 @@ class TaskRunner:
             return False
         removed_journal_count = 0
         for path, _payload in list_action_journals(
-            conversation_id=target.conversation_id,
+            conversation_id=conversation_id,
             action_kinds=("image",),
         ):
             remove_action_journal(path)
@@ -2799,10 +2912,10 @@ class TaskRunner:
         append_log(
             "WARN",
             "c2_invalid_image_failure_gate_reported",
-            "无效图片失败已由后端确认并转人工；本地等待和全局门禁已释放。",
+            "无效图片事实已由后端逐条确认；本地等待和全局门禁已释放。",
             error_code="C2_IMAGE_SOURCE_INVALID",
             metadata={
-                "conversation_id": target.conversation_id,
+                "conversation_id": conversation_id,
                 "remark_code": target.remark_code,
                 "source_message_keys": source_keys,
                 "removed_journal_count": removed_journal_count,
@@ -3980,7 +4093,9 @@ class TaskRunner:
         accepted = {
             str(item.get("source_message_key") or "").strip()
             for item in (result.get("results") or [])
-            if isinstance(item, dict) and item.get("ingest_result") in {"ingested", "duplicated"}
+            if isinstance(item, dict)
+            and item.get("ingest_result")
+            in {"ingested", "duplicated", "technical_terminal"}
         }
         if (
             not requires_per_message_confirmation
@@ -4034,7 +4149,56 @@ class TaskRunner:
             }
         mark_c2_outbox_attempt(outbox_id)
         try:
-            result = self.api.post_wechat_messages_ingest(binding, payload)
+            settlement_token: str | None = None
+            if str(payload.get("authorization_scope") or "") == "fact_settlement":
+                evidence = (
+                    payload.get("evidence")
+                    if isinstance(payload.get("evidence"), dict)
+                    else {}
+                )
+                authorization = self.api.get_wechat_read_authorization(
+                    binding,
+                    str(payload.get("conversation_id") or ""),
+                    recovery_transaction_id=str(
+                        evidence.get("recovery_transaction_id") or ""
+                    ),
+                    action_kind=str(evidence.get("action_kind") or ""),
+                    source_message_key_digest=str(
+                        evidence.get("source_message_key_digest") or ""
+                    ),
+                    original_authorization_revision=str(
+                        payload.get("authorization_revision") or ""
+                    ),
+                )
+                if (
+                    str(authorization.get("recovery_decision") or "")
+                    != "settle_without_ui"
+                    or str(authorization.get("settlement_mode") or "")
+                    != str(evidence.get("settlement_mode") or "")
+                ):
+                    raise ApiError(
+                        "C2_FACT_SETTLEMENT_RETRY_LATER",
+                        "后端尚未授权无界面事实结算",
+                        409,
+                    )
+                settlement_token = str(
+                    authorization.get("settlement_token") or ""
+                ).strip()
+                if not settlement_token:
+                    raise ApiError(
+                        "C2_SETTLEMENT_TOKEN_MISSING",
+                        "后端未返回事实结算凭据",
+                        409,
+                    )
+            result = (
+                self.api.post_wechat_messages_ingest(
+                    binding,
+                    payload,
+                    settlement_token=settlement_token,
+                )
+                if settlement_token
+                else self.api.post_wechat_messages_ingest(binding, payload)
+            )
         except Exception as exc:
             error_code = str(
                 exc.code if isinstance(exc, ApiError) else type(exc).__name__
@@ -4158,57 +4322,28 @@ class TaskRunner:
                 "target_terminated",
                 "conversation_terminated",
             }:
-                terminal_confirmed = bool(
-                    isinstance(exc, ApiError)
-                    and isinstance(exc.data, dict)
-                    and exc.data.get("terminal_confirmed") is True
-                )
-                if not terminal_confirmed:
-                    mark_c2_outbox_capability_paused(
-                        outbox_id,
-                        f"{error_code}:TERMINAL_NOT_CONFIRMED",
-                    )
-                    return {
-                        "ok": False,
-                        "outbox_id": outbox_id,
-                        "error_code": error_code,
-                        "exception": exc,
-                        "capability_paused": True,
-                        "recovery_action": "capability_paused",
-                    }
-                transition_c2_outbox(
+                mark_c2_outbox_capability_paused(
                     outbox_id,
-                    status=next_state,
-                    error=error_code,
-                )
-                source_keys = [
-                    str(item.get("source_message_key") or "").strip()
-                    for item in (payload.get("messages") or [])
-                    if isinstance(item, dict)
-                    and str(item.get("source_message_key") or "").strip()
-                ]
-                mark_c2_ledger_rejected(
-                    str(payload.get("conversation_id") or ""),
-                    source_keys,
+                    f"{error_code}:FACT_SETTLEMENT_REQUIRED",
                 )
                 append_log(
-                    "ERROR",
-                    "c2_outbox_backend_terminal",
-                    "后端已确认该目标或会话不能继续自动处理；旧 Outbox 已终结，不再原样重试。",
+                    "WARN",
+                    "c2_outbox_fact_settlement_required",
+                    "当前读取授权已终止，但已形成事实仍须走无界面结算；本地记录继续保留。",
                     error_code=error_code,
                     metadata={
                         "outbox_id": outbox_id,
                         "conversation_id": payload.get("conversation_id"),
-                        "terminal_state": next_state,
+                        "requested_recovery_action": recovery_action,
                     },
                 )
                 return {
                     "ok": False,
-                    "resolved": True,
                     "outbox_id": outbox_id,
                     "error_code": error_code,
                     "exception": exc,
-                    "recovery_action": recovery_action,
+                    "capability_paused": True,
+                    "recovery_action": "capability_paused",
                 }
             if next_state == "capability_paused":
                 mark_c2_outbox_capability_paused(
@@ -4857,12 +4992,12 @@ class TaskRunner:
                                 item.get("raw_payload")
                                 if isinstance(item.get("raw_payload"), dict)
                                 else {}
-                            ).get("voice_processing_reason")
+                            ).get("error_code")
                             or (
                                 item.get("raw_payload")
                                 if isinstance(item.get("raw_payload"), dict)
                                 else {}
-                            ).get("image_processing_reason")
+                            ).get("error_code")
                             or "MESSAGE_PROCESSING_FAILED"
                         ),
                     }
@@ -4987,18 +5122,18 @@ class TaskRunner:
                 continue
             role = str(observation.get("sender_role") or "").strip().lower()
             observation["item_state"] = "failed"
-            observation["voice_processing_reason"] = str(
+            observation["error_code"] = str(
                 error_code or "VOICE_TRANSCRIBE_FAILED"
             )
+            observation["reason_detail"] = observation["error_code"]
             source_message = (
                 dict(observation.get("source_message"))
                 if isinstance(observation.get("source_message"), dict)
                 else {}
             )
             source_message["item_state"] = "failed"
-            source_message["voice_processing_reason"] = observation[
-                "voice_processing_reason"
-            ]
+            source_message["error_code"] = observation["error_code"]
+            source_message["reason_detail"] = observation["reason_detail"]
             source_message["voice_anchor_stable_key"] = str(
                 observation.get("voice_anchor_key") or ""
             )
@@ -5463,7 +5598,7 @@ class TaskRunner:
         if projected_state in {"completed", "failed"}:
             terminal_state = projected_state
         terminal_reason = str(
-            terminal_observation.get("image_processing_reason")
+            terminal_observation.get("error_code")
             or result.get("reason")
             or ""
         )
@@ -5831,8 +5966,19 @@ class TaskRunner:
             if action_was_attempted:
                 mark_image_action(stats, source_key)
                 if (
-                    str(transaction.get("failure_settlement") or "")
-                    == "handoff_without_ui_recovery"
+                    result_reason
+                    in {
+                        "C2_IMAGE_SOURCE_INVALID",
+                        "C2_IMAGE_MENU_OPERATION_FAILED",
+                    }
+                    and str(transaction.get("status") or "")
+                    in {
+                        "text_context_menu_rejected",
+                        "voice_context_menu_rejected",
+                        "menu_evidence_conflict",
+                        "menu_evidence_incomplete",
+                        "clipboard_current_content_not_bitmap",
+                    }
                 ):
                     mark_image_settled_without_refresh(
                         stats,
@@ -5850,7 +5996,16 @@ class TaskRunner:
                 image_action["evidence"] = image_evidence
                 image_action["terminal_payload"] = {
                     "state": raw_terminal_state,
-                    "reason": str(result.get("reason") or ""),
+                    "error_code": (
+                        str(result.get("reason") or "")
+                        if raw_terminal_state == "failed"
+                        else None
+                    ),
+                    "reason_detail": (
+                        str(transaction.get("status") or result_reason)
+                        if raw_terminal_state == "failed"
+                        else None
+                    ),
                     "customer_image_understanding": (
                         dict(result.get("customer_image_understanding") or {})
                         if isinstance(
@@ -7202,8 +7357,58 @@ class TaskRunner:
                     "outcome_count": len(recovered_outcomes),
                 },
             )
-        for path, _payload in journal_entries:
-            remove_action_journal(path)
+        for path, payload in journal_entries:
+            if self._action_journal_can_be_removed(payload):
+                remove_action_journal(path)
+
+    @staticmethod
+    def _action_journal_can_be_removed(payload: dict[str, Any]) -> bool:
+        """Delete a physical journal only after every formed fact is confirmed.
+
+        ``not_attempted`` describes whether the irreversible UI trigger ran;
+        it does not mean that no business fact exists.  A text/voice menu
+        rejection, for example, is a completed failed observation even though
+        image copy was deliberately not attempted.
+        """
+
+        conversation_id = str(payload.get("conversation_id") or "").strip()
+        items = (
+            payload.get("items")
+            if isinstance(payload.get("items"), dict)
+            else {}
+        )
+        formed_source_keys: set[str] = set()
+        all_source_keys: set[str] = set()
+        for source_key, item in items.items():
+            source_key = str(source_key or "").strip()
+            if not source_key or not isinstance(item, dict):
+                continue
+            all_source_keys.add(source_key)
+            if action_journal_item_has_formed_fact(item):
+                formed_source_keys.add(source_key)
+        if formed_source_keys:
+            return all(
+                str(
+                    (
+                        load_c2_ledger_entry(conversation_id, source_key)
+                        or {}
+                    ).get("ingest_state")
+                    or ""
+                )
+                == "confirmed"
+                for source_key in formed_source_keys
+            )
+        return bool(
+            action_journal_is_strictly_not_attempted(payload)
+            and not has_c2_outbox_for_source_keys(
+                conversation_id,
+                all_source_keys,
+            )
+            and not any(
+                load_c2_ledger_entry(conversation_id, source_key)
+                for source_key in all_source_keys
+            )
+        )
 
     @staticmethod
     def _physical_action_journal_outcomes(
@@ -7222,11 +7427,6 @@ class TaskRunner:
             for source_key, item in items.items():
                 if not isinstance(item, dict):
                     continue
-                phase = str(
-                    item.get("action_phase") or "not_attempted"
-                ).strip()
-                if phase == "not_attempted":
-                    continue
                 business_confirmed = (
                     item.get("business_result_confirmed") is True
                 )
@@ -7238,6 +7438,17 @@ class TaskRunner:
                     if isinstance(item.get("terminal_payload"), dict)
                     else {}
                 )
+                phase = str(
+                    item.get("action_phase") or "not_attempted"
+                ).strip()
+                formed_fact = bool(terminal_payload) or business_state in {
+                    "completed",
+                    "failed",
+                } or business_confirmed or bool(
+                    str(item.get("error_code") or "").strip()
+                )
+                if phase == "not_attempted" and not formed_fact:
+                    continue
                 if action_kind == "image" and isinstance(
                     item.get("replayable_observation"),
                     dict,
@@ -7246,9 +7457,13 @@ class TaskRunner:
                         "completed" if business_confirmed else "failed"
                     )
                     recovered_reason = str(
-                        terminal_payload.get("reason")
+                        terminal_payload.get("error_code")
                         or item.get("error_code")
-                        or "IMAGE_INTERRUPTED_AFTER_TRIGGER"
+                        or (
+                            "vision_ready"
+                            if business_confirmed
+                            else "IMAGE_INTERRUPTED_AFTER_TRIGGER"
+                        )
                     )
                     terminal_observation = apply_image_terminal_result(
                         dict(item["replayable_observation"]),
@@ -7353,8 +7568,9 @@ class TaskRunner:
             )
             self._finalize_c2_flow_outcomes(target, flow_outcomes)
             clear_c2_action_journal(flow_id)
-            for path, _payload in current_journal_entries:
-                remove_action_journal(path)
+            for path, payload in current_journal_entries:
+                if self._action_journal_can_be_removed(payload):
+                    remove_action_journal(path)
 
     def _recover_c2_action_journal(
         self,

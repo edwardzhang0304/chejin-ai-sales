@@ -1152,7 +1152,6 @@ def _find_context_menu_item(
             {
                 "text": text,
                 "bounds": click_bounds,
-                "menu_bounds": [item_left, item_top, item_right, item_bottom],
                 "x": center_x,
                 "y": center_y,
                 "confidence": float(item.get("confidence") or 0.0),

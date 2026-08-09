@@ -524,11 +524,6 @@ def rebuild_invalid_media_as_failed(
             and item_state != "failed"
         ):
             continue
-        reason_field = (
-            "voice_processing_reason"
-            if message_type == "voice"
-            else "image_processing_reason"
-        )
         raw_payload = (
             message.get("raw_payload")
             if isinstance(message.get("raw_payload"), dict)
@@ -546,8 +541,14 @@ def rebuild_invalid_media_as_failed(
         message["item_state"] = "failed"
         message["flow_state"] = "failed"
         message["content"] = None
-        raw_payload[reason_field] = reason
-        observation[reason_field] = reason
+        reason_detail = (
+            "Worker preserved the original media observation after the "
+            f"backend rejected it with {reason}."
+        )
+        raw_payload["error_code"] = reason
+        raw_payload["reason_detail"] = reason_detail
+        observation["error_code"] = reason
+        observation["reason_detail"] = reason_detail
         observation["item_state"] = "failed"
         observation["content_clean"] = None
         if message_type == "image":

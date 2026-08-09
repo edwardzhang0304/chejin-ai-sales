@@ -1087,7 +1087,7 @@ def apply_image_terminal_result(observation: dict[str, Any], result: dict[str, A
     if state not in {"completed", "failed"}:
         state = "failed"
     enriched["item_state"] = state
-    enriched["image_processing_reason"] = str(result.get("reason") or "")
+    error_code = str(result.get("reason") or "").strip()
     reason_detail = str(
         result.get("reason_detail")
         or (
@@ -1098,7 +1098,9 @@ def apply_image_terminal_result(observation: dict[str, Any], result: dict[str, A
         or ""
     ).strip()
     if reason_detail:
-        enriched["image_processing_reason_detail"] = reason_detail
+        enriched["reason_detail"] = reason_detail
+    if error_code:
+        enriched["error_code"] = error_code
     enriched.pop("contract_errors", None)
     if state != "completed":
         return enriched
@@ -1450,7 +1452,11 @@ def _build_message_ingest_payload_v3(
     slots: list[dict[str, Any]] = []
     observation_validation_errors: list[dict[str, Any]] = []
     authoritative_frame_source = str(sidecar_payload.get("authoritative_frame_source") or "").strip()
-    if authoritative_frame_source not in {"initial_read", "final_read"}:
+    if authoritative_frame_source not in {
+        "initial_read",
+        "final_read",
+        "action_journal_recovery",
+    }:
         raise ValueError("C2_AUTHORITATIVE_FRAME_SOURCE_INVALID")
 
     def append_item(
@@ -1559,9 +1565,11 @@ def _build_message_ingest_payload_v3(
             }
         if msg_type == "image":
             observation = source.get("observation") if isinstance(source.get("observation"), dict) else {}
-            raw_payload["image_processing_reason"] = str(observation.get("image_processing_reason") or "")
-            raw_payload["image_processing_reason_detail"] = str(
-                observation.get("image_processing_reason_detail") or ""
+            raw_payload["error_code"] = str(
+                observation.get("error_code") or ""
+            )
+            raw_payload["reason_detail"] = str(
+                observation.get("reason_detail") or ""
             )
             if item_state == "completed":
                 raw_payload["customer_image_understanding"] = _project_customer_image_understanding(
@@ -1577,9 +1585,12 @@ def _build_message_ingest_payload_v3(
                 if isinstance(source.get("observation"), dict)
                 else {}
             )
-            raw_payload["voice_processing_reason"] = str(
-                observation.get("voice_processing_reason")
-                or "VOICE_TRANSCRIBE_FAILED"
+            raw_payload["error_code"] = str(
+                observation.get("error_code") or "VOICE_TRANSCRIBE_FAILED"
+            )
+            raw_payload["reason_detail"] = str(
+                observation.get("reason_detail")
+                or raw_payload["error_code"]
             )
         mapped.append(
             {

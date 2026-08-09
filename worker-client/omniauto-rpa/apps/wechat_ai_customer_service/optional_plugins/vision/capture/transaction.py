@@ -91,7 +91,7 @@ def _item_bounds(item: dict[str, Any]) -> tuple[float, float, float, float] | No
     return result
 
 
-def _menu_bounds(value: Any) -> tuple[float, float, float, float] | None:
+def _menu_panel_bounds(value: Any) -> tuple[float, float, float, float] | None:
     try:
         bounds = tuple(float(item) for item in list(value)[:4])
     except (TypeError, ValueError):
@@ -103,16 +103,16 @@ def _menu_bounds(value: Any) -> tuple[float, float, float, float] | None:
 
 def _inside_menu(
     item: dict[str, Any],
-    menu_bounds: tuple[float, float, float, float],
+    menu_panel_bounds: tuple[float, float, float, float],
 ) -> bool:
     bounds = _item_bounds(item)
     if bounds is None:
         return False
     return (
-        menu_bounds[0] <= bounds[0]
-        and menu_bounds[1] <= bounds[1]
-        and bounds[2] <= menu_bounds[2]
-        and bounds[3] <= menu_bounds[3]
+        menu_panel_bounds[0] <= bounds[0]
+        and menu_panel_bounds[1] <= bounds[1]
+        and bounds[2] <= menu_panel_bounds[2]
+        and bounds[3] <= menu_panel_bounds[3]
     )
 
 
@@ -128,11 +128,11 @@ def _classify_context_menu(
     ocr_items: list[dict[str, Any]],
     copy_item: dict[str, Any] | None,
     *,
-    menu_bounds: Any,
+    menu_panel_bounds: Any,
 ) -> dict[str, Any]:
     """Classify exact labels contained by one confirmed popup window."""
 
-    confirmed_bounds = _menu_bounds(menu_bounds)
+    confirmed_bounds = _menu_panel_bounds(menu_panel_bounds)
     if confirmed_bounds is None:
         return {"kind": "unknown", "labels": [], "copy_item": None}
     candidates: list[tuple[dict[str, Any], str]] = []
@@ -433,8 +433,8 @@ def _acquire_current_image_via_ports(
                 for item in (menu_frame.get("ocr_items") or [])
                 if isinstance(item, dict)
             ]
-            confirmed_menu_bounds = _menu_bounds(
-                menu_frame.get("menu_bounds")
+            confirmed_menu_bounds = _menu_panel_bounds(
+                menu_frame.get("menu_panel_bounds")
             )
             bounded_menu_items = (
                 [
@@ -453,7 +453,7 @@ def _acquire_current_image_via_ports(
             classification = _classify_context_menu(
                 menu_ocr_items,
                 copy_item,
-                menu_bounds=confirmed_menu_bounds,
+                menu_panel_bounds=confirmed_menu_bounds,
             )
             menu_kind = str(classification.get("kind") or "unknown")
             if menu_kind in {"text", "voice"}:
@@ -466,8 +466,8 @@ def _acquire_current_image_via_ports(
                         "right_click_ok": True,
                         "menu_copy_confirmed": False,
                         "clipboard_content_read": False,
-                        "failure_settlement": "handoff_without_ui_recovery",
                         "menu_labels": classification.get("labels") or [],
+                        "menu_panel_bounds": list(confirmed_menu_bounds or []),
                     },
                 )
             if menu_kind != "image":
@@ -484,8 +484,8 @@ def _acquire_current_image_via_ports(
                         "right_click_ok": True,
                         "menu_copy_confirmed": False,
                         "clipboard_content_read": False,
-                        "failure_settlement": "handoff_without_ui_recovery",
                         "menu_labels": classification.get("labels") or [],
+                        "menu_panel_bounds": list(confirmed_menu_bounds or []),
                     },
                 )
             copy_item = classification.get("copy_item")
@@ -614,7 +614,6 @@ def _acquire_current_image_via_ports(
                             "clipboard_sequence_changed": True,
                             "clipboard_content_read": True,
                             "clipboard_image_valid": False,
-                            "failure_settlement": "handoff_without_ui_recovery",
                         },
                     )
                 return fail(clipboard_reason)
