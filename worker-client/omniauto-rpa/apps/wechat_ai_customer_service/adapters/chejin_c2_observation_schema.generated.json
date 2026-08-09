@@ -1,8 +1,8 @@
 {
   "generated_file": true,
   "source": "contracts/c2_contract_v3.json",
-  "contract_revision": "3.12.5",
-  "contract_sha256": "8a5353cb3a6e686677e49e508f9d7f41d31bd8c660fcd8597f084117b9790f11",
+  "contract_revision": "3.12.6",
+  "contract_sha256": "a706d4308f90fde6dfcd3382712fececb926b465ff94e8e1df1cee22babb3d00",
   "observation_schema_version": 3,
   "action_phases": [
     "not_attempted",
@@ -338,11 +338,7 @@
       "image_bubble_current_bounds_missing": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
       "image_bubble_clipboard_fingerprint_missing": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
       "C2_IMAGE_MENU_OPERATION_FAILED": "C2_IMAGE_MENU_OPERATION_FAILED",
-      "image_context_menu_unavailable": "C2_IMAGE_MENU_OPERATION_FAILED",
-      "image_context_menu_copy_item_missing": "C2_IMAGE_MENU_OPERATION_FAILED",
       "image_context_menu_screen_click_unavailable": "C2_IMAGE_MENU_OPERATION_FAILED",
-      "image_context_menu_copy_bounds_missing": "C2_IMAGE_MENU_OPERATION_FAILED",
-      "image_context_menu_copy_click_failed": "C2_IMAGE_MENU_OPERATION_FAILED",
       "C2_IMAGE_SOURCE_INVALID": "C2_IMAGE_SOURCE_INVALID",
       "clipboard_current_content_not_bitmap": "C2_IMAGE_SOURCE_INVALID",
       "clipboard_current_image_invalid": "C2_IMAGE_SOURCE_INVALID",

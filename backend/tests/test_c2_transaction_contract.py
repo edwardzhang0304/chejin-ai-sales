@@ -47,9 +47,18 @@ def test_backend_uses_the_shared_image_menu_failure_code():
     assert "C2_IMAGE_MENU_OPERATION_FAILED" in image_contract["error_codes"]
     assert (
         image_contract["failure_reason_to_error_code"][
-            "image_context_menu_copy_item_missing"
+            "C2_IMAGE_MENU_OPERATION_FAILED"
         ]
         == "C2_IMAGE_MENU_OPERATION_FAILED"
+    )
+    retired_menu_reasons = {
+        "image_context_menu_unavailable",
+        "image_context_menu_copy_item_missing",
+        "image_context_menu_copy_bounds_missing",
+        "image_context_menu_copy_click_failed",
+    }
+    assert retired_menu_reasons.isdisjoint(
+        image_contract["failure_reason_to_error_code"]
     )
     assert (
         image_contract["failure_reason_to_error_code"][
