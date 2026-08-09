@@ -20,6 +20,7 @@ def _ack_payload(*, send_result: str, action_phase: str) -> dict:
 def test_backend_recovery_actions_are_owned_by_the_machine_contract():
     contract = c2_contract_v3()["outbox_recovery_contract"]
     code_groups = (
+        ("refresh_identity_and_retry_codes", "refresh_identity_and_retry"),
         ("refresh_and_rebuild_codes", "refresh_and_rebuild"),
         ("rebuild_failed_fact_codes", "rebuild_failed_facts"),
         ("split_and_retry_codes", "split_and_retry"),

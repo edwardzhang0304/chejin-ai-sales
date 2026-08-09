@@ -1,6 +1,6 @@
-import json
 import hashlib
-from datetime import timedelta, timezone
+import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 
@@ -41,11 +41,14 @@ from app.core.database import Base, engine
 from app.errors import AppError
 from app.main import app
 from app.models.base import utcnow
+from app.models.audit import OperationLog
 from app.models.c3 import Conversation, HandoffEvent, MessageBatch, ReplyAction
 from app.models.sales import Sales
 from app.models.task import Task
 from app.models.wechat import MessageEvent, WechatSessionBinding
+from app.models.worker import Worker
 from app.core.database import SessionLocal
+from app.schemas.wechat import WechatMessageIngestRequest
 from app.services import c3_service, wechat_service
 from app.services.message_contract import (
     canonical_reply_text as backend_canonical_reply_text,
@@ -6085,3 +6088,598 @@ def test_same_remark_code_reuses_canonical_binding_when_sales_moves_to_another_w
     assert targets_a.status_code == 200
     assert targets_b.status_code == 200
     assert targets_a.json()["data"]["targets"] == []
+
+
+def test_server_identity_checkpoint_restores_worker_sequence_across_worker_change():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("身份恢复客户", "13896676671")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    old_worker = _create_worker()
+    with SessionLocal() as db:
+        binding_row = db.get(WechatSessionBinding, binding["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert binding_row is not None
+        assert conversation is not None
+        binding_row.unread_hint = False
+        conversation.status = "waiting_sales_reply"
+        db.add(
+            MessageEvent(
+                conversation_id=binding["conversation_id"],
+                binding_id=binding["id"],
+                lead_id=binding["lead_id"],
+                sales_id=binding["sales_id"],
+                worker_id=old_worker["id"],
+                rpa_session_key="old-worker-row",
+                read_run_id="old-worker-read",
+                contract_version=3,
+                source_message_key="old-worker-source-7",
+                dedupe_key="old-worker-dedupe-7",
+                sender_role="customer",
+                message_type="text",
+                content="服务端保存的第七条消息",
+                raw_payload={
+                    "dedupe_basis": {
+                        "source": "worker_cross_round_sequence",
+                        "worker_stable_id": "worker-message-7",
+                    }
+                },
+                evidence={},
+                item_state="completed",
+                flow_state="completed",
+            )
+        )
+        db.commit()
+
+    targets = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+    authorization = client.get(
+        f"/api/workers/{worker['id']}/wechat/conversations/{binding['conversation_id']}/read-authorization",
+        headers=_worker_headers(worker),
+    )
+
+    assert targets.status_code == 200
+    assert authorization.status_code == 200
+    target_checkpoint = targets.json()["data"]["targets"][0][
+        "identity_checkpoint"
+    ]
+    authorization_checkpoint = authorization.json()["data"][
+        "identity_checkpoint"
+    ]
+    assert target_checkpoint == authorization_checkpoint
+    assert target_checkpoint["version"] == 1
+    assert target_checkpoint["next_sequence_floor"] == 8
+    assert target_checkpoint["recent_messages"] == [
+        {
+            "stable_id": "worker-message-7",
+            "source_message_key": "old-worker-source-7",
+            "dedupe_key": "old-worker-dedupe-7",
+            "sender_role": "customer",
+            "message_type": "text",
+            "normalized_content_hash": hashlib.sha256(
+                "服务端保存的第七条消息".encode("utf-8")
+            ).hexdigest(),
+            "media_identity_hash": "",
+            "alignment_signature": target_checkpoint["recent_messages"][0][
+                "alignment_signature"
+            ],
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("collision_kind", "incoming_role", "incoming_content"),
+    [
+        ("different_content", "customer", "同编号但正文不同"),
+        ("different_sender", "self", "原始正文"),
+    ],
+)
+def test_duplicate_key_identity_collision_rolls_back_without_consuming_or_brain(
+    collision_kind,
+    incoming_role,
+    incoming_content,
+):
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead(f"身份碰撞-{collision_kind}", "13896676672")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    first_payload = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id="identity-original-read",
+        messages=[
+            _v3_message(
+                "worker-message-collision",
+                role="customer",
+                message_type="text",
+                content="原始正文",
+                screen_order=1,
+            )
+        ],
+    )
+    first = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=first_payload,
+        headers=_worker_headers(worker),
+    )
+    assert first.status_code == 200
+
+    unread_scan = _scan_payload(remark_code)
+    unread_scan["scan_id"] = f"identity-collision-scan-{collision_kind}"
+    refreshed = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=unread_scan,
+        headers=_worker_headers(worker),
+    )
+    assert refreshed.status_code == 200
+    collision_payload = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id=f"identity-collision-read-{collision_kind}",
+        read_reason="visible_unread",
+        messages=[
+            _v3_message(
+                "worker-message-collision",
+                role=incoming_role,
+                message_type="text",
+                content=incoming_content,
+                screen_order=1,
+            )
+        ],
+    )
+    before_revision = _binding_authorization_revision(binding["id"])
+    with SessionLocal() as db:
+        before_conversation = db.get(Conversation, binding["conversation_id"])
+        assert before_conversation is not None
+        before_status = before_conversation.status
+        before_batch_count = db.query(MessageBatch).count()
+
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=collision_payload,
+        headers=_worker_headers(worker),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "MESSAGE_IDENTITY_COLLISION"
+    assert response.json()["data"]["recovery_action"] == (
+        "refresh_identity_and_retry"
+    )
+    assert response.json()["data"]["source_message_key"]
+    assert response.json()["data"]["next_sequence_floor"] >= 1
+    assert response.json()["trace_id"]
+    with SessionLocal() as db:
+        binding_row = db.get(WechatSessionBinding, binding["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert binding_row is not None
+        assert conversation is not None
+        assert binding_row.unread_hint is True
+        assert wechat_service._authorization_revision(binding_row) == before_revision
+        assert binding_row.last_read_run_id == "identity-original-read"
+        assert conversation.status == before_status
+        assert db.query(MessageEvent).filter(
+            MessageEvent.conversation_id == binding["conversation_id"]
+        ).count() == 1
+        assert db.query(MessageBatch).count() == before_batch_count
+
+
+def test_integrity_error_duplicate_branch_rechecks_full_message_identity(monkeypatch):
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("并发身份碰撞", "13896676676")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    original = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id="concurrent-original-read",
+        messages=[
+            _v3_message(
+                "concurrent-dedupe-key",
+                role="customer",
+                message_type="text",
+                content="并发前原始正文",
+                screen_order=1,
+            )
+        ],
+    )
+    first = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=original,
+        headers=_worker_headers(worker),
+    )
+    assert first.status_code == 200
+
+    incoming_message = _v3_message(
+        "concurrent-new-source",
+        role="customer",
+        message_type="text",
+        content="并发时不同正文",
+        screen_order=1,
+    )
+    incoming_message["dedupe_key"] = "concurrent-dedupe-key"
+    payload_dict = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id="concurrent-collision-read",
+        read_reason="waiting_sales_reply",
+        messages=[incoming_message],
+    )
+    payload = WechatMessageIngestRequest.model_validate(payload_dict)
+
+    with SessionLocal() as db:
+        worker_row = db.get(Worker, worker["id"])
+        assert worker_row is not None
+        original_scalar = db.scalar
+        skipped_precheck = False
+        seen_scalar_sql = []
+
+        def race_scalar(statement, *args, **kwargs):
+            nonlocal skipped_precheck
+            sql = str(statement).lower()
+            seen_scalar_sql.append(sql)
+            where_clause = sql.partition("\nwhere ")[2]
+            if (
+                not skipped_precheck
+                and "message_events" in sql
+                and "dedupe_key" in where_clause
+                and "read_run_id" not in where_clause
+            ):
+                skipped_precheck = True
+                return None
+            return original_scalar(statement, *args, **kwargs)
+
+        monkeypatch.setattr(db, "scalar", race_scalar)
+        with pytest.raises(AppError) as exc:
+            wechat_service.ingest_messages(db, worker_row, payload)
+        db.rollback()
+
+    assert skipped_precheck is True, seen_scalar_sql
+    assert exc.value.code == "MESSAGE_IDENTITY_COLLISION"
+    assert exc.value.status_code == 409
+    with SessionLocal() as db:
+        assert db.query(MessageEvent).filter(
+            MessageEvent.conversation_id == binding["conversation_id"]
+        ).count() == 1
+
+
+def test_duplicate_voice_key_with_different_media_anchor_is_identity_collision():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("语音媒体身份碰撞", "13896676677")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    original_message = _v3_message(
+        "voice-anchor-one",
+        role="customer",
+        message_type="voice",
+        content="相同语音正文",
+        screen_order=1,
+    )
+    original = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=_v3_ingest_payload(
+            binding,
+            remark_code,
+            read_run_id="voice-anchor-original",
+            messages=[original_message],
+        ),
+        headers=_worker_headers(worker),
+    )
+    assert original.status_code == 200, original.text
+
+    incoming_message = _v3_message(
+        "voice-anchor-two",
+        role="customer",
+        message_type="voice",
+        content="相同语音正文",
+        screen_order=1,
+    )
+    incoming_message["dedupe_key"] = original_message["dedupe_key"]
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=_v3_ingest_payload(
+            binding,
+            remark_code,
+            read_run_id="voice-anchor-collision",
+            messages=[incoming_message],
+        ),
+        headers=_worker_headers(worker),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "MESSAGE_IDENTITY_COLLISION"
+    assert response.json()["data"]["existing_identity"][
+        "media_identity_hash"
+    ] != response.json()["data"]["incoming_identity"][
+        "media_identity_hash"
+    ]
+
+
+def test_empty_reads_back_off_two_five_ten_minutes_and_unread_wakes_immediately():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("读取退避客户", "13896676673")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    with SessionLocal() as db:
+        binding_row = db.get(WechatSessionBinding, binding["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert binding_row is not None
+        assert conversation is not None
+        binding_row.unread_hint = False
+        conversation.status = "waiting_sales_reply"
+        db.commit()
+
+    for index, expected_seconds in enumerate((120, 300, 600), start=1):
+        payload = _v3_ingest_payload(
+            binding,
+            remark_code,
+            read_run_id=f"empty-read-{index}",
+            messages=[],
+            read_reason="waiting_sales_reply",
+        )
+        response = client.post(
+            f"/api/workers/{worker['id']}/wechat/messages/ingest",
+            json=payload,
+            headers=_worker_headers(worker),
+        )
+        assert response.status_code == 200, response.text
+        completion = response.json()["data"]["read_completion"]
+        assert completion["result"] == "no_change"
+        assert completion["no_change_read_count"] == index
+        completed_at = datetime.fromisoformat(completion["completed_at"])
+        due_at = datetime.fromisoformat(completion["next_read_due_at"])
+        assert abs((due_at - completed_at).total_seconds() - expected_seconds) < 1
+
+        blocked = client.get(
+            f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+            headers=_worker_headers(worker),
+        )
+        assert blocked.status_code == 200
+        assert blocked.json()["data"]["targets"] == []
+        authorization = client.get(
+            f"/api/workers/{worker['id']}/wechat/conversations/{binding['conversation_id']}/read-authorization",
+            headers=_worker_headers(worker),
+        )
+        assert authorization.status_code == 200
+        assert authorization.json()["data"]["allowed"] is False
+        assert authorization.json()["data"]["identity_checkpoint"]["version"] == 1
+        if index < 3:
+            with SessionLocal() as db:
+                binding_row = db.get(WechatSessionBinding, binding["id"])
+                assert binding_row is not None
+                binding_row.next_read_due_at = utcnow() - timedelta(seconds=1)
+                db.commit()
+
+    unread_scan = _scan_payload(remark_code)
+    unread_scan["scan_id"] = "scan-break-read-backoff"
+    unread = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=unread_scan,
+        headers=_worker_headers(worker),
+    )
+    assert unread.status_code == 200
+    targets = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+    assert targets.status_code == 200
+    assert targets.json()["data"]["targets"][0]["conversation_id"] == (
+        binding["conversation_id"]
+    )
+    with SessionLocal() as db:
+        binding_row = db.get(WechatSessionBinding, binding["id"])
+        assert binding_row is not None
+        assert binding_row.no_change_read_count == 0
+        assert binding_row.next_read_due_at is None
+
+
+def test_temporary_paused_binding_restore_is_audited_and_requires_rescan():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("临时暂停恢复客户", "13896676674")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    with SessionLocal() as db:
+        binding_row = db.get(WechatSessionBinding, binding["id"])
+        assert binding_row is not None
+        binding_row.bind_status = "bound"
+        binding_row.listen_status = "paused"
+        binding_row.allow_listening = False
+        original_revision = int(binding_row.authorization_revision)
+        db.commit()
+
+    restored = client.post(
+        f"/api/conversations/{binding['conversation_id']}/wechat-binding/restore",
+        json={"reason": "联调误暂停，已核实客户仍有效"},
+        headers=HEADERS,
+    )
+
+    assert restored.status_code == 200, restored.text
+    data = restored.json()["data"]
+    assert data["bind_status"] == "bound"
+    assert data["listen_status"] == "paused"
+    assert data["allow_listening"] is False
+    assert data["recovery_state"] == "paused_waiting_worker"
+    assert data["authorization_revision"] > original_revision
+    with SessionLocal() as db:
+        log = db.query(OperationLog).filter(
+            OperationLog.event_type == "wechat_binding_restored"
+        ).one()
+        assert log.operator_name_snapshot == "Ops Tester"
+        assert log.extra_metadata["reason"] == "联调误暂停，已核实客户仍有效"
+        assert log.before_data["listen_status"] == "paused"
+        assert log.after_data == {
+            "bind_status": "bound",
+            "listen_status": "paused",
+            "allow_listening": False,
+            "authorization_revision": data["authorization_revision"],
+            "disable_reason": None,
+        }
+
+    rescan_payload = _scan_payload(remark_code)
+    rescan_payload["scan_id"] = "scan-after-binding-restore"
+    rescan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=rescan_payload,
+        headers=_worker_headers(worker),
+    )
+    assert rescan.status_code == 200
+    assert rescan.json()["data"]["bindings"][0]["listen_status"] == "listening"
+    assert rescan.json()["data"]["bindings"][0]["can_ingest_messages"] is True
+
+
+def test_legacy_disabled_paused_binding_is_not_permanently_skipped_on_scan():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("历史暂停恢复客户", "13896676670")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    with SessionLocal() as db:
+        binding_row = db.get(WechatSessionBinding, binding["id"])
+        assert binding_row is not None
+        binding_row.bind_status = "disabled"
+        binding_row.listen_status = "paused"
+        binding_row.allow_listening = False
+        binding_row.disable_reason = None
+        binding_row.disabled_at = None
+        binding_row.disabled_by = None
+        binding_row.replacement_binding_id = None
+        db.commit()
+
+    rescan_payload = _scan_payload(remark_code)
+    rescan_payload["scan_id"] = "scan-legacy-disabled-paused"
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=rescan_payload,
+        headers=_worker_headers(worker),
+    )
+
+    assert response.status_code == 200, response.text
+    recovered = response.json()["data"]["bindings"][0]
+    assert recovered["id"] == binding["id"]
+    assert recovered["bind_status"] == "already_bound"
+    assert recovered["listen_status"] == "listening"
+    assert recovered["can_ingest_messages"] is True
+
+
+@pytest.mark.parametrize(
+    ("blocked_case", "expected_code"),
+    [
+        ("hard_opt_out", "WECHAT_BINDING_RESTORE_CONVERSATION_TERMINATED"),
+        ("closed", "WECHAT_BINDING_RESTORE_CONVERSATION_TERMINATED"),
+        ("remark_removed", "WECHAT_BINDING_RESTORE_PERMANENTLY_DISABLED"),
+        ("admin_disabled", "WECHAT_BINDING_RESTORE_PERMANENTLY_DISABLED"),
+        ("wrong_worker", "WECHAT_BINDING_RESTORE_WORKER_MISMATCH"),
+        ("conflict", "WECHAT_BINDING_RESTORE_CONFLICT"),
+        ("history", "WECHAT_BINDING_RESTORE_HISTORY_FORBIDDEN"),
+    ],
+)
+def test_permanent_conflicting_and_historical_bindings_cannot_restore(
+    blocked_case,
+    expected_code,
+):
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead(f"禁止恢复-{blocked_case}", "13896676675")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    other_worker = _create_worker() if blocked_case == "wrong_worker" else None
+    with SessionLocal() as db:
+        binding_row = db.get(WechatSessionBinding, binding["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert binding_row is not None
+        assert conversation is not None
+        binding_row.bind_status = "bound"
+        binding_row.listen_status = "paused"
+        binding_row.allow_listening = False
+        if blocked_case == "hard_opt_out":
+            conversation.status = "rejected"
+            conversation.ai_enabled = False
+        elif blocked_case == "closed":
+            conversation.status = "closed"
+            conversation.close_reason = "人工关闭"
+        elif blocked_case == "remark_removed":
+            binding_row.bind_status = "disabled"
+            binding_row.disable_reason = "remark_code_removed_confirmed"
+        elif blocked_case == "admin_disabled":
+            binding_row.bind_status = "disabled"
+            binding_row.disable_reason = "admin_disabled"
+        elif blocked_case == "wrong_worker":
+            assert other_worker is not None
+            conversation.worker_id = other_worker["id"]
+        elif blocked_case == "conflict":
+            db.add(
+                WechatSessionBinding(
+                    worker_id=worker["id"],
+                    display_name="冲突会话",
+                    rpa_session_key="conflicting-row",
+                    row_fingerprint="conflicting-row",
+                    remark_code=remark_code,
+                    bind_status="needs_review",
+                    listen_status="paused",
+                    allow_listening=False,
+                )
+            )
+        else:
+            binding_row.deleted_at = utcnow()
+            binding_row.replacement_binding_id = binding_row.id
+        db.commit()
+
+    response = client.post(
+        f"/api/conversations/{binding['conversation_id']}/wechat-binding/restore",
+        json={"reason": "尝试恢复"},
+        headers=HEADERS,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["code"] == expected_code
+    with SessionLocal() as db:
+        assert db.query(OperationLog).filter(
+            OperationLog.event_type == "wechat_binding_restored"
+        ).count() == 0

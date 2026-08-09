@@ -784,9 +784,51 @@ def reconcile_v16104_identity_transition(
 ) -> tuple[list[Any], dict[str, Any], list[dict[str, Any]]]:
     """Bridge legacy dedupe keys once, then keep only Worker sequence identities."""
 
-    existing_state = previous_state if isinstance(previous_state, dict) else {}
+    existing_state = dict(previous_state) if isinstance(previous_state, dict) else {}
+    checkpoint = (
+        target.raw.get("identity_checkpoint")
+        if isinstance(target.raw, dict)
+        and isinstance(target.raw.get("identity_checkpoint"), dict)
+        else {}
+    )
+    try:
+        sequence_floor = max(
+            1,
+            int(checkpoint.get("next_sequence_floor") or 1),
+        )
+    except (TypeError, ValueError):
+        sequence_floor = 1
+    existing_state["next_sequence"] = max(
+        sequence_floor,
+        int(existing_state.get("next_sequence") or 1),
+    )
+    if not existing_state.get("last_frame"):
+        recent_messages = [
+            item
+            for item in (checkpoint.get("recent_messages") or [])
+            if isinstance(item, dict)
+            and str(item.get("stable_id") or "").strip()
+            and str(item.get("alignment_signature") or "").strip()
+        ]
+        checkpoint_frame = [
+            {
+                "signature": str(item["alignment_signature"]),
+                "alignment_signature": str(item["alignment_signature"]),
+                "stable_id": str(item["stable_id"]),
+            }
+            for item in recent_messages
+        ]
+        if checkpoint_frame:
+            existing_state["last_frame"] = checkpoint_frame
+            existing_state["catalog"] = {
+                str(item["alignment_signature"]): [str(item["stable_id"])]
+                for item in recent_messages
+            }
     if existing_state.get("legacy_transition_completed") is True:
-        return reconcile_cross_round_observation_identities(observations, previous_state)
+        return reconcile_cross_round_observation_identities(
+            observations,
+            existing_state,
+        )
     transition = target.raw.get("identity_transition") if isinstance(target.raw, dict) else {}
     try:
         transition_version = (
@@ -798,7 +840,7 @@ def reconcile_v16104_identity_transition(
         transition_version = 0
     enriched, state, errors = reconcile_cross_round_observation_identities(
         observations,
-        previous_state,
+        existing_state,
     )
     if errors or transition_version != 1:
         return enriched, state, errors

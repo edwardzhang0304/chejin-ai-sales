@@ -41,6 +41,10 @@ class WechatFriendActivationConfirmRequest(BaseModel):
     title_evidence: dict
 
 
+class WechatBindingRestoreRequest(BaseModel):
+    reason: str = Field(min_length=2, max_length=500)
+
+
 class WechatMessagePosition(BaseModel):
     screen_order: int = Field(ge=1)
     visual_top: int | None = Field(default=None, ge=0)

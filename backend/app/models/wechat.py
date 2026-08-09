@@ -24,6 +24,14 @@ class WechatSessionBinding(Base, TimestampMixin):
     allow_listening: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     authorization_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    disable_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    disabled_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    replacement_binding_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("wechat_session_bindings.id"),
+        nullable=True,
+    )
     unread_hint: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     last_message_preview: Mapped[str | None] = mapped_column(Text, nullable=True)
     ocr_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -32,6 +40,21 @@ class WechatSessionBinding(Base, TimestampMixin):
     last_ingested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_read_dispatched_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
+        nullable=True,
+    )
+    last_read_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_read_result: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_read_run_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    no_change_read_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_read_due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_read_conversation_status: Mapped[str | None] = mapped_column(
+        String(32),
         nullable=True,
     )
     last_scan_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
@@ -50,6 +73,13 @@ class WechatSessionBinding(Base, TimestampMixin):
 Index("idx_wechat_bindings_lead_status", WechatSessionBinding.lead_id, WechatSessionBinding.bind_status)
 Index("idx_wechat_bindings_worker_status", WechatSessionBinding.worker_id, WechatSessionBinding.bind_status, WechatSessionBinding.listen_status)
 Index("idx_wechat_bindings_remark_code", WechatSessionBinding.remark_code)
+Index(
+    "idx_wechat_bindings_worker_read_due",
+    WechatSessionBinding.worker_id,
+    WechatSessionBinding.bind_status,
+    WechatSessionBinding.listen_status,
+    WechatSessionBinding.next_read_due_at,
+)
 Index(
     "uq_wechat_bindings_effective_remark_code",
     WechatSessionBinding.remark_code,

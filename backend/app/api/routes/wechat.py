@@ -8,8 +8,10 @@ from app.contracts.c2 import recovery_action_for_error
 from app.core.auth import require_admin_auth
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.core.request_context import ActorContext, get_actor_context
 from app.errors import AppError
 from app.schemas.wechat import (
+    WechatBindingRestoreRequest,
     WechatFriendActivationConfirmRequest,
     WechatMessageIngestRequest,
     WechatSessionScanResultRequest,
@@ -230,6 +232,27 @@ def conversation_binding(
     _admin_auth: None = Depends(require_admin_auth),
 ):
     return ok(wechat_service.get_binding_by_conversation(db, conversation_id))
+
+
+@router.post("/conversations/{conversation_id}/wechat-binding/restore")
+def restore_conversation_binding(
+    conversation_id: str,
+    payload: WechatBindingRestoreRequest,
+    db: Session = Depends(get_db),
+    actor: ActorContext = Depends(get_actor_context),
+):
+    try:
+        data = wechat_service.restore_binding(
+            db,
+            conversation_id=conversation_id,
+            reason=payload.reason,
+            actor=actor,
+        )
+        db.commit()
+        return ok(data)
+    except Exception:
+        db.rollback()
+        raise
 
 
 @router.get("/conversations/{conversation_id}/messages")
