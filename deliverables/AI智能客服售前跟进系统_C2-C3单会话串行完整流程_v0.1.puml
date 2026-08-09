@@ -1,4 +1,5 @@
 @startuml
+' 文档版本：v0.1.1；最后更新：2026-08-09
 title AI智能客服售前跟进系统 C2-C3 单会话串行完整流程（图片增强目标架构）
 
 skinparam monochrome true
@@ -107,21 +108,21 @@ loop Worker运行中；每次循环最多完成一个会话事务
       end
     else 存在voice/image动作日志或待结算media事实
       L --> W: 最早原事务 + replayable_observation\n不含图片原图
-      alt 全部action_phase=not_attempted
+      alt 仅纯ActionJournal意图、全部not_attempted，且无terminal/Ledger/Outbox
         W -> L: 本地删除未触发动作意图
-      else 存在trigger_attempted或confirmed
+      else 存在terminal事实、Ledger/Outbox，或trigger_attempted/confirmed
         W -> Auth: 查询原事务恢复决定\ntransaction_id + action_kind\nsource key摘要 + 原authorization_revision
         alt recovery_decision=resume_current_target
           Auth --> W: 原会话恢复target
-          W -> W: 调用下方2-9相同单会话子Flow\n本轮只允许原会话并重新确认短码/private
+          W -> W: 调用下方2-9相同单会话子Flow\n本轮只允许原会话并重新确认短码/private\n重放原始完整V3消息并按active_read角色/顺序处理
           break 原媒体事实结算后再开始下一轮；禁止其他会话
         else recovery_decision=settle_without_ui
           Auth --> W: settlement_mode + settlement_token
-          W -> Ingest: 原样提交已有media事实\nauthorization_scope=fact_settlement\n不打开微信、不重复RPA/Vision
+          W -> Ingest: 原样提交原始完整V3 media事实\nauthorization_scope=fact_settlement\n禁止messages=[]代替失败消息\n不打开微信、不重复RPA/Vision
           alt 后端逐条确认
             Ingest -> DB: 幂等保存fact_only\n或保存technical_terminal
             Ingest --> W: source keys逐条确认\nstate_transition_applied=false\nmessage_batch=null
-            W -> L: media Ledger置confirmed\n删除对应ActionJournal
+            W -> L: 每个source_message_key均确认后\nmedia Ledger置confirmed并删除对应ActionJournal/Outbox
           else 后端未确认
             W -> L: 保留原事务
             break 事实未结算：禁止新UI动作
@@ -138,7 +139,7 @@ loop Worker运行中；每次循环最多完成一个会话事务
   end
 
   group 0.5 新C2 UI流程所需Vision能力预检
-    W -> W: 校验真实Provider API Key/模型/地址
+    W -> W: 校验正式包内置Vision客户端专用Key\nProvider/HTTPS接口/模型白名单
     alt 配置缺失
       W -> W: vision_not_ready\n不开始新扫描、不打开会话
       break 配置恢复并重新预检前不进入新C2 UI流程
@@ -443,30 +444,61 @@ loop Worker运行中；每次循环最多完成一个会话事务
                   else 两次C2角色一致
                     Role --> OA: role_reconfirmed\nvisual_side仅记录诊断
                     OA -> WX: 右键图片
-                  OA -> WX: OCR确认菜单后点击“复制”
-                  WX --> OA: Windows剪贴板位图
-                  OA --> W: image bytes（仅当前进程内存）\ncanonical_visual_id + slot_id
-                  W -> W: 原始位图按像素/源内存上限解码\n缩放并自适应编码到Provider上限
-                  W -> W: 校验image_hash和目标视觉指纹\n清除本次Windows剪贴板内容
-                  W -> VG: 进程内调用 BuiltinVisionPlugin.run(context)\n不上传车金后端，不写本地文件
-                  VG -> VM: HTTPS + 白名单request_style\n调用单张图片Vision模型
-                  note right of VM
-                  Vision只输出：
-                  vision_summary / image_ocr_text / classification /
-                  entities / intent_hints / confidence / model trace。
-                  Vision不决定最终客户意图、不决定是否回复、不生成回复文案。
-                  end note
-                  alt 模型成功且共享JSON Schema合法
-                    VM --> VG: customer_image_understanding + visual_bridge_input
-                    VG --> W: 文字白名单结构化图片事实
-                    W -> W: 回填原slot_id\nitem_state=completed
-                  else 模型超时/异常/结果非法
-                    VM --> VG: timeout / provider_error / invalid_result
-                    VG -> VG: 仅非JSON格式纠正允许同flow再请求一次\n父进程预算覆盖两次请求
-                    VG --> W: state=failed + 明确reason\n绝不返回终态pending
-                    W -> W: 回填原slot_id\nitem_state=failed
-                  end
-                  W -> W: 立即释放该图片内存\n不写本地文件、不保存image_local_path
+                    OA -> OA: OCR识别完整菜单
+                    note right of OA
+                    从同一右键截图唯一确定真实menu_panel_bounds；
+                    大范围锚点搜索区不等于弹窗边界。
+                    所有分类项和复制点击项必须完整落在同一panel、同一纵列。
+                    仅去掉末尾省略号：
+                    文字 = 放大阅读 OR (翻译 AND 搜一搜)
+                    语音 = 语音转文字 OR 收起文字
+                    图片 = 复制 AND (编辑/用窗口打开/另存为/打开方式至少一项)
+                    公共项不能单独证明类型
+                    end note
+                    alt 精确确认为文字菜单
+                      OA -> WX: 关闭菜单\n不点击复制
+                      OA --> W: item_state=failed\nerror_code=C2_IMAGE_SOURCE_INVALID\nreason_detail=text_context_menu_rejected\naction_phase=not_attempted\n零剪贴板读取/零Vision
+                      W -> L: 原始完整V3 failed消息立即保存到ledger/Outbox
+                    else 精确确认为语音菜单
+                      OA -> WX: 关闭菜单\n不点击复制
+                      OA --> W: item_state=failed\nerror_code=C2_IMAGE_SOURCE_INVALID\nreason_detail=voice_context_menu_rejected\naction_phase=not_attempted\n零剪贴板读取/零Vision
+                      W -> L: 原始完整V3 failed消息立即保存到ledger/Outbox
+                    else 精确确认为图片菜单
+                      OA -> OA: 复制物理点击前先落盘\naction_phase=trigger_attempted\n落盘失败则禁止点击
+                      OA -> WX: 点击“复制”
+                      WX --> OA: Windows剪贴板当前内容
+                      alt 稳定确认不是可解码位图
+                        OA --> W: item_state=failed\nerror_code=C2_IMAGE_SOURCE_INVALID\nreason_detail=clipboard_current_content_not_bitmap\naction_phase=trigger_attempted
+                        W -> L: 原始完整V3 failed消息立即保存到ledger/Outbox\n不重复UI/Vision
+                      else 位图有效
+                        OA --> W: image bytes（仅当前进程内存）\ncanonical_visual_id + slot_id
+                        W -> W: 原始位图按像素/源内存上限解码\n缩放并自适应编码到Provider上限
+                        W -> W: 校验image_hash和目标视觉指纹\n清除本次Windows剪贴板内容
+                        W -> VG: 进程内调用 BuiltinVisionPlugin.run(context)\n不上传车金后端，不写本地文件
+                        VG -> VM: 使用CI注入的正式包内置客户端专用Key\nHTTPS + 白名单request_style调用单张图片Vision模型
+                        note right of VM
+                        Vision只输出：
+                        vision_summary / image_ocr_text / classification /
+                        entities / intent_hints / confidence / model trace。
+                        Vision不决定最终客户意图、不决定是否回复、不生成回复文案。
+                        end note
+                        alt 模型成功且共享JSON Schema合法
+                          VM --> VG: customer_image_understanding + visual_bridge_input
+                          VG --> W: 文字白名单结构化图片事实
+                          W -> W: 回填原slot_id\nitem_state=completed
+                        else 模型超时/异常/结果非法
+                          VM --> VG: timeout / provider_error / invalid_result
+                          VG -> VG: 仅非JSON格式纠正允许同flow再请求一次\n父进程预算覆盖两次请求
+                          VG --> W: state=failed + 明确reason\n绝不返回终态pending
+                          W -> W: 回填原slot_id\nitem_state=failed
+                        end
+                        W -> W: 立即释放该图片内存\n不写本地文件、不保存image_local_path
+                      end
+                    else 弹窗边界不明/只有公共项/证据不足/多类冲突
+                      OA -> WX: 关闭菜单\n不点击任何菜单项
+                      OA --> W: item_state=failed\nerror_code=C2_IMAGE_MENU_OPERATION_FAILED\nreason_detail=menu_panel_unconfirmed / menu_evidence_incomplete /\nmenu_evidence_conflict / menu_copy_item_unsafe\naction_phase=not_attempted
+                      W -> L: 原始完整V3 failed消息立即保存到ledger/Outbox
+                    end
                   end
                 end
               end
@@ -480,6 +512,13 @@ loop Worker运行中；每次循环最多完成一个会话事务
             end
             W -> W: 将新文字 + 新语音 + 新图片结果\n回填final_read原槽位
             W -> W: 按screen_order排序\n生成稳定source_message_key/dedupe_key
+            note right of W
+            active_read逐source key确认后按角色/最终顺序处理：
+            客户失败媒体 -> waiting_sales_reply + handoff；
+            销售失败媒体且其下无新客户消息 -> sales_replied_waiting_user；
+            unknown -> 身份门禁，不伪造图片消息。
+            fact_settlement固定不改状态、不建Brain/handoff。
+            end note
             note right of W
             screen_order/绝对坐标/authorization_revision不参与消息身份。
             图片优先稳定visual id；缺失时使用角色、同类序号、
