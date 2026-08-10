@@ -221,6 +221,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("python run_checks.py", workflow)
         self.assertIn("build-fast-uat-package.py", workflow)
         self.assertIn("debug_uat", workflow)
+        self.assertIn("git_dirty", workflow)
         self.assertIn("not_for_customer_release", workflow)
         self.assertIn("Expand-Archive -LiteralPath $zip.FullName", workflow)
         self.assertIn("start-fast-uat.ps1", workflow)
@@ -285,6 +286,10 @@ class PackagingScriptsTest(unittest.TestCase):
             with patch.object(module, "_copy_worker_app", side_effect=copy_worker), patch.object(
                 module, "_copy_omniauto", side_effect=copy_omniauto
             ), patch.object(
+                module,
+                "verify_build_source",
+                return_value={"git_commit": commit, "git_dirty": False},
+            ), patch.object(
                 module, "load_source_provenance", return_value=provenance
             ), patch.object(
                 module,
@@ -319,6 +324,7 @@ class PackagingScriptsTest(unittest.TestCase):
             self.assertFalse(manifest["formal_release"])
             self.assertTrue(manifest["not_for_customer_release"])
             self.assertEqual(manifest["git_commit"], commit)
+            self.assertIs(manifest["git_dirty"], False)
             self.assertEqual(manifest["omniauto_source"], provenance)
             self.assertEqual(
                 manifest["runtime_base"]["runtime_kind"],
@@ -328,6 +334,32 @@ class PackagingScriptsTest(unittest.TestCase):
                 credential["vision_api_key"], "fast-uat-secret-never-public"
             )
             self.assertNotIn(b"fast-uat-secret-never-public", public_manifest_bytes)
+
+    def test_fast_uat_zip_rejects_dirty_git_source(self):
+        module = self._load_fast_uat_package_module()
+        commit = "a" * 40
+
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ,
+            {"CHEJIN_VISION_CLIENT_API_KEY": "fast-uat-secret-never-public"},
+            clear=False,
+        ):
+            root = Path(temp)
+            runtime = root / "runtime-base"
+            runtime.mkdir()
+            (runtime / "python.exe").write_bytes(b"portable-python")
+
+            with patch.object(
+                module,
+                "verify_build_source",
+                return_value={"git_commit": commit, "git_dirty": True},
+            ), self.assertRaisesRegex(SystemExit, "FAST_UAT_GIT_DIRTY"):
+                module.build(
+                    runtime_root=runtime,
+                    output_dir=root / "release",
+                    git_commit=commit,
+                    git_branch="codex/worker-fast-uat-test",
+                )
 
     def test_source_package_script_excludes_local_env_and_runtime_state(self):
         text = (ROOT / "scripts" / "build-source-package.py").read_text(encoding="utf-8")
