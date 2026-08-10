@@ -587,6 +587,7 @@ def _seed_open_handoff(
     *,
     paused: bool,
     trigger_source_key: str | None = None,
+    reason_code: str | None = None,
 ) -> tuple[str, str]:
     with SessionLocal() as db:
         conversation = db.get(Conversation, binding["conversation_id"])
@@ -618,6 +619,14 @@ def _seed_open_handoff(
             )
             db.add(trigger_message)
             db.flush()
+        resolved_reason_code = str(
+            reason_code
+            or (
+                "AI_ENGINE_PAUSED_FOR_MANUAL_REVIEW"
+                if paused
+                else "HANDOFF_REQUIRED"
+            )
+        )
         batch = MessageBatch(
             conversation_id=binding["conversation_id"],
             status="paused" if paused else "handoff_created",
@@ -628,11 +637,7 @@ def _seed_open_handoff(
             message_event_ids=[trigger_message.id] if trigger_message else [],
             message_count=1 if trigger_message else 0,
             decision="pause" if paused else "handoff",
-            error_code=(
-                "AI_ENGINE_PAUSED_FOR_MANUAL_REVIEW"
-                if paused
-                else "HANDOFF_REQUIRED"
-            ),
+            error_code=resolved_reason_code,
             suggested_action="sales_handoff" if paused else "handoff",
         )
         db.add(batch)
@@ -641,8 +646,8 @@ def _seed_open_handoff(
             conversation_id=binding["conversation_id"],
             batch_id=batch.id,
             status="created",
-            handoff_reason_code=str(batch.error_code),
-            reason_detail=str(batch.error_code),
+            handoff_reason_code=resolved_reason_code,
+            reason_detail=resolved_reason_code,
             trigger_message_event_ids=[trigger_message.id] if trigger_message else [],
         )
         db.add(handoff)
@@ -4155,6 +4160,140 @@ def test_open_handoff_keeps_customer_fact_without_reactivating_brain():
         assert db.get(MessageBatch, batch_id).status == "handoff_created"
 
 
+@pytest.mark.parametrize(
+    "reason_code",
+    [
+        "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+        "C2_MESSAGE_HISTORY_GAP",
+    ],
+)
+def test_clean_authoritative_read_auto_recovers_temporary_c2_handoff(
+    reason_code: str,
+):
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead(f"自动恢复{reason_code}", "13896676701")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    _, handoff_id = _seed_open_handoff(
+        binding,
+        paused=False,
+        reason_code=reason_code,
+    )
+
+    targets = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+    assert targets.status_code == 200, targets.text
+    target = next(
+        item
+        for item in targets.json()["data"]["targets"]
+        if item["conversation_id"] == binding["conversation_id"]
+    )
+    assert target["recoverable_handoff_reason_codes"] == [reason_code]
+
+    payload = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id=f"read-auto-recover-{reason_code}",
+        messages=[
+            _v3_message(
+                f"customer-after-recovery-{reason_code}",
+                role="customer",
+                message_type="text",
+                content="这是恢复后需要回复的新消息",
+                screen_order=1,
+            )
+        ],
+    )
+    payload["evidence"]["recoverable_handoff_resolution"] = {
+        "version": 1,
+        "status": "latest_unreplied_turn_complete",
+        "reason_codes": [reason_code],
+        "identity_confirmed": True,
+        "history_confirmed": True,
+        "automatic_reread_performed": True,
+    }
+
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers=_worker_headers(worker),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"].get("message_batch") is not None
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        handoff = db.get(HandoffEvent, handoff_id)
+        assert conversation.status == "ai_active"
+        assert conversation.handoff_reason_code is None
+        assert handoff.status == "auto_recovered_clean_read"
+        assert handoff.closed_at is not None
+        assert any(
+            value.startswith("c2_recovery_read:")
+            for value in handoff.evidence_refs
+        )
+
+
+def test_clean_read_does_not_auto_close_nonrecoverable_handoff():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("硬风险不得自动恢复", "13896676702")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    _, handoff_id = _seed_open_handoff(
+        binding,
+        paused=False,
+        reason_code="HARD_BUSINESS_RISK",
+    )
+    payload = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id="read-must-not-auto-recover-hard-risk",
+        messages=[
+            _v3_message(
+                "hard-risk-follow-up",
+                role="customer",
+                message_type="text",
+                content="新的客户消息",
+                screen_order=1,
+            )
+        ],
+    )
+    payload["evidence"]["recoverable_handoff_resolution"] = {
+        "version": 1,
+        "status": "latest_unreplied_turn_complete",
+        "reason_codes": ["MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"],
+        "identity_confirmed": True,
+        "history_confirmed": True,
+    }
+
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers=_worker_headers(worker),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"].get("message_batch") is None
+    with SessionLocal() as db:
+        handoff = db.get(HandoffEvent, handoff_id)
+        assert handoff.closed_at is None
+        assert handoff.status == "created"
+
+
 def test_open_handoff_repairs_stale_conversation_projection_before_read_target():
     worker = _create_worker()
     _create_sales(worker["id"])
@@ -6826,6 +6965,80 @@ def test_empty_reads_back_off_two_five_ten_minutes_and_unread_wakes_immediately(
         binding_row = db.get(WechatSessionBinding, binding["id"])
         assert binding_row is not None
         assert binding_row.no_change_read_count == 0
+        assert binding_row.next_read_due_at is None
+
+
+def test_new_facts_keep_success_cooldown_until_new_unread_transition():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("成功读取冷却客户", "13896676679")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    with SessionLocal() as db:
+        binding_row = db.get(WechatSessionBinding, binding["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert binding_row is not None
+        assert conversation is not None
+        binding_row.unread_hint = False
+        conversation.status = "waiting_sales_reply"
+        db.commit()
+
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=_v3_ingest_payload(
+            binding,
+            remark_code,
+            read_run_id="successful-read-cooldown",
+            messages=[
+                _v3_message(
+                    "successful-read-new-fact",
+                    role="customer",
+                    message_type="text",
+                    content="这是一次成功读取的新消息",
+                    screen_order=1,
+                )
+            ],
+            read_reason="waiting_sales_reply",
+        ),
+        headers=_worker_headers(worker),
+    )
+    assert response.status_code == 200, response.text
+    completion = response.json()["data"]["read_completion"]
+    assert completion["result"] == "new_facts"
+    completed_at = datetime.fromisoformat(completion["completed_at"])
+    due_at = datetime.fromisoformat(completion["next_read_due_at"])
+    assert abs((due_at - completed_at).total_seconds() - 120) < 1
+
+    no_unread_scan = _scan_payload(remark_code)
+    no_unread_scan["scan_id"] = "scan-success-cooldown-no-unread"
+    no_unread_scan["sessions"][0]["unread_hint"] = False
+    no_unread = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=no_unread_scan,
+        headers=_worker_headers(worker),
+    )
+    assert no_unread.status_code == 200
+    with SessionLocal() as db:
+        binding_row = db.get(WechatSessionBinding, binding["id"])
+        assert binding_row is not None
+        assert binding_row.next_read_due_at is not None
+
+    new_unread_scan = _scan_payload(remark_code)
+    new_unread_scan["scan_id"] = "scan-success-cooldown-new-unread"
+    new_unread = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=new_unread_scan,
+        headers=_worker_headers(worker),
+    )
+    assert new_unread.status_code == 200
+    with SessionLocal() as db:
+        binding_row = db.get(WechatSessionBinding, binding["id"])
+        assert binding_row is not None
         assert binding_row.next_read_due_at is None
 
 

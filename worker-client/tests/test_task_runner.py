@@ -10,7 +10,7 @@ import unittest
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("CHEJIN_WORKER_HOME", tempfile.mkdtemp(prefix="chejin-worker-test-"))
 os.environ.setdefault("CHEJIN_RPA_MODE", "mock")
@@ -34,6 +34,7 @@ from chejin_worker_client.storage import (
     db_connection,
     enqueue_c2_outbox,
     list_c2_action_journal,
+    list_c2_ledger_entries,
     list_c2_outbox_waiting,
     load_c2_state,
     load_c2_ledger_entry,
@@ -59,6 +60,7 @@ from chejin_worker_client.ui_lock import LOCK_FILE, UiLockError
 from chejin_worker_client.wechat_c2 import (
     build_message_ingest_payload,
     image_observation_source_key,
+    project_final_slot_flow_gates,
     reconcile_v16104_identity_transition,
     voice_observation_source_key,
 )
@@ -1224,7 +1226,11 @@ class TaskRunnerTest(unittest.TestCase):
         runner.c2_vision_preflight_ready = True
         production_reconcile = runner._reconcile_message_identities
 
-        def reconcile_with_contract_fixture(target, observations):
+        def reconcile_with_contract_fixture(
+            target,
+            observations,
+            **kwargs,
+        ):
             # Direct unit tests bypass FakeApi.read-targets. Supply the field
             # that backend C2 3.12.6 always returns in production.
             if isinstance(target.raw, dict):
@@ -1236,7 +1242,11 @@ class TaskRunnerTest(unittest.TestCase):
                         "recent_messages": [],
                     },
                 )
-            return production_reconcile(target, observations)
+            return production_reconcile(
+                target,
+                observations,
+                **kwargs,
+            )
 
         runner._reconcile_message_identities = (  # type: ignore[method-assign]
             reconcile_with_contract_fixture
@@ -4084,6 +4094,9 @@ class TaskRunnerTest(unittest.TestCase):
                         "type": "voice",
                         "sender_role": "customer",
                         "content": '[语音] 3"',
+                        "voice_anchor_structural_key": (
+                            "voice-existing-structural"
+                        ),
                         "bubble_rect": [400, 100, 600, 140],
                     }
                 ]
@@ -4095,6 +4108,9 @@ class TaskRunnerTest(unittest.TestCase):
                         "type": "voice",
                         "sender_role": "customer",
                         "content": '[语音] 3"',
+                        "voice_anchor_structural_key": (
+                            "voice-existing-structural"
+                        ),
                         "bubble_rect": [400, 100, 600, 140],
                     },
                     {
@@ -4102,6 +4118,9 @@ class TaskRunnerTest(unittest.TestCase):
                         "type": "voice",
                         "sender_role": "customer",
                         "content": '[语音] 4"',
+                        "voice_anchor_structural_key": (
+                            "voice-arrived-later-structural"
+                        ),
                         "bubble_rect": [400, 220, 600, 260],
                     },
                 ]
@@ -4113,6 +4132,9 @@ class TaskRunnerTest(unittest.TestCase):
                         "type": "voice",
                         "sender_role": "customer",
                         "content": '[语音] 3"',
+                        "voice_anchor_structural_key": (
+                            "voice-existing-structural"
+                        ),
                         "bubble_rect": [400, 100, 600, 140],
                     },
                     {
@@ -4121,6 +4143,9 @@ class TaskRunnerTest(unittest.TestCase):
                         "sender_role": "customer",
                         "content": "后来到达的语音也已转写",
                         "voice_anchor_stable_key": "voice-arrived-later",
+                        "voice_anchor_structural_key": (
+                            "voice-arrived-later-structural"
+                        ),
                         "bubble_rect": [400, 220, 700, 280],
                     },
                 ]
@@ -4208,6 +4233,112 @@ class TaskRunnerTest(unittest.TestCase):
                 if item["item_state"] == "failed"
             )["message_type"],
             "voice",
+        )
+        voice_ledger = list_c2_ledger_entries(
+            target.conversation_id,
+            message_type="voice",
+        )
+        self.assertEqual(len(voice_ledger), 2)
+        self.assertEqual(
+            sorted(item["terminal_state"] for item in voice_ledger),
+            ["completed", "failed"],
+        )
+        self.assertNotIn(
+            "not_attempted",
+            {
+                str(
+                    (item.get("result") or {})
+                    .get("action_outcome", {})
+                    .get("action_phase")
+                    or ""
+                )
+                for item in voice_ledger
+            },
+        )
+
+    def test_identity_ambiguity_runs_only_after_voice_terminal_is_saved(self):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-voice-before-identity-gate",
+            rpa_session_key="wx:rpa:v1:voice-before-identity",
+            display_name="CJIDGATE",
+            remark_code="CJIDGATE",
+            read_reason="waiting_user_reply",
+            authorization_revision="revision-voice-before-identity",
+        )
+        api.read_targets = [target]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        frame = {
+            "messages": [
+                {
+                    "id": "voice-before-identity",
+                    "type": "voice",
+                    "sender_role": "customer",
+                    "content": '[语音] 5"',
+                    "bubble_rect": [400, 100, 600, 140],
+                }
+            ]
+        }
+        bridge.get_messages_payloads = [frame, frame, frame]
+        bridge.voice_payload = {
+            "ok": True,
+            "state": "voice_transcribe_partial",
+            "sidecar_run_id": "voice-before-identity-run",
+            "processed_voice_anchor_keys": [],
+            "failed_voice_anchor_keys": ["voice-before-identity"],
+            "item_action_outcomes": [
+                {
+                    "physical_anchor_keys": ["voice-before-identity"],
+                    "action_phase": "trigger_attempted",
+                    "business_state": "failed",
+                    "business_result_confirmed": False,
+                    "error_code": "VOICE_TRANSCRIBE_RESULT_UNKNOWN",
+                }
+            ],
+        }
+        runner, _ = self.make_runner(api, bridge)
+        identity_error = {
+            "observation_id": "voice-before-identity",
+            "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+        }
+        runner._reconcile_message_identities = Mock(
+            side_effect=lambda _target, observations, **_kwargs: (
+                list(observations),
+                {},
+                [dict(identity_error)],
+            )
+        )
+
+        result = runner._read_one_wechat_target(
+            Binding(
+                worker_id="worker-1",
+                worker_token="token",
+                client_instance_id="client-1",
+                run_status="running",
+            ),
+            target,
+            current_step="state_target_message_read",
+            enforce_read_targets=False,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["error_code"],
+            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+        )
+        voice_ledger = list_c2_ledger_entries(
+            target.conversation_id,
+            message_type="voice",
+        )
+        self.assertEqual(len(voice_ledger), 1)
+        self.assertEqual(voice_ledger[0]["terminal_state"], "failed")
+        self.assertNotEqual(
+            voice_ledger[0]["result"]["action_outcome"][
+                "action_phase"
+            ],
+            "not_attempted",
         )
 
     def test_new_voice_helper_keeps_one_success_and_one_failure(self):
@@ -6440,6 +6571,65 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(bridge.message_reads, [])
         self.assertEqual(runner.visible_hit_queue, [])
         self.assertIn("read_targets:20", api.events)
+
+    def test_first_screen_queue_uses_success_failure_and_backend_cooldowns(self):
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        session = {
+            "rpa_session_key": "wx:rpa:v1:cooldown",
+            "display_name": "CJCOOL01 客户",
+            "remark_code_candidates": ["CJCOOL01"],
+            "unread_hint": False,
+        }
+        payload = {"sessions": [session]}
+        result = {
+            "bindings": [
+                {
+                    "conversation_id": "conv-visible-cooldown",
+                    "rpa_session_key": "wx:rpa:v1:cooldown",
+                    "display_name": "CJCOOL01 客户",
+                    "remark_code": "CJCOOL01",
+                    "can_ingest_messages": True,
+                }
+            ]
+        }
+        target = WechatReadTarget(
+            conversation_id="conv-visible-cooldown",
+            rpa_session_key="wx:rpa:v1:cooldown",
+            display_name="CJCOOL01 客户",
+            remark_code="CJCOOL01",
+        )
+        dedupe_key = runner._target_dedupe_key(target)
+
+        runner.c2_read_success_cooldowns[dedupe_key] = (
+            time.monotonic() + 120
+        )
+        runner._enqueue_visible_hits(payload, result)
+        self.assertEqual(runner.visible_hit_queue, [])
+
+        session["unread_hint"] = True
+        runner._enqueue_visible_hits(payload, result)
+        self.assertEqual(len(runner.visible_hit_queue), 1)
+
+        runner.visible_hit_queue.clear()
+        runner.c2_read_failure_cooldowns[dedupe_key] = (
+            time.monotonic() + 120
+        )
+        runner._enqueue_visible_hits(payload, result)
+        self.assertEqual(runner.visible_hit_queue, [])
+
+        runner.c2_read_failure_cooldowns.clear()
+        runner.c2_read_success_cooldowns.clear()
+        session["unread_hint"] = False
+        result["bindings"][0]["next_read_due_at"] = (
+            datetime.now(timezone.utc) + timedelta(minutes=2)
+        ).isoformat()
+        runner._enqueue_visible_hits(payload, result)
+        self.assertEqual(runner.visible_hit_queue, [])
 
     def test_c2_visible_hit_inherits_current_read_target_authorization(self):
         api = FakeApi(None)
@@ -10649,6 +10839,298 @@ class TaskRunnerTest(unittest.TestCase):
         )
         self.assertIsNotNone(incident_path)
         vision.assert_called_once()
+
+    def test_backend_checkpoint_prevents_false_history_gap_after_local_cleanup(self):
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="ok", message="unused")
+        )
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            bridge,
+        )
+        unique = str(time.time_ns())
+        target = WechatReadTarget(
+            conversation_id=f"conv-backend-history-{unique}",
+            rpa_session_key="wx:rpa:v1:backend-history",
+            display_name="CJBACKEND 客户",
+            remark_code="CJBACKEND",
+            authorization_revision=f"revision-{unique}",
+        )
+        payload = bridge._contractual_message_payload(
+            {
+                "ok": True,
+                "messages": [
+                    {
+                        "id": f"new-customer-{unique}",
+                        "sender_role": "customer",
+                        "type": "text",
+                        "content": "最新问题",
+                        "bubble_rect": [420, 120, 650, 160],
+                    },
+                    {
+                        "id": f"backend-old-{unique}",
+                        "sender_role": "customer",
+                        "type": "text",
+                        "content": "后端已有的旧问题",
+                        "bubble_rect": [420, 220, 650, 260],
+                    },
+                ],
+            }
+        )
+        first = runner._build_final_slot_incremental_plan(
+            target=target,
+            sidecar_payload=payload,
+        )
+        backend_old_source_key = first["slot_ledger_states"][0][
+            "source_message_key"
+        ]
+        local_old_source_key = first["slot_ledger_states"][1][
+            "source_message_key"
+        ]
+        save_c2_ledger_terminal(
+            conversation_id=target.conversation_id,
+            source_message_key=local_old_source_key,
+            dedupe_key=f"dedupe:{local_old_source_key}",
+            message_type="text",
+            terminal_state="completed",
+            ingest_state="confirmed",
+            result={},
+        )
+        target.raw["identity_checkpoint"] = {
+            "version": 1,
+            "next_sequence_floor": 3,
+            "recent_messages": [
+                {
+                    "stable_id": "worker-message-2",
+                    "source_message_key": backend_old_source_key,
+                }
+            ],
+        }
+
+        plan = runner._build_final_slot_incremental_plan(
+            target=target,
+            sidecar_payload=payload,
+        )
+
+        self.assertEqual(
+            [item["ledger_state"] for item in plan["slot_ledger_states"]],
+            ["OLD_COMPLETED", "OLD_COMPLETED"],
+        )
+        self.assertEqual(
+            plan["slot_ledger_states"][0]["history_source"],
+            "backend_identity_checkpoint",
+        )
+        self.assertFalse(plan["history_gap"])
+
+    def test_history_gap_before_latest_self_is_warning_not_reply_gate(self):
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="ok", message="unused")
+        )
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            bridge,
+        )
+        unique = str(time.time_ns())
+        target = WechatReadTarget(
+            conversation_id=f"conv-historical-gap-{unique}",
+            rpa_session_key="wx:rpa:v1:historical-gap",
+            display_name="CJHIST 客户",
+            remark_code="CJHIST",
+            authorization_revision=f"revision-{unique}",
+            raw={
+                "recoverable_handoff_reason_codes": [
+                    "C2_MESSAGE_HISTORY_GAP"
+                ]
+            },
+        )
+        payload = bridge._contractual_message_payload(
+            {
+                "ok": True,
+                "messages": [
+                    {
+                        "id": f"historical-new-{unique}",
+                        "sender_role": "customer",
+                        "type": "text",
+                        "content": "旧区间新发现",
+                        "bubble_rect": [420, 100, 650, 140],
+                    },
+                    {
+                        "id": f"historical-old-{unique}",
+                        "sender_role": "customer",
+                        "type": "text",
+                        "content": "旧区间已确认",
+                        "bubble_rect": [420, 180, 650, 220],
+                    },
+                    {
+                        "id": f"latest-self-{unique}",
+                        "sender_role": "self",
+                        "type": "text",
+                        "content": "销售此前已经回复",
+                        "bubble_rect": [700, 260, 920, 300],
+                    },
+                    {
+                        "id": f"latest-customer-{unique}",
+                        "sender_role": "customer",
+                        "type": "text",
+                        "content": "这是最新待回复问题",
+                        "bubble_rect": [420, 340, 650, 380],
+                    },
+                ],
+            }
+        )
+        first = runner._build_final_slot_incremental_plan(
+            target=target,
+            sidecar_payload=payload,
+        )
+        historical_old_key = first["slot_ledger_states"][1][
+            "source_message_key"
+        ]
+        save_c2_ledger_terminal(
+            conversation_id=target.conversation_id,
+            source_message_key=historical_old_key,
+            dedupe_key=f"dedupe:{historical_old_key}",
+            message_type="text",
+            terminal_state="completed",
+            ingest_state="confirmed",
+            result={},
+        )
+
+        plan = runner._build_final_slot_incremental_plan(
+            target=target,
+            sidecar_payload=payload,
+        )
+
+        self.assertFalse(plan["history_gap"])
+        self.assertEqual(
+            plan["historical_warnings"][0]["warning_code"],
+            "C2_MESSAGE_HISTORY_GAP_HISTORICAL",
+        )
+        self.assertEqual(
+            plan["recoverable_handoff_resolution"]["status"],
+            "latest_unreplied_turn_complete",
+        )
+        payload.update(project_final_slot_flow_gates(plan))
+        ingest = build_message_ingest_payload(target, payload)
+        self.assertEqual(
+            ingest["evidence"]["recoverable_handoff_resolution"][
+                "reason_codes"
+            ],
+            ["C2_MESSAGE_HISTORY_GAP"],
+        )
+
+    def test_cross_round_error_before_latest_self_is_historical_warning(self):
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(
+                RpaResult(ok=True, result_code="ok", message="unused")
+            ),
+        )
+        target = WechatReadTarget(
+            conversation_id=f"conv-old-identity-{time.time_ns()}",
+            rpa_session_key="wx:rpa:v1:old-identity",
+            display_name="CJOLDID 客户",
+            remark_code="CJOLDID",
+            authorization_revision="revision-old-identity",
+        )
+        observations = [
+            {
+                "observation_id": "old-ambiguous",
+                "row_kind": "text_bubble",
+                "sender_role": "customer",
+                "sender_role_source": "same_row_avatar",
+                "content_clean": "很早以前的重复消息",
+                "bubble_rect": [420, 100, 650, 140],
+            },
+            {
+                "observation_id": "latest-self",
+                "row_kind": "text_bubble",
+                "sender_role": "self",
+                "sender_role_source": "same_row_avatar",
+                "content_clean": "销售已经回复",
+                "bubble_rect": [700, 220, 920, 260],
+            },
+            {
+                "observation_id": "latest-customer",
+                "row_kind": "text_bubble",
+                "sender_role": "customer",
+                "sender_role_source": "same_row_avatar",
+                "content_clean": "最新问题",
+                "bubble_rect": [420, 340, 650, 380],
+            },
+        ]
+
+        reconciled, blocking, warnings = (
+            runner._downgrade_historical_identity_errors(
+                target=target,
+                observations=observations,
+                errors=[
+                    {
+                        "observation_id": "old-ambiguous",
+                        "error_code": (
+                            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                        ),
+                    }
+                ],
+            )
+        )
+
+        self.assertEqual(blocking, [])
+        self.assertEqual(
+            [item["observation_id"] for item in reconciled],
+            ["latest-self", "latest-customer"],
+        )
+        self.assertEqual(
+            warnings[0]["warning_code"],
+            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS_HISTORICAL",
+        )
+
+    def test_history_gap_gets_one_backend_first_current_chat_reread(self):
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="ok", message="unused")
+        )
+        runner, _ = self.make_runner(FakeApi(None), bridge)
+        target = WechatReadTarget(
+            conversation_id=f"conv-gap-retry-{time.time_ns()}",
+            rpa_session_key="wx:rpa:v1:gap-retry",
+            display_name="CJGAPRETRY 客户",
+            remark_code="CJGAPRETRY",
+            authorization_revision="revision-gap-retry",
+        )
+        clean_payload = bridge._contractual_message_payload(
+            {
+                "ok": True,
+                "messages": [
+                    {
+                        "id": "clean-latest-customer",
+                        "sender_role": "customer",
+                        "type": "text",
+                        "content": "重新读取后顺序完整",
+                        "bubble_rect": [420, 300, 650, 340],
+                    }
+                ],
+            }
+        )
+        bridge.get_messages = unittest.mock.Mock(
+            return_value=clean_payload
+        )
+
+        retried_payload, retried_plan = (
+            runner._retry_history_gap_from_backend_once(
+                target=target,
+                target_label="CJGAPRETRY",
+                sidecar_payload=clean_payload,
+                incremental_plan={"history_gap": True},
+                cancel_check=lambda: False,
+            )
+        )
+
+        self.assertFalse(retried_plan["history_gap"])
+        self.assertTrue(
+            retried_payload[
+                "history_gap_automatic_reread_performed"
+            ]
+        )
+        bridge.get_messages.assert_called_once()
 
     def test_real_image_terminal_path_captures_each_unattended_failure(self):
         api = FakeApi(None)

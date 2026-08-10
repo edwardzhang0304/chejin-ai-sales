@@ -1089,6 +1089,62 @@ def open_handoff_events_for_conversation(
     return list(db.scalars(statement).all())
 
 
+RECOVERABLE_C2_HANDOFF_REASON_CODES = frozenset(
+    {
+        "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+        "C2_MESSAGE_HISTORY_GAP",
+    }
+)
+
+
+def close_open_recoverable_c2_handoffs(
+    db: Session,
+    *,
+    conversation_id: str,
+    reason_codes: list[str],
+    read_run_id: str,
+) -> dict[str, Any]:
+    """Close only temporary C2 gates proven healthy by a later full read."""
+
+    requested = {
+        str(value).strip()
+        for value in reason_codes
+        if str(value).strip() in RECOVERABLE_C2_HANDOFF_REASON_CODES
+    }
+    closed: list[HandoffEvent] = []
+    closed_at = utcnow()
+    for event in open_handoff_events_for_conversation(
+        db,
+        conversation_id,
+        for_update=True,
+    ):
+        reason_code = str(event.handoff_reason_code or "").strip()
+        if reason_code not in requested:
+            continue
+        evidence_refs = list(event.evidence_refs or [])
+        recovery_ref = f"c2_recovery_read:{read_run_id}"
+        if recovery_ref not in evidence_refs:
+            evidence_refs.append(recovery_ref)
+        event.evidence_refs = evidence_refs
+        event.status = "auto_recovered_clean_read"
+        event.closed_at = closed_at
+        closed.append(event)
+    db.flush()
+    remaining = open_handoff_events_for_conversation(
+        db,
+        conversation_id,
+        for_update=True,
+    )
+    return {
+        "closed_count": len(closed),
+        "closed_handoff_ids": [event.id for event in closed],
+        "closed_reason_codes": sorted(
+            {str(event.handoff_reason_code) for event in closed}
+        ),
+        "remaining_open_count": len(remaining),
+    }
+
+
 def enforce_open_handoff_gate(
     db: Session,
     conversation: Conversation,

@@ -1,5 +1,5 @@
 @startuml
-' 文档版本：v0.1.1；最后更新：2026-08-09
+' 文档版本：v0.1.3；最后更新：2026-08-10
 title AI智能客服售前跟进系统 C2-C3 单会话串行完整流程（图片增强目标架构）
 
 skinparam monochrome true
@@ -192,6 +192,12 @@ loop Worker运行中；每次循环最多完成一个会话事务
         W -> Lock: finally release
       else 存在授权目标
         W -> W: 按优先级选择一个目标\n好友待通过只允许首屏命中；\n已有有效会话才允许短码定向搜索
+        W -> W: 首屏/定向/恢复共用同一读取准入\n同时检查成功冷却、失败冷却、后端next_read_due_at
+        note right
+          成功且有新事实也至少冷却2分钟。
+          只有完成时间之后的新未读或正式continuation_token可提前唤醒。
+          未到期目标不得点击或搜索。
+        end note
 
         group 2. 授权检查 + 打开会话 + 单帧确认和首次读取
           W -> Auth: 校验当前authorization_revision
@@ -252,6 +258,8 @@ loop Worker运行中；每次循环最多完成一个会话事务
               OA -> Role: 对可见消息统一判定角色\n同行头像优先
               Role --> OA: customer / self / system / unknown
               OA --> W: initial observations + 未转写语音anchor列表
+              W -> W: 按物理气泡归并为canonical_voice_id\nstructural/stable等仅作为aliases
+              W -> L: 冻结唯一语音集合\nActionJournal每个canonical_voice_id一项
               opt read_reason=recall_precheck
                 W -> W: recall_precheck=true\n保存recall_cycle_id + recall_origin_status\n尚不允许发送召回
               end
@@ -272,15 +280,16 @@ loop Worker运行中；每次循环最多完成一个会话事务
         loop 保持当前会话，直到回复发送或明确不回复/转人工/技术失败
 
           group 3. 语音增强：Worker重新编排OmniAuto RPA
-            loop 当前屏每条未转写语音，物理操作可自下而上
-              W -> L: 查询conversation_id + voice_source_key
+            loop 当前屏每个canonical_voice_id，物理操作可自下而上
+              W -> L: 查询conversation_id + 唯一voice_source_key
               alt 已completed或failed
                 L --> W: terminal cache hit
                 W -> W: 不重复右键、不重复转写
               else 新的未转写语音
                 L --> W: cache miss
-                W -> L: 持久化动作意图\naction_phase=not_attempted
-                W -> OA: voice-transcribe(anchor)\n保持同一flow_id和UI锁
+                W -> L: 持久化唯一动作意图\naction_phase=not_attempted
+                W -> W: aliases必须恰好匹配一个对象\n零匹配或多匹配均零点击
+                W -> OA: voice-transcribe(canonical_voice_id + aliases)\n保持同一flow_id和UI锁
                 OA -> WX: 重新定位当前anchor并右键
                 OA -> OA: 右键/点击前先落盘\naction_phase=trigger_attempted\n落盘失败则禁止点击
                 OA -> WX: 点击语音转文字入口
@@ -297,8 +306,12 @@ loop Worker运行中；每次循环最多完成一个会话事务
                 end
                 W -> W: merge_item_outcomes\ncompleted/failed集合只增不减
                 W -> L: 按voice_source_key记录终态\n后续扫描不自动重复昂贵动作
+                opt 当前语音失败
+                  W -> OA: 关闭残留菜单并恢复稳定画面\n继续下一条语音
+                end
               end
             end
+            W -> W: 任何身份/合同/授权返回前先finally结算冻结集合\n断言completed+failed=冻结数且not_attempted=0
           end
 
           group 4. 最终权威画面：默认复用，不机械重复截图
@@ -528,10 +541,11 @@ loop Worker运行中；每次循环最多完成一个会话事务
             W -> W: 将新文字 + 新语音 + 新图片结果\n回填final_read原槽位
             W -> W: 按screen_order排序\n生成稳定source_message_key/dedupe_key
             note right of W
-            active_read逐source key确认后按角色/最终顺序处理：
-            客户失败媒体 -> waiting_sales_reply + handoff；
-            销售失败媒体且其下无新客户消息 -> sales_replied_waiting_user；
-            unknown -> 身份门禁，不伪造图片消息。
+            active_read逐source key确认后按影响范围处理：
+            客户失败媒体 -> L1回答完整文字或请求重发；
+            销售失败媒体 -> warning，不阻断最新客户消息；
+            unknown -> L2身份恢复，不伪造图片消息；
+            仅无法安全澄清且影响最新尾部才handoff。
             fact_settlement固定不改状态、不建Brain/handoff。
             end note
             note right of W
@@ -608,17 +622,27 @@ loop Worker运行中；每次循环最多完成一个会话事务
               end
             else 本轮没有ingested的新customer消息
               W -> W: no_action\nself-only/duplicated/ignored不触发Brain
-            else history_gap=true
-              Ingest -> C3: 新消息事实已入库\n但历史顺序存在缺口
-              C3 -> C3: 直接handoff\n不调用Brain、不自动回复
-              C3 --> W: terminal handoff + C2_MESSAGE_HISTORY_GAP
+            else history_gap=true且切入最新待回复尾部
+              Ingest -> C3: 新消息事实已入库\n建立L2 recoverable_hold
+              C3 -> C3: 合并后端recent_messages纯数据恢复\n必要时最多稳定重读一次
+              alt 两次/120秒内恢复或缺口仅在旧区间
+                C3 --> W: auto_recovered_clean_read\n继续最新完整尾部
+              else 仍影响最新待回复尾部
+                C3 --> W: terminal handoff + C2_MESSAGE_HISTORY_GAP
+              end
             else 会话ai_enabled=false/仍在waiting_sales_reply/全局紧急暂停
               Ingest -> C3: batch直接no_action或handoff
               C3 --> W: terminal no_action / handoff
-            else 存在未被后续销售事实覆盖的\nfailed customer/self语音或图片
-              Ingest -> C3: 完整消息事实已入库\n但上下文不完整
-              C3 -> C3: 直接handoff\n不调用Brain、不自动回复
-              C3 --> W: terminal handoff + error_code
+            else customer最新存在failed语音或图片
+              Ingest -> C3: failed事实已入库\n同批完整文字仍保留
+              alt 同批完整文字足以回答
+                C3 --> W: 创建普通batch\n回答文字并说明媒体未识别
+              else 最新只有failed媒体
+                C3 --> W: 创建澄清batch\n请客户改发文字或重发
+              end
+            else 只有self失败媒体或旧区间门禁
+              C3 -> C3: 记录warning\n不阻断最新完整客户尾部
+              C3 --> W: 创建普通客户消息batch或no_action
             else 目标、授权、角色和所有customer内容完整
               Ingest -> C3: collect/freeze message_batch\n返回当前batch_id
             end
@@ -643,10 +667,15 @@ loop Worker运行中；每次循环最多完成一个会话事务
                 Brain --> C3: send_reply + approved reply_text
                 C3 -> Reply: 创建当前batch唯一reply_action\nstatus=queued
                 C3 --> W: batch terminal=reply_action_created\nreply_action_id
-              else 高风险/低置信/Guard阻断
-                Brain --> C3: handoff / handoff_for_approval + reason
-                C3 -> DB: conversation.status=waiting_sales_reply\n记录handoff_event\nai_enabled保持原硬开关值
-                C3 --> W: batch terminal=handoff
+              else 高风险/低置信/Guard阻断原文
+                Brain --> C3: handoff / handoff_for_approval + reason\n可选安全边界文本
+                alt 边界文本通过Guard且不是必须静默
+                  C3 -> DB: 创建唯一reply_action + handoff_event\nconversation.status=waiting_sales_reply
+                  C3 --> W: batch terminal=reply_then_handoff\n只发送一次边界回复
+                else 无安全边界文本或必须静默
+                  C3 -> DB: conversation.status=waiting_sales_reply\n只记录handoff_event
+                  C3 --> W: batch terminal=handoff
+                end
               else Brain无可见回复/超时/供应商异常/结果合同非法
                 Brain --> C3: technical_error
                 C3 -> C3: 按同一batch重试策略处理\n不得伪装为no_action
