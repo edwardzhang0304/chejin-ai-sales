@@ -14932,7 +14932,7 @@ def sidebar_visible_list_enhanced_ocr_items(
         if not isinstance(item, dict):
             continue
         text = str(item.get("text") or "").strip()
-        if not text or not is_session_name_candidate(text):
+        if not text or not is_c2_session_title_candidate(text):
             continue
         row = dict(item)
         for key in ("left", "right", "center_x"):
@@ -15028,7 +15028,7 @@ def parse_sessions_from_ocr(
     candidates: list[dict[str, Any]] = []
     for item in ocr_items:
         text = str(item.get("text") or "").strip()
-        if not is_session_name_candidate(text):
+        if not is_c2_session_title_candidate(text):
             continue
         if item["center_y"] < min_header_y or item["center_y"] > height - 20:
             continue
@@ -16790,6 +16790,10 @@ def normalize_wechat_window(hwnd: int) -> dict[str, Any]:
 
 def is_session_name_candidate(text: str) -> bool:
     return win32_ocr_text.is_session_name_candidate(text)
+
+
+def is_c2_session_title_candidate(text: Any) -> bool:
+    return win32_ocr_text.is_c2_session_title_candidate(text)
 
 
 def is_session_time_text(text: str) -> bool:

@@ -527,6 +527,10 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["chejin_overlays"],
         )
         self.assertIn(
+            "c2_omniauto_authoritative_session_admission",
+            provenance["chejin_overlays"],
+        )
+        self.assertIn(
             "91688de9047d5973cee9b18de00ca2f6e7772a86",
             provenance["integration_note"],
         )
@@ -534,6 +538,12 @@ class PackagingScriptsTest(unittest.TestCase):
             "可靠消息类型优先于结构图片且不依赖动作成功",
             provenance["integration_note"],
         )
+        self.assertIn(
+            "OmniAuto 独占标题 OCR",
+            provenance["integration_note"],
+        )
+        self.assertIn("Worker 只校验", provenance["integration_note"])
+        self.assertIn("不读取 `raw_title`", provenance["integration_note"])
         self.assertEqual(
             provenance["historical_integrations"][0][
                 "chejin_integration_commit"

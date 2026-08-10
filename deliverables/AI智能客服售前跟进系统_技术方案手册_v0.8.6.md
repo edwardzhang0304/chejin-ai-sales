@@ -2997,6 +2997,16 @@ POST /api/workers/{worker_id}/wechat/sessions/scan-result
 | `last_message_preview` | string | 否 | 列表预览文本。 |
 | `ocr_confidence` | number | 否 | OCR 置信度。 |
 
+C2 会话身份只允许一个决策点：OmniAuto Sidecar 负责从微信界面确认标题行、判定
+`private / group / unknown`、提取固定八位正式短码，并输出最终准入结果。正式短码生产语法统一为
+`CJ[A-Z0-9]{6}`，历史可变长度短码不参与正式 C2 身份链路。
+
+Worker 不得读取 `raw_title`、不得提取短码，也不得重新判定单聊、群聊或
+`unknown`。Worker 只校验 Sidecar 的 `c2_remark_code_candidates` 与
+`c2_conversation_admission`：仅当结果是 `private + admission_allowed=true + 恰好一个固定八位短码`，且列表短码与准入对象中的 `remark_code` 一致时，才可以用该短码匹配后端授权任务。`group / unknown / admission_allowed=false`
+全部不准入；字段缺失、格式错误或彼此矛盾必须失败关闭，记录
+`C2_SIDECAR_IDENTITY_CONTRACT_INVALID`，不得尝试“修复” Sidecar 结论。
+
 V16.98 不在 `sessions[]` 中新增 `conversation_type` 字段：群聊/unknown 的会话行通过清空 `remark_code_candidates` 阻止自动绑定；扫描级 `evidence.c2_conversation_admission` 只保存 private/group/unknown 数量和规则摘要。点击目标后的详细 `raw_title / conversation_type / conversation_type_reason` 保存在 Worker/Sidecar 定位证据中，用于本轮终止判断，不发散新的后端绑定字段。
 
 响应字段：
@@ -4205,6 +4215,10 @@ tree SHA 必须由最终提交后的真实目录动态计算，不得把历史 t
    仲裁不得依赖点击、转写结算或后端确认是否成功。中文 `integration_note`、上述
    机器字段与来源记录测试必须同时保持一致；旧
    `855c218 + 2318bd8 + ff9e0de` 仍保留在 `historical_integrations`。
+   车金专属 `chejin_overlays` 还必须登记
+   `c2_omniauto_authoritative_session_admission`，表示 OmniAuto 是 C2 会话身份的唯一判定者，
+   Worker 只验证合同和后端授权；该车金 overlay 不得伪写为新的
+   `selective_integrations[].source_commit`。
 4. 上一轮隔离整改已闭环语音/图片类型仲裁与图片失败结算，但 `9872dad…` 实机又证明
    语音候选仍可因多 alias 分裂，且跨轮身份门禁可早于剩余语音终态返回。当前必须按
    第 6.0.3.6、6.0.4.6 和第 8.7 节新增门禁整改；通过前不能构建替代 UAT 包、正式 EXE，

@@ -3,10 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import sys
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from .models import WechatReadTarget
@@ -21,16 +19,6 @@ from .c2_contract import (
 from .storage import save_c2_state
 
 
-OMNIAUTO_ROOT = Path(__file__).resolve().parents[1] / "omniauto-rpa"
-if str(OMNIAUTO_ROOT) not in sys.path:
-    sys.path.insert(0, str(OMNIAUTO_ROOT))
-
-from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.text_normalization import (  # noqa: E402
-    classify_c2_conversation_title,
-    extract_c2_remark_codes,
-)
-
-
 IMAGE_PERSISTENCE_POLICY = dict(c2_contract_v3().get("image_persistence_policy") or {})
 IMAGE_RUNTIME_FIELDS = set(IMAGE_PERSISTENCE_POLICY.get("forbidden_field_names") or [])
 
@@ -40,6 +28,8 @@ IMAGE_RUNTIME_FIELD_PREFIXES = (
     "retry_response",
     "initial_response",
 )
+
+FORMAL_C2_REMARK_CODE_RE = re.compile(r"CJ[A-Z0-9]{6}")
 
 
 def project_final_slot_flow_gates(
@@ -262,8 +252,8 @@ def normalized_content_hash(value: Any) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
 
 
-def extract_remark_codes(*values: Any) -> list[str]:
-    return extract_c2_remark_codes(*values)
+def is_formal_c2_remark_code(value: Any) -> bool:
+    return isinstance(value, str) and bool(FORMAL_C2_REMARK_CODE_RE.fullmatch(value))
 
 
 def row_fingerprint(value: Any) -> str:
@@ -292,34 +282,53 @@ def build_scan_result_payload(
     mapped: list[dict[str, Any]] = []
     admission_counts = {"private": 0, "group": 0, "unknown": 0}
     missing_session_key_excluded_count = 0
+    contract_rejections: list[dict[str, str]] = []
     for item in sessions:
         if not isinstance(item, dict):
             continue
         display_name = str(item.get("name") or item.get("title") or item.get("display_name") or "").strip()
         if not display_name:
+            contract_rejections.append(
+                {
+                    "rpa_session_key": str(item.get("session_key") or "")[:255],
+                    "reason": "display_name_missing",
+                }
+            )
             continue
         rpa_session_key = str(item.get("session_key") or "").strip()
         if not rpa_session_key:
             missing_session_key_excluded_count += 1
+            contract_rejections.append(
+                {
+                    "rpa_session_key": "",
+                    "reason": "session_key_missing",
+                }
+            )
             continue
-        raw_title = str(item.get("raw_title") or display_name).strip()
-        detected_codes = extract_remark_codes(raw_title)
-        admitted_codes: list[str] = []
-        admission_type = "unknown"
-        if len(detected_codes) == 1:
-            admission = classify_c2_conversation_title(raw_title, detected_codes[0])
-            admission_type = str(admission.get("conversation_type") or "unknown")
-            if admission.get("admission_allowed"):
-                admitted_codes = detected_codes
-        admission_counts[admission_type if admission_type in admission_counts else "unknown"] += 1
+        admitted_codes, admission_type, contract_error = validate_sidecar_c2_identity(item)
+        if contract_error:
+            contract_rejections.append(
+                {
+                    "rpa_session_key": rpa_session_key[:255],
+                    "reason": contract_error,
+                }
+            )
+        counted_type = (
+            "private"
+            if admitted_codes
+            else admission_type
+            if admission_type in {"group", "unknown"}
+            else "unknown"
+        )
+        admission_counts[counted_type] += 1
         preview = str(item.get("content") or item.get("preview") or item.get("last_message_preview") or "")
         fingerprint = row_fingerprint(item.get("row_fingerprint"))
         mapped.append(
             {
                 "rpa_session_key": rpa_session_key,
                 "display_name": display_name[:255],
-                # A preview may quote another contact or group member name. Only
-                # the session title is authoritative enough for automatic binding.
+                # Copy only the identity accepted by the Sidecar contract. Worker
+                # must not derive a replacement identity from display/preview text.
                 "remark_code_candidates": admitted_codes,
                 "row_fingerprint": fingerprint or None,
                 "unread_hint": bool(item.get("unread_signal") or item.get("unread") or item.get("unread_badge")),
@@ -346,7 +355,9 @@ def build_scan_result_payload(
                 "group_excluded_count": admission_counts["group"],
                 "unknown_excluded_count": admission_counts["unknown"],
                 "missing_session_key_excluded_count": missing_session_key_excluded_count,
-                "rule": "valid_remark_code_and_private_title_only",
+                "contract_rejected_count": len(contract_rejections),
+                "contract_rejections": contract_rejections[:20],
+                "rule": "omniauto_authoritative_identity_contract_only",
             },
         },
         "scan_failed": not bool(sidecar_payload.get("ok")),
@@ -354,6 +365,47 @@ def build_scan_result_payload(
     }
     save_c2_state("last_scan", {"scan_id": payload["scan_id"], "sidecar_run_id": payload["sidecar_run_id"], "session_count": len(mapped), "finished_at": payload["finished_at"]})
     return payload
+
+
+def validate_sidecar_c2_identity(
+    item: dict[str, Any],
+) -> tuple[list[str], str, str | None]:
+    candidates_raw = item.get("c2_remark_code_candidates")
+    admission = item.get("c2_conversation_admission")
+    if not isinstance(candidates_raw, list):
+        return [], "unknown", "remark_code_candidates_missing"
+    if not isinstance(admission, dict):
+        return [], "unknown", "conversation_admission_missing"
+
+    conversation_type = str(admission.get("conversation_type") or "")
+    allowed = admission.get("admission_allowed")
+    reason = str(admission.get("reason") or "").strip()
+    if conversation_type not in {"private", "group", "unknown"}:
+        return [], "unknown", "conversation_type_invalid"
+    if not isinstance(allowed, bool):
+        return [], conversation_type, "admission_allowed_invalid"
+    if not reason:
+        return [], conversation_type, "admission_reason_missing"
+
+    if any(not isinstance(value, str) for value in candidates_raw):
+        return [], conversation_type, "remark_code_candidates_invalid"
+    candidates = list(candidates_raw)
+    if any(not value for value in candidates) or len(candidates) != len(set(candidates)):
+        return [], conversation_type, "remark_code_candidates_invalid"
+    if allowed is not True:
+        if candidates:
+            return [], conversation_type, "disallowed_identity_has_candidates"
+        return [], conversation_type, None
+    if conversation_type != "private":
+        return [], conversation_type, "allowed_identity_not_private"
+    if len(candidates) != 1 or not is_formal_c2_remark_code(candidates[0]):
+        return [], conversation_type, "formal_remark_code_invalid"
+    admitted_code = admission.get("remark_code")
+    if not isinstance(admitted_code, str):
+        return [], conversation_type, "admission_remark_code_invalid"
+    if admitted_code != candidates[0]:
+        return [], conversation_type, "admission_remark_code_mismatch"
+    return candidates, conversation_type, None
 
 
 def sender_role_hint(message: dict[str, Any]) -> str:
