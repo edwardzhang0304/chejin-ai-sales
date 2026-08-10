@@ -66,6 +66,25 @@ from chejin_worker_client.wechat_c2 import (
 )
 
 
+def sidecar_identity_contract(
+    code: str = "",
+    *,
+    conversation_type: str = "unknown",
+    allowed: bool = False,
+    reason: str = "test_sidecar_identity",
+) -> dict:
+    normalized_code = str(code or "").strip().upper()
+    return {
+        "c2_remark_code_candidates": [normalized_code] if allowed else [],
+        "c2_conversation_admission": {
+            "conversation_type": conversation_type,
+            "admission_allowed": allowed,
+            "remark_code": normalized_code,
+            "reason": reason,
+        },
+    }
+
+
 class FakeApi:
     def __init__(self, task: Task | None, result_mode: str = "success", claim_response: Task | None = None) -> None:
         self.task = task
@@ -529,6 +548,11 @@ class FakeBridge:
                 {
                     "name": "CJTEST01 许聪",
                     "session_key": "wx:rpa:v1:a",
+                    **sidecar_identity_contract(
+                        "CJTEST01",
+                        conversation_type="private",
+                        allowed=True,
+                    ),
                     "row_fingerprint": {"title_text": "CJTEST01 许聪"},
                     "content": "你好",
                     "unread_signal": True,
@@ -5516,9 +5540,9 @@ class TaskRunnerTest(unittest.TestCase):
             WechatReadTarget(
                 conversation_id="conv-1",
                 rpa_session_key="wx:rpa:v1:a",
-                display_name="CJVOICE01 虾丸子大人",
-                remark_code="CJVOICE01",
-                row_fingerprint={"title_text": "CJVOICE01 虾丸子大人"},
+                display_name="CJVOIC01 虾丸子大人",
+                remark_code="CJVOIC01",
+                row_fingerprint={"title_text": "CJVOIC01 虾丸子大人"},
                 ocr_confidence=0.98,
             )
         ]
@@ -5984,7 +6008,13 @@ class TaskRunnerTest(unittest.TestCase):
                 "state": "sessions_mock",
                 "sidecar_run_id": "session-run-miss",
                 "sessions": [
-                    {"name": "腾讯新闻", "session_key": "wx:rpa:v1:news", "content": "新闻", "ocr_confidence": 0.98}
+                    {
+                        "name": "腾讯新闻",
+                        "session_key": "wx:rpa:v1:news",
+                        **sidecar_identity_contract(),
+                        "content": "新闻",
+                        "ocr_confidence": 0.98,
+                    }
                 ],
             }
 
@@ -6038,6 +6068,61 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(api.events.count("ingest:1"), 1)
         self.assertIn("read_targets:20", api.events)
 
+    def test_c2_scan_warns_and_rejects_invalid_sidecar_identity_contract(self):
+        api = FakeApi(None)
+        bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"))
+
+        def list_contradictory_session(**_kwargs):
+            bridge.session_scans.append({})
+            return {
+                "ok": True,
+                "adapter": "mock",
+                "state": "sessions_mock",
+                "sidecar_run_id": "session-run-invalid-contract",
+                "sessions": [
+                    {
+                        "name": "CJP6M3R7许聪",
+                        "raw_title": "CJP6M3R7许聪",
+                        "session_key": "wx:rpa:v1:invalid-contract",
+                        "c2_remark_code_candidates": ["CJP6M3R7"],
+                        "c2_conversation_admission": {
+                            "conversation_type": "unknown",
+                            "admission_allowed": True,
+                            "remark_code": "CJP6M3R7",
+                            "reason": "contradictory_test_fixture",
+                        },
+                    }
+                ],
+            }
+
+        bridge.list_sessions = list_contradictory_session  # type: ignore[method-assign]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        with patch("chejin_worker_client.task_runner.append_log") as logger:
+            runner._run_c2_scan_round(binding, reason="unit")
+
+        self.assertEqual(
+            api.scan_payloads[0]["sessions"][0]["remark_code_candidates"],
+            [],
+        )
+        warning_calls = [
+            call
+            for call in logger.call_args_list
+            if len(call.args) >= 2
+            and call.args[1] == "c2_sidecar_identity_contract_rejected"
+        ]
+        self.assertEqual(len(warning_calls), 1)
+        self.assertEqual(
+            warning_calls[0].kwargs.get("error_code"),
+            "C2_SIDECAR_IDENTITY_CONTRACT_INVALID",
+        )
+
     def test_c2_visible_hit_uses_current_scan_session_key_when_backend_binding_key_is_stale(self):
         api = FakeApi(None)
         bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"))
@@ -6045,9 +6130,9 @@ class TaskRunnerTest(unittest.TestCase):
             WechatReadTarget(
                 conversation_id="conv-voice",
                 rpa_session_key="wx:rpa:v1:stale-binding",
-                display_name="CJVOICE01 许聪",
-                remark_code="CJVOICE01",
-                row_fingerprint={"title_text": "CJVOICE01 许聪"},
+                display_name="CJVOIC01 许聪",
+                remark_code="CJVOIC01",
+                row_fingerprint={"title_text": "CJVOIC01 许聪"},
                 ocr_confidence=0.98,
                 read_reason="waiting_user_reply",
             )
@@ -6063,9 +6148,14 @@ class TaskRunnerTest(unittest.TestCase):
                 "sidecar_run_id": "session-run-voice",
                 "sessions": [
                     {
-                        "name": "CJVOICE01 许聪",
+                        "name": "CJVOIC01 许聪",
                         "session_key": "wx:rpa:v1:current-visible",
-                        "row_fingerprint": {"title_text": "CJVOICE01 许聪", "title_bbox": [154, 115, 306, 143]},
+                        **sidecar_identity_contract(
+                            "CJVOIC01",
+                            conversation_type="private",
+                            allowed=True,
+                        ),
+                        "row_fingerprint": {"title_text": "CJVOIC01 许聪", "title_bbox": [154, 115, 306, 143]},
                         "content": '[语音] 2"',
                         "unread_signal": True,
                         "ocr_confidence": 0.98,
@@ -6083,10 +6173,10 @@ class TaskRunnerTest(unittest.TestCase):
                         "conversation_id": "conv-voice",
                         "lead_id": "lead-voice",
                         "sales_id": "sales-1",
-                        "remark_code": "CJVOICE01",
+                        "remark_code": "CJVOIC01",
                         "rpa_session_key": "wx:rpa:v1:stale-binding",
-                        "display_name": "CJVOICE01 许聪",
-                        "row_fingerprint": {"title_text": "CJVOICE01 许聪"},
+                        "display_name": "CJVOIC01 许聪",
+                        "row_fingerprint": {"title_text": "CJVOIC01 许聪"},
                         "ocr_confidence": 0.98,
                         "can_ingest_messages": True,
                     }
@@ -6159,9 +6249,9 @@ class TaskRunnerTest(unittest.TestCase):
             WechatReadTarget(
                 conversation_id="conv-voice",
                 rpa_session_key="wx:rpa:v1:backend",
-                display_name="CJVOICE01 虾丸子大人",
-                remark_code="CJVOICE01",
-                row_fingerprint={"title_text": "CJVOICE01 虾丸子大人"},
+                display_name="CJVOIC01 虾丸子大人",
+                remark_code="CJVOIC01",
+                row_fingerprint={"title_text": "CJVOIC01 虾丸子大人"},
                 ocr_confidence=0.98,
                 read_reason="waiting_user_reply",
             )
@@ -6178,9 +6268,9 @@ class TaskRunnerTest(unittest.TestCase):
                 "sidecar_run_id": "session-run-visible-now",
                 "sessions": [
                     {
-                        "name": "CJVOICE01 虾丸子大人",
+                        "name": "CJVOIC01 虾丸子大人",
                         "session_key": "wx:rpa:v1:visible-now",
-                        "row_fingerprint": {"title_text": "CJVOICE01 虾丸子大人"},
+                        "row_fingerprint": {"title_text": "CJVOIC01 虾丸子大人"},
                         "content": '[语音] 2"',
                         "unread_signal": True,
                         "ocr_confidence": 0.98,
@@ -6197,7 +6287,7 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertNotIn("sessions", bridge.c2_operation_order)
         self.assertEqual(bridge.locate_chats[0]["target_mode"], "visible")
         self.assertEqual(bridge.locate_chats[0]["rpa_session_key"], "wx:rpa:v1:backend")
-        self.assertEqual(bridge.locate_chats[0]["remark_code"], "CJVOICE01")
+        self.assertEqual(bridge.locate_chats[0]["remark_code"], "CJVOIC01")
 
     def test_c2_state_target_passes_short_code_to_atomic_visible_locate(self):
         api = FakeApi(None)
@@ -6251,9 +6341,9 @@ class TaskRunnerTest(unittest.TestCase):
             WechatReadTarget(
                 conversation_id="conv-voice",
                 rpa_session_key="wx:rpa:v1:backend",
-                display_name="CJVOICE01 虾丸子大人",
-                remark_code="CJVOICE01",
-                row_fingerprint={"title_text": "CJVOICE01 虾丸子大人"},
+                display_name="CJVOIC01 虾丸子大人",
+                remark_code="CJVOIC01",
+                row_fingerprint={"title_text": "CJVOIC01 虾丸子大人"},
                 ocr_confidence=0.98,
                 read_reason="waiting_user_reply",
             )
@@ -6297,9 +6387,9 @@ class TaskRunnerTest(unittest.TestCase):
             WechatReadTarget(
                 conversation_id="conv-voice",
                 rpa_session_key="wx:rpa:v1:backend",
-                display_name="CJVOICE01 虾丸子大人",
-                remark_code="CJVOICE01",
-                row_fingerprint={"title_text": "CJVOICE01 虾丸子大人"},
+                display_name="CJVOIC01 虾丸子大人",
+                remark_code="CJVOIC01",
+                row_fingerprint={"title_text": "CJVOIC01 虾丸子大人"},
                 ocr_confidence=0.98,
                 read_reason="waiting_user_reply",
             )
@@ -6328,11 +6418,11 @@ class TaskRunnerTest(unittest.TestCase):
         runner, _ = self.make_runner(api, bridge)
         runner.c2_last_visible_sessions = [
             {
-                "display_name": "CJVOICE01 虾丸子大人",
+                "display_name": "CJVOIC01 虾丸子大人",
                 "rpa_session_key": "wx:rpa:v1:recent-visible",
-                "remark_code_candidates": ["CJVOICE01"],
+                "remark_code_candidates": ["CJVOIC01"],
                 "last_message_preview": '[语音] 2"',
-                "row_fingerprint": {"title_text": "CJVOICE01 虾丸子大人", "title_bbox": [154, 198, 306, 222]},
+                "row_fingerprint": {"title_text": "CJVOIC01 虾丸子大人", "title_bbox": [154, 198, 306, 222]},
                 "ocr_confidence": 0.98,
             }
         ]
@@ -6352,9 +6442,9 @@ class TaskRunnerTest(unittest.TestCase):
             WechatReadTarget(
                 conversation_id="conv-voice",
                 rpa_session_key="wx:rpa:v1:backend",
-                display_name="CJVOICE01 虾丸子大人",
-                remark_code="CJVOICE01",
-                row_fingerprint={"title_text": "CJVOICE01 虾丸子大人"},
+                display_name="CJVOIC01 虾丸子大人",
+                remark_code="CJVOIC01",
+                row_fingerprint={"title_text": "CJVOIC01 虾丸子大人"},
                 ocr_confidence=0.98,
                 read_reason="waiting_user_reply",
             )
@@ -6382,11 +6472,11 @@ class TaskRunnerTest(unittest.TestCase):
         runner, _ = self.make_runner(api, bridge)
         runner.c2_last_visible_sessions = [
             {
-                "display_name": "CJVOICE01 虾丸子大人",
+                "display_name": "CJVOIC01 虾丸子大人",
                 "rpa_session_key": "wx:rpa:v1:recent-visible",
-                "remark_code_candidates": ["CJVOICE01"],
+                "remark_code_candidates": ["CJVOIC01"],
                 "last_message_preview": '[语音] 2"',
-                "row_fingerprint": {"title_text": "CJVOICE01 虾丸子大人"},
+                "row_fingerprint": {"title_text": "CJVOIC01 虾丸子大人"},
                 "ocr_confidence": 0.98,
             }
         ]
@@ -6404,9 +6494,9 @@ class TaskRunnerTest(unittest.TestCase):
             WechatReadTarget(
                 conversation_id="conv-voice",
                 rpa_session_key="wx:rpa:v1:backend",
-                display_name="CJVOICE01 虾丸子大人",
-                remark_code="CJVOICE01",
-                row_fingerprint={"title_text": "CJVOICE01 虾丸子大人"},
+                display_name="CJVOIC01 虾丸子大人",
+                remark_code="CJVOIC01",
+                row_fingerprint={"title_text": "CJVOIC01 虾丸子大人"},
                 ocr_confidence=0.98,
                 read_reason="waiting_user_reply",
             )
@@ -6422,8 +6512,8 @@ class TaskRunnerTest(unittest.TestCase):
                 "state": "sessions_mock",
                 "sidecar_run_id": "session-run-ambiguous",
                 "sessions": [
-                    {"name": "CJVOICE01 虾丸子大人", "session_key": "wx:rpa:v1:a", "content": '[语音] 2"', "ocr_confidence": 0.98},
-                    {"name": "群聊", "session_key": "wx:rpa:v1:b", "content": "包含:CJVOICE01 虾丸子大人", "ocr_confidence": 0.98},
+                    {"name": "CJVOIC01 虾丸子大人", "session_key": "wx:rpa:v1:a", "content": '[语音] 2"', "ocr_confidence": 0.98},
+                    {"name": "群聊", "session_key": "wx:rpa:v1:b", "content": "包含:CJVOIC01 虾丸子大人", "ocr_confidence": 0.98},
                 ],
             }
 
@@ -6894,6 +6984,11 @@ class TaskRunnerTest(unittest.TestCase):
                     {
                         "name": "CJTEST01 许聪",
                         "session_key": "wx:rpa:v1:a",
+                        **sidecar_identity_contract(
+                            "CJTEST01",
+                            conversation_type="private",
+                            allowed=True,
+                        ),
                         "row_fingerprint": {"title_text": "CJTEST01 许聪"},
                         "content": "没有未读标记",
                         "unread_signal": False,

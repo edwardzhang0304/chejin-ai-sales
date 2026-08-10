@@ -107,8 +107,8 @@ from .wechat_c2 import (
     build_flow_gate_ingest_payload,
     build_message_ingest_payload,
     build_scan_result_payload,
-    extract_remark_codes,
     image_observation_source_key,
+    is_formal_c2_remark_code,
     message_rect,
     order_authoritative_slots,
     project_final_slot_flow_gates,
@@ -3516,6 +3516,28 @@ class TaskRunner:
             if not self._ui_actions_enabled(binding):
                 return
             payload = build_scan_result_payload(sidecar_payload)
+            admission_evidence = (
+                (payload.get("evidence") or {}).get("c2_conversation_admission")
+                if isinstance(payload.get("evidence"), dict)
+                else {}
+            )
+            contract_rejected_count = int(
+                (admission_evidence or {}).get("contract_rejected_count") or 0
+            )
+            if contract_rejected_count:
+                append_log(
+                    "WARN",
+                    "c2_sidecar_identity_contract_rejected",
+                    "OmniAuto 会话身份结论字段缺失或互相矛盾，Worker 已拒绝该候选且未重新解析标题。",
+                    error_code="C2_SIDECAR_IDENTITY_CONTRACT_INVALID",
+                    metadata={
+                        "rejected_count": contract_rejected_count,
+                        "rejections": (admission_evidence or {}).get(
+                            "contract_rejections"
+                        )
+                        or [],
+                    },
+                )
             review_path = self._write_c2_sessions_review(reason=reason, sidecar_payload=sidecar_payload, scan_payload=payload)
             raw_sessions = sidecar_payload.get("sessions") if isinstance(sidecar_payload.get("sessions"), list) else []
             self.c2_last_visible_sessions = [
@@ -4284,7 +4306,7 @@ class TaskRunner:
             return "C2_TARGET_CONVERSATION_ID_MISSING"
         if not target.remark_code:
             return "C2_TARGET_REMARK_CODE_MISSING"
-        if str(target.remark_code).strip().upper() not in extract_remark_codes(target.remark_code):
+        if not is_formal_c2_remark_code(target.remark_code):
             return "C2_TARGET_REMARK_CODE_INVALID"
         if target.ocr_confidence is not None and target.ocr_confidence < CONFIG.c2_message_min_ocr_confidence:
             return "C2_TARGET_OCR_LOW_CONFIDENCE"

@@ -17,6 +17,7 @@
   ],
   "chejin_overlays": [
     "strict_current_screen_without_history_scroll",
+    "c2_omniauto_authoritative_session_admission",
     "c2_same_row_avatar_sender_role",
     "c2_error_and_observation_contract",
     "action_journal_authorization_and_cancel_checks",
@@ -35,5 +36,5 @@
       ]
     }
   ],
-  "integration_note": "当前内嵌副本基于 OmniAuto a563e6688c47a8922510794101967823fe1389d7，并选择性同步 91688de9047d5973cee9b18de00ca2f6e7772a86 的微信菜单精确分类、同一真实弹窗边界证据合同、非图片剪贴板失败结算、正式菜单失败原因、复制点击前安全落盘顺序，以及可靠消息类型优先于结构图片且不依赖动作成功的仲裁能力；该固定提交同时收口独立 OmniAuto 的绝对 Vision 边界指纹与正式菜单测试夹具。车金继续保留悬浮球/F8/键鼠守护删除、hard_opt_out 以及专属适配。最终车金提交和完整目录 tree SHA 由打包 manifest 动态记录。"
+  "integration_note": "当前内嵌副本基于 OmniAuto a563e6688c47a8922510794101967823fe1389d7，并选择性同步 91688de9047d5973cee9b18de00ca2f6e7772a86 的微信菜单精确分类、同一真实弹窗边界证据合同、非图片剪贴板失败结算、正式菜单失败原因、复制点击前安全落盘顺序，以及可靠消息类型优先于结构图片且不依赖动作成功的仲裁能力；该固定提交同时收口独立 OmniAuto 的绝对 Vision 边界指纹与正式菜单测试夹具。车金 overlay 固定 C2 会话身份的单一决策边界：OmniAuto 独占标题 OCR、单聊/群聊/unknown 分类、固定八位正式短码提取与准入决策；Worker 只校验 `c2_remark_code_candidates` 与 `c2_conversation_admission` 合同并匹配后端授权，不读取 `raw_title`、不提取短码、不重新分类会话；缺字段或矛盾结果必须拒绝并告警。车金继续保留悬浮球/F8/键鼠守护删除、hard_opt_out 以及专属适配。最终车金提交和完整目录 tree SHA 由打包 manifest 动态记录。"
 }

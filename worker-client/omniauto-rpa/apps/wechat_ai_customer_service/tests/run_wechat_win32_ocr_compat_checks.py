@@ -361,7 +361,7 @@ def test_sidebar_visible_list_enhanced_ocr_recovers_pinned_gray_sessions() -> No
     def fake_ocr_runner(_image):
         return [
             {
-                "text": "CJR8S5K3虾丸子大..",
+                "text": "CJR8S5K3虾丸子大...",
                 "confidence": 0.997,
                 "left": 154 * scale,
                 "right": 330 * scale,
@@ -388,7 +388,7 @@ def test_sidebar_visible_list_enhanced_ocr_recovers_pinned_gray_sessions() -> No
     enhanced = sidebar_visible_list_enhanced_ocr_items(image, (980, 860), ocr_runner=fake_ocr_runner)
     sessions = parse_sessions_from_ocr(full_ocr_items + enhanced, (980, 860), screenshot=image)
     names = [item["name"] for item in sessions]
-    assert_true(names[:2] == ["CJR8S5K3虾丸子大..", "CJTOP02第二个置顶"], f"enhanced OCR should recover all pinned gray rows: {names}")
+    assert_true(names[:2] == ["CJR8S5K3虾丸子大...", "CJTOP02第二个置顶"], f"enhanced OCR should recover all pinned gray rows: {names}")
     assert_true(enhanced and enhanced[0].get("ocr_source") == "sidebar_visible_list_enhanced", f"enhanced OCR source should be marked: {enhanced}")
 
 

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import inspect
 import json
 import unittest
 
+import chejin_worker_client.wechat_c2 as wechat_c2_module
 from chejin_worker_client.c2_contract import contract_revision, contract_sha256
 from chejin_worker_client.models import WechatReadTarget
 from chejin_worker_client.wechat_c2 import (
     build_flow_gate_ingest_payload,
     build_message_ingest_payload as _build_message_ingest_payload_v3,
     build_scan_result_payload,
-    extract_remark_codes,
+    is_formal_c2_remark_code,
     message_dedupe_metadata,
     message_type,
     observation_alignment_signature,
@@ -35,7 +37,39 @@ def build_v3_message_ingest_payload(target: WechatReadTarget, sidecar_payload: d
     )
 
 
+def sidecar_session_identity(
+    *,
+    name: str,
+    session_key: str,
+    conversation_type: str,
+    allowed: bool,
+    code: str = "",
+    reason: str = "sidecar_test_decision",
+    **extra,
+) -> dict:
+    return {
+        "name": name,
+        "session_key": session_key,
+        "c2_remark_code_candidates": [code] if allowed and code else [],
+        "c2_conversation_admission": {
+            "conversation_type": conversation_type,
+            "admission_allowed": allowed,
+            "remark_code": code,
+            "reason": reason,
+        },
+        **extra,
+    }
+
+
 class WechatC2Test(unittest.TestCase):
+    def test_worker_identity_module_cannot_reintroduce_title_reclassification(self):
+        source = inspect.getsource(wechat_c2_module)
+
+        self.assertNotIn("raw_title", source)
+        self.assertNotIn("classify_c2_conversation_title", source)
+        self.assertNotIn("extract_c2_remark_codes", source)
+        self.assertNotIn("omniauto-rpa", source)
+
     def test_voice_structural_and_stable_anchors_are_one_physical_identity(self):
         target = WechatReadTarget(
             conversation_id="conv-voice-alias",
@@ -645,21 +679,24 @@ class WechatC2Test(unittest.TestCase):
                 "state": "sessions_ocr",
                 "screenshot_path": "C:/scan.png",
                 "sessions": [
-                    {
-                        "name": "王先生 CJ8K2P",
-                        "session_key": "wx:rpa:v1:a",
-                        "row_fingerprint": {"row": 1, "text": "王先生"},
-                        "content": "你好",
-                        "unread_signal": True,
-                        "ocr_confidence": 0.97,
-                    }
+                    sidecar_session_identity(
+                        name="王先生 CJ8K2P34",
+                        session_key="wx:rpa:v1:a",
+                        conversation_type="private",
+                        allowed=True,
+                        code="CJ8K2P34",
+                        row_fingerprint={"row": 1, "text": "王先生"},
+                        content="你好",
+                        unread_signal=True,
+                        ocr_confidence=0.97,
+                    )
                 ],
             }
         )
 
         self.assertFalse(payload["scan_failed"])
         self.assertEqual(payload["sessions"][0]["rpa_session_key"], "wx:rpa:v1:a")
-        self.assertEqual(payload["sessions"][0]["remark_code_candidates"], ["CJ8K2P"])
+        self.assertEqual(payload["sessions"][0]["remark_code_candidates"], ["CJ8K2P34"])
         self.assertTrue(payload["sessions"][0]["unread_hint"])
 
     def test_scan_payload_admits_short_code_before_glued_time_suffix(self):
@@ -667,11 +704,14 @@ class WechatC2Test(unittest.TestCase):
             {
                 "ok": True,
                 "sessions": [
-                    {
-                        "name": "CJR8S5K3虾丸子大",
-                        "raw_title": "CJR8S5K3虾丸子大...11:05",
-                        "session_key": "wx:rpa:v1:cjr8s5k3",
-                    }
+                    sidecar_session_identity(
+                        name="CJR8S5K3虾丸子大",
+                        raw_title="CJR8S5K3虾丸子大...11:05",
+                        session_key="wx:rpa:v1:cjr8s5k3",
+                        conversation_type="private",
+                        allowed=True,
+                        code="CJR8S5K3",
+                    )
                 ],
             }
         )
@@ -703,6 +743,11 @@ class WechatC2Test(unittest.TestCase):
         self.assertEqual(payload["sessions"], [])
         admission = payload["evidence"]["c2_conversation_admission"]
         self.assertEqual(admission["missing_session_key_excluded_count"], 1)
+        self.assertEqual(admission["contract_rejected_count"], 1)
+        self.assertEqual(
+            admission["contract_rejections"][0]["reason"],
+            "session_key_missing",
+        )
 
     def test_worker_does_not_guess_message_type_or_sender_role_from_legacy_aliases(self):
         self.assertEqual(message_type({"voice_duration": 3}), "unknown")
@@ -711,35 +756,152 @@ class WechatC2Test(unittest.TestCase):
         self.assertEqual(sender_role_hint({"sender_role": "sales"}), "unknown")
         self.assertEqual(sender_role_hint({"sender_role": "contact"}), "unknown")
 
-    def test_scan_payload_does_not_bind_remark_code_from_message_preview(self):
+    def test_worker_rejects_contradictory_sidecar_identity_without_reclassifying(self):
         payload = build_scan_result_payload(
             {
                 "ok": True,
                 "sessions": [
                     {
-                        "name": "聿安的家",
-                        "session_key": "wx:rpa:v1:group",
-                        "content": "CJR8S5K3虾丸子大人：蛹者",
+                        "name": "CJP6M3R7许聪",
+                        "session_key": "wx:rpa:v1:contract-conflict",
+                        "c2_remark_code_candidates": ["CJP6M3R7"],
+                        "c2_conversation_admission": {
+                            "conversation_type": "unknown",
+                            "reason": "contradictory_test_fixture",
+                            "admission_allowed": True,
+                            "remark_code": "CJP6M3R7",
+                        },
                     }
                 ],
             }
         )
 
-        self.assertEqual(payload["sessions"][0]["display_name"], "聿安的家")
-        self.assertEqual(payload["sessions"][0]["last_message_preview"], "CJR8S5K3虾丸子大人：蛹者")
         self.assertEqual(payload["sessions"][0]["remark_code_candidates"], [])
+        admission = payload["evidence"]["c2_conversation_admission"]
+        self.assertEqual(admission["private_candidate_count"], 0)
+        self.assertEqual(admission["unknown_excluded_count"], 1)
+        self.assertEqual(admission["contract_rejected_count"], 1)
+        self.assertEqual(
+            admission["contract_rejections"][0]["reason"],
+            "allowed_identity_not_private",
+        )
+
+    def test_worker_does_not_reopen_sidecar_unknown_from_raw_title(self):
+        payload = build_scan_result_payload(
+            {
+                "ok": True,
+                "sessions": [
+                    sidecar_session_identity(
+                        name="CJP6M3R7许聪",
+                        raw_title="CJP6M3R7许聪",
+                        session_key="wx:rpa:v1:sidecar-unknown",
+                        conversation_type="unknown",
+                        allowed=False,
+                        reason="sidecar_could_not_confirm_private_title",
+                    )
+                ],
+            }
+        )
+
+        self.assertEqual(payload["sessions"][0]["remark_code_candidates"], [])
+        admission = payload["evidence"]["c2_conversation_admission"]
+        self.assertEqual(admission["unknown_excluded_count"], 1)
+        self.assertEqual(admission["contract_rejected_count"], 0)
+
+    def test_worker_copies_sidecar_code_without_reading_conflicting_raw_title(self):
+        payload = build_scan_result_payload(
+            {
+                "ok": True,
+                "sessions": [
+                    sidecar_session_identity(
+                        name="展示名-CJP6M3R7",
+                        raw_title="标题噪声-CJFAKE23",
+                        session_key="wx:rpa:v1:sidecar-authoritative",
+                        conversation_type="private",
+                        allowed=True,
+                        code="CJP6M3R7",
+                        reason="formal_code_confirmed_in_title",
+                    )
+                ],
+            }
+        )
+
+        self.assertEqual(
+            payload["sessions"][0]["remark_code_candidates"],
+            ["CJP6M3R7"],
+        )
+
+    def test_worker_rejects_missing_or_invalid_sidecar_identity_contract(self):
+        payload = build_scan_result_payload(
+            {
+                "ok": True,
+                "sessions": [
+                    {"name": "缺少合同", "session_key": "missing"},
+                    {
+                        "name": "短码非八位",
+                        "session_key": "invalid-code",
+                        "c2_remark_code_candidates": ["CJ123"],
+                        "c2_conversation_admission": {
+                            "conversation_type": "private",
+                            "admission_allowed": True,
+                            "remark_code": "CJ123",
+                            "reason": "invalid_code_fixture",
+                        },
+                    },
+                    {
+                        "name": "短码非规范大写",
+                        "session_key": "lowercase-code",
+                        "c2_remark_code_candidates": ["cjp6m3r7"],
+                        "c2_conversation_admission": {
+                            "conversation_type": "private",
+                            "admission_allowed": True,
+                            "remark_code": "cjp6m3r7",
+                            "reason": "lowercase_code_fixture",
+                        },
+                    },
+                    {
+                        "name": "列表与准入短码不一致",
+                        "session_key": "mismatched-code",
+                        "c2_remark_code_candidates": ["CJP6M3R7"],
+                        "c2_conversation_admission": {
+                            "conversation_type": "private",
+                            "admission_allowed": True,
+                            "remark_code": "CJUAT728",
+                            "reason": "mismatched_code_fixture",
+                        },
+                    },
+                ],
+            }
+        )
+
+        self.assertEqual(
+            [row["remark_code_candidates"] for row in payload["sessions"]],
+            [[], [], [], []],
+        )
+        admission = payload["evidence"]["c2_conversation_admission"]
+        self.assertEqual(admission["contract_rejected_count"], 4)
 
     def test_scan_payload_excludes_group_from_same_short_code_conflict(self):
         payload = build_scan_result_payload(
             {
                 "ok": True,
                 "sessions": [
-                    {"name": "张三-CJR8S5K3", "raw_title": "张三-CJR8S5K3", "session_key": "private"},
-                    {
-                        "name": "销售讨论-CJR8S5K3(5)",
-                        "raw_title": "销售讨论-CJR8S5K3(5)",
-                        "session_key": "group",
-                    },
+                    sidecar_session_identity(
+                        name="张三-CJR8S5K3",
+                        raw_title="张三-CJR8S5K3",
+                        session_key="private",
+                        conversation_type="private",
+                        allowed=True,
+                        code="CJR8S5K3",
+                    ),
+                    sidecar_session_identity(
+                        name="销售讨论-CJR8S5K3(5)",
+                        raw_title="销售讨论-CJR8S5K3(5)",
+                        session_key="group",
+                        conversation_type="group",
+                        allowed=False,
+                        code="CJR8S5K3",
+                    ),
                 ],
             }
         )
@@ -748,25 +910,46 @@ class WechatC2Test(unittest.TestCase):
         self.assertEqual(payload["sessions"][1]["remark_code_candidates"], [])
         self.assertEqual(payload["evidence"]["c2_conversation_admission"]["group_excluded_count"], 1)
 
-    def test_scan_payload_rejects_incomplete_or_fuzzy_title(self):
+    def test_scan_payload_admits_truncated_short_code_but_rejects_fuzzy_group_suffix(self):
         payload = build_scan_result_payload(
             {
                 "ok": True,
                 "sessions": [
-                    {"name": "张三-CJR8S5K3…", "raw_title": "张三-CJR8S5K3…", "session_key": "ellipsis"},
-                    {"name": "李四-CJR8S5K3(5", "raw_title": "李四-CJR8S5K3(5", "session_key": "fuzzy"},
+                    sidecar_session_identity(
+                        name="张三-CJR8S5K3…",
+                        raw_title="张三-CJR8S5K3…",
+                        session_key="ellipsis",
+                        conversation_type="private",
+                        allowed=True,
+                        code="CJR8S5K3",
+                    ),
+                    sidecar_session_identity(
+                        name="李四-CJR8S5K3(5",
+                        raw_title="李四-CJR8S5K3(5",
+                        session_key="fuzzy",
+                        conversation_type="unknown",
+                        allowed=False,
+                        code="CJR8S5K3",
+                    ),
                 ],
             }
         )
 
-        self.assertEqual(payload["sessions"][0]["remark_code_candidates"], [])
+        self.assertEqual(
+            payload["sessions"][0]["remark_code_candidates"],
+            ["CJR8S5K3"],
+        )
         self.assertEqual(payload["sessions"][1]["remark_code_candidates"], [])
-        self.assertEqual(payload["evidence"]["c2_conversation_admission"]["unknown_excluded_count"], 2)
+        admission = payload["evidence"]["c2_conversation_admission"]
+        self.assertEqual(admission["private_candidate_count"], 1)
+        self.assertEqual(admission["unknown_excluded_count"], 1)
 
-
-    def test_extract_remark_codes_supports_manual_suffix(self):
-        self.assertEqual(extract_remark_codes("CJ8K2P 王先生想看轩逸"), ["CJ8K2P"])
-        self.assertEqual(extract_remark_codes("CJTEST01 许聪", "CJTEST01许聪"), ["CJTEST01"])
+    def test_worker_formal_remark_code_validation_is_format_only(self):
+        self.assertTrue(is_formal_c2_remark_code("CJP6M3R7"))
+        self.assertFalse(is_formal_c2_remark_code("cjtest01"))
+        self.assertFalse(is_formal_c2_remark_code(" CJP6M3R7"))
+        self.assertFalse(is_formal_c2_remark_code("CJ123"))
+        self.assertFalse(is_formal_c2_remark_code("CJABCDEFG"))
 
     def test_v3_uses_final_observations_as_the_only_voice_message_source(self):
         target = WechatReadTarget(

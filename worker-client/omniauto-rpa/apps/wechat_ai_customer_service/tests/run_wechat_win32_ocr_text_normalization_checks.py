@@ -53,6 +53,7 @@ def test_text_module_exports_expected_helpers() -> None:
         "session_name_matches",
         "strip_session_time_suffix",
         "is_session_name_candidate",
+        "is_c2_session_title_candidate",
         "is_session_time_text",
         "is_message_noise",
         "infer_conversation_type",
@@ -70,6 +71,7 @@ def test_normalization_helpers_match_sidecar() -> None:
         assert_true(text_normalization.normalize_message_content(text) == sidecar.normalize_message_content(text), f"message content mismatch: {text!r}")
         assert_true(text_normalization.strip_session_time_suffix(text) == sidecar.strip_session_time_suffix(text), f"time suffix mismatch: {text!r}")
         assert_true(text_normalization.is_session_name_candidate(text) == sidecar.is_session_name_candidate(text), f"name candidate mismatch: {text!r}")
+        assert_true(text_normalization.is_c2_session_title_candidate(text) == sidecar.is_c2_session_title_candidate(text), f"C2 title candidate mismatch: {text!r}")
         assert_true(text_normalization.is_session_time_text(text) == sidecar.is_session_time_text(text), f"time text mismatch: {text!r}")
         assert_true(text_normalization.is_message_noise(text) == sidecar.is_message_noise(text), f"message noise mismatch: {text!r}")
         assert_true(text_normalization.infer_conversation_type(text) == sidecar.infer_conversation_type(text), f"conversation type mismatch: {text!r}")
@@ -140,14 +142,15 @@ def test_quick_login_like_matches_sidecar() -> None:
 
 def test_c2_conversation_title_admission_contract() -> None:
     cases = [
-        ("张三-CJ123", "CJ123", "private", True),
-        ("群英客户-CJ123", "CJ123", "private", True),
-        ("销售讨论-CJ123(5)", "CJ123", "group", False),
-        ("销售讨论-CJ123（ 25 ）", "CJ123", "group", False),
-        ("张三-CJ123(5", "CJ123", "unknown", False),
-        ("张三-CJ123…", "CJ123", "unknown", False),
-        ("CJ123虾丸子大...11:05", "CJ123", "private", True),
-        ("张三-CJ12", "CJ123", "unknown", False),
+        ("张三-CJABC123", "CJABC123", "private", True),
+        ("群英客户-CJABC123", "CJABC123", "private", True),
+        ("销售讨论-CJABC123(5)", "CJABC123", "group", False),
+        ("销售讨论-CJABC123（ 25 ）", "CJABC123", "group", False),
+        ("张三-CJABC123(5", "CJABC123", "unknown", False),
+        ("CJABC123 (...)", "CJABC123", "unknown", False),
+        ("张三-CJABC123…", "CJABC123", "private", True),
+        ("CJABC123虾丸子大...11:05", "CJABC123", "private", True),
+        ("张三-CJABC12", "CJABC123", "unknown", False),
     ]
     for raw_title, remark_code, expected_type, expected_allowed in cases:
         extracted = text_normalization.classify_c2_conversation_title(raw_title, remark_code)
@@ -161,6 +164,21 @@ def test_c2_remark_code_extraction_contract() -> None:
     assert_true(
         text_normalization.extract_c2_remark_codes("张三-CJR8S5K3", "CJR8S5K3") == ["CJR8S5K3"],
         "C2 remark code extraction should be stable and deduplicated",
+    )
+    fixed_cases = {
+        "CJP6M3R7Alice...": ["CJP6M3R7"],
+        "CJP6M3R7-VIP...": ["CJP6M3R7"],
+        "AliceCJP6M3R7...": ["CJP6M3R7"],
+        "CJP6M3R712:22": ["CJP6M3R7"],
+    }
+    for raw_title, expected in fixed_cases.items():
+        assert_true(
+            text_normalization.extract_c2_remark_codes(raw_title) == expected,
+            f"fixed C2 remark code boundary mismatch: {raw_title}",
+        )
+    assert_true(
+        text_normalization.extract_c2_remark_codes("CJTEST01") == ["CJTEST01"],
+        "standalone fixed-width C2 remark code must remain valid",
     )
     assert_true(text_normalization.extract_c2_remark_codes("张三") == [], "non-code title must stay empty")
 
