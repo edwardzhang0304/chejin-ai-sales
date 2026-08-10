@@ -354,7 +354,73 @@ class WorkerWebWindow(QMainWindow):
         self.view.load(QUrl.fromLocalFile(str(index_file)))
 
     def state_json(self) -> str:
-        return json.dumps(self._state(), ensure_ascii=False)
+        try:
+            payload = json.dumps(self._state(), ensure_ascii=False)
+        except Exception as exc:
+            signature = f"{type(exc).__name__}:{exc}"
+            if signature != getattr(
+                self,
+                "_last_state_projection_error",
+                "",
+            ):
+                self._last_state_projection_error = signature
+                try:
+                    append_log(
+                        "WARN",
+                        "ui_state_projection_failed",
+                        "Worker 界面状态投影失败；业务线程继续运行并保留上一份可用界面状态。",
+                        error_code="UI_STATE_PROJECTION_FAILED",
+                        metadata={
+                            "exception_type": type(exc).__name__,
+                            "current_step": self.runner.current_step or "",
+                        },
+                    )
+                except Exception:
+                    pass
+            cached = str(
+                getattr(self, "_last_successful_state_json", "") or ""
+            )
+            if cached:
+                return cached
+            return json.dumps(
+                {
+                    "screen": "bind" if not self.binding else "offline-empty",
+                    "model": {
+                        "workerId": self.binding.worker_id if self.binding else "",
+                        "version": CLIENT_VERSION,
+                        "schedule": dict(self.accept_schedule),
+                        "status": {
+                            "receiveState": "暂停接单",
+                            "connectionState": "状态刷新暂不可用",
+                            "currentStep": self.runner.current_step or "",
+                        },
+                        "listener": {},
+                        "localLock": {
+                            "locked": True,
+                            "state": "unknown",
+                            "error_code": "UI_STATE_PROJECTION_FAILED",
+                        },
+                        "task": None,
+                        "runningSteps": [],
+                        "completedSteps": [],
+                        "failedSteps": [],
+                        "scanRunningSteps": [],
+                        "scanCompletedSteps": [],
+                        "targetReadRunningSteps": [],
+                        "targetReadCompletedSteps": [],
+                        "replyRunningSteps": [],
+                        "replyCompletedSteps": [],
+                        "replyFailedSteps": [],
+                        "logs": [],
+                        "latestIncident": {},
+                    },
+                    "bindError": self.bind_error,
+                },
+                ensure_ascii=False,
+            )
+        self._last_successful_state_json = payload
+        self._last_state_projection_error = ""
+        return payload
 
     def _state(self) -> dict[str, Any]:
         return {

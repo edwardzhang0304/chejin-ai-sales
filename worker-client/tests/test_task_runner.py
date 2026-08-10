@@ -50,6 +50,7 @@ from chejin_worker_client.task_runner import (
     C2_RECENT_VISIBLE_CACHE_TTL_SECONDS,
     TaskLeaseGuard,
     TaskRunner,
+    coalesce_physical_voice_observations,
     _freeze_phase_metadata,
 )
 from chejin_worker_client.transaction_outcomes import (
@@ -751,6 +752,70 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(frozen["completed_source_keys"], [source_key])
         self.assertEqual(frozen["terminal_source_keys"], [source_key])
         self.assertEqual(frozen["cached_source_keys"], [])
+
+    def test_physical_voice_aliases_merge_before_journal_creation(self):
+        target = WechatReadTarget(
+            conversation_id="conv-one-physical-voice",
+            rpa_session_key="wx:rpa:v1:one-physical-voice",
+            display_name="CJT9V5X1",
+            remark_code="CJT9V5X1",
+            authorization_revision="revision-one-physical-voice",
+        )
+        observations = [
+            {
+                "sender_role": "customer",
+                "voice_anchor_structural_key": "voice-structural:a",
+                "parent_voice_anchor_key": "voice-parent:shared",
+            },
+            {
+                "sender_role": "customer",
+                "voice_anchor_structural_key": "voice-structural:b",
+                "parent_voice_anchor_key": "voice-parent:shared",
+            },
+        ]
+
+        groups = coalesce_physical_voice_observations(
+            target,
+            observations,
+        )
+
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(len(groups[0]["source_message_keys"]), 2)
+        self.assertEqual(
+            groups[0]["physical_anchor_keys"],
+            [
+                "voice-parent:shared",
+                "voice-structural:a",
+                "voice-structural:b",
+            ],
+        )
+        self.assertEqual(groups[0]["role"], "customer")
+
+    def test_distinct_physical_voices_remain_distinct(self):
+        target = WechatReadTarget(
+            conversation_id="conv-two-physical-voices",
+            rpa_session_key="wx:rpa:v1:two-physical-voices",
+            display_name="CJT9V5X1",
+            remark_code="CJT9V5X1",
+            authorization_revision="revision-two-physical-voices",
+        )
+        observations = [
+            {
+                "sender_role": "customer",
+                "voice_anchor_structural_key": "voice-structural:a",
+            },
+            {
+                "sender_role": "customer",
+                "voice_anchor_structural_key": "voice-structural:b",
+            },
+        ]
+
+        groups = coalesce_physical_voice_observations(
+            target,
+            observations,
+        )
+
+        self.assertEqual(len(groups), 2)
 
     def test_original_and_later_voice_failures_are_merged_not_overwritten(self):
         outcomes = merge_item_outcomes(
@@ -3566,6 +3631,176 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(
             list_c2_action_journal(target.conversation_id),
             [],
+        )
+
+    def test_same_physical_voice_has_one_journal_item_before_sidecar_action(self):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-voice-alias-journal",
+            rpa_session_key="wx:rpa:v1:voice-alias-journal",
+            display_name="CJT9V5X1",
+            remark_code="CJT9V5X1",
+            read_reason="waiting_user_reply",
+            authorization_revision="revision-voice-alias-journal",
+        )
+        api.read_targets = [target]
+        observed_journals: list[dict] = []
+
+        class AliasVoiceBridge(FakeBridge):
+            def voice_transcribe(
+                self,
+                *,
+                display_name: str,
+                rpa_session_key: str,
+                **kwargs,
+            ):
+                journal_path = Path(kwargs["action_journal"])
+                journal = read_action_journal(journal_path)
+                observed_journals.append(journal)
+                source_key = next(iter(journal["items"]))
+                update_action_journal_item(
+                    journal_path,
+                    source_message_key=source_key,
+                    action_phase="confirmed",
+                    business_state="completed",
+                    business_result_confirmed=True,
+                    terminal_payload={
+                        "state": "completed",
+                        "transcribed_message": {
+                            "content": "同一条语音只结算一次。",
+                            "sender_role": "customer",
+                            "voice_anchor_stable_key": "voice-stable:a",
+                        },
+                    },
+                )
+                self.voice_payload = {
+                    "ok": True,
+                    "state": "voice_transcribe_completed",
+                    "sidecar_run_id": "voice-alias-run",
+                    "processed_voice_anchor_keys": [
+                        "voice-parent:shared"
+                    ],
+                    "failed_voice_anchor_keys": [],
+                    "item_action_outcomes": [
+                        {
+                            "action_phase": "confirmed",
+                            "business_state": "completed",
+                            "business_result_confirmed": True,
+                            "physical_anchor_keys": [
+                                "voice-stable:a",
+                                "voice-stable:b",
+                                "voice-structural:a",
+                                "voice-structural:b",
+                                "voice-parent:shared",
+                            ],
+                        }
+                    ],
+                    "transcribed_messages": [
+                        {
+                            "content": "同一条语音只结算一次。",
+                            "sender_role": "customer",
+                            "parent_voice_anchor_key": (
+                                "voice-parent:shared"
+                            ),
+                            "voice_anchor_stable_key": "voice-stable:a",
+                        }
+                    ],
+                }
+                return super().voice_transcribe(
+                    display_name=display_name,
+                    rpa_session_key=rpa_session_key,
+                    **kwargs,
+                )
+
+        bridge = AliasVoiceBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        initial = bridge._contractual_message_payload(
+            {
+                "messages": [
+                    {
+                        "id": "voice-alias-a",
+                        "type": "voice",
+                        "sender_role": "customer",
+                        "content": '[语音] 5"',
+                        "voice_anchor_stable_key": "voice-stable:a",
+                        "voice_anchor_structural_key": (
+                            "voice-structural:a"
+                        ),
+                    }
+                ]
+            }
+        )
+        first = initial["observations"][0]
+        first["parent_voice_anchor_key"] = "voice-parent:shared"
+        first["voice_anchor_structural_key"] = "voice-structural:a"
+        second = json.loads(json.dumps(first))
+        second["observation_id"] = "voice-alias-b"
+        second["voice_anchor_key"] = "voice-stable:b"
+        second["voice_anchor_structural_key"] = "voice-structural:b"
+        second["source_message"]["id"] = "voice-alias-b"
+        second["source_message"]["voice_anchor_stable_key"] = (
+            "voice-stable:b"
+        )
+        second["source_message"]["voice_anchor_structural_key"] = (
+            "voice-structural:b"
+        )
+        initial["observations"].append(second)
+        bridge.get_messages_payloads = [
+            initial,
+            {
+                "messages": [
+                    {
+                        "id": "voice-alias-a",
+                        "type": "voice",
+                        "sender_role": "customer",
+                        "content": "同一条语音只结算一次。",
+                        "voice_anchor_stable_key": "voice-stable:a",
+                        "voice_anchor_structural_key": (
+                            "voice-structural:a"
+                        ),
+                    }
+                ]
+            },
+        ]
+        runner, _ = self.make_runner(api, bridge)
+
+        result = runner._read_one_wechat_target(
+            Binding(
+                worker_id="worker-voice-alias",
+                worker_token="token",
+                client_instance_id="client-voice-alias",
+                run_status="running",
+            ),
+            target,
+            current_step="state_target_message_read",
+            enforce_read_targets=True,
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(len(observed_journals), 1)
+        journal_items = observed_journals[0]["items"]
+        self.assertEqual(len(journal_items), 1)
+        only_item = next(iter(journal_items.values()))
+        self.assertEqual(
+            set(only_item["physical_anchor_keys"]),
+            {
+                "voice-stable:a",
+                "voice-stable:b",
+                "voice-structural:a",
+                "voice-structural:b",
+                "voice-parent:shared",
+            },
+        )
+        voice_ledger = list_c2_ledger_entries(
+            target.conversation_id,
+            message_type="voice",
+        )
+        self.assertEqual(len(voice_ledger), 1)
+        self.assertEqual(voice_ledger[0]["terminal_state"], "completed")
+        self.assertNotEqual(
+            voice_ledger[0]["result"]["action_outcome"]["action_phase"],
+            "not_attempted",
         )
 
     def test_c2_voice_ledger_is_checked_before_any_right_click(self):

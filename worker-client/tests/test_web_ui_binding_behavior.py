@@ -6,7 +6,7 @@ import sys
 import types
 import unittest
 from contextlib import contextmanager
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from chejin_worker_client.models import Binding, WorkerProfile
 
@@ -190,6 +190,37 @@ class WebUiBindingBehaviorTest(unittest.TestCase):
         self.assertEqual(emitted[-1]["model"]["workerId"], "worker-new")
         self.assertEqual(emitted[-1]["notice"], "绑定成功，已进入 Worker 工作台。")
         save_binding.assert_called()
+
+    def test_lock_projection_permission_error_keeps_worker_running(self):
+        with _headless_web_ui_module() as module, patch.object(
+            module, "_log_rows", return_value=[]
+        ), patch.object(module, "latest_incident", return_value=None), patch.object(
+            module, "lock_summary", return_value={}
+        ) as lock_summary_mock, patch.object(module, "append_log") as append_log:
+            binding = Binding(
+                worker_id="worker-existing",
+                worker_token="token-existing",
+                client_instance_id="client-existing",
+                run_status="running",
+            )
+            window = self._window(module, binding)
+            cached = window.state_json()
+            window.runner.stop = Mock()
+            emitted: list[str] = []
+            window.bridge.stateChanged.connect(emitted.append)
+            lock_summary_mock.side_effect = PermissionError(
+                "ui_lock.json is temporarily unreadable"
+            )
+
+            window._publish()
+
+        self.assertEqual(emitted, [cached])
+        window.runner.stop.assert_not_called()
+        append_log.assert_called_once()
+        self.assertEqual(
+            append_log.call_args.kwargs["error_code"],
+            "UI_STATE_PROJECTION_FAILED",
+        )
 
 
 if __name__ == "__main__":

@@ -52,6 +52,61 @@ class WechatSendSafetyTest(unittest.TestCase):
                 "trigger_attempted",
             )
 
+    def test_voice_journal_terminal_update_covers_every_physical_alias_item(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "voice-action.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "action_kind": "voice",
+                        "action_phase": "not_attempted",
+                        "items": {
+                            "source-stable": {
+                                "source_message_key": "source-stable",
+                                "physical_anchor_keys": ["voice-stable:one"],
+                                "action_phase": "not_attempted",
+                            },
+                            "source-structural": {
+                                "source_message_key": "source-structural",
+                                "physical_anchor_keys": [
+                                    "voice-structural:one"
+                                ],
+                                "action_phase": "not_attempted",
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            sidecar.write_action_phase_journal(
+                str(path),
+                "confirmed",
+                physical_anchor_keys=[
+                    "voice-stable:one",
+                    "voice-structural:one",
+                ],
+                business_state="completed",
+                business_result_confirmed=True,
+                terminal_payload={"state": "completed"},
+            )
+
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["action_phase"], "confirmed")
+            self.assertEqual(
+                {
+                    item["action_phase"]
+                    for item in payload["items"].values()
+                },
+                {"confirmed"},
+            )
+            self.assertTrue(
+                all(
+                    item["business_result_confirmed"]
+                    for item in payload["items"].values()
+                )
+            )
+
     def test_generic_journal_rejects_missing_or_uninitialized_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "missing-action.json"
