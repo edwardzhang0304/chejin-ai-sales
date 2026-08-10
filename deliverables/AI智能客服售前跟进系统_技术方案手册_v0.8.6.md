@@ -70,14 +70,16 @@
 > 依靠窗口、会话、授权、消息顺序和 ActionJournal 复核安全取消，不允许猜测继续。
 > 悬浮球与输入锁整体列入后续独立优化版本，必须在不影响主流程后另行设计、开发和验收。
 
-> **2026-08-08 首屏首次未读授权唯一口径：**第一屏扫描到有效短码会话的
+> **2026-08-10 首屏首次未读授权唯一口径：**第一屏扫描到有效短码会话的
 > `unread_hint=true` 时，该事实必须先上报后端，不得由 Worker 直接点击。
 > 后端完成短码绑定、Worker 归属、监听状态和当前授权版本校验后，对
 > `conversation.status=ai_active` 且当前仍有未读证据的会话以
 > `read_reason=visible_unread` 签发服务端读取许可。`visible_unread` 不是新的长期
-> 会话主状态，只是由当前首屏未读事实触发的临时 `read_reason`。Worker 仍必须用
-> 本轮 `read-targets + authorization_revision` 与本地 `visible_hit_queue` 取交集，
-> 进入会话后再同步确认有效短码和 `private`，才能读取。完整读取入库被后端
+> 会话主状态，只是由首屏未读事实触发、由后端签发的临时 `read_reason`。Worker
+> 只以当前 `read-target + authorization_revision` 判断是否允许读取；本地
+> `visible_hit/local_unread_hint` 只决定是否走首屏快速定位，不能成为第二授权门禁。
+> 当前首屏未命中时必须按正式短码进入 `search_by_remark_code`，进入会话后再同步
+> 确认有效短码和 `private`。完整读取入库被后端
 > 确认，或新一轮扫描已明确 `unread_hint=false` 后，该未读事实失效；读取失败不得
 > 伪造消费或丢弃证据。
 
@@ -1793,8 +1795,9 @@ V16 系列主链路固定为：
 -> 上报scan-result
 -> 后端对满足门禁的首屏未读签发read_reason=visible_unread
 -> 拉取并复核read-targets + authorization_revision
--> 授权命中进入visible_hit_queue
--> 点击会话并同步确认有效短码 + private
+-> 当前首屏唯一命中时进入visible_hit_queue并走快速定位
+-> 当前首屏未命中时进入state_target_queue并按remark_code搜索
+-> 打开会话并同步确认有效短码 + private
 -> OmniAuto messages读取
 -> 生成dedupe_key
 -> 上报/messages/ingest
@@ -1806,6 +1809,7 @@ V16 系列主链路固定为：
 | 规则 | 说明 |
 |---|---|
 | 授权后优先读取 | 第一屏命中优先于普通状态机定向读取，但短码命中本身不是读取授权。 |
+| 授权与定位分离 | `visible_unread` 由首屏事实触发，但后端签发后就是当前读取授权；`visible_hit/local_unread_hint` 只能选择快速定位路径，不得否决授权。首屏未命中或红点已不可见时，Worker 不得静默丢弃目标，应交给状态目标队列按正式短码搜索。 |
 | 首次未读闭环 | 会话没有“等待客户回复/召回”等既有状态时，只要当前首屏扫描事实满足 `visible_unread` 门禁，后端也必须签发一次可重试的读取许可，不能让“未读事实”和“等待 read-target”互相卡住。 |
 | 批量上限 | 每轮最多读取配置化数量，第一期建议 3-5 个，避免长期占用微信。 |
 | 去重 | 同一轮按 `conversation_id + remark_code` 身份键去重；`remark_code` 是非第一屏微信搜索定位主锚点，`rpa_session_key / display_name / row_fingerprint` 只用于第一屏快速定位和排查证据。 |
@@ -1813,7 +1817,9 @@ V16 系列主链路固定为：
 
 #### 6.0.1.3 状态机驱动定向读取
 
-状态机定向读取用于处理非第一屏的已知客户。服务端根据会话状态和时间字段返回 `read-targets`，Worker 空闲后逐个定向读取。
+状态机定向读取用于处理非第一屏的已知客户。服务端根据会话状态、时间字段或仍有效的
+`visible_unread` 事实返回 `read-targets`，Worker 空闲后逐个定向读取。`visible_unread`
+在当前首屏未命中时与其他已授权状态目标走同一套合同校验、冷却和短码搜索流程。
 
 定向读取不是滚动找人，而是明确找指定客户。`conversation_id + remark_code` 是业务身份收口，`remark_code` 是 Worker/OmniAuto 非第一屏搜索定位主锚点；`rpa_session_key / display_name / row_fingerprint` 只作为第一屏快速定位和排查证据。服务端返回的 `read-targets` 必须包含 `remark_code`。
 
@@ -3071,7 +3077,7 @@ GET /api/workers/{worker_id}/wechat/sessions/read-targets?limit=20
 契约要求：
 
 - 正常 `read-targets.targets[]` 必须包含 `conversation_id + remark_code + authorization_revision`。
-- `read_reason=visible_unread` 时，后端必须能证明当前绑定的最新成功扫描事实为 `unread_hint=true`，且会话为 `ai_active`。Worker 不得自行把本地 `visible_hit` 改写成该服务端 `read_reason`。
+- `read_reason=visible_unread` 时，后端必须能证明当前绑定的最新成功扫描事实为 `unread_hint=true`，且会话为 `ai_active`。Worker 不得自行把本地 `visible_hit` 改写成该服务端 `read_reason`，也不得因本轮没有 `visible_hit/local_unread_hint` 而否决后端当前授权；首屏未命中必须进入正式短码搜索。
 - 后端确认 `visible_unread` 的完整 `active_read` 入库/结算后消费当前 `unread_hint`；中途失败、未确认入库或仅写本地 ledger 不得消费。后续首屏扫描可以根据微信当前事实重新置 `true/false`。
 - 已绑定会话如果缺少 `remark_code`，不得出现在正常 `read-targets` 中，应进入 `needs_review / degraded` 并记录 `C2_TARGET_REMARK_CODE_MISSING`。
 - Worker 收到缺少 `remark_code` 的读取目标时，必须跳过读取，不得继续打开微信会话或上报消息。

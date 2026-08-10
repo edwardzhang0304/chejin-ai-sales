@@ -428,6 +428,13 @@ X-Request-Id: ...     # 可选
 
 后端返回 `bindings[]`；只有 `can_ingest_messages=true` 仍不能直接点击，Worker 还必须用当前轮 `read-targets` 做最终授权交集。
 
+`visible_unread` 的来源虽然是首屏 `unread_hint`，但后端将其放入当前
+`read-targets` 并签发 `authorization_revision` 后，它就是当前有效的读取授权。
+Worker 的 `visible_hit/local_unread_hint` 只用于选择首屏快速定位，不是第二授权门禁：
+首屏未命中必须进入状态目标队列并执行 `search_by_remark_code`；首屏能唯一定位但红点
+已经不可见时，也不得由 Worker 自行撤销后端授权。是否继续签发或消费该事实只由后端
+根据后续 `scan-result` 和完整读取结算决定。
+
 ### 6.2 `GET /api/workers/{worker_id}/wechat/sessions/read-targets?limit=20`
 
 每个正常目标必须包含：

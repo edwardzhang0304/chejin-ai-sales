@@ -6958,7 +6958,7 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(api.message_payloads[0]["messages"], [])
         self.assertIn("ingest:0", api.events)
 
-    def test_c2_visible_unread_without_current_local_unread_fact_never_opens_wechat(self):
+    def test_c2_visible_unread_without_current_local_unread_fact_uses_visible_fast_path(self):
         api = FakeApi(None)
         api.read_targets = [
             WechatReadTarget(
@@ -7003,35 +7003,139 @@ class TaskRunnerTest(unittest.TestCase):
 
         runner._run_c2_scan_round(binding, reason="unit")
 
-        self.assertEqual(bridge.locate_chats, [])
-        self.assertEqual(bridge.message_reads, [])
-        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(
+            [item["target_mode"] for item in bridge.locate_chats],
+            ["visible"],
+        )
+        self.assertEqual(len(bridge.message_reads), 1)
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(
+            api.message_payloads[0]["evidence"]["authorization_read_reason"],
+            "visible_unread",
+        )
         self.assertEqual(runner.visible_hit_queue, [])
 
-    def test_c2_visible_unread_requires_exact_backend_and_local_target_intersection(self):
+    def test_c2_offscreen_visible_unread_runs_full_search_state_machine(self):
         api = FakeApi(None)
-        api.read_targets = [
-            WechatReadTarget(
-                conversation_id="conv-other",
-                rpa_session_key="wx:rpa:v1:other",
-                display_name="CJOTHER1 其他客户",
-                remark_code="CJOTHER1",
-                read_reason="visible_unread",
-                authorization_revision="revision-other",
-            )
-        ]
+        target = WechatReadTarget(
+            conversation_id="acbd7657-fe82-413b-ac69-39a6535841e1",
+            rpa_session_key="wx:rpa:v1:offscreen",
+            display_name="CJT9V5X1",
+            remark_code="CJT9V5X1",
+            read_reason="visible_unread",
+            authorization_revision="revision-visible-unread-offscreen",
+        )
+        api.read_targets = [target]
         bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"))
+
+        def list_unrelated_first_screen(**_kwargs):
+            bridge.c2_operation_order.append("sessions")
+            bridge.session_scans.append({})
+            return {
+                "ok": True,
+                "adapter": "mock",
+                "state": "sessions_mock",
+                "sidecar_run_id": "session-run-without-target",
+                "sessions": [],
+            }
+
+        def post_scan_without_binding(_binding: Binding, payload: dict):
+            api.scan_payloads.append(payload)
+            api.events.append(
+                f"scan:{len(payload.get('sessions') or [])}:{payload.get('error_code')}"
+            )
+            return {"bound_count": 0, "bindings": []}
+
+        def locate_offscreen_target(*, display_name: str, rpa_session_key: str, **kwargs):
+            bridge.c2_operation_order.append("locate_chat")
+            bridge.locate_chats.append(
+                {
+                    "display_name": display_name,
+                    "rpa_session_key": rpa_session_key,
+                    **kwargs,
+                }
+            )
+            mode = kwargs.get("target_mode")
+            if mode == "visible":
+                return {
+                    "ok": False,
+                    "state": "target_not_confirmed",
+                    "error_code": "TARGET_NOT_CONFIRMED",
+                    "target_mode": mode,
+                }
+            return {
+                "ok": True,
+                "state": "chat_target_confirmed",
+                "target_mode": mode,
+                "remark_code": "CJT9V5X1",
+                "conversation_type": "private",
+                "guard": {
+                    "allowed": True,
+                    "conversation_type": "private",
+                    "remark_code": "CJT9V5X1",
+                },
+            }
+
+        bridge.list_sessions = list_unrelated_first_screen  # type: ignore[method-assign]
+        bridge.locate_chat = locate_offscreen_target  # type: ignore[method-assign]
+        bridge.get_messages_payloads = [
+            {
+                "ok": True,
+                "observation_schema_version": 3,
+                "observations": [],
+                "state": "messages_ocr",
+                "sidecar_run_id": "offscreen-visible-unread-empty-read",
+            }
+        ]
+        api.post_wechat_session_scan_result = post_scan_without_binding  # type: ignore[method-assign]
         runner, _ = self.make_runner(api, bridge)
         binding = Binding(worker_id="worker-1", worker_token="token", client_instance_id="client-1", run_status="running")
+        processed_before_state_queue: list[bool] = []
+        original_read_state_target_queue = runner._read_state_target_queue
+
+        def read_state_target_queue_with_probe(
+            current_binding: Binding,
+            *,
+            targets: list[WechatReadTarget] | None = None,
+        ):
+            processed_before_state_queue.append(
+                runner._target_dedupe_key(target)
+                in runner.c2_round_processed_conversation_ids
+            )
+            return original_read_state_target_queue(
+                current_binding,
+                targets=targets,
+            )
+
+        runner._read_state_target_queue = read_state_target_queue_with_probe  # type: ignore[method-assign]
 
         runner._run_c2_scan_round(binding, reason="unit")
 
-        self.assertEqual(bridge.locate_chats, [])
-        self.assertEqual(bridge.message_reads, [])
-        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(processed_before_state_queue, [False])
+        self.assertEqual(
+            [item["target_mode"] for item in bridge.locate_chats],
+            ["visible", "search_by_remark_code"],
+        )
+        self.assertEqual(bridge.locate_chats[1]["remark_code"], "CJT9V5X1")
+        self.assertEqual(bridge.locate_chats[1]["rpa_session_key"], "")
+        self.assertEqual(len(bridge.message_reads), 1)
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(api.message_payloads[0]["messages"], [])
+        self.assertEqual(
+            api.message_payloads[0]["authorization_revision"],
+            "revision-visible-unread-offscreen",
+        )
+        self.assertEqual(
+            api.message_payloads[0]["evidence"]["authorization_read_reason"],
+            "visible_unread",
+        )
+        self.assertEqual(
+            bridge.c2_operation_order[:4],
+            ["sessions", "locate_chat", "locate_chat", "messages"],
+        )
         self.assertEqual(runner.visible_hit_queue, [])
 
-    def test_c2_visible_unread_target_cannot_bypass_queue_through_direct_read(self):
+    def test_c2_visible_unread_contract_validation_does_not_require_visible_hit(self):
         api = FakeApi(None)
         bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"))
         runner, _ = self.make_runner(api, bridge)
@@ -7044,11 +7148,11 @@ class TaskRunnerTest(unittest.TestCase):
             authorization_revision="revision-current",
         )
 
-        self.assertEqual(runner._validate_read_target(target), "C2_VISIBLE_UNREAD_LOCAL_FACT_MISSING")
+        self.assertIsNone(runner._validate_read_target(target))
         target.raw["visible_hit"] = True
         self.assertIsNone(runner._validate_read_target(target))
 
-    def test_c2_visible_unread_failure_retries_only_after_cooldown_with_new_unread_scan(self):
+    def test_c2_visible_unread_failure_retries_after_cooldown_without_new_visible_hit(self):
         api = FakeApi(None)
         api.read_targets = [
             WechatReadTarget(
@@ -7062,6 +7166,45 @@ class TaskRunnerTest(unittest.TestCase):
         ]
         bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"))
 
+        def list_empty_first_screen(**_kwargs):
+            bridge.c2_operation_order.append("sessions")
+            bridge.session_scans.append({})
+            return {
+                "ok": True,
+                "adapter": "mock",
+                "state": "sessions_mock",
+                "sidecar_run_id": "session-run-empty",
+                "sessions": [],
+            }
+
+        def post_scan_without_binding(_binding: Binding, payload: dict):
+            api.scan_payloads.append(payload)
+            api.events.append(
+                f"scan:{len(payload.get('sessions') or [])}:{payload.get('error_code')}"
+            )
+            return {"bound_count": 0, "bindings": []}
+
+        def locate_by_search(*, display_name: str, rpa_session_key: str, **kwargs):
+            bridge.c2_operation_order.append("locate_chat")
+            bridge.locate_chats.append(
+                {
+                    "display_name": display_name,
+                    "rpa_session_key": rpa_session_key,
+                    **kwargs,
+                }
+            )
+            mode = kwargs.get("target_mode")
+            return {
+                "ok": mode == "search_by_remark_code",
+                "state": (
+                    "chat_target_confirmed"
+                    if mode == "search_by_remark_code"
+                    else "target_not_confirmed"
+                ),
+                "error_code": None if mode == "search_by_remark_code" else "TARGET_NOT_CONFIRMED",
+                "target_mode": mode,
+            }
+
         def failing_get_messages(*, display_name: str, rpa_session_key: str, **kwargs):
             bridge.message_reads.append({"display_name": display_name, "rpa_session_key": rpa_session_key, **kwargs})
             return {
@@ -7071,6 +7214,9 @@ class TaskRunnerTest(unittest.TestCase):
             }
 
         bridge.get_messages = failing_get_messages  # type: ignore[method-assign]
+        bridge.list_sessions = list_empty_first_screen  # type: ignore[method-assign]
+        bridge.locate_chat = locate_by_search  # type: ignore[method-assign]
+        api.post_wechat_session_scan_result = post_scan_without_binding  # type: ignore[method-assign]
         runner, _ = self.make_runner(api, bridge)
         binding = Binding(worker_id="worker-1", worker_token="token", client_instance_id="client-1", run_status="running")
 
@@ -7078,13 +7224,208 @@ class TaskRunnerTest(unittest.TestCase):
         runner._run_c2_scan_round(binding, reason="cooldown")
         self.assertEqual(len(bridge.message_reads), 1)
         self.assertTrue(runner.c2_read_failure_cooldowns)
-        self.assertTrue(all(payload["sessions"][0]["unread_hint"] for payload in api.scan_payloads))
+        self.assertTrue(all(payload["sessions"] == [] for payload in api.scan_payloads))
 
         runner.c2_read_failure_cooldowns.clear()
         runner._run_c2_scan_round(binding, reason="retry")
 
         self.assertEqual(len(bridge.message_reads), 2)
+        self.assertEqual(
+            [
+                item["target_mode"]
+                for item in bridge.locate_chats
+                if item["target_mode"] == "search_by_remark_code"
+            ],
+            ["search_by_remark_code", "search_by_remark_code"],
+        )
         self.assertEqual(api.message_payloads, [])
+
+    def test_c2_offscreen_visible_unread_revoked_before_search_never_opens_wechat(self):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-visible-unread-revoked-before-search",
+            rpa_session_key="wx:rpa:v1:offscreen",
+            display_name="CJT9V5X1",
+            remark_code="CJT9V5X1",
+            read_reason="visible_unread",
+            authorization_revision="revision-revoked-before-search",
+        )
+        api.read_targets = [target]
+
+        def reject_authorization(
+            _binding: Binding,
+            conversation_id: str,
+            **_kwargs,
+        ):
+            api.events.append(f"read_authorization:{conversation_id}")
+            return {
+                "allowed": False,
+                "conversation_id": conversation_id,
+                "authorization_revision": "",
+                "read_reason": "",
+            }
+
+        api.get_wechat_read_authorization = reject_authorization  # type: ignore[method-assign]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="invite_sent", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        runner._read_state_target_queue(binding, targets=[target])
+
+        self.assertEqual(bridge.locate_chats, [])
+        self.assertEqual(bridge.message_reads, [])
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(
+            runner.c2_stats["last_error"],
+            "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
+        )
+
+    def test_c2_offscreen_visible_unread_revoked_during_search_cancels_immediately(self):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-visible-unread-revoked-during-search",
+            rpa_session_key="wx:rpa:v1:offscreen",
+            display_name="CJT9V5X1",
+            remark_code="CJT9V5X1",
+            read_reason="visible_unread",
+            authorization_revision="revision-revoked-during-search",
+        )
+        api.read_targets = [target]
+        authorization_calls = {"count": 0}
+
+        def expire_authorization_during_search(
+            _binding: Binding,
+            conversation_id: str,
+            **_kwargs,
+        ):
+            api.events.append(f"read_authorization:{conversation_id}")
+            authorization_calls["count"] += 1
+            allowed = authorization_calls["count"] <= 2
+            return {
+                "allowed": allowed,
+                "conversation_id": conversation_id,
+                "authorization_revision": (
+                    target.authorization_revision if allowed else ""
+                ),
+                "read_reason": target.read_reason if allowed else "",
+            }
+
+        api.get_wechat_read_authorization = expire_authorization_during_search  # type: ignore[method-assign]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="invite_sent", message="unused")
+        )
+
+        def locate_with_authorization_expiry(
+            *,
+            display_name: str,
+            rpa_session_key: str,
+            **kwargs,
+        ):
+            bridge.c2_operation_order.append("locate_chat")
+            bridge.locate_chats.append(
+                {
+                    "display_name": display_name,
+                    "rpa_session_key": rpa_session_key,
+                    **kwargs,
+                }
+            )
+            mode = kwargs.get("target_mode")
+            if mode == "visible":
+                return {
+                    "ok": False,
+                    "state": "target_not_confirmed",
+                    "error_code": "TARGET_NOT_CONFIRMED",
+                    "target_mode": mode,
+                }
+            self.assertTrue(kwargs["cancel_check"]())
+            return {
+                "ok": False,
+                "state": "cancelled",
+                "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
+                "target_mode": mode,
+            }
+
+        bridge.locate_chat = locate_with_authorization_expiry  # type: ignore[method-assign]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        runner._read_state_target_queue(binding, targets=[target])
+
+        self.assertEqual(
+            [item["target_mode"] for item in bridge.locate_chats],
+            ["visible", "search_by_remark_code"],
+        )
+        self.assertGreaterEqual(authorization_calls["count"], 3)
+        self.assertEqual(bridge.message_reads, [])
+        self.assertEqual(api.message_payloads, [])
+
+    def test_c2_offscreen_visible_unread_unsafe_search_result_never_reads_messages(self):
+        for error_code in (
+            "TARGET_NOT_CONFIRMED",
+            "C2_VISIBLE_TARGET_AMBIGUOUS",
+            "C2_GROUP_CHAT_NOT_ALLOWED",
+            "C2_CONVERSATION_TYPE_UNKNOWN",
+        ):
+            with self.subTest(error_code=error_code):
+                api = FakeApi(None)
+                target = WechatReadTarget(
+                    conversation_id=f"conv-{error_code.lower()}",
+                    rpa_session_key="wx:rpa:v1:offscreen",
+                    display_name="CJT9V5X1",
+                    remark_code="CJT9V5X1",
+                    read_reason="visible_unread",
+                    authorization_revision=f"revision-{error_code.lower()}",
+                )
+                api.read_targets = [target]
+                bridge = FakeBridge(
+                    RpaResult(
+                        ok=True,
+                        result_code="invite_sent",
+                        message="unused",
+                    )
+                )
+                bridge.locate_payloads = [
+                    {
+                        "ok": False,
+                        "state": "target_not_confirmed",
+                        "error_code": "TARGET_NOT_CONFIRMED",
+                        "target_mode": "visible",
+                    },
+                    {
+                        "ok": False,
+                        "state": "target_not_confirmed",
+                        "error_code": error_code,
+                        "target_mode": "search_by_remark_code",
+                    },
+                ]
+                runner, _ = self.make_runner(api, bridge)
+                binding = Binding(
+                    worker_id="worker-1",
+                    worker_token="token",
+                    client_instance_id="client-1",
+                    run_status="running",
+                )
+
+                runner._read_state_target_queue(binding, targets=[target])
+
+                self.assertEqual(
+                    [item["target_mode"] for item in bridge.locate_chats],
+                    ["visible", "search_by_remark_code"],
+                )
+                self.assertEqual(bridge.message_reads, [])
+                self.assertEqual(api.message_payloads, [])
 
     def test_c2_backend_ignored_message_is_not_reported_as_success(self):
         api = FakeApi(None)
