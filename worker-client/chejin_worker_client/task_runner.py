@@ -3833,23 +3833,6 @@ class TaskRunner:
                 )
                 self.c2_round_processed_conversation_ids.add(dedupe_key)
                 continue
-            if authorized_target.read_reason == "visible_unread" and not (
-                isinstance(visible_target.raw, dict)
-                and visible_target.raw.get("local_unread_hint") is True
-            ):
-                append_log(
-                    "INFO",
-                    "c2_visible_unread_local_fact_missing",
-                    "后端签发了首屏未读许可，但本机当前会话行没有未读标记，禁止读取。",
-                    error_code="C2_VISIBLE_UNREAD_LOCAL_FACT_MISSING",
-                    metadata={
-                        "conversation_id": visible_target.conversation_id,
-                        "remark_code": visible_target.remark_code,
-                        "authorization_revision": authorized_target.authorization_revision,
-                    },
-                )
-                self.c2_round_processed_conversation_ids.add(dedupe_key)
-                continue
             target = self._authorized_visible_hit_target(visible_target, authorized_target)
             if dedupe_key in self.c2_round_processed_conversation_ids:
                 continue
@@ -3915,22 +3898,6 @@ class TaskRunner:
             if not self._ui_actions_enabled(binding):
                 break
             dedupe_key = self._target_dedupe_key(target)
-            if target.read_reason == "visible_unread":
-                # ``visible_unread`` is a short-lived server authorization for
-                # the current local unread fact. It may only be consumed by
-                # _drain_visible_hit_queue after an exact queue intersection;
-                # never turn it into a normal search/read target here.
-                append_log(
-                    "INFO",
-                    "c2_visible_unread_waiting_local_fact",
-                    "后端已签发首屏未读许可，但本机当前扫描没有相同未读事实，禁止定向读取。",
-                    metadata={
-                        "conversation_id": target.conversation_id,
-                        "remark_code": target.remark_code,
-                        "authorization_revision": target.authorization_revision,
-                    },
-                )
-                continue
             if dedupe_key in self.c2_round_processed_conversation_ids:
                 append_log("INFO", "c2_state_target_deduped", "状态机读取目标已在本轮第一屏命中读取中处理，跳过重复读取。", metadata={"conversation_id": target.conversation_id, "rpa_session_key": target.rpa_session_key, "remark_code": target.remark_code, "read_reason": target.read_reason})
                 continue
@@ -4310,10 +4277,6 @@ class TaskRunner:
             return "C2_TARGET_REMARK_CODE_INVALID"
         if target.ocr_confidence is not None and target.ocr_confidence < CONFIG.c2_message_min_ocr_confidence:
             return "C2_TARGET_OCR_LOW_CONFIDENCE"
-        if target.read_reason == "visible_unread" and not (
-            isinstance(target.raw, dict) and target.raw.get("visible_hit") is True
-        ):
-            return "C2_VISIBLE_UNREAD_LOCAL_FACT_MISSING"
         next_read_due_at = (
             target.raw.get("next_read_due_at")
             if isinstance(target.raw, dict)
