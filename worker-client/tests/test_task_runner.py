@@ -43,7 +43,7 @@ from chejin_worker_client.storage import (
     read_logs,
     refresh_c2_outbox_payload,
     save_c2_state,
-    save_c2_ledger_terminal,
+    save_c2_ledger_terminal as _save_c2_ledger_terminal,
     save_reply_send_intent,
 )
 from chejin_worker_client.task_runner import (
@@ -67,6 +67,16 @@ from chejin_worker_client.wechat_c2 import (
 )
 
 
+def save_c2_ledger_terminal(**kwargs):
+    """Seed legacy-independent ledger fixtures with explicit fact ownership."""
+
+    kwargs.setdefault(
+        "origin_read_run_id",
+        f"read-fixture:{kwargs.get('conversation_id') or 'unknown'}",
+    )
+    return _save_c2_ledger_terminal(**kwargs)
+
+
 def sidecar_identity_contract(
     code: str = "",
     *,
@@ -83,6 +93,16 @@ def sidecar_identity_contract(
             "remark_code": normalized_code,
             "reason": reason,
         },
+    }
+
+
+def identity_checkpoint(
+    *, next_sequence_floor: int = 1,
+) -> dict:
+    return {
+        "version": 2,
+        "next_sequence_floor": next_sequence_floor,
+        "recent_messages": [],
     }
 
 
@@ -245,7 +265,7 @@ class FakeApi:
                 target.raw.setdefault(
                     "identity_checkpoint",
                     {
-                        "version": 1,
+                        "version": 2,
                         "next_sequence_floor": 1,
                         "recent_messages": [],
                     },
@@ -326,7 +346,7 @@ class FakeApi:
                     target.raw.get("identity_checkpoint"), dict
                 )
                 else {
-                    "version": 1,
+                    "version": 2,
                     "next_sequence_floor": 1,
                     "recent_messages": [],
                 }
@@ -1033,6 +1053,7 @@ class TaskRunnerTest(unittest.TestCase):
         checkpoint_c2_action_outcomes(
             flow_id="crashed-flow",
             conversation_id=target.conversation_id,
+            origin_read_run_id="read-crashed-flow",
             outcomes=[
                 {
                     "source_message_key": "voice-completed-before-crash",
@@ -1090,6 +1111,7 @@ class TaskRunnerTest(unittest.TestCase):
             action_kind="voice",
             transaction_id="voice-crashed-after-click",
             conversation_id=target.conversation_id,
+            origin_read_run_id="read-voice-crashed-after-click",
             items=[
                 {
                     "source_message_key": "voice-triggered-before-crash",
@@ -1111,6 +1133,10 @@ class TaskRunnerTest(unittest.TestCase):
         )
         self.assertEqual(ledger["terminal_state"], "failed")
         self.assertEqual(
+            ledger["origin_read_run_id"],
+            "read-voice-crashed-after-click",
+        )
+        self.assertEqual(
             ledger["result"]["action_outcome"]["action_phase"],
             "trigger_attempted",
         )
@@ -1119,6 +1145,7 @@ class TaskRunnerTest(unittest.TestCase):
         save_c2_ledger_terminal(
             conversation_id=target.conversation_id,
             source_message_key="voice-triggered-before-crash",
+            origin_read_run_id="read-voice-crashed-after-click",
             dedupe_key=None,
             message_type="voice",
             terminal_state="failed",
@@ -1154,6 +1181,7 @@ class TaskRunnerTest(unittest.TestCase):
             action_kind="image",
             transaction_id="image-crashed-before-copy",
             conversation_id=target.conversation_id,
+            origin_read_run_id="read-image-crashed-before-copy",
             items=[
                 {
                     "source_message_key": "image-not-attempted",
@@ -1243,6 +1271,7 @@ class TaskRunnerTest(unittest.TestCase):
         save_c2_ledger_terminal(
             conversation_id=target.conversation_id,
             source_message_key="voice-sidecar-crashed",
+            origin_read_run_id=ledger["origin_read_run_id"],
             dedupe_key=None,
             message_type="voice",
             terminal_state="failed",
@@ -1263,13 +1292,16 @@ class TaskRunnerTest(unittest.TestCase):
         save_c2_ledger_terminal(
             conversation_id=target.conversation_id,
             source_message_key="voice-failed-with-evidence",
+            origin_read_run_id="read-test-accumulator",
             dedupe_key=None,
             message_type="voice",
             terminal_state="failed",
             ingest_state="waiting",
             result={"state": "failed", "error_code": "VOICE_FAILED"},
         )
-        accumulator = FlowOutcomeAccumulator()
+        accumulator = FlowOutcomeAccumulator(
+            origin_read_run_id="read-test-accumulator"
+        )
         accumulator.record(
             {
                 "source_message_key": "voice-failed-with-evidence",
@@ -1299,6 +1331,20 @@ class TaskRunnerTest(unittest.TestCase):
         )
 
     def make_runner(self, api: FakeApi, bridge: FakeBridge):
+        # read-targets in production always carry the backend identity
+        # checkpoint. Tests that invoke the single-target flow directly must
+        # model that same contract instead of relying on local state leaked
+        # from another test.
+        for target in api.read_targets:
+            if isinstance(target.raw, dict):
+                target.raw.setdefault(
+                    "identity_checkpoint",
+                    {
+                        "version": 2,
+                        "next_sequence_floor": 1,
+                        "recent_messages": [],
+                    },
+                )
         seen = {"profiles": [], "statuses": [], "steps": [], "tasks": [], "results": [], "errors": []}
         runner = TaskRunner(
             api,  # type: ignore[arg-type]
@@ -3320,6 +3366,13 @@ class TaskRunnerTest(unittest.TestCase):
             ocr_confidence=0.98,
             read_reason="waiting_user_reply",
             authorization_revision="revision-conv-1",
+            raw={
+                "identity_checkpoint": {
+                    "version": 2,
+                    "next_sequence_floor": 1,
+                    "recent_messages": [],
+                }
+            },
         )
         api.read_targets = [target]
         calls = {"count": 0}
@@ -3613,7 +3666,7 @@ class TaskRunnerTest(unittest.TestCase):
             enforce_read_targets=True,
         )
 
-        self.assertTrue(result["ok"])
+        self.assertTrue(result["ok"], result)
         self.assertEqual(
             observed_phases,
             ["not_attempted", "trigger_attempted", "confirmed"],
@@ -3861,7 +3914,7 @@ class TaskRunnerTest(unittest.TestCase):
 
         result = runner._read_one_wechat_target(binding, target, current_step="state_target_message_read", enforce_read_targets=True)
 
-        self.assertTrue(result["ok"])
+        self.assertTrue(result["ok"], result)
         self.assertEqual(bridge.voice_transcribes, [])
         self.assertNotIn("voice_transcribe", bridge.c2_operation_order)
         self.assertEqual(api.message_payloads[0]["messages"][0]["content"], "新的文字")
@@ -4773,6 +4826,10 @@ class TaskRunnerTest(unittest.TestCase):
                 "error_code": "VOICE_TRANSCRIBE_PARTIAL",
             },
         )
+        original_origin_read_run_id = load_c2_ledger_entry(
+            target.conversation_id,
+            failed_source_key,
+        )["origin_read_run_id"]
         bridge.get_messages_payloads = [{"messages": [failed_message]}]
         runner, _ = self.make_runner(api, bridge)
         binding = Binding(
@@ -4789,7 +4846,7 @@ class TaskRunnerTest(unittest.TestCase):
             enforce_read_targets=True,
         )
 
-        self.assertTrue(result["ok"])
+        self.assertTrue(result["ok"], result)
         self.assertNotIn("voice_transcribe", bridge.c2_operation_order)
         self.assertEqual(len(api.message_payloads), 1)
         recovered = api.message_payloads[0]["messages"][0]
@@ -4806,6 +4863,21 @@ class TaskRunnerTest(unittest.TestCase):
         )
         self.assertEqual(ledger["terminal_state"], "failed")
         self.assertEqual(ledger["ingest_state"], "confirmed")
+        self.assertEqual(
+            ledger["origin_read_run_id"],
+            original_origin_read_run_id,
+        )
+        failed_slot = next(
+            item
+            for item in api.message_payloads[0]["evidence"][
+                "slot_ledger_states"
+            ]
+            if item["source_message_key"] == failed_source_key
+        )
+        self.assertEqual(
+            failed_slot["origin_read_run_id"],
+            original_origin_read_run_id,
+        )
 
     def test_c2_brain_technical_failure_is_not_reported_as_read_success(self):
         api = FakeApi(None)
@@ -5069,6 +5141,7 @@ class TaskRunnerTest(unittest.TestCase):
             runner._report_identity_failure_gate(
                 binding=binding,
                 target=target,
+                read_run_id="read-identity-failure-gate",
                 error_code="MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
                 identity_errors=errors,
             )
@@ -5086,6 +5159,7 @@ class TaskRunnerTest(unittest.TestCase):
             runner._report_identity_failure_gate(
                 binding=binding,
                 target=target,
+                read_run_id="read-identity-failure-gate",
                 error_code="MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
                 identity_errors=errors,
             )
@@ -5146,6 +5220,7 @@ class TaskRunnerTest(unittest.TestCase):
             display_name="CJAMB01",
             remark_code="CJAMB01",
             authorization_revision="revision-cross-round-ambiguous",
+            raw={"identity_checkpoint": identity_checkpoint()},
         )
         identity_errors = [
             {
@@ -5235,6 +5310,14 @@ class TaskRunnerTest(unittest.TestCase):
             for row in rows
         ]
         self.assertEqual(len(stored), 3)
+        self.assertEqual(
+            {item["payload"]["read_run_id"] for item in stored},
+            {
+                "read-common-outbox-1",
+                "read-common-outbox-2",
+                "read-common-outbox-3",
+            },
+        )
         self.assertEqual(
             {item["payload"]["evidence"]["operation"] for item in stored},
             {"message_ingest", "voice_failure_gate", "identity_failure_gate"},
@@ -5802,6 +5885,13 @@ class TaskRunnerTest(unittest.TestCase):
             ocr_confidence=0.98,
             read_reason="waiting_user_reply",
             authorization_revision="revision-conv-1",
+            raw={
+                "identity_checkpoint": {
+                    "version": 2,
+                    "next_sequence_floor": 1,
+                    "recent_messages": [],
+                }
+            },
         )
         bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"), message_sender_role="customer")
         runner, _ = self.make_runner(api, bridge)
@@ -5811,7 +5901,7 @@ class TaskRunnerTest(unittest.TestCase):
         second = runner._read_one_wechat_target(binding, target, current_step="state_target_message_read", enforce_read_targets=False)
 
         self.assertTrue(first.get("ok"))
-        self.assertTrue(second.get("ok"))
+        self.assertTrue(second.get("ok"), second)
         self.assertEqual([item["target_mode"] for item in bridge.locate_chats[:2]], ["visible", "current"])
 
     def test_c2_recent_visible_scan_survives_read_target_permission_delay(self):
@@ -5858,6 +5948,13 @@ class TaskRunnerTest(unittest.TestCase):
             remark_code="CJFRAME01",
             read_reason="waiting_user_reply",
             authorization_revision="revision-frame-reuse",
+            raw={
+                "identity_checkpoint": {
+                    "version": 2,
+                    "next_sequence_floor": 1,
+                    "recent_messages": [],
+                }
+            },
         )
         bridge = FakeBridge(RpaResult(ok=True, result_code="unused", message="unused"))
         snapshot = bridge._contractual_message_payload(
@@ -5910,6 +6007,7 @@ class TaskRunnerTest(unittest.TestCase):
             remark_code="CJFRAME02",
             read_reason="waiting_user_reply",
             authorization_revision=f"revision-frame-image-{unique}",
+            raw={"identity_checkpoint": identity_checkpoint()},
         )
         bridge = FakeBridge(
             RpaResult(ok=True, result_code="unused", message="unused")
@@ -6200,7 +6298,9 @@ class TaskRunnerTest(unittest.TestCase):
                 observation=observation,
                 source_key=source_key,
                 cancel_check=None,
-                flow_outcomes=FlowOutcomeAccumulator(),
+                flow_outcomes=FlowOutcomeAccumulator(
+                    origin_read_run_id="read-adapter-exception"
+                ),
             )
 
         self.assertEqual(result["state"], "failed")
@@ -7987,6 +8087,7 @@ class TaskRunnerTest(unittest.TestCase):
             remark_code="CJFRIEND01",
             read_reason="friend_acceptance_visible_hit",
             authorization_revision="revision-friend-activation",
+            raw={"identity_checkpoint": identity_checkpoint()},
         )
         runner, _ = self.make_runner(api, bridge)
         runner.c2_last_visible_sessions = [
@@ -8234,9 +8335,12 @@ class TaskRunnerTest(unittest.TestCase):
             ingest_state="waiting",
             result={"state": "completed"},
         )
+        original_read_run_id = (
+            f"read-outbox-expired-{time.time_ns()}"
+        )
         outbox_id = enqueue_c2_outbox(
             {
-                "read_run_id": f"read-outbox-expired-{time.time_ns()}",
+                "read_run_id": original_read_run_id,
                 "conversation_id": "conv-outbox-expired",
                 "authorization_revision": "expired-revision",
                 "messages": [
@@ -8257,6 +8361,10 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(
             waiting["payload"]["authorization_revision"],
             "fresh-revision",
+        )
+        self.assertEqual(
+            waiting["payload"]["read_run_id"],
+            original_read_run_id,
         )
         self.assertEqual(
             waiting["payload"]["messages"][0]["source_message_key"],
@@ -8289,7 +8397,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "authorization_revision": "fresh-revision",
                 "read_reason": "waiting_user_reply",
                 "identity_checkpoint": {
-                    "version": 1,
+                    "version": 2,
                     "next_sequence_floor": 8,
                     "recent_messages": [],
                 },
@@ -8422,7 +8530,7 @@ class TaskRunnerTest(unittest.TestCase):
             authorization_revision="revision-missing-db",
             raw={
                 "identity_checkpoint": {
-                    "version": 1,
+                    "version": 2,
                     "next_sequence_floor": 31,
                     "recent_messages": [],
                 }
@@ -8475,7 +8583,7 @@ class TaskRunnerTest(unittest.TestCase):
             authorization_revision="revision-concurrent",
             raw={
                 "identity_checkpoint": {
-                    "version": 1,
+                    "version": 2,
                     "next_sequence_floor": 41,
                     "recent_messages": [],
                 }
@@ -8533,7 +8641,7 @@ class TaskRunnerTest(unittest.TestCase):
                     datetime.now(timezone.utc) + timedelta(minutes=2)
                 ).isoformat(),
                 "identity_checkpoint": {
-                    "version": 1,
+                    "version": 2,
                     "next_sequence_floor": 1,
                     "recent_messages": [],
                 },
@@ -8570,7 +8678,7 @@ class TaskRunnerTest(unittest.TestCase):
             authorization_revision="revision-refresh-checkpoint",
             raw={
                 "identity_checkpoint": {
-                    "version": 1,
+                    "version": 2,
                     "next_sequence_floor": 2,
                     "recent_messages": [],
                 }
@@ -8584,7 +8692,7 @@ class TaskRunnerTest(unittest.TestCase):
             "authorization_revision": target.authorization_revision,
             "read_reason": target.read_reason,
             "identity_checkpoint": {
-                "version": 1,
+                "version": 2,
                 "next_sequence_floor": 50,
                 "recent_messages": [],
             },
@@ -8688,9 +8796,13 @@ class TaskRunnerTest(unittest.TestCase):
             run_status="running",
         )
         source_key = "voice-invalid-structural"
+        original_read_run_id = (
+            f"read-outbox-invalid-{time.time_ns()}"
+        )
         save_c2_ledger_terminal(
             conversation_id="conv-outbox-invalid",
             source_message_key=source_key,
+            origin_read_run_id=original_read_run_id,
             dedupe_key="dedupe-voice-invalid-structural",
             message_type="voice",
             terminal_state="completed",
@@ -8699,7 +8811,7 @@ class TaskRunnerTest(unittest.TestCase):
         )
         outbox_id = enqueue_c2_outbox(
             {
-                "read_run_id": f"read-outbox-invalid-{time.time_ns()}",
+                "read_run_id": original_read_run_id,
                 "conversation_id": "conv-outbox-invalid",
                 "authorization_revision": "revision-invalid",
                 "messages": [
@@ -8749,6 +8861,19 @@ class TaskRunnerTest(unittest.TestCase):
                     ],
                     "flow_gate_errors": [],
                     "flow_gate_details": [],
+                    "slot_ledger_states": [
+                        {
+                            "observation_id": "observation-invalid-voice",
+                            "screen_order": 1,
+                            "order_source": "visual_top",
+                            "row_kind": "voice_transcript",
+                            "source_message_key": source_key,
+                            "origin_read_run_id": original_read_run_id,
+                            "fact_scope": "current_read_run",
+                            "delivery_state": "outbox_waiting",
+                            "item_state": "completed",
+                        }
+                    ],
                 },
             }
         )
@@ -8766,6 +8891,14 @@ class TaskRunnerTest(unittest.TestCase):
         )
         self.assertIsNone(
             stored["payload"]["messages"][0]["content"],
+        )
+        rebuilt_slot = stored["payload"]["evidence"][
+            "slot_ledger_states"
+        ][0]
+        self.assertEqual(rebuilt_slot["item_state"], "failed")
+        self.assertEqual(
+            rebuilt_slot["origin_read_run_id"],
+            original_read_run_id,
         )
         self.assertEqual(
             load_c2_ledger_entry(
@@ -9071,12 +9204,18 @@ class TaskRunnerTest(unittest.TestCase):
                 target=target,
                 sidecar_payload=sidecar_payload,
                 enforce_read_targets=False,
+                flow_outcomes=FlowOutcomeAccumulator(
+                    origin_read_run_id="read-image-cache"
+                ),
             )
             second, second_stats = runner._process_final_image_slots(
                 binding=binding,
                 target=target,
                 sidecar_payload=sidecar_payload,
                 enforce_read_targets=False,
+                flow_outcomes=FlowOutcomeAccumulator(
+                    origin_read_run_id="read-image-cache"
+                ),
             )
 
         assert vision.call_count == 1
@@ -9220,6 +9359,9 @@ class TaskRunnerTest(unittest.TestCase):
                 target=target,
                 sidecar_payload=initial_payload,
                 enforce_read_targets=False,
+                flow_outcomes=FlowOutcomeAccumulator(
+                    origin_read_run_id="read-image-pushed-out"
+                ),
             )
             shifted_context = {
                 **context_text,
@@ -9268,6 +9410,9 @@ class TaskRunnerTest(unittest.TestCase):
                 target=target,
                 sidecar_payload=restored,
                 enforce_read_targets=False,
+                flow_outcomes=FlowOutcomeAccumulator(
+                    origin_read_run_id="read-image-pushed-out"
+                ),
             )
 
         self.assertEqual(vision.call_count, 1)
@@ -9285,7 +9430,11 @@ class TaskRunnerTest(unittest.TestCase):
             "已完成且后来被顶出屏幕的车辆图片",
         )
         self.assertNotIn("bubble_rect", restored_images[0])
-        ingest = build_message_ingest_payload(target, restored)
+        ingest = build_message_ingest_payload(
+            target,
+            restored,
+            read_run_id=f"read-restored-{unique}",
+        )
         self.assertEqual(len(ingest["messages"]), 3)
         self.assertEqual(
             ingest["messages"][0]["message_type"],
@@ -9417,6 +9566,9 @@ class TaskRunnerTest(unittest.TestCase):
                 target=target,
                 sidecar_payload=initial_payload,
                 enforce_read_targets=False,
+                flow_outcomes=FlowOutcomeAccumulator(
+                    origin_read_run_id="read-image-preflight"
+                ),
             )
             convergence = runner._converge_current_screen_after_images(
                 binding=binding,
@@ -9430,7 +9582,9 @@ class TaskRunnerTest(unittest.TestCase):
                 )(),
                 action_cancel_requested=lambda: False,
                 enforce_read_targets=False,
-                flow_outcomes=FlowOutcomeAccumulator(),
+                flow_outcomes=FlowOutcomeAccumulator(
+                    origin_read_run_id="read-image-preflight"
+                ),
             )
             self.assertFalse(
                 runner._worker_transaction_barrier_ready(
@@ -9580,6 +9734,7 @@ class TaskRunnerTest(unittest.TestCase):
             action_kind="image",
             transaction_id=transaction_id,
             conversation_id="conv-image-not-attempted",
+            origin_read_run_id="read-image-not-attempted",
             items=[
                 {
                     "source_message_key": "image-not-attempted-source",
@@ -9633,6 +9788,7 @@ class TaskRunnerTest(unittest.TestCase):
             action_kind="image",
             transaction_id=transaction_id,
             conversation_id=conversation_id,
+            origin_read_run_id="read-image-legacy-confirmed",
             items=[{
                 "source_message_key": source_key,
                 "physical_anchor_keys": ["image-anchor-legacy"],
@@ -9733,6 +9889,7 @@ class TaskRunnerTest(unittest.TestCase):
             action_kind="image",
             transaction_id=transaction_id,
             conversation_id=conversation_id,
+            origin_read_run_id="read-image-physical-alias",
             items=[
                 {
                     "source_message_key": source_key,
@@ -9943,6 +10100,7 @@ class TaskRunnerTest(unittest.TestCase):
             action_kind="image",
             transaction_id=transaction_id,
             conversation_id=conversation_id,
+            origin_read_run_id="read-image-ledger-before-outbox",
             items=journal_items,
         )
         for index, source_key in enumerate(source_keys):
@@ -10145,6 +10303,7 @@ class TaskRunnerTest(unittest.TestCase):
             action_kind="image",
             transaction_id="image-terminated-transaction",
             conversation_id=conversation_id,
+            origin_read_run_id="read-image-terminated",
             items=[
                 {
                     "source_message_key": source_key,
@@ -10422,7 +10581,9 @@ class TaskRunnerTest(unittest.TestCase):
             target,
             reconciled[0],
         )
-        flow_outcomes = FlowOutcomeAccumulator()
+        flow_outcomes = FlowOutcomeAccumulator(
+            origin_read_run_id="read-flow-outcomes"
+        )
 
         def vision_finishes_then_process_exits(**kwargs):
             journal_path = Path(kwargs["action_journal_path"])
@@ -10607,6 +10768,9 @@ class TaskRunnerTest(unittest.TestCase):
                 sidecar_payload=sidecar_payload,
                 enforce_read_targets=False,
                 cancel_check=lambda: True,
+                flow_outcomes=FlowOutcomeAccumulator(
+                    origin_read_run_id="read-image-cancelled"
+                ),
             )
 
         self.assertEqual(stats["authorization_revoked"], 1)
@@ -10704,6 +10868,9 @@ class TaskRunnerTest(unittest.TestCase):
                 target=target,
                 sidecar_payload=sidecar_payload,
                 enforce_read_targets=False,
+                flow_outcomes=FlowOutcomeAccumulator(
+                    origin_read_run_id="read-image-window-failure"
+                ),
             )
 
         self.assertEqual(stats["failed"], 1)
@@ -10789,6 +10956,9 @@ class TaskRunnerTest(unittest.TestCase):
                 target=target,
                 sidecar_payload=sidecar_payload,
                 enforce_read_targets=False,
+                flow_outcomes=FlowOutcomeAccumulator(
+                    origin_read_run_id="read-image-removed"
+                ),
             )
 
         self.assertEqual(stats["removed_from_final_screen"], 1)
@@ -10903,6 +11073,9 @@ class TaskRunnerTest(unittest.TestCase):
                     "observations": [old_failed, new_image]
                 },
                 enforce_read_targets=False,
+                flow_outcomes=FlowOutcomeAccumulator(
+                    origin_read_run_id="read-image-mixed-cache"
+                ),
             )
 
         self.assertEqual(vision.call_count, 1)
@@ -10957,6 +11130,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "authoritative_frame_source": "final_read",
                 "observations": [observation],
             },
+            read_run_id=f"read-image-untrusted-{unique}",
         )
 
         source_key = image_observation_source_key(target, observation)
@@ -10978,6 +11152,9 @@ class TaskRunnerTest(unittest.TestCase):
             sidecar_payload={"observations": [observation]},
             enforce_read_targets=False,
             allowed_new_source_keys=set(),
+            flow_outcomes=FlowOutcomeAccumulator(
+                origin_read_run_id="read-image-not-new"
+            ),
         )
 
         self.assertNotIn("ignored", phase_result)
@@ -11007,6 +11184,7 @@ class TaskRunnerTest(unittest.TestCase):
             display_name="CJPOST01",
             remark_code="CJPOST01",
             authorization_revision="revision-post-vision",
+            raw={"identity_checkpoint": identity_checkpoint()},
         )
         new_image = {
             "observation_id": "new-image",
@@ -11101,7 +11279,9 @@ class TaskRunnerTest(unittest.TestCase):
                 lease=lease,
                 action_cancel_requested=lambda: False,
                 enforce_read_targets=True,
-                flow_outcomes=FlowOutcomeAccumulator(),
+                flow_outcomes=FlowOutcomeAccumulator(
+                    origin_read_run_id="read-image-flow-1"
+                ),
             )
 
         self.assertTrue(result["ok"], result)
@@ -11139,6 +11319,7 @@ class TaskRunnerTest(unittest.TestCase):
             display_name="CJPOST02",
             remark_code="CJPOST02",
             authorization_revision="revision-post-vision-voice",
+            raw={"identity_checkpoint": identity_checkpoint()},
         )
         voice = {
             "observation_id": "new-voice",
@@ -11207,7 +11388,9 @@ class TaskRunnerTest(unittest.TestCase):
                 lease=unittest.mock.Mock(),
                 action_cancel_requested=lambda: False,
                 enforce_read_targets=True,
-                flow_outcomes=FlowOutcomeAccumulator(),
+                flow_outcomes=FlowOutcomeAccumulator(
+                    origin_read_run_id="read-image-flow-2"
+                ),
             )
 
         self.assertTrue(result["ok"], result)
@@ -11236,6 +11419,7 @@ class TaskRunnerTest(unittest.TestCase):
             display_name="CJPOST03",
             remark_code="CJPOST03",
             authorization_revision="revision-post-vision-ambiguous",
+            raw={"identity_checkpoint": identity_checkpoint()},
         )
         runner.bridge.get_messages = unittest.mock.Mock(
             return_value={
@@ -11280,7 +11464,9 @@ class TaskRunnerTest(unittest.TestCase):
                 lease=unittest.mock.Mock(),
                 action_cancel_requested=lambda: False,
                 enforce_read_targets=True,
-                flow_outcomes=FlowOutcomeAccumulator(),
+                flow_outcomes=FlowOutcomeAccumulator(
+                    origin_read_run_id="read-image-flow-3"
+                ),
             )
 
         self.assertFalse(result["ok"])
@@ -11445,19 +11631,28 @@ class TaskRunnerTest(unittest.TestCase):
             },
         )
         payload["observations"][1]["bubble_rect"] = [420, 300, 650, 340]
-        first_plan = runner._build_final_slot_incremental_plan(target=target, sidecar_payload=payload)
+        current_read_run_id = f"read-history-gap-{unique}"
+        first_plan = runner._build_final_slot_incremental_plan(
+            target=target,
+            sidecar_payload=payload,
+            read_run_id=current_read_run_id,
+        )
         old_text_slot = next(item for item in first_plan["slot_ledger_states"] if item["row_kind"] == "text_bubble")
         save_c2_ledger_terminal(
             conversation_id=target.conversation_id,
             source_message_key=old_text_slot["source_message_key"],
+            origin_read_run_id=f"read-old-history-{unique}",
             dedupe_key=f"dedupe:{old_text_slot['source_message_key']}",
             message_type="text",
             terminal_state="completed",
             ingest_state="confirmed",
             result={},
         )
-
-        plan = runner._build_final_slot_incremental_plan(target=target, sidecar_payload=payload)
+        plan = runner._build_final_slot_incremental_plan(
+            target=target,
+            sidecar_payload=payload,
+            read_run_id=current_read_run_id,
+        )
         with patch(
             "chejin_worker_client.omniauto_vision.process_image_slot",
             return_value={
@@ -11474,6 +11669,9 @@ class TaskRunnerTest(unittest.TestCase):
                 enforce_read_targets=False,
                 allowed_new_source_keys=set(
                     plan["new_image_source_keys"]
+                ),
+                flow_outcomes=FlowOutcomeAccumulator(
+                    origin_read_run_id=current_read_run_id
                 ),
             )
 
@@ -11551,6 +11749,7 @@ class TaskRunnerTest(unittest.TestCase):
         first = runner._build_final_slot_incremental_plan(
             target=target,
             sidecar_payload=payload,
+            read_run_id=f"read-current-backend-{unique}",
         )
         backend_old_source_key = first["slot_ledger_states"][0][
             "source_message_key"
@@ -11561,6 +11760,7 @@ class TaskRunnerTest(unittest.TestCase):
         save_c2_ledger_terminal(
             conversation_id=target.conversation_id,
             source_message_key=local_old_source_key,
+            origin_read_run_id=f"read-old-local-{unique}",
             dedupe_key=f"dedupe:{local_old_source_key}",
             message_type="text",
             terminal_state="completed",
@@ -11568,12 +11768,13 @@ class TaskRunnerTest(unittest.TestCase):
             result={},
         )
         target.raw["identity_checkpoint"] = {
-            "version": 1,
+            "version": 2,
             "next_sequence_floor": 3,
             "recent_messages": [
                 {
                     "stable_id": "worker-message-2",
                     "source_message_key": backend_old_source_key,
+                    "origin_read_run_id": f"read-old-backend-{unique}",
                 }
             ],
         }
@@ -11581,6 +11782,7 @@ class TaskRunnerTest(unittest.TestCase):
         plan = runner._build_final_slot_incremental_plan(
             target=target,
             sidecar_payload=payload,
+            read_run_id=f"read-current-backend-{unique}",
         )
 
         self.assertEqual(
@@ -11592,6 +11794,381 @@ class TaskRunnerTest(unittest.TestCase):
             "backend_identity_checkpoint",
         )
         self.assertFalse(plan["history_gap"])
+
+    def test_staging_backend_historical_fact_preserves_its_origin(self):
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="ok", message="unused")
+        )
+        runner, _ = self.make_runner(FakeApi(None), bridge)
+        unique = str(time.time_ns())
+        current_read_run_id = f"read-current-stage-{unique}"
+        historical_read_run_id = f"read-backend-stage-{unique}"
+        target = WechatReadTarget(
+            conversation_id=f"conv-backend-stage-{unique}",
+            rpa_session_key="wx:rpa:v1:backend-stage",
+            display_name="CJSTAGE1 客户",
+            remark_code="CJSTAGE1",
+            read_reason="waiting_user_reply",
+            authorization_revision=f"revision-{unique}",
+        )
+        sidecar_payload = bridge._contractual_message_payload(
+            {
+                "ok": True,
+                "messages": [
+                    {
+                        "id": f"backend-history-{unique}",
+                        "sender_role": "customer",
+                        "type": "text",
+                        "content": "后端已有历史事实",
+                        "bubble_rect": [420, 100, 650, 140],
+                    }
+                ],
+            }
+        )
+        first_plan = runner._build_final_slot_incremental_plan(
+            target=target,
+            sidecar_payload=sidecar_payload,
+            read_run_id=current_read_run_id,
+        )
+        source_key = first_plan["slot_ledger_states"][0][
+            "source_message_key"
+        ]
+        target.raw["identity_checkpoint"] = {
+            "version": 2,
+            "next_sequence_floor": 2,
+            "recent_messages": [
+                {
+                    "stable_id": "worker-message-1",
+                    "source_message_key": source_key,
+                    "origin_read_run_id": historical_read_run_id,
+                }
+            ],
+        }
+        plan = runner._build_final_slot_incremental_plan(
+            target=target,
+            sidecar_payload=sidecar_payload,
+            read_run_id=current_read_run_id,
+        )
+        sidecar_payload.update(project_final_slot_flow_gates(plan))
+        ingest = build_message_ingest_payload(
+            target,
+            sidecar_payload,
+            read_run_id=current_read_run_id,
+        )
+
+        runner._stage_payload_ledger(ingest)
+
+        self.assertEqual(
+            load_c2_ledger_entry(
+                target.conversation_id,
+                source_key,
+            )["origin_read_run_id"],
+            historical_read_run_id,
+        )
+
+    def test_current_read_media_waiting_between_new_text_and_voice_is_not_history_gap(self):
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="ok", message="unused")
+        )
+        runner, _ = self.make_runner(FakeApi(None), bridge)
+        for terminal_state in ("completed", "failed"):
+            with self.subTest(terminal_state=terminal_state):
+                unique = f"{terminal_state}-{time.time_ns()}"
+                read_run_id = f"read-current-media-{unique}"
+                target = WechatReadTarget(
+                    conversation_id=f"conv-current-media-{unique}",
+                    rpa_session_key="wx:rpa:v1:current-media",
+                    display_name="CJCURR01 客户",
+                    remark_code="CJCURR01",
+                    authorization_revision=f"revision-{unique}",
+                )
+                payload = bridge._contractual_message_payload(
+                    {
+                        "ok": True,
+                        "messages": [
+                            {
+                                "id": f"text-{unique}",
+                                "sender_role": "customer",
+                                "type": "text",
+                                "content": "在？",
+                                "bubble_rect": [420, 100, 650, 140],
+                            },
+                            {
+                                "id": f"image-{unique}",
+                                "sender_role": "customer",
+                                "type": "image",
+                                "content": "",
+                                "bubble_rect": [420, 180, 650, 280],
+                            },
+                            {
+                                "id": f"voice-{unique}",
+                                "sender_role": "customer",
+                                "type": "voice",
+                                "content": "你好，在吗？",
+                                "bubble_rect": [420, 320, 650, 370],
+                            },
+                        ],
+                    }
+                )
+                payload["observations"][1].update(
+                    {
+                        "row_kind": "image_bubble",
+                        "message_type": "image",
+                        "content_clean": "",
+                        "image_physical_anchor": {
+                            "sender_role": "customer",
+                            "preceding_stable_message": f"text-{unique}",
+                            "following_stable_message": f"voice-{unique}",
+                            "occurrence_index": 0,
+                        },
+                    }
+                )
+                first = runner._build_final_slot_incremental_plan(
+                    target=target,
+                    sidecar_payload=payload,
+                    read_run_id=read_run_id,
+                )
+                image_slot = next(
+                    item
+                    for item in first["slot_ledger_states"]
+                    if item["row_kind"] == "image_bubble"
+                )
+                save_c2_ledger_terminal(
+                    conversation_id=target.conversation_id,
+                    source_message_key=image_slot["source_message_key"],
+                    origin_read_run_id=read_run_id,
+                    dedupe_key=None,
+                    message_type="image",
+                    terminal_state=terminal_state,
+                    ingest_state="waiting",
+                    result={"state": terminal_state},
+                )
+
+                post_media = runner._build_final_slot_incremental_plan(
+                    target=target,
+                    sidecar_payload=payload,
+                    read_run_id=read_run_id,
+                )
+
+                self.assertEqual(
+                    [
+                        item["fact_scope"]
+                        for item in post_media["slot_ledger_states"]
+                    ],
+                    ["current_read_run"] * 3,
+                )
+                self.assertEqual(
+                    post_media["slot_ledger_states"][1]["delivery_state"],
+                    "outbox_waiting",
+                )
+                self.assertEqual(
+                    post_media["slot_ledger_states"][1]["item_state"],
+                    terminal_state,
+                )
+                self.assertFalse(post_media["history_gap"])
+                self.assertNotIn(
+                    image_slot["source_message_key"],
+                    post_media["new_image_source_keys"],
+                )
+
+    def test_two_conversations_keep_distinct_read_run_ownership(self):
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="ok", message="unused")
+        )
+        runner, _ = self.make_runner(FakeApi(None), bridge)
+        observed_origins: dict[str, str] = {}
+        for suffix in ("a", "b"):
+            read_run_id = f"read-conversation-{suffix}"
+            target = WechatReadTarget(
+                conversation_id=f"conv-read-run-{suffix}",
+                rpa_session_key=f"wx:rpa:v1:read-run-{suffix}",
+                display_name=f"CJREAD0{suffix.upper()}",
+                remark_code=f"CJREAD0{suffix.upper()}",
+                authorization_revision=f"revision-{suffix}",
+            )
+            payload = bridge._contractual_message_payload(
+                {
+                    "ok": True,
+                    "messages": [
+                        {
+                            "id": f"message-{suffix}",
+                            "sender_role": "customer",
+                            "type": "text",
+                            "content": f"会话 {suffix}",
+                            "bubble_rect": [420, 100, 650, 140],
+                        }
+                    ],
+                }
+            )
+            plan = runner._build_final_slot_incremental_plan(
+                target=target,
+                sidecar_payload=payload,
+                read_run_id=read_run_id,
+            )
+            observed_origins[target.conversation_id] = plan[
+                "slot_ledger_states"
+            ][0]["origin_read_run_id"]
+
+        self.assertEqual(
+            observed_origins,
+            {
+                "conv-read-run-a": "read-conversation-a",
+                "conv-read-run-b": "read-conversation-b",
+            },
+        )
+
+    def test_historical_fact_below_current_read_still_creates_history_gap(self):
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="ok", message="unused")
+        )
+        runner, _ = self.make_runner(FakeApi(None), bridge)
+        unique = str(time.time_ns())
+        read_run_id = f"read-current-gap-{unique}"
+        target = WechatReadTarget(
+            conversation_id=f"conv-real-gap-{unique}",
+            rpa_session_key="wx:rpa:v1:real-gap",
+            display_name="CJREAL01 客户",
+            remark_code="CJREAL01",
+            authorization_revision=f"revision-{unique}",
+        )
+        payload = bridge._contractual_message_payload(
+            {
+                "ok": True,
+                "messages": [
+                    {
+                        "id": f"current-top-{unique}",
+                        "sender_role": "customer",
+                        "type": "text",
+                        "content": "本轮顶部消息",
+                        "bubble_rect": [420, 100, 650, 140],
+                    },
+                    {
+                        "id": f"historical-middle-{unique}",
+                        "sender_role": "customer",
+                        "type": "text",
+                        "content": "旧轮次消息",
+                        "bubble_rect": [420, 180, 650, 220],
+                    },
+                    {
+                        "id": f"current-bottom-{unique}",
+                        "sender_role": "customer",
+                        "type": "voice",
+                        "content": "本轮语音",
+                        "bubble_rect": [420, 260, 650, 310],
+                    },
+                ],
+            }
+        )
+        first = runner._build_final_slot_incremental_plan(
+            target=target,
+            sidecar_payload=payload,
+            read_run_id=read_run_id,
+        )
+        middle = first["slot_ledger_states"][1]
+        save_c2_ledger_terminal(
+            conversation_id=target.conversation_id,
+            source_message_key=middle["source_message_key"],
+            origin_read_run_id=f"read-historical-{unique}",
+            dedupe_key=None,
+            message_type="text",
+            terminal_state="completed",
+            ingest_state="confirmed",
+            result={},
+        )
+
+        plan = runner._build_final_slot_incremental_plan(
+            target=target,
+            sidecar_payload=payload,
+            read_run_id=read_run_id,
+        )
+
+        self.assertTrue(plan["history_gap"])
+        self.assertEqual(
+            [item["fact_scope"] for item in plan["slot_ledger_states"]],
+            ["current_read_run", "historical", "current_read_run"],
+        )
+
+    def test_unproved_backend_origin_is_identity_gate_not_history_gap(self):
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="ok", message="unused")
+        )
+        runner, _ = self.make_runner(FakeApi(None), bridge)
+        unique = str(time.time_ns())
+        read_run_id = f"read-unknown-origin-{unique}"
+        target = WechatReadTarget(
+            conversation_id=f"conv-unknown-origin-{unique}",
+            rpa_session_key="wx:rpa:v1:unknown-origin",
+            display_name="CJUNKN01 客户",
+            remark_code="CJUNKN01",
+            authorization_revision=f"revision-{unique}",
+        )
+        payload = bridge._contractual_message_payload(
+            {
+                "ok": True,
+                "messages": [
+                    {
+                        "id": f"unknown-{unique}",
+                        "sender_role": "customer",
+                        "type": "image",
+                        "content": "",
+                        "bubble_rect": [420, 100, 650, 220],
+                    }
+                ],
+            }
+        )
+        payload["observations"][0].update(
+            {
+                "row_kind": "image_bubble",
+                "message_type": "image",
+                "content_clean": "",
+                "image_physical_anchor": {
+                    "sender_role": "customer",
+                    "preceding_stable_message": "top-boundary",
+                    "following_stable_message": "bottom-boundary",
+                    "occurrence_index": 0,
+                },
+            }
+        )
+        first = runner._build_final_slot_incremental_plan(
+            target=target,
+            sidecar_payload=payload,
+            read_run_id=read_run_id,
+        )
+        source_key = first["slot_ledger_states"][0]["source_message_key"]
+        target.raw["identity_checkpoint"] = {
+            "version": 2,
+            "next_sequence_floor": 2,
+            "recent_messages": [
+                {
+                    "stable_id": "worker-message-1",
+                    "source_message_key": source_key,
+                }
+            ],
+        }
+
+        plan = runner._build_final_slot_incremental_plan(
+            target=target,
+            sidecar_payload=payload,
+            read_run_id=read_run_id,
+        )
+
+        self.assertEqual(
+            plan["slot_ledger_states"][0]["fact_scope"],
+            "unknown",
+        )
+        self.assertTrue(plan["identity_errors"])
+        self.assertFalse(plan["history_gap"])
+        self.assertEqual(plan["new_image_source_keys"], set())
+        payload.update(project_final_slot_flow_gates(plan))
+        ingest = build_message_ingest_payload(
+            target,
+            payload,
+            read_run_id=read_run_id,
+        )
+        runner._stage_payload_ledger(ingest)
+        self.assertIsNone(
+            load_c2_ledger_entry(target.conversation_id, source_key)
+        )
 
     def test_history_gap_before_latest_self_is_warning_not_reply_gate(self):
         bridge = FakeBridge(
@@ -11652,6 +12229,7 @@ class TaskRunnerTest(unittest.TestCase):
         first = runner._build_final_slot_incremental_plan(
             target=target,
             sidecar_payload=payload,
+            read_run_id=f"read-current-historical-{unique}",
         )
         historical_old_key = first["slot_ledger_states"][1][
             "source_message_key"
@@ -11659,6 +12237,7 @@ class TaskRunnerTest(unittest.TestCase):
         save_c2_ledger_terminal(
             conversation_id=target.conversation_id,
             source_message_key=historical_old_key,
+            origin_read_run_id=f"read-old-historical-{unique}",
             dedupe_key=f"dedupe:{historical_old_key}",
             message_type="text",
             terminal_state="completed",
@@ -11669,6 +12248,7 @@ class TaskRunnerTest(unittest.TestCase):
         plan = runner._build_final_slot_incremental_plan(
             target=target,
             sidecar_payload=payload,
+            read_run_id=f"read-current-historical-{unique}",
         )
 
         self.assertFalse(plan["history_gap"])
@@ -11681,7 +12261,11 @@ class TaskRunnerTest(unittest.TestCase):
             "latest_unreplied_turn_complete",
         )
         payload.update(project_final_slot_flow_gates(plan))
-        ingest = build_message_ingest_payload(target, payload)
+        ingest = build_message_ingest_payload(
+            target,
+            payload,
+            read_run_id=f"read-current-historical-{unique}",
+        )
         self.assertEqual(
             ingest["evidence"]["recoverable_handoff_resolution"][
                 "reason_codes"
@@ -11702,6 +12286,7 @@ class TaskRunnerTest(unittest.TestCase):
             display_name="CJOLDID 客户",
             remark_code="CJOLDID",
             authorization_revision="revision-old-identity",
+            raw={"identity_checkpoint": identity_checkpoint()},
         )
         observations = [
             {
@@ -11766,6 +12351,7 @@ class TaskRunnerTest(unittest.TestCase):
             display_name="CJGAPRETRY 客户",
             remark_code="CJGAPRETRY",
             authorization_revision="revision-gap-retry",
+            raw={"identity_checkpoint": identity_checkpoint()},
         )
         clean_payload = bridge._contractual_message_payload(
             {
@@ -11788,6 +12374,7 @@ class TaskRunnerTest(unittest.TestCase):
         retried_payload, retried_plan = (
             runner._retry_history_gap_from_backend_once(
                 target=target,
+                read_run_id="read-gap-retry",
                 target_label="CJGAPRETRY",
                 sidecar_payload=clean_payload,
                 incremental_plan={"history_gap": True},
@@ -11802,6 +12389,239 @@ class TaskRunnerTest(unittest.TestCase):
             ]
         )
         bridge.get_messages.assert_called_once()
+
+    def test_history_gap_reread_new_voice_stays_gated_for_next_authorized_read(self):
+        api = FakeApi(None)
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="ok", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        unique = str(time.time_ns())
+        target = WechatReadTarget(
+            conversation_id=f"conv-gap-new-voice-{unique}",
+            rpa_session_key="wx:rpa:v1:gap-new-voice",
+            display_name="CJGAPV01 客户",
+            remark_code="CJGAPV01",
+            read_reason="waiting_user_reply",
+            authorization_revision=f"revision-gap-new-voice-{unique}",
+            raw={"identity_checkpoint": identity_checkpoint()},
+        )
+        api.read_targets = [target]
+        initial_messages = {
+            "ok": True,
+            "messages": [
+                {
+                    "id": "replyable-current-text",
+                    "sender_role": "customer",
+                    "type": "text",
+                    "content": "这条文字可以回复",
+                    "bubble_rect": [420, 100, 650, 140],
+                },
+            ],
+        }
+        production_plan = runner._build_final_slot_incremental_plan
+        plan_calls = {"count": 0}
+
+        def first_frame_has_history_gap(*args, **kwargs):
+            plan = production_plan(*args, **kwargs)
+            plan_calls["count"] += 1
+            if plan_calls["count"] == 1:
+                plan = dict(plan)
+                plan["history_gap"] = True
+            return plan
+
+        runner._build_final_slot_incremental_plan = (  # type: ignore[method-assign]
+            first_frame_has_history_gap
+        )
+        bridge.get_messages_payloads = [
+            initial_messages,
+            {
+                "ok": True,
+                "messages": [
+                    {
+                        "id": "replyable-current-text",
+                        "sender_role": "customer",
+                        "type": "text",
+                        "content": "这条文字可以回复",
+                        "bubble_rect": [420, 100, 650, 140],
+                    },
+                    {
+                        "id": "new-customer-voice",
+                        "sender_role": "customer",
+                        "type": "voice",
+                        "content": '[语音] 6"',
+                        "voice_anchor_stable_key": "voice-new-on-gap-reread",
+                        "bubble_rect": [420, 220, 650, 260],
+                    },
+                ],
+            },
+        ]
+        original_ingest = api.post_wechat_messages_ingest
+
+        def ingest_with_batch_only_when_ungated(
+            binding: Binding,
+            payload: dict,
+            *,
+            settlement_token: str | None = None,
+        ):
+            response = original_ingest(
+                binding,
+                payload,
+                settlement_token=settlement_token,
+            )
+            flow_gate_errors = (
+                payload.get("evidence", {}).get("flow_gate_errors", [])
+            )
+            if "C2_MESSAGE_HISTORY_GAP" not in flow_gate_errors:
+                response["message_batch"] = {
+                    "batch_id": "batch-must-not-exist",
+                    "conversation_id": target.conversation_id,
+                }
+            return response
+
+        api.post_wechat_messages_ingest = (  # type: ignore[method-assign]
+            ingest_with_batch_only_when_ungated
+        )
+        api.message_batch_statuses = [
+            {
+                "batch_id": "batch-must-not-exist",
+                "batch_status": "no_action",
+                "processing": False,
+                "decision": "no_action",
+                "task": None,
+            }
+        ]
+
+        result = runner._read_one_wechat_target(
+            Binding(
+                worker_id="worker-1",
+                worker_token="token",
+                client_instance_id="client-1",
+                run_status="running",
+            ),
+            target,
+            current_step="state_target_message_read",
+            enforce_read_targets=False,
+        )
+
+        self.assertEqual(len(api.message_payloads), 1)
+        evidence = api.message_payloads[0]["evidence"]
+        self.assertIn(
+            "C2_MESSAGE_HISTORY_GAP",
+            evidence["flow_gate_errors"],
+            msg={
+                "operations": bridge.c2_operation_order,
+                "observations": [
+                    item.get("observation_id")
+                    for item in evidence["observations"]
+                    if isinstance(item, dict)
+                ],
+                "slot_states": evidence["slot_ledger_states"],
+                "plan_call_count": plan_calls["count"],
+            },
+        )
+        self.assertNotIn("message_batch", result["result"])
+        self.assertFalse(
+            any(event.startswith("message_batch:") for event in api.events)
+        )
+        self.assertEqual(bridge.voice_transcribes, [])
+        self.assertNotIn(
+            "new-customer-voice",
+            {
+                item.get("observation_id")
+                for item in evidence["observations"]
+                if isinstance(item, dict)
+            },
+        )
+
+        bridge.get_messages_payloads = [
+            {
+                "ok": True,
+                "messages": [
+                    {
+                        "id": "replyable-current-text",
+                        "sender_role": "customer",
+                        "type": "text",
+                        "content": "这条文字可以回复",
+                        "bubble_rect": [420, 100, 650, 140],
+                    },
+                    {
+                        "id": "new-customer-voice",
+                        "sender_role": "customer",
+                        "type": "voice",
+                        "content": '[语音] 6"',
+                        "voice_anchor_stable_key": (
+                            "voice-new-on-gap-reread"
+                        ),
+                        "bubble_rect": [420, 220, 650, 260],
+                    },
+                ],
+            },
+            {
+                "ok": True,
+                "messages": [
+                    {
+                        "id": "replyable-current-text",
+                        "sender_role": "customer",
+                        "type": "text",
+                        "content": "这条文字可以回复",
+                        "bubble_rect": [420, 100, 650, 140],
+                    },
+                    {
+                        "id": "new-customer-voice-transcript",
+                        "sender_role": "customer",
+                        "type": "voice",
+                        "content": "下一轮已经完成语音转写",
+                        "voice_anchor_stable_key": (
+                            "voice-new-on-gap-reread"
+                        ),
+                        "bubble_rect": [420, 220, 650, 260],
+                    },
+                ],
+            },
+        ]
+        bridge.voice_payload = {
+            "ok": True,
+            "adapter": "mock",
+            "state": "voice_transcribe_completed",
+            "sidecar_run_id": "voice-gap-next-authorized-read",
+            "attempt_count": 1,
+            "quality_flags": [],
+            "transcribed_messages": [
+                {
+                    "content": "下一轮已经完成语音转写",
+                    "sender_role": "customer",
+                    "voice_anchor_stable_key": (
+                        "voice-new-on-gap-reread"
+                    ),
+                }
+            ],
+        }
+
+        second_result = runner._read_one_wechat_target(
+            Binding(
+                worker_id="worker-1",
+                worker_token="token",
+                client_instance_id="client-1",
+                run_status="running",
+            ),
+            target,
+            current_step="state_target_message_read",
+            enforce_read_targets=False,
+            wait_for_brain=False,
+        )
+
+        self.assertTrue(second_result["fact_ingest_ok"])
+        self.assertEqual(len(bridge.voice_transcribes), 1)
+        self.assertEqual(len(api.message_payloads), 2)
+        self.assertTrue(
+            any(
+                item.get("message_type") == "voice"
+                and item.get("item_state") == "completed"
+                for item in api.message_payloads[1]["messages"]
+                if isinstance(item, dict)
+            )
+        )
 
     def test_real_image_terminal_path_captures_each_unattended_failure(self):
         api = FakeApi(None)
@@ -11870,6 +12690,7 @@ class TaskRunnerTest(unittest.TestCase):
         plan = runner._build_final_slot_incremental_plan(
             target=target,
             sidecar_payload=payload,
+            read_run_id=f"read-image-failures-{unique}",
         )
         results = []
         for index, reason in enumerate(failure_reasons):
@@ -11920,6 +12741,9 @@ class TaskRunnerTest(unittest.TestCase):
                 sidecar_payload=payload,
                 enforce_read_targets=False,
                 allowed_new_source_keys=set(plan["new_image_source_keys"]),
+                flow_outcomes=FlowOutcomeAccumulator(
+                    origin_read_run_id=f"read-image-failures-{unique}"
+                ),
             )
 
         self.assertEqual(stats["failed"], 4)
@@ -12024,12 +12848,18 @@ class TaskRunnerTest(unittest.TestCase):
                 target=target,
                 sidecar_payload=sidecar_payload,
                 enforce_read_targets=False,
+                flow_outcomes=FlowOutcomeAccumulator(
+                    origin_read_run_id="read-image-preflight-bypass"
+                ),
             )
             _, second_stats = runner._process_final_image_slots(
                 binding=binding,
                 target=target,
                 sidecar_payload=sidecar_payload,
                 enforce_read_targets=False,
+                flow_outcomes=FlowOutcomeAccumulator(
+                    origin_read_run_id="read-image-preflight-bypass"
+                ),
             )
 
         assert vision.call_count == 1
@@ -12056,6 +12886,7 @@ class TaskRunnerTest(unittest.TestCase):
             display_name="CJIMAGE03",
             remark_code="CJIMAGE03",
             authorization_revision="revision-image-paused",
+            raw={"identity_checkpoint": identity_checkpoint()},
         )
         save_c2_state(
             f"vision_capability:{target.conversation_id}",
@@ -12227,6 +13058,13 @@ class TaskRunnerTest(unittest.TestCase):
             display_name="CJIMAGE05",
             remark_code="CJIMAGE05",
             authorization_revision="revision-image-unreconfirmed-mixed",
+            raw={
+                "identity_checkpoint": {
+                    "version": 2,
+                    "next_sequence_floor": 1,
+                    "recent_messages": [],
+                }
+            },
         )
 
         with patch(

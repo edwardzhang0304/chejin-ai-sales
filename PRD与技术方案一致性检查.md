@@ -30,6 +30,11 @@ PRD v0.5.3 已同步三层职责、C2 private/V3 准入、文字/语音/图片�
 生产链自动测试已经完成，架构复审通过前仍不得生成替代 ZIP、正式 EXE 或进入下一轮
 Windows UAT。
 
+2026-08-10 新增的 C2 读取轮次分层是内部技术正确性修正，不改变 PRD 业务行为。
+机器合同已升为 `3.12.8`，Worker、后端及本地持久化已按
+`origin_read_run_id/fact_scope + item_state + delivery_state` 三维分层完成隔离候选；
+当前状态是“代码候选已实现、待架构复审”，不得写成已发布或已通过 Windows UAT。
+
 同时，自动回复口径已从“遇到任一异常即长期 handoff”改为 L0—L3 分级。安全边界之前的
 旧问题不阻断，身份/历史/技术暂态先自动恢复；当前客户单条语音/图片失败完成事实结算后
 直接转人工且不生成重发提示，高意向通知销售并转人工；明确拒收、目标不明、发送未知、
@@ -40,12 +45,13 @@ Windows UAT。
 | 检查项 | 产品/技术口径 | 当前实现与证据 | 判断 |
 |---|---|---|---|
 | C2 会话准入 | OmniAuto 是标题、会话类型、固定八位短码和准入的唯一判定者；Worker 只校验合同与后端授权 | 已删除 Worker 对 `raw_title` 的解析和会话重分类；缺失、矛盾或非 `private + allowed=true + 唯一正式短码` 全部失败关闭并告警 | 已整改，待架构复审 |
+| C2 读取轮次与传输状态 | `origin_read_run_id/fact_scope`、`item_state`、`delivery_state` 三维独立；waiting 不推断新旧 | 机器合同 `3.12.8`、Worker、后端、Ledger、Journal、Outbox 和合同测试已同步 | 已实现，待架构复审 |
 | 首屏与定向 | 首屏可发现事实；未授权不读取，授权后才定向 | 多目标自动发现和串行实机通过 | 一致 |
 | 文字/语音/图片 | 统一角色、身份、顺序和 V3 ingest | `v16.130.0` 图片、顺序、去重实机通过 | 一致 |
 | 图片失败 | 结构化失败，不伪装零图片；菜单失败只用四个正式 `reason_detail`；PID 不是硬门禁；真实生产端必须无条件形成终态 | `not_attempted` 菜单失败已由真实 `process_image_slot` 生产路径写 terminal | 已实现，待架构复审 |
 | 语音/图片类型仲裁 | 先保护可靠文字/语音结构，只对未解释区域生成图片候选；任一可靠类型证据即可否决冲突图片候选 | 已覆盖连续展开语音、动作失败/无动作证据及图片内时长 OCR 反向边界 | 已实现，待架构复审 |
 | 语音唯一身份与逐条结算 | 一个物理语音一个 `canonical_voice_id`，多 anchor 只作 aliases；冻结候选全部 completed/failed 后才允许异常退出 | `9872dad…` 现场链已在隔离候选补生产测试 | 已实现，待架构复审 |
-| AI 回复门禁 | 只保护最新 `reply_safe_suffix`；L0 继续、L2 自动恢复；当前客户媒体失败走 L1 handoff，高意向及其他硬风险走 L3 | customer/self 媒体分级、高意向直接 handoff 及合同 `3.12.7` 已实现 | 已实现，待架构复审 |
+| AI 回复门禁 | 只保护最新 `reply_safe_suffix`；L0 继续、L2 自动恢复；当前客户媒体失败走 L1 handoff，高意向及其他硬风险走 L3 | customer/self 媒体分级、高意向直接 handoff 已由合同 `3.12.8` 保留 | 已实现，待架构复审 |
 | 读取冷却 | 首屏、定向和恢复入口共用成功/失败/后端 due；完成后的新未读可唤醒 | `9872dad…` 现场链已在隔离候选补生产测试 | 已实现，待架构复审 |
 | C3 自动回复 | Brain/Guard → reply_action → 当前 C2 flow 发送 | 此前实机测试且当前无已知问题 | 一致 |
 | 召回任务类型 | recall_precheck → trigger_type=recall 批次 → chat_reply；无独立 follow_up | PRD 已删除 follow_up 当前任务口径 | 一致 |

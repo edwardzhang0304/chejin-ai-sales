@@ -249,6 +249,7 @@ loop Worker运行中；每次循环最多完成一个会话事务
             end
 
             opt 后端已activation_confirmed或原本就是有效会话
+              W -> W: 生成本单会话Flow唯一read_run_id\n时点早于initial_read和任何媒体动作
               alt 本轮刚完成好友激活
                 W -> OA: messages\n激活确认后读取一张消息帧
               else 原本就是有效会话
@@ -361,6 +362,7 @@ loop Worker运行中；每次循环最多完成一个会话事务
           end
 
           group 5. 增量过滤：全屏重新观察，但不重复昂贵处理
+            W -> W: 确认本Flow的read_run_id已被\ninitial/final read、Ledger、Journal和Outbox共用
             W -> W: 先为每个slot生成不依赖绝对坐标的稳定身份\nsource_message_key + candidate dedupe_key
             note right of W
             文字：稳定输入ID优先；否则角色 + 归一化正文 + 同类出现序号。
@@ -369,20 +371,20 @@ loop Worker运行中；每次循环最多完成一个会话事务
             相同正文/相同图片连续发送两次必须形成两个不同消息身份。
             final_read的screen_order和绝对坐标只用于排序，不参与身份。
             end note
-            W -> L: 批量查询conversation_id + source_message_key\n读取terminal processing_result和ingest_state
-            L --> W: 每个slot返回以下一种：\nNOT_FOUND / INGESTED_COMPLETED / INGESTED_FAILED / OUTBOX_WAITING
+            W -> L: 批量查询conversation_id + source_message_key\n读取origin_read_run_id、item_state和delivery_state
+            L --> W: 每个slot返回原读取轮次、单条结果和传输进度
 
             loop 遍历final_read统一槽位
-              alt INGESTED_COMPLETED：历史消息已成功入库
-                W -> W: 标记old_completed\n只保留为当前画面顺序/上下文证据
+              alt INGESTED_COMPLETED：已有成功事实并入库
+                W -> W: 继承origin_read_run_id\nitem_state=completed\ndelivery_state=backend_confirmed
                 note right of W
                 旧文字：不重复上报。
                 旧语音：不重复右键、不重复OCR转写。
                 旧图片：不重复右键、不复制、不上传、不调用Vision。
                 后端Brain需要历史时直接查询message_events，不要求Worker重传。
                 end note
-              else INGESTED_FAILED：历史语音/图片已明确失败并入库
-                W -> W: 标记old_failed\n不自动重试昂贵处理
+              else INGESTED_FAILED：已有语音/图片失败事实并入库
+                W -> W: 继承origin_read_run_id\nitem_state=failed\ndelivery_state=backend_confirmed
                 note right of W
                 failed是终态，不是pending。
                 未被后续销售事实覆盖的customer/self失败保持上下文门禁；
@@ -390,10 +392,10 @@ loop Worker运行中；每次循环最多完成一个会话事务
                 旧失败事实不建立后台人工修复任务；新的客户消息按新一轮事实处理。
                 end note
               else OUTBOX_WAITING：内容处理完成但入库尚未确认
-                W -> W: 标记old_waiting_ingest\n不得重新语音RPA或Vision
+                W -> W: 继承origin_read_run_id\ndelivery_state=outbox_waiting\n不得重新语音RPA或Vision
                 W -> L: 沿用Outbox中的完整结构化结果\n优先重传原V3批次
               else NOT_FOUND：本地从未处理
-                W -> W: 标记new_message\n本轮唯一允许进入增强和新批次的集合
+                W -> W: origin_read_run_id=本轮read_run_id\nfact_scope=current_read_run\ndelivery_state=not_enqueued
               else 图片初次sender_role=unknown或角色证据不可信
                 W -> W: 尚未建立业务图片身份\nMESSAGE_IDENTITY_UNCONFIRMED帧级门禁
                 W -> W: 零点击/零Vision/零terminal ledger\n后续自然画面可重新观察
@@ -408,15 +410,16 @@ loop Worker运行中；每次循环最多完成一个会话事务
               else 新图片槽位
                 W -> W: 进入逐张图片增强
               end
+              W -> W: 身份可靠时按origin与本轮ID关系\n计算current_read_run或historical；冲突为unknown
             end
 
             opt 本轮发现新的self消息
               W -> W: sales_replied_detected=true\nself事实继续入库；取消当前主动开场/召回/自动回复
             end
 
-            alt 状态顺序为OLD*后接NEW*（正常增量边界）
+            alt fact_scope顺序为historical*后接current_read_run*（正常增量边界）
               W -> W: history_gap=false\n继续处理新消息
-            else 任一NEW_MESSAGE下方再次出现OLD*
+            else 任一current_read_run下方再次出现historical
               W -> W: C2_MESSAGE_HISTORY_GAP\nhistory_gap=true
               note right of W
               说明以前有中间消息被跳过、身份发生冲突，
@@ -424,6 +427,8 @@ loop Worker运行中；每次循环最多完成一个会话事务
               可继续保存本轮已确认的新消息事实，
               但禁止Brain自动回复，必须转人工。
               end note
+            else fact_scope=unknown
+              W -> W: 走身份不确定门禁\n不伪装成历史断层
             end
 
             alt source_message_key无法可靠生成或身份证据冲突
@@ -434,6 +439,8 @@ loop Worker运行中；每次循环最多完成一个会话事务
             note over W,L
             本地清单负责“不要重复做昂贵动作”；后端唯一约束负责“绝不重复写业务事实”。
             本地缓存命中不能替代后端dedupe，后端duplicated结果也必须回写本地清单。
+            OUTBOX_WAITING只是delivery_state，不得推断fact_scope。
+            媒体后二次计算必须按source_message_key保留origin_read_run_id。
             end note
           end
 

@@ -568,6 +568,20 @@ def rebuild_invalid_media_as_failed(
     if not changed:
         raise ValueError("C2_OUTBOX_MEDIA_REBUILD_TARGET_MISSING")
 
+    changed_source_keys = {
+        str(item.get("source_message_key") or "").strip()
+        for item in changed
+        if str(item.get("source_message_key") or "").strip()
+    }
+    for slot in evidence.get("slot_ledger_states") or []:
+        if (
+            isinstance(slot, dict)
+            and str(slot.get("source_message_key") or "").strip()
+            in changed_source_keys
+        ):
+            slot["item_state"] = "failed"
+            slot["delivery_state"] = "outbox_waiting"
+
     gate_code = (
         "C2_VOICE_TRANSCRIBE_FAILED"
         if str(error_code).startswith("VOICE_")

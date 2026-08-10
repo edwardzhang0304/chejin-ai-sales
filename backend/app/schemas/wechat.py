@@ -109,7 +109,16 @@ class WechatSlotLedgerState(BaseModel):
     )
     row_kind: str = Field(min_length=1, max_length=64)
     source_message_key: str = Field(min_length=1, max_length=255)
-    ledger_state: str = Field(
+    origin_read_run_id: str = Field(min_length=1, max_length=128)
+    fact_scope: str = Field(
+        pattern="^(current_read_run|historical|unknown)$"
+    )
+    delivery_state: str = Field(
+        pattern="^(not_enqueued|outbox_waiting|backend_confirmed)$"
+    )
+    item_state: str = Field(pattern="^(completed|failed)$")
+    ledger_state: str | None = Field(
+        default=None,
         pattern="^(NEW_MESSAGE|OUTBOX_WAITING|OLD_FAILED|OLD_COMPLETED)$"
     )
 
@@ -151,10 +160,7 @@ class WechatMessageEvidence(BaseModel):
         default_factory=list,
         max_length=50,
     )
-    slot_ledger_states: list[WechatSlotLedgerState] = Field(
-        default_factory=list,
-        max_length=500,
-    )
+    slot_ledger_states: list[WechatSlotLedgerState] = Field(max_length=500)
     ingest_partition: WechatIngestPartition | None = None
 
     @model_validator(mode="after")
@@ -197,6 +203,40 @@ class WechatMessageIngestRequest(BaseModel):
     @model_validator(mode="after")
     def validate_settlement_envelope(self):
         evidence = self.evidence.model_dump(mode="json")
+        for slot in self.evidence.slot_ledger_states:
+            if (
+                slot.fact_scope == "current_read_run"
+                and slot.origin_read_run_id != self.read_run_id
+            ):
+                raise ValueError("本轮事实的 origin_read_run_id 必须等于 read_run_id")
+            if (
+                slot.fact_scope == "historical"
+                and slot.origin_read_run_id == self.read_run_id
+            ):
+                raise ValueError("历史事实不能归属于当前 read_run_id")
+        message_source_keys = {
+            item.source_message_key for item in self.messages
+        }
+        slot_source_keys = {
+            item.source_message_key
+            for item in self.evidence.slot_ledger_states
+        }
+        if message_source_keys and not message_source_keys.issubset(
+            slot_source_keys
+        ):
+            raise ValueError("每条入库消息必须具有槽位轮次归属")
+        slots_by_source = {
+            item.source_message_key: item
+            for item in self.evidence.slot_ledger_states
+        }
+        for message in self.messages:
+            slot = slots_by_source.get(message.source_message_key)
+            if slot is None:
+                continue
+            if slot.item_state != message.item_state:
+                raise ValueError("消息终态必须与槽位 item_state 一致")
+            if slot.screen_order != message.message_position.screen_order:
+                raise ValueError("消息顺序必须与槽位 screen_order 一致")
         settlement_fields = {
             "recovery_transaction_id": str(
                 evidence.get("recovery_transaction_id") or ""

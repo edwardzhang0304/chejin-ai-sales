@@ -76,17 +76,85 @@ class StorageTest(unittest.TestCase):
         self.storage.checkpoint_c2_action_outcomes(
             flow_id="flow-action-1",
             conversation_id="conv-action-1",
+            origin_read_run_id="read-action-1",
             outcomes=[outcome],
         )
 
         pending = self.storage.list_c2_action_journal("conv-action-1")
         self.assertEqual(len(pending), 1)
-        self.assertEqual(pending[0]["outcome"], outcome)
+        self.assertEqual(
+            pending[0]["outcome"],
+            {**outcome, "origin_read_run_id": "read-action-1"},
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "C2_ACTION_JOURNAL_ORIGIN_READ_RUN_ID_CONFLICT",
+        ):
+            self.storage.checkpoint_c2_action_outcomes(
+                flow_id="flow-action-1",
+                conversation_id="conv-action-1",
+                origin_read_run_id="read-action-2",
+                outcomes=[outcome],
+            )
 
         self.storage.clear_c2_action_journal("flow-action-1")
         self.assertEqual(
             self.storage.list_c2_action_journal("conv-action-1"),
             [],
+        )
+
+    def test_ledger_origin_read_run_is_required_and_immutable(self):
+        self.storage.save_c2_ledger_terminal(
+            conversation_id="conv-origin",
+            source_message_key="source-origin",
+            origin_read_run_id="read-origin-1",
+            dedupe_key=None,
+            message_type="image",
+            terminal_state="completed",
+            ingest_state="waiting",
+            result={},
+        )
+        stored = self.storage.load_c2_ledger_entry(
+            "conv-origin",
+            "source-origin",
+        )
+        self.assertEqual(stored["origin_read_run_id"], "read-origin-1")
+        with self.assertRaisesRegex(
+            ValueError,
+            "C2_LEDGER_ORIGIN_READ_RUN_ID_CONFLICT",
+        ):
+            self.storage.save_c2_ledger_terminal(
+                conversation_id="conv-origin",
+                source_message_key="source-origin",
+                origin_read_run_id="read-origin-2",
+                dedupe_key=None,
+                message_type="image",
+                terminal_state="completed",
+                ingest_state="waiting",
+                result={},
+            )
+
+    def test_outbox_source_origin_is_the_original_read_run(self):
+        payload = {
+            "conversation_id": "conv-outbox-origin",
+            "authorization_revision": "revision-outbox-origin",
+            "read_run_id": "read-current-outbox-envelope",
+            "messages": [{"source_message_key": "source-outbox-origin"}],
+            "evidence": {
+                "slot_ledger_states": [
+                    {
+                        "source_message_key": "source-outbox-origin",
+                        "origin_read_run_id": "read-outbox-origin",
+                    }
+                ]
+            },
+        }
+        self.storage.enqueue_c2_outbox(payload)
+        self.assertEqual(
+            self.storage.load_c2_outbox_origin_read_run_ids(
+                "conv-outbox-origin"
+            ),
+            {"source-outbox-origin": "read-outbox-origin"},
         )
 
     def test_outbox_storage_rejects_states_outside_machine_contract(self):

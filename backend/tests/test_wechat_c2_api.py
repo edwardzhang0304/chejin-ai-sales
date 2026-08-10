@@ -443,6 +443,34 @@ def _v3_ingest_payload(
             "finished_at": utcnow().isoformat(),
             "flow_gate_errors": [],
             "flow_gate_details": [],
+            "slot_ledger_states": [
+                {
+                    "observation_id": str(
+                        message["raw_payload"]["observation"][
+                            "observation_id"
+                        ]
+                    ),
+                    "screen_order": int(
+                        message["message_position"]["screen_order"]
+                    ),
+                    "order_source": str(
+                        message["message_position"]["order_source"]
+                    ),
+                    "row_kind": str(
+                        message["raw_payload"]["observation"]["row_kind"]
+                    ),
+                    "source_message_key": str(
+                        message["source_message_key"]
+                    ),
+                    "origin_read_run_id": read_run_id,
+                    "fact_scope": "current_read_run",
+                    "delivery_state": "not_enqueued",
+                    "item_state": str(
+                        message.get("item_state") or "completed"
+                    ),
+                }
+                for message in messages
+            ],
         },
     }
 
@@ -553,6 +581,22 @@ def _simulate_worker_incremental_filter(
                 or ""
             ),
             "source_message_key": str(item.get("source_message_key") or ""),
+            "origin_read_run_id": (
+                str(payload.get("read_run_id") or "")
+                if str(item.get("source_message_key") or "") in keep_source_keys
+                else "read-historical-filter-fixture"
+            ),
+            "fact_scope": (
+                "current_read_run"
+                if str(item.get("source_message_key") or "") in keep_source_keys
+                else "historical"
+            ),
+            "delivery_state": (
+                "not_enqueued"
+                if str(item.get("source_message_key") or "") in keep_source_keys
+                else "backend_confirmed"
+            ),
+            "item_state": str(item.get("item_state") or "completed"),
             "ledger_state": (
                 "NEW_MESSAGE"
                 if str(item.get("source_message_key") or "") in keep_source_keys
@@ -3942,6 +3986,127 @@ def test_ingest_rejects_duplicate_screen_order():
         assert db.query(MessageEvent).count() == 0
 
 
+def test_ingest_persists_each_slot_origin_read_run_id():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("轮次归属客户", "13896676689")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    current_read_run_id = "read-current-slot-origin"
+    historical_read_run_id = "read-historical-slot-origin"
+    messages = [
+        _v3_message(
+            "historical-slot-origin",
+            role="customer",
+            message_type="text",
+            content="上一轮尚待确认的事实",
+            screen_order=1,
+        ),
+        _v3_message(
+            "current-slot-origin",
+            role="customer",
+            message_type="text",
+            content="本轮新事实",
+            screen_order=2,
+        ),
+    ]
+    payload = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id=current_read_run_id,
+        messages=messages,
+    )
+    payload["evidence"]["slot_ledger_states"] = [
+        {
+            "observation_id": "observation:historical-slot-origin",
+            "screen_order": 1,
+            "order_source": "observation_index_fallback",
+            "row_kind": "text_bubble",
+            "source_message_key": "historical-slot-origin",
+            "origin_read_run_id": historical_read_run_id,
+            "fact_scope": "historical",
+            "delivery_state": "outbox_waiting",
+            "item_state": "completed",
+        },
+        {
+            "observation_id": "observation:current-slot-origin",
+            "screen_order": 2,
+            "order_source": "observation_index_fallback",
+            "row_kind": "text_bubble",
+            "source_message_key": "current-slot-origin",
+            "origin_read_run_id": current_read_run_id,
+            "fact_scope": "current_read_run",
+            "delivery_state": "not_enqueued",
+            "item_state": "completed",
+        },
+    ]
+
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers=_worker_headers(worker),
+    )
+
+    assert response.status_code == 200, response.text
+    with SessionLocal() as db:
+        rows = {
+            row.source_message_key: row.read_run_id
+            for row in db.query(MessageEvent)
+            .filter(
+                MessageEvent.conversation_id == binding["conversation_id"]
+            )
+            .all()
+        }
+    assert rows == {
+        "historical-slot-origin": historical_read_run_id,
+        "current-slot-origin": current_read_run_id,
+    }
+
+
+def test_ingest_rejects_message_without_slot_read_run_ownership():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("缺少轮次归属客户", "13896676690")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    payload = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id="read-missing-slot-origin",
+        messages=[
+            _v3_message(
+                "missing-slot-origin",
+                role="customer",
+                message_type="text",
+                content="缺少槽位归属",
+                screen_order=1,
+            )
+        ],
+    )
+    del payload["evidence"]["slot_ledger_states"]
+
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers=_worker_headers(worker),
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["code"] == "VALIDATION_ERROR"
+    with SessionLocal() as db:
+        assert db.query(MessageEvent).count() == 0
+
+
 def test_ingest_rejects_message_position_without_order_evidence_source():
     worker = _create_worker()
     _create_sales(worker["id"])
@@ -4023,6 +4188,10 @@ def test_ingest_rejects_ambiguous_final_frame_slot_ledger(
             "order_source": "visual_top",
             "row_kind": "text_bubble",
             "source_message_key": "slot-ledger-a",
+            "origin_read_run_id": "read-slot-ledger-historical",
+            "fact_scope": "historical",
+            "delivery_state": "backend_confirmed",
+            "item_state": "completed",
             "ledger_state": "OLD_COMPLETED",
         },
         {
@@ -4031,6 +4200,10 @@ def test_ingest_rejects_ambiguous_final_frame_slot_ledger(
             "order_source": "visual_top",
             "row_kind": "text_bubble",
             "source_message_key": "slot-ledger-b",
+            "origin_read_run_id": "read-slot-ledger-duplicate",
+            "fact_scope": "historical",
+            "delivery_state": "backend_confirmed",
+            "item_state": "completed",
             "ledger_state": "NEW_MESSAGE",
         },
     ]
@@ -5649,6 +5822,9 @@ def test_worker_split_batch_is_atomic_for_brain_and_completes_once():
     parts = split_ingest_payload(payload)
 
     assert len(parts) >= 2
+    assert {
+        part["read_run_id"] for part in parts
+    } == {"read-partition-atomic"}
     for index, part in enumerate(parts, start=1):
         response = client.post(
             f"/api/workers/{worker['id']}/wechat/messages/ingest",
@@ -7042,12 +7218,13 @@ def test_server_identity_checkpoint_restores_worker_sequence_across_worker_chang
         "identity_checkpoint"
     ]
     assert target_checkpoint == authorization_checkpoint
-    assert target_checkpoint["version"] == 1
+    assert target_checkpoint["version"] == 2
     assert target_checkpoint["next_sequence_floor"] == 8
     assert target_checkpoint["recent_messages"] == [
         {
             "stable_id": "worker-message-7",
             "source_message_key": "old-worker-source-7",
+            "origin_read_run_id": "old-worker-read",
             "dedupe_key": "old-worker-dedupe-7",
             "sender_role": "customer",
             "message_type": "text",
@@ -7360,7 +7537,7 @@ def test_empty_reads_back_off_two_five_ten_minutes_and_unread_wakes_immediately(
         )
         assert authorization.status_code == 200
         assert authorization.json()["data"]["allowed"] is False
-        assert authorization.json()["data"]["identity_checkpoint"]["version"] == 1
+        assert authorization.json()["data"]["identity_checkpoint"]["version"] == 2
         if index < 3:
             with SessionLocal() as db:
                 binding_row = db.get(WechatSessionBinding, binding["id"])

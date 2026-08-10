@@ -84,6 +84,65 @@ def contract_row_rules() -> dict[str, dict[str, Any]]:
     return rules
 
 
+def validate_slot_ledger_states(
+    states: Any,
+    *,
+    read_run_id: str,
+) -> list[dict[str, Any]]:
+    schema = c2_contract_v3().get("slot_ledger_state_schema")
+    if not isinstance(schema, dict) or not isinstance(states, list):
+        raise ValueError("C2_SLOT_LEDGER_STATE_SCHEMA_INVALID")
+    required = {str(value) for value in schema.get("required_fields") or []}
+    fact_scopes = {str(value) for value in schema.get("fact_scopes") or []}
+    delivery_states = {
+        str(value) for value in schema.get("delivery_states") or []
+    }
+    item_states = {str(value) for value in schema.get("item_states") or []}
+    order_sources = {str(value) for value in schema.get("order_sources") or []}
+    clean_read_run_id = str(read_run_id or "").strip()
+    if not clean_read_run_id:
+        raise ValueError("C2_READ_RUN_ID_MISSING")
+    normalized: list[dict[str, Any]] = []
+    source_keys: set[str] = set()
+    screen_orders: set[int] = set()
+    for raw in states:
+        if not isinstance(raw, dict) or any(
+            key not in raw or raw.get(key) in {None, ""}
+            for key in required
+        ):
+            raise ValueError("C2_SLOT_LEDGER_REQUIRED_FIELD_MISSING")
+        item = dict(raw)
+        source_key = str(item.get("source_message_key") or "").strip()
+        origin = str(item.get("origin_read_run_id") or "").strip()
+        fact_scope = str(item.get("fact_scope") or "").strip()
+        delivery_state = str(item.get("delivery_state") or "").strip()
+        item_state = str(item.get("item_state") or "").strip()
+        order_source = str(item.get("order_source") or "").strip()
+        try:
+            screen_order = int(item.get("screen_order") or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("C2_SLOT_LEDGER_SCREEN_ORDER_INVALID") from exc
+        if (
+            not source_key
+            or screen_order <= 0
+            or fact_scope not in fact_scopes
+            or delivery_state not in delivery_states
+            or item_state not in item_states
+            or order_source not in order_sources
+        ):
+            raise ValueError("C2_SLOT_LEDGER_STATE_INVALID")
+        if fact_scope == "current_read_run" and origin != clean_read_run_id:
+            raise ValueError("C2_SLOT_LEDGER_CURRENT_ORIGIN_MISMATCH")
+        if fact_scope == "historical" and origin == clean_read_run_id:
+            raise ValueError("C2_SLOT_LEDGER_HISTORICAL_ORIGIN_MISMATCH")
+        if source_key in source_keys or screen_order in screen_orders:
+            raise ValueError("C2_SLOT_LEDGER_IDENTITY_DUPLICATED")
+        source_keys.add(source_key)
+        screen_orders.add(screen_order)
+        normalized.append(item)
+    return normalized
+
+
 def observation_role_is_trusted(observation: dict[str, Any]) -> bool:
     """Validate one observation's final role against the shared C2 contract."""
 

@@ -15,6 +15,7 @@ from .c2_contract import (
     contract_sha256,
     contract_values,
     observation_role_is_trusted,
+    validate_slot_ledger_states,
 )
 from .storage import save_c2_state
 
@@ -1473,11 +1474,16 @@ def voice_transcription_meta(
 def _build_message_ingest_payload_v3(
     target: WechatReadTarget,
     sidecar_payload: dict[str, Any],
+    *,
+    read_run_id: str,
 ) -> dict[str, Any]:
     if not target.authorization_revision:
         raise ValueError("C2_TARGET_AUTHORIZATION_REVISION_MISSING")
     if int(sidecar_payload.get("observation_schema_version") or 0) != 3:
         raise ValueError("C2_OBSERVATION_SCHEMA_VERSION_REQUIRED")
+    clean_read_run_id = str(read_run_id or "").strip()
+    if not clean_read_run_id:
+        raise ValueError("C2_READ_RUN_ID_MISSING")
     observations = sidecar_payload.get("observations")
     if not isinstance(observations, list):
         raise ValueError("C2 V3 payload is missing observations")
@@ -1913,12 +1919,16 @@ def _build_message_ingest_payload_v3(
         for item in (sidecar_payload.get("flow_gate_details") or [])
         if isinstance(item, dict)
     ]
+    slot_ledger_states = validate_slot_ledger_states(
+        list(sidecar_payload.get("slot_ledger_states") or []),
+        read_run_id=clean_read_run_id,
+    )
     return {
         "contract_version": 3,
         "contract_revision": contract_revision(),
         "contract_sha256": contract_sha256(),
         "observation_schema_version": 3,
-        "read_run_id": f"read-{uuid.uuid4()}",
+        "read_run_id": clean_read_run_id,
         "conversation_id": target.conversation_id,
         "remark_code": target.remark_code,
         "rpa_session_key": target.rpa_session_key,
@@ -1957,7 +1967,7 @@ def _build_message_ingest_payload_v3(
             "failed_voice_source_keys": list(
                 sidecar_payload.get("failed_voice_source_keys") or []
             ),
-            "slot_ledger_states": list(sidecar_payload.get("slot_ledger_states") or []),
+            "slot_ledger_states": slot_ledger_states,
             "historical_warnings": list(
                 sidecar_payload.get("historical_warnings") or []
             ),
@@ -1968,15 +1978,25 @@ def _build_message_ingest_payload_v3(
     }
 
 
-def build_message_ingest_payload(target: WechatReadTarget, sidecar_payload: dict[str, Any]) -> dict[str, Any]:
+def build_message_ingest_payload(
+    target: WechatReadTarget,
+    sidecar_payload: dict[str, Any],
+    *,
+    read_run_id: str,
+) -> dict[str, Any]:
     if int(sidecar_payload.get("observation_schema_version") or 0) != 3:
         raise ValueError("C2_OBSERVATION_SCHEMA_VERSION_REQUIRED")
-    return _build_message_ingest_payload_v3(target, sidecar_payload)
+    return _build_message_ingest_payload_v3(
+        target,
+        sidecar_payload,
+        read_run_id=read_run_id,
+    )
 
 
 def build_flow_gate_ingest_payload(
     target: WechatReadTarget,
     *,
+    read_run_id: str,
     error_code: str,
     evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -1986,12 +2006,9 @@ def build_flow_gate_ingest_payload(
     if not clean_code:
         raise ValueError("C2_FLOW_GATE_ERROR_CODE_MISSING")
     clean_evidence = dict(evidence or {})
-    stable_gate_key = str(clean_evidence.get("flow_gate_identity_key") or "").strip()
-    read_run_id = (
-        f"flow-gate-{stable_gate_key[:48]}"
-        if stable_gate_key
-        else f"read-{uuid.uuid4()}"
-    )
+    clean_read_run_id = str(read_run_id or "").strip()
+    if not clean_read_run_id:
+        raise ValueError("C2_READ_RUN_ID_MISSING")
     authorization_read_reason = ""
     if isinstance(target.raw, dict):
         authorization_read_reason = str(
@@ -2023,7 +2040,7 @@ def build_flow_gate_ingest_payload(
         "contract_revision": contract_revision(),
         "contract_sha256": contract_sha256(),
         "observation_schema_version": 3,
-        "read_run_id": read_run_id,
+        "read_run_id": clean_read_run_id,
         "conversation_id": target.conversation_id,
         "remark_code": target.remark_code,
         "rpa_session_key": target.rpa_session_key,
@@ -2048,5 +2065,6 @@ def build_flow_gate_ingest_payload(
             "finished_at": now_iso(),
             "flow_gate_errors": [clean_code],
             "flow_gate_details": flow_gate_details,
+            "slot_ledger_states": [],
         },
     }

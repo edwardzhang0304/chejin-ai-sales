@@ -450,6 +450,7 @@ def _identity_checkpoint(
             {
                 "stable_id": stable_id,
                 "source_message_key": str(message.source_message_key or ""),
+                "origin_read_run_id": str(message.read_run_id or ""),
                 "dedupe_key": message.dedupe_key,
                 "sender_role": summary["sender_role"],
                 "message_type": summary["message_type"],
@@ -463,7 +464,7 @@ def _identity_checkpoint(
             }
         )
     return {
-        "version": 1,
+        "version": 2,
         "next_sequence_floor": max_sequence + 1,
         "recent_messages": recent_messages,
     }
@@ -2379,6 +2380,30 @@ def _visible_existing_message_orders(
     }
 
 
+def _slot_origin_read_run_ids(evidence_payload: dict) -> dict[str, str]:
+    """Return the immutable fact owner declared by each final-frame slot."""
+
+    origins: dict[str, str] = {}
+    conflicts: set[str] = set()
+    for raw in evidence_payload.get("slot_ledger_states") or []:
+        if not isinstance(raw, dict):
+            continue
+        source_key = str(raw.get("source_message_key") or "").strip()
+        origin_read_run_id = str(
+            raw.get("origin_read_run_id") or ""
+        ).strip()
+        if not source_key or not origin_read_run_id:
+            continue
+        existing = origins.get(source_key)
+        if existing is not None and existing != origin_read_run_id:
+            conflicts.add(source_key)
+            continue
+        origins[source_key] = origin_read_run_id
+    for source_key in conflicts:
+        origins.pop(source_key, None)
+    return origins
+
+
 def _flow_gate_details_by_code(evidence_payload: dict) -> dict[str, list[dict]]:
     strong_position_sources = FLOW_GATE_STRONG_POSITION_SOURCES_V3
     result: dict[str, list[dict]] = {}
@@ -2603,6 +2628,9 @@ def settle_messages_without_ui(
         )
     _validate_v3_request_contract(payload)
     ordered_messages = _ordered_v3_messages(payload)
+    slot_origin_read_run_ids = _slot_origin_read_run_ids(
+        evidence_payload
+    )
     results: list[dict] = []
     for item in ordered_messages:
         message_type = str(item.message_type or "").strip().lower()
@@ -2665,7 +2693,7 @@ def settle_messages_without_ui(
             sales_id=binding.sales_id,
             worker_id=worker.id,
             rpa_session_key=payload.rpa_session_key or binding.rpa_session_key,
-            read_run_id=payload.read_run_id,
+            read_run_id=slot_origin_read_run_ids[item.source_message_key],
             contract_version=payload.contract_version,
             source_message_key=item.source_message_key,
             dedupe_key=item.dedupe_key,
@@ -2725,6 +2753,9 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
     _validate_v3_request_contract(payload)
     ordered_messages = _ordered_v3_messages(payload)
     evidence_payload = payload.evidence.model_dump(mode="json")
+    slot_origin_read_run_ids = _slot_origin_read_run_ids(
+        evidence_payload
+    )
     ingest_partition = (
         evidence_payload.get("ingest_partition")
         if isinstance(evidence_payload.get("ingest_partition"), dict)
@@ -3138,7 +3169,7 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             sales_id=binding.sales_id,
             worker_id=worker.id,
             rpa_session_key=observed_rpa_session_key,
-            read_run_id=payload.read_run_id,
+            read_run_id=slot_origin_read_run_ids[item.source_message_key],
             contract_version=payload.contract_version,
             source_message_key=item.source_message_key,
             dedupe_key=dedupe_key,

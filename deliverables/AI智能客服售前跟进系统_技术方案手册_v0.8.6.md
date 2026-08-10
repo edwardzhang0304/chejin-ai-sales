@@ -6,7 +6,7 @@
 
 最后更新：2026-08-10
 
-当前阶段：运营后台 + Windows Worker 客户端。C1 已形成稳定基线；C2 的文字、语音、图片、V3 授权、private 单聊准入、群聊阻断、统一顺序、跨轮去重、多目标串行和停止监听曾在 `v16.130.0 / 8ee53e1` 完成正式 Windows 实机验收，C3 自动回复与 C4 自动召回也已实现并测试。2026-08-09 以车金 `3f65660fb712a14527ea1307715a8c2dacb9c8b1`（运行代码父基线 Worker `4352f5e35d69eeea5898a57eb39d00e07372c403`）、OmniAuto `99d0070517a0976dc47661f4b6564e9f6e1f1b1a`、机器合同 `3.12.6` 为整改父基线；语音/图片仲裁通用修复及其绝对 Vision 边界门禁已先在独立 OmniAuto 固定并推送为 `91688de9047d5973cee9b18de00ca2f6e7772a86`。2026-08-10 快速 UAT 的真实运行基线为车金 `9872dad3c469b4d9c1cc328060f04fb1e0c3e139 / v16.145.0`，现场暴露新的 P0：同一物理语音被多种 anchor 重复登记、身份仲裁可早于媒体逐条终态结算返回、首屏命中绕过成功冷却。当前未发布运行整改提交为 `53e979d89316344c282245c62f6349586de16eee`，已完成上述三项运行代码、媒体门禁、高意向转人工和 `3.12.7` 合同整改并补生产链自动门禁，仍须架构复审通过后才能生成替代 ZIP；正式 EXE 和正式 PR 继续禁止。OmniAuto 当前内嵌基础为包含 `35b0eee` 的 `a563e668…`，活动选择性集成为 `91688de…`；`2318bd8` 仅作为历史选择性来源保留。本版继续以主流程稳定为目标：不启动悬浮球、不安装键盘鼠标 Hook、不锁定人工输入，也不以守护状态门禁任务。
+当前阶段：运营后台 + Windows Worker 客户端。C1 已形成稳定基线；C2 的文字、语音、图片、V3 授权、private 单聊准入、群聊阻断、统一顺序、跨轮去重、多目标串行和停止监听曾在 `v16.130.0 / 8ee53e1` 完成正式 Windows 实机验收，C3 自动回复与 C4 自动召回也已实现并测试。2026-08-09 以车金 `3f65660fb712a14527ea1307715a8c2dacb9c8b1`（运行代码父基线 Worker `4352f5e35d69eeea5898a57eb39d00e07372c403`）、OmniAuto `99d0070517a0976dc47661f4b6564e9f6e1f1b1a`、机器合同 `3.12.6` 为整改父基线；语音/图片仲裁通用修复及其绝对 Vision 边界门禁已先在独立 OmniAuto 固定并推送为 `91688de9047d5973cee9b18de00ca2f6e7772a86`。2026-08-10 快速 UAT 的真实运行基线为车金 `9872dad3c469b4d9c1cc328060f04fb1e0c3e139 / v16.145.0`。当前隔离候选已完成语音唯一身份、媒体逐条结算、统一冷却、高意向转人工，以及读取轮次归属与传输状态分层；机器合同已升至 `3.12.8`。这些仍是未提交候选，须架构复审通过后才能提交、推送或生成替代 ZIP；正式 EXE 和正式 PR 继续禁止。OmniAuto 当前内嵌基础为包含 `35b0eee` 的 `a563e668…`，活动选择性集成为 `91688de…`；`2318bd8` 仅作为历史选择性来源保留。本版继续以主流程稳定为目标：不启动悬浮球、不安装键盘鼠标 Hook、不锁定人工输入，也不以守护状态门禁任务。
 
 一句话结论：当前技术方案统一收口到本文档；C0—C4 已有历史主链基线，不重开回复或召回流程，但图片候选生成与语音类型仲裁必须按“先用强消息结构解释画面，再对剩余区域生成弱图片候选”整改；一条物理语音只能形成一个业务对象，多种 anchor 只能作为该对象的识别别名；任何媒体明确失败都必须逐条终态结算。自动回复采用“最新待回复消息尾部完整即可回复”的原则：旧问题和可恢复技术异常不得直接形成永久人工接管；当前客户单条语音/图片失败、高意向，以及不可自动处理的业务硬风险均停止 AI 并转人工。运营后台指定账号登录和车辆信息/Product Master 继续沿用既定方案：后台账号由服务端预先建立，登录成功即拥有全部后台权限，第一期不做 RBAC；车辆和正式知识复用 OmniAuto 的 Product Master、KnowledgeRuntime、RAG 与 Guard 并持久化到车金现有 PostgreSQL；不接大风车 API，不部署第二套后台，不将测试车辆或未审核知识带入生产。
 
@@ -1690,7 +1690,7 @@ classify_outbox_recovery(http_result)
 - 第一期不读取微信数据库、不破解协议、不使用非公开微信接口、不依赖客户昵称唯一性。
 - 绑定优先通过初始备注/短码；已是好友立即尝试绑定；绑定失败不自动回复。
 - 当前 V16.107 开发基线统一处理客户/我方文字、语音和图片事实；Worker 先用 OmniAuto `messages` 读取/探测消息类型，只有发现未转写语音时才调用 `voice-transcribe`，转写正文必须绑定原语音并按 `message_type=voice` 入库，不能再作为独立 `text` 入库。
-- 图片必须先进入最终画面的统一消息槽位并完成新老判定；只对 `NEW_IMAGE` 执行一次内存剪贴板事务和真实 OmniAuto Vision。不得落本地图片文件、上传车金后端、调用旧图片入口或上报 `pending/discovered` 占位。
+- 图片必须先进入最终画面的统一消息槽位并完成事实归属与传输状态分层；只对 `fact_scope=current_read_run + delivery_state=not_enqueued` 的图片执行一次内存剪贴板事务和真实 OmniAuto Vision。不得落本地图片文件、上传车金后端、调用旧图片入口或上报 `pending/discovered` 占位。
 - 重复消息由 Worker 稳定来源身份和 `dedupe_key` 初筛，服务端以 `unique(conversation_id, dedupe_key)` 做最终防线；页面坐标、扫描轮次和绝对时间不得作为消息主身份。
 - C2 唯一准入条件为：当前会话标题含有效短码、标题同步确认 `conversation_type=private`、服务端 `read-targets` 仍提供当前 `authorization_revision`。群聊和 `unknown` 不进入消息读取。
 - 本模块是 OmniAuto 接入 C2 checkpoint。Worker 调用 OmniAuto `sessions / messages / voice-transcribe` 能力读取微信事实，服务端负责短码绑定、会话状态、消息去重和是否允许后续 AI 回复。
@@ -2234,6 +2234,54 @@ Worker 必须保留 Outbox 并执行身份刷新重传。在冲突解决前不�
 
 同一个 `read_run_id` 重复上报时，服务端必须返回同样或等价的处理结果，不得重复入库。
 
+##### 6.0.3.3.1 读取轮次归属与传输状态分层
+
+原先把 `NEW_MESSAGE / OUTBOX_WAITING / OLD_FAILED / OLD_COMPLETED` 作为同一个
+互斥枚举的模型废弃。它混合了“事实属于哪次读取”和“事实是否上报”，
+不得继续作为历史连续性、Vision 准入或 Brain 准入的决策输入。
+
+每个最终权威画面槽位必须同时具有三个独立维度：
+
+| 维度 | 字段 | 允许值 | 只回答什么 |
+|---|---|---|---|
+| 事实归属 | `fact_scope` + `origin_read_run_id` | `current_read_run / historical / unknown` + 原始读取轮次 ID | 这条事实是本轮还是历史。 |
+| 传输进度 | `delivery_state` | `not_enqueued / outbox_waiting / backend_confirmed` | 完整 JSON 是否已被后端确认。 |
+| 单条处理结果 | `item_state` | `completed / failed` | 文字、语音或图片事实本身是否处理成功。 |
+
+`read_run_id` 生成和继承规则固定为：
+
+1. Worker 取得单会话有效授权后，在首次 `messages/initial_read` 和任何语音、图片
+   动作前生成一个 `read_run_id`。
+2. 本次的 initial read、语音展开、图片处理、final read、二次连续性判断、Ledger、
+   ActionJournal 和 Outbox 全部沿用该 ID；中途不得重新生成。
+3. 本轮首次出现且未命中历史 Ledger、Outbox 或后端身份检查点的稳定消息，固定为
+   `fact_scope=current_read_run`、`origin_read_run_id=顶层 read_run_id`。
+4. 命中已有 Ledger、Outbox 或后端检查点时必须继承 `origin_read_run_id`；与顶层 ID
+   相同为 `current_read_run`，不同为 `historical`，来源冲突或不可证明为 `unknown`。
+5. 媒体处理后重建槽位必须按 `source_message_key` 合并，只允许 `item_state` 和
+   `delivery_state` 单调前进，不得改变 `origin_read_run_id` 或 `fact_scope`。
+6. Outbox 重传、授权外壳重建、拆批和事务恢复必须保留原始读取轮次；只有真正开始
+   一次新的权威读取才允许生成新 ID。
+7. `flow_id` 继续只表示动作流程或 UI 锁上下文，不得成为第二套事实轮次身份。
+
+历史连续性算法固定为：
+
+```text
+按 final_read.screen_order 从上到下遍历稳定业务槽位
+-> historical* 后接 current_read_run* 为正常增量边界
+-> 一旦看到 current_read_run，其下方再出现 historical 才是 C2_MESSAGE_HISTORY_GAP
+-> 任何 unknown 走现有身份不确定门禁，不得伪装成历史断层
+-> delivery_state 和 item_state 全程不参与新旧连续性判断
+```
+
+因此，“本轮新文字 -> 本轮图片 `outbox_waiting` -> 本轮新语音”三者均为
+`current_read_run`，不得报历史断层。图片进入右键复制和 Vision 的必要条件为
+`fact_scope=current_read_run + delivery_state=not_enqueued`；历史图片和已进入 Outbox
+的图片不得重复处理。
+
+机器合同 `3.12.8` 已强制上述字段；`identity_checkpoint.recent_messages[]` 回传
+`origin_read_run_id`。旧 `ledger_state` 只允许作为诊断投影，业务门禁不得读取。
+
 #### 6.0.3.4 低置信和异常处理
 
 | 场景 | 处理 |
@@ -2245,7 +2293,7 @@ Worker 必须保留 Outbox 并执行身份刷新重传。在冲突解决前不�
 | 语音转写文本缺少独立头像 | 只能继承已确认的父语音 `parent_voice` 角色；无法绑定父语音则不入库。 |
 | 普通文字/语音发送方无法判断 | 不猜角色、不入库；按 L2 `recoverable_hold` 自动重建一次。只在仍影响最新待回复尾部时停止该会话 AI，旧区间歧义不连坐最新完整消息。 |
 | 消息顺序异常 | 不得假定物理处理顺序等于对话顺序。V16.104 已按最终权威画面建立统一 `screen_order`，并完成 Windows 实机回归。 |
-| 图片气泡 | 初次观察角色不可信时尚不能建立业务图片身份，形成可自动恢复的 `MESSAGE_IDENTITY_UNCONFIRMED` 帧级 hold，零点击且不得持久化 `ignored` Ledger；角色可靠后才建立稳定身份并判定 `NEW_IMAGE`。`OLD/OUTBOX` 不重复复制或调用模型；动作前出屏图片本轮移除；已有稳定身份且仍可见但复核失败时形成 failed 事实；customer 失败按 L1 转人工，self 失败只记 warning。 |
+| 图片气泡 | 初次观察角色不可信时尚不能建立业务图片身份，形成可自动恢复的 `MESSAGE_IDENTITY_UNCONFIRMED` 帧级 hold，零点击且不得持久化 `ignored` Ledger；角色可靠后才建立稳定身份并计算 `fact_scope/delivery_state`。只有 `current_read_run + not_enqueued` 可复制或调用模型；历史或已入 Outbox 图片不重复执行；动作前出屏图片本轮移除；已有稳定身份且仍可见但复核失败时形成 failed 事实；customer 失败按 L1 转人工，self 失败只记 warning。 |
 
 #### 6.0.3.5 逐条结果单调合并
 
@@ -2715,7 +2763,7 @@ Worker C2 读取某个会话时，执行顺序必须调整为：
 -> 以最终有效画面建立文字、语音、图片统一slots和screen_order
 -> 为每个slot生成稳定source_message_key，并查询本地ledger/Outbox判定NEW、OLD、OUTBOX_WAITING或身份冲突
 -> 初次图片同行头像角色不可信时形成帧级身份门禁，不建立图片消息、不写ignored Ledger
--> 只对NEW_IMAGE执行一次图片右键复制和进程内真实OmniAuto Vision；旧图片和Outbox图片不得重复复制或重复计费
+-> 只对fact_scope=current_read_run且delivery_state=not_enqueued的图片执行一次右键复制和进程内真实OmniAuto Vision；历史图片和Outbox图片不得重复复制或重复计费
 -> 图片成功回填customer_image_understanding/visual_bridge_input；右键前仍可见但身份无法唯一确认、复制失败、Vision失败或结果非法均回填failed事实；被顶出最终当前屏的图片本轮不建立槽位；禁止会话内图片deferred/pending
 -> 在任何身份仲裁、合同失败、授权变化或提前返回前，先让本轮冻结的每个canonical_voice_id进入completed/failed；再按最终screen_order收集新文字、已绑定父语音和图片终态，转换为message_event
 -> 上报 /api/workers/{worker_id}/wechat/messages/ingest
@@ -3357,7 +3405,7 @@ allow_listening=true`。迁移脚本必须输出每类数量和记录 ID，支�
 - Worker 能读取已绑定会话的客户文字消息并上报服务端。
 - Worker 先执行 OmniAuto `messages` 读取/探测；发现未转写语音时再执行 `voice-transcribe`，客户语音成功转写后按 `message_type=voice` 入库，并保留 `raw_payload.voice_transcription` 证据。
 - 新 C2 UI 流程进入扫描循环前必须通过真实 Vision 配置预检；恢复门禁先于能力
-  预检。具有可信角色和稳定身份的当前屏 NEW_IMAGE 必须在同一 Flow 内结束为
+  预检。具有可信角色和稳定身份、且为 `current_read_run + not_enqueued` 的当前屏图片必须在同一 Flow 内结束为
   completed/failed，不允许图片 pending/deferred；初次角色不可信走帧级身份门禁，
   不写 ignored Ledger。
 - 图片动作前重建最终画面后已经出屏的图片本轮不处理；仍在屏幕但无法唯一确认时形成 failed 事实，不允许反复右键或跨轮 Vision。
@@ -3932,7 +3980,7 @@ OmniAuto AI Engine 在服务端通过 Adapter 接入，不允许运行 OmniAuto 
 - Worker 负责最终画面统一槽位、`screen_order`、跨轮 `source_message_key/dedupe_key`、本地 ledger、Outbox 和 V3 映射。
 - 后端负责授权、消息事实持久化、数据库最终去重、服务端权威车源匹配、跨轮图片上下文、`message_batch`、状态机、Brain/Guard、handoff 和 `chat_reply`。
 - Vision 只理解图片，不生成客户可见回复；唯一回复作者是服务端 `customer_service_brain`。
-- 会话内不存在图片 `pending/deferred`。全局能力未就绪在进入 C2 前阻断；具有可信角色和稳定身份的当前屏 `NEW_IMAGE` 必须在同一 Flow 内结束为 `completed/failed`。`ignored` 只允许在建立业务图片身份前表示已经明确证明不是聊天图片消息。
+- 会话内不存在图片 `pending/deferred`。全局能力未就绪在进入 C2 前阻断；具有可信角色和稳定身份、且为 `fact_scope=current_read_run + delivery_state=not_enqueued` 的当前屏图片必须在同一 Flow 内结束为 `completed/failed`。`ignored` 只允许在建立业务图片身份前表示已经明确证明不是聊天图片消息。
 - 车金正式产品 ID 和车辆事实只由服务端 Product Master 确认；RAG 和 Vision 只能形成检索线索，不能独立认定价格、库存或车型。服务端允许通过 OmniAuto `KnowledgeRuntime` 读取已过 customer-safe projection 的 Product Master 证据；Worker/客户端本地知识不得成为正式事实源。
 
 ### 8.1.1 消息类型解释与图片候选仲裁
@@ -3958,7 +4006,7 @@ OmniAuto AI Engine 在服务端通过 Adapter 接入，不允许运行 OmniAuto 
 
 `structural_image_candidate / explained_voice_region` 是 OmniAuto 内部仲裁对象，不新增
 后端接口字段。本轮因 L0-L3 门禁动作、历史 handoff 自动恢复及高意向动作改变了跨进程
-机器语义，机器合同已独立升到 `3.12.7`；若未来暴露上述内部仲裁字段，仍须再次升级
+机器语义，机器合同已独立升到 `3.12.8`；若未来暴露上述内部仲裁字段，仍须再次升级
 revision 并同步三层合同测试。
 
 ### 8.2 单会话图片处理流程
@@ -3974,7 +4022,7 @@ revision 并同步三层合同测试。
 -> 查询Worker本地ledger和Outbox，判定NEW / OLD_COMPLETED / OLD_FAILED / OUTBOX_WAITING / IDENTITY_CONFLICT
 -> 初次图片角色不可信时形成帧级MESSAGE_IDENTITY_UNCONFIRMED，不建立图片消息、不写ignored Ledger
 -> OLD图片不复制、不调用Vision；OUTBOX图片只重传原JSON
--> 只把NEW_IMAGE加入图片增强队列
+-> 只把fact_scope=current_read_run且delivery_state=not_enqueued的图片加入图片增强队列
 -> 再次确认图片bubble_rect、同行头像角色、当前短码、private和authorization_revision
 -> 刷新后的同行头像角色必须与初始C2角色一致；另一角色或unknown时零点击并failed
 -> 页面已经变化时先重建完整final_read；图片已出屏则从本轮候选删除，仍可见但无法唯一匹配则failed
@@ -4128,7 +4176,7 @@ Worker运行代码父基线：4352f5e35d69eeea5898a57eb39d00e07372c403
 本轮未发布运行整改提交：53e979d89316344c282245c62f6349586de16eee
 内嵌OmniAuto基础：a563e6688c47a8922510794101967823fe1389d7（包含35b0eee）
 活动选择性来源：91688de9047d5973cee9b18de00ca2f6e7772a86
-机器合同revision：3.12.7
+机器合同revision：3.12.8
 发布状态：9872dad快速UAT发现的语音唯一身份、逐条结算顺序、统一读取冷却及本轮媒体/高意向门禁已在隔离候选实现；完整自动门禁和架构复审前禁止生成替代ZIP，正式EXE继续禁止
 ```
 
@@ -4235,7 +4283,8 @@ tree SHA 必须由最终提交后的真实目录动态计算，不得把历史 t
 
 图片业务身份只由 Worker/C2 的最终画面统一 slot、同行头像 `sender_role`、
 `canonical_visual_id` 或“角色 + 同类出现序号 + 邻近稳定消息锚点”以及
-`source_message_key` 决定。只有 `NEW_IMAGE` 才进入 OmniAuto；
+`source_message_key` 决定。只有 `fact_scope=current_read_run + delivery_state=not_enqueued`
+的图片才进入 OmniAuto；
 `OLD/OUTBOX` 不得重复执行图片动作。
 
 OmniAuto 当前事务只负责证明：
