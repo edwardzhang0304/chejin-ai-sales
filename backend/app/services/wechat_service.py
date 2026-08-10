@@ -3506,10 +3506,41 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             for detail in details
         )
 
+    def gate_is_self_media_warning(code: str) -> bool:
+        """A failed sales-side media fact is evidence, never a customer gate.
+
+        Fail closed when the role detail is missing or mixed: only a gate whose
+        every settled item is explicitly owned by ``self`` may be downgraded to
+        a non-blocking warning. Customer media failures remain L1 handoffs.
+        """
+
+        if code not in {
+            "C2_VOICE_TRANSCRIBE_FAILED",
+            "C2_IMAGE_UNDERSTANDING_FAILED",
+        }:
+            return False
+        failed_items = (
+            failed_voices
+            if code == "C2_VOICE_TRANSCRIBE_FAILED"
+            else failed_images
+        )
+        if not failed_items or any(
+            str(item.sender_role_hint or "").strip().lower() != "self"
+            for item in failed_items
+        ):
+            return False
+        details = flow_gate_details_by_code.get(code) or []
+        return bool(details) and all(
+            str(detail.get("subject_sender_role") or "").strip().lower()
+            == "self"
+            for detail in details
+        )
+
     flow_gate_errors = [
         code
         for code in flow_gate_errors
-        if not gate_is_proven_before_latest_human_sales(code)
+        if not gate_is_self_media_warning(code)
+        and not gate_is_proven_before_latest_human_sales(code)
     ]
     temporary_capability_gates = [
         code

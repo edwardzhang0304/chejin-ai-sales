@@ -59,6 +59,23 @@ def test_backend_uses_the_shared_image_menu_failure_code():
     )
 
 
+def test_backend_uses_shared_flow_gate_action_contract():
+    contract = c2_contract_v3()["flow_gate_action_contract"]
+    assert contract["classes"] == [
+        "non_blocking_warning",
+        "item_handoff",
+        "recoverable_hold",
+        "hard_stop",
+    ]
+    assert contract["customer_media_failure"] == (
+        "settle_each_failed_fact_then_handoff_without_brain_or_automatic_clarification"
+    )
+    assert contract["self_media_failure"] == (
+        "persist_warning_and_continue_latest_complete_customer_tail"
+    )
+    assert contract["high_intent_reason_code"] == "CUSTOMER_HIGH_INTENT"
+
+
 @pytest.mark.parametrize(
     ("send_result", "action_phase"),
     [

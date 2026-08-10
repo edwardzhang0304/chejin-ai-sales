@@ -12,6 +12,7 @@ os.environ.setdefault(
 )
 
 from chejin_worker_client.c2_contract import (
+    c2_contract_v3,
     formal_image_failure_code,
     image_contract,
     observation_role_is_trusted,
@@ -42,6 +43,26 @@ from chejin_worker_client.wechat_c2 import (
 
 
 class C2ContractTests(unittest.TestCase):
+    def test_flow_gate_actions_match_backend_orchestration(self):
+        contract = c2_contract_v3()["flow_gate_action_contract"]
+        self.assertEqual(
+            contract["classes"],
+            [
+                "non_blocking_warning",
+                "item_handoff",
+                "recoverable_hold",
+                "hard_stop",
+            ],
+        )
+        self.assertEqual(
+            contract["self_media_failure"],
+            "persist_warning_and_continue_latest_complete_customer_tail",
+        )
+        self.assertEqual(
+            contract["high_intent_reason_code"],
+            "CUSTOMER_HIGH_INTENT",
+        )
+
     def test_outbox_recovery_uses_only_backend_action(self):
         for recovery_action in (
             "retry",

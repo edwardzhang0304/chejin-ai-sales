@@ -1,26 +1,26 @@
 # C2-C3 OmniAuto / Worker / 后端接口合同
 
-版本：v0.1.4
+版本：v0.1.5
 
 日期：2026-07-21
 
-最后更新：2026-08-10（补齐语音唯一身份、AI回复优先门禁分级、自动恢复和统一冷却）
+最后更新：2026-08-10（补齐语音唯一身份、AI回复门禁分级、自动恢复、统一冷却及媒体失败/高意向转人工）
 
-状态：接口命名和职责边界保持唯一。当前 C2 机器合同为 `3.12.6`。本轮整改父基线为
+状态：接口命名和职责边界保持唯一。当前 C2 机器合同为 `3.12.7`。本轮整改父基线为
 车金 `3f65660…`（Worker 运行代码父基线 `4352f5e…`）、OmniAuto 整改父基线 `99d0070…`；当前仲裁通用修复与绝对 Vision 边界门禁已固定并推送为 `91688de…`。复审曾确认
 “展开语音再次成为图片候选、类型仲裁方向错误、`not_attempted` 失败终态未由真实生产端
 生成”三项 P0。本次不新增同义顶层错误码：文字、语音或非位图造成的无效图片源统一
 使用 `error_code=C2_IMAGE_SOURCE_INVALID`，并以本合同规定的精确 `reason_detail`
 区分。`9872dad… / v16.145.0` 快速 UAT 又确认同一物理语音可被多 anchor 拆成多个
-待处理对象，身份门禁可早于媒体逐条结算返回，首屏命中可绕过成功冷却。当前必须先按
-本合同新增的唯一语音身份、L0-L3 门禁和统一冷却整改；通过架构复审和生产链门禁前
+待处理对象，身份门禁可早于媒体逐条结算返回，首屏命中可绕过成功冷却。当前已按
+本合同新增的唯一语音身份、L0-L3 门禁和统一冷却完成隔离候选整改；通过架构复审前
 不得生成替代 ZIP/正式 EXE或进入下一轮 Windows UAT。
 
 > 恢复流程以
 > `C1-C3_事务恢复与事实结算统一架构_v0.1_2026-07-31.md`
 > 为最高约束。旧实现中的图片专用恢复和“收到 `target_terminated` 后本地丢弃事实”
 > 不再属于正式合同。
-> 当前机器合同为 `3.12.6`。PID 硬门禁、五个专用失败原因和三个观察失败映射已经
+> 当前机器合同为 `3.12.7`。PID 硬门禁、五个专用失败原因和三个观察失败映射已经
 > 按共享 schema、样例和合同测试收口；后续不得恢复，也不得借双仓统一重开其他
 > 状态机设计。
 >
@@ -533,18 +533,19 @@ handoff，在一次权威干净读取后以 `auto_recovered_clean_read` 自动�
 同批最新 customer 消息可以立即进入新的 `message_batch`。存在任何其他未关闭 handoff
 时仍保持 `waiting_sales_reply`，不得启动 Brain。
 
-上述新增字段和动作改变机器语义，代码实施时必须把 C2 机器合同从 `3.12.6` 升级到
-新的 revision，并同步共享 schema、生成物、Worker/后端合同测试；文档先行不表示旧
-`3.12.6` 已经具备该能力。
+上述新增字段和动作改变机器语义，当前实现已把 C2 机器合同从 `3.12.6` 升级到
+`3.12.7`，并同步共享 schema、生成物、Worker/后端合同测试；旧 `3.12.6` 不具备这些
+新增语义，联调双方必须使用同一 revision 和哈希。
 
 每个 `flow_gate_errors[]` 必须有且只有一组同码
 `flow_gate_details[]`。能够定位的门禁必须携带最终画面的
 `min_screen_order/max_screen_order`；无法定位时必须明确写
 `position_source=position_unavailable`，不得猜位置。只有门禁的
 `max_screen_order` 明确小于后续人工销售消息的 `screen_order`，后端才允许
-认为该门禁已经被人工回复覆盖。失败销售语音本身是已持久化的人工销售事实，
-因此 `subject_sender_role=self` 时允许其在相同 `screen_order` 关闭自己的语音失败
-门禁；如果其下方还有新客户消息，门禁继续保留并禁止 Brain。
+认为该门禁已经被人工回复覆盖。失败销售语音本身是已持久化的销售侧告警事实。
+只要门禁的全部失败项都明确属于 `subject_sender_role=self`，该门禁按
+`non_blocking_warning` 处理；即使其下方还有新客户消息，也不得阻止最新完整客户尾部
+进入 Brain。角色缺失、混合或包含 customer 时仍须保守门禁。
 
 这里的“能够定位”只接受最终画面的强证据来源：
 `slot_ledger_visual_top`、`identity_error_visual_top`、
@@ -556,10 +557,10 @@ handoff，在一次权威干净读取后以 `auto_recovered_clean_read` 自动�
 
 | 类别 | 合同动作 | 代表场景 |
 |---|---|---|
-| `non_blocking_warning` | 保存证据并继续最新完整尾部 | 旧区间缺口、self 媒体失败、高意向通知、普通寒暄无 RAG |
-| `item_fallback` | 失败项入库；回答完整文字或生成媒体澄清 | customer 语音/图片单条失败 |
+| `non_blocking_warning` | 保存证据并继续最新完整尾部 | 旧区间缺口、self 媒体失败、普通寒暄无 RAG |
+| `item_handoff` | 失败项完成逐条入库后创建 handoff，停止普通 AI 且不生成自动澄清回复 | 当前 customer 语音/图片单条失败 |
 | `recoverable_hold` | 数据重建 + 最多一次稳定重读；两次/120 秒后仍影响最新尾部才 handoff | 跨轮身份、历史缺口、角色未确认、上下文/授权/租约/Provider 暂时失败 |
-| `hard_stop` | 零动作、静默停止或 `reply_then_handoff` | 明确拒收、关闭/黑名单、目标不明、发送未知、必须由人工决定的硬风险 |
+| `hard_stop` | 零动作、静默停止、handoff 或 `reply_then_handoff` | 高意向、明确拒收、关闭/黑名单、目标不明、发送未知、必须由人工决定的硬风险 |
 
 `reply_then_handoff` 是 C3 正式目标动作：同一 batch 同时返回唯一 `reply_action_id` 和
 `handoff_event_id`。边界回复必须先过 Guard；进入 `waiting_sales_reply` 后只允许发送
@@ -648,10 +649,10 @@ menu_evidence_conflict / menu_copy_item_unsafe`。
 `POST /api/workers/{worker_id}/wechat/messages/ingest` Outbox，不得先等待图片后
 最终画面收敛。正常 `active_read` 下，后端逐 source key 返回 `ingested/duplicated`
 确认后，Worker 将 ledger 置为 confirmed 并删除对应 ActionJournal；客户失败媒体转
-L1 单条降级：同批文字完整时继续回答，最新只有失败媒体时生成 Guard 批准的澄清回复；
+L1 单条媒体人工接管：直接创建 handoff、通知销售并进入 `waiting_sales_reply`，不调用
+Brain 回答同批文字，也不生成请求重发/改发文字的自动澄清回复；
 销售自己发送的失败媒体只作上下文 warning，不阻断其下方更新客户消息；角色为
-`unknown` 时不伪造图片消息，进入 L2 可恢复身份 hold。只有失败影响最新待回复尾部且
-无法安全澄清时才创建唯一 handoff。确认完成后
+`unknown` 时不伪造图片消息，进入 L2 可恢复身份 hold。确认完成后
 该会话不再占用
 `C2_IMAGE_FACT_PENDING`，Worker 必须继续其他已授权短码。后端网络暂时不可用时
 保留 Outbox 并退避重传，但重传只能发送原 JSON，不得重复 UI/Vision。
@@ -814,8 +815,8 @@ V3 请求顶层字段：
 ```json
 {
   "contract_version": 3,
-  "contract_revision": "3.12.6",
-  "contract_sha256": "a706d4308f90fde6dfcd3382712fececb926b465ff94e8e1df1cee22babb3d00",
+  "contract_revision": "3.12.7",
+  "contract_sha256": "75242ec6cd00bcff7925037d8529d57975ee39d00845c58c449816ac8586ee5e",
   "observation_schema_version": 3,
   "authorization_scope": "active_read",
   "read_run_id": "read-...",
@@ -1253,8 +1254,9 @@ completed。持久化时剔除 Provider 原始响应/错误正文、图片字节
 2. Worker 在 `raw_payload.customer_image_understanding` 保存上述文字白名单投影；不得改名为 `image_recognition`，也不得保存完整运行时对象。
 3. 后端校验图片 canonical message 与原始 `image_bubble` 的稳定来源关系。
 4. `failed customer/self` 图片不得伪装文字；后端按角色、最终顺序和
-   `reply_safe_boundary` 判断影响范围。customer 失败走 L1，同批已确认文字/语音仍可进入
-   Brain；self 失败只作 warning；只有无法安全澄清且切入最新待回复尾部时才停止 AI。
+   `reply_safe_boundary` 判断影响范围。当前 customer 失败走 L1，完成事实结算后直接
+   handoff，同批已确认文字/语音不得进入 Brain；self 失败只作 warning；历史已结算且位于
+   reply-safe boundary 之前的旧失败不重新触发接管。
 5. 后端给 Brain 的历史图片保留紧凑 `item_state/error_code`、摘要、OCR、分类、实体、中性查询和服务端确认产品 ID，支持下一轮“这辆/刚才那台”。
 6. 图片检测不得静默限制为 8 张。若内部容量不足，必须返回
    `observation_truncated=true + C2_IMAGE_OBSERVATION_FAILED`；截断影响最新待回复尾部时
@@ -1285,7 +1287,7 @@ completed。持久化时剔除 Provider 原始响应/错误正文、图片字节
 | P0 | 已在当前候选收口；本轮回归保留 | 技术恢复终态不得创建 handoff 冒充结算；改用通用 recovery settlement 持久化，并支持绑定已不存在时仍安全终结原事务。 |
 | P0 | 已在当前候选收口；本轮回归保留 | 分离 Windows 原始位图和 Provider 载荷上限，支持普通 1080p DIB/HBITMAP 自适应压缩，并在取入内存后清除系统剪贴板。 |
 | P0 | 已在当前候选收口；本轮回归保留 | Vision 父进程预算覆盖两次合法请求；Provider 使用 HTTPS/请求风格白名单；模型结果由共享完整 schema 校验。 |
-| P0 | 部分保留，门禁动作待整改 | 图片观察不得静默截断；历史图片上下文保留结构化结果。旧“failed customer/self 一律阻断 Brain”退出，改为 customer L1 澄清、self warning、仅最新尾部无法安全理解时 handoff。 |
+| P0 | 部分保留，门禁动作待整改 | 图片观察不得静默截断；历史图片上下文保留结构化结果。当前 customer failed 图片完成结算后直接 handoff，self failed 图片只作 warning；历史已结算的旧失败不重新触发接管。 |
 | P0 | 已在当前候选收口；本轮回归保留 | 车金严格 Vision 入口不得使用客户端本地 KnowledgeRuntime 确认正式产品 ID；后端使用服务端权威车源验证。 |
 | P0 | 已通过 | `v16.130.0 / 8ee53e1` 已完成真实豆包 Vision、Windows C2 图片、顺序、跨轮去重、多目标串行和停止监听验收；详见 `C2_Windows实机验收报告_2026-08-03.md`。 |
 | P0 | 历史基线已收口；当前候选待复审 | 历史 `v16.132.0` 固定到 `35b0eee` 且活动选择性集成为空；当前候选基础为 `a563e668…`，活动选择性接入 `91688de…`。 |
@@ -1295,8 +1297,8 @@ completed。持久化时剔除 Provider 原始响应/错误正文、图片字节
 | P0 | 已实现，待架构复审 | 同一物理语音只能形成一个 `canonical_voice_id`，structural/stable 等只作 aliases；ActionJournal 禁止首个匹配，冻结候选必须逐项终态。 |
 | P0 | 已实现，待架构复审 | 身份仲裁、合同或授权异常不得早于语音/图片终态结算返回；第一项失败后第二项继续，任何出口零 `not_attempted` 残留。 |
 | P0 | 已实现，待架构复审 | 首屏、定向和恢复队列共用成功/失败/后端 due 冷却；有新事实也保留至少 2 分钟 due，新未读证据可提前唤醒。 |
-| P0 | 方案已定，待实现 | `MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS/C2_MESSAGE_HISTORY_GAP` 等改为 L2 recoverable hold；旧区间不连坐最新尾部，干净读取自动恢复历史技术 handoff。 |
-| P0 | 方案已定，待实现 | failed customer 媒体优先澄清，self 媒体不阻断；C3 技术失败先恢复；高意向/销售通知不停止 AI；硬风险优先 `reply_then_handoff`，必须静默场景除外。 |
+| P0 | 已实现，待架构复审 | `MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS/C2_MESSAGE_HISTORY_GAP` 等改为 L2 recoverable hold；旧区间不连坐最新尾部，干净读取自动恢复历史技术 handoff。 |
+| P0 | 本轮三项已实现，待架构复审 | failed customer 媒体直接 handoff 且不生成重发提示，self 媒体不阻断；高意向以结构化 Brain 证据通知销售并转人工。其他硬风险的 `reply_then_handoff` 仍按独立交付门禁验收。 |
 
 ## 11. 联调验收门禁
 
@@ -1337,8 +1339,9 @@ completed。持久化时剔除 Provider 原始响应/错误正文、图片字节
     崩溃重启；分别测试各组件通过不能替代跨层串联门禁。
 21. 两个物理语音、多 alias、第一项失败的生产链必须证明：正式对象恰好两个、第二项
     继续、两项终态、零 `not_attempted`、身份门禁发生时仍先结算。
-22. L0-L3 表驱动测试必须覆盖每个现有 flow gate：旧区间继续 AI、customer 媒体澄清、
-    self 媒体不阻断、身份/历史/技术异常自动恢复、硬风险不自由回答。
+22. L0-L3 表驱动测试必须覆盖每个现有 flow gate：旧区间继续 AI、customer 媒体失败
+    直接 handoff 且无自动重发提示、self 媒体不阻断、身份/历史/技术异常自动恢复、
+    高意向及其他硬风险不自由回答。
 23. 历史 L2 handoff 必须由一次干净权威读取自动关闭；L3 handoff、pause、hard opt-out
     不得自动关闭。
 24. `reply_then_handoff` 必须同时验证唯一 reply_action/handoff_event、Guard 通过、只发送

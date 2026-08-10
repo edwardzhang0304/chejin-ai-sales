@@ -1,5 +1,5 @@
 @startuml
-' 文档版本：v0.1.3；最后更新：2026-08-10
+' 文档版本：v0.1.4；最后更新：2026-08-10
 title AI智能客服售前跟进系统 C2-C3 单会话串行完整流程（图片增强目标架构）
 
 skinparam monochrome true
@@ -542,10 +542,10 @@ loop Worker运行中；每次循环最多完成一个会话事务
             W -> W: 按screen_order排序\n生成稳定source_message_key/dedupe_key
             note right of W
             active_read逐source key确认后按影响范围处理：
-            客户失败媒体 -> L1回答完整文字或请求重发；
+            客户失败媒体 -> L1直接handoff，不生成自动回复；
             销售失败媒体 -> warning，不阻断最新客户消息；
             unknown -> L2身份恢复，不伪造图片消息；
-            仅无法安全澄清且影响最新尾部才handoff。
+            高意向 -> 通知销售并直接handoff。
             fact_settlement固定不改状态、不建Brain/handoff。
             end note
             note right of W
@@ -633,13 +633,13 @@ loop Worker运行中；每次循环最多完成一个会话事务
             else 会话ai_enabled=false/仍在waiting_sales_reply/全局紧急暂停
               Ingest -> C3: batch直接no_action或handoff
               C3 --> W: terminal no_action / handoff
+            else high_intent=true
+              C3 -> DB: 通知销售\nconversation.status=waiting_sales_reply
+              C3 --> W: terminal handoff\n停止普通AI回复
             else customer最新存在failed语音或图片
               Ingest -> C3: failed事实已入库\n同批完整文字仍保留
-              alt 同批完整文字足以回答
-                C3 --> W: 创建普通batch\n回答文字并说明媒体未识别
-              else 最新只有failed媒体
-                C3 --> W: 创建澄清batch\n请客户改发文字或重发
-              end
+              C3 -> DB: 创建唯一handoff_event\nconversation.status=waiting_sales_reply
+              C3 --> W: terminal handoff\n不调用Brain，不生成重发/改发文字提示
             else 只有self失败媒体或旧区间门禁
               C3 -> C3: 记录warning\n不阻断最新完整客户尾部
               C3 --> W: 创建普通客户消息batch或no_action
