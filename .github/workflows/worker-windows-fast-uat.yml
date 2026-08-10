@@ -93,7 +93,7 @@ jobs:
           $packageRoot = Join-Path $verifyDir "CheJinWorkerDebug"
           $manifestPath = Join-Path $packageRoot "fast-uat-manifest.json"
           $manifest = Get-Content -Raw -Encoding UTF8 $manifestPath | ConvertFrom-Json
-          if ($manifest.debug_uat -ne $true -or $manifest.formal_release -ne $false -or $manifest.not_for_customer_release -ne $true) {
+          if ($manifest.debug_uat -ne $true -or $manifest.formal_release -ne $false -or $manifest.not_for_customer_release -ne $true -or $manifest.git_dirty -ne $false) {
             throw "Fast UAT identity is not explicit"
           }
           if ($manifest.git_commit -ne $env:GITHUB_SHA) {

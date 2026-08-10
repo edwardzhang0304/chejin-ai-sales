@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import zipfile
 
+from build_source import BuildSourceError, verify_build_source
 from client_delivery_policy import is_client_forbidden_path, load_client_exclude_paths
 from omniauto_tree import load_source_provenance, tree_manifest
 
@@ -100,6 +101,14 @@ def build(*, runtime_root: Path, output_dir: Path, git_commit: str, git_branch: 
         raise SystemExit("FAST_UAT_RUNTIME_BASE_INVALID")
     if len(git_commit) != 40 or any(char not in "0123456789abcdefABCDEF" for char in git_commit):
         raise SystemExit("FAST_UAT_GIT_COMMIT_INVALID")
+    try:
+        build_source = verify_build_source(ROOT, development_build=False)
+    except BuildSourceError as exc:
+        raise SystemExit(str(exc)) from exc
+    if str(build_source["git_commit"]).lower() != git_commit.lower():
+        raise SystemExit("FAST_UAT_GIT_COMMIT_MISMATCH")
+    if bool(build_source["git_dirty"]):
+        raise SystemExit("FAST_UAT_GIT_DIRTY")
     vision_key = str(os.environ.get("CHEJIN_VISION_CLIENT_API_KEY") or "").strip()
     if not vision_key:
         raise SystemExit("FAST_UAT_VISION_KEY_REQUIRED")
@@ -124,6 +133,7 @@ def build(*, runtime_root: Path, output_dir: Path, git_commit: str, git_branch: 
         "version": _version(),
         "git_commit": git_commit,
         "git_branch": git_branch,
+        "git_dirty": False,
         "build_kind": "debug_uat_locked",
         "formal_release": False,
         "distribution_channel": "windows_fast_debug_zip",
