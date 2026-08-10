@@ -89,6 +89,7 @@ PERMANENT_BINDING_DISABLE_REASONS = {
     "replaced_binding",
 }
 READ_NO_CHANGE_BACKOFF_SECONDS = (120, 300, 600)
+READ_SUCCESS_COOLDOWN_SECONDS = 120
 IDENTITY_CHECKPOINT_RECENT_LIMIT = 200
 SALES_SIDE_SENDER_ROLES = {"self", "sales", "sales_candidate"}
 SETTLEMENT_TOKEN_TTL_SECONDS = 300
@@ -1113,7 +1114,10 @@ def _settle_completed_read(
     binding.last_read_conversation_status = str(conversation.status or "")
     if has_new_facts:
         binding.last_read_result = "new_facts"
-        _reset_read_backoff(binding)
+        binding.no_change_read_count = 0
+        binding.next_read_due_at = now + timedelta(
+            seconds=READ_SUCCESS_COOLDOWN_SECONDS
+        )
     else:
         binding.last_read_result = "no_change"
         binding.no_change_read_count = int(binding.no_change_read_count or 0) + 1
@@ -1215,6 +1219,22 @@ def _read_target_payload(
     *,
     read_reason: str,
 ) -> dict:
+    from app.services.c3_service import (
+        RECOVERABLE_C2_HANDOFF_REASON_CODES,
+        open_handoff_events_for_conversation,
+    )
+
+    recoverable_handoff_reason_codes = sorted(
+        {
+            str(event.handoff_reason_code or "").strip()
+            for event in open_handoff_events_for_conversation(
+                db,
+                binding.conversation_id,
+            )
+            if str(event.handoff_reason_code or "").strip()
+            in RECOVERABLE_C2_HANDOFF_REASON_CODES
+        }
+    )
     target = {
         "conversation_id": binding.conversation_id,
         "lead_id": binding.lead_id,
@@ -1228,6 +1248,9 @@ def _read_target_payload(
         "identity_checkpoint": _identity_checkpoint(
             db,
             conversation_id=binding.conversation_id,
+        ),
+        "recoverable_handoff_reason_codes": (
+            recoverable_handoff_reason_codes
         ),
         "next_read_due_at": binding.next_read_due_at,
     }
@@ -2880,6 +2903,52 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
         )
     )
     conversation_allowed = conversation.status not in CONVERSATION_CLOSED_STATUSES
+
+    recovery_resolution = evidence_payload.get(
+        "recoverable_handoff_resolution"
+    )
+    if isinstance(recovery_resolution, dict):
+        recovery_reason_codes = [
+            str(value).strip()
+            for value in (recovery_resolution.get("reason_codes") or [])
+            if str(value).strip()
+        ]
+        recovery_is_proven = bool(
+            state_transition_allowed
+            and conversation.ai_enabled is True
+            and not flow_gate_error_codes
+            and str(payload.authorization_scope or "") == "active_read"
+            and str(
+                evidence_payload.get("authoritative_frame_source") or ""
+            )
+            in {"initial_read", "final_read"}
+            and bool(evidence_payload.get("observations"))
+            and str(recovery_resolution.get("status") or "")
+            == "latest_unreplied_turn_complete"
+            and recovery_resolution.get("identity_confirmed") is True
+            and recovery_resolution.get("history_confirmed") is True
+        )
+        if recovery_is_proven and recovery_reason_codes:
+            from app.services.c3_service import (
+                close_open_recoverable_c2_handoffs,
+            )
+
+            recovery_result = close_open_recoverable_c2_handoffs(
+                db,
+                conversation_id=payload.conversation_id,
+                reason_codes=recovery_reason_codes,
+                read_run_id=payload.read_run_id,
+            )
+            open_handoff_active = bool(
+                recovery_result["remaining_open_count"]
+            )
+            if recovery_result["closed_count"] and not open_handoff_active:
+                conversation.status = "ai_active"
+                conversation.handoff_reason_code = None
+                conversation.handoff_at = None
+                conversation.recall_origin_status = None
+                conversation.recall_cycle_id = None
+                conversation.next_recall_at = None
     observed_rpa_session_key = payload.rpa_session_key or ""
 
     ingested_count = 0

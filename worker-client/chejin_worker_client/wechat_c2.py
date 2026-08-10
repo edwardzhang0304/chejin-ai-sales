@@ -123,6 +123,12 @@ def project_final_slot_flow_gates(
         "slot_ledger_states": list(
             incremental_plan.get("slot_ledger_states") or []
         ),
+        "historical_warnings": list(
+            incremental_plan.get("historical_warnings") or []
+        ),
+        "recoverable_handoff_resolution": incremental_plan.get(
+            "recoverable_handoff_resolution"
+        ),
     }
 
 
@@ -1055,19 +1061,37 @@ def image_observation_source_key(target: WechatReadTarget, observation: dict[str
 
 def voice_observation_anchor_key(observation: dict[str, Any]) -> str:
     source = observation.get("source_message") if isinstance(observation.get("source_message"), dict) else {}
+    action_target = (
+        observation.get("action_target")
+        if isinstance(observation.get("action_target"), dict)
+        else {}
+    )
+    anchor = source.get("voice_anchor") if isinstance(source.get("voice_anchor"), dict) else {}
+    # ``stable`` and ``structural`` are aliases of one physical bubble. The
+    # structural key is viewport-shift invariant and is therefore the only
+    # canonical identity whenever OmniAuto provides it. A transcript may keep
+    # the stable alias in parent_voice_anchor_key, so parent must not win.
     for value in (
+        observation.get("_voice_canonical_anchor_key"),
+        observation.get("voice_anchor_structural_key"),
+        source.get("voice_anchor_structural_key"),
+        action_target.get("anchor_structural_key"),
+        anchor.get("anchor_structural_key"),
+        observation.get("voice_anchor_stable_key"),
+        source.get("voice_anchor_stable_key"),
+        action_target.get("anchor_stable_key"),
+        anchor.get("anchor_stable_key"),
         observation.get("parent_voice_anchor_key"),
         observation.get("voice_anchor_key"),
         source.get("parent_voice_anchor_key"),
-        source.get("voice_anchor_structural_key"),
-        source.get("voice_anchor_stable_key"),
         source.get("voice_anchor_key"),
+        action_target.get("anchor_key"),
+        anchor.get("anchor_key"),
     ):
         clean = str(value or "").strip()
         if clean:
             return clean
-    anchor = source.get("voice_anchor") if isinstance(source.get("voice_anchor"), dict) else {}
-    return str(anchor.get("anchor_stable_key") or anchor.get("anchor_structural_key") or anchor.get("anchor_key") or "").strip()
+    return ""
 
 
 def voice_observation_source_key(target: WechatReadTarget, observation: dict[str, Any]) -> str:
@@ -1882,6 +1906,12 @@ def _build_message_ingest_payload_v3(
                 sidecar_payload.get("failed_voice_source_keys") or []
             ),
             "slot_ledger_states": list(sidecar_payload.get("slot_ledger_states") or []),
+            "historical_warnings": list(
+                sidecar_payload.get("historical_warnings") or []
+            ),
+            "recoverable_handoff_resolution": sidecar_payload.get(
+                "recoverable_handoff_resolution"
+            ),
         },
     }
 

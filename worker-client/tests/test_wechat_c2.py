@@ -16,6 +16,8 @@ from chejin_worker_client.wechat_c2 import (
     reconcile_cross_round_observation_identities,
     reconcile_v16104_identity_transition,
     sender_role_hint,
+    voice_observation_anchor_key,
+    voice_observation_source_key,
 )
 from tests.contract_artifacts import resolve_contract_artifact
 
@@ -34,6 +36,37 @@ def build_v3_message_ingest_payload(target: WechatReadTarget, sidecar_payload: d
 
 
 class WechatC2Test(unittest.TestCase):
+    def test_voice_structural_and_stable_anchors_are_one_physical_identity(self):
+        target = WechatReadTarget(
+            conversation_id="conv-voice-alias",
+            rpa_session_key="wx:rpa:v1:voice-alias",
+            display_name="CJALIAS1",
+            remark_code="CJALIAS1",
+        )
+        bubble = {
+            "voice_anchor_stable_key": "voice-stable-alias",
+            "source_message": {
+                "voice_anchor_structural_key": "voice-structural-canonical",
+                "voice_anchor_stable_key": "voice-stable-alias",
+            },
+        }
+        transcript = {
+            "parent_voice_anchor_key": "voice-stable-alias",
+            "source_message": {
+                "voice_anchor_structural_key": "voice-structural-canonical",
+                "voice_anchor_stable_key": "voice-stable-alias",
+            },
+        }
+
+        self.assertEqual(
+            voice_observation_anchor_key(bubble),
+            "voice-structural-canonical",
+        )
+        self.assertEqual(
+            voice_observation_source_key(target, bubble),
+            voice_observation_source_key(target, transcript),
+        )
+
     @staticmethod
     def _identity_text(observation_id: str, content: str, top: int) -> dict:
         return {
