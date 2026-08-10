@@ -3578,7 +3578,7 @@ def test_failed_sales_voice_is_human_intervention_and_cannot_trigger_brain():
         assert db.query(MessageBatch).count() == 0
 
 
-def test_customer_after_failed_sales_voice_stays_manual_and_cannot_trigger_brain():
+def test_customer_after_failed_sales_voice_continues_to_brain():
     worker = _create_worker()
     _create_sales(worker["id"])
     _create_lead("销售失败语音后客户追问", "13896676690")
@@ -3631,13 +3631,99 @@ def test_customer_after_failed_sales_voice_stays_manual_and_cannot_trigger_brain
     assert response.status_code == 200, response.text
     with SessionLocal() as db:
         conversation = db.get(Conversation, binding["conversation_id"])
-        handoff = db.query(HandoffEvent).one()
-        assert conversation.status == "waiting_sales_reply"
-        assert handoff.handoff_reason_code == "C2_VOICE_TRANSCRIBE_FAILED"
-        brain_batches = db.query(MessageBatch).filter(
-            MessageBatch.decision != "handoff"
-        ).count()
-        assert brain_batches == 0
+        failed_sales_voice = db.query(MessageEvent).filter(
+            MessageEvent.message_type == "voice",
+            MessageEvent.item_state == "failed",
+        ).one()
+        customer_message = db.query(MessageEvent).filter(
+            MessageEvent.source_message_key
+            == "customer-after-failed-sales-voice"
+        ).one()
+        batch = db.query(MessageBatch).one()
+        assert failed_sales_voice.sender_role == "self"
+        assert conversation.status == "ai_active"
+        assert db.query(HandoffEvent).count() == 0
+        assert batch.status == "reply_action_created"
+        assert batch.message_event_ids == [customer_message.id]
+        assert db.query(ReplyAction).filter(
+            ReplyAction.batch_id == batch.id,
+            ReplyAction.status == "queued",
+        ).count() == 1
+
+
+def test_customer_after_failed_sales_image_continues_to_brain():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("销售失败图片后客户追问", "13896676691")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    payload = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id="read-sales-image-failed-before-customer",
+        messages=[
+            _v3_failed_image_message(
+                "failed-sales-image-before-customer",
+                role="self",
+                screen_order=1,
+                reason="VISION_MODEL_TIMEOUT",
+                order_source="visual_top",
+            ),
+            _v3_message(
+                "customer-after-failed-sales-image",
+                role="customer",
+                message_type="text",
+                content="这辆车还能看吗？",
+                screen_order=2,
+                order_source="visual_top",
+            ),
+        ],
+    )
+    payload["evidence"]["flow_gate_errors"] = [
+        "C2_IMAGE_UNDERSTANDING_FAILED"
+    ]
+    payload["evidence"]["flow_gate_details"] = [
+        {
+            "error_code": "C2_IMAGE_UNDERSTANDING_FAILED",
+            "position_source": "failed_image_visual_top",
+            "subject_sender_role": "self",
+            "min_screen_order": 1,
+            "max_screen_order": 1,
+        }
+    ]
+
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers=_worker_headers(worker),
+    )
+
+    assert response.status_code == 200, response.text
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        failed_sales_image = db.query(MessageEvent).filter(
+            MessageEvent.message_type == "image",
+            MessageEvent.item_state == "failed",
+        ).one()
+        customer_message = db.query(MessageEvent).filter(
+            MessageEvent.source_message_key
+            == "customer-after-failed-sales-image"
+        ).one()
+        batch = db.query(MessageBatch).one()
+        assert failed_sales_image.sender_role == "self"
+        assert conversation.status == "ai_active"
+        assert db.query(HandoffEvent).count() == 0
+        assert batch.status == "reply_action_created"
+        assert batch.message_event_ids == [customer_message.id]
+        assert db.query(ReplyAction).filter(
+            ReplyAction.batch_id == batch.id,
+            ReplyAction.status == "queued",
+        ).count() == 1
 
 
 @pytest.mark.parametrize(
@@ -4240,6 +4326,15 @@ def test_clean_authoritative_read_auto_recovers_temporary_c2_handoff(
             value.startswith("c2_recovery_read:")
             for value in handoff.evidence_refs
         )
+        recovered_batch = db.query(MessageBatch).filter(
+            MessageBatch.conversation_id == binding["conversation_id"],
+            MessageBatch.id != handoff.batch_id,
+        ).one()
+        assert recovered_batch.status == "reply_action_created"
+        assert db.query(ReplyAction).filter(
+            ReplyAction.batch_id == recovered_batch.id,
+            ReplyAction.status == "queued",
+        ).count() == 1
 
 
 def test_clean_read_does_not_auto_close_nonrecoverable_handoff():

@@ -1,6 +1,6 @@
 {
   "contract_version": 3,
-  "contract_revision": "3.12.6",
+  "contract_revision": "3.12.7",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "sender_roles": ["customer", "self", "system", "unknown"],
@@ -303,6 +303,19 @@
     "C2_IMAGE_PROCESSING_DEFERRED"
   ],
   "temporary_capability_gate_rule": "temporary capability gates are request-level protocol gates only; Vision configuration and individual image processing must never use this mechanism",
+  "flow_gate_action_contract": {
+    "classes": [
+      "non_blocking_warning",
+      "item_handoff",
+      "recoverable_hold",
+      "hard_stop"
+    ],
+    "customer_media_failure": "settle_each_failed_fact_then_handoff_without_brain_or_automatic_clarification",
+    "self_media_failure": "persist_warning_and_continue_latest_complete_customer_tail",
+    "recoverable_identity_history": "close_matching_temporary_handoff_after_authoritative_clean_read",
+    "high_intent": "notify_sales_by_handoff_event_and_enter_waiting_sales_reply_without_normal_ai_reply",
+    "high_intent_reason_code": "CUSTOMER_HIGH_INTENT"
+  },
   "slot_ledger_state_schema": {
     "owner": "worker",
     "required_fields": [

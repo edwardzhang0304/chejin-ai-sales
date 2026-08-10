@@ -105,6 +105,50 @@ class MockOmniAutoAIEngineAdapter:
         )
 
 
+HIGH_INTENT_REASON_CODE = "CUSTOMER_HIGH_INTENT"
+HIGH_INTENT_MARKERS = {
+    "customer_high_intent",
+    "high_intent",
+    "high_purchase_intent",
+    "used_car_high_intent",
+    "used_car_high_intent_or_risk",
+}
+
+
+def _is_structured_high_intent_handoff(
+    result: dict,
+    plan: dict,
+    risk_flags: list[str],
+) -> bool:
+    """Recognize high intent only from explicit Brain contract evidence.
+
+    Broad business keywords such as price, finance, contract or vehicle
+    condition are intentionally not treated as high intent here.
+    """
+
+    risk = plan.get("risk") if isinstance(plan.get("risk"), dict) else {}
+    intent_assist = (
+        result.get("intent_assist")
+        if isinstance(result.get("intent_assist"), dict)
+        else {}
+    )
+    markers = {
+        str(value or "").strip().lower()
+        for value in (
+            result.get("reason"),
+            plan.get("reason"),
+            plan.get("intent"),
+            risk.get("handoff_reason"),
+            intent_assist.get("intent"),
+            intent_assist.get("reason"),
+            *risk.get("risk_tags", []),
+            *risk_flags,
+        )
+        if str(value or "").strip()
+    }
+    return bool(markers & HIGH_INTENT_MARKERS)
+
+
 class RealOmniAutoAIEngineAdapter:
     _provider_worker_script = Path(__file__).with_name("ai_provider_worker.py")
 
@@ -380,13 +424,34 @@ class RealOmniAutoAIEngineAdapter:
                 raw_payload=raw_payload,
             )
         if rule_name == "customer_service_brain_handoff" or recommended_action in {"handoff", "handoff_for_approval"}:
+            high_intent = _is_structured_high_intent_handoff(
+                result,
+                plan,
+                risk_flags,
+            )
             return AIEngineDecision(
-                decision=recommended_action if recommended_action in {"handoff", "handoff_for_approval"} else "handoff",
+                decision=(
+                    "handoff"
+                    if high_intent
+                    else recommended_action
+                    if recommended_action in {"handoff", "handoff_for_approval"}
+                    else "handoff"
+                ),
                 confidence=confidence,
-                handoff_reason_code=str(result.get("reason") or "HANDOFF_REQUIRED")[:64],
-                risk_flags=risk_flags,
+                handoff_reason_code=(
+                    HIGH_INTENT_REASON_CODE
+                    if high_intent
+                    else str(result.get("reason") or "HANDOFF_REQUIRED")[:64]
+                ),
+                risk_flags=(
+                    list(dict.fromkeys([*risk_flags, "customer_high_intent"]))
+                    if high_intent
+                    else risk_flags
+                ),
                 evidence_refs=evidence_refs,
                 guard_result="handoff",
+                error_code=(HIGH_INTENT_REASON_CODE if high_intent else None),
+                suggested_action="handoff",
                 raw_payload=raw_payload,
             )
         if (

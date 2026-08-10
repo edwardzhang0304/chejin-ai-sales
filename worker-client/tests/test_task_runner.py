@@ -1232,7 +1232,7 @@ class TaskRunnerTest(unittest.TestCase):
             **kwargs,
         ):
             # Direct unit tests bypass FakeApi.read-targets. Supply the field
-            # that backend C2 3.12.6 always returns in production.
+            # that the current backend C2 contract always returns in production.
             if isinstance(target.raw, dict):
                 target.raw.setdefault(
                     "identity_checkpoint",

@@ -446,6 +446,60 @@ def test_real_adapter_emits_structured_hard_opt_out_without_customer_reply(monke
     assert decision.hard_opt_out_evidence == brain_result["hard_opt_out"]
 
 
+def test_real_adapter_maps_structured_high_intent_to_direct_handoff(monkeypatch):
+    adapter = RealOmniAutoAIEngineAdapter()
+    brain_result = {
+        "rule_name": "customer_service_brain_handoff",
+        "adoptable": True,
+        "reason": "used_car_high_intent_or_risk",
+        "brain_plan": {
+            "recommended_action": "handoff_for_approval",
+            "confidence": 0.96,
+            "risk": {
+                "risk_level": "high",
+                "risk_tags": ["customer_high_intent"],
+                "needs_handoff": True,
+                "handoff_reason": "used_car_high_intent_or_risk",
+            },
+            "risk_flags": ["customer_high_intent"],
+            "evidence_refs": ["policy:chejin_handoff_high_intent"],
+            "reply_segments": ["我帮您确认到店安排。"],
+        },
+    }
+    monkeypatch.setattr(
+        adapter,
+        "_load_config",
+        lambda: {
+            "customer_service_brain": {
+                "provider": "test",
+                "model": "test",
+                "api_key": "test-only",
+            }
+        },
+    )
+    monkeypatch.setattr(adapter, "_load_brain", lambda: object())
+    monkeypatch.setattr(
+        adapter,
+        "_run_brain_isolated",
+        lambda **_kwargs: brain_result,
+    )
+
+    decision = adapter.generate_reply_decision(
+        conversation_context={"conversation_id": "conv-high-intent"},
+        message_batch={
+            "id": "batch-high-intent",
+            "messages": [{"content": "我今天就想去看车"}],
+        },
+    )
+
+    assert decision.decision == "handoff"
+    assert decision.reply_text is None
+    assert decision.handoff_reason_code == "CUSTOMER_HIGH_INTENT"
+    assert decision.error_code == "CUSTOMER_HIGH_INTENT"
+    assert "customer_high_intent" in decision.risk_flags
+    assert decision.suggested_action == "handoff"
+
+
 def test_real_adapter_provider_exception_is_explicit_retry_later(monkeypatch):
     adapter = RealOmniAutoAIEngineAdapter()
     monkeypatch.setattr(adapter, "_load_config", lambda: {"customer_service_brain": {"provider": "test", "model": "test", "api_key": "test-only"}})
@@ -2231,6 +2285,50 @@ def test_handoff_decision_uses_state_gate_without_disabling_ai():
         assert conversation.ai_enabled is True
         assert conversation.status == "waiting_sales_reply"
         assert conversation.handoff_reason_code == "HANDOFF_REQUIRED"
+
+
+def test_high_intent_notifies_sales_by_handoff_without_reply_action(monkeypatch):
+    class HighIntentAdapter:
+        def generate_reply_decision(self, **_kwargs):
+            return c3_service.AIEngineDecision(
+                decision="handoff",
+                confidence=0.97,
+                handoff_reason_code="CUSTOMER_HIGH_INTENT",
+                risk_flags=["customer_high_intent"],
+                evidence_refs=["policy:chejin_handoff_high_intent"],
+                guard_result="handoff",
+                error_code="CUSTOMER_HIGH_INTENT",
+                suggested_action="handoff",
+            )
+
+    monkeypatch.setattr(
+        c3_service,
+        "get_ai_engine_adapter",
+        lambda: HighIntentAdapter(),
+    )
+    worker, binding = _setup_bound_conversation()
+    message_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-c3-high-intent",
+        "我今天想直接到店看车",
+    )
+    batch = _collect(binding["conversation_id"], message_id)
+    generated = _generate(batch["batch_id"])
+
+    assert generated["decision"] == "handoff"
+    assert generated["error_code"] == "CUSTOMER_HIGH_INTENT"
+    assert generated["handoff_event_id"]
+    assert generated.get("reply_action_id") is None
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        handoff = db.query(HandoffEvent).one()
+        assert conversation.status == "waiting_sales_reply"
+        assert conversation.handoff_reason_code == "CUSTOMER_HIGH_INTENT"
+        assert handoff.status == "created"
+        assert handoff.handoff_reason_code == "CUSTOMER_HIGH_INTENT"
+        assert handoff.risk_flags == ["customer_high_intent"]
+        assert db.query(ReplyAction).count() == 0
 
 
 def test_formal_api_responses_do_not_leak_deprecated_fields():

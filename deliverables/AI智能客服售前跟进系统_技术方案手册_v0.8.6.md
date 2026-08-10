@@ -8,7 +8,7 @@
 
 当前阶段：运营后台 + Windows Worker 客户端。C1 已形成稳定基线；C2 的文字、语音、图片、V3 授权、private 单聊准入、群聊阻断、统一顺序、跨轮去重、多目标串行和停止监听曾在 `v16.130.0 / 8ee53e1` 完成正式 Windows 实机验收，C3 自动回复与 C4 自动召回也已实现并测试。2026-08-09 以车金 `3f65660fb712a14527ea1307715a8c2dacb9c8b1`（运行代码父基线 Worker `4352f5e35d69eeea5898a57eb39d00e07372c403`）、OmniAuto `99d0070517a0976dc47661f4b6564e9f6e1f1b1a`、机器合同 `3.12.6` 为整改父基线；语音/图片仲裁通用修复及其绝对 Vision 边界门禁已先在独立 OmniAuto 固定并推送为 `91688de9047d5973cee9b18de00ca2f6e7772a86`。2026-08-10 快速 UAT 的真实运行基线为车金 `9872dad3c469b4d9c1cc328060f04fb1e0c3e139 / v16.145.0`，现场暴露新的 P0：同一物理语音被多种 anchor 重复登记、身份仲裁可早于媒体逐条终态结算返回、首屏命中绕过成功冷却。当前隔离候选已完成上述三项运行代码整改并补生产链自动门禁，仍须架构复审通过后才能生成替代 ZIP；正式 EXE 和正式 PR 继续禁止。OmniAuto 当前内嵌基础为包含 `35b0eee` 的 `a563e668…`，活动选择性集成为 `91688de…`；`2318bd8` 仅作为历史选择性来源保留。本版继续以主流程稳定为目标：不启动悬浮球、不安装键盘鼠标 Hook、不锁定人工输入，也不以守护状态门禁任务。
 
-一句话结论：当前技术方案统一收口到本文档；C0—C4 已有历史主链基线，不重开回复或召回流程，但图片候选生成与语音类型仲裁必须按“先用强消息结构解释画面，再对剩余区域生成弱图片候选”整改；一条物理语音只能形成一个业务对象，多种 anchor 只能作为该对象的识别别名；任何媒体明确失败都必须逐条终态结算。自动回复采用“最新待回复消息尾部完整即可回复”的原则：旧问题、单条可降级媒体和可恢复技术异常不得直接形成永久人工接管，只有明确影响最新待回复内容且自动恢复失败，或命中不可自动处理的业务硬风险时才停止 AI。运营后台指定账号登录和车辆信息/Product Master 继续沿用既定方案：后台账号由服务端预先建立，登录成功即拥有全部后台权限，第一期不做 RBAC；车辆和正式知识复用 OmniAuto 的 Product Master、KnowledgeRuntime、RAG 与 Guard 并持久化到车金现有 PostgreSQL；不接大风车 API，不部署第二套后台，不将测试车辆或未审核知识带入生产。
+一句话结论：当前技术方案统一收口到本文档；C0—C4 已有历史主链基线，不重开回复或召回流程，但图片候选生成与语音类型仲裁必须按“先用强消息结构解释画面，再对剩余区域生成弱图片候选”整改；一条物理语音只能形成一个业务对象，多种 anchor 只能作为该对象的识别别名；任何媒体明确失败都必须逐条终态结算。自动回复采用“最新待回复消息尾部完整即可回复”的原则：旧问题和可恢复技术异常不得直接形成永久人工接管；当前客户单条语音/图片失败、高意向，以及不可自动处理的业务硬风险均停止 AI 并转人工。运营后台指定账号登录和车辆信息/Product Master 继续沿用既定方案：后台账号由服务端预先建立，登录成功即拥有全部后台权限，第一期不做 RBAC；车辆和正式知识复用 OmniAuto 的 Product Master、KnowledgeRuntime、RAG 与 Guard 并持久化到车金现有 PostgreSQL；不接大风车 API，不部署第二套后台，不将测试车辆或未审核知识带入生产。
 
 ## 文档治理规则
 
@@ -127,10 +127,10 @@
 > 不可逆动作是否触发，不能决定业务事实是否删除：只有“纯动作意图、没有 terminal payload、
 > 没有 completed/failed Ledger、没有 Outbox”的 `not_attempted` 才能本地清理；已经形成
 > completed/failed 事实时，无论 action_phase 为何都必须由后端逐 source key 确认。
-> 当前有效授权下正常入库时，customer 失败按 L1 单条降级：回答同批完整文字或发送
-> Guard 批准的“未看清图片，请重发/描述”澄清回复，不默认进入 `waiting_sales_reply`；
+> 当前有效授权下正常入库时，customer 单条语音/图片失败按 L1 人工接管：失败事实完成
+> 逐条结算后直接进入 `waiting_sales_reply`，不生成“请重发/改发文字”等自动澄清回复；
 > self 失败只作销售侧上下文 warning，不阻断更晚客户消息；unknown 不建立图片消息，进入
-> L2 身份恢复 hold。只有失败确实切断最新待回复尾部且无法安全澄清时才 handoff。
+> L2 身份恢复 hold。历史已结算且位于 reply-safe boundary 之前的旧失败不重新触发接管。
 > 跨重启恢复时，当前授权仍有效则重传原完整 V3 消息并执行相同角色规则；只能使用
 > `fact_settlement` 时只补录事实、不改变当前会话状态；身份不可信时使用
 > `technical_terminal` 且不伪造 message_event。三种路径都必须得到每个 source key 的
@@ -170,7 +170,7 @@
 
 | 日期 | 版本 | 原来是什么 | 变更成什么 |
 |---|---|---|---|
-| 2026-08-10 | v0.8.6内部修订 | 同一物理语音可因 `voice-structural/voice-stable` 等 anchor 形成多个待处理身份；媒体未逐条结算前可被跨轮身份门禁提前返回；`MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS`、`C2_MESSAGE_HISTORY_GAP`、单条语音/图片失败和部分 C3 技术失败默认长期 handoff，旧问题会持续压低 AI 回复率；首屏队列只检查失败冷却 | 固定“一个物理语音对象 + 多个识别别名 + 一个正式终态”；ActionJournal 只按唯一正式身份更新，零匹配或多匹配均禁止点击；任何提前返回前先结算全部已发现媒体；新增 reply-safe suffix 和四级门禁，旧/无关问题继续 AI、单条媒体失败优先澄清回复、身份与技术异常先自动恢复、只有最新待回复内容仍不可靠或业务硬风险才转人工；首屏与定向读取统一检查成功/失败冷却和后端 `next_read_due_at` |
+| 2026-08-10 | v0.8.6内部修订 | 同一物理语音可因 `voice-structural/voice-stable` 等 anchor 形成多个待处理身份；媒体未逐条结算前可被跨轮身份门禁提前返回；身份/历史和部分 C3 技术失败默认长期 handoff，旧问题会持续压低 AI 回复率；首屏队列只检查失败冷却 | 固定“一个物理语音对象 + 多个识别别名 + 一个正式终态”；ActionJournal 只按唯一正式身份更新，零匹配或多匹配均禁止点击；任何提前返回前先结算全部已发现媒体；新增 reply-safe suffix 和四级门禁，旧/无关问题继续 AI、身份与技术异常先自动恢复；当前客户单条语音/图片失败及高意向固定转人工；首屏与定向读取统一检查成功/失败冷却和后端 `next_read_due_at` |
 | 2026-08-09 | v0.8.6 | OmniAuto 活动来源实际接入五项能力，机器 `scope` 只登记三项；兼容映射和旧 CLI 仍保留四个退役菜单错误名 | `selective_integrations[0].scope` 精确登记五个机器字段；旧 CLI 只返回统一 `C2_IMAGE_MENU_OPERATION_FAILED` 和正式事务状态；删除四个退役兼容映射，机器合同升至 `3.12.6` |
 | 2026-08-09 | v0.8.5内部修订 | 图片候选右键后只要看到“复制”就继续，未使用真实弹窗边界和完整菜单区分文字/图片/语音；剪贴板已明确不是位图时，failed 事实仍可被最终画面收敛或跨重启空流程门禁拦截，形成 `C2_IMAGE_FACT_PENDING` 并饿死其他短码 | 不重写图片矩形探测器；依据三张真实微信菜单固定三类唯一特征和公共项，且所有证据必须完整位于同一 `menu_panel_bounds`；所有无效图片源使用 `error_code=C2_IMAGE_SOURCE_INVALID` 及精确 `reason_detail`，以原始完整 V3 消息进入 Outbox；正常读取按消息角色和最终顺序决定状态，事实补录不改业务状态；逐 source key 确认后释放全局门禁并继续其他短码 |
 | 2026-08-09 | v0.8.5内部修订 | Worker 消息序号只在本地延续且后端排除该类历史身份，状态丢失后可能复用旧编号；`duplicated` 不校验角色和正文；读取成功仅本地冷却 20 秒而 30 秒扫描会再次派发；临时暂停、永久停用和被替代旧绑定缺少可恢复的来源区分 | 后端下发身份检查点和全部最近身份，Worker 原子恢复/分配编号；后端以完整身份不变量判重并对碰撞执行刷新身份后原 Outbox 重传；后端记录读取完成并按 2/5/10 分钟退避；固定 `paused/disabled/retired history` 边界、停用来源、历史不一致数据迁移及人工恢复接口 |
@@ -605,9 +605,10 @@ friend_state/status=friend_active（already_friend过渡路径）
 
 - AI不再按句数停止。
 - AI是否继续聊由硬准入、最新待回复尾部完整性、权威证据、风控和会话状态决定。
-- 高意向只触发销售通知，不停止 AI；模型首次失败进入 L2 恢复；图片/语音低置信优先
-  澄清；证据不足时回答可确认部分或说明需要确认。只有硬风险或恢复失败且影响最新尾部
-  才执行 `reply_then_handoff/handoff`。
+- 高意向触发销售通知并立即转人工，停止普通 AI 回复；当前客户单条语音/图片失败完成
+  事实结算后同样直接转人工，不向客户发送重发/改发文字提示。模型首次失败进入 L2 恢复；
+  证据不足时回答可确认部分或说明需要确认。硬风险或恢复失败且影响最新尾部时执行
+  `reply_then_handoff/handoff`。
 
 ### 4.3 等待用户回复
 
@@ -679,15 +680,15 @@ Worker上报sent_ack
 触发转人工：
 
 ```text
-客户明确要求人工、需要权威审批/承诺、Guard安全改写仍失败、
-或最新待回复尾部经L2恢复仍不完整 -> waiting_sales_reply
+客户明确要求人工、高意向、当前客户单条语音/图片失败、需要权威审批/承诺、
+Guard安全改写仍失败、或最新待回复尾部经L2恢复仍不完整 -> waiting_sales_reply
 ```
 
 转人工后：
 
 - AI不再自由回答需要人工决定的事实；允许在进入接管时通过 `reply_then_handoff`
-  发送一次 Guard 通过的边界说明。单纯高意向、图片低置信、车源证据不足或首次模型
-  技术失败不再直接触发永久接管。
+  发送一次 Guard 通过的边界说明。高意向和当前客户单条语音/图片失败直接 handoff，
+  不生成自动回复；车源证据不足或首次模型技术失败不直接触发永久接管。
 - Worker继续监听该绑定会话，识别销售手机端同步到桌面端的人工回复。
 - 销售回复后，状态进入 `sales_replied_waiting_user`。
 
@@ -1573,8 +1574,8 @@ sent_ack用于确认Worker已发送。
 
 1. `failed` 只表示有证据证明目标动作没有发生，或者动作发生后目标结果明确失败。
 2. 物理触发已经发生但无法确认结果时，发送必须返回 `unknown`；语音和图片必须形成带
-   `*_RESULT_UNKNOWN` 错误码的 failed 事实，不得自动重复昂贵动作。媒体失败按 L1/L2
-   及实际影响范围处理，不得把单条未知结果无条件升级为整会话 Brain 门禁。
+   `*_RESULT_UNKNOWN` 错误码的 failed 事实，不得自动重复昂贵动作。当前 customer 媒体
+   失败按 L1 转人工，self 媒体失败按 L0 告警，身份或暂态技术异常按 L2 恢复。
 3. `unknown` 是正式终态，不能转换成“没有发送”，不得自动补发，也不建立人工确认发送结果的流程；原自动发送动作终结，会话转为销售正常接管。
 4. 不可逆动作前先持久化 `not_attempted` 意图；紧邻物理点击之前必须原子落盘
    `trigger_attempted`，落盘成功后才允许点击；取得可靠证据后再落盘
@@ -2238,7 +2239,7 @@ Worker 必须保留 Outbox 并执行身份刷新重传。在冲突解决前不�
 | 语音转写文本缺少独立头像 | 只能继承已确认的父语音 `parent_voice` 角色；无法绑定父语音则不入库。 |
 | 普通文字/语音发送方无法判断 | 不猜角色、不入库；按 L2 `recoverable_hold` 自动重建一次。只在仍影响最新待回复尾部时停止该会话 AI，旧区间歧义不连坐最新完整消息。 |
 | 消息顺序异常 | 不得假定物理处理顺序等于对话顺序。V16.104 已按最终权威画面建立统一 `screen_order`，并完成 Windows 实机回归。 |
-| 图片气泡 | 初次观察角色不可信时尚不能建立业务图片身份，形成可自动恢复的 `MESSAGE_IDENTITY_UNCONFIRMED` 帧级 hold，零点击且不得持久化 `ignored` Ledger；角色可靠后才建立稳定身份并判定 `NEW_IMAGE`。`OLD/OUTBOX` 不重复复制或调用模型；动作前出屏图片本轮移除；已有稳定身份且仍可见但复核失败时形成 failed 事实，并按 L1 单条降级而不是默认永久 handoff。 |
+| 图片气泡 | 初次观察角色不可信时尚不能建立业务图片身份，形成可自动恢复的 `MESSAGE_IDENTITY_UNCONFIRMED` 帧级 hold，零点击且不得持久化 `ignored` Ledger；角色可靠后才建立稳定身份并判定 `NEW_IMAGE`。`OLD/OUTBOX` 不重复复制或调用模型；动作前出屏图片本轮移除；已有稳定身份且仍可见但复核失败时形成 failed 事实；customer 失败按 L1 转人工，self 失败只记 warning。 |
 
 #### 6.0.3.5 逐条结果单调合并
 
@@ -2264,11 +2265,10 @@ ignored集合只记录明确忽略原因；
 
 这里的“新槽位”指已经具有可信角色和稳定 `source_message_key` 的业务消息。初次图片观察尚无法确认角色时，不得为了满足终态计数而伪造 `ignored`；它属于本帧身份门禁，等待后续自然画面重新观察。
 
-成功事实正常进入 Outbox 和后端入库。failed 语音或图片同样必须形成逐条终态，但
-“事实失败”不再等同于“整个会话永久转人工”。后端必须按下一节的影响范围判断：
-`self` 失败媒体不阻断客户回复；发生在 reply-safe boundary 之前的旧失败不阻断；客户
-最新尾部只有单条媒体失败时优先生成不包含业务事实的澄清回复；只有失败导致最新待回复
-尾部无法安全理解且自动恢复或澄清均不可用时才创建 handoff。失败不能伪装成
+成功事实正常进入 Outbox 和后端入库。failed 语音或图片同样必须形成逐条终态，并按
+角色和时点处理：`self` 失败媒体不阻断客户回复；发生在 reply-safe boundary 之前且已
+结算的旧失败不重新触发接管；当前 `customer` 单条语音/图片失败在事实结算后直接创建
+handoff 并进入 `waiting_sales_reply`，不生成请求重发或改发文字的自动回复。失败不能伪装成
 `no_action`。`partial` 只是“同一 Flow 同时包含成功和失败”的汇总视图，不是新的单条
 消息状态，也不创建长期 pending 任务。
 
@@ -2286,10 +2286,10 @@ ignored集合只记录明确忽略原因；
 
 | 等级 | 典型状态 | 固定处理 |
 |---|---|---|
-| L0：不阻断 AI | reply-safe boundary 之前的旧缺口；已被服务端确认的旧消息；`self` 侧媒体失败；高意向但没有硬风险；普通寒暄/澄清问题没有 RAG 证据 | 记录 warning 或异步通知销售，继续使用完整 `reply_safe_suffix` 进入 Brain。高意向和“需要销售跟进”不得自动等同于停止 AI。 |
-| L1：单条降级 | `C2_VOICE_TRANSCRIBE_FAILED/EMPTY/CLICK_FAILED/RESULT_UNKNOWN`；customer 图片理解、菜单或剪贴板失败；同批其他文字/媒体完整 | 失败事实照常入库，不重复媒体动作。若最新客户意图可由完整文字回答，则回答完整部分并说明未识别媒体；若最新内容只有失败媒体，则发送经 Guard 固定批准的澄清话术，请客户改发文字或重发，不默认 handoff。 |
+| L0：不阻断 AI | reply-safe boundary 之前的旧缺口；已被服务端确认的旧消息；`self` 侧媒体失败；普通寒暄/澄清问题没有 RAG 证据 | 记录 warning，继续使用完整 `reply_safe_suffix` 进入 Brain。 |
+| L1：单条媒体人工接管 | 当前客户消息命中 `C2_VOICE_TRANSCRIBE_FAILED/EMPTY/CLICK_FAILED/RESULT_UNKNOWN`，或 customer 图片理解、菜单、剪贴板失败 | 失败事实照常入库且不重复媒体动作；随后直接创建 handoff、通知销售并进入 `waiting_sales_reply`。不得调用 Brain 回答同批文字，也不得生成“请重发/改发文字”等澄清回复。 |
 | L2：可自动恢复暂停 | `MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS`、`C2_MESSAGE_HISTORY_GAP`、`MESSAGE_IDENTITY_UNCONFIRMED`、`MESSAGE_LEGACY_IDENTITY_TRANSITION_AMBIGUOUS`；回复上下文、授权、续行批次、任务租约或 AI Provider 的暂时技术失败 | 第一次只创建 `recoverable_hold`，不得创建长期 handoff。先用后端检查点和数据库事实纯数据重建；仍未恢复时最多再做一次当前会话稳定重读。120 秒内或两次证据恢复内解决则自动关闭 hold 并继续 Brain；只有仍影响最新待回复尾部时才 handoff。 |
-| L3：硬停止或人工接管 | 明确 `hard_opt_out`、会话关闭/拒绝/黑名单、人工关闭 AI、销售已实际接管、目标客户或 private 会话无法确认、发送结果可能已触发但未知、违法/支付/合同/审批/赔付等必须由权威人员决定且无法形成安全边界回复 | 禁止自由回答。除拒收、关闭、目标不明和发送结果未知等必须静默的场景外，优先使用 `reply_then_handoff`：先发送 Guard 通过的边界说明，再创建人工接管；禁止编造价格、库存、审批或承诺。 |
+| L3：硬停止或人工接管 | 高意向；明确 `hard_opt_out`、会话关闭/拒绝/黑名单、人工关闭 AI、销售已实际接管、目标客户或 private 会话无法确认、发送结果可能已触发但未知、违法/支付/合同/审批/赔付等必须由权威人员决定且无法形成安全边界回复 | 禁止自由回答。高意向直接 handoff 并通知销售；除拒收、关闭、目标不明和发送结果未知等必须静默的场景外，其他业务硬风险优先使用 `reply_then_handoff`：先发送 Guard 通过的边界说明，再创建人工接管；禁止编造价格、库存、审批或承诺。 |
 
 两个身份门禁的固定恢复规则：
 
@@ -2359,9 +2359,9 @@ Outbox 保存已经完成昂贵处理后的完整结构化 V3 JSON，不保存�
 消息级失败不能升级成请求级拒绝。有效会话中的语音或图片失败必须作为
 `item_state=failed + error_code` 通过同一个 `messages/ingest` 入库，后端仍返回
 `ingested`；附加截图、诊断或非核心证据异常只返回 warning。`self` failed 媒体只作
-上下文 warning；customer failed 媒体按 L1 单条降级，由 Brain 读取失败类型和最终顺序，
-优先回答同批完整文字或发送“请改发文字/重发图片”的安全澄清回复。只有该失败切断最新
-待回复尾部且无法形成安全澄清时，才让销售接手会话。
+上下文 warning；当前 customer failed 媒体按 L1 单条媒体人工接管处理：事实完成逐条
+结算后直接创建 handoff、通知销售并进入 `waiting_sales_reply`，不调用 Brain 回答同批
+文字，也不发送“请改发文字/重发图片”等自动澄清回复。
 
 兼容字段 `retryable` 不能单独决定 Worker 行为；正式响应必须提供 `recovery_action`。没有该字段时采取最保守策略：不操作微信、不调用 Brain、不发送，冻结原事实并进入 `capability_paused` 自动探测。
 
@@ -2736,23 +2736,23 @@ Worker 上报语音消息时：
 | OmniAuto 状态 | Worker处理 | 服务端处理 |
 |---|---|---|
 | `voice_transcribe_completed` | 继续调用 `messages`，把转写文本入库。 | 按正常 `message_event` 处理；客户语音可触发 C3。 |
-| `voice_transcribe_partial` | 同一 flow 内存在成功和失败；所有冻结的 `canonical_voice_id` 必须逐项输出 completed/failed，第一条失败不得阻止后续语音继续。 | 成功和失败事实均可入库；按 L1/L2 判断最新回复尾部，不因汇总状态直接永久 handoff。 |
-| `voice_transcribe_no_new_text` | 已尝试但没有确认出对应文字，将该 `canonical_voice_id` 写为 failed；恢复稳定画面后继续处理其他语音。 | 不把时长或疑似文本当正文；若它是最新唯一客户内容，生成安全澄清回复，不默认永久 handoff。 |
+| `voice_transcribe_partial` | 同一 flow 内存在成功和失败；所有冻结的 `canonical_voice_id` 必须逐项输出 completed/failed，第一条失败不得阻止后续语音继续。 | 成功和失败事实均先逐条入库；存在 customer failed 项时，全部已发现媒体结算后按 L1 转人工；self failed 项只告警。 |
+| `voice_transcribe_no_new_text` | 已尝试但没有确认出对应文字，将该 `canonical_voice_id` 写为 failed；恢复稳定画面后继续处理其他语音。 | 不把时长或疑似文本当正文；customer failed 项完成结算后按 L1 转人工，不生成自动澄清回复。 |
 | `voice_transcribe_no_visible_voice` | 继续调用 `messages`；说明当前可见区没有待转写语音。 | 不作为错误。 |
 | `voice_transcribe_target_not_found` | 目标会话或目标语音未能确认，零点击并结束该项；不能与 `no_visible_voice` 混为一谈。 | 作为 L2 可恢复暂停；不直接创建长期 handoff，不影响其他短码。 |
 | `target_not_confirmed_for_voice_transcribe` | 停止读取该目标，不调用后续微信动作。 | 记录读取失败并等待准入证据改善；不创建客户 handoff。 |
-| `voice_transcribe_click_failed` | 将当前项写为 failed，恢复稳定画面后继续下一条；不得退出并遗留其他 `not_attempted`。 | 记录 `VOICE_TRANSCRIBE_CLICK_FAILED`；按 L1 生成澄清或回答同批完整文字。 |
+| `voice_transcribe_click_failed` | 将当前项写为 failed，恢复稳定画面后继续下一条；不得退出并遗留其他 `not_attempted`。 | 记录 `VOICE_TRANSCRIBE_CLICK_FAILED`；客户消息完成结算后按 L1 转人工，销售消息只记 warning。 |
 | `voice_transcribe_lock_timeout` | 本轮跳过，等待下轮。 | 记录 `VOICE_TRANSCRIBE_LOCK_TIMEOUT`。 |
-| `voice_transcription_exception` | 当前项写为 failed；`finally` 结算全部已冻结项。 | 记录 `VOICE_TRANSCRIBE_FAILED`；不得直接等同永久 handoff，按 L1/L2 处理。 |
+| `voice_transcription_exception` | 当前项写为 failed；`finally` 结算全部已冻结项。 | 记录 `VOICE_TRANSCRIBE_FAILED`；客户消息完成结算后按 L1 转人工；仅身份或暂态技术异常进入 L2。 |
 
 语音转写失败时，不能把“语音时长 5 秒”当成客户内容，也不能因为没有文本就认为客户沉默。V16.98 的 `item_state/flow_state` 是单次 flow 的结果合同，不是新增数据库状态机，也不要求拆出新的语音任务。默认规则：
 
 ```text
 目标客户已确认，且客户语音可见但转写失败
 -> failed事实入库并记录error_code
--> 同批存在完整客户文字：Brain回答完整文字并说明语音未识别
--> 最新内容只有失败语音：发送Guard批准的“没听清，请改发文字”澄清回复
--> 只有无法形成安全澄清或同时命中L3业务风险：reply_then_handoff或handoff
+-> 不调用Brain回答同批文字
+-> 不发送“没听清/请改发文字/请重发”等自动澄清回复
+-> 创建handoff、通知销售并进入waiting_sales_reply
 ```
 
 如果目标客户未确认，例如 `target_not_confirmed_for_voice_transcribe`，不得改变会话主状态，只记录读取失败证据，避免把别人的会话误判为当前客户。
@@ -2762,7 +2762,7 @@ Worker 上报语音消息时：
 - `sender_role=customer` 且 `message_type=voice` 且 `content` 非空：等同客户新消息，可触发 C3。
 - `sender_role=self` 且 `message_type=voice`：等同销售侧人工回复，不触发 AI，并按销售接管/AI 暂停处理。
 - `sender_role=unknown`：不猜角色，进入 L2 可恢复暂停；只在影响最新待回复尾部且恢复失败后 handoff。
-- `sender_role=customer` 且失败事实 `content` 为空：允许 Brain/固定模板生成不包含业务事实的澄清回复；禁止把空内容当正常问题作答。
+- `sender_role=customer` 且失败事实 `content` 为空：禁止把空内容当正常问题作答；完成事实结算后直接转人工，不生成自动澄清回复。
 
 实机验证要求：
 
@@ -2770,7 +2770,7 @@ Worker 上报语音消息时：
 1. 客户发一条语音，Worker 能点击微信语音转文字并入库为 message_type=voice。
 2. 客户连续发文字+语音，服务端能按同一 conversation_id 合并上下文。
 3. 销售手机端发语音，桌面同步后不得触发 AI 自动回复。
-4. 语音转写失败时不重复点击；失败项终态入库，能够安全澄清时由 AI 自动请客户改发文字，不能安全澄清时才接管。
+4. 客户语音转写失败时不重复点击；失败项终态入库后直接转人工，不生成请客户改发文字或重发的自动回复。
 5. Worker 重启后同一条语音转写文本不重复入库、不重复触发 C3。
 6. add_friend / chat_reply / pre_send_refresh 与 voice-transcribe 共享本地 UI 锁，不允许并行操作微信。
 7. 同屏两个真实语音、同一气泡同时出现 structural/stable alias、第一条失败时，待处理对象必须恰好为两个，第二条继续执行，最终两项均为 completed/failed 且零 `not_attempted` 残留。
@@ -3318,13 +3318,13 @@ allow_listening=true`。迁移脚本必须输出每类数量和记录 ID，支�
 | `MESSAGE_INGEST_DUPLICATED` | 去重键已存在且角色、类型、规范化正文和媒体稳定锚点全部相同。 | 返回 duplicated，不算失败。 |
 | `MESSAGE_IDENTITY_COLLISION` | 去重键已存在，但角色、类型、正文或媒体稳定锚点至少一项不同。 | 返回 409；保留原 Outbox，刷新服务端身份检查点，重新分配身份后重传，不重新读取微信。 |
 | `C2_VISION_NOT_READY` | 新 C2 UI 流程启动前发现真实 Vision Provider 的 API Key、模型或地址缺失。 | 不开始新扫描、不打开会话；已有回执、Outbox 和 `settle_without_ui` 仍先恢复。 |
-| `C2_IMAGE_SLOT_RECONFIRM_FAILED` | 图片仍在最终当前屏，但动作前无法用稳定身份唯一确认原槽位。 | 不右键、不调用 Vision；以 failed 图片事实入库，不跨轮重复动作。按 L1 回答同批完整文字或请求客户重发；仅在无法安全澄清且影响最新待回复尾部时停止 AI。 |
+| `C2_IMAGE_SLOT_RECONFIRM_FAILED` | 图片仍在最终当前屏，但动作前无法用稳定身份唯一确认原槽位。 | 不右键、不调用 Vision；以 failed 图片事实入库，不跨轮重复动作。customer 失败完成结算后按 L1 直接转人工；self 失败只记 warning。 |
 | `C2_IMAGE_MENU_OPERATION_FAILED` | 图片槽位已确认且右键已执行，但真实弹窗边界未确认、只有公共项、证据不足、多类特征冲突，或无法安全点击已确认的图片菜单项。 | 关闭菜单，不读取剪贴板、不调用 Vision，固定 `action_phase=not_attempted`；`reason_detail` 只允许 `menu_panel_unconfirmed / menu_evidence_incomplete / menu_evidence_conflict / menu_copy_item_unsafe`。以 failed 图片事实入库并按 sender_role 处理状态。 |
 | `C2_IMAGE_SOURCE_INVALID` | 图片候选的完整菜单被精确确认为文字/语音，或已点击复制但剪贴板经有界检查稳定确认不是可解码位图。 | `reason_detail` 只允许 `text_context_menu_rejected / voice_context_menu_rejected / clipboard_current_content_not_bitmap`。前两者固定 `action_phase=not_attempted`、零剪贴板读取/零 Vision；后者固定 `action_phase=trigger_attempted`。均立即以完整 failed 事实进入现有 Outbox；后端逐 source key 确认后按 sender_role、最终画面顺序和授权范围决定状态，释放全局门禁并继续其他短码。 |
-| `VOICE_TRANSCRIBE_FAILED` | 语音转文字整体失败，无法确认有效转写文本。 | 记录 failed 事实；按 L1 回答同批完整文字或生成澄清回复，不默认永久 handoff。 |
-| `VOICE_TRANSCRIBE_CLICK_FAILED` | OmniAuto 找到疑似语音转文字入口，但点击或转写动作失败。 | 记录截图和 OCR 证据，不重复点击；按 L1 生成澄清或回答完整文字。 |
+| `VOICE_TRANSCRIBE_FAILED` | 语音转文字整体失败，无法确认有效转写文本。 | 记录 failed 事实；customer 失败完成结算后按 L1 直接转人工，不生成自动澄清回复。 |
+| `VOICE_TRANSCRIBE_CLICK_FAILED` | OmniAuto 找到疑似语音转文字入口，但点击或转写动作失败。 | 记录截图和 OCR 证据，不重复点击；customer 失败完成结算后按 L1 直接转人工。 |
 | `VOICE_TRANSCRIBE_LOCK_TIMEOUT` | 语音转写等待 Local WeChat UI Lock 超时。 | 本轮跳过，保持会话原状态，后续扫描可再尝试。 |
-| `VOICE_TRANSCRIBE_EMPTY` | 转写动作完成但未产生新的可用文字。 | 不把语音时长当正文；允许发送“请改发文字”的安全澄清回复。 |
+| `VOICE_TRANSCRIBE_EMPTY` | 转写动作完成但未产生新的可用文字。 | 不把语音时长当正文；customer 失败完成结算后直接转人工，不发送“请改发文字”等自动澄清回复。 |
 | `VOICE_MESSAGE_UNCONFIRMED` | OCR 只识别到语音形态或时长，未确认发送方/父语音。 | 先进入 L2 自动重建；恢复前不猜内容，恢复失败且影响最新尾部才 handoff。 |
 | `TARGET_NOT_CONFIRMED_FOR_VOICE_TRANSCRIBE` | 定向读取时未能通过短码/会话标题确认目标客户。 | 禁止点击和读取，避免读错人。 |
 | `WECHAT_WINDOW_NOT_READY` | 微信窗口不可控。 | Worker 状态异常，暂停读取。 |
@@ -3345,7 +3345,7 @@ allow_listening=true`。迁移脚本必须输出每类数量和记录 ID，支�
   completed/failed，不允许图片 pending/deferred；初次角色不可信走帧级身份门禁，
   不写 ignored Ledger。
 - 图片动作前重建最终画面后已经出屏的图片本轮不处理；仍在屏幕但无法唯一确认时形成 failed 事实，不允许反复右键或跨轮 Vision。
-- 语音只识别到时长或转写失败时不得把时长当正文，但允许按 L1 触发安全澄清；目标客户未确认、UI 锁超时或微信窗口不可控时进入 L2，恢复前不回复且不直接永久 handoff。
+- 语音只识别到时长或转写失败时不得把时长当正文；customer failed 项完成结算后按 L1 直接转人工且不生成自动澄清，目标客户未确认、UI 锁超时或微信窗口不可控时进入 L2，恢复前不回复且不直接永久 handoff。
 - 同一消息在 Worker 重启、断网恢复、重复扫描时不会重复入库和重复触发后续动作。
 - 删除或损坏 Worker 本地身份状态后，Worker 必须先用服务端身份检查点恢复编号下限和最近身份；新消息不得从 1 重新编号，也不得撞上历史消息。
 - 相同去重键且角色、类型、正文、媒体锚点都相同才返回 duplicated；故意构造相同键但不同角色或正文时必须返回 `MESSAGE_IDENTITY_COLLISION`，数据库并发冲突补偿分支结果相同。
@@ -3941,8 +3941,9 @@ OmniAuto AI Engine 在服务端通过 Adapter 接入，不允许运行 OmniAuto 
    错误排除。
 
 `structural_image_candidate / explained_voice_region` 是 OmniAuto 内部仲裁对象，不新增
-后端接口字段，因此本次按现方案整改可保持机器合同 `3.12.6`。若实现确需把它们暴露到
-Worker/后端共享 schema，必须先升级机器合同 revision，再同步三层合同测试。
+后端接口字段。本轮因 L0-L3 门禁动作、历史 handoff 自动恢复及高意向动作改变了跨进程
+机器语义，机器合同已独立升到 `3.12.7`；若未来暴露上述内部仲裁字段，仍须再次升级
+revision 并同步三层合同测试。
 
 ### 8.2 单会话图片处理流程
 
@@ -4033,17 +4034,17 @@ Vision 正式凭据交付规则：
 | 图片候选右键后确认为图片菜单 | 必须同时精确出现“复制”和至少一项“编辑/用窗口打开/另存为/打开方式”，才允许点击复制并继续剪贴板、指纹及 Vision 证明链。 |
 | 右键菜单边界未确认、只有公共项、证据不足、分类冲突或复制项坐标不安全 | “复制/转发/收藏/多选/提醒/引用/删除”不能单独证明类型；复制项边界和点击坐标必须完整落在同一真实弹窗内。任一条件不满足都关闭菜单，以 `error_code=C2_IMAGE_MENU_OPERATION_FAILED + reason_detail=menu_panel_unconfirmed/menu_evidence_incomplete/menu_evidence_conflict/menu_copy_item_unsafe + action_phase=not_attempted` failed 收口，不点击任何菜单项。 |
 | 已点复制但剪贴板稳定确认不是位图 | 停止剪贴板轮询且不调用 Vision；以 `error_code=C2_IMAGE_SOURCE_INVALID + reason_detail=clipboard_current_content_not_bitmap + action_phase=trigger_attempted` failed 图片事实立即进入现有 Outbox，不得等待图片后最终画面收敛才上报。 |
-| 上述明确 failed 事实已获后端逐 source key 确认 | 本地 ledger/ActionJournal 改为 confirmed 并释放 `C2_IMAGE_FACT_PENDING`。正常 `active_read` 下：customer 失败按 L1 回答同批完整文字或请求重发；self 失败只记 warning；unknown 不建立图片事实并进入 L2 身份恢复。`fact_settlement` 只补录事实，不改变当前状态。完成后 Worker 立即继续下一个短码。 |
+| 上述明确 failed 事实已获后端逐 source key 确认 | 本地 ledger/ActionJournal 改为 confirmed 并释放 `C2_IMAGE_FACT_PENDING`。正常 `active_read` 下：customer 失败按 L1 直接转人工且不生成自动回复；self 失败只记 warning；unknown 不建立图片事实并进入 L2 身份恢复。`fact_settlement` 只补录事实，不改变当前状态。完成后 Worker 立即继续下一个短码。 |
 | 展开后的已转写语音与结构图片候选重叠 | 先以语音条、转写正文、父子关系和角色/空间证据形成 `explained_voice_region` 并否决图片候选；不得再次右键、复制或调用 Vision，不得删除原语音/正文。 |
 | 语音类型证据已成立，但动作成功、父锚点或 alias 证据不完整 | 保持语音类型，按语音自身失败/恢复规则结算；不得降级成图片。业务结算证据缺失不能反向推翻已经成立的消息类型。 |
 | 上述事实因后端暂时无法确认 | 保留 Outbox 并按退避重传，不重复右键、复制或 Vision；这是可观测的临时事务等待，不得因确定性代码错误永久卡住。 |
 | 图片在动作前已被顶出最终当前屏 | 重建 final_read 后本轮不建立该图片槽位，不上滚、不追踪、不产生失败事实或 Brain 门禁；后续自然可见时重新观察。 |
 | 图片仍在最终当前屏但无法唯一确认原稳定身份 | `message_type=image + item_state=failed + content=null + error_code=C2_IMAGE_SLOT_RECONFIRM_FAILED` 入库；不右键、不调用 Vision、不跨轮重试。 |
 | 初次图片观察无法确认同行头像角色 | 尚未建立业务图片身份；返回 L2 帧级 `MESSAGE_IDENTITY_UNCONFIRMED`，零点击、零 Vision、零 terminal ledger；先自动恢复，旧区间问题不阻断最新完整尾部。 |
-| customer 图片失败 | 同批已确认文字和语音继续入库；按 L1 回答完整文字或发送“图片没看清，请重发/描述”的安全澄清。只有无法形成安全澄清且影响最新待回复尾部时才 handoff。 |
+| customer 图片失败 | 同批已确认文字和语音继续入库；失败事实完成逐 source key 结算后按 L1 直接 handoff 并进入 `waiting_sales_reply`，不调用 Brain 回答同批文字，也不发送“请重发/描述”等自动澄清。 |
 | self 图片失败 | 作为销售侧上下文 warning 入库，不阻断最新客户消息进入 Brain。 |
 | Vision 配置缺失 | 新 C2 UI 流程启动前 `vision_not_ready`；不得开始扫描或打开会话，但不阻断已有回执、Outbox 和无 UI 事实结算。该状态不是图片消息状态，也不使用后端 `capability_paused`。 |
-| 同屏语音失败 | 失败语音事实必须结算，但不阻止身份可靠的新图片继续处理；同批完整文字可进入 Brain，最新只有失败语音时生成安全澄清。身份/历史异常仅按其实际影响范围进入 L2。 |
+| 同屏语音失败 | 失败语音事实必须结算，但不阻止身份可靠的新图片继续完成媒体处理；若失败语音属于 customer，全部已发现媒体结算后直接转人工，不让同批文字进入 Brain，也不生成自动澄清。身份/历史异常仅按其实际影响范围进入 L2。 |
 | 网络或后端未确认 | 完整 JSON 进入 Outbox；下轮只重传，不重复图片 RPA 或 Vision。 |
 | 后端返回 duplicated | 不新增数据库记录，但用服务端原样返回的 `source_message_key` 确认本地 ledger，避免下轮重复处理。 |
 | 图片身份不确定 | 不复制、不调用 Vision；保存 L2 门禁错误和影响范围。只暂停受影响项或最新尾部，旧区间歧义不得阻断边界之后的完整消息进入 Brain。 |
@@ -4110,8 +4111,8 @@ OmniAuto 通用上游固定提交：35b0eee13c6423d56a0f15736f96a422e10d8d1c
 Worker运行代码父基线：4352f5e35d69eeea5898a57eb39d00e07372c403
 内嵌OmniAuto基础：a563e6688c47a8922510794101967823fe1389d7（包含35b0eee）
 活动选择性来源：91688de9047d5973cee9b18de00ca2f6e7772a86
-机器合同revision：3.12.6
-发布状态：9872dad快速UAT发现的语音唯一身份、逐条结算顺序和统一读取冷却P0已在隔离候选实现并通过自动门禁；架构复审前禁止生成替代ZIP，正式EXE继续禁止
+机器合同revision：3.12.7
+发布状态：9872dad快速UAT发现的语音唯一身份、逐条结算顺序、统一读取冷却及本轮媒体/高意向门禁已在隔离候选实现；完整自动门禁和架构复审前禁止生成替代ZIP，正式EXE继续禁止
 ```
 
 当前主链完整复用：
@@ -4294,7 +4295,7 @@ V3 消息并正常应用角色状态机；只有 `fact_settlement` 时才固定�
     事实；不百次级轮询、不重新操作微信、不重复 Vision。
 15. 明确 failed 事实必须在不依赖新 UI 动作的情况下获得后端逐 source key 确认；
     正常 `active_read` 下按消息角色、最终顺序和 reply-safe suffix 处理：客户失败媒体
-    优先澄清或回答同批完整文字，self 失败只作 warning，角色未知进入 L2 恢复 hold。
+    直接 handoff 且不生成自动回复，self 失败只作 warning，角色未知进入 L2 恢复 hold。
     `fact_settlement` 只补录事实、不改变状态。以上路径完成后，同一 Worker 均可继续
     处理其他短码。
 16. 从 `v16.145.0` 留下的同类 waiting ledger/ActionJournal 必须可由新版本原样重传并
@@ -4319,8 +4320,9 @@ V3 消息并正常应用角色状态机；只有 `fact_settlement` 时才固定�
 23. `MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS/C2_MESSAGE_HISTORY_GAP` 必须覆盖四种结果：
     后端检查点自动恢复、旧区间不阻断最新尾部、一次重读后恢复、两次/120 秒仍影响最新
     尾部才 handoff；历史 L2 handoff 在干净权威读取后自动关闭。
-24. customer 语音/图片单条失败但同批文字完整时必须产生安全回复；最新只有失败媒体时
-    必须产生 Guard 批准的澄清回复；self 媒体失败不得阻断。硬风险仍必须阻断自由回答。
+24. customer 语音/图片单条失败时，无论同批文字是否完整，都必须在事实结算后直接
+    handoff 且不得生成请求重发/改发文字的自动回复；self 媒体失败不得阻断。高意向和
+    其他硬风险仍必须阻断自由回答。
 25. 首屏、定向和恢复队列必须共用冷却准入：读取成功后 30 秒扫描不得再次点击；有新
     事实时后端也保留至少 2 分钟 `next_read_due_at`，只有完成时间之后的新未读或正式
     continuation token 可提前唤醒。
@@ -4481,7 +4483,7 @@ Product Master、KnowledgeRuntime、RAG 与 Guard，但车金后台仍是唯一�
 | 黑名单 | 第一期支持，用于拒绝、投诉、无效、不再跟进客户。 |
 | 白名单 | 预留或仅支持测试手机号，不能绕过高风险接管。 |
 | 关键词拦截 | 关键词只触发风险分类，不直接决定静默或永久 handoff。“别联系/不要再发”等明确拒收执行 hard opt-out；投诉、报警、律师、退款、赔偿、诈骗进入边界回复 + 人工接管，原候选事实承诺不得发送。 |
-| 人工接管关键词 | 底价、事故、泡水、贷款、定金、合同、地址、现在定等只提升检索和 Guard 强度。已有权威公开证据时 AI 可按允许字段回答；流程咨询可继续澄清；只有最低价承诺、车况绝对保证、审批结果、合同责任、支付/退款决定等必须由人工确认。高意向本身只异步通知销售，不停止 AI。 |
+| 人工接管关键词 | 高意向固定通知销售并转人工，停止普通 AI 回复。底价、事故、泡水、贷款、定金、合同、地址、现在定等非高意向词先提升检索和 Guard 强度；已有权威公开证据时 AI 可按允许字段回答，流程咨询可继续澄清；最低价承诺、车况绝对保证、审批结果、合同责任、支付/退款决定等必须由人工确认。 |
 | 随机发送延迟 | 配置化，默认待定；仅体验优化，不承诺规避微信风控。 |
 | 风险提示检测 | 操作频繁、环境异常、添加受限等出现后暂停任务并上报。 |
 | 单会话突发限频 | 配置化，默认待定。 |
