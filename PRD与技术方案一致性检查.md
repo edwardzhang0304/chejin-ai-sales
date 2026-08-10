@@ -11,6 +11,7 @@
 - 接口合同：`deliverables/C2-C3_OmniAuto_Worker_后端接口合同_v0.1.1_2026-08-05.md`
 - C2 实机报告：`deliverables/C2_Windows实机验收报告_2026-08-03.md`
 - 车金本轮快速 UAT 实际基线：`9872dad3c469b4d9c1cc328060f04fb1e0c3e139 / v16.145.0`；此前整改父基线：`3f65660fb712a14527ea1307715a8c2dacb9c8b1`
+- 车金当前未发布运行整改提交：`53e979d89316344c282245c62f6349586de16eee`
 - 独立 OmniAuto 当前候选：`91688de9047d5973cee9b18de00ca2f6e7772a86`；内嵌基础仍为包含 `35b0eee` 的 `a563e668…`
 - 正式回滚证据：`v16.130.0 / 8ee53e1`
 
