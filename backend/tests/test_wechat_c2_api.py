@@ -1,5 +1,6 @@
 import hashlib
 import json
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
@@ -587,6 +588,7 @@ def _seed_open_handoff(
     *,
     paused: bool,
     trigger_source_key: str | None = None,
+    trigger_content: str = "触发人工接管的客户消息",
     reason_code: str | None = None,
 ) -> tuple[str, str]:
     with SessionLocal() as db:
@@ -609,7 +611,7 @@ def _seed_open_handoff(
                 dedupe_key=trigger_source_key,
                 sender_role="customer",
                 message_type="text",
-                content="触发人工接管的客户消息",
+                content=trigger_content,
                 raw_payload={},
                 evidence={},
                 item_state="completed",
@@ -4335,6 +4337,332 @@ def test_clean_authoritative_read_auto_recovers_temporary_c2_handoff(
             ReplyAction.batch_id == recovered_batch.id,
             ReplyAction.status == "queued",
         ).count() == 1
+
+
+@pytest.mark.parametrize(
+    "reason_code",
+    [
+        "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+        "C2_MESSAGE_HISTORY_GAP",
+    ],
+)
+def test_clean_authoritative_reread_replies_to_existing_unreplied_customer_tail_once(
+    reason_code: str,
+):
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead(f"重复消息恢复{reason_code}", "13896676711")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    source_key = f"existing-unreplied-{reason_code}"
+    handoff_batch_id, handoff_id = _seed_open_handoff(
+        binding,
+        paused=False,
+        trigger_source_key=source_key,
+        trigger_content="我想了解这辆车的具体情况",
+        reason_code=reason_code,
+    )
+    payload = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id=f"read-existing-recovery-{reason_code}",
+        messages=[
+            _v3_message(
+                source_key,
+                role="customer",
+                message_type="text",
+                content="我想了解这辆车的具体情况",
+                screen_order=1,
+            )
+        ],
+    )
+    payload["evidence"]["recoverable_handoff_resolution"] = {
+        "version": 1,
+        "status": "latest_unreplied_turn_complete",
+        "reason_codes": [reason_code],
+        "identity_confirmed": True,
+        "history_confirmed": True,
+        "automatic_reread_performed": True,
+    }
+
+    first = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers=_worker_headers(worker),
+    )
+
+    assert first.status_code == 200, first.text
+    first_data = first.json()["data"]
+    assert first_data["ingested_count"] == 0
+    assert first_data["duplicated_count"] == 1
+    assert first_data.get("message_batch") is not None
+
+    # A transport retry of the same authoritative read must reuse the
+    # deterministic recovery work and must never enqueue a second reply.
+    second = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers=_worker_headers(worker),
+    )
+    assert second.status_code == 200, second.text
+
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        handoff = db.get(HandoffEvent, handoff_id)
+        recovery_batches = db.query(MessageBatch).filter(
+            MessageBatch.conversation_id == binding["conversation_id"],
+            MessageBatch.id != handoff_batch_id,
+            MessageBatch.trigger_type == "c2_handoff_recovery",
+        ).all()
+        assert conversation.status == "ai_active"
+        assert handoff.status == "auto_recovered_clean_read"
+        assert handoff.closed_at is not None
+        assert len(recovery_batches) == 1
+        assert recovery_batches[0].message_event_ids == [
+            handoff.trigger_message_event_ids[0]
+        ]
+        assert db.query(ReplyAction).filter(
+            ReplyAction.batch_id == recovery_batches[0].id,
+            ReplyAction.status == "queued",
+        ).count() == 1
+        assert db.query(ReplyAction).filter(
+            ReplyAction.conversation_id == binding["conversation_id"]
+        ).count() == 1
+
+
+def test_postgres_concurrent_recovery_requests_create_one_batch_claim_and_reply():
+    if engine.dialect.name != "postgresql":
+        pytest.skip("PostgreSQL recovery concurrency test")
+
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("并发恢复客户", "13896676713")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    source_key = "postgres-concurrent-recovery-customer"
+    _, handoff_id = _seed_open_handoff(
+        binding,
+        paused=False,
+        trigger_source_key=source_key,
+        trigger_content="我想了解这辆车的具体情况",
+        reason_code="C2_MESSAGE_HISTORY_GAP",
+    )
+    payload = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id="read-postgres-concurrent-recovery",
+        messages=[
+            _v3_message(
+                source_key,
+                role="customer",
+                message_type="text",
+                content="我想了解这辆车的具体情况",
+                screen_order=1,
+            )
+        ],
+    )
+    payload["evidence"]["recoverable_handoff_resolution"] = {
+        "version": 1,
+        "status": "latest_unreplied_turn_complete",
+        "reason_codes": ["C2_MESSAGE_HISTORY_GAP"],
+        "identity_confirmed": True,
+        "history_confirmed": True,
+        "automatic_reread_performed": True,
+    }
+
+    start_barrier = threading.Barrier(2)
+    outcome_lock = threading.Lock()
+    outcomes: list[dict] = []
+    claim_results: list[dict] = []
+
+    def submit_recovery_request(request_no: int) -> None:
+        try:
+            request_payload = WechatMessageIngestRequest.model_validate(payload)
+            start_barrier.wait(timeout=5)
+            with SessionLocal() as request_db:
+                worker_row = request_db.get(Worker, worker["id"])
+                result = wechat_service.ingest_messages(
+                    request_db,
+                    worker_row,
+                    request_payload,
+                )
+                request_db.commit()
+                message_batch = result.get("message_batch") or {}
+                batch_id = str(message_batch.get("batch_id") or "")
+                claim = None
+                if batch_id and str(message_batch.get("batch_status") or "") in {
+                    "collecting",
+                    "generating",
+                }:
+                    claim = c3_service.claim_message_batch_generation(
+                        request_db,
+                        batch_id=batch_id,
+                    )
+                    request_db.commit()
+                    if claim.get("run"):
+                        with SessionLocal() as generation_db:
+                            c3_service.generate_for_batch(
+                                generation_db,
+                                batch_id=batch_id,
+                                expected_generation_attempt=int(
+                                    claim["attempt"]
+                                ),
+                            )
+                            generation_db.commit()
+                with outcome_lock:
+                    outcomes.append(
+                        {
+                            "request_no": request_no,
+                            "result": result,
+                        }
+                    )
+                    if claim is not None:
+                        claim_results.append(claim)
+        except Exception as exc:  # pragma: no cover - asserted below
+            with outcome_lock:
+                outcomes.append(
+                    {
+                        "request_no": request_no,
+                        "exception": exc,
+                    }
+                )
+
+    threads = [
+        threading.Thread(
+            target=submit_recovery_request,
+            args=(request_no,),
+            daemon=True,
+        )
+        for request_no in (1, 2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=15)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(outcomes) == 2
+    assert all("exception" not in outcome for outcome in outcomes), outcomes
+    assert sum(bool(claim.get("run")) for claim in claim_results) == 1
+
+    with SessionLocal() as db:
+        handoff = db.get(HandoffEvent, handoff_id)
+        recovery_batches = db.query(MessageBatch).filter(
+            MessageBatch.conversation_id == binding["conversation_id"],
+            MessageBatch.trigger_type == "c2_handoff_recovery",
+        ).all()
+        assert handoff.status == "auto_recovered_clean_read"
+        assert handoff.closed_at is not None
+        assert len(recovery_batches) == 1
+        assert recovery_batches[0].generation_attempt_count == 1
+        assert db.query(ReplyAction).filter(
+            ReplyAction.batch_id == recovery_batches[0].id,
+            ReplyAction.status == "queued",
+        ).count() == 1
+        assert db.query(ReplyAction).filter(
+            ReplyAction.conversation_id == binding["conversation_id"]
+        ).count() == 1
+
+
+def test_hard_handoff_keeps_gate_when_recoverable_handoff_is_closed():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("硬门禁并存恢复客户", "13896676712")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    source_key = "recoverable-with-hard-gate"
+    _, recoverable_handoff_id = _seed_open_handoff(
+        binding,
+        paused=False,
+        trigger_source_key=source_key,
+        reason_code="C2_MESSAGE_HISTORY_GAP",
+    )
+    with SessionLocal() as db:
+        hard_batch = MessageBatch(
+            conversation_id=binding["conversation_id"],
+            status="handoff_created",
+            active=False,
+            trigger_type="c2_safety_handoff",
+            trigger_key="coexisting-hard-gate",
+            message_event_ids=[],
+            message_count=0,
+            decision="handoff",
+            error_code="HARD_BUSINESS_RISK",
+            suggested_action="handoff",
+        )
+        db.add(hard_batch)
+        db.flush()
+        hard_handoff = HandoffEvent(
+            conversation_id=binding["conversation_id"],
+            batch_id=hard_batch.id,
+            status="created",
+            handoff_reason_code="HARD_BUSINESS_RISK",
+            reason_detail="HARD_BUSINESS_RISK",
+            trigger_message_event_ids=[],
+        )
+        db.add(hard_handoff)
+        db.commit()
+        hard_handoff_id = hard_handoff.id
+
+    payload = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id="read-recoverable-with-hard-gate",
+        messages=[
+            _v3_message(
+                source_key,
+                role="customer",
+                message_type="text",
+                content="触发人工接管的客户消息",
+                screen_order=1,
+            )
+        ],
+    )
+    payload["evidence"]["recoverable_handoff_resolution"] = {
+        "version": 1,
+        "status": "latest_unreplied_turn_complete",
+        "reason_codes": ["C2_MESSAGE_HISTORY_GAP"],
+        "identity_confirmed": True,
+        "history_confirmed": True,
+        "automatic_reread_performed": True,
+    }
+
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers=_worker_headers(worker),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"].get("message_batch") is None
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        recoverable = db.get(HandoffEvent, recoverable_handoff_id)
+        hard = db.get(HandoffEvent, hard_handoff_id)
+        assert recoverable.status == "auto_recovered_clean_read"
+        assert recoverable.closed_at is not None
+        assert hard.status == "created"
+        assert hard.closed_at is None
+        assert conversation.status == "waiting_sales_reply"
+        assert db.query(MessageBatch).filter(
+            MessageBatch.trigger_type == "c2_handoff_recovery"
+        ).count() == 0
+        assert db.query(ReplyAction).count() == 0
 
 
 def test_clean_read_does_not_auto_close_nonrecoverable_handoff():

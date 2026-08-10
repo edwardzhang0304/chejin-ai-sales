@@ -940,6 +940,147 @@ def collect_customer_message_batch(
     return result
 
 
+def collect_recovered_customer_message_batch(
+    db: Session,
+    *,
+    conversation_id: str,
+    message_event_ids: list[str],
+    trace_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Create one deterministic batch for an auto-recovered customer tail.
+
+    A recoverable C2 handoff may already own the customer events that a later
+    authoritative read proves complete.  The normal collector deliberately
+    reuses any batch that already contains an event, so it cannot create the
+    fresh reply work needed after that handoff closes.  Recovery therefore has
+    its own stable trigger, keyed by the ordered database event IDs.
+    """
+
+    unique_ids = list(
+        dict.fromkeys(
+            str(value).strip()
+            for value in message_event_ids
+            if str(value).strip()
+        )
+    )
+    if not unique_ids:
+        return None
+    events = list(
+        db.scalars(
+            select(MessageEvent).where(
+                MessageEvent.conversation_id == conversation_id,
+                MessageEvent.id.in_(unique_ids),
+            )
+        )
+    )
+    events_by_id = {event.id: event for event in events}
+    if set(events_by_id) != set(unique_ids):
+        raise AppError(
+            "C2_RECOVERY_MESSAGE_TAIL_INCOMPLETE",
+            "C2 自动恢复的客户消息尾部与数据库记录不一致",
+            409,
+        )
+    if any(
+        events_by_id[event_id].sender_role != "customer"
+        for event_id in unique_ids
+    ):
+        raise AppError(
+            "C2_RECOVERY_MESSAGE_TAIL_INVALID",
+            "C2 自动恢复批次只能包含客户消息",
+            409,
+        )
+
+    trigger_key = "customer-tail:" + hashlib.sha256(
+        "\n".join(unique_ids).encode("utf-8")
+    ).hexdigest()
+    existing = db.scalar(
+        select(MessageBatch).where(
+            MessageBatch.conversation_id == conversation_id,
+            MessageBatch.trigger_type == "c2_handoff_recovery",
+            MessageBatch.trigger_key == trigger_key,
+            MessageBatch.deleted_at.is_(None),
+        )
+    )
+    if existing:
+        return {
+            "batch_id": existing.id,
+            "batch_status": existing.status,
+            "next_step": (
+                "generate"
+                if existing.status in ACTIVE_BATCH_STATUSES
+                else "use_existing"
+            ),
+            "batch": _batch_to_dict(existing),
+        }
+
+    binding = _binding_or_404(db, conversation_id)
+    conversation = db.scalar(
+        select(Conversation)
+        .where(Conversation.conversation_id == conversation_id)
+        .with_for_update()
+    )
+    if not conversation:
+        conversation = _conversation_for_binding(db, binding)
+        db.flush()
+    _ensure_conversation_eligible(binding, conversation)
+
+    # The conversation lock serializes recovery with other batch creation.
+    # Re-read after acquiring it so simultaneous retries converge on the batch
+    # committed by the first request instead of racing the unique indexes.
+    existing = db.scalar(
+        select(MessageBatch).where(
+            MessageBatch.conversation_id == conversation_id,
+            MessageBatch.trigger_type == "c2_handoff_recovery",
+            MessageBatch.trigger_key == trigger_key,
+            MessageBatch.deleted_at.is_(None),
+        )
+    )
+    if existing:
+        return {
+            "batch_id": existing.id,
+            "batch_status": existing.status,
+            "next_step": (
+                "generate"
+                if existing.status in ACTIVE_BATCH_STATUSES
+                else "use_existing"
+            ),
+            "batch": _batch_to_dict(existing),
+        }
+
+    active = _active_batch(db, conversation_id)
+    if active:
+        active.status = "superseded"
+        active.active = False
+        active.retryable = False
+        active.error_code = "MESSAGE_BATCH_SUPERSEDED"
+        _supersede_open_actions(
+            db,
+            conversation_id,
+            reason="C2 权威重读恢复后，以最新未回复客户尾部重建回复任务",
+        )
+
+    batch = MessageBatch(
+        conversation_id=conversation_id,
+        status="collecting",
+        active=True,
+        trigger_type="c2_handoff_recovery",
+        trigger_key=trigger_key,
+        trigger_message_event_id=unique_ids[-1],
+        message_event_ids=unique_ids,
+        message_count=len(unique_ids),
+        generation_no=1,
+        trace_id=trace_id,
+    )
+    db.add(batch)
+    db.flush()
+    return {
+        "batch_id": batch.id,
+        "batch_status": batch.status,
+        "next_step": "generate",
+        "batch": _batch_to_dict(batch),
+    }
+
+
 def _build_ai_context(db: Session, binding: WechatSessionBinding, conversation: Conversation, batch: MessageBatch) -> dict[str, Any]:
     messages = _customer_messages(db, batch)
     history_rows = list(
