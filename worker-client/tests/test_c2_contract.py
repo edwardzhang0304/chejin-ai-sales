@@ -17,6 +17,7 @@ from chejin_worker_client.c2_contract import (
     image_contract,
     observation_role_is_trusted,
     temporary_capability_gate_codes,
+    validate_slot_ledger_states,
 )
 from chejin_worker_client.api import ApiError
 from chejin_worker_client.c2_outbox_recovery import rebuild_identity_collision
@@ -43,6 +44,58 @@ from chejin_worker_client.wechat_c2 import (
 
 
 class C2ContractTests(unittest.TestCase):
+    def test_slot_ledger_contract_separates_fact_scope_from_delivery(self):
+        schema = c2_contract_v3()["slot_ledger_state_schema"]
+        self.assertEqual(c2_contract_v3()["contract_revision"], "3.12.8")
+        self.assertIn(
+            "slot_ledger_states",
+            c2_contract_v3()["required_evidence_fields"],
+        )
+        self.assertNotIn(
+            "slot_ledger_states",
+            c2_contract_v3()["optional_evidence_fields"],
+        )
+        self.assertEqual(
+            set(schema["required_fields"]),
+            {
+                "observation_id",
+                "screen_order",
+                "order_source",
+                "row_kind",
+                "source_message_key",
+                "origin_read_run_id",
+                "fact_scope",
+                "delivery_state",
+                "item_state",
+            },
+        )
+        states = validate_slot_ledger_states(
+            [
+                {
+                    "observation_id": "image-1",
+                    "screen_order": 1,
+                    "order_source": "visual_top",
+                    "row_kind": "image_bubble",
+                    "source_message_key": "source:image-1",
+                    "origin_read_run_id": "read-current",
+                    "fact_scope": "current_read_run",
+                    "delivery_state": "outbox_waiting",
+                    "item_state": "completed",
+                    "ledger_state": "OUTBOX_WAITING",
+                }
+            ],
+            read_run_id="read-current",
+        )
+        self.assertEqual(states[0]["fact_scope"], "current_read_run")
+        with self.assertRaisesRegex(
+            ValueError,
+            "C2_SLOT_LEDGER_CURRENT_ORIGIN_MISMATCH",
+        ):
+            validate_slot_ledger_states(
+                [{**states[0], "origin_read_run_id": "read-other"}],
+                read_run_id="read-current",
+            )
+
     def test_flow_gate_actions_match_backend_orchestration(self):
         contract = c2_contract_v3()["flow_gate_action_contract"]
         self.assertEqual(

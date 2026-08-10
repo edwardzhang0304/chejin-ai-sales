@@ -160,6 +160,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS c2_message_ledger (
           conversation_id TEXT NOT NULL,
           source_message_key TEXT NOT NULL,
+          origin_read_run_id TEXT NOT NULL,
           dedupe_key TEXT,
           message_type TEXT NOT NULL,
           terminal_state TEXT NOT NULL,
@@ -195,6 +196,7 @@ def init_db(conn: sqlite3.Connection) -> None:
           flow_id TEXT NOT NULL,
           conversation_id TEXT NOT NULL,
           source_message_key TEXT NOT NULL,
+          origin_read_run_id TEXT NOT NULL,
           outcome_json TEXT NOT NULL,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
@@ -215,6 +217,24 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE c2_ingest_outbox "
             "ADD COLUMN next_attempt_at TEXT"
+        )
+    ledger_columns = {
+        str(row["name"])
+        for row in conn.execute("PRAGMA table_info(c2_message_ledger)").fetchall()
+    }
+    if "origin_read_run_id" not in ledger_columns:
+        conn.execute(
+            "ALTER TABLE c2_message_ledger "
+            "ADD COLUMN origin_read_run_id TEXT NOT NULL DEFAULT ''"
+        )
+    action_journal_columns = {
+        str(row["name"])
+        for row in conn.execute("PRAGMA table_info(c2_action_journal)").fetchall()
+    }
+    if "origin_read_run_id" not in action_journal_columns:
+        conn.execute(
+            "ALTER TABLE c2_action_journal "
+            "ADD COLUMN origin_read_run_id TEXT NOT NULL DEFAULT ''"
         )
     conn.execute(
         "UPDATE c2_ingest_outbox "
@@ -515,7 +535,8 @@ def load_c2_ledger_entry(conversation_id: str, source_message_key: str) -> dict[
         row = conn.execute(
             """
             SELECT conversation_id, source_message_key, dedupe_key, message_type,
-                   terminal_state, ingest_state, result_json, first_seen_at, updated_at
+                   origin_read_run_id, terminal_state, ingest_state, result_json,
+                   first_seen_at, updated_at
             FROM c2_message_ledger
             WHERE conversation_id = ? AND source_message_key = ?
             """,
@@ -549,8 +570,8 @@ def list_c2_ledger_entries(
         rows = conn.execute(
             f"""
             SELECT conversation_id, source_message_key, dedupe_key, message_type,
-                   terminal_state, ingest_state, result_json, first_seen_at,
-                   updated_at
+                   origin_read_run_id, terminal_state, ingest_state, result_json,
+                   first_seen_at, updated_at
             FROM c2_message_ledger
             WHERE {' AND '.join(clauses)}
             ORDER BY first_seen_at ASC, source_message_key ASC
@@ -610,12 +631,16 @@ def save_c2_ledger_terminal(
     *,
     conversation_id: str,
     source_message_key: str,
+    origin_read_run_id: str,
     dedupe_key: str | None,
     message_type: str,
     terminal_state: str,
     ingest_state: str,
     result: dict[str, Any] | None = None,
 ) -> None:
+    clean_origin_read_run_id = str(origin_read_run_id or "").strip()
+    if not clean_origin_read_run_id:
+        raise ValueError("C2_LEDGER_ORIGIN_READ_RUN_ID_MISSING")
     if terminal_state not in {"completed", "failed", "ignored"}:
         raise ValueError("C2_LEDGER_TERMINAL_STATE_INVALID")
     if ingest_state not in {
@@ -627,13 +652,33 @@ def save_c2_ledger_terminal(
     _assert_outbox_text_only(result or {}, path="ledger_result")
     now = utc_now_iso()
     with db_connection() as conn:
+        existing_origin = conn.execute(
+            """
+            SELECT origin_read_run_id FROM c2_message_ledger
+            WHERE conversation_id = ? AND source_message_key = ?
+            """,
+            (str(conversation_id), str(source_message_key)),
+        ).fetchone()
+        if (
+            existing_origin
+            and str(existing_origin["origin_read_run_id"] or "").strip()
+            and str(existing_origin["origin_read_run_id"]).strip()
+            != clean_origin_read_run_id
+        ):
+            raise ValueError("C2_LEDGER_ORIGIN_READ_RUN_ID_CONFLICT")
         conn.execute(
             """
             INSERT INTO c2_message_ledger (
-              conversation_id, source_message_key, dedupe_key, message_type,
+              conversation_id, source_message_key, origin_read_run_id,
+              dedupe_key, message_type,
               terminal_state, ingest_state, result_json, first_seen_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(conversation_id, source_message_key) DO UPDATE SET
+              origin_read_run_id = CASE
+                WHEN c2_message_ledger.origin_read_run_id = ''
+                THEN excluded.origin_read_run_id
+                ELSE c2_message_ledger.origin_read_run_id
+              END,
               dedupe_key = COALESCE(excluded.dedupe_key, c2_message_ledger.dedupe_key),
               message_type = excluded.message_type,
               terminal_state = excluded.terminal_state,
@@ -644,6 +689,7 @@ def save_c2_ledger_terminal(
             (
                 str(conversation_id),
                 str(source_message_key),
+                clean_origin_read_run_id,
                 str(dedupe_key or "") or None,
                 str(message_type),
                 terminal_state,
@@ -771,16 +817,22 @@ def checkpoint_c2_action_outcomes(
     *,
     flow_id: str,
     conversation_id: str,
+    origin_read_run_id: str,
     outcomes: list[dict[str, Any]],
 ) -> None:
     """Persist irreversible action facts before the flow can exit or crash."""
 
     normalized_flow_id = str(flow_id or "").strip()
     normalized_conversation_id = str(conversation_id or "").strip()
-    if not normalized_flow_id or not normalized_conversation_id:
+    normalized_origin_read_run_id = str(origin_read_run_id or "").strip()
+    if (
+        not normalized_flow_id
+        or not normalized_conversation_id
+        or not normalized_origin_read_run_id
+    ):
         raise ValueError("C2_ACTION_JOURNAL_IDENTITY_MISSING")
     now = utc_now_iso()
-    rows: list[tuple[str, str, str, str, str, str]] = []
+    rows: list[tuple[str, str, str, str, str, str, str]] = []
     for outcome in outcomes:
         if not isinstance(outcome, dict):
             continue
@@ -799,6 +851,7 @@ def checkpoint_c2_action_outcomes(
                 normalized_flow_id,
                 normalized_conversation_id,
                 source_message_key,
+                normalized_origin_read_run_id,
                 json.dumps(
                     outcome,
                     ensure_ascii=False,
@@ -811,12 +864,28 @@ def checkpoint_c2_action_outcomes(
     if not rows:
         return
     with db_connection() as conn:
+        for row in rows:
+            existing = conn.execute(
+                """
+                SELECT origin_read_run_id FROM c2_action_journal
+                WHERE flow_id = ? AND source_message_key = ?
+                """,
+                (row[0], row[2]),
+            ).fetchone()
+            if (
+                existing
+                and str(existing["origin_read_run_id"] or "").strip()
+                and str(existing["origin_read_run_id"]).strip() != row[3]
+            ):
+                raise ValueError(
+                    "C2_ACTION_JOURNAL_ORIGIN_READ_RUN_ID_CONFLICT"
+                )
         conn.executemany(
             """
             INSERT INTO c2_action_journal (
-              flow_id, conversation_id, source_message_key,
+              flow_id, conversation_id, source_message_key, origin_read_run_id,
               outcome_json, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(flow_id, source_message_key) DO UPDATE SET
               outcome_json = excluded.outcome_json,
               updated_at = excluded.updated_at
@@ -833,7 +902,7 @@ def list_c2_action_journal(
         rows = conn.execute(
             """
             SELECT flow_id, conversation_id, source_message_key,
-                   outcome_json, created_at, updated_at
+                   origin_read_run_id, outcome_json, created_at, updated_at
             FROM c2_action_journal
             WHERE conversation_id = ?
             ORDER BY created_at ASC, source_message_key ASC
@@ -849,6 +918,9 @@ def list_c2_action_journal(
             )
         except json.JSONDecodeError:
             item["outcome"] = {}
+        item["outcome"]["origin_read_run_id"] = str(
+            item.get("origin_read_run_id") or ""
+        )
         results.append(item)
     return results
 
@@ -1014,6 +1086,67 @@ def has_c2_outbox_for_source_keys(
         if expected & actual:
             return True
     return False
+
+
+def load_c2_outbox_origin_read_run_ids(
+    conversation_id: str,
+) -> dict[str, str]:
+    """Return immutable fact ownership recorded by every local Outbox.
+
+    A source key appearing under different read runs is an identity conflict;
+    callers receive an empty origin so they can fail closed as unknown.
+    """
+
+    with db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT read_run_id, payload_json
+            FROM c2_ingest_outbox
+            WHERE conversation_id = ?
+            ORDER BY created_at ASC, outbox_id ASC
+            """,
+            (str(conversation_id),),
+        ).fetchall()
+    origins: dict[str, str] = {}
+    conflicts: set[str] = set()
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        evidence = (
+            payload.get("evidence")
+            if isinstance(payload.get("evidence"), dict)
+            else {}
+        )
+        slot_origins = {
+            str(item.get("source_message_key") or "").strip(): str(
+                item.get("origin_read_run_id") or ""
+            ).strip()
+            for item in (evidence.get("slot_ledger_states") or [])
+            if isinstance(item, dict)
+            and str(item.get("source_message_key") or "").strip()
+        }
+        for item in payload.get("messages") or []:
+            if not isinstance(item, dict):
+                continue
+            source_key = str(item.get("source_message_key") or "").strip()
+            if not source_key:
+                continue
+            origin_read_run_id = str(
+                slot_origins.get(source_key) or ""
+            ).strip()
+            if not origin_read_run_id:
+                conflicts.add(source_key)
+                continue
+            previous = origins.get(source_key)
+            if previous and previous != origin_read_run_id:
+                conflicts.add(source_key)
+            else:
+                origins[source_key] = origin_read_run_id
+    for source_key in conflicts:
+        origins[source_key] = ""
+    return origins
 
 
 def load_c2_outbox_entry(outbox_id: str) -> dict[str, Any] | None:

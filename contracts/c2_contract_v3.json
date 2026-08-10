@@ -1,6 +1,6 @@
 {
   "contract_version": 3,
-  "contract_revision": "3.12.7",
+  "contract_revision": "3.12.8",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "sender_roles": ["customer", "self", "system", "unknown"],
@@ -274,12 +274,12 @@
     "authorization_read_reason",
     "finished_at",
     "flow_gate_errors",
-    "flow_gate_details"
+    "flow_gate_details",
+    "slot_ledger_states"
   ],
   "optional_evidence_fields": [
     "continuation_batch_id",
-    "continuation_token",
-    "slot_ledger_states"
+    "continuation_token"
   ],
   "batch_continuation_rule": "continuation_batch_id and continuation_token must be present together and may only advance the exact backend-issued batch",
   "flow_gate_detail_schema": {
@@ -324,9 +324,26 @@
       "order_source",
       "row_kind",
       "source_message_key",
-      "ledger_state"
+      "origin_read_run_id",
+      "fact_scope",
+      "delivery_state",
+      "item_state"
     ],
-    "ledger_states": [
+    "fact_scopes": [
+      "current_read_run",
+      "historical",
+      "unknown"
+    ],
+    "delivery_states": [
+      "not_enqueued",
+      "outbox_waiting",
+      "backend_confirmed"
+    ],
+    "item_states": [
+      "completed",
+      "failed"
+    ],
+    "legacy_display_ledger_states": [
       "NEW_MESSAGE",
       "OUTBOX_WAITING",
       "OLD_FAILED",
@@ -334,6 +351,10 @@
     ],
     "order_sources": ["visual_top", "observation_index_fallback"],
     "identity_rule": "source_message_key is the only cross-round slot identity and screen_order is ordering evidence only",
+    "read_run_ownership_rule": "origin_read_run_id is immutable fact ownership; fact_scope is derived only by comparing it with the active read_run_id",
+    "delivery_independence_rule": "delivery_state and item_state must never determine fact_scope or history continuity",
+    "legacy_display_rule": "legacy ledger_state may be emitted only for logs and compatibility display; business gates must not read it",
+    "history_gap_rule": "only a historical slot below a current_read_run slot is C2_MESSAGE_HISTORY_GAP; unknown is an identity gate",
     "safety_rule": "only visual_top is strong physical-order evidence; observation_index_fallback must never clear a flow gate or handoff",
     "uniqueness_rule": "source_message_key and screen_order must each be unique inside one authoritative frame"
   },
@@ -974,7 +995,7 @@
     "dedupe_key_owner": "worker",
     "backend_behavior": "persist_and_compare_full_identity_invariants",
     "identity_checkpoint": {
-      "version": 1,
+      "version": 2,
       "outputs": [
         "read-targets.targets[].identity_checkpoint",
         "read-authorization.identity_checkpoint"
@@ -987,6 +1008,7 @@
       "recent_message_fields": [
         "stable_id",
         "source_message_key",
+        "origin_read_run_id",
         "dedupe_key",
         "sender_role",
         "message_type",

@@ -14,22 +14,43 @@ class FlowOutcomeAccumulator:
         self,
         *,
         checkpoint: Callable[[list[dict[str, Any]]], None] | None = None,
+        origin_read_run_id: str | None = None,
     ) -> None:
         self._item_outcomes: list[dict[str, Any]] = []
         self._checkpoint = checkpoint
         self._action_journal_paths: set[Path] = set()
+        self._origin_read_run_id = str(origin_read_run_id or "").strip()
+
+    @property
+    def origin_read_run_id(self) -> str:
+        return self._origin_read_run_id
+
+    def _with_origin(
+        self,
+        outcomes: Iterable[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        for raw in outcomes:
+            item = dict(raw)
+            existing = str(item.get("origin_read_run_id") or "").strip()
+            if existing and self._origin_read_run_id and existing != self._origin_read_run_id:
+                raise ValueError("C2_FLOW_OUTCOME_ORIGIN_READ_RUN_ID_CONFLICT")
+            if self._origin_read_run_id:
+                item["origin_read_run_id"] = self._origin_read_run_id
+            normalized.append(item)
+        return normalized
 
     def record(self, *outcomes: dict[str, Any]) -> None:
         self._item_outcomes = merge_item_outcomes(
             self._item_outcomes,
-            outcomes,
+            self._with_origin(outcomes),
         )
         self._persist_checkpoint()
 
     def extend(self, outcomes: Iterable[dict[str, Any]] | None) -> None:
         self._item_outcomes = merge_item_outcomes(
             self._item_outcomes,
-            outcomes,
+            self._with_origin(outcomes or []),
         )
         self._persist_checkpoint()
 

@@ -199,14 +199,19 @@ partition "C. 为每个最终slot生成稳定身份" {
   end note
 }
 
-partition "D. 查询本地已处理清单，判定新老消息" {
+partition "D. 独立计算事实归属、处理结果和传输状态" {
   :按conversation_id + source_message_key\n批量查询Worker SQLite;
 
   while (还有slot判定结果?) is (是)
-    :取一个slot及其ledger状态;
+    :取一个slot及其Ledger/Outbox/
+后端identity checkpoint命中结果;
 
     if (ledger=INGESTED_COMPLETED?) then (是)
-      :OLD_COMPLETED;
+      :继承origin_read_run_id;
+      :fact_scope = origin是否等于本轮read_run_id
+      ? current_read_run : historical;
+      :delivery_state=backend_confirmed;
+      :item_state=completed;
       if (文字?) then (是)
         :不重复上报文字;
       elseif (语音?) then (是)
@@ -217,13 +222,20 @@ partition "D. 查询本地已处理清单，判定新老消息" {
       :仅保留为当前画面的顺序和证据;
 
     elseif (ledger=INGESTED_FAILED?) then (是)
-      :OLD_FAILED;
+      :继承origin_read_run_id;
+      :fact_scope = origin是否等于本轮read_run_id
+      ? current_read_run : historical;
+      :delivery_state=backend_confirmed;
+      :item_state=failed;
       :失败已经是终态;
       :不自动重试语音或Vision;
       :未被后续销售事实覆盖的customer/self失败\n继续保持上下文门禁;
 
     elseif (ledger=OUTBOX_WAITING?) then (是)
-      :OLD_WAITING_INGEST;
+      :继承origin_read_run_id;
+      :fact_scope = origin是否等于本轮read_run_id
+      ? current_read_run : historical;
+      :delivery_state=outbox_waiting;
       :内容处理已经完成，只是服务端未确认;
       :沿用原read_run_id和完整JSON重传;
       :不重复执行OCR后续动作/语音RPA/Vision;
@@ -234,7 +246,9 @@ partition "D. 查询本地已处理清单，判定新老消息" {
       :按退避周期自动探测合同/能力恢复;
 
     elseif (ledger不存在?) then (是)
-      :NEW_MESSAGE;
+      :origin_read_run_id=本轮read_run_id;
+      :fact_scope=current_read_run;
+      :delivery_state=not_enqueued;
 
       if (新文字?) then (是)
         :保存OCR正文、角色和稳定身份;
@@ -253,20 +267,35 @@ partition "D. 查询本地已处理清单，判定新老消息" {
       endif
 
     else (身份冲突)
+      :fact_scope=unknown;
       :MESSAGE_IDENTITY_UNCONFIRMED;
       :不得只凭content或image hash猜成旧消息;
       :不自动增强、不触发Brain;
     endif
   endwhile (否)
+
+  :媒体后重算按source_message_key合并;
+  :只允许item_state/delivery_state前进;
+  :禁止覆盖origin_read_run_id或fact_scope;
+
+  if (fact_scope顺序为historical*后接current_read_run*?) then (正常)
+    :history_gap=false;
+  elseif (current_read_run下方出现historical?) then (是)
+    :C2_MESSAGE_HISTORY_GAP;
+    :history_gap=true;
+  else (fact_scope=unknown)
+    :走身份不确定门禁;
+    :不伪装成历史断层;
+  endif
 }
 
-partition "E. 只对NEW_IMAGE执行一次Vision" {
+partition "E. 只对本轮未入队图片执行一次Vision" {
   note
     复用以OmniAuto 855c218为基础、从2318bd8选择性接入的图片一致性能力，
     不新增第二套剪贴板模块，不使用claim_copy_ownership/微信PID硬门禁。
     稳定slot和C2角色决定图片身份；现有指纹只作复制一致性辅助检查。
   end note
-  while (还有NEW_IMAGE?) is (是)
+  while (还有current_read_run + not_enqueued图片?) is (是)
     :页面变化时重建完整final_read;
     if (图片已被顶出当前屏?) then (是)
       :从本轮候选删除;
@@ -359,11 +388,12 @@ partition "E. 只对NEW_IMAGE执行一次Vision" {
 }
 
 partition "F. 构建并上报增量批次" {
-  :OLD_COMPLETED/OLD_FAILED不进入新请求;
-  :OUTBOX_WAITING走原批次重传;
-  :只收集本轮NEW_MESSAGE结果;
+  :fact_scope=historical不进入本轮新请求;
+  :delivery_state=outbox_waiting走原批次重传;
+  :只收集fact_scope=current_read_run
+且delivery_state=not_enqueued的终态结果;
 
-  if (存在NEW_MESSAGE?) then (是)
+  if (存在本轮未入队终态事实?) then (是)
     :按final_read screen_order排序新消息;
     :一次POST messages/ingest;
 

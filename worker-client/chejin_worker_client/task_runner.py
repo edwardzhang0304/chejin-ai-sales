@@ -69,6 +69,7 @@ from .storage import (
     list_waiting_c2_ledger_conversation_ids,
     list_reply_send_ack_outbox,
     load_c2_outbox_entry,
+    load_c2_outbox_origin_read_run_ids,
     load_c2_state,
     load_c2_ledger_entry,
     load_reply_send_ack_outbox,
@@ -2223,7 +2224,7 @@ class TaskRunner:
                 local_version = 0
             local_is_usable = local_version >= 3 and local_floor >= 1
             checkpoint_is_usable = (
-                checkpoint_version == 1 and server_floor >= 1
+                checkpoint_version == 2 and server_floor >= 1
             )
             if not local_is_usable and not checkpoint_is_usable:
                 error = {
@@ -2430,6 +2431,7 @@ class TaskRunner:
         self,
         *,
         target: WechatReadTarget,
+        read_run_id: str,
         target_label: str,
         sidecar_payload: dict[str, Any],
         incremental_plan: dict[str, Any],
@@ -2476,11 +2478,7 @@ class TaskRunner:
         retry_sidecar_run_id = str(
             refreshed.get("sidecar_run_id") or ""
         )
-        # The reread proves or rejects the history hypothesis, but the
-        # pre-reread frame remains the settlement frame. New observations from
-        # the reread must enter a later authorized round, otherwise a text or
-        # media item could bypass the current round's action/terminal order.
-        refreshed = dict(sidecar_payload)
+        refreshed = dict(refreshed)
         refreshed["history_gap_automatic_reread_performed"] = True
         refreshed["history_gap_automatic_reread_sidecar_run_id"] = (
             retry_sidecar_run_id
@@ -2489,13 +2487,53 @@ class TaskRunner:
             target=target,
             sidecar_payload=refreshed,
         )
-        return (
-            refreshed,
-            self._build_final_slot_incremental_plan(
-                target=target,
-                sidecar_payload=refreshed,
-            ),
+        refreshed_plan = self._build_final_slot_incremental_plan(
+            target=target,
+            sidecar_payload=refreshed,
+            read_run_id=read_run_id,
         )
+        original_source_keys = {
+            str(item.get("source_message_key") or "").strip()
+            for item in incremental_plan.get("slot_ledger_states") or []
+            if isinstance(item, dict)
+            and str(item.get("source_message_key") or "").strip()
+        }
+        refreshed_source_keys = {
+            str(item.get("source_message_key") or "").strip()
+            for item in refreshed_plan.get("slot_ledger_states") or []
+            if isinstance(item, dict)
+            and str(item.get("source_message_key") or "").strip()
+        }
+        deferred_source_keys = sorted(
+            refreshed_source_keys - original_source_keys
+        )
+        if original_source_keys and deferred_source_keys:
+            # The voice/media phases for this authorized read have already
+            # finished. A history-gap confirmation frame must not become a
+            # second settlement frame, otherwise newly arrived untranscribed
+            # media could be omitted while the remaining text reaches Brain.
+            # Keep the original gate and let the next authorized read own all
+            # newly observed facts through the normal media pipeline.
+            original["history_gap_automatic_reread_sidecar_run_id"] = (
+                retry_sidecar_run_id
+            )
+            original["history_gap_reread_new_facts_deferred"] = True
+            original["history_gap_reread_deferred_source_keys"] = (
+                deferred_source_keys
+            )
+            append_log(
+                "INFO",
+                "c2_history_gap_reread_new_facts_deferred",
+                "历史断层自动重读发现新增事实；保留原结算画面和门禁，新增事实交由下一次授权读取。",
+                metadata={
+                    "conversation_id": target.conversation_id,
+                    "remark_code": target.remark_code,
+                    "deferred_source_keys": deferred_source_keys,
+                    "sidecar_run_id": retry_sidecar_run_id,
+                },
+            )
+            return original, incremental_plan
+        return refreshed, refreshed_plan
 
     def _attach_confirmed_ai_reply_receipts(
         self,
@@ -3090,6 +3128,21 @@ class TaskRunner:
                 read_reason="fact_settlement",
                 authorization_revision=original_revision,
             )
+        origin_read_run_ids = {
+            str(entry.get("origin_read_run_id") or "").strip()
+            for entry in entries
+            if str(entry.get("origin_read_run_id") or "").strip()
+        }
+        if len(origin_read_run_ids) != 1:
+            append_log(
+                "ERROR",
+                "c2_fact_settlement_origin_read_run_invalid",
+                "恢复事实缺少唯一原读取轮次；保持等待且不重建 Outbox。",
+                error_code="C2_FACT_ORIGIN_READ_RUN_ID_INVALID",
+                metadata={"conversation_id": conversation_id},
+            )
+            return False
+        origin_read_run_id = next(iter(origin_read_run_ids))
         payload = build_message_ingest_payload(
             target,
             {
@@ -3106,6 +3159,7 @@ class TaskRunner:
                 "flow_gate_errors": [],
                 "flow_gate_details": [],
             },
+            read_run_id=origin_read_run_id,
         )
         payload_source_keys = sorted(
             str(item.get("source_message_key") or "").strip()
@@ -4956,10 +5010,34 @@ class TaskRunner:
         operation: str,
     ) -> dict[str, Any]:
         with self.c2_outbox_lock:
-            outbox_id = enqueue_c2_outbox(payload)
+            durable_payload = copy.deepcopy(payload)
+            message_source_keys = {
+                str(item.get("source_message_key") or "").strip()
+                for item in (durable_payload.get("messages") or [])
+                if isinstance(item, dict)
+                and str(item.get("source_message_key") or "").strip()
+            }
+            durable_evidence = (
+                durable_payload.get("evidence")
+                if isinstance(durable_payload.get("evidence"), dict)
+                else {}
+            )
+            for slot in durable_evidence.get("slot_ledger_states") or []:
+                if (
+                    isinstance(slot, dict)
+                    and str(slot.get("source_message_key") or "").strip()
+                    in message_source_keys
+                    and str(slot.get("delivery_state") or "")
+                    != "backend_confirmed"
+                ):
+                    slot["delivery_state"] = "outbox_waiting"
+                    if slot.get("fact_scope") == "current_read_run":
+                        slot["ledger_state"] = "OUTBOX_WAITING"
+            durable_payload["evidence"] = durable_evidence
+            outbox_id = enqueue_c2_outbox(durable_payload)
             outbox_items = self._prepare_persisted_c2_outbox(
                 outbox_id=outbox_id,
-                payload=payload,
+                payload=durable_payload,
             )
             if outbox_items is None:
                 return {
@@ -4990,9 +5068,11 @@ class TaskRunner:
                     "超大消息批次的全部分片已按原画面顺序确认入库。",
                     metadata={
                         "conversation_id": payload.get("conversation_id"),
-                        "read_run_id": payload.get("read_run_id"),
+                        "read_run_id": durable_payload.get("read_run_id"),
                         "partition_count": len(outbox_items),
-                        "original_bytes": encoded_payload_size(payload),
+                        "original_bytes": encoded_payload_size(
+                            durable_payload
+                        ),
                     },
                 )
             return final_delivery
@@ -5270,13 +5350,40 @@ class TaskRunner:
 
     def _stage_payload_ledger(self, payload: dict[str, Any]) -> None:
         conversation_id = str(payload.get("conversation_id") or "")
+        read_run_id = str(payload.get("read_run_id") or "").strip()
+        if not read_run_id:
+            raise ValueError("C2_READ_RUN_ID_MISSING")
+        evidence = (
+            payload.get("evidence")
+            if isinstance(payload.get("evidence"), dict)
+            else {}
+        )
+        slots_by_source = {
+            str(slot.get("source_message_key") or "").strip(): slot
+            for slot in (evidence.get("slot_ledger_states") or [])
+            if isinstance(slot, dict)
+            and str(slot.get("source_message_key") or "").strip()
+        }
         for item in payload.get("messages") or []:
             if not isinstance(item, dict):
                 continue
             source_key = str(item.get("source_message_key") or "").strip()
             if not source_key:
                 continue
+            slot = slots_by_source.get(source_key)
+            if not isinstance(slot, dict):
+                raise ValueError("C2_SLOT_LEDGER_MESSAGE_MAPPING_MISSING")
+            if str(slot.get("fact_scope") or "") == "unknown":
+                continue
+            slot_origin_read_run_id = str(
+                slot.get("origin_read_run_id") or ""
+            ).strip()
+            if not slot_origin_read_run_id:
+                raise ValueError("C2_SLOT_LEDGER_ORIGIN_READ_RUN_ID_MISSING")
             existing = load_c2_ledger_entry(conversation_id, source_key)
+            item_origin_read_run_id = str(
+                slot_origin_read_run_id
+            ).strip()
             item_state = str(item.get("item_state") or "completed").strip().lower()
             if existing and (
                 item.get("message_type") in {"voice", "image"}
@@ -5285,6 +5392,7 @@ class TaskRunner:
                 save_c2_ledger_terminal(
                     conversation_id=conversation_id,
                     source_message_key=source_key,
+                    origin_read_run_id=item_origin_read_run_id,
                     dedupe_key=(
                         str(item.get("dedupe_key") or "")
                         or str(existing.get("dedupe_key") or "")
@@ -5316,6 +5424,7 @@ class TaskRunner:
             save_c2_ledger_terminal(
                 conversation_id=conversation_id,
                 source_message_key=source_key,
+                origin_read_run_id=item_origin_read_run_id,
                 dedupe_key=str(item.get("dedupe_key") or "") or None,
                 message_type=str(item.get("message_type") or "unknown"),
                 terminal_state=(
@@ -5349,6 +5458,7 @@ class TaskRunner:
         *,
         binding: Binding,
         target: WechatReadTarget,
+        read_run_id: str,
         error_code: str,
         source_keys: list[str],
         voice_payload: dict[str, Any],
@@ -5356,11 +5466,13 @@ class TaskRunner:
         clean_keys = sorted({str(value).strip() for value in source_keys if str(value).strip()})
         self._mark_voice_sources_failed(
             target=target,
+            origin_read_run_id=read_run_id,
             source_keys=clean_keys,
             error_code=error_code,
         )
         payload = build_flow_gate_ingest_payload(
             target,
+            read_run_id=read_run_id,
             error_code="C2_VOICE_TRANSCRIBE_FAILED",
             evidence={
                 "failed_voice_source_keys": clean_keys,
@@ -5410,22 +5522,42 @@ class TaskRunner:
     def _mark_voice_sources_failed(
         *,
         target: WechatReadTarget,
+        origin_read_run_id: str,
         source_keys: list[str],
         error_code: str,
     ) -> None:
         for source_key in sorted(
             {str(value).strip() for value in source_keys if str(value).strip()}
         ):
+            existing = load_c2_ledger_entry(
+                target.conversation_id,
+                source_key,
+            )
+            effective_origin_read_run_id = str(
+                (existing or {}).get("origin_read_run_id")
+                or origin_read_run_id
+            ).strip()
+            existing_result = (
+                dict(existing.get("result") or {})
+                if isinstance((existing or {}).get("result"), dict)
+                else {}
+            )
             save_c2_ledger_terminal(
                 conversation_id=target.conversation_id,
                 source_message_key=source_key,
+                origin_read_run_id=effective_origin_read_run_id,
                 dedupe_key=None,
                 message_type="voice",
                 terminal_state="failed",
                 ingest_state="waiting",
                 result={
+                    **existing_result,
                     "state": "failed",
-                    "error_code": str(error_code or "VOICE_TRANSCRIBE_FAILED"),
+                    "error_code": str(
+                        existing_result.get("error_code")
+                        or error_code
+                        or "VOICE_TRANSCRIBE_FAILED"
+                    ),
                 },
             )
 
@@ -5484,6 +5616,7 @@ class TaskRunner:
         *,
         binding: Binding,
         target: WechatReadTarget,
+        read_run_id: str,
         error_code: str,
         identity_errors: list[dict[str, Any]],
     ) -> bool:
@@ -5537,6 +5670,7 @@ class TaskRunner:
             gate_detail["max_screen_order"] = gate_orders[-1]
         payload = build_flow_gate_ingest_payload(
             target,
+            read_run_id=read_run_id,
             error_code=error_code,
             evidence={
                 "flow_gate_identity_key": stable_gate_key,
@@ -5581,8 +5715,16 @@ class TaskRunner:
         *,
         target: WechatReadTarget,
         sidecar_payload: dict[str, Any],
+        read_run_id: str,
     ) -> dict[str, Any]:
-        preliminary_payload = build_message_ingest_payload(target, sidecar_payload)
+        clean_read_run_id = str(read_run_id or "").strip()
+        if not clean_read_run_id:
+            raise ValueError("C2_READ_RUN_ID_MISSING")
+        preliminary_payload = build_message_ingest_payload(
+            target,
+            sidecar_payload,
+            read_run_id=clean_read_run_id,
+        )
         canonical_by_observation_id: dict[str, dict[str, Any]] = {}
         for message in preliminary_payload.get("messages") or []:
             if not isinstance(message, dict):
@@ -5613,8 +5755,10 @@ class TaskRunner:
         states: list[dict[str, Any]] = []
         identity_errors: list[dict[str, Any]] = []
         seen_source_keys: set[str] = set()
-        backend_confirmed_source_keys = {
-            str(item.get("source_message_key") or "").strip()
+        backend_confirmed_origins = {
+            str(item.get("source_message_key") or "").strip(): str(
+                item.get("origin_read_run_id") or ""
+            ).strip()
             for item in (
                 (
                     target.raw.get("identity_checkpoint") or {}
@@ -5628,6 +5772,9 @@ class TaskRunner:
             if isinstance(item, dict)
             and str(item.get("source_message_key") or "").strip()
         }
+        outbox_origins = load_c2_outbox_origin_read_run_ids(
+            target.conversation_id
+        )
         for screen_order, (index, observation) in enumerate(ordered, start=1):
             row_kind = str(observation.get("row_kind") or "").strip().lower()
             voice_state = str(observation.get("voice_state") or "").strip().lower()
@@ -5667,55 +5814,114 @@ class TaskRunner:
                 continue
             seen_source_keys.add(source_key)
             ledger = load_c2_ledger_entry(target.conversation_id, source_key)
-            if (
-                str(observation.get("item_state") or "").strip().lower()
-                == "failed"
-                and ledger
-                and ledger.get("terminal_state") == "failed"
-                and ledger.get("ingest_state") == "waiting"
-            ):
-                # The action ledger is written before this authoritative frame
-                # is assembled. This failed fact is still new for the Outbox.
-                state = "NEW_MESSAGE"
-            elif ledger and ledger.get("ingest_state") == "waiting":
-                state = "OUTBOX_WAITING"
-            elif ledger and ledger.get("terminal_state") == "failed":
-                state = "OLD_FAILED"
-            elif ledger:
-                state = "OLD_COMPLETED"
-            elif source_key in backend_confirmed_source_keys:
-                state = "OLD_COMPLETED"
+            ledger_origin = str(
+                (ledger or {}).get("origin_read_run_id") or ""
+            ).strip()
+            outbox_present = source_key in outbox_origins
+            outbox_origin = str(outbox_origins.get(source_key) or "").strip()
+            backend_present = source_key in backend_confirmed_origins
+            backend_origin = str(
+                backend_confirmed_origins.get(source_key) or ""
+            ).strip()
+            known_origins = {
+                value
+                for value in (ledger_origin, outbox_origin, backend_origin)
+                if value
+            }
+            origin_conflict = len(known_origins) > 1
+            has_existing_fact = bool(ledger or outbox_present or backend_present)
+            if origin_conflict or (has_existing_fact and not known_origins):
+                origin_read_run_id = "unknown"
+                fact_scope = "unknown"
+                identity_errors.append(
+                    {
+                        "observation_id": observation_id or f"observation-{index}",
+                        "screen_order": screen_order,
+                        "order_source": frame_order_source,
+                        "row_kind": row_kind,
+                        "error_code": "MESSAGE_IDENTITY_UNCONFIRMED",
+                        "reason": "origin_read_run_id_unconfirmed",
+                    }
+                )
             else:
-                state = "NEW_MESSAGE"
-            states.append(
-                {
-                    "observation_id": observation_id or f"observation-{index}",
-                    "screen_order": screen_order,
-                    "order_source": frame_order_source,
-                    "row_kind": row_kind,
-                    "sender_role": sender_role,
-                    "source_message_key": source_key,
-                    "ledger_state": state,
-                    "history_source": (
-                        "local_ledger"
-                        if ledger
-                        else "backend_identity_checkpoint"
-                        if source_key in backend_confirmed_source_keys
-                        else "unconfirmed"
-                    ),
-                }
+                origin_read_run_id = (
+                    next(iter(known_origins))
+                    if known_origins
+                    else clean_read_run_id
+                )
+                fact_scope = (
+                    "current_read_run"
+                    if origin_read_run_id == clean_read_run_id
+                    else "historical"
+                )
+            if ledger and str(ledger.get("ingest_state") or "") == "confirmed":
+                delivery_state = "backend_confirmed"
+            elif backend_present:
+                delivery_state = "backend_confirmed"
+            elif outbox_present or (
+                ledger and str(ledger.get("ingest_state") or "") == "waiting"
+            ):
+                delivery_state = "outbox_waiting"
+            else:
+                delivery_state = "not_enqueued"
+            item_state = (
+                "failed"
+                if str(
+                    (ledger or {}).get("terminal_state")
+                    or observation.get("item_state")
+                    or ""
+                ).strip().lower()
+                == "failed"
+                else "completed"
             )
+            legacy_ledger_state: str | None = None
+            if fact_scope == "current_read_run":
+                legacy_ledger_state = (
+                    "OUTBOX_WAITING"
+                    if delivery_state == "outbox_waiting"
+                    else "NEW_MESSAGE"
+                )
+            elif fact_scope == "historical":
+                legacy_ledger_state = (
+                    "OLD_FAILED"
+                    if item_state == "failed"
+                    else "OLD_COMPLETED"
+                )
+            state_payload = {
+                "observation_id": observation_id or f"observation-{index}",
+                "screen_order": screen_order,
+                "order_source": frame_order_source,
+                "row_kind": row_kind,
+                "sender_role": sender_role,
+                "source_message_key": source_key,
+                "origin_read_run_id": origin_read_run_id,
+                "fact_scope": fact_scope,
+                "delivery_state": delivery_state,
+                "item_state": item_state,
+                "history_source": (
+                    "local_ledger"
+                    if ledger
+                    else "local_outbox"
+                    if outbox_present
+                    else "backend_identity_checkpoint"
+                    if backend_present
+                    else "current_read_run"
+                ),
+            }
+            if legacy_ledger_state:
+                state_payload["ledger_state"] = legacy_ledger_state
+            states.append(state_payload)
 
-        seen_new = False
-        first_new_screen_order = 0
+        seen_current = False
+        first_current_screen_order = 0
         history_gap_screen_order = 0
         raw_history_gap = False
         for item in states:
-            if item["ledger_state"] == "NEW_MESSAGE":
-                seen_new = True
-                if not first_new_screen_order:
-                    first_new_screen_order = int(item["screen_order"])
-            elif seen_new:
+            if item["fact_scope"] == "current_read_run":
+                seen_current = True
+                if not first_current_screen_order:
+                    first_current_screen_order = int(item["screen_order"])
+            elif item["fact_scope"] == "historical" and seen_current:
                 raw_history_gap = True
                 history_gap_screen_order = int(item["screen_order"])
                 break
@@ -5749,7 +5955,7 @@ class TaskRunner:
             historical_warnings.append(
                 {
                     "warning_code": "C2_MESSAGE_HISTORY_GAP_HISTORICAL",
-                    "min_screen_order": first_new_screen_order,
+                    "min_screen_order": first_current_screen_order,
                     "max_screen_order": history_gap_screen_order,
                     "latest_self_screen_order": latest_self_screen_order,
                 }
@@ -5757,7 +5963,9 @@ class TaskRunner:
         new_image_source_keys = {
             item["source_message_key"]
             for item in states
-            if item["row_kind"] == "image_bubble" and item["ledger_state"] == "NEW_MESSAGE"
+            if item["row_kind"] == "image_bubble"
+            and item["fact_scope"] == "current_read_run"
+            and item["delivery_state"] == "not_enqueued"
         }
         flow_gate_details: list[dict[str, Any]] = []
         if history_gap:
@@ -5770,7 +5978,7 @@ class TaskRunner:
                 ),
             }
             if frame_order_source == "visual_top":
-                history_gap_detail["min_screen_order"] = first_new_screen_order
+                history_gap_detail["min_screen_order"] = first_current_screen_order
                 history_gap_detail["max_screen_order"] = history_gap_screen_order
             flow_gate_details.append(history_gap_detail)
         if identity_errors:
@@ -6100,6 +6308,7 @@ class TaskRunner:
         payload: dict[str, Any],
         observation: dict[str, Any],
         source_key: str,
+        origin_read_run_id: str,
         result: dict[str, Any],
         stats: dict[str, Any],
     ) -> tuple[dict[str, Any], str, str]:
@@ -6169,6 +6378,7 @@ class TaskRunner:
         save_c2_ledger_terminal(
             conversation_id=target.conversation_id,
             source_message_key=source_key,
+            origin_read_run_id=origin_read_run_id,
             dedupe_key=None,
             message_type="image",
             terminal_state=terminal_state,
@@ -6415,7 +6625,7 @@ class TaskRunner:
                 append_log(
                     "INFO",
                     "c2_image_slot_not_new",
-                    "图片不是本轮 NEW_IMAGE；旧终态由 ledger 复用，OUTBOX 只重传原 JSON。",
+                    "图片不满足 current_read_run + not_enqueued；历史终态由 ledger 复用，OUTBOX 只重传原 JSON。",
                     metadata=common_metadata,
                 )
                 continue
@@ -6619,6 +6829,11 @@ class TaskRunner:
                 payload=payload,
                 observation=observation,
                 source_key=source_key,
+                origin_read_run_id=(
+                    flow_outcomes.origin_read_run_id
+                    if flow_outcomes is not None
+                    else ""
+                ),
                 result=result,
                 stats=stats,
             )
@@ -7631,6 +7846,7 @@ class TaskRunner:
                 self._persist_c2_flow_outcomes(
                     target,
                     voice_outcomes,
+                    origin_read_run_id=flow_outcomes.origin_read_run_id,
                 )
                 new_failed_keys = {
                     str(value).strip()
@@ -7646,6 +7862,7 @@ class TaskRunner:
                     )
                     self._mark_voice_sources_failed(
                         target=target,
+                        origin_read_run_id=flow_outcomes.origin_read_run_id,
                         source_keys=sorted(new_failed_keys),
                         error_code=failure_code,
                     )
@@ -7814,6 +8031,7 @@ class TaskRunner:
                     )
                     self._mark_voice_sources_failed(
                         target=target,
+                        origin_read_run_id=flow_outcomes.origin_read_run_id,
                         source_keys=sorted(new_failed_keys),
                         error_code=failure_code,
                     )
@@ -7840,6 +8058,7 @@ class TaskRunner:
             incremental_plan = self._build_final_slot_incremental_plan(
                 target=target,
                 sidecar_payload=current_payload,
+                read_run_id=flow_outcomes.origin_read_run_id,
             )
             if incremental_plan["identity_errors"]:
                 return {
@@ -7961,6 +8180,7 @@ class TaskRunner:
             transaction_id=transaction_id,
             conversation_id=target.conversation_id,
             items=items,
+            origin_read_run_id=flow_outcomes.origin_read_run_id,
         )
         flow_outcomes.register_action_journal(path)
         return path
@@ -8039,6 +8259,9 @@ class TaskRunner:
             action_kind = str(payload.get("action_kind") or "").strip()
             if action_kind not in {"voice", "image"}:
                 continue
+            origin_read_run_id = str(
+                payload.get("origin_read_run_id") or ""
+            ).strip()
             items = (
                 payload.get("items")
                 if isinstance(payload.get("items"), dict)
@@ -8146,6 +8369,7 @@ class TaskRunner:
                 )
                 if terminal_payload:
                     outcome["terminal_payload"] = terminal_payload
+                outcome["origin_read_run_id"] = origin_read_run_id
                 recovered_outcomes = merge_item_outcomes(
                     recovered_outcomes,
                     [outcome],
@@ -8160,19 +8384,23 @@ class TaskRunner:
     ) -> dict[str, Any]:
         self._recover_physical_action_journals(target)
         self._recover_c2_action_journal(target)
+        read_run_id = f"read-{uuid.uuid4()}"
         flow_id = f"c2-action:{uuid.uuid4()}"
         flow_outcomes = FlowOutcomeAccumulator(
             checkpoint=lambda outcomes: checkpoint_c2_action_outcomes(
                 flow_id=flow_id,
                 conversation_id=target.conversation_id,
+                origin_read_run_id=read_run_id,
                 outcomes=outcomes,
-            )
+            ),
+            origin_read_run_id=read_run_id,
         )
         try:
             return self._read_one_wechat_target_impl(
                 binding,
                 target,
                 flow_outcomes=flow_outcomes,
+                read_run_id=read_run_id,
                 **kwargs,
             )
         finally:
@@ -8233,18 +8461,28 @@ class TaskRunner:
         TaskRunner._persist_c2_flow_outcomes(
             target,
             flow_outcomes.snapshot(),
+            origin_read_run_id=flow_outcomes.origin_read_run_id,
         )
 
     @staticmethod
     def _persist_c2_flow_outcomes(
         target: WechatReadTarget,
         outcomes: list[dict[str, Any]],
+        *,
+        origin_read_run_id: str | None = None,
     ) -> None:
         for outcome in outcomes:
             source_key = str(outcome.get("source_message_key") or "").strip()
+            outcome_origin_read_run_id = str(
+                outcome.get("origin_read_run_id")
+                or origin_read_run_id
+                or ""
+            ).strip()
             result = str(outcome.get("result") or "").strip().lower()
             if not source_key or result not in {"completed", "failed"}:
                 continue
+            if not outcome_origin_read_run_id:
+                raise ValueError("C2_FLOW_OUTCOME_ORIGIN_READ_RUN_ID_MISSING")
             evidence = (
                 dict(outcome.get("evidence") or {})
                 if isinstance(outcome.get("evidence"), dict)
@@ -8274,6 +8512,7 @@ class TaskRunner:
             save_c2_ledger_terminal(
                 conversation_id=target.conversation_id,
                 source_message_key=source_key,
+                origin_read_run_id=outcome_origin_read_run_id,
                 dedupe_key=(
                     str(existing.get("dedupe_key") or "") or None
                     if existing
@@ -8304,6 +8543,7 @@ class TaskRunner:
         target: WechatReadTarget,
         *,
         flow_outcomes: FlowOutcomeAccumulator,
+        read_run_id: str,
         current_step: str = "message_read",
         allow_during_current_task: bool = False,
         enforce_read_targets: bool = False,
@@ -8321,6 +8561,7 @@ class TaskRunner:
             "flow": "c2_message_read",
             "conversation_id": target.conversation_id,
             "remark_code": target.remark_code,
+            "read_run_id": read_run_id,
             "phases": [],
         }
 
@@ -9289,6 +9530,7 @@ class TaskRunner:
                         self._report_voice_failure_gate(
                             binding=binding,
                             target=target,
+                            read_run_id=read_run_id,
                             error_code=voice_action_failure_code,
                             source_keys=partial_failed_voice_source_keys,
                             voice_payload=voice_payload,
@@ -9322,6 +9564,7 @@ class TaskRunner:
                         self._report_voice_failure_gate(
                             binding=binding,
                             target=target,
+                            read_run_id=read_run_id,
                             error_code=voice_action_failure_code,
                             source_keys=partial_failed_voice_source_keys,
                             voice_payload=voice_payload,
@@ -9498,6 +9741,7 @@ class TaskRunner:
                 if partial_failed_voice_source_keys:
                     self._mark_voice_sources_failed(
                         target=target,
+                        origin_read_run_id=read_run_id,
                         source_keys=partial_failed_voice_source_keys,
                         error_code=final_voice_failure_code,
                     )
@@ -9608,6 +9852,7 @@ class TaskRunner:
                     }
                     self._mark_voice_sources_failed(
                         target=target,
+                        origin_read_run_id=read_run_id,
                         source_keys=continuation_failed_keys,
                         error_code=failure_code,
                     )
@@ -9749,6 +9994,7 @@ class TaskRunner:
             self._persist_c2_flow_outcomes(
                 target,
                 voice_item_outcomes,
+                origin_read_run_id=read_run_id,
             )
 
             self._annotate_failed_voice_observations(
@@ -9966,6 +10212,7 @@ class TaskRunner:
                 self._report_identity_failure_gate(
                     binding=binding,
                     target=target,
+                    read_run_id=read_run_id,
                     error_code=code,
                     identity_errors=cross_round_identity_errors,
                 )
@@ -9979,10 +10226,12 @@ class TaskRunner:
             incremental_plan = self._build_final_slot_incremental_plan(
                 target=target,
                 sidecar_payload=sidecar_payload,
+                read_run_id=read_run_id,
             )
             sidecar_payload, incremental_plan = (
                 self._retry_history_gap_from_backend_once(
                     target=target,
+                    read_run_id=read_run_id,
                     target_label=target_label,
                     sidecar_payload=sidecar_payload,
                     incremental_plan=incremental_plan,
@@ -10147,6 +10396,7 @@ class TaskRunner:
                     self._build_final_slot_incremental_plan(
                         target=target,
                         sidecar_payload=sidecar_payload,
+                        read_run_id=read_run_id,
                     )
                 )
                 gate_projection = project_final_slot_flow_gates(
@@ -10164,7 +10414,11 @@ class TaskRunner:
                 )
             phase_started_at = time.perf_counter()
             try:
-                payload = build_message_ingest_payload(target, sidecar_payload)
+                payload = build_message_ingest_payload(
+                    target,
+                    sidecar_payload,
+                    read_run_id=read_run_id,
+                )
             except ValueError as exc:
                 code = str(exc)
                 self.c2_stats["last_error"] = code

@@ -4,9 +4,9 @@
 
 日期：2026-07-21
 
-最后更新：2026-08-10（补齐语音唯一身份、AI回复门禁分级、自动恢复、统一冷却及媒体失败/高意向转人工）
+最后更新：2026-08-10（补齐读取轮次归属与 Outbox 传输状态分层）
 
-状态：接口命名和职责边界保持唯一。当前 C2 机器合同为 `3.12.7`，未发布运行整改提交为
+状态：接口命名和职责边界保持唯一。当前 C2 机器合同为 `3.12.8`，未发布运行整改提交为
 车金 `53e979d89316344c282245c62f6349586de16eee`。本轮整改父基线为车金 `3f65660…`
 （Worker 运行代码父基线 `4352f5e…`）、OmniAuto 整改父基线 `99d0070…`；当前仲裁通用修复与绝对 Vision 边界门禁已固定并推送为 `91688de…`。复审曾确认
 “展开语音再次成为图片候选、类型仲裁方向错误、`not_attempted` 失败终态未由真实生产端
@@ -14,14 +14,14 @@
 使用 `error_code=C2_IMAGE_SOURCE_INVALID`，并以本合同规定的精确 `reason_detail`
 区分。`9872dad… / v16.145.0` 快速 UAT 又确认同一物理语音可被多 anchor 拆成多个
 待处理对象，身份门禁可早于媒体逐条结算返回，首屏命中可绕过成功冷却。当前已按
-本合同新增的唯一语音身份、L0-L3 门禁和统一冷却完成隔离候选整改；通过架构复审前
+本合同新增的唯一语音身份、L0-L3 门禁、统一冷却和读取轮次分层完成隔离候选整改；通过架构复审前
 不得生成替代 ZIP/正式 EXE或进入下一轮 Windows UAT。
 
 > 恢复流程以
 > `C1-C3_事务恢复与事实结算统一架构_v0.1_2026-07-31.md`
 > 为最高约束。旧实现中的图片专用恢复和“收到 `target_terminated` 后本地丢弃事实”
 > 不再属于正式合同。
-> 当前机器合同为 `3.12.7`。PID 硬门禁、五个专用失败原因和三个观察失败映射已经
+> 当前机器合同为 `3.12.8`。PID 硬门禁、五个专用失败原因和三个观察失败映射已经
 > 按共享 schema、样例和合同测试收口；后续不得恢复，也不得借双仓统一重开其他
 > 状态机设计。
 >
@@ -319,7 +319,7 @@ AND 不是 group/unknown
 - 同一物理语音气泡只允许形成一个 `canonical_voice_id`。`voice-structural`、
   `voice-stable`、视觉指纹、父语音 anchor 和转写后 anchor 全部只是该对象的
   `anchor_aliases[]`，不得各自产生待处理项、source key 或 ActionJournal item。
-- `image_bubble` 发现态只观察、不入库。初次同行头像角色不可信时尚未形成业务图片身份，必须形成帧级 `MESSAGE_IDENTITY_UNCONFIRMED`，零点击、零 Vision、零 terminal ledger；不得用 `ignored` 静默结案。只有角色可信且稳定身份唯一的 `NEW_IMAGE` 才进入第 9 节，并在同一 Flow 形成 `completed/failed`。`discovered/ignored` 不入库。
+- `image_bubble` 发现态只观察、不入库。初次同行头像角色不可信时尚未形成业务图片身份，必须形成帧级 `MESSAGE_IDENTITY_UNCONFIRMED`，零点击、零 Vision、零 terminal ledger；不得用 `ignored` 静默结案。只有角色可信、稳定身份唯一且为 `fact_scope=current_read_run + delivery_state=not_enqueued` 的图片才进入第 9 节，并在同一 Flow 形成 `completed/failed`。`discovered/ignored` 不入库。
 
 ### 5.4 `voice-transcribe`
 
@@ -542,7 +542,7 @@ handoff，在一次权威干净读取后以 `auto_recovered_clean_read` 自动�
 时仍保持 `waiting_sales_reply`，不得启动 Brain。
 
 上述新增字段和动作改变机器语义，当前实现已把 C2 机器合同从 `3.12.6` 升级到
-`3.12.7`，并同步共享 schema、生成物、Worker/后端合同测试；旧 `3.12.6` 不具备这些
+`3.12.7` 首次引入，并由 `3.12.8` 保留；共享 schema、生成物、Worker/后端合同测试已同步，旧 `3.12.6` 不具备这些
 新增语义，联调双方必须使用同一 revision 和哈希。
 
 每个 `flow_gate_errors[]` 必须有且只有一组同码
@@ -823,8 +823,8 @@ V3 请求顶层字段：
 ```json
 {
   "contract_version": 3,
-  "contract_revision": "3.12.7",
-  "contract_sha256": "75242ec6cd00bcff7925037d8529d57975ee39d00845c58c449816ac8586ee5e",
+  "contract_revision": "3.12.8",
+  "contract_sha256": "cebdbd38cbf69983dee6750437cfa0e67ec6c59d62e3b6311cb6aebdafa35e83",
   "observation_schema_version": 3,
   "authorization_scope": "active_read",
   "read_run_id": "read-...",
@@ -846,6 +846,35 @@ V3 请求顶层字段：
   }
 }
 ```
+
+`slot_ledger_states[]` 是消息事实归属的强制合同，必须包含：
+
+```json
+{
+  "source_message_key": "...",
+  "origin_read_run_id": "read-...",
+  "fact_scope": "current_read_run",
+  "delivery_state": "outbox_waiting",
+  "item_state": "completed",
+  "screen_order": 1
+}
+```
+
+硬规则：
+
+1. `fact_scope=current_read_run` 时，`origin_read_run_id` 必须等于请求顶层
+   `read_run_id`；`historical` 时必须不等于；来源冲突或不可证明时使用 `unknown`。
+2. `delivery_state` 和 `item_state` 不得参与消息新旧或历史连续性判断。
+3. initial read、媒体动作、final read、二次槽位计算、Ledger、ActionJournal、Outbox
+   和最终 ingest 必须使用同一读取轮次身份。
+4. 媒体后二次计算只允许 `item_state/delivery_state` 单调前进，不得覆盖
+   `origin_read_run_id/fact_scope`。
+5. Outbox 重传、授权外壳重建、拆批和事实结算必须保留原始读取轮次。
+6. `fact_scope=unknown` 进入身份不确定门禁，不进入 Vision、新消息批次或 Brain。
+7. 图片只有在 `current_read_run + not_enqueued` 且其他原安全门禁全部通过时，才可
+   右键复制并调用 Vision。
+8. 后端 `identity_checkpoint.recent_messages[]` 必须回传 `origin_read_run_id`。
+9. 旧 `ledger_state` 只能用于诊断展示，任何业务门禁不得读取。
 
 硬规则：
 
@@ -1160,7 +1189,7 @@ retry_later / fallback_existing
 ```text
 image_bubble
 → C2 同行头像规则确定 customer/self
-→ Worker建立稳定身份并只选择NEW_IMAGE
+→ Worker建立稳定身份并只选择current_read_run + not_enqueued图片
 → 当前剪贴板一次性图片事务
 → customer_image_understanding
 → visual_bridge_input
@@ -1286,7 +1315,7 @@ completed。持久化时剔除 Provider 原始响应/错误正文、图片字节
 | P1 | 已在当前候选收口；本轮回归保留 | 普通会话继续复用 open-chat 确认帧；Vision 只门禁新的 C2 UI 流程，事务恢复与事实结算先于能力预检。 |
 | P0 | 已收口 | Sidecar、Worker 与后端已统一落实 `action_phase`；发送触发后无法确认时只进入 `unknown`，不会按普通失败清除证据。 |
 | P0 | 已收口 | Worker 已使用唯一 `merge_item_outcomes` 单调累计语音/图片逐条结果；后续调用只能合并，不能覆盖既有成功或失败结果。 |
-| P0 | 已在当前候选收口；本轮回归保留 | 删除 `C2_IMAGE_PROCESSING_DEFERRED` 和图片跨轮未收口项；出屏图片本轮不存在，仍可见但不能唯一确认则 failed；当前屏 NEW_IMAGE 必须在同一 Flow 内终态。 |
+| P0 | 已在当前候选收口；本轮回归保留 | 删除 `C2_IMAGE_PROCESSING_DEFERRED` 和图片跨轮未收口项；出屏图片本轮不存在，仍可见但不能唯一确认则 failed；当前屏 `current_read_run + not_enqueued` 图片必须在同一 Flow 内终态。 |
 | P0 | 已收口 | 图片角色只采用 C2 同行头像结论；复制前几何侧仅记录物理一致性证据，不再作为第二套准入规则。 |
 | P0 | 已收口 | 后端失败外壳与 Worker Outbox 统一使用 `retry / refresh_and_rebuild / capability_paused`；旧 `quarantine/abandoned` 仅作为启动迁移输入，不再是运行时终态。 |
 | P0 | 修复已提交，等待复审 | voice/image 共用 `media_fact` 协调器；恢复必须重放原始完整 V3 消息，禁止用 `messages=[]` 空门禁提前确认 Ledger。 |

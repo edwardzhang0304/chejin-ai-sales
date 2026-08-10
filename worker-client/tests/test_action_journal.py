@@ -32,6 +32,7 @@ class ActionJournalTest(unittest.TestCase):
             action_kind="voice",
             transaction_id="voice-transaction",
             conversation_id="conversation-1",
+            origin_read_run_id="read-voice-transaction",
             items=[
                 {
                     "source_message_key": "message-1",
@@ -115,6 +116,7 @@ class ActionJournalTest(unittest.TestCase):
             "checkpoint_c2_action_outcomes("
             f"flow_id='{flow_id}',"
             "conversation_id='conversation-1',"
+            "origin_read_run_id='read-worker-result',"
             "outcomes=[{"
             "'source_message_key':'message-1',"
             "'result':'completed',"
@@ -130,6 +132,10 @@ class ActionJournalTest(unittest.TestCase):
         self.assertEqual(
             pending[0]["outcome"]["source_message_key"],
             "message-1",
+        )
+        self.assertEqual(
+            pending[0]["outcome"]["origin_read_run_id"],
+            "read-worker-result",
         )
         clear_c2_action_journal(flow_id)
 

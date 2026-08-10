@@ -34,6 +34,7 @@ def build_v3_message_ingest_payload(target: WechatReadTarget, sidecar_payload: d
             "authoritative_frame_source": "final_read",
             **sidecar_payload,
         },
+        read_run_id="read-v3-message-ingest-test",
     )
 
 
@@ -62,6 +63,39 @@ def sidecar_session_identity(
 
 
 class WechatC2Test(unittest.TestCase):
+    def test_ingest_builder_requires_and_preserves_caller_read_run_id(self):
+        target = WechatReadTarget(
+            conversation_id="conv-explicit-read-run",
+            rpa_session_key="wx:explicit-read-run",
+            display_name="CJREAD01",
+            remark_code="CJREAD01",
+            authorization_revision="revision-explicit-read-run",
+            read_reason="waiting_user_reply",
+        )
+        sidecar_payload = {
+            "contract_version": 3,
+            "contract_revision": contract_revision(),
+            "contract_sha256": contract_sha256(),
+            "observation_schema_version": 3,
+            "authoritative_frame_source": "final_read",
+            "observations": [],
+            "slot_ledger_states": [],
+        }
+
+        payload = _build_message_ingest_payload_v3(
+            target,
+            sidecar_payload,
+            read_run_id="read-explicit-caller",
+        )
+
+        self.assertEqual(payload["read_run_id"], "read-explicit-caller")
+        with self.assertRaises(TypeError):
+            _build_message_ingest_payload_v3(target, sidecar_payload)
+        self.assertNotIn(
+            "uuid",
+            inspect.getsource(_build_message_ingest_payload_v3),
+        )
+
     def test_worker_identity_module_cannot_reintroduce_title_reclassification(self):
         source = inspect.getsource(wechat_c2_module)
 
@@ -169,7 +203,7 @@ class WechatC2Test(unittest.TestCase):
             authorization_revision="rev-checkpoint",
             raw={
                 "identity_checkpoint": {
-                    "version": 1,
+                    "version": 2,
                     "next_sequence_floor": 8,
                     "recent_messages": [
                         {
@@ -1545,6 +1579,7 @@ class WechatC2Test(unittest.TestCase):
 
         payload = build_flow_gate_ingest_payload(
             target,
+            read_run_id="read-flow-gate-history-gap",
             error_code="C2_MESSAGE_HISTORY_GAP",
             evidence={
                 "contract_sha256": "0" * 64,

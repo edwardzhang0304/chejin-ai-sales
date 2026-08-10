@@ -11,7 +11,7 @@ from .config import CONFIG
 from .c2_contract import c2_contract_v3
 
 
-ACTION_JOURNAL_SCHEMA_VERSION = 1
+ACTION_JOURNAL_SCHEMA_VERSION = 2
 ACTION_PHASES = tuple(
     str(value)
     for value in (c2_contract_v3().get("action_phases") or [])
@@ -74,8 +74,16 @@ def initialize_action_journal(
     transaction_id: str,
     conversation_id: str,
     items: Iterable[dict[str, Any]],
+    origin_read_run_id: str | None = None,
 ) -> Path:
     target = Path(path)
+    normalized_action_kind = str(action_kind or "").strip().lower()
+    normalized_origin_read_run_id = str(origin_read_run_id or "").strip()
+    if (
+        normalized_action_kind in {"voice", "image"}
+        and not normalized_origin_read_run_id
+    ):
+        raise ValueError("ACTION_JOURNAL_ORIGIN_READ_RUN_ID_MISSING")
     normalized_items: dict[str, dict[str, Any]] = {}
     for item in items:
         source_key = str(item.get("source_message_key") or "").strip()
@@ -83,6 +91,7 @@ def initialize_action_journal(
             continue
         normalized_items[source_key] = {
             "source_message_key": source_key,
+            "origin_read_run_id": normalized_origin_read_run_id or None,
             "physical_anchor_keys": sorted(
                 {
                     str(value).strip()
@@ -115,9 +124,10 @@ def initialize_action_journal(
         target,
         {
             "schema_version": ACTION_JOURNAL_SCHEMA_VERSION,
-            "action_kind": str(action_kind or "").strip().lower(),
+            "action_kind": normalized_action_kind,
             "transaction_id": str(transaction_id or "").strip(),
             "conversation_id": str(conversation_id or "").strip(),
+            "origin_read_run_id": normalized_origin_read_run_id or None,
             "action_phase": "not_attempted",
             "items": normalized_items,
             "created_at": now,
