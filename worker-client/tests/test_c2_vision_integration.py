@@ -3422,6 +3422,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 action_kind="image",
                 transaction_id="image-cancel-after-copy",
                 conversation_id="conversation-image-cancel",
+                origin_read_run_id="read-image-cancel-after-copy",
                 items=[
                     {
                         "source_message_key": "image-source-1",
@@ -3486,6 +3487,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 action_kind="image",
                 transaction_id="image-menu-failure",
                 conversation_id="conversation-image-menu-failure",
+                origin_read_run_id="read-image-menu-failure",
                 items=[{
                     "source_message_key": "image-source-menu-failure",
                     "physical_anchor_keys": ["image-anchor-menu-failure"],
@@ -3549,6 +3551,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 action_kind="image",
                 transaction_id="image-empty-result",
                 conversation_id="conversation-image-empty",
+                origin_read_run_id="read-image-empty-result",
                 items=[
                     {
                         "source_message_key": "image-source-empty",
