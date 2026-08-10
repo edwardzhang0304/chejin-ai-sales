@@ -228,6 +228,21 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("-PreflightOnly -SkipBackend -SkipWechat", workflow)
         self.assertIn("actions/upload-artifact@v4", workflow)
 
+    def test_fast_uat_runtime_cache_is_gitignored(self):
+        result = subprocess.run(
+            [
+                "git",
+                "check-ignore",
+                "-q",
+                "--no-index",
+                "worker-client/.fast-uat-runtime/runtime/python.exe",
+            ],
+            cwd=ROOT.parent,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0)
+
     def test_fast_uat_launcher_uses_locked_runtime_and_shared_worker_data(self):
         launcher = (ROOT / "packaging" / "start-fast-uat.ps1").read_text(
             encoding="utf-8-sig"
