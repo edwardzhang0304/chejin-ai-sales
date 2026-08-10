@@ -29,7 +29,7 @@ from app.contracts.c2 import (
 )
 from app.errors import AppError
 from app.models.base import utcnow
-from app.models.c3 import Conversation, MessageBatch, ReplyAction
+from app.models.c3 import Conversation, HandoffEvent, MessageBatch, ReplyAction
 from app.models.lead import Lead
 from app.models.sales import Sales
 from app.models.task import Task
@@ -2904,6 +2904,7 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
     )
     conversation_allowed = conversation.status not in CONVERSATION_CLOSED_STATUSES
 
+    recovery_batch_eligible = False
     recovery_resolution = evidence_payload.get(
         "recoverable_handoff_resolution"
     )
@@ -2942,6 +2943,28 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             open_handoff_active = bool(
                 recovery_result["remaining_open_count"]
             )
+            recovery_ref = f"c2_recovery_read:{payload.read_run_id}"
+            previously_recovered_for_read = any(
+                event.status == "auto_recovered_clean_read"
+                and str(event.handoff_reason_code or "").strip()
+                in set(recovery_reason_codes)
+                and recovery_ref in set(event.evidence_refs or [])
+                for event in db.scalars(
+                    select(HandoffEvent).where(
+                        HandoffEvent.conversation_id
+                        == payload.conversation_id,
+                        HandoffEvent.closed_at.is_not(None),
+                        HandoffEvent.deleted_at.is_(None),
+                    )
+                )
+            )
+            recovery_batch_eligible = bool(
+                not open_handoff_active
+                and (
+                    recovery_result["closed_count"]
+                    or previously_recovered_for_read
+                )
+            )
             if recovery_result["closed_count"] and not open_handoff_active:
                 conversation.status = "ai_active"
                 conversation.handoff_reason_code = None
@@ -2957,6 +2980,7 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
     read_has_new_facts = False
     results: list[dict] = []
     new_customer_message_ids: list[str] = []
+    authoritative_customer_tail_ids: list[str] = []
     new_sales_message = False
     human_sales_observed = False
     last_human_sales_screen_order = 0
@@ -3041,6 +3065,10 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
                     "error_code": "MESSAGE_INGEST_DUPLICATED",
                 }
             )
+            if sender_role == "customer":
+                authoritative_customer_tail_ids.append(exists.id)
+            elif sender_role in SALES_SIDE_SENDER_ROLES:
+                authoritative_customer_tail_ids.clear()
             continue
         source_exists = db.scalar(
             select(MessageEvent).where(
@@ -3288,6 +3316,10 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
                         )
         ingested_count += 1
         read_has_new_facts = True
+        if sender_role == "customer":
+            authoritative_customer_tail_ids.append(message.id)
+        elif sender_role in SALES_SIDE_SENDER_ROLES:
+            authoritative_customer_tail_ids.clear()
         result = {
             "source_message_key": item.source_message_key,
             "dedupe_key": dedupe_key,
@@ -3333,6 +3365,28 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             if event.sender_role in SALES_SIDE_SENDER_ROLES
         ]
         latest_sales_order = max(sales_orders, default=0)
+        authoritative_partition_events = sorted(
+            partition_events,
+            key=lambda event: (
+                int(event.observation_order or 0),
+                str(event.id),
+            ),
+        )
+        authoritative_latest_sales_order = max(
+            (
+                int(event.observation_order or 0)
+                for event in authoritative_partition_events
+                if event.sender_role in SALES_SIDE_SENDER_ROLES
+            ),
+            default=0,
+        )
+        authoritative_customer_tail_ids = [
+            event.id
+            for event in authoritative_partition_events
+            if event.sender_role == "customer"
+            and int(event.observation_order or 0)
+            > authoritative_latest_sales_order
+        ]
         new_customer_message_ids = [
             event.id
             for event in current_run_events
@@ -3615,6 +3669,21 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             "batch_status": "capability_paused",
             "reason_codes": temporary_capability_gates,
         }
+    elif (
+        recovery_batch_eligible
+        and authoritative_customer_tail_ids
+        and (not partitioned or partition_final)
+    ):
+        from app.services.c3_service import (
+            collect_recovered_customer_message_batch,
+        )
+
+        message_batch = collect_recovered_customer_message_batch(
+            db,
+            conversation_id=payload.conversation_id,
+            message_event_ids=authoritative_customer_tail_ids,
+            trace_id=get_request_id(),
+        )
     elif new_customer_message_ids:
         from app.services.c3_service import collect_customer_message_batch
 

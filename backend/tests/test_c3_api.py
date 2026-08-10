@@ -500,6 +500,108 @@ def test_real_adapter_maps_structured_high_intent_to_direct_handoff(monkeypatch)
     assert decision.suggested_action == "handoff"
 
 
+def test_real_adapter_high_intent_overrides_send_reply(monkeypatch):
+    adapter = RealOmniAutoAIEngineAdapter()
+    brain_result = {
+        "rule_name": "customer_service_brain_reply",
+        "adoptable": True,
+        "reply_text": "可以，我帮您安排。",
+        "visible_reply_source": "brain_plan.reply_segments",
+        "brain_plan": {
+            "recommended_action": "send_reply",
+            "confidence": 0.97,
+            "risk_flags": ["customer_high_intent"],
+            "evidence_refs": ["message:event-high-intent-conflict"],
+            "reply_segments": ["可以，我帮您安排。"],
+        },
+    }
+    monkeypatch.setattr(
+        adapter,
+        "_load_config",
+        lambda: {
+            "customer_service_brain": {
+                "provider": "test",
+                "model": "test",
+                "api_key": "test-only",
+            }
+        },
+    )
+    monkeypatch.setattr(adapter, "_load_brain", lambda: object())
+    monkeypatch.setattr(
+        adapter,
+        "_run_brain_isolated",
+        lambda **_kwargs: brain_result,
+    )
+
+    decision = adapter.generate_reply_decision(
+        conversation_context={"conversation_id": "conv-high-intent-conflict"},
+        message_batch={
+            "id": "batch-high-intent-conflict",
+            "messages": [{"content": "我今天就去店里付定金"}],
+        },
+    )
+
+    assert decision.decision == "handoff"
+    assert decision.reply_text is None
+    assert decision.handoff_reason_code == "CUSTOMER_HIGH_INTENT"
+    assert decision.error_code == "CUSTOMER_HIGH_INTENT"
+    assert decision.suggested_action == "handoff"
+
+
+def test_real_adapter_does_not_label_combined_risk_reason_as_high_intent_without_explicit_marker(
+    monkeypatch,
+):
+    adapter = RealOmniAutoAIEngineAdapter()
+    brain_result = {
+        "rule_name": "customer_service_brain_handoff",
+        "adoptable": True,
+        "reason": "used_car_high_intent_or_risk",
+        "brain_plan": {
+            "recommended_action": "handoff",
+            "confidence": 0.9,
+            "risk": {
+                "risk_tags": ["contract_dispute"],
+                "needs_handoff": True,
+                "handoff_reason": "used_car_high_intent_or_risk",
+            },
+            "risk_flags": ["contract_dispute"],
+            "evidence_refs": ["policy:contract-risk"],
+            "reply_segments": [],
+        },
+    }
+    monkeypatch.setattr(
+        adapter,
+        "_load_config",
+        lambda: {
+            "customer_service_brain": {
+                "provider": "test",
+                "model": "test",
+                "api_key": "test-only",
+            }
+        },
+    )
+    monkeypatch.setattr(adapter, "_load_brain", lambda: object())
+    monkeypatch.setattr(
+        adapter,
+        "_run_brain_isolated",
+        lambda **_kwargs: brain_result,
+    )
+
+    decision = adapter.generate_reply_decision(
+        conversation_context={"conversation_id": "conv-contract-risk"},
+        message_batch={
+            "id": "batch-contract-risk",
+            "messages": [{"content": "合同条款存在争议"}],
+        },
+    )
+
+    assert decision.decision == "handoff"
+    assert decision.reply_text is None
+    assert decision.handoff_reason_code == "used_car_high_intent_or_risk"
+    assert decision.handoff_reason_code != "CUSTOMER_HIGH_INTENT"
+    assert decision.error_code is None
+
+
 def test_real_adapter_provider_exception_is_explicit_retry_later(monkeypatch):
     adapter = RealOmniAutoAIEngineAdapter()
     monkeypatch.setattr(adapter, "_load_config", lambda: {"customer_service_brain": {"provider": "test", "model": "test", "api_key": "test-only"}})
