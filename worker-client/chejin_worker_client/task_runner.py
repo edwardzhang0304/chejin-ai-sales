@@ -238,6 +238,72 @@ def voice_action_journal_anchor_keys(
     )
 
 
+def coalesce_physical_voice_observations(
+    target: WechatReadTarget,
+    observations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge every alias of one physical voice before business settlement."""
+
+    groups: list[dict[str, Any]] = []
+    for observation in observations:
+        source_key = voice_observation_source_key(target, observation)
+        anchor_key = voice_observation_anchor_key(observation)
+        if not anchor_key:
+            raise ValueError("MESSAGE_SOURCE_IDENTITY_MISSING")
+        aliases = set(voice_action_journal_anchor_keys(observation))
+        aliases.add(anchor_key)
+        role = str(observation.get("sender_role") or "").strip().lower()
+        matching_indexes = [
+            index
+            for index, group in enumerate(groups)
+            if aliases & set(group["physical_anchor_keys"])
+        ]
+        if not matching_indexes:
+            groups.append(
+                {
+                    "observation": observation,
+                    "source_message_key": source_key,
+                    "source_message_keys": {source_key},
+                    "anchor_key": anchor_key,
+                    "physical_anchor_keys": set(aliases),
+                    "roles": {role} if role else set(),
+                }
+            )
+            continue
+
+        primary = groups[matching_indexes[0]]
+        primary["source_message_keys"].add(source_key)
+        primary["physical_anchor_keys"].update(aliases)
+        if role:
+            primary["roles"].add(role)
+        for index in reversed(matching_indexes[1:]):
+            merged = groups.pop(index)
+            primary["source_message_keys"].update(
+                merged["source_message_keys"]
+            )
+            primary["physical_anchor_keys"].update(
+                merged["physical_anchor_keys"]
+            )
+            primary["roles"].update(merged["roles"])
+
+    normalized: list[dict[str, Any]] = []
+    for group in groups:
+        trusted_roles = set(group["roles"]) & {"customer", "self"}
+        if len(trusted_roles) != 1:
+            raise ValueError("VOICE_PHYSICAL_ALIAS_ROLE_CONFLICT")
+        normalized.append(
+            {
+                **group,
+                "source_message_keys": sorted(group["source_message_keys"]),
+                "physical_anchor_keys": sorted(
+                    group["physical_anchor_keys"]
+                ),
+                "role": next(iter(trusted_roles)),
+            }
+        )
+    return normalized
+
+
 class TaskLeaseGuard:
     def __init__(
         self,
@@ -7111,33 +7177,40 @@ class TaskRunner:
             }
 
         while True:
-            pending: list[tuple[dict[str, Any], str, str, str]] = []
-            pending_source_keys_seen: set[str] = set()
-            for observation in _untranscribed_voice_observations(current_payload):
-                if not observation_role_is_trusted(observation):
-                    continue
-                try:
-                    source_key = voice_observation_source_key(target, observation)
-                except ValueError:
-                    continue
-                ledger = load_c2_ledger_entry(target.conversation_id, source_key)
-                if ledger and ledger.get("terminal_state") in {
-                    "completed",
-                    "failed",
-                    "ignored",
-                }:
-                    continue
-                anchor_key = voice_observation_anchor_key(observation)
-                role = str(observation.get("sender_role") or "").strip().lower()
-                if (
-                    source_key
-                    and anchor_key
-                    and anchor_key not in processed_anchor_keys
-                    and role in {"customer", "self"}
-                    and source_key not in pending_source_keys_seen
+            try:
+                voice_groups = coalesce_physical_voice_observations(
+                    target,
+                    _untranscribed_voice_observations(current_payload),
+                )
+            except ValueError as exc:
+                return {
+                    "ok": False,
+                    "error_code": str(exc)
+                    or "MESSAGE_IDENTITY_UNCONFIRMED",
+                    "payload": current_payload,
+                }
+            pending: list[dict[str, Any]] = []
+            for group in voice_groups:
+                aliases = set(group["physical_anchor_keys"])
+                ledger_settled = any(
+                    (
+                        ledger := load_c2_ledger_entry(
+                            target.conversation_id,
+                            alias_source,
+                        )
+                    )
+                    and (
+                        ledger.get("terminal_state")
+                        in {"completed", "failed", "ignored"}
+                        or ledger.get("ingest_state")
+                        in {"waiting", "confirmed", "not_required"}
+                    )
+                    for alias_source in group["source_message_keys"]
+                )
+                if not ledger_settled and not (
+                    aliases & processed_anchor_keys
                 ):
-                    pending.append((observation, source_key, anchor_key, role))
-                    pending_source_keys_seen.add(source_key)
+                    pending.append(group)
 
             if not pending:
                 return {
@@ -7147,17 +7220,22 @@ class TaskRunner:
                     **summarized_outcomes(),
                 }
 
-            pending_source_keys = tuple(sorted({item[1] for item in pending}))
+            pending_source_keys = tuple(
+                sorted(
+                    str(item["source_message_key"])
+                    for item in pending
+                )
+            )
             if pending_source_keys in seen_pending_sets:
                 no_progress_outcomes = _unconfirmed_voice_action_outcomes(
                     source_keys=set(pending_source_keys),
                     roles={
-                        source_key: role
-                        for _, source_key, _, role in pending
+                        str(item["source_message_key"]): str(item["role"])
+                        for item in pending
                     },
                     anchors={
-                        source_key: anchor_key
-                        for _, source_key, anchor_key, _ in pending
+                        str(item["source_message_key"]): str(item["anchor_key"])
+                        for item in pending
                     },
                     error_code="VOICE_TRANSCRIBE_NO_PROGRESS",
                     voice_payload=current_payload,
@@ -7208,15 +7286,14 @@ class TaskRunner:
                         target=target,
                         items=[
                             {
-                                "source_message_key": source_key,
-                                "physical_anchor_keys": (
-                                    voice_action_journal_anchor_keys(
-                                        observation
-                                    )
-                                    or [anchor_key]
+                                "source_message_key": str(
+                                    item["source_message_key"]
+                                ),
+                                "physical_anchor_keys": list(
+                                    item["physical_anchor_keys"]
                                 ),
                             }
-                            for observation, source_key, anchor_key, _ in pending
+                            for item in pending
                         ],
                         flow_outcomes=flow_outcomes,
                     )
@@ -7295,35 +7372,44 @@ class TaskRunner:
 
             unresolved_anchors = set(reported_failed_anchors)
             if voice_state == "voice_transcribe_partial":
-                unresolved_anchors.update(
-                    anchor_key
-                    for _, _, anchor_key, _ in pending
-                    if anchor_key not in reported_processed_anchors
-                )
+                for item in pending:
+                    aliases = set(item["physical_anchor_keys"])
+                    if not aliases & reported_processed_anchors:
+                        unresolved_anchors.update(aliases)
             elif voice_state not in {
                 "voice_transcribe_completed",
                 "voice_transcribe_no_visible_voice",
             }:
-                unresolved_anchors.update(
-                    anchor_key for _, _, anchor_key, _ in pending
-                )
+                for item in pending:
+                    unresolved_anchors.update(item["physical_anchor_keys"])
             round_outcomes: list[dict[str, Any]] = []
-            for _, source_key, anchor_key, role in pending:
-                raw_outcome = raw_outcomes_by_anchor.get(anchor_key)
+            for item in pending:
+                source_key = str(item["source_message_key"])
+                anchor_key = str(item["anchor_key"])
+                role = str(item["role"])
+                aliases = set(item["physical_anchor_keys"])
+                raw_outcome = next(
+                    (
+                        raw_outcomes_by_anchor[alias]
+                        for alias in aliases
+                        if alias in raw_outcomes_by_anchor
+                    ),
+                    None,
+                )
                 if raw_outcome is not None:
                     outcome = classify_action_result(
                         "voice",
                         raw_outcome,
                         source_message_key=source_key,
                     )
-                elif anchor_key in reported_processed_anchors:
+                elif aliases & reported_processed_anchors:
                     outcome = classify_action_result(
                         "voice",
                         {
                             "action_phase": "confirmed",
                             "business_state": "completed",
                             "business_result_confirmed": True,
-                            "physical_anchor_keys": [anchor_key],
+                            "physical_anchor_keys": sorted(aliases),
                             "evidence": {
                                 "voice_anchor_key": anchor_key,
                                 "reported_processed_without_item_outcome": True,
@@ -7331,7 +7417,7 @@ class TaskRunner:
                         },
                         source_message_key=source_key,
                     )
-                elif anchor_key in unresolved_anchors:
+                elif aliases & unresolved_anchors:
                     outcome = classify_action_result(
                         "voice",
                         {
@@ -7355,14 +7441,14 @@ class TaskRunner:
                 outcome["evidence"] = outcome_evidence
                 outcome["terminal_payload"] = _voice_terminal_payload(
                     voice_payload,
-                    anchor_keys=[anchor_key],
+                    anchor_keys=sorted(aliases),
                     result=str(outcome.get("result") or "failed"),
                     error_code=str(outcome.get("error_code") or "") or None,
                 )
                 outcome_evidence["action_kind"] = "voice"
                 outcome["evidence"] = outcome_evidence
                 round_outcomes.append(outcome)
-                processed_anchor_keys.add(anchor_key)
+                processed_anchor_keys.update(aliases)
             item_outcomes = merge_item_outcomes(
                 item_outcomes,
                 round_outcomes,
@@ -8663,19 +8749,57 @@ class TaskRunner:
             voice_candidate_sources: dict[str, str] = {}
             voice_candidate_alias_sources: dict[str, str] = {}
             voice_candidate_roles: dict[str, str] = {}
+            voice_candidate_physical_anchors: dict[str, list[str]] = {}
             voice_item_outcomes: list[dict[str, Any]] = []
             partial_failed_voice_source_keys: list[str] = []
             partial_failed_voice_roles: dict[str, str] = {}
             deferred_new_voice_source_keys: list[str] = []
             voice_action_failure_code = ""
-            for observation in voice_candidates:
-                source_key = voice_observation_source_key(target, observation)
-                anchor_key = voice_observation_anchor_key(observation)
-                ledger = load_c2_ledger_entry(target.conversation_id, source_key)
-                if ledger and (
-                    ledger.get("terminal_state") in {"completed", "failed", "ignored"}
-                    or ledger.get("ingest_state") in {"waiting", "confirmed", "not_required"}
-                ):
+            try:
+                voice_groups = coalesce_physical_voice_observations(
+                    target,
+                    voice_candidates,
+                )
+            except ValueError as exc:
+                code = str(exc) or "MESSAGE_IDENTITY_UNCONFIRMED"
+                self.c2_stats["last_error"] = code
+                append_log(
+                    "WARN",
+                    "c2_voice_preaction_identity_unconfirmed",
+                    "语音物理别名无法在动作前合并为唯一身份，已阻断右键。",
+                    error_code=code,
+                    metadata={"conversation_id": target.conversation_id},
+                )
+                return {
+                    "ok": False,
+                    "error_code": code,
+                    "initial_messages": sidecar_payload,
+                }
+            for group in voice_groups:
+                observation = group["observation"]
+                source_key = str(group["source_message_key"])
+                anchor_key = str(group["anchor_key"])
+                physical_anchor_keys = list(group["physical_anchor_keys"])
+                settled_ledger = next(
+                    (
+                        ledger
+                        for alias_source in group["source_message_keys"]
+                        if (
+                            ledger := load_c2_ledger_entry(
+                                target.conversation_id,
+                                alias_source,
+                            )
+                        )
+                        and (
+                            ledger.get("terminal_state")
+                            in {"completed", "failed", "ignored"}
+                            or ledger.get("ingest_state")
+                            in {"waiting", "confirmed", "not_required"}
+                        )
+                    ),
+                    None,
+                )
+                if settled_ledger:
                     if not anchor_key:
                         code = "MESSAGE_IDENTITY_UNCONFIRMED"
                         self.c2_stats["last_error"] = code
@@ -8687,10 +8811,7 @@ class TaskRunner:
                             metadata={"conversation_id": target.conversation_id, "source_message_key": source_key},
                         )
                         return {"ok": False, "error_code": code, "initial_messages": sidecar_payload}
-                    excluded_voice_anchor_keys.update(
-                        voice_action_journal_anchor_keys(observation)
-                        or [anchor_key]
-                    )
+                    excluded_voice_anchor_keys.update(physical_anchor_keys)
                     append_log(
                         "INFO",
                         "c2_voice_preaction_ledger_hit",
@@ -8699,8 +8820,8 @@ class TaskRunner:
                             "conversation_id": target.conversation_id,
                             "source_message_key": source_key,
                             "voice_anchor_key": anchor_key,
-                            "terminal_state": ledger.get("terminal_state"),
-                            "ingest_state": ledger.get("ingest_state"),
+                            "terminal_state": settled_ledger.get("terminal_state"),
+                            "ingest_state": settled_ledger.get("ingest_state"),
                         },
                     )
                     continue
@@ -8715,17 +8836,14 @@ class TaskRunner:
                         metadata={"conversation_id": target.conversation_id, "source_message_key": source_key},
                     )
                     return {"ok": False, "error_code": code, "initial_messages": sidecar_payload}
-                for alias in voice_action_journal_anchor_keys(observation):
+                for alias in physical_anchor_keys:
                     voice_candidate_alias_sources[alias] = source_key
-                if source_key in voice_candidate_sources.values():
-                    # Multiple OmniAuto aliases for one physical bubble must
-                    # never become multiple business items or journal rows.
-                    continue
                 new_voice_candidates.append(observation)
                 voice_candidate_sources[anchor_key] = source_key
-                voice_candidate_roles[anchor_key] = str(
-                    observation.get("sender_role") or ""
-                ).strip().lower()
+                voice_candidate_roles[anchor_key] = str(group["role"])
+                voice_candidate_physical_anchors[source_key] = (
+                    physical_anchor_keys
+                )
             if new_voice_candidates:
                 if enforce_read_targets and not self._backend_still_allows_read_target_for_voice(binding, target):
                     return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS", "target_confirmation": locate_payload, "initial_messages": sidecar_payload}
@@ -8740,21 +8858,9 @@ class TaskRunner:
                             {
                                 "source_message_key": source_key,
                                 "physical_anchor_keys": (
-                                    voice_action_journal_anchor_keys(
-                                        next(
-                                            (
-                                                observation
-                                                for observation
-                                                in new_voice_candidates
-                                                if voice_observation_anchor_key(
-                                                    observation
-                                                )
-                                                == anchor_key
-                                            ),
-                                            {},
-                                        )
-                                    )
-                                    or [anchor_key]
+                                    voice_candidate_physical_anchors[
+                                        source_key
+                                    ]
                                 ),
                             }
                             for anchor_key, source_key

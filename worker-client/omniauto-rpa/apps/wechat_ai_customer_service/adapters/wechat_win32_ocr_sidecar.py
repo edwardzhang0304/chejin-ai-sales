@@ -7804,7 +7804,7 @@ def write_action_phase_journal(
         for value in (physical_anchor_keys or [])
         if str(value).strip()
     }
-    selected_source_key = ""
+    selected_source_keys: list[str] = []
     for source_key, item in items.items():
         if not isinstance(item, dict):
             continue
@@ -7814,21 +7814,21 @@ def write_action_phase_journal(
             if str(value).strip()
         }
         if anchor_keys and item_anchors & anchor_keys:
-            selected_source_key = str(source_key)
-            break
-    if not selected_source_key and len(items) == 1:
-        selected_source_key = str(next(iter(items)))
-    if items and not selected_source_key:
+            selected_source_keys.append(str(source_key))
+    if not selected_source_keys and len(items) == 1:
+        selected_source_keys.append(str(next(iter(items))))
+    if items and not selected_source_keys:
         raise ValueError("ACTION_JOURNAL_ITEM_NOT_FOUND")
     updated_at = datetime.now(timezone.utc).isoformat()
-    if selected_source_key:
+    for selected_source_key in selected_source_keys:
         item = dict(items.get(selected_source_key) or {})
         current_phase = str(
             item.get("action_phase") or "not_attempted"
         ).strip()
-        if phase_rank[requested_phase] < phase_rank.get(current_phase, 0):
-            requested_phase = current_phase
-        item["action_phase"] = requested_phase
+        item_phase = requested_phase
+        if phase_rank[item_phase] < phase_rank.get(current_phase, 0):
+            item_phase = current_phase
+        item["action_phase"] = item_phase
         if business_state is not None:
             item["business_state"] = (
                 str(business_state or "").strip() or None
@@ -7843,13 +7843,16 @@ def write_action_phase_journal(
             item["terminal_payload"] = terminal_payload
         item["updated_at"] = updated_at
         items[selected_source_key] = item
-        payload["items"] = items
-    current_top_phase = str(
-        payload.get("action_phase") or "not_attempted"
-    ).strip()
-    if phase_rank[requested_phase] < phase_rank.get(current_top_phase, 0):
-        requested_phase = current_top_phase
-    payload["action_phase"] = requested_phase
+    payload["items"] = items
+    payload["action_phase"] = max(
+        (
+            str(item.get("action_phase") or "not_attempted")
+            for item in items.values()
+            if isinstance(item, dict)
+        ),
+        key=lambda value: phase_rank.get(value, 0),
+        default="not_attempted",
+    )
     payload["updated_at"] = updated_at
     payload["updated_at_unix_ms"] = int(time.time() * 1000)
     encoded = json.dumps(

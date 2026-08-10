@@ -19,9 +19,12 @@ UI_LOCK_LEASE_EXPIRED = "UI_LOCK_LEASE_EXPIRED"
 UI_LOCK_RENEW_FAILED = "UI_LOCK_RENEW_FAILED"
 UI_LOCK_OWNER_MISMATCH = "UI_LOCK_OWNER_MISMATCH"
 UI_STEP_TIMEOUT = "UI_STEP_TIMEOUT"
+UI_LOCK_STATE_UNAVAILABLE = "UI_LOCK_STATE_UNAVAILABLE"
 
 LOCK_FILE = CONFIG.app_dir / "runtime" / "worker" / "ui_lock.json"
-_PROCESS_LOCK = threading.Lock()
+_PROCESS_LOCK = threading.RLock()
+_READ_RETRY_ATTEMPTS = 3
+_READ_RETRY_DELAY_SECONDS = 0.01
 
 
 class UiLockError(RuntimeError):
@@ -56,6 +59,42 @@ def _read_lock(path: Path = LOCK_FILE) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else {"corrupted": True, "path": str(path)}
 
 
+def _read_lock_with_retry(
+    path: Path = LOCK_FILE,
+    *,
+    attempts: int = _READ_RETRY_ATTEMPTS,
+    delay_seconds: float = _READ_RETRY_DELAY_SECONDS,
+) -> dict[str, Any] | None:
+    """Read a Windows lock file through short transient-sharing retries.
+
+    A read failure is never interpreted as an absent lock. Callers that still
+    cannot read the file must fail closed or convert the failure into a
+    structured ``UiLockError``.
+    """
+
+    last_error: OSError | None = None
+    for attempt in range(max(1, int(attempts))):
+        try:
+            return _read_lock(path)
+        except OSError as exc:
+            last_error = exc
+            if attempt + 1 < max(1, int(attempts)):
+                time.sleep(max(0.0, float(delay_seconds)))
+    assert last_error is not None
+    raise last_error
+
+
+def _unavailable_lock_payload(path: Path, exc: BaseException) -> dict[str, Any]:
+    return {
+        "locked": True,
+        "expired": False,
+        "state": "unknown",
+        "error_code": UI_LOCK_STATE_UNAVAILABLE,
+        "read_error": type(exc).__name__,
+        "path": str(path),
+    }
+
+
 def _write_lock(payload: dict[str, Any], path: Path = LOCK_FILE) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
@@ -71,6 +110,8 @@ def _delete_lock(path: Path = LOCK_FILE) -> None:
 
 
 def _is_expired(payload: dict[str, Any], *, now: datetime | None = None) -> bool:
+    if payload.get("corrupted") or payload.get("state") == "unknown":
+        return False
     expires_at = _parse_iso(payload.get("lease_expires_at"))
     if expires_at is None:
         return True
@@ -78,9 +119,22 @@ def _is_expired(payload: dict[str, Any], *, now: datetime | None = None) -> bool
 
 
 def lock_summary() -> dict[str, Any]:
-    payload = _read_lock()
+    try:
+        with _PROCESS_LOCK:
+            payload = _read_lock_with_retry()
+    except OSError as exc:
+        return _unavailable_lock_payload(LOCK_FILE, exc)
     if not payload:
         return {"locked": False}
+    if payload.get("corrupted"):
+        return {
+            "locked": True,
+            "expired": False,
+            "state": "unknown",
+            "error_code": UI_LOCK_STATE_UNAVAILABLE,
+            "read_error": "JSONDecodeError",
+            "path": str(payload.get("path") or LOCK_FILE),
+        }
     return {
         "locked": not _is_expired(payload),
         "lock_id": payload.get("lock_id"),
@@ -95,9 +149,27 @@ def lock_summary() -> dict[str, Any]:
 
 def force_recover_stale_lock(*, reason: str = "stale_lock_recovered") -> dict[str, Any]:
     with _PROCESS_LOCK:
-        payload = _read_lock()
+        try:
+            payload = _read_lock_with_retry()
+        except OSError as exc:
+            return {
+                "recovered": False,
+                "reason": "lock_state_unavailable",
+                "lock": _unavailable_lock_payload(LOCK_FILE, exc),
+            }
         if not payload:
             return {"recovered": False, "reason": "no_lock"}
+        if payload.get("corrupted"):
+            return {
+                "recovered": False,
+                "reason": "lock_state_unavailable",
+                "lock": {
+                    "locked": True,
+                    "state": "unknown",
+                    "error_code": UI_LOCK_STATE_UNAVAILABLE,
+                    **payload,
+                },
+            }
         if not _is_expired(payload):
             return {"recovered": False, "reason": "lock_not_expired", "lock": payload}
         _delete_lock()
@@ -169,7 +241,14 @@ class UiLockLease:
     def renew(self) -> dict[str, Any]:
         self.raise_if_lost()
         with _PROCESS_LOCK:
-            payload = _read_lock(self.path)
+            try:
+                payload = _read_lock_with_retry(self.path)
+            except OSError as exc:
+                raise UiLockError(
+                    UI_LOCK_RENEW_FAILED,
+                    "微信 UI 锁状态暂时不可读，已停止续租和后续微信操作。",
+                    data=_unavailable_lock_payload(self.path, exc),
+                ) from exc
             if not payload or payload.get("lock_id") != self.lock_id or payload.get("owner") != self.owner:
                 raise UiLockError(UI_LOCK_OWNER_MISMATCH, "当前进程不再持有微信 UI 锁。", data={"lock": payload or {}})
             if _is_expired(payload):
@@ -208,7 +287,14 @@ class UiLockLease:
         if self._renew_thread and self._renew_thread.is_alive():
             self._renew_thread.join(timeout=1.0)
         with _PROCESS_LOCK:
-            payload = _read_lock(self.path)
+            try:
+                payload = _read_lock_with_retry(self.path)
+            except OSError as exc:
+                raise UiLockError(
+                    UI_LOCK_STATE_UNAVAILABLE,
+                    "微信 UI 锁状态暂时不可读，禁止猜测锁归属并删除锁文件。",
+                    data=_unavailable_lock_payload(self.path, exc),
+                ) from exc
             if payload:
                 if payload.get("lock_id") != self.lock_id or payload.get("owner") != self.owner:
                     raise UiLockError(UI_LOCK_OWNER_MISMATCH, "释放微信 UI 锁失败：锁归属不匹配。", data={"lock": payload})
@@ -227,7 +313,10 @@ def acquire_ui_lock(
     last_payload: dict[str, Any] | None = None
     while time.monotonic() <= deadline:
         with _PROCESS_LOCK:
-            payload = _read_lock()
+            try:
+                payload = _read_lock_with_retry()
+            except OSError as exc:
+                payload = _unavailable_lock_payload(LOCK_FILE, exc)
             last_payload = payload
             if payload and _is_expired(payload):
                 _delete_lock()
