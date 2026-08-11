@@ -4294,6 +4294,56 @@ class TaskRunner:
         value = target.raw.get("batch_continuation")
         return dict(value) if isinstance(value, dict) else {}
 
+    def _apply_ingest_batch_continuation_to_target(
+        self,
+        message_batch: dict[str, Any],
+        target: WechatReadTarget,
+    ) -> bool:
+        """Promote an active-read result to its batch-scoped continuation.
+
+        The backend consumes the original read authorization when ingest is
+        settled.  Brain waiting must therefore start with the continuation
+        returned by that same ingest response; otherwise the first polling
+        guard would incorrectly test the already-consumed active-read ticket.
+        """
+
+        continuation = (
+            message_batch.get("continuation")
+            if isinstance(message_batch.get("continuation"), dict)
+            else {}
+        )
+        batch_id = str(message_batch.get("batch_id") or "").strip()
+        continuation_batch_id = str(
+            continuation.get("batch_id") or ""
+        ).strip()
+        token = str(continuation.get("token") or "").strip()
+        revision = str(
+            continuation.get("authorization_revision") or ""
+        ).strip()
+        read_reason = str(continuation.get("read_reason") or "").strip()
+        expected_reason = str(target.read_reason or "").strip()
+        if isinstance(target.raw, dict):
+            expected_reason = str(
+                target.raw.get("authorization_read_reason")
+                or expected_reason
+            ).strip()
+        if (
+            not batch_id
+            or continuation_batch_id != batch_id
+            or not token
+            or revision != str(target.authorization_revision or "").strip()
+            or read_reason != expected_reason
+        ):
+            return False
+        if not isinstance(target.raw, dict):
+            target.raw = {}
+        target.raw["batch_continuation"] = {
+            "batch_id": batch_id,
+            "token": token,
+        }
+        target.raw["authorization_read_reason"] = read_reason
+        return True
+
     def _apply_batch_continuation_to_target(
         self,
         status: dict[str, Any],
@@ -10805,15 +10855,45 @@ class TaskRunner:
             brain_result = None
             message_batch = result.get("message_batch") if isinstance(result, dict) else None
             if wait_for_brain and isinstance(message_batch, dict) and message_batch.get("batch_id"):
-                try:
-                    brain_result = self._wait_and_send_current_c3_batch(
-                        binding=binding,
-                        target=target,
-                        batch_id=str(message_batch["batch_id"]),
-                        cancel_check=action_cancel_requested,
+                if not self._apply_ingest_batch_continuation_to_target(
+                    message_batch,
+                    target,
+                ):
+                    error_code = "C3_BATCH_CONTINUATION_INVALID"
+                    append_log(
+                        "ERROR",
+                        "c3_batch_continuation_invalid",
+                        "消息已入库但批次续行票缺失或与原读取授权冲突；已暂停接单，禁止释放锁后恢复扫描。",
+                        error_code=error_code,
+                        metadata={
+                            "conversation_id": target.conversation_id,
+                            "remark_code": target.remark_code,
+                            "batch_id": message_batch.get("batch_id"),
+                            "authorization_revision": target.authorization_revision,
+                            "authorization_read_reason": (
+                                target.raw.get("authorization_read_reason")
+                                if isinstance(target.raw, dict)
+                                else target.read_reason
+                            ),
+                        },
+                        force_incident=True,
                     )
-                finally:
-                    self._stop_task_lease_guard()
+                    self.set_run_status("paused")
+                    brain_result = {
+                        "ok": False,
+                        "error_code": error_code,
+                        "batch_id": str(message_batch.get("batch_id") or ""),
+                    }
+                else:
+                    try:
+                        brain_result = self._wait_and_send_current_c3_batch(
+                            binding=binding,
+                            target=target,
+                            batch_id=str(message_batch["batch_id"]),
+                            cancel_check=action_cancel_requested,
+                        )
+                    finally:
+                        self._stop_task_lease_guard()
             fact_ingest_ok = not bool(ingest_error_code)
             conversation_flow_ok, conversation_terminal_state, flow_error_code = (
                 self._conversation_flow_outcome(

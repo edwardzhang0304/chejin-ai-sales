@@ -5546,7 +5546,19 @@ def test_ai_active_requires_exact_batch_continuation_to_advance_flow():
         headers=_worker_headers(worker),
     )
     assert first.status_code == 200, first.text
-    first_batch_id = first.json()["data"]["message_batch"]["batch_id"]
+    first_message_batch = first.json()["data"]["message_batch"]
+    first_batch_id = first_message_batch["batch_id"]
+    ingest_continuation = first_message_batch["continuation"]
+    assert ingest_continuation["batch_id"] == first_batch_id
+    assert ingest_continuation["token"]
+    assert (
+        ingest_continuation["authorization_revision"]
+        == first_payload["authorization_revision"]
+    )
+    assert (
+        ingest_continuation["read_reason"]
+        == first_payload["evidence"]["authorization_read_reason"]
+    )
 
     global_authorization = client.get(
         (
@@ -5567,6 +5579,7 @@ def test_ai_active_requires_exact_batch_continuation_to_advance_flow():
     assert continuation["authorization_scope"] == "batch_continuation"
     assert continuation["batch_id"] == first_batch_id
     assert continuation["continuation_token"]
+    assert continuation["continuation_token"] == ingest_continuation["token"]
 
     lightweight = client.get(
         (
