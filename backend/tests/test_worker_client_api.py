@@ -64,7 +64,7 @@ def _heartbeat(worker: dict, client_instance_id: str = "client-a", run_status: s
 def _create_sales(worker_id: str) -> str:
     response = client.post(
         "/api/sales",
-        json={"sales_name": "张伟", "enabled": True, "sort_order": 10, "worker_id": worker_id},
+        json={"sales_name": "张伟", "phone": "13900000001", "enabled": True, "sort_order": 10, "worker_id": worker_id},
         headers=HEADERS,
     )
     assert response.status_code == 200

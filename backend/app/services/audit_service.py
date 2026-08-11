@@ -56,9 +56,20 @@ EVENT_NAMES: dict[str, str] = {
     "admin_login_failed": "后台登录失败",
     "admin_logout": "退出后台",
     "wechat_binding_restored": "恢复微信监听",
+    "sales_feishu_open_id_matched": "销售飞书身份匹配成功",
+    "sales_feishu_open_id_sync_failed": "销售飞书身份匹配失败",
+    "sales_feishu_open_id_stale_discarded": "丢弃陈旧销售飞书身份结果",
+    "handoff_feishu_notify_succeeded": "转人工飞书通知成功",
+    "handoff_feishu_notify_failed": "转人工飞书通知失败",
 }
 
-FAILED_EVENTS = {"lead_assign_failed", "admin_login_failed", "vehicle_operation_failed"}
+FAILED_EVENTS = {
+    "lead_assign_failed",
+    "admin_login_failed",
+    "vehicle_operation_failed",
+    "sales_feishu_open_id_sync_failed",
+    "handoff_feishu_notify_failed",
+}
 logger = logging.getLogger(__name__)
 
 
@@ -143,6 +154,35 @@ def write_log(
         request_id=actor.request_id,
         before_data=jsonable_encoder(before_data) if before_data is not None else None,
         after_data=jsonable_encoder(after_data) if after_data is not None else None,
+        extra_metadata=jsonable_encoder(metadata or {}),
+    )
+    db.add(log)
+    return log
+
+
+def write_system_log(
+    db: Session,
+    *,
+    event_type: str,
+    module: str,
+    target_type: str,
+    target_id: str | None = None,
+    lead_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> OperationLog:
+    log = OperationLog(
+        event_type=event_type,
+        module=module,
+        target_type=target_type,
+        target_id=target_id,
+        lead_id=lead_id,
+        operator_id=None,
+        operator_name_snapshot="system",
+        ip_address=None,
+        user_agent=None,
+        request_id=None,
+        before_data=None,
+        after_data=None,
         extra_metadata=jsonable_encoder(metadata or {}),
     )
     db.add(log)

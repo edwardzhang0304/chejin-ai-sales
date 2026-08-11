@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     vehicle_excel_max_bytes: int = 8 * 1024 * 1024
     vehicle_excel_max_rows: int = 2000
     vehicle_import_preview_ttl_seconds: int = 24 * 60 * 60
+    feishu_app_id: str | None = None
+    feishu_app_secret: str | None = None
+    feishu_base_url: str = "https://open.feishu.cn"
+    feishu_http_timeout_seconds: float = 10.0
 
     # The same runtime env file also carries provider-owned variables such as
     # OPENAI_API_KEY. Chejin reads only its own settings while OmniAuto
@@ -122,6 +126,10 @@ class Settings(BaseSettings):
             raise ValueError("车辆图片数量和像素限制必须大于 0")
         if self.vehicle_excel_max_rows < 1:
             raise ValueError("车辆 Excel 最大行数必须至少为 1")
+        if self.feishu_http_timeout_seconds <= 0:
+            raise ValueError("飞书 HTTP 超时时间必须大于 0")
+        if not self.feishu_base_url.startswith("https://"):
+            raise ValueError("飞书 API 地址必须使用 HTTPS")
         if self.admin_session_cookie_path != "/api":
             raise ValueError("后台会话 Cookie Path 固定为 /api")
         if self.admin_session_idle_seconds <= 0:

@@ -114,7 +114,7 @@ def _task_lease_headers(worker: dict, claim_response) -> dict:
 def _create_sales(worker_id: str) -> str:
     response = client.post(
         "/api/sales",
-        json={"sales_name": "张伟", "enabled": True, "sort_order": 10, "worker_id": worker_id},
+        json={"sales_name": "张伟", "phone": "13900000001", "enabled": True, "sort_order": 10, "worker_id": worker_id},
         headers=INTERNAL_HEADERS,
     )
     assert response.status_code == 200

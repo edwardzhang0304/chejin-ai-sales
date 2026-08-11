@@ -12,7 +12,7 @@ class Sales(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     sales_name: Mapped[str] = mapped_column(String(50), nullable=False)
-    phone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    phone: Mapped[str] = mapped_column(String(32), nullable=False)
     wechat: Mapped[str | None] = mapped_column(String(64), nullable=True)
     feishu_user_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     worker_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("workers.id"), nullable=True)

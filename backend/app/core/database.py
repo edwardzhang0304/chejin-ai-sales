@@ -26,6 +26,20 @@ if settings.database_url.startswith("sqlite"):
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 
+@event.listens_for(Session, "after_commit")
+def _run_post_commit_effects(session: Session) -> None:
+    from app.services.feishu_service import run_post_commit_effects
+
+    run_post_commit_effects(session)
+
+
+@event.listens_for(Session, "after_rollback")
+def _clear_rolled_back_post_commit_effects(session: Session) -> None:
+    from app.services.feishu_service import clear_post_commit_effects
+
+    clear_post_commit_effects(session)
+
+
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:

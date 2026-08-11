@@ -64,7 +64,7 @@ def _worker_headers(worker: dict, claim: dict | None = None) -> dict[str, str]:
 
 
 def _create_sales(name: str = "张伟", worker_id: str | None = None) -> str:
-    payload = {"sales_name": name, "enabled": True, "sort_order": 10}
+    payload = {"sales_name": name, "phone": "13900000001", "enabled": True, "sort_order": 10}
     if worker_id:
         payload["worker_id"] = worker_id
     response = client.post("/api/sales", json=payload, headers=HEADERS)
