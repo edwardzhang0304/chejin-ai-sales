@@ -2833,12 +2833,16 @@ class TaskRunnerTest(unittest.TestCase):
             runner,
             "_read_one_wechat_target",
             return_value={"ok": False, "error_code": "C2_TARGET_CHAT_NOT_FOUND"},
-        ):
+        ) as refresh:
             runner.tick_once()
 
         self.assertIn(
             "fail:C2_REPLY_CONTEXT_RECOVERY_FAILED:pre_send_refresh",
             api.events,
+        )
+        self.assertEqual(
+            refresh.call_args.kwargs["operation_phase"],
+            "pre_send_refresh",
         )
         self.assertEqual(bridge.sent_replies, [])
 
@@ -3067,6 +3071,75 @@ class TaskRunnerTest(unittest.TestCase):
         assert kwargs["wait_for_brain"] is False
         assert kwargs["enforce_read_targets"] is True
         assert kwargs["allow_during_current_task"] is True
+        assert kwargs["operation_phase"] == "pre_send_refresh"
+
+    def test_c3_pre_send_refresh_failure_settles_pending_reply_before_return(self):
+        task = self.make_chat_reply_task(task_id="task-pre-send-failed")
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(RpaResult(ok=True, result_code="unused", message="unused")),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        with patch.object(
+            runner,
+            "_read_one_wechat_target",
+            return_value={
+                "ok": False,
+                "error_code": "C2_FRIEND_ACTIVATION_STATE_INVALID",
+            },
+        ):
+            result = runner._wait_and_send_current_c3_batch(
+                binding=binding,
+                target=api.read_targets[0],
+                batch_id="batch-1",
+                cancel_check=lambda: False,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["reply_task_settled"])
+        self.assertEqual(binding.run_status, "running")
+        self.assertNotIn("paused", api.run_status_updates)
+        self.assertEqual(
+            api.events.count(
+                "fail:C2_REPLY_CONTEXT_RECOVERY_FAILED:pre_send_refresh"
+            ),
+            1,
+        )
+        self.assertFalse(any(event.startswith("claim:") for event in api.events))
+
+    def test_unconfirmed_pre_send_failure_settlement_pauses_worker(self):
+        task = self.make_chat_reply_task(task_id="task-settlement-unconfirmed")
+        api = FakeApi(task)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(RpaResult(ok=True, result_code="unused", message="unused")),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        api.fail_task = Mock(side_effect=RuntimeError("backend unavailable"))
+
+        settled = runner._settle_chat_reply_context_failure_before_unlock(
+            binding,
+            task_id=task.id,
+            source_error_code="C2_TARGET_CHAT_NOT_FOUND",
+        )
+
+        self.assertFalse(settled)
+        self.assertEqual(binding.run_status, "paused")
+        self.assertIn("paused", api.run_status_updates)
 
     def test_c2_visible_scan_reports_first_screen_sessions(self):
         api = FakeApi(None)
@@ -8294,6 +8367,100 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(api.friend_activation_payloads[0]["conversation_type"], "private")
         self.assertFalse(bridge.locate_chats[0]["capture_initial_messages"])
         self.assertEqual(len(bridge.message_reads), 1)
+
+    def test_pre_send_refresh_preserves_friend_reason_without_reactivating(self):
+        api = FakeApi(None)
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.locate_payloads = [
+            {
+                "ok": True,
+                "state": "chat_target_confirmed",
+                "conversation_type": "private",
+                "conversation_type_evidence": {
+                    "matched": True,
+                    "short_code_confirmed": True,
+                    "admission_allowed": True,
+                    "conversation_type": "private",
+                    "raw_title": "CJK7M4Q2",
+                },
+            }
+        ]
+        target = WechatReadTarget(
+            conversation_id="conv-friend-pre-send",
+            rpa_session_key="wx:rpa:v1:friend-pre-send",
+            display_name="CJK7M4Q2",
+            remark_code="CJK7M4Q2",
+            read_reason="friend_acceptance_visible_hit",
+            authorization_revision="revision-friend-pre-send",
+            raw={
+                "identity_checkpoint": identity_checkpoint(),
+                "authorization_read_reason": "friend_acceptance_visible_hit",
+                "batch_continuation": {
+                    "batch_id": "batch-friend-pre-send",
+                    "token": "continuation-batch-friend-pre-send",
+                },
+            },
+        )
+        api.read_targets = [target]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        result = runner._read_one_wechat_target(
+            binding,
+            target,
+            operation_phase="pre_send_refresh",
+            current_step="pre_send_refresh",
+            current_only=True,
+            wait_for_brain=False,
+            enforce_read_targets=True,
+        )
+
+        self.assertTrue(result.get("ok"))
+        self.assertEqual(api.friend_activation_payloads, [])
+        self.assertTrue(bridge.locate_chats[0]["capture_initial_messages"])
+        self.assertEqual(len(bridge.message_reads), 1)
+
+    def test_pre_send_step_without_explicit_operation_phase_fails_closed(self):
+        api = FakeApi(None)
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        target = WechatReadTarget(
+            conversation_id="conv-pre-send-phase-conflict",
+            rpa_session_key="",
+            display_name="CJK7M4Q2",
+            remark_code="CJK7M4Q2",
+            read_reason="friend_acceptance_visible_hit",
+            authorization_revision="revision-pre-send-phase-conflict",
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        result = runner._read_one_wechat_target(
+            binding,
+            target,
+            current_step="pre_send_refresh",
+            wait_for_brain=False,
+        )
+
+        self.assertEqual(
+            result.get("error_code"),
+            "C2_READ_OPERATION_PHASE_CONFLICT",
+        )
+        self.assertEqual(bridge.locate_chats, [])
+        self.assertEqual(api.friend_activation_payloads, [])
 
     def test_image_observer_exception_blocks_same_screen_text_ingest(self):
         api = FakeApi(None)

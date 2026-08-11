@@ -1,5 +1,5 @@
 @startuml
-' 文档版本：v0.1.4；最后更新：2026-08-10
+' 文档版本：v0.1.5；最后更新：2026-08-11
 title AI智能客服售前跟进系统 C2-C3 单会话串行完整流程（图片增强目标架构）
 
 skinparam monochrome true
@@ -231,7 +231,7 @@ loop Worker运行中；每次循环最多完成一个会话事务
               W -> W: C2_CONVERSATION_TYPE_UNKNOWN\n不降级为private
               W -> Lock: finally release
             else 有效短码 + private + 当前授权
-              alt read_reason=friend_acceptance_visible_hit
+              alt operation_phase=authorized_read 且\nauthorization_read_reason=friend_acceptance_visible_hit
                 W -> Auth: 上报首次打开确认\n短码/private/chat_input_ready + 标题证据
                 Auth -> Auth: 再校验短时点击许可和证据\n此时才将friend_request_sent更新为friend_active
                 alt 后端拒绝激活确认
@@ -693,6 +693,7 @@ loop Worker运行中；每次循环最多完成一个会话事务
             alt C3结果=no_action/handoff/technical_failed
               W -> W: 不发送；当前会话事务到达终态
             else C3结果=send_reply
+              W -> W: operation_phase=pre_send_refresh\n保留原authorization_read_reason仅作授权来源\n禁止重复好友激活或召回状态转换
               W -> OA: pre_send_refresh current conversation\n保持原窗口，只做最新截图读取
               OA -> WX: 截图并读取当前底部消息
               WX --> OA: 最新画面
@@ -701,7 +702,13 @@ loop Worker运行中；每次循环最多完成一个会话事务
               OA --> W: refresh observations
               W -> L: 与已处理清单比较
 
-              alt 等待期间出现新customer文字/语音/图片
+              alt pre_send_refresh失败或目标不确认
+                W -> Reply: 在原UI锁内fail pending chat_reply\nC2_REPLY_CONTEXT_RECOVERY_FAILED
+                Reply -> DB: 取消未发送action/batch并创建handoff
+                alt 结算结果无法确认
+                  W -> W: 暂停接单\n禁止释放锁后由扫描抢跑
+                end
+              else 等待期间出现新customer文字/语音/图片
                 W -> Reply: supersede旧reply_action\n禁止发送旧回复
                 Reply -> C3: batch/action标记superseded
                 W -> W: 保持同一UI锁和当前会话\n回到语音处理 -> final_read -> Vision -> ingest -> Brain

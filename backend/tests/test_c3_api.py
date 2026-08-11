@@ -210,6 +210,8 @@ def _ingest_with_role(worker: dict, conversation_id: str, dedupe_key: str, conte
             "continuation_batch_id": continuation_batch_id,
             "continuation_token": authorization["continuation_token"],
         }
+    read_run_id = f"read-{dedupe_key}"
+    observation_id = f"observation:{dedupe_key}"
     raw_payload = {
         "contract_version": 3,
         "contract_revision": contract_revision(),
@@ -218,7 +220,7 @@ def _ingest_with_role(worker: dict, conversation_id: str, dedupe_key: str, conte
         "source_message_key": dedupe_key,
         "observation": {
             "schema_version": 3,
-            "observation_id": f"observation:{dedupe_key}",
+            "observation_id": observation_id,
             "row_kind": "text_bubble",
             "sender_role": role,
             "sender_role_source": "same_row_avatar",
@@ -235,7 +237,7 @@ def _ingest_with_role(worker: dict, conversation_id: str, dedupe_key: str, conte
             "contract_revision": contract_revision(),
             "contract_sha256": contract_sha256(),
             "observation_schema_version": int(c2_contract_v3()["observation_schema_version"]),
-            "read_run_id": f"read-{dedupe_key}",
+            "read_run_id": read_run_id,
             "conversation_id": conversation_id,
             "remark_code": remark_code,
             "rpa_session_key": "wx-c3-row-001",
@@ -269,6 +271,19 @@ def _ingest_with_role(worker: dict, conversation_id: str, dedupe_key: str, conte
                 "finished_at": utcnow().isoformat(),
                 "flow_gate_errors": [],
                 "flow_gate_details": [],
+                "slot_ledger_states": [
+                    {
+                        "observation_id": observation_id,
+                        "screen_order": 1,
+                        "order_source": "observation_index_fallback",
+                        "row_kind": "text_bubble",
+                        "source_message_key": dedupe_key,
+                        "origin_read_run_id": read_run_id,
+                        "fact_scope": "current_read_run",
+                        "delivery_state": "not_enqueued",
+                        "item_state": "completed",
+                    }
+                ],
             },
         },
         headers=_worker_headers(worker),

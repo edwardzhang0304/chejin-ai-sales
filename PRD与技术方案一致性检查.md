@@ -1,8 +1,8 @@
 # PRD 与技术方案一致性检查
 
-版本：v0.8.9
+版本：v0.8.10
 
-日期：2026-08-10
+日期：2026-08-11
 
 ## 1. 检查对象
 
@@ -40,12 +40,20 @@ Windows UAT。
 直接转人工且不生成重发提示，高意向通知销售并转人工；明确拒收、目标不明、发送未知、
 人工接管及必须人工决定的硬风险同样停止普通 AI。该修订不放宽目标、发送和 Guard 安全边界。
 
+2026-08-11 已进一步把“授权来源”和“Worker 当前执行动作”拆成两个正交维度：后端
+`read_reason` 在 Worker 内只作为 `authorization_read_reason` 保存，Worker 内部另以
+`operation_phase=authorized_read/pre_send_refresh` 决定是否属于首次授权读取或发送前
+复读。只有首次授权读取且原因为 `friend_acceptance_visible_hit` 时允许调用激活确认；
+发送前复读保留原授权原因但禁止重复激活。该修订不改变 PRD 业务流程、HTTP 接口或机器
+合同字段，只消除实现层状态语义混用。
+
 ## 3. 一致性矩阵
 
 | 检查项 | 产品/技术口径 | 当前实现与证据 | 判断 |
 |---|---|---|---|
 | C2 会话准入 | OmniAuto 是标题、会话类型、固定八位短码和准入的唯一判定者；Worker 只校验合同与后端授权 | 已删除 Worker 对 `raw_title` 的解析和会话重分类；缺失、矛盾或非 `private + allowed=true + 唯一正式短码` 全部失败关闭并告警 | 已整改，待架构复审 |
 | C2 读取轮次与传输状态 | `origin_read_run_id/fact_scope`、`item_state`、`delivery_state` 三维独立；waiting 不推断新旧 | 机器合同 `3.12.8`、Worker、后端、Ledger、Journal、Outbox 和合同测试已同步 | 已实现，待架构复审 |
+| C2 授权来源与执行阶段 | `authorization_read_reason` 只作后端授权来源；`operation_phase` 独立表示授权读取或发送前复读；复读禁止重复好友激活 | Worker 已增加阶段声明与冲突门禁；技术手册、三层合同、恢复架构和主流程 PUML 已同步 | 已实现，待架构复审 |
 | 首屏与定向 | 首屏可发现事实；未授权不读取，授权后才定向 | 多目标自动发现和串行实机通过 | 一致 |
 | 文字/语音/图片 | 统一角色、身份、顺序和 V3 ingest | `v16.130.0` 图片、顺序、去重实机通过 | 一致 |
 | 图片失败 | 结构化失败，不伪装零图片；菜单失败只用四个正式 `reason_detail`；PID 不是硬门禁；真实生产端必须无条件形成终态 | `not_attempted` 菜单失败已由真实 `process_image_slot` 生产路径写 terminal | 已实现，待架构复审 |
