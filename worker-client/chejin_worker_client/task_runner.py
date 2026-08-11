@@ -8686,11 +8686,6 @@ class TaskRunner:
                     if isinstance(effective_target.raw, dict):
                         effective_target.raw["authorization_read_reason"] = target.read_reason
                 else:
-                    if target.read_reason == "friend_acceptance_visible_hit":
-                        return {
-                            "ok": False,
-                            "error_code": "C2_FRIEND_ACCEPTANCE_NOT_VISIBLE",
-                        }
                     visible_source = "atomic_visible_scan"
                 base_target_mode = "visible"
                 fallback_target_mode = "search_by_remark_code" if effective_target.remark_code else ""

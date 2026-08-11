@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import ast
+import inspect
 import json
 import hashlib
 import os
 import tempfile
+import textwrap
 import threading
 import time
 import unittest
@@ -8043,25 +8046,201 @@ class TaskRunnerTest(unittest.TestCase):
             )
         )
 
-    def test_friend_acceptance_target_never_falls_back_to_short_code_search(self):
+    def test_all_backend_authorized_read_reasons_search_when_offscreen(self):
+        backend_read_reasons = (
+            "recall_precheck",
+            "friend_acceptance_visible_hit",
+            "visible_unread",
+            "recent_ai_sent",
+            "waiting_user_reply",
+            "waiting_sales_reply",
+        )
+        for read_reason in backend_read_reasons:
+            with self.subTest(read_reason=read_reason):
+                api = FakeApi(None)
+                bridge = FakeBridge(
+                    RpaResult(ok=True, result_code="unused", message="unused")
+                )
+                bridge.locate_payloads = [
+                    {
+                        "ok": False,
+                        "state": "target_not_confirmed",
+                        "error_code": "TARGET_NOT_CONFIRMED",
+                        "target_mode": "visible",
+                    },
+                    {
+                        "ok": True,
+                        "state": "chat_target_confirmed",
+                        "target_mode": "search_by_remark_code",
+                        "conversation_type": "private",
+                        "conversation_type_evidence": {
+                            "matched": True,
+                            "short_code_confirmed": True,
+                            "admission_allowed": True,
+                            "conversation_type": "private",
+                            "raw_title": "CJK7M4Q2 新好友",
+                        },
+                    },
+                ]
+                conversation_id = f"conv-offscreen-{read_reason}"
+                target = WechatReadTarget(
+                    conversation_id=conversation_id,
+                    rpa_session_key=f"wx:rpa:v1:{read_reason}",
+                    display_name="CJK7M4Q2 新好友",
+                    remark_code="CJK7M4Q2",
+                    read_reason=read_reason,
+                    authorization_revision=f"revision-{read_reason}",
+                    raw={"identity_checkpoint": identity_checkpoint()},
+                )
+                api.read_targets = [target]
+                runner, _ = self.make_runner(api, bridge)
+                binding = Binding(
+                    worker_id="worker-1",
+                    worker_token="token",
+                    client_instance_id="client-1",
+                    run_status="running",
+                )
+
+                runner._read_state_target_queue(binding, targets=[target])
+
+                self.assertEqual(
+                    [item["target_mode"] for item in bridge.locate_chats],
+                    ["visible", "search_by_remark_code"],
+                )
+                self.assertEqual(bridge.locate_chats[1]["rpa_session_key"], "")
+                self.assertEqual(
+                    bridge.locate_chats[1]["remark_code"], "CJK7M4Q2"
+                )
+                activation_count = (
+                    1 if read_reason == "friend_acceptance_visible_hit" else 0
+                )
+                self.assertEqual(
+                    len(api.friend_activation_payloads), activation_count
+                )
+                self.assertEqual(len(bridge.message_reads), 1)
+                self.assertEqual(len(api.message_payloads), 1)
+                if activation_count:
+                    self.assertLess(
+                        api.events.index(f"friend_activation:{conversation_id}"),
+                        api.events.index("ingest:1"),
+                    )
+                dedupe_key = runner._target_dedupe_key(target)
+                self.assertIn(
+                    dedupe_key, runner.c2_round_processed_conversation_ids
+                )
+                self.assertNotIn(
+                    dedupe_key, runner.c2_read_failure_cooldowns
+                )
+
+    def test_no_read_reason_specific_return_exists_before_target_chat_locating(self):
+        source = textwrap.dedent(
+            inspect.getsource(TaskRunner._read_one_wechat_target_impl)
+        )
+        tree = ast.parse(source)
+        locating_line = next(
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and node.value == "target_chat_locating"
+        )
+        violations: list[str] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If) or node.lineno >= locating_line:
+                continue
+            condition = ast.unparse(node.test)
+            if "read_reason" not in condition:
+                continue
+            if any(isinstance(child, ast.Return) for child in ast.walk(node)):
+                violations.append(condition)
+        self.assertEqual(violations, [])
+
+    def test_offscreen_friend_acceptance_revoked_before_locate_never_searches(self):
         api = FakeApi(None)
-        bridge = FakeBridge(RpaResult(ok=True, result_code="unused", message="unused"))
         target = WechatReadTarget(
-            conversation_id="conv-friend-visible-only",
-            rpa_session_key="wx:rpa:v1:friend",
-            display_name="CJFRIEND01 新好友",
-            remark_code="CJFRIEND01",
+            conversation_id="conv-friend-revoked",
+            rpa_session_key="wx:rpa:v1:friend-revoked",
+            display_name="CJK7M4Q2 新好友",
+            remark_code="CJK7M4Q2",
             read_reason="friend_acceptance_visible_hit",
-            authorization_revision="revision-friend-visible-only",
+            authorization_revision="revision-friend-revoked",
+        )
+        api.read_targets = [target]
+        api.read_authorization_overrides[target.conversation_id] = {
+            "allowed": False,
+            "conversation_id": target.conversation_id,
+            "authorization_revision": target.authorization_revision,
+            "read_reason": target.read_reason,
+        }
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
         )
         runner, _ = self.make_runner(api, bridge)
-        binding = Binding(worker_id="worker-1", worker_token="token", client_instance_id="client-1", run_status="running")
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
 
-        result = runner._read_one_wechat_target(binding, target)
+        runner._read_state_target_queue(binding, targets=[target])
 
-        assert result["error_code"] == "C2_FRIEND_ACCEPTANCE_NOT_VISIBLE"
-        assert bridge.locate_chats == []
-        assert bridge.message_reads == []
+        self.assertEqual(bridge.locate_chats, [])
+        self.assertEqual(api.friend_activation_payloads, [])
+        self.assertEqual(bridge.message_reads, [])
+
+    def test_offscreen_friend_acceptance_group_result_never_activates_or_reads(self):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-friend-group",
+            rpa_session_key="wx:rpa:v1:friend-group",
+            display_name="CJK7M4Q2 新好友",
+            remark_code="CJK7M4Q2",
+            read_reason="friend_acceptance_visible_hit",
+            authorization_revision="revision-friend-group",
+        )
+        api.read_targets = [target]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.locate_payloads = [
+            {
+                "ok": False,
+                "state": "target_not_confirmed",
+                "error_code": "TARGET_NOT_CONFIRMED",
+                "target_mode": "visible",
+            },
+            {
+                "ok": True,
+                "state": "chat_target_confirmed",
+                "target_mode": "search_by_remark_code",
+                "conversation_type": "group",
+                "conversation_type_evidence": {
+                    "matched": True,
+                    "short_code_confirmed": True,
+                    "admission_allowed": False,
+                    "conversation_type": "group",
+                    "raw_title": "CJK7M4Q2 测试群",
+                },
+            },
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        runner._read_state_target_queue(binding, targets=[target])
+
+        self.assertEqual(
+            [item["target_mode"] for item in bridge.locate_chats],
+            ["visible", "search_by_remark_code"],
+        )
+        self.assertEqual(runner.c2_stats["last_error"], "C2_FRIEND_ACTIVATION_EVIDENCE_INVALID")
+        self.assertEqual(api.friend_activation_payloads, [])
+        self.assertEqual(bridge.message_reads, [])
+        self.assertEqual(api.message_payloads, [])
 
     def test_friend_activation_is_confirmed_before_first_message_read(self):
         api = FakeApi(None)
