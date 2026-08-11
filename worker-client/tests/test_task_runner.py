@@ -2967,6 +2967,188 @@ class TaskRunnerTest(unittest.TestCase):
         assert result["sent"] is False
         assert result["batch"]["decision"] == "handoff"
 
+    def test_c2_ingest_switches_to_batch_continuation_before_brain_wait(self):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-serial-brain",
+            rpa_session_key="wx:rpa:v1:serial-brain",
+            display_name="CJV6P3R8",
+            remark_code="CJV6P3R8",
+            read_reason="waiting_user_reply",
+            authorization_revision="revision-serial-brain",
+            raw={
+                "authorization_read_reason": "waiting_user_reply",
+                "identity_checkpoint": identity_checkpoint(),
+            },
+        )
+        api.read_targets = [target]
+        api.message_batch_result = {
+            "batch_id": "batch-serial-brain",
+            "batch_status": "generating",
+            "continuation": {
+                "batch_id": "batch-serial-brain",
+                "token": "continuation-batch-serial-brain",
+                "authorization_revision": "revision-serial-brain",
+                "read_reason": "waiting_user_reply",
+            },
+        }
+        api.message_batch_statuses = [
+            {
+                "batch_id": "batch-serial-brain",
+                "batch_status": "generating",
+                "processing": True,
+                "updated_at": "generating",
+            },
+            {
+                "batch_id": "batch-serial-brain",
+                "batch_status": "handoff",
+                "processing": False,
+                "decision": "handoff",
+                "updated_at": "done",
+            },
+        ]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        ingest_confirmed = False
+        authorization_requests: list[tuple[bool, str, str]] = []
+        lock_states_during_batch_poll: list[bool] = []
+        original_ingest = api.post_wechat_messages_ingest
+        original_authorization = api.get_wechat_read_authorization
+        original_batch_status = api.get_wechat_message_batch
+
+        def ingest_and_consume_active_read(*args, **kwargs):
+            nonlocal ingest_confirmed
+            result = original_ingest(*args, **kwargs)
+            ingest_confirmed = True
+            return result
+
+        def authorization_after_ingest(
+            binding_arg,
+            conversation_id,
+            *,
+            continuation_batch_id=None,
+            continuation_token=None,
+            **kwargs,
+        ):
+            authorization_requests.append(
+                (
+                    ingest_confirmed,
+                    str(continuation_batch_id or ""),
+                    str(continuation_token or ""),
+                )
+            )
+            if ingest_confirmed and not continuation_batch_id:
+                return {
+                    "allowed": False,
+                    "conversation_id": conversation_id,
+                    "authorization_revision": "",
+                    "read_reason": "",
+                }
+            return original_authorization(
+                binding_arg,
+                conversation_id,
+                continuation_batch_id=continuation_batch_id,
+                continuation_token=continuation_token,
+                **kwargs,
+            )
+
+        def batch_status_with_lock_check(*args, **kwargs):
+            lock_states_during_batch_poll.append(
+                runner.current_ui_lock is not None
+            )
+            return original_batch_status(*args, **kwargs)
+
+        api.post_wechat_messages_ingest = ingest_and_consume_active_read
+        api.get_wechat_read_authorization = authorization_after_ingest
+        api.get_wechat_message_batch = batch_status_with_lock_check
+
+        with patch(
+            "chejin_worker_client.task_runner.time.sleep",
+            return_value=None,
+        ):
+            result = runner._read_one_wechat_target(
+                binding,
+                target,
+                current_step="state_target_message_read",
+                enforce_read_targets=True,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["conversation_terminal_state"], "handoff")
+        self.assertEqual(len(lock_states_during_batch_poll), 2)
+        self.assertTrue(all(lock_states_during_batch_poll))
+        after_ingest_requests = [
+            request for request in authorization_requests if request[0]
+        ]
+        self.assertTrue(after_ingest_requests)
+        self.assertTrue(
+            all(
+                request[1:] == (
+                    "batch-serial-brain",
+                    "continuation-batch-serial-brain",
+                )
+                for request in after_ingest_requests
+            )
+        )
+        self.assertEqual(bridge.session_scans, [])
+        self.assertNotIn("run_status:paused", api.events)
+
+    def test_c2_active_batch_without_valid_continuation_pauses_before_wait(self):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-missing-continuation",
+            rpa_session_key="wx:rpa:v1:missing-continuation",
+            display_name="CJV6P3R8",
+            remark_code="CJV6P3R8",
+            read_reason="waiting_user_reply",
+            authorization_revision="revision-missing-continuation",
+            raw={"identity_checkpoint": identity_checkpoint()},
+        )
+        api.read_targets = [target]
+        api.message_batch_result = {
+            "batch_id": "batch-missing-continuation",
+            "batch_status": "generating",
+        }
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+
+        with patch.object(
+            runner,
+            "_wait_and_send_current_c3_batch",
+        ) as wait_for_brain:
+            result = runner._read_one_wechat_target(
+                binding,
+                target,
+                current_step="state_target_message_read",
+                enforce_read_targets=True,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_code"], "C3_BATCH_CONTINUATION_INVALID")
+        self.assertEqual(binding.run_status, "paused")
+        self.assertIn("run_status:paused", api.events)
+        wait_for_brain.assert_not_called()
+
     def test_c3_brain_wait_stops_when_backend_state_has_no_progress(self):
         api = FakeApi(None)
         api.read_targets = [
@@ -4969,6 +5151,12 @@ class TaskRunnerTest(unittest.TestCase):
         api.message_batch_result = {
             "batch_id": "batch-flow-failed",
             "batch_status": "generating",
+            "continuation": {
+                "batch_id": "batch-flow-failed",
+                "token": "continuation-batch-flow-failed",
+                "authorization_revision": "revision-conv-flow-failed",
+                "read_reason": "waiting_sales_reply",
+            },
         }
         bridge = FakeBridge(
             RpaResult(ok=True, result_code="unused", message="unused")
