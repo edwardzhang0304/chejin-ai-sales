@@ -163,7 +163,7 @@ loop Worker运行中；每次循环最多完成一个会话事务
       W -> Auth: 上报scan-result
       Auth -> Auth: 只更新会话发现/绑定事实\nscan-result本身不授予读取权限
       Auth -> Auth: 将候选与C1的friend_request_sent核对\n校验短码、Worker/微信实例绑定和首屏行证据
-      Auth -> Auth: 只有核对通过才签发短时点击许可\nread_reason=friend_acceptance_visible_hit\nvisible-only，禁止定向搜索
+      Auth -> Auth: 只有核对通过才签发短时读取许可\nread_reason=friend_acceptance_visible_hit\n首屏命中走visible，未命中按正式短码搜索
       Auth -> Auth: 已有会话到达召回周期时，仅在静默时段/上限/状态检查通过后\n签发read_reason=recall_precheck + recall_cycle_id + recall_origin_status
       opt 此前bound的同一可见行，本次高质量观察不到原短码
         Auth -> Auth: 先保持原绑定并置degraded\n单次缺失不等于短码已移除
@@ -185,13 +185,13 @@ loop Worker运行中；每次循环最多完成一个会话事务
         end
       end
       W -> Auth: GET read-targets
-      Auth --> W: 仅返回后端已许可的目标\nconversation_id + remark_code\nauthorization_revision + read_reason + visible-only
+      Auth --> W: 仅返回后端已许可的目标\nconversation_id + remark_code\nauthorization_revision + read_reason
 
       alt read-targets为空
         W -> W: 清空visible_hit_queue\n不点击、不读消息、不转写、不识图、不入库
         W -> Lock: finally release
       else 存在授权目标
-        W -> W: 按优先级选择一个目标\n好友待通过只允许首屏命中；\n已有有效会话才允许短码定向搜索
+        W -> W: 按优先级选择一个目标\n所有授权原因统一定位：\n首屏唯一命中走visible，否则按正式短码搜索
         W -> W: 首屏/定向/恢复共用同一读取准入\n同时检查成功冷却、失败冷却、后端next_read_due_at
         note right
           成功且有新事实也至少冷却2分钟。
@@ -210,9 +210,7 @@ loop Worker运行中；每次循环最多完成一个会话事务
             W -> OA: open_and_verify\n当前屏、禁止主动上滚
             alt 目标仍在第一屏且同码唯一
               OA -> WX: 点击实时首屏唯一会话行
-            else 好友待通过候选已不在第一屏
-              OA --> W: C2_PENDING_FRIEND_VISIBLE_HIT_EXPIRED\n不打开搜索框，等待下次首屏扫描
-            else 已有有效会话第一屏没有命中
+            else 授权目标第一屏没有命中
               OA -> WX: 打开搜索框、粘贴短码\n等待结果稳定、唯一命中后点击
             else 第一屏同码多条/候选歧义
               OA --> W: C2_VISIBLE_TARGET_AMBIGUOUS

@@ -89,7 +89,9 @@
 > `private` 复核就直接进入 AI 会话。后续 C2 首屏发现并成功绑定短码后，
 > `invite_sent` 路径为 `friend_state/status=friend_request_sent`，
 > `already_friend` 路径为 `friend_state/status=friend_active`；两者都必须由后端签发
-> `read_reason=friend_acceptance_visible_hit`。Worker 确认有效短码、`private` 和会话可用后，
+> `read_reason=friend_acceptance_visible_hit`。最近首屏可见是后端签发该授权的事实来源，
+> 不是 Worker 执行时的第二授权门禁；授权仍有效但当前首屏未命中时，Worker 必须按正式
+> 短码执行 `search_by_remark_code`。Worker 确认有效短码、`private` 和会话可用后，
 > 后端统一进入 `friend_state=friend_active + status=friend_activation_reading`，
 > 再允许首次读取。有客户消息创建 `customer_message` 批次；有销售人工消息进入
 > `sales_replied_waiting_user`；双方都无消息才创建唯一 `friend_welcome` 批次。
@@ -554,7 +556,7 @@ C1 add_friend任务完成
 
 ```text
 后端read-targets返回read_reason=friend_acceptance_visible_hit
--> Worker使用当前authorization_revision打开当前可见会话
+-> Worker使用当前authorization_revision定位会话：首屏唯一命中走visible，否则按remark_code搜索
 -> Worker同步确认标题含正确remark_code
 -> Worker确认conversation_type=private且会话表面可用
 -> Worker调用activation-confirm

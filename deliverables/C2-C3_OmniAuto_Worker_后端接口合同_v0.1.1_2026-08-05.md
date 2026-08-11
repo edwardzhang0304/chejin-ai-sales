@@ -428,12 +428,15 @@ X-Request-Id: ...     # 可选
 
 后端返回 `bindings[]`；只有 `can_ingest_messages=true` 仍不能直接点击，Worker 还必须用当前轮 `read-targets` 做最终授权交集。
 
-`visible_unread` 的来源虽然是首屏 `unread_hint`，但后端将其放入当前
-`read-targets` 并签发 `authorization_revision` 后，它就是当前有效的读取授权。
-Worker 的 `visible_hit/local_unread_hint` 只用于选择首屏快速定位，不是第二授权门禁：
-首屏未命中必须进入状态目标队列并执行 `search_by_remark_code`；首屏能唯一定位但红点
-已经不可见时，也不得由 Worker 自行撤销后端授权。是否继续签发或消费该事实只由后端
-根据后续 `scan-result` 和完整读取结算决定。
+后端将目标放入当前 `read-targets` 并签发 `authorization_revision` 后，该目标就是当前
+有效的读取授权。对 `friend_acceptance_visible_hit / recall_precheck / visible_unread /
+recent_ai_sent / waiting_user_reply / waiting_sales_reply` 统一采用同一定位规则：本轮首屏
+唯一命中时走 `visible` 快速路径；首屏未命中时进入状态目标队列并执行
+`search_by_remark_code`。`visible_hit/local_unread_hint` 只选择定位路径，不是第二授权门禁。
+其中 `visible_unread` 来源于首屏 `unread_hint`，`friend_acceptance_visible_hit` 来源于最近
+首屏好友绑定事实，但 Worker 执行时均不得因当前首屏未命中自行撤销后端授权。是否继续
+签发或消费授权事实只由后端根据后续 `scan-result`、授权状态与完整读取结算决定；授权
+失效、正式短码不合法、搜索多结果、群聊、`unknown` 或搜索后短码不一致时必须失败关闭。
 
 ### 6.2 `GET /api/workers/{worker_id}/wechat/sessions/read-targets?limit=20`
 
