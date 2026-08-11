@@ -18,6 +18,7 @@
       {
         "schema_version": 3,
         "observation_id": "fixture-text-1",
+        "_worker_stable_id": "11111111-1111-1111-1111-111111111111:message:1",
         "row_kind": "text_bubble",
         "sender_role": "customer",
         "sender_role_source": "same_row_avatar",
@@ -35,6 +36,7 @@
       {
         "schema_version": 3,
         "observation_id": "fixture-voice-1",
+        "_worker_stable_id": "11111111-1111-1111-1111-111111111111:message:2",
         "row_kind": "voice_transcript",
         "sender_role": "customer",
         "sender_role_source": "parent_voice",
@@ -54,6 +56,7 @@
       {
         "schema_version": 3,
         "observation_id": "fixture-image-1",
+        "_worker_stable_id": "11111111-1111-1111-1111-111111111111:message:3",
         "row_kind": "image_bubble",
         "sender_role": "self",
         "sender_role_source": "same_row_avatar",
@@ -158,7 +161,56 @@
           "content": "销售发送了一张白色 SUV 外观图。"
         }
       }
-    ]
+    ],
+    "slot_ledger_states": [
+      {
+        "observation_id": "fixture-text-1",
+        "screen_order": 1,
+        "order_source": "observation_index_fallback",
+        "row_kind": "text_bubble",
+        "source_message_key": "fixture-worker-sequence-1",
+        "origin_read_run_id": "read-shared-mixed-roundtrip",
+        "fact_scope": "current_read_run",
+        "delivery_state": "not_enqueued",
+        "item_state": "completed"
+      },
+      {
+        "observation_id": "fixture-voice-1",
+        "screen_order": 2,
+        "order_source": "observation_index_fallback",
+        "row_kind": "voice_transcript",
+        "source_message_key": "fixture-worker-sequence-2",
+        "origin_read_run_id": "read-shared-mixed-roundtrip",
+        "fact_scope": "current_read_run",
+        "delivery_state": "not_enqueued",
+        "item_state": "completed"
+      },
+      {
+        "observation_id": "fixture-image-1",
+        "screen_order": 3,
+        "order_source": "observation_index_fallback",
+        "row_kind": "image_bubble",
+        "source_message_key": "fixture-worker-sequence-3",
+        "origin_read_run_id": "read-shared-mixed-roundtrip",
+        "fact_scope": "current_read_run",
+        "delivery_state": "not_enqueued",
+        "item_state": "completed"
+      }
+    ],
+    "sequence_alignment_evidence": {
+      "pre_sequence_source": "empty_checkpoint",
+      "pre_frame_id": "checkpoint:none:11111111-1111-1111-1111-111111111111",
+      "post_frame_id": "frame:read-shared-mixed-roundtrip",
+      "alignment_status": "not_required",
+      "candidate_alignment_count": 0,
+      "matched_pairs": [],
+      "old_tail_fully_consumed": true,
+      "new_suffix_observation_ids": [
+        "fixture-text-1",
+        "fixture-voice-1",
+        "fixture-image-1"
+      ]
+    }
   },
   "expected_messages": [
     {"screen_order": 1, "message_type": "text", "sender_role_hint": "customer"},

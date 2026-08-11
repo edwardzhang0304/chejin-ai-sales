@@ -30,7 +30,7 @@ from chejin_worker_client.transaction_outcomes import (
 )
 from chejin_worker_client.image_phase import (
     mark_image_action,
-    mark_image_settled_without_refresh,
+    mark_image_ui_frame_invalidated,
     mark_image_terminal,
     merge_image_phase_results,
     new_image_phase_result,
@@ -46,9 +46,87 @@ from chejin_worker_client.wechat_c2 import (
 class C2ContractTests(unittest.TestCase):
     def test_slot_ledger_contract_separates_fact_scope_from_delivery(self):
         schema = c2_contract_v3()["slot_ledger_state_schema"]
-        self.assertEqual(c2_contract_v3()["contract_revision"], "3.12.8")
+        self.assertEqual(c2_contract_v3()["contract_revision"], "3.13.2")
+        quarantine = c2_contract_v3()["outbox_recovery_contract"][
+            "state_machine"
+        ]["state_properties"]["identity_quarantined"]
+        self.assertFalse(quarantine["automatic_retry"])
+        self.assertFalse(quarantine["blocks_new_ui_actions"])
+        alignment = c2_contract_v3()["sequence_alignment_contract"]
+        self.assertNotIn(
+            "legacy_transition",
+            c2_contract_v3()["message_identity_contract"],
+        )
+        self.assertEqual(alignment["owner"], "worker")
+        self.assertEqual(
+            alignment["new_suffix_rule"],
+            "only_after_unique_alignment_consumes_pre_tail",
+        )
+        self.assertIn(
+            "voice_anchor_alias",
+            alignment["forbidden_cross_action_identity_inputs"],
+        )
+        self.assertIn(
+            "image_physical_anchor",
+            alignment["forbidden_cross_action_identity_inputs"],
+        )
+        identity_contract = c2_contract_v3()["message_identity_contract"]
+        self.assertEqual(
+            identity_contract["frame_local_action_inputs"],
+            ["physical_anchor"],
+        )
+        self.assertNotIn(
+            "physical_anchor",
+            identity_contract["omniauto_inputs"],
+        )
+        for forbidden in (
+            "voice_anchor_alias",
+            "image_physical_anchor",
+            "message_body_alone",
+            "same_type_occurrence_index",
+        ):
+            self.assertIn(
+                forbidden,
+                identity_contract["forbidden_identity_inputs"],
+            )
+        voice_binding = c2_contract_v3()[
+            "voice_action_binding_contract"
+        ]
+        self.assertEqual(voice_binding["owner"], "omniauto")
+        self.assertEqual(
+            voice_binding["confirmed_candidate_count"], 1
+        )
+        self.assertIn(
+            "continuous_target_tracking",
+            voice_binding["confirmed_methods"],
+        )
+        for field in (
+            "voice_action_stage",
+            "canonical_voice_action_id",
+            "reserved_worker_stable_id",
+            "pre_frame_id",
+            "post_frame_id",
+            "selected_pre_observation_id",
+            "selected_action_token",
+            "selected_target_fingerprint",
+            "tracking_frame_ids",
+            "tracking_edges",
+            "confirmed_action_mapping",
+        ):
+            self.assertIn(
+                field,
+                voice_binding["required_response_fields"],
+            )
+        self.assertIn(
+            "at_least_three_real_capture_frame_ids",
+            voice_binding["continuous_tracking_rule"],
+        )
         self.assertIn(
             "slot_ledger_states",
+            c2_contract_v3()["required_evidence_fields"],
+        )
+        self.assertIn(
+            "sequence_alignment_evidence",
             c2_contract_v3()["required_evidence_fields"],
         )
         self.assertNotIn(
@@ -87,6 +165,16 @@ class C2ContractTests(unittest.TestCase):
             read_run_id="read-current",
         )
         self.assertEqual(states[0]["fact_scope"], "current_read_run")
+        not_attempted_rule = c2_contract_v3()[
+            "image_transaction_recovery_contract"
+        ]["not_attempted_rule"]
+        for required_guard in (
+            "no terminal payload",
+            "no completed or failed ledger fact",
+            "no corresponding outbox record",
+            "regardless of action_phase",
+        ):
+            self.assertIn(required_guard, not_attempted_rule)
         with self.assertRaisesRegex(
             ValueError,
             "C2_SLOT_LEDGER_CURRENT_ORIGIN_MISMATCH",
@@ -603,10 +691,10 @@ class C2ContractTests(unittest.TestCase):
             ["image-1", "image-2"],
         )
 
-    def test_definitive_non_bitmap_failure_does_not_require_chat_refresh(self):
+    def test_any_image_ui_action_requires_chat_refresh(self):
         result = new_image_phase_result()
         mark_image_action(result, "invalid-image")
-        mark_image_settled_without_refresh(result, "invalid-image")
+        mark_image_ui_frame_invalidated(result, "invalid-image")
         mark_image_terminal(
             result,
             "invalid-image",
@@ -615,8 +703,9 @@ class C2ContractTests(unittest.TestCase):
 
         self.assertEqual(result["new_action_count"], 1)
         self.assertEqual(result["failed"], 1)
-        self.assertFalse(result["requires_final_refresh"])
-        self.assertEqual(result["refresh_source_keys"], [])
+        self.assertTrue(result["ui_frame_invalidated"])
+        self.assertTrue(result["requires_final_refresh"])
+        self.assertEqual(result["refresh_source_keys"], ["invalid-image"])
 
     def test_role_trust_is_derived_from_each_contract_row_rule(self):
         self.assertTrue(

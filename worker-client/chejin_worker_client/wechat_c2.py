@@ -248,11 +248,6 @@ def stable_digest(payload: Any, length: int = 16) -> str:
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:length]
 
 
-def normalized_content_hash(value: Any) -> str:
-    text = re.sub(r"\s+", " ", str(value or "").strip())
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
-
-
 def is_formal_c2_remark_code(value: Any) -> bool:
     return isinstance(value, str) and bool(FORMAL_C2_REMARK_CODE_RE.fullmatch(value))
 
@@ -510,528 +505,9 @@ def authoritative_order_source(slots: list[dict[str, Any]]) -> str:
     )
 
 
-def observation_identity_signature(observation: dict[str, Any]) -> str:
-    row_kind = str(observation.get("row_kind") or "").strip().lower()
-    role = str(observation.get("sender_role") or "").strip().lower()
-    message_type_value = str(observation.get("message_type") or "").strip().lower()
-    if row_kind == "image_bubble":
-        source = observation.get("source_message") if isinstance(observation.get("source_message"), dict) else {}
-        anchor = observation.get("image_physical_anchor")
-        if not isinstance(anchor, dict):
-            anchor = source.get("image_physical_anchor")
-        anchor = anchor if isinstance(anchor, dict) else {}
-        basis = {
-            "row_kind": row_kind,
-            "sender_role": role,
-            "message_type": message_type_value,
-            "preceding_stable_message": anchor.get("preceding_stable_message"),
-            "following_stable_message": anchor.get("following_stable_message"),
-            "bubble_visual_fingerprint": anchor.get("bubble_visual_fingerprint"),
-            "occurrence_index": anchor.get("occurrence_index"),
-        }
-    else:
-        basis = {
-            "row_kind": row_kind,
-            "sender_role": role,
-            "message_type": message_type_value,
-            "content_hash": normalized_content_hash(observation.get("content_clean") or ""),
-        }
-    return stable_digest(basis, length=40)
 
 
-def observation_alignment_signature(observation: dict[str, Any]) -> str:
-    """Return the coordinate-free signature used only for viewport alignment."""
 
-    row_kind = str(observation.get("row_kind") or "").strip().lower()
-    if row_kind != "image_bubble":
-        return observation_identity_signature(observation)
-    role = str(observation.get("sender_role") or "").strip().lower()
-    message_type_value = str(
-        observation.get("message_type") or ""
-    ).strip().lower()
-    source = (
-        observation.get("source_message")
-        if isinstance(observation.get("source_message"), dict)
-        else {}
-    )
-    anchor = observation.get("image_physical_anchor")
-    if not isinstance(anchor, dict):
-        anchor = source.get("image_physical_anchor")
-    anchor = anchor if isinstance(anchor, dict) else {}
-    return stable_digest(
-        {
-            "row_kind": row_kind,
-            "sender_role": role,
-            "message_type": message_type_value,
-            "bubble_visual_fingerprint": anchor.get(
-                "bubble_visual_fingerprint"
-            ),
-        },
-        length=40,
-    )
-
-
-def _stored_frame_signature_matches(
-    stored_item: dict[str, Any],
-    *,
-    current_index: int,
-    current_identity_signatures: list[str],
-    current_alignment_signatures: list[str],
-) -> bool:
-    """Compare one stored slot with the matching current contract version."""
-
-    stored_alignment = str(
-        stored_item.get("alignment_signature") or ""
-    ).strip()
-    stored_signature = str(stored_item.get("signature") or "").strip()
-    if stored_alignment:
-        return stored_alignment == current_alignment_signatures[current_index]
-    return stored_signature == current_identity_signatures[current_index]
-
-
-def _viewport_overlap_matches(
-    previous_frame: list[dict[str, Any]],
-    current_identity_signatures: list[str],
-    current_alignment_signatures: list[str],
-) -> tuple[dict[int, str], bool]:
-    """Align the previous visible suffix with the current visible prefix."""
-
-    max_overlap = min(
-        len(previous_frame),
-        len(current_alignment_signatures),
-    )
-    overlap_lengths = [
-        length
-        for length in range(1, max_overlap + 1)
-        if all(
-            _stored_frame_signature_matches(
-                previous_frame[
-                    len(previous_frame) - length + offset
-                ],
-                current_index=offset,
-                current_identity_signatures=current_identity_signatures,
-                current_alignment_signatures=current_alignment_signatures,
-            )
-            for offset in range(length)
-        )
-    ]
-    if len(overlap_lengths) > 1:
-        return {}, True
-    if not overlap_lengths:
-        return {}, False
-    overlap = overlap_lengths[0]
-    previous_start = len(previous_frame) - overlap
-    return (
-        {
-            current_index: str(
-                previous_frame[previous_start + current_index]["stable_id"]
-            )
-            for current_index in range(overlap)
-        },
-        False,
-    )
-
-
-def reconcile_cross_round_observation_identities(
-    observations: list[Any],
-    previous_state: dict[str, Any] | None = None,
-) -> tuple[list[Any], dict[str, Any], list[dict[str, Any]]]:
-    """Assign Worker-owned stable IDs by aligning consecutive visible sequences."""
-
-    state = previous_state if isinstance(previous_state, dict) else {}
-    previous_frame = [
-        item
-        for item in (state.get("last_frame") or [])
-        if isinstance(item, dict) and item.get("signature") and item.get("stable_id")
-    ]
-    recent_frames = [
-        [
-            item
-            for item in frame
-            if isinstance(item, dict) and item.get("signature") and item.get("stable_id")
-        ]
-        for frame in (state.get("recent_frames") or [])
-        if isinstance(frame, list)
-    ]
-    recent_frames = [frame for frame in recent_frames if frame]
-    catalog = {
-        str(signature): [str(value) for value in values if str(value)]
-        for signature, values in (state.get("catalog") or {}).items()
-        if isinstance(values, list)
-    }
-    original_catalog = {key: list(values) for key, values in catalog.items()}
-    legacy_dedupe_overrides = {
-        str(stable_id): str(dedupe_key)
-        for stable_id, dedupe_key in (state.get("legacy_dedupe_overrides") or {}).items()
-        if str(stable_id) and str(dedupe_key)
-    }
-    next_sequence = max(1, int(state.get("next_sequence") or 1))
-    enriched = [dict(item) if isinstance(item, dict) else item for item in observations]
-    slots: list[dict[str, Any]] = []
-    for index, observation in enumerate(enriched):
-        if not isinstance(observation, dict):
-            continue
-        row_kind = str(observation.get("row_kind") or "").strip().lower()
-        if row_kind not in {"text_bubble", "image_bubble", "system_message"}:
-            continue
-        if not observation_role_is_trusted(observation):
-            continue
-        slots.append(
-            {
-                "authority_index": index,
-                "rect": message_rect({"bubble_rect": observation.get("bubble_rect")}),
-                "signature": observation_identity_signature(observation),
-                "alignment_signature": observation_alignment_signature(
-                    observation
-                ),
-            }
-        )
-    ordered = order_authoritative_slots(slots)
-    current_signatures = [str(item["signature"]) for item in ordered]
-    current_alignment_signatures = [
-        str(item["alignment_signature"]) for item in ordered
-    ]
-    matches, overlap_ambiguous = _viewport_overlap_matches(
-        previous_frame,
-        current_signatures,
-        current_alignment_signatures,
-    )
-    if overlap_ambiguous:
-        return (
-            enriched,
-            state,
-            [
-                {
-                    "observation_id": "frame",
-                    "row_kind": "message_sequence",
-                    "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
-                    "signature": (
-                        current_alignment_signatures[0]
-                        if current_alignment_signatures
-                        else ""
-                    ),
-                    "reason": "multiple_viewport_suffix_prefix_overlaps",
-                }
-            ],
-        )
-
-    # A temporarily unrelated viewport must not erase recoverable identity
-    # evidence. Restore an older frame only when the complete ordered
-    # signature sequence matches; a single repeated message remains
-    # ambiguous and is never guessed from the catalog.
-    if not matches and len(current_alignment_signatures) > 1:
-        exact_historical_frames = [
-            frame
-            for frame in [previous_frame, *recent_frames]
-            if len(frame) == len(current_alignment_signatures)
-            and all(
-                _stored_frame_signature_matches(
-                    item,
-                    current_index=index,
-                    current_identity_signatures=current_signatures,
-                    current_alignment_signatures=(
-                        current_alignment_signatures
-                    ),
-                )
-                for index, item in enumerate(frame)
-            )
-        ]
-        unique_identity_sequences = {
-            tuple(str(item["stable_id"]) for item in frame)
-            for frame in exact_historical_frames
-        }
-        if len(unique_identity_sequences) == 1:
-            stable_ids = next(iter(unique_identity_sequences))
-            matches = {index: stable_id for index, stable_id in enumerate(stable_ids)}
-
-    used_ids = set(matches.values())
-    errors: list[dict[str, Any]] = []
-    frame: list[dict[str, str]] = []
-    for ordered_index, slot in enumerate(ordered):
-        observation_index = int(slot["authority_index"])
-        observation = enriched[observation_index]
-        signature = str(slot["signature"])
-        alignment_signature = str(slot["alignment_signature"])
-        stable_id = matches.get(ordered_index, "")
-        if not stable_id:
-            historical = [value for value in catalog.get(signature, []) if value not in used_ids]
-            if historical:
-                errors.append(
-                    {
-                        "observation_id": str(observation.get("observation_id") or f"observation-{observation_index}"),
-                        "row_kind": str(observation.get("row_kind") or ""),
-                        "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
-                        "signature": signature,
-                    }
-                )
-                frame.append(
-                    {
-                        "signature": signature,
-                        "alignment_signature": alignment_signature,
-                        "stable_id": "",
-                    }
-                )
-                continue
-            stable_id = f"worker-message-{next_sequence}"
-            next_sequence += 1
-        used_ids.add(stable_id)
-        observation["_worker_stable_id"] = stable_id
-        if stable_id in legacy_dedupe_overrides:
-            observation["_worker_legacy_dedupe_key"] = legacy_dedupe_overrides[stable_id]
-        known = catalog.setdefault(signature, [])
-        if stable_id not in known:
-            known.append(stable_id)
-            del known[:-50]
-        frame.append(
-            {
-                "signature": signature,
-                "alignment_signature": alignment_signature,
-                "stable_id": stable_id,
-            }
-        )
-
-    if errors:
-        return (
-            enriched,
-            {
-                "version": int(state.get("version") or 2),
-                "next_sequence": max(1, int(state.get("next_sequence") or 1)),
-                "last_frame": previous_frame,
-                "recent_frames": recent_frames,
-                "catalog": original_catalog,
-                "legacy_dedupe_overrides": legacy_dedupe_overrides,
-            },
-            errors,
-        )
-    trimmed_catalog = dict(list(catalog.items())[-500:])
-    frame_history = [previous_frame, *recent_frames] if previous_frame else recent_frames
-    unique_frame_history: list[list[dict[str, str]]] = []
-    seen_frame_sequences: set[tuple[tuple[str, str], ...]] = set()
-    for historical_frame in frame_history:
-        sequence = tuple(
-            (
-                str(
-                    item.get("alignment_signature")
-                    or item.get("signature")
-                    or ""
-                ),
-                str(item["stable_id"]),
-            )
-            for item in historical_frame
-        )
-        if not sequence or sequence in seen_frame_sequences:
-            continue
-        seen_frame_sequences.add(sequence)
-        unique_frame_history.append(historical_frame)
-        if len(unique_frame_history) >= 5:
-            break
-    new_state = {
-        "version": 3,
-        "next_sequence": next_sequence,
-        "last_frame": frame,
-        "recent_frames": unique_frame_history,
-        "catalog": trimmed_catalog,
-        "legacy_dedupe_overrides": legacy_dedupe_overrides,
-    }
-    return enriched, new_state, errors
-
-
-def reconcile_v16104_identity_transition(
-    target: WechatReadTarget,
-    observations: list[Any],
-    previous_state: dict[str, Any] | None,
-) -> tuple[list[Any], dict[str, Any], list[dict[str, Any]]]:
-    """Bridge legacy dedupe keys once, then keep only Worker sequence identities."""
-
-    existing_state = dict(previous_state) if isinstance(previous_state, dict) else {}
-    checkpoint = (
-        target.raw.get("identity_checkpoint")
-        if isinstance(target.raw, dict)
-        and isinstance(target.raw.get("identity_checkpoint"), dict)
-        else {}
-    )
-    try:
-        sequence_floor = max(
-            1,
-            int(checkpoint.get("next_sequence_floor") or 1),
-        )
-    except (TypeError, ValueError):
-        sequence_floor = 1
-    existing_state["next_sequence"] = max(
-        sequence_floor,
-        int(existing_state.get("next_sequence") or 1),
-    )
-    recent_messages = [
-        item
-        for item in (checkpoint.get("recent_messages") or [])
-        if isinstance(item, dict)
-        and str(item.get("stable_id") or "").strip()
-        and str(item.get("alignment_signature") or "").strip()
-    ]
-    checkpoint_frame = [
-        {
-            "signature": str(item["alignment_signature"]),
-            "alignment_signature": str(item["alignment_signature"]),
-            "stable_id": str(item["stable_id"]),
-        }
-        for item in recent_messages
-    ]
-    checkpoint_digest = hashlib.sha256(
-        json.dumps(
-            {
-                "version": checkpoint.get("version"),
-                "next_sequence_floor": sequence_floor,
-                "recent_messages": recent_messages,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            default=str,
-        ).encode("utf-8")
-    ).hexdigest()
-    if (
-        checkpoint_frame
-        and existing_state.get("server_checkpoint_digest")
-        != checkpoint_digest
-    ):
-        previous_frame = [
-            item
-            for item in (existing_state.get("last_frame") or [])
-            if isinstance(item, dict)
-        ]
-        local_next_sequence = int(
-            existing_state.get("next_sequence") or 1
-        )
-        if not previous_frame or sequence_floor >= local_next_sequence:
-            if previous_frame:
-                existing_state["recent_frames"] = [
-                    previous_frame,
-                    *(existing_state.get("recent_frames") or []),
-                ][:5]
-            existing_state["last_frame"] = checkpoint_frame
-        else:
-            existing_state["recent_frames"] = [
-                checkpoint_frame,
-                *(existing_state.get("recent_frames") or []),
-            ][:5]
-    existing_state["server_checkpoint_digest"] = checkpoint_digest
-    existing_state["server_next_sequence_floor"] = sequence_floor
-
-    def attach_checkpoint_state(
-        result: tuple[list[Any], dict[str, Any], list[dict[str, Any]]],
-    ) -> tuple[list[Any], dict[str, Any], list[dict[str, Any]]]:
-        enriched, state, errors = result
-        state = dict(state)
-        state["server_checkpoint_digest"] = checkpoint_digest
-        state["server_next_sequence_floor"] = sequence_floor
-        return enriched, state, errors
-    if existing_state.get("legacy_transition_completed") is True:
-        return attach_checkpoint_state(
-            reconcile_cross_round_observation_identities(
-                observations,
-                existing_state,
-            )
-        )
-    transition = target.raw.get("identity_transition") if isinstance(target.raw, dict) else {}
-    try:
-        transition_version = (
-            int(transition.get("version") or 0)
-            if isinstance(transition, dict)
-            else 0
-        )
-    except (TypeError, ValueError):
-        transition_version = 0
-    enriched, state, errors = attach_checkpoint_state(
-        reconcile_cross_round_observation_identities(
-            observations,
-            existing_state,
-        )
-    )
-    if errors or transition_version != 1:
-        return enriched, state, errors
-    legacy_messages = transition.get("legacy_messages") if isinstance(transition, dict) else []
-    legacy_keys = {
-        str(item.get("dedupe_key") or "").strip()
-        for item in legacy_messages
-        if isinstance(item, dict) and str(item.get("dedupe_key") or "").strip()
-    }
-    if not legacy_keys:
-        state["legacy_transition_completed"] = True
-        state["legacy_transition_source"] = str(
-            transition.get("source_version") or "v16.104"
-        )
-        return enriched, state, []
-
-    slots: list[dict[str, Any]] = []
-    for index, observation in enumerate(enriched):
-        if not isinstance(observation, dict):
-            continue
-        if str(observation.get("row_kind") or "").strip().lower() not in {
-            "text_bubble",
-            "system_message",
-        }:
-            continue
-        if not observation_role_is_trusted(observation):
-            continue
-        slots.append(
-            {
-                "authority_index": index,
-                "rect": message_rect({"bubble_rect": observation.get("bubble_rect")}),
-            }
-        )
-    ordered_slots = order_authoritative_slots(slots)
-    ordered_messages = [enriched[int(slot["authority_index"])] for slot in ordered_slots]
-    legacy_messages_for_identity: list[dict[str, Any]] = []
-    for item in ordered_messages:
-        clean_item = dict(item)
-        clean_item.pop("_worker_stable_id", None)
-        clean_item.pop("_worker_legacy_dedupe_key", None)
-        clean_item["content"] = str(
-            clean_item.get("content_clean") or clean_item.get("content") or ""
-        ).strip()
-        clean_item["type"] = str(
-            clean_item.get("message_type") or clean_item.get("type") or ""
-        ).strip()
-        legacy_messages_for_identity.append(clean_item)
-    matched_positions: list[int] = []
-    overrides = dict(state.get("legacy_dedupe_overrides") or {})
-    for position, observation in enumerate(ordered_messages):
-        legacy_observation = legacy_messages_for_identity[position]
-        try:
-            legacy_key, _, _ = message_dedupe_metadata(
-                target,
-                legacy_observation,
-                position,
-                messages=legacy_messages_for_identity,
-            )
-        except ValueError:
-            continue
-        if legacy_key not in legacy_keys:
-            continue
-        stable_id = str(observation.get("_worker_stable_id") or "").strip()
-        if not stable_id:
-            continue
-        matched_positions.append(position)
-        overrides[stable_id] = legacy_key
-        observation["_worker_legacy_dedupe_key"] = legacy_key
-
-    if matched_positions and matched_positions != list(range(len(matched_positions))):
-        return (
-            enriched,
-            state,
-            [
-                {
-                    "observation_id": "frame",
-                    "row_kind": "message_sequence",
-                    "error_code": "MESSAGE_LEGACY_IDENTITY_TRANSITION_AMBIGUOUS",
-                    "matched_positions": matched_positions,
-                    "reason": "legacy_messages_are_not_a_contiguous_visible_prefix",
-                }
-            ],
-        )
-    state["legacy_dedupe_overrides"] = overrides
-    state["legacy_transition_completed"] = True
-    state["legacy_transition_source"] = str(transition.get("source_version") or "v16.104")
-    return enriched, state, []
 
 
 def sender_role_group(message: dict[str, Any]) -> str:
@@ -1067,18 +543,23 @@ def worker_source_message_key(
     )[:255]
 
 
-def source_message_key_from_dedupe(target: WechatReadTarget, dedupe_key: str) -> str:
-    clean = str(dedupe_key or "").strip()
-    if not clean:
-        raise ValueError("MESSAGE_DEDUPE_KEY_MISSING")
-    return worker_source_message_key(
-        target,
-        identity_kind="worker_dedupe_key",
-        identity=clean,
-    )
-
-
 def image_observation_source_key(target: WechatReadTarget, observation: dict[str, Any]) -> str:
+    source = (
+        observation.get("source_message")
+        if isinstance(observation.get("source_message"), dict)
+        else {}
+    )
+    canonical_visual_id = str(
+        observation.get("canonical_visual_id")
+        or source.get("canonical_visual_id")
+        or ""
+    ).strip()
+    if canonical_visual_id:
+        return worker_source_message_key(
+            target,
+            identity_kind="canonical_visual_id",
+            identity=canonical_visual_id,
+        )
     worker_stable_id = str(observation.get("_worker_stable_id") or "").strip()
     if worker_stable_id:
         return worker_source_message_key(
@@ -1086,80 +567,35 @@ def image_observation_source_key(target: WechatReadTarget, observation: dict[str
             identity_kind="worker_sequence",
             identity=worker_stable_id,
         )
-    source = observation.get("source_message") if isinstance(observation.get("source_message"), dict) else {}
-    physical_anchor = observation.get("image_physical_anchor")
-    if not isinstance(physical_anchor, dict):
-        physical_anchor = source.get("image_physical_anchor")
-    if not isinstance(physical_anchor, dict):
-        raise ValueError("MESSAGE_SOURCE_IDENTITY_MISSING")
-    stable_anchor = {
-        key: physical_anchor.get(key)
-        for key in (
-            "sender_role",
-            "preceding_stable_message",
-            "following_stable_message",
-            "bubble_visual_fingerprint",
-            "occurrence_index",
-        )
-        if physical_anchor.get(key) not in (None, "")
-    }
-    if not stable_anchor:
-        raise ValueError("MESSAGE_SOURCE_IDENTITY_MISSING")
-    return worker_source_message_key(
-        target,
-        identity_kind="image_physical_anchor",
-        identity=stable_anchor,
-    )
-
-
-def voice_observation_anchor_key(observation: dict[str, Any]) -> str:
-    source = observation.get("source_message") if isinstance(observation.get("source_message"), dict) else {}
-    action_target = (
-        observation.get("action_target")
-        if isinstance(observation.get("action_target"), dict)
-        else {}
-    )
-    anchor = source.get("voice_anchor") if isinstance(source.get("voice_anchor"), dict) else {}
-    # ``stable`` and ``structural`` are aliases of one physical bubble. The
-    # structural key is viewport-shift invariant and is therefore the only
-    # canonical identity whenever OmniAuto provides it. A transcript may keep
-    # the stable alias in parent_voice_anchor_key, so parent must not win.
-    for value in (
-        observation.get("_voice_canonical_anchor_key"),
-        observation.get("voice_anchor_structural_key"),
-        source.get("voice_anchor_structural_key"),
-        action_target.get("anchor_structural_key"),
-        anchor.get("anchor_structural_key"),
-        observation.get("voice_anchor_stable_key"),
-        source.get("voice_anchor_stable_key"),
-        action_target.get("anchor_stable_key"),
-        anchor.get("anchor_stable_key"),
-        observation.get("parent_voice_anchor_key"),
-        observation.get("voice_anchor_key"),
-        source.get("parent_voice_anchor_key"),
-        source.get("voice_anchor_key"),
-        action_target.get("anchor_key"),
-        anchor.get("anchor_key"),
-    ):
-        clean = str(value or "").strip()
-        if clean:
-            return clean
-    return ""
+    raise ValueError("MESSAGE_SEQUENCE_IDENTITY_MISSING")
 
 
 def voice_observation_source_key(target: WechatReadTarget, observation: dict[str, Any]) -> str:
-    anchor_key = voice_observation_anchor_key(observation)
-    if not anchor_key:
-        raise ValueError("MESSAGE_SOURCE_IDENTITY_MISSING")
+    worker_stable_id = str(
+        observation.get("_worker_stable_id") or ""
+    ).strip()
+    if not worker_stable_id:
+        raise ValueError("MESSAGE_SEQUENCE_IDENTITY_MISSING")
     return worker_source_message_key(
         target,
-        identity_kind="voice_physical_anchor",
-        identity=anchor_key,
+        identity_kind="worker_sequence",
+        identity=worker_stable_id,
     )
 
 
 def apply_image_terminal_result(observation: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
     enriched = dict(observation)
+    transaction = (
+        result.get("transaction")
+        if isinstance(result.get("transaction"), dict)
+        else {}
+    )
+    action_phase = str(
+        result.get("action_phase")
+        or transaction.get("action_phase")
+        or "not_attempted"
+    ).strip()
+    enriched["action_phase"] = action_phase
     state = str(result.get("state") or "failed").strip().lower()
     if state not in {"completed", "failed"}:
         state = "failed"
@@ -1168,9 +604,7 @@ def apply_image_terminal_result(observation: dict[str, Any], result: dict[str, A
     reason_detail = str(
         result.get("reason_detail")
         or (
-            result.get("transaction", {}).get("status")
-            if isinstance(result.get("transaction"), dict)
-            else ""
+            transaction.get("status")
         )
         or ""
     ).strip()
@@ -1183,7 +617,6 @@ def apply_image_terminal_result(observation: dict[str, Any], result: dict[str, A
         return enriched
     understanding = _project_customer_image_understanding(result.get("customer_image_understanding") or {})
     bridge = _project_visual_bridge_input(result.get("visual_bridge_input") or {})
-    transaction = result.get("transaction") if isinstance(result.get("transaction"), dict) else {}
     image_sha256 = str(transaction.get("image_sha256") or "").strip().lower()
     if image_sha256:
         audit = understanding.get("audit") if isinstance(understanding.get("audit"), dict) else {}
@@ -1241,53 +674,12 @@ def normalized_voice_flow_state(value: Any) -> str:
     return "completed"
 
 
-def ocr_message_identity_context(messages: list[Any], message: dict[str, Any], index: int) -> dict[str, Any]:
-    role = sender_role_group(message)
-    msg_type = message_type(message)
-    content_hash = normalized_content_hash(message.get("content") or message.get("content_raw_ocr") or "")
-    occurrence_index = 0
-    previous_same_role = ""
-    next_same_role = ""
-    for candidate_index, candidate in enumerate(messages):
-        if not isinstance(candidate, dict):
-            continue
-        candidate_role = sender_role_group(candidate)
-        candidate_type = message_type(candidate)
-        candidate_content_hash = normalized_content_hash(candidate.get("content") or candidate.get("content_raw_ocr") or "")
-        if candidate_index < index and candidate_role == role:
-            previous_same_role = stable_digest(
-                {"type": candidate_type, "content_hash": candidate_content_hash},
-                length=20,
-            )
-        elif candidate_index > index and candidate_role == role and not next_same_role:
-            next_same_role = stable_digest(
-                {"type": candidate_type, "content_hash": candidate_content_hash},
-                length=20,
-            )
-        if (
-            candidate_index < index
-            and candidate_role == role
-            and candidate_type == msg_type
-            and candidate_content_hash == content_hash
-        ):
-            occurrence_index += 1
-    return {
-        "sender": role,
-        "type": msg_type,
-        "content_hash": content_hash,
-        "occurrence_index": occurrence_index,
-        "previous_same_role": previous_same_role,
-        "next_same_role": next_same_role,
-    }
-
-
-def message_dedupe_metadata(
+def unified_message_dedupe_metadata(
     target: WechatReadTarget,
     message: dict[str, Any],
-    index: int,
-    *,
-    messages: list[Any] | None = None,
 ) -> tuple[str, str, dict[str, Any]]:
+    """Build V3 dedupe metadata only from committed durable identity."""
+
     worker_stable_id = str(message.get("_worker_stable_id") or "").strip()
     if worker_stable_id:
         base = {
@@ -1299,97 +691,26 @@ def message_dedupe_metadata(
             "high",
             {"source": "worker_cross_round_sequence", **base},
         )
-    content = str(message.get("content") or message.get("content_raw_ocr") or "")
-    voice_anchor_id = voice_anchor_identity(message)
-    if message_type(message) == "voice" and content.strip() and not content_looks_like_untranscribed_voice_placeholder(content):
-        identity = ocr_message_identity_context(messages or [message], message, index if messages else 0)
-        occurrence_index = int(message.get("_voice_occurrence_index") or identity["occurrence_index"] or 0)
-        base = {
-            "conversation_id": target.conversation_id,
-            "remark_code": target.remark_code,
-            "sender": sender_role_group(message),
-            "type": "voice",
-            "content_hash": normalized_content_hash(content),
-            "voice_duration": voice_duration_seconds(message),
-            "occurrence_index": occurrence_index,
-        }
-        return (
-            f"{target.conversation_id}:{stable_digest(base, length=32)}"[:255],
-            "high",
-            {"source": "voice_semantic_identity", **base},
-        )
-    if message_type(message) == "voice" and voice_anchor_id:
-        base = {
-            "conversation_id": target.conversation_id,
-            "remark_code": target.remark_code,
-            "sender": sender_role_group(message),
-            "type": "voice",
-            "voice_anchor_id": voice_anchor_id,
-        }
-        return (
-            f"{target.conversation_id}:{stable_digest(base, length=32)}"[:255],
-            "high",
-            {"source": "voice_anchor_identity", **base},
-        )
     if message_type(message) == "image":
-        observation = message.get("observation") if isinstance(message.get("observation"), dict) else {}
-        physical_source_key = image_observation_source_key(target, observation)
+        observation = (
+            message.get("observation")
+            if isinstance(message.get("observation"), dict)
+            else {}
+        )
+        image_source_key = image_observation_source_key(target, observation)
         base = {
             "conversation_id": target.conversation_id,
             "remark_code": target.remark_code,
             "sender": sender_role_group(message),
             "type": "image",
-            "physical_source_key": physical_source_key,
+            "source_message_key": image_source_key,
         }
         return (
             f"{target.conversation_id}:{stable_digest(base, length=32)}"[:255],
             "high",
-            {"source": "worker_image_physical_identity", **base},
+            {"source": "worker_image_stable_identity", **base},
         )
-    if content.strip():
-        identity = ocr_message_identity_context(messages or [message], message, index if messages else 0)
-        base = {
-            "conversation_id": target.conversation_id,
-            "remark_code": target.remark_code,
-            "sender": identity["sender"],
-            "type": identity["type"],
-            "content_hash": identity["content_hash"],
-            "occurrence_index": identity["occurrence_index"],
-        }
-        return (
-            f"{target.conversation_id}:{stable_digest(base, length=32)}"[:255],
-            "medium",
-            {"source": "worker_structural_identity", **base, "context": identity},
-        )
-    raise ValueError("MESSAGE_DEDUPE_IDENTITY_UNCONFIRMED")
-
-
-def voice_anchor_identity(message: dict[str, Any]) -> str:
-    for key in ("voice_anchor_stable_key", "voice_anchor_key"):
-        value = str(message.get(key) or "").strip()
-        if value:
-            return value
-    anchor = message.get("voice_anchor")
-    if isinstance(anchor, dict):
-        for key in ("anchor_stable_key", "anchor_key"):
-            value = str(anchor.get(key) or "").strip()
-            if value:
-                return value
-    return ""
-
-
-def voice_duration_seconds(message: dict[str, Any]) -> int | None:
-    for key in ("voice_duration", "voice_seconds", "audio_duration", "audio_seconds"):
-        value = message.get(key)
-        if value is None:
-            continue
-        try:
-            return int(float(value))
-        except (TypeError, ValueError):
-            continue
-    text = str(message.get("voice_duration_text") or "")
-    match = re.search(r"\d{1,3}", text)
-    return int(match.group(0)) if match else None
+    raise ValueError("MESSAGE_SEQUENCE_IDENTITY_MISSING")
 
 
 def voice_text_looks_like_payload(value: str) -> bool:
@@ -1436,6 +757,16 @@ def voice_transcription_meta(
 ) -> dict[str, Any]:
     meta = {
         "state": voice_transcription_summary.get("state"),
+        "action_phase": voice_transcription_summary.get("action_phase"),
+        "ui_action_performed": voice_transcription_summary.get(
+            "ui_action_performed"
+        ),
+        "business_state": voice_transcription_summary.get(
+            "business_state"
+        ),
+        "business_result_confirmed": voice_transcription_summary.get(
+            "business_result_confirmed"
+        ),
         "attempt_count": voice_transcription_summary.get("attempt_count"),
         "quality_flags": voice_transcription_summary.get("quality_flags") if isinstance(voice_transcription_summary.get("quality_flags"), list) else [],
         "sidecar_run_id": voice_transcription_summary.get("sidecar_run_id"),
@@ -1446,6 +777,63 @@ def voice_transcription_meta(
         "review_path": voice_transcription_summary.get("review_path"),
         "target_mode": voice_transcription_summary.get("target_mode"),
         "remark_code": voice_transcription_summary.get("remark_code"),
+        # The backend must validate the same immutable action-to-message
+        # binding that the Worker accepted before it admits the final frame.
+        # Keep these fields as a read-only projection of the OmniAuto execute
+        # result; never reconstruct them from content, coordinates or anchors.
+        "canonical_voice_action_id": voice_transcription_summary.get(
+            "canonical_voice_action_id"
+        ),
+        "voice_action_stage": voice_transcription_summary.get(
+            "voice_action_stage"
+        ),
+        "pre_frame_id": voice_transcription_summary.get("pre_frame_id"),
+        "post_frame_id": voice_transcription_summary.get("post_frame_id"),
+        "selected_pre_observation_id": voice_transcription_summary.get(
+            "selected_pre_observation_id"
+        ),
+        "selected_action_token": voice_transcription_summary.get(
+            "selected_action_token"
+        ),
+        "selected_target_fingerprint": voice_transcription_summary.get(
+            "selected_target_fingerprint"
+        ),
+        "reserved_worker_stable_id": voice_transcription_summary.get(
+            "reserved_worker_stable_id"
+        ),
+        "transcript_binding_status": voice_transcription_summary.get(
+            "transcript_binding_status"
+        ),
+        "transcript_binding_method": voice_transcription_summary.get(
+            "transcript_binding_method"
+        ),
+        "binding_candidate_count": voice_transcription_summary.get(
+            "binding_candidate_count"
+        ),
+        "tracking_frame_ids": list(
+            voice_transcription_summary.get("tracking_frame_ids") or []
+        ),
+        "tracking_edges": [
+            dict(item)
+            for item in (
+                voice_transcription_summary.get("tracking_edges") or []
+            )
+            if isinstance(item, dict)
+        ],
+        "matched_neighbor_pairs": [
+            dict(item)
+            for item in (
+                voice_transcription_summary.get("matched_neighbor_pairs")
+                or []
+            )
+            if isinstance(item, dict)
+        ],
+        "native_source_message_id": voice_transcription_summary.get(
+            "native_source_message_id"
+        ),
+        "confirmed_action_mapping": dict(
+            voice_transcription_summary.get("confirmed_action_mapping") or {}
+        ),
     }
     if isinstance(message, dict):
         meta["message"] = {
@@ -1488,8 +876,8 @@ def _build_message_ingest_payload_v3(
     if not isinstance(observations, list):
         raise ValueError("C2 V3 payload is missing observations")
     worker_stable_ids: dict[str, str] = {}
-    worker_legacy_dedupe_keys: dict[str, str] = {}
     worker_ai_reply_receipts: dict[str, dict[str, Any]] = {}
+    worker_voice_action_summaries: dict[str, dict[str, Any]] = {}
     sanitized_observations: list[Any] = []
     for item in observations:
         if not isinstance(item, dict):
@@ -1498,19 +886,39 @@ def _build_message_ingest_payload_v3(
         observation = _drop_image_runtime_fields(dict(item))
         observation_id = str(observation.get("observation_id") or "").strip()
         worker_stable_id = str(observation.pop("_worker_stable_id", "") or "").strip()
-        worker_legacy_dedupe_key = str(
-            observation.pop("_worker_legacy_dedupe_key", "") or ""
-        ).strip()
+        if "_worker_legacy_dedupe_key" in observation:
+            raise ValueError("C2_LEGACY_IDENTITY_FIELD_FORBIDDEN")
         worker_ai_reply_receipt = observation.pop(
             "_worker_ai_reply_receipt", None
         )
+        worker_voice_action_summary = observation.pop(
+            "_worker_voice_action_summary", None
+        )
         if observation_id and worker_stable_id:
             worker_stable_ids[observation_id] = worker_stable_id
-        if observation_id and worker_legacy_dedupe_key:
-            worker_legacy_dedupe_keys[observation_id] = worker_legacy_dedupe_key
+            source_message = (
+                observation.get("source_message")
+                if isinstance(observation.get("source_message"), dict)
+                else {}
+            )
+            observation["source_message"] = {
+                **source_message,
+                "source_message_key": worker_source_message_key(
+                    target,
+                    identity_kind="worker_sequence",
+                    identity=worker_stable_id,
+                ),
+            }
         if observation_id and isinstance(worker_ai_reply_receipt, dict):
             worker_ai_reply_receipts[observation_id] = dict(
                 worker_ai_reply_receipt
+            )
+        if observation_id and isinstance(
+            worker_voice_action_summary,
+            dict,
+        ):
+            worker_voice_action_summaries[observation_id] = dict(
+                worker_voice_action_summary
             )
         if str(observation.get("row_kind") or "").strip().lower() == "image_bubble":
             if isinstance(observation.get("customer_image_understanding"), dict):
@@ -1548,8 +956,6 @@ def _build_message_ingest_payload_v3(
         msg_type: str,
         content: str | None,
         source_index: int,
-        identity_index: int,
-        identity_sources: list[dict[str, Any]],
         message_position: dict[str, Any],
         voice_meta: dict[str, Any] | None = None,
         item_state: str = "completed",
@@ -1563,37 +969,30 @@ def _build_message_ingest_payload_v3(
         ):
             raise RuntimeError("validated C2 observation lost content during canonical assembly")
         normalized_source = {**source, "sender_role": role, "sender": role, "type": msg_type, "content": content}
-        dedupe_key, confidence, basis = message_dedupe_metadata(
+        dedupe_key, confidence, basis = unified_message_dedupe_metadata(
             target,
             normalized_source,
-            identity_index,
-            messages=identity_sources,
         )
-        legacy_dedupe_key = str(source.get("_worker_legacy_dedupe_key") or "").strip()
-        if legacy_dedupe_key:
-            dedupe_key = legacy_dedupe_key
-            confidence = "high"
-            basis = {
-                "source": "v16104_identity_transition",
-                "legacy_dedupe_key": legacy_dedupe_key,
-                "worker_stable_id": str(source.get("_worker_stable_id") or ""),
-            }
         source_observation = source.get("observation") if isinstance(source.get("observation"), dict) else {}
         worker_stable_id = str(source.get("_worker_stable_id") or "").strip()
-        if msg_type == "voice":
-            canonical_source_key = voice_observation_source_key(target, source_observation)
-        elif msg_type == "image":
-            canonical_source_key = (
-                worker_source_message_key(
-                    target,
-                    identity_kind="worker_sequence",
-                    identity=worker_stable_id,
+        if msg_type == "image":
+            image_identity_observation = dict(source_observation)
+            if worker_stable_id:
+                image_identity_observation["_worker_stable_id"] = (
+                    worker_stable_id
                 )
-                if worker_stable_id
-                else image_observation_source_key(target, source_observation)
+            canonical_source_key = image_observation_source_key(
+                target,
+                image_identity_observation,
             )
         else:
-            canonical_source_key = source_message_key_from_dedupe(target, dedupe_key)
+            if not worker_stable_id:
+                raise ValueError("MESSAGE_SEQUENCE_IDENTITY_MISSING")
+            canonical_source_key = worker_source_message_key(
+                target,
+                identity_kind="worker_sequence",
+                identity=worker_stable_id,
+            )
         if canonical_source_key in source_keys:
             observation_validation_errors.append(
                 {
@@ -1610,7 +1009,10 @@ def _build_message_ingest_payload_v3(
             **{
                 key: value
                 for key, value in normalized_source.items()
-                if key not in {"_worker_stable_id", "_worker_legacy_dedupe_key"}
+                if key not in {
+                    "_worker_stable_id",
+                    "_worker_voice_action_summary",
+                }
             },
             "contract_version": 3,
             "contract_revision": contract_revision(),
@@ -1687,7 +1089,7 @@ def _build_message_ingest_payload_v3(
                 "flow_state": (
                     "failed"
                     if msg_type == "voice" and item_state == "failed"
-                    else (flow_state if msg_type == "voice" else "completed")
+                    else "completed"
                 ),
                 "message_position": message_position,
                 "raw_payload": raw_payload,
@@ -1722,9 +1124,11 @@ def _build_message_ingest_payload_v3(
                 str(observation.get("observation_id") or "").strip(),
                 "",
             ),
-            "_worker_legacy_dedupe_key": worker_legacy_dedupe_keys.get(
-                str(observation.get("observation_id") or "").strip(),
-                "",
+            "_worker_voice_action_summary": (
+                worker_voice_action_summaries.get(
+                    str(observation.get("observation_id") or "").strip(),
+                    {},
+                )
             ),
         }
         rect = message_rect({"bubble_rect": observation.get("bubble_rect") or source.get("bubble_rect")})
@@ -1790,7 +1194,6 @@ def _build_message_ingest_payload_v3(
                     "type": "voice",
                     "content": content,
                     "voice_anchor_stable_key": parent_anchor_key,
-                    "source_message_key": voice_observation_source_key(target, observation),
                 }
                 candidate = {
                     "source": voice_source,
@@ -1798,7 +1201,18 @@ def _build_message_ingest_payload_v3(
                     "msg_type": "voice",
                     "content": content,
                     "source_index": index,
-                    "voice_meta": voice_transcription_meta(voice_summary, message=source),
+                    "voice_meta": voice_transcription_meta(
+                        (
+                            source.get("_worker_voice_action_summary")
+                            if isinstance(
+                                source.get("_worker_voice_action_summary"),
+                                dict,
+                            )
+                            and source.get("_worker_voice_action_summary")
+                            else voice_summary
+                        ),
+                        message=source,
+                    ),
                 }
             elif row_kind == "voice_bubble" and item_state == "failed":
                 candidate = {
@@ -1808,10 +1222,6 @@ def _build_message_ingest_payload_v3(
                         "content": None,
                         "voice_anchor_stable_key": str(
                             observation.get("voice_anchor_key") or ""
-                        ),
-                        "source_message_key": voice_observation_source_key(
-                            target,
-                            observation,
                         ),
                     },
                     "role": role,
@@ -1856,18 +1266,6 @@ def _build_message_ingest_payload_v3(
     frame_order_source = authoritative_order_source(slots)
     ordered_slots = order_authoritative_slots(slots)
 
-    candidates = [slot["candidate"] for slot in ordered_slots if isinstance(slot.get("candidate"), dict)]
-    identity_sources = [
-        {
-            **candidate["source"],
-            "sender_role": candidate["role"],
-            "sender": candidate["role"],
-            "type": candidate["msg_type"],
-            "content": candidate["content"],
-        }
-        for candidate in candidates
-    ]
-    identity_index = 0
     for screen_order, slot in enumerate(ordered_slots, start=1):
         candidate = slot.get("candidate")
         if not isinstance(candidate, dict):
@@ -1891,13 +1289,10 @@ def _build_message_ingest_payload_v3(
             msg_type=candidate["msg_type"],
             content=candidate["content"],
             source_index=candidate["source_index"],
-            identity_index=identity_index,
-            identity_sources=identity_sources,
             message_position=message_position,
             voice_meta=candidate["voice_meta"],
             item_state=str(candidate.get("item_state") or "completed"),
         )
-        identity_index += 1
 
     finished_at = now_iso()
     authorization_read_reason = ""
@@ -1923,6 +1318,23 @@ def _build_message_ingest_payload_v3(
         list(sidecar_payload.get("slot_ledger_states") or []),
         read_run_id=clean_read_run_id,
     )
+    sequence_alignment_evidence = sidecar_payload.get(
+        "sequence_alignment_evidence"
+    )
+    if not isinstance(sequence_alignment_evidence, dict):
+        raise ValueError("C2_SEQUENCE_ALIGNMENT_EVIDENCE_MISSING")
+    required_alignment_fields = {
+        "pre_sequence_source",
+        "pre_frame_id",
+        "post_frame_id",
+        "alignment_status",
+        "candidate_alignment_count",
+        "matched_pairs",
+        "old_tail_fully_consumed",
+        "new_suffix_observation_ids",
+    }
+    if not required_alignment_fields.issubset(sequence_alignment_evidence):
+        raise ValueError("C2_SEQUENCE_ALIGNMENT_EVIDENCE_INVALID")
     return {
         "contract_version": 3,
         "contract_revision": contract_revision(),
@@ -1940,6 +1352,9 @@ def _build_message_ingest_payload_v3(
             "contract_sha256": contract_sha256(),
             "observation_schema_version": 3,
             "authoritative_frame_source": authoritative_frame_source,
+            "ui_frame_invalidated": bool(
+                sidecar_payload.get("ui_frame_invalidated")
+            ),
             "observations": [dict(item) if isinstance(item, dict) else item for item in observations],
             "sidecar_run_id": message_sidecar_id,
             "artifact_dir": sidecar_payload.get("artifact_dir"),
@@ -1968,6 +1383,9 @@ def _build_message_ingest_payload_v3(
                 sidecar_payload.get("failed_voice_source_keys") or []
             ),
             "slot_ledger_states": slot_ledger_states,
+            "sequence_alignment_evidence": dict(
+                sequence_alignment_evidence
+            ),
             "historical_warnings": list(
                 sidecar_payload.get("historical_warnings") or []
             ),
@@ -2006,6 +1424,24 @@ def build_flow_gate_ingest_payload(
     if not clean_code:
         raise ValueError("C2_FLOW_GATE_ERROR_CODE_MISSING")
     clean_evidence = dict(evidence or {})
+    authoritative_frame_source = str(
+        clean_evidence.pop("authoritative_frame_source", "initial_read")
+        or "initial_read"
+    ).strip()
+    if authoritative_frame_source not in {
+        "initial_read",
+        "final_read",
+        "action_journal_recovery",
+    }:
+        raise ValueError("C2_AUTHORITATIVE_FRAME_SOURCE_INVALID")
+    ui_frame_invalidated = clean_evidence.pop(
+        "ui_frame_invalidated",
+        False,
+    )
+    if not isinstance(ui_frame_invalidated, bool):
+        raise ValueError("C2_UI_FRAME_INVALIDATED_INVALID")
+    if ui_frame_invalidated and authoritative_frame_source != "final_read":
+        raise ValueError("C2_AUTHORITATIVE_FRAME_SOURCE_INVALID")
     clean_read_run_id = str(read_run_id or "").strip()
     if not clean_read_run_id:
         raise ValueError("C2_READ_RUN_ID_MISSING")
@@ -2052,7 +1488,8 @@ def build_flow_gate_ingest_payload(
             "contract_revision": contract_revision(),
             "contract_sha256": contract_sha256(),
             "observation_schema_version": 3,
-            "authoritative_frame_source": "initial_read",
+            "authoritative_frame_source": authoritative_frame_source,
+            "ui_frame_invalidated": ui_frame_invalidated,
             "observations": [],
             "read_reason": target.read_reason,
             "authorization_read_reason": authorization_read_reason,

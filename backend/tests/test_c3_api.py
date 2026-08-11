@@ -76,7 +76,7 @@ def _create_worker() -> dict:
         json={"worker_name": "C3 Worker", "device_name": "Windows PC", "platform": "windows", "enabled": True},
         headers=HEADERS,
     )
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     worker = response.json()["data"]
     bind = client.post(
         f"/api/workers/{worker['id']}/client-bind",
@@ -271,8 +271,8 @@ def _ingest_with_role(worker: dict, conversation_id: str, dedupe_key: str, conte
                 "finished_at": utcnow().isoformat(),
                 "flow_gate_errors": [],
                 "flow_gate_details": [],
-                "slot_ledger_states": [
-                    {
+                    "slot_ledger_states": [
+                        {
                         "observation_id": observation_id,
                         "screen_order": 1,
                         "order_source": "observation_index_fallback",
@@ -281,14 +281,26 @@ def _ingest_with_role(worker: dict, conversation_id: str, dedupe_key: str, conte
                         "origin_read_run_id": read_run_id,
                         "fact_scope": "current_read_run",
                         "delivery_state": "not_enqueued",
-                        "item_state": "completed",
-                    }
-                ],
+                            "item_state": "completed",
+                        }
+                    ],
+                    "sequence_alignment_evidence": {
+                        "pre_sequence_source": "empty_checkpoint",
+                        "pre_frame_id": (
+                            f"checkpoint:none:{conversation_id}"
+                        ),
+                        "post_frame_id": f"frame:{read_run_id}",
+                        "alignment_status": "not_required",
+                        "candidate_alignment_count": 0,
+                        "matched_pairs": [],
+                        "old_tail_fully_consumed": True,
+                        "new_suffix_observation_ids": [observation_id],
+                    },
+                },
             },
-        },
         headers=_worker_headers(worker),
     )
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     result = response.json()["data"]["results"][0]
     assert result["ingest_result"] == "ingested"
     assert "ingest_status" not in result

@@ -1,6 +1,6 @@
 {
   "contract_version": 3,
-  "contract_revision": "3.12.8",
+  "contract_revision": "3.13.2",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "sender_roles": ["customer", "self", "system", "unknown"],
@@ -23,7 +23,14 @@
   ],
   "chat_message_row_kinds": ["text_bubble", "voice_transcript", "image_bubble"],
   "voice_states": ["not_voice", "untranscribed", "transcribed"],
-  "action_phases": ["not_attempted", "trigger_attempted", "confirmed"],
+  "action_phases": [
+    "not_attempted",
+    "cancelled_before_trigger",
+    "trigger_attempted",
+    "failed",
+    "confirmed",
+    "quarantined"
+  ],
   "action_result_contract": {
     "send": {
       "not_attempted": "failed",
@@ -32,8 +39,11 @@
     },
     "voice": {
       "not_attempted": "failed",
+      "cancelled_before_trigger": "failed",
       "trigger_attempted": "failed",
-      "confirmed": "completed"
+      "failed": "failed",
+      "confirmed": "completed",
+      "quarantined": "failed"
     },
     "image": {
       "not_attempted": "failed",
@@ -265,6 +275,20 @@
     "order_sources": ["visual_top", "observation_index_fallback"],
     "safety_rule": "screen_order may sort messages, but only visual_top may prove that one message is physically below another for state or handoff decisions"
   },
+  "authoritative_frame_source_values": [
+    "initial_read",
+    "final_read",
+    "action_journal_recovery"
+  ],
+  "authoritative_frame_source_contract": {
+    "owner": "worker",
+    "initial_read_rule": "allowed only when no voice or image UI action invalidated the initial complete frame; the original payload and observations must be preserved",
+    "final_read_rule": "required when the initial complete frame was invalidated by any voice or image UI action or by an observed concurrent page change, and must represent the latest stable complete frame before ingest or Brain",
+    "action_journal_recovery_rule": "allowed only for fact settlement reconstructed without reading or operating the current WeChat UI",
+    "voice_orchestrator_entry_rule": "voice prepare or execute may be called only when the current authoritative observations contain an executable untranscribed voice not already terminally settled",
+    "forbidden_values": ["voice_execute_final"],
+    "invalid_error_code": "C2_AUTHORITATIVE_FRAME_SOURCE_INVALID"
+  },
   "required_evidence_fields": [
     "contract_revision",
     "contract_sha256",
@@ -275,7 +299,8 @@
     "finished_at",
     "flow_gate_errors",
     "flow_gate_details",
-    "slot_ledger_states"
+    "slot_ledger_states",
+    "sequence_alignment_evidence"
   ],
   "optional_evidence_fields": [
     "continuation_batch_id",
@@ -790,7 +815,7 @@
     "decisions": ["allowed", "retry_later", "target_terminated"],
     "decision_field": "recovery_decision",
     "allowed_target_field": "target",
-    "not_attempted_rule": "an image action journal whose every item is explicitly not_attempted is removed locally before the global transaction barrier",
+    "not_attempted_rule": "an image action journal whose every item is explicitly not_attempted may be removed locally before the global transaction barrier only when it is a pure action intent with no terminal payload, no completed or failed ledger fact, and no corresponding outbox record; any formed completed or failed fact must enter settlement regardless of action_phase",
     "retry_later_rule": "retain the exact ledger and action journal, block new UI actions, and retry the lightweight authorization check without reopening another conversation",
     "target_terminated_rule": "only a backend-confirmed permanent target termination may mark the exact conversation's waiting image facts not_required and remove its image action journals",
     "unknown_decision_rule": "missing or unknown decisions fail closed as retry_later"
@@ -903,6 +928,7 @@
         "rebuild_pending",
         "split_pending",
         "capability_paused",
+        "identity_quarantined",
         "split_completed",
         "target_terminated",
         "conversation_terminated",
@@ -947,6 +973,11 @@
           "blocks_new_ui_actions": true,
           "manual_recovery": false
         },
+        "identity_quarantined": {
+          "automatic_retry": false,
+          "blocks_new_ui_actions": false,
+          "manual_recovery": true
+        },
         "split_completed": {
           "automatic_retry": false,
           "blocks_new_ui_actions": false,
@@ -977,6 +1008,7 @@
         "rebuild_failed_facts": "rebuild_pending",
         "split_and_retry": "split_pending",
         "capability_paused": "capability_paused",
+        "identity_quarantined": "identity_quarantined",
         "split_completed": "split_completed",
         "target_terminated": "target_terminated",
         "conversation_terminated": "conversation_terminated",
@@ -1014,7 +1046,9 @@
         "message_type",
         "normalized_content_hash",
         "media_identity_hash",
-        "alignment_signature"
+        "alignment_signature",
+        "native_source_message_id",
+        "canonical_visual_id"
       ],
       "worker_sequence_messages_must_be_included": true
     },
@@ -1028,26 +1062,25 @@
     "collision_recovery_action": "refresh_identity_and_retry",
     "omniauto_inputs": [
       "observation",
-      "physical_anchor",
-      "recognition_evidence"
+      "recognition_evidence",
+      "sequence_evidence"
+    ],
+    "frame_local_action_inputs": [
+      "physical_anchor"
     ],
     "forbidden_identity_inputs": [
       "scan_id",
       "read_run_id",
       "absolute_coordinates",
       "authorization_revision",
-      "time_bucket"
+      "time_bucket",
+      "bubble_rect",
+      "voice_anchor_alias",
+      "image_physical_anchor",
+      "normalized_content_hash_alone",
+      "message_body_alone",
+      "same_type_occurrence_index"
     ],
-    "legacy_transition": {
-      "source_version": "v16.104",
-      "backend_output": "read-targets.identity_transition.legacy_messages",
-      "backend_output_policy": "always_return_versioned_transition_even_when_legacy_messages_is_empty",
-      "worker_behavior": "reuse_exact_legacy_dedupe_key_once_then_persist_worker_sequence_mapping",
-      "completion_rule": "set_legacy_transition_completed_only_after_versioned_backend_transition_is_processed",
-      "backend_behavior": "database_unique_constraint_remains_final_dedupe",
-      "ambiguous_behavior": "block_ingest_and_brain_then_report_idempotent_handoff",
-      "forbidden_as_steady_state_identity": true
-    },
     "identity_ambiguity_gate": {
       "worker_output": "messages/ingest.evidence.flow_gate_identity_key",
       "key_owner": "worker",
@@ -1067,6 +1100,104 @@
         "time_bucket"
       ]
     }
+  },
+  "sequence_alignment_contract": {
+    "owner": "worker",
+    "pre_sequence_sources": ["action_frame", "checkpoint", "empty_checkpoint"],
+    "identity_states": ["committed", "selected_action", "frame_local_unselected"],
+    "alignment_statuses": ["unique", "ambiguous", "unresolved", "not_required"],
+    "strong_anchor_fields": ["native_source_message_id", "canonical_visual_id", "confirmed_action_mapping"],
+    "required_evidence_fields": [
+      "pre_sequence_source",
+      "pre_frame_id",
+      "post_frame_id",
+      "alignment_status",
+      "candidate_alignment_count",
+      "matched_pairs",
+      "old_tail_fully_consumed",
+      "new_suffix_observation_ids"
+    ],
+    "new_suffix_rule": "only_after_unique_alignment_consumes_pre_tail",
+    "ambiguous_behavior": "block_ingest_and_brain_for_current_conversation",
+    "unresolved_behavior": "block_ingest_and_brain_for_current_conversation",
+    "selected_action_commit_rule": "binding_confirmed_then_commit_reserved_worker_stable_id",
+    "frame_local_unselected_rule": "sequence_evidence_only_and_rearbitrate_from_latest_frame",
+    "forbidden_cross_action_identity_inputs": [
+      "absolute_coordinates",
+      "relative_same_type_index",
+      "duration_text",
+      "normalized_content_hash_alone",
+      "voice_anchor_alias",
+      "image_physical_anchor"
+    ]
+  },
+  "voice_action_binding_contract": {
+    "owner": "omniauto",
+    "stages": ["prepare", "execute"],
+    "prepare_ui_action_performed": false,
+    "required_prepare_response_fields": [
+      "pre_frame_id",
+      "selected_pre_observation_id",
+      "selected_action_token",
+      "selected_target_fingerprint",
+      "candidate_group_count",
+      "ui_action_performed"
+    ],
+    "required_request_fields": [
+      "canonical_voice_action_id",
+      "reserved_worker_stable_id",
+      "pre_frame_id",
+      "selected_pre_observation_id",
+      "selected_action_token",
+      "selected_target_fingerprint"
+    ],
+    "required_response_fields": [
+      "voice_action_stage",
+      "canonical_voice_action_id",
+      "reserved_worker_stable_id",
+      "pre_frame_id",
+      "post_frame_id",
+      "selected_pre_observation_id",
+      "selected_action_token",
+      "selected_target_fingerprint",
+      "transcript_binding_status",
+      "transcript_binding_method",
+      "binding_candidate_count",
+      "tracking_frame_ids",
+      "tracking_edges",
+      "confirmed_action_mapping"
+    ],
+    "binding_statuses": ["confirmed", "ambiguous", "failed"],
+    "identity_bound_terminal_statuses": ["confirmed", "failed"],
+    "identity_unbound_statuses": ["not_attempted", "ambiguous"],
+    "confirmed_methods": [
+      "native_source_id",
+      "continuous_target_tracking",
+      "neighbor_scroll_alignment"
+    ],
+    "confirmed_candidate_count": 1,
+    "continuous_tracking_rule": "at_least_three_real_capture_frame_ids_and_a_contiguous_chain_of_exactly_adjacent_unique_tracking_edges_from_selected_pre_observation_to_final_bound_observation",
+    "forbidden_compatibility_fields": ["tracking_candidate_counts"],
+    "cancel_before_trigger_rule": "token_or_target_revalidation_failure_must_return_cancelled_before_trigger_with_zero_ui_actions_and_burn_the_reservation",
+    "ambiguous_terminal_rule": "persist_quarantined_without_body_binding_or_repeat_click_then_allow_at_most_two_evidence_only_reads_or_120_seconds_before_one_idempotent_handoff",
+    "neighbor_alignment_rule": "at_least_two_trusted_independent_neighbors_with_consistent_measured_scroll_delta_and_exactly_one_same_role_voice_at_the_projected_target_slot",
+    "worker_behavior": "validate_and_forward_sidecar_mapping_without_anchor_content_or_coordinate_reconstruction",
+    "invalid_behavior": "C2_VOICE_IDENTITY_CONTRACT_INVALID"
+  },
+  "image_ui_frame_contract": {
+    "ui_frame_invalidating_actions": [
+      "context_menu_opened",
+      "context_menu_dismissed",
+      "copy_item_clicked"
+    ],
+    "invalidated_field": "ui_frame_invalidated",
+    "refresh_rule": "any_invalidating_action_requires_a_fresh_current_private_chat_read_and_unified_sequence_alignment_before_next_media_ingest_or_brain",
+    "reuse_rule": "old_frame_may_be_reused_only_when_no_wechat_ui_action_was_performed",
+    "forbidden_shortcuts": [
+      "settled_without_refresh",
+      "infer_reuse_from_terminal_state",
+      "infer_reuse_from_action_count"
+    ]
   },
   "session_scan_identity_contract": {
     "owner": "omniauto",

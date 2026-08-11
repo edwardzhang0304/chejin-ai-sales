@@ -1,13 +1,16 @@
 {
   "generated_file": true,
   "source": "contracts/c2_contract_v3.json",
-  "contract_revision": "3.12.8",
-  "contract_sha256": "07b097c108bb4a5be08e6c91f46c8680fb3277d73f2a7d0dfac20f597370d612",
+  "contract_revision": "3.13.2",
+  "contract_sha256": "d2905e58d45118123db90e6fb706683c0a9bbb5d613dc3c1a5394babf70f3356",
   "observation_schema_version": 3,
   "action_phases": [
     "not_attempted",
+    "cancelled_before_trigger",
     "trigger_attempted",
-    "confirmed"
+    "failed",
+    "confirmed",
+    "quarantined"
   ],
   "sender_roles": [
     "customer",

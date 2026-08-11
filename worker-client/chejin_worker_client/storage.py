@@ -1466,7 +1466,8 @@ def transition_c2_outbox(
         attempt_count = int(row["attempt_count"] or 0) if row else 0
         next_attempt_at = (
             None
-            if str(status) in {"waiting", "confirmed"}
+            if str(status) == "waiting"
+            or str(status) in _c2_outbox_terminal_states()
             else _next_attempt_iso(attempt_count)
         )
         cursor = conn.execute(
@@ -1501,6 +1502,17 @@ def mark_c2_outbox_capability_paused(
     transition_c2_outbox(
         outbox_id,
         status="capability_paused",
+        error=error,
+    )
+
+
+def mark_c2_outbox_identity_quarantined(
+    outbox_id: str,
+    error: str,
+) -> None:
+    transition_c2_outbox(
+        outbox_id,
+        status="identity_quarantined",
         error=error,
     )
 

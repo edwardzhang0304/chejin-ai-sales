@@ -230,11 +230,18 @@ class RpaBridge:
         payload.setdefault("remark_code", remark_code)
         return payload
 
-    def voice_transcribe(
+    def _voice_action_call(
         self,
         *,
+        stage: str,
         display_name: str,
         rpa_session_key: str,
+        canonical_voice_action_id: str = "",
+        reserved_worker_stable_id: str = "",
+        pre_frame_id: str = "",
+        selected_pre_observation_id: str = "",
+        selected_action_token: str = "",
+        selected_target_fingerprint: str = "",
         remark_code: str = "",
         target_mode: str = "",
         max_duration_seconds: int = 90,
@@ -242,12 +249,32 @@ class RpaBridge:
         action_journal: Path | None = None,
         cancel_check: CancellationCheck | None = None,
     ) -> dict[str, Any]:
+        normalized_stage = str(stage or "").strip().lower()
+        if normalized_stage not in {"prepare", "execute"}:
+            raise ValueError("C2_VOICE_ACTION_STAGE_INVALID")
+        if normalized_stage == "execute" and any(
+            not str(value or "").strip()
+            for value in (
+                canonical_voice_action_id,
+                reserved_worker_stable_id,
+                pre_frame_id,
+                selected_pre_observation_id,
+                selected_action_token,
+                selected_target_fingerprint,
+            )
+        ):
+            raise ValueError("C2_VOICE_EXECUTE_CONTRACT_INCOMPLETE")
         if self.mode == "mock":
             return {
                 "ok": True,
                 "online": True,
                 "adapter": "mock",
-                "state": "voice_transcribe_no_visible_voice",
+                "state": (
+                    "voice_action_prepare_empty"
+                    if normalized_stage == "prepare"
+                    else "voice_transcribe_no_visible_voice"
+                ),
+                "voice_action_stage": normalized_stage,
                 "sidecar_run_id": f"mock-voice-{uuid.uuid4()}",
                 "target_mode": target_mode or "visible",
                 "remark_code": remark_code,
@@ -264,11 +291,28 @@ class RpaBridge:
             "voice-transcribe",
             "--sidecar-run-id",
             sidecar_run_id,
+            "--voice-action-stage",
+            normalized_stage,
             "--max-duration-seconds",
             str(max(1, int(max_duration_seconds))),
             "--artifact-dir",
             str(artifact_dir),
         ]
+        if normalized_stage == "execute":
+            args[3:3] = [
+                "--canonical-voice-action-id",
+                str(canonical_voice_action_id).strip(),
+                "--reserved-worker-stable-id",
+                str(reserved_worker_stable_id).strip(),
+                "--pre-frame-id",
+                str(pre_frame_id).strip(),
+                "--selected-pre-observation-id",
+                str(selected_pre_observation_id).strip(),
+                "--selected-action-token",
+                str(selected_action_token).strip(),
+                "--selected-target-fingerprint",
+                str(selected_target_fingerprint).strip(),
+            ]
         if str(display_name or "").strip():
             args[3:3] = ["--target", display_name]
         if str(rpa_session_key or "").strip():
@@ -294,6 +338,16 @@ class RpaBridge:
         payload.setdefault("target_mode", normalized_target_mode or "visible")
         payload.setdefault("remark_code", remark_code)
         return payload
+
+    def prepare_voice_action(self, **kwargs: Any) -> dict[str, Any]:
+        """Capture and select one physical voice without touching WeChat."""
+
+        return self._voice_action_call(stage="prepare", **kwargs)
+
+    def execute_voice_action(self, **kwargs: Any) -> dict[str, Any]:
+        """Execute only the exact prepare token persisted by the Worker."""
+
+        return self._voice_action_call(stage="execute", **kwargs)
 
     def send_reply(
         self,

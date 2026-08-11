@@ -19,14 +19,17 @@ from .action_journal import (
     action_journal_is_strictly_not_attempted,
     action_journal_path,
     action_journal_phase,
+    commit_action_journal_item_identity,
     initialize_action_journal,
     list_action_journals,
     remove_action_journal,
     read_action_journal,
+    record_action_sequence_alignment,
     update_action_journal_item,
 )
 from .artifact_retention import cleanup_artifacts, record_artifact_outcome
 from .c2_contract import (
+    contract_revision,
     formal_image_failure_code,
     observation_role_is_trusted,
     sidecar_contract_error,
@@ -43,7 +46,7 @@ from .image_phase import (
     finalize_image_phase_result,
     mark_image_action,
     mark_image_removed_from_final_screen,
-    mark_image_settled_without_refresh,
+    mark_image_ui_frame_invalidated,
     mark_image_terminal,
     merge_image_phase_results,
     new_image_phase_result,
@@ -77,6 +80,7 @@ from .storage import (
     mark_c2_ledger_rejected,
     mark_c2_outbox_attempt,
     mark_c2_outbox_capability_paused,
+    mark_c2_outbox_identity_quarantined,
     mark_reply_send_ack_attempt,
     mark_reply_send_ack_confirmed,
     prepare_c2_outbox_payload,
@@ -93,6 +97,12 @@ from .storage import (
     transition_c2_outbox,
     terminate_waiting_c2_image_ledger,
     update_c2_state_atomic,
+)
+from .sequence_alignment import (
+    align_committed_message_sequence,
+    apply_inherited_worker_ids,
+    build_post_action_observation_sequence,
+    build_pre_action_identity_sequence,
 )
 from .transaction_outcomes import (
     FlowOutcomeAccumulator,
@@ -113,11 +123,9 @@ from .wechat_c2 import (
     message_rect,
     order_authoritative_slots,
     project_final_slot_flow_gates,
-    reconcile_cross_round_observation_identities,
-    reconcile_v16104_identity_transition,
     replayable_image_observation,
-    voice_observation_anchor_key,
     voice_observation_source_key,
+    worker_source_message_key,
 )
 
 
@@ -226,6 +234,7 @@ def voice_action_journal_anchor_keys(
         else {}
     )
     values = [
+        *(observation.get("_voice_action_anchor_keys") or []),
         observation.get("parent_voice_anchor_key"),
         observation.get("voice_anchor_key"),
         observation.get("voice_anchor_stable_key"),
@@ -247,70 +256,506 @@ def voice_action_journal_anchor_keys(
     )
 
 
-def coalesce_physical_voice_observations(
-    target: WechatReadTarget,
-    observations: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """Merge every alias of one physical voice before business settlement."""
+def _same_frame_voice_rect_matches(
+    left: dict[str, Any],
+    right: dict[str, Any],
+) -> bool:
+    """Use geometry only to prove aliases in one captured frame."""
 
-    groups: list[dict[str, Any]] = []
-    for observation in observations:
-        source_key = voice_observation_source_key(target, observation)
-        anchor_key = voice_observation_anchor_key(observation)
-        if not anchor_key:
-            raise ValueError("MESSAGE_SOURCE_IDENTITY_MISSING")
-        aliases = set(voice_action_journal_anchor_keys(observation))
-        aliases.add(anchor_key)
-        role = str(observation.get("sender_role") or "").strip().lower()
-        matching_indexes = [
-            index
-            for index, group in enumerate(groups)
-            if aliases & set(group["physical_anchor_keys"])
-        ]
-        if not matching_indexes:
-            groups.append(
-                {
-                    "observation": observation,
-                    "source_message_key": source_key,
-                    "source_message_keys": {source_key},
-                    "anchor_key": anchor_key,
-                    "physical_anchor_keys": set(aliases),
-                    "roles": {role} if role else set(),
-                }
-            )
+    left_rect = message_rect({"bubble_rect": left.get("bubble_rect")})
+    right_rect = message_rect({"bubble_rect": right.get("bubble_rect")})
+    if not left_rect or not right_rect:
+        return False
+    if str(left.get("sender_role") or "").strip().lower() != str(
+        right.get("sender_role") or ""
+    ).strip().lower():
+        return False
+    return all(
+        abs(float(left_rect[key]) - float(right_rect[key])) <= 3.0
+        for key in ("left", "top", "right", "bottom")
+    )
+
+
+def collapse_same_frame_voice_aliases(
+    observations: list[Any],
+) -> list[Any]:
+    """Collapse OCR/visual aliases before allocating a business identity."""
+
+    result: list[Any] = []
+    voice_indexes: list[int] = []
+    for raw in observations:
+        if not isinstance(raw, dict):
+            result.append(raw)
             continue
-
-        primary = groups[matching_indexes[0]]
-        primary["source_message_keys"].add(source_key)
-        primary["physical_anchor_keys"].update(aliases)
-        if role:
-            primary["roles"].add(role)
-        for index in reversed(matching_indexes[1:]):
-            merged = groups.pop(index)
-            primary["source_message_keys"].update(
-                merged["source_message_keys"]
-            )
-            primary["physical_anchor_keys"].update(
-                merged["physical_anchor_keys"]
-            )
-            primary["roles"].update(merged["roles"])
-
-    normalized: list[dict[str, Any]] = []
-    for group in groups:
-        trusted_roles = set(group["roles"]) & {"customer", "self"}
-        if len(trusted_roles) != 1:
-            raise ValueError("VOICE_PHYSICAL_ALIAS_ROLE_CONFLICT")
-        normalized.append(
+        observation = dict(raw)
+        if not (
+            str(observation.get("row_kind") or "").strip().lower()
+            == "voice_bubble"
+            and str(observation.get("voice_state") or "").strip().lower()
+            == "untranscribed"
+        ):
+            result.append(observation)
+            continue
+        aliases = set(voice_action_journal_anchor_keys(observation))
+        matching_index = next(
+            (
+                index
+                for index in voice_indexes
+                if aliases
+                & set(
+                    result[index].get("_voice_action_anchor_keys")
+                    or voice_action_journal_anchor_keys(result[index])
+                )
+                or _same_frame_voice_rect_matches(
+                    result[index], observation
+                )
+            ),
+            None,
+        )
+        if matching_index is None:
+            observation["_voice_action_anchor_keys"] = sorted(aliases)
+            result.append(observation)
+            voice_indexes.append(len(result) - 1)
+            continue
+        existing = dict(result[matching_index])
+        existing["_voice_action_anchor_keys"] = sorted(
             {
-                **group,
-                "source_message_keys": sorted(group["source_message_keys"]),
-                "physical_anchor_keys": sorted(
-                    group["physical_anchor_keys"]
-                ),
-                "role": next(iter(trusted_roles)),
+                *voice_action_journal_anchor_keys(existing),
+                *aliases,
             }
         )
-    return normalized
+        result[matching_index] = existing
+    return result
+
+
+def align_post_action_observations(
+    pre_observations: list[Any],
+    post_observations: list[Any],
+    *,
+    confirmed_action_mapping: dict[str, Any] | None = None,
+) -> tuple[list[Any], dict[str, Any]]:
+    """Use the unified sequence aligner after a frame-changing UI action."""
+
+    committed_ids = {
+        str(item.get("observation_id") or "").strip(): str(
+            item.get("_worker_stable_id") or ""
+        ).strip()
+        for item in pre_observations
+        if isinstance(item, dict)
+        and str(item.get("observation_id") or "").strip()
+        and str(item.get("_worker_stable_id") or "").strip()
+    }
+    mapping = (
+        dict(confirmed_action_mapping)
+        if isinstance(confirmed_action_mapping, dict)
+        else {}
+    )
+    pre_sequence = build_pre_action_identity_sequence(
+        pre_observations,
+        committed_ids=committed_ids,
+        selected_observation_id=str(
+            mapping.get("pre_observation_id") or ""
+        ),
+        canonical_action_id=str(mapping.get("canonical_action_id") or ""),
+        reserved_worker_stable_id=str(
+            mapping.get("reserved_worker_stable_id") or ""
+        ),
+    )
+    post_sequence = build_post_action_observation_sequence(
+        post_observations,
+        confirmed_action_mapping=mapping,
+    )
+    pre_digest = hashlib.sha256(
+        json.dumps(pre_sequence, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:20]
+    post_digest = hashlib.sha256(
+        json.dumps(post_sequence, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:20]
+    evidence = align_committed_message_sequence(
+        pre_sequence,
+        post_sequence,
+        mapping,
+        pre_sequence_source="action_frame",
+        pre_frame_id=f"action-pre:{pre_digest}",
+        post_frame_id=f"action-post:{post_digest}",
+    )
+    aligned = apply_inherited_worker_ids(post_observations, evidence)
+    voice_action_summary_by_stable_id = {
+        str(item.get("_worker_stable_id") or "").strip(): dict(
+            item.get("_worker_voice_action_summary") or {}
+        )
+        for item in pre_observations
+        if isinstance(item, dict)
+        and str(item.get("_worker_stable_id") or "").strip()
+        and isinstance(item.get("_worker_voice_action_summary"), dict)
+        and item.get("_worker_voice_action_summary")
+    }
+    if voice_action_summary_by_stable_id:
+        carried: list[Any] = []
+        for raw in aligned:
+            if not isinstance(raw, dict):
+                carried.append(raw)
+                continue
+            observation = dict(raw)
+            stable_id = str(
+                observation.get("_worker_stable_id") or ""
+            ).strip()
+            summary = voice_action_summary_by_stable_id.get(stable_id)
+            if summary:
+                observation["_worker_voice_action_summary"] = dict(
+                    summary
+                )
+            carried.append(observation)
+        aligned = carried
+    return aligned, evidence
+
+
+def confirmed_voice_action_mapping(
+    *,
+    voice_payload: dict[str, Any],
+    pre_observations: list[Any],
+    post_observations: list[Any],
+    canonical_action_id: str,
+    reserved_worker_stable_id: str,
+    expected_pre_frame_id: str,
+    pre_observation_id: str,
+    selected_anchor_keys: set[str],
+) -> dict[str, Any]:
+    """Validate the Sidecar decision without reconstructing its binding."""
+
+    del selected_anchor_keys
+    if (
+        str(voice_payload.get("canonical_voice_action_id") or "").strip()
+        != canonical_action_id
+        or str(
+            voice_payload.get("reserved_worker_stable_id") or ""
+        ).strip()
+        != reserved_worker_stable_id
+        or str(
+            voice_payload.get("transcript_binding_status") or ""
+        ).strip()
+        not in {"confirmed", "failed"}
+        or int(voice_payload.get("binding_candidate_count") or 0) != 1
+    ):
+        raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+
+    method = str(
+        voice_payload.get("transcript_binding_method") or ""
+    ).strip()
+    tracking_frame_ids = [
+        str(value or "").strip()
+        for value in (voice_payload.get("tracking_frame_ids") or [])
+        if str(value or "").strip()
+    ]
+    tracking_edges = list(voice_payload.get("tracking_edges") or [])
+    neighbor_pairs = list(
+        voice_payload.get("matched_neighbor_pairs") or []
+    )
+    native_id = str(
+        voice_payload.get("native_source_message_id") or ""
+    ).strip()
+    if method == "native_source_id":
+        evidence_valid = bool(
+            native_id
+            and not tracking_frame_ids
+            and not tracking_edges
+            and not neighbor_pairs
+        )
+    elif method == "continuous_target_tracking":
+        evidence_valid = bool(
+            not native_id
+            and not neighbor_pairs
+            and len(tracking_frame_ids) >= 3
+            and len(set(tracking_frame_ids))
+            == len(tracking_frame_ids)
+            and len(tracking_edges) == len(tracking_frame_ids) - 1
+            and tracking_frame_ids[0]
+            == str(expected_pre_frame_id or "").strip()
+        )
+        expected_observation_id = str(pre_observation_id or "").strip()
+        previous_to_frame = ""
+        tracking_role = ""
+        for index, edge in enumerate(tracking_edges):
+            if not isinstance(edge, dict):
+                evidence_valid = False
+                continue
+            from_frame = str(edge.get("from_frame_id") or "").strip()
+            from_observation = str(
+                edge.get("from_observation_id") or ""
+            ).strip()
+            to_frame = str(edge.get("to_frame_id") or "").strip()
+            to_observation = str(
+                edge.get("to_observation_id") or ""
+            ).strip()
+            structural = edge.get("structural_evidence")
+            displacement = edge.get("displacement_evidence")
+            edge_role = str(edge.get("sender_role") or "").lower()
+            if (
+                not from_frame
+                or not from_observation
+                or not to_frame
+                or not to_observation
+                or str(edge.get("message_type") or "").lower() != "voice"
+                or edge_role not in {"customer", "self"}
+                or (tracking_role and edge_role != tracking_role)
+                or int(edge.get("edge_candidate_count") or 0) != 1
+                or not isinstance(structural, dict)
+                or not structural
+                or not isinstance(displacement, dict)
+                or not displacement
+                or from_frame != tracking_frame_ids[index]
+                or to_frame != tracking_frame_ids[index + 1]
+                or (index == 0 and from_observation != expected_observation_id)
+                or (index > 0 and from_frame != previous_to_frame)
+                or (index > 0 and from_observation != expected_observation_id)
+            ):
+                evidence_valid = False
+            tracking_role = tracking_role or edge_role
+            expected_observation_id = to_observation
+            previous_to_frame = to_frame
+    elif method == "neighbor_scroll_alignment":
+        deltas = []
+        evidence_valid = bool(
+            not native_id
+            and not tracking_frame_ids
+            and not tracking_edges
+            and len(neighbor_pairs) >= 2
+        )
+        for pair in neighbor_pairs:
+            if not isinstance(pair, dict):
+                evidence_valid = False
+                continue
+            if (
+                not str(pair.get("pre_observation_id") or "").strip()
+                or not str(
+                    pair.get("post_observation_id") or ""
+                ).strip()
+                or str(pair.get("sender_role") or "").strip().lower()
+                not in {"customer", "self"}
+            ):
+                evidence_valid = False
+            try:
+                deltas.append(float(pair["scroll_delta_y"]))
+            except (KeyError, TypeError, ValueError):
+                evidence_valid = False
+        if deltas and max(deltas) - min(deltas) > 8.0:
+            evidence_valid = False
+    else:
+        evidence_valid = False
+    if not evidence_valid:
+        raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+
+    mapping = voice_payload.get("confirmed_action_mapping")
+    if not isinstance(mapping, dict):
+        raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+    post_observation_id = str(
+        mapping.get("post_observation_id") or ""
+    ).strip()
+    observation_ids = [
+        str(item.get("observation_id") or "").strip()
+        for item in post_observations
+        if isinstance(item, dict)
+    ]
+    if (
+        str(mapping.get("canonical_action_id") or "").strip()
+        != canonical_action_id
+        or str(
+            mapping.get("reserved_worker_stable_id") or ""
+        ).strip()
+        != reserved_worker_stable_id
+        or mapping.get("binding_confirmed") is not True
+        or not post_observation_id
+        or observation_ids.count(post_observation_id) != 1
+        or (
+            method == "continuous_target_tracking"
+            and tracking_edges
+            and str(tracking_edges[-1].get("to_observation_id") or "").strip()
+            != post_observation_id
+        )
+    ):
+        raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+
+    def unique_observation(
+        observations: list[Any] | None,
+        observation_id: str,
+    ) -> dict[str, Any] | None:
+        matches = [
+            item
+            for item in (observations or [])
+            if isinstance(item, dict)
+            and str(item.get("observation_id") or "").strip()
+            == observation_id
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    def observation_native_id(observation: dict[str, Any] | None) -> str:
+        if not isinstance(observation, dict):
+            return ""
+        source = (
+            observation.get("source_message")
+            if isinstance(observation.get("source_message"), dict)
+            else {}
+        )
+        return str(
+            observation.get("native_source_message_id")
+            or source.get("native_source_message_id")
+            or source.get("native_message_id")
+            or ""
+        ).strip()
+
+    if method == "native_source_id":
+        pre_observation = unique_observation(
+            pre_observations,
+            str(pre_observation_id or "").strip(),
+        )
+        post_observation = unique_observation(
+            post_observations,
+            post_observation_id,
+        )
+        if (
+            observation_native_id(pre_observation) != native_id
+            or observation_native_id(post_observation) != native_id
+            or str((pre_observation or {}).get("message_type") or "")
+            .strip().lower()
+            != "voice"
+            or str((post_observation or {}).get("message_type") or "")
+            .strip().lower()
+            != "voice"
+            or str((pre_observation or {}).get("sender_role") or "")
+            .strip().lower()
+            != str((post_observation or {}).get("sender_role") or "")
+            .strip().lower()
+        ):
+            raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+    elif method == "continuous_target_tracking":
+        pre_observation = unique_observation(
+            pre_observations,
+            str(pre_observation_id or "").strip(),
+        )
+        post_observation = unique_observation(
+            post_observations,
+            post_observation_id,
+        )
+        pre_role = str(
+            (pre_observation or {}).get("sender_role") or ""
+        ).strip().lower()
+        post_role = str(
+            (post_observation or {}).get("sender_role") or ""
+        ).strip().lower()
+        if (
+            not pre_observation
+            or not post_observation
+            or pre_role not in {"customer", "self"}
+            or post_role != pre_role
+            or tracking_role != pre_role
+            or str(pre_observation.get("message_type") or "")
+            .strip().lower()
+            != "voice"
+            or str(post_observation.get("message_type") or "")
+            .strip().lower()
+            != "voice"
+        ):
+            raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+    elif method == "neighbor_scroll_alignment":
+        pre_by_id = {
+            str(item.get("observation_id") or "").strip(): item
+            for item in (pre_observations or [])
+            if isinstance(item, dict)
+            and str(item.get("observation_id") or "").strip()
+        }
+        post_by_id = {
+            str(item.get("observation_id") or "").strip(): item
+            for item in post_observations
+            if isinstance(item, dict)
+            and str(item.get("observation_id") or "").strip()
+        }
+        measured_deltas: list[float] = []
+        used_pre_ids: set[str] = set()
+        used_post_ids: set[str] = set()
+        for pair in neighbor_pairs:
+            pre_id = str(pair.get("pre_observation_id") or "").strip()
+            post_id = str(pair.get("post_observation_id") or "").strip()
+            pre_item = pre_by_id.get(pre_id)
+            post_item = post_by_id.get(post_id)
+            pre_rect = message_rect(pre_item or {})
+            post_rect = message_rect(post_item or {})
+            role = str(pair.get("sender_role") or "").strip().lower()
+            if (
+                not pre_item
+                or not post_item
+                or not pre_rect
+                or not post_rect
+                or pre_id in used_pre_ids
+                or post_id in used_post_ids
+                or str(pre_item.get("sender_role") or "").strip().lower()
+                != role
+                or str(post_item.get("sender_role") or "").strip().lower()
+                != role
+            ):
+                raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+            measured = float(post_rect["center_y"]) - float(
+                pre_rect["center_y"]
+            )
+            if abs(measured - float(pair["scroll_delta_y"])) > 8.0:
+                raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+            used_pre_ids.add(pre_id)
+            used_post_ids.add(post_id)
+            measured_deltas.append(measured)
+        if (
+            len(measured_deltas) < 2
+            or max(measured_deltas) - min(measured_deltas) > 8.0
+        ):
+            raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+        expected_delta = sum(measured_deltas) / len(measured_deltas)
+        selected_pre = unique_observation(
+            pre_observations,
+            str(pre_observation_id or "").strip(),
+        )
+        selected_pre_rect = message_rect(selected_pre or {})
+        if not selected_pre or not selected_pre_rect:
+            raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+        selected_role = str(
+            selected_pre.get("sender_role") or ""
+        ).strip().lower()
+        projected_y = float(selected_pre_rect["center_y"]) + expected_delta
+        projected_candidates = []
+        for item in post_observations:
+            if not isinstance(item, dict):
+                continue
+            item_rect = message_rect(item)
+            if (
+                not item_rect
+                or str(item.get("message_type") or "").strip().lower()
+                != "voice"
+                or str(item.get("sender_role") or "").strip().lower()
+                != selected_role
+                or abs(float(item_rect["center_y"]) - projected_y) > 8.0
+            ):
+                continue
+            projected_candidates.append(
+                str(item.get("observation_id") or "").strip()
+            )
+        if projected_candidates != [post_observation_id]:
+            raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+    derived_ids = [
+        str(value or "").strip()
+        for value in (mapping.get("derived_observation_ids") or [])
+        if str(value or "").strip()
+    ]
+    if (
+        post_observation_id in derived_ids
+        or any(observation_ids.count(value) != 1 for value in derived_ids)
+    ):
+        raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+    return {
+        "canonical_action_id": canonical_action_id,
+        "reserved_worker_stable_id": reserved_worker_stable_id,
+        "pre_observation_id": pre_observation_id,
+        "binding_confirmed": True,
+        "post_observation_id": post_observation_id,
+        "derived_observation_ids": derived_ids,
+        "binding_method": method,
+    }
 
 
 class TaskLeaseGuard:
@@ -556,6 +1001,86 @@ def _untranscribed_voice_observations(sidecar_payload: dict[str, Any]) -> list[d
     ]
 
 
+def _executable_untranscribed_voice_observations(
+    target: WechatReadTarget,
+    sidecar_payload: dict[str, Any],
+    *,
+    excluded_anchor_keys: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Return only voices that may enter the one production orchestrator.
+
+    A trusted untranscribed row is not automatically actionable.  A stable
+    identity already present in the backend checkpoint, or any local terminal
+    ledger fact, proves that the physical message was settled previously.
+    Frame-local anchors may suppress a voice only inside the current
+    orchestrator run; they never become a cross-round identity.
+    """
+
+    excluded = {
+        str(value).strip()
+        for value in (excluded_anchor_keys or set())
+        if str(value).strip()
+    }
+    checkpoint = (
+        target.raw.get("identity_checkpoint")
+        if isinstance(target.raw, dict)
+        and isinstance(target.raw.get("identity_checkpoint"), dict)
+        else {}
+    )
+    confirmed_stable_ids = {
+        str(item.get("stable_id") or "").strip()
+        for item in (checkpoint.get("recent_messages") or [])
+        if isinstance(item, dict)
+        and str(item.get("stable_id") or "").strip()
+    }
+    confirmed_source_keys = {
+        str(item.get("source_message_key") or "").strip()
+        for item in (checkpoint.get("recent_messages") or [])
+        if isinstance(item, dict)
+        and str(item.get("source_message_key") or "").strip()
+    }
+    executable: list[dict[str, Any]] = []
+    for observation in _untranscribed_voice_observations(sidecar_payload):
+        aliases = set(voice_action_journal_anchor_keys(observation))
+        aliases.update(
+            str(value).strip()
+            for value in (
+                observation.get("_voice_action_anchor_keys") or []
+            )
+            if str(value).strip()
+        )
+        if aliases & excluded:
+            continue
+        stable_id = str(
+            observation.get("_worker_stable_id") or ""
+        ).strip()
+        if stable_id and stable_id in confirmed_stable_ids:
+            continue
+        try:
+            source_key = voice_observation_source_key(target, observation)
+        except ValueError:
+            source_key = ""
+        if source_key and source_key in confirmed_source_keys:
+            continue
+        ledger = (
+            load_c2_ledger_entry(target.conversation_id, source_key)
+            if source_key
+            else None
+        )
+        if ledger and str(ledger.get("terminal_state") or "") in {
+            "completed",
+            "failed",
+        }:
+            continue
+        if str(observation.get("item_state") or "") in {
+            "completed",
+            "failed",
+        }:
+            continue
+        executable.append(observation)
+    return executable
+
+
 def _voice_payload_has_unbound_transcript(sidecar_payload: dict[str, Any]) -> bool:
     transcribed = sidecar_payload.get("transcribed_messages")
     if isinstance(transcribed, list) and any(isinstance(item, dict) for item in transcribed):
@@ -652,6 +1177,37 @@ def _unconfirmed_voice_action_outcomes(
         )
         outcomes.append(outcome)
     return outcomes
+
+
+def _checkpoint_voice_outcome_in_action_journal(
+    journal_path: Path | None,
+    outcome: dict[str, Any],
+) -> None:
+    """Durably save the physical result before any identity alignment gate."""
+
+    if journal_path is None:
+        return
+    source_key = str(outcome.get("source_message_key") or "").strip()
+    result = str(outcome.get("result") or "").strip().lower()
+    if not source_key or result not in {"completed", "failed"}:
+        return
+    update_action_journal_item(
+        journal_path,
+        source_message_key=source_key,
+        action_phase=str(
+            outcome.get("action_phase") or "not_attempted"
+        ),
+        business_state=result,
+        business_result_confirmed=(result == "completed"),
+        error_code=(
+            str(outcome.get("error_code") or "").strip() or None
+        ),
+        terminal_payload=(
+            dict(outcome.get("terminal_payload") or {})
+            if isinstance(outcome.get("terminal_payload"), dict)
+            else {"state": result}
+        ),
+    )
 
 
 class TaskRunner:
@@ -2011,47 +2567,132 @@ class TaskRunner:
     def _utc_now_iso(self) -> str:
         return datetime.now(timezone.utc).isoformat()
 
+    def _send_identity_frame(
+        self,
+        sidecar_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        frame_token = str(
+            sidecar_payload.get("frame_id")
+            or sidecar_payload.get("sidecar_run_id")
+            or sidecar_payload.get("run_id")
+            or ""
+        ).strip()
+        observations = [
+            dict(item)
+            for item in (sidecar_payload.get("observations") or [])
+            if isinstance(item, dict)
+        ]
+        if not frame_token or not observations:
+            return {}
+        return {
+            "contract_revision": contract_revision(),
+            "frame_id": f"send-pre:{frame_token}",
+            "observations": observations,
+        }
+
     def _record_possible_ai_send(
         self,
         *,
         target: WechatReadTarget,
         reply_action_id: str,
         reply_text_hash: str,
+        reserved_worker_stable_id: str,
+        pre_frame_id: str,
+        pre_action_identity_sequence: list[dict[str, Any]],
     ) -> None:
-        """Persist the send possibility before the physical send trigger."""
+        """Persist the exact pre-send identity frame before any send trigger."""
 
-        identity_state = load_c2_state(
-            f"message_identity:{target.conversation_id}"
-        )
+        action_id = str(reply_action_id or "").strip()
+        reserved_id = str(reserved_worker_stable_id or "").strip()
+        frame_id = str(pre_frame_id or "").strip()
+        if not action_id or not reserved_id or not frame_id:
+            raise ValueError("AI_REPLY_IDENTITY_RESERVATION_INCOMPLETE")
+        if not isinstance(pre_action_identity_sequence, list):
+            raise ValueError("AI_REPLY_PRE_SEQUENCE_MISSING")
         state_key = f"possible_ai_sends:{target.conversation_id}"
-        state = load_c2_state(state_key)
-        sends = [
-            dict(item)
-            for item in (state.get("sends") or [])
-            if isinstance(item, dict)
-            and str(item.get("reply_action_id") or "").strip()
-            != reply_action_id
-        ]
-        sends.append(
-            {
-                "reply_action_id": reply_action_id,
-                "reply_text_hash": reply_text_hash,
-                "identity_sequence_floor": max(
-                    1,
-                    int(identity_state.get("next_sequence") or 1),
-                ),
-                "armed_at": self._utc_now_iso(),
-                "reconciliation_state": "ai_unreconciled",
-            }
-        )
-        save_c2_state(
-            state_key,
-            {
-                "version": 1,
-                "sends": sends,
-                "updated_at": self._utc_now_iso(),
-            },
-        )
+
+        def persist(previous: dict[str, Any]):
+            sends = [
+                dict(item)
+                for item in (previous.get("sends") or [])
+                if isinstance(item, dict)
+                and str(item.get("reply_action_id") or "").strip()
+                != action_id
+            ]
+            sends.append(
+                {
+                    "reply_action_id": action_id,
+                    "reply_text_hash": str(reply_text_hash or "").strip(),
+                    "reserved_worker_stable_id": reserved_id,
+                    "pre_frame_id": frame_id,
+                    "pre_action_identity_sequence": json.loads(
+                        json.dumps(
+                            pre_action_identity_sequence,
+                            ensure_ascii=False,
+                        )
+                    ),
+                    "armed_at": self._utc_now_iso(),
+                    "physical_send_possible": True,
+                    "reconciliation_state": "armed_before_trigger",
+                }
+            )
+            try:
+                previous_version = int(previous.get("version") or 0)
+            except (TypeError, ValueError):
+                previous_version = 0
+            state = dict(previous)
+            state.update(
+                {
+                    "version": max(2, previous_version),
+                    "sends": sends,
+                    "updated_at": self._utc_now_iso(),
+                }
+            )
+            return state, None
+
+        update_c2_state_atomic(state_key, persist)
+
+    def _mark_possible_ai_send_alignment(
+        self,
+        *,
+        conversation_id: str,
+        reply_action_id: str,
+        reconciliation_state: str,
+        sequence_alignment_evidence: dict[str, Any] | None = None,
+        physical_send_confirmed: bool = False,
+    ) -> None:
+        state_key = f"possible_ai_sends:{conversation_id}"
+
+        def mark(previous: dict[str, Any]):
+            sends: list[dict[str, Any]] = []
+            for raw in previous.get("sends") or []:
+                if not isinstance(raw, dict):
+                    continue
+                item = dict(raw)
+                if (
+                    str(item.get("reply_action_id") or "").strip()
+                    == reply_action_id
+                ):
+                    item["reconciliation_state"] = reconciliation_state
+                    item["physical_send_possible"] = True
+                    item["physical_send_confirmed"] = bool(
+                        physical_send_confirmed
+                    )
+                    if isinstance(sequence_alignment_evidence, dict):
+                        item["sequence_alignment_evidence"] = json.loads(
+                            json.dumps(
+                                sequence_alignment_evidence,
+                                ensure_ascii=False,
+                            )
+                        )
+                    item["updated_at"] = self._utc_now_iso()
+                sends.append(item)
+            state = dict(previous)
+            state["sends"] = sends
+            state["updated_at"] = self._utc_now_iso()
+            return state, None
+
+        update_c2_state_atomic(state_key, mark)
 
     def _clear_possible_ai_send(
         self,
@@ -2060,22 +2701,20 @@ class TaskRunner:
         reply_action_id: str,
     ) -> None:
         state_key = f"possible_ai_sends:{conversation_id}"
-        state = load_c2_state(state_key)
-        remaining = [
-            dict(item)
-            for item in (state.get("sends") or [])
-            if isinstance(item, dict)
-            and str(item.get("reply_action_id") or "").strip()
-            != reply_action_id
-        ]
-        save_c2_state(
-            state_key,
-            {
-                "version": 1,
-                "sends": remaining,
-                "updated_at": self._utc_now_iso(),
-            },
-        )
+
+        def clear(previous: dict[str, Any]):
+            state = dict(previous)
+            state["sends"] = [
+                dict(item)
+                for item in (previous.get("sends") or [])
+                if isinstance(item, dict)
+                and str(item.get("reply_action_id") or "").strip()
+                != reply_action_id
+            ]
+            state["updated_at"] = self._utc_now_iso()
+            return state, None
+
+        update_c2_state_atomic(state_key, clear)
 
     def _attach_possible_ai_send_receipts(
         self,
@@ -2083,72 +2722,13 @@ class TaskRunner:
         target: WechatReadTarget,
         observations: list[Any],
     ) -> list[Any]:
-        """Keep an uncertain AI send from being projected as human sales."""
+        """Never rehang an uncertain send using text, position, or snapshots."""
 
-        state = load_c2_state(
-            f"possible_ai_sends:{target.conversation_id}"
-        )
-        pending = [
-            dict(item)
-            for item in (state.get("sends") or [])
-            if isinstance(item, dict)
-            and str(item.get("reply_action_id") or "").strip()
-            and str(item.get("reply_text_hash") or "").strip()
-        ]
-        enriched = [
+        del target
+        return [
             dict(item) if isinstance(item, dict) else item
             for item in observations
         ]
-        for possible in pending:
-            floor = max(
-                1,
-                int(possible.get("identity_sequence_floor") or 1),
-            )
-            candidates: list[dict[str, Any]] = []
-            for observation in enriched:
-                if not isinstance(observation, dict):
-                    continue
-                if observation.get("_worker_ai_reply_receipt"):
-                    continue
-                stable_id = str(
-                    observation.get("_worker_stable_id") or ""
-                ).strip()
-                match = re.fullmatch(r"worker-message-(\d+)", stable_id)
-                if (
-                    not match
-                    or int(match.group(1)) < floor
-                    or str(observation.get("row_kind") or "")
-                    != "text_bubble"
-                    or str(observation.get("sender_role") or "") != "self"
-                ):
-                    continue
-                content_hash = self._reply_text_hash(
-                    self._canonical_reply_text(
-                        str(observation.get("content_clean") or "")
-                    )
-                )
-                if content_hash == str(possible["reply_text_hash"]):
-                    candidates.append(observation)
-            first_candidate = min(
-                candidates,
-                key=lambda item: int(
-                    re.fullmatch(
-                        r"worker-message-(\d+)",
-                        str(item.get("_worker_stable_id") or ""),
-                    ).group(1)
-                ),
-                default=None,
-            )
-            if first_candidate is not None:
-                observation = first_candidate
-                observation["_worker_ai_reply_receipt"] = {
-                    **possible,
-                    "worker_stable_id": str(
-                        observation.get("_worker_stable_id") or ""
-                    ),
-                    "confirmed_at": "",
-                }
-        return enriched
 
     def _record_confirmed_ai_reply_receipt(
         self,
@@ -2159,6 +2739,32 @@ class TaskRunner:
         sidecar_result: dict[str, Any],
         confirmed_at: str,
     ) -> bool:
+        possible_state = load_c2_state(
+            f"possible_ai_sends:{target.conversation_id}"
+        )
+        possible = next(
+            (
+                dict(item)
+                for item in (possible_state.get("sends") or [])
+                if isinstance(item, dict)
+                and str(item.get("reply_action_id") or "").strip()
+                == reply_action_id
+            ),
+            None,
+        )
+        if not possible:
+            return False
+        reserved_id = str(
+            possible.get("reserved_worker_stable_id") or ""
+        ).strip()
+        pre_frame_id = str(possible.get("pre_frame_id") or "").strip()
+        pre_sequence = [
+            dict(item)
+            for item in (possible.get("pre_action_identity_sequence") or [])
+            if isinstance(item, dict)
+        ]
+        if not reserved_id or not pre_frame_id or not pre_sequence:
+            return False
         send_result = (
             sidecar_result.get("send_result")
             if isinstance(sidecar_result.get("send_result"), dict)
@@ -2169,6 +2775,12 @@ class TaskRunner:
             if isinstance(send_result.get("sent_confirmation"), dict)
             else {}
         )
+        if (
+            send_result.get("confirmed") is not True
+            or str(send_result.get("result") or "").strip() != "sent"
+            or confirmation.get("ok") is not True
+        ):
+            return False
         snapshot = (
             confirmation.get("snapshot")
             if isinstance(confirmation.get("snapshot"), dict)
@@ -2187,66 +2799,208 @@ class TaskRunner:
         confirmed_observation_id = str(
             confirmed_observation.get("observation_id") or ""
         ).strip()
-        if not observations or not confirmed_observation_id:
-            return False
-        reconciled, _identity_state, errors = (
-            self._reconcile_message_identities(target, observations)
-        )
-        if errors:
-            return False
-        matched = next(
-            (
-                item
-                for item in reconciled
-                if isinstance(item, dict)
-                and str(item.get("observation_id") or "").strip()
-                == confirmed_observation_id
-            ),
-            None,
-        )
-        stable_id = (
-            str(matched.get("_worker_stable_id") or "").strip()
-            if isinstance(matched, dict)
-            else ""
-        )
-        if not stable_id:
-            return False
-        state_key = f"ai_reply_receipts:{target.conversation_id}"
-        state = load_c2_state(state_key)
-        receipts = [
-            dict(item)
-            for item in (state.get("receipts") or [])
-            if isinstance(item, dict)
-            and str(item.get("reply_action_id") or "").strip() != reply_action_id
+        confirmed_matches = [
+            item
+            for item in observations
+            if str(item.get("observation_id") or "").strip()
+            == confirmed_observation_id
         ]
-        receipts.append(
-            {
-                "reply_action_id": reply_action_id,
-                "reply_text_hash": reply_text_hash,
-                "worker_stable_id": stable_id,
-                "confirmed_at": confirmed_at,
+        if (
+            not observations
+            or not confirmed_observation_id
+            or len(confirmed_matches) != 1
+            or str(confirmed_matches[0].get("sender_role") or "")
+            .strip()
+            .lower()
+            != "self"
+            or str(confirmed_matches[0].get("message_type") or "text")
+            .strip()
+            .lower()
+            != "text"
+        ):
+            return False
+        mapping = {
+            "canonical_action_id": reply_action_id,
+            "reserved_worker_stable_id": reserved_id,
+            "post_observation_id": confirmed_observation_id,
+            "binding_confirmed": True,
+            "action_appended": True,
+        }
+        post_sequence = build_post_action_observation_sequence(
+            observations,
+            confirmed_action_mapping=mapping,
+        )
+        run_id = str(
+            sidecar_result.get("sidecar_run_id")
+            or sidecar_result.get("run_id")
+            or ""
+        ).strip()
+        try:
+            confirmation_attempt = int(confirmation.get("attempt") or 1)
+        except (TypeError, ValueError):
+            confirmation_attempt = 1
+        post_frame_id = (
+            f"send-post:{run_id or reply_action_id}:"
+            f"{confirmation_attempt}"
+        )
+        try:
+            evidence = align_committed_message_sequence(
+                pre_sequence,
+                post_sequence,
+                mapping,
+                pre_sequence_source="action_frame",
+                pre_frame_id=pre_frame_id,
+                post_frame_id=post_frame_id,
+            )
+        except (TypeError, ValueError) as exc:
+            evidence = {
+                "pre_sequence_source": "action_frame",
+                "pre_frame_id": pre_frame_id,
+                "post_frame_id": post_frame_id,
+                "alignment_status": "unresolved",
+                "candidate_alignment_count": 0,
+                "matched_pairs": [],
+                "old_tail_fully_consumed": False,
+                "new_suffix_observation_ids": [],
+                "error_code": "AI_REPLY_SEQUENCE_ALIGNMENT_INVALID",
+                "error": repr(exc),
             }
+        new_suffix = [
+            str(value or "").strip()
+            for value in (evidence.get("new_suffix_observation_ids") or [])
+            if str(value or "").strip()
+        ]
+        if (
+            evidence.get("alignment_status") != "unique"
+            or evidence.get("old_tail_fully_consumed") is not True
+            or not new_suffix
+            or new_suffix[0] != confirmed_observation_id
+        ):
+            self._mark_possible_ai_send_alignment(
+                conversation_id=target.conversation_id,
+                reply_action_id=reply_action_id,
+                reconciliation_state="identity_unconfirmed_possible_sent",
+                sequence_alignment_evidence=evidence,
+                physical_send_confirmed=True,
+            )
+            return False
+        journal_path = self.bridge.send_transaction_journal_path(
+            reply_action_id
         )
-        save_c2_state(
-            state_key,
-            {
-                "version": 1,
-                "receipts": receipts,
-                "updated_at": self._utc_now_iso(),
-            },
+        try:
+            record_action_sequence_alignment(journal_path, evidence)
+        except (OSError, ValueError):
+            self._mark_possible_ai_send_alignment(
+                conversation_id=target.conversation_id,
+                reply_action_id=reply_action_id,
+                reconciliation_state="identity_journal_unconfirmed_possible_sent",
+                sequence_alignment_evidence=evidence,
+                physical_send_confirmed=True,
+            )
+            return False
+        confirmed_sequence_item = next(
+            item
+            for item in post_sequence
+            if str(item.get("post_observation_id") or "").strip()
+            == confirmed_observation_id
         )
+        receipt = {
+            "reply_action_id": reply_action_id,
+            "reply_text_hash": reply_text_hash,
+            "worker_stable_id": reserved_id,
+            "confirmed_at": confirmed_at,
+            "native_source_message_id": str(
+                confirmed_sequence_item.get("native_source_message_id") or ""
+            ).strip(),
+            "canonical_visual_id": str(
+                confirmed_sequence_item.get("canonical_visual_id") or ""
+            ).strip(),
+            "sequence_alignment_evidence": evidence,
+        }
+        state_key = f"message_identity:{target.conversation_id}"
+
+        def commit(previous: dict[str, Any]):
+            state = dict(previous)
+            try:
+                current_version = int(state.get("version") or 0)
+                current_next = int(state.get("next_sequence") or 1)
+                reserved_match = re.fullmatch(
+                    r"worker-message-(\d+)", reserved_id
+                )
+                if reserved_match is None:
+                    return previous, False
+                reserved_number = int(reserved_match.group(1))
+            except (TypeError, ValueError):
+                return previous, False
+            reservations = dict(state.get("sequence_reservations") or {})
+            reservation_key = f"send-action:{reply_action_id}"
+            if str(reservations.get(reservation_key) or "").strip() != reserved_id:
+                return previous, False
+            commits = dict(state.get("sequence_commits") or {})
+            committed = str(commits.get(reply_action_id) or "").strip()
+            if committed and committed != reserved_id:
+                return previous, False
+            receipts = [
+                dict(item)
+                for item in (state.get("ai_reply_receipts") or [])
+                if isinstance(item, dict)
+                and str(item.get("reply_action_id") or "").strip()
+                != reply_action_id
+            ]
+            receipts.append(receipt)
+            commits[reply_action_id] = reserved_id
+            state.update(
+                {
+                    "version": max(4, current_version),
+                    "next_sequence": max(current_next, reserved_number + 1),
+                    "sequence_reservations": reservations,
+                    "sequence_commits": commits,
+                    "ai_reply_receipts": receipts,
+                    "updated_at": self._utc_now_iso(),
+                }
+            )
+            return state, True
+
+        committed = update_c2_state_atomic(state_key, commit)
+        if not committed:
+            self._mark_possible_ai_send_alignment(
+                conversation_id=target.conversation_id,
+                reply_action_id=reply_action_id,
+                reconciliation_state="identity_commit_conflict_possible_sent",
+                sequence_alignment_evidence=evidence,
+                physical_send_confirmed=True,
+            )
+            return False
+        try:
+            commit_action_journal_item_identity(
+                journal_path,
+                journal_item_id=reply_action_id,
+                source_message_key=worker_source_message_key(
+                    target,
+                    identity_kind="worker_sequence",
+                    identity=reserved_id,
+                ),
+            )
+        except (OSError, ValueError) as exc:
+            append_log(
+                "WARN",
+                "ai_reply_identity_journal_commit_deferred",
+                "AI 回复身份已原子提交；动作日志提交延后，不会降级编号或触发重发。",
+                error_code="AI_REPLY_IDENTITY_JOURNAL_COMMIT_DEFERRED",
+                metadata={
+                    "conversation_id": target.conversation_id,
+                    "reply_action_id": reply_action_id,
+                    "error": repr(exc),
+                },
+            )
         return True
 
-    def _reconcile_message_identities(
+    def _reserve_worker_sequence(
         self,
         target: WechatReadTarget,
-        observations: list[Any],
         *,
-        prefer_server_checkpoint: bool = False,
-    ) -> tuple[list[Any], dict[str, Any], list[dict[str, Any]]]:
-        """Merge the server floor and allocate identities in one transaction."""
-
-        state_key = f"message_identity:{target.conversation_id}"
+        reservation_key: str,
+    ) -> str:
         checkpoint = (
             target.raw.get("identity_checkpoint")
             if isinstance(target.raw, dict)
@@ -2254,107 +3008,228 @@ class TaskRunner:
             else {}
         )
         try:
-            checkpoint_version = int(checkpoint.get("version") or 0)
-            server_floor = int(checkpoint.get("next_sequence_floor") or 0)
+            server_floor = max(
+                1, int(checkpoint.get("next_sequence_floor") or 1)
+            )
         except (TypeError, ValueError):
-            checkpoint_version = 0
-            server_floor = 0
+            server_floor = 1
+        # Defend against a stale or partially projected checkpoint.  The
+        # declared floor is authoritative only when it is above every
+        # committed Worker sequence included in that same response; otherwise
+        # allocating it would reuse an existing durable identity.
+        recent_floor = 1
+        for item in (checkpoint.get("recent_messages") or []):
+            if not isinstance(item, dict):
+                continue
+            match = re.fullmatch(
+                r"worker-message-(\d+)",
+                str(item.get("stable_id") or "").strip(),
+            )
+            if match is not None:
+                recent_floor = max(recent_floor, int(match.group(1)) + 1)
+        server_floor = max(server_floor, recent_floor)
 
-        def reconcile_under_lock(
-            previous_state: dict[str, Any],
-        ) -> tuple[
-            dict[str, Any],
-            tuple[
-                list[Any],
-                dict[str, Any],
-                list[dict[str, Any]],
-                int,
-            ],
-        ]:
+        def reserve(previous: dict[str, Any]):
+            state = dict(previous)
             try:
-                local_floor = int(previous_state.get("next_sequence") or 0)
-                local_version = int(previous_state.get("version") or 0)
+                state_version = int(state.get("version") or 0)
             except (TypeError, ValueError):
-                local_floor = 0
-                local_version = 0
-            local_is_usable = local_version >= 3 and local_floor >= 1
-            checkpoint_is_usable = (
-                checkpoint_version == 2 and server_floor >= 1
-            )
-            if not local_is_usable and not checkpoint_is_usable:
-                error = {
-                    "error_code": "MESSAGE_IDENTITY_CHECKPOINT_MISSING",
-                    "reason": "local_identity_state_unusable_and_server_checkpoint_missing",
+                state_version = 0
+            reservations = dict(state.get("sequence_reservations") or {})
+            existing = str(reservations.get(reservation_key) or "").strip()
+            if existing:
+                return state, existing
+            try:
+                next_sequence = max(
+                    server_floor, int(state.get("next_sequence") or 1)
+                )
+            except (TypeError, ValueError):
+                next_sequence = server_floor
+            stable_id = f"worker-message-{next_sequence}"
+            reservations[reservation_key] = stable_id
+            state.update(
+                {
+                    "version": max(4, state_version),
+                    "next_sequence": next_sequence + 1,
+                    "sequence_reservations": reservations,
                 }
-                return previous_state, (
-                    list(observations),
-                    previous_state,
-                    [error],
-                    local_floor,
-                )
-            effective_previous_state = (
-                previous_state
-                if local_is_usable and not prefer_server_checkpoint
-                else {}
             )
-            reconciled, updated_state, errors = (
-                reconcile_v16104_identity_transition(
-                    target,
-                    observations,
-                    effective_previous_state,
-                )
-            )
-            return updated_state, (
-                reconciled,
-                updated_state,
-                errors,
-                local_floor,
-            )
+            return state, stable_id
 
-        reconciled, state, errors, local_floor = update_c2_state_atomic(
-            state_key,
-            reconcile_under_lock,
+        return update_c2_state_atomic(
+            f"message_identity:{target.conversation_id}", reserve
         )
-        assigned_numbers = sorted(
-            {
-                int(match.group(1))
-                for item in reconciled
-                if isinstance(item, dict)
-                and (
-                    match := re.fullmatch(
-                        r"worker-message-(\d+)",
-                        str(item.get("_worker_stable_id") or "").strip(),
-                    )
+
+    def _align_initial_identity_frame(
+        self,
+        *,
+        target: WechatReadTarget,
+        sidecar_payload: dict[str, Any],
+        read_run_id: str,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Align the first frame with the authoritative backend checkpoint."""
+
+        prepared = dict(sidecar_payload)
+        observations = collapse_same_frame_voice_aliases(
+            list(prepared.get("observations") or [])
+        )
+        checkpoint = (
+            target.raw.get("identity_checkpoint")
+            if isinstance(target.raw, dict)
+            and isinstance(target.raw.get("identity_checkpoint"), dict)
+            else {}
+        )
+        if int(checkpoint.get("version") or 0) != 2:
+            return prepared, [
+                {
+                    "error_code": "MESSAGE_IDENTITY_CHECKPOINT_MISSING",
+                    "reason": "authoritative_checkpoint_missing",
+                }
+            ]
+        recent = [
+            item
+            for item in (checkpoint.get("recent_messages") or [])
+            if isinstance(item, dict)
+        ]
+        pre_sequence: list[dict[str, Any]] = []
+        for index, item in enumerate(recent):
+            stable_id = str(item.get("stable_id") or "").strip()
+            if not stable_id:
+                continue
+            pre_sequence.append(
+                {
+                    "identity_state": "committed",
+                    "worker_stable_id": stable_id,
+                    "pre_observation_id": str(
+                        item.get("source_message_key") or f"checkpoint-{index}"
+                    ),
+                    "pre_sequence_index": index,
+                    "sender_role": str(item.get("sender_role") or "").strip(),
+                    "message_type": str(item.get("message_type") or "").strip(),
+                    "normalized_content_hash": str(
+                        item.get("normalized_content_hash") or ""
+                    ).strip(),
+                    "native_source_message_id": str(
+                        item.get("native_source_message_id") or ""
+                    ).strip(),
+                    "canonical_visual_id": str(
+                        item.get("canonical_visual_id") or ""
+                    ).strip(),
+                }
+            )
+        post_sequence = build_post_action_observation_sequence(observations)
+        frame_id = str(
+            prepared.get("frame_id")
+            or prepared.get("sidecar_run_id")
+            or prepared.get("run_id")
+            or ""
+        ).strip()
+        if not frame_id:
+            return prepared, [
+                {
+                    "error_code": "MESSAGE_IDENTITY_UNCONFIRMED",
+                    "reason": "initial_frame_id_missing",
+                }
+            ]
+        explicit_empty = not recent and int(
+            checkpoint.get("next_sequence_floor") or 0
+        ) <= 1
+        if not pre_sequence and not explicit_empty:
+            return prepared, [
+                {
+                    "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+                    "reason": "checkpoint_history_not_visible",
+                }
+            ]
+        evidence = align_committed_message_sequence(
+            pre_sequence,
+            post_sequence,
+            pre_sequence_source=(
+                "empty_checkpoint" if explicit_empty else "checkpoint"
+            ),
+            pre_frame_id=(
+                f"checkpoint:none:{target.conversation_id}"
+                if explicit_empty
+                else f"checkpoint:{target.authorization_revision}"
+            ),
+            post_frame_id=f"frame:{frame_id}",
+        )
+        if evidence.get("alignment_status") not in {"unique", "not_required"}:
+            prepared["sequence_alignment_evidence"] = evidence
+            return prepared, [
+                {
+                    "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+                    "reason": str(evidence.get("alignment_status") or ""),
+                    "sequence_alignment_evidence": evidence,
+                }
+            ]
+        observations = apply_inherited_worker_ids(observations, evidence)
+        observations = self._assign_sequence_new_suffix_identities(
+            target=target,
+            observations=observations,
+            evidence=evidence,
+            read_run_id=read_run_id,
+        )
+        prepared["observations"] = observations
+        prepared["sequence_alignment_evidence"] = evidence
+        return prepared, []
+
+    def _assign_sequence_new_suffix_identities(
+        self,
+        *,
+        target: WechatReadTarget,
+        observations: list[Any],
+        evidence: dict[str, Any],
+        read_run_id: str,
+    ) -> list[Any]:
+        """Number only the safely exposed tail of one authoritative frame."""
+
+        if (
+            evidence.get("alignment_status") not in {"unique", "not_required"}
+            or evidence.get("old_tail_fully_consumed") is not True
+        ):
+            return list(observations)
+        new_suffix = {
+            str(value).strip()
+            for value in (evidence.get("new_suffix_observation_ids") or [])
+            if str(value).strip()
+        }
+        assigned: list[Any] = []
+        for raw in observations:
+            if not isinstance(raw, dict):
+                assigned.append(raw)
+                continue
+            observation = dict(raw)
+            observation_id = str(
+                observation.get("observation_id") or ""
+            ).strip()
+            message_type = str(
+                observation.get("message_type") or ""
+            ).strip().lower()
+            uncommitted_media = (
+                message_type == "voice"
+                and str(observation.get("voice_state") or "").strip().lower()
+                == "untranscribed"
+            )
+            if (
+                observation_id in new_suffix
+                and not uncommitted_media
+                and observation_role_is_trusted(observation)
+            ):
+                observation["_worker_stable_id"] = self._reserve_worker_sequence(
+                    target,
+                    reservation_key=(
+                        f"committed:{read_run_id}:{observation_id}"
+                    ),
                 )
-            }
-        )
-        append_log(
-            "WARN" if errors else "INFO",
-            "c2_message_identity_checkpoint_merged",
-            (
-                "消息编号检查点无效，已禁止从编号 1 猜测分配。"
-                if errors
-                else "已合并本地与服务端消息编号检查点并原子保存编号。"
-            ),
-            error_code=(
-                str(errors[0].get("error_code") or "")
-                if errors and isinstance(errors[0], dict)
-                else None
-            ),
-            metadata={
-                "conversation_id": target.conversation_id,
-                "local_next_sequence": local_floor,
-                "server_next_sequence_floor": server_floor,
-                "final_assigned_sequences": assigned_numbers,
-                "saved_next_sequence": state.get("next_sequence"),
-            },
-        )
-        return reconciled, state, errors
+            assigned.append(observation)
+        return assigned
 
     def _retry_identity_from_backend_checkpoint_once(
         self,
         *,
         target: WechatReadTarget,
+        read_run_id: str,
         target_label: str,
         cancel_check: Callable[[], bool] | None = None,
     ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str]:
@@ -2381,106 +3256,14 @@ class TaskRunner:
         contract_error = sidecar_contract_error(refreshed)
         if contract_error:
             return None, [], contract_error
-        observations, _state, errors = self._reconcile_message_identities(
-            target,
-            list(refreshed.get("observations") or []),
-            prefer_server_checkpoint=True,
+        refreshed, errors = self._align_initial_identity_frame(
+            target=target,
+            sidecar_payload=refreshed,
+            read_run_id=read_run_id,
         )
-        refreshed["observations"] = observations
         refreshed["authoritative_frame_source"] = "final_read"
         refreshed["identity_automatic_reread_performed"] = True
         return refreshed, errors, ""
-
-    def _downgrade_historical_identity_errors(
-        self,
-        *,
-        target: WechatReadTarget,
-        observations: list[Any],
-        errors: list[dict[str, Any]],
-    ) -> tuple[list[Any], list[dict[str, Any]], list[dict[str, Any]]]:
-        """Keep identity errors before the latest self reply as warnings."""
-
-        slots = []
-        for index, observation in enumerate(observations):
-            if not isinstance(observation, dict):
-                continue
-            if str(observation.get("row_kind") or "").strip().lower() not in {
-                "text_bubble",
-                "image_bubble",
-                "system_message",
-            }:
-                continue
-            if not observation_role_is_trusted(observation):
-                continue
-            slots.append(
-                {
-                    "authority_index": index,
-                    "rect": message_rect(
-                        {"bubble_rect": observation.get("bubble_rect")}
-                    ),
-                    "observation": observation,
-                }
-            )
-        ordered_slots = order_authoritative_slots(slots)
-        order_by_observation_id = {
-            str(slot["observation"].get("observation_id") or "").strip(): order
-            for order, slot in enumerate(ordered_slots, start=1)
-            if str(
-                slot["observation"].get("observation_id") or ""
-            ).strip()
-        }
-        latest_self_order = max(
-            (
-                order
-                for order, slot in enumerate(ordered_slots, start=1)
-                if str(
-                    slot["observation"].get("sender_role") or ""
-                ).strip().lower()
-                == "self"
-            ),
-            default=0,
-        )
-        historical_error_ids = {
-            str(error.get("observation_id") or "").strip()
-            for error in errors
-            if order_by_observation_id.get(
-                str(error.get("observation_id") or "").strip(),
-                latest_self_order + 1,
-            )
-            <= latest_self_order
-        }
-        if not historical_error_ids:
-            return list(observations), list(errors), []
-        filtered = [
-            item
-            for item in observations
-            if not (
-                isinstance(item, dict)
-                and str(item.get("observation_id") or "").strip()
-                in historical_error_ids
-            )
-        ]
-        reconciled, _state, remaining_errors = (
-            self._reconcile_message_identities(
-                target,
-                filtered,
-                prefer_server_checkpoint=True,
-            )
-        )
-        if remaining_errors:
-            return list(observations), list(errors), []
-        warnings = [
-            {
-                "warning_code": (
-                    "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS_HISTORICAL"
-                ),
-                "observation_id": observation_id,
-                "screen_order": order_by_observation_id[observation_id],
-                "latest_self_screen_order": latest_self_order,
-            }
-            for observation_id in sorted(historical_error_ids)
-        ]
-        return reconciled, [], warnings
 
     def _retry_history_gap_from_backend_once(
         self,
@@ -2509,6 +3292,7 @@ class TaskRunner:
         refreshed, identity_errors, retry_error_code = (
             self._retry_identity_from_backend_checkpoint_once(
                 target=target,
+                read_run_id=read_run_id,
                 target_label=target_label,
                 cancel_check=cancel_check,
             )
@@ -2527,9 +3311,14 @@ class TaskRunner:
             "initial_messages",
             "voice_transcription",
             "send_context_guard",
+            "ui_frame_invalidated",
         ):
             if key in sidecar_payload and key not in refreshed:
                 refreshed[key] = sidecar_payload[key]
+        refreshed["ui_frame_invalidated"] = bool(
+            sidecar_payload.get("ui_frame_invalidated")
+            or refreshed.get("ui_frame_invalidated")
+        )
         retry_sidecar_run_id = str(
             refreshed.get("sidecar_run_id") or ""
         )
@@ -2538,6 +3327,44 @@ class TaskRunner:
         refreshed["history_gap_automatic_reread_sidecar_run_id"] = (
             retry_sidecar_run_id
         )
+        deferred_voices = _executable_untranscribed_voice_observations(
+            target,
+            refreshed,
+        )
+        if deferred_voices:
+            # A history-gap reread is evidence for confirming the existing
+            # gate; it is not a second media-processing pass.  A voice first
+            # observed here intentionally has no committed Worker identity
+            # yet, so building the settlement plan would either invent a
+            # cross-round identity or fail before the deferred branch.  Keep
+            # the original authoritative frame/gate and let the next
+            # authorized read own prepare/execute and identity commitment.
+            deferred_observation_ids = sorted(
+                {
+                    str(item.get("observation_id") or "").strip()
+                    for item in deferred_voices
+                    if str(item.get("observation_id") or "").strip()
+                }
+            )
+            original["history_gap_automatic_reread_sidecar_run_id"] = (
+                retry_sidecar_run_id
+            )
+            original["history_gap_reread_new_facts_deferred"] = True
+            original["history_gap_reread_deferred_observation_ids"] = (
+                deferred_observation_ids
+            )
+            append_log(
+                "INFO",
+                "c2_history_gap_reread_new_voice_deferred",
+                "历史断层自动重读发现未处理语音；保留原结算画面和门禁，语音交由下一次授权读取。",
+                metadata={
+                    "conversation_id": target.conversation_id,
+                    "remark_code": target.remark_code,
+                    "deferred_observation_ids": deferred_observation_ids,
+                    "sidecar_run_id": retry_sidecar_run_id,
+                },
+            )
+            return original, incremental_plan
         refreshed = self._merge_waiting_image_facts(
             target=target,
             sidecar_payload=refreshed,
@@ -2596,10 +3423,11 @@ class TaskRunner:
         target: WechatReadTarget,
         observations: list[Any],
     ) -> list[Any]:
-        state_key = f"ai_reply_receipts:{target.conversation_id}"
-        state = load_c2_state(state_key)
+        identity_state = load_c2_state(
+            f"message_identity:{target.conversation_id}"
+        )
         active_receipts: list[dict[str, Any]] = []
-        for raw in state.get("receipts") or []:
+        for raw in identity_state.get("ai_reply_receipts") or []:
             if not isinstance(raw, dict):
                 continue
             if (
@@ -2623,12 +3451,6 @@ class TaskRunner:
                 receipt
                 and str(observation.get("row_kind") or "") == "text_bubble"
                 and str(observation.get("sender_role") or "") == "self"
-                and self._reply_text_hash(
-                    self._canonical_reply_text(
-                        str(observation.get("content_clean") or "")
-                    )
-                )
-                == str(receipt.get("reply_text_hash") or "")
             ):
                 observation["_worker_ai_reply_receipt"] = receipt
             enriched.append(observation)
@@ -2691,23 +3513,29 @@ class TaskRunner:
                 "updated_at": self._utc_now_iso(),
             },
         )
-        possible_state_key = f"possible_ai_sends:{conversation_id}"
-        possible_state = load_c2_state(possible_state_key)
-        remaining_possible = [
-            dict(item)
-            for item in (possible_state.get("sends") or [])
-            if isinstance(item, dict)
-            and str(item.get("reply_action_id") or "").strip()
-            not in consumed_action_ids
-        ]
-        save_c2_state(
-            possible_state_key,
-            {
-                "version": 1,
-                "sends": remaining_possible,
-                "updated_at": self._utc_now_iso(),
-            },
+        identity_state_key = f"message_identity:{conversation_id}"
+
+        def consume_identity_receipts(previous: dict[str, Any]):
+            state = dict(previous)
+            state["ai_reply_receipts"] = [
+                dict(item)
+                for item in (previous.get("ai_reply_receipts") or [])
+                if isinstance(item, dict)
+                and str(item.get("reply_action_id") or "").strip()
+                not in consumed_action_ids
+            ]
+            state["updated_at"] = self._utc_now_iso()
+            return state, None
+
+        update_c2_state_atomic(
+            identity_state_key,
+            consume_identity_receipts,
         )
+        for action_id in consumed_action_ids:
+            self._clear_possible_ai_send(
+                conversation_id=conversation_id,
+                reply_action_id=action_id,
+            )
         append_log(
             "INFO",
             "ai_reply_receipt_consumed",
@@ -3198,11 +4026,57 @@ class TaskRunner:
             )
             return False
         origin_read_run_id = next(iter(origin_read_run_ids))
+        recovery_pairs: list[dict[str, Any]] = []
+        for index, observation in enumerate(recovery_observations):
+            stable_id = str(
+                observation.get("_worker_stable_id") or ""
+            ).strip()
+            observation_id = str(
+                observation.get("observation_id") or ""
+            ).strip()
+            if not stable_id or not observation_id:
+                append_log(
+                    "ERROR",
+                    "c2_action_journal_recovery_identity_missing",
+                    "ActionJournal 恢复事实缺少已提交的统一序列身份；保持等待且不读取微信。",
+                    error_code="MESSAGE_SEQUENCE_IDENTITY_MISSING",
+                    metadata={
+                        "conversation_id": conversation_id,
+                        "source_message_keys": source_keys,
+                    },
+                )
+                return False
+            recovery_pairs.append(
+                {
+                    "identity_state": "committed",
+                    "worker_stable_id": stable_id,
+                    "pre_observation_id": observation_id,
+                    "post_observation_id": observation_id,
+                    "pre_index": index,
+                    "post_index": index,
+                    "match_basis": (
+                        "action_journal_committed_identity"
+                    ),
+                }
+            )
+        recovery_alignment_evidence = {
+            "pre_sequence_source": "action_frame",
+            "pre_frame_id": f"action-journal-terminal:{source_digest}",
+            "post_frame_id": (
+                f"action-journal-recovery:{transaction_id}"
+            ),
+            "alignment_status": "unique",
+            "candidate_alignment_count": 1,
+            "matched_pairs": recovery_pairs,
+            "old_tail_fully_consumed": True,
+            "new_suffix_observation_ids": [],
+        }
         payload = build_message_ingest_payload(
             target,
             {
                 "observation_schema_version": 3,
                 "authoritative_frame_source": "action_journal_recovery",
+                "ui_frame_invalidated": False,
                 "adapter": "local_failed_image_recovery",
                 "state": "failed_image_fact_recovery",
                 "sidecar_run_id": "",
@@ -3213,6 +4087,9 @@ class TaskRunner:
                 ),
                 "flow_gate_errors": [],
                 "flow_gate_details": [],
+                "sequence_alignment_evidence": (
+                    recovery_alignment_evidence
+                ),
             },
             read_run_id=origin_read_run_id,
         )
@@ -3329,7 +4206,8 @@ class TaskRunner:
             for obj, name in (
                 (self.bridge, "list_sessions"),
                 (self.bridge, "get_messages"),
-                (self.bridge, "voice_transcribe"),
+                (self.bridge, "prepare_voice_action"),
+                (self.bridge, "execute_voice_action"),
                 (self.api, "post_wechat_session_scan_result"),
                 (self.api, "get_wechat_read_targets"),
                 (self.api, "post_wechat_messages_ingest"),
@@ -4009,6 +4887,9 @@ class TaskRunner:
                 self.c2_round_processed_conversation_ids.add(dedupe_key)
                 continue
             target = self._authorized_visible_hit_target(visible_target, authorized_target)
+            if self._c2_identity_quarantine(target):
+                self.c2_round_processed_conversation_ids.add(dedupe_key)
+                continue
             if dedupe_key in self.c2_round_processed_conversation_ids:
                 continue
             cooldown_remaining = self._c2_read_cooldown_remaining(dedupe_key)
@@ -4073,6 +4954,9 @@ class TaskRunner:
             if not self._ui_actions_enabled(binding):
                 break
             dedupe_key = self._target_dedupe_key(target)
+            if self._c2_identity_quarantine(target):
+                self.c2_round_processed_conversation_ids.add(dedupe_key)
+                continue
             if dedupe_key in self.c2_round_processed_conversation_ids:
                 append_log("INFO", "c2_state_target_deduped", "状态机读取目标已在本轮第一屏命中读取中处理，跳过重复读取。", metadata={"conversation_id": target.conversation_id, "rpa_session_key": target.rpa_session_key, "remark_code": target.remark_code, "read_reason": target.read_reason})
                 continue
@@ -4100,6 +4984,31 @@ class TaskRunner:
                 self._mark_c2_read_success_cooldown(dedupe_key)
             else:
                 self._mark_c2_read_failure_cooldown(dedupe_key, read_result.get("error_code"))
+
+    def _c2_identity_quarantine(
+        self,
+        target: WechatReadTarget,
+    ) -> dict[str, Any]:
+        state = load_c2_state(
+            f"identity_quarantine:{target.conversation_id}"
+        )
+        if not state or state.get("active") is not True:
+            return {}
+        append_log(
+            "WARN",
+            "c2_identity_quarantine_skipped",
+            "当前客户存在不可自动恢复的身份碰撞；仅隔离该客户，继续处理其他短码。",
+            error_code=str(
+                state.get("error_code")
+                or "MESSAGE_IDENTITY_COLLISION_NOT_REKEYABLE"
+            ),
+            metadata={
+                "conversation_id": target.conversation_id,
+                "remark_code": target.remark_code,
+                "outbox_id": state.get("outbox_id"),
+            },
+        )
+        return state
 
     def _visible_target_from_recent_scan(
         self,
@@ -4670,6 +5579,65 @@ class TaskRunner:
             error_code = str(
                 exc.code if isinstance(exc, ApiError) else type(exc).__name__
             )
+            if error_code == "MESSAGE_IDENTITY_COLLISION_NOT_REKEYABLE":
+                conversation_id = str(
+                    payload.get("conversation_id") or ""
+                )
+                mark_c2_outbox_identity_quarantined(
+                    outbox_id,
+                    error_code,
+                )
+                save_c2_state(
+                    f"identity_quarantine:{conversation_id}",
+                    {
+                        "active": True,
+                        "error_code": error_code,
+                        "outbox_id": outbox_id,
+                        "conversation_id": conversation_id,
+                        "read_run_id": payload.get("read_run_id"),
+                        "source_message_keys": sorted(
+                            {
+                                str(item.get("source_message_key") or "")
+                                for item in (payload.get("messages") or [])
+                                if isinstance(item, dict)
+                                and str(item.get("source_message_key") or "")
+                            }
+                        ),
+                        "quarantined_at": self._utc_now_iso(),
+                    },
+                )
+                append_log(
+                    "ERROR",
+                    "c2_identity_collision_quarantined",
+                    "消息身份碰撞无法安全换号；已保留 Outbox 证据并仅隔离当前客户，不再自动重试。",
+                    error_code=error_code,
+                    metadata={
+                        "outbox_id": outbox_id,
+                        "conversation_id": conversation_id,
+                        "backend_error_response": (
+                            redact_diagnostic(
+                                {
+                                    "code": exc.code,
+                                    "message": str(exc),
+                                    "status_code": exc.status_code,
+                                    "trace_id": exc.trace_id,
+                                    "data": exc.data,
+                                }
+                            )
+                            if isinstance(exc, ApiError)
+                            else None
+                        ),
+                    },
+                    force_incident=True,
+                )
+                return {
+                    "ok": False,
+                    "outbox_id": outbox_id,
+                    "error_code": error_code,
+                    "exception": exc,
+                    "recovery_action": "identity_quarantined",
+                    "conversation_quarantined": True,
+                }
             recovery_action = classify_outbox_recovery(exc)
             next_state = transition_outbox_state(
                 current_state=str(outbox_entry.get("status") or "waiting"),
@@ -5403,19 +6371,34 @@ class TaskRunner:
         filtered = dict(payload)
         messages: list[dict[str, Any]] = []
         removed_observation_ids: set[str] = set()
+        evidence = (
+            dict(payload.get("evidence"))
+            if isinstance(payload.get("evidence"), dict)
+            else {}
+        )
+        slot_states = {
+            str(item.get("source_message_key") or "").strip(): item
+            for item in (evidence.get("slot_ledger_states") or [])
+            if isinstance(item, dict)
+            and str(item.get("source_message_key") or "").strip()
+        }
         for item in payload.get("messages") or []:
             if not isinstance(item, dict):
                 continue
             source_key = str(item.get("source_message_key") or "").strip()
             ledger = load_c2_ledger_entry(str(payload.get("conversation_id") or ""), source_key) if source_key else None
-            # The backend database is the authoritative idempotency boundary.
-            # A persistent Windows ledger can outlive a restored/reset backend;
-            # hiding a currently visible fact merely because it was confirmed
-            # in an older server epoch causes permanent message loss.  Keep
-            # confirmed facts in the JSON payload and let backend unique keys
-            # classify them as duplicated.  Only backend-terminal facts remain
-            # excluded.
-            if ledger and ledger.get("ingest_state") == "not_required":
+            slot = slot_states.get(source_key)
+            already_settled = bool(
+                isinstance(slot, dict)
+                and (
+                    str(slot.get("fact_scope") or "") == "unknown"
+                    or str(slot.get("delivery_state") or "")
+                    in {"outbox_waiting", "backend_confirmed"}
+                )
+            )
+            if already_settled or (
+                ledger and ledger.get("ingest_state") == "not_required"
+            ):
                 raw_payload = (
                     item.get("raw_payload")
                     if isinstance(item.get("raw_payload"), dict)
@@ -5434,11 +6417,6 @@ class TaskRunner:
                 continue
             messages.append(item)
         filtered["messages"] = messages
-        evidence = (
-            dict(payload.get("evidence"))
-            if isinstance(payload.get("evidence"), dict)
-            else {}
-        )
         observations = evidence.get("observations")
         if removed_observation_ids and isinstance(observations, list):
             evidence["observations"] = [
@@ -5724,6 +6702,8 @@ class TaskRunner:
         read_run_id: str,
         error_code: str,
         identity_errors: list[dict[str, Any]],
+        authoritative_frame_source: str = "initial_read",
+        ui_frame_invalidated: bool = False,
     ) -> bool:
         normalized_errors = [
             {
@@ -5781,6 +6761,10 @@ class TaskRunner:
                 "flow_gate_identity_key": stable_gate_key,
                 "identity_errors": normalized_errors,
                 "flow_gate_details": [gate_detail],
+                "authoritative_frame_source": (
+                    authoritative_frame_source
+                ),
+                "ui_frame_invalidated": ui_frame_invalidated,
             },
         )
         delivery = self._submit_c2_outbox_payload(
@@ -5888,16 +6872,40 @@ class TaskRunner:
             if row_kind not in {"text_bubble", "voice_bubble", "voice_transcript", "image_bubble", "system_message"}:
                 continue
             observation_id = str(observation.get("observation_id") or "").strip()
-            canonical = canonical_by_observation_id.get(observation_id)
-            if canonical:
-                source_key = str(canonical.get("source_message_key") or "").strip()
-            elif row_kind == "image_bubble":
-                source_key = image_observation_source_key(target, observation)
-            elif row_kind in {"voice_bubble", "voice_transcript"}:
-                source_key = voice_observation_source_key(target, observation)
-            else:
-                source_key = ""
             trusted_role = observation_role_is_trusted(observation)
+            if not trusted_role:
+                identity_errors.append(
+                    {
+                        "observation_id": (
+                            observation_id or f"observation-{index}"
+                        ),
+                        "screen_order": screen_order,
+                        "order_source": frame_order_source,
+                        "row_kind": row_kind,
+                        "error_code": "MESSAGE_IDENTITY_UNCONFIRMED",
+                    }
+                )
+                continue
+            canonical = canonical_by_observation_id.get(observation_id)
+            try:
+                if canonical:
+                    source_key = str(
+                        canonical.get("source_message_key") or ""
+                    ).strip()
+                elif row_kind == "image_bubble":
+                    source_key = image_observation_source_key(
+                        target,
+                        observation,
+                    )
+                elif row_kind in {"voice_bubble", "voice_transcript"}:
+                    source_key = voice_observation_source_key(
+                        target,
+                        observation,
+                    )
+                else:
+                    source_key = ""
+            except ValueError:
+                source_key = ""
             sender_role = str(
                 (canonical or {}).get("sender_role_hint")
                 or observation.get("sender_role")
@@ -5905,7 +6913,6 @@ class TaskRunner:
             ).strip().lower()
             if (
                 not source_key
-                or not trusted_role
                 or source_key in seen_source_keys
             ):
                 error = {
@@ -5963,9 +6970,7 @@ class TaskRunner:
                 delivery_state = "backend_confirmed"
             elif backend_present:
                 delivery_state = "backend_confirmed"
-            elif outbox_present or (
-                ledger and str(ledger.get("ingest_state") or "") == "waiting"
-            ):
+            elif outbox_present:
                 delivery_state = "outbox_waiting"
             else:
                 delivery_state = "not_enqueued"
@@ -6071,6 +7076,7 @@ class TaskRunner:
             if item["row_kind"] == "image_bubble"
             and item["fact_scope"] == "current_read_run"
             and item["delivery_state"] == "not_enqueued"
+            and item["history_source"] == "current_read_run"
         }
         flow_gate_details: list[dict[str, Any]] = []
         if history_gap:
@@ -6195,6 +7201,33 @@ class TaskRunner:
     ) -> dict[str, Any]:
         image_action_journal: Path | None = None
         if flow_outcomes is not None:
+            payload_observations = list(payload.get("observations") or [])
+            committed_ids = {
+                str(item.get("observation_id") or "").strip(): str(
+                    item.get("_worker_stable_id") or ""
+                ).strip()
+                for item in payload_observations
+                if isinstance(item, dict)
+                and str(item.get("observation_id") or "").strip()
+                and str(item.get("_worker_stable_id") or "").strip()
+            }
+            pre_action_sequence = build_pre_action_identity_sequence(
+                payload_observations,
+                committed_ids=committed_ids,
+            )
+            pre_frame_id = str(
+                payload.get("frame_id")
+                or payload.get("sidecar_run_id")
+                or payload.get("run_id")
+                or ""
+            ).strip()
+            if not pre_frame_id:
+                return {
+                    "state": "failed",
+                    "reason": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    "action_phase": "not_attempted",
+                    "diagnostics": {"events": [], "image_persisted": False},
+                }
             image_action_journal = self._start_irreversible_action_journal(
                 action_kind="image",
                 target=target,
@@ -6215,6 +7248,8 @@ class TaskRunner:
                     }
                 ],
                 flow_outcomes=flow_outcomes,
+                pre_action_identity_sequence=pre_action_sequence,
+                pre_frame_id=pre_frame_id,
             )
         try:
             from .omniauto_vision import process_image_slot
@@ -6239,6 +7274,11 @@ class TaskRunner:
                 "state": "failed",
                 "reason": "vision_adapter_failed",
                 "error_type": type(exc).__name__,
+                "action_phase": "quarantined",
+                "transaction": {
+                    "action_phase": "quarantined",
+                    "status": "vision_adapter_failed",
+                },
                 "diagnostics": {
                     "events": [],
                     "image_persisted": False,
@@ -6346,9 +7386,22 @@ class TaskRunner:
             or transaction.get("action_phase")
             or "not_attempted"
         )
+        ui_frame_invalidated = bool(
+            normalized.get("ui_action_performed") is True
+            or transaction.get("ui_action_performed") is True
+            or transaction.get("right_click_ok") is True
+            or transaction.get("menu_opened") is True
+            or transaction.get("menu_dismissed") is True
+            or transaction.get("copy_click_ok") is True
+            or transaction.get("clipboard_content_read") is True
+            or action_phase
+            not in {"not_attempted", "cancelled_before_trigger"}
+        )
         if (
             action_phase == "not_attempted"
-            and str(normalized.get("state") or "") == "not_visible"
+            and str(normalized.get("state") or "")
+            in {"image_not_visible", "not_visible"}
+            and not ui_frame_invalidated
         ):
             return {
                 "result": normalized,
@@ -6357,6 +7410,7 @@ class TaskRunner:
                 "action_phase": action_phase,
                 "removed_from_final_screen": True,
                 "action_was_attempted": False,
+                "ui_frame_invalidated": ui_frame_invalidated,
                 "terminal_state": "",
             }
         action_outcome = classify_action_result(
@@ -6402,6 +7456,7 @@ class TaskRunner:
             "action_phase": action_phase,
             "removed_from_final_screen": False,
             "action_was_attempted": action_phase != "not_attempted",
+            "ui_frame_invalidated": ui_frame_invalidated,
             "raw_terminal_state": raw_terminal_state,
             "terminal_state": str(normalized.get("state") or "failed"),
         }
@@ -6627,6 +7682,64 @@ class TaskRunner:
         payload["observations"] = observations
         return payload
 
+    def _restore_visible_failed_voice_facts(
+        self,
+        *,
+        target: WechatReadTarget,
+        sidecar_payload: dict[str, Any],
+    ) -> tuple[set[str], dict[str, str]]:
+        """Project waiting failed voice facts without repeating UI actions."""
+
+        grouped: dict[str, set[str]] = {}
+        for observation in sidecar_payload.get("observations") or []:
+            if (
+                not isinstance(observation, dict)
+                or observation.get("row_kind") != "voice_bubble"
+                or observation.get("voice_state") != "untranscribed"
+            ):
+                continue
+            try:
+                source_key = voice_observation_source_key(
+                    target,
+                    observation,
+                )
+            except ValueError:
+                continue
+            ledger = load_c2_ledger_entry(
+                target.conversation_id,
+                source_key,
+            )
+            if (
+                not ledger
+                or ledger.get("terminal_state") != "failed"
+                or ledger.get("ingest_state") == "confirmed"
+            ):
+                continue
+            result = (
+                ledger.get("result")
+                if isinstance(ledger.get("result"), dict)
+                else {}
+            )
+            error_code = str(
+                result.get("error_code")
+                or "VOICE_TRANSCRIBE_FAILED"
+            )
+            grouped.setdefault(error_code, set()).add(source_key)
+
+        roles: dict[str, str] = {}
+        source_keys: set[str] = set()
+        for error_code, grouped_keys in grouped.items():
+            roles.update(
+                self._annotate_failed_voice_observations(
+                    target=target,
+                    sidecar_payload=sidecar_payload,
+                    failed_source_keys=grouped_keys,
+                    error_code=error_code,
+                )
+            )
+            source_keys.update(grouped_keys)
+        return source_keys, roles
+
     def _process_final_image_slots(
         self,
         *,
@@ -6659,10 +7772,16 @@ class TaskRunner:
             if isinstance(item, dict) and item.get("row_kind") == "image_bubble"
         ]
         stats["discovered"] = len(indexed)
+        image_action_started = False
         for index, observation in sorted(indexed, key=lambda value: (visual_top(value[1]), value[0])):
-            source_key = image_observation_source_key(target, observation)
             source = observation.get("source_message") if isinstance(observation.get("source_message"), dict) else {}
-            observation["source_message"] = {**source, "source_message_key": source_key}
+            try:
+                source_key = image_observation_source_key(
+                    target,
+                    observation,
+                )
+            except ValueError:
+                source_key = ""
             common_metadata = {
                 "conversation_id": target.conversation_id,
                 "remark_code": target.remark_code,
@@ -6687,6 +7806,28 @@ class TaskRunner:
                 "C2 在最终权威画面发现图片槽位。",
                 metadata=common_metadata,
             )
+            if not observation_role_is_trusted(observation):
+                append_log(
+                    "WARN",
+                    "c2_image_role_rejected",
+                    "C2 图片初始同行头像角色不可信；本轮不建立图片身份、不落终态、不调用 Vision。",
+                    error_code="MESSAGE_IDENTITY_UNCONFIRMED",
+                    metadata=common_metadata,
+                )
+                continue
+            if not source_key:
+                append_log(
+                    "WARN",
+                    "c2_image_identity_rejected",
+                    "C2 图片缺少 canonical_visual_id 或统一序列身份；本轮不落终态、不调用 Vision。",
+                    error_code="MESSAGE_SEQUENCE_IDENTITY_MISSING",
+                    metadata=common_metadata,
+                )
+                continue
+            observation["source_message"] = {
+                **source,
+                "source_message_key": source_key,
+            }
             ledger = load_c2_ledger_entry(target.conversation_id, source_key)
             if ledger and ledger.get("terminal_state") in {"completed", "failed"}:
                 result = ledger.get("result") if isinstance(ledger.get("result"), dict) else {}
@@ -6745,6 +7886,11 @@ class TaskRunner:
                 )
                 break
             else:
+                if image_action_started:
+                    # Every irreversible image operation invalidates the
+                    # frame. Remaining candidates are selected only after a
+                    # fresh read and sequence alignment.
+                    continue
                 append_log(
                     "INFO",
                     "c2_image_role_confirmed",
@@ -6781,6 +7927,7 @@ class TaskRunner:
             result_reason = str(result.get("reason") or "")
             result_action_phase = normalized["action_phase"]
             if normalized["removed_from_final_screen"]:
+                image_action_started = True
                 stats["removed_from_final_screen"] += 1
                 mark_image_removed_from_final_screen(
                     stats,
@@ -6801,29 +7948,11 @@ class TaskRunner:
             image_action = normalized["action_outcome"]
             raw_terminal_state = normalized["raw_terminal_state"]
             action_was_attempted = normalized["action_was_attempted"]
+            if normalized["ui_frame_invalidated"]:
+                image_action_started = True
+                mark_image_ui_frame_invalidated(stats, source_key)
             if action_was_attempted:
                 mark_image_action(stats, source_key)
-                if (
-                    result_reason
-                    in {
-                        "C2_IMAGE_SOURCE_INVALID",
-                        "C2_IMAGE_MENU_OPERATION_FAILED",
-                    }
-                    and str(transaction.get("status") or "")
-                    in {
-                        "text_context_menu_rejected",
-                        "voice_context_menu_rejected",
-                        "menu_panel_unconfirmed",
-                        "menu_evidence_conflict",
-                        "menu_evidence_incomplete",
-                        "menu_copy_item_unsafe",
-                        "clipboard_current_content_not_bitmap",
-                    }
-                ):
-                    mark_image_settled_without_refresh(
-                        stats,
-                        source_key,
-                    )
             if (
                 flow_outcomes is not None
                 and (
@@ -7171,6 +8300,31 @@ class TaskRunner:
                     "batch": status,
                     "pre_send_refresh": refresh_read,
                 }
+            send_identity_frame = (
+                refresh_read.get("send_identity_frame")
+                if isinstance(refresh_read.get("send_identity_frame"), dict)
+                else {}
+            )
+            pre_send_observations = [
+                dict(item)
+                for item in (send_identity_frame.get("observations") or [])
+                if isinstance(item, dict)
+            ]
+            pre_send_frame_id = str(
+                send_identity_frame.get("frame_id") or ""
+            ).strip()
+            if (
+                send_identity_frame.get("contract_revision")
+                != contract_revision()
+                or not pre_send_frame_id
+                or not pre_send_observations
+            ):
+                return {
+                    "ok": False,
+                    "error_code": "C3_SEND_IDENTITY_FRAME_MISSING",
+                    "batch": status,
+                    "pre_send_refresh": refresh_read,
+                }
 
             if not task_payload:
                 return {"ok": False, "error_code": "C3_REPLY_TASK_MISSING", "batch": status}
@@ -7263,23 +8417,20 @@ class TaskRunner:
                     claim.reply_action_id
                 )
             )
-            if not send_journal_path.exists():
-                initialize_action_journal(
-                    send_journal_path,
-                    action_kind="send",
-                    transaction_id=claim.reply_action_id,
-                    conversation_id=target.conversation_id,
-                    items=[
-                        {
-                            "source_message_key": claim.reply_action_id,
-                            "physical_anchor_keys": [],
-                        }
-                    ],
-                )
             journal_phase = self._send_transaction_journal_phase(
                 claim.reply_action_id
             )
             if claim.duplicated and journal_phase != "not_attempted":
+                self._mark_possible_ai_send_alignment(
+                    conversation_id=target.conversation_id,
+                    reply_action_id=claim.reply_action_id,
+                    reconciliation_state=(
+                        "journal_confirmed_identity_pending"
+                        if journal_phase == "confirmed"
+                        else "triggered_identity_pending"
+                    ),
+                    physical_send_confirmed=(journal_phase == "confirmed"),
+                )
                 pending_ack = load_reply_send_ack_outbox(claim.reply_action_id)
                 if pending_ack and pending_ack.get("status") == "intent":
                     recovered_send_result = (
@@ -7328,6 +8479,92 @@ class TaskRunner:
                     ),
                     "reason": "duplicate_send_claim_suppressed",
                 }
+            reserved_send_stable_id = self._reserve_worker_sequence(
+                target,
+                reservation_key=f"send-action:{claim.reply_action_id}",
+            )
+            committed_pre_ids = {
+                str(item.get("observation_id") or "").strip(): str(
+                    item.get("_worker_stable_id") or ""
+                ).strip()
+                for item in pre_send_observations
+                if str(item.get("observation_id") or "").strip()
+                and str(item.get("_worker_stable_id") or "").strip()
+            }
+            pre_send_identity_sequence = build_pre_action_identity_sequence(
+                pre_send_observations,
+                committed_ids=committed_pre_ids,
+            )
+            if not pre_send_identity_sequence:
+                self._queue_and_submit_reply_send_ack(
+                    binding,
+                    claim,
+                    send_result="failed",
+                    action_phase="not_attempted",
+                    reply_text_hash=claim.reply_text_hash,
+                    error_code="C3_SEND_IDENTITY_SEQUENCE_EMPTY",
+                    remark="发送前消息序列为空，未操作微信输入框。",
+                )
+                return {
+                    "ok": False,
+                    "error_code": "C3_SEND_IDENTITY_SEQUENCE_EMPTY",
+                    "batch": status,
+                }
+            if not send_journal_path.exists():
+                initialize_action_journal(
+                    send_journal_path,
+                    action_kind="send",
+                    transaction_id=claim.reply_action_id,
+                    conversation_id=target.conversation_id,
+                    items=[
+                        {
+                            "source_message_key": claim.reply_action_id,
+                            "physical_anchor_keys": [],
+                        }
+                    ],
+                    pre_action_identity_sequence=(
+                        pre_send_identity_sequence
+                    ),
+                    pre_frame_id=pre_send_frame_id,
+                    canonical_action_id=claim.reply_action_id,
+                    reserved_worker_stable_id=reserved_send_stable_id,
+                )
+            else:
+                existing_send_journal = read_action_journal(
+                    send_journal_path
+                )
+                if (
+                    str(
+                        existing_send_journal.get("canonical_action_id")
+                        or ""
+                    ).strip()
+                    != claim.reply_action_id
+                    or str(
+                        existing_send_journal.get(
+                            "reserved_worker_stable_id"
+                        )
+                        or ""
+                    ).strip()
+                    != reserved_send_stable_id
+                    or existing_send_journal.get(
+                        "pre_action_identity_sequence"
+                    )
+                    != pre_send_identity_sequence
+                ):
+                    self._queue_and_submit_reply_send_ack(
+                        binding,
+                        claim,
+                        send_result="failed",
+                        action_phase="not_attempted",
+                        reply_text_hash=claim.reply_text_hash,
+                        error_code="C3_SEND_IDENTITY_JOURNAL_CONFLICT",
+                        remark="发送身份日志与当前序列不一致，未操作微信输入框。",
+                    )
+                    return {
+                        "ok": False,
+                        "error_code": "C3_SEND_IDENTITY_JOURNAL_CONFLICT",
+                        "batch": status,
+                    }
             final_send_text = self._canonical_reply_text(claim.reply_text)
             if not final_send_text or final_send_text != claim.reply_text:
                 actual_hash = self._reply_text_hash(final_send_text)
@@ -7394,6 +8631,9 @@ class TaskRunner:
                 target=target,
                 reply_action_id=claim.reply_action_id,
                 reply_text_hash=actual_hash,
+                reserved_worker_stable_id=reserved_send_stable_id,
+                pre_frame_id=pre_send_frame_id,
+                pre_action_identity_sequence=pre_send_identity_sequence,
             )
             sidecar_result = self.bridge.send_reply(
                 target=target.remark_code or target.display_name,
@@ -7456,6 +8696,16 @@ class TaskRunner:
                     conversation_id=target.conversation_id,
                     reply_action_id=claim.reply_action_id,
                 )
+            else:
+                # The physical trigger may have run.  Preserve the action as
+                # unreconciled; recovery must not re-send or reattach it by
+                # body text, viewport position, or an old screenshot.
+                self._mark_possible_ai_send_alignment(
+                    conversation_id=target.conversation_id,
+                    reply_action_id=claim.reply_action_id,
+                    reconciliation_state="ai_unreconciled",
+                    physical_send_confirmed=False,
+                )
             self._queue_and_submit_reply_send_ack(
                 binding, claim, send_result=send_result, action_phase=action_phase, reply_text_hash=actual_hash,
                 sidecar_run_id=run_id, evidence=evidence, error_code=error_code,
@@ -7476,399 +8726,961 @@ class TaskRunner:
         excluded_voice_anchor_keys: set[str],
         flow_outcomes: FlowOutcomeAccumulator | None = None,
     ) -> dict[str, Any]:
-        """Finish voices that appeared while the current chat lock is held.
+        """The only production voice orchestrator: prepare, persist, execute."""
 
-        Progress is measured by the stable pending source-key set. There is no
-        business-wide duration cutoff: each sidecar call has its own watchdog,
-        and an unchanged pending set is closed as an explicit failed fact.
-        """
-
-        current_payload = dict(sidecar_payload)
-        seen_pending_sets: set[tuple[str, ...]] = set()
-        processed_anchor_keys = set(excluded_voice_anchor_keys)
-        item_outcomes: list[dict[str, Any]] = []
-        accumulated_failure_code = ""
-
-        def summarized_outcomes() -> dict[str, Any]:
-            failed = [
-                item
-                for item in item_outcomes
-                if item.get("result") == "failed"
-            ]
+        if flow_outcomes is None:
             return {
+                "ok": False,
+                "error_code": "C2_VOICE_FLOW_OUTCOMES_MISSING",
+                "payload": sidecar_payload,
+            }
+        current_payload = dict(sidecar_payload)
+        current_payload["ui_frame_invalidated"] = bool(
+            current_payload.get("ui_frame_invalidated")
+        )
+        item_outcomes: list[dict[str, Any]] = []
+        failure_code = ""
+        terminal_gate: dict[str, Any] | None = None
+        cancelled_prepares = 0
+        remaining_actions = 32
+        attempted_fingerprints: set[str] = set()
+
+        def result() -> dict[str, Any]:
+            payload = {
+                "ok": True,
+                "payload": current_payload,
+                "failure_code": failure_code,
                 "item_outcomes": list(item_outcomes),
-                "failed_source_keys": sorted(
-                    str(item["source_message_key"])
-                    for item in failed
+                "failed_source_keys": sorted({
+                    str(item.get("source_message_key") or "")
+                    for item in item_outcomes
+                    if item.get("result") == "failed"
+                }),
+            }
+            if terminal_gate is not None:
+                payload["terminal_gate"] = dict(terminal_gate)
+            return payload
+
+        def quarantine_voice_identity(
+            *,
+            action_id: str,
+            action_error_code: str,
+        ) -> None:
+            """Project an unbound physical result as a conversation gate.
+
+            The action id is durable audit evidence for the one physical
+            click. It is deliberately not promoted to a message identity,
+            and the reserved worker sequence remains burned and uncommitted.
+            """
+
+            nonlocal failure_code, terminal_gate
+            failure_code = str(
+                action_error_code or "C2_VOICE_RESULT_AMBIGUOUS"
+            ).strip()
+            terminal_gate = {
+                "error_code": (
+                    "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
                 ),
-                "failed_roles": {
-                    str(item["source_message_key"]): str(
-                        (item.get("evidence") or {}).get("sender_role")
-                    )
-                    for item in failed
-                    if str(
-                        (item.get("evidence") or {}).get("sender_role") or ""
-                    )
-                    in {"customer", "self"}
-                },
+                "identity_errors": [
+                    {
+                        "observation_id": "",
+                        "row_kind": "voice_bubble",
+                        "error_code": (
+                            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                        ),
+                        "signature": action_id,
+                        "reason": (
+                            "action_triggered_without_confirmed_post_alignment"
+                        ),
+                        "screen_order": 0,
+                        "order_source": "",
+                    }
+                ],
+                "authoritative_frame_source": "final_read",
+                "ui_frame_invalidated": True,
+                "action_error_code": failure_code,
             }
 
-        while True:
-            try:
-                voice_groups = coalesce_physical_voice_observations(
+        while remaining_actions > 0:
+            if action_cancel_requested():
+                return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS", "payload": current_payload}
+            if enforce_read_targets and not self._backend_still_allows_read_target_for_voice(binding, target):
+                return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS", "payload": current_payload}
+            current_executable_voices = (
+                _executable_untranscribed_voice_observations(
                     target,
-                    _untranscribed_voice_observations(current_payload),
-                )
-            except ValueError as exc:
-                return {
-                    "ok": False,
-                    "error_code": str(exc)
-                    or "MESSAGE_IDENTITY_UNCONFIRMED",
-                    "payload": current_payload,
-                }
-            pending: list[dict[str, Any]] = []
-            for group in voice_groups:
-                aliases = set(group["physical_anchor_keys"])
-                ledger_settled = any(
-                    (
-                        ledger := load_c2_ledger_entry(
-                            target.conversation_id,
-                            alias_source,
-                        )
-                    )
-                    and (
-                        ledger.get("terminal_state")
-                        in {"completed", "failed", "ignored"}
-                        or ledger.get("ingest_state")
-                        in {"waiting", "confirmed", "not_required"}
-                    )
-                    for alias_source in group["source_message_keys"]
-                )
-                if not ledger_settled and not (
-                    aliases & processed_anchor_keys
-                ):
-                    pending.append(group)
-
-            if not pending:
-                return {
-                    "ok": True,
-                    "payload": current_payload,
-                    "failure_code": accumulated_failure_code,
-                    **summarized_outcomes(),
-                }
-
-            pending_source_keys = tuple(
-                sorted(
-                    str(item["source_message_key"])
-                    for item in pending
+                    current_payload,
+                    excluded_anchor_keys=excluded_voice_anchor_keys,
                 )
             )
-            if pending_source_keys in seen_pending_sets:
-                no_progress_outcomes = _unconfirmed_voice_action_outcomes(
-                    source_keys=set(pending_source_keys),
-                    roles={
-                        str(item["source_message_key"]): str(item["role"])
-                        for item in pending
-                    },
-                    anchors={
-                        str(item["source_message_key"]): str(item["anchor_key"])
-                        for item in pending
-                    },
-                    error_code="VOICE_TRANSCRIBE_NO_PROGRESS",
-                    voice_payload=current_payload,
-                )
-                item_outcomes = merge_item_outcomes(
-                    item_outcomes,
-                    no_progress_outcomes,
-                )
-                if flow_outcomes is not None:
-                    flow_outcomes.extend(no_progress_outcomes)
-                return {
-                    "ok": True,
-                    "payload": current_payload,
-                    "failure_code": (
-                        accumulated_failure_code
-                        or "VOICE_TRANSCRIBE_NO_PROGRESS"
-                    ),
-                    **summarized_outcomes(),
-                }
-            seen_pending_sets.add(pending_source_keys)
+            if not current_executable_voices:
+                return result()
 
-            if action_cancel_requested():
-                return {
-                    "ok": False,
-                    "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
-                    "payload": current_payload,
-                }
-            if (
-                enforce_read_targets
-                and not self._backend_still_allows_read_target_for_voice(
-                    binding,
-                    target,
-                )
-            ):
-                return {
-                    "ok": False,
-                    "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
-                    "payload": current_payload,
-                }
-
-            lease.update_step("voice_transcribe_current_chat")
-            self.current_step = "voice_transcribe_current_chat"
-            voice_action_journal: Path | None = None
-            if flow_outcomes is not None:
-                voice_action_journal = (
-                    self._start_irreversible_action_journal(
-                        action_kind="voice",
-                        target=target,
-                        items=[
-                            {
-                                "source_message_key": str(
-                                    item["source_message_key"]
-                                ),
-                                "physical_anchor_keys": list(
-                                    item["physical_anchor_keys"]
-                                ),
-                            }
-                            for item in pending
-                        ],
-                        flow_outcomes=flow_outcomes,
-                    )
-                )
-            voice_payload = self.bridge.voice_transcribe(
+            lease.update_step("voice_prepare_current_chat")
+            self.current_step = "voice_prepare_current_chat"
+            prepared = self.bridge.prepare_voice_action(
                 display_name=target_label,
                 rpa_session_key="",
                 remark_code=target.remark_code or "",
                 target_mode="current",
-                max_duration_seconds=CONFIG.c2_voice_transcribe_max_duration_seconds,
-                excluded_voice_anchor_keys=sorted(processed_anchor_keys),
-                action_journal=voice_action_journal,
+                max_duration_seconds=20,
+                excluded_voice_anchor_keys=sorted(excluded_voice_anchor_keys),
                 cancel_check=action_cancel_requested,
             )
-            contract_error = sidecar_contract_error(
-                voice_payload,
-                require_observations=False,
-            )
+            contract_error = sidecar_contract_error(prepared, require_observations=False)
             if contract_error:
-                return {
-                    "ok": False,
-                    "error_code": contract_error,
-                    "payload": current_payload,
-                }
-            voice_state = str(
-                voice_payload.get("state")
-                or voice_payload.get("error_code")
-                or ""
-            ).strip()
-            if voice_state in {
-                "voice_transcribe_cancelled",
-                "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
-            }:
-                return {
-                    "ok": False,
-                    "error_code": str(
-                        voice_payload.get("error_code") or voice_state
-                    ),
-                    "payload": current_payload,
-                }
-            if voice_state in {
-                "target_not_confirmed_for_voice_transcribe",
-                "voice_transcribe_target_not_found",
-                "TARGET_NOT_CONFIRMED_FOR_VOICE_TRANSCRIBE",
-            }:
-                return {
-                    "ok": False,
-                    "error_code": voice_state,
-                    "payload": current_payload,
-                }
-
-            reported_processed_anchors = {
-                str(value).strip()
-                for value in (
-                    voice_payload.get("processed_voice_anchor_keys") or []
-                )
-                if str(value).strip()
-            }
-            reported_failed_anchors = {
-                str(value).strip()
-                for value in (
-                    voice_payload.get("failed_voice_anchor_keys") or []
-                )
-                if str(value).strip()
-            }
-            processed_anchor_keys.update(reported_processed_anchors)
-            processed_anchor_keys.update(reported_failed_anchors)
-            raw_outcomes_by_anchor: dict[str, dict[str, Any]] = {}
-            for raw_outcome in voice_payload.get("item_action_outcomes") or []:
-                if not isinstance(raw_outcome, dict):
-                    continue
-                for value in raw_outcome.get("physical_anchor_keys") or []:
-                    anchor_key = str(value).strip()
-                    if anchor_key:
-                        raw_outcomes_by_anchor[anchor_key] = raw_outcome
-
-            unresolved_anchors = set(reported_failed_anchors)
-            if voice_state == "voice_transcribe_partial":
-                for item in pending:
-                    aliases = set(item["physical_anchor_keys"])
-                    if not aliases & reported_processed_anchors:
-                        unresolved_anchors.update(aliases)
-            elif voice_state not in {
-                "voice_transcribe_completed",
-                "voice_transcribe_no_visible_voice",
-            }:
-                for item in pending:
-                    unresolved_anchors.update(item["physical_anchor_keys"])
-            round_outcomes: list[dict[str, Any]] = []
-            for item in pending:
-                source_key = str(item["source_message_key"])
-                anchor_key = str(item["anchor_key"])
-                role = str(item["role"])
-                aliases = set(item["physical_anchor_keys"])
-                raw_outcome = next(
-                    (
-                        raw_outcomes_by_anchor[alias]
-                        for alias in aliases
-                        if alias in raw_outcomes_by_anchor
-                    ),
-                    None,
-                )
-                if raw_outcome is not None:
-                    outcome = classify_action_result(
-                        "voice",
-                        raw_outcome,
-                        source_message_key=source_key,
-                    )
-                elif aliases & reported_processed_anchors:
-                    outcome = classify_action_result(
-                        "voice",
-                        {
-                            "action_phase": "confirmed",
-                            "business_state": "completed",
-                            "business_result_confirmed": True,
-                            "physical_anchor_keys": sorted(aliases),
-                            "evidence": {
-                                "voice_anchor_key": anchor_key,
-                                "reported_processed_without_item_outcome": True,
-                            },
-                        },
-                        source_message_key=source_key,
-                    )
-                elif aliases & unresolved_anchors:
-                    outcome = classify_action_result(
-                        "voice",
-                        {
-                            "error_code": (
-                                str(voice_payload.get("error_code") or "").strip()
-                                or str(voice_state or "VOICE_TRANSCRIBE_FAILED")
-                            ),
-                            "evidence": {"voice_anchor_key": anchor_key},
-                        },
-                        source_message_key=source_key,
-                    )
-                else:
-                    continue
-                outcome_evidence = dict(outcome.get("evidence") or {})
-                outcome_evidence.update(
-                    {
-                        "sender_role": role,
-                        "voice_anchor_key": anchor_key,
+                return {"ok": False, "error_code": contract_error, "payload": current_payload}
+            prepare_state = str(prepared.get("state") or "")
+            if prepare_state == "voice_action_prepare_empty":
+                if not isinstance(prepared.get("observations"), list):
+                    return {
+                        "ok": False,
+                        "error_code": "C2_AUTHORITATIVE_FRAME_SOURCE_INVALID",
+                        "payload": current_payload,
                     }
+                current_observations = list(
+                    current_payload.get("observations") or []
                 )
-                outcome["evidence"] = outcome_evidence
-                outcome["terminal_payload"] = _voice_terminal_payload(
-                    voice_payload,
-                    anchor_keys=sorted(aliases),
-                    result=str(outcome.get("result") or "failed"),
-                    error_code=str(outcome.get("error_code") or "") or None,
+                prepared_observations = list(
+                    prepared.get("observations") or []
                 )
-                outcome_evidence["action_kind"] = "voice"
-                outcome["evidence"] = outcome_evidence
-                round_outcomes.append(outcome)
-                processed_anchor_keys.update(aliases)
-            item_outcomes = merge_item_outcomes(
-                item_outcomes,
-                round_outcomes,
-            )
-            if flow_outcomes is not None:
-                flow_outcomes.extend(round_outcomes)
-            if unresolved_anchors and not accumulated_failure_code:
-                accumulated_failure_code = (
-                    str(voice_payload.get("error_code") or "").strip()
-                    or (
-                        "VOICE_TRANSCRIBE_PARTIAL"
-                        if voice_state
-                        in {
-                            "voice_transcribe_completed",
-                            "voice_transcribe_partial",
-                            "voice_transcribe_no_visible_voice",
-                        }
-                        else str(voice_state or "VOICE_TRANSCRIBE_FAILED")
+                current_candidate_ids = {
+                    str(item.get("observation_id") or "").strip()
+                    for item in current_executable_voices
+                    if str(item.get("observation_id") or "").strip()
+                }
+                prepared_voice_ids = {
+                    str(item.get("observation_id") or "").strip()
+                    for item in _untranscribed_voice_observations(prepared)
+                    if str(item.get("observation_id") or "").strip()
+                }
+                if current_candidate_ids & prepared_voice_ids:
+                    return {
+                        "ok": False,
+                        "error_code": "C2_AUTHORITATIVE_FRAME_SOURCE_INVALID",
+                        "payload": current_payload,
+                    }
+                aligned, alignment_evidence = (
+                    align_post_action_observations(
+                        current_observations,
+                        prepared_observations,
                     )
                 )
-
-            lease.update_step("target_chat_reconfirming")
-            self.current_step = "target_chat_reconfirming"
-            reusable = bool(
-                voice_payload.get("final_frame_reusable")
-                and isinstance(voice_payload.get("observations"), list)
-                and isinstance(voice_payload.get("target_confirmation"), dict)
-                and voice_payload.get("target_confirmation", {}).get("ok")
+                if alignment_evidence.get("alignment_status") not in {
+                    "unique",
+                    "not_required",
+                }:
+                    return {
+                        "ok": False,
+                        "error_code": (
+                            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                        ),
+                        "payload": current_payload,
+                    }
+                aligned = self._assign_sequence_new_suffix_identities(
+                    target=target,
+                    observations=aligned,
+                    evidence=alignment_evidence,
+                    read_run_id=flow_outcomes.origin_read_run_id,
+                )
+                completed_voice_summary = current_payload.get(
+                    "voice_transcription"
+                )
+                current_payload = {
+                    **prepared,
+                    "ok": True,
+                    "state": "messages_ocr",
+                    "observations": aligned,
+                    "sequence_alignment_evidence": alignment_evidence,
+                    "authoritative_frame_source": "final_read",
+                    "ui_frame_invalidated": bool(
+                        current_payload.get("ui_frame_invalidated")
+                    ),
+                }
+                if completed_voice_summary:
+                    current_payload["voice_transcription"] = (
+                        completed_voice_summary
+                    )
+                continue
+            prepare_fields = {
+                key: str(prepared.get(key) or "").strip()
+                for key in (
+                    "pre_frame_id",
+                    "selected_pre_observation_id",
+                    "selected_action_token",
+                    "selected_target_fingerprint",
+                )
+            }
+            if (
+                not prepared.get("ok")
+                or prepare_state != "voice_action_prepared"
+                or prepared.get("ui_action_performed") is not False
+                or any(not value for value in prepare_fields.values())
+            ):
+                return {
+                    "ok": False,
+                    "error_code": str(prepared.get("error_code") or "C2_VOICE_PREPARE_CONTRACT_INVALID"),
+                    "payload": current_payload,
+                }
+            fingerprint = prepare_fields["selected_target_fingerprint"]
+            if fingerprint in attempted_fingerprints:
+                failure_code = failure_code or "VOICE_TRANSCRIBE_NO_PROGRESS"
+                return result()
+            current_observations = list(
+                current_payload.get("observations") or []
             )
-            if reusable:
-                final_payload = dict(voice_payload)
-                final_payload["ok"] = True
-                final_payload["state"] = "messages_ocr"
-            else:
-                final_payload = self.bridge.get_messages(
+            pre_observations = list(prepared.get("observations") or [])
+            current_has_committed_identity = any(
+                isinstance(item, dict)
+                and str(item.get("_worker_stable_id") or "").strip()
+                for item in current_observations
+            )
+            current_ids = [
+                str(item.get("observation_id") or "").strip()
+                for item in current_observations
+                if isinstance(item, dict)
+            ]
+            prepared_ids = [
+                str(item.get("observation_id") or "").strip()
+                for item in pre_observations
+                if isinstance(item, dict)
+            ]
+            exact_read_only_frame = bool(
+                current_ids
+                and current_ids == prepared_ids
+                and len(set(current_ids)) == len(current_ids)
+                and all(current_ids)
+            )
+            if exact_read_only_frame:
+                committed_by_id = {
+                    str(item.get("observation_id") or "").strip(): str(
+                        item.get("_worker_stable_id") or ""
+                    ).strip()
+                    for item in current_observations
+                    if isinstance(item, dict)
+                    and str(item.get("observation_id") or "").strip()
+                    and str(item.get("_worker_stable_id") or "").strip()
+                }
+                voice_action_summary_by_id = {
+                    str(item.get("observation_id") or "").strip(): dict(
+                        item.get("_worker_voice_action_summary") or {}
+                    )
+                    for item in current_observations
+                    if isinstance(item, dict)
+                    and str(item.get("observation_id") or "").strip()
+                    and isinstance(
+                        item.get("_worker_voice_action_summary"), dict
+                    )
+                    and item.get("_worker_voice_action_summary")
+                }
+                inherited_pre_observations: list[Any] = []
+                for raw_observation in pre_observations:
+                    if not isinstance(raw_observation, dict):
+                        inherited_pre_observations.append(raw_observation)
+                        continue
+                    observation = dict(raw_observation)
+                    observation_id = str(
+                        observation.get("observation_id") or ""
+                    ).strip()
+                    committed_id = committed_by_id.get(observation_id)
+                    if committed_id:
+                        observation["_worker_stable_id"] = committed_id
+                    voice_action_summary = (
+                        voice_action_summary_by_id.get(observation_id)
+                    )
+                    if voice_action_summary:
+                        observation["_worker_voice_action_summary"] = dict(
+                            voice_action_summary
+                        )
+                    inherited_pre_observations.append(observation)
+                pre_observations = inherited_pre_observations
+                prepared = {
+                    **prepared,
+                    "observations": pre_observations,
+                }
+            elif current_has_committed_identity:
+                pre_observations, prepare_alignment_evidence = (
+                    align_post_action_observations(
+                        current_observations,
+                        pre_observations,
+                    )
+                )
+                if prepare_alignment_evidence.get(
+                    "alignment_status"
+                ) not in {"unique", "not_required"}:
+                    return {
+                        "ok": False,
+                        "error_code": (
+                            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                        ),
+                        "payload": current_payload,
+                    }
+                pre_observations = (
+                    self._assign_sequence_new_suffix_identities(
+                        target=target,
+                        observations=pre_observations,
+                        evidence=prepare_alignment_evidence,
+                        read_run_id=(
+                            flow_outcomes.origin_read_run_id
+                        ),
+                    )
+                )
+                prepared = {
+                    **prepared,
+                    "observations": pre_observations,
+                    "sequence_alignment_evidence": (
+                        prepare_alignment_evidence
+                    ),
+                }
+            selected_id = prepare_fields["selected_pre_observation_id"]
+            selected_observations = [
+                item
+                for item in pre_observations
+                if isinstance(item, dict)
+                and str(item.get("observation_id") or "").strip()
+                == selected_id
+            ]
+            selected_plan = (
+                prepared.get("selected_voice_observation")
+                if isinstance(
+                    prepared.get("selected_voice_observation"), dict
+                )
+                else {}
+            )
+            executable_prepared_ids = {
+                str(item.get("observation_id") or "").strip()
+                for item in _executable_untranscribed_voice_observations(
+                    target,
+                    {**prepared, "observations": pre_observations},
+                    excluded_anchor_keys=excluded_voice_anchor_keys,
+                )
+                if str(item.get("observation_id") or "").strip()
+            }
+            selected_observation = (
+                selected_observations[0]
+                if len(selected_observations) == 1
+                else {}
+            )
+            if (
+                len(selected_observations) != 1
+                or selected_id not in executable_prepared_ids
+                or not observation_role_is_trusted(selected_observation)
+                or str(
+                    selected_observation.get("message_type") or ""
+                ).strip().lower()
+                != "voice"
+                or str(
+                    selected_observation.get("voice_state") or ""
+                ).strip().lower()
+                != "untranscribed"
+                or str(
+                    selected_plan.get("observation_id") or ""
+                ).strip()
+                != selected_id
+                or str(
+                    selected_plan.get("sender_role") or ""
+                ).strip().lower()
+                != str(
+                    selected_observation.get("sender_role") or ""
+                ).strip().lower()
+            ):
+                return {"ok": False, "error_code": "C2_VOICE_PREPARE_CONTRACT_INVALID", "payload": current_payload}
+            physical_anchor_keys = sorted({
+                str(value).strip()
+                for value in (prepared.get("selected_physical_anchor_keys") or [])
+                if str(value).strip()
+            })
+            if not physical_anchor_keys:
+                return {"ok": False, "error_code": "C2_VOICE_PREPARE_CONTRACT_INVALID", "payload": current_payload}
+
+            action_id = f"voice:{target.conversation_id}:{uuid.uuid4()}"
+            reserved_id = self._reserve_worker_sequence(
+                target,
+                reservation_key=f"selected-action:{action_id}",
+            )
+            committed_ids = {
+                str(item.get("observation_id") or ""): str(item.get("_worker_stable_id") or "")
+                for item in pre_observations
+                if isinstance(item, dict)
+                and str(item.get("observation_id") or "")
+                and str(item.get("_worker_stable_id") or "")
+            }
+            pre_sequence = build_pre_action_identity_sequence(
+                pre_observations,
+                committed_ids=committed_ids,
+                selected_observation_id=selected_id,
+                canonical_action_id=action_id,
+                reserved_worker_stable_id=reserved_id,
+            )
+            prepare_evidence = {
+                **prepare_fields,
+                "selected_physical_anchor_keys": physical_anchor_keys,
+                "candidate_group_count": int(
+                    prepared.get("candidate_group_count") or 0
+                ),
+            }
+            journal = self._start_irreversible_action_journal(
+                action_kind="voice",
+                target=target,
+                items=[{"source_message_key": action_id, "physical_anchor_keys": physical_anchor_keys}],
+                flow_outcomes=flow_outcomes,
+                transaction_id=action_id,
+                pre_action_identity_sequence=pre_sequence,
+                pre_frame_id=prepare_fields["pre_frame_id"],
+                reserved_worker_stable_id=reserved_id,
+                prepare_evidence=prepare_evidence,
+            )
+
+            def terminate_created_voice_action(
+                error_code: str,
+                *,
+                definitely_before_trigger: bool = False,
+            ) -> None:
+                """Ensure every created voice action has a finite phase.
+
+                The Sidecar journal is authoritative about whether the
+                irreversible trigger may have run.  A still-not-attempted
+                journal can be cancelled.  Any other unresolved phase is
+                quarantined without attaching the reserved sequence identity
+                to message content or permitting a repeat click.
+                """
+
+                payload = read_action_journal(journal)
+                items = (
+                    payload.get("items")
+                    if isinstance(payload.get("items"), dict)
+                    else {}
+                )
+                item = (
+                    dict(items.get(action_id) or {})
+                    if isinstance(items.get(action_id), dict)
+                    else {}
+                )
+                phase = str(
+                    item.get("action_phase")
+                    or payload.get("action_phase")
+                    or "not_attempted"
+                ).strip()
+                if definitely_before_trigger and phase == "not_attempted":
+                    update_action_journal_item(
+                        journal,
+                        source_message_key=action_id,
+                        action_phase="cancelled_before_trigger",
+                        business_state="not_attempted",
+                        business_result_confirmed=False,
+                        error_code=error_code,
+                        terminal_payload={
+                            "state": "cancelled_before_trigger",
+                            "error_code": error_code,
+                        },
+                    )
+                    return
+                if phase in {"cancelled_before_trigger", "quarantined"}:
+                    return
+                update_action_journal_item(
+                    journal,
+                    source_message_key=action_id,
+                    action_phase="quarantined",
+                    error_code=error_code,
+                    terminal_payload={
+                        "state": "quarantined",
+                        "error_code": error_code,
+                        "previous_action_phase": phase,
+                    },
+                )
+
+            if enforce_read_targets and not self._backend_still_allows_read_target_for_voice(binding, target):
+                terminate_created_voice_action(
+                    "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
+                    definitely_before_trigger=True,
+                )
+                return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS", "payload": current_payload}
+
+            lease.update_step("voice_transcribe_current_chat")
+            self.current_step = "voice_transcribe_current_chat"
+            try:
+                executed = self.bridge.execute_voice_action(
                     display_name=target_label,
                     rpa_session_key="",
+                    canonical_voice_action_id=action_id,
+                    reserved_worker_stable_id=reserved_id,
+                    pre_frame_id=prepare_fields["pre_frame_id"],
+                    selected_pre_observation_id=selected_id,
+                    selected_action_token=prepare_fields["selected_action_token"],
+                    selected_target_fingerprint=fingerprint,
                     remark_code=target.remark_code or "",
                     target_mode="current",
-                    max_duration_seconds=20,
+                    max_duration_seconds=CONFIG.c2_voice_transcribe_max_duration_seconds,
+                    action_journal=journal,
                     cancel_check=action_cancel_requested,
                 )
-            if not final_payload.get("ok"):
-                return {
-                    "ok": False,
-                    "error_code": str(
-                        final_payload.get("error_code")
-                        or final_payload.get("state")
-                        or "TARGET_NOT_CONFIRMED_FOR_MESSAGES"
+            except Exception:
+                terminate_created_voice_action(
+                    "C2_VOICE_EXECUTE_INTERRUPTED",
+                )
+                raise
+            execute_contract_error = sidecar_contract_error(executed, require_observations=False)
+            if execute_contract_error:
+                terminate_created_voice_action(
+                    execute_contract_error,
+                    definitely_before_trigger=bool(
+                        executed.get("ui_action_performed") is False
+                        and str(executed.get("action_phase") or "").strip()
+                        in {"not_attempted", "cancelled_before_trigger"}
                     ),
-                    "payload": current_payload,
-                }
-            final_contract_error = sidecar_contract_error(final_payload)
-            if final_contract_error:
+                )
+                return {"ok": False, "error_code": execute_contract_error, "payload": current_payload}
+            execute_state = str(executed.get("state") or "")
+            action_phase = str(executed.get("action_phase") or "not_attempted")
+            if execute_state == "voice_action_cancelled_before_trigger":
+                if (
+                    action_phase != "cancelled_before_trigger"
+                    or executed.get("ui_action_performed") is not False
+                    or str(executed.get("voice_action_stage") or "")
+                    != "execute"
+                    or any(
+                        str(executed.get(key) or "").strip() != value
+                        for key, value in {
+                            "canonical_voice_action_id": action_id,
+                            "reserved_worker_stable_id": reserved_id,
+                            **prepare_fields,
+                        }.items()
+                    )
+                ):
+                    terminate_created_voice_action(
+                        "C2_VOICE_CANCEL_CONTRACT_INVALID"
+                    )
+                    return {"ok": False, "error_code": "C2_VOICE_CANCEL_CONTRACT_INVALID", "payload": current_payload}
+                terminate_created_voice_action(
+                    str(executed.get("error_code") or "C2_VOICE_ACTION_CANCELLED"),
+                    definitely_before_trigger=True,
+                )
+                if (
+                    str(executed.get("error_code") or "").strip()
+                    == "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS"
+                    or action_cancel_requested()
+                    or (
+                        enforce_read_targets
+                        and not self._backend_still_allows_read_target_for_voice(
+                            binding,
+                            target,
+                        )
+                    )
+                ):
+                    return {
+                        "ok": False,
+                        "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
+                        "payload": current_payload,
+                    }
+                cancelled_prepares += 1
+                if cancelled_prepares >= 4:
+                    return {"ok": False, "error_code": "C2_VOICE_PREPARE_TARGET_UNSTABLE", "payload": current_payload}
+                continue
+
+            binding_status = str(
+                executed.get("transcript_binding_status") or ""
+            ).strip().lower()
+            binding_method = str(
+                executed.get("transcript_binding_method") or ""
+            ).strip().lower()
+            confirmed_mapping = (
+                executed.get("confirmed_action_mapping")
+                if isinstance(
+                    executed.get("confirmed_action_mapping"), dict
+                )
+                else {}
+            )
+            tracking_edges = executed.get("tracking_edges")
+            tracking_frame_ids = executed.get("tracking_frame_ids")
+            try:
+                binding_candidate_count = int(
+                    executed.get("binding_candidate_count")
+                )
+            except (TypeError, ValueError):
+                binding_candidate_count = -1
+            execute_identity_contract_valid = bool(
+                str(executed.get("voice_action_stage") or "").strip()
+                == "execute"
+                and str(executed.get("pre_frame_id") or "").strip()
+                == prepare_fields["pre_frame_id"]
+                and str(executed.get("post_frame_id") or "").strip()
+                and str(
+                    executed.get("post_frame_id") or ""
+                ).strip()
+                != prepare_fields["pre_frame_id"]
+                and str(
+                    executed.get("selected_pre_observation_id") or ""
+                ).strip()
+                == selected_id
+                and str(
+                    executed.get("selected_action_token") or ""
+                ).strip()
+                == prepare_fields["selected_action_token"]
+                and str(
+                    executed.get("selected_target_fingerprint") or ""
+                ).strip()
+                == fingerprint
+                and
+                str(
+                    executed.get("canonical_voice_action_id") or ""
+                ).strip()
+                == action_id
+                and str(
+                    executed.get("reserved_worker_stable_id") or ""
+                ).strip()
+                == reserved_id
+                and binding_status in {"confirmed", "ambiguous", "failed"}
+                and binding_method
+                and binding_candidate_count >= 0
+                and isinstance(tracking_frame_ids, list)
+                and isinstance(tracking_edges, list)
+                and str(
+                    confirmed_mapping.get("canonical_action_id") or ""
+                ).strip()
+                == action_id
+                and str(
+                    confirmed_mapping.get("reserved_worker_stable_id")
+                    or ""
+                ).strip()
+                == reserved_id
+                and isinstance(executed.get("ui_action_performed"), bool)
+            )
+            if execute_state == "voice_transcribe_completed":
+                execute_identity_contract_valid = bool(
+                    execute_identity_contract_valid
+                    and binding_status == "confirmed"
+                    and binding_candidate_count == 1
+                    and confirmed_mapping.get("binding_confirmed") is True
+                )
+            elif execute_state == "voice_transcribe_ambiguous":
+                execute_identity_contract_valid = bool(
+                    execute_identity_contract_valid
+                    and binding_status == "ambiguous"
+                    and confirmed_mapping.get("binding_confirmed") is False
+                )
+            else:
+                execute_identity_contract_valid = bool(
+                    execute_identity_contract_valid
+                    and binding_status == "failed"
+                    and binding_candidate_count == 1
+                    and confirmed_mapping.get("binding_confirmed") is True
+                    and str(
+                        confirmed_mapping.get("post_observation_id") or ""
+                    ).strip()
+                    and executed.get("ui_action_performed") is True
+                )
+            if not execute_identity_contract_valid:
+                terminate_created_voice_action(
+                    "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+                    definitely_before_trigger=bool(
+                        executed.get("ui_action_performed") is False
+                        and action_phase
+                        in {"not_attempted", "cancelled_before_trigger"}
+                    ),
+                )
                 return {
                     "ok": False,
-                    "error_code": final_contract_error,
+                    "error_code": "C2_VOICE_IDENTITY_CONTRACT_INVALID",
                     "payload": current_payload,
                 }
 
-            # Do not run cross-round identity arbitration while any visible
-            # voice still needs a terminal result. The outer flow performs the
-            # single arbitration only after every voice is completed/failed.
-            final_payload["observations"] = list(
-                final_payload.get("observations") or []
+            remaining_actions -= 1
+            attempted_fingerprints.add(fingerprint)
+            durable_source_key = worker_source_message_key(
+                target,
+                identity_kind="worker_sequence",
+                identity=reserved_id,
             )
-            final_payload["voice_transcription"] = voice_payload
-            final_payload["initial_messages"] = current_payload
-            final_payload["authoritative_frame_source"] = "final_read"
-            current_payload = final_payload
-
-            blocking_failure = voice_state not in {
-                "voice_transcribe_completed",
-                "voice_transcribe_partial",
-                "voice_transcribe_no_visible_voice",
-            }
-            if blocking_failure:
-                return {
+            sender_role = str((prepared.get("selected_voice_observation") or {}).get("sender_role") or "")
+            if execute_state == "voice_transcribe_ambiguous":
+                # Sidecar has exhausted its bounded evidence-only reads but
+                # cannot bind the result to one physical voice. This is an
+                # independent terminal gate, not a failed message slot: keep
+                # the quarantined Journal, burn the reservation, and never
+                # ask normal slot settlement for a source_message_key.
+                ambiguous_error_code = str(
+                    executed.get("error_code")
+                    or "C2_VOICE_RESULT_AMBIGUOUS"
+                )
+                terminate_created_voice_action(ambiguous_error_code)
+                excluded_voice_anchor_keys.update(physical_anchor_keys)
+                current_payload = {
+                    **executed,
                     "ok": True,
-                    "payload": current_payload,
-                    "failure_code": accumulated_failure_code,
-                    **summarized_outcomes(),
+                    "state": "messages_ocr",
+                    "observations": list(
+                        executed.get("observations") or []
+                    ),
+                    "voice_transcription": executed,
+                    "authoritative_frame_source": "final_read",
+                    "ui_frame_invalidated": True,
                 }
+                quarantine_voice_identity(
+                    action_id=action_id,
+                    action_error_code=ambiguous_error_code,
+                )
+                return result()
+
+            if execute_state != "voice_transcribe_completed":
+                post_observations = list(executed.get("observations") or [])
+                try:
+                    mapping = confirmed_voice_action_mapping(
+                        voice_payload=executed,
+                        pre_observations=pre_observations,
+                        post_observations=post_observations,
+                        canonical_action_id=action_id,
+                        reserved_worker_stable_id=reserved_id,
+                        expected_pre_frame_id=(
+                            prepare_fields["pre_frame_id"]
+                        ),
+                        pre_observation_id=selected_id,
+                        selected_anchor_keys=set(physical_anchor_keys),
+                    )
+                except ValueError:
+                    terminate_created_voice_action(
+                        "C2_VOICE_IDENTITY_CONTRACT_INVALID"
+                    )
+                    return {
+                        "ok": False,
+                        "error_code": "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+                        "payload": current_payload,
+                    }
+                aligned, alignment_evidence = align_post_action_observations(
+                    pre_observations,
+                    post_observations,
+                    confirmed_action_mapping=mapping,
+                )
+                record_action_sequence_alignment(journal, alignment_evidence)
+                if alignment_evidence.get("alignment_status") != "unique":
+                    terminate_created_voice_action(
+                        "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                    )
+                    current_payload = {
+                        **executed,
+                        "ok": True,
+                        "state": "messages_ocr",
+                        "observations": post_observations,
+                        "sequence_alignment_evidence": alignment_evidence,
+                        "voice_transcription": executed,
+                        "authoritative_frame_source": "final_read",
+                        "ui_frame_invalidated": True,
+                    }
+                    quarantine_voice_identity(
+                        action_id=action_id,
+                        action_error_code=(
+                            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                        ),
+                    )
+                    return result()
+                aligned = self._assign_sequence_new_suffix_identities(
+                    target=target,
+                    observations=aligned,
+                    evidence=alignment_evidence,
+                    read_run_id=flow_outcomes.origin_read_run_id,
+                )
+                confirmed_post_observation_id = str(
+                    mapping.get("post_observation_id") or ""
+                ).strip()
+                confirmed_post_anchor_keys: set[str] = set()
+                for observation in aligned:
+                    if (
+                        isinstance(observation, dict)
+                        and str(
+                            observation.get("observation_id") or ""
+                        ).strip()
+                        == confirmed_post_observation_id
+                    ):
+                        observation["_worker_voice_action_summary"] = dict(
+                            executed
+                        )
+                        # Exclusions are deliberately frame-local.  The
+                        # failed bubble may have moved after a new message
+                        # arrived, so carrying the pre-click seat/anchor into
+                        # the next prepare could suppress the new bubble that
+                        # now occupies that seat.  Continuous tracking has
+                        # already proved which post-action observation owns
+                        # this failure; exclude only that latest observation's
+                        # aliases during the remainder of this UI flow.
+                        confirmed_post_anchor_keys.update(
+                            voice_action_journal_anchor_keys(observation)
+                        )
+                if not confirmed_post_anchor_keys:
+                    terminate_created_voice_action(
+                        "C2_VOICE_IDENTITY_CONTRACT_INVALID"
+                    )
+                    return {
+                        "ok": False,
+                        "error_code": (
+                            "C2_VOICE_IDENTITY_CONTRACT_INVALID"
+                        ),
+                        "payload": current_payload,
+                    }
+                commit_action_journal_item_identity(
+                    journal,
+                    journal_item_id=action_id,
+                    source_message_key=durable_source_key,
+                )
+                outcome = classify_action_result(
+                    "voice",
+                    executed,
+                    source_message_key=durable_source_key,
+                )
+                evidence = dict(outcome.get("evidence") or {})
+                evidence.update(
+                    {"action_kind": "voice", "sender_role": sender_role}
+                )
+                outcome["evidence"] = evidence
+                outcome["terminal_payload"] = _voice_terminal_payload(
+                    executed,
+                    anchor_keys=physical_anchor_keys,
+                    result="failed",
+                    error_code=str(
+                        executed.get("error_code")
+                        or "C2_VOICE_TRANSCRIBE_FAILED"
+                    ),
+                )
+                update_action_journal_item(
+                    journal,
+                    source_message_key=durable_source_key,
+                    action_phase=action_phase,
+                    business_state="failed",
+                    business_result_confirmed=False,
+                    error_code=str(
+                        executed.get("error_code")
+                        or "C2_VOICE_TRANSCRIBE_FAILED"
+                    ),
+                    terminal_payload=outcome["terminal_payload"],
+                )
+                flow_outcomes.record(outcome)
+                item_outcomes = merge_item_outcomes(
+                    item_outcomes,
+                    [outcome],
+                )
+                failure_code = str(
+                    executed.get("error_code")
+                    or "C2_VOICE_TRANSCRIBE_FAILED"
+                )
+                excluded_voice_anchor_keys.update(
+                    confirmed_post_anchor_keys
+                )
+                current_payload = {
+                    **executed,
+                    "ok": True,
+                    "state": "messages_ocr",
+                    "observations": aligned,
+                    "sequence_alignment_evidence": alignment_evidence,
+                    "voice_transcription": executed,
+                    "authoritative_frame_source": "final_read",
+                    "ui_frame_invalidated": True,
+                }
+                continue
+
+            post_observations = list(executed.get("observations") or [])
+            try:
+                mapping = confirmed_voice_action_mapping(
+                    voice_payload=executed,
+                    pre_observations=pre_observations,
+                    post_observations=post_observations,
+                    canonical_action_id=action_id,
+                    reserved_worker_stable_id=reserved_id,
+                    expected_pre_frame_id=(
+                        prepare_fields["pre_frame_id"]
+                    ),
+                    pre_observation_id=selected_id,
+                    selected_anchor_keys=set(physical_anchor_keys),
+                )
+            except ValueError:
+                terminate_created_voice_action(
+                    "C2_VOICE_IDENTITY_CONTRACT_INVALID"
+                )
+                return {"ok": False, "error_code": "C2_VOICE_IDENTITY_CONTRACT_INVALID", "payload": current_payload}
+            aligned, alignment_evidence = align_post_action_observations(
+                pre_observations,
+                post_observations,
+                confirmed_action_mapping=mapping,
+            )
+            record_action_sequence_alignment(journal, alignment_evidence)
+            if alignment_evidence.get("alignment_status") != "unique":
+                terminate_created_voice_action(
+                    "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                )
+                current_payload = {
+                    **executed,
+                    "ok": True,
+                    "state": "messages_ocr",
+                    "observations": post_observations,
+                    "sequence_alignment_evidence": alignment_evidence,
+                    "voice_transcription": executed,
+                    "authoritative_frame_source": "final_read",
+                    "ui_frame_invalidated": True,
+                }
+                quarantine_voice_identity(
+                    action_id=action_id,
+                    action_error_code=(
+                        "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                    ),
+                )
+                return result()
+            aligned = self._assign_sequence_new_suffix_identities(
+                target=target,
+                observations=aligned,
+                evidence=alignment_evidence,
+                read_run_id=flow_outcomes.origin_read_run_id,
+            )
+            confirmed_post_observation_id = str(
+                mapping.get("post_observation_id") or ""
+            ).strip()
+            for observation in aligned:
+                if (
+                    isinstance(observation, dict)
+                    and str(observation.get("observation_id") or "").strip()
+                    == confirmed_post_observation_id
+                ):
+                    observation["_worker_voice_action_summary"] = dict(
+                        executed
+                    )
+            commit_action_journal_item_identity(
+                journal,
+                journal_item_id=action_id,
+                source_message_key=durable_source_key,
+            )
+            outcome = classify_action_result("voice", executed, source_message_key=durable_source_key)
+            evidence = dict(outcome.get("evidence") or {})
+            evidence.update({"action_kind": "voice", "sender_role": sender_role})
+            outcome["evidence"] = evidence
+            outcome["terminal_payload"] = _voice_terminal_payload(
+                executed,
+                anchor_keys=physical_anchor_keys,
+                result="completed",
+                error_code=None,
+            )
+            update_action_journal_item(
+                journal,
+                source_message_key=durable_source_key,
+                action_phase=action_phase,
+                business_state="completed",
+                business_result_confirmed=True,
+                error_code="",
+                terminal_payload=outcome["terminal_payload"],
+            )
+            flow_outcomes.record(outcome)
+            item_outcomes = merge_item_outcomes(item_outcomes, [outcome])
+            current_payload = {
+                **executed,
+                "ok": True,
+                "state": "messages_ocr",
+                "observations": aligned,
+                "sequence_alignment_evidence": alignment_evidence,
+                "voice_transcription": executed,
+                "authoritative_frame_source": "final_read",
+                "ui_frame_invalidated": True,
+            }
+
+        return {
+            "ok": False,
+            "error_code": "C2_VOICE_ACTION_BUDGET_EXHAUSTED",
+            "payload": current_payload,
+        }
 
     def _converge_current_screen_after_images(
         self,
@@ -7891,6 +9703,9 @@ class TaskRunner:
         """
 
         current_payload = dict(sidecar_payload)
+        current_payload["ui_frame_invalidated"] = bool(
+            current_payload.get("ui_frame_invalidated")
+        )
         aggregate_image_stats = new_image_phase_result()
         failed_voice_source_keys: set[str] = set()
         failed_voice_roles: dict[str, str] = {}
@@ -7937,117 +9752,54 @@ class TaskRunner:
                     "image_stats": aggregate_image_stats,
                 }
 
-            # A voice that arrives while Vision is active must be settled
-            # before any cross-round identity gate is evaluated. Otherwise an
-            # identity pause could leave the voice permanently not_attempted.
-            if _untranscribed_voice_observations(refreshed):
-                voice_result = (
-                    self._finish_new_visible_voices_in_current_chat(
-                        binding=binding,
-                        target=target,
-                        target_label=target_label,
-                        sidecar_payload=refreshed,
-                        lease=lease,
-                        action_cancel_requested=action_cancel_requested,
-                        enforce_read_targets=enforce_read_targets,
-                        excluded_voice_anchor_keys=set(),
-                        flow_outcomes=flow_outcomes,
-                    )
-                )
-                if not voice_result.get("ok"):
-                    return {
-                        **voice_result,
-                        "image_stats": aggregate_image_stats,
-                    }
-                refreshed = dict(
-                    voice_result.get("payload") or refreshed
-                )
-                voice_outcomes = list(
-                    voice_result.get("item_outcomes") or []
-                )
-                self._persist_c2_flow_outcomes(
-                    target,
-                    voice_outcomes,
-                    origin_read_run_id=flow_outcomes.origin_read_run_id,
-                )
-                new_failed_keys = {
-                    str(value).strip()
-                    for value in (
-                        voice_result.get("failed_source_keys") or []
-                    )
-                    if str(value).strip()
-                }
-                if new_failed_keys:
-                    failure_code = str(
-                        voice_result.get("failure_code")
-                        or "VOICE_TRANSCRIBE_FAILED"
-                    )
-                    self._mark_voice_sources_failed(
-                        target=target,
-                        origin_read_run_id=flow_outcomes.origin_read_run_id,
-                        source_keys=sorted(new_failed_keys),
-                        error_code=failure_code,
-                    )
-                    annotated_roles = (
-                        self._annotate_failed_voice_observations(
-                            target=target,
-                            sidecar_payload=refreshed,
-                            failed_source_keys=new_failed_keys,
-                            error_code=failure_code,
-                        )
-                    )
-                    failed_voice_source_keys.update(new_failed_keys)
-                    failed_voice_roles.update(annotated_roles)
-
-            observations, _identity_state, identity_errors = (
-                self._reconcile_message_identities(
-                    target,
+            observations, sequence_alignment_evidence = (
+                align_post_action_observations(
+                    list(current_payload.get("observations") or []),
                     list(refreshed.get("observations") or []),
                 )
             )
-            if identity_errors:
-                retried, retry_errors, retry_error_code = (
-                    self._retry_identity_from_backend_checkpoint_once(
-                        target=target,
-                        target_label=target_label,
-                        cancel_check=action_cancel_requested,
-                    )
-                )
-                if retried is not None and not retry_errors:
-                    refreshed["identity_automatic_reread_performed"] = True
-                    refreshed[
-                        "identity_automatic_reread_sidecar_run_id"
-                    ] = str(retried.get("sidecar_run_id") or "")
-                    identity_errors = []
-                elif retry_errors:
-                    identity_errors = retry_errors
-                elif retried is None and retry_error_code:
-                    for error in identity_errors:
-                        error["automatic_reread_error_code"] = (
-                            retry_error_code
-                        )
-            observations, identity_errors, identity_warnings = (
-                self._downgrade_historical_identity_errors(
-                    target=target,
-                    observations=observations,
-                    errors=identity_errors,
-                )
+            refreshed["sequence_alignment_evidence"] = (
+                sequence_alignment_evidence
             )
+            identity_errors = (
+                []
+                if sequence_alignment_evidence.get("alignment_status")
+                == "unique"
+                else [
+                    {
+                        "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+                        "reason": sequence_alignment_evidence.get(
+                            "alignment_status"
+                        ),
+                    }
+                ]
+            )
+            if not identity_errors:
+                for journal_path, journal_payload in list_action_journals(
+                    conversation_id=target.conversation_id,
+                    action_kinds=("image",),
+                ):
+                    if journal_payload.get("sequence_alignment_evidence") is None:
+                        record_action_sequence_alignment(
+                            journal_path,
+                            sequence_alignment_evidence,
+                        )
             if identity_errors:
                 return {
                     "ok": False,
-                    "error_code": str(
-                        identity_errors[0].get("error_code")
-                        or "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
-                    ),
+                    "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
                     "payload": current_payload,
                     "image_stats": aggregate_image_stats,
+                    "sequence_alignment_evidence": (
+                        sequence_alignment_evidence
+                    ),
                 }
-            if identity_warnings:
-                refreshed["historical_warnings"] = [
-                    *(refreshed.get("historical_warnings") or []),
-                    *identity_warnings,
-                ]
+            observations = self._assign_sequence_new_suffix_identities(
+                target=target,
+                observations=observations,
+                evidence=sequence_alignment_evidence,
+                read_run_id=flow_outcomes.origin_read_run_id,
+            )
             refreshed["observations"] = observations
             refreshed = self._merge_waiting_image_facts(
                 target=target,
@@ -8063,6 +9815,9 @@ class TaskRunner:
                 or sidecar_payload.get("voice_transcription")
             )
             refreshed["authoritative_frame_source"] = "final_read"
+            refreshed["ui_frame_invalidated"] = bool(
+                current_payload.get("ui_frame_invalidated")
+            )
             current_payload = refreshed
 
             failed_ledger_groups: dict[str, set[str]] = {}
@@ -8117,7 +9872,10 @@ class TaskRunner:
                 failed_voice_source_keys.update(source_keys)
                 failed_voice_roles.update(annotated_roles)
 
-            if _untranscribed_voice_observations(current_payload):
+            if _executable_untranscribed_voice_observations(
+                target,
+                current_payload,
+            ):
                 voice_result = (
                     self._finish_new_visible_voices_in_current_chat(
                         binding=binding,
@@ -8139,6 +9897,22 @@ class TaskRunner:
                 current_payload = dict(
                     voice_result.get("payload") or current_payload
                 )
+                terminal_gate = voice_result.get("terminal_gate")
+                if isinstance(terminal_gate, dict):
+                    return {
+                        "ok": False,
+                        "error_code": str(
+                            terminal_gate.get("error_code")
+                            or "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                        ),
+                        "terminal_gate": dict(terminal_gate),
+                        "payload": current_payload,
+                        "image_stats": aggregate_image_stats,
+                        "failed_voice_source_keys": sorted(
+                            failed_voice_source_keys
+                        ),
+                        "failed_voice_roles": failed_voice_roles,
+                    }
                 new_failed_keys = {
                     str(value)
                     for value in (
@@ -8194,7 +9968,12 @@ class TaskRunner:
             pending_image_keys = tuple(
                 sorted(incremental_plan["new_image_source_keys"])
             )
-            allowed_image_keys = set(pending_image_keys)
+            # One image action per stable frame. The next candidate is chosen
+            # only after the loop obtains and aligns a fresh authoritative
+            # frame.
+            allowed_image_keys = (
+                {pending_image_keys[0]} if pending_image_keys else set()
+            )
             image_observations = [
                 item
                 for item in (current_payload.get("observations") or [])
@@ -8251,6 +10030,8 @@ class TaskRunner:
                     flow_outcomes=flow_outcomes,
                 )
             )
+            if image_stats.get("ui_frame_invalidated"):
+                current_payload["ui_frame_invalidated"] = True
             add_image_stats(image_stats)
             if not pending_image_keys:
                 return {
@@ -8293,16 +10074,30 @@ class TaskRunner:
         target: WechatReadTarget,
         items: list[dict[str, Any]],
         flow_outcomes: FlowOutcomeAccumulator,
+        transaction_id: str | None = None,
+        pre_action_identity_sequence: list[dict[str, Any]] | None = None,
+        pre_frame_id: str | None = None,
+        reserved_worker_stable_id: str | None = None,
+        prepare_evidence: dict[str, Any] | None = None,
     ) -> Path:
-        transaction_id = f"{action_kind}:{target.conversation_id}:{uuid.uuid4()}"
-        path = action_journal_path(action_kind, transaction_id)
+        action_id = str(transaction_id or "").strip() or (
+            f"{action_kind}:{target.conversation_id}:{uuid.uuid4()}"
+        )
+        path = action_journal_path(action_kind, action_id)
         initialize_action_journal(
             path,
             action_kind=action_kind,
-            transaction_id=transaction_id,
+            transaction_id=action_id,
             conversation_id=target.conversation_id,
             items=items,
             origin_read_run_id=flow_outcomes.origin_read_run_id,
+            canonical_action_id=(
+                action_id if reserved_worker_stable_id else None
+            ),
+            reserved_worker_stable_id=reserved_worker_stable_id,
+            pre_frame_id=pre_frame_id,
+            pre_action_identity_sequence=pre_action_identity_sequence,
+            prepare_evidence=prepare_evidence,
         )
         flow_outcomes.register_action_journal(path)
         return path
@@ -8310,12 +10105,121 @@ class TaskRunner:
     def _recover_physical_action_journals(
         self,
         target: WechatReadTarget,
-    ) -> None:
+    ) -> list[dict[str, Any]]:
         journal_entries = list_action_journals(
             conversation_id=target.conversation_id,
         )
+        unresolved: list[dict[str, Any]] = []
+        recovered_entries: list[tuple[Path, dict[str, Any]]] = []
+        for path, raw_payload in journal_entries:
+            payload = dict(raw_payload)
+            action_id = str(payload.get("canonical_action_id") or "").strip()
+            reserved_id = str(
+                payload.get("reserved_worker_stable_id") or ""
+            ).strip()
+            committed_id = str(
+                payload.get("committed_worker_stable_id") or ""
+            ).strip()
+            items = (
+                payload.get("items")
+                if isinstance(payload.get("items"), dict)
+                else {}
+            )
+            action_kind = str(payload.get("action_kind") or "").strip()
+            action_item = (
+                dict(items.get(action_id) or {})
+                if action_id and isinstance(items.get(action_id), dict)
+                else {}
+            )
+            if (
+                action_kind == "voice"
+                and action_id
+                and str(action_item.get("action_phase") or "").strip()
+                == "trigger_attempted"
+                and not isinstance(
+                    payload.get("sequence_alignment_evidence"), dict
+                )
+            ):
+                # A crash/transport loss after the durable no-repeat barrier
+                # cannot remain pending forever.  No body or reserved
+                # sequence identity may be guessed; close the physical action
+                # as quarantined and let the idempotent identity gate isolate
+                # only this conversation.
+                payload = update_action_journal_item(
+                    path,
+                    source_message_key=action_id,
+                    action_phase="quarantined",
+                    error_code="C2_VOICE_RESULT_AMBIGUOUS",
+                    terminal_payload={
+                        "state": "quarantined",
+                        "error_code": "C2_VOICE_RESULT_AMBIGUOUS",
+                        "reason": (
+                            "recovered_trigger_without_post_alignment"
+                        ),
+                    },
+                )
+                items = (
+                    payload.get("items")
+                    if isinstance(payload.get("items"), dict)
+                    else {}
+                )
+            formed_fact = any(
+                isinstance(item, dict)
+                and action_journal_item_has_formed_fact(item)
+                for item in items.values()
+            )
+            if action_id and reserved_id and not committed_id and formed_fact:
+                evidence = (
+                    payload.get("sequence_alignment_evidence")
+                    if isinstance(
+                        payload.get("sequence_alignment_evidence"), dict
+                    )
+                    else {}
+                )
+                selected_pair_confirmed = any(
+                    isinstance(pair, dict)
+                    and pair.get("identity_state") == "selected_action"
+                    and str(pair.get("worker_stable_id") or "").strip()
+                    == reserved_id
+                    for pair in (evidence.get("matched_pairs") or [])
+                )
+                if (
+                    evidence.get("alignment_status") == "unique"
+                    and selected_pair_confirmed
+                    and action_id in items
+                ):
+                    durable_source_key = worker_source_message_key(
+                        target,
+                        identity_kind="worker_sequence",
+                        identity=reserved_id,
+                    )
+                    payload = commit_action_journal_item_identity(
+                        path,
+                        journal_item_id=action_id,
+                        source_message_key=durable_source_key,
+                    )
+                else:
+                    unresolved.append(
+                        {
+                            "error_code": (
+                                "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                            ),
+                            "reason": "action_triggered_without_confirmed_post_alignment",
+                            "row_kind": "voice_bubble",
+                            "signature": action_id,
+                            "transaction_id": str(
+                                payload.get("transaction_id") or ""
+                            ),
+                            "origin_read_run_id": str(
+                                payload.get("origin_read_run_id") or ""
+                            ),
+                            "sequence_alignment_evidence": evidence,
+                        }
+                    )
+                    continue
+            recovered_entries.append((path, payload))
         recovered_outcomes = self._physical_action_journal_outcomes(
-            journal_entries,
+            recovered_entries,
         )
         if recovered_outcomes:
             self._persist_c2_flow_outcomes(target, recovered_outcomes)
@@ -8332,6 +10236,7 @@ class TaskRunner:
         for path, payload in journal_entries:
             if self._action_journal_can_be_removed(payload):
                 remove_action_journal(path)
+        return unresolved
 
     @staticmethod
     def _action_journal_can_be_removed(payload: dict[str, Any]) -> bool:
@@ -8381,6 +10286,19 @@ class TaskRunner:
             action_kind = str(payload.get("action_kind") or "").strip()
             if action_kind not in {"voice", "image"}:
                 continue
+            if (
+                str(payload.get("canonical_action_id") or "").strip()
+                and str(
+                    payload.get("reserved_worker_stable_id") or ""
+                ).strip()
+                and not str(
+                    payload.get("committed_worker_stable_id") or ""
+                ).strip()
+            ):
+                # The physical result remains durable in the Journal, but it
+                # has no confirmed cross-frame identity yet. Persisting it
+                # under the action-local key would create a second message.
+                continue
             origin_read_run_id = str(
                 payload.get("origin_read_run_id") or ""
             ).strip()
@@ -8406,6 +10324,8 @@ class TaskRunner:
                 phase = str(
                     item.get("action_phase") or "not_attempted"
                 ).strip()
+                if phase == "cancelled_before_trigger":
+                    continue
                 formed_fact = bool(terminal_payload) or business_state in {
                     "completed",
                     "failed",
@@ -8504,7 +10424,25 @@ class TaskRunner:
         target: WechatReadTarget,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        self._recover_physical_action_journals(target)
+        unresolved_action_journals = (
+            self._recover_physical_action_journals(target)
+        )
+        if unresolved_action_journals:
+            read_run_id = str(
+                unresolved_action_journals[0].get("origin_read_run_id") or ""
+            ).strip() or f"recovery-{uuid.uuid4()}"
+            self._report_identity_failure_gate(
+                binding=binding,
+                target=target,
+                read_run_id=read_run_id,
+                error_code="MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+                identity_errors=unresolved_action_journals,
+            )
+            return {
+                "ok": False,
+                "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+                "identity_errors": unresolved_action_journals,
+            }
         self._recover_c2_action_journal(target)
         read_run_id = f"read-{uuid.uuid4()}"
         flow_id = f"c2-action:{uuid.uuid4()}"
@@ -8731,6 +10669,49 @@ class TaskRunner:
                 binding,
                 target,
             )
+
+        def settle_identity_terminal_gate(
+            terminal_gate: dict[str, Any],
+            *,
+            final_payload: dict[str, Any],
+            target_confirmation: dict[str, Any],
+            initial_observations: list[Any],
+        ) -> dict[str, Any]:
+            """Finish one conversation gate without normal slot settlement."""
+
+            gate_error_code = str(
+                terminal_gate.get("error_code")
+                or "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+            )
+            identity_errors = [
+                dict(item)
+                for item in (terminal_gate.get("identity_errors") or [])
+                if isinstance(item, dict)
+            ]
+            gate_reported = self._report_identity_failure_gate(
+                binding=binding,
+                target=target,
+                read_run_id=read_run_id,
+                error_code=gate_error_code,
+                identity_errors=identity_errors,
+                authoritative_frame_source=str(
+                    terminal_gate.get("authoritative_frame_source")
+                    or "final_read"
+                ),
+                ui_frame_invalidated=(
+                    terminal_gate.get("ui_frame_invalidated") is True
+                ),
+            )
+            self.c2_stats["last_error"] = gate_error_code
+            return {
+                "ok": False,
+                "error_code": gate_error_code,
+                "identity_gate_reported": gate_reported,
+                "identity_errors": identity_errors,
+                "target_confirmation": target_confirmation,
+                "initial_observations": initial_observations,
+                "final_messages": final_payload,
+            }
 
         try:
             if operation_phase not in {
@@ -9071,6 +11052,7 @@ class TaskRunner:
             )
             sidecar_payload["target_confirmation"] = locate_payload
             sidecar_payload["authoritative_frame_source"] = "initial_read"
+            sidecar_payload["ui_frame_invalidated"] = False
             if not sidecar_payload.get("ok"):
                 code = str(sidecar_payload.get("error_code") or sidecar_payload.get("state") or "MESSAGE_READ_FAILED")
                 self.c2_stats["last_error"] = code
@@ -9119,6 +11101,45 @@ class TaskRunner:
                 }
             if enforce_read_targets and not self._backend_still_allows_read_target(binding, target):
                 return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS", "target_confirmation": locate_payload, "initial_messages": sidecar_payload}
+            sidecar_payload, initial_identity_errors = (
+                self._align_initial_identity_frame(
+                    target=target,
+                    sidecar_payload=sidecar_payload,
+                    read_run_id=read_run_id,
+                )
+            )
+            if initial_identity_errors:
+                code = str(
+                    initial_identity_errors[0].get("error_code")
+                    or "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                )
+                self.c2_stats["last_error"] = code
+                append_log(
+                    "WARN",
+                    "c2_initial_sequence_alignment_blocked",
+                    "当前画面无法与后端身份尾部唯一对齐，已禁止媒体动作、入库和 Brain。",
+                    error_code=code,
+                    metadata={
+                        "conversation_id": target.conversation_id,
+                        "identity_errors": initial_identity_errors,
+                        "sequence_alignment_evidence": sidecar_payload.get(
+                            "sequence_alignment_evidence"
+                        ),
+                    },
+                    force_incident=True,
+                )
+                self._report_identity_failure_gate(
+                    binding=binding,
+                    target=target,
+                    read_run_id=read_run_id,
+                    error_code=code,
+                    identity_errors=initial_identity_errors,
+                )
+                return {
+                    "ok": False,
+                    "error_code": code,
+                    "initial_messages": sidecar_payload,
+                }
             voice_binding_guard_key = (
                 f"{target_cache_key}:{str(target.authorization_revision).strip()}"
             )
@@ -9142,901 +11163,90 @@ class TaskRunner:
                     "target_confirmation": locate_payload,
                     "initial_messages": sidecar_payload,
                 }
-            initial_read_observations = list(
-                sidecar_payload.get("observations") or []
-            )
-            voice_candidates = _untranscribed_voice_observations(sidecar_payload)
+            initial_read_observations = list(sidecar_payload.get("observations") or [])
             excluded_voice_anchor_keys: set[str] = set()
-            new_voice_candidates: list[dict[str, Any]] = []
-            voice_candidate_sources: dict[str, str] = {}
-            voice_candidate_alias_sources: dict[str, str] = {}
-            voice_candidate_roles: dict[str, str] = {}
-            voice_candidate_physical_anchors: dict[str, list[str]] = {}
             voice_item_outcomes: list[dict[str, Any]] = []
-            partial_failed_voice_source_keys: list[str] = []
-            partial_failed_voice_roles: dict[str, str] = {}
-            deferred_new_voice_source_keys: list[str] = []
             voice_action_failure_code = ""
-            try:
-                voice_groups = coalesce_physical_voice_observations(
-                    target,
-                    voice_candidates,
-                )
-            except ValueError as exc:
-                code = str(exc) or "MESSAGE_IDENTITY_UNCONFIRMED"
-                self.c2_stats["last_error"] = code
-                append_log(
-                    "WARN",
-                    "c2_voice_preaction_identity_unconfirmed",
-                    "语音物理别名无法在动作前合并为唯一身份，已阻断右键。",
-                    error_code=code,
-                    metadata={"conversation_id": target.conversation_id},
-                )
-                return {
-                    "ok": False,
-                    "error_code": code,
-                    "initial_messages": sidecar_payload,
-                }
-            for group in voice_groups:
-                observation = group["observation"]
-                source_key = str(group["source_message_key"])
-                anchor_key = str(group["anchor_key"])
-                physical_anchor_keys = list(group["physical_anchor_keys"])
-                settled_ledger = next(
-                    (
-                        ledger
-                        for alias_source in group["source_message_keys"]
-                        if (
-                            ledger := load_c2_ledger_entry(
-                                target.conversation_id,
-                                alias_source,
-                            )
-                        )
-                        and (
-                            ledger.get("terminal_state")
-                            in {"completed", "failed", "ignored"}
-                            or ledger.get("ingest_state")
-                            in {"waiting", "confirmed", "not_required"}
-                        )
-                    ),
-                    None,
-                )
-                if settled_ledger:
-                    if not anchor_key:
-                        code = "MESSAGE_IDENTITY_UNCONFIRMED"
-                        self.c2_stats["last_error"] = code
-                        append_log(
-                            "WARN",
-                            "c2_voice_preaction_identity_unconfirmed",
-                            "旧语音命中本地清单但缺少可传给 OmniAuto 的稳定 anchor，已在右键前阻断。",
-                            error_code=code,
-                            metadata={"conversation_id": target.conversation_id, "source_message_key": source_key},
-                        )
-                        return {"ok": False, "error_code": code, "initial_messages": sidecar_payload}
-                    excluded_voice_anchor_keys.update(physical_anchor_keys)
-                    append_log(
-                        "INFO",
-                        "c2_voice_preaction_ledger_hit",
-                        "语音在物理操作前命中本地终态，不再右键或转写。",
-                        metadata={
-                            "conversation_id": target.conversation_id,
-                            "source_message_key": source_key,
-                            "voice_anchor_key": anchor_key,
-                            "terminal_state": settled_ledger.get("terminal_state"),
-                            "ingest_state": settled_ledger.get("ingest_state"),
-                        },
-                    )
-                    continue
-                if not anchor_key:
-                    code = "MESSAGE_IDENTITY_UNCONFIRMED"
-                    self.c2_stats["last_error"] = code
-                    append_log(
-                        "WARN",
-                        "c2_voice_preaction_identity_unconfirmed",
-                        "新语音缺少稳定 anchor，禁止以坐标代替身份并执行右键。",
-                        error_code=code,
-                        metadata={"conversation_id": target.conversation_id, "source_message_key": source_key},
-                    )
-                    return {"ok": False, "error_code": code, "initial_messages": sidecar_payload}
-                for alias in physical_anchor_keys:
-                    voice_candidate_alias_sources[alias] = source_key
-                new_voice_candidates.append(observation)
-                voice_candidate_sources[anchor_key] = source_key
-                voice_candidate_roles[anchor_key] = str(group["role"])
-                voice_candidate_physical_anchors[source_key] = (
-                    physical_anchor_keys
-                )
-            if new_voice_candidates:
-                if enforce_read_targets and not self._backend_still_allows_read_target_for_voice(binding, target):
-                    return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS", "target_confirmation": locate_payload, "initial_messages": sidecar_payload}
-                lease.update_step("voice_transcribe_current_chat")
-                self.current_step = "voice_transcribe_current_chat"
-                phase_started_at = time.perf_counter()
-                voice_action_journal = (
-                    self._start_irreversible_action_journal(
-                        action_kind="voice",
-                        target=target,
-                        items=[
-                            {
-                                "source_message_key": source_key,
-                                "physical_anchor_keys": (
-                                    voice_candidate_physical_anchors[
-                                        source_key
-                                    ]
-                                ),
-                            }
-                            for anchor_key, source_key
-                            in voice_candidate_sources.items()
-                        ],
-                        flow_outcomes=flow_outcomes,
-                    )
-                )
-                voice_payload = self.bridge.voice_transcribe(
-                    display_name=target_label,
-                    rpa_session_key="",
-                    remark_code=effective_target.remark_code or "",
-                    target_mode="current",
-                    max_duration_seconds=CONFIG.c2_voice_transcribe_max_duration_seconds,
-                    excluded_voice_anchor_keys=sorted(excluded_voice_anchor_keys),
-                    action_journal=voice_action_journal,
-                    cancel_check=action_cancel_requested,
-                )
-                record_phase(
-                    "voice_transcribe",
-                    phase_started_at,
-                    state=voice_payload.get("state"),
-                    sidecar_run_id=voice_payload.get("sidecar_run_id"),
-                    timing=voice_payload.get("timing") if isinstance(voice_payload.get("timing"), dict) else None,
-                )
-                voice_contract_error = sidecar_contract_error(voice_payload, require_observations=False)
-                if voice_contract_error:
-                    self.c2_stats["last_error"] = voice_contract_error
-                    append_log(
-                        "WARN",
-                        "c2_voice_sidecar_contract_invalid",
-                        "OmniAuto 语音动作返回的合同指纹不一致，已阻断后续读取和入库。",
-                        error_code=voice_contract_error,
-                        metadata={
-                            "conversation_id": target.conversation_id,
-                            "remark_code": target.remark_code,
-                            "contract_revision": voice_payload.get("contract_revision"),
-                            "contract_sha256": voice_payload.get("contract_sha256"),
-                        },
-                    )
-                    return {
-                        "ok": False,
-                        "error_code": voice_contract_error,
-                        "target_confirmation": locate_payload,
-                        "initial_messages": sidecar_payload,
-                        "voice_transcription": voice_payload,
-                    }
-                voice_state = str(voice_payload.get("state") or voice_payload.get("error_code") or "").strip()
-                for raw_outcome in (
-                    voice_payload.get("item_action_outcomes") or []
-                ):
-                    if not isinstance(raw_outcome, dict):
-                        continue
-                    aliases = [
-                        str(value).strip()
-                        for value in (
-                            raw_outcome.get("physical_anchor_keys") or []
-                        )
-                        if str(value).strip()
-                    ]
-                    source_key = next(
-                        (
-                            voice_candidate_alias_sources[alias]
-                            for alias in aliases
-                            if alias in voice_candidate_alias_sources
-                        ),
-                        "",
-                    )
-                    if not source_key:
-                        continue
-                    classified = classify_action_result(
-                        "voice",
-                        raw_outcome,
-                        source_message_key=source_key,
-                    )
-                    classified["terminal_payload"] = _voice_terminal_payload(
-                        voice_payload,
-                        anchor_keys=aliases,
-                        result=str(classified.get("result") or "failed"),
-                        error_code=(
-                            str(classified.get("error_code") or "") or None
-                        ),
-                    )
-                    classified_evidence = dict(
-                        classified.get("evidence") or {}
-                    )
-                    classified_evidence["action_kind"] = "voice"
-                    classified["evidence"] = classified_evidence
-                    voice_item_outcomes = merge_item_outcomes(
-                        voice_item_outcomes,
-                        [classified],
-                    )
-                    flow_outcomes.record(classified)
-                reported_processed_anchor_keys = {
-                    str(value).strip()
-                    for value in (
-                        voice_payload.get("processed_voice_anchor_keys")
-                        or []
-                    )
-                    if str(value).strip()
-                }
-                terminal_source_keys = {
-                    str(item.get("source_message_key") or "").strip()
-                    for item in voice_item_outcomes
-                    if isinstance(item, dict)
-                }
-                for anchor_key in sorted(reported_processed_anchor_keys):
-                    source_key = voice_candidate_alias_sources.get(
-                        anchor_key, ""
-                    )
-                    if not source_key or source_key in terminal_source_keys:
-                        continue
-                    completed = classify_action_result(
-                        "voice",
-                        {
-                            "action_phase": "confirmed",
-                            "business_state": "completed",
-                            "business_result_confirmed": True,
-                            "physical_anchor_keys": [anchor_key],
-                        },
-                        source_message_key=source_key,
-                    )
-                    completed["terminal_payload"] = (
-                        _voice_terminal_payload(
-                            voice_payload,
-                            anchor_keys=[anchor_key],
-                            result="completed",
-                            error_code=None,
-                        )
-                    )
-                    completed_evidence = dict(
-                        completed.get("evidence") or {}
-                    )
-                    completed_evidence["action_kind"] = "voice"
-                    completed["evidence"] = completed_evidence
-                    voice_item_outcomes = merge_item_outcomes(
-                        voice_item_outcomes,
-                        [completed],
-                    )
-                    flow_outcomes.record(completed)
-                    terminal_source_keys.add(source_key)
-                failed_anchor_keys = {
-                    str(value).strip()
-                    for value in (voice_payload.get("failed_voice_anchor_keys") or [])
-                    if str(value).strip()
-                }
-                if voice_state in {"voice_transcribe_click_failed", "VOICE_TRANSCRIBE_CLICK_FAILED"} and len(new_voice_candidates) == 1:
-                    only_anchor = voice_observation_anchor_key(new_voice_candidates[0])
-                    if only_anchor:
-                        failed_anchor_keys.add(only_anchor)
-                voice_fatal_states = {
-                    "target_not_confirmed_for_voice_transcribe",
-                    "voice_transcribe_target_not_found",
-                    "TARGET_NOT_CONFIRMED_FOR_VOICE_TRANSCRIBE",
-                }
-                voice_blocking_states = voice_fatal_states | {
-                    "voice_transcribe_click_failed",
-                    "VOICE_TRANSCRIBE_CLICK_FAILED",
-                    "RPA_SIDECAR_TIMEOUT",
-                    "RPA_SIDECAR_PROTOCOL_INVALID",
-                    "RPA_SIDECAR_CRASHED",
-                    "voice_transcribe_cancelled",
-                    "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
-                }
-                voice_success_states = {
-                    "voice_transcribe_completed",
-                    "voice_transcribe_partial",
-                    # The initial OCR can conservatively flag voice-like noise.
-                    # A fresh structural scan finding no voice is safe to continue.
-                    "voice_transcribe_no_visible_voice",
-                }
-                append_log(
-                    "INFO" if voice_state in voice_success_states else "WARN",
-                    "c2_voice_transcribe_finished",
-                    "C2 语音转文字调用完成。",
-                    error_code=None if voice_state in voice_success_states else str(voice_payload.get("error_code") or voice_state or "VOICE_TRANSCRIBE_FAILED"),
-                    metadata={
-                        "conversation_id": target.conversation_id,
-                        "remark_code": target.remark_code,
-                        "state": voice_state,
-                        "sidecar_run_id": voice_payload.get("sidecar_run_id"),
-                        "artifact_dir": voice_payload.get("artifact_dir"),
-                        "review_path": voice_payload.get("review_path"),
-                        "target_mode": voice_payload.get("target_mode"),
-                        "transcribed_count": len(voice_payload.get("transcribed_messages") or []) if isinstance(voice_payload.get("transcribed_messages"), list) else 0,
-                        "timing": voice_payload.get("timing") if isinstance(voice_payload.get("timing"), dict) else None,
-                    },
-                )
-                failed_source_keys = [
-                    voice_candidate_alias_sources[key]
-                    for key in sorted(failed_anchor_keys)
-                    if key in voice_candidate_alias_sources
-                ]
-                failed_source_keys = sorted(
-                    {
-                        *failed_source_keys,
-                        *[
-                            str(item.get("source_message_key") or "")
-                            for item in voice_item_outcomes
-                            if item.get("result") == "failed"
-                        ],
-                    }
-                )
-                if any(
-                    item.get("action_phase") == "trigger_attempted"
-                    and item.get("result") == "failed"
-                    for item in voice_item_outcomes
-                ):
-                    voice_action_failure_code = (
-                        "VOICE_TRANSCRIBE_RESULT_UNKNOWN"
-                    )
-                excluded_voice_anchor_keys.update(failed_anchor_keys)
-                if voice_state == "voice_transcribe_partial":
-                    processed_anchor_keys = {
-                        str(value).strip()
-                        for value in (
-                            voice_payload.get("processed_voice_anchor_keys") or []
-                        )
-                        if str(value).strip()
-                    }
-                    processed_source_keys = {
-                        voice_candidate_alias_sources[anchor_key]
-                        for anchor_key in processed_anchor_keys
-                        if anchor_key in voice_candidate_alias_sources
-                    }
-                    failed_source_key_set = {
-                        voice_candidate_alias_sources[anchor_key]
-                        for anchor_key in failed_anchor_keys
-                        if anchor_key in voice_candidate_alias_sources
-                    }
-                    unresolved_source_keys = {
-                        source_key
-                        for source_key in voice_candidate_sources.values()
-                        if source_key in failed_source_key_set
-                        or source_key not in processed_source_keys
-                    }
-                    unresolved_anchor_keys = {
-                        alias
-                        for alias, source_key
-                        in voice_candidate_alias_sources.items()
-                        if source_key in unresolved_source_keys
-                    }
-                    excluded_voice_anchor_keys.update(
-                        unresolved_anchor_keys
-                    )
-                    partial_failed_voice_source_keys = sorted(
-                        unresolved_source_keys
-                    )
-                    partial_failed_voice_roles = {
-                        source_key: (
-                            voice_candidate_roles.get(anchor_key) or ""
-                        )
-                        for anchor_key, source_key
-                        in voice_candidate_sources.items()
-                        if source_key in unresolved_source_keys
-                        if voice_candidate_roles.get(anchor_key)
-                        in {"customer", "self"}
-                    }
-                    append_log(
-                        "WARN",
-                        "c2_voice_transcribe_partial_gated",
-                        "部分语音已成功保留；未完成锚点将在最终画面复核后落账并加入 Brain 门禁。",
-                        error_code="C2_VOICE_TRANSCRIBE_FAILED",
-                        metadata={
-                            "conversation_id": target.conversation_id,
-                            "remark_code": target.remark_code,
-                            "processed_voice_anchor_keys": sorted(
-                                processed_anchor_keys
-                            ),
-                            "failed_voice_anchor_keys": sorted(
-                                failed_anchor_keys
-                            ),
-                            "failed_customer_voice_source_keys": (
-                                sorted(
-                                    source_key
-                                    for source_key, role in (
-                                        partial_failed_voice_roles.items()
-                                    )
-                                    if role == "customer"
-                                )
-                            ),
-                            "unresolved_voice_source_keys": partial_failed_voice_source_keys,
-                        },
-                    )
-                if _voice_payload_has_unbound_transcript(voice_payload):
-                    code = "VOICE_TRANSCRIPT_BINDING_INCONSISTENT"
-                    voice_action_failure_code = code
-                    self.c2_voice_binding_blocked_authorizations.add(voice_binding_guard_key)
-                    if len(self.c2_voice_binding_blocked_authorizations) > 128:
-                        self.c2_voice_binding_blocked_authorizations = {voice_binding_guard_key}
-                    self.c2_stats["last_error"] = code
-                    append_log(
-                        "WARN",
-                        "c2_voice_transcript_binding_inconsistent",
-                        "OCR 已识别完整语音正文，但 sidecar 未绑定到稳定语音锚点。",
-                        error_code=code,
-                        metadata={
-                            "conversation_id": target.conversation_id,
-                            "remark_code": target.remark_code,
-                            "authorization_revision": target.authorization_revision,
-                            "state": voice_state,
-                            "sidecar_run_id": voice_payload.get("sidecar_run_id"),
-                            "new_message_count": len(voice_payload.get("new_messages") or []),
-                            "transcribed_count": len(voice_payload.get("transcribed_messages") or []),
-                        },
-                    )
-                    partial_failed_voice_source_keys = sorted(
-                        set(voice_candidate_sources.values())
-                    )
-                    partial_failed_voice_roles = {
-                        source_key: voice_candidate_roles.get(anchor_key) or ""
-                        for anchor_key, source_key in voice_candidate_sources.items()
-                        if voice_candidate_roles.get(anchor_key) in {"customer", "self"}
-                    }
-                if voice_state in {
-                    "voice_transcribe_cancelled",
-                    "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
-                }:
-                    code = str(
-                        voice_payload.get("error_code")
-                        or voice_state
-                        or "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS"
-                    )
-                    self.c2_stats["last_error"] = code
-                    append_log(
-                        "INFO",
-                        "c2_voice_transcribe_cancelled_without_terminal_state",
-                        "语音动作因停止或授权撤销而中断；本轮不把语音记成失败，恢复监听后按新画面重新判断。",
-                        error_code=code,
-                        metadata={
-                            "conversation_id": target.conversation_id,
-                            "remark_code": target.remark_code,
-                            "source_message_keys": sorted(
-                                set(voice_candidate_sources.values())
-                            ),
-                        },
-                    )
-                    return {
-                        "ok": False,
-                        "error_code": code,
-                        "target_confirmation": locate_payload,
-                        "initial_messages": sidecar_payload,
-                        "voice_transcription": voice_payload,
-                    }
-                if voice_state in voice_blocking_states or voice_state not in voice_success_states:
-                    code = str(voice_payload.get("error_code") or voice_state or "TARGET_NOT_CONFIRMED_FOR_VOICE_TRANSCRIBE")
-                    voice_action_failure_code = voice_action_failure_code or code
-                    self.c2_stats["last_error"] = code
-                    action_failed_source_keys = sorted(
-                        {
-                            *partial_failed_voice_source_keys,
-                            *(failed_source_keys or list(voice_candidate_sources.values())),
-                        }
-                    )
-                    partial_failed_voice_source_keys = action_failed_source_keys
-                    for anchor_key, source_key in voice_candidate_sources.items():
-                        role = voice_candidate_roles.get(anchor_key) or ""
-                        if source_key in action_failed_source_keys and role in {
-                            "customer",
-                            "self",
-                        }:
-                            partial_failed_voice_roles[source_key] = role
-                    append_log(
-                        "WARN",
-                        "c2_voice_action_failed_continuing_final_read",
-                        "语音动作失败，但当前会话仍可复核；继续读取最终画面并一次性保存同屏事实。",
-                        error_code=code,
-                        metadata={
-                            "conversation_id": target.conversation_id,
-                            "remark_code": target.remark_code,
-                            "source_message_keys": action_failed_source_keys,
-                        },
-                    )
-                if enforce_read_targets and not self._backend_still_allows_read_target(binding, target):
-                    return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS", "target_confirmation": locate_payload, "initial_messages": sidecar_payload, "voice_transcription": voice_payload}
-                lease.update_step("target_chat_reconfirming")
-                self.current_step = "target_chat_reconfirming"
-                phase_started_at = time.perf_counter()
-                can_reuse_voice_frame = bool(
-                    voice_payload.get("final_frame_reusable")
-                    and isinstance(voice_payload.get("observations"), list)
-                    and isinstance(voice_payload.get("target_confirmation"), dict)
-                    and voice_payload.get("target_confirmation", {}).get("ok")
-                )
-                if can_reuse_voice_frame:
-                    transcribed_payload = dict(voice_payload)
-                    transcribed_payload["ok"] = True
-                    transcribed_payload["state"] = "messages_ocr"
-                    transcribed_payload["target_confirmation"] = dict(voice_payload.get("target_confirmation") or {})
-                else:
-                    transcribed_payload = self.bridge.get_messages(
-                        display_name=target_label,
-                        rpa_session_key="",
-                        remark_code=effective_target.remark_code or "",
-                        target_mode="current",
-                        max_duration_seconds=20,
-                        cancel_check=action_cancel_requested,
-                    )
-                record_phase(
-                    "target_chat_reconfirm_and_final_read",
-                    phase_started_at,
-                    state=transcribed_payload.get("state"),
-                    sidecar_run_id=transcribed_payload.get("sidecar_run_id"),
-                    reused_voice_final_frame=can_reuse_voice_frame,
-                )
-                if not transcribed_payload.get("ok"):
-                    code = str(transcribed_payload.get("error_code") or transcribed_payload.get("state") or "TARGET_NOT_CONFIRMED_FOR_MESSAGES")
-                    self.c2_stats["last_error"] = code
-                    append_log(
-                        "WARN",
-                        "c2_message_read_sidecar_failed",
-                        "C2 语音转写后消息读取失败。",
-                        error_code=code,
-                        metadata={
-                            "conversation_id": target.conversation_id,
-                            "remark_code": target.remark_code,
-                            "state": transcribed_payload.get("state"),
-                            "sidecar_run_id": transcribed_payload.get("sidecar_run_id"),
-                            "artifact_dir": transcribed_payload.get("artifact_dir"),
-                            "review_path": transcribed_payload.get("review_path"),
-                            "target_mode": transcribed_payload.get("target_mode"),
-                        },
-                        force_incident=True,
-                    )
-                    if voice_action_failure_code:
-                        self._report_voice_failure_gate(
-                            binding=binding,
-                            target=target,
-                            read_run_id=read_run_id,
-                            error_code=voice_action_failure_code,
-                            source_keys=partial_failed_voice_source_keys,
-                            voice_payload=voice_payload,
-                        )
-                    return {
-                        "ok": False,
-                        "error_code": code,
-                        "target_confirmation": locate_payload,
-                        "initial_messages": sidecar_payload,
-                        "voice_transcription": voice_payload,
-                        "target_reconfirmation": transcribed_payload.get("target_confirmation"),
-                    }
-                final_contract_error = sidecar_contract_error(transcribed_payload)
-                if final_contract_error:
-                    self.c2_stats["last_error"] = final_contract_error
-                    append_log(
-                        "WARN",
-                        "c2_final_sidecar_contract_invalid",
-                        "OmniAuto 最终权威画面不符合当前唯一 C2 合同，已阻断入库。",
-                        error_code=final_contract_error,
-                        metadata={
-                            "conversation_id": target.conversation_id,
-                            "remark_code": target.remark_code,
-                            "contract_revision": transcribed_payload.get("contract_revision"),
-                            "contract_sha256": transcribed_payload.get("contract_sha256"),
-                            "observation_validation_errors": transcribed_payload.get("observation_validation_errors"),
-                        },
-                        force_incident=True,
-                    )
-                    if voice_action_failure_code:
-                        self._report_voice_failure_gate(
-                            binding=binding,
-                            target=target,
-                            read_run_id=read_run_id,
-                            error_code=voice_action_failure_code,
-                            source_keys=partial_failed_voice_source_keys,
-                            voice_payload=voice_payload,
-                        )
-                    return {
-                        "ok": False,
-                        "error_code": final_contract_error,
-                        "target_confirmation": locate_payload,
-                        "initial_messages": sidecar_payload,
-                        "voice_transcription": voice_payload,
-                        "final_messages": transcribed_payload,
-                    }
-                if enforce_read_targets and not self._backend_still_allows_read_target(binding, target):
-                    return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS", "target_confirmation": locate_payload, "initial_messages": sidecar_payload, "voice_transcription": voice_payload, "target_reconfirmation": transcribed_payload.get("target_confirmation")}
-                target_reconfirmation = transcribed_payload.get("target_confirmation") if isinstance(transcribed_payload.get("target_confirmation"), dict) else {}
-                lease.update_step(current_step)
-                self.current_step = current_step
-                transcribed_payload["target_confirmation"] = locate_payload
-                transcribed_payload["target_reconfirmation"] = target_reconfirmation
-                transcribed_payload["voice_transcription"] = voice_payload
-                transcribed_payload["initial_messages"] = sidecar_payload
-                transcribed_payload["authoritative_frame_source"] = "final_read"
-                sidecar_payload = transcribed_payload
-            if recovery_waiting_image_facts:
-                sidecar_payload = self._merge_waiting_image_facts(
-                    target=target,
-                    sidecar_payload=sidecar_payload,
-                )
-            sidecar_payload = self._merge_waiting_image_facts(
+            (
+                restored_failed_voice_source_keys,
+                restored_failed_voice_roles,
+            ) = self._restore_visible_failed_voice_facts(
                 target=target,
                 sidecar_payload=sidecar_payload,
             )
-            sidecar_payload["observations"] = (
-                self._attach_possible_ai_send_receipts(
-                    target=target,
-                    observations=self._attach_confirmed_ai_reply_receipts(
-                        target=target,
-                        observations=list(
-                            sidecar_payload.get("observations") or []
-                        ),
-                    ),
-                )
-            )
-            actionable_voice_source_keys = set(voice_candidate_sources.values())
-            if new_voice_candidates or _untranscribed_voice_observations(
-                sidecar_payload
+            if _executable_untranscribed_voice_observations(
+                target,
+                sidecar_payload,
             ):
-                completed_voice_source_keys: set[str] = set()
-                for observation in sidecar_payload.get("observations") or []:
-                    if not isinstance(observation, dict):
-                        continue
-                    row_kind = str(observation.get("row_kind") or "").strip().lower()
-                    voice_state = str(
-                        observation.get("voice_state") or ""
-                    ).strip().lower()
-                    if row_kind not in {"voice_bubble", "voice_transcript"}:
-                        continue
-                    if row_kind == "voice_bubble" and voice_state == "untranscribed":
-                        continue
-                    try:
-                        completed_voice_source_keys.add(
-                            voice_observation_source_key(target, observation)
-                        )
-                    except ValueError:
-                        continue
-                if completed_voice_source_keys:
-                    partial_failed_voice_source_keys = sorted(
-                        set(partial_failed_voice_source_keys)
-                        - completed_voice_source_keys
-                    )
-                    for source_key in completed_voice_source_keys:
-                        partial_failed_voice_roles.pop(source_key, None)
-                    terminal_source_keys = {
-                        str(item.get("source_message_key") or "").strip()
-                        for item in voice_item_outcomes
-                        if isinstance(item, dict)
-                        and str(item.get("result") or "").strip().lower()
-                        in {"completed", "failed"}
-                    }
-                    for source_key in sorted(
-                        actionable_voice_source_keys
-                        & completed_voice_source_keys
-                        - terminal_source_keys
-                    ):
-                        anchor_key = next(
-                            (
-                                anchor
-                                for anchor, candidate_source
-                                in voice_candidate_sources.items()
-                                if candidate_source == source_key
-                            ),
-                            "",
-                        )
-                        completed = classify_action_result(
-                            "voice",
-                            {
-                                "action_phase": "confirmed",
-                                "business_state": "completed",
-                                "business_result_confirmed": True,
-                                "physical_anchor_keys": [anchor_key],
-                            },
-                            source_message_key=source_key,
-                        )
-                        completed["terminal_payload"] = (
-                            _voice_terminal_payload(
-                                sidecar_payload,
-                                anchor_keys=[anchor_key],
-                                result="completed",
-                                error_code=None,
-                            )
-                        )
-                        completed_evidence = dict(
-                            completed.get("evidence") or {}
-                        )
-                        completed_evidence.update(
-                            {
-                                "action_kind": "voice",
-                                "voice_anchor_key": anchor_key,
-                                "final_frame_confirmed_transcript": True,
-                            }
-                        )
-                        completed["evidence"] = completed_evidence
-                        voice_item_outcomes = merge_item_outcomes(
-                            voice_item_outcomes,
-                            [completed],
-                        )
-                        flow_outcomes.record(completed)
-                final_unresolved_source_keys: list[str] = []
-                for observation in _untranscribed_voice_observations(sidecar_payload):
-                    if not observation_role_is_trusted(observation):
-                        continue
-                    role = str(
-                        observation.get("sender_role") or ""
-                    ).strip().lower()
-                    try:
-                        source_key = voice_observation_source_key(
-                            target,
-                            observation,
-                        )
-                    except ValueError:
-                        continue
-                    ledger = load_c2_ledger_entry(
-                        target.conversation_id,
-                        source_key,
-                    )
-                    if (
-                        ledger
-                        and ledger.get("terminal_state") == "failed"
-                        and ledger.get("ingest_state") == "waiting"
-                    ):
-                        final_unresolved_source_keys.append(source_key)
-                        partial_failed_voice_roles[source_key] = role
-                        continue
-                    if ledger and ledger.get("terminal_state") in {
-                        "completed",
-                        "failed",
-                        "ignored",
-                    }:
-                        continue
-                    if source_key in actionable_voice_source_keys:
-                        final_unresolved_source_keys.append(source_key)
-                        partial_failed_voice_roles[source_key] = role
-                    else:
-                        deferred_new_voice_source_keys.append(source_key)
-                partial_failed_voice_source_keys = sorted(
-                    {
-                        *partial_failed_voice_source_keys,
-                        *final_unresolved_source_keys,
-                    }
-                )
-                final_voice_failure_code = (
-                    voice_action_failure_code or "VOICE_TRANSCRIBE_PARTIAL"
-                )
-                if partial_failed_voice_source_keys:
-                    self._mark_voice_sources_failed(
-                        target=target,
-                        origin_read_run_id=read_run_id,
-                        source_keys=partial_failed_voice_source_keys,
-                        error_code=final_voice_failure_code,
-                    )
-                annotated_roles = self._annotate_failed_voice_observations(
-                    target=target,
-                    sidecar_payload=sidecar_payload,
-                    failed_source_keys=set(partial_failed_voice_source_keys),
-                    error_code=final_voice_failure_code,
-                )
-                partial_failed_voice_roles.update(annotated_roles)
-            if deferred_new_voice_source_keys:
-                continuation = self._finish_new_visible_voices_in_current_chat(
-                    binding=binding,
-                    target=target,
-                    target_label=target_label,
-                    sidecar_payload=sidecar_payload,
-                    lease=lease,
+                phase_started_at = time.perf_counter()
+                voice_result = self._finish_new_visible_voices_in_current_chat(
+                    binding=binding, target=target, target_label=target_label,
+                    sidecar_payload=sidecar_payload, lease=lease,
                     action_cancel_requested=action_cancel_requested,
                     enforce_read_targets=enforce_read_targets,
                     excluded_voice_anchor_keys=excluded_voice_anchor_keys,
                     flow_outcomes=flow_outcomes,
                 )
-                if not continuation.get("ok"):
-                    code = str(
-                        continuation.get("error_code")
-                        or "C2_NEW_VOICE_CONTINUATION_FAILED"
-                    )
+                record_phase(
+                    "voice_transcribe",
+                    phase_started_at,
+                    completed=bool(voice_result.get("ok")),
+                    failure_code=voice_result.get("failure_code"),
+                    item_count=len(voice_result.get("item_outcomes") or []),
+                )
+                if not voice_result.get("ok"):
+                    code = str(voice_result.get("error_code") or "C2_VOICE_ORCHESTRATION_FAILED")
                     self.c2_stats["last_error"] = code
-                    append_log(
-                        "WARN",
-                        "c2_new_voice_continuation_stopped",
-                        "当前会话新增语音处理因停止、授权或会话确认失败而中止。",
-                        error_code=code,
-                        metadata={
-                            "conversation_id": target.conversation_id,
-                            "remark_code": target.remark_code,
-                        },
-                    )
-                    return {
-                        "ok": False,
-                        "error_code": code,
-                        "target_confirmation": locate_payload,
-                        "final_messages": continuation.get("payload")
-                        or sidecar_payload,
-                    }
+                    return {"ok": False, "error_code": code, "target_confirmation": locate_payload, "initial_messages": sidecar_payload, "final_messages": voice_result.get("payload")}
                 sidecar_payload = dict(
-                    continuation.get("payload") or sidecar_payload
+                    voice_result.get("payload") or sidecar_payload
                 )
-                sidecar_payload["observations"] = (
-                    self._attach_possible_ai_send_receipts(
-                        target=target,
-                        observations=self._attach_confirmed_ai_reply_receipts(
-                            target=target,
-                            observations=list(
-                                sidecar_payload.get("observations") or []
-                            ),
-                        ),
+                voice_item_outcomes = list(
+                    voice_result.get("item_outcomes") or []
+                )
+                voice_action_failure_code = str(
+                    voice_result.get("failure_code") or ""
+                )
+                terminal_gate = voice_result.get("terminal_gate")
+                if isinstance(terminal_gate, dict):
+                    return settle_identity_terminal_gate(
+                        terminal_gate,
+                        final_payload=sidecar_payload,
+                        target_confirmation=locate_payload,
+                        initial_observations=initial_read_observations,
                     )
-                )
-                unconfirmed_voice_outcomes = (
-                    _unconfirmed_voice_action_outcomes(
-                        source_keys=set(
-                            partial_failed_voice_source_keys
-                        ),
-                        roles=partial_failed_voice_roles,
-                        error_code=(
-                            voice_action_failure_code
-                            or "C2_VOICE_TRANSCRIBE_FAILED"
-                        ),
-                        voice_payload=voice_payload,
-                    )
-                )
-                voice_item_outcomes = merge_item_outcomes(
-                    voice_item_outcomes,
-                    unconfirmed_voice_outcomes,
-                )
-                flow_outcomes.extend(unconfirmed_voice_outcomes)
-                voice_item_outcomes = merge_item_outcomes(
-                    voice_item_outcomes,
-                    continuation.get("item_outcomes") or [],
-                )
-                continuation_failed_keys = sorted(
-                    str(item["source_message_key"])
-                    for item in (continuation.get("item_outcomes") or [])
+            partial_failed_voice_source_keys = sorted({
+                *restored_failed_voice_source_keys,
+                *{
+                    str(item.get("source_message_key") or "")
+                    for item in voice_item_outcomes
                     if isinstance(item, dict)
                     and item.get("result") == "failed"
-                )
-                if continuation_failed_keys:
-                    failure_code = str(
-                        continuation.get("failure_code")
-                        or "VOICE_TRANSCRIBE_FAILED"
+                    and str(item.get("source_message_key") or "")
+                },
+            })
+            partial_failed_voice_roles = {
+                **restored_failed_voice_roles,
+                **{
+                    str(item.get("source_message_key") or ""): str(
+                        (item.get("evidence") or {}).get("sender_role")
+                        or ""
                     )
-                    partial_failed_voice_source_keys = [
-                        str(item["source_message_key"])
-                        for item in voice_item_outcomes
-                        if item.get("result") == "failed"
-                    ]
-                    partial_failed_voice_roles = {
-                        str(item["source_message_key"]): str(
-                            (item.get("evidence") or {}).get("sender_role")
-                        )
-                        for item in voice_item_outcomes
-                        if item.get("result") == "failed"
-                        if str(
-                            (item.get("evidence") or {}).get("sender_role") or ""
-                        )
-                        in {"customer", "self"}
-                    }
-                    self._mark_voice_sources_failed(
-                        target=target,
-                        origin_read_run_id=read_run_id,
-                        source_keys=continuation_failed_keys,
-                        error_code=failure_code,
-                    )
-                    annotated_roles = self._annotate_failed_voice_observations(
-                        target=target,
-                        sidecar_payload=sidecar_payload,
-                        failed_source_keys=set(continuation_failed_keys),
-                        error_code=failure_code,
-                    )
-                    partial_failed_voice_roles.update(annotated_roles)
-                deferred_new_voice_source_keys = []
-                append_log(
-                    "INFO",
-                    "c2_new_voice_finished_in_current_chat",
-                    "语音处理期间新增的可见语音已在当前会话和同一 UI 锁内收口。",
-                    metadata={
-                        "conversation_id": target.conversation_id,
-                        "remark_code": target.remark_code,
-                        "failed_source_message_keys": continuation_failed_keys,
-                    },
-                )
-                if partial_failed_voice_source_keys:
-                    annotated_roles = self._annotate_failed_voice_observations(
+                    for item in voice_item_outcomes
+                    if isinstance(item, dict)
+                    and item.get("result") == "failed"
+                    and str(
+                        (item.get("evidence") or {}).get("sender_role")
+                        or ""
+                    ) in {"customer", "self"}
+                },
+            }
+            sidecar_payload = self._merge_waiting_image_facts(target=target, sidecar_payload=sidecar_payload)
+            sidecar_payload["observations"] = self._attach_possible_ai_send_receipts(target=target, observations=self._attach_confirmed_ai_reply_receipts(target=target, observations=list(sidecar_payload.get("observations") or [])))
+            self._persist_c2_flow_outcomes(target, voice_item_outcomes, origin_read_run_id=read_run_id)
+            if partial_failed_voice_source_keys:
+                partial_failed_voice_roles.update(
+                    self._annotate_failed_voice_observations(
                         target=target,
                         sidecar_payload=sidecar_payload,
                         failed_source_keys=set(
@@ -10044,346 +11254,10 @@ class TaskRunner:
                         ),
                         error_code=(
                             voice_action_failure_code
-                            or "VOICE_TRANSCRIBE_PARTIAL"
+                            or "C2_VOICE_TRANSCRIBE_FAILED"
                         ),
                     )
-                    partial_failed_voice_roles.update(annotated_roles)
-
-            # A later structural refresh may omit a failed bubble or render it
-            # with less detail. The failure fact was already produced by the
-            # physical action, so preserve exactly one authoritative failed
-            # observation from the initial frame instead of silently dropping
-            # that voice from the ingest batch.
-            failed_voice_source_set = set(
-                partial_failed_voice_source_keys
-            )
-            if failed_voice_source_set:
-                final_observations = list(
-                    sidecar_payload.get("observations") or []
                 )
-                final_voice_source_keys: set[str] = set()
-                for observation in final_observations:
-                    if not isinstance(observation, dict):
-                        continue
-                    try:
-                        final_voice_source_keys.add(
-                            voice_observation_source_key(
-                                target,
-                                observation,
-                            )
-                        )
-                    except ValueError:
-                        continue
-                for observation in new_voice_candidates:
-                    source_key = voice_observation_source_key(
-                        target,
-                        observation,
-                    )
-                    if (
-                        source_key not in failed_voice_source_set
-                        or source_key in final_voice_source_keys
-                    ):
-                        continue
-                    final_observations.append(dict(observation))
-                    final_voice_source_keys.add(source_key)
-                sidecar_payload["observations"] = final_observations
-                annotated_roles = self._annotate_failed_voice_observations(
-                    target=target,
-                    sidecar_payload=sidecar_payload,
-                    failed_source_keys=failed_voice_source_set,
-                    error_code=(
-                        voice_action_failure_code
-                        or "VOICE_TRANSCRIBE_PARTIAL"
-                    ),
-                )
-                partial_failed_voice_roles.update(annotated_roles)
-
-            discovered_voice_source_keys = set(
-                voice_candidate_sources.values()
-            )
-            terminal_voice_source_keys = {
-                str(item.get("source_message_key") or "").strip()
-                for item in voice_item_outcomes
-                if isinstance(item, dict)
-                and str(item.get("result") or "").strip().lower()
-                in {"completed", "failed"}
-                and str(item.get("source_message_key") or "").strip()
-            }
-            missing_voice_terminal_keys = (
-                discovered_voice_source_keys - terminal_voice_source_keys
-            )
-            if missing_voice_terminal_keys:
-                missing_outcomes = _unconfirmed_voice_action_outcomes(
-                    source_keys=missing_voice_terminal_keys,
-                    roles={
-                        source_key: voice_candidate_roles.get(anchor_key, "")
-                        for anchor_key, source_key
-                        in voice_candidate_sources.items()
-                    },
-                    error_code=(
-                        voice_action_failure_code
-                        or "VOICE_ITEM_ACTION_OUTCOME_MISSING"
-                    ),
-                    voice_payload=voice_payload,
-                    anchors={
-                        source_key: anchor_key
-                        for anchor_key, source_key
-                        in voice_candidate_sources.items()
-                    },
-                )
-                voice_item_outcomes = merge_item_outcomes(
-                    voice_item_outcomes,
-                    missing_outcomes,
-                )
-                flow_outcomes.extend(missing_outcomes)
-                partial_failed_voice_source_keys = sorted(
-                    {
-                        *partial_failed_voice_source_keys,
-                        *missing_voice_terminal_keys,
-                    }
-                )
-                for anchor_key, source_key in voice_candidate_sources.items():
-                    role = voice_candidate_roles.get(anchor_key) or ""
-                    if (
-                        source_key in missing_voice_terminal_keys
-                        and role in {"customer", "self"}
-                    ):
-                        partial_failed_voice_roles[source_key] = role
-            # This is deliberately before cross-round arbitration. Every
-            # discovered physical voice has exactly one completed/failed
-            # Ledger terminal even when identity arbitration blocks Brain.
-            self._persist_c2_flow_outcomes(
-                target,
-                voice_item_outcomes,
-                origin_read_run_id=read_run_id,
-            )
-
-            self._annotate_failed_voice_observations(
-                target=target,
-                sidecar_payload=sidecar_payload,
-                failed_source_keys=failed_voice_source_set,
-                error_code=(
-                    voice_action_failure_code
-                    or "VOICE_TRANSCRIBE_PARTIAL"
-                ),
-            )
-            settled_voice_observations = [
-                dict(observation)
-                for observation in (
-                    sidecar_payload.get("observations") or []
-                )
-                if isinstance(observation, dict)
-                and str(observation.get("row_kind") or "").strip().lower()
-                in {"voice_bubble", "voice_transcript"}
-            ]
-            settled_voice_source_keys: set[str] = set()
-            for observation in settled_voice_observations:
-                try:
-                    settled_voice_source_keys.add(
-                        voice_observation_source_key(target, observation)
-                    )
-                except ValueError:
-                    continue
-            for observation in new_voice_candidates:
-                source_key = voice_observation_source_key(
-                    target,
-                    observation,
-                )
-                if (
-                    source_key not in failed_voice_source_set
-                    or source_key in settled_voice_source_keys
-                ):
-                    continue
-                failed_observation = dict(observation)
-                failed_payload = {
-                    "observations": [failed_observation]
-                }
-                self._annotate_failed_voice_observations(
-                    target=target,
-                    sidecar_payload=failed_payload,
-                    failed_source_keys={source_key},
-                    error_code=(
-                        voice_action_failure_code
-                        or "VOICE_TRANSCRIBE_PARTIAL"
-                    ),
-                )
-                settled_voice_observations.append(failed_observation)
-                settled_voice_source_keys.add(source_key)
-            append_log(
-                "INFO",
-                "c2_voice_settlement_ready_for_identity",
-                "全部已发现语音已形成终态，开始跨轮身份检查。",
-                metadata={
-                    "conversation_id": target.conversation_id,
-                    "remark_code": target.remark_code,
-                    "discovered_source_keys": sorted(
-                        discovered_voice_source_keys
-                    ),
-                    "failed_source_keys": sorted(
-                        failed_voice_source_set
-                    ),
-                    "settled_observation_source_keys": sorted(
-                        settled_voice_source_keys
-                    ),
-                    "settled_observation_count": len(
-                        settled_voice_observations
-                    ),
-                },
-            )
-            pre_identity_observations = list(
-                sidecar_payload.get("observations") or []
-            )
-            settlement_frame_observations = [
-                dict(observation)
-                for observation in initial_read_observations
-                if isinstance(observation, dict)
-                and str(observation.get("row_kind") or "").strip().lower()
-                not in {"voice_bubble", "voice_transcript"}
-            ]
-            settlement_frame_observations.extend(
-                settled_voice_observations
-            )
-            reconciled_observations, _identity_state, cross_round_identity_errors = (
-                self._reconcile_message_identities(
-                    target,
-                    [
-                        observation
-                        for observation in (
-                            sidecar_payload.get("observations") or []
-                        )
-                        if not (
-                            isinstance(observation, dict)
-                            and str(
-                                observation.get("row_kind") or ""
-                            ).strip().lower()
-                            == "voice_bubble"
-                            and str(
-                                observation.get("item_state") or ""
-                            ).strip().lower()
-                            == "failed"
-                        )
-                    ],
-                )
-            )
-            sidecar_payload["observations"] = reconciled_observations
-            if cross_round_identity_errors:
-                retried, retry_errors, retry_error_code = (
-                    self._retry_identity_from_backend_checkpoint_once(
-                        target=target,
-                        target_label=target_label,
-                        cancel_check=action_cancel_requested,
-                    )
-                )
-                if retried is not None and not retry_errors:
-                    # The reread is identity evidence only. Do not replace the
-                    # already-settled media frame with observations that
-                    # arrived after settlement; those belong to the next read
-                    # round and otherwise could bypass per-item media action.
-                    sidecar_payload["observations"] = (
-                        settlement_frame_observations
-                    )
-                    sidecar_payload[
-                        "identity_automatic_reread_performed"
-                    ] = True
-                    sidecar_payload[
-                        "identity_automatic_reread_sidecar_run_id"
-                    ] = str(retried.get("sidecar_run_id") or "")
-                    cross_round_identity_errors = []
-                else:
-                    for error in cross_round_identity_errors:
-                        error["automatic_reread_performed"] = True
-                        if retry_error_code:
-                            error["automatic_reread_error_code"] = (
-                                retry_error_code
-                            )
-                    if retry_errors:
-                        cross_round_identity_errors = retry_errors
-            if cross_round_identity_errors:
-                (
-                    reconciled_observations,
-                    cross_round_identity_errors,
-                    identity_warnings,
-                ) = self._downgrade_historical_identity_errors(
-                    target=target,
-                    observations=list(
-                        sidecar_payload.get("observations") or []
-                    ),
-                    errors=cross_round_identity_errors,
-                )
-                sidecar_payload["observations"] = (
-                    reconciled_observations
-                )
-                if identity_warnings:
-                    sidecar_payload["historical_warnings"] = [
-                        *(
-                            sidecar_payload.get("historical_warnings")
-                            or []
-                        ),
-                        *identity_warnings,
-                    ]
-            if not cross_round_identity_errors:
-                reconciled_observations = list(
-                    sidecar_payload.get("observations") or []
-                )
-                reconciled_voice_source_keys: set[str] = set()
-                for observation in reconciled_observations:
-                    if not isinstance(observation, dict):
-                        continue
-                    try:
-                        reconciled_voice_source_keys.add(
-                            voice_observation_source_key(
-                                target,
-                                observation,
-                            )
-                        )
-                    except ValueError:
-                        continue
-                for observation in settled_voice_observations:
-                    source_key = voice_observation_source_key(
-                        target,
-                        observation,
-                    )
-                    if source_key in reconciled_voice_source_keys:
-                        continue
-                    reconciled_observations.append(observation)
-                    reconciled_voice_source_keys.add(source_key)
-                sidecar_payload["observations"] = (
-                    reconciled_observations
-                )
-            if cross_round_identity_errors:
-                code = str(
-                    cross_round_identity_errors[0].get("error_code")
-                    or "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
-                )
-                self.c2_stats["last_error"] = code
-                append_log(
-                    "WARN",
-                    "c2_cross_round_identity_ambiguous",
-                    "全部语音已逐条结算；当前画面身份仍不唯一，已禁止 Vision、入库和 Brain。",
-                    error_code=code,
-                    metadata={
-                        "conversation_id": target.conversation_id,
-                        "remark_code": target.remark_code,
-                        "identity_errors": cross_round_identity_errors,
-                        "voice_terminal_source_keys": sorted(
-                            discovered_voice_source_keys
-                        ),
-                    },
-                )
-                self._report_identity_failure_gate(
-                    binding=binding,
-                    target=target,
-                    read_run_id=read_run_id,
-                    error_code=code,
-                    identity_errors=cross_round_identity_errors,
-                )
-                return {
-                    "ok": False,
-                    "error_code": code,
-                    "target_confirmation": locate_payload,
-                    "final_messages": sidecar_payload,
-                    "identity_errors": cross_round_identity_errors,
-                }
             incremental_plan = self._build_final_slot_incremental_plan(
                 target=target,
                 sidecar_payload=sidecar_payload,
@@ -10444,6 +11318,8 @@ class TaskRunner:
                     allowed_new_source_keys=allowed_new_image_source_keys,
                     flow_outcomes=flow_outcomes,
                 )
+                if image_stats.get("ui_frame_invalidated"):
+                    sidecar_payload["ui_frame_invalidated"] = True
                 record_phase("image_understanding", phase_started_at, **image_stats)
                 append_log(
                     "INFO" if not image_stats.get("failed") else "WARN",
@@ -10488,6 +11364,18 @@ class TaskRunner:
                         "failed_voice_roles": {},
                     }
                 )
+                convergence_terminal_gate = convergence.get(
+                    "terminal_gate"
+                )
+                if isinstance(convergence_terminal_gate, dict):
+                    return settle_identity_terminal_gate(
+                        convergence_terminal_gate,
+                        final_payload=dict(
+                            convergence.get("payload") or sidecar_payload
+                        ),
+                        target_confirmation=locate_payload,
+                        initial_observations=initial_read_observations,
+                    )
                 if not convergence.get("ok"):
                     code = str(
                         convergence.get("error_code")
@@ -10684,6 +11572,9 @@ class TaskRunner:
                         sidecar_payload.get("send_context_guard")
                         if isinstance(sidecar_payload.get("send_context_guard"), dict)
                         else {}
+                    ),
+                    "send_identity_frame": self._send_identity_frame(
+                        sidecar_payload
                     ),
                 }
             self._stage_payload_ledger(payload)
@@ -10935,6 +11826,9 @@ class TaskRunner:
                     sidecar_payload.get("send_context_guard")
                     if isinstance(sidecar_payload.get("send_context_guard"), dict)
                     else {}
+                ),
+                "send_identity_frame": self._send_identity_frame(
+                    sidecar_payload
                 ),
             }
         except UiLockError as exc:

@@ -64,7 +64,12 @@ from chejin_worker_client.action_journal import (
 )
 from chejin_worker_client.wechat_c2 import (
     apply_image_terminal_result,
-    reconcile_cross_round_observation_identities,
+)
+from chejin_worker_client.sequence_alignment import (
+    align_committed_message_sequence,
+    build_post_action_observation_sequence,
+    build_pre_action_identity_sequence,
+    inherited_worker_ids,
 )
 from apps.wechat_ai_customer_service.optional_plugins.vision.capture import transaction
 from apps.wechat_ai_customer_service.optional_plugins.vision.capture import wechat as wechat_capture
@@ -5938,28 +5943,60 @@ class C2VisionIntegrationTests(unittest.TestCase):
             )
 
         try:
-            first, state, first_errors = (
-                reconcile_cross_round_observation_identities(
-                    observations("第一次误识文字"),
-                    None,
-                )
+            first = observations("第一次误识文字")
+            second = observations("第二次另一种误识文字")
+            self.assertEqual([item["row_kind"] for item in first], ["image_bubble"])
+            self.assertEqual([item["row_kind"] for item in second], ["image_bubble"])
+            first_visual_id = str(
+                first[0].get("canonical_visual_id")
+                or (first[0].get("source_message") or {}).get("canonical_visual_id")
+                or ""
             )
-            second, _, second_errors = (
-                reconcile_cross_round_observation_identities(
-                    observations("第二次另一种误识文字"),
-                    state,
-                )
+            second_visual_id = str(
+                second[0].get("canonical_visual_id")
+                or (second[0].get("source_message") or {}).get("canonical_visual_id")
+                or ""
+            )
+            self.assertTrue(first_visual_id)
+            self.assertEqual(first_visual_id, second_visual_id)
+            native_result = align_committed_message_sequence(
+                build_pre_action_identity_sequence(
+                    first,
+                    committed_ids={
+                        str(first[0]["observation_id"]): "worker-message-1"
+                    },
+                ),
+                build_post_action_observation_sequence(second),
+                pre_sequence_source="checkpoint",
+                pre_frame_id="frame-before-ocr-drift-weak",
+                post_frame_id="frame-after-ocr-drift-weak",
+            )
+            self.assertEqual(native_result["alignment_status"], "unique")
+            self.assertEqual(
+                native_result["matched_pairs"][0]["match_basis"],
+                "canonical_visual_id",
+            )
+            first[0]["canonical_visual_id"] = "visual-confirmed-image"
+            second[0]["canonical_visual_id"] = "visual-confirmed-image"
+            result = align_committed_message_sequence(
+                build_pre_action_identity_sequence(
+                    first,
+                    committed_ids={
+                        str(first[0]["observation_id"]): "worker-message-1"
+                    },
+                ),
+                build_post_action_observation_sequence(second),
+                pre_sequence_source="checkpoint",
+                pre_frame_id="frame-before-ocr-drift",
+                post_frame_id="frame-after-ocr-drift",
             )
         finally:
             screenshot.close()
 
-        self.assertEqual(first_errors, [])
-        self.assertEqual(second_errors, [])
-        self.assertEqual([item["row_kind"] for item in first], ["image_bubble"])
-        self.assertEqual([item["row_kind"] for item in second], ["image_bubble"])
+        self.assertEqual(result["alignment_status"], "unique")
         self.assertEqual(
-            first[0]["_worker_stable_id"],
-            second[0]["_worker_stable_id"],
+            inherited_worker_ids(result),
+            {str(second[0]["observation_id"]): "worker-message-1"},
         )
 
     def test_initial_read_and_preclick_refresh_share_real_image_observer(self):

@@ -1,6 +1,6 @@
 @startuml
-' 文档版本：v0.1.5；最后更新：2026-08-11
-title AI智能客服售前跟进系统 C2-C3 单会话串行完整流程（图片增强目标架构）
+' 文档版本：v0.3；最后更新：2026-08-11
+title AI智能客服售前跟进系统 全流程图（C0-C4、媒体、回复、转人工与恢复）
 
 skinparam monochrome true
 skinparam shadowing false
@@ -20,6 +20,10 @@ skinparam sequence {
 
 autonumber
 
+actor "运营人员" as OPS
+actor "销售" as Sales
+actor "客户" as Customer
+
 box "商家侧 Windows Worker（同一 Worker 严格串行）"
 participant "Worker主进程\n单会话Flow调度器" as W
 database "Worker本地SQLite\n已处理清单 + Outbox" as L
@@ -35,15 +39,22 @@ participant "图片理解大模型\nVision Model" as VM
 end box
 
 box "车金服务端"
+participant "C0/C1线索、销售与任务服务" as C01
 participant "会话绑定与授权服务\nread-targets" as Auth
 participant "消息入库服务\nmessages/ingest" as Ingest
 database "业务数据库\nmessage_events" as DB
 participant "C3会话调度器\nmessage_batch" as C3
 participant "回复AI引擎\nContext + RAG + Brain + Guard" as Brain
 participant "ReplyAction / SentAck" as Reply
+participant "HandoffEvent / 飞书通知" as Handoff
 end box
 
+participant "车金飞书自建应用" as Feishu
+
 note over W,Reply
+本图是项目唯一全流程图；产品规则以PRD为准，技术规则以技术方案为准。
+不得再拆分维护独立子流程图或在本图中创造第五套文档口径。
+
 核心不变量：
 1. 同一个Worker、同一个微信实例，同一时间只处理一个会话。
 2. 从打开目标会话到 send_reply / no_action / handoff / technical_failed 终态，全程持有同一UI锁并自动续租。
@@ -53,6 +64,21 @@ note over W,Reply
 6. 图片理解模型与回复Brain是两个独立模型阶段，不能合并或互相越权。
 7. 历史事务恢复先于能力预检；Vision只门禁新的C2 UI流程；会话内图片不得结束为pending/deferred。
 end note
+
+group C0-C1：线索进入、分配销售与加好友
+  OPS -> C01: 新增/导入线索
+  C01 -> C01: 手机号去重、分配唯一sales_id\n创建add_friend任务并绑定可用Worker
+  C01 --> W: 下发add_friend任务\n手机号 + 正式短码 + 申请语
+  W -> Lock: 获取本地微信UI锁
+  W -> OA: add_friend
+  OA -> WX: 搜索手机号、填写短码备注、发送好友申请
+  OA --> W: invite_sent / already_friend / failed + 动作证据
+  W -> C01: 幂等回传任务结果
+  W -> Lock: 释放UI锁
+  note over C01,Auth
+  C1任务完成不等于会话已激活；只有C2发现正式短码private会话并取得当前授权后才能读取消息。
+  end note
+end
 
 loop Worker运行中；每次循环最多完成一个会话事务
 
@@ -256,9 +282,9 @@ loop Worker运行中；每次循环最多完成一个会话事务
               OA -> OA: OCR观察当前屏文字、语音和图片
               OA -> Role: 对可见消息统一判定角色\n同行头像优先
               Role --> OA: customer / self / system / unknown
-              OA --> W: initial observations + 未转写语音anchor列表
-              W -> W: 按物理气泡归并为canonical_voice_id\nstructural/stable等仅作为aliases
-              W -> L: 冻结唯一语音集合\nActionJournal每个canonical_voice_id一项
+              OA --> W: initial observations + 未转写语音帧内观察
+              W -> W: 按当前帧物理气泡归并frame-local候选\nstructural/stable等仅作当次帧aliases
+              W -> L: 恢复已提交历史worker_stable_id\n未选中候选不创建ActionJournal
               opt read_reason=recall_precheck
                 W -> W: recall_precheck=true\n保存recall_cycle_id + recall_origin_status\n尚不允许发送召回
               end
@@ -278,54 +304,80 @@ loop Worker运行中；每次循环最多完成一个会话事务
 
         loop 保持当前会话，直到回复发送或明确不回复/转人工/技术失败
 
-          group 3. 语音增强：Worker重新编排OmniAuto RPA
-            loop 当前屏每个canonical_voice_id，物理操作可自下而上
-              W -> L: 查询conversation_id + 唯一voice_source_key
-              alt 已completed或failed
+          group 3. 语音增强：唯一生产编排器 + OmniAuto两阶段目标握手
+            alt initial_read无当前可执行且未结算的未转写语音
+              W -> W: 跳过整个语音编排器\n零voice prepare/execute、零额外语音OCR\n保留原initial_read payload和observations
+            else initial_read明确存在可执行未转写语音
+              loop 最新帧仍有可执行新语音
+              W -> OA: voice-transcribe(stage=prepare)\n只观察、零UI动作
+              OA --> W: 真实pre_frame + selected_pre_observation_id\n+ selected_action_token + fingerprint
+              W -> W: 只验合同与授权，不重选物理目标\n此时才创建canonical_voice_action_id
+              W -> L: 仅用checkpoint/本地正式状态查历史worker_stable_id
+              alt 历史身份唯一恢复且已completed或failed
                 L --> W: terminal cache hit
                 W -> W: 不重复右键、不重复转写
               else 新的未转写语音
                 L --> W: cache miss
-                W -> L: 持久化唯一动作意图\naction_phase=not_attempted
+                W -> L: 原子分配不可复用reserved_worker_stable_id\nidentity_phase=sequence_reserved + ActionJournal
+                W -> L: 原子保存pre_action_identity_sequence\n含committed/selected_action/frame_local_unselected
                 W -> W: aliases必须恰好匹配一个对象\n零匹配或多匹配均零点击
-                W -> OA: voice-transcribe(canonical_voice_id + aliases)\n保持同一flow_id和UI锁
-                OA -> WX: 重新定位当前anchor并右键
+                W -> L: 原子保存pre frame、selected observation和token
+                W -> OA: voice-transcribe(stage=execute + action/reserved/token)\n一次只操作一个action，保持同一UI锁
+                OA -> OA: 点击前重验token未消费、同一会话和同一物理目标
+                alt token/目标重验失败且确认零点击
+                  OA --> W: cancelled_before_trigger + not_attempted
+                  W -> L: 预留号作废不复用\n从最新帧重新prepare，不形成客户失败事实
+                else 重验唯一
                 OA -> OA: 右键/点击前先落盘\naction_phase=trigger_attempted\n落盘失败则禁止点击
                 OA -> WX: 点击语音转文字入口
-                OA -> WX: 页面变化后立即废弃旧坐标并重新截图
+                OA -> WX: 点击后自动滚动属正常路径\n立即废弃旧坐标并取post_frame
                 WX --> OA: 转写后的新画面
-                OA -> OA: OCR确认正文出现\n绑定parent_voice anchor和原角色
+                OA -> OA: native ID / >=3帧逐相邻帧tracking_edges / >=2可信邻居滚动对齐\n边链从selected pre observation到最终观察且每边唯一
                 OA -> OA: 将本次完整截图和OCR结果\n更新为current_valid_frame
-                alt 转写成功且父语音绑定成功
-                  OA --> W: action_phase=confirmed\nvoice item_state=completed\n正文 + 稳定anchor + 证据
+                W -> W: 先将confirmed action的转写衍生行\n折叠回selected_action，不当新消息
+                W -> W: 对pre_action_identity_sequence与post_frame\n执行唯一单调一对一对齐
+                alt 转写成功且binding唯一confirmed
+                  OA --> W: 回显原action_id\nbinding=confirmed + candidate_count=1\n前后帧 + 邻居证据
+                  W -> L: 提交reserved_id为worker_stable_id\n此后才生成source key
                 else 触发前明确失败
                   OA --> W: action_phase=not_attempted\nvoice item_state=failed + error_code
+                  W -> L: 以同一reserved_id提交failed事实\n不重点
                 else 已触发但结果无法确认
-                  OA --> W: action_phase=trigger_attempted\nitem_state=failed\nVOICE_TRANSCRIBE_RESULT_UNKNOWN
+                  OA --> W: binding=ambiguous
+                  W -> L: ActionJournal=quarantined终态
+                  W -> W: 仅已有证据+一次零操作重读\n两次或120秒后幂等handoff并结束action
                 end
                 W -> W: merge_item_outcomes\ncompleted/failed集合只增不减
-                W -> L: 按voice_source_key记录终态\n后续扫描不自动重复昂贵动作
+                W -> W: committed匹配继承旧ID\nconfirmed action才提交预留ID
+                W -> W: 仅旧尾完整消费后的连续new_suffix可分配新ID
+                W -> W: 重新仲裁动作后新语音/新文字\n禁止继承旧anchor/内容的ID
+                W -> W: 作废动作前帧其他未执行候选\n从最新帧重新选下一条
                 opt 当前语音失败
                   W -> OA: 关闭残留菜单并恢复稳定画面\n继续下一条语音
                 end
+                end
               end
+              end
+              W -> W: 任何身份/合同/授权返回前先finally结算已创建action\n未选中frame-local候选不伪造Journal/终态
             end
-            W -> W: 任何身份/合同/授权返回前先finally结算冻结集合\n断言completed+failed=冻结数且not_attempted=0
           end
 
           group 4. 最终权威画面：默认复用，不机械重复截图
             W -> OA: finalize_current_frame\n同时复核标题和建立统一槽位
-            alt 本轮没有执行语音操作
-              OA -> OA: 复用initial_read完整截图和OCR结果
-            else 已执行语音且最后一次确认画面完整稳定
-              OA -> OA: 复用最后一条语音的\nvoice_transcribe_after截图和OCR结果
+            alt 本轮尚未执行任何语音/图片UI动作
+              OA -> OA: 原样复用initial_read完整payload、截图和OCR结果
+              W -> W: authoritative_frame_source=initial_read
+            else 已有因语音动作或并发页面变化产生的最新完整稳定帧
+              OA -> OA: 复用该最新完整截图和OCR结果
+              W -> W: authoritative_frame_source=final_read
             else 最后画面无效/菜单未关闭/尚未稳定
               OA -> WX: 清理菜单并等待画面稳定
               OA -> WX: 仅此异常分支补截一张完整新图
               WX --> OA: 补截后的有效画面
               OA -> OA: OCR并更新current_valid_frame
+              W -> W: authoritative_frame_source=final_read
             end
-            OA -> OA: current_valid_frame成为final_read权威画面
+            OA -> OA: current_valid_frame成为本轮权威画面\n来源由上方分支唯一确定
             OA -> OA: 先解析文字、语音条、转写正文和父语音关系
             OA -> OA: 合并explained_voice_region并在候选生成前排除高重叠已解释区域
             OA -> OA: 只对剩余未解释表面生成structural_image_candidate
@@ -361,14 +413,21 @@ loop Worker运行中；每次循环最多完成一个会话事务
 
           group 5. 增量过滤：全屏重新观察，但不重复昂贵处理
             W -> W: 确认本Flow的read_run_id已被\ninitial/final read、Ledger、Journal和Outbox共用
-            W -> W: 先为每个slot生成不依赖绝对坐标的稳定身份\nsource_message_key + candidate dedupe_key
+            W -> W: 用checkpoint尾部/动作前全序列与final_read\n执行统一单调一对一对齐
             note right of W
-            文字：稳定输入ID优先；否则角色 + 归一化正文 + 同类出现序号。
-            语音：稳定父voice anchor优先；否则角色 + 正文/时长 + 同类出现序号。
-            图片：canonical_visual_id优先；否则角色 + 同类出现序号 + 邻近稳定消息锚点。
-            相同正文/相同图片连续发送两次必须形成两个不同消息身份。
-            final_read的screen_order和绝对坐标只用于排序，不参与身份。
+            强锚点优先；剩余匹配必须保持时间顺序、一对一且候选唯一。
+            只有动作前最后一条业务观察已消费，
+            final_read后方未匹配的连续尾部才是new_suffix。
+            相同正文/时长/图片只是兼容证据，不是同一身份证明。
             end note
+            alt 对齐唯一且旧尾完整消费
+              W -> W: committed匹配项继承旧ID\n仅new_suffix新分配ID
+            else 从未有checkpoint
+              W -> W: 完整当前业务序列为初始new_suffix
+            else 多解/旧尾未消费/中间有漏项
+              W -> W: MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS\n不分配新ID、不启动Brain
+            end
+            W -> W: 为唯一对齐后的合法slot生成\nsource_message_key + candidate dedupe_key
             W -> L: 批量查询conversation_id + source_message_key\n读取origin_read_run_id、item_state和delivery_state
             L --> W: 每个slot返回原读取轮次、单条结果和传输进度
 
@@ -470,6 +529,7 @@ loop Worker运行中；每次循环最多完成一个会话事务
                     W -> W: item_state=failed\nC2_IMAGE_SLOT_RECONFIRM_FAILED\n不右键、不调用Vision
                   else 两次C2角色一致
                     Role --> OA: role_reconfirmed\nvisual_side仅记录诊断
+                    W -> L: 原子保存pre_action_identity_sequence\n含本帧全部业务观察
                     OA -> WX: 右键图片
                     OA -> OA: OCR识别完整菜单
                     note right of OA
@@ -529,6 +589,15 @@ loop Worker运行中；每次循环最多完成一个会话事务
                   end
                 end
               end
+              alt 本图片分支实际右键/关菜单/点击复制
+                W -> W: ui_frame_invalidated=true
+                W -> OA: 下一媒体、最终排序或Brain前\n强制取同一短码private会话最新稳定post_frame
+                W -> W: 用统一序列对齐器结算本次画面变化\n仅连续new_suffix可分配新ID
+                W -> W: 作废动作前其他frame_local执行候选\n下一张图必须从最新帧重新仲裁
+                W -> W: authoritative_frame_source=final_read
+              else 全程零微信UI动作
+                W -> W: 允许复用当前有效帧
+              end
             end
           end
 
@@ -542,6 +611,13 @@ loop Worker运行中；每次循环最多完成一个会话事务
             W -> W: 检查所有已建立稳定身份的“新槽位”\n图片只能是completed / failed
             alt 仍存在pending
               W -> W: 视为C2_FLOW_CONTRACT_INVALID\n转为failed，禁止结束为pending
+            end
+            alt 仅由Journal恢复且未读取/操作微信UI
+              W -> W: authoritative_frame_source=action_journal_recovery\n只允许事实补录，不启动Brain
+            else 当前微信读取且initial_read未被UI动作或并发变化失效
+              W -> W: 必须保持authoritative_frame_source=initial_read\n禁止prepare空响应覆盖原payload
+            else initial_read已被UI动作或并发页面变化失效
+              W -> W: 必须使用authoritative_frame_source=final_read\n并以最后稳定完整帧为准
             end
             W -> W: 将新文字 + 新语音 + 新图片结果\n回填final_read原槽位
             W -> W: 按screen_order排序\n生成稳定source_message_key/dedupe_key
@@ -639,11 +715,15 @@ loop Worker运行中；每次循环最多完成一个会话事务
               Ingest -> C3: batch直接no_action或handoff
               C3 --> W: terminal no_action / handoff
             else high_intent=true
-              C3 -> DB: 通知销售\nconversation.status=waiting_sales_reply
+              C3 -> Handoff: 创建唯一HandoffEvent\nconversation.status=waiting_sales_reply
+              Handoff -> DB: 保存handoff_event_id与未关闭状态
+              Handoff -> Feishu: 按conversation.sales_id查询Sales.open_id\n同一handoff_event_id立即通知一次
+              Feishu --> Handoff: 成功/失败时间、结果、错误码和摘要
               C3 --> W: terminal handoff\n停止普通AI回复
             else customer最新存在failed语音或图片
               Ingest -> C3: failed事实已入库\n同批完整文字仍保留
-              C3 -> DB: 创建唯一handoff_event\nconversation.status=waiting_sales_reply
+              C3 -> Handoff: 创建唯一HandoffEvent\nconversation.status=waiting_sales_reply
+              Handoff -> Feishu: 同一handoff_event_id立即通知销售一次\n失败不回滚接管状态、不由Worker补发
               C3 --> W: terminal handoff\n不调用Brain，不生成重发/改发文字提示
             else 只有self失败媒体或旧区间门禁
               C3 -> C3: 记录warning\n不阻断最新完整客户尾部

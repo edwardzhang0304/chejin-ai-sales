@@ -25,6 +25,7 @@ from chejin_worker_client.action_journal import (
     initialize_action_journal,
     list_action_journals,
     read_action_journal,
+    record_action_sequence_alignment,
     remove_action_journal,
     update_action_journal_item,
 )
@@ -32,10 +33,15 @@ from chejin_worker_client.c2_contract import contract_revision, contract_sha256
 from chejin_worker_client.models import Binding, RpaResult, RpaStep, Task, WechatReadTarget, WorkerProfile
 from chejin_worker_client.incident_evidence import wait_for_incident
 from chejin_worker_client.rpa_bridge import RpaBridge
+from chejin_worker_client.sequence_alignment import (
+    build_pre_action_identity_sequence,
+    normalized_content_hash,
+)
 from chejin_worker_client.storage import (
     checkpoint_c2_action_outcomes,
     db_connection,
     enqueue_c2_outbox,
+    has_pending_c2_outbox,
     list_c2_action_journal,
     list_c2_ledger_entries,
     list_c2_outbox_waiting,
@@ -53,7 +59,9 @@ from chejin_worker_client.task_runner import (
     C2_RECENT_VISIBLE_CACHE_TTL_SECONDS,
     TaskLeaseGuard,
     TaskRunner,
-    coalesce_physical_voice_observations,
+    _executable_untranscribed_voice_observations,
+    align_post_action_observations,
+    collapse_same_frame_voice_aliases,
     _freeze_phase_metadata,
 )
 from chejin_worker_client.transaction_outcomes import (
@@ -65,8 +73,8 @@ from chejin_worker_client.wechat_c2 import (
     build_message_ingest_payload,
     image_observation_source_key,
     project_final_slot_flow_gates,
-    reconcile_v16104_identity_transition,
     voice_observation_source_key,
+    worker_source_message_key,
 )
 
 
@@ -107,6 +115,39 @@ def identity_checkpoint(
         "next_sequence_floor": next_sequence_floor,
         "recent_messages": [],
     }
+
+
+def attach_sequence_identity_fixture(
+    payload: dict,
+    *,
+    frame_id: str,
+) -> dict:
+    """Give direct plan tests the identities production alignment provides."""
+
+    observations = [
+        dict(item) if isinstance(item, dict) else item
+        for item in (payload.get("observations") or [])
+    ]
+    new_ids: list[str] = []
+    for index, item in enumerate(observations, start=1):
+        if not isinstance(item, dict):
+            continue
+        item.setdefault("_worker_stable_id", f"worker-message-{index}")
+        observation_id = str(item.get("observation_id") or "").strip()
+        if observation_id:
+            new_ids.append(observation_id)
+    payload["observations"] = observations
+    payload["sequence_alignment_evidence"] = {
+        "pre_sequence_source": "empty_checkpoint",
+        "pre_frame_id": f"checkpoint:none:{frame_id}",
+        "post_frame_id": f"frame:{frame_id}",
+        "alignment_status": "not_required",
+        "candidate_alignment_count": 0,
+        "matched_pairs": [],
+        "old_tail_fully_consumed": True,
+        "new_suffix_observation_ids": new_ids,
+    }
+    return payload
 
 
 class FakeApi:
@@ -480,6 +521,7 @@ class FakeBridge:
         self.sent_replies: list[dict] = []
         self.session_scans: list[dict] = []
         self.message_reads: list[dict] = []
+        self.last_message_payload: dict = {}
         self.get_messages_payloads: list[dict] = []
         self.locate_chats: list[dict] = []
         self.locate_payloads: list[dict] = []
@@ -594,8 +636,10 @@ class FakeBridge:
             payload.setdefault("adapter", "mock")
             payload.setdefault("state", "messages_mock")
             payload.setdefault("sidecar_run_id", f"message-run-{len(self.message_reads)}")
-            return self._contractual_message_payload(payload)
-        return self._contractual_message_payload({
+            result = self._contractual_message_payload(payload)
+            self.last_message_payload = dict(result)
+            return result
+        result = self._contractual_message_payload({
             "ok": True,
             "adapter": "mock",
             "state": "messages_mock",
@@ -604,6 +648,8 @@ class FakeBridge:
                 {"id": "wx-msg-1", "sender_role": self.message_sender_role, "type": "text", "content": "你好", "ocr_confidence": 0.98}
             ],
         })
+        self.last_message_payload = dict(result)
+        return result
 
     def _contractual_message_payload(self, payload: dict) -> dict:
         payload.setdefault("contract_version", 3)
@@ -719,7 +765,63 @@ class FakeBridge:
             "targeting": {"ok": True, "mode": kwargs.get("target_mode") or "visible"},
         }
 
-    def voice_transcribe(self, *, display_name: str, rpa_session_key: str, **kwargs):
+    def prepare_voice_action(self, *, display_name: str, rpa_session_key: str, **kwargs):
+        self.c2_operation_order.append("voice_prepare")
+        observations = collapse_same_frame_voice_aliases(
+            list(self.last_message_payload.get("observations") or [])
+        )
+        candidates = [
+            item for item in observations
+            if isinstance(item, dict)
+            and item.get("row_kind") == "voice_bubble"
+            and item.get("voice_state") == "untranscribed"
+        ]
+        excluded = {
+            str(value).strip()
+            for value in (kwargs.get("excluded_voice_anchor_keys") or [])
+            if str(value).strip()
+        }
+        candidates = [
+            item for item in candidates
+            if str(item.get("voice_anchor_key") or item.get("observation_id") or "")
+            not in excluded
+        ]
+        if not candidates:
+            return self._contractual_message_payload({
+                **self.last_message_payload,
+                "observations": observations,
+                "ok": True,
+                "state": "voice_action_prepare_empty",
+                "voice_action_stage": "prepare",
+                "pre_frame_id": "fixture-empty-frame",
+                "ui_action_performed": False,
+            })
+        selected = candidates[0]
+        selected_id = str(selected.get("observation_id") or "")
+        return self._contractual_message_payload({
+            **self.last_message_payload,
+            "observations": observations,
+            "ok": True,
+            "state": "voice_action_prepared",
+            "voice_action_stage": "prepare",
+            "pre_frame_id": f"fixture-pre:{selected_id}",
+            "selected_pre_observation_id": selected_id,
+            "selected_action_token": f"fixture-token:{selected_id}",
+            "selected_target_fingerprint": f"fixture-fingerprint:{selected_id}",
+            "selected_voice_observation": dict(selected),
+            "selected_physical_anchor_keys": sorted({
+                str(value).strip()
+                for value in (
+                    selected.get("_voice_action_anchor_keys")
+                    or [selected.get("voice_anchor_key") or selected_id]
+                )
+                if str(value or "").strip()
+            }),
+            "candidate_group_count": len(candidates),
+            "ui_action_performed": False,
+        })
+
+    def execute_voice_action(self, *, display_name: str, rpa_session_key: str, **kwargs):
         self.c2_operation_order.append("voice_transcribe")
         self.voice_transcribes.append({"display_name": display_name, "rpa_session_key": rpa_session_key, **kwargs})
         payload = dict(
@@ -731,10 +833,527 @@ class FakeBridge:
         payload.setdefault("contract_revision", contract_revision())
         payload.setdefault("contract_sha256", contract_sha256())
         payload.setdefault("observation_schema_version", 3)
+        action_id = str(
+            kwargs.get("canonical_voice_action_id") or ""
+        ).strip()
+        reserved_id = str(
+            kwargs.get("reserved_worker_stable_id") or ""
+        ).strip()
+        selected_observation_id = str(
+            kwargs.get("selected_pre_observation_id") or ""
+        ).strip()
+        selected_observation = next(
+            (
+                item
+                for item in (
+                    self.last_message_payload.get("observations") or []
+                )
+                if isinstance(item, dict)
+                and str(item.get("observation_id") or "").strip()
+                == selected_observation_id
+            ),
+            {},
+        )
+        selected_sender_role = str(
+            selected_observation.get("sender_role") or ""
+        ).strip().lower()
+        if (
+            action_id
+            and reserved_id
+            and str(payload.get("state") or "")
+            == "voice_transcribe_partial"
+        ):
+            selected_id = str(
+                kwargs.get("selected_pre_observation_id") or ""
+            ).strip()
+            selected = next(
+                (
+                    item
+                    for item in (
+                        self.last_message_payload.get("observations") or []
+                    )
+                    if isinstance(item, dict)
+                    and str(item.get("observation_id") or "").strip()
+                    == selected_id
+                ),
+                {},
+            )
+            selected_source = (
+                selected.get("source_message")
+                if isinstance(selected.get("source_message"), dict)
+                else {}
+            )
+            selected_aliases = {
+                str(value).strip()
+                for value in (
+                    selected_id,
+                    selected.get("voice_anchor_key"),
+                    selected.get("parent_voice_anchor_key"),
+                    selected.get("voice_anchor_structural_key"),
+                    selected_source.get("id"),
+                    selected_source.get("voice_anchor_stable_key"),
+                    selected_source.get("voice_anchor_structural_key"),
+                )
+                if str(value or "").strip()
+            }
+            processed_aliases = {
+                str(value).strip()
+                for value in (
+                    payload.get("processed_voice_anchor_keys") or []
+                )
+                if str(value).strip()
+            }
+            failed_aliases = {
+                str(value).strip()
+                for value in (
+                    payload.get("failed_voice_anchor_keys") or []
+                )
+                if str(value).strip()
+            }
+            if selected_aliases & processed_aliases:
+                matching_transcripts = [
+                    item
+                    for item in (payload.get("transcribed_messages") or [])
+                    if isinstance(item, dict)
+                    and {
+                        str(item.get("voice_anchor_stable_key") or "").strip(),
+                        str(item.get("parent_voice_anchor_key") or "").strip(),
+                    }
+                    & selected_aliases
+                ]
+                payload["state"] = "voice_transcribe_completed"
+                payload["processed_voice_anchor_keys"] = sorted(
+                    selected_aliases & processed_aliases
+                )
+                payload["failed_voice_anchor_keys"] = []
+                payload["transcribed_messages"] = (
+                    matching_transcripts
+                    or list(payload.get("transcribed_messages") or [])[:1]
+                )
+            elif selected_aliases & failed_aliases:
+                payload.update(
+                    {
+                        "ok": False,
+                        "state": "voice_transcribe_failed",
+                        "error_code": next(
+                            (
+                                str(item.get("error_code") or "")
+                                for item in (
+                                    payload.get("item_action_outcomes") or []
+                                )
+                                if isinstance(item, dict)
+                                and str(item.get("error_code") or "")
+                            ),
+                            "C2_VOICE_TRANSCRIBE_FAILED",
+                        ),
+                        "processed_voice_anchor_keys": [],
+                        "failed_voice_anchor_keys": sorted(
+                            selected_aliases & failed_aliases
+                        ),
+                        "transcribed_messages": [],
+                    }
+                )
+        if (
+            action_id
+            and reserved_id
+            and str(payload.get("state") or "")
+            == "voice_transcribe_completed"
+            and not payload.get(
+            "confirmed_action_mapping"
+            )
+        ):
+            future_payload = (
+                self._contractual_message_payload(
+                    dict(self.get_messages_payloads.pop(0))
+                )
+                if self.get_messages_payloads
+                else self._contractual_message_payload(payload)
+            )
+            voice_observations = [
+                item
+                for item in (future_payload.get("observations") or [])
+                if isinstance(item, dict)
+                and item.get("message_type") == "voice"
+            ]
+            reported_anchors = {
+                str(value).strip()
+                for value in [
+                    *(payload.get("processed_voice_anchor_keys") or []),
+                    *(payload.get("failed_voice_anchor_keys") or []),
+                ]
+                if str(value).strip()
+            }
+            matched_voice_observations = []
+            for item in voice_observations:
+                source = (
+                    item.get("source_message")
+                    if isinstance(item.get("source_message"), dict)
+                    else {}
+                )
+                aliases = {
+                    str(value).strip()
+                    for value in (
+                        item.get("voice_anchor_key"),
+                        item.get("parent_voice_anchor_key"),
+                        source.get("voice_anchor_key"),
+                        source.get("voice_anchor_stable_key"),
+                        source.get("voice_anchor_structural_key"),
+                        source.get("id"),
+                    )
+                    if str(value or "").strip()
+                }
+                if aliases & reported_anchors:
+                    matched_voice_observations.append(item)
+            if len(matched_voice_observations) == 1:
+                voice_observations = matched_voice_observations
+            post_observation_id = str(
+                (voice_observations[0] if voice_observations else {}).get(
+                    "observation_id"
+                )
+                or ""
+            ).strip()
+            payload.update(
+                {
+                    "canonical_voice_action_id": action_id,
+                    "reserved_worker_stable_id": reserved_id,
+                    "transcript_binding_status": (
+                        "confirmed" if post_observation_id else "failed"
+                    ),
+                    "transcript_binding_method": (
+                        "continuous_target_tracking"
+                        if post_observation_id
+                        else "none"
+                    ),
+                    "binding_candidate_count": (
+                        1 if post_observation_id else 0
+                    ),
+                    "tracking_frame_ids": ([
+                        str(
+                            kwargs.get("pre_frame_id")
+                            or "fixture-pre"
+                        ),
+                        "fixture-mid",
+                        "fixture-post",
+                    ] if post_observation_id else []),
+                    "tracking_edges": ([
+                        {
+                            "from_frame_id": str(kwargs.get("pre_frame_id") or "fixture-pre"),
+                            "from_observation_id": str(kwargs.get("selected_pre_observation_id") or ""),
+                            "to_frame_id": "fixture-mid",
+                            "to_observation_id": str(kwargs.get("selected_pre_observation_id") or ""),
+                            "sender_role": selected_sender_role,
+                            "message_type": "voice",
+                            "structural_evidence": {"fixture": True},
+                            "displacement_evidence": {"fixture": True},
+                            "edge_candidate_count": 1,
+                        },
+                        {
+                            "from_frame_id": "fixture-mid",
+                            "from_observation_id": str(kwargs.get("selected_pre_observation_id") or ""),
+                            "to_frame_id": "fixture-post",
+                            "to_observation_id": post_observation_id,
+                            "sender_role": selected_sender_role,
+                            "message_type": "voice",
+                            "structural_evidence": {"fixture": True},
+                            "displacement_evidence": {"fixture": True},
+                            "edge_candidate_count": 1,
+                        },
+                    ] if post_observation_id else []),
+                    "matched_neighbor_pairs": [],
+                    "native_source_message_id": None,
+                    "confirmed_action_mapping": {
+                        "canonical_action_id": action_id,
+                        "reserved_worker_stable_id": reserved_id,
+                        "binding_confirmed": bool(post_observation_id),
+                        "post_observation_id": post_observation_id,
+                        "derived_observation_ids": [],
+                    },
+                }
+            )
+            payload["observations"] = list(
+                future_payload.get("observations") or []
+            )
+            payload["messages"] = list(future_payload.get("messages") or [])
+            payload["target_confirmation"] = {"ok": True}
+            payload["final_frame_reusable"] = True
+            payload.setdefault("action_phase", "confirmed")
+            payload.setdefault("business_state", "completed")
+            payload.setdefault("business_result_confirmed", True)
+            payload.setdefault("ui_action_performed", True)
+            self.last_message_payload = dict(payload)
+        elif action_id and reserved_id and str(
+            payload.get("state") or ""
+        ) in {
+            "voice_transcribe_click_failed",
+            "voice_transcribe_failed",
+            "voice_transcribe_ambiguous",
+        }:
+            ambiguous = str(payload.get("state") or "") == (
+                "voice_transcribe_ambiguous"
+            )
+            future_payload = (
+                self._contractual_message_payload(
+                    dict(self.get_messages_payloads.pop(0))
+                )
+                if self.get_messages_payloads
+                else self._contractual_message_payload(
+                    dict(self.last_message_payload)
+                )
+            )
+            selected_id = str(
+                kwargs.get("selected_pre_observation_id") or ""
+            ).strip()
+            reported_anchors = {
+                str(value).strip()
+                for value in [
+                    *(payload.get("processed_voice_anchor_keys") or []),
+                    *(payload.get("failed_voice_anchor_keys") or []),
+                ]
+                if str(value).strip()
+            }
+            matched_voice_observations = []
+            for item in future_payload.get("observations") or []:
+                if not isinstance(item, dict) or item.get(
+                    "message_type"
+                ) != "voice":
+                    continue
+                source = (
+                    item.get("source_message")
+                    if isinstance(item.get("source_message"), dict)
+                    else {}
+                )
+                aliases = {
+                    str(value).strip()
+                    for value in (
+                        item.get("observation_id"),
+                        item.get("voice_anchor_key"),
+                        item.get("parent_voice_anchor_key"),
+                        source.get("id"),
+                        source.get("voice_anchor_key"),
+                        source.get("voice_anchor_stable_key"),
+                        source.get("voice_anchor_structural_key"),
+                    )
+                    if str(value or "").strip()
+                }
+                if selected_id in aliases or aliases & reported_anchors:
+                    matched_voice_observations.append(item)
+            post_observation_id = ""
+            if not ambiguous and len(matched_voice_observations) == 1:
+                post_observation_id = str(
+                    matched_voice_observations[0].get("observation_id")
+                    or ""
+                ).strip()
+            payload.update(
+                {
+                    "canonical_voice_action_id": action_id,
+                    "reserved_worker_stable_id": reserved_id,
+                    "transcript_binding_status": (
+                        "ambiguous" if ambiguous else "failed"
+                    ),
+                    "transcript_binding_method": "none",
+                    "binding_candidate_count": (
+                        1 if post_observation_id else 0
+                    ),
+                    "tracking_frame_ids": ([
+                        str(
+                            kwargs.get("pre_frame_id")
+                            or "fixture-pre"
+                        ),
+                        "fixture-failed-execute",
+                        "fixture-failed-final",
+                    ] if post_observation_id else []),
+                    "tracking_edges": ([
+                        {
+                            "from_frame_id": str(
+                                kwargs.get("pre_frame_id") or "fixture-pre"
+                            ),
+                            "from_observation_id": str(
+                                kwargs.get("selected_pre_observation_id")
+                                or ""
+                            ),
+                            "to_frame_id": "fixture-failed-execute",
+                            "to_observation_id": str(
+                                kwargs.get("selected_pre_observation_id")
+                                or ""
+                            ),
+                            "sender_role": selected_sender_role,
+                            "message_type": "voice",
+                            "structural_evidence": {"fixture": True},
+                            "displacement_evidence": {"fixture": True},
+                            "edge_candidate_count": 1,
+                        },
+                        {
+                            "from_frame_id": "fixture-failed-execute",
+                            "from_observation_id": str(
+                                kwargs.get("selected_pre_observation_id")
+                                or ""
+                            ),
+                            "to_frame_id": "fixture-failed-final",
+                            "to_observation_id": post_observation_id,
+                            "sender_role": selected_sender_role,
+                            "message_type": "voice",
+                            "structural_evidence": {"fixture": True},
+                            "displacement_evidence": {"fixture": True},
+                            "edge_candidate_count": 1,
+                        },
+                    ] if post_observation_id else []),
+                    "confirmed_action_mapping": {
+                        "canonical_action_id": action_id,
+                        "reserved_worker_stable_id": reserved_id,
+                        "binding_confirmed": bool(post_observation_id),
+                        "post_observation_id": post_observation_id,
+                        "derived_observation_ids": [],
+                    },
+                    "action_phase": (
+                        "quarantined" if ambiguous else "failed"
+                    ),
+                    "ui_action_performed": True,
+                }
+            )
+            if post_observation_id:
+                payload["transcript_binding_method"] = (
+                    "continuous_target_tracking"
+                )
+                payload["observations"] = list(
+                    future_payload.get("observations") or []
+                )
+                payload["messages"] = list(
+                    future_payload.get("messages") or []
+                )
+                self.last_message_payload = dict(payload)
+            journal_path_value = kwargs.get("action_journal")
+            if journal_path_value:
+                update_action_journal_item(
+                    Path(journal_path_value),
+                    source_message_key=action_id,
+                    action_phase=(
+                        "quarantined" if ambiguous else "failed"
+                    ),
+                    business_state="failed",
+                    business_result_confirmed=False,
+                    error_code=str(
+                        payload.get("error_code")
+                        or "C2_VOICE_TRANSCRIBE_FAILED"
+                    ),
+                    terminal_payload={
+                        "state": (
+                            "quarantined" if ambiguous else "failed"
+                        )
+                    },
+                )
+        elif action_id and reserved_id and str(
+            payload.get("state") or ""
+        ) == "voice_transcribe_cancelled":
+            payload.update(
+                {
+                    "ok": True,
+                    "state": "voice_action_cancelled_before_trigger",
+                    "action_phase": "cancelled_before_trigger",
+                    "ui_action_performed": False,
+                }
+            )
+        elif (
+            action_id
+            and reserved_id
+            and str(payload.get("error_code") or "")
+            == "RPA_SIDECAR_TIMEOUT"
+            and kwargs.get("action_journal")
+        ):
+            # A transport timeout cannot prove that the click did not occur.
+            # Model the durable no-repeat barrier written by the real Sidecar.
+            update_action_journal_item(
+                Path(kwargs["action_journal"]),
+                source_message_key=action_id,
+                action_phase="trigger_attempted",
+                business_state="unknown",
+                business_result_confirmed=False,
+                error_code="RPA_SIDECAR_TIMEOUT",
+            )
+        if (
+            str(payload.get("transcript_binding_method") or "")
+            == "continuous_target_tracking"
+            and not payload.get("tracking_frame_ids")
+            and isinstance(payload.get("tracking_edges"), list)
+            and payload["tracking_edges"]
+        ):
+            edges = payload["tracking_edges"]
+            payload["tracking_frame_ids"] = [
+                str(edges[0].get("from_frame_id") or ""),
+                *[
+                    str(edge.get("to_frame_id") or "")
+                    for edge in edges
+                    if isinstance(edge, dict)
+                ],
+            ]
+        if action_id and reserved_id:
+            tracking_frame_ids = payload.get("tracking_frame_ids")
+            payload.setdefault("voice_action_stage", "execute")
+            payload.setdefault("canonical_voice_action_id", action_id)
+            payload.setdefault("reserved_worker_stable_id", reserved_id)
+            payload.setdefault(
+                "pre_frame_id", str(kwargs.get("pre_frame_id") or "")
+            )
+            payload.setdefault(
+                "post_frame_id",
+                str(
+                    (
+                        tracking_frame_ids[-1]
+                        if isinstance(tracking_frame_ids, list)
+                        and tracking_frame_ids
+                        else "fixture-post-frame"
+                    )
+                    or "fixture-post-frame"
+                ),
+            )
+            payload.setdefault(
+                "selected_pre_observation_id",
+                str(kwargs.get("selected_pre_observation_id") or ""),
+            )
+            payload.setdefault(
+                "selected_action_token",
+                str(kwargs.get("selected_action_token") or ""),
+            )
+            payload.setdefault(
+                "selected_target_fingerprint",
+                str(kwargs.get("selected_target_fingerprint") or ""),
+            )
         return payload
 
 
 class TaskRunnerTest(unittest.TestCase):
+    @staticmethod
+    def _ai_send_observation(
+        observation_id: str,
+        *,
+        sender_role: str,
+        content: str,
+        stable_id: str = "",
+        native_id: str = "",
+    ) -> dict:
+        observation = {
+            "schema_version": 3,
+            "observation_id": observation_id,
+            "row_kind": "text_bubble",
+            "sender_role": sender_role,
+            "sender_role_source": "same_row_avatar",
+            "message_type": "text",
+            "voice_state": "not_voice",
+            "content_clean": content,
+            "source_message": {
+                "id": observation_id,
+                "type": "text",
+                "sender_role": sender_role,
+            },
+        }
+        if stable_id:
+            observation["_worker_stable_id"] = stable_id
+        if native_id:
+            observation["native_source_message_id"] = native_id
+            observation["source_message"][
+                "native_source_message_id"
+            ] = native_id
+        return observation
+
     @staticmethod
     def _identity_text_observation(
         observation_id: str,
@@ -758,6 +1377,112 @@ class TaskRunnerTest(unittest.TestCase):
             },
         }
 
+    def _prepare_ai_send_receipt_fixture(
+        self,
+        *,
+        conversation_id: str,
+        pre_observations: list[dict],
+        next_sequence: int,
+        state_version: int = 4,
+    ):
+        runner, _states = self.make_runner(
+            FakeApi(None),
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        target = WechatReadTarget(
+            conversation_id=conversation_id,
+            rpa_session_key="",
+            display_name="CJAI0001",
+            remark_code="CJAI0001",
+            authorization_revision="revision-ai-send-receipt",
+            raw={
+                "identity_checkpoint": identity_checkpoint(
+                    next_sequence_floor=next_sequence
+                )
+            },
+        )
+        state_key = f"message_identity:{conversation_id}"
+        save_c2_state(
+            state_key,
+            {
+                "version": state_version,
+                "next_sequence": next_sequence,
+                "sequence_reservations": {},
+                "sentinel": "must-survive",
+            },
+        )
+        action_id = f"reply-{conversation_id}"
+        reserved_id = runner._reserve_worker_sequence(
+            target,
+            reservation_key=f"send-action:{action_id}",
+        )
+        committed_ids = {
+            str(item["observation_id"]): str(item["_worker_stable_id"])
+            for item in pre_observations
+            if item.get("_worker_stable_id")
+        }
+        pre_sequence = build_pre_action_identity_sequence(
+            pre_observations,
+            committed_ids=committed_ids,
+        )
+        pre_frame_id = f"send-pre:{conversation_id}"
+        bridge = runner.bridge
+        journal_path = bridge.send_transaction_journal_path(action_id)
+        initialize_action_journal(
+            journal_path,
+            action_kind="send",
+            transaction_id=action_id,
+            conversation_id=conversation_id,
+            items=[
+                {
+                    "source_message_key": action_id,
+                    "physical_anchor_keys": [],
+                }
+            ],
+            pre_action_identity_sequence=pre_sequence,
+            pre_frame_id=pre_frame_id,
+            canonical_action_id=action_id,
+            reserved_worker_stable_id=reserved_id,
+        )
+        runner._record_possible_ai_send(
+            target=target,
+            reply_action_id=action_id,
+            reply_text_hash="transport-only-hash",
+            reserved_worker_stable_id=reserved_id,
+            pre_frame_id=pre_frame_id,
+            pre_action_identity_sequence=pre_sequence,
+        )
+        return runner, bridge, target, action_id, reserved_id, state_key
+
+    @staticmethod
+    def _confirmed_send_sidecar_result(
+        *,
+        observations: list[dict],
+        confirmed_observation_id: str,
+        run_id: str,
+    ) -> dict:
+        confirmed = next(
+            dict(item)
+            for item in observations
+            if item.get("observation_id") == confirmed_observation_id
+        )
+        return {
+            "sidecar_run_id": run_id,
+            "send_result": {
+                "ok": True,
+                "confirmed": True,
+                "result": "sent",
+                "sent_confirmation": {
+                    "ok": True,
+                    "attempt": 1,
+                    "confirmed_observation": confirmed,
+                    "snapshot": {"observations": observations},
+                },
+            },
+        }
+
     def test_phase_metadata_is_frozen_before_later_image_merges(self):
         source_key = "source:image-1"
         mutable = {
@@ -777,68 +1502,67 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(frozen["cached_source_keys"], [])
 
     def test_physical_voice_aliases_merge_before_journal_creation(self):
-        target = WechatReadTarget(
-            conversation_id="conv-one-physical-voice",
-            rpa_session_key="wx:rpa:v1:one-physical-voice",
-            display_name="CJT9V5X1",
-            remark_code="CJT9V5X1",
-            authorization_revision="revision-one-physical-voice",
-        )
         observations = [
             {
+                "observation_id": "voice-alias-a",
+                "row_kind": "voice_bubble",
+                "message_type": "voice",
+                "voice_state": "untranscribed",
                 "sender_role": "customer",
                 "voice_anchor_structural_key": "voice-structural:a",
                 "parent_voice_anchor_key": "voice-parent:shared",
             },
             {
+                "observation_id": "voice-alias-b",
+                "row_kind": "voice_bubble",
+                "message_type": "voice",
+                "voice_state": "untranscribed",
                 "sender_role": "customer",
                 "voice_anchor_structural_key": "voice-structural:b",
                 "parent_voice_anchor_key": "voice-parent:shared",
             },
         ]
 
-        groups = coalesce_physical_voice_observations(
-            target,
+        collapsed = collapse_same_frame_voice_aliases(
             observations,
         )
 
-        self.assertEqual(len(groups), 1)
-        self.assertEqual(len(groups[0]["source_message_keys"]), 2)
+        self.assertEqual(len(collapsed), 1)
         self.assertEqual(
-            groups[0]["physical_anchor_keys"],
+            collapsed[0]["_voice_action_anchor_keys"],
             [
                 "voice-parent:shared",
                 "voice-structural:a",
                 "voice-structural:b",
             ],
         )
-        self.assertEqual(groups[0]["role"], "customer")
+        self.assertEqual(collapsed[0]["sender_role"], "customer")
 
     def test_distinct_physical_voices_remain_distinct(self):
-        target = WechatReadTarget(
-            conversation_id="conv-two-physical-voices",
-            rpa_session_key="wx:rpa:v1:two-physical-voices",
-            display_name="CJT9V5X1",
-            remark_code="CJT9V5X1",
-            authorization_revision="revision-two-physical-voices",
-        )
         observations = [
             {
+                "observation_id": "voice-distinct-a",
+                "row_kind": "voice_bubble",
+                "message_type": "voice",
+                "voice_state": "untranscribed",
                 "sender_role": "customer",
                 "voice_anchor_structural_key": "voice-structural:a",
             },
             {
+                "observation_id": "voice-distinct-b",
+                "row_kind": "voice_bubble",
+                "message_type": "voice",
+                "voice_state": "untranscribed",
                 "sender_role": "customer",
                 "voice_anchor_structural_key": "voice-structural:b",
             },
         ]
 
-        groups = coalesce_physical_voice_observations(
-            target,
+        collapsed = collapse_same_frame_voice_aliases(
             observations,
         )
 
-        self.assertEqual(len(groups), 2)
+        self.assertEqual(len(collapsed), 2)
 
     def test_original_and_later_voice_failures_are_merged_not_overwritten(self):
         outcomes = merge_item_outcomes(
@@ -1115,6 +1839,16 @@ class TaskRunnerTest(unittest.TestCase):
             transaction_id="voice-crashed-after-click",
             conversation_id=target.conversation_id,
             origin_read_run_id="read-voice-crashed-after-click",
+            pre_frame_id="frame-voice-before-crash",
+            prepare_evidence={
+                "pre_frame_id": "frame-voice-before-crash",
+                "selected_pre_observation_id": "voice-before-crash",
+                "selected_action_token": "token-voice-before-crash",
+                "selected_target_fingerprint": (
+                    "fingerprint-voice-before-crash"
+                ),
+                "ui_action_performed": False,
+            },
             items=[
                 {
                     "source_message_key": "voice-triggered-before-crash",
@@ -1227,6 +1961,8 @@ class TaskRunnerTest(unittest.TestCase):
             authorization_revision="revision-sidecar-crash",
         )
         created_paths: list[Path] = []
+        action_id = "voice-sidecar-crashed"
+        reserved_id = "worker-message-sidecar-crashed"
 
         def crash_after_trigger(*_args, flow_outcomes, **_kwargs):
             path = runner._start_irreversible_action_journal(
@@ -1234,16 +1970,39 @@ class TaskRunnerTest(unittest.TestCase):
                 target=target,
                 items=[
                     {
-                        "source_message_key": "voice-sidecar-crashed",
+                        "source_message_key": action_id,
                         "physical_anchor_keys": ["voice-anchor-crashed"],
                     }
                 ],
                 flow_outcomes=flow_outcomes,
+                transaction_id=action_id,
+                pre_action_identity_sequence=[
+                    {
+                        "identity_state": "selected_action",
+                        "canonical_action_id": action_id,
+                        "reserved_worker_stable_id": reserved_id,
+                        "pre_observation_id": "voice-before-crash",
+                        "pre_sequence_index": 0,
+                        "sender_role": "customer",
+                        "message_type": "voice",
+                    }
+                ],
+                pre_frame_id="frame-before-sidecar-crash",
+                reserved_worker_stable_id=reserved_id,
+                prepare_evidence={
+                    "pre_frame_id": "frame-before-sidecar-crash",
+                    "selected_pre_observation_id": "voice-before-crash",
+                    "selected_action_token": "token-before-crash",
+                    "selected_target_fingerprint": (
+                        "fingerprint-before-crash"
+                    ),
+                    "candidate_group_count": 1,
+                },
             )
             created_paths.append(path)
             update_action_journal_item(
                 path,
-                source_message_key="voice-sidecar-crashed",
+                source_message_key=action_id,
                 action_phase="trigger_attempted",
             )
             raise RuntimeError("SIDECAR_CRASHED_AFTER_CLICK")
@@ -1259,30 +2018,21 @@ class TaskRunnerTest(unittest.TestCase):
             ):
                 runner._read_one_wechat_target(binding, target)
 
-        ledger = load_c2_ledger_entry(
-            target.conversation_id,
-            "voice-sidecar-crashed",
-        )
-        self.assertEqual(ledger["terminal_state"], "failed")
-        self.assertEqual(
-            ledger["result"]["action_outcome"]["action_phase"],
-            "trigger_attempted",
-        )
         self.assertTrue(created_paths)
-        self.assertEqual(ledger["ingest_state"], "waiting")
         self.assertTrue(created_paths[0].exists())
-        save_c2_ledger_terminal(
-            conversation_id=target.conversation_id,
-            source_message_key="voice-sidecar-crashed",
-            origin_read_run_id=ledger["origin_read_run_id"],
-            dedupe_key=None,
-            message_type="voice",
-            terminal_state="failed",
-            ingest_state="confirmed",
-            result=ledger["result"],
+        self.assertIsNone(
+            load_c2_ledger_entry(target.conversation_id, action_id)
         )
-        runner._recover_physical_action_journals(target)
-        self.assertFalse(created_paths[0].exists())
+        unresolved = runner._recover_physical_action_journals(target)
+        self.assertEqual(len(unresolved), 1)
+        self.assertEqual(
+            unresolved[0]["reason"],
+            "action_triggered_without_confirmed_post_alignment",
+        )
+        self.assertEqual(
+            action_journal_phase(created_paths[0]), "quarantined"
+        )
+        self.assertTrue(created_paths[0].exists())
 
     def test_c2_flow_finalizer_enriches_existing_terminal_ledger(self):
         target = WechatReadTarget(
@@ -1362,33 +2112,6 @@ class TaskRunnerTest(unittest.TestCase):
         runner.c2_stop_guard_before_voice_seconds = 0
         runner.last_c2_vision_preflight_at = time.monotonic()
         runner.c2_vision_preflight_ready = True
-        production_reconcile = runner._reconcile_message_identities
-
-        def reconcile_with_contract_fixture(
-            target,
-            observations,
-            **kwargs,
-        ):
-            # Direct unit tests bypass FakeApi.read-targets. Supply the field
-            # that the current backend C2 contract always returns in production.
-            if isinstance(target.raw, dict):
-                target.raw.setdefault(
-                    "identity_checkpoint",
-                    {
-                        "version": 1,
-                        "next_sequence_floor": 1,
-                        "recent_messages": [],
-                    },
-                )
-            return production_reconcile(
-                target,
-                observations,
-                **kwargs,
-            )
-
-        runner._reconcile_message_identities = (  # type: ignore[method-assign]
-            reconcile_with_contract_fixture
-        )
         return runner, seen
 
     def make_chat_reply_task(self, *, task_id: str, status: str = "pending") -> Task:
@@ -2774,7 +3497,6 @@ class TaskRunnerTest(unittest.TestCase):
             client_instance_id="client-1",
             run_status="running",
         )
-
         with patch.object(
             runner,
             "_c2_vision_ready_before_scan",
@@ -2856,7 +3578,11 @@ class TaskRunnerTest(unittest.TestCase):
 
         runner.tick_once()
 
-        self.assertIn("ingest:1", api.events)
+        self.assertIn(
+            "ingest:1",
+            api.events,
+            msg={"stats": runner.c2_stats, "events": api.events},
+        )
         self.assertEqual(bridge.sent_replies, [])
         self.assertNotIn("claim_send:reply-action-1", api.events)
         self.assertTrue(any(result and result.error_code == "C3_REPLACEMENT_BATCH_MISSING" for result in seen["results"]))
@@ -3082,7 +3808,7 @@ class TaskRunnerTest(unittest.TestCase):
                 enforce_read_targets=True,
             )
 
-        self.assertTrue(result["ok"])
+        self.assertTrue(result["ok"], result)
         self.assertEqual(result["conversation_terminal_state"], "handoff")
         self.assertEqual(len(lock_states_during_batch_poll), 2)
         self.assertTrue(all(lock_states_during_batch_poll))
@@ -3533,7 +4259,154 @@ class TaskRunnerTest(unittest.TestCase):
 
         self.assertEqual(bridge.c2_operation_order, ["locate_chat", "messages"])
         self.assertEqual(bridge.voice_transcribes, [])
+        self.assertNotIn("voice_prepare", bridge.c2_operation_order)
+        self.assertEqual(
+            api.message_payloads[0]["evidence"][
+                "authoritative_frame_source"
+            ],
+            "initial_read",
+        )
+        self.assertEqual(
+            [
+                item["content"]
+                for item in api.message_payloads[0]["messages"]
+            ],
+            ["你好"],
+        )
+        self.assertEqual(
+            api.message_payloads[0]["evidence"]["flow_gate_errors"],
+            [],
+        )
         self.assertIsNone(api.message_payloads[0]["evidence"]["voice_transcription"])
+
+    def test_c2_transcribed_and_backend_confirmed_voices_never_prepare(self):
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        transcribed_api = FakeApi(None)
+        transcribed_target = WechatReadTarget(
+            conversation_id="conv-transcribed-only",
+            rpa_session_key="wx:transcribed-only",
+            display_name="CJTRN001",
+            remark_code="CJTRN001",
+            authorization_revision="revision-transcribed-only",
+            raw={"identity_checkpoint": identity_checkpoint()},
+        )
+        transcribed_api.read_targets = [transcribed_target]
+        transcribed_bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused")
+        )
+        transcribed_bridge.get_messages_payloads = [{
+            "observations": [{
+                "schema_version": 3,
+                "observation_id": "voice-already-transcribed",
+                "row_kind": "voice_transcript",
+                "sender_role": "customer",
+                "sender_role_source": "parent_voice",
+                "message_type": "voice",
+                "voice_state": "transcribed",
+                "content_clean": "已经转写",
+                "parent_voice_anchor_key": "voice-transcribed-parent",
+                "source_message": {
+                    "id": "voice-already-transcribed",
+                    "type": "voice",
+                    "sender_role": "customer",
+                    "content": "已经转写",
+                },
+            }],
+        }]
+        transcribed_runner, _ = self.make_runner(
+            transcribed_api,
+            transcribed_bridge,
+        )
+        transcribed_runner._read_state_target_queue(binding)
+
+        self.assertNotIn(
+            "voice_prepare",
+            transcribed_bridge.c2_operation_order,
+        )
+        self.assertEqual(
+            len(transcribed_api.message_payloads),
+            1,
+            msg={
+                "stats": transcribed_runner.c2_stats,
+                "events": transcribed_api.events,
+            },
+        )
+        self.assertEqual(
+            transcribed_api.message_payloads[0]["evidence"][
+                "authoritative_frame_source"
+            ],
+            "initial_read",
+        )
+
+        historical_api = FakeApi(None)
+        historical_target = WechatReadTarget(
+            conversation_id="conv-historical-voice-only",
+            rpa_session_key="wx:historical-voice-only",
+            display_name="CJHIS001",
+            remark_code="CJHIS001",
+            authorization_revision="revision-historical-voice-only",
+        )
+        historical_source_key = worker_source_message_key(
+            historical_target,
+            identity_kind="worker_sequence",
+            identity="worker-message-7",
+        )
+        historical_target.raw = {
+            "identity_checkpoint": {
+                "version": 2,
+                "next_sequence_floor": 8,
+                "recent_messages": [{
+                    "stable_id": "worker-message-7",
+                    "source_message_key": historical_source_key,
+                    "origin_read_run_id": "read-historical-voice",
+                    "sender_role": "customer",
+                    "message_type": "voice",
+                    "normalized_content_hash": "",
+                    "native_source_message_id": "native-historical-voice",
+                    "canonical_visual_id": "",
+                }],
+            },
+        }
+        historical_api.read_targets = [historical_target]
+        historical_bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused")
+        )
+        historical_bridge.get_messages_payloads = [{
+            "observations": [{
+                "schema_version": 3,
+                "observation_id": "historical-voice-current-frame",
+                "row_kind": "voice_bubble",
+                "sender_role": "customer",
+                "sender_role_source": "same_row_avatar",
+                "message_type": "voice",
+                "voice_state": "untranscribed",
+                "native_source_message_id": "native-historical-voice",
+                "voice_anchor_key": "frame-local-history-anchor",
+                "source_message": {
+                    "id": "historical-voice-current-frame",
+                    "type": "voice",
+                    "sender_role": "customer",
+                },
+            }],
+        }]
+        historical_runner, _ = self.make_runner(
+            historical_api,
+            historical_bridge,
+        )
+        historical_runner._read_state_target_queue(binding)
+
+        self.assertNotIn(
+            "voice_prepare",
+            historical_bridge.c2_operation_order,
+        )
+        self.assertEqual(historical_bridge.voice_transcribes, [])
+        self.assertEqual(historical_api.message_payloads, [])
 
     def test_c2_message_read_does_not_bypass_v3_observations_with_legacy_visual_hint(self):
         api = FakeApi(None)
@@ -3674,6 +4547,7 @@ class TaskRunnerTest(unittest.TestCase):
                         "sender_role": "customer",
                         "voice_duration": 2,
                         "content": '[语音] 2"',
+                        "voice_anchor_stable_key": "voice-transcription-1",
                     }
                 ],
             }
@@ -3718,7 +4592,7 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(bridge.voice_transcribes, [])
         self.assertEqual(api.message_payloads, [])
 
-    def test_c2_voice_transcription_is_ingested_as_voice_message(self):
+    def test_c2_text_and_voice_preserve_order_and_ingest(self):
         api = FakeApi(None)
         api.read_targets = [
             WechatReadTarget(
@@ -3728,6 +4602,8 @@ class TaskRunnerTest(unittest.TestCase):
                 remark_code="CJTEST01",
                 row_fingerprint={"title_text": "CJTEST01 许聪"},
                 ocr_confidence=0.98,
+                authorization_revision="revision-text-and-voice",
+                raw={"identity_checkpoint": identity_checkpoint()},
             )
         ]
         bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="unused"), message_sender_role="customer")
@@ -3736,11 +4612,18 @@ class TaskRunnerTest(unittest.TestCase):
                 "ok": True,
                 "messages": [
                     {
+                        "id": "wx-msg-text-before-voice",
+                        "type": "text",
+                        "sender_role": "customer",
+                        "content": "在？",
+                    },
+                    {
                         "id": "wx-msg-voice-raw",
                         "type": "voice",
                         "sender_role": "customer",
                         "voice_duration": 2,
                         "content": '[语音] 2"',
+                        "voice_anchor_stable_key": "voice-transcription-1",
                     }
                 ],
             },
@@ -3748,10 +4631,17 @@ class TaskRunnerTest(unittest.TestCase):
                 "ok": True,
                 "messages": [
                     {
+                        "id": "wx-msg-text-before-voice",
+                        "type": "text",
+                        "sender_role": "customer",
+                        "content": "在？",
+                    },
+                    {
                         "id": "wx-msg-voice-text",
                         "type": "voice",
                         "sender_role": "customer",
                         "content": "你好",
+                        "voice_anchor_stable_key": "voice-transcription-1",
                     }
                 ],
             },
@@ -3760,30 +4650,84 @@ class TaskRunnerTest(unittest.TestCase):
             "ok": True,
             "adapter": "mock",
             "state": "voice_transcribe_completed",
+            "action_phase": "confirmed",
+            "business_state": "completed",
+            "business_result_confirmed": True,
+            "ui_action_performed": True,
             "sidecar_run_id": "voice-run-1",
             "artifact_dir": "C:/voice-run-1",
             "attempt_count": 1,
             "quality_flags": [],
             "transcribed_messages": [{"content": "你好", "sender_role": "customer"}],
+            "item_action_outcomes": [
+                {
+                    "action_phase": "confirmed",
+                    "business_state": "completed",
+                    "business_result_confirmed": True,
+                    "physical_anchor_keys": ["voice-transcription-1"],
+                }
+            ],
         }
         runner, _ = self.make_runner(api, bridge)
         binding = Binding(worker_id="worker-1", worker_token="token", client_instance_id="client-1", run_status="running")
 
-        runner._read_state_target_queue(binding)
+        result = runner._read_one_wechat_target(
+            binding,
+            api.read_targets[0],
+            current_step="state_target_message_read",
+            enforce_read_targets=True,
+        )
 
+        self.assertTrue(result["ok"], result)
         self.assertEqual(
             bridge.c2_operation_order,
-            ["locate_chat", "messages", "voice_transcribe", "messages"],
+            [
+                "locate_chat",
+                "messages",
+                "voice_prepare",
+                "voice_transcribe",
+            ],
         )
         self.assertEqual(bridge.voice_transcribes[0]["target_mode"], "current")
         self.assertEqual(bridge.voice_transcribes[0]["max_duration_seconds"], 240)
         self.assertEqual(bridge.message_reads[0]["target_mode"], "current")
-        self.assertEqual(bridge.message_reads[1]["target_mode"], "current")
-        self.assertIn("ingest:1", api.events)
-        self.assertEqual(api.message_payloads[0]["messages"][0]["message_type"], "voice")
-        self.assertEqual(api.message_payloads[0]["messages"][0]["sender_role_hint"], "customer")
-        self.assertEqual(api.message_payloads[0]["messages"][0]["raw_payload"]["voice_transcription"], "你好")
-        self.assertEqual(api.message_payloads[0]["messages"][0]["raw_payload"]["voice_transcription_meta"]["state"], "voice_transcribe_completed")
+        self.assertIn(
+            "ingest:2",
+            api.events,
+            msg={"stats": runner.c2_stats, "events": api.events},
+        )
+        messages = api.message_payloads[0]["messages"]
+        self.assertEqual(
+            [(item["message_type"], item["content"]) for item in messages],
+            [("text", "在？"), ("voice", "你好")],
+        )
+        self.assertEqual(messages[1]["sender_role_hint"], "customer")
+        self.assertEqual(
+            messages[1]["raw_payload"]["voice_transcription"],
+            "你好",
+        )
+        self.assertEqual(
+            messages[1]["raw_payload"]["voice_transcription_meta"][
+                "state"
+            ],
+            "voice_transcribe_completed",
+        )
+        self.assertEqual(
+            api.message_payloads[0]["evidence"][
+                "authoritative_frame_source"
+            ],
+            "final_read",
+        )
+        self.assertIs(
+            api.message_payloads[0]["evidence"][
+                "ui_frame_invalidated"
+            ],
+            True,
+        )
+        self.assertEqual(
+            api.message_payloads[0]["evidence"]["flow_gate_errors"],
+            [],
+        )
         timing = api.message_payloads[0]["evidence"]["timing"]
         self.assertEqual(timing["schema_version"], 1)
         self.assertEqual(
@@ -3792,7 +4736,6 @@ class TaskRunnerTest(unittest.TestCase):
                 "target_chat_locate",
                 "initial_message_read",
                 "voice_transcribe",
-                "target_chat_reconfirm_and_final_read",
                 "build_ingest_payload",
             ],
         )
@@ -3813,7 +4756,7 @@ class TaskRunnerTest(unittest.TestCase):
         observed_phases: list[str] = []
 
         class JournalVoiceBridge(FakeBridge):
-            def voice_transcribe(
+            def execute_voice_action(
                 self,
                 *,
                 display_name: str,
@@ -3850,6 +4793,10 @@ class TaskRunnerTest(unittest.TestCase):
                 self.voice_payload = {
                     "ok": True,
                     "state": "voice_transcribe_completed",
+                    "action_phase": "confirmed",
+                    "business_state": "completed",
+                    "business_result_confirmed": True,
+                    "ui_action_performed": True,
                     "sidecar_run_id": "voice-journal-vertical",
                     "processed_voice_anchor_keys": [
                         "voice-anchor-vertical"
@@ -3873,7 +4820,7 @@ class TaskRunnerTest(unittest.TestCase):
                         }
                     ],
                 }
-                return super().voice_transcribe(
+                return super().execute_voice_action(
                     display_name=display_name,
                     rpa_session_key=rpa_session_key,
                     **kwargs,
@@ -3930,6 +4877,12 @@ class TaskRunnerTest(unittest.TestCase):
             ["not_attempted", "trigger_attempted", "confirmed"],
         )
         self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(
+            api.message_payloads[0]["evidence"][
+                "authoritative_frame_source"
+            ],
+            "final_read",
+        )
         voice_message = api.message_payloads[0]["messages"][0]
         self.assertEqual(voice_message["message_type"], "voice")
         self.assertEqual(voice_message["content"], "纵向语音已经转写。")
@@ -3958,7 +4911,7 @@ class TaskRunnerTest(unittest.TestCase):
         observed_journals: list[dict] = []
 
         class AliasVoiceBridge(FakeBridge):
-            def voice_transcribe(
+            def execute_voice_action(
                 self,
                 *,
                 display_name: str,
@@ -3987,6 +4940,10 @@ class TaskRunnerTest(unittest.TestCase):
                 self.voice_payload = {
                     "ok": True,
                     "state": "voice_transcribe_completed",
+                    "action_phase": "confirmed",
+                    "business_state": "completed",
+                    "business_result_confirmed": True,
+                    "ui_action_performed": True,
                     "sidecar_run_id": "voice-alias-run",
                     "processed_voice_anchor_keys": [
                         "voice-parent:shared"
@@ -4017,7 +4974,7 @@ class TaskRunnerTest(unittest.TestCase):
                         }
                     ],
                 }
-                return super().voice_transcribe(
+                return super().execute_voice_action(
                     display_name=display_name,
                     rpa_session_key=rpa_session_key,
                     **kwargs,
@@ -4088,7 +5045,21 @@ class TaskRunnerTest(unittest.TestCase):
             enforce_read_targets=True,
         )
 
-        self.assertTrue(result["ok"], result)
+        self.assertTrue(
+            result["ok"],
+            {
+                "result": result,
+                "voice_transcribes": bridge.voice_transcribes,
+                "last_payload": bridge.last_message_payload,
+                "journal_after": (
+                    read_action_journal(
+                        Path(bridge.voice_transcribes[0]["action_journal"])
+                    )
+                    if bridge.voice_transcribes
+                    else None
+                ),
+            },
+        )
         self.assertEqual(len(observed_journals), 1)
         journal_items = observed_journals[0]["items"]
         self.assertEqual(len(journal_items), 1)
@@ -4135,11 +5106,30 @@ class TaskRunnerTest(unittest.TestCase):
             "message_type": "voice",
             "voice_state": "untranscribed",
             "voice_anchor_key": "voice:customer:2:bottom:1",
+            "native_source_message_id": "native-voice-old",
             "source_message": {"voice_anchor_stable_key": "voice:customer:2:bottom:1"},
+            "_worker_stable_id": "worker-message-1",
+        }
+        old_source_key = voice_observation_source_key(target, voice_observation)
+        old_read_run_id = "read-confirmed-old-voice"
+        target.raw["identity_checkpoint"] = {
+            "version": 2,
+            "next_sequence_floor": 2,
+            "recent_messages": [{
+                "stable_id": "worker-message-1",
+                "source_message_key": old_source_key,
+                "origin_read_run_id": old_read_run_id,
+                "sender_role": "customer",
+                "message_type": "voice",
+                "normalized_content_hash": "",
+                "native_source_message_id": "native-voice-old",
+                "canonical_visual_id": "",
+            }],
         }
         save_c2_ledger_terminal(
             conversation_id=target.conversation_id,
-            source_message_key=voice_observation_source_key(target, voice_observation),
+            source_message_key=old_source_key,
+            origin_read_run_id=old_read_run_id,
             dedupe_key=None,
             message_type="voice",
             terminal_state="completed",
@@ -4175,7 +5165,225 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         self.assertEqual(bridge.voice_transcribes, [])
         self.assertNotIn("voice_transcribe", bridge.c2_operation_order)
-        self.assertEqual(api.message_payloads[0]["messages"][0]["content"], "新的文字")
+        self.assertEqual(
+            api.message_payloads[0]["messages"][0]["content"],
+            "新的文字",
+        )
+
+    def test_legacy_anchor_ledger_cannot_skip_new_voice_at_same_position(self):
+        target = WechatReadTarget(
+            conversation_id=f"conv-anchor-upgrade-{time.time_ns()}",
+            rpa_session_key="wx:rpa:v1:anchor-upgrade",
+            display_name="CJUPGRD1",
+            remark_code="CJUPGRD1",
+            authorization_revision="revision-anchor-upgrade",
+            raw={"identity_checkpoint": identity_checkpoint()},
+        )
+        reused_anchor = "voice:customer:3:bottom:1"
+        legacy_source_key = worker_source_message_key(
+            target,
+            identity_kind="voice_physical_anchor",
+            identity=reused_anchor,
+        )
+        save_c2_ledger_terminal(
+            conversation_id=target.conversation_id,
+            source_message_key=legacy_source_key,
+            origin_read_run_id="read-legacy-anchor",
+            dedupe_key=None,
+            message_type="voice",
+            terminal_state="completed",
+            ingest_state="confirmed",
+            result={"content": "旧语音已完成"},
+        )
+        new_voice = {
+            "schema_version": 3,
+            "observation_id": "new-voice-same-position",
+            "row_kind": "voice_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "voice",
+            "voice_state": "untranscribed",
+            "item_state": "discovered",
+            "voice_anchor_key": reused_anchor,
+            "source_message": {
+                "id": "new-voice-same-position",
+                "type": "voice",
+                "sender_role": "customer",
+                "voice_anchor_stable_key": reused_anchor,
+            },
+        }
+
+        executable = _executable_untranscribed_voice_observations(
+            target,
+            {"observations": [new_voice]},
+        )
+
+        self.assertEqual(
+            [item["observation_id"] for item in executable],
+            ["new-voice-same-position"],
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "MESSAGE_SEQUENCE_IDENTITY_MISSING",
+        ):
+            voice_observation_source_key(target, new_voice)
+
+    def test_new_suffix_does_not_commit_untrusted_image_identity(self):
+        target = WechatReadTarget(
+            conversation_id=f"conv-untrusted-image-{time.time_ns()}",
+            rpa_session_key="wx:rpa:v1:untrusted-image",
+            display_name="CJIMGU01",
+            remark_code="CJIMGU01",
+            authorization_revision="revision-untrusted-image",
+        )
+        observations = [
+            {
+                "observation_id": "image-role-unknown",
+                "row_kind": "image_bubble",
+                "sender_role": "unknown",
+                "sender_role_source": "unknown",
+                "message_type": "image",
+                "voice_state": "not_voice",
+                "source_message": {"id": "image-role-unknown"},
+            },
+            {
+                "observation_id": "text-role-confirmed",
+                "row_kind": "text_bubble",
+                "sender_role": "customer",
+                "sender_role_source": "same_row_avatar",
+                "message_type": "text",
+                "voice_state": "not_voice",
+                "content_clean": "在吗",
+                "source_message": {"id": "text-role-confirmed"},
+            },
+        ]
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(
+                RpaResult(
+                    ok=True,
+                    result_code="unused",
+                    message="unused",
+                )
+            ),
+        )
+
+        assigned = runner._assign_sequence_new_suffix_identities(
+            target=target,
+            observations=observations,
+            evidence={
+                "alignment_status": "not_required",
+                "old_tail_fully_consumed": True,
+                "new_suffix_observation_ids": [
+                    "image-role-unknown",
+                    "text-role-confirmed",
+                ],
+            },
+            read_run_id="read-untrusted-image",
+        )
+
+        self.assertNotIn("_worker_stable_id", assigned[0])
+        self.assertRegex(
+            assigned[1]["_worker_stable_id"], r"^worker-message-\d+$"
+        )
+
+    def test_second_round_single_text_history_ingests_new_tail_and_enters_brain(self):
+        unique = str(time.time_ns())
+        api = FakeApi(None)
+        batch_id = f"batch-second-round-{unique}"
+        authorization_revision = f"revision-second-round-{unique}"
+        api.message_batch_result = {
+            "batch_id": batch_id,
+            "conversation_id": f"conv-second-round-{unique}",
+            "batch_status": "generating",
+            "continuation": {
+                "batch_id": batch_id,
+                "token": f"continuation-{batch_id}",
+                "authorization_revision": authorization_revision,
+                "read_reason": "waiting_user_reply",
+            },
+        }
+        target = WechatReadTarget(
+            conversation_id=f"conv-second-round-{unique}",
+            rpa_session_key="wx:rpa:v1:second-round",
+            display_name="CJROUND1",
+            remark_code="CJROUND1",
+            read_reason="waiting_user_reply",
+            authorization_revision=authorization_revision,
+        )
+        target.raw["identity_checkpoint"] = {
+            "version": 2,
+            "next_sequence_floor": 2,
+            "recent_messages": [
+                {
+                    "stable_id": "worker-message-1",
+                    "source_message_key": worker_source_message_key(
+                        target,
+                        identity_kind="worker_sequence",
+                        identity="worker-message-1",
+                    ),
+                    "origin_read_run_id": "read-first-round",
+                    "sender_role": "customer",
+                    "message_type": "text",
+                    "normalized_content_hash": (
+                        normalized_content_hash("你好")
+                    ),
+                    "native_source_message_id": "",
+                    "canonical_visual_id": "",
+                }
+            ],
+        }
+        api.read_targets = [target]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            {
+                "messages": [
+                    {
+                        "id": "visible-old-hello",
+                        "type": "text",
+                        "sender_role": "customer",
+                        "content": "你好",
+                        "bubble_rect": [420, 100, 650, 140],
+                    },
+                    {
+                        "id": "new-question",
+                        "type": "text",
+                        "sender_role": "customer",
+                        "content": "在吗",
+                        "bubble_rect": [420, 180, 650, 220],
+                    },
+                ]
+            }
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-second-round",
+            worker_token="token",
+            client_instance_id="client-second-round",
+            run_status="running",
+        )
+
+        with patch.object(
+            runner,
+            "_wait_and_send_current_c3_batch",
+            return_value={"ok": True, "sent": False},
+        ) as brain:
+            result = runner._read_one_wechat_target(
+                binding,
+                target,
+                current_step="state_target_message_read",
+                enforce_read_targets=True,
+            )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(
+            [item["content"] for item in api.message_payloads[0]["messages"]],
+            ["在吗"],
+        )
+        brain.assert_called_once()
 
     def test_c2_does_not_treat_omniauto_machine_fingerprint_as_authoritative(self):
         api = FakeApi(None)
@@ -4199,9 +5407,24 @@ class TaskRunnerTest(unittest.TestCase):
                         "type": "voice",
                         "sender_role": "customer",
                         "content": '[语音] 2"',
+                        "voice_anchor_stable_key": "voice-machine-hash",
+                        "bubble_rect": [120, 200, 240, 240],
                     }
                 ],
-            }
+            },
+            {
+                "ok": True,
+                "messages": [
+                    {
+                        "id": "wx-msg-voice-raw",
+                        "type": "voice",
+                        "sender_role": "customer",
+                        "content": "你好",
+                        "voice_anchor_stable_key": "voice-machine-hash",
+                        "bubble_rect": [120, 200, 240, 240],
+                    }
+                ],
+            },
         ]
         bridge.voice_payload = {
             "ok": True,
@@ -4214,7 +5437,10 @@ class TaskRunnerTest(unittest.TestCase):
 
         runner._read_state_target_queue(binding)
 
-        self.assertEqual(bridge.c2_operation_order, ["locate_chat", "messages", "voice_transcribe", "messages"])
+        self.assertEqual(
+            bridge.c2_operation_order,
+            ["locate_chat", "messages", "voice_prepare", "voice_transcribe"],
+        )
         self.assertEqual(len(api.message_payloads), 1)
         self.assertEqual(api.message_payloads[0]["contract_sha256"], contract_sha256())
 
@@ -4299,7 +5525,14 @@ class TaskRunnerTest(unittest.TestCase):
 
         self.assertEqual(
             bridge.c2_operation_order,
-            ["locate_chat", "messages", "voice_transcribe", "messages"],
+            [
+                "locate_chat",
+                "messages",
+                "voice_prepare",
+                "voice_transcribe",
+                "voice_prepare",
+                "voice_transcribe",
+            ],
         )
         self.assertIn("ingest:2", api.events)
         self.assertEqual(len(api.message_payloads[0]["messages"]), 2)
@@ -4316,7 +5549,7 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(completed_voice["content"], "果然掉在更衣柜里了。")
         self.assertEqual(
             completed_voice["raw_payload"]["voice_transcription_meta"]["state"],
-            "voice_transcribe_partial",
+            "voice_transcribe_completed",
         )
         self.assertEqual(failed_voice["message_type"], "voice")
         self.assertEqual(failed_voice["sender_role_hint"], "customer")
@@ -4338,22 +5571,7 @@ class TaskRunnerTest(unittest.TestCase):
                 }
             ],
         )
-        failed_observation = bridge._contractual_message_payload(
-            {
-                "messages": [
-                    {
-                        "id": "voice-customer-failed",
-                        "type": "voice",
-                        "sender_role": "customer",
-                        "content": '[语音] 6"',
-                    }
-                ]
-            }
-        )["observations"][0]
-        failed_source_key = voice_observation_source_key(
-            api.read_targets[0],
-            failed_observation,
-        )
+        failed_source_key = failed_voice["source_message_key"]
         failed_ledger = load_c2_ledger_entry("conv-1", failed_source_key)
         self.assertEqual(failed_ledger["terminal_state"], "failed")
         self.assertEqual(failed_ledger["ingest_state"], "confirmed")
@@ -4378,7 +5596,7 @@ class TaskRunnerTest(unittest.TestCase):
                         "content": '[语音] 6"',
                     },
                 ]
-            }
+            },
         ]
         runner._read_state_target_queue(binding)
         self.assertNotIn("voice_transcribe", bridge.c2_operation_order)
@@ -4467,6 +5685,13 @@ class TaskRunnerTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         payload = api.message_payloads[0]
+        self.assertTrue(
+            any(
+                item["item_state"] == "failed"
+                for item in payload["messages"]
+            ),
+            payload,
+        )
         failed_sales = next(
             item
             for item in payload["messages"]
@@ -4513,6 +5738,26 @@ class TaskRunnerTest(unittest.TestCase):
         def frame_payload() -> dict:
             return {
                 "observations": [
+                    {
+                        "schema_version": 3,
+                        "observation_id": "stable-text-before-media",
+                        "row_kind": "text_bubble",
+                        "sender_role": "customer",
+                        "sender_role_source": "same_row_avatar",
+                        "message_type": "text",
+                        "voice_state": "not_voice",
+                        "content_clean": "稳定上下文",
+                        "native_source_message_id": (
+                            "native-stable-text-before-media"
+                        ),
+                        "bubble_rect": [400, 40, 600, 80],
+                        "source_message": {
+                            "id": "stable-text-before-media",
+                            "type": "text",
+                            "sender_role": "customer",
+                            "content": "稳定上下文",
+                        },
+                    },
                     {
                         "schema_version": 3,
                         "observation_id": "voice-customer-failed",
@@ -4563,8 +5808,13 @@ class TaskRunnerTest(unittest.TestCase):
             frame_payload(),
         ]
         bridge.voice_payload = {
-            "ok": True,
-            "state": "voice_transcribe_partial",
+            "ok": False,
+            "state": "voice_transcribe_click_failed",
+            "action_phase": "failed",
+            "business_state": "failed",
+            "business_result_confirmed": False,
+            "ui_action_performed": True,
+            "error_code": "VOICE_TRANSCRIBE_TRIGGER_FAILED",
             "sidecar_run_id": "voice-run-failed-with-image",
             "processed_voice_anchor_keys": [],
             "failed_voice_anchor_keys": ["voice-customer-failed"],
@@ -4779,15 +6029,31 @@ class TaskRunnerTest(unittest.TestCase):
             enforce_read_targets=True,
         )
 
-        self.assertTrue(result["ok"])
+        self.assertTrue(result["ok"], result)
         self.assertEqual(len(bridge.voice_transcribes), 2)
-        self.assertIn(
-            "voice-existing",
-            bridge.voice_transcribes[1]["excluded_voice_anchor_keys"],
+        self.assertNotEqual(
+            bridge.voice_transcribes[0][
+                "selected_pre_observation_id"
+            ],
+            bridge.voice_transcribes[1][
+                "selected_pre_observation_id"
+            ],
+        )
+        self.assertNotEqual(
+            bridge.voice_transcribes[0]["reserved_worker_stable_id"],
+            bridge.voice_transcribes[1]["reserved_worker_stable_id"],
         )
         self.assertEqual(len(api.message_payloads), 1)
         messages = api.message_payloads[0]["messages"]
-        self.assertEqual(len(messages), 2)
+        self.assertEqual(
+            len(messages),
+            2,
+            {
+                "messages": messages,
+                "evidence": api.message_payloads[0]["evidence"],
+                "last_payload": bridge.last_message_payload,
+            },
+        )
         self.assertEqual(
             next(
                 item
@@ -4824,6 +6090,226 @@ class TaskRunnerTest(unittest.TestCase):
                 )
                 for item in voice_ledger
             },
+        )
+
+    def test_failed_voice_move_does_not_hide_new_voice_in_old_seat(self):
+        """A failed bubble is excluded by its post frame, never its old seat."""
+
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-failed-voice-moved",
+            rpa_session_key="wx:failed-voice-moved",
+            display_name="CJMOVE01",
+            remark_code="CJMOVE01",
+            read_reason="waiting_user_reply",
+            authorization_revision="revision-failed-voice-moved",
+            raw={"identity_checkpoint": identity_checkpoint()},
+        )
+        bridge = FakeBridge(RpaResult(ok=True, result_code="unused"))
+
+        def voice(
+            observation_id: str,
+            anchor: str,
+            *,
+            content: str = '[语音] 3"',
+            transcribed: bool = False,
+        ) -> dict:
+            return {
+                "schema_version": 3,
+                "observation_id": observation_id,
+                "row_kind": (
+                    "voice_transcript" if transcribed else "voice_bubble"
+                ),
+                "sender_role": "customer",
+                "sender_role_source": (
+                    "parent_voice" if transcribed else "same_row_avatar"
+                ),
+                "message_type": "voice",
+                "voice_state": (
+                    "transcribed" if transcribed else "untranscribed"
+                ),
+                "voice_anchor_key": anchor,
+                "parent_voice_anchor_key": (
+                    anchor if transcribed else ""
+                ),
+                "content_clean": content if transcribed else "",
+                "source_message": {
+                    "id": observation_id,
+                    "type": "voice",
+                    "sender_role": "customer",
+                    "voice_anchor_stable_key": anchor,
+                },
+            }
+
+        initial = bridge._contractual_message_payload(
+            {"observations": [voice("old-pre", "seat-bottom")]}
+        )
+        bridge.last_message_payload = dict(initial)
+        execute_calls = 0
+        prepare_calls: list[dict] = []
+        original_prepare_voice_action = bridge.prepare_voice_action
+
+        def prepare_voice_action(**kwargs):
+            prepare_calls.append(dict(kwargs))
+            return original_prepare_voice_action(**kwargs)
+
+        bridge.prepare_voice_action = prepare_voice_action  # type: ignore[method-assign]
+
+        def tracking_edge(
+            from_frame: str,
+            from_id: str,
+            to_frame: str,
+            to_id: str,
+        ) -> dict:
+            return {
+                "from_frame_id": from_frame,
+                "from_observation_id": from_id,
+                "to_frame_id": to_frame,
+                "to_observation_id": to_id,
+                "sender_role": "customer",
+                "message_type": "voice",
+                "structural_evidence": {"fixture": True},
+                "displacement_evidence": {"fixture": True},
+                "edge_candidate_count": 1,
+            }
+
+        def execute_voice_action(**kwargs):
+            nonlocal execute_calls
+            execute_calls += 1
+            bridge.c2_operation_order.append("voice_transcribe")
+            bridge.voice_transcribes.append(dict(kwargs))
+            pre_id = str(kwargs["selected_pre_observation_id"])
+            pre_frame = str(kwargs["pre_frame_id"])
+            action_id = str(kwargs["canonical_voice_action_id"])
+            reserved_id = str(kwargs["reserved_worker_stable_id"])
+            if execute_calls == 1:
+                post_id = "old-post-shifted"
+                post_observations = [
+                    voice(post_id, "seat-shifted-up"),
+                    voice("new-in-old-seat", "seat-bottom"),
+                ]
+                state = "voice_transcribe_failed"
+                action_phase = "failed"
+                ok = False
+                error_code = "C2_VOICE_TRANSCRIBE_FAILED"
+                binding_status = "failed"
+            else:
+                post_id = "new-post-transcribed"
+                post_observations = [
+                    voice("old-post-shifted", "seat-shifted-up"),
+                    voice(
+                        post_id,
+                        "seat-bottom",
+                        content="新语音已转写",
+                        transcribed=True,
+                    ),
+                ]
+                state = "voice_transcribe_completed"
+                action_phase = "confirmed"
+                ok = True
+                error_code = ""
+                binding_status = "confirmed"
+            mid_frame = f"mid-{execute_calls}"
+            post_frame = f"post-{execute_calls}"
+            payload = bridge._contractual_message_payload(
+                {
+                    "ok": ok,
+                    "state": state,
+                    "error_code": error_code,
+                    "voice_action_stage": "execute",
+                    "canonical_voice_action_id": action_id,
+                    "reserved_worker_stable_id": reserved_id,
+                    "pre_frame_id": pre_frame,
+                    "post_frame_id": post_frame,
+                    "selected_pre_observation_id": pre_id,
+                    "selected_action_token": str(
+                        kwargs["selected_action_token"]
+                    ),
+                    "selected_target_fingerprint": str(
+                        kwargs["selected_target_fingerprint"]
+                    ),
+                    "transcript_binding_status": binding_status,
+                    "transcript_binding_method": (
+                        "continuous_target_tracking"
+                    ),
+                    "binding_candidate_count": 1,
+                    "tracking_frame_ids": [
+                        pre_frame,
+                        mid_frame,
+                        post_frame,
+                    ],
+                    "tracking_edges": [
+                        tracking_edge(
+                            pre_frame, pre_id, mid_frame, pre_id
+                        ),
+                        tracking_edge(
+                            mid_frame, pre_id, post_frame, post_id
+                        ),
+                    ],
+                    "confirmed_action_mapping": {
+                        "canonical_action_id": action_id,
+                        "reserved_worker_stable_id": reserved_id,
+                        "binding_confirmed": True,
+                        "post_observation_id": post_id,
+                        "derived_observation_ids": [],
+                    },
+                    "observations": post_observations,
+                    "action_phase": action_phase,
+                    "business_state": (
+                        "completed" if ok else "failed"
+                    ),
+                    "business_result_confirmed": ok,
+                    "ui_action_performed": True,
+                }
+            )
+            bridge.last_message_payload = dict(payload)
+            return payload
+
+        bridge.execute_voice_action = execute_voice_action  # type: ignore[method-assign]
+        runner, _ = self.make_runner(api, bridge)
+        result = runner._finish_new_visible_voices_in_current_chat(
+            binding=Binding(
+                worker_id="worker-1",
+                worker_token="token",
+                client_instance_id="client-1",
+                run_status="running",
+            ),
+            target=target,
+            target_label="CJMOVE01",
+            sidecar_payload=initial,
+            lease=unittest.mock.Mock(),
+            action_cancel_requested=lambda: False,
+            enforce_read_targets=False,
+            excluded_voice_anchor_keys=set(),
+            flow_outcomes=FlowOutcomeAccumulator(
+                origin_read_run_id="read-failed-voice-moved"
+            ),
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(len(bridge.voice_transcribes), 2)
+        self.assertEqual(
+            bridge.voice_transcribes[0]["selected_pre_observation_id"],
+            "old-pre",
+        )
+        self.assertEqual(
+            bridge.voice_transcribes[1]["selected_pre_observation_id"],
+            "new-in-old-seat",
+        )
+        self.assertEqual(len(prepare_calls), 2)
+        self.assertIn(
+            "seat-shifted-up",
+            prepare_calls[1]["excluded_voice_anchor_keys"],
+        )
+        self.assertNotIn(
+            "seat-bottom",
+            prepare_calls[1]["excluded_voice_anchor_keys"],
+        )
+        self.assertEqual(
+            sorted(
+                item["result"] for item in result["item_outcomes"]
+            ),
+            ["completed", "failed"],
         )
 
     def test_identity_ambiguity_runs_only_after_voice_terminal_is_saved(self):
@@ -4869,46 +6355,284 @@ class TaskRunnerTest(unittest.TestCase):
             ],
         }
         runner, _ = self.make_runner(api, bridge)
-        identity_error = {
-            "observation_id": "voice-before-identity",
-            "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+        ambiguous_evidence = {
+            "pre_sequence_source": "action_frame",
+            "pre_frame_id": "voice-before-identity-pre",
+            "post_frame_id": "voice-before-identity-post",
+            "alignment_status": "ambiguous",
+            "candidate_alignment_count": 2,
+            "matched_pairs": [],
+            "old_tail_fully_consumed": False,
+            "new_suffix_observation_ids": [],
         }
-        runner._reconcile_message_identities = Mock(
-            side_effect=lambda _target, observations, **_kwargs: (
-                list(observations),
-                {},
-                [dict(identity_error)],
-            )
-        )
+        journals_at_alignment = []
 
-        result = runner._read_one_wechat_target(
-            Binding(
-                worker_id="worker-1",
-                worker_token="token",
-                client_instance_id="client-1",
-                run_status="running",
-            ),
-            target,
-            current_step="state_target_message_read",
-            enforce_read_targets=False,
-        )
+        def return_ambiguous_alignment(_pre, post, **_kwargs):
+            journals_at_alignment.extend(
+                list_action_journals(
+                    conversation_id=target.conversation_id,
+                    action_kinds=("voice",),
+                )
+            )
+            return list(post), dict(ambiguous_evidence)
+
+        with patch(
+            "chejin_worker_client.task_runner.align_post_action_observations",
+            side_effect=return_ambiguous_alignment,
+        ):
+            result = runner._read_one_wechat_target(
+                Binding(
+                    worker_id="worker-1",
+                    worker_token="token",
+                    client_instance_id="client-1",
+                    run_status="running",
+                ),
+                target,
+                current_step="state_target_message_read",
+                enforce_read_targets=False,
+            )
 
         self.assertFalse(result["ok"])
         self.assertEqual(
             result["error_code"],
             "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
         )
-        voice_ledger = list_c2_ledger_entries(
-            target.conversation_id,
-            message_type="voice",
-        )
-        self.assertEqual(len(voice_ledger), 1)
-        self.assertEqual(voice_ledger[0]["terminal_state"], "failed")
+        self.assertEqual(len(bridge.voice_transcribes), 1)
+        self.assertEqual(len(journals_at_alignment), 1)
+        journal_items = journals_at_alignment[0][1]["items"]
+        self.assertEqual(len(journal_items), 1)
+        journal_item = next(iter(journal_items.values()))
+        self.assertEqual(journal_item["business_state"], "failed")
         self.assertNotEqual(
-            voice_ledger[0]["result"]["action_outcome"][
-                "action_phase"
+            journal_item["action_phase"], "not_attempted"
+        )
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(api.message_payloads[0]["messages"], [])
+        self.assertEqual(
+            api.message_payloads[0]["evidence"]["flow_gate_errors"],
+            ["MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"],
+        )
+        self.assertEqual(
+            api.message_payloads[0]["evidence"][
+                "authoritative_frame_source"
             ],
-            "not_attempted",
+            "final_read",
+        )
+        self.assertTrue(
+            api.message_payloads[0]["evidence"]["ui_frame_invalidated"]
+        )
+
+    def test_voice_ambiguous_is_one_terminal_gate_and_other_target_continues(
+        self,
+    ):
+        api = FakeApi(None)
+        ambiguous_target = WechatReadTarget(
+            conversation_id="conv-voice-ambiguous-terminal",
+            rpa_session_key="wx:rpa:v1:voice-ambiguous-terminal",
+            display_name="CJAMBV01 客户",
+            remark_code="CJAMBV01",
+            read_reason="waiting_user_reply",
+            authorization_revision="revision-voice-ambiguous-terminal",
+            raw={"identity_checkpoint": identity_checkpoint()},
+        )
+        healthy_target = WechatReadTarget(
+            conversation_id="conv-after-voice-ambiguous",
+            rpa_session_key="wx:rpa:v1:after-voice-ambiguous",
+            display_name="CJNEXT01 客户",
+            remark_code="CJNEXT01",
+            read_reason="waiting_user_reply",
+            authorization_revision="revision-after-voice-ambiguous",
+            raw={"identity_checkpoint": identity_checkpoint()},
+        )
+        api.read_targets = [ambiguous_target, healthy_target]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            {
+                "ok": True,
+                "messages": [
+                    {
+                        "id": "ambiguous-voice",
+                        "type": "voice",
+                        "sender_role": "customer",
+                        "content": '[语音] 5"',
+                        "voice_anchor_stable_key": "ambiguous-anchor",
+                        "bubble_rect": [400, 100, 600, 140],
+                    }
+                ],
+            },
+            {
+                "ok": True,
+                "messages": [
+                    {
+                        "id": "ambiguous-voice",
+                        "type": "voice",
+                        "sender_role": "customer",
+                        "content": '[语音] 5"',
+                        "voice_anchor_stable_key": "ambiguous-anchor",
+                        "bubble_rect": [400, 100, 600, 140],
+                    }
+                ],
+            },
+            {
+                "ok": True,
+                "messages": [
+                    {
+                        "id": "healthy-text",
+                        "type": "text",
+                        "sender_role": "customer",
+                        "content": "另一个客户继续处理",
+                        "bubble_rect": [400, 100, 650, 140],
+                    }
+                ],
+            },
+        ]
+        bridge.voice_payload = {
+            "ok": True,
+            "state": "voice_transcribe_ambiguous",
+            "error_code": "C2_VOICE_RESULT_AMBIGUOUS",
+            "business_state": "failed",
+            "business_result_confirmed": False,
+            "processed_voice_anchor_keys": [],
+            "failed_voice_anchor_keys": ["ambiguous-anchor"],
+        }
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        production_read = runner._read_one_wechat_target
+        read_results: dict[str, list[dict]] = {}
+
+        def tracked_read(
+            current_binding: Binding,
+            current_target: WechatReadTarget,
+            **kwargs,
+        ):
+            read_result = production_read(
+                current_binding,
+                current_target,
+                **kwargs,
+            )
+            read_results.setdefault(
+                current_target.conversation_id,
+                [],
+            ).append(read_result)
+            return read_result
+
+        runner._read_one_wechat_target = tracked_read  # type: ignore[method-assign]
+
+        with patch.object(
+            runner,
+            "_wait_and_send_current_c3_batch",
+        ) as brain:
+            runner._read_state_target_queue(binding)
+
+            self.assertEqual(len(bridge.voice_transcribes), 1)
+            first_ambiguous_result = read_results[
+                ambiguous_target.conversation_id
+            ][0]
+            self.assertFalse(first_ambiguous_result["ok"])
+            self.assertEqual(
+                first_ambiguous_result["error_code"],
+                "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+            )
+            self.assertNotEqual(
+                first_ambiguous_result["error_code"],
+                "MESSAGE_READ_FAILED",
+            )
+            self.assertTrue(
+                first_ambiguous_result["identity_gate_reported"]
+            )
+            self.assertEqual(len(api.message_payloads), 2)
+            gate_payload = next(
+                payload
+                for payload in api.message_payloads
+                if payload["conversation_id"]
+                == ambiguous_target.conversation_id
+            )
+            self.assertEqual(gate_payload["messages"], [])
+            self.assertEqual(
+                gate_payload["evidence"]["flow_gate_errors"],
+                ["MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"],
+            )
+            self.assertEqual(
+                gate_payload["evidence"]["authoritative_frame_source"],
+                "final_read",
+            )
+            self.assertTrue(
+                gate_payload["evidence"]["ui_frame_invalidated"]
+            )
+            healthy_payload = next(
+                payload
+                for payload in api.message_payloads
+                if payload["conversation_id"]
+                == healthy_target.conversation_id
+            )
+            self.assertEqual(
+                [item["content"] for item in healthy_payload["messages"]],
+                ["另一个客户继续处理"],
+            )
+
+            second = runner._read_one_wechat_target(
+                binding,
+                ambiguous_target,
+                current_step="state_target_message_read",
+                enforce_read_targets=False,
+            )
+
+        self.assertFalse(second["ok"])
+        self.assertEqual(
+            second["error_code"],
+            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+        )
+        self.assertEqual(len(bridge.voice_transcribes), 1)
+        self.assertEqual(
+            len(
+                [
+                    payload
+                    for payload in api.message_payloads
+                    if payload["conversation_id"]
+                    == ambiguous_target.conversation_id
+                ]
+            ),
+            1,
+        )
+        brain.assert_not_called()
+        journals = list_action_journals(
+            conversation_id=ambiguous_target.conversation_id,
+            action_kinds=("voice",),
+        )
+        self.assertEqual(len(journals), 1)
+        journal_item = next(iter(journals[0][1]["items"].values()))
+        self.assertEqual(journal_item["action_phase"], "quarantined")
+        self.assertFalse(
+            str(journals[0][1].get("committed_worker_stable_id") or "")
+        )
+        identity_state = load_c2_state(
+            f"message_identity:{ambiguous_target.conversation_id}"
+        )
+        self.assertEqual(identity_state["next_sequence"], 2)
+        self.assertEqual(
+            sorted(identity_state["sequence_reservations"].values()),
+            ["worker-message-1"],
+        )
+        self.assertEqual(
+            runner._reserve_worker_sequence(
+                ambiguous_target,
+                reservation_key="test:after-ambiguous",
+            ),
+            "worker-message-2",
+        )
+        self.assertEqual(
+            list_c2_ledger_entries(
+                ambiguous_target.conversation_id,
+                message_type="voice",
+            ),
+            [],
         )
 
     def test_new_voice_helper_keeps_one_success_and_one_failure(self):
@@ -4920,86 +6644,141 @@ class TaskRunnerTest(unittest.TestCase):
             remark_code="CJMIX01",
             read_reason="waiting_user_reply",
             authorization_revision="revision-new-voice-mixed",
+            raw={"identity_checkpoint": identity_checkpoint()},
         )
-        bridge = FakeBridge(
-            RpaResult(ok=True, result_code="unused", message="unused")
-        )
-        initial = bridge._contractual_message_payload(
-            {
-                "messages": [
-                    {
-                        "id": "voice-later-success",
-                        "type": "voice",
-                        "sender_role": "customer",
-                        "content": '[语音] 3"',
-                        "bubble_rect": [400, 100, 600, 140],
-                    },
-                    {
-                        "id": "voice-later-failed",
-                        "type": "voice",
-                        "sender_role": "self",
-                        "content": '[语音] 4"',
-                        "bubble_rect": [700, 220, 900, 260],
-                    },
-                ]
-            }
-        )
+        bridge = FakeBridge(RpaResult(ok=True, result_code="unused", message="unused"))
+        initial = bridge._contractual_message_payload({
+            "messages": [
+                {"id": "existing-context", "native_source_message_id": "native-existing-context", "type": "text", "sender_role": "customer", "content": "之前的上下文", "bubble_rect": [400, 40, 600, 80]},
+                {"id": "voice-first-failed", "type": "voice", "sender_role": "customer", "content": "[语音] 4\"", "voice_anchor_stable_key": "voice-first-failed", "bubble_rect": [400, 100, 600, 140]},
+                {"id": "voice-second-success", "type": "voice", "sender_role": "self", "content": "[语音] 3\"", "voice_anchor_stable_key": "voice-second-success", "bubble_rect": [700, 220, 900, 260]},
+            ]
+        })
+        for item in initial["observations"]:
+            item["sender_role_source"] = "same_row_avatar"
+            if item.get("message_type") == "voice":
+                item["row_kind"] = "voice_bubble"
+                item["voice_state"] = "untranscribed"
+            else:
+                item["_worker_stable_id"] = "worker-message-1"
+                item["native_source_message_id"] = (
+                    "native-existing-context"
+                )
+        bridge.last_message_payload = dict(initial)
         bridge.voice_payloads = [
-            {
-                "ok": True,
-                "state": "voice_transcribe_partial",
-                "sidecar_run_id": "voice-run-later-mixed",
-                "processed_voice_anchor_keys": ["voice-later-success"],
-                "failed_voice_anchor_keys": ["voice-later-failed"],
-                "transcribed_messages": [],
-                "item_action_outcomes": [
-                    {
-                        "physical_anchor_keys": [
-                            "voice-later-success"
-                        ],
-                        "action_phase": "confirmed",
-                        "business_state": "completed",
-                        "business_result_confirmed": True,
-                    },
-                    {
-                        "physical_anchor_keys": [
-                            "voice-later-failed"
-                        ],
-                        "action_phase": "trigger_attempted",
-                        "business_state": "failed",
-                        "business_result_confirmed": False,
-                        "error_code": "VOICE_TRANSCRIBE_RESULT_UNKNOWN",
-                    },
-                ],
-            }
+            {"ok": False, "state": "voice_transcribe_click_failed", "error_code": "VOICE_TRANSCRIBE_TRIGGER_FAILED", "action_phase": "failed", "business_state": "failed", "business_result_confirmed": False, "ui_action_performed": True},
+            {"ok": True, "state": "voice_transcribe_completed", "action_phase": "confirmed", "business_state": "completed", "business_result_confirmed": True, "processed_voice_anchor_keys": ["voice-second-success"], "failed_voice_anchor_keys": [], "item_action_outcomes": [{"physical_anchor_keys": ["voice-second-success"], "action_phase": "confirmed", "business_state": "completed", "business_result_confirmed": True}]},
         ]
         bridge.get_messages_payloads = [
-            {
-                "messages": [
-                    {
-                        "id": "voice-later-success",
-                        "type": "voice",
-                        "sender_role": "customer",
-                        "content": "后来成功的语音",
-                        "voice_anchor_stable_key": "voice-later-success",
-                        "bubble_rect": [400, 100, 700, 160],
-                    },
-                    {
-                        "id": "voice-later-failed",
-                        "type": "voice",
-                        "sender_role": "self",
-                        "content": '[语音] 4"',
-                        "bubble_rect": [700, 220, 900, 260],
-                    },
-                ]
-            }
+            {"messages": [
+                {"id": "existing-context", "native_source_message_id": "native-existing-context", "type": "text", "sender_role": "customer", "content": "之前的上下文", "bubble_rect": [400, 40, 600, 80]},
+                {"id": "voice-first-failed", "type": "voice", "sender_role": "customer", "content": "[语音] 4\"", "voice_anchor_stable_key": "voice-first-failed", "bubble_rect": [400, 100, 600, 140]},
+                {"id": "voice-second-success", "type": "voice", "sender_role": "self", "content": "[语音] 3\"", "voice_anchor_stable_key": "voice-second-success", "bubble_rect": [700, 220, 900, 260]},
+            ]},
+            {"messages": [
+                {"id": "existing-context", "native_source_message_id": "native-existing-context", "type": "text", "sender_role": "customer", "content": "之前的上下文", "bubble_rect": [400, 40, 600, 80]},
+                {"id": "voice-first-failed", "type": "voice", "sender_role": "customer", "content": "[语音] 4\"", "voice_anchor_stable_key": "voice-first-failed", "bubble_rect": [400, 100, 600, 140]},
+                {"id": "voice-second-success", "type": "voice", "sender_role": "self", "content": "transcribed second voice", "voice_anchor_stable_key": "voice-second-success", "bubble_rect": [700, 220, 900, 280]},
+            ]},
         ]
+        original_get_messages = bridge.get_messages
+
+        def trusted_get_messages(**kwargs):
+            payload = original_get_messages(**kwargs)
+            for observation in payload.get("observations") or []:
+                if not isinstance(observation, dict):
+                    continue
+                observation["sender_role_source"] = "same_row_avatar"
+                if observation.get("message_type") == "text":
+                    observation["_worker_stable_id"] = "worker-message-1"
+                    observation["native_source_message_id"] = (
+                        "native-existing-context"
+                    )
+            bridge.last_message_payload = dict(payload)
+            return payload
+
+        bridge.get_messages = trusted_get_messages  # type: ignore[method-assign]
         runner, _ = self.make_runner(api, bridge)
 
         class Lease:
             def update_step(self, _step):
                 return None
 
+        result = runner._finish_new_visible_voices_in_current_chat(
+            binding=Binding(worker_id="worker-1", worker_token="token", client_instance_id="client-1", run_status="running"),
+            target=target,
+            target_label="CJMIX01",
+            sidecar_payload=initial,
+            lease=Lease(),  # type: ignore[arg-type]
+            action_cancel_requested=lambda: False,
+            enforce_read_targets=False,
+            excluded_voice_anchor_keys=set(),
+            flow_outcomes=FlowOutcomeAccumulator(origin_read_run_id="read-mixed"),
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["failure_code"], "VOICE_TRANSCRIBE_TRIGGER_FAILED")
+        self.assertEqual(
+            {item["result"] for item in result["item_outcomes"]},
+            {"completed", "failed"},
+            msg={
+                "result": result,
+                "operations": bridge.c2_operation_order,
+                "voice_calls": bridge.voice_transcribes,
+            },
+        )
+        self.assertEqual(len(result["item_outcomes"]), 2)
+        self.assertEqual(len(bridge.voice_transcribes), 2)
+        self.assertIs(
+            result["payload"]["ui_frame_invalidated"],
+            True,
+        )
+        self.assertEqual([call["selected_pre_observation_id"] for call in bridge.voice_transcribes], ["voice-first-failed", "voice-second-success"])
+
+    def test_voice_prepare_empty_cannot_overwrite_same_authoritative_voice(self):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-prepare-empty-same-voice",
+            rpa_session_key="wx:prepare-empty-same-voice",
+            display_name="CJEMPTY1",
+            remark_code="CJEMPTY1",
+            authorization_revision="revision-prepare-empty-same-voice",
+            raw={"identity_checkpoint": identity_checkpoint()},
+        )
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused")
+        )
+        initial = bridge._contractual_message_payload({
+            "observations": [{
+                "schema_version": 3,
+                "observation_id": "voice-still-visible",
+                "row_kind": "voice_bubble",
+                "sender_role": "customer",
+                "sender_role_source": "same_row_avatar",
+                "message_type": "voice",
+                "voice_state": "untranscribed",
+                "voice_anchor_key": "voice-still-visible",
+                "source_message": {
+                    "id": "voice-still-visible",
+                    "type": "voice",
+                    "sender_role": "customer",
+                },
+            }],
+        })
+
+        def invalid_empty_prepare(**_kwargs):
+            bridge.c2_operation_order.append("voice_prepare")
+            return bridge._contractual_message_payload({
+                **initial,
+                "ok": True,
+                "state": "voice_action_prepare_empty",
+                "voice_action_stage": "prepare",
+                "pre_frame_id": "prepare-empty-same-frame",
+                "ui_action_performed": False,
+            })
+
+        bridge.prepare_voice_action = invalid_empty_prepare  # type: ignore[method-assign]
+        runner, _ = self.make_runner(api, bridge)
         result = runner._finish_new_visible_voices_in_current_chat(
             binding=Binding(
                 worker_id="worker-1",
@@ -5008,41 +6787,273 @@ class TaskRunnerTest(unittest.TestCase):
                 run_status="running",
             ),
             target=target,
-            target_label="CJMIX01",
+            target_label="CJEMPTY1",
             sidecar_payload=initial,
-            lease=Lease(),  # type: ignore[arg-type]
+            lease=unittest.mock.Mock(),
             action_cancel_requested=lambda: False,
             enforce_read_targets=False,
             excluded_voice_anchor_keys=set(),
+            flow_outcomes=FlowOutcomeAccumulator(
+                origin_read_run_id="read-prepare-empty-same"
+            ),
         )
 
-        failed_observation = next(
-            item
-            for item in initial["observations"]
-            if item["observation_id"] == "voice-later-failed"
-        )
-        failed_source_key = voice_observation_source_key(
-            target,
-            failed_observation,
-        )
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["failed_source_keys"], [failed_source_key])
-        self.assertEqual(result["failed_roles"], {failed_source_key: "self"})
+        self.assertFalse(result["ok"])
         self.assertEqual(
-            result["failure_code"],
-            "VOICE_TRANSCRIBE_PARTIAL",
+            result["error_code"],
+            "C2_AUTHORITATIVE_FRAME_SOURCE_INVALID",
         )
-        self.assertEqual(
-            {
-                item["result"]
-                for item in result["item_outcomes"]
+        self.assertEqual(bridge.voice_transcribes, [])
+
+    def test_voice_prepare_cannot_select_backend_confirmed_historical_voice(
+        self,
+    ):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-prepare-selected-history",
+            rpa_session_key="wx:prepare-selected-history",
+            display_name="CJHISTV1",
+            remark_code="CJHISTV1",
+            authorization_revision="revision-prepare-selected-history",
+            raw={
+                "identity_checkpoint": {
+                    "version": 2,
+                    "next_sequence_floor": 2,
+                    "recent_messages": [
+                        {
+                            "stable_id": "worker-message-1",
+                            "source_message_key": (
+                                "wechat:conv-prepare-selected-history:"
+                                "worker_sequence:worker-message-1"
+                            ),
+                            "origin_read_run_id": "read-history",
+                        }
+                    ],
+                }
             },
-            {"completed", "failed"},
+        )
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused")
+        )
+        initial = bridge._contractual_message_payload(
+            {
+                "observations": [
+                    {
+                        "schema_version": 3,
+                        "observation_id": "historical-voice",
+                        "row_kind": "voice_bubble",
+                        "sender_role": "customer",
+                        "sender_role_source": "same_row_avatar",
+                        "message_type": "voice",
+                        "voice_state": "untranscribed",
+                        "voice_anchor_key": "historical-anchor",
+                        "_worker_stable_id": "worker-message-1",
+                        "source_message": {
+                            "id": "historical-voice",
+                            "type": "voice",
+                            "sender_role": "customer",
+                        },
+                    },
+                    {
+                        "schema_version": 3,
+                        "observation_id": "new-voice",
+                        "row_kind": "voice_bubble",
+                        "sender_role": "customer",
+                        "sender_role_source": "same_row_avatar",
+                        "message_type": "voice",
+                        "voice_state": "untranscribed",
+                        "voice_anchor_key": "new-anchor",
+                        "source_message": {
+                            "id": "new-voice",
+                            "type": "voice",
+                            "sender_role": "customer",
+                        },
+                    },
+                ]
+            }
+        )
+        bridge.last_message_payload = dict(initial)
+
+        def prepare_wrong_historical_voice(**_kwargs):
+            historical = dict(initial["observations"][0])
+            return bridge._contractual_message_payload(
+                {
+                    **initial,
+                    "ok": True,
+                    "state": "voice_action_prepared",
+                    "voice_action_stage": "prepare",
+                    "pre_frame_id": "prepare-history-frame",
+                    "selected_pre_observation_id": "historical-voice",
+                    "selected_action_token": "prepare-history-token",
+                    "selected_target_fingerprint": (
+                        "prepare-history-fingerprint"
+                    ),
+                    "selected_voice_observation": historical,
+                    "selected_physical_anchor_keys": [
+                        "historical-anchor"
+                    ],
+                    "candidate_group_count": 2,
+                    "ui_action_performed": False,
+                }
+            )
+
+        bridge.prepare_voice_action = (  # type: ignore[method-assign]
+            prepare_wrong_historical_voice
+        )
+        runner, _ = self.make_runner(api, bridge)
+        result = runner._finish_new_visible_voices_in_current_chat(
+            binding=Binding(
+                worker_id="worker-1",
+                worker_token="token",
+                client_instance_id="client-1",
+                run_status="running",
+            ),
+            target=target,
+            target_label="CJHISTV1",
+            sidecar_payload=initial,
+            lease=unittest.mock.Mock(),
+            action_cancel_requested=lambda: False,
+            enforce_read_targets=False,
+            excluded_voice_anchor_keys=set(),
+            flow_outcomes=FlowOutcomeAccumulator(
+                origin_read_run_id="read-current"
+            ),
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["error_code"],
+            "C2_VOICE_PREPARE_CONTRACT_INVALID",
+        )
+        self.assertEqual(bridge.voice_transcribes, [])
+        self.assertEqual(
+            list_action_journals(
+                conversation_id=target.conversation_id,
+                action_kinds=("voice",),
+            ),
+            [],
+        )
+
+    def test_voice_prepare_empty_page_change_adopts_complete_final_read(self):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-prepare-empty-page-change",
+            rpa_session_key="wx:prepare-empty-page-change",
+            display_name="CJEMPTY2",
+            remark_code="CJEMPTY2",
+            authorization_revision="revision-prepare-empty-page-change",
+            raw={"identity_checkpoint": identity_checkpoint()},
+        )
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused")
+        )
+        existing_text = {
+            "schema_version": 3,
+            "observation_id": "existing-context",
+            "row_kind": "text_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "text",
+            "voice_state": "not_voice",
+            "content_clean": "稳定上下文",
+            "native_source_message_id": "native-stable-context",
+            "_worker_stable_id": "worker-message-1",
+            "source_message": {
+                "id": "existing-context",
+                "type": "text",
+                "sender_role": "customer",
+                "content": "稳定上下文",
+            },
+        }
+        initial = bridge._contractual_message_payload({
+            "observations": [
+                existing_text,
+                {
+                    "schema_version": 3,
+                    "observation_id": "voice-disappeared",
+                    "row_kind": "voice_bubble",
+                    "sender_role": "customer",
+                    "sender_role_source": "same_row_avatar",
+                    "message_type": "voice",
+                    "voice_state": "untranscribed",
+                    "voice_anchor_key": "voice-disappeared",
+                    "source_message": {
+                        "id": "voice-disappeared",
+                        "type": "voice",
+                        "sender_role": "customer",
+                    },
+                },
+            ],
+        })
+
+        def changed_empty_prepare(**_kwargs):
+            bridge.c2_operation_order.append("voice_prepare")
+            return bridge._contractual_message_payload({
+                "ok": True,
+                "state": "voice_action_prepare_empty",
+                "voice_action_stage": "prepare",
+                "pre_frame_id": "prepare-empty-new-frame",
+                "observations": [
+                    existing_text,
+                    {
+                        "schema_version": 3,
+                        "observation_id": "voice-disappeared",
+                        "row_kind": "voice_transcript",
+                        "sender_role": "customer",
+                        "sender_role_source": "parent_voice",
+                        "message_type": "voice",
+                        "voice_state": "transcribed",
+                        "content_clean": "页面变化后已有转写证据",
+                        "parent_voice_anchor_key": "voice-disappeared",
+                        "source_message": {
+                            "id": "voice-disappeared",
+                            "type": "voice",
+                            "sender_role": "customer",
+                            "content": "页面变化后已有转写证据",
+                        },
+                    },
+                ],
+                "ui_action_performed": False,
+            })
+
+        bridge.prepare_voice_action = changed_empty_prepare  # type: ignore[method-assign]
+        runner, _ = self.make_runner(api, bridge)
+        result = runner._finish_new_visible_voices_in_current_chat(
+            binding=Binding(
+                worker_id="worker-1",
+                worker_token="token",
+                client_instance_id="client-1",
+                run_status="running",
+            ),
+            target=target,
+            target_label="CJEMPTY2",
+            sidecar_payload=initial,
+            lease=unittest.mock.Mock(),
+            action_cancel_requested=lambda: False,
+            enforce_read_targets=False,
+            excluded_voice_anchor_keys=set(),
+            flow_outcomes=FlowOutcomeAccumulator(
+                origin_read_run_id="read-prepare-empty-page-change"
+            ),
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(
+            result["payload"]["authoritative_frame_source"],
+            "final_read",
+        )
+        self.assertIs(
+            result["payload"]["ui_frame_invalidated"],
+            False,
         )
         self.assertEqual(
-            len(result["item_outcomes"]),
-            2,
+            [
+                item["observation_id"]
+                for item in result["payload"]["observations"]
+            ],
+            ["existing-context", "voice-disappeared"],
         )
+        self.assertEqual(bridge.voice_transcribes, [])
 
     def test_c2_failed_voice_waiting_is_reassembled_without_repeating_rpa(self):
         api = FakeApi(None)
@@ -5060,6 +7071,7 @@ class TaskRunnerTest(unittest.TestCase):
         )
         failed_message = {
             "id": "voice-failed-before-authorization-refresh",
+            "native_source_message_id": "native-failed-voice",
             "type": "voice",
             "sender_role": "customer",
             "content": '[语音] 5"',
@@ -5068,13 +7080,34 @@ class TaskRunnerTest(unittest.TestCase):
         failed_observation = bridge._contractual_message_payload(
             {"messages": [failed_message]}
         )["observations"][0]
+        failed_observation["_worker_stable_id"] = "worker-message-1"
+        failed_observation["native_source_message_id"] = (
+            "native-failed-voice"
+        )
         failed_source_key = voice_observation_source_key(
             target,
             failed_observation,
         )
+        target.raw["identity_checkpoint"] = {
+            "version": 2,
+            "next_sequence_floor": 2,
+            "recent_messages": [
+                {
+                    "stable_id": "worker-message-1",
+                    "source_message_key": failed_source_key,
+                    "origin_read_run_id": "read-failed-old-voice",
+                    "sender_role": "customer",
+                    "message_type": "voice",
+                    "normalized_content_hash": "",
+                    "native_source_message_id": "native-failed-voice",
+                    "canonical_visual_id": "",
+                }
+            ],
+        }
         save_c2_ledger_terminal(
             conversation_id=target.conversation_id,
             source_message_key=failed_source_key,
+            origin_read_run_id="read-failed-old-voice",
             dedupe_key=None,
             message_type="voice",
             terminal_state="failed",
@@ -5107,10 +7140,10 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         self.assertNotIn("voice_transcribe", bridge.c2_operation_order)
         self.assertEqual(len(api.message_payloads), 1)
-        recovered = api.message_payloads[0]["messages"][0]
-        self.assertEqual(recovered["source_message_key"], failed_source_key)
-        self.assertEqual(recovered["item_state"], "failed")
-        self.assertEqual(recovered["sender_role_hint"], "customer")
+        # The backend checkpoint is authoritative proof that this identity
+        # was already accepted. Recovery confirms the local waiting ledger
+        # without retransmitting the historical failure.
+        self.assertEqual(api.message_payloads[0]["messages"], [])
         self.assertIn(
             "C2_VOICE_TRANSCRIBE_FAILED",
             api.message_payloads[0]["evidence"]["flow_gate_errors"],
@@ -5171,7 +7204,7 @@ class TaskRunnerTest(unittest.TestCase):
                         "content": "请问还在吗？",
                     }
                 ]
-            }
+            },
         ]
         runner, _ = self.make_runner(api, bridge)
         binding = Binding(
@@ -5332,29 +7365,38 @@ class TaskRunnerTest(unittest.TestCase):
 
         runner._read_state_target_queue(binding)
 
-        self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(api.message_payloads, [])
         self.assertEqual(
-            {
-                (item["message_type"], item["sender_role_hint"])
-                for item in api.message_payloads[0]["messages"]
-            },
-            {("voice", "customer"), ("text", "self")},
+            runner.c2_stats["last_error"],
+            "C2_VOICE_IDENTITY_CONTRACT_INVALID",
         )
-        self.assertEqual(api.message_payloads[0]["evidence"]["flow_gate_errors"], ["C2_VOICE_TRANSCRIBE_FAILED"])
-        failed_voice = next(
-            item
-            for item in api.message_payloads[0]["messages"]
-            if item["message_type"] == "voice"
+        journals = list_action_journals(
+            conversation_id=target.conversation_id,
+            action_kinds=("voice",),
+        )
+        self.assertEqual(len(journals), 1)
+        journal_items = journals[0][1]["items"]
+        self.assertEqual(len(journal_items), 1)
+        terminal_item = next(iter(journal_items.values()))
+        self.assertEqual(
+            terminal_item["action_phase"], "quarantined"
         )
         self.assertEqual(
-            failed_voice["raw_payload"]["error_code"],
-            "VOICE_TRANSCRIPT_BINDING_INCONSISTENT",
+            terminal_item["error_code"],
+            "C2_VOICE_IDENTITY_CONTRACT_INVALID",
         )
         self.assertEqual(
             bridge.c2_operation_order,
-            ["locate_chat", "messages", "voice_transcribe", "messages"],
+            [
+                "locate_chat",
+                "messages",
+                "voice_prepare",
+                "voice_transcribe",
+            ],
         )
-        self.assertEqual(len(runner.c2_voice_binding_blocked_authorizations), 1)
+        self.assertEqual(
+            len(runner.c2_voice_binding_blocked_authorizations), 0
+        )
 
         runner.c2_read_failure_cooldowns.clear()
         runner.c2_read_success_cooldowns.clear()
@@ -5495,13 +7537,19 @@ class TaskRunnerTest(unittest.TestCase):
             }
         ]
 
-        def reject_identity(_target, observations, previous_state):
-            return list(observations), dict(previous_state or {}), identity_errors
-
         with patch(
             "chejin_worker_client.task_runner."
-            "reconcile_v16104_identity_transition",
-            side_effect=reject_identity,
+            "align_committed_message_sequence",
+            return_value={
+                "pre_sequence_source": "empty_checkpoint",
+                "pre_frame_id": "checkpoint:none:conv-cross-round-ambiguous",
+                "post_frame_id": "frame:ambiguous-image",
+                "alignment_status": "ambiguous",
+                "candidate_alignment_count": 2,
+                "matched_pairs": [],
+                "old_tail_fully_consumed": False,
+                "new_suffix_observation_ids": [],
+            },
         ), patch(
             "chejin_worker_client.omniauto_vision.process_image_slot"
         ) as vision, patch.object(
@@ -5854,10 +7902,15 @@ class TaskRunnerTest(unittest.TestCase):
 
         self.assertEqual(
             bridge.c2_operation_order,
-            ["locate_chat", "messages", "voice_transcribe", "messages"],
+            [
+                "locate_chat",
+                "messages",
+                "voice_prepare",
+                "voice_transcribe",
+            ],
         )
         self.assertEqual(len(bridge.locate_chats), 1)
-        self.assertEqual(len(bridge.message_reads), 2)
+        self.assertEqual(len(bridge.message_reads), 1)
         self.assertEqual(len(api.message_payloads), 1)
         self.assertEqual(
             {
@@ -5878,7 +7931,7 @@ class TaskRunnerTest(unittest.TestCase):
             "VOICE_TRANSCRIBE_CLICK_FAILED",
         )
 
-    def test_c2_voice_sidecar_timeout_still_closes_current_screen_in_one_ingest(self):
+    def test_c2_voice_sidecar_timeout_fails_closed_without_reclick_or_ingest(self):
         api = FakeApi(None)
         api.read_targets = [
             WechatReadTarget(
@@ -5947,31 +8000,112 @@ class TaskRunnerTest(unittest.TestCase):
 
         self.assertEqual(
             bridge.c2_operation_order,
-            ["locate_chat", "messages", "voice_transcribe", "messages"],
+            [
+                "locate_chat",
+                "messages",
+                "voice_prepare",
+                "voice_transcribe",
+            ],
         )
         self.assertEqual(len(bridge.locate_chats), 1)
-        self.assertEqual(len(bridge.message_reads), 2)
-        self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(len(bridge.message_reads), 1)
+        self.assertEqual(api.message_payloads, [])
         self.assertEqual(
-            {
-                (item["message_type"], item["sender_role_hint"])
-                for item in api.message_payloads[0]["messages"]
-            },
-            {("voice", "customer"), ("text", "self")},
+            runner.c2_stats["last_error"],
+            "C2_VOICE_IDENTITY_CONTRACT_INVALID",
         )
-        self.assertEqual(api.message_payloads[0]["evidence"]["flow_gate_errors"], ["C2_VOICE_TRANSCRIBE_FAILED"])
-        failed_voice = next(
-            item
-            for item in api.message_payloads[0]["messages"]
-            if item["message_type"] == "voice"
+        journals = list_action_journals(
+            conversation_id="conv-1",
+            action_kinds=("voice",),
         )
-        self.assertEqual(failed_voice["item_state"], "failed")
+        self.assertEqual(len(journals), 1)
         self.assertEqual(
-            failed_voice["raw_payload"]["error_code"],
-            "RPA_SIDECAR_TIMEOUT",
+            action_journal_phase(journals[0][0]),
+            "quarantined",
+        )
+        self.assertEqual(
+            list_c2_ledger_entries("conv-1", message_type="voice"),
+            [],
         )
 
-    def test_c2_voice_timeout_does_not_mark_failed_when_final_frame_proves_transcript(self):
+    def test_voice_execute_exception_without_sidecar_journal_update_is_quarantined(self):
+        target = WechatReadTarget(
+            conversation_id="conv-voice-execute-exception",
+            rpa_session_key="wx:rpa:v1:voice-execute-exception",
+            display_name="CJERR001",
+            remark_code="CJERR001",
+            authorization_revision="revision-voice-execute-exception",
+            raw={"identity_checkpoint": identity_checkpoint()},
+        )
+
+        class CrashingBridge(FakeBridge):
+            def execute_voice_action(self, **kwargs):
+                self.c2_operation_order.append("voice_transcribe")
+                self.voice_transcribes.append(dict(kwargs))
+                raise TimeoutError("sidecar disappeared after execute began")
+
+        bridge = CrashingBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        initial = bridge._contractual_message_payload(
+            {
+                "ok": True,
+                "state": "messages_ocr",
+                "sidecar_run_id": "frame-before-execute-exception",
+                "messages": [
+                    {
+                        "id": "voice-execute-exception",
+                        "type": "voice",
+                        "sender_role": "customer",
+                        "content": '[语音] 3"',
+                        "voice_anchor_stable_key": "voice-execute-exception",
+                        "bubble_rect": [420, 180, 650, 240],
+                    }
+                ],
+            }
+        )
+        for item in initial["observations"]:
+            item["sender_role_source"] = "same_row_avatar"
+        bridge.last_message_payload = dict(initial)
+        runner, _ = self.make_runner(FakeApi(None), bridge)
+
+        class Lease:
+            def update_step(self, _step):
+                return None
+
+        with self.assertRaisesRegex(
+            TimeoutError,
+            "sidecar disappeared",
+        ):
+            runner._finish_new_visible_voices_in_current_chat(
+                binding=Binding(
+                    worker_id="worker-1",
+                    worker_token="token",
+                    client_instance_id="client-1",
+                    run_status="running",
+                ),
+                target=target,
+                target_label="CJERR001",
+                sidecar_payload=initial,
+                lease=Lease(),  # type: ignore[arg-type]
+                action_cancel_requested=lambda: False,
+                enforce_read_targets=False,
+                excluded_voice_anchor_keys=set(),
+                flow_outcomes=FlowOutcomeAccumulator(
+                    origin_read_run_id="read-voice-execute-exception"
+                ),
+            )
+
+        journals = list_action_journals(
+            conversation_id=target.conversation_id,
+            action_kinds=("voice",),
+        )
+        self.assertEqual(len(journals), 1)
+        self.assertEqual(action_journal_phase(journals[0][0]), "quarantined")
+        item = next(iter(journals[0][1]["items"].values()))
+        self.assertEqual(item["error_code"], "C2_VOICE_EXECUTE_INTERRUPTED")
+
+    def test_c2_voice_timeout_cannot_bind_transcript_from_unowned_later_frame(self):
         api = FakeApi(None)
         target = WechatReadTarget(
             conversation_id="conv-timeout-final-success",
@@ -6019,13 +8153,29 @@ class TaskRunnerTest(unittest.TestCase):
 
         runner._read_state_target_queue(binding)
 
-        self.assertEqual(len(api.message_payloads), 1)
-        payload = api.message_payloads[0]
-        self.assertEqual(payload["evidence"]["flow_gate_errors"], [])
-        self.assertEqual(len(payload["messages"]), 1)
-        self.assertEqual(payload["messages"][0]["message_type"], "voice")
-        self.assertEqual(payload["messages"][0]["item_state"], "completed")
-        self.assertEqual(payload["messages"][0]["content"], "我下午三点有空")
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(len(bridge.message_reads), 1)
+        self.assertEqual(len(bridge.get_messages_payloads), 1)
+        self.assertEqual(
+            runner.c2_stats["last_error"],
+            "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+        )
+        journals = list_action_journals(
+            conversation_id=target.conversation_id,
+            action_kinds=("voice",),
+        )
+        self.assertEqual(len(journals), 1)
+        self.assertEqual(
+            action_journal_phase(journals[0][0]),
+            "quarantined",
+        )
+        self.assertEqual(
+            list_c2_ledger_entries(
+                target.conversation_id,
+                message_type="voice",
+            ),
+            [],
+        )
 
     def test_c2_voice_cancelled_by_stop_does_not_terminalize_or_report_failure(self):
         api = FakeApi(None)
@@ -6075,12 +8225,12 @@ class TaskRunnerTest(unittest.TestCase):
             "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
         )
         self.assertEqual(api.message_payloads, [])
-        observation = bridge._contractual_message_payload(
-            {"messages": [raw_voice]}
-        )["observations"][0]
-        source_key = voice_observation_source_key(target, observation)
-        self.assertIsNone(
-            load_c2_ledger_entry(target.conversation_id, source_key)
+        self.assertEqual(
+            list_c2_ledger_entries(
+                target.conversation_id,
+                message_type="voice",
+            ),
+            [],
         )
 
     def test_c2_message_read_failure_enters_cooldown_before_retry(self):
@@ -6396,6 +8546,7 @@ class TaskRunnerTest(unittest.TestCase):
             "message_type": "image",
             "voice_state": "not_voice",
             "item_state": "discovered",
+            "canonical_visual_id": f"canonical-image-{unique}",
             "bubble_rect": [420, 180, 650, 320],
             "image_physical_anchor": {
                 "sender_role": "customer",
@@ -6526,21 +8677,22 @@ class TaskRunnerTest(unittest.TestCase):
             remark_code="CJP0EX01",
             authorization_revision=f"revision-adapter-exception-{unique}",
         )
-        source_key = f"image-adapter-exception-{unique}"
         observation = {
             "schema_version": 3,
-            "observation_id": source_key,
+            "observation_id": f"image-adapter-exception-{unique}",
             "row_kind": "image_bubble",
             "sender_role": "customer",
             "sender_role_source": "same_row_avatar",
             "message_type": "image",
             "voice_state": "not_voice",
+            "_worker_stable_id": f"worker-image-adapter-{unique}",
             "bubble_rect": [420, 180, 650, 320],
             "image_physical_anchor": {
                 "sender_role": "customer",
                 "bubble_visual_fingerprint": "dhash64:0123456789abcdef",
             },
         }
+        source_key = image_observation_source_key(target, observation)
 
         def crash_after_trigger(**kwargs):
             update_action_journal_item(
@@ -6558,7 +8710,10 @@ class TaskRunnerTest(unittest.TestCase):
         ):
             result = runner._execute_one_image_slot_vision(
                 target=target,
-                payload={},
+                payload={
+                    "frame_id": f"frame-image-adapter-{unique}",
+                    "observations": [observation],
+                },
                 observation=observation,
                 source_key=source_key,
                 cancel_check=None,
@@ -6574,7 +8729,7 @@ class TaskRunnerTest(unittest.TestCase):
         )
         self.assertEqual(len(journals), 1)
         item = journals[0][1]["items"][source_key]
-        self.assertEqual(item["action_phase"], "trigger_attempted")
+        self.assertEqual(item["action_phase"], "quarantined")
         self.assertEqual(item["business_state"], "failed")
         self.assertEqual(item["error_code"], "vision_adapter_failed")
         self.assertEqual(
@@ -8152,8 +10307,33 @@ class TaskRunnerTest(unittest.TestCase):
                         "content": '[语音] 2"',
                     }
                 ],
-            }
+            },
+            {
+                "ok": True,
+                "messages": [
+                    {
+                        "id": "wx-msg-voice-raw",
+                        "type": "voice",
+                        "sender_role": "customer",
+                        "voice_duration": 2,
+                        "content": "已完成转写",
+                        "voice_anchor_stable_key": "wx-msg-voice-raw",
+                    }
+                ],
+            },
         ]
+        bridge.voice_payload = {
+            "ok": True,
+            "state": "voice_transcribe_completed",
+            "processed_voice_anchor_keys": ["wx-msg-voice-raw"],
+            "transcribed_messages": [
+                {
+                    "content": "已完成转写",
+                    "sender_role": "customer",
+                    "voice_anchor_stable_key": "wx-msg-voice-raw",
+                }
+            ],
+        }
         target = WechatReadTarget(
             conversation_id="conv-1",
             rpa_session_key="wx:rpa:v1:a",
@@ -8175,7 +10355,7 @@ class TaskRunnerTest(unittest.TestCase):
             api.events.append(f"read_authorization:{conversation_id}")
             calls["count"] += 1
             return {
-                "allowed": calls["count"] <= 5,
+                "allowed": not bridge.voice_transcribes,
                 "conversation_id": conversation_id,
                 "authorization_revision": target.authorization_revision,
                 "read_reason": target.read_reason,
@@ -8208,8 +10388,33 @@ class TaskRunnerTest(unittest.TestCase):
                         "content": '[语音] 2"',
                     }
                 ],
-            }
+            },
+            {
+                "ok": True,
+                "messages": [
+                    {
+                        "id": "wx-msg-voice-raw",
+                        "type": "voice",
+                        "sender_role": "customer",
+                        "voice_duration": 2,
+                        "content": "已完成转写",
+                        "voice_anchor_stable_key": "wx-msg-voice-raw",
+                    }
+                ],
+            },
         ]
+        bridge.voice_payload = {
+            "ok": True,
+            "state": "voice_transcribe_completed",
+            "processed_voice_anchor_keys": ["wx-msg-voice-raw"],
+            "transcribed_messages": [
+                {
+                    "content": "已完成转写",
+                    "sender_role": "customer",
+                    "voice_anchor_stable_key": "wx-msg-voice-raw",
+                }
+            ],
+        }
         target = WechatReadTarget(
             conversation_id="conv-1",
             rpa_session_key="wx:rpa:v1:a",
@@ -8231,7 +10436,7 @@ class TaskRunnerTest(unittest.TestCase):
             api.events.append(f"read_authorization:{conversation_id}")
             calls["count"] += 1
             return {
-                "allowed": calls["count"] <= 5,
+                "allowed": not bridge.voice_transcribes,
                 "conversation_id": conversation_id,
                 "authorization_revision": target.authorization_revision,
                 "read_reason": target.read_reason,
@@ -9047,6 +11252,146 @@ class TaskRunnerTest(unittest.TestCase):
             "confirmed",
         )
 
+    def test_non_rekeyable_identity_collision_is_quarantined_once(self):
+        api = FakeApi(None)
+        attempts = 0
+
+        def reject(_binding, _payload):
+            nonlocal attempts
+            attempts += 1
+            raise ApiError(
+                "MESSAGE_IDENTITY_COLLISION_NOT_REKEYABLE",
+                "collision cannot be rekeyed",
+                409,
+                {"existing_identity": "old", "incoming_identity": "new"},
+            )
+
+        api.post_wechat_messages_ingest = reject  # type: ignore[method-assign]
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(RpaResult(ok=True, result_code="ok", message="unused")),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        conversation_id = f"conv-nonrekeyable-{time.time_ns()}"
+        outbox_id = enqueue_c2_outbox(
+            {
+                "read_run_id": f"read-{time.time_ns()}",
+                "conversation_id": conversation_id,
+                "authorization_revision": "revision-1",
+                "messages": [
+                    {
+                        "source_message_key": "source-collision",
+                        "dedupe_key": "dedupe-collision",
+                        "sender_role_hint": "customer",
+                        "message_type": "text",
+                        "content": "新消息",
+                    }
+                ],
+            }
+        )
+
+        self.assertFalse(runner._replay_c2_outbox(binding))
+        self.assertEqual(attempts, 1)
+        self.assertEqual(
+            load_c2_outbox_entry(outbox_id)["status"],
+            "identity_quarantined",
+        )
+        self.assertFalse(has_pending_c2_outbox())
+        quarantine = load_c2_state(
+            f"identity_quarantine:{conversation_id}"
+        )
+        self.assertTrue(quarantine["active"])
+        self.assertEqual(quarantine["outbox_id"], outbox_id)
+
+        self.assertTrue(runner._replay_c2_outbox(binding))
+        self.assertEqual(attempts, 1)
+
+    def test_same_frame_ocr_and_visual_voice_aliases_collapse_once(self):
+        common = {
+            "row_kind": "voice_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "voice",
+            "voice_state": "untranscribed",
+            "bubble_rect": [400, 100, 600, 140],
+        }
+        collapsed = collapse_same_frame_voice_aliases(
+            [
+                {
+                    **common,
+                    "observation_id": "ocr-voice",
+                    "voice_anchor_stable_key": "stable-anchor",
+                },
+                {
+                    **common,
+                    "observation_id": "visual-voice",
+                    "voice_anchor_structural_key": "structural-anchor",
+                    "quality_flags": ["visual_voice_hint"],
+                },
+            ]
+        )
+
+        self.assertEqual(len(collapsed), 1)
+        self.assertEqual(
+            set(collapsed[0]["_voice_action_anchor_keys"]),
+            {"stable-anchor", "structural-anchor"},
+        )
+
+    def test_identity_quarantine_skips_only_affected_conversation(self):
+        api = FakeApi(None)
+        quarantined = WechatReadTarget(
+            conversation_id="conv-quarantined",
+            rpa_session_key="wx:rpa:v1:quarantined",
+            display_name="CJQUAR01",
+            remark_code="CJQUAR01",
+            read_reason="waiting_user_reply",
+            authorization_revision="revision-quarantined",
+        )
+        healthy = WechatReadTarget(
+            conversation_id="conv-healthy",
+            rpa_session_key="wx:rpa:v1:healthy",
+            display_name="CJNEXT01",
+            remark_code="CJNEXT01",
+            read_reason="waiting_user_reply",
+            authorization_revision="revision-healthy",
+        )
+        api.read_targets = [quarantined, healthy]
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(RpaResult(ok=True, result_code="ok", message="unused")),
+        )
+        save_c2_state(
+            "identity_quarantine:conv-quarantined",
+            {
+                "active": True,
+                "error_code": "MESSAGE_IDENTITY_COLLISION_NOT_REKEYABLE",
+                "outbox_id": "outbox-quarantined",
+            },
+        )
+        processed: list[str] = []
+
+        def read_one(_binding, target, **_kwargs):
+            processed.append(target.conversation_id)
+            return {"ok": True}
+
+        runner._read_one_wechat_target = read_one  # type: ignore[method-assign]
+        runner._read_state_target_queue(
+            Binding(
+                worker_id="worker-1",
+                worker_token="token",
+                client_instance_id="client-1",
+                run_status="running",
+            ),
+            targets=[quarantined, healthy],
+        )
+
+        self.assertEqual(processed, ["conv-healthy"])
+
     def test_missing_local_identity_database_uses_server_sequence_floor(self):
         from chejin_worker_client import storage
 
@@ -9081,26 +11426,52 @@ class TaskRunnerTest(unittest.TestCase):
                 "DB_FILE",
                 missing_db,
             ):
-                reconciled, state, errors = (
-                    runner._reconcile_message_identities(
-                        target,
-                        [
-                            self._identity_text_observation(
-                                "new-after-db-loss",
-                                "本地数据库删除后的新消息",
-                                220,
-                            )
-                        ],
-                    )
+                reserved = runner._reserve_worker_sequence(
+                    target,
+                    reservation_key=(
+                        "committed:read-after-db-loss:"
+                        "new-after-db-loss"
+                    ),
+                )
+                state = load_c2_state(
+                    f"message_identity:{target.conversation_id}"
                 )
                 self.assertTrue(missing_db.exists())
 
-        self.assertEqual(errors, [])
-        self.assertEqual(
-            reconciled[0]["_worker_stable_id"],
-            "worker-message-31",
-        )
+        self.assertEqual(reserved, "worker-message-31")
         self.assertEqual(state["next_sequence"], 32)
+
+    def test_stale_server_floor_cannot_reuse_recent_committed_sequence(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(RpaResult(ok=True, result_code="unused", message="unused")),
+        )
+        target = WechatReadTarget(
+            conversation_id=f"conv-stale-floor-{time.time_ns()}",
+            rpa_session_key="wx:stale-floor",
+            display_name="CJSAFE01 测试客户",
+            remark_code="CJSAFE01",
+            read_reason="waiting_user_reply",
+            authorization_revision="revision-stale-floor",
+            raw={
+                "identity_checkpoint": {
+                    "version": 2,
+                    "next_sequence_floor": 3,
+                    "recent_messages": [
+                        {"stable_id": "worker-message-8"},
+                        {"stable_id": "worker-message-12"},
+                    ],
+                }
+            },
+        )
+
+        reserved = runner._reserve_worker_sequence(
+            target,
+            reservation_key="selected-action:stale-floor",
+        )
+
+        self.assertEqual(reserved, "worker-message-13")
 
     def test_concurrent_identity_allocation_is_unique_and_transactional(self):
         api = FakeApi(None)
@@ -9125,26 +11496,18 @@ class TaskRunnerTest(unittest.TestCase):
         )
         barrier = threading.Barrier(3)
         assigned: list[str] = []
-        errors: list[list[dict]] = []
         result_lock = threading.Lock()
 
         def allocate(index: int) -> None:
             barrier.wait()
-            reconciled, _state, identity_errors = (
-                runner._reconcile_message_identities(
-                    target,
-                    [
-                        self._identity_text_observation(
-                            f"concurrent-{index}",
-                            f"并发新消息-{index}",
-                            180 + index * 180,
-                        )
-                    ],
-                )
+            reserved = runner._reserve_worker_sequence(
+                target,
+                reservation_key=(
+                    f"committed:read-concurrent:concurrent-{index}"
+                ),
             )
             with result_lock:
-                assigned.append(reconciled[0]["_worker_stable_id"])
-                errors.append(identity_errors)
+                assigned.append(reserved)
 
         threads = [
             threading.Thread(target=allocate, args=(index,))
@@ -9157,7 +11520,6 @@ class TaskRunnerTest(unittest.TestCase):
             thread.join(timeout=5)
 
         self.assertFalse(any(thread.is_alive() for thread in threads))
-        self.assertEqual(errors, [[], []])
         self.assertEqual(len(set(assigned)), 2)
         self.assertEqual(set(assigned), {"worker-message-41", "worker-message-42"})
 
@@ -9673,6 +12035,8 @@ class TaskRunnerTest(unittest.TestCase):
             authorization_revision=f"revision-image-{unique}",
         )
         sidecar_payload = {
+            "frame_id": f"frame-image-cache-{unique}",
+            "authoritative_frame_source": "initial_read",
             "observations": [
                 {
                     "schema_version": 3,
@@ -9683,6 +12047,7 @@ class TaskRunnerTest(unittest.TestCase):
                     "message_type": "image",
                     "voice_state": "not_voice",
                     "item_state": "discovered",
+                    "canonical_visual_id": f"visual-image-{unique}",
                     "image_physical_anchor": {
                         "sender_role": "customer",
                         "preceding_stable_message": f"before-{unique}",
@@ -9795,6 +12160,11 @@ class TaskRunnerTest(unittest.TestCase):
             display_name="CJREPLAY1",
             remark_code="CJREPLAY1",
             authorization_revision=f"revision-image-replay-{unique}",
+            raw={
+                "identity_checkpoint": identity_checkpoint(
+                    next_sequence_floor=3
+                )
+            },
         )
         observation = {
             "schema_version": 3,
@@ -9832,6 +12202,7 @@ class TaskRunnerTest(unittest.TestCase):
             "message_type": "text",
             "voice_state": "not_voice",
             "content_clean": "图片后的稳定锚点文字",
+            "native_source_message_id": f"native-context-{unique}",
             "bubble_rect": [420, 340, 650, 390],
             "source_message": {
                 "id": f"text-context-source-{unique}",
@@ -9840,15 +12211,11 @@ class TaskRunnerTest(unittest.TestCase):
                 "content": "图片后的稳定锚点文字",
             },
         }
-        reconciled, identity_state, identity_errors = (
-            reconcile_v16104_identity_transition(
-                target,
-                [observation, context_text],
-                {},
-            )
-        )
-        self.assertEqual(identity_errors, [])
+        observation["_worker_stable_id"] = "worker-message-1"
+        context_text["_worker_stable_id"] = "worker-message-2"
+        reconciled = [observation, context_text]
         initial_payload = {
+            "frame_id": f"frame-image-replay-{unique}",
             "observation_schema_version": 3,
             "authoritative_frame_source": "final_read",
             "observations": reconciled,
@@ -9922,18 +12289,29 @@ class TaskRunnerTest(unittest.TestCase):
                     "content": "图片被顶出后出现的新文字",
                 },
             }
-            current_observations, _, current_identity_errors = (
-                reconcile_v16104_identity_transition(
-                    target,
+            current_observations, sequence_evidence = (
+                align_post_action_observations(
+                    reconciled,
                     [shifted_context, new_text],
-                    identity_state,
                 )
             )
-            self.assertEqual(current_identity_errors, [])
+            self.assertEqual(
+                sequence_evidence["alignment_status"],
+                "unique",
+            )
+            current_observations = (
+                runner._assign_sequence_new_suffix_identities(
+                    target=target,
+                    observations=current_observations,
+                    evidence=sequence_evidence,
+                    read_run_id=f"read-restored-{unique}",
+                )
+            )
             pushed_out_payload = {
                 "observation_schema_version": 3,
                 "authoritative_frame_source": "final_read",
                 "observations": current_observations,
+                "sequence_alignment_evidence": sequence_evidence,
             }
             restored = runner._merge_waiting_image_facts(
                 target=target,
@@ -9969,7 +12347,7 @@ class TaskRunnerTest(unittest.TestCase):
             restored,
             read_run_id=f"read-restored-{unique}",
         )
-        self.assertEqual(len(ingest["messages"]), 3)
+        self.assertEqual(len(ingest["messages"]), 3, ingest)
         self.assertEqual(
             ingest["messages"][0]["message_type"],
             "image",
@@ -10039,19 +12417,10 @@ class TaskRunnerTest(unittest.TestCase):
                 "sender_role": "customer",
             },
         }
-        reconciled, identity_state, identity_errors = (
-            reconcile_v16104_identity_transition(
-                target,
-                [observation],
-                {},
-            )
-        )
-        self.assertEqual(identity_errors, [])
-        save_c2_state(
-            f"message_identity:{target.conversation_id}",
-            identity_state,
-        )
+        observation["_worker_stable_id"] = "worker-message-1"
+        reconciled = [observation]
         initial_payload = {
+            "frame_id": f"frame-image-restart-{unique}",
             "observation_schema_version": 3,
             "authoritative_frame_source": "final_read",
             "observations": reconciled,
@@ -10225,6 +12594,12 @@ class TaskRunnerTest(unittest.TestCase):
             ],
         )
         self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(
+            api.message_payloads[0]["evidence"][
+                "authoritative_frame_source"
+            ],
+            "action_journal_recovery",
+        )
         image_messages = [
             item
             for item in api.message_payloads[0]["messages"]
@@ -10408,6 +12783,7 @@ class TaskRunnerTest(unittest.TestCase):
             "message_type": "image",
             "voice_state": "not_voice",
             "item_state": "failed",
+            "_worker_stable_id": "worker-not-attempted-failed-image",
             "image_physical_anchor": physical_anchor,
             "error_code": "C2_IMAGE_SOURCE_INVALID",
             "reason_detail": "text_context_menu_rejected",
@@ -10589,6 +12965,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "message_type": "image",
                 "voice_state": "not_voice",
                 "item_state": "failed",
+                "_worker_stable_id": f"worker-invalid-image-{index}",
                 "image_physical_anchor": physical_anchor,
                 "error_code": formal_reason,
                 "reason_detail": reason_detail,
@@ -10750,6 +13127,7 @@ class TaskRunnerTest(unittest.TestCase):
         observation = {
             "schema_version": 3,
             "observation_id": "invalid-unconfirmed-observation",
+            "_worker_stable_id": "worker-message-invalid-unconfirmed",
             "row_kind": "image_bubble",
             "sender_role": "customer",
             "sender_role_source": "same_row_avatar",
@@ -10900,11 +13278,15 @@ class TaskRunnerTest(unittest.TestCase):
                 "sender_role": "customer",
                 "preceding_stable_message": f"before-{unique}",
                 "following_stable_message": f"after-{unique}",
+                "bubble_visual_fingerprint": (
+                    f"image-window-fingerprint-{unique}"
+                ),
                 "occurrence_index": 0,
             },
             "bubble_rect": [420, 180, 650, 320],
             "source_message": {
                 "id": f"image-message-{unique}",
+                "canonical_visual_id": f"canonical-image-{unique}",
                 "type": "image",
                 "sender_role": "customer",
             },
@@ -11009,9 +13391,17 @@ class TaskRunnerTest(unittest.TestCase):
                 target,
                 current_step="state_target_message_read",
                 enforce_read_targets=True,
-            )
+        )
 
-        self.assertTrue(result["ok"], result)
+        self.assertTrue(
+            result["ok"],
+            {
+                "result": result,
+                "voice_transcribes": bridge.voice_transcribes,
+                "last_payload": bridge.last_message_payload,
+            },
+        )
+        self.assertNotIn("voice_prepare", bridge.c2_operation_order)
         self.assertEqual(
             observed_phases,
             ["not_attempted", "trigger_attempted", "confirmed"],
@@ -11030,6 +13420,12 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertNotIn("image_bytes", journal_observations[0])
         self.assertNotIn("image_local_path", journal_observations[0])
         self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(
+            api.message_payloads[0]["evidence"][
+                "authoritative_frame_source"
+            ],
+            "final_read",
+        )
         image_message = api.message_payloads[0]["messages"][0]
         self.assertEqual(image_message["message_type"], "image")
         self.assertEqual(image_message["item_state"], "completed")
@@ -11099,18 +13495,8 @@ class TaskRunnerTest(unittest.TestCase):
                 "sender_role": "customer",
             },
         }
-        reconciled, identity_state, identity_errors = (
-            reconcile_v16104_identity_transition(
-                target,
-                [observation],
-                {},
-            )
-        )
-        self.assertEqual(identity_errors, [])
-        save_c2_state(
-            f"message_identity:{target.conversation_id}",
-            identity_state,
-        )
+        observation["_worker_stable_id"] = "worker-message-1"
+        reconciled = [observation]
         source_key = image_observation_source_key(
             target,
             reconciled[0],
@@ -11156,6 +13542,8 @@ class TaskRunnerTest(unittest.TestCase):
                 runner._execute_one_image_slot_vision(
                     target=target,
                     payload={
+                        "frame_id": f"frame-image-journal-{unique}",
+                        "observations": reconciled,
                         "window_context": {
                             "hwnd": 100,
                             "capture_source": "confirmed_c2_window",
@@ -11265,6 +13653,7 @@ class TaskRunnerTest(unittest.TestCase):
         observation = {
             "schema_version": 3,
             "observation_id": f"image-cancel-{unique}",
+            "canonical_visual_id": f"visual-image-cancel-{unique}",
             "row_kind": "image_bubble",
             "sender_role": "customer",
             "sender_role_source": "same_row_avatar",
@@ -11275,12 +13664,18 @@ class TaskRunnerTest(unittest.TestCase):
                 "sender_role": "customer",
                 "preceding_stable_message": f"before-{unique}",
                 "following_stable_message": f"after-{unique}",
+                "bubble_visual_fingerprint": (
+                    f"image-frame-fingerprint-{unique}"
+                ),
                 "occurrence_index": 0,
             },
             "bubble_rect": [420, 180, 650, 320],
             "source_message": {"id": f"image-source-{unique}", "type": "image"},
         }
-        sidecar_payload = {"observations": [observation]}
+        sidecar_payload = {
+            "frame_id": f"frame-image-cancel-{unique}",
+            "observations": [observation],
+        }
 
         with patch(
             "chejin_worker_client.omniauto_vision.vision_configuration_status",
@@ -11343,10 +13738,14 @@ class TaskRunnerTest(unittest.TestCase):
             "message_type": "image",
             "voice_state": "not_voice",
             "item_state": "discovered",
+            "_worker_stable_id": f"worker-image-frame-{unique}",
             "image_physical_anchor": {
                 "sender_role": "customer",
                 "preceding_stable_message": f"before-{unique}",
                 "following_stable_message": f"after-{unique}",
+                "bubble_visual_fingerprint": (
+                    f"image-frame-fingerprint-{unique}"
+                ),
                 "occurrence_index": 0,
             },
             "bubble_rect": [420, 180, 650, 320],
@@ -11363,6 +13762,7 @@ class TaskRunnerTest(unittest.TestCase):
             "source": "sidecar_selected_main_window",
         }
         sidecar_payload = {
+            "frame_id": f"frame-image-window-{unique}",
             "window_context": window_context,
             "observations": [observation],
         }
@@ -11448,6 +13848,7 @@ class TaskRunnerTest(unittest.TestCase):
         observation = {
             "schema_version": 3,
             "observation_id": f"image-moved-{unique}",
+            "canonical_visual_id": f"visual-image-moved-{unique}",
             "row_kind": "image_bubble",
             "sender_role": "customer",
             "sender_role_source": "same_row_avatar",
@@ -11467,7 +13868,10 @@ class TaskRunnerTest(unittest.TestCase):
                 "type": "image",
             },
         }
-        sidecar_payload = {"observations": [observation]}
+        sidecar_payload = {
+            "frame_id": f"frame-image-moved-{unique}",
+            "observations": [observation],
+        }
         with patch(
             "chejin_worker_client.omniauto_vision.vision_configuration_status",
             return_value={
@@ -11479,7 +13883,8 @@ class TaskRunnerTest(unittest.TestCase):
         ), patch(
             "chejin_worker_client.omniauto_vision.process_image_slot",
             return_value={
-                "state": "not_visible",
+                # Match the production Vision transaction envelope exactly.
+                "state": "image_not_visible",
                 "reason": "image_bubble_not_visible_after_refresh",
                 "action_phase": "not_attempted",
                 "diagnostics": {"events": [], "image_persisted": False},
@@ -11538,6 +13943,12 @@ class TaskRunnerTest(unittest.TestCase):
                 "message_type": "image",
                 "voice_state": "not_voice",
                 "item_state": "discovered",
+                "canonical_visual_id": f"visual-image-{name}-{unique}",
+                "_worker_stable_id": (
+                    "worker-message-1"
+                    if name == "old-failed"
+                    else "worker-message-2"
+                ),
                 "image_physical_anchor": {
                     "sender_role": "customer",
                     "preceding_stable_message": (
@@ -11604,6 +14015,7 @@ class TaskRunnerTest(unittest.TestCase):
                 binding=binding,
                 target=target,
                 sidecar_payload={
+                    "sidecar_run_id": f"image-refresh-{unique}",
                     "observations": [old_failed, new_image]
                 },
                 enforce_read_targets=False,
@@ -11663,11 +14075,24 @@ class TaskRunnerTest(unittest.TestCase):
                 "observation_schema_version": 3,
                 "authoritative_frame_source": "final_read",
                 "observations": [observation],
+                "sequence_alignment_evidence": {
+                    "pre_sequence_source": "empty_checkpoint",
+                    "pre_frame_id": (
+                        f"checkpoint:none:{target.conversation_id}"
+                    ),
+                    "post_frame_id": f"frame:image-untrusted-{unique}",
+                    "alignment_status": "not_required",
+                    "candidate_alignment_count": 0,
+                    "matched_pairs": [],
+                    "old_tail_fully_consumed": True,
+                    "new_suffix_observation_ids": [
+                        observation["observation_id"]
+                    ],
+                },
             },
             read_run_id=f"read-image-untrusted-{unique}",
         )
 
-        source_key = image_observation_source_key(target, observation)
         self.assertEqual(len(plan["identity_errors"]), 1)
         self.assertEqual(
             plan["identity_errors"][0]["error_code"],
@@ -11696,8 +14121,13 @@ class TaskRunnerTest(unittest.TestCase):
             result["observations"][0]["item_state"],
             "discovered",
         )
-        ledger = load_c2_ledger_entry(target.conversation_id, source_key)
-        self.assertIsNone(ledger)
+        self.assertEqual(
+            list_c2_ledger_entries(
+                target.conversation_id,
+                message_type="image",
+            ),
+            [],
+        )
 
     def test_post_vision_refresh_processes_new_image_in_same_ui_lease(self):
         runner, _ = self.make_runner(
@@ -11720,15 +14150,45 @@ class TaskRunnerTest(unittest.TestCase):
             authorization_revision="revision-post-vision",
             raw={"identity_checkpoint": identity_checkpoint()},
         )
-        new_image = {
-            "observation_id": "new-image",
-            "row_kind": "image_bubble",
+        existing_text = {
+            "schema_version": 3,
+            "observation_id": "existing-text",
+            "row_kind": "text_bubble",
+            "message_type": "text",
+            "voice_state": "not_voice",
             "sender_role": "customer",
             "sender_role_source": "same_row_avatar",
+            "content_clean": "图片动作前已存在的文字",
+            "_worker_stable_id": "worker-message-1",
+            "bubble_rect": [420, 100, 650, 150],
+            "source_message": {
+                "id": "existing-text",
+                "type": "text",
+                "sender_role": "customer",
+            },
+        }
+        new_image = {
+            "schema_version": 3,
+            "observation_id": "new-image",
+            "row_kind": "image_bubble",
+            "message_type": "image",
+            "voice_state": "not_voice",
+            "item_state": "discovered",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "canonical_visual_id": "visual-new-image",
+            "bubble_rect": [420, 200, 650, 320],
+            "source_message": {
+                "id": "new-image",
+                "type": "image",
+                "sender_role": "customer",
+                "canonical_visual_id": "visual-new-image",
+            },
         }
         refreshed_payload = {
             "ok": True,
-            "observations": [new_image],
+            "frame_id": "frame-post-vision-new-image",
+            "observations": [existing_text, new_image],
         }
         runner.bridge.get_messages = unittest.mock.Mock(
             side_effect=[
@@ -11752,6 +14212,7 @@ class TaskRunnerTest(unittest.TestCase):
         processed_payload = {
             **refreshed_payload,
             "observations": [
+                existing_text,
                 {**new_image, "item_state": "completed"}
             ],
         }
@@ -11763,14 +14224,6 @@ class TaskRunnerTest(unittest.TestCase):
             return_value=None,
         ), patch(
             "chejin_worker_client.task_runner.save_c2_state",
-        ), patch(
-            "chejin_worker_client.task_runner."
-            "reconcile_v16104_identity_transition",
-            side_effect=lambda _target, observations, _state: (
-                observations,
-                {"schema_version": 1},
-                [],
-            ),
         ), patch.object(
             runner,
             "_build_final_slot_incremental_plan",
@@ -11809,7 +14262,11 @@ class TaskRunnerTest(unittest.TestCase):
                 binding=binding,
                 target=target,
                 target_label="CJPOST01",
-                sidecar_payload={"ok": True, "observations": []},
+                sidecar_payload={
+                    "ok": True,
+                    "frame_id": "frame-before-new-image",
+                    "observations": [existing_text],
+                },
                 lease=lease,
                 action_cancel_requested=lambda: False,
                 enforce_read_targets=True,
@@ -11863,13 +14320,24 @@ class TaskRunnerTest(unittest.TestCase):
             "sender_role": "customer",
             "sender_role_source": "same_row_avatar",
         }
+        existing_text = {
+            "observation_id": "existing-text",
+            "row_kind": "text_bubble",
+            "message_type": "text",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "content_clean": "在？",
+            "_worker_stable_id": "worker-seq:1",
+            "native_source_message_id": "native-existing-text",
+        }
         refreshed_payload = {
             "ok": True,
-            "observations": [voice],
+            "observations": [existing_text, voice],
         }
         transcribed_payload = {
             "ok": True,
             "observations": [
+                existing_text,
                 {
                     **voice,
                     "voice_state": "transcribed",
@@ -11888,14 +14356,6 @@ class TaskRunnerTest(unittest.TestCase):
             return_value=None,
         ), patch(
             "chejin_worker_client.task_runner.save_c2_state",
-        ), patch(
-            "chejin_worker_client.task_runner."
-            "reconcile_v16104_identity_transition",
-            side_effect=lambda _target, observations, _state: (
-                observations,
-                {"schema_version": 1},
-                [],
-            ),
         ), patch.object(
             runner,
             "_finish_new_visible_voices_in_current_chat",
@@ -11918,7 +14378,10 @@ class TaskRunnerTest(unittest.TestCase):
                 binding=binding,
                 target=target,
                 target_label="CJPOST02",
-                sidecar_payload={"ok": True, "observations": []},
+                sidecar_payload={
+                    "ok": True,
+                    "observations": [existing_text],
+                },
                 lease=unittest.mock.Mock(),
                 action_cancel_requested=lambda: False,
                 enforce_read_targets=True,
@@ -11930,9 +14393,110 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         finish_voice.assert_called_once()
         self.assertEqual(
-            result["payload"]["observations"][0]["voice_state"],
+            result["payload"]["observations"][1]["voice_state"],
             "transcribed",
         )
+
+    def test_post_vision_refresh_propagates_voice_terminal_gate(self):
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(
+                RpaResult(ok=True, result_code="ok", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        target = WechatReadTarget(
+            conversation_id="conv-post-vision-voice-gate",
+            rpa_session_key="",
+            display_name="CJPOST04",
+            remark_code="CJPOST04",
+            authorization_revision="revision-post-vision-voice-gate",
+            raw={"identity_checkpoint": identity_checkpoint()},
+        )
+        existing_text = {
+            "observation_id": "existing-text",
+            "row_kind": "text_bubble",
+            "message_type": "text",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "content_clean": "在？",
+            "_worker_stable_id": "worker-message-1",
+        }
+        new_voice = {
+            "observation_id": "new-ambiguous-voice",
+            "row_kind": "voice_bubble",
+            "message_type": "voice",
+            "voice_state": "untranscribed",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+        }
+        refreshed_payload = {
+            "ok": True,
+            "observations": [existing_text, new_voice],
+        }
+        terminal_gate = {
+            "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+            "identity_errors": [
+                {
+                    "row_kind": "voice_bubble",
+                    "signature": "voice:post-vision:action-1",
+                    "reason": (
+                        "action_triggered_without_confirmed_post_alignment"
+                    ),
+                }
+            ],
+            "authoritative_frame_source": "final_read",
+            "ui_frame_invalidated": True,
+        }
+        runner.bridge.get_messages = unittest.mock.Mock(
+            return_value=refreshed_payload
+        )
+        with patch(
+            "chejin_worker_client.task_runner.sidecar_contract_error",
+            return_value=None,
+        ), patch.object(
+            runner,
+            "_finish_new_visible_voices_in_current_chat",
+            return_value={
+                "ok": True,
+                "payload": refreshed_payload,
+                "failed_source_keys": [],
+                "failed_roles": {},
+                "terminal_gate": terminal_gate,
+            },
+        ) as finish_voice, patch.object(
+            runner,
+            "_build_final_slot_incremental_plan",
+        ) as build_plan:
+            result = runner._converge_current_screen_after_images(
+                binding=binding,
+                target=target,
+                target_label="CJPOST04",
+                sidecar_payload={
+                    "ok": True,
+                    "observations": [existing_text],
+                },
+                lease=unittest.mock.Mock(),
+                action_cancel_requested=lambda: False,
+                enforce_read_targets=True,
+                flow_outcomes=FlowOutcomeAccumulator(
+                    origin_read_run_id="read-image-flow-4"
+                ),
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["terminal_gate"], terminal_gate)
+        self.assertEqual(
+            result["error_code"],
+            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+        )
+        finish_voice.assert_called_once()
+        build_plan.assert_not_called()
 
     def test_post_vision_identity_ambiguity_blocks_media_and_ingest(self):
         runner, _ = self.make_runner(
@@ -11970,21 +14534,20 @@ class TaskRunnerTest(unittest.TestCase):
             "chejin_worker_client.task_runner.sidecar_contract_error",
             return_value=None,
         ), patch(
-            "chejin_worker_client.task_runner.load_c2_state",
-            return_value=None,
-        ), patch(
             "chejin_worker_client.task_runner."
-            "reconcile_v16104_identity_transition",
+            "align_post_action_observations",
             return_value=(
                 [],
-                {"schema_version": 1},
-                [
-                    {
-                        "error_code": (
-                            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
-                        )
-                    }
-                ],
+                {
+                    "pre_sequence_source": "action_frame",
+                    "pre_frame_id": "frame-before-ambiguous",
+                    "post_frame_id": "frame-after-ambiguous",
+                    "alignment_status": "ambiguous",
+                    "candidate_alignment_count": 2,
+                    "matched_pairs": [],
+                    "old_tail_fully_consumed": False,
+                    "new_suffix_observation_ids": [],
+                },
             ),
         ), patch.object(
             runner,
@@ -12010,7 +14573,7 @@ class TaskRunnerTest(unittest.TestCase):
         )
         process_images.assert_not_called()
 
-    def test_confirmed_local_ledger_does_not_hide_visible_fact_from_backend(self):
+    def test_backend_confirmed_historical_fact_is_not_reenqueued(self):
         api = FakeApi(None)
         runner, _ = self.make_runner(
             api,
@@ -12043,11 +14606,15 @@ class TaskRunnerTest(unittest.TestCase):
                         "source_message_key": "old-trigger",
                         "screen_order": 1,
                         "ledger_state": "OLD_COMPLETED",
+                        "fact_scope": "historical",
+                        "delivery_state": "backend_confirmed",
                     },
                     {
                         "source_message_key": "new-sales",
                         "screen_order": 2,
                         "ledger_state": "NEW_MESSAGE",
+                        "fact_scope": "current_read_run",
+                        "delivery_state": "not_enqueued",
                     },
                 ],
             },
@@ -12065,14 +14632,14 @@ class TaskRunnerTest(unittest.TestCase):
 
         self.assertEqual(
             [item["source_message_key"] for item in filtered["messages"]],
-            ["old-trigger", "new-sales"],
+            ["new-sales"],
         )
         self.assertEqual(
             [
                 item["observation_id"]
                 for item in filtered["evidence"]["observations"]
             ],
-            ["observation-old-trigger", "observation-new-sales"],
+            ["observation-new-sales"],
         )
         self.assertEqual(
             [
@@ -12143,6 +14710,7 @@ class TaskRunnerTest(unittest.TestCase):
                 ],
             }
         )
+        payload["frame_id"] = f"frame-history-gap-{unique}"
         payload["observations"].insert(
             0,
             {
@@ -12154,6 +14722,7 @@ class TaskRunnerTest(unittest.TestCase):
                 "message_type": "image",
                 "voice_state": "not_voice",
                 "item_state": "discovered",
+                "canonical_visual_id": f"visual-new-image-{unique}",
                 "image_physical_anchor": {
                     "sender_role": "customer",
                     "preceding_stable_message": f"new-before-{unique}",
@@ -12165,6 +14734,22 @@ class TaskRunnerTest(unittest.TestCase):
             },
         )
         payload["observations"][1]["bubble_rect"] = [420, 300, 650, 340]
+        payload["observations"][1]["_worker_stable_id"] = (
+            f"worker-old-text-{unique}"
+        )
+        payload["sequence_alignment_evidence"] = {
+            "pre_sequence_source": "empty_checkpoint",
+            "pre_frame_id": f"checkpoint:none:{target.conversation_id}",
+            "post_frame_id": f"frame:history-gap-{unique}",
+            "alignment_status": "not_required",
+            "candidate_alignment_count": 0,
+            "matched_pairs": [],
+            "old_tail_fully_consumed": True,
+            "new_suffix_observation_ids": [
+                str(item.get("observation_id") or "")
+                for item in payload["observations"]
+            ],
+        }
         current_read_run_id = f"read-history-gap-{unique}"
         first_plan = runner._build_final_slot_incremental_plan(
             target=target,
@@ -12280,6 +14865,23 @@ class TaskRunnerTest(unittest.TestCase):
                 ],
             }
         )
+        for index, observation in enumerate(payload["observations"], start=1):
+            observation["_worker_stable_id"] = (
+                f"worker-backend-history-{unique}-{index}"
+            )
+        payload["sequence_alignment_evidence"] = {
+            "pre_sequence_source": "empty_checkpoint",
+            "pre_frame_id": f"checkpoint:none:{target.conversation_id}",
+            "post_frame_id": f"frame:backend-history-{unique}",
+            "alignment_status": "not_required",
+            "candidate_alignment_count": 0,
+            "matched_pairs": [],
+            "old_tail_fully_consumed": True,
+            "new_suffix_observation_ids": [
+                str(item.get("observation_id") or "")
+                for item in payload["observations"]
+            ],
+        }
         first = runner._build_final_slot_incremental_plan(
             target=target,
             sidecar_payload=payload,
@@ -12358,6 +14960,10 @@ class TaskRunnerTest(unittest.TestCase):
                     }
                 ],
             }
+        )
+        attach_sequence_identity_fixture(
+            sidecar_payload,
+            frame_id=f"backend-stage-{unique}",
         )
         first_plan = runner._build_final_slot_incremental_plan(
             target=target,
@@ -12457,6 +15063,26 @@ class TaskRunnerTest(unittest.TestCase):
                         },
                     }
                 )
+                for index, observation in enumerate(
+                    payload["observations"],
+                    start=1,
+                ):
+                    observation["_worker_stable_id"] = (
+                        f"worker-message-{index}"
+                    )
+                payload["sequence_alignment_evidence"] = {
+                    "pre_sequence_source": "empty_checkpoint",
+                    "pre_frame_id": f"checkpoint:none:{unique}",
+                    "post_frame_id": f"frame:{unique}",
+                    "alignment_status": "not_required",
+                    "candidate_alignment_count": 1,
+                    "matched_pairs": [],
+                    "old_tail_fully_consumed": True,
+                    "new_suffix_observation_ids": [
+                        str(item["observation_id"])
+                        for item in payload["observations"]
+                    ],
+                }
                 first = runner._build_final_slot_incremental_plan(
                     target=target,
                     sidecar_payload=payload,
@@ -12493,7 +15119,7 @@ class TaskRunnerTest(unittest.TestCase):
                 )
                 self.assertEqual(
                     post_media["slot_ledger_states"][1]["delivery_state"],
-                    "outbox_waiting",
+                    "not_enqueued",
                 )
                 self.assertEqual(
                     post_media["slot_ledger_states"][1]["item_state"],
@@ -12533,6 +15159,10 @@ class TaskRunnerTest(unittest.TestCase):
                         }
                     ],
                 }
+            )
+            attach_sequence_identity_fixture(
+                payload,
+                frame_id=f"conversation-{suffix}",
             )
             plan = runner._build_final_slot_incremental_plan(
                 target=target,
@@ -12592,6 +15222,10 @@ class TaskRunnerTest(unittest.TestCase):
                     },
                 ],
             }
+        )
+        attach_sequence_identity_fixture(
+            payload,
+            frame_id=f"real-gap-{unique}",
         )
         first = runner._build_final_slot_incremental_plan(
             target=target,
@@ -12662,6 +15296,10 @@ class TaskRunnerTest(unittest.TestCase):
                     "occurrence_index": 0,
                 },
             }
+        )
+        attach_sequence_identity_fixture(
+            payload,
+            frame_id=f"unknown-origin-{unique}",
         )
         first = runner._build_final_slot_incremental_plan(
             target=target,
@@ -12760,6 +15398,10 @@ class TaskRunnerTest(unittest.TestCase):
                 ],
             }
         )
+        attach_sequence_identity_fixture(
+            payload,
+            frame_id=f"historical-warning-{unique}",
+        )
         first = runner._build_final_slot_incremental_plan(
             target=target,
             sidecar_payload=payload,
@@ -12808,12 +15450,10 @@ class TaskRunnerTest(unittest.TestCase):
         )
 
     def test_cross_round_error_before_latest_self_is_historical_warning(self):
-        runner, _ = self.make_runner(
-            FakeApi(None),
-            FakeBridge(
-                RpaResult(ok=True, result_code="ok", message="unused")
-            ),
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="ok", message="unused")
         )
+        runner, _ = self.make_runner(FakeApi(None), bridge)
         target = WechatReadTarget(
             conversation_id=f"conv-old-identity-{time.time_ns()}",
             rpa_session_key="wx:rpa:v1:old-identity",
@@ -12822,55 +15462,50 @@ class TaskRunnerTest(unittest.TestCase):
             authorization_revision="revision-old-identity",
             raw={"identity_checkpoint": identity_checkpoint()},
         )
-        observations = [
+        payload = bridge._contractual_message_payload(
             {
+                "ok": True,
+                "messages": [
+                    {
+                        "id": "latest-self",
+                        "type": "text",
+                        "sender_role": "self",
+                        "content": "销售已经回复",
+                        "bubble_rect": [700, 220, 920, 260],
+                    },
+                    {
+                        "id": "latest-customer",
+                        "type": "text",
+                        "sender_role": "customer",
+                        "content": "最新问题",
+                        "bubble_rect": [420, 340, 650, 380],
+                    },
+                ],
+            }
+        )
+        attach_sequence_identity_fixture(
+            payload,
+            frame_id="cross-round-historical-warning",
+        )
+        payload["historical_warnings"] = [
+            {
+                "warning_code": (
+                    "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS_HISTORICAL"
+                ),
                 "observation_id": "old-ambiguous",
-                "row_kind": "text_bubble",
-                "sender_role": "customer",
-                "sender_role_source": "same_row_avatar",
-                "content_clean": "很早以前的重复消息",
-                "bubble_rect": [420, 100, 650, 140],
-            },
-            {
-                "observation_id": "latest-self",
-                "row_kind": "text_bubble",
-                "sender_role": "self",
-                "sender_role_source": "same_row_avatar",
-                "content_clean": "销售已经回复",
-                "bubble_rect": [700, 220, 920, 260],
-            },
-            {
-                "observation_id": "latest-customer",
-                "row_kind": "text_bubble",
-                "sender_role": "customer",
-                "sender_role_source": "same_row_avatar",
-                "content_clean": "最新问题",
-                "bubble_rect": [420, 340, 650, 380],
-            },
+            }
         ]
 
-        reconciled, blocking, warnings = (
-            runner._downgrade_historical_identity_errors(
-                target=target,
-                observations=observations,
-                errors=[
-                    {
-                        "observation_id": "old-ambiguous",
-                        "error_code": (
-                            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
-                        ),
-                    }
-                ],
-            )
+        plan = runner._build_final_slot_incremental_plan(
+            target=target,
+            sidecar_payload=payload,
+            read_run_id="read-cross-round-historical-warning",
         )
 
-        self.assertEqual(blocking, [])
+        self.assertEqual(plan["identity_errors"], [])
+        self.assertFalse(plan["history_gap"])
         self.assertEqual(
-            [item["observation_id"] for item in reconciled],
-            ["latest-self", "latest-customer"],
-        )
-        self.assertEqual(
-            warnings[0]["warning_code"],
+            plan["historical_warnings"][0]["warning_code"],
             "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS_HISTORICAL",
         )
 
@@ -12890,6 +15525,7 @@ class TaskRunnerTest(unittest.TestCase):
         clean_payload = bridge._contractual_message_payload(
             {
                 "ok": True,
+                "sidecar_run_id": "history-gap-clean-frame",
                 "messages": [
                     {
                         "id": "clean-latest-customer",
@@ -12916,7 +15552,13 @@ class TaskRunnerTest(unittest.TestCase):
             )
         )
 
-        self.assertFalse(retried_plan["history_gap"])
+        self.assertFalse(
+            retried_plan["history_gap"],
+            {
+                "retried_payload": retried_payload,
+                "retried_plan": retried_plan,
+            },
+        )
         self.assertTrue(
             retried_payload[
                 "history_gap_automatic_reread_performed"
@@ -13216,16 +15858,12 @@ class TaskRunnerTest(unittest.TestCase):
                 "bubble_rect": [420, 120 + index * 180, 650, 260 + index * 180],
                 "source_message": {
                     "id": f"image-source-{index}-{unique}",
+                    "canonical_visual_id": f"visual-image-{index}-{unique}",
                     "type": "image",
                 },
             }
             for index in range(len(failure_reasons))
         ]
-        plan = runner._build_final_slot_incremental_plan(
-            target=target,
-            sidecar_payload=payload,
-            read_run_id=f"read-image-failures-{unique}",
-        )
         results = []
         for index, reason in enumerate(failure_reasons):
             diagnostics_events = []
@@ -13269,18 +15907,34 @@ class TaskRunnerTest(unittest.TestCase):
             "chejin_worker_client.omniauto_vision.process_image_slot",
             side_effect=results,
         ) as vision:
-            _, stats = runner._process_final_image_slots(
-                binding=binding,
-                target=target,
-                sidecar_payload=payload,
-                enforce_read_targets=False,
-                allowed_new_source_keys=set(plan["new_image_source_keys"]),
-                flow_outcomes=FlowOutcomeAccumulator(
-                    origin_read_run_id=f"read-image-failures-{unique}"
-                ),
-            )
+            stats_by_frame = []
+            for observation in payload["observations"]:
+                _, frame_stats = runner._process_final_image_slots(
+                    binding=binding,
+                    target=target,
+                    sidecar_payload={
+                        **payload,
+                        "sidecar_run_id": (
+                            f"image-frame-{observation['observation_id']}"
+                        ),
+                        "observations": [observation],
+                    },
+                    enforce_read_targets=False,
+                    allowed_new_source_keys={
+                        image_observation_source_key(target, observation)
+                    },
+                    flow_outcomes=FlowOutcomeAccumulator(
+                        origin_read_run_id=(
+                            f"read-image-failures-{unique}"
+                        )
+                    ),
+                )
+                stats_by_frame.append(frame_stats)
 
-        self.assertEqual(stats["failed"], 4)
+        self.assertEqual(
+            sum(int(stats["failed"]) for stats in stats_by_frame),
+            4,
+        )
         self.assertEqual(vision.call_count, 4)
         incident_logs = [
             row
@@ -13347,10 +16001,12 @@ class TaskRunnerTest(unittest.TestCase):
             authorization_revision=f"revision-image-config-{unique}",
         )
         sidecar_payload = {
+            "frame_id": f"frame-image-config-{unique}",
             "observations": [
                 {
                     "schema_version": 3,
                     "observation_id": f"image-config-{unique}",
+                    "canonical_visual_id": f"visual-image-config-{unique}",
                     "row_kind": "image_bubble",
                     "sender_role": "customer",
                     "sender_role_source": "same_row_avatar",
@@ -13640,7 +16296,7 @@ class TaskRunnerTest(unittest.TestCase):
             payload["evidence"]["flow_gate_errors"],
         )
 
-    def test_ai_reply_receipt_attaches_only_to_matching_stable_self_bubble(self):
+    def test_ai_reply_receipt_attaches_only_by_committed_stable_identity(self):
         api = FakeApi(None)
         runner, _ = self.make_runner(
             api,
@@ -13655,10 +16311,10 @@ class TaskRunnerTest(unittest.TestCase):
         )
         text = "好的，我帮您确认一下"
         save_c2_state(
-            f"ai_reply_receipts:{target.conversation_id}",
+            f"message_identity:{target.conversation_id}",
             {
-                "version": 1,
-                "receipts": [
+                "version": 4,
+                "ai_reply_receipts": [
                     {
                         "reply_action_id": "reply-action-ai",
                         "reply_text_hash": runner._reply_text_hash(text),
@@ -13696,7 +16352,7 @@ class TaskRunnerTest(unittest.TestCase):
         )
         self.assertNotIn("_worker_ai_reply_receipt", enriched[1])
 
-    def test_possible_ai_send_marks_matching_new_bubble_as_unreconciled(self):
+    def test_possible_ai_send_never_rehangs_matching_text(self):
         api = FakeApi(None)
         runner, _ = self.make_runner(
             api,
@@ -13756,17 +16412,325 @@ class TaskRunnerTest(unittest.TestCase):
         )
 
         self.assertNotIn("_worker_ai_reply_receipt", enriched[0])
-        self.assertEqual(
-            enriched[1]["_worker_ai_reply_receipt"][
-                "reconciliation_state"
-            ],
-            "ai_unreconciled",
-        )
-        self.assertEqual(
-            enriched[1]["_worker_ai_reply_receipt"]["reply_action_id"],
-            "reply-action-unknown",
-        )
+        self.assertNotIn("_worker_ai_reply_receipt", enriched[1])
         self.assertNotIn("_worker_ai_reply_receipt", enriched[2])
+
+    def test_ai_send_receipt_accepts_concurrent_message_after_confirmed_send(self):
+        pre = [
+            self._ai_send_observation(
+                "old-1",
+                sender_role="customer",
+                content="在吗",
+                stable_id="worker-message-10",
+            ),
+            self._ai_send_observation(
+                "old-2",
+                sender_role="customer",
+                content="想了解价格",
+                stable_id="worker-message-11",
+            ),
+        ]
+        runner, _bridge, target, action_id, reserved_id, state_key = (
+            self._prepare_ai_send_receipt_fixture(
+                conversation_id="conv-send-after-concurrent",
+                pre_observations=pre,
+                next_sequence=12,
+            )
+        )
+        post = [
+            dict(pre[0]),
+            dict(pre[1]),
+            self._ai_send_observation(
+                "sent-ai",
+                sender_role="self",
+                content="好的",
+                native_id="native-sent-ai",
+            ),
+            self._ai_send_observation(
+                "new-after",
+                sender_role="customer",
+                content="还有一个问题",
+            ),
+        ]
+
+        recorded = runner._record_confirmed_ai_reply_receipt(
+            target=target,
+            reply_action_id=action_id,
+            reply_text_hash="transport-only-hash",
+            sidecar_result=self._confirmed_send_sidecar_result(
+                observations=post,
+                confirmed_observation_id="sent-ai",
+                run_id="send-after-concurrent",
+            ),
+            confirmed_at="2026-08-11T00:00:00+00:00",
+        )
+
+        self.assertTrue(recorded)
+        state = load_c2_state(state_key)
+        self.assertEqual(
+            state["sequence_commits"][action_id], reserved_id
+        )
+        self.assertEqual(
+            state["ai_reply_receipts"][0]["worker_stable_id"],
+            reserved_id,
+        )
+
+    def test_ai_send_receipt_rejects_concurrent_message_before_send(self):
+        pre = [
+            self._ai_send_observation(
+                "old-a",
+                sender_role="customer",
+                content="并发的新问题",
+                stable_id="worker-message-20",
+            ),
+        ]
+        runner, _bridge, target, action_id, _reserved_id, state_key = (
+            self._prepare_ai_send_receipt_fixture(
+                conversation_id="conv-send-before-concurrent",
+                pre_observations=pre,
+                next_sequence=21,
+            )
+        )
+        post = [
+            dict(pre[0]),
+            self._ai_send_observation(
+                "new-before",
+                sender_role="customer",
+                content="并发的新问题",
+            ),
+            self._ai_send_observation(
+                "sent-ai",
+                sender_role="self",
+                content="好的",
+                native_id="native-sent-ai-before",
+            ),
+        ]
+
+        recorded = runner._record_confirmed_ai_reply_receipt(
+            target=target,
+            reply_action_id=action_id,
+            reply_text_hash="transport-only-hash",
+            sidecar_result=self._confirmed_send_sidecar_result(
+                observations=post,
+                confirmed_observation_id="sent-ai",
+                run_id="send-before-concurrent",
+            ),
+            confirmed_at="2026-08-11T00:00:00+00:00",
+        )
+
+        self.assertFalse(recorded)
+        self.assertNotIn("ai_reply_receipts", load_c2_state(state_key))
+        possible = load_c2_state(
+            f"possible_ai_sends:{target.conversation_id}"
+        )["sends"][0]
+        self.assertTrue(possible["physical_send_confirmed"])
+        self.assertEqual(
+            possible["reconciliation_state"],
+            "identity_unconfirmed_possible_sent",
+        )
+
+    def test_ai_send_receipt_identifies_same_text_only_by_confirmed_action(self):
+        pre = [
+            self._ai_send_observation(
+                "old-same-text",
+                sender_role="self",
+                content="好的",
+                stable_id="worker-message-30",
+            ),
+            self._ai_send_observation(
+                "customer-latest",
+                sender_role="customer",
+                content="麻烦确认",
+                stable_id="worker-message-31",
+            ),
+        ]
+        runner, _bridge, target, action_id, reserved_id, state_key = (
+            self._prepare_ai_send_receipt_fixture(
+                conversation_id="conv-send-identical-text",
+                pre_observations=pre,
+                next_sequence=32,
+            )
+        )
+        post = [
+            dict(pre[0]),
+            dict(pre[1]),
+            self._ai_send_observation(
+                "new-same-text",
+                sender_role="self",
+                content="好的",
+                native_id="native-new-same-text",
+            ),
+        ]
+
+        recorded = runner._record_confirmed_ai_reply_receipt(
+            target=target,
+            reply_action_id=action_id,
+            reply_text_hash="same-text-hash-is-not-identity",
+            sidecar_result=self._confirmed_send_sidecar_result(
+                observations=post,
+                confirmed_observation_id="new-same-text",
+                run_id="send-identical-text",
+            ),
+            confirmed_at="2026-08-11T00:00:00+00:00",
+        )
+
+        self.assertTrue(recorded)
+        self.assertEqual(
+            load_c2_state(state_key)["ai_reply_receipts"][0][
+                "worker_stable_id"
+            ],
+            reserved_id,
+        )
+
+    def test_ai_send_receipt_aligns_after_viewport_scroll(self):
+        pre = [
+            self._ai_send_observation(
+                f"scroll-{index}",
+                sender_role="customer",
+                content=f"消息{index}",
+                stable_id=f"worker-message-{40 + index}",
+            )
+            for index in range(4)
+        ]
+        runner, _bridge, target, action_id, reserved_id, state_key = (
+            self._prepare_ai_send_receipt_fixture(
+                conversation_id="conv-send-scroll",
+                pre_observations=pre,
+                next_sequence=44,
+            )
+        )
+        post = [
+            dict(pre[2]),
+            dict(pre[3]),
+            self._ai_send_observation(
+                "sent-after-scroll",
+                sender_role="self",
+                content="收到",
+                native_id="native-sent-after-scroll",
+            ),
+        ]
+
+        recorded = runner._record_confirmed_ai_reply_receipt(
+            target=target,
+            reply_action_id=action_id,
+            reply_text_hash="scroll-hash",
+            sidecar_result=self._confirmed_send_sidecar_result(
+                observations=post,
+                confirmed_observation_id="sent-after-scroll",
+                run_id="send-scroll",
+            ),
+            confirmed_at="2026-08-11T00:00:00+00:00",
+        )
+
+        self.assertTrue(recorded)
+        receipt = load_c2_state(state_key)["ai_reply_receipts"][0]
+        self.assertEqual(receipt["worker_stable_id"], reserved_id)
+        self.assertEqual(
+            [
+                pair["worker_stable_id"]
+                for pair in receipt["sequence_alignment_evidence"][
+                    "matched_pairs"
+                ]
+            ],
+            ["worker-message-42", "worker-message-43"],
+        )
+
+    def test_ai_send_crash_state_keeps_possible_sent_and_reuses_reservation(self):
+        pre = [
+            self._ai_send_observation(
+                "crash-old",
+                sender_role="customer",
+                content="请回复",
+                stable_id="worker-message-60",
+            )
+        ]
+        runner, _bridge, target, action_id, reserved_id, _state_key = (
+            self._prepare_ai_send_receipt_fixture(
+                conversation_id="conv-send-crash",
+                pre_observations=pre,
+                next_sequence=61,
+            )
+        )
+        journal_path = runner.bridge.send_transaction_journal_path(action_id)
+        update_action_journal_item(
+            journal_path,
+            source_message_key=action_id,
+            action_phase="trigger_attempted",
+            business_state="send_triggered_before_worker_crash",
+        )
+
+        recovered_reservation = runner._reserve_worker_sequence(
+            target,
+            reservation_key=f"send-action:{action_id}",
+        )
+        unchanged = runner._attach_possible_ai_send_receipts(
+            target=target,
+            observations=[
+                self._ai_send_observation(
+                    "same-text-after-crash",
+                    sender_role="self",
+                    content="请回复",
+                    stable_id="worker-message-999",
+                )
+            ],
+        )
+
+        self.assertEqual(recovered_reservation, reserved_id)
+        self.assertEqual(action_journal_phase(journal_path), "trigger_attempted")
+        self.assertNotIn("_worker_ai_reply_receipt", unchanged[0])
+        self.assertEqual(
+            load_c2_state(
+                f"possible_ai_sends:{target.conversation_id}"
+            )["sends"][0]["reconciliation_state"],
+            "armed_before_trigger",
+        )
+
+    def test_ai_send_receipt_never_downgrades_newer_identity_state_version(self):
+        pre = [
+            self._ai_send_observation(
+                "version-old",
+                sender_role="customer",
+                content="版本测试",
+                stable_id="worker-message-99",
+                native_id="native-version-old",
+            )
+        ]
+        runner, _bridge, target, action_id, reserved_id, state_key = (
+            self._prepare_ai_send_receipt_fixture(
+                conversation_id="conv-send-version",
+                pre_observations=pre,
+                next_sequence=100,
+                state_version=9,
+            )
+        )
+        post = [
+            dict(pre[0]),
+            self._ai_send_observation(
+                "version-sent",
+                sender_role="self",
+                content="已收到",
+                native_id="native-version-sent",
+            ),
+        ]
+
+        self.assertTrue(
+            runner._record_confirmed_ai_reply_receipt(
+                target=target,
+                reply_action_id=action_id,
+                reply_text_hash="version-hash",
+                sidecar_result=self._confirmed_send_sidecar_result(
+                    observations=post,
+                    confirmed_observation_id="version-sent",
+                    run_id="send-version",
+                ),
+                confirmed_at="2026-08-11T00:00:00+00:00",
+            )
+        )
+        state = load_c2_state(state_key)
+        self.assertEqual(state["version"], 9)
+        self.assertEqual(state["next_sequence"], 101)
+        self.assertEqual(state["sentinel"], "must-survive")
+        self.assertEqual(state["sequence_commits"][action_id], reserved_id)
 
     def test_ai_reply_receipt_is_consumed_only_after_backend_confirms_bubble(self):
         api = FakeApi(None)
@@ -13827,6 +16791,531 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(
             load_c2_state(possible_state_key)["sends"],
             [],
+        )
+
+    def test_same_duration_voice_actions_reserve_distinct_nonreusable_ids(self):
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(RpaResult(ok=True, result_code="ok", message="unused")),
+        )
+        target = WechatReadTarget(
+            conversation_id=f"conv-reservation-{time.time_ns()}",
+            rpa_session_key="wx:rpa:v1:reservation",
+            display_name="CJRSV001",
+            remark_code="CJRSV001",
+            authorization_revision="revision-reservation",
+            raw={"identity_checkpoint": identity_checkpoint(next_sequence_floor=11)},
+        )
+
+        first = runner._reserve_worker_sequence(
+            target,
+            reservation_key="voice-action:first-3-seconds",
+        )
+        second = runner._reserve_worker_sequence(
+            target,
+            reservation_key="voice-action:second-3-seconds",
+        )
+        retried_first = runner._reserve_worker_sequence(
+            target,
+            reservation_key="voice-action:first-3-seconds",
+        )
+
+        self.assertEqual(first, "worker-message-11")
+        self.assertEqual(second, "worker-message-12")
+        self.assertEqual(retried_first, first)
+
+    def test_new_suffix_gets_next_sequence_without_reordering_existing_outbox_ids(self):
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(RpaResult(ok=True, result_code="ok", message="unused")),
+        )
+        target = WechatReadTarget(
+            conversation_id=f"conv-tail-order-{time.time_ns()}",
+            rpa_session_key="wx:rpa:v1:tail-order",
+            display_name="CJORDER1",
+            remark_code="CJORDER1",
+            authorization_revision="revision-tail-order",
+            raw={"identity_checkpoint": identity_checkpoint(next_sequence_floor=14)},
+        )
+        observations = [
+            {
+                "observation_id": observation_id,
+                "row_kind": "text_bubble",
+                "message_type": "text",
+                "voice_state": "not_voice",
+                "sender_role": "customer",
+                "sender_role_source": "same_row_avatar",
+                "content_clean": content,
+                **(
+                    {"_worker_stable_id": f"worker-message-{sequence}"}
+                    if sequence is not None
+                    else {}
+                ),
+            }
+            for observation_id, content, sequence in (
+                ("text-1", "文字1", 10),
+                ("voice-1", "语音1", 11),
+                ("image-1", "图片1", 12),
+                ("text-2", "好的", 13),
+                ("text-3", "好的", None),
+            )
+        ]
+        evidence = {
+            "alignment_status": "unique",
+            "old_tail_fully_consumed": True,
+            "new_suffix_observation_ids": ["text-3"],
+        }
+
+        assigned = runner._assign_sequence_new_suffix_identities(
+            target=target,
+            observations=observations,
+            evidence=evidence,
+            read_run_id="read-tail-order",
+        )
+
+        self.assertEqual(
+            [item.get("_worker_stable_id") for item in assigned],
+            [
+                "worker-message-10",
+                "worker-message-11",
+                "worker-message-12",
+                "worker-message-13",
+                "worker-message-14",
+            ],
+        )
+
+    def test_image_processor_executes_only_one_candidate_per_authoritative_frame(self):
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(RpaResult(ok=True, result_code="ok", message="unused")),
+        )
+        target = WechatReadTarget(
+            conversation_id=f"conv-one-image-{time.time_ns()}",
+            rpa_session_key="wx:rpa:v1:one-image",
+            display_name="CJIMG001",
+            remark_code="CJIMG001",
+            authorization_revision="revision-one-image",
+        )
+
+        def image(observation_id: str, sequence: int, top: int) -> dict:
+            return {
+                "schema_version": 3,
+                "observation_id": observation_id,
+                "row_kind": "image_bubble",
+                "sender_role": "customer",
+                "sender_role_source": "same_row_avatar",
+                "message_type": "image",
+                "voice_state": "not_voice",
+                "item_state": "discovered",
+                "canonical_visual_id": f"visual-{observation_id}",
+                "bubble_rect": [420, top, 650, top + 80],
+                "_worker_stable_id": f"worker-message-{sequence}",
+                "source_message": {
+                    "id": observation_id,
+                    "canonical_visual_id": f"visual-{observation_id}",
+                    "type": "image",
+                    "sender_role": "customer",
+                },
+            }
+
+        first = image("image-first", 41, 100)
+        second = image("image-second", 42, 220)
+        allowed = {
+            image_observation_source_key(target, first),
+            image_observation_source_key(target, second),
+        }
+        terminal = {
+            "state": "failed",
+            "action_phase": "trigger_attempted",
+            "business_state": "failed",
+            "business_result_confirmed": False,
+            "reason": "menu_panel_unconfirmed",
+            "transaction": {
+                "action_phase": "trigger_attempted",
+                "status": "menu_panel_unconfirmed",
+            },
+            "diagnostics": {"events": [], "image_persisted": False},
+        }
+        with patch.object(
+            runner,
+            "_execute_one_image_slot_vision",
+            return_value=terminal,
+        ) as execute:
+            payload, stats = runner._process_final_image_slots(
+                binding=Binding(
+                    worker_id="worker-1",
+                    worker_token="token",
+                    client_instance_id="client-1",
+                    run_status="running",
+                ),
+                target=target,
+                sidecar_payload={
+                    "authoritative_frame_source": "final_read",
+                    "sidecar_run_id": "frame-two-images",
+                    "observations": [first, second],
+                },
+                enforce_read_targets=False,
+                allowed_new_source_keys=allowed,
+                flow_outcomes=FlowOutcomeAccumulator(
+                    origin_read_run_id="read-two-images"
+                ),
+            )
+
+        self.assertEqual(execute.call_count, 1)
+        self.assertEqual(stats["failed"], 1)
+        self.assertEqual(
+            [
+                item.get("item_state")
+                for item in payload["observations"]
+            ],
+            ["failed", "discovered"],
+        )
+
+    def test_zero_ui_image_failure_does_not_skip_next_image(self):
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(RpaResult(ok=True, result_code="ok", message="unused")),
+        )
+        target = WechatReadTarget(
+            conversation_id=f"conv-zero-ui-images-{time.time_ns()}",
+            rpa_session_key="wx:rpa:v1:zero-ui-images",
+            display_name="CJIMG002",
+            remark_code="CJIMG002",
+            authorization_revision="revision-zero-ui-images",
+        )
+
+        def image(observation_id: str, sequence: int, top: int) -> dict:
+            return {
+                "schema_version": 3,
+                "observation_id": observation_id,
+                "row_kind": "image_bubble",
+                "sender_role": "customer",
+                "sender_role_source": "same_row_avatar",
+                "message_type": "image",
+                "voice_state": "not_voice",
+                "item_state": "discovered",
+                "canonical_visual_id": f"visual-{observation_id}",
+                "bubble_rect": [420, top, 650, top + 80],
+                "_worker_stable_id": f"worker-message-{sequence}",
+                "source_message": {
+                    "id": observation_id,
+                    "canonical_visual_id": f"visual-{observation_id}",
+                    "type": "image",
+                    "sender_role": "customer",
+                },
+            }
+
+        first = image("image-zero-ui", 51, 100)
+        second = image("image-with-ui", 52, 220)
+        allowed = {
+            image_observation_source_key(target, first),
+            image_observation_source_key(target, second),
+        }
+        zero_ui_failure = {
+            "state": "failed",
+            "action_phase": "not_attempted",
+            "business_state": "failed",
+            "business_result_confirmed": False,
+            "reason": "C2_IMAGE_SLOT_RECONFIRM_FAILED",
+            "transaction": {"action_phase": "not_attempted"},
+            "diagnostics": {"events": [], "image_persisted": False},
+        }
+        triggered_failure = {
+            "state": "failed",
+            "action_phase": "trigger_attempted",
+            "business_state": "failed",
+            "business_result_confirmed": False,
+            "reason": "menu_panel_unconfirmed",
+            "transaction": {
+                "action_phase": "trigger_attempted",
+                "status": "menu_panel_unconfirmed",
+            },
+            "diagnostics": {"events": [], "image_persisted": False},
+        }
+        with patch.object(
+            runner,
+            "_execute_one_image_slot_vision",
+            side_effect=[zero_ui_failure, triggered_failure],
+        ) as execute:
+            payload, stats = runner._process_final_image_slots(
+                binding=Binding(
+                    worker_id="worker-1",
+                    worker_token="token",
+                    client_instance_id="client-1",
+                    run_status="running",
+                ),
+                target=target,
+                sidecar_payload={
+                    "authoritative_frame_source": "initial_read",
+                    "sidecar_run_id": "frame-zero-ui-images",
+                    "observations": [first, second],
+                },
+                enforce_read_targets=False,
+                allowed_new_source_keys=allowed,
+                flow_outcomes=FlowOutcomeAccumulator(
+                    origin_read_run_id="read-zero-ui-images"
+                ),
+            )
+
+        self.assertEqual(execute.call_count, 2)
+        self.assertEqual(stats["failed"], 2)
+        self.assertTrue(stats["ui_frame_invalidated"])
+        self.assertTrue(stats["requires_final_refresh"])
+        self.assertEqual(
+            [item.get("item_state") for item in payload["observations"]],
+            ["failed", "failed"],
+        )
+
+    def test_triggered_voice_without_post_alignment_blocks_reclick_on_recovery(self):
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(RpaResult(ok=True, result_code="ok", message="unused")),
+        )
+        target = WechatReadTarget(
+            conversation_id=f"conv-crash-before-post-{time.time_ns()}",
+            rpa_session_key="wx:rpa:v1:crash-before-post",
+            display_name="CJCRSH01",
+            remark_code="CJCRSH01",
+            authorization_revision="revision-crash",
+        )
+        action_id = f"voice:{target.conversation_id}:action"
+        path = action_journal_path("voice", action_id)
+        initialize_action_journal(
+            path,
+            action_kind="voice",
+            transaction_id=action_id,
+            conversation_id=target.conversation_id,
+            origin_read_run_id="read-before-crash",
+            canonical_action_id=action_id,
+            reserved_worker_stable_id="worker-message-21",
+            pre_frame_id="frame-before-crash",
+            pre_action_identity_sequence=[
+                {
+                    "identity_state": "selected_action",
+                    "canonical_action_id": action_id,
+                    "reserved_worker_stable_id": "worker-message-21",
+                    "pre_observation_id": "voice-before-crash",
+                    "pre_sequence_index": 0,
+                    "sender_role": "customer",
+                    "message_type": "voice",
+                    "normalized_content_hash": "",
+                    "native_source_message_id": "",
+                    "canonical_visual_id": "",
+                }
+            ],
+            prepare_evidence={
+                "pre_frame_id": "frame-before-crash",
+                "selected_pre_observation_id": "voice-before-crash",
+                "selected_action_token": "token-before-crash",
+                "selected_target_fingerprint": "fingerprint-before-crash",
+                "candidate_group_count": 1,
+                "ui_action_performed": False,
+            },
+            items=[
+                {
+                    "source_message_key": action_id,
+                    "physical_anchor_keys": ["voice-anchor-before-crash"],
+                }
+            ],
+        )
+        update_action_journal_item(
+            path,
+            source_message_key=action_id,
+            action_phase="trigger_attempted",
+            business_state="failed",
+            business_result_confirmed=False,
+            error_code="VOICE_INTERRUPTED_AFTER_TRIGGER",
+        )
+
+        unresolved = runner._recover_physical_action_journals(target)
+
+        self.assertEqual(len(unresolved), 1)
+        self.assertEqual(
+            unresolved[0]["reason"],
+            "action_triggered_without_confirmed_post_alignment",
+        )
+        self.assertEqual(action_journal_phase(path), "quarantined")
+        self.assertIsNone(
+            load_c2_ledger_entry(target.conversation_id, action_id)
+        )
+        self.assertTrue(path.exists())
+
+    def test_pretrigger_crash_discards_action_but_never_reuses_reservation(self):
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(RpaResult(ok=True, result_code="ok", message="unused")),
+        )
+        target = WechatReadTarget(
+            conversation_id=f"conv-crash-pretrigger-{time.time_ns()}",
+            rpa_session_key="wx:rpa:v1:crash-pretrigger",
+            display_name="CJCRSH03",
+            remark_code="CJCRSH03",
+            authorization_revision="revision-crash-pretrigger",
+            raw={
+                "identity_checkpoint": identity_checkpoint(
+                    next_sequence_floor=51
+                )
+            },
+        )
+        action_id = f"voice:{target.conversation_id}:first"
+        reserved_id = runner._reserve_worker_sequence(
+            target,
+            reservation_key=f"selected-action:{action_id}",
+        )
+        path = action_journal_path("voice", action_id)
+        initialize_action_journal(
+            path,
+            action_kind="voice",
+            transaction_id=action_id,
+            conversation_id=target.conversation_id,
+            origin_read_run_id="read-pretrigger-crash",
+            canonical_action_id=action_id,
+            reserved_worker_stable_id=reserved_id,
+            pre_frame_id="frame-pretrigger",
+            pre_action_identity_sequence=[
+                {
+                    "identity_state": "selected_action",
+                    "canonical_action_id": action_id,
+                    "reserved_worker_stable_id": reserved_id,
+                    "pre_observation_id": "voice-pretrigger",
+                    "pre_sequence_index": 0,
+                    "sender_role": "customer",
+                    "message_type": "voice",
+                    "normalized_content_hash": "",
+                    "native_source_message_id": "",
+                    "canonical_visual_id": "",
+                }
+            ],
+            prepare_evidence={
+                "pre_frame_id": "frame-pretrigger",
+                "selected_pre_observation_id": "voice-pretrigger",
+                "selected_action_token": "token-pretrigger",
+                "selected_target_fingerprint": "fingerprint-pretrigger",
+                "candidate_group_count": 1,
+                "ui_action_performed": False,
+            },
+            items=[
+                {
+                    "source_message_key": action_id,
+                    "physical_anchor_keys": ["voice-pretrigger-anchor"],
+                }
+            ],
+        )
+
+        self.assertEqual(runner._recover_physical_action_journals(target), [])
+        self.assertFalse(path.exists())
+        next_id = runner._reserve_worker_sequence(
+            target,
+            reservation_key=(
+                f"selected-action:voice:{target.conversation_id}:second"
+            ),
+        )
+        self.assertNotEqual(next_id, reserved_id)
+        self.assertEqual(reserved_id, "worker-message-51")
+        self.assertEqual(next_id, "worker-message-52")
+
+    def test_unique_post_alignment_recovers_reserved_voice_identity_after_crash(self):
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(RpaResult(ok=True, result_code="ok", message="unused")),
+        )
+        target = WechatReadTarget(
+            conversation_id=f"conv-crash-after-post-{time.time_ns()}",
+            rpa_session_key="wx:rpa:v1:crash-after-post",
+            display_name="CJCRSH02",
+            remark_code="CJCRSH02",
+            authorization_revision="revision-crash-post",
+        )
+        action_id = f"voice:{target.conversation_id}:action"
+        reserved_id = "worker-message-31"
+        path = action_journal_path("voice", action_id)
+        initialize_action_journal(
+            path,
+            action_kind="voice",
+            transaction_id=action_id,
+            conversation_id=target.conversation_id,
+            origin_read_run_id="read-after-post-crash",
+            canonical_action_id=action_id,
+            reserved_worker_stable_id=reserved_id,
+            pre_frame_id="frame-before-post",
+            pre_action_identity_sequence=[
+                {
+                    "identity_state": "selected_action",
+                    "canonical_action_id": action_id,
+                    "reserved_worker_stable_id": reserved_id,
+                    "pre_observation_id": "voice-before-post",
+                    "pre_sequence_index": 0,
+                    "sender_role": "customer",
+                    "message_type": "voice",
+                    "normalized_content_hash": "",
+                    "native_source_message_id": "",
+                    "canonical_visual_id": "",
+                }
+            ],
+            prepare_evidence={
+                "pre_frame_id": "frame-before-post",
+                "selected_pre_observation_id": "voice-before-post",
+                "selected_action_token": "token-before-post",
+                "selected_target_fingerprint": "fingerprint-before-post",
+                "candidate_group_count": 1,
+                "ui_action_performed": False,
+            },
+            items=[
+                {
+                    "source_message_key": action_id,
+                    "physical_anchor_keys": ["voice-anchor-after-post"],
+                }
+            ],
+        )
+        update_action_journal_item(
+            path,
+            source_message_key=action_id,
+            action_phase="confirmed",
+            business_state="completed",
+            business_result_confirmed=True,
+            terminal_payload={"state": "completed"},
+        )
+        record_action_sequence_alignment(
+            path,
+            {
+                "pre_sequence_source": "action_frame",
+                "pre_frame_id": "frame-before-post",
+                "post_frame_id": "frame-after-post",
+                "alignment_status": "unique",
+                "candidate_alignment_count": 1,
+                "matched_pairs": [
+                    {
+                        "identity_state": "selected_action",
+                        "worker_stable_id": reserved_id,
+                        "pre_observation_id": "voice-before-post",
+                        "post_observation_id": "voice-after-post",
+                        "pre_index": 0,
+                        "post_index": 0,
+                        "match_basis": "confirmed_action",
+                    }
+                ],
+                "old_tail_fully_consumed": True,
+                "new_suffix_observation_ids": [],
+            },
+        )
+
+        unresolved = runner._recover_physical_action_journals(target)
+        durable_source_key = worker_source_message_key(
+            target,
+            identity_kind="worker_sequence",
+            identity=reserved_id,
+        )
+
+        self.assertEqual(unresolved, [])
+        self.assertIsNone(
+            load_c2_ledger_entry(target.conversation_id, action_id)
+        )
+        self.assertEqual(
+            load_c2_ledger_entry(
+                target.conversation_id,
+                durable_source_key,
+            )["terminal_state"],
+            "completed",
         )
 
 

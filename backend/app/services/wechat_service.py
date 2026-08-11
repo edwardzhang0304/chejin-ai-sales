@@ -266,17 +266,20 @@ def _media_identity_hash(message_type: str, raw_payload: dict | None) -> str:
     raw = raw_payload if isinstance(raw_payload, dict) else {}
     observation = _nested_dict(raw, "observation")
     source = _nested_dict(raw, "observation", "source_message")
-    voice_meta = _nested_dict(raw, "voice_transcription_meta")
+    basis = raw.get("dedupe_basis")
+    basis = basis if isinstance(basis, dict) else {}
+    worker_stable_id = _first_stable_value(
+        basis.get("worker_stable_id"),
+        raw.get("worker_stable_id"),
+    )
     normalized_type = str(message_type or "").strip().lower()
     identity: object = ""
     if normalized_type == "voice":
         identity = _first_stable_value(
-            raw.get("voice_anchor_stable_key"),
-            voice_meta.get("voice_anchor_stable_key"),
-            observation.get("parent_voice_anchor_key"),
-            observation.get("voice_anchor_key"),
-            source.get("voice_anchor_stable_key"),
-            source.get("voice_anchor_key"),
+            raw.get("native_source_message_id"),
+            observation.get("native_source_message_id"),
+            source.get("native_source_message_id"),
+            worker_stable_id,
         )
     elif normalized_type == "image":
         identity = _first_stable_value(
@@ -284,8 +287,7 @@ def _media_identity_hash(message_type: str, raw_payload: dict | None) -> str:
             raw.get("canonical_input_id"),
             observation.get("canonical_visual_id"),
             source.get("canonical_visual_id"),
-            observation.get("image_physical_anchor"),
-            source.get("image_physical_anchor"),
+            worker_stable_id,
         )
     elif normalized_type == "file":
         identity = _first_stable_value(
@@ -352,6 +354,29 @@ def _worker_stable_id(message: MessageEvent) -> str:
     return _worker_stable_id_from_raw(message.raw_payload)
 
 
+def _checkpoint_strong_identity(message: MessageEvent) -> tuple[str, str]:
+    raw = message.raw_payload if isinstance(message.raw_payload, dict) else {}
+    observation = _nested_dict(raw, "observation")
+    source = _nested_dict(raw, "observation", "source_message")
+    native_source_message_id = str(
+        _first_stable_value(
+            raw.get("native_source_message_id"),
+            observation.get("native_source_message_id"),
+            source.get("native_source_message_id"),
+        )
+        or ""
+    ).strip()
+    canonical_visual_id = str(
+        _first_stable_value(
+            raw.get("canonical_visual_id"),
+            observation.get("canonical_visual_id"),
+            source.get("canonical_visual_id"),
+        )
+        or ""
+    ).strip()
+    return native_source_message_id, canonical_visual_id
+
+
 def _checkpoint_alignment_signature(message: MessageEvent) -> str:
     raw = message.raw_payload if isinstance(message.raw_payload, dict) else {}
     observation = raw.get("observation")
@@ -372,17 +397,17 @@ def _checkpoint_alignment_signature(message: MessageEvent) -> str:
     if row_kind == "image_bubble":
         source = observation.get("source_message")
         source = source if isinstance(source, dict) else {}
-        anchor = observation.get("image_physical_anchor")
-        if not isinstance(anchor, dict):
-            anchor = source.get("image_physical_anchor")
-        anchor = anchor if isinstance(anchor, dict) else {}
+        worker_stable_id = _worker_stable_id_from_raw(raw)
         basis = {
             "row_kind": row_kind,
             "sender_role": sender_role,
             "message_type": message_type,
-            "bubble_visual_fingerprint": anchor.get(
-                "bubble_visual_fingerprint"
+            "canonical_visual_id": str(
+                observation.get("canonical_visual_id")
+                or source.get("canonical_visual_id")
+                or ""
             ),
+            "worker_stable_id": worker_stable_id,
         }
     else:
         content_hash = hashlib.sha256(
@@ -440,6 +465,9 @@ def _identity_checkpoint(
     recent_messages: list[dict[str, str]] = []
     for message in reversed(events):
         stable_id = _worker_stable_id(message)
+        native_source_message_id, canonical_visual_id = (
+            _checkpoint_strong_identity(message)
+        )
         summary = _message_identity_summary(
             sender_role=message.sender_role,
             message_type=message.message_type,
@@ -461,6 +489,8 @@ def _identity_checkpoint(
                 "alignment_signature": _checkpoint_alignment_signature(
                     message
                 ),
+                "native_source_message_id": native_source_message_id,
+                "canonical_visual_id": canonical_visual_id,
             }
         )
     return {
@@ -493,7 +523,11 @@ def _raise_message_identity_collision(
         content=incoming_content,
         raw_payload=incoming_raw_payload,
     )
-    if existing_identity == incoming_identity:
+    if (
+        str(existing.source_message_key or "").strip()
+        == str(source_message_key or "").strip()
+        and existing_identity == incoming_identity
+    ):
         return
     checkpoint = _identity_checkpoint(
         db,
@@ -1192,21 +1226,6 @@ def read_targets(db: Session, worker: Worker, limit: int = 20) -> dict:
     dispatched_at = utcnow()
     for target in targets:
         target.pop("_dispatch_binding").last_read_dispatched_at = dispatched_at
-    for target in targets:
-        checkpoint = target["identity_checkpoint"]
-        target["identity_transition"] = {
-            "version": 1,
-            "source_version": "v16.104",
-            "legacy_messages": [
-                {
-                    "dedupe_key": item["dedupe_key"],
-                    "source_message_key": item["source_message_key"],
-                    "message_type": item["message_type"],
-                    "sender_role": item["sender_role"],
-                }
-                for item in checkpoint["recent_messages"]
-            ],
-        }
     return {
         "targets": targets,
         "poll_after_seconds": 10,
@@ -2036,17 +2055,19 @@ def _verified_ai_reply_action_for_self_message(
     return action
 
 
-def _unreconciled_ai_reply_action_without_local_receipt(
+def _has_unreconciled_ai_send_without_local_receipt(
     db: Session,
     *,
     conversation_id: str,
-    content: object,
-) -> ReplyAction | None:
-    """Protect one unresolved AI send when the Worker's local receipt is lost."""
+) -> bool:
+    """Keep an unresolved send gated without guessing which bubble it is.
 
-    normalized = _normalized_contract_text(content)
-    if not normalized:
-        return None
+    Message body, screen position and old snapshots are not identity.  When
+    the local receipt is unavailable, preserve the possible-send fact and
+    prohibit automatic replay, but never attach a ReplyAction to a concrete
+    self bubble.
+    """
+
     used_action_ids: set[str] = set()
     recent_self_events = db.scalars(
         select(MessageEvent)
@@ -2063,25 +2084,19 @@ def _unreconciled_ai_reply_action_without_local_receipt(
         if action_id:
             used_action_ids.add(action_id)
 
-    candidates = db.scalars(
+    possible_actions = db.scalars(
         select(ReplyAction)
         .where(
             ReplyAction.conversation_id == conversation_id,
-            ReplyAction.status == "unknown_send_result",
-            ReplyAction.reply_text_hash == _reply_text_hash(normalized),
+            ReplyAction.status.in_(
+                {"sending", "sent", "unknown_send_result"}
+            ),
             ReplyAction.deleted_at.is_(None),
         )
-        .order_by(ReplyAction.created_at.desc(), ReplyAction.id.desc())
+        .order_by(ReplyAction.created_at.desc())
+        .limit(200)
     ).all()
-    return next(
-        (
-            action
-            for action in candidates
-            if action.id not in used_action_ids
-            and _normalized_contract_text(action.reply_text) == normalized
-        ),
-        None,
-    )
+    return any(action.id not in used_action_ids for action in possible_actions)
 
 
 def _validate_v3_observation(observation: object, *, require_ingestible: bool | None = None) -> tuple[str, dict]:
@@ -3127,16 +3142,16 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             )
             server_guarded_unreconciled = False
             if not ai_reply_action and not local_receipt:
-                ai_reply_action = _unreconciled_ai_reply_action_without_local_receipt(
+                server_guarded_unreconciled = bool(
+                    _has_unreconciled_ai_send_without_local_receipt(
                     db,
                     conversation_id=payload.conversation_id,
-                    content=content,
+                    )
                 )
-                server_guarded_unreconciled = ai_reply_action is not None
             raw_payload["sender_source"] = (
                 "ai"
                 if ai_reply_action and ai_reply_action.status == "sent"
-                else "ai_unreconciled_server_guard"
+                else "ai_identity_unconfirmed_guard"
                 if server_guarded_unreconciled
                 else "ai_unreconciled"
                 if (
@@ -3275,7 +3290,7 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
                     "ai",
                     "ai_pending_ack",
                     "ai_unreconciled",
-                    "ai_unreconciled_server_guard",
+                    "ai_identity_unconfirmed_guard",
                 }:
                     # This is the right-side bubble produced by our own sent
                     # ReplyAction. It closes customer facts above it, but it is not

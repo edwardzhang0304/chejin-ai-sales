@@ -143,13 +143,225 @@ class WechatIngestPartition(BaseModel):
         return self
 
 
+class WechatSequenceAlignmentPair(BaseModel):
+    identity_state: str = Field(
+        pattern="^(committed|selected_action|frame_local_unselected)$"
+    )
+    worker_stable_id: str | None = Field(default=None, max_length=128)
+    pre_observation_id: str = Field(min_length=1, max_length=255)
+    post_observation_id: str = Field(min_length=1, max_length=255)
+    pre_index: int = Field(ge=0)
+    post_index: int = Field(ge=0)
+    match_basis: str = Field(min_length=1, max_length=64)
+
+
+class WechatSequenceAlignmentEvidence(BaseModel):
+    pre_sequence_source: str = Field(
+        pattern="^(action_frame|checkpoint|empty_checkpoint)$"
+    )
+    pre_frame_id: str = Field(min_length=1, max_length=255)
+    post_frame_id: str = Field(min_length=1, max_length=255)
+    alignment_status: str = Field(
+        pattern="^(unique|ambiguous|unresolved|not_required)$"
+    )
+    candidate_alignment_count: int = Field(ge=0)
+    matched_pairs: list[WechatSequenceAlignmentPair] = Field(
+        default_factory=list,
+        max_length=500,
+    )
+    old_tail_fully_consumed: bool
+    new_suffix_observation_ids: list[str] = Field(
+        default_factory=list,
+        max_length=500,
+    )
+
+    @model_validator(mode="after")
+    def validate_safe_suffix(self):
+        if self.alignment_status in {"ambiguous", "unresolved"}:
+            if self.old_tail_fully_consumed or self.new_suffix_observation_ids:
+                raise ValueError("非唯一对齐不得声明新增尾部")
+        if self.new_suffix_observation_ids and not self.old_tail_fully_consumed:
+            raise ValueError("新增尾部必须建立在旧尾部已完整消费之上")
+        return self
+
+
+class WechatVoiceTrackingEdge(BaseModel):
+    from_frame_id: str = Field(min_length=1, max_length=255)
+    from_observation_id: str = Field(min_length=1, max_length=255)
+    to_frame_id: str = Field(min_length=1, max_length=255)
+    to_observation_id: str = Field(min_length=1, max_length=255)
+    sender_role: str = Field(pattern="^(customer|self)$")
+    message_type: str = Field(pattern="^voice$")
+    structural_evidence: dict
+    displacement_evidence: dict
+    edge_candidate_count: int = Field(ge=1, le=1)
+
+    @model_validator(mode="after")
+    def validate_evidence(self):
+        if not self.structural_evidence or not self.displacement_evidence:
+            raise ValueError("语音跟踪边缺少结构或位移证据")
+        return self
+
+
+class WechatVoiceNeighborPair(BaseModel):
+    pre_observation_id: str = Field(min_length=1, max_length=255)
+    post_observation_id: str = Field(min_length=1, max_length=255)
+    sender_role: str = Field(pattern="^(customer|self)$")
+    scroll_delta_y: float
+
+
+class WechatVoiceConfirmedActionMapping(BaseModel):
+    canonical_action_id: str = Field(min_length=1, max_length=255)
+    reserved_worker_stable_id: str = Field(min_length=1, max_length=128)
+    binding_confirmed: bool
+    post_observation_id: str = Field(default="", max_length=255)
+    derived_observation_ids: list[str] = Field(
+        default_factory=list,
+        max_length=50,
+    )
+
+
+class WechatVoiceActionEvidence(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    voice_action_stage: str = Field(pattern="^execute$")
+    canonical_voice_action_id: str = Field(min_length=1, max_length=255)
+    reserved_worker_stable_id: str = Field(min_length=1, max_length=128)
+    pre_frame_id: str = Field(min_length=1, max_length=255)
+    post_frame_id: str = Field(min_length=1, max_length=255)
+    selected_pre_observation_id: str = Field(min_length=1, max_length=255)
+    selected_action_token: str = Field(min_length=1, max_length=255)
+    selected_target_fingerprint: str = Field(min_length=1, max_length=255)
+    transcript_binding_status: str = Field(
+        pattern="^(confirmed|failed|ambiguous)$"
+    )
+    transcript_binding_method: str = Field(
+        pattern="^(native_source_id|continuous_target_tracking|neighbor_scroll_alignment|none)$"
+    )
+    binding_candidate_count: int = Field(ge=0)
+    tracking_frame_ids: list[str] = Field(default_factory=list, max_length=20)
+    tracking_edges: list[WechatVoiceTrackingEdge] = Field(
+        default_factory=list,
+        max_length=19,
+    )
+    matched_neighbor_pairs: list[WechatVoiceNeighborPair] = Field(
+        default_factory=list,
+        max_length=50,
+    )
+    native_source_message_id: str | None = Field(default=None, max_length=255)
+    confirmed_action_mapping: WechatVoiceConfirmedActionMapping
+    ui_action_performed: bool
+    action_phase: str = Field(
+        pattern="^(confirmed|failed|quarantined)$"
+    )
+
+    @model_validator(mode="after")
+    def validate_binding_proof(self):
+        mapping = self.confirmed_action_mapping
+        if self.pre_frame_id == self.post_frame_id:
+            raise ValueError("语音动作前后帧必须不同")
+        if (
+            mapping.canonical_action_id != self.canonical_voice_action_id
+            or mapping.reserved_worker_stable_id
+            != self.reserved_worker_stable_id
+        ):
+            raise ValueError("语音动作映射与动作身份不一致")
+        if self.ui_action_performed is not True:
+            raise ValueError("语音 execute 证据必须声明真实 UI 动作")
+        expected_phase = {
+            "confirmed": "confirmed",
+            "failed": "failed",
+            "ambiguous": "quarantined",
+        }[self.transcript_binding_status]
+        if self.action_phase != expected_phase:
+            raise ValueError("语音绑定终态与动作阶段不一致")
+
+        confirmed = self.transcript_binding_status in {
+            "confirmed",
+            "failed",
+        }
+        if confirmed:
+            if (
+                self.binding_candidate_count != 1
+                or mapping.binding_confirmed is not True
+                or not mapping.post_observation_id
+            ):
+                raise ValueError("语音已结算事实缺少唯一动作绑定")
+        elif (
+            mapping.binding_confirmed is not False
+            or mapping.post_observation_id
+        ):
+            raise ValueError("歧义语音不得绑定正式消息身份")
+
+        method = self.transcript_binding_method
+        native_id = str(self.native_source_message_id or "").strip()
+        if method == "continuous_target_tracking":
+            frames = [str(value or "").strip() for value in self.tracking_frame_ids]
+            if (
+                not confirmed
+                or native_id
+                or self.matched_neighbor_pairs
+                or len(frames) < 3
+                or any(not value for value in frames)
+                or len(set(frames)) != len(frames)
+                or len(self.tracking_edges) != len(frames) - 1
+                or frames[0] != self.pre_frame_id
+                or frames[-1] != self.post_frame_id
+            ):
+                raise ValueError("连续语音跟踪证据不完整")
+            previous_observation_id = self.selected_pre_observation_id
+            for index, edge in enumerate(self.tracking_edges):
+                if (
+                    edge.from_frame_id != frames[index]
+                    or edge.to_frame_id != frames[index + 1]
+                    or edge.from_observation_id
+                    != previous_observation_id
+                ):
+                    raise ValueError("连续语音跟踪边未首尾相接")
+                previous_observation_id = edge.to_observation_id
+            if previous_observation_id != mapping.post_observation_id:
+                raise ValueError("连续语音跟踪未连接到最终绑定观察")
+        elif method == "native_source_id":
+            if (
+                not confirmed
+                or not native_id
+                or self.tracking_frame_ids
+                or self.tracking_edges
+                or self.matched_neighbor_pairs
+            ):
+                raise ValueError("语音原生身份绑定证据不合法")
+        elif method == "neighbor_scroll_alignment":
+            deltas = [pair.scroll_delta_y for pair in self.matched_neighbor_pairs]
+            if (
+                not confirmed
+                or native_id
+                or self.tracking_frame_ids
+                or self.tracking_edges
+                or len(deltas) < 2
+                or max(deltas) - min(deltas) > 8.0
+            ):
+                raise ValueError("语音邻居滚动对齐证据不合法")
+        elif (
+            self.transcript_binding_status != "ambiguous"
+            or native_id
+            or self.matched_neighbor_pairs
+        ):
+            raise ValueError("语音无绑定方法只允许歧义终态")
+        return self
+
+
 class WechatMessageEvidence(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     contract_revision: str = Field(min_length=1, max_length=32)
     contract_sha256: str = Field(min_length=64, max_length=64)
     observation_schema_version: int = Field(ge=1)
-    authoritative_frame_source: str = Field(min_length=1, max_length=32)
+    authoritative_frame_source: str = Field(
+        min_length=1,
+        max_length=32,
+        pattern="^(initial_read|final_read|action_journal_recovery)$",
+    )
+    ui_frame_invalidated: bool = False
     observations: list[dict] = Field(max_length=500)
     authorization_read_reason: str = Field(min_length=1, max_length=64)
     continuation_batch_id: str | None = Field(default=None, max_length=36)
@@ -161,7 +373,9 @@ class WechatMessageEvidence(BaseModel):
         max_length=50,
     )
     slot_ledger_states: list[WechatSlotLedgerState] = Field(max_length=500)
+    sequence_alignment_evidence: WechatSequenceAlignmentEvidence | None = None
     ingest_partition: WechatIngestPartition | None = None
+    voice_transcription: WechatVoiceActionEvidence | None = None
 
     @model_validator(mode="after")
     def validate_continuation_pair(self):
@@ -177,6 +391,21 @@ class WechatMessageEvidence(BaseModel):
             raise ValueError("最终画面槽位 source_message_key 不能重复")
         if len(screen_orders) != len(set(screen_orders)):
             raise ValueError("最终画面槽位 screen_order 不能重复")
+        if (
+            self.ui_frame_invalidated
+            and self.authoritative_frame_source == "initial_read"
+        ):
+            raise ValueError(
+                "媒体 UI 动作发生后不得继续使用 initial_read"
+            )
+        if (
+            self.ui_frame_invalidated
+            and self.authoritative_frame_source
+            == "action_journal_recovery"
+        ):
+            raise ValueError(
+                "ActionJournal 无 UI 恢复不得声明当前画面失效"
+            )
         return self
 
 
@@ -203,6 +432,11 @@ class WechatMessageIngestRequest(BaseModel):
     @model_validator(mode="after")
     def validate_settlement_envelope(self):
         evidence = self.evidence.model_dump(mode="json")
+        if (
+            (self.messages or self.evidence.slot_ledger_states)
+            and self.evidence.sequence_alignment_evidence is None
+        ):
+            raise ValueError("消息事实必须携带统一序列对齐证据")
         for slot in self.evidence.slot_ledger_states:
             if (
                 slot.fact_scope == "current_read_run"
@@ -237,6 +471,60 @@ class WechatMessageIngestRequest(BaseModel):
                 raise ValueError("消息终态必须与槽位 item_state 一致")
             if slot.screen_order != message.message_position.screen_order:
                 raise ValueError("消息顺序必须与槽位 screen_order 一致")
+        if (
+            self.authorization_scope == "active_read"
+            and self.evidence.authoritative_frame_source == "initial_read"
+        ):
+            current_source_keys = {
+                slot.source_message_key
+                for slot in self.evidence.slot_ledger_states
+                if slot.fact_scope == "current_read_run"
+            }
+            current_action_phases: set[str] = set()
+            for observation in self.evidence.observations:
+                if not isinstance(observation, dict):
+                    continue
+                source = observation.get("source_message")
+                source = source if isinstance(source, dict) else {}
+                source_key = str(
+                    source.get("source_message_key") or ""
+                ).strip()
+                if source_key not in current_source_keys:
+                    continue
+                current_action_phases.add(
+                    str(observation.get("action_phase") or "")
+                    .strip()
+                    .lower()
+                )
+            voice_transcription = evidence.get("voice_transcription")
+            voice_transcription = (
+                voice_transcription
+                if isinstance(voice_transcription, dict)
+                else {}
+            )
+            # The top-level voice transaction describes UI work performed in
+            # this active read.  It remains authoritative even when a final
+            # refresh has scrolled the operated voice out of the visible slot
+            # list.  Do not condition this evidence on a surviving voice row.
+            voice_action_phase = str(
+                voice_transcription.get("action_phase") or ""
+            ).strip().lower()
+            if voice_action_phase:
+                current_action_phases.add(voice_action_phase)
+            if (
+                voice_transcription.get("ui_action_performed") is True
+            ) or any(
+                phase
+                not in {
+                    "",
+                    "not_attempted",
+                    "cancelled_before_trigger",
+                }
+                for phase in current_action_phases
+            ):
+                raise ValueError(
+                    "媒体 UI 动作发生后不得继续使用 initial_read"
+                )
         settlement_fields = {
             "recovery_transaction_id": str(
                 evidence.get("recovery_transaction_id") or ""
