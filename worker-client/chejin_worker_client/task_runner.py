@@ -11,7 +11,7 @@ import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal, TypeAlias
 
 from .api import ApiError, WorkerApiClient
 from .action_journal import (
@@ -119,6 +119,14 @@ from .wechat_c2 import (
     voice_observation_anchor_key,
     voice_observation_source_key,
 )
+
+
+C2ReadOperationPhase: TypeAlias = Literal[
+    "authorized_read",
+    "pre_send_refresh",
+]
+C2_AUTHORIZED_READ_PHASE: C2ReadOperationPhase = "authorized_read"
+C2_PRE_SEND_REFRESH_PHASE: C2ReadOperationPhase = "pre_send_refresh"
 
 
 def should_submit_c2_ingest_payload(
@@ -1303,6 +1311,63 @@ class TaskRunner:
             self.set_run_status("paused")
             self.on_error("运行环境异常，已暂停接单。")
 
+    def _settle_chat_reply_context_failure_before_unlock(
+        self,
+        binding: Binding,
+        *,
+        task_id: str,
+        source_error_code: str,
+    ) -> bool:
+        """Make a pre-send read failure durable before C2 may scan again."""
+
+        normalized_task_id = str(task_id or "").strip()
+        normalized_source_error = str(
+            source_error_code or "PRE_SEND_REFRESH_FAILED"
+        ).strip()
+        if not normalized_task_id:
+            append_log(
+                "ERROR",
+                "c3_pre_send_failure_task_missing",
+                "发送前复读失败，但批次没有可结算的 chat_reply 任务；已暂停接单，禁止 C2 扫描重新介入。",
+                error_code="C3_REPLY_TASK_MISSING",
+                metadata={"source_error_code": normalized_source_error},
+                force_incident=True,
+            )
+            self.set_run_status("paused")
+            return False
+        try:
+            self.api.fail_task(
+                binding,
+                normalized_task_id,
+                "C2_REPLY_CONTEXT_RECOVERY_FAILED",
+                "pre_send_refresh",
+                normalized_source_error,
+            )
+        except Exception as exc:
+            append_log(
+                "ERROR",
+                "c3_pre_send_failure_settlement_failed",
+                "发送前复读失败后未能确认 chat_reply 终态；已暂停接单，禁止释放锁后恢复 C2 扫描。",
+                task_id=normalized_task_id,
+                error_code="C3_REPLY_FAILURE_SETTLEMENT_UNCONFIRMED",
+                metadata={
+                    "source_error_code": normalized_source_error,
+                    "exception_type": type(exc).__name__,
+                },
+                force_incident=True,
+            )
+            self.set_run_status("paused")
+            return False
+        append_log(
+            "INFO",
+            "c3_pre_send_failure_settled",
+            "发送前复读失败已在原 C2 单会话流程内结算，释放 UI 锁后不会留下待领取回复任务。",
+            task_id=normalized_task_id,
+            error_code="C2_REPLY_CONTEXT_RECOVERY_FAILED",
+            metadata={"source_error_code": normalized_source_error},
+        )
+        return True
+
     def _execute_c2_reply_recovery(self, binding: Binding, task: Task, mode: str) -> None:
         if not self._c2_vision_ready_before_scan():
             append_log(
@@ -1429,6 +1494,7 @@ class TaskRunner:
                 binding,
                 target,
                 current_step="pre_send_refresh",
+                operation_phase=C2_PRE_SEND_REFRESH_PHASE,
                 allow_during_current_task=True,
                 enforce_read_targets=True,
                 held_lease=lease,
@@ -1436,25 +1502,14 @@ class TaskRunner:
                 wait_for_brain=False,
             )
             if not refresh.get("ok"):
-                try:
-                    self.api.fail_task(
-                        binding,
-                        task.id,
-                        "C2_REPLY_CONTEXT_RECOVERY_FAILED",
-                        "pre_send_refresh",
-                        str(
-                            refresh.get("error_code")
-                            or "恢复回复任务时未能安全重建当前会话"
-                        ),
-                    )
-                except Exception as report_exc:
-                    append_log(
-                        "ERROR",
-                        "c2_reply_recovery_failure_report_failed",
-                        str(report_exc),
-                        task_id=task.id,
-                        error_code="C2_REPLY_CONTEXT_RECOVERY_FAILED",
-                    )
+                self._settle_chat_reply_context_failure_before_unlock(
+                    binding,
+                    task_id=task.id,
+                    source_error_code=str(
+                        refresh.get("error_code")
+                        or "恢复回复任务时未能安全重建当前会话"
+                    ),
+                )
                 self.on_result(
                     RpaResult(
                         ok=False,
@@ -6992,6 +7047,12 @@ class TaskRunner:
                     self.current_ui_lock.update_step("c3_brain_waiting")
                 time.sleep(max(0.1, CONFIG.c3_brain_poll_interval_seconds))
                 continue
+            task_payload = (
+                status.get("task")
+                if isinstance(status.get("task"), dict)
+                else {}
+            )
+            reply_task_id = str(task_payload.get("id") or "").strip()
             # Reuse the only complete C2 fact flow under the lease already held.
             # It may transcribe voice and run Vision, but it may only validate the
             # current chat; pre-send refresh must never search or switch sessions.
@@ -6999,6 +7060,7 @@ class TaskRunner:
                 binding,
                 target,
                 current_step="pre_send_refresh",
+                operation_phase=C2_PRE_SEND_REFRESH_PHASE,
                 allow_during_current_task=True,
                 enforce_read_targets=True,
                 held_lease=self.current_ui_lock,
@@ -7006,11 +7068,22 @@ class TaskRunner:
                 wait_for_brain=False,
             )
             if not refresh_read.get("ok"):
+                reply_task_settled = (
+                    self._settle_chat_reply_context_failure_before_unlock(
+                        binding,
+                        task_id=reply_task_id,
+                        source_error_code=str(
+                            refresh_read.get("error_code")
+                            or "PRE_SEND_REFRESH_FAILED"
+                        ),
+                    )
+                )
                 return {
                     "ok": False,
                     "error_code": str(refresh_read.get("error_code") or "PRE_SEND_REFRESH_FAILED"),
                     "batch": status,
                     "pre_send_refresh": refresh_read,
+                    "reply_task_settled": reply_task_settled,
                 }
             if int(refresh_read.get("new_self_message_count") or 0) > 0:
                 return {
@@ -7049,8 +7122,7 @@ class TaskRunner:
                     "pre_send_refresh": refresh_read,
                 }
 
-            task_payload = status.get("task")
-            if not isinstance(task_payload, dict):
+            if not task_payload:
                 return {"ok": False, "error_code": "C3_REPLY_TASK_MISSING", "batch": status}
             pending_task = Task.from_api(task_payload)
             if recovered_task is not None and recovered_task.id == pending_task.id:
@@ -8544,6 +8616,7 @@ class TaskRunner:
         *,
         flow_outcomes: FlowOutcomeAccumulator,
         read_run_id: str,
+        operation_phase: C2ReadOperationPhase = C2_AUTHORIZED_READ_PHASE,
         current_step: str = "message_read",
         allow_during_current_task: bool = False,
         enforce_read_targets: bool = False,
@@ -8562,6 +8635,7 @@ class TaskRunner:
             "conversation_id": target.conversation_id,
             "remark_code": target.remark_code,
             "read_run_id": read_run_id,
+            "operation_phase": operation_phase,
             "phases": [],
         }
 
@@ -8609,6 +8683,21 @@ class TaskRunner:
             )
 
         try:
+            if operation_phase not in {
+                C2_AUTHORIZED_READ_PHASE,
+                C2_PRE_SEND_REFRESH_PHASE,
+            }:
+                return {
+                    "ok": False,
+                    "error_code": "C2_READ_OPERATION_PHASE_INVALID",
+                }
+            if (current_step == "pre_send_refresh") != (
+                operation_phase == C2_PRE_SEND_REFRESH_PHASE
+            ):
+                return {
+                    "ok": False,
+                    "error_code": "C2_READ_OPERATION_PHASE_CONFLICT",
+                }
             if not str(target.authorization_revision or "").strip():
                 self.c2_stats["last_error"] = "C2_TARGET_AUTHORIZATION_REVISION_MISSING"
                 append_log(
@@ -8667,6 +8756,10 @@ class TaskRunner:
             fallback_target_mode = ""
             target_is_visible_hit = target.read_reason == "visible_hit" or bool(
                 isinstance(target.raw, dict) and target.raw.get("visible_hit")
+            )
+            friend_activation_read = bool(
+                target.read_reason == "friend_acceptance_visible_hit"
+                and operation_phase == C2_AUTHORIZED_READ_PHASE
             )
             if target_is_visible_hit:
                 base_target_mode = "visible"
@@ -8730,7 +8823,7 @@ class TaskRunner:
                     remark_code=effective_target.remark_code or "",
                     target_mode=locate_mode,
                     visible_session_candidate=effective_target.raw.get("visible_session_candidate") if visible_target and isinstance(effective_target.raw, dict) else None,
-                    capture_initial_messages=target.read_reason != "friend_acceptance_visible_hit",
+                    capture_initial_messages=not friend_activation_read,
                     max_duration_seconds=20 if locate_mode == "current" else 30 if visible_target else 90,
                     cancel_check=action_cancel_requested,
                 )
@@ -8840,40 +8933,63 @@ class TaskRunner:
                         },
                     )
                     return {"ok": False, "error_code": code, "target_confirmation": locate_payload}
-                phase_started_at = time.perf_counter()
-                activation = self.api.confirm_wechat_friend_activation(
-                    binding,
-                    target,
-                    conversation_type=conversation_type,
-                    chat_surface_ready=True,
-                    title_evidence=title_evidence,
-                )
-                record_phase(
-                    "friend_activation_confirm",
-                    phase_started_at,
-                    activation_confirmed=activation.get("activation_confirmed"),
-                    friend_state=activation.get("friend_state"),
-                )
-                if activation.get("activation_confirmed") is not True:
-                    code = "C2_FRIEND_ACTIVATION_NOT_CONFIRMED"
-                    self.c2_stats["last_error"] = code
-                    return {"ok": False, "error_code": code, "target_confirmation": locate_payload}
-                refreshed_revision = str(activation.get("authorization_revision") or "").strip()
-                if refreshed_revision:
-                    target.authorization_revision = refreshed_revision
-                if isinstance(target.raw, dict):
-                    target.raw["friend_activation"] = dict(activation)
-                append_log(
-                    "INFO",
-                    "c2_friend_activation_confirmed",
-                    "新好友已由后端确认激活，现在才允许读取文字、语音和图片。",
-                    metadata={
-                        "conversation_id": target.conversation_id,
-                        "remark_code": target.remark_code,
-                        "friend_state": activation.get("friend_state"),
-                        "conversation_status": activation.get("conversation_status"),
-                    },
-                )
+                if friend_activation_read:
+                    phase_started_at = time.perf_counter()
+                    activation = self.api.confirm_wechat_friend_activation(
+                        binding,
+                        target,
+                        conversation_type=conversation_type,
+                        chat_surface_ready=True,
+                        title_evidence=title_evidence,
+                    )
+                    record_phase(
+                        "friend_activation_confirm",
+                        phase_started_at,
+                        activation_confirmed=activation.get(
+                            "activation_confirmed"
+                        ),
+                        friend_state=activation.get("friend_state"),
+                    )
+                    if activation.get("activation_confirmed") is not True:
+                        code = "C2_FRIEND_ACTIVATION_NOT_CONFIRMED"
+                        self.c2_stats["last_error"] = code
+                        return {
+                            "ok": False,
+                            "error_code": code,
+                            "target_confirmation": locate_payload,
+                        }
+                    refreshed_revision = str(
+                        activation.get("authorization_revision") or ""
+                    ).strip()
+                    if refreshed_revision:
+                        target.authorization_revision = refreshed_revision
+                    if isinstance(target.raw, dict):
+                        target.raw["friend_activation"] = dict(activation)
+                    append_log(
+                        "INFO",
+                        "c2_friend_activation_confirmed",
+                        "新好友已由后端确认激活，现在才允许读取文字、语音和图片。",
+                        metadata={
+                            "conversation_id": target.conversation_id,
+                            "remark_code": target.remark_code,
+                            "friend_state": activation.get("friend_state"),
+                            "conversation_status": activation.get(
+                                "conversation_status"
+                            ),
+                        },
+                    )
+                else:
+                    append_log(
+                        "INFO",
+                        "c2_friend_activation_provenance_preserved",
+                        "批次续行保留首次读取原因，但发送前复读不会重复执行好友激活状态转换。",
+                        metadata={
+                            "conversation_id": target.conversation_id,
+                            "remark_code": target.remark_code,
+                            "authorization_read_reason": target.read_reason,
+                            "operation_phase": operation_phase,
+                        },
+                    )
             lease.update_step(current_step)
             self.current_step = current_step
             phase_started_at = time.perf_counter()

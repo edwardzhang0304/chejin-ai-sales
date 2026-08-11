@@ -1,10 +1,10 @@
 # C2-C3 OmniAuto / Worker / 后端接口合同
 
-版本：v0.1.5
+版本：v0.1.6
 
 日期：2026-07-21
 
-最后更新：2026-08-10（补齐读取轮次归属与 Outbox 传输状态分层）
+最后更新：2026-08-11（分离授权来源与 Worker 执行阶段）
 
 状态：接口命名和职责边界保持唯一。当前 C2 机器合同为 `3.12.8`，未发布运行整改提交为
 车金 `53e979d89316344c282245c62f6349586de16eee`。本轮整改父基线为车金 `3f65660…`
@@ -53,6 +53,23 @@
    - 负责短码绑定、private 准入、`read-targets`、`authorization_revision`、`message_batch`、会话状态机、主动开场、召回、handoff、`reply_action`、持久化和数据库最终去重。
    - 负责真实调用 OmniAuto Brain Adapter 并映射 Brain 结果。
    - 不得重新推测微信左右侧、发送方、语音父子关系、图片位置或消息顺序。
+
+### 0.1 授权来源与执行阶段不得混用
+
+| 维度 | 正式名称 | 所有者 | 含义 |
+|---|---|---|---|
+| 后端授权来源 | HTTP 中为 `read_reason`；进入 Worker、证据和续行上下文后记为 `authorization_read_reason` | 后端签发，Worker 只保存和匹配 | 为什么允许本轮或本批次继续读取。 |
+| Worker 执行阶段 | `operation_phase=authorized_read | pre_send_refresh` | Worker 内部编排 | 当前是在执行首次/普通授权读取，还是发送前复读。 |
+
+`operation_phase` 是 Worker 内部执行合同，不新增后端 HTTP 字段，也不加入机器合同
+`3.12.8` 的 ingest payload。原始 `read_reason` 不得被 Worker 改写成
+`pre_send_refresh`，`pre_send_refresh` 也不得作为新的后端授权原因。只有
+`operation_phase=authorized_read` 且
+`authorization_read_reason=friend_acceptance_visible_hit` 时，Worker 才能调用首次
+好友激活接口；同一原因被批次续行保留时，`operation_phase=pre_send_refresh` 必须跳过
+激活，只执行目标、授权和消息复核。阶段缺失、非法或与 `current_step` 矛盾时，必须在
+任何微信 UI 动作前返回 `C2_READ_OPERATION_PHASE_INVALID` 或
+`C2_READ_OPERATION_PHASE_CONFLICT`。
 
 禁止三层各做一套：同一字段必须有唯一所有者，其他层只能校验、透传或映射。合同缺字段时必须先更新本文和机器合同，再同时修改三层；不得私自加临时字段、动作或 HTTP 接口。三层合同测试必须共用 `contracts/examples/` 中的同组 JSON 样例。缺少真实模型凭据时必须停止凭据联调，不得用 mock 冒充功能完成。
 
@@ -711,7 +728,8 @@ AND authorization_revision 未变化
 }
 ```
 
-Worker 必须同时匹配 `conversation_id + authorization_revision + read_reason`。
+Worker 必须同时匹配 `conversation_id + authorization_revision + read_reason`，并把这里的
+`read_reason` 作为 `authorization_read_reason`，不得据此推导当前 `operation_phase`。
 该接口不负责普通目标发现，不能替代开始动作前的完整 `read-targets` 准入。
 唯一例外是恢复已经持久化的语音/图片事务：后端必须返回统一三态结果，避免
 `read-targets` 的数量限制或状态变化让整台 Worker 永久停住。
@@ -809,13 +827,20 @@ X-C2-Continuation-Token: {token}
 ```
 
 续行票只允许同一 Worker、同一会话、同一批次、同一授权版本和原始
-`read_reason` 继续完成最终刷新、等待 Brain 和发送。停止监听、授权版本
+`read_reason` 继续完成最终刷新、等待 Brain 和发送。这里的原始 `read_reason` 只证明
+授权来源；最终刷新必须另以 Worker 内部 `operation_phase=pre_send_refresh` 执行，不得
+重复触发好友激活或召回前状态转换。停止监听、授权版本
 变化、批次被替换、回复任务终结或票据不匹配时必须立即失效。token 只放
 请求头和结构化 Outbox，不放 URL、普通日志或截图。
 
 ### 6.2.2 `POST /api/workers/{worker_id}/wechat/conversations/{conversation_id}/activation-confirm`
 
-仅用于 `read_reason=friend_acceptance_visible_hit`。Worker 打开会话并获得“有效短码 + private + 输入区可用”的标题证据后，必须先调用本接口；后端确认 `friend_request_sent -> friend_active` 并返回新的 `authorization_revision` 后，Worker 才能读取消息、转写语音或处理图片。
+仅允许在 `operation_phase=authorized_read` 且
+`authorization_read_reason=friend_acceptance_visible_hit` 时调用。Worker 打开会话并获得
+“有效短码 + private + 输入区可用”的标题证据后，必须先调用本接口；后端确认
+`friend_request_sent -> friend_active` 并返回新的 `authorization_revision` 后，Worker
+才能读取消息、转写语音或处理图片。批次续行或崩溃恢复即使保留相同原始
+`read_reason`，只要当前阶段是 `pre_send_refresh` 就禁止再次调用本接口。
 
 新好友定位时不得提前复用或解析消息截图；激活确认成功后再执行一次 `messages`。普通已激活会话可以复用 `open-chat` 的会话确认帧作为初始消息帧，避免机械重复截图。
 
