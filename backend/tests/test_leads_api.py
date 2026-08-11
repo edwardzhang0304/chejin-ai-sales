@@ -22,7 +22,7 @@ def setup_function():
 def test_create_lead_assigns_round_robin_sales():
     client.post(
         "/api/sales",
-        json={"sales_name": "张伟", "enabled": True, "sort_order": 10},
+        json={"sales_name": "张伟", "phone": "13900000001", "enabled": True, "sort_order": 10},
         headers=HEADERS,
     )
 
@@ -53,7 +53,7 @@ def test_create_lead_without_sales_records_assignment_failure_then_retry_succeed
 
     client.post(
         "/api/sales",
-        json={"sales_name": "张伟", "enabled": True, "sort_order": 10},
+        json={"sales_name": "张伟", "phone": "13900000001", "enabled": True, "sort_order": 10},
         headers=HEADERS,
     )
     retried = client.post("/api/leads/retry-auto-assign", json={"lead_ids": [lead_id]}, headers=HEADERS)

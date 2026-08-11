@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
+import logging
 import secrets
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -28,6 +29,7 @@ from app.models.vehicle import KnowledgeItem, VehicleImage
 from app.models.wechat import MessageEvent, WechatSessionBinding
 from app.models.worker import Worker
 from app.services.ai_adapter import AIEngineDecision, get_ai_engine_adapter
+from app.services.feishu_service import enqueue_handoff_notification
 from app.services.message_contract import canonical_reply_text, reply_text_hash
 from app.services.task_service import _write_event, finish_task_and_release_worker, get_task_or_404, task_to_detail
 
@@ -54,6 +56,7 @@ FAILED_SEND_TERMINAL_REMARK = (
 )
 VEHICLE_FACT_STALE_CODE = "REPLY_ACTION_VEHICLE_FACT_STALE"
 VEHICLE_FACT_STALE_REASON = "车辆资料或上下架状态已变化，旧回复动作作废"
+logger = logging.getLogger(__name__)
 
 
 def _brain_plan_vehicle_ids(payload: dict[str, Any]) -> list[str]:
@@ -1304,9 +1307,12 @@ def enforce_open_handoff_gate(
         "rejected",
     }:
         conversation.status = "waiting_sales_reply"
-        conversation.recall_origin_status = None
-        conversation.recall_cycle_id = None
-        conversation.next_recall_at = None
+    elif not events and conversation.status == "waiting_sales_reply":
+        logger.error(
+            "handoff projection inconsistent conversation_id=%s error_code=%s",
+            conversation.conversation_id,
+            "HANDOFF_EVENT_MISSING_FOR_WAITING_SALES_REPLY",
+        )
     return events
 
 
@@ -1431,10 +1437,10 @@ def _create_handoff(
     decision: AIEngineDecision,
     handoff_reason_code: str,
 ) -> HandoffEvent:
-    event = HandoffEvent(
-        conversation_id=binding.conversation_id,
+    event, _created = _create_or_reuse_open_handoff(
+        db,
+        conversation=conversation,
         batch_id=batch.id,
-        status="created",
         handoff_reason_code=handoff_reason_code,
         reason_detail=decision.handoff_reason_code or handoff_reason_code,
         trigger_message_event_ids=list(batch.message_event_ids or []),
@@ -1442,7 +1448,6 @@ def _create_handoff(
         evidence_refs=decision.evidence_refs or [],
         ai_payload=_decision_payload(decision),
     )
-    db.add(event)
     conversation.status = "waiting_sales_reply"
     conversation.recall_origin_status = None
     conversation.recall_cycle_id = None
@@ -1458,6 +1463,78 @@ def _create_handoff(
     batch.generated_at = utcnow()
     batch.generation_started_at = None
     return event
+
+
+def _create_or_reuse_open_handoff(
+    db: Session,
+    *,
+    conversation: Conversation,
+    batch_id: str | None,
+    handoff_reason_code: str,
+    reason_detail: str | None,
+    trigger_message_event_ids: list[str],
+    risk_flags: list[str],
+    evidence_refs: list[str],
+    ai_payload: dict[str, Any],
+) -> tuple[HandoffEvent, bool]:
+    # PostgreSQL serializes concurrent handoff creation on the conversation
+    # row. The partial unique index remains the final database guard.
+    db.scalar(
+        select(Conversation.conversation_id)
+        .where(Conversation.conversation_id == conversation.conversation_id)
+        .with_for_update()
+    )
+    existing = db.scalar(
+        select(HandoffEvent)
+        .where(
+            HandoffEvent.conversation_id == conversation.conversation_id,
+            HandoffEvent.closed_at.is_(None),
+            HandoffEvent.deleted_at.is_(None),
+        )
+        .order_by(HandoffEvent.created_at.asc(), HandoffEvent.id.asc())
+        .with_for_update()
+    )
+    if existing:
+        existing_reason = str(existing.handoff_reason_code or "").strip()
+        if (
+            existing_reason in RECOVERABLE_C2_HANDOFF_REASON_CODES
+            and handoff_reason_code not in RECOVERABLE_C2_HANDOFF_REASON_CODES
+        ):
+            existing.handoff_reason_code = handoff_reason_code
+            existing.reason_detail = reason_detail
+            existing.trigger_message_event_ids = list(
+                dict.fromkeys(
+                    list(existing.trigger_message_event_ids or [])
+                    + trigger_message_event_ids
+                )
+            )
+            existing.risk_flags = list(
+                dict.fromkeys(list(existing.risk_flags or []) + risk_flags)
+            )
+            existing.evidence_refs = list(
+                dict.fromkeys(list(existing.evidence_refs or []) + evidence_refs)
+            )
+            existing.ai_payload = ai_payload
+        if conversation.status not in {"closed", "rejected"}:
+            conversation.status = "waiting_sales_reply"
+        return existing, False
+
+    event = HandoffEvent(
+        conversation_id=conversation.conversation_id,
+        batch_id=batch_id,
+        status="created",
+        handoff_reason_code=handoff_reason_code,
+        reason_detail=reason_detail,
+        trigger_message_event_ids=trigger_message_event_ids,
+        risk_flags=risk_flags,
+        evidence_refs=evidence_refs,
+        ai_payload=ai_payload,
+        notify_status="pending",
+    )
+    db.add(event)
+    db.flush()
+    enqueue_handoff_notification(db, handoff_event_id=event.id)
+    return event, True
 
 
 def _pause_conversation_for_manual(
@@ -1500,19 +1577,11 @@ def _create_send_failure_handoff(
     error_code: str,
     send_result: str,
 ) -> HandoffEvent:
-    existing = db.scalar(
-        select(HandoffEvent).where(
-            HandoffEvent.batch_id == action.batch_id,
-            HandoffEvent.deleted_at.is_(None),
-        )
-    )
-    if existing:
-        return existing
     batch = db.get(MessageBatch, action.batch_id)
-    event = HandoffEvent(
-        conversation_id=action.conversation_id,
+    event, _created = _create_or_reuse_open_handoff(
+        db,
+        conversation=conversation,
         batch_id=action.batch_id,
-        status="created",
         handoff_reason_code=error_code,
         reason_detail=(
             UNKNOWN_SEND_TERMINAL_REMARK
@@ -1528,7 +1597,6 @@ def _create_send_failure_handoff(
             "error_code": error_code,
         },
     )
-    db.add(event)
     conversation.status = "waiting_sales_reply"
     conversation.handoff_reason_code = error_code
     conversation.handoff_at = utcnow()

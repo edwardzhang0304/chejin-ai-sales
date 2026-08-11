@@ -1105,7 +1105,7 @@ def _worker_headers(worker: dict) -> dict:
 def _create_sales(worker_id: str) -> str:
     response = client.post(
         "/api/sales",
-        json={"sales_name": "张伟", "enabled": True, "sort_order": 10, "worker_id": worker_id},
+        json={"sales_name": "张伟", "phone": "13900000001", "enabled": True, "sort_order": 10, "worker_id": worker_id},
         headers=HEADERS,
     )
     assert response.status_code == 200
@@ -5437,17 +5437,23 @@ def test_hard_handoff_keeps_gate_when_recoverable_handoff_is_closed():
         )
         db.add(hard_batch)
         db.flush()
-        hard_handoff = HandoffEvent(
-            conversation_id=binding["conversation_id"],
+        conversation = db.get(Conversation, binding["conversation_id"])
+        hard_handoff, created = c3_service._create_or_reuse_open_handoff(
+            db,
+            conversation=conversation,
             batch_id=hard_batch.id,
-            status="created",
             handoff_reason_code="HARD_BUSINESS_RISK",
             reason_detail="HARD_BUSINESS_RISK",
             trigger_message_event_ids=[],
+            risk_flags=["hard_business_risk"],
+            evidence_refs=["test:hard_business_risk"],
+            ai_payload={},
         )
-        db.add(hard_handoff)
         db.commit()
         hard_handoff_id = hard_handoff.id
+        assert created is False
+        assert hard_handoff_id == recoverable_handoff_id
+        assert hard_handoff.handoff_reason_code == "HARD_BUSINESS_RISK"
 
     payload = _v3_ingest_payload(
         binding,
@@ -5482,12 +5488,11 @@ def test_hard_handoff_keeps_gate_when_recoverable_handoff_is_closed():
     assert response.json()["data"].get("message_batch") is None
     with SessionLocal() as db:
         conversation = db.get(Conversation, binding["conversation_id"])
-        recoverable = db.get(HandoffEvent, recoverable_handoff_id)
         hard = db.get(HandoffEvent, hard_handoff_id)
-        assert recoverable.status == "auto_recovered_clean_read"
-        assert recoverable.closed_at is not None
         assert hard.status == "created"
         assert hard.closed_at is None
+        assert hard.handoff_reason_code == "HARD_BUSINESS_RISK"
+        assert db.query(HandoffEvent).count() == 1
         assert conversation.status == "waiting_sales_reply"
         assert db.query(MessageBatch).filter(
             MessageBatch.trigger_type == "c2_handoff_recovery"
@@ -5579,9 +5584,9 @@ def test_open_handoff_repairs_stale_conversation_projection_before_read_target()
     with SessionLocal() as db:
         conversation = db.get(Conversation, binding["conversation_id"])
         assert conversation.status == "waiting_sales_reply"
-        assert conversation.recall_origin_status is None
-        assert conversation.recall_cycle_id is None
-        assert conversation.next_recall_at is None
+        assert conversation.recall_origin_status == "waiting_user_reply"
+        assert conversation.recall_cycle_id == "stale-recall"
+        assert conversation.next_recall_at is not None
 
 
 def test_pause_keeps_customer_fact_without_409_or_brain_batch():

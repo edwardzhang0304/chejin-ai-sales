@@ -44,6 +44,10 @@ def _load_migration(filename: str):
             "20260809_0024_review_inconsistent_disabled_bindings.py",
             "IRREVERSIBLE_MIGRATION_20260809_0024",
         ),
+        (
+            "20260811_0026_feishu_handoff_notifications.py",
+            "IRREVERSIBLE_MIGRATION_20260811_0026",
+        ),
     ],
 )
 def test_data_bearing_migrations_refuse_automatic_downgrade(
@@ -172,6 +176,110 @@ def test_legacy_disabled_paused_repair_is_idempotent_and_preserves_terminals():
     ):
         assert by_id[protected_id]["bind_status"] == "disabled"
         assert by_id[protected_id]["authorization_revision"] == 2
+
+
+def test_feishu_handoff_migration_is_idempotent_and_preserves_one_open_event():
+    migration = _load_migration(
+        "20260811_0026_feishu_handoff_notifications.py"
+    )
+    engine = create_engine("sqlite:///:memory:", future=True)
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE sales (
+                id TEXT PRIMARY KEY,
+                phone TEXT,
+                feishu_user_id TEXT,
+                deleted_at TIMESTAMP
+            )
+            """
+        )
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE handoff_events (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                handoff_reason_code TEXT,
+                created_at TIMESTAMP NOT NULL,
+                updated_at TIMESTAMP NOT NULL,
+                closed_at TIMESTAMP,
+                deleted_at TIMESTAMP
+            )
+            """
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO sales (id, phone, feishu_user_id, deleted_at)
+                VALUES
+                    ('active', '13900000001', 'legacy-id', NULL),
+                    ('deleted', '13900000002', 'legacy-deleted-id', CURRENT_TIMESTAMP)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO handoff_events
+                    (id, conversation_id, status, handoff_reason_code,
+                     created_at, updated_at, closed_at, deleted_at)
+                VALUES
+                    ('hard', 'conversation-one', 'created', 'CUSTOMER_HIGH_INTENT',
+                     '2026-01-01 00:00:00', '2026-01-01 00:00:00', NULL, NULL),
+                    ('recoverable', 'conversation-one', 'created', 'C2_MESSAGE_HISTORY_GAP',
+                     '2025-01-01 00:00:00', '2025-01-01 00:00:00', NULL, NULL),
+                    ('other', 'conversation-two', 'created', 'HANDOFF_REQUIRED',
+                     '2026-01-01 00:00:00', '2026-01-01 00:00:00', NULL, NULL)
+                """
+            )
+        )
+
+        migration._normalize_and_validate_sales_phones(connection)
+        migration._close_duplicate_open_handoffs(connection)
+        migration._close_duplicate_open_handoffs(connection)
+        rows = connection.execute(
+            text(
+                """
+                SELECT id, status, closed_at
+                  FROM handoff_events
+                 ORDER BY id
+                """
+            )
+        ).mappings().all()
+
+    by_id = {row["id"]: row for row in rows}
+    assert by_id["hard"]["closed_at"] is None
+    assert by_id["recoverable"]["status"] == "closed_duplicate_migration"
+    assert by_id["recoverable"]["closed_at"] is not None
+    assert by_id["other"]["closed_at"] is None
+
+
+def test_feishu_handoff_migration_rejects_missing_phone_on_deleted_sales():
+    migration = _load_migration(
+        "20260811_0026_feishu_handoff_notifications.py"
+    )
+    engine = create_engine("sqlite:///:memory:", future=True)
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE TABLE sales (
+                id TEXT PRIMARY KEY,
+                phone TEXT,
+                deleted_at TIMESTAMP
+            )
+            """
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO sales (id, phone, deleted_at)
+                VALUES ('deleted', NULL, CURRENT_TIMESTAMP)
+                """
+            )
+        )
+        with pytest.raises(RuntimeError, match="SALES_PHONE_BACKFILL_REQUIRED"):
+            migration._normalize_and_validate_sales_phones(connection)
 
 
 def test_inconsistent_disabled_repair_is_idempotent_and_preserves_evidence():
