@@ -3,27 +3,74 @@ from __future__ import annotations
 import inspect
 import json
 import unittest
+from pathlib import Path
 
 import chejin_worker_client.wechat_c2 as wechat_c2_module
 from chejin_worker_client.c2_contract import contract_revision, contract_sha256
 from chejin_worker_client.models import WechatReadTarget
+from chejin_worker_client.sequence_alignment import (
+    align_committed_message_sequence,
+    build_post_action_observation_sequence,
+    build_pre_action_identity_sequence,
+    inherited_worker_ids,
+)
 from chejin_worker_client.wechat_c2 import (
     build_flow_gate_ingest_payload,
     build_message_ingest_payload as _build_message_ingest_payload_v3,
     build_scan_result_payload,
     is_formal_c2_remark_code,
-    message_dedupe_metadata,
+    image_observation_source_key,
     message_type,
-    observation_alignment_signature,
-    reconcile_cross_round_observation_identities,
-    reconcile_v16104_identity_transition,
     sender_role_hint,
-    voice_observation_anchor_key,
     voice_observation_source_key,
+    worker_source_message_key,
 )
 from tests.contract_artifacts import resolve_contract_artifact
 
 def build_v3_message_ingest_payload(target: WechatReadTarget, sidecar_payload: dict) -> dict:
+    observations = [
+        (
+            {
+                **item,
+                "_worker_stable_id": str(
+                    item.get("_worker_stable_id")
+                    or f"worker-message-{index}"
+                ),
+            }
+            if isinstance(item, dict)
+            else item
+        )
+        for index, item in enumerate(
+            sidecar_payload.get("observations") or [],
+            start=1,
+        )
+    ]
+    evidence = {
+        "pre_sequence_source": "empty_checkpoint",
+        "pre_frame_id": f"checkpoint:none:{target.conversation_id}",
+        "post_frame_id": "frame:test-v3-message-ingest",
+        "alignment_status": "not_required",
+        "candidate_alignment_count": 0,
+        "matched_pairs": [],
+        "old_tail_fully_consumed": True,
+        "new_suffix_observation_ids": [
+            str(item.get("observation_id") or "")
+            for item in observations
+            if isinstance(item, dict)
+            and str(item.get("observation_id") or "")
+        ],
+    }
+    slot_origins = {
+        str(item.get("origin_read_run_id") or "").strip()
+        for item in (sidecar_payload.get("slot_ledger_states") or [])
+        if isinstance(item, dict)
+        and str(item.get("origin_read_run_id") or "").strip()
+    }
+    read_run_id = (
+        next(iter(slot_origins))
+        if len(slot_origins) == 1
+        else "read-v3-message-ingest-test"
+    )
     return _build_message_ingest_payload_v3(
         target,
         {
@@ -33,8 +80,12 @@ def build_v3_message_ingest_payload(target: WechatReadTarget, sidecar_payload: d
             "observation_schema_version": 3,
             "authoritative_frame_source": "final_read",
             **sidecar_payload,
+            "observations": observations,
+            "sequence_alignment_evidence": sidecar_payload.get(
+                "sequence_alignment_evidence", evidence
+            ),
         },
-        read_run_id="read-v3-message-ingest-test",
+        read_run_id=read_run_id,
     )
 
 
@@ -63,6 +114,23 @@ def sidecar_session_identity(
 
 
 class WechatC2Test(unittest.TestCase):
+    def _align_committed(
+        self,
+        previous: list[dict],
+        current: list[dict],
+        committed_ids: dict[str, str],
+    ) -> dict:
+        return align_committed_message_sequence(
+            build_pre_action_identity_sequence(
+                previous,
+                committed_ids=committed_ids,
+            ),
+            build_post_action_observation_sequence(current),
+            pre_sequence_source="checkpoint",
+            pre_frame_id="checkpoint:test",
+            post_frame_id="frame:current",
+        )
+
     def test_ingest_builder_requires_and_preserves_caller_read_run_id(self):
         target = WechatReadTarget(
             conversation_id="conv-explicit-read-run",
@@ -80,6 +148,16 @@ class WechatC2Test(unittest.TestCase):
             "authoritative_frame_source": "final_read",
             "observations": [],
             "slot_ledger_states": [],
+            "sequence_alignment_evidence": {
+                "pre_sequence_source": "empty_checkpoint",
+                "pre_frame_id": "checkpoint:none:conv-explicit-read-run",
+                "post_frame_id": "frame:explicit-read-run",
+                "alignment_status": "not_required",
+                "candidate_alignment_count": 0,
+                "matched_pairs": [],
+                "old_tail_fully_consumed": True,
+                "new_suffix_observation_ids": [],
+            },
         }
 
         payload = _build_message_ingest_payload_v3(
@@ -104,7 +182,7 @@ class WechatC2Test(unittest.TestCase):
         self.assertNotIn("extract_c2_remark_codes", source)
         self.assertNotIn("omniauto-rpa", source)
 
-    def test_voice_structural_and_stable_anchors_are_one_physical_identity(self):
+    def test_voice_frame_local_anchors_never_become_durable_identity(self):
         target = WechatReadTarget(
             conversation_id="conv-voice-alias",
             rpa_session_key="wx:rpa:v1:voice-alias",
@@ -126,14 +204,16 @@ class WechatC2Test(unittest.TestCase):
             },
         }
 
-        self.assertEqual(
-            voice_observation_anchor_key(bubble),
-            "voice-structural-canonical",
-        )
-        self.assertEqual(
-            voice_observation_source_key(target, bubble),
-            voice_observation_source_key(target, transcript),
-        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "MESSAGE_SEQUENCE_IDENTITY_MISSING",
+        ):
+            voice_observation_source_key(target, bubble)
+        with self.assertRaisesRegex(
+            ValueError,
+            "MESSAGE_SEQUENCE_IDENTITY_MISSING",
+        ):
+            voice_observation_source_key(target, transcript)
 
     @staticmethod
     def _identity_text(observation_id: str, content: str, top: int) -> dict:
@@ -193,403 +273,270 @@ class WechatC2Test(unittest.TestCase):
             },
         }
 
+    def test_image_physical_anchor_never_restores_cross_round_identity(self):
+        target = WechatReadTarget(
+            conversation_id="conv-image-anchor-retired",
+            rpa_session_key="wx:image-anchor-retired",
+            display_name="CJIMG001",
+            remark_code="CJIMG001",
+        )
+        old_anchor = {
+            "sender_role": "customer",
+            "bubble_visual_fingerprint": "dhash64:same-seat",
+            "occurrence_index": 1,
+            "occurrence_count": 1,
+        }
+        physical_only = self._identity_image(
+            "image-new-same-seat",
+            260,
+            occurrence_index=1,
+            occurrence_count=1,
+            fingerprint="dhash64:same-seat",
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "MESSAGE_SEQUENCE_IDENTITY_MISSING",
+        ):
+            image_observation_source_key(target, physical_only)
+
+        old_anchor_key = worker_source_message_key(
+            target,
+            identity_kind="image_physical_anchor",
+            identity=old_anchor,
+        )
+        canonical = {
+            **physical_only,
+            "canonical_visual_id": "visual:new-message",
+        }
+        canonical_key = image_observation_source_key(target, canonical)
+        self.assertNotEqual(canonical_key, old_anchor_key)
+        sequence = {
+            **physical_only,
+            "_worker_stable_id": "worker-message-9",
+        }
+        sequence_key = image_observation_source_key(target, sequence)
+        self.assertNotEqual(sequence_key, old_anchor_key)
+        self.assertNotEqual(sequence_key, canonical_key)
+
     def test_server_checkpoint_recovers_sequence_after_local_state_loss(self):
         historical = self._identity_text("historical", "历史消息", 180)
-        target = WechatReadTarget(
-            conversation_id="conv-checkpoint",
-            rpa_session_key="wx:checkpoint",
-            display_name="张三-CJCP0001",
-            remark_code="CJCP0001",
-            authorization_revision="rev-checkpoint",
-            raw={
-                "identity_checkpoint": {
-                    "version": 2,
-                    "next_sequence_floor": 8,
-                    "recent_messages": [
-                        {
-                            "stable_id": "worker-message-7",
-                            "alignment_signature": (
-                                observation_alignment_signature(historical)
-                            ),
-                        }
-                    ],
-                }
-            },
+        current = [historical, self._identity_text("new", "新消息", 260)]
+        result = self._align_committed(
+            [historical],
+            current,
+            {"historical": "worker-message-7"},
         )
-
-        reconciled, state, errors = reconcile_v16104_identity_transition(
-            target,
-            [
-                historical,
-                self._identity_text("new", "新消息", 260),
-            ],
-            None,
-        )
-
-        self.assertEqual(errors, [])
+        self.assertEqual(result["alignment_status"], "unique")
         self.assertEqual(
-            reconciled[0]["_worker_stable_id"],
-            "worker-message-7",
+            inherited_worker_ids(result),
+            {"historical": "worker-message-7"},
         )
-        self.assertEqual(
-            reconciled[1]["_worker_stable_id"],
-            "worker-message-8",
-        )
-        self.assertEqual(state["next_sequence"], 9)
+        self.assertEqual(result["new_suffix_observation_ids"], ["new"])
 
     def test_cross_round_identity_survives_page_shift(self):
-        first, state, errors = reconcile_cross_round_observation_identities(
-            [
-                self._identity_text("frame-1-a", "您好", 180),
-                self._identity_text("frame-1-b", "好的", 260),
-            ]
+        previous = [
+            self._identity_text("frame-1-a", "您好", 180),
+            self._identity_text("frame-1-b", "好的", 260),
+        ]
+        current = [
+            self._identity_text("frame-2-a", "您好", 420),
+            self._identity_text("frame-2-b", "好的", 500),
+        ]
+        result = self._align_committed(
+            previous,
+            current,
+            {
+                "frame-1-a": "worker-message-1",
+                "frame-1-b": "worker-message-2",
+            },
         )
-        shifted, _, shifted_errors = reconcile_cross_round_observation_identities(
-            [
-                self._identity_text("frame-2-a", "您好", 420),
-                self._identity_text("frame-2-b", "好的", 500),
-            ],
-            state,
-        )
-
-        self.assertEqual(errors, [])
-        self.assertEqual(shifted_errors, [])
+        self.assertEqual(result["alignment_status"], "unique")
         self.assertEqual(
-            [item["_worker_stable_id"] for item in first],
-            [item["_worker_stable_id"] for item in shifted],
+            inherited_worker_ids(result),
+            {
+                "frame-2-a": "worker-message-1",
+                "frame-2-b": "worker-message-2",
+            },
         )
 
     def test_cross_round_identity_distinguishes_new_repeated_text(self):
-        first, state, _ = reconcile_cross_round_observation_identities(
-            [self._identity_text("old-ok", "好的", 180)]
+        previous = [self._identity_text("old-ok", "好的", 180)]
+        current = [
+            self._identity_text("old-ok-shifted", "好的", 360),
+            self._identity_text("new-ok", "好的", 440),
+        ]
+        result = self._align_committed(
+            previous,
+            current,
+            {"old-ok": "worker-message-1"},
         )
-        second, _, errors = reconcile_cross_round_observation_identities(
-            [
-                self._identity_text("old-ok-shifted", "好的", 360),
-                self._identity_text("new-ok", "好的", 440),
-            ],
-            state,
-        )
-
-        self.assertEqual(errors, [])
-        self.assertEqual(first[0]["_worker_stable_id"], second[0]["_worker_stable_id"])
-        self.assertNotEqual(second[0]["_worker_stable_id"], second[1]["_worker_stable_id"])
+        self.assertEqual(result["alignment_status"], "ambiguous")
+        self.assertEqual(inherited_worker_ids(result), {})
+        self.assertEqual(result["new_suffix_observation_ids"], [])
 
     def test_cross_round_identity_blocks_fully_identical_sequence(self):
-        _, state, _ = reconcile_cross_round_observation_identities(
-            [
-                self._identity_text("old-ok-1", "好的", 180),
-                self._identity_text("old-ok-2", "好的", 260),
-            ]
-        )
-
-        current, blocked_state, errors = reconcile_cross_round_observation_identities(
-            [
-                self._identity_text("current-ok-1", "好的", 180),
-                self._identity_text("current-ok-2", "好的", 260),
-            ],
-            state,
-        )
-
-        self.assertEqual(errors[0]["error_code"], "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS")
-        self.assertEqual(blocked_state, state)
-        self.assertTrue(all("_worker_stable_id" not in item for item in current))
-
-    def test_cross_round_identity_aligns_previous_suffix_for_repeated_text(self):
-        first, state, errors = reconcile_cross_round_observation_identities(
-            [
-                self._identity_text("old-a-1", "A", 180),
-                self._identity_text("old-a-2", "A", 260),
-                self._identity_text("old-b", "B", 340),
-            ]
-        )
-        current, _, current_errors = (
-            reconcile_cross_round_observation_identities(
-                [
-                    self._identity_text("current-a", "A", 180),
-                    self._identity_text("current-b", "B", 260),
-                    self._identity_text("current-c", "C", 340),
-                ],
-                state,
-            )
-        )
-
-        self.assertEqual(errors, [])
-        self.assertEqual(current_errors, [])
-        self.assertEqual(
-            current[0]["_worker_stable_id"],
-            first[1]["_worker_stable_id"],
-        )
-        self.assertEqual(
-            current[1]["_worker_stable_id"],
-            first[2]["_worker_stable_id"],
-        )
-        self.assertNotIn(
-            current[2]["_worker_stable_id"],
+        previous = [
+            self._identity_text("old-ok-1", "好的", 180),
+            self._identity_text("old-ok-2", "好的", 260),
+        ]
+        current = [
+            self._identity_text("current-ok-1", "好的", 180),
+            self._identity_text("current-ok-2", "好的", 260),
+            self._identity_text("current-ok-3", "好的", 340),
+        ]
+        result = self._align_committed(
+            previous,
+            current,
             {
-                first[0]["_worker_stable_id"],
-                first[1]["_worker_stable_id"],
-                first[2]["_worker_stable_id"],
+                "old-ok-1": "worker-message-1",
+                "old-ok-2": "worker-message-2",
             },
         )
+        self.assertEqual(result["alignment_status"], "ambiguous")
+        self.assertEqual(inherited_worker_ids(result), {})
+
+    def test_cross_round_identity_aligns_previous_suffix_for_repeated_text(self):
+        previous = [
+            self._identity_text("old-a-1", "A", 180),
+            self._identity_text("old-a-2", "A", 260),
+            self._identity_text("old-b", "B", 340),
+        ]
+        current = [
+            self._identity_text("current-a", "A", 180),
+            self._identity_text("current-b", "B", 260),
+            self._identity_text("current-c", "C", 340),
+        ]
+        result = self._align_committed(
+            previous,
+            current,
+            {
+                "old-a-1": "worker-message-1",
+                "old-a-2": "worker-message-2",
+                "old-b": "worker-message-3",
+            },
+        )
+        self.assertEqual(result["alignment_status"], "unique")
+        self.assertEqual(
+            inherited_worker_ids(result),
+            {
+                "current-a": "worker-message-2",
+                "current-b": "worker-message-3",
+            },
+        )
+        self.assertEqual(result["new_suffix_observation_ids"], ["current-c"])
 
     def test_cross_round_identity_aligns_repeated_image_after_occurrence_reset(self):
-        first, state, errors = reconcile_cross_round_observation_identities(
-            [
-                self._identity_image(
-                    "old-image-1",
-                    180,
-                    occurrence_index=0,
-                    occurrence_count=2,
-                ),
-                self._identity_image(
-                    "old-image-2",
-                    340,
-                    occurrence_index=1,
-                    occurrence_count=2,
-                ),
-                self._identity_text("old-b", "B", 500),
-            ]
+        previous_image = {
+            **self._identity_image("old-image", 340, occurrence_index=1, occurrence_count=2),
+            "canonical_visual_id": "visual-image-2",
+        }
+        current_image = {
+            **self._identity_image("current-image", 180, occurrence_index=0, occurrence_count=1),
+            "canonical_visual_id": "visual-image-2",
+        }
+        previous_text = self._identity_text("old-b", "B", 500)
+        current_text = self._identity_text("current-b", "B", 340)
+        result = self._align_committed(
+            [previous_image, previous_text],
+            [current_image, current_text, self._identity_text("current-c", "C", 420)],
+            {
+                "old-image": "worker-message-2",
+                "old-b": "worker-message-3",
+            },
         )
-        current, _, current_errors = (
-            reconcile_cross_round_observation_identities(
-                [
-                    self._identity_image(
-                        "current-image",
-                        180,
-                        occurrence_index=0,
-                        occurrence_count=1,
-                    ),
-                    self._identity_text("current-b", "B", 340),
-                    self._identity_text("current-c", "C", 420),
-                ],
-                state,
-            )
-        )
-
-        self.assertEqual(errors, [])
-        self.assertEqual(current_errors, [])
+        self.assertEqual(result["alignment_status"], "unique")
         self.assertEqual(
-            current[0]["_worker_stable_id"],
-            first[1]["_worker_stable_id"],
-        )
-        self.assertEqual(
-            current[1]["_worker_stable_id"],
-            first[2]["_worker_stable_id"],
+            inherited_worker_ids(result),
+            {
+                "current-image": "worker-message-2",
+                "current-b": "worker-message-3",
+            },
         )
 
     def test_cross_round_identity_upgrades_v2_image_state_without_guessing(self):
-        first, state, errors = reconcile_cross_round_observation_identities(
-            [
-                self._identity_image(
-                    "old-image",
-                    180,
-                    occurrence_index=0,
-                    occurrence_count=1,
-                ),
-                self._identity_text("old-b", "B", 340),
-            ]
-        )
-        v2_state = {
-            **state,
-            "version": 2,
-            "last_frame": [
-                {
-                    "signature": item["signature"],
-                    "stable_id": item["stable_id"],
-                }
-                for item in state["last_frame"]
-            ],
-            "recent_frames": [],
+        previous = {
+            **self._identity_image("old-image", 180, occurrence_index=0, occurrence_count=1),
+            "canonical_visual_id": "visual-image",
         }
-        current, upgraded_state, current_errors = (
-            reconcile_cross_round_observation_identities(
-                [
-                    self._identity_image(
-                        "current-image",
-                        420,
-                        occurrence_index=0,
-                        occurrence_count=1,
-                    ),
-                    self._identity_text("current-b", "B", 580),
-                ],
-                v2_state,
-            )
+        current = {
+            **self._identity_image("current-image", 420, occurrence_index=7, occurrence_count=9),
+            "canonical_visual_id": "visual-image",
+        }
+        result = self._align_committed(
+            [previous],
+            [current],
+            {"old-image": "worker-message-1"},
         )
-
-        self.assertEqual(errors, [])
-        self.assertEqual(current_errors, [])
-        self.assertEqual(upgraded_state["version"], 3)
+        self.assertEqual(result["alignment_status"], "unique")
         self.assertEqual(
-            [item["_worker_stable_id"] for item in current],
-            [item["_worker_stable_id"] for item in first],
+            inherited_worker_ids(result),
+            {"current-image": "worker-message-1"},
         )
-        self.assertTrue(
-            all(
-                item.get("alignment_signature")
-                for item in upgraded_state["last_frame"]
-            )
-        )
+        self.assertEqual(result["matched_pairs"][0]["match_basis"], "canonical_visual_id")
 
-    def test_v16104_transition_keeps_legacy_key_and_assigns_new_identity_only_to_new_suffix(self):
-        old_observation = self._identity_text("legacy-old", "历史消息", 180)
-        new_observation = self._identity_text("new-current", "本轮新消息", 260)
-        target = WechatReadTarget(
-            conversation_id="conv-upgrade",
-            rpa_session_key="CJUnit01",
-            display_name="张三-CJUnit01",
-            remark_code="CJUnit01",
-            authorization_revision="rev-upgrade",
+    def test_retired_identity_transition_cannot_reenter_v3_builder(self):
+        source = Path(wechat_c2_module.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("reconcile_v16104_identity_transition", source)
+        self.assertEqual(source.count("_worker_legacy_dedupe_key"), 1)
+        self.assertIn(
+            'raise ValueError("C2_LEGACY_IDENTITY_FIELD_FORBIDDEN")',
+            source,
         )
-        legacy_source = {
-            **old_observation,
-            "content": old_observation["content_clean"],
-            "type": old_observation["message_type"],
-        }
-        legacy_key, _, _ = message_dedupe_metadata(
-            target,
-            legacy_source,
-            0,
-            messages=[legacy_source],
-        )
-        target.raw = {
-            "identity_transition": {
-                "version": 1,
-                "source_version": "v16.104",
-                "legacy_messages": [{"dedupe_key": legacy_key}],
-            }
-        }
-
-        transitioned, state, errors = reconcile_v16104_identity_transition(
-            target,
-            [old_observation, new_observation],
-            None,
-        )
-
-        self.assertEqual(errors, [])
-        self.assertEqual(transitioned[0]["_worker_legacy_dedupe_key"], legacy_key)
-        self.assertNotIn("_worker_legacy_dedupe_key", transitioned[1])
-        first_payload = build_v3_message_ingest_payload(
-            target,
-            {"observations": transitioned},
-        )
-        self.assertEqual(first_payload["messages"][0]["dedupe_key"], legacy_key)
-        self.assertNotEqual(first_payload["messages"][1]["dedupe_key"], legacy_key)
-
-        shifted, _, shifted_errors = reconcile_v16104_identity_transition(
-            target,
-            [
-                self._identity_text("legacy-old-shifted", "历史消息", 420),
-                self._identity_text("new-current-shifted", "本轮新消息", 500),
-            ],
-            state,
-        )
-        self.assertEqual(shifted_errors, [])
-        self.assertEqual(shifted[0]["_worker_legacy_dedupe_key"], legacy_key)
+        for retired_identity in (
+            "ocr_message_identity_context",
+            "voice_anchor_identity",
+            "voice_semantic_identity",
+            "worker_structural_identity",
+        ):
+            self.assertNotIn(retired_identity, source)
 
     def test_v16104_transition_runs_when_backend_support_arrives_after_local_state(self):
-        old_observation = self._identity_text("legacy-old", "历史消息", 180)
-        target = WechatReadTarget(
-            conversation_id="conv-delayed-upgrade",
-            rpa_session_key="CJDELAY01",
-            display_name="张三-CJDELAY01",
-            remark_code="CJDELAY01",
-            authorization_revision="rev-delayed",
+        previous = [self._identity_text("old", "历史消息", 180)]
+        current = [
+            self._identity_text("old-visible", "历史消息", 420),
+            self._identity_text("new", "新消息", 500),
+        ]
+        result = self._align_committed(
+            previous,
+            current,
+            {"old": "worker-message-8"},
         )
-
-        first, local_state, first_errors = reconcile_v16104_identity_transition(
-            target,
-            [old_observation],
-            None,
+        self.assertEqual(result["alignment_status"], "unique")
+        self.assertEqual(
+            inherited_worker_ids(result),
+            {"old-visible": "worker-message-8"},
         )
-        self.assertEqual(first_errors, [])
-        self.assertTrue(first[0]["_worker_stable_id"])
-        self.assertNotIn("legacy_transition_completed", local_state)
-
-        legacy_source = {
-            **old_observation,
-            "content": old_observation["content_clean"],
-            "type": old_observation["message_type"],
-        }
-        legacy_key, _, _ = message_dedupe_metadata(
-            target,
-            legacy_source,
-            0,
-            messages=[legacy_source],
-        )
-        target.raw = {
-            "identity_transition": {
-                "version": 1,
-                "source_version": "v16.104",
-                "legacy_messages": [{"dedupe_key": legacy_key}],
-            }
-        }
-
-        migrated, migrated_state, migrated_errors = (
-            reconcile_v16104_identity_transition(
-                target,
-                [self._identity_text("legacy-old-later", "历史消息", 420)],
-                local_state,
-            )
-        )
-
-        self.assertEqual(migrated_errors, [])
-        self.assertEqual(migrated[0]["_worker_legacy_dedupe_key"], legacy_key)
-        self.assertTrue(migrated_state["legacy_transition_completed"])
+        self.assertEqual(result["new_suffix_observation_ids"], ["new"])
 
     def test_versioned_empty_transition_is_required_to_mark_migration_complete(self):
-        target = WechatReadTarget(
-            conversation_id="conv-empty-upgrade",
-            rpa_session_key="CJEMPTY01",
-            display_name="张三-CJEMPTY01",
-            remark_code="CJEMPTY01",
-            authorization_revision="rev-empty",
-            raw={
-                "identity_transition": {
-                    "version": 1,
-                    "source_version": "v16.104",
-                    "legacy_messages": [],
-                }
-            },
+        current = [self._identity_text("new-only", "全新消息", 180)]
+        result = align_committed_message_sequence(
+            [],
+            build_post_action_observation_sequence(current),
+            pre_sequence_source="empty_checkpoint",
+            pre_frame_id="checkpoint:none",
+            post_frame_id="frame:first",
         )
-
-        _, state, errors = reconcile_v16104_identity_transition(
-            target,
-            [self._identity_text("new-only", "全新消息", 180)],
-            None,
-        )
-
-        self.assertEqual(errors, [])
-        self.assertTrue(state["legacy_transition_completed"])
+        self.assertEqual(result["alignment_status"], "not_required")
+        self.assertEqual(result["new_suffix_observation_ids"], ["new-only"])
 
     def test_cross_round_identity_blocks_guess_when_no_sequence_overlap_exists(self):
-        _, state, _ = reconcile_cross_round_observation_identities(
-            [
-                self._identity_text("old-a", "第一条", 180),
-                self._identity_text("old-ok", "好的", 260),
-            ]
+        previous = [
+            self._identity_text("old-a", "第一条", 180),
+            self._identity_text("old-ok", "好的", 260),
+        ]
+        current = [self._identity_text("unrelated", "完全不同的上下文", 180)]
+        result = self._align_committed(
+            previous,
+            current,
+            {
+                "old-a": "worker-message-1",
+                "old-ok": "worker-message-2",
+            },
         )
-        _, state, _ = reconcile_cross_round_observation_identities(
-            [self._identity_text("new-context", "完全不同的上下文", 180)],
-            state,
-        )
-        current, blocked_state, errors = reconcile_cross_round_observation_identities(
-            [self._identity_text("ambiguous-ok", "好的", 180)],
-            state,
-        )
-
-        self.assertNotIn("_worker_stable_id", current[0])
-        self.assertEqual(errors[0]["error_code"], "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS")
-        self.assertEqual(blocked_state, state)
-        recovered, _, recovered_errors = reconcile_cross_round_observation_identities(
-            [
-                self._identity_text("old-a-visible-again", "第一条", 180),
-                self._identity_text("old-ok-visible-again", "好的", 260),
-            ],
-            blocked_state,
-        )
-        self.assertEqual(recovered_errors, [])
-        self.assertTrue(all(item.get("_worker_stable_id") for item in recovered))
+        self.assertEqual(result["alignment_status"], "unresolved")
+        self.assertEqual(inherited_worker_ids(result), {})
+        self.assertEqual(result["new_suffix_observation_ids"], [])
 
     def test_shared_mixed_roundtrip_fixture_is_translated_by_worker_in_screen_order(self):
         fixture_path = resolve_contract_artifact(
@@ -1078,6 +1025,7 @@ class WechatC2Test(unittest.TestCase):
                         "message_type": "text",
                         "voice_state": "not_voice",
                         "content_clean": "上一条消息",
+                        "_worker_stable_id": "worker-message-8",
                         "source_message": {"id": "win32_ocr:prefix", "source_adapter": "win32_ocr"},
                     }
                 )
@@ -1091,6 +1039,7 @@ class WechatC2Test(unittest.TestCase):
                     "message_type": "text",
                     "voice_state": "not_voice",
                     "content_clean": "哦",
+                    "_worker_stable_id": "worker-message-9",
                     "bubble_rect": [841, top, 868, top + 26],
                     "source_message": {
                         "id": f"win32_ocr:self-{top}",
@@ -1111,8 +1060,18 @@ class WechatC2Test(unittest.TestCase):
             first_item["message_position"].get("visual_top"),
             shifted_item["message_position"].get("visual_top"),
         )
-        self.assertEqual(first_item["raw_payload"]["dedupe_basis"]["occurrence_index"], 0)
-        self.assertEqual(shifted_item["raw_payload"]["dedupe_basis"]["occurrence_index"], 0)
+        self.assertEqual(
+            first_item["raw_payload"]["dedupe_basis"],
+            {
+                "source": "worker_cross_round_sequence",
+                "conversation_id": "conv-1",
+                "worker_stable_id": "worker-message-9",
+            },
+        )
+        self.assertEqual(
+            shifted_item["raw_payload"]["dedupe_basis"],
+            first_item["raw_payload"]["dedupe_basis"],
+        )
 
     def test_v3_mixed_text_and_bottom_up_voice_results_are_emitted_top_to_bottom(self):
         target = WechatReadTarget(
@@ -1602,6 +1561,161 @@ class WechatC2Test(unittest.TestCase):
             evidence["flow_gate_errors"],
             ["C2_MESSAGE_HISTORY_GAP"],
         )
+
+    def test_worker_sequence_is_voice_business_identity_not_screen_anchor(self):
+        target = WechatReadTarget(
+            conversation_id="conv-voice-worker-id",
+            rpa_session_key="wx:rpa:v1:voice-worker-id",
+            display_name="CJVOICE1",
+            remark_code="CJVOICE1",
+        )
+        first = {
+            "_worker_stable_id": "worker-message-7",
+            "voice_anchor_structural_key": "voice:customer:3:bottom:1",
+        }
+        moved = {
+            "_worker_stable_id": "worker-message-7",
+            "voice_anchor_structural_key": "voice:customer:3:bottom:2",
+        }
+        self.assertEqual(
+            voice_observation_source_key(target, first),
+            voice_observation_source_key(target, moved),
+        )
+
+    def test_image_terminal_projection_preserves_ui_action_phase(self):
+        projected = wechat_c2_module.apply_image_terminal_result(
+            {
+                "observation_id": "image-action-evidence",
+                "row_kind": "image_bubble",
+            },
+            {
+                "state": "failed",
+                "reason": "menu_evidence_incomplete",
+                "transaction": {
+                    "action_phase": "trigger_attempted",
+                    "status": "menu_opened_then_unconfirmed",
+                },
+            },
+        )
+
+        self.assertEqual(projected["action_phase"], "trigger_attempted")
+        self.assertEqual(projected["item_state"], "failed")
+
+    def test_voice_transcription_meta_preserves_ui_action_evidence(self):
+        projected = wechat_c2_module.voice_transcription_meta(
+            {
+                "state": "voice_transcribe_completed",
+                "action_phase": "confirmed",
+                "ui_action_performed": True,
+                "business_state": "completed",
+                "business_result_confirmed": True,
+                "canonical_voice_action_id": "voice-action-1",
+                "voice_action_stage": "execute",
+                "reserved_worker_stable_id": "voice-stable-1",
+                "pre_frame_id": "voice-frame-pre-1",
+                "post_frame_id": "voice-frame-post-1",
+                "selected_pre_observation_id": "voice-pre-1",
+                "selected_action_token": "voice-token-1",
+                "selected_target_fingerprint": "voice-fingerprint-1",
+                "transcript_binding_status": "confirmed",
+                "transcript_binding_method": "native_source_id",
+                "binding_candidate_count": 1,
+                "native_source_message_id": "wx-native-voice-1",
+                "confirmed_action_mapping": {
+                    "canonical_action_id": "voice-action-1",
+                    "reserved_worker_stable_id": "voice-stable-1",
+                    "binding_confirmed": True,
+                    "post_observation_id": "voice-post-1",
+                    "derived_observation_ids": [],
+                },
+            }
+        )
+
+        self.assertEqual(projected["action_phase"], "confirmed")
+        self.assertIs(projected["ui_action_performed"], True)
+        self.assertIs(projected["business_result_confirmed"], True)
+        self.assertEqual(
+            projected["canonical_voice_action_id"], "voice-action-1"
+        )
+        self.assertEqual(
+            projected["native_source_message_id"], "wx-native-voice-1"
+        )
+        self.assertEqual(
+            projected["confirmed_action_mapping"]["post_observation_id"],
+            "voice-post-1",
+        )
+
+    def test_ingest_evidence_preserves_monotonic_ui_frame_invalidation(self):
+        target = WechatReadTarget(
+            conversation_id="conv-frame-invalidated",
+            rpa_session_key="wx:rpa:v1:frame-invalidated",
+            display_name="CJFRAME1",
+            remark_code="CJFRAME1",
+            authorization_revision="revision-frame-invalidated",
+        )
+        payload = build_v3_message_ingest_payload(
+            target,
+            {
+                "authoritative_frame_source": "final_read",
+                "ui_frame_invalidated": True,
+                "observations": [
+                    {
+                        "schema_version": 3,
+                        "observation_id": "text-after-media-action",
+                        "row_kind": "text_bubble",
+                        "sender_role": "customer",
+                        "sender_role_source": "same_row_avatar",
+                        "message_type": "text",
+                        "voice_state": "not_voice",
+                        "content_clean": "媒体动作后的最新文字",
+                        "source_message": {
+                            "id": "text-after-media-action",
+                            "type": "text",
+                            "sender_role": "customer",
+                            "content": "媒体动作后的最新文字",
+                        },
+                    }
+                ],
+            },
+        )
+
+        self.assertIs(
+            payload["evidence"]["ui_frame_invalidated"],
+            True,
+        )
+        self.assertEqual(
+            payload["evidence"]["observations"][0][
+                "source_message"
+            ]["source_message_key"],
+            payload["messages"][0]["source_message_key"],
+        )
+
+    def test_same_duration_voice_insertion_gets_new_sequence_identity(self):
+        old_voice = {
+            "observation_id": "old-three-seconds",
+            "row_kind": "voice_bubble",
+            "sender_role": "customer",
+            "message_type": "voice",
+            "voice_state": "untranscribed",
+            "native_source_message_id": "native-old-voice",
+        }
+        new_voice = {
+            **old_voice,
+            "observation_id": "new-three-seconds",
+            "native_source_message_id": "",
+        }
+        visible_old = {**old_voice, "observation_id": "old-three-seconds-visible"}
+        result = self._align_committed(
+            [old_voice],
+            [visible_old, new_voice],
+            {"old-three-seconds": "worker-message-1"},
+        )
+        self.assertEqual(result["alignment_status"], "unique")
+        self.assertEqual(
+            inherited_worker_ids(result),
+            {"old-three-seconds-visible": "worker-message-1"},
+        )
+        self.assertEqual(result["new_suffix_observation_ids"], ["new-three-seconds"])
 
 
 if __name__ == "__main__":

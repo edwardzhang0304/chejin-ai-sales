@@ -506,7 +506,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "91688de9047d5973cee9b18de00ca2f6e7772a86"
+                        "0ef552684d474be9fa95af8c8c5557f833e4ecbd"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -518,6 +518,15 @@ class PackagingScriptsTest(unittest.TestCase):
                             "reliable_message_type_before_structural_"
                             "image_arbitration"
                         ),
+                        "voice_prepare_execute_single_target_contract",
+                        "continuous_voice_tracking_edges_contract",
+                        "unified_voice_observation_sequence_arbitration",
+                        (
+                            "voice_action_journal_monotonic_terminal_"
+                            "settlement"
+                        ),
+                        "ambiguous_voice_finite_terminal_settlement",
+                        "c2_contract_3_13_2_generated_schema",
                     ],
                 }
             ],
@@ -531,7 +540,7 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["chejin_overlays"],
         )
         self.assertIn(
-            "91688de9047d5973cee9b18de00ca2f6e7772a86",
+            "0ef552684d474be9fa95af8c8c5557f833e4ecbd",
             provenance["integration_note"],
         )
         self.assertIn(

@@ -159,6 +159,57 @@ class RpaBridgeTest(unittest.TestCase):
         self.assertEqual(path.name, "wechat_win32_ocr_sidecar.py")
         self.assertIn("wechat_ai_customer_service", str(path))
 
+    def test_voice_prepare_is_read_only_and_execute_carries_exact_token(self):
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        bridge.mode = "real"
+        calls: list[list[str]] = []
+
+        def fake_call(args, **_kwargs):
+            calls.append(list(args))
+            return {"ok": True}
+
+        with patch.object(bridge, "_call_omniauto", side_effect=fake_call):
+            bridge.prepare_voice_action(
+                display_name="CJK7M4Q2",
+                rpa_session_key="",
+                remark_code="CJK7M4Q2",
+                target_mode="current",
+            )
+            bridge.execute_voice_action(
+                display_name="CJK7M4Q2",
+                rpa_session_key="",
+                canonical_voice_action_id="voice-action-1",
+                reserved_worker_stable_id="worker-message-9",
+                pre_frame_id="voice-frame-1",
+                selected_pre_observation_id="voice-observation-1",
+                selected_action_token="single-use-token",
+                selected_target_fingerprint="target-fingerprint",
+                remark_code="CJK7M4Q2",
+                target_mode="current",
+                action_journal=Path("voice-action.json"),
+            )
+
+        prepare_args, execute_args = calls
+        self.assertEqual(
+            prepare_args[prepare_args.index("--voice-action-stage") + 1],
+            "prepare",
+        )
+        self.assertNotIn("--selected-action-token", prepare_args)
+        self.assertEqual(
+            execute_args[execute_args.index("--voice-action-stage") + 1],
+            "execute",
+        )
+        self.assertEqual(
+            execute_args[execute_args.index("--selected-action-token") + 1],
+            "single-use-token",
+        )
+        self.assertEqual(
+            execute_args[
+                execute_args.index("--selected-target-fingerprint") + 1
+            ],
+            "target-fingerprint",
+        )
+
     def test_mock_bridge_emits_add_friend_steps_and_result(self):
         bridge = RpaBridge()
         bridge.mode = "mock"
@@ -453,38 +504,6 @@ class RpaBridgeTest(unittest.TestCase):
         self.assertEqual(parsed["name"], candidate["name"])
         self.assertEqual(parsed["session_key"], candidate["session_key"])
         self.assertEqual(parsed["center_y"], candidate["center_y"])
-
-    def test_real_bridge_voice_transcribe_current_chat_validates_target_without_switching(self):
-        bridge = RpaBridge(sidecar_script=Path(__file__))
-        bridge.mode = "real"
-        captured = {"args": [], "timeout": None}
-
-        def fake_call_omniauto(args, timeout=30, cancel_check=None):
-            captured["args"] = args
-            captured["timeout"] = timeout
-            return {"ok": True, "adapter": "win32_ocr", "state": "voice_transcribe_no_new_text", "transcribed_messages": []}
-
-        with patch.object(bridge, "_call_omniauto", side_effect=fake_call_omniauto):
-            result = bridge.voice_transcribe(
-                display_name="CJTEST01 许聪",
-                rpa_session_key="",
-                remark_code="CJTEST01",
-                target_mode="current",
-            )
-
-        self.assertTrue(result["ok"])
-        self.assertEqual(captured["args"][0], "voice-transcribe")
-        self.assertIn("--target", captured["args"])
-        self.assertEqual(captured["args"][captured["args"].index("--target") + 1], "CJTEST01 许聪")
-        self.assertIn("--target-mode", captured["args"])
-        self.assertEqual(captured["args"][captured["args"].index("--target-mode") + 1], "current")
-        self.assertIn("--remark-code", captured["args"])
-        self.assertIn("--max-duration-seconds", captured["args"])
-        self.assertIn("--sidecar-run-id", captured["args"])
-        self.assertNotIn("--session-key", captured["args"])
-        self.assertGreaterEqual(int(captured["timeout"]), 150)
-        self.assertIn("sidecar_run_id", result)
-        self.assertIn(str(result["sidecar_run_id"]), str(result["artifact_dir"]))
 
     def test_real_bridge_emits_preflight_steps_before_sidecar_call(self):
         bridge = RpaBridge(sidecar_script=Path(__file__))

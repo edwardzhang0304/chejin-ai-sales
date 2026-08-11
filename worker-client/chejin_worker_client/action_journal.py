@@ -11,7 +11,7 @@ from .config import CONFIG
 from .c2_contract import c2_contract_v3
 
 
-ACTION_JOURNAL_SCHEMA_VERSION = 2
+ACTION_JOURNAL_SCHEMA_VERSION = 4
 ACTION_PHASES = tuple(
     str(value)
     for value in (c2_contract_v3().get("action_phases") or [])
@@ -75,6 +75,11 @@ def initialize_action_journal(
     conversation_id: str,
     items: Iterable[dict[str, Any]],
     origin_read_run_id: str | None = None,
+    pre_action_identity_sequence: list[dict[str, Any]] | None = None,
+    pre_frame_id: str | None = None,
+    canonical_action_id: str | None = None,
+    reserved_worker_stable_id: str | None = None,
+    prepare_evidence: dict[str, Any] | None = None,
 ) -> Path:
     target = Path(path)
     normalized_action_kind = str(action_kind or "").strip().lower()
@@ -120,6 +125,39 @@ def initialize_action_journal(
     if not normalized_items:
         raise ValueError("ACTION_JOURNAL_ITEMS_MISSING")
     now = _now_iso()
+    action_id = str(canonical_action_id or "").strip()
+    reserved_id = str(reserved_worker_stable_id or "").strip()
+    pre_sequence = [
+        json.loads(json.dumps(item, ensure_ascii=False))
+        for item in (pre_action_identity_sequence or [])
+        if isinstance(item, dict)
+    ]
+    if pre_sequence and not str(pre_frame_id or "").strip():
+        raise ValueError("ACTION_JOURNAL_PRE_FRAME_ID_MISSING")
+    if bool(action_id) != bool(reserved_id):
+        raise ValueError("ACTION_JOURNAL_RESERVED_IDENTITY_INCOMPLETE")
+    normalized_prepare_evidence = (
+        json.loads(json.dumps(prepare_evidence, ensure_ascii=False))
+        if isinstance(prepare_evidence, dict)
+        else None
+    )
+    if normalized_action_kind == "voice":
+        required_prepare_fields = {
+            "pre_frame_id",
+            "selected_pre_observation_id",
+            "selected_action_token",
+            "selected_target_fingerprint",
+        }
+        if not isinstance(normalized_prepare_evidence, dict) or any(
+            not str(normalized_prepare_evidence.get(field) or "").strip()
+            for field in required_prepare_fields
+        ):
+            raise ValueError("ACTION_JOURNAL_VOICE_PREPARE_EVIDENCE_MISSING")
+        if (
+            str(normalized_prepare_evidence["pre_frame_id"]).strip()
+            != str(pre_frame_id or "").strip()
+        ):
+            raise ValueError("ACTION_JOURNAL_VOICE_PRE_FRAME_CONFLICT")
     _atomic_write(
         target,
         {
@@ -128,6 +166,12 @@ def initialize_action_journal(
             "transaction_id": str(transaction_id or "").strip(),
             "conversation_id": str(conversation_id or "").strip(),
             "origin_read_run_id": normalized_origin_read_run_id or None,
+            "canonical_action_id": action_id or None,
+            "reserved_worker_stable_id": reserved_id or None,
+            "pre_frame_id": str(pre_frame_id or "").strip() or None,
+            "pre_action_identity_sequence": pre_sequence,
+            "prepare_evidence": normalized_prepare_evidence,
+            "sequence_alignment_evidence": None,
             "action_phase": "not_attempted",
             "items": normalized_items,
             "created_at": now,
@@ -135,6 +179,60 @@ def initialize_action_journal(
         },
     )
     return target
+
+
+def record_action_sequence_alignment(
+    path: str | Path,
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist post-action alignment without rebuilding the pre-action state."""
+
+    target = Path(path)
+    payload = read_action_journal(target)
+    if not payload:
+        raise ValueError("ACTION_JOURNAL_NOT_FOUND")
+    if not isinstance(payload.get("pre_action_identity_sequence"), list):
+        raise ValueError("ACTION_JOURNAL_PRE_SEQUENCE_MISSING")
+    status = str(evidence.get("alignment_status") or "").strip()
+    if status not in {"unique", "ambiguous", "unresolved", "not_required"}:
+        raise ValueError("ACTION_JOURNAL_ALIGNMENT_STATUS_INVALID")
+    payload["sequence_alignment_evidence"] = json.loads(
+        json.dumps(evidence, ensure_ascii=False)
+    )
+    payload["updated_at"] = _now_iso()
+    _atomic_write(target, payload)
+    return payload
+
+
+def commit_action_journal_item_identity(
+    path: str | Path,
+    *,
+    journal_item_id: str,
+    source_message_key: str,
+) -> dict[str, Any]:
+    """Replace the action-local item key only after identity is confirmed."""
+
+    target = Path(path)
+    payload = read_action_journal(target)
+    items = payload.get("items") if isinstance(payload.get("items"), dict) else {}
+    item_id = str(journal_item_id or "").strip()
+    source_key = str(source_message_key or "").strip()
+    if not item_id or not source_key or item_id not in items:
+        raise ValueError("ACTION_JOURNAL_ITEM_IDENTITY_INVALID")
+    if source_key != item_id and source_key in items:
+        raise ValueError("ACTION_JOURNAL_ITEM_IDENTITY_CONFLICT")
+    item = dict(items.pop(item_id))
+    item["source_message_key"] = source_key
+    item["committed_from_action_id"] = item_id
+    item["updated_at"] = _now_iso()
+    items[source_key] = item
+    payload["items"] = items
+    payload["committed_worker_stable_id"] = str(
+        payload.get("reserved_worker_stable_id") or ""
+    ).strip() or None
+    payload["updated_at"] = _now_iso()
+    _atomic_write(target, payload)
+    return payload
 
 
 def update_action_journal_item(
@@ -159,7 +257,11 @@ def update_action_journal_item(
     if requested_phase not in _PHASE_RANK:
         raise ValueError("ACTION_JOURNAL_PHASE_INVALID")
     if _PHASE_RANK[requested_phase] < _PHASE_RANK.get(current_phase, 0):
-        requested_phase = current_phase
+        # A delayed writer must not keep the newer phase while overwriting
+        # its business result, confirmation bit, error, or terminal evidence
+        # with an older snapshot. Treat the whole regressive mutation as a
+        # stale write, not just the action_phase field.
+        return payload
     item["action_phase"] = requested_phase
     if business_state is not None:
         item["business_state"] = str(business_state or "").strip() or None
@@ -241,10 +343,12 @@ def action_journal_phase(path: str | Path) -> str:
 def action_journal_item_has_formed_fact(item: dict[str, Any]) -> bool:
     """Return whether an item contains a result that must be settled."""
 
+    phase = str(item.get("action_phase") or "not_attempted").strip()
+    if phase == "cancelled_before_trigger":
+        return False
     terminal_payload = item.get("terminal_payload")
     return bool(
-        str(item.get("action_phase") or "not_attempted").strip()
-        != "not_attempted"
+        phase != "not_attempted"
         or str(item.get("business_state") or "").strip()
         in {"completed", "failed"}
         or str(item.get("error_code") or "").strip()
@@ -264,14 +368,15 @@ def action_journal_is_strictly_not_attempted(
     items = payload.get("items")
     if (
         str(payload.get("action_phase") or "").strip()
-        != "not_attempted"
+        not in {"not_attempted", "cancelled_before_trigger"}
         or not isinstance(items, dict)
         or not items
     ):
         return False
     return all(
         isinstance(item, dict)
-        and str(item.get("action_phase") or "").strip() == "not_attempted"
+        and str(item.get("action_phase") or "").strip()
+        in {"not_attempted", "cancelled_before_trigger"}
         and not action_journal_item_has_formed_fact(item)
         for item in items.values()
     )

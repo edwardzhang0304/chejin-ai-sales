@@ -473,6 +473,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=SIDECAR_ACTION_CHOICES, nargs="?")
     parser.add_argument("--sidecar-run-id", default="", help="Correlation id for one Worker-to-sidecar run.")
+    parser.add_argument("--canonical-voice-action-id", default="")
+    parser.add_argument("--reserved-worker-stable-id", default="")
+    parser.add_argument("--voice-action-stage", choices=("prepare", "execute"), default="prepare")
+    parser.add_argument("--pre-frame-id", default="")
+    parser.add_argument("--selected-pre-observation-id", default="")
+    parser.add_argument("--selected-action-token", default="")
+    parser.add_argument("--selected-target-fingerprint", default="")
     parser.add_argument("--target", help="Chat name for messages/send.")
     parser.add_argument("--session-key", default="", help="Internal session key for row-level RPA targeting.")
     parser.add_argument(
@@ -1182,20 +1189,63 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
             parsed_excluded_voice_anchor_keys = []
         if not isinstance(parsed_excluded_voice_anchor_keys, list):
             parsed_excluded_voice_anchor_keys = []
-        payload = voice_transcribe_payload(
-            hwnd,
-            probe,
-            target=args.target or "",
-            artifact_dir=args.artifact_dir,
-            max_duration_seconds=bounded_int(args.max_duration_seconds, default=240, minimum=15, maximum=900),
-            confirm_target=confirmation_target if single_frame_confirmation else "",
-            confirm_exact=False if clean_remark_code else bool(args.exact),
-            excluded_voice_anchor_keys={
-                str(value).strip() for value in parsed_excluded_voice_anchor_keys if str(value).strip()
-            },
-            action_journal_path=str(
-                getattr(args, "action_journal", "") or ""
-            ).strip(),
+        voice_action_stage = str(
+            getattr(args, "voice_action_stage", "prepare") or "prepare"
+        ).strip()
+        common_voice_args = {
+            "target": args.target or "",
+            "artifact_dir": args.artifact_dir,
+            "confirm_target": (
+                confirmation_target if single_frame_confirmation else ""
+            ),
+            "confirm_exact": (
+                False if clean_remark_code else bool(args.exact)
+            ),
+        }
+        if voice_action_stage == "prepare":
+            payload = prepare_voice_action_payload(
+                hwnd,
+                probe,
+                **common_voice_args,
+                excluded_voice_anchor_keys={
+                    str(value).strip()
+                    for value in parsed_excluded_voice_anchor_keys
+                    if str(value).strip()
+                },
+            )
+        else:
+            payload = execute_voice_action_payload(
+                hwnd,
+                probe,
+                **common_voice_args,
+                action_journal_path=str(
+                    getattr(args, "action_journal", "") or ""
+                ).strip(),
+                canonical_voice_action_id=str(
+                    getattr(args, "canonical_voice_action_id", "") or ""
+                ).strip(),
+                reserved_worker_stable_id=str(
+                    getattr(args, "reserved_worker_stable_id", "") or ""
+                ).strip(),
+                pre_frame_id=str(getattr(args, "pre_frame_id", "") or "").strip(),
+                selected_pre_observation_id=str(
+                    getattr(args, "selected_pre_observation_id", "") or ""
+                ).strip(),
+                selected_action_token=str(
+                    getattr(args, "selected_action_token", "") or ""
+                ).strip(),
+                selected_target_fingerprint=str(
+                    getattr(args, "selected_target_fingerprint", "") or ""
+                ).strip(),
+            )
+        payload.setdefault(
+            "observation_schema_version", C2_OBSERVATION_SCHEMA_VERSION
+        )
+        payload.setdefault(
+            "contract_revision", C2_OBSERVATION_CONTRACT_REVISION
+        )
+        payload.setdefault(
+            "contract_sha256", C2_OBSERVATION_CONTRACT_SHA256
         )
         payload["sidecar_run_id"] = clean_sidecar_run_id
         payload["target_mode"] = target_mode or "visible"
@@ -2172,87 +2222,102 @@ def messages_payload(
     return payload
 
 
-def voice_transcribe_payload(
+def _voice_action_frame_id(image: Image.Image, screenshot_path: str) -> str:
+    digest = hashlib.sha256()
+    digest.update(str(screenshot_path or "").encode("utf-8"))
+    digest.update(bytes(image.tobytes()))
+    return f"voice-frame:{digest.hexdigest()}"
+
+
+def _voice_observation_fingerprint(
+    image: Image.Image,
+    observation: dict[str, Any],
+) -> str:
+    """Return action-local target evidence without using screen position as identity."""
+
+    source_message = (
+        observation.get("source_message")
+        if isinstance(observation.get("source_message"), dict)
+        else {}
+    )
+    target = (
+        observation.get("action_target")
+        if isinstance(observation.get("action_target"), dict)
+        else {}
+    )
+    rect = unified_voice_observation_rect(observation)
+    crop_digest = ""
+    if rect:
+        left, top, right, bottom = [int(round(value)) for value in rect]
+        left = max(0, left)
+        top = max(0, top)
+        right = min(image.size[0], right)
+        bottom = min(image.size[1], bottom)
+        if right > left and bottom > top:
+            crop = image.crop((left, top, right, bottom)).convert("L")
+            crop.thumbnail((96, 48))
+            crop_digest = hashlib.sha256(bytes(crop.tobytes())).hexdigest()
+    material = {
+        "sender_role": normalized_voice_sender_role(
+            observation.get("sender_role")
+        ),
+        "voice_duration": str(observation.get("voice_duration") or ""),
+        "voice_duration_text": voice_transcribe_compact_text(
+            observation.get("voice_duration_text")
+        ),
+        "source_message_id": str(
+            observation.get("source_message_id")
+            or source_message.get("id")
+            or ""
+        ),
+        "anchor_stable_key": str(target.get("anchor_stable_key") or ""),
+        "avatar_role": str(
+            (target.get("avatar_alignment") or {}).get("role") or ""
+        ),
+        "evidence_sources": sorted(
+            str(value) for value in (observation.get("evidence_sources") or [])
+        ),
+        "crop_digest": crop_digest,
+        # A target crop can be pixel-identical after a newly arrived voice
+        # takes the old bubble's seat.  Bind the prepare token to the complete
+        # observed frame as action-local evidence so any concurrent page
+        # mutation forces a zero-click re-prepare.
+        "frame_visual_digest": hashlib.sha256(
+            bytes(image.tobytes())
+        ).hexdigest(),
+    }
+    return hashlib.sha256(
+        json.dumps(material, sort_keys=True, ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+
+
+def _public_voice_observation(observation: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in observation.items()
+        if key not in {"action_target", "visible_button_target"}
+    }
+
+
+def prepare_voice_action_payload(
     hwnd: int,
     probe: dict[str, Any],
     *,
     target: str,
     artifact_dir: str | None = None,
-    max_duration_seconds: int = 240,
     confirm_target: str = "",
     confirm_exact: bool = False,
     excluded_voice_anchor_keys: set[str] | None = None,
-    action_journal_path: str = "",
 ) -> dict[str, Any]:
-    flow_started_at = time.monotonic()
-    last_progress_at = flow_started_at
-    no_progress_timeout_seconds = max(15, int(max_duration_seconds))
-    hard_safety_timeout_seconds = max(900, no_progress_timeout_seconds * 4)
-    performance_started_at = time.perf_counter()
-    performance_timing: dict[str, Any] = {
-        "schema_version": 1,
-        "flow": "voice_transcribe_current_chat",
-        "watchdog_mode": "no_progress",
-        "no_progress_timeout_seconds": no_progress_timeout_seconds,
-        "hard_safety_timeout_seconds": hard_safety_timeout_seconds,
-        "started_at": _sidecar_timing_now_iso(),
-        "operations": [],
-    }
+    """Capture and select exactly one physical voice; never touch WeChat UI."""
 
-    def timed_call(kind: str, purpose: str, callback: Callable[[], Any]) -> Any:
-        started = time.perf_counter()
-        operation: dict[str, Any] = {
-            "kind": kind,
-            "purpose": purpose,
-            "started_at": _sidecar_timing_now_iso(),
-        }
-        try:
-            result = callback()
-        except Exception as exc:
-            operation["error"] = type(exc).__name__
-            raise
-        finally:
-            operation["finished_at"] = _sidecar_timing_now_iso()
-            operation["duration_seconds"] = round(max(0.0, time.perf_counter() - started), 4)
-            performance_timing["operations"].append(operation)
-        if kind == "ocr" and isinstance(result, list):
-            operation["item_count"] = len(result)
-        return result
-
-    def finalize_performance_timing() -> dict[str, Any]:
-        operations = performance_timing.get("operations") if isinstance(performance_timing.get("operations"), list) else []
-        performance_timing["finished_at"] = _sidecar_timing_now_iso()
-        performance_timing["total_duration_seconds"] = round(
-            max(0.0, time.perf_counter() - performance_started_at),
-            4,
-        )
-        performance_timing["operation_count"] = len(operations)
-        performance_timing["ocr_call_count"] = sum(1 for item in operations if item.get("kind") == "ocr")
-        performance_timing["ocr_total_duration_seconds"] = round(
-            sum(float(item.get("duration_seconds") or 0.0) for item in operations if item.get("kind") == "ocr"),
-            4,
-        )
-        performance_timing["capture_call_count"] = sum(1 for item in operations if item.get("kind") == "capture")
-        performance_timing["capture_total_duration_seconds"] = round(
-            sum(float(item.get("duration_seconds") or 0.0) for item in operations if item.get("kind") == "capture"),
-            4,
-        )
-        performance_timing["wait_call_count"] = sum(1 for item in operations if item.get("kind") == "wait")
-        performance_timing["wait_total_duration_seconds"] = round(
-            sum(float(item.get("duration_seconds") or 0.0) for item in operations if item.get("kind") == "wait"),
-            4,
-        )
-        return performance_timing
-
-    watchdog_stopped_reason = ""
-    before_screenshot, before_path = timed_call(
-        "capture",
-        "voice_transcribe_before",
-        lambda: capture_wechat(hwnd, artifact_dir=artifact_dir, label="voice_transcribe_before"),
+    screenshot, screenshot_path = capture_wechat(
+        hwnd,
+        artifact_dir=artifact_dir,
+        label="voice_action_prepare",
     )
-    before_items = timed_call("ocr", "voice_transcribe_before", lambda: run_ocr(before_screenshot))
-    geometry = get_window_geometry(hwnd)
-    image_size = getattr(before_screenshot, "size", (int(geometry.get("width") or 0), int(geometry.get("height") or 0)))
+    ocr_items = run_ocr(screenshot)
+    image_size = getattr(screenshot, "size", (0, 0))
     target_confirmation: dict[str, Any] = {}
     if confirm_target:
         target_confirmation = validate_active_send_target(
@@ -2260,1092 +2325,659 @@ def voice_transcribe_payload(
             confirm_target,
             exact=confirm_exact,
             artifact_dir=artifact_dir,
-            screenshot=before_screenshot,
-            ocr_items=before_items,
-            screenshot_path=before_path,
+            screenshot=screenshot,
+            ocr_items=ocr_items,
+            screenshot_path=screenshot_path,
         )
         if not c2_target_activation_confirmed(target_confirmation):
-            admission_code, admission_error = c2_target_admission_error(
+            error_code, error = c2_target_admission_error(
                 target_confirmation,
                 "TARGET_NOT_CONFIRMED_FOR_VOICE_TRANSCRIBE",
             )
             return {
                 "ok": False,
-                "online": bool(target_confirmation.get("online", True)),
-                "adapter": "win32_ocr",
-                "state": "target_not_confirmed_for_voice_transcribe",
-                "error_code": admission_code,
-                "window_probe": probe,
-                "target": target,
-                "before_screenshot_path": before_path,
+                "state": "target_not_confirmed_for_voice_prepare",
+                "error_code": error_code,
+                "error": error,
                 "target_confirmation": target_confirmation,
-                "ocr_items_count": len(before_items),
-                "timing": finalize_performance_timing(),
-                "error": admission_error,
+                "ui_action_performed": False,
             }
-    before_messages = timed_call(
-        "parse",
-        "voice_transcribe_before",
-        lambda: parse_current_chat_frame_messages(
-            before_items,
+    messages = parse_current_chat_frame_messages(
+        ocr_items,
+        image_size,
+        target=target,
+        screenshot=screenshot,
+    )
+    candidates = [
+        observation
+        for observation in build_unified_voice_observations_v3(
+            screenshot,
+            ocr_items,
             image_size,
-            target=target,
-            screenshot=before_screenshot,
-        ),
-    )
-    visible_button_attempt: dict[str, Any] | None = None
-    context_menu_attempt: dict[str, Any] | None = None
-    voice_attempts: list[dict[str, Any]] = []
-
-    def transcribed_messages_from_after(
-        after_messages: list[dict[str, Any]],
-        baseline_messages: list[dict[str, Any]],
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        new_items = sidecar_new_message_occurrences(after_messages, baseline_messages)
-        transcribed_items = [
-            message
-            for message in new_items
-            if not voice_duration_text_like(str(message.get("content_clean") or message.get("content") or ""))
-        ]
-        return new_items, transcribed_items
-
-    def build_voice_transcribe_result(
-        *,
-        state: str,
-        error_code: str | None,
-        click_result: dict[str, Any],
-        final_click_target: dict[str, Any] | None,
-        planned_click_point: list[int] | None,
-        click_jitter: dict[str, Any] | None,
-        after_screenshot_path: str,
-        after_messages: list[dict[str, Any]],
-        final_screenshot: Image.Image | None,
-        final_ocr_items: list[dict[str, Any]],
-        after_ocr_items_count: int,
-        new_messages: list[dict[str, Any]],
-        transcribed_messages: list[dict[str, Any]],
-        quality_flags: list[str],
-        attempt_count: int,
-    ) -> dict[str, Any]:
-        timing_payload = finalize_performance_timing()
-        final_target_confirmation: dict[str, Any] = {}
-        if confirm_target and final_screenshot is not None:
-            final_target_confirmation = validate_active_send_target(
-                hwnd,
-                confirm_target,
-                exact=confirm_exact,
-                artifact_dir=artifact_dir,
-                screenshot=final_screenshot,
-                ocr_items=final_ocr_items,
-                screenshot_path=after_screenshot_path,
-            )
-        final_target_confirmed = bool(
-            not confirm_target or c2_target_activation_confirmed(final_target_confirmation)
+            excluded_anchor_keys=excluded_voice_anchor_keys,
+            parsed_messages=messages,
         )
-        image_observation_errors: list[dict[str, Any]] = []
-        image_candidate_diagnostics: list[dict[str, Any]] = []
-
-        def binding_occurrence_key(item: dict[str, Any]) -> str:
-            for key in (
-                "id",
-                "message_id",
-                "canonical_input_id",
-                "original_message_id",
-            ):
-                value = str(item.get(key) or "").strip()
-                if value:
-                    return f"id:{value}"
-            rect = item.get("bubble_rect")
-            rect_key = json.dumps(rect, ensure_ascii=False, sort_keys=True)
-            content = str(
-                item.get("content_clean") or item.get("content") or ""
-            ).strip()
-            role = str(item.get("sender_role") or item.get("sender") or "").strip()
-            return f"visual:{role}:{rect_key}:{content}"
-
-        bound_by_occurrence = {
-            binding_occurrence_key(item): dict(item)
-            for item in transcribed_messages
-            if isinstance(item, dict)
-        }
-        messages_with_bound_transcripts: list[dict[str, Any]] = []
-        for message in after_messages:
-            if not isinstance(message, dict):
-                continue
-            key = binding_occurrence_key(message)
-            messages_with_bound_transcripts.append(
-                bound_by_occurrence.pop(key, dict(message))
-            )
-        authoritative_messages = merge_structural_image_messages(
-            final_screenshot,
-            final_ocr_items,
-            messages_with_bound_transcripts,
-            target=target,
-            observation_validation_errors=image_observation_errors,
-            voice_action_attempts=voice_attempts,
-            image_candidate_diagnostics=image_candidate_diagnostics,
-        )
-        observations = build_message_observations_v3(authoritative_messages)
-        observation_validation_errors = [
-            {
-                "observation_id": str(observation.get("observation_id") or ""),
-                "row_kind": str(observation.get("row_kind") or ""),
-                "error_codes": list(observation.get("contract_errors") or []),
-            }
-            for observation in observations
-            if isinstance(observation, dict) and observation.get("contract_errors")
-        ] + image_observation_errors
-        visible_menu_texts = voice_transcribe_menu_texts_from_items(final_ocr_items)
-        visible_panel_texts = chat_info_panel_texts_from_items(final_ocr_items)
-        final_frame_reusable = bool(
-            final_screenshot is not None
-            and final_target_confirmed
-            and not visible_menu_texts
-            and not visible_panel_texts
-            and not observation_validation_errors
-        )
-        payload = {
-            "ok": bool(transcribed_messages) or (bool(click_result.get("ok")) if click_result else False),
-            "observation_schema_version": C2_OBSERVATION_SCHEMA_VERSION,
-            "online": True,
-            "adapter": "win32_ocr",
-            "state": state,
-            "error_code": error_code,
-            "window_probe": probe,
-            "target": target,
-            "before_screenshot_path": before_path,
-            "after_screenshot_path": after_screenshot_path,
-            "voice_context_anchor": context_anchor or {},
-            "click_target": final_click_target or {},
-            "visible_button_attempt": visible_button_attempt or {},
-            "hover_attempt": {},
-            "context_menu_attempt": context_menu_attempt or {},
-            "click": click_result,
-            "attempts": voice_attempts,
-            "item_action_outcomes": [
-                {
-                    "physical_anchor_keys": list(
-                        attempt.get("processed_anchor_keys")
-                        or attempt.get("failed_anchor_keys")
-                        or attempt.get("skipped_anchor_keys")
-                        or []
-                    ),
-                    "action_phase": str(
-                        attempt.get("action_phase") or "not_attempted"
-                    ),
-                    "business_state": (
-                        "completed"
-                        if attempt.get("effective_success") is True
-                        else "failed"
-                    ),
-                    "business_result_confirmed": bool(
-                        attempt.get("effective_success") is True
-                    ),
-                    "evidence": {
-                        "attempt_index": attempt.get("attempt_index"),
-                        "method": attempt.get("method"),
-                        "result": attempt.get("result"),
-                        "business_state": (
-                            "completed"
-                            if attempt.get("effective_success") is True
-                            else "failed"
-                        ),
-                        "business_result_confirmed": bool(
-                            attempt.get("effective_success") is True
-                        ),
-                    },
-                }
-                for attempt in voice_attempts
-                if isinstance(attempt, dict)
-            ],
-            "action_phase": (
-                "trigger_attempted"
-                if any(
-                    isinstance(attempt, dict)
-                    and attempt.get("action_phase") == "trigger_attempted"
-                    for attempt in voice_attempts
-                )
-                else "confirmed"
-                if any(
-                    isinstance(attempt, dict)
-                    and attempt.get("action_phase") == "confirmed"
-                    for attempt in voice_attempts
-                )
-                else "not_attempted"
-            ),
-            "planned_click_point": planned_click_point or [],
-            "click_jitter": click_jitter or {},
-            "wait_ms": wait_ms,
-            "candidate_order": "bottom_to_top",
-            "skipped_already_transcribed_count": len(skipped_transcribed_anchor_keys),
-            "skipped_already_transcribed_anchor_keys": sorted(skipped_transcribed_anchor_keys),
-            "skipped_wrong_context_menu_count": len(skipped_wrong_context_menu_anchor_keys),
-            "skipped_wrong_context_menu_anchor_keys": sorted(skipped_wrong_context_menu_anchor_keys),
-            "skipped_unknown_context_menu_count": len(skipped_unknown_context_menu_anchor_keys),
-            "skipped_unknown_context_menu_anchor_keys": sorted(skipped_unknown_context_menu_anchor_keys),
-            "failed_voice_anchor_count": len(failed_voice_anchor_keys),
-            "failed_voice_anchor_keys": sorted(failed_voice_anchor_keys),
-            "processed_voice_anchor_count": len(processed_voice_anchor_keys),
-            "processed_voice_anchor_keys": sorted(processed_voice_anchor_keys),
-            "before_messages": before_messages,
-            "messages": authoritative_messages,
+        if observation.get("voice_state") == "untranscribed"
+        and not observation.get("contract_errors")
+        and not observation.get("excluded")
+        and isinstance(observation.get("action_target"), dict)
+    ]
+    frame_id = _voice_action_frame_id(screenshot, screenshot_path)
+    observations = build_message_observations_v3(messages)
+    if not candidates:
+        return {
+            "ok": True,
+            "state": "voice_action_prepare_empty",
+            "voice_action_stage": "prepare",
+            "pre_frame_id": frame_id,
+            "messages": messages,
             "observations": observations,
-            "send_context_guard": build_send_context_guard(observations),
-            "observation_validation_errors": observation_validation_errors,
-            "image_candidate_diagnostics": image_candidate_diagnostics,
-            "final_frame_reusable": final_frame_reusable,
-            "final_frame_validation": {
-                "target_confirmed": final_target_confirmed,
-                "menu_closed": not bool(visible_menu_texts),
-                "chat_info_panel_closed": not bool(visible_panel_texts),
-                "observation_contract_valid": not bool(observation_validation_errors),
-            },
-            "new_messages": new_messages,
-            "transcribed_messages": transcribed_messages,
-            "attempt_count": attempt_count,
-            "quality_flags": quality_flags,
-            "ocr_items_count": after_ocr_items_count,
-            "initial_target_confirmation": target_confirmation,
-            "target_confirmation": final_target_confirmation,
-            "timing": timing_payload,
+            "target_confirmation": target_confirmation,
+            "ui_action_performed": False,
         }
-        if artifact_dir:
-            try:
-                review_path = Path(artifact_dir) / "voice_transcribe_review.json"
-                payload["review_path"] = str(review_path)
-                review_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
-            except Exception as exc:
-                payload["review_write_error"] = repr(exc)
-        return payload
-
-    wait_ms = bounded_int(
-        os.getenv("WECHAT_WIN32_OCR_VOICE_TRANSCRIBE_WAIT_MS"),
-        default=2600,
-        minimum=500,
-        maximum=15000,
+    selected = max(
+        candidates,
+        key=lambda item: voice_target_center_y(item.get("action_target")),
     )
-
-    def has_untranscribed_voice(
-        screenshot_for_messages: Image.Image,
-        ocr_items_for_messages: list[dict[str, Any]],
-        messages: list[dict[str, Any]],
-        image_size_for_messages: tuple[int, int],
-    ) -> bool:
-        return any(
-            observation.get("voice_state") == "untranscribed"
-            and isinstance(observation.get("action_target"), dict)
-            for observation in build_unified_voice_observations_v3(
-                screenshot_for_messages,
-                ocr_items_for_messages,
-                image_size_for_messages,
-                parsed_messages=messages,
-            )
-        )
-
-    def bind_transcribed_messages_to_anchor(
-        messages: list[dict[str, Any]],
-        anchor: dict[str, Any] | None,
-        image_size_for_anchor: tuple[int, int],
-        *,
-        after_messages_for_layout: list[dict[str, Any]] | None = None,
-    ) -> list[dict[str, Any]]:
-        if not isinstance(anchor, dict) or not anchor:
-            return messages
-        anchor_keys = sorted(voice_context_anchor_exclusion_keys(anchor, image_size_for_anchor))
-        anchor_item = anchor.get("item") if isinstance(anchor.get("item"), dict) else {}
-        anchor_meta = {
-            "source": anchor.get("source"),
-            "anchor_key": str(anchor.get("anchor_key") or ""),
-            "anchor_stable_key": str(anchor.get("anchor_stable_key") or ""),
-            "anchor_structural_key": str(anchor.get("anchor_structural_key") or ""),
-            "exclusion_keys": anchor_keys,
-            "item": anchor_item,
-            "click_bounds": anchor.get("click_bounds") if isinstance(anchor.get("click_bounds"), list) else [],
-            "avatar_alignment": anchor.get("avatar_alignment") if isinstance(anchor.get("avatar_alignment"), dict) else {},
+    selected_id = str(selected.get("observation_id") or "").strip()
+    fingerprint = _voice_observation_fingerprint(screenshot, selected)
+    same_fingerprint_count = sum(
+        _voice_observation_fingerprint(screenshot, item) == fingerprint
+        for item in candidates
+    )
+    if not selected_id or same_fingerprint_count != 1:
+        return {
+            "ok": False,
+            "state": "voice_action_prepare_ambiguous",
+            "error_code": "C2_VOICE_PREPARE_TARGET_AMBIGUOUS",
+            "pre_frame_id": frame_id,
+            "candidate_group_count": len(candidates),
+            "fingerprint_candidate_count": same_fingerprint_count,
+            "ui_action_performed": False,
         }
-        duration_text = str(anchor_item.get("voice_duration_text") or anchor_item.get("text") or "")
-        anchor_role = voice_anchor_sender_role(anchor, image_size_for_anchor)
-        bound: list[dict[str, Any]] = []
-        for message in messages:
-            if not isinstance(message, dict):
-                continue
-            if not message_is_plausible_voice_transcript_for_anchor(
-                message,
-                anchor,
-                image_size_for_anchor,
-                after_messages=after_messages_for_layout,
-            ):
-                continue
-            item = {
-                **message,
+    token_material = os.urandom(32) + frame_id.encode("utf-8") + fingerprint.encode("ascii")
+    action_token = hashlib.sha256(token_material).hexdigest()
+    return {
+        "ok": True,
+        "state": "voice_action_prepared",
+        "voice_action_stage": "prepare",
+        "pre_frame_id": frame_id,
+        "selected_pre_observation_id": selected_id,
+        "selected_action_token": action_token,
+        "selected_target_fingerprint": fingerprint,
+        "selected_voice_observation": _public_voice_observation(selected),
+        "selected_physical_anchor_keys": sorted(
+            voice_context_anchor_exclusion_keys(
+                selected["action_target"], image_size
+            )
+        ),
+        "candidate_group_count": len(candidates),
+        "messages": messages,
+        "observations": observations,
+        "target_confirmation": target_confirmation,
+        "screenshot_path": screenshot_path,
+        "ui_action_performed": False,
+    }
+
+
+def _bind_voice_transcripts_for_action(
+    messages: list[dict[str, Any]],
+    anchor: dict[str, Any],
+    image_size: tuple[int, int],
+    *,
+    canonical_voice_action_id: str,
+    reserved_worker_stable_id: str,
+) -> list[dict[str, Any]]:
+    anchor_role = voice_anchor_sender_role(anchor, image_size)
+    anchor_keys = sorted(voice_context_anchor_exclusion_keys(anchor, image_size))
+    bound: list[dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, dict) or not message_is_plausible_voice_transcript_for_anchor(
+            message,
+            anchor,
+            image_size,
+            after_messages=messages,
+        ):
+            continue
+        item = dict(message)
+        item.update(
+            {
                 "type": "voice",
-                "voice_anchor": anchor_meta,
-                "voice_anchor_key": anchor_meta["anchor_key"],
-                "voice_anchor_stable_key": anchor_meta["anchor_stable_key"],
-                "voice_anchor_structural_key": anchor_meta["anchor_structural_key"],
-                "parent_voice_anchor_key": anchor_meta["anchor_stable_key"] or anchor_meta["anchor_key"],
-                "observation_schema_version": 3,
+                "canonical_voice_action_id": canonical_voice_action_id,
+                "reserved_worker_stable_id": reserved_worker_stable_id,
+                "voice_anchor": {
+                    "anchor_key": str(anchor.get("anchor_key") or ""),
+                    "anchor_stable_key": str(anchor.get("anchor_stable_key") or ""),
+                    "anchor_structural_key": str(anchor.get("anchor_structural_key") or ""),
+                    "exclusion_keys": anchor_keys,
+                },
+                "voice_anchor_key": str(anchor.get("anchor_key") or ""),
+                "voice_anchor_stable_key": str(anchor.get("anchor_stable_key") or ""),
+                "voice_anchor_structural_key": str(anchor.get("anchor_structural_key") or ""),
                 "row_kind": "voice_transcript",
                 "voice_state": "transcribed",
             }
-            if message_is_combined_voice_transcript_record(message):
-                item["voice_anchor_binding_evidence"] = combined_voice_transcript_anchor_match_evidence(
-                    message,
-                    anchor,
-                    image_size_for_anchor,
-                    after_messages=after_messages_for_layout,
-                )
-            if anchor_role == "customer":
-                item["sender"] = "customer"
-                item["sender_role"] = "customer"
-            elif anchor_role == "self":
-                item["sender"] = "self"
-                item["sender_role"] = "self"
-            if anchor_role in {"self", "customer"}:
-                envelope = dict(item.get("message_envelope") or {})
-                if envelope:
-                    envelope["sender"] = anchor_role
-                    envelope["sender_role"] = anchor_role
-                    item["message_envelope"] = envelope
-            if duration_text and voice_duration_text_like(duration_text):
-                item.setdefault("voice_duration_text", duration_text)
-                seconds = voice_duration_seconds_from_text(duration_text)
-                if seconds is not None:
-                    item.setdefault("voice_duration", seconds)
-            bound.append(item)
-        combined = [item for item in bound if message_is_combined_voice_transcript_record(item)]
-        return combined or bound
+        )
+        if anchor_role in {"customer", "self"}:
+            item["sender"] = anchor_role
+            item["sender_role"] = anchor_role
+        bound.append(item)
+    combined = [item for item in bound if message_is_combined_voice_transcript_record(item)]
+    return combined or bound
 
-    initial_voice_observation = find_unified_untranscribed_voice_observation(
-        before_screenshot,
-        before_items,
-        image_size,
-        parsed_messages=before_messages,
-    )
-    context_anchor = initial_voice_observation.get("action_target") if isinstance(initial_voice_observation, dict) else None
-    click_target = initial_voice_observation.get("visible_button_target") if isinstance(initial_voice_observation, dict) else None
-    if not context_anchor:
-        timing_payload = finalize_performance_timing()
+
+def execute_voice_action_payload(
+    hwnd: int,
+    probe: dict[str, Any],
+    *,
+    target: str,
+    artifact_dir: str | None,
+    confirm_target: str,
+    confirm_exact: bool,
+    action_journal_path: str,
+    canonical_voice_action_id: str,
+    reserved_worker_stable_id: str,
+    pre_frame_id: str,
+    selected_pre_observation_id: str,
+    selected_action_token: str,
+    selected_target_fingerprint: str,
+) -> dict[str, Any]:
+    """Execute only the exact, journaled prepare target and finish once."""
+
+    journal = read_action_phase_journal(action_journal_path)
+    journal_payload = journal.get("payload") if isinstance(journal.get("payload"), dict) else {}
+    prepare_evidence = journal_payload.get("prepare_evidence") if isinstance(journal_payload.get("prepare_evidence"), dict) else {}
+    expected = {
+        "pre_frame_id": pre_frame_id,
+        "selected_pre_observation_id": selected_pre_observation_id,
+        "selected_action_token": selected_action_token,
+        "selected_target_fingerprint": selected_target_fingerprint,
+    }
+    request_identity_evidence = {
+        "voice_action_stage": "execute",
+        "canonical_voice_action_id": canonical_voice_action_id,
+        "reserved_worker_stable_id": reserved_worker_stable_id,
+        **expected,
+    }
+    if (
+        not journal.get("ok")
+        or journal.get("action_phase") != "not_attempted"
+        or str(journal_payload.get("canonical_action_id") or "") != canonical_voice_action_id
+        or str(journal_payload.get("reserved_worker_stable_id") or "") != reserved_worker_stable_id
+        or any(str(prepare_evidence.get(key) or "") != str(value) for key, value in expected.items())
+    ):
         return {
             "ok": False,
-            "online": True,
-            "adapter": "win32_ocr",
-            "state": "voice_transcribe_no_visible_voice",
-            "error_code": "VOICE_TRANSCRIBE_NO_VISIBLE_VOICE",
-            "window_probe": probe,
-            "target": target,
-            "screenshot_path": before_path,
-            "before_screenshot_path": before_path,
-            "ocr_items_count": len(before_items),
-            "messages": before_messages,
-            "voice_context_anchor": {},
-            "timing": timing_payload,
-            "error": "No visible WeChat voice-to-text affordance or voice bubble context-menu anchor was found.",
+            "state": "voice_action_execute_contract_rejected",
+            "error_code": "C2_VOICE_EXECUTE_CONTRACT_INVALID",
+            "action_phase": str(journal.get("action_phase") or "not_attempted"),
+            "ui_action_performed": False,
+            **request_identity_evidence,
         }
-
-    initial_pending_voice_count = sum(
-        1
-        for message in before_messages
-        if isinstance(message, dict) and message_is_untranscribed_voice_record(message)
-    )
-    default_max_attempts = max(8, min(16, initial_pending_voice_count * 3 + 2))
-    max_attempts = bounded_int(
-        os.getenv("WECHAT_WIN32_OCR_VOICE_TRANSCRIBE_MAX_ATTEMPTS"),
-        default=default_max_attempts,
-        minimum=1,
-        maximum=16,
-    )
-    current_screenshot = before_screenshot
-    current_items = before_items
-    current_size = image_size
-    current_messages = before_messages
-    all_new_messages: list[dict[str, Any]] = []
-    all_transcribed_messages: list[dict[str, Any]] = []
-    seen_new_keys: set[str] = set()
-    seen_transcribed_keys: set[str] = set()
-    last_click_result: dict[str, Any] = {}
-    last_click_target: dict[str, Any] | None = None
-    last_click_point: list[int] | None = None
-    last_click_jitter: dict[str, Any] | None = None
-    last_after_path = before_path
-    last_ocr_count = len(before_items)
-    skipped_transcribed_anchor_keys: set[str] = set()
-    processed_voice_anchor_keys: set[str] = set(excluded_voice_anchor_keys or set())
-    skipped_wrong_context_menu_anchor_keys: set[str] = set()
-    skipped_unknown_context_menu_anchor_keys: set[str] = set()
-    failed_voice_anchor_keys: set[str] = set()
-
-    for attempt_index in range(1, max_attempts + 1):
-        now_monotonic = time.monotonic()
-        if now_monotonic - flow_started_at >= hard_safety_timeout_seconds:
-            watchdog_stopped_reason = "hard_safety_timeout_reached"
-            break
-        if now_monotonic - last_progress_at >= no_progress_timeout_seconds:
-            watchdog_stopped_reason = "no_progress_timeout_reached"
-            break
-        attempt_baseline_messages = current_messages
-        excluded_anchor_keys = (
-            skipped_transcribed_anchor_keys
-            | processed_voice_anchor_keys
-            | skipped_wrong_context_menu_anchor_keys
-            | skipped_unknown_context_menu_anchor_keys
-            | failed_voice_anchor_keys
+    screenshot, screenshot_path = capture_wechat(hwnd, artifact_dir=artifact_dir, label="voice_action_execute_before")
+    ocr_items = run_ocr(screenshot)
+    image_size = getattr(screenshot, "size", (0, 0))
+    target_confirmation: dict[str, Any] = {}
+    if confirm_target:
+        target_confirmation = validate_active_send_target(
+            hwnd,
+            confirm_target,
+            exact=confirm_exact,
+            artifact_dir=artifact_dir,
+            screenshot=screenshot,
+            ocr_items=ocr_items,
+            screenshot_path=screenshot_path,
         )
-        voice_observation = find_unified_untranscribed_voice_observation(
-            current_screenshot,
-            current_items,
-            current_size,
-            excluded_anchor_keys=excluded_anchor_keys,
-            parsed_messages=current_messages,
+    messages = parse_current_chat_frame_messages(ocr_items, image_size, target=target, screenshot=screenshot)
+    candidates = [
+        item for item in build_unified_voice_observations_v3(
+            screenshot,
+            ocr_items,
+            image_size,
+            parsed_messages=messages,
         )
-        context_anchor = voice_observation.get("action_target") if isinstance(voice_observation, dict) else None
-        click_target = voice_observation.get("visible_button_target") if isinstance(voice_observation, dict) else None
-        if not context_anchor:
-            break
-        use_visible_button = bool(click_target)
-        attempt_record: dict[str, Any] = {
-            "attempt_index": attempt_index,
-            "candidate_order": "bottom_to_top",
-            "action_phase": "not_attempted",
-            "context_anchor": context_anchor or {},
-            "visible_button_target": click_target or {},
-            "unified_voice_observation": {
-                key: value
-                for key, value in (voice_observation or {}).items()
-                if key not in {"action_target", "visible_button_target", "source_message"}
+        if item.get("voice_state") == "untranscribed"
+        and not item.get("contract_errors")
+        and isinstance(item.get("action_target"), dict)
+    ]
+    matches = [
+        item for item in candidates
+        if str(item.get("observation_id") or "") == selected_pre_observation_id
+        and _voice_observation_fingerprint(screenshot, item) == selected_target_fingerprint
+    ]
+    if (
+        (confirm_target and not c2_target_activation_confirmed(target_confirmation))
+        or len(candidates)
+        != int(prepare_evidence.get("candidate_group_count") or 0)
+        or len(matches) != 1
+    ):
+        write_action_phase_journal(
+            action_journal_path,
+            "cancelled_before_trigger",
+            terminal_payload={
+                "state": "cancelled_before_trigger",
+                "reason": "prepared_voice_target_changed",
             },
-            "selected_method": "visible_button" if use_visible_button else "context_menu",
+        )
+        return {
+            "ok": True,
+            "state": "voice_action_cancelled_before_trigger",
+            "action_phase": "cancelled_before_trigger",
+            "business_state": "not_attempted",
+            "business_result_confirmed": False,
+            "error_code": "C2_VOICE_PREPARED_TARGET_CHANGED",
+            "ui_action_performed": False,
+            "target_confirmation": target_confirmation,
+            **request_identity_evidence,
         }
-        click_result: dict[str, Any] = {}
-        final_target: dict[str, Any] | None = None
-        planned_point: list[int] | None = None
-        click_jitter: dict[str, Any] | None = None
-        clicked_context_anchor: dict[str, Any] | None = None
-        explicitly_completed_without_text = False
-        if use_visible_button and click_target:
-            visible_item = click_target.get("item") if isinstance(click_target.get("item"), dict) else {}
-            click_bounds = [
-                int(float(visible_item.get("left") or 0)),
-                int(float(visible_item.get("top") or 0)),
-                int(float(visible_item.get("right") or 0)),
-                int(float(visible_item.get("bottom") or 0)),
-            ]
-            if len(click_bounds) < 4 or click_bounds[2] <= click_bounds[0] or click_bounds[3] <= click_bounds[1]:
-                click_bounds = [int(value) for value in click_target.get("click_bounds") or []]
-            click_x = int((click_bounds[0] + click_bounds[2]) / 2)
-            click_y = int((click_bounds[1] + click_bounds[3]) / 2)
-            jitter_meta = {
-                "enabled": False,
-                "source": "ocr_visible_button_center",
-                "bounds": click_bounds,
-                "reason": "click_exact_ocr_button_center",
-            }
-            journal_anchor_keys = sorted(
-                voice_context_anchor_exclusion_keys(
-                    context_anchor,
-                    current_size,
-                )
-            )
-            if action_journal_path:
-                write_action_phase_journal(
-                    action_journal_path,
-                    "trigger_attempted",
-                    physical_anchor_keys=journal_anchor_keys,
-                )
-            attempt_record["action_phase"] = "trigger_attempted"
-            click_result = timed_call(
-                "click",
-                f"click_visible_transcribe_{attempt_index}",
-                lambda: human_window_image_click_in_bounds(
-                    hwnd,
-                    click_x,
-                    click_y,
-                    bounds=click_bounds,
-                    action_name="voice_transcribe_visible_button_click",
-                ),
-            )
-            final_target = click_target
-            planned_point = [click_x, click_y]
-            click_jitter = jitter_meta
-            if context_anchor and abs(voice_target_center_y(click_target) - voice_target_center_y(context_anchor)) <= 96:
-                clicked_context_anchor = context_anchor
-            visible_button_attempt = {
-                "click_target": click_target,
-                "click": click_result,
-                "planned_click_point": planned_point,
-                "click_jitter": click_jitter,
-            }
-            attempt_record.update({"method": "visible_button", "visible_button_attempt": visible_button_attempt})
-        if (not use_visible_button or not click_result.get("ok")) and context_anchor:
-            context_menu_attempt = timed_call(
-                "menu",
-                f"open_context_menu_{attempt_index}",
-                lambda: open_voice_transcribe_context_menu(
-                    hwnd,
-                    context_anchor,
-                    image_size=current_size,
-                    artifact_dir=artifact_dir,
-                ),
-            )
-            menu_target = context_menu_attempt.get("click_target") if isinstance(context_menu_attempt, dict) else None
-            collapse_target = context_menu_attempt.get("already_transcribed_target") if isinstance(context_menu_attempt, dict) else None
-            menu_state = str((context_menu_attempt or {}).get("menu_state") or "")
-            if menu_state == "already_transcribed":
-                skipped_keys = sorted(voice_context_anchor_exclusion_keys(context_anchor, current_size))
-                skipped_key = skipped_keys[0] if skipped_keys else ""
-                skipped_transcribed_anchor_keys.update(skipped_keys)
-                dismissal = timed_call(
-                    "menu",
-                    f"dismiss_already_transcribed_menu_{attempt_index}",
-                    lambda: dismiss_voice_transcribe_context_menu(
-                        hwnd,
-                        artifact_dir=artifact_dir,
-                        label=f"voice_transcribe_context_menu_dismissed_{attempt_index}",
-                        menu_bounds=(collapse_target or {}).get("click_bounds"),
-                    ),
-                )
-                click_result = {"ok": bool(dismissal.get("ok")), "reason": "already_transcribed_voice_skipped", "dismissal": dismissal}
-                last_click_result = click_result
-                last_click_target = context_anchor
-                last_click_point = None
-                last_click_jitter = None
-                attempt_record.update({
-                    "method": "context_menu",
-                    "action_phase": "confirmed",
-                    "context_menu_attempt": context_menu_attempt or {},
-                    "menu_dismissal": dismissal,
-                    "result": "already_transcribed_skipped",
-                    "skipped_anchor_key": skipped_key,
-                    "skipped_anchor_keys": skipped_keys,
-                })
-                voice_attempts.append(attempt_record)
-                if not dismissal.get("ok"):
-                    break
-                continue
-            if menu_state in {"text_message_context_menu", "avatar_context_menu"}:
-                skipped_keys = sorted(voice_context_anchor_exclusion_keys(context_anchor, current_size))
-                skipped_key = skipped_keys[0] if skipped_keys else ""
-                skipped_wrong_context_menu_anchor_keys.update(skipped_keys)
-                dismissal = timed_call(
-                    "menu",
-                    f"dismiss_wrong_context_menu_{attempt_index}",
-                    lambda: dismiss_voice_transcribe_context_menu(
-                        hwnd,
-                        artifact_dir=artifact_dir,
-                        label=f"voice_transcribe_context_menu_dismissed_{attempt_index}",
-                    ),
-                )
-                click_result = {"ok": bool(dismissal.get("ok")), "reason": f"{menu_state}_skipped", "dismissal": dismissal}
-                last_click_result = click_result
-                last_click_target = context_anchor
-                last_click_point = None
-                last_click_jitter = None
-                attempt_record.update({
-                    "method": "context_menu",
-                    "context_menu_attempt": context_menu_attempt or {},
-                    "menu_dismissal": dismissal,
-                    "result": f"{menu_state}_skipped",
-                    "skipped_anchor_key": skipped_key,
-                    "skipped_anchor_keys": skipped_keys,
-                })
-                voice_attempts.append(attempt_record)
-                if not dismissal.get("ok"):
-                    break
-                continue
-            if not isinstance(menu_target, dict) or not menu_target:
-                skipped_keys = sorted(voice_context_anchor_exclusion_keys(context_anchor, current_size))
-                skipped_key = skipped_keys[0] if skipped_keys else ""
-                skipped_unknown_context_menu_anchor_keys.update(skipped_keys)
-                dismissal = timed_call(
-                    "menu",
-                    f"dismiss_unknown_context_menu_{attempt_index}",
-                    lambda: dismiss_voice_transcribe_context_menu(
-                        hwnd,
-                        artifact_dir=artifact_dir,
-                        label=f"voice_transcribe_context_menu_dismissed_{attempt_index}",
-                    ),
-                )
-                attempt_record.update({
-                    "method": "context_menu",
-                    "context_menu_attempt": context_menu_attempt or {},
-                    "menu_dismissal": dismissal,
-                    "result": "context_menu_target_not_found",
-                    "skipped_anchor_key": skipped_key,
-                    "skipped_anchor_keys": skipped_keys,
-                })
-                voice_attempts.append(attempt_record)
-                if not dismissal.get("ok"):
-                    break
-                continue
-            journal_anchor_keys = sorted(
-                voice_context_anchor_exclusion_keys(
-                    context_anchor,
-                    current_size,
-                )
-            )
-            if action_journal_path:
-                write_action_phase_journal(
-                    action_journal_path,
-                    "trigger_attempted",
-                    physical_anchor_keys=journal_anchor_keys,
-                )
-            attempt_record["action_phase"] = "trigger_attempted"
-            click_result = timed_call(
-                "click",
-                f"click_context_menu_transcribe_{attempt_index}",
-                lambda: click_voice_transcribe_context_menu_target(
-                    hwnd,
-                    menu_target,
-                    geometry=geometry,
-                    artifact_dir=artifact_dir,
-                    attempt_index=attempt_index,
-                ),
-            )
-            final_target = menu_target
-            clicked_context_anchor = context_anchor
-            planned_point = list(click_result.get("planned_click_point") or [])
-            click_jitter = click_result.get("click_jitter") if isinstance(click_result.get("click_jitter"), dict) else {}
-            attempt_record.update({
-                "method": "context_menu",
-                "context_menu_attempt": context_menu_attempt or {},
-            })
-        timed_call(
-            "wait",
-            f"wait_after_action_{attempt_index}",
-            lambda: humanized_action_sleep(max(200, wait_ms - 500), wait_ms + 900),
-        )
-        after_screenshot, after_path = timed_call(
-            "capture",
-            f"voice_transcribe_after_{attempt_index}",
-            lambda: capture_wechat(hwnd, artifact_dir=artifact_dir, label=f"voice_transcribe_after_{attempt_index}"),
-        )
-        after_items = timed_call("ocr", f"voice_transcribe_after_{attempt_index}", lambda: run_ocr(after_screenshot))
-        after_size = getattr(after_screenshot, "size", current_size)
-        after_messages = timed_call(
-            "parse",
-            f"voice_transcribe_after_{attempt_index}",
-            lambda: parse_current_chat_frame_messages(
-                after_items,
-                after_size,
-                target=target,
-                screenshot=after_screenshot,
-            ),
-        )
-        new_messages, transcribed_messages = transcribed_messages_from_after(after_messages, attempt_baseline_messages)
-        if click_result.get("ok") and clicked_context_anchor:
-            transcribed_messages = bind_transcribed_messages_to_anchor(
-                transcribed_messages,
-                clicked_context_anchor,
-                current_size,
-                after_messages_for_layout=after_messages,
-            )
-        reanchor_attempts: list[dict[str, Any]] = []
-        if click_result.get("ok") and clicked_context_anchor and not transcribed_messages:
-            passive_confirm_attempts = bounded_int(
-                os.getenv("WECHAT_WIN32_OCR_VOICE_PASSIVE_CONFIRM_ATTEMPTS"),
-                default=3,
-                minimum=2,
-                maximum=6,
-            )
-            for reanchor_index in range(1, passive_confirm_attempts + 1):
-                scrolled_up = False
-                timed_call(
-                    "wait",
-                    f"passive_confirm_wait_{attempt_index}_{reanchor_index}",
-                    lambda: humanized_action_sleep(650, 1200),
-                )
-                recovered_screenshot, recovered_path = timed_call(
-                    "capture",
-                    f"voice_transcribe_reanchor_{attempt_index}_{reanchor_index}",
-                    lambda: capture_wechat(
-                        hwnd,
-                        artifact_dir=artifact_dir,
-                        label=f"voice_transcribe_reanchor_{attempt_index}_{reanchor_index}",
-                    ),
-                )
-                recovered_items = timed_call(
-                    "ocr",
-                    f"voice_transcribe_reanchor_{attempt_index}_{reanchor_index}",
-                    lambda: run_ocr(recovered_screenshot),
-                )
-                recovered_size = getattr(recovered_screenshot, "size", after_size)
-                recovered_messages = timed_call(
-                    "parse",
-                    f"voice_transcribe_reanchor_{attempt_index}_{reanchor_index}",
-                    lambda: parse_current_chat_frame_messages(
-                        recovered_items,
-                        recovered_size,
-                        target=target,
-                        screenshot=recovered_screenshot,
-                    ),
-                )
-                recovered_new, recovered_candidates = transcribed_messages_from_after(
-                    recovered_messages,
-                    attempt_baseline_messages,
-                )
-                recovered_transcribed = bind_transcribed_messages_to_anchor(
-                    recovered_candidates,
-                    clicked_context_anchor,
-                    current_size,
-                    after_messages_for_layout=recovered_messages,
-                )
-                reanchor_attempts.append(
-                    {
-                        "attempt_index": reanchor_index,
-                        "scrolled_up": scrolled_up,
-                        "screenshot_path": recovered_path,
-                        "message_count": len(recovered_messages),
-                        "candidate_count": len(recovered_candidates),
-                        "transcribed_count": len(recovered_transcribed),
-                    }
-                )
-                after_screenshot = recovered_screenshot
-                after_path = recovered_path
-                after_items = recovered_items
-                after_size = recovered_size
-                after_messages = recovered_messages
-                new_messages = recovered_new
-                transcribed_messages = recovered_transcribed
-                if recovered_transcribed:
-                    break
-        # A successful physical action is never followed by a second action on
-        # the same bubble. Slow transcription is handled by passive captures
-        # above; another context-menu click would risk duplicate interaction.
-        if use_visible_button and clicked_context_anchor and not transcribed_messages and not click_result.get("ok"):
-            fallback_menu = open_voice_transcribe_context_menu(
-                hwnd,
-                clicked_context_anchor,
-                image_size=after_size,
-                artifact_dir=artifact_dir,
-            )
-            attempt_record["visible_button_fallback_context_menu"] = fallback_menu or {}
-            fallback_state = str((fallback_menu or {}).get("menu_state") or "")
-            fallback_target = fallback_menu.get("click_target") if isinstance(fallback_menu, dict) else None
-            if fallback_state == "already_transcribed":
-                skipped_keys = sorted(voice_context_anchor_exclusion_keys(clicked_context_anchor, after_size))
-                skipped_transcribed_anchor_keys.update(skipped_keys)
-                dismissal = dismiss_voice_transcribe_context_menu(
-                    hwnd,
-                    artifact_dir=artifact_dir,
-                    label=f"voice_transcribe_visible_fallback_dismissed_{attempt_index}",
-                    menu_bounds=((fallback_menu or {}).get("already_transcribed_target") or {}).get("click_bounds"),
-                )
-                click_result = {
-                    "ok": bool(dismissal.get("ok")),
-                    "reason": "visible_button_fallback_already_transcribed",
-                    "dismissal": dismissal,
-                }
-                attempt_record["visible_button_fallback_dismissal"] = dismissal
-                if dismissal.get("ok"):
-                    completed_screenshot, completed_path = capture_wechat(
-                        hwnd,
-                        artifact_dir=artifact_dir,
-                        label=f"voice_transcribe_visible_fallback_completed_{attempt_index}",
-                    )
-                    completed_items = run_ocr(completed_screenshot)
-                    completed_size = getattr(completed_screenshot, "size", after_size)
-                    completed_messages = parse_current_chat_frame_messages(
-                        completed_items,
-                        completed_size,
-                        target=target,
-                        screenshot=completed_screenshot,
-                    )
-                    completed_new, completed_candidates = transcribed_messages_from_after(
-                        completed_messages,
-                        attempt_baseline_messages,
-                    )
-                    completed_transcribed = bind_transcribed_messages_to_anchor(
-                        completed_candidates,
-                        clicked_context_anchor,
-                        current_size,
-                        after_messages_for_layout=completed_messages,
-                    )
-                    after_screenshot = completed_screenshot
-                    after_path = completed_path
-                    after_items = completed_items
-                    after_size = completed_size
-                    after_messages = completed_messages
-                    new_messages = completed_new
-                    transcribed_messages = completed_transcribed
-                explicitly_completed_without_text = not bool(transcribed_messages)
-            elif isinstance(fallback_target, dict) and fallback_target:
-                fallback_click = click_voice_transcribe_context_menu_target(
-                    hwnd,
-                    fallback_target,
-                    geometry=geometry,
-                    artifact_dir=artifact_dir,
-                    attempt_index=attempt_index,
-                )
-                click_result = fallback_click
-                final_target = fallback_target
-                planned_point = list(fallback_click.get("planned_click_point") or [])
-                click_jitter = fallback_click.get("click_jitter") if isinstance(fallback_click.get("click_jitter"), dict) else {}
-                attempt_record["visible_button_fallback_click"] = fallback_click
-                if fallback_click.get("ok"):
-                    humanized_action_sleep(max(200, wait_ms - 500), wait_ms + 900)
-                    fallback_screenshot, fallback_path = capture_wechat(
-                        hwnd,
-                        artifact_dir=artifact_dir,
-                        label=f"voice_transcribe_after_fallback_{attempt_index}",
-                    )
-                    fallback_items = run_ocr(fallback_screenshot)
-                    fallback_size = getattr(fallback_screenshot, "size", after_size)
-                    fallback_messages = parse_current_chat_frame_messages(
-                        fallback_items,
-                        fallback_size,
-                        target=target,
-                        screenshot=fallback_screenshot,
-                    )
-                    fallback_new, fallback_candidates = transcribed_messages_from_after(
-                        fallback_messages,
-                        attempt_baseline_messages,
-                    )
-                    fallback_transcribed = bind_transcribed_messages_to_anchor(
-                        fallback_candidates,
-                        clicked_context_anchor,
-                        current_size,
-                        after_messages_for_layout=fallback_messages,
-                    )
-                    if not fallback_transcribed:
-                        for fallback_retry_index in range(1, 2):
-                            humanized_action_sleep(650, 1200)
-                            retry_screenshot, retry_path = capture_wechat(
-                                hwnd,
-                                artifact_dir=artifact_dir,
-                                label=f"voice_transcribe_fallback_reanchor_{attempt_index}_{fallback_retry_index}",
-                            )
-                            retry_items = run_ocr(retry_screenshot)
-                            retry_size = getattr(retry_screenshot, "size", fallback_size)
-                            retry_messages = parse_current_chat_frame_messages(
-                                retry_items,
-                                retry_size,
-                                target=target,
-                                screenshot=retry_screenshot,
-                            )
-                            retry_new, retry_candidates = transcribed_messages_from_after(
-                                retry_messages,
-                                attempt_baseline_messages,
-                            )
-                            retry_transcribed = bind_transcribed_messages_to_anchor(
-                                retry_candidates,
-                                clicked_context_anchor,
-                                current_size,
-                                after_messages_for_layout=retry_messages,
-                            )
-                            reanchor_attempts.append(
-                                {
-                                    "attempt_index": fallback_retry_index,
-                                    "phase": "visible_button_fallback",
-                                    "scrolled_up": False,
-                                    "screenshot_path": retry_path,
-                                    "message_count": len(retry_messages),
-                                    "candidate_count": len(retry_candidates),
-                                    "transcribed_count": len(retry_transcribed),
-                                }
-                            )
-                            fallback_screenshot = retry_screenshot
-                            fallback_path = retry_path
-                            fallback_items = retry_items
-                            fallback_size = retry_size
-                            fallback_messages = retry_messages
-                            fallback_new = retry_new
-                            fallback_transcribed = retry_transcribed
-                            if fallback_transcribed:
-                                break
-                    after_screenshot = fallback_screenshot
-                    after_path = fallback_path
-                    after_items = fallback_items
-                    after_size = fallback_size
-                    after_messages = fallback_messages
-                    new_messages = fallback_new
-                    transcribed_messages = fallback_transcribed
-            else:
-                dismissal = dismiss_voice_transcribe_context_menu(
-                    hwnd,
-                    artifact_dir=artifact_dir,
-                    label=f"voice_transcribe_visible_fallback_unknown_{attempt_index}",
-                )
-                click_result = {
-                    "ok": False,
-                    "reason": f"visible_button_fallback_{fallback_state or 'unknown'}",
-                    "dismissal": dismissal,
-                }
-                attempt_record["visible_button_fallback_dismissal"] = dismissal
-        unique_new: list[dict[str, Any]] = []
-        for message in new_messages:
-            key = sidecar_message_content_key(message)
-            if key in seen_new_keys:
-                continue
-            seen_new_keys.add(key)
-            unique_new.append(message)
-            all_new_messages.append(message)
-        unique_transcribed: list[dict[str, Any]] = []
-        for message in transcribed_messages:
-            key = sidecar_message_content_key(message)
-            if key in seen_transcribed_keys:
-                continue
-            seen_transcribed_keys.add(key)
-            unique_transcribed.append(message)
-            all_transcribed_messages.append(message)
-        processed_anchor_key = ""
-        if unique_transcribed and clicked_context_anchor:
-            processed_keys = sorted(voice_context_anchor_exclusion_keys(clicked_context_anchor, current_size))
-            processed_anchor_key = processed_keys[0] if processed_keys else ""
-            processed_voice_anchor_keys.update(processed_keys)
-            attempt_record["action_phase"] = "confirmed"
-            if action_journal_path:
-                write_action_phase_journal(
-                    action_journal_path,
-                    "confirmed",
-                    physical_anchor_keys=processed_keys,
-                    business_state="completed",
-                    business_result_confirmed=True,
-                    terminal_payload={
-                        "state": "completed",
-                        "transcribed_messages": unique_transcribed,
-                    },
-                )
-        elif explicitly_completed_without_text and clicked_context_anchor:
-            processed_keys = sorted(
-                voice_context_anchor_exclusion_keys(
-                    clicked_context_anchor,
-                    current_size,
-                )
-            )
-            processed_voice_anchor_keys.update(processed_keys)
-            attempt_record["action_phase"] = "confirmed"
-            if action_journal_path:
-                write_action_phase_journal(
-                    action_journal_path,
-                    "confirmed",
-                    physical_anchor_keys=processed_keys,
-                    business_state="completed",
-                    business_result_confirmed=True,
-                    terminal_payload={"state": "completed"},
-                )
-        else:
-            processed_keys = []
-        failed_anchor_keys: list[str] = []
-        if clicked_context_anchor and not unique_transcribed and not explicitly_completed_without_text:
-            failed_anchor_keys = sorted(voice_context_anchor_exclusion_keys(clicked_context_anchor, current_size))
-            failed_voice_anchor_keys.update(failed_anchor_keys)
-            if action_journal_path:
-                write_action_phase_journal(
-                    action_journal_path,
-                    "trigger_attempted",
-                    physical_anchor_keys=failed_anchor_keys,
-                    business_state="failed",
-                    business_result_confirmed=False,
-                    error_code="VOICE_TRANSCRIBE_RESULT_UNCONFIRMED",
-                    terminal_payload={
-                        "state": "failed",
-                        "reason": "voice_transcribe_result_unconfirmed",
-                    },
-                )
-        if unique_transcribed or explicitly_completed_without_text or failed_anchor_keys:
-            last_progress_at = time.monotonic()
-        attempt_record.update({
-            "click_target": final_target or {},
-            "click": click_result,
-            "planned_click_point": planned_point or [],
-            "click_jitter": click_jitter or {},
-            "processed_anchor_key": processed_anchor_key,
-            "processed_anchor_keys": processed_keys,
-            "failed_anchor_keys": failed_anchor_keys,
-            "after_screenshot_path": after_path,
-            "reanchor_attempts": reanchor_attempts,
-            "new_messages_count": len(unique_new),
-            "transcribed_messages_count": len(unique_transcribed),
-            "effective_success": bool(unique_transcribed or explicitly_completed_without_text),
-            "explicitly_completed_without_text": explicitly_completed_without_text,
-            "remaining_untranscribed_voice": has_untranscribed_voice(
-                after_screenshot,
-                after_items,
-                after_messages,
-                after_size,
-            ),
-        })
-        voice_attempts.append(attempt_record)
-        last_click_result = click_result
-        last_click_target = final_target
-        last_click_point = planned_point
-        last_click_jitter = click_jitter
-        last_after_path = after_path
-        last_ocr_count = len(after_items)
-        current_screenshot = after_screenshot
-        current_items = after_items
-        current_size = after_size
-        current_messages = after_messages
-        if not click_result.get("ok") and not unique_transcribed and not clicked_context_anchor:
-            break
-        if not has_untranscribed_voice(after_screenshot, after_items, after_messages, after_size) and not has_remaining_voice_transcribe_candidate(
-            after_screenshot,
-            after_items,
-            after_size,
-            excluded_anchor_keys=(
-                skipped_transcribed_anchor_keys
-                | processed_voice_anchor_keys
-                | skipped_wrong_context_menu_anchor_keys
-                | skipped_unknown_context_menu_anchor_keys
-                | failed_voice_anchor_keys
-            ),
-            parsed_messages=after_messages,
-        ):
-            break
-
-    state = "voice_transcribe_click_failed"
-    error_code = "VOICE_TRANSCRIBE_CLICK_FAILED"
-    quality_flags: list[str] = []
-    remaining_untranscribed_voice = has_untranscribed_voice(
-        current_screenshot,
-        current_items,
-        current_messages,
-        current_size,
+    selected = matches[0]
+    anchor = dict(selected["action_target"])
+    physical_anchor_keys = sorted(voice_context_anchor_exclusion_keys(anchor, image_size))
+    execute_frame_id = _voice_action_frame_id(
+        screenshot,
+        screenshot_path,
     )
-    if all_transcribed_messages:
-        state = (
-            "voice_transcribe_partial"
-            if remaining_untranscribed_voice or failed_voice_anchor_keys
-            else "voice_transcribe_completed"
+    tracking_edges: list[dict[str, Any]] = [
+        {
+            "from_frame_id": pre_frame_id,
+            "from_observation_id": selected_pre_observation_id,
+            "to_frame_id": execute_frame_id,
+            "to_observation_id": str(
+                selected.get("observation_id") or ""
+            ),
+            "sender_role": normalized_voice_sender_role(
+                selected.get("sender_role")
+            ),
+            "message_type": "voice",
+            "structural_evidence": {
+                "selected_observation_id_unchanged": True
+            },
+            "displacement_evidence": {
+                "target_fingerprint_unchanged": True
+            },
+            "edge_candidate_count": 1,
+        }
+    ]
+    tracking_frame_ids = [pre_frame_id, execute_frame_id]
+    visible_target = selected.get("visible_button_target") if isinstance(selected.get("visible_button_target"), dict) else None
+    click_result: dict[str, Any]
+    if visible_target:
+        bounds = [int(value) for value in (visible_target.get("click_bounds") or [])]
+        if len(bounds) != 4:
+            item = visible_target.get("item") if isinstance(visible_target.get("item"), dict) else {}
+            bounds = [int(float(item.get(key) or 0)) for key in ("left", "top", "right", "bottom")]
+        if len(bounds) != 4 or bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
+            write_action_phase_journal(
+                action_journal_path,
+                "cancelled_before_trigger",
+                physical_anchor_keys=physical_anchor_keys,
+                terminal_payload={
+                    "state": "cancelled_before_trigger",
+                    "reason": "visible_button_bounds_invalid",
+                },
+            )
+            return {
+                "ok": True,
+                "state": "voice_action_cancelled_before_trigger",
+                "action_phase": "cancelled_before_trigger",
+                "business_state": "not_attempted",
+                "business_result_confirmed": False,
+                "error_code": "C2_VOICE_PREPARED_TARGET_CHANGED",
+                "ui_action_performed": False,
+                "target_confirmation": target_confirmation,
+                **request_identity_evidence,
+            }
+        write_action_phase_journal(
+            action_journal_path,
+            "trigger_attempted",
+            physical_anchor_keys=physical_anchor_keys,
         )
-        error_code = ""
-    elif last_click_result.get("ok"):
-        state = "voice_transcribe_no_new_text"
-        error_code = ""
-        quality_flags.append("no_new_transcribed_text")
+        click_result = human_window_image_click_in_bounds(
+            hwnd,
+            (bounds[0] + bounds[2]) // 2,
+            (bounds[1] + bounds[3]) // 2,
+            bounds=bounds,
+            action_name="voice_transcribe_visible_button_click",
+        )
     else:
-        quality_flags.append("voice_transcribe_click_failed")
-    if remaining_untranscribed_voice:
-        quality_flags.append("untranscribed_voice_remaining")
-    if skipped_transcribed_anchor_keys:
-        quality_flags.append("already_transcribed_voice_skipped")
-    if processed_voice_anchor_keys:
-        quality_flags.append("processed_voice_anchor_skipped")
-    if skipped_wrong_context_menu_anchor_keys:
-        quality_flags.append("wrong_context_menu_anchor_skipped")
-    if skipped_unknown_context_menu_anchor_keys:
-        quality_flags.append("unknown_context_menu_anchor_skipped")
-    if failed_voice_anchor_keys:
-        quality_flags.append("voice_transcribe_anchor_failed")
-    if watchdog_stopped_reason:
-        quality_flags.append(f"voice_transcribe_{watchdog_stopped_reason}")
-    return build_voice_transcribe_result(
-        state=state,
-        error_code=error_code or None,
-        click_result=last_click_result,
-        final_click_target=last_click_target,
-        planned_click_point=last_click_point,
-        click_jitter=last_click_jitter,
-        after_screenshot_path=last_after_path,
-        after_messages=current_messages,
-        final_screenshot=current_screenshot,
-        final_ocr_items=current_items,
-        after_ocr_items_count=last_ocr_count,
-        new_messages=all_new_messages,
-        transcribed_messages=all_transcribed_messages,
-        quality_flags=quality_flags,
-        attempt_count=len(voice_attempts),
+        # Opening the context menu is already a WeChat UI action, so the
+        # no-repeat barrier must be durable before this call.
+        write_action_phase_journal(
+            action_journal_path,
+            "trigger_attempted",
+            physical_anchor_keys=physical_anchor_keys,
+        )
+        menu = open_voice_transcribe_context_menu(
+            hwnd,
+            anchor,
+            image_size=image_size,
+            artifact_dir=artifact_dir,
+        )
+        menu_target = menu.get("click_target") if isinstance(menu.get("click_target"), dict) else None
+        if not menu_target:
+            dismiss_voice_transcribe_context_menu(hwnd, artifact_dir=artifact_dir)
+            click_result = {"ok": False, "reason": str(menu.get("menu_state") or "menu_target_missing")}
+        else:
+            click_result = click_voice_transcribe_context_menu_target(
+                hwnd,
+                menu_target,
+                geometry=get_window_geometry(hwnd),
+                artifact_dir=artifact_dir,
+                attempt_index=1,
+            )
+    if not click_result.get("ok"):
+        humanized_action_sleep(300, 700)
+        failed_screenshot, failed_path = capture_wechat(
+            hwnd,
+            artifact_dir=artifact_dir,
+            label="voice_action_execute_failed_final",
+        )
+        failed_items = run_ocr(failed_screenshot)
+        failed_size = getattr(failed_screenshot, "size", image_size)
+        failed_messages = parse_current_chat_frame_messages(
+            failed_items,
+            failed_size,
+            target=target,
+            screenshot=failed_screenshot,
+        )
+        failed_observations = build_message_observations_v3(
+            failed_messages
+        )
+        failed_frame_id = _voice_action_frame_id(
+            failed_screenshot,
+            failed_path,
+        )
+        failed_candidates = [
+            item
+            for item in build_unified_voice_observations_v3(
+                failed_screenshot,
+                failed_items,
+                failed_size,
+                parsed_messages=failed_messages,
+            )
+            if item.get("voice_state") == "untranscribed"
+            and not item.get("contract_errors")
+            and isinstance(item.get("action_target"), dict)
+        ]
+        tracked_candidates = [
+            item
+            for item in failed_candidates
+            if str(item.get("observation_id") or "")
+            == selected_pre_observation_id
+            and _voice_observation_fingerprint(
+                failed_screenshot,
+                item,
+            )
+            == selected_target_fingerprint
+        ]
+        post_observation_id = ""
+        if len(tracked_candidates) == 1:
+            tracked_aliases = voice_context_anchor_exclusion_keys(
+                dict(tracked_candidates[0]["action_target"]),
+                failed_size,
+            )
+            matching_observations = [
+                item
+                for item in failed_observations
+                if isinstance(item, dict)
+                and item.get("row_kind") == "voice_bubble"
+                and tracked_aliases
+                & set(voice_context_anchor_exclusion_keys(
+                    dict(item.get("action_target") or {}),
+                    failed_size,
+                ))
+            ]
+            if len(matching_observations) == 1:
+                post_observation_id = str(
+                    matching_observations[0].get("observation_id") or ""
+                ).strip()
+        if post_observation_id:
+            tracking_edges.append(
+                {
+                    "from_frame_id": tracking_edges[-1]["to_frame_id"],
+                    "from_observation_id": tracking_edges[-1][
+                        "to_observation_id"
+                    ],
+                    "to_frame_id": failed_frame_id,
+                    "to_observation_id": post_observation_id,
+                    "sender_role": normalized_voice_sender_role(
+                        selected.get("sender_role")
+                    ),
+                    "message_type": "voice",
+                    "structural_evidence": {
+                        "failed_action_target_tracked": True
+                    },
+                    "displacement_evidence": {
+                        "same_action_token_chain": True
+                    },
+                    "edge_candidate_count": 1,
+                }
+            )
+            tracking_frame_ids.append(failed_frame_id)
+            write_action_phase_journal(
+                action_journal_path,
+                "failed",
+                physical_anchor_keys=physical_anchor_keys,
+                business_state="failed",
+                business_result_confirmed=False,
+                error_code="VOICE_TRANSCRIBE_TRIGGER_FAILED",
+                terminal_payload={
+                    "state": "failed",
+                    "click": click_result,
+                },
+            )
+            return {
+                "ok": False,
+                "state": "voice_transcribe_click_failed",
+                "error_code": "VOICE_TRANSCRIBE_TRIGGER_FAILED",
+                "action_phase": "failed",
+                "business_state": "failed",
+                "business_result_confirmed": False,
+                "canonical_voice_action_id": canonical_voice_action_id,
+                "reserved_worker_stable_id": reserved_worker_stable_id,
+                **request_identity_evidence,
+                "post_frame_id": failed_frame_id,
+                "transcript_binding_status": "failed",
+                "transcript_binding_method": "continuous_target_tracking",
+                "binding_candidate_count": 1,
+                "tracking_frame_ids": tracking_frame_ids,
+                "tracking_edges": tracking_edges,
+                "confirmed_action_mapping": {
+                    "canonical_action_id": canonical_voice_action_id,
+                    "reserved_worker_stable_id": reserved_worker_stable_id,
+                    "binding_confirmed": True,
+                    "post_observation_id": post_observation_id,
+                    "derived_observation_ids": [],
+                },
+                "messages": failed_messages,
+                "observations": failed_observations,
+                "ui_action_performed": True,
+                "click": click_result,
+            }
+        write_action_phase_journal(
+            action_journal_path,
+            "quarantined",
+            physical_anchor_keys=physical_anchor_keys,
+            business_state="failed",
+            business_result_confirmed=False,
+            error_code="C2_VOICE_RESULT_AMBIGUOUS",
+            terminal_payload={"state": "quarantined"},
+        )
+        return {
+            "ok": True,
+            "state": "voice_transcribe_ambiguous",
+            "error_code": "C2_VOICE_RESULT_AMBIGUOUS",
+            "action_phase": "quarantined",
+            "business_state": "failed",
+            "business_result_confirmed": False,
+            "canonical_voice_action_id": canonical_voice_action_id,
+            "reserved_worker_stable_id": reserved_worker_stable_id,
+            **request_identity_evidence,
+            "post_frame_id": failed_frame_id,
+            "transcript_binding_status": "ambiguous",
+            "transcript_binding_method": "none",
+            "binding_candidate_count": 0,
+            "tracking_frame_ids": tracking_frame_ids,
+            "tracking_edges": tracking_edges,
+            "confirmed_action_mapping": {
+                "canonical_action_id": canonical_voice_action_id,
+                "reserved_worker_stable_id": reserved_worker_stable_id,
+                "binding_confirmed": False,
+                "post_observation_id": "",
+                "derived_observation_ids": [],
+            },
+            "messages": failed_messages,
+            "observations": failed_observations,
+            "ui_action_performed": True,
+            "click": click_result,
+        }
+    bound: list[dict[str, Any]] = []
+    final_screenshot = screenshot
+    final_path = screenshot_path
+    final_items = ocr_items
+    final_messages = messages
+    for evidence_read in range(2):
+        humanized_action_sleep(500, 1100)
+        final_screenshot, final_path = capture_wechat(
+            hwnd,
+            artifact_dir=artifact_dir,
+            label=f"voice_action_execute_after_{evidence_read + 1}",
+        )
+        final_items = run_ocr(final_screenshot)
+        final_size = getattr(final_screenshot, "size", image_size)
+        final_messages = parse_current_chat_frame_messages(
+            final_items,
+            final_size,
+            target=target,
+            screenshot=final_screenshot,
+        )
+        bound = _bind_voice_transcripts_for_action(
+            final_messages,
+            anchor,
+            image_size,
+            canonical_voice_action_id=canonical_voice_action_id,
+            reserved_worker_stable_id=reserved_worker_stable_id,
+        )
+        if len(bound) == 1:
+            break
+    authoritative_messages = list(final_messages)
+    if len(bound) == 1:
+        bound_id = str(bound[0].get("id") or bound[0].get("message_id") or "")
+        authoritative_messages = [
+            bound[0]
+            if str(item.get("id") or item.get("message_id") or "") == bound_id
+            else item
+            for item in final_messages
+        ]
+    observations = build_message_observations_v3(authoritative_messages)
+    final_frame_id = _voice_action_frame_id(
+        final_screenshot,
+        final_path,
     )
+    action_observations = [
+        item for item in observations
+        if isinstance(item.get("source_message"), dict)
+        and str(item["source_message"].get("canonical_voice_action_id") or "") == canonical_voice_action_id
+    ]
+    if len(action_observations) != 1:
+        write_action_phase_journal(
+            action_journal_path,
+            "quarantined",
+            physical_anchor_keys=physical_anchor_keys,
+            business_state="failed",
+            business_result_confirmed=False,
+            error_code="C2_VOICE_RESULT_AMBIGUOUS",
+            terminal_payload={"state": "quarantined", "evidence_read_count": 2},
+        )
+        return {
+            "ok": True,
+            "state": "voice_transcribe_ambiguous",
+            "error_code": "C2_VOICE_RESULT_AMBIGUOUS",
+            "action_phase": "quarantined",
+            "business_state": "failed",
+            "business_result_confirmed": False,
+            "canonical_voice_action_id": canonical_voice_action_id,
+            "reserved_worker_stable_id": reserved_worker_stable_id,
+            **request_identity_evidence,
+            "post_frame_id": final_frame_id,
+            "transcript_binding_status": "ambiguous",
+            "transcript_binding_method": "none",
+            "binding_candidate_count": 0,
+            "tracking_frame_ids": tracking_frame_ids,
+            "tracking_edges": tracking_edges,
+            "confirmed_action_mapping": {
+                "canonical_action_id": canonical_voice_action_id,
+                "reserved_worker_stable_id": reserved_worker_stable_id,
+                "binding_confirmed": False,
+                "post_observation_id": "",
+                "derived_observation_ids": [],
+            },
+            "messages": final_messages,
+            "observations": build_message_observations_v3(final_messages),
+            "ui_action_performed": True,
+        }
+    post_observation_id = str(action_observations[0].get("observation_id") or "")
+    tracking_edges.append(
+        {
+            "from_frame_id": tracking_edges[-1]["to_frame_id"],
+            "from_observation_id": tracking_edges[-1]["to_observation_id"],
+            "to_frame_id": final_frame_id,
+            "to_observation_id": post_observation_id,
+            "sender_role": normalized_voice_sender_role(selected.get("sender_role")),
+            "message_type": "voice",
+            "structural_evidence": {"unique_transcript_binding": True},
+            "displacement_evidence": {"same_action_token_chain": True},
+            "edge_candidate_count": 1,
+        }
+    )
+    tracking_frame_ids.append(final_frame_id)
+    write_action_phase_journal(
+        action_journal_path,
+        "confirmed",
+        physical_anchor_keys=physical_anchor_keys,
+        business_state="completed",
+        business_result_confirmed=True,
+        terminal_payload={"state": "completed", "transcribed_messages": bound},
+    )
+    return {
+        "ok": True,
+        "state": "voice_transcribe_completed",
+        "voice_action_stage": "execute",
+        "action_phase": "confirmed",
+        "business_state": "completed",
+        "business_result_confirmed": True,
+        "canonical_voice_action_id": canonical_voice_action_id,
+        "reserved_worker_stable_id": reserved_worker_stable_id,
+        **request_identity_evidence,
+        "post_frame_id": final_frame_id,
+        "transcript_binding_status": "confirmed",
+        "transcript_binding_method": "continuous_target_tracking",
+        "binding_candidate_count": 1,
+        "tracking_frame_ids": tracking_frame_ids,
+        "tracking_edges": tracking_edges,
+        "confirmed_action_mapping": {
+            "canonical_action_id": canonical_voice_action_id,
+            "reserved_worker_stable_id": reserved_worker_stable_id,
+            "binding_confirmed": True,
+            "post_observation_id": post_observation_id,
+            "derived_observation_ids": [],
+        },
+        "processed_voice_anchor_keys": physical_anchor_keys,
+        "failed_voice_anchor_keys": [],
+        "item_action_outcomes": [
+            {
+                "physical_anchor_keys": physical_anchor_keys,
+                "action_phase": "confirmed",
+                "business_state": "completed",
+                "business_result_confirmed": True,
+            }
+        ],
+        "messages": authoritative_messages,
+        "observations": observations,
+        "target_confirmation": target_confirmation,
+        "final_frame_reusable": True,
+        "ui_action_performed": True,
+    }
 
 
 def voice_transcribe_compact_text(text: str) -> str:
@@ -7819,6 +7451,20 @@ def write_action_phase_journal(
         selected_source_keys.append(str(next(iter(items))))
     if items and not selected_source_keys:
         raise ValueError("ACTION_JOURNAL_ITEM_NOT_FOUND")
+    if any(
+        phase_rank[requested_phase]
+        < phase_rank.get(
+            str(
+                (items.get(source_key) or {}).get("action_phase")
+                or "not_attempted"
+            ).strip(),
+            0,
+        )
+        for source_key in selected_source_keys
+    ):
+        # All selected aliases describe one physical action. A stale writer
+        # must not partially mutate the aliases that happen to lag behind.
+        return
     updated_at = datetime.now(timezone.utc).isoformat()
     for selected_source_key in selected_source_keys:
         item = dict(items.get(selected_source_key) or {})
@@ -7826,8 +7472,6 @@ def write_action_phase_journal(
             item.get("action_phase") or "not_attempted"
         ).strip()
         item_phase = requested_phase
-        if phase_rank[item_phase] < phase_rank.get(current_phase, 0):
-            item_phase = current_phase
         item["action_phase"] = item_phase
         if business_state is not None:
             item["business_state"] = (
@@ -16827,6 +16471,18 @@ def args_for_daemon_request(request: dict[str, Any]) -> list[str]:
     sidecar_run_id = str(request.get("sidecar_run_id") or request.get("run_id") or "").strip()
     if sidecar_run_id:
         argv.extend(["--sidecar-run-id", sidecar_run_id])
+    for key, flag in (
+        ("canonical_voice_action_id", "--canonical-voice-action-id"),
+        ("reserved_worker_stable_id", "--reserved-worker-stable-id"),
+        ("voice_action_stage", "--voice-action-stage"),
+        ("pre_frame_id", "--pre-frame-id"),
+        ("selected_pre_observation_id", "--selected-pre-observation-id"),
+        ("selected_action_token", "--selected-action-token"),
+        ("selected_target_fingerprint", "--selected-target-fingerprint"),
+    ):
+        value = str(request.get(key) or "").strip()
+        if action == "voice-transcribe" and value:
+            argv.extend([flag, value])
     if bool(request.get("exact")):
         argv.append("--exact")
     if bool(request.get("current_only")):
@@ -16968,6 +16624,13 @@ def run_sidecar_cli(argv: list[str] | None = None) -> dict[str, Any]:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=SIDECAR_ACTION_CHOICES, nargs="?")
     parser.add_argument("--sidecar-run-id", default="", help="Correlation id for one Worker-to-sidecar run.")
+    parser.add_argument("--canonical-voice-action-id", default="")
+    parser.add_argument("--reserved-worker-stable-id", default="")
+    parser.add_argument("--voice-action-stage", choices=("prepare", "execute"), default="prepare")
+    parser.add_argument("--pre-frame-id", default="")
+    parser.add_argument("--selected-pre-observation-id", default="")
+    parser.add_argument("--selected-action-token", default="")
+    parser.add_argument("--selected-target-fingerprint", default="")
     parser.add_argument("--target", help="Chat name for messages/send.")
     parser.add_argument("--session-key", default="", help="Internal session key for row-level RPA targeting.")
     parser.add_argument("--target-mode", default="", help="Targeting mode for messages, e.g. search_by_remark_code.")

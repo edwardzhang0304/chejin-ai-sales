@@ -57,6 +57,24 @@ class FlowOutcomeAccumulator:
     def snapshot(self) -> list[dict[str, Any]]:
         return [dict(item) for item in self._item_outcomes]
 
+    def replace_source_key(self, old_source_key: str, new_source_key: str) -> None:
+        """Commit one action-local outcome to its durable message identity."""
+
+        old_key = str(old_source_key or "").strip()
+        new_key = str(new_source_key or "").strip()
+        if not old_key or not new_key:
+            raise ValueError("C2_FLOW_OUTCOME_SOURCE_KEY_MISSING")
+        if old_key == new_key:
+            return
+        remapped: list[dict[str, Any]] = []
+        for raw in self._item_outcomes:
+            item = dict(raw)
+            if str(item.get("source_message_key") or "").strip() == old_key:
+                item["source_message_key"] = new_key
+            remapped.append(item)
+        self._item_outcomes = merge_item_outcomes([], remapped)
+        self._persist_checkpoint()
+
     def register_action_journal(self, path: str | Path) -> None:
         self._action_journal_paths.add(Path(path))
 

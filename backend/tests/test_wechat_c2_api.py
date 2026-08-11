@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import json
 import threading
@@ -28,6 +29,7 @@ from chejin_worker_client.c2_outbox_recovery import (
 )
 from chejin_worker_client.wechat_c2 import (
     build_message_ingest_payload as build_worker_message_ingest_payload,
+    worker_source_message_key,
 )
 from chejin_worker_client.task_runner import should_submit_c2_ingest_payload
 
@@ -53,7 +55,10 @@ from app.models.wechat import (
 )
 from app.models.worker import Worker
 from app.core.database import SessionLocal
-from app.schemas.wechat import WechatMessageIngestRequest
+from app.schemas.wechat import (
+    WechatMessageEvidence,
+    WechatMessageIngestRequest,
+)
 from app.services import c3_service, wechat_service
 from app.services.message_contract import (
     canonical_reply_text as backend_canonical_reply_text,
@@ -104,6 +109,55 @@ def _v3_raw_fields(source_message_key: str) -> dict:
     return {
         **_v3_contract_fields(),
         "source_message_key": source_message_key,
+    }
+
+
+def _voice_action_evidence(
+    *,
+    action_id: str = "voice-action-test",
+    stable_id: str = "voice-stable-test",
+) -> dict:
+    frames = ["frame:voice:pre", "frame:voice:execute", "frame:voice:final"]
+    observations = ["voice:pre", "voice:execute", "voice:final"]
+    return {
+        "state": "voice_transcribe_completed",
+        "voice_action_stage": "execute",
+        "action_phase": "confirmed",
+        "ui_action_performed": True,
+        "canonical_voice_action_id": action_id,
+        "reserved_worker_stable_id": stable_id,
+        "pre_frame_id": frames[0],
+        "post_frame_id": frames[-1],
+        "selected_pre_observation_id": observations[0],
+        "selected_action_token": "voice-token-test",
+        "selected_target_fingerprint": "voice-fingerprint-test",
+        "transcript_binding_status": "confirmed",
+        "transcript_binding_method": "continuous_target_tracking",
+        "binding_candidate_count": 1,
+        "tracking_frame_ids": frames,
+        "tracking_edges": [
+            {
+                "from_frame_id": frames[index],
+                "from_observation_id": observations[index],
+                "to_frame_id": frames[index + 1],
+                "to_observation_id": observations[index + 1],
+                "sender_role": "customer",
+                "message_type": "voice",
+                "structural_evidence": {"same_target": True},
+                "displacement_evidence": {"delta_y": 0},
+                "edge_candidate_count": 1,
+            }
+            for index in range(2)
+        ],
+        "matched_neighbor_pairs": [],
+        "native_source_message_id": None,
+        "confirmed_action_mapping": {
+            "canonical_action_id": action_id,
+            "reserved_worker_stable_id": stable_id,
+            "binding_confirmed": True,
+            "post_observation_id": observations[-1],
+            "derived_observation_ids": [],
+        },
     }
 
 
@@ -471,6 +525,20 @@ def _v3_ingest_payload(
                 }
                 for message in messages
             ],
+            "sequence_alignment_evidence": {
+                "pre_sequence_source": "empty_checkpoint",
+                "pre_frame_id": f"checkpoint:none:{binding['conversation_id']}",
+                "post_frame_id": f"frame:{read_run_id}",
+                "alignment_status": "not_required",
+                "candidate_alignment_count": 0,
+                "matched_pairs": [],
+                "old_tail_fully_consumed": True,
+                "new_suffix_observation_ids": [
+                    str(observation.get("observation_id") or "")
+                    for observation in observations
+                    if str(observation.get("observation_id") or "")
+                ],
+            },
         },
     }
 
@@ -505,6 +573,299 @@ def _authorize_fact_settlement(
     authorization = response.json()["data"]
     assert authorization["recovery_decision"] == "settle_without_ui"
     return authorization
+
+
+def test_authoritative_frame_source_accepts_only_contract_values():
+    base = {
+        "contract_revision": contract_revision(),
+        "contract_sha256": contract_sha256(),
+        "observation_schema_version": int(
+            c2_contract_v3()["observation_schema_version"]
+        ),
+        "observations": [],
+        "authorization_read_reason": "waiting_sales_reply",
+        "finished_at": utcnow().isoformat(),
+        "flow_gate_errors": [],
+        "flow_gate_details": [],
+        "slot_ledger_states": [],
+    }
+    for source in (
+        "initial_read",
+        "final_read",
+        "action_journal_recovery",
+    ):
+        evidence = WechatMessageEvidence.model_validate(
+            {**base, "authoritative_frame_source": source}
+        )
+        assert evidence.authoritative_frame_source == source
+
+    with pytest.raises(ValueError):
+        WechatMessageEvidence.model_validate(
+            {**base, "authoritative_frame_source": "voice_execute_final"}
+        )
+    with pytest.raises(ValueError, match="ActionJournal"):
+        WechatMessageEvidence.model_validate(
+            {
+                **base,
+                "authoritative_frame_source": (
+                    "action_journal_recovery"
+                ),
+                "ui_frame_invalidated": True,
+            }
+        )
+
+
+def test_voice_action_evidence_requires_three_frame_contiguous_proof():
+    base = {
+        "contract_revision": contract_revision(),
+        "contract_sha256": contract_sha256(),
+        "observation_schema_version": int(
+            c2_contract_v3()["observation_schema_version"]
+        ),
+        "authoritative_frame_source": "final_read",
+        "ui_frame_invalidated": True,
+        "observations": [],
+        "authorization_read_reason": "waiting_user_reply",
+        "finished_at": utcnow().isoformat(),
+        "flow_gate_errors": [],
+        "flow_gate_details": [],
+        "slot_ledger_states": [],
+        "voice_transcription": _voice_action_evidence(),
+    }
+
+    validated = WechatMessageEvidence.model_validate(base)
+    assert validated.voice_transcription is not None
+    assert validated.voice_transcription.transcript_binding_status == (
+        "confirmed"
+    )
+
+    two_frame = copy.deepcopy(base)
+    two_frame["voice_transcription"]["tracking_frame_ids"] = [
+        "frame:voice:pre",
+        "frame:voice:final",
+    ]
+    two_frame["voice_transcription"]["tracking_edges"] = [
+        {
+            **two_frame["voice_transcription"]["tracking_edges"][0],
+            "to_frame_id": "frame:voice:final",
+            "to_observation_id": "voice:final",
+        }
+    ]
+    with pytest.raises(ValueError, match="连续语音跟踪证据不完整"):
+        WechatMessageEvidence.model_validate(two_frame)
+
+    broken_chain = copy.deepcopy(base)
+    broken_chain["voice_transcription"]["tracking_edges"][1][
+        "from_observation_id"
+    ] = "voice:another"
+    with pytest.raises(ValueError, match="未首尾相接"):
+        WechatMessageEvidence.model_validate(broken_chain)
+
+    ambiguous_bound = copy.deepcopy(base)
+    ambiguous_bound["voice_transcription"].update(
+        {
+            "action_phase": "quarantined",
+            "transcript_binding_status": "ambiguous",
+            "transcript_binding_method": "none",
+            "binding_candidate_count": 0,
+            "tracking_frame_ids": [],
+            "tracking_edges": [],
+        }
+    )
+    ambiguous_bound["voice_transcription"]["confirmed_action_mapping"].update(
+        {
+            "binding_confirmed": False,
+            "post_observation_id": "voice:still-bound",
+        }
+    )
+    with pytest.raises(ValueError, match="歧义语音不得绑定"):
+        WechatMessageEvidence.model_validate(ambiguous_bound)
+
+
+
+def test_authoritative_frame_source_rejects_current_media_action_on_initial_read():
+    source_key = "source-current-image"
+    read_run_id = "read-current-image-action"
+    base_request = {
+        "contract_version": 3,
+        "contract_revision": contract_revision(),
+        "contract_sha256": contract_sha256(),
+        "observation_schema_version": int(
+            c2_contract_v3()["observation_schema_version"]
+        ),
+        "read_run_id": read_run_id,
+        "conversation_id": "11111111-1111-1111-1111-111111111111",
+        "remark_code": "CJFRAME1",
+        "authorization_revision": "revision-frame-source",
+        "messages": [
+            {
+                "dedupe_key": "dedupe-current-image",
+                "source_message_key": source_key,
+                "sender_role_hint": "customer",
+                "message_type": "image",
+                "content": None,
+                "item_state": "failed",
+                "flow_state": "failed",
+                "message_position": {
+                    "screen_order": 1,
+                    "frame_source": "initial_read",
+                    "order_source": "observation_index_fallback",
+                },
+                "raw_payload": {},
+            }
+        ],
+        "evidence": {
+            "contract_revision": contract_revision(),
+            "contract_sha256": contract_sha256(),
+            "observation_schema_version": int(
+                c2_contract_v3()["observation_schema_version"]
+            ),
+            "authoritative_frame_source": "initial_read",
+            "observations": [
+                {
+                    "observation_id": "image-current-action",
+                    "row_kind": "image_bubble",
+                    "action_phase": "trigger_attempted",
+                    "source_message": {
+                        "source_message_key": source_key,
+                    },
+                }
+            ],
+            "authorization_read_reason": "waiting_user_reply",
+            "finished_at": utcnow().isoformat(),
+            "flow_gate_errors": [],
+            "flow_gate_details": [],
+            "slot_ledger_states": [
+                {
+                    "observation_id": "image-current-action",
+                    "screen_order": 1,
+                    "order_source": "observation_index_fallback",
+                    "row_kind": "image_bubble",
+                    "source_message_key": source_key,
+                    "origin_read_run_id": read_run_id,
+                    "fact_scope": "current_read_run",
+                    "delivery_state": "not_enqueued",
+                    "item_state": "failed",
+                }
+            ],
+            "sequence_alignment_evidence": {
+                "pre_sequence_source": "empty_checkpoint",
+                "pre_frame_id": "checkpoint:none:frame-source",
+                "post_frame_id": "frame:current-image-action",
+                "alignment_status": "not_required",
+                "candidate_alignment_count": 0,
+                "matched_pairs": [],
+                "old_tail_fully_consumed": True,
+                "new_suffix_observation_ids": [
+                    "image-current-action"
+                ],
+            },
+        },
+    }
+
+    with pytest.raises(ValueError, match="initial_read"):
+        WechatMessageIngestRequest.model_validate(base_request)
+
+    marker_request = copy.deepcopy(base_request)
+    marker_request["evidence"]["observations"][0][
+        "action_phase"
+    ] = "not_attempted"
+    marker_request["evidence"]["ui_frame_invalidated"] = True
+    with pytest.raises(ValueError, match="initial_read"):
+        WechatMessageIngestRequest.model_validate(marker_request)
+
+    voice_request = copy.deepcopy(base_request)
+    voice_request["messages"][0].update(
+        {
+            "message_type": "voice",
+            "content": "已转写语音",
+            "item_state": "completed",
+            "flow_state": "completed",
+        }
+    )
+    voice_request["evidence"]["observations"][0].update(
+        {
+            "row_kind": "voice_transcript",
+            "action_phase": "confirmed",
+        }
+    )
+    voice_request["evidence"]["slot_ledger_states"][0].update(
+        {
+            "row_kind": "voice_transcript",
+            "item_state": "completed",
+        }
+    )
+    voice_request["evidence"]["voice_transcription"] = (
+        _voice_action_evidence()
+    )
+    with pytest.raises(ValueError, match="initial_read"):
+        WechatMessageIngestRequest.model_validate(voice_request)
+
+    voice_scrolled_out_request = copy.deepcopy(base_request)
+    voice_scrolled_out_request["messages"][0].update(
+        {
+            "message_type": "text",
+            "content": "语音操作后仍可见的文字",
+            "item_state": "completed",
+            "flow_state": "completed",
+        }
+    )
+    voice_scrolled_out_request["evidence"]["observations"][0].update(
+        {
+            "row_kind": "text_bubble",
+            "action_phase": "not_attempted",
+        }
+    )
+    voice_scrolled_out_request["evidence"]["slot_ledger_states"][0].update(
+        {
+            "row_kind": "text_bubble",
+            "item_state": "completed",
+        }
+    )
+    voice_scrolled_out_request["evidence"]["voice_transcription"] = (
+        _voice_action_evidence()
+    )
+    with pytest.raises(ValueError, match="initial_read"):
+        WechatMessageIngestRequest.model_validate(
+            voice_scrolled_out_request
+        )
+
+    voice_scrolled_out_final = copy.deepcopy(
+        voice_scrolled_out_request
+    )
+    voice_scrolled_out_final["evidence"][
+        "authoritative_frame_source"
+    ] = "final_read"
+    voice_scrolled_out_final["messages"][0]["message_position"][
+        "frame_source"
+    ] = "final_read"
+    parsed = WechatMessageIngestRequest.model_validate(
+        voice_scrolled_out_final
+    )
+    assert parsed.evidence.authoritative_frame_source == "final_read"
+
+    final_request = copy.deepcopy(base_request)
+    final_request["evidence"]["authoritative_frame_source"] = "final_read"
+    final_request["evidence"]["ui_frame_invalidated"] = True
+    final_request["messages"][0]["message_position"][
+        "frame_source"
+    ] = "final_read"
+    parsed = WechatMessageIngestRequest.model_validate(final_request)
+    assert parsed.evidence.authoritative_frame_source == "final_read"
+
+    historical_request = copy.deepcopy(base_request)
+    historical_request["messages"] = []
+    historical_request["evidence"]["slot_ledger_states"][0].update(
+        {
+            "origin_read_run_id": "read-older-image-action",
+            "fact_scope": "historical",
+            "delivery_state": "backend_confirmed",
+        }
+    )
+    parsed = WechatMessageIngestRequest.model_validate(
+        historical_request
+    )
+    assert parsed.evidence.authoritative_frame_source == "initial_read"
 
 
 def _fact_settlement_payload(
@@ -893,18 +1254,21 @@ def test_scan_result_binds_unique_remark_code_and_authorizes_visible_unread():
     assert read_target["row_fingerprint"] == "fingerprint-wx-row-1"
     assert read_target["ocr_confidence"] == 0.98
     assert len(read_target["authorization_revision"]) == 32
-    assert read_target["identity_transition"] == {
-        "version": 1,
-        "source_version": "v16.104",
-        "legacy_messages": [
-            {
-                "dedupe_key": "legacy-dedupe-key",
-                "source_message_key": "legacy-source-key",
-                "message_type": "text",
-                "sender_role": "customer",
-            }
-        ],
-    }
+    assert "identity_transition" not in read_target
+    recent_messages = read_target["identity_checkpoint"]["recent_messages"]
+    assert len(recent_messages) == 1
+    checkpoint_message = recent_messages[0]
+    assert checkpoint_message["stable_id"] == ""
+    assert checkpoint_message["source_message_key"] == "legacy-source-key"
+    assert checkpoint_message["origin_read_run_id"] == "legacy-read-run"
+    assert checkpoint_message["dedupe_key"] == "legacy-dedupe-key"
+    assert checkpoint_message["sender_role"] == "customer"
+    assert checkpoint_message["message_type"] == "text"
+    assert checkpoint_message["normalized_content_hash"]
+    assert checkpoint_message["media_identity_hash"] == ""
+    assert checkpoint_message["alignment_signature"]
+    assert checkpoint_message["native_source_message_id"] == ""
+    assert checkpoint_message["canonical_visual_id"] == ""
 
     admin_binding = client.get(f"/api/conversations/{binding['conversation_id']}/wechat-binding", headers=HEADERS)
     assert admin_binding.status_code == 200
@@ -1099,7 +1463,7 @@ def test_duplicate_scan_id_cannot_restore_consumed_visible_unread_but_new_scan_c
     assert targets.json()["data"]["targets"][0]["read_reason"] == "visible_unread"
 
 
-def test_read_targets_always_returns_versioned_empty_identity_transition():
+def test_read_targets_uses_empty_identity_checkpoint_without_legacy_transition():
     worker = _create_worker()
     _create_sales(worker["id"])
     _create_lead("无历史身份客户", "13896676679")
@@ -1123,11 +1487,8 @@ def test_read_targets_always_returns_versioned_empty_identity_transition():
 
     assert response.status_code == 200
     target = response.json()["data"]["targets"][0]
-    assert target["identity_transition"] == {
-        "version": 1,
-        "source_version": "v16.104",
-        "legacy_messages": [],
-    }
+    assert "identity_transition" not in target
+    assert target["identity_checkpoint"]["recent_messages"] == []
 
 
 def test_read_targets_fairly_rotates_more_than_twenty_eligible_conversations():
@@ -1499,7 +1860,22 @@ def test_shared_mixed_roundtrip_fixture_crosses_worker_and_backend_without_secon
         read_reason="waiting_sales_reply",
         authorization_revision=_binding_authorization_revision(binding["id"]),
     )
-    payload = build_worker_message_ingest_payload(target, fixture["omniauto_output"])
+    read_run_id = "read-shared-mixed-roundtrip"
+    stable_ids_by_observation = {
+        str(item["observation_id"]): str(item["_worker_stable_id"])
+        for item in fixture["omniauto_output"]["observations"]
+    }
+    for state in fixture["omniauto_output"]["slot_ledger_states"]:
+        state["source_message_key"] = worker_source_message_key(
+            target,
+            identity_kind="worker_sequence",
+            identity=stable_ids_by_observation[state["observation_id"]],
+        )
+    payload = build_worker_message_ingest_payload(
+        target,
+        fixture["omniauto_output"],
+        read_run_id=read_run_id,
+    )
 
     response = client.post(
         f"/api/workers/{worker['id']}/wechat/messages/ingest",
@@ -2623,8 +2999,31 @@ def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revi
             "read_reason": "waiting_user_reply",
             "authorization_read_reason": "waiting_user_reply",
             "finished_at": utcnow().isoformat(),
-            "flow_gate_errors": [],
-            "flow_gate_details": [],
+        "flow_gate_errors": [],
+        "flow_gate_details": [],
+        "slot_ledger_states": [
+            {
+                "observation_id": "v3-voice-observation",
+                "screen_order": 2,
+                "order_source": "visual_top",
+                "row_kind": "voice_transcript",
+                "source_message_key": "v3-voice-source",
+                "origin_read_run_id": "read-v3",
+                "fact_scope": "current_read_run",
+                "delivery_state": "not_enqueued",
+                "item_state": "completed",
+            }
+        ],
+        "sequence_alignment_evidence": {
+            "pre_sequence_source": "empty_checkpoint",
+            "pre_frame_id": f"checkpoint:none:{binding['conversation_id']}",
+            "post_frame_id": "frame:read-v3",
+            "alignment_status": "not_required",
+            "candidate_alignment_count": 0,
+            "matched_pairs": [],
+            "old_tail_fully_consumed": True,
+            "new_suffix_observation_ids": ["v3-voice-observation"],
+        },
         }
     accepted = client.post(
         f"/api/workers/{worker['id']}/wechat/messages/ingest",
@@ -2636,7 +3035,7 @@ def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revi
     assert accepted.json()["data"]["ignored_count"] == 0
     wrong_contract = client.post(
         f"/api/workers/{worker['id']}/wechat/messages/ingest",
-        json={**payload, "read_run_id": "read-v3-wrong-contract", "contract_sha256": "0" * 64},
+        json={**payload, "contract_sha256": "0" * 64},
         headers=_worker_headers(worker),
     )
     assert wrong_contract.status_code == 409
@@ -2661,12 +3060,25 @@ def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revi
         binding_row.authorization_revision += 1
         db.commit()
 
-    payload["read_run_id"] = "read-v3-stale"
-    payload["messages"][0]["dedupe_key"] = "v3-stale-key"
-    payload["messages"][0]["source_message_key"] = "v3-stale-source"
+    stale_payload = copy.deepcopy(payload)
+    stale_payload["read_run_id"] = "read-v3-stale"
+    stale_payload["messages"][0]["dedupe_key"] = "v3-stale-key"
+    stale_payload["messages"][0]["source_message_key"] = "v3-stale-source"
+    stale_payload["messages"][0]["raw_payload"][
+        "source_message_key"
+    ] = "v3-stale-source"
+    stale_payload["evidence"]["slot_ledger_states"][0].update(
+        {
+            "source_message_key": "v3-stale-source",
+            "origin_read_run_id": "read-v3-stale",
+        }
+    )
+    stale_payload["evidence"]["sequence_alignment_evidence"][
+        "post_frame_id"
+    ] = "frame:read-v3-stale"
     stale = client.post(
         f"/api/workers/{worker['id']}/wechat/messages/ingest",
-        json=payload,
+        json=stale_payload,
         headers=_worker_headers(worker),
     )
     assert stale.status_code == 409
@@ -2714,6 +3126,10 @@ def test_worker_v3_five_second_voice_transcript_is_accepted_by_backend():
     ]
     observations = build_message_observations_v3(sidecar_messages)
     assert observations[0]["sender_role_source"] == "parent_voice"
+    read_run_id = "read-worker-v3-five-second-voice"
+    observations[0]["_worker_stable_id"] = (
+        f"{binding['conversation_id']}:message:1"
+    )
     worker_payload = build_worker_message_ingest_payload(
         worker_target,
         {
@@ -2721,13 +3137,48 @@ def test_worker_v3_five_second_voice_transcript_is_accepted_by_backend():
             **_v3_contract_fields(),
             "authoritative_frame_source": "final_read",
             "observations": observations,
+            "slot_ledger_states": [
+                {
+                    "observation_id": observations[0]["observation_id"],
+                    "screen_order": 1,
+                    "order_source": "observation_index_fallback",
+                    "row_kind": observations[0]["row_kind"],
+                    "source_message_key": worker_source_message_key(
+                        worker_target,
+                        identity_kind="worker_sequence",
+                        identity=observations[0]["_worker_stable_id"],
+                    ),
+                    "origin_read_run_id": read_run_id,
+                    "fact_scope": "current_read_run",
+                    "delivery_state": "not_enqueued",
+                    "item_state": "completed",
+                }
+            ],
+            "sequence_alignment_evidence": {
+                "pre_sequence_source": "empty_checkpoint",
+                "pre_frame_id": (
+                    f"checkpoint:none:{binding['conversation_id']}"
+                ),
+                "post_frame_id": f"frame:{read_run_id}",
+                "alignment_status": "not_required",
+                "candidate_alignment_count": 0,
+                "matched_pairs": [],
+                "old_tail_fully_consumed": True,
+                "new_suffix_observation_ids": [
+                    observations[0]["observation_id"]
+                ],
+            },
             "voice_transcription": {
-                "state": "voice_transcribe_completed",
+                **_voice_action_evidence(
+                    action_id="voice-action-five-second",
+                    stable_id=observations[0]["_worker_stable_id"],
+                ),
                 "attempt_count": 1,
                 "quality_flags": [],
                 "transcribed_messages": sidecar_messages,
             },
         },
+        read_run_id=read_run_id,
     )
 
     assert len(worker_payload["messages"]) == 1
@@ -2760,9 +3211,25 @@ def test_worker_v3_five_second_voice_transcript_is_accepted_by_backend():
             },
         },
     }
+    untrusted_read_run_id = "read-v3-untrusted-voice-role"
+    untrusted_payload = copy.deepcopy(worker_payload)
+    untrusted_payload.update(
+        read_run_id=untrusted_read_run_id,
+        messages=[untrusted_message],
+    )
+    untrusted_payload["evidence"]["observations"] = [
+        copy.deepcopy(untrusted_message["raw_payload"]["observation"])
+    ]
+    untrusted_payload["evidence"]["slot_ledger_states"][0].update(
+        source_message_key=untrusted_message["source_message_key"],
+        origin_read_run_id=untrusted_read_run_id,
+    )
+    untrusted_payload["evidence"]["sequence_alignment_evidence"].update(
+        post_frame_id=f"frame:{untrusted_read_run_id}",
+    )
     untrusted_response = client.post(
         f"/api/workers/{worker['id']}/wechat/messages/ingest",
-        json={**worker_payload, "read_run_id": "read-v3-untrusted-voice-role", "messages": [untrusted_message]},
+        json=untrusted_payload,
         headers=_worker_headers(worker),
     )
     assert untrusted_response.status_code == 409
@@ -2806,8 +3273,12 @@ def test_message_ingest_rejects_v2_before_any_source_processing():
         headers=_worker_headers(worker),
     )
 
-    assert response.status_code == 409
-    assert response.json()["code"] == "MESSAGE_CONTRACT_V3_REQUIRED"
+    assert response.status_code == 400
+    assert response.json()["code"] == "VALIDATION_ERROR"
+    assert "contract_version" in json.dumps(
+        response.json()["data"]["errors"],
+        ensure_ascii=False,
+    )
     with SessionLocal() as db:
         assert db.query(MessageEvent).filter(MessageEvent.conversation_id == conversation_id).count() == 0
 
@@ -3255,7 +3726,7 @@ def test_unknown_send_reconciled_bubble_never_closes_handoff_as_human_sales():
         assert handoff.closed_at is None
 
 
-def test_unknown_send_without_local_receipt_gets_one_server_side_safety_guard():
+def test_unknown_send_without_local_receipt_never_rebinds_by_message_body():
     worker = _create_worker()
     _create_sales(worker["id"])
     _create_lead("本地凭证丢失客户", "13896676692")
@@ -3324,9 +3795,9 @@ def test_unknown_send_without_local_receipt_gets_one_server_side_safety_guard():
         handoff = db.get(HandoffEvent, handoff_id)
         assert (
             message.raw_payload["sender_source"]
-            == "ai_unreconciled_server_guard"
+            == "ai_identity_unconfirmed_guard"
         )
-        assert message.raw_payload["ai_reply_action_id"] == action_id
+        assert "ai_reply_action_id" not in message.raw_payload
         assert conversation.status == "waiting_sales_reply"
         assert conversation.last_sales_reply_at is None
         assert handoff.closed_at is None
@@ -3342,7 +3813,7 @@ def test_unknown_send_without_local_receipt_gets_one_server_side_safety_guard():
                     "human-same-text-after-server-guard",
                     role="self",
                     message_type="text",
-                    content=reply_text,
+                    content="这是一条正文完全不同的右侧消息。",
                     screen_order=1,
                 )
             ],
@@ -3356,10 +3827,17 @@ def test_unknown_send_without_local_receipt_gets_one_server_side_safety_guard():
         messages = db.query(MessageEvent).filter(
             MessageEvent.conversation_id == binding["conversation_id"]
         ).order_by(MessageEvent.ingested_at.asc()).all()
-        assert messages[1].raw_payload["sender_source"] == "human"
+        assert (
+            messages[1].raw_payload["sender_source"]
+            == "ai_identity_unconfirmed_guard"
+        )
+        assert all(
+            "ai_reply_action_id" not in message.raw_payload
+            for message in messages
+        )
 
 
-def test_same_text_human_sales_message_without_stable_receipt_is_not_marked_as_ai():
+def test_sent_action_without_stable_receipt_keeps_conversation_identity_guarded():
     worker = _create_worker()
     _create_sales(worker["id"])
     _create_lead("王先生", "13896676678")
@@ -3372,8 +3850,7 @@ def test_same_text_human_sales_message_without_stable_receipt_is_not_marked_as_a
     binding = scan.json()["data"]["bindings"][0]
     reply_text = "好的，我帮您确认一下"
     with SessionLocal() as db:
-        db.add(
-            ReplyAction(
+        action = ReplyAction(
                 batch_id="batch-old-ai-text",
                 conversation_id=binding["conversation_id"],
                 status="sent",
@@ -3384,7 +3861,7 @@ def test_same_text_human_sales_message_without_stable_receipt_is_not_marked_as_a
                 reply_text_hash=hashlib.sha256(reply_text.encode("utf-8")).hexdigest(),
                 sent_at=utcnow(),
             )
-        )
+        db.add(action)
         db.commit()
 
     response = client.post(
@@ -3412,10 +3889,106 @@ def test_same_text_human_sales_message_without_stable_receipt_is_not_marked_as_a
             MessageEvent.conversation_id == binding["conversation_id"]
         ).one()
         conversation = db.get(Conversation, binding["conversation_id"])
-        assert message.raw_payload["sender_source"] == "human"
+        assert (
+            message.raw_payload["sender_source"]
+            == "ai_identity_unconfirmed_guard"
+        )
         assert "ai_reply_action_id" not in message.raw_payload
-        assert conversation.status == "sales_replied_waiting_user"
-        assert conversation.last_sales_reply_at is not None
+        assert conversation.status != "sales_replied_waiting_user"
+        assert conversation.last_sales_reply_at is None
+
+
+def test_consumed_sent_action_does_not_guard_later_human_sales_message():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("已消费发送回执客户", "13896676679")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    reply_text = "这是已经稳定入库的 AI 回复"
+    sent_at = utcnow()
+    with SessionLocal() as db:
+        action = ReplyAction(
+            batch_id="batch-consumed-ai-send",
+            conversation_id=binding["conversation_id"],
+            status="sent",
+            current=False,
+            generation_no=1,
+            decision="send_reply",
+            reply_text=reply_text,
+            reply_text_hash=hashlib.sha256(
+                reply_text.encode("utf-8")
+            ).hexdigest(),
+            sent_at=sent_at,
+        )
+        db.add(action)
+        db.flush()
+        action_id = action.id
+        db.commit()
+
+    receipt_ingest = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=_v3_ingest_payload(
+            binding,
+            remark_code,
+            read_run_id="read-consumed-ai-send",
+            messages=[
+                _v3_message(
+                    "consumed-ai-send",
+                    role="self",
+                    message_type="text",
+                    content=reply_text,
+                    screen_order=1,
+                    raw_extra={
+                        "ai_reply_receipt": {
+                            "reply_action_id": action_id,
+                            "reply_text_hash": hashlib.sha256(
+                                reply_text.encode("utf-8")
+                            ).hexdigest(),
+                            "worker_stable_id": "worker-message-ai-consumed",
+                            "source_message_key": "consumed-ai-send",
+                            "confirmed_at": sent_at.isoformat(),
+                        }
+                    },
+                )
+            ],
+        ),
+        headers=_worker_headers(worker),
+    )
+    assert receipt_ingest.status_code == 200, receipt_ingest.text
+
+    human_ingest = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=_v3_ingest_payload(
+            binding,
+            remark_code,
+            read_run_id="read-human-after-consumed-ai-send",
+            messages=[
+                _v3_message(
+                    "human-after-consumed-ai-send",
+                    role="self",
+                    message_type="text",
+                    content="这是后续销售人工回复",
+                    screen_order=1,
+                )
+            ],
+        ),
+        headers=_worker_headers(worker),
+    )
+    assert human_ingest.status_code == 200, human_ingest.text
+    with SessionLocal() as db:
+        messages = db.query(MessageEvent).filter(
+            MessageEvent.conversation_id == binding["conversation_id"]
+        ).order_by(MessageEvent.ingested_at.asc()).all()
+        assert messages[0].raw_payload["sender_source"] == "ai"
+        assert messages[1].raw_payload["sender_source"] == "human"
+        assert (
+            messages[1].raw_payload.get("ai_reply_action_id") is None
+        )
 
 
 def test_failed_customer_image_before_later_human_sales_reply_does_not_reopen_handoff():
@@ -3980,8 +4553,12 @@ def test_ingest_rejects_duplicate_screen_order():
         headers=_worker_headers(worker),
     )
 
-    assert response.status_code == 409, response.text
-    assert response.json()["code"] == "MESSAGE_SCREEN_ORDER_DUPLICATED"
+    assert response.status_code == 400, response.text
+    assert response.json()["code"] == "VALIDATION_ERROR"
+    assert any(
+        "screen_order 不能重复" in str(error.get("msg") or "")
+        for error in response.json()["data"]["errors"]
+    )
     with SessionLocal() as db:
         assert db.query(MessageEvent).count() == 0
 
@@ -4105,6 +4682,86 @@ def test_ingest_rejects_message_without_slot_read_run_ownership():
     assert response.json()["code"] == "VALIDATION_ERROR"
     with SessionLocal() as db:
         assert db.query(MessageEvent).count() == 0
+
+
+def test_ingest_rejects_message_fact_without_sequence_alignment_evidence():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("缺少序列证据客户", "13896676691")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    payload = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id="read-missing-sequence-evidence",
+        messages=[
+            _v3_message(
+                "missing-sequence-evidence",
+                role="customer",
+                message_type="text",
+                content="缺少统一序列证据",
+                screen_order=1,
+            )
+        ],
+    )
+    del payload["evidence"]["sequence_alignment_evidence"]
+
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers=_worker_headers(worker),
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["code"] == "VALIDATION_ERROR"
+
+
+def test_ingest_rejects_ambiguous_alignment_that_declares_new_suffix():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("歧义序列客户", "13896676692")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    payload = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id="read-ambiguous-suffix",
+        messages=[
+            _v3_message(
+                "ambiguous-suffix",
+                role="customer",
+                message_type="text",
+                content="不能冒充新增尾部",
+                screen_order=1,
+            )
+        ],
+    )
+    payload["evidence"]["sequence_alignment_evidence"].update(
+        {
+            "alignment_status": "ambiguous",
+            "candidate_alignment_count": 2,
+            "old_tail_fully_consumed": False,
+        }
+    )
+
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers=_worker_headers(worker),
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["code"] == "VALIDATION_ERROR"
 
 
 def test_ingest_rejects_message_position_without_order_evidence_source():
@@ -7248,6 +7905,8 @@ def test_server_identity_checkpoint_restores_worker_sequence_across_worker_chang
             "alignment_signature": target_checkpoint["recent_messages"][0][
                 "alignment_signature"
             ],
+            "native_source_message_id": "",
+            "canonical_visual_id": "",
         }
     ]
 
@@ -7490,11 +8149,69 @@ def test_duplicate_voice_key_with_different_media_anchor_is_identity_collision()
 
     assert response.status_code == 409
     assert response.json()["code"] == "MESSAGE_IDENTITY_COLLISION"
-    assert response.json()["data"]["existing_identity"][
-        "media_identity_hash"
-    ] != response.json()["data"]["incoming_identity"][
-        "media_identity_hash"
-    ]
+    collision = response.json()["data"]
+    assert collision["source_message_key"] == "voice-anchor-two"
+    assert collision["existing_identity"]["media_identity_hash"] == ""
+    assert collision["incoming_identity"]["media_identity_hash"] == ""
+
+
+def test_same_voice_identity_is_duplicated_when_only_frame_anchor_moves():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("语音位置变化不改身份", "13896676678")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    original_message = _v3_message(
+        "voice-stable-source",
+        role="customer",
+        message_type="voice",
+        content="同一条语音转写",
+        screen_order=1,
+        raw_extra={
+            "dedupe_basis": {"worker_stable_id": "worker-message-31"}
+        },
+    )
+    original = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=_v3_ingest_payload(
+            binding,
+            remark_code,
+            read_run_id="voice-position-original",
+            messages=[original_message],
+        ),
+        headers=_worker_headers(worker),
+    )
+    assert original.status_code == 200, original.text
+
+    moved_message = copy.deepcopy(original_message)
+    moved_observation = moved_message["raw_payload"]["observation"]
+    moved_observation["parent_voice_anchor_key"] = "anchor:moved-row"
+    moved_observation["source_message"][
+        "voice_anchor_stable_key"
+    ] = "anchor:moved-row"
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=_v3_ingest_payload(
+            binding,
+            remark_code,
+            read_run_id="voice-position-reread",
+            messages=[moved_message],
+        ),
+        headers=_worker_headers(worker),
+    )
+
+    assert response.status_code == 200, response.text
+    result = response.json()["data"]["results"][0]
+    assert result["ingest_result"] == "duplicated"
+    with SessionLocal() as db:
+        assert db.query(MessageEvent).filter(
+            MessageEvent.conversation_id == binding["conversation_id"]
+        ).count() == 1
 
 
 def test_empty_reads_back_off_two_five_ten_minutes_and_unread_wakes_immediately():

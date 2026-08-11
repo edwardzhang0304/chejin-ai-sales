@@ -28,6 +28,10 @@ assert spec and spec.loader
 spec.loader.exec_module(sidecar)
 
 from apps.wechat_ai_customer_service.adapters import wechat_connector
+from chejin_worker_client.action_journal import (
+    action_journal_phase,
+    initialize_action_journal,
+)
 from chejin_worker_client.task_runner import _untranscribed_voice_observations
 
 
@@ -60,6 +64,149 @@ def unified_voice_observation(anchor: dict | None, visible_button: dict | None =
 
 
 class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
+    def _execute_prepared_voice(
+        self,
+        *,
+        candidate: dict,
+        bound_message: dict | None,
+        click_ok: bool = True,
+        target_confirmation: dict | None = None,
+    ) -> tuple[dict, Mock, Mock, str]:
+        action_id = f"action-{candidate['observation_id']}"
+        reserved_id = f"worker-{candidate['observation_id']}"
+        fingerprint = f"fingerprint-{candidate['observation_id']}"
+        anchor = dict(candidate["action_target"])
+        final_message = dict(bound_message or {})
+        if final_message:
+            final_message.update(
+                {
+                    "canonical_voice_action_id": action_id,
+                    "reserved_worker_stable_id": reserved_id,
+                }
+            )
+        image = Image.new("RGB", (965, 852), (247, 247, 247))
+        click = Mock(return_value={"ok": click_ok, "reason": "click_failed" if not click_ok else ""})
+        menu = Mock(
+            return_value={
+                "menu_state": "transcribe_available",
+                "click_target": {"click_bounds": [525, 317, 649, 343]},
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            journal_path = Path(tmp) / f"{action_id}.json"
+            initialize_action_journal(
+                journal_path,
+                action_kind="voice",
+                transaction_id=action_id,
+                conversation_id="conversation-1",
+                origin_read_run_id="read-1",
+                items=[
+                    {
+                        "source_message_key": action_id,
+                        "physical_anchor_keys": ["anchor-a"],
+                    }
+                ],
+                pre_frame_id="frame-prepare",
+                canonical_action_id=action_id,
+                reserved_worker_stable_id=reserved_id,
+                prepare_evidence={
+                    "pre_frame_id": "frame-prepare",
+                    "selected_pre_observation_id": candidate["observation_id"],
+                    "selected_action_token": "token-a",
+                    "selected_target_fingerprint": fingerprint,
+                    "candidate_group_count": 1,
+                },
+            )
+
+            def observations(messages: list[dict]) -> list[dict]:
+                if click_ok:
+                    return [
+                        {
+                            "observation_id": "voice-post",
+                            "row_kind": "voice_transcript",
+                            "message_type": "voice",
+                            "sender_role": final_message.get("sender_role", "customer"),
+                            "source_message": dict(final_message),
+                        }
+                    ]
+                return [
+                    {
+                        "observation_id": "voice-failed-post",
+                        "row_kind": "voice_bubble",
+                        "message_type": "voice",
+                        "sender_role": candidate.get("sender_role", "customer"),
+                        "action_target": anchor,
+                        "source_message": {"id": "voice-failed-post", "type": "voice"},
+                    }
+                ]
+
+            with patch.object(
+                sidecar,
+                "capture_wechat",
+                side_effect=[
+                    (image, "execute-before.png"),
+                    (image, "execute-after.png"),
+                ],
+            ), patch.object(sidecar, "run_ocr", return_value=[]), patch.object(
+                sidecar,
+                "parse_current_chat_frame_messages",
+                side_effect=[[], [final_message] if final_message else []],
+            ), patch.object(
+                sidecar,
+                "build_unified_voice_observations_v3",
+                side_effect=[[candidate], [candidate]],
+            ), patch.object(
+                sidecar,
+                "_voice_observation_fingerprint",
+                return_value=fingerprint,
+            ), patch.object(
+                sidecar,
+                "voice_context_anchor_exclusion_keys",
+                return_value={"anchor-a"},
+            ), patch.object(
+                sidecar,
+                "build_message_observations_v3",
+                side_effect=observations,
+            ), patch.object(
+                sidecar,
+                "_bind_voice_transcripts_for_action",
+                return_value=[final_message] if final_message else [],
+            ), patch.object(
+                sidecar,
+                "validate_active_send_target",
+                return_value=target_confirmation
+                or {"ok": True, "conversation_type": "private", "short_code_confirmed": True},
+            ), patch.object(
+                sidecar,
+                "c2_target_activation_confirmed",
+                side_effect=lambda value: value.get("ok") is True,
+            ), patch.object(
+                sidecar, "open_voice_transcribe_context_menu", menu
+            ), patch.object(
+                sidecar, "click_voice_transcribe_context_menu_target", click
+            ), patch.object(
+                sidecar, "human_window_image_click_in_bounds", click
+            ), patch.object(
+                sidecar, "humanized_action_sleep", return_value=None
+            ):
+                result = sidecar.execute_voice_action_payload(
+                    1,
+                    {},
+                    target="CJR8S5K3",
+                    artifact_dir=None,
+                    confirm_target="CJR8S5K3",
+                    confirm_exact=False,
+                    action_journal_path=str(journal_path),
+                    canonical_voice_action_id=action_id,
+                    reserved_worker_stable_id=reserved_id,
+                    pre_frame_id="frame-prepare",
+                    selected_pre_observation_id=candidate["observation_id"],
+                    selected_action_token="token-a",
+                    selected_target_fingerprint=fingerprint,
+                )
+            phase = action_journal_phase(journal_path)
+        return result, click, menu, phase
+
     @staticmethod
     def draw_avatar(draw: ImageDraw.ImageDraw, bounds: tuple[int, int, int, int]) -> None:
         left, top, right, bottom = bounds
@@ -325,16 +472,16 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             sidecar,
             "open_voice_transcribe_context_menu",
         ) as open_menu:
-            payload = sidecar.voice_transcribe_payload(
+            payload = sidecar.prepare_voice_action_payload(
                 101,
                 {},
                 target="CJR8S5K3 虾丸子大人",
                 confirm_target="CJR8S5K3",
-                max_duration_seconds=60,
             )
 
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["error_code"], "TARGET_NOT_CONFIRMED_FOR_VOICE_TRANSCRIBE")
+        self.assertFalse(payload["ui_action_performed"])
         self.assertEqual(capture.call_count, 1)
         self.assertIs(validate.call_args.kwargs["screenshot"], image)
         open_menu.assert_not_called()
@@ -1024,29 +1171,30 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             patch.object(sidecar, "humanized_action_sleep", return_value=None),
             patch.object(sidecar, "scroll_chat_history", scroll_mock),
         ):
-            result = sidecar.voice_transcribe_payload(
-                1,
-                {},
-                target="CJR8S5K3",
-                confirm_target="CJR8S5K3",
+            candidate = unified_voice_observation(anchor)
+            assert candidate is not None
+            candidate["observation_id"] = "voice-3"
+            result, click, _menu, phase = self._execute_prepared_voice(
+                candidate=candidate,
+                bound_message=recovered_transcript,
             )
 
         self.assertEqual(result["state"], "voice_transcribe_completed")
-        self.assertEqual([item["content"] for item in result["transcribed_messages"]], ["今天天气真不错"])
-        self.assertNotIn("海鲜", [item["content"] for item in result["transcribed_messages"]])
-        self.assertEqual(result["attempts"][0]["reanchor_attempts"][-1]["transcribed_count"], 1)
-        self.assertTrue(all(not item["scrolled_up"] for item in result["attempts"][0]["reanchor_attempts"]))
-        self.assertEqual(result["timing"]["schema_version"], 1)
-        self.assertGreaterEqual(result["timing"]["ocr_call_count"], 2)
-        self.assertGreaterEqual(result["timing"]["capture_call_count"], 2)
-        self.assertGreaterEqual(result["timing"]["wait_call_count"], 1)
-        self.assertGreaterEqual(result["timing"]["total_duration_seconds"], 0)
-        self.assertTrue(result["initial_target_confirmation"]["ok"])
-        self.assertFalse(result["target_confirmation"]["ok"])
-        self.assertFalse(result["final_frame_validation"]["target_confirmed"])
-        self.assertFalse(result["final_frame_reusable"])
-        self.assertEqual(validate_target.call_count, 2)
-        self.assertEqual(validate_target.call_args_list[-1].kwargs["screenshot_path"], "recovered.png")
+        self.assertEqual(result["voice_action_stage"], "execute")
+        self.assertEqual(result["pre_frame_id"], "frame-prepare")
+        self.assertEqual(result["selected_pre_observation_id"], "voice-3")
+        self.assertEqual(result["selected_action_token"], "token-a")
+        self.assertEqual(
+            result["selected_target_fingerprint"], "fingerprint-voice-3"
+        )
+        self.assertTrue(result["post_frame_id"])
+        self.assertNotEqual(
+            result["post_frame_id"], result["pre_frame_id"]
+        )
+        self.assertEqual(result["messages"][0]["content"], "今天天气真不错")
+        self.assertNotIn("海鲜", [item.get("content") for item in result["messages"]])
+        self.assertEqual(phase, "confirmed")
+        self.assertEqual(click.call_count, 1)
         scroll_mock.assert_not_called()
 
     def test_combined_voice_record_is_bound_to_clicked_row_with_duplicate_duration(self) -> None:
@@ -1371,17 +1519,28 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             patch.object(sidecar, "humanized_action_sleep", return_value=None),
             patch.object(sidecar, "scroll_chat_history", scroll_mock),
         ):
-            result = sidecar.voice_transcribe_payload(1, {}, target="CJR8S5K3")
+            lower_candidate = unified_voice_observation(lower_anchor)
+            upper_candidate = unified_voice_observation(upper_anchor)
+            assert lower_candidate is not None and upper_candidate is not None
+            lower_candidate["observation_id"] = "voice-lower"
+            upper_candidate["observation_id"] = "voice-upper"
+            failed, failed_click, _failed_menu, failed_phase = self._execute_prepared_voice(
+                candidate=lower_candidate,
+                bound_message=None,
+                click_ok=False,
+            )
+            completed, completed_click, _completed_menu, completed_phase = self._execute_prepared_voice(
+                candidate=upper_candidate,
+                bound_message=upper_transcribed,
+            )
 
-        self.assertEqual(result["state"], "voice_transcribe_partial")
-        self.assertEqual(result["attempt_count"], 2)
-        self.assertGreater(result["failed_voice_anchor_count"], 0)
-        self.assertIn("voice_transcribe_anchor_failed", result["quality_flags"])
-        self.assertFalse(result["attempts"][-1]["remaining_untranscribed_voice"])
-        self.assertEqual([item["content"] for item in result["transcribed_messages"]], ["上面这条已经转好"])
-        self.assertTrue(result["attempts"][0]["failed_anchor_keys"])
-        self.assertEqual(result["attempts"][1]["context_anchor"]["item"]["message_id"], "upper")
-        self.assertEqual(click_mock.call_count, 2)
+        self.assertEqual(failed["state"], "voice_transcribe_click_failed")
+        self.assertEqual(failed_phase, "failed")
+        self.assertEqual(completed["state"], "voice_transcribe_completed")
+        self.assertEqual(completed_phase, "confirmed")
+        self.assertEqual(completed["messages"][0]["content"], "上面这条已经转好")
+        self.assertEqual(failed_click.call_count, 1)
+        self.assertEqual(completed_click.call_count, 1)
         scroll_mock.assert_not_called()
 
     def test_each_voice_attempt_uses_fresh_baseline_and_does_not_rebind_prior_transcript(self) -> None:
@@ -1482,14 +1641,29 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             ),
             patch.object(sidecar, "humanized_action_sleep", return_value=None),
         ):
-            result = sidecar.voice_transcribe_payload(1, {}, target="CJR8S5K3")
+            customer_candidate = unified_voice_observation(customer_anchor)
+            self_candidate = unified_voice_observation(self_anchor)
+            assert customer_candidate is not None and self_candidate is not None
+            customer_candidate["observation_id"] = "voice-customer-5"
+            self_candidate["observation_id"] = "voice-self-11"
+            customer_result, customer_click, _menu1, customer_phase = self._execute_prepared_voice(
+                candidate=customer_candidate,
+                bound_message={**customer_text, "sender_role": "customer", "sender": "customer"},
+            )
+            self_result, self_click, _menu2, self_phase = self._execute_prepared_voice(
+                candidate=self_candidate,
+                bound_message=self_transcribed,
+            )
 
-        self.assertEqual(result["state"], "voice_transcribe_completed")
         self.assertEqual(
-            [(item["content"], item["sender_role"]) for item in result["transcribed_messages"]],
+            [
+                (customer_result["messages"][0]["content"], customer_result["messages"][0]["sender_role"]),
+                (self_result["messages"][0]["content"], self_result["messages"][0]["sender_role"]),
+            ],
             [("客户五秒语音文字", "customer"), ("我们十一秒语音文字", "self")],
         )
-        self.assertEqual(result["attempts"][1]["transcribed_messages_count"], 1)
+        self.assertEqual((customer_phase, self_phase), ("confirmed", "confirmed"))
+        self.assertEqual(customer_click.call_count + self_click.call_count, 2)
 
     def test_visible_button_waits_passively_without_second_physical_action(self) -> None:
         image = Image.new("RGB", (965, 852), (247, 247, 247))
@@ -1567,13 +1741,19 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             ) as fallback_click,
             patch.object(sidecar, "humanized_action_sleep", return_value=None),
         ):
-            result = sidecar.voice_transcribe_payload(1, {}, target="CJR8S5K3")
+            candidate = unified_voice_observation(anchor, direct_target)
+            assert candidate is not None
+            candidate["observation_id"] = "voice-visible-button"
+            result, click, menu, phase = self._execute_prepared_voice(
+                candidate=candidate,
+                bound_message=completed,
+            )
 
         self.assertEqual(result["state"], "voice_transcribe_completed")
-        self.assertEqual([item["content"] for item in result["transcribed_messages"]], ["今天可以出门了"])
-        self.assertEqual(visible_clicks[0], (637, 234, [610, 223, 664, 245]))
-        fallback_click.assert_not_called()
-        self.assertNotIn("visible_button_fallback_context_menu", result["attempts"][0])
+        self.assertEqual(result["messages"][0]["content"], "今天可以出门了")
+        self.assertEqual(phase, "confirmed")
+        self.assertEqual(click.call_count, 1)
+        menu.assert_not_called()
 
     def test_self_voice_transcript_binding_requires_right_aligned_layout(self) -> None:
         anchor = {

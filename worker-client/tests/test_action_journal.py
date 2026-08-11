@@ -16,6 +16,7 @@ from chejin_worker_client.action_journal import (
     action_journal_phase,
     initialize_action_journal,
     read_action_journal,
+    record_action_sequence_alignment,
 )
 from chejin_worker_client.storage import (
     clear_c2_action_journal,
@@ -39,6 +40,15 @@ class ActionJournalTest(unittest.TestCase):
                     "physical_anchor_keys": ["voice-anchor-1"],
                 }
             ],
+            pre_frame_id="voice-frame-1",
+            canonical_action_id="voice-transaction",
+            reserved_worker_stable_id="worker-message-1",
+            prepare_evidence={
+                "pre_frame_id": "voice-frame-1",
+                "selected_pre_observation_id": "voice-observation-1",
+                "selected_action_token": "voice-token-1",
+                "selected_target_fingerprint": "voice-fingerprint-1",
+            },
         )
 
     def tearDown(self) -> None:
@@ -155,9 +165,78 @@ class ActionJournalTest(unittest.TestCase):
             self.path,
             source_message_key="message-1",
             action_phase="not_attempted",
+            business_state="failed",
+            business_result_confirmed=False,
+            error_code="STALE_FAILURE",
+            terminal_payload={"state": "failed"},
         )
 
         self.assertEqual(action_journal_phase(self.path), "confirmed")
+        item = read_action_journal(self.path)["items"]["message-1"]
+        self.assertEqual(item["business_state"], "completed")
+        self.assertTrue(item["business_result_confirmed"])
+        self.assertIsNone(item["error_code"])
+        self.assertIsNone(item["terminal_payload"])
+
+    def test_pre_action_sequence_and_reserved_id_survive_alignment_write(
+        self,
+    ) -> None:
+        path = Path(self.tmp.name) / "sequence-action.json"
+        pre_sequence = [
+            {
+                "identity_state": "selected_action",
+                "pre_observation_id": "voice-before",
+                "pre_sequence_index": 0,
+                "sender_role": "customer",
+                "message_type": "voice",
+                "canonical_action_id": "voice-action-1",
+                "reserved_worker_stable_id": "worker-message-8",
+            }
+        ]
+        initialize_action_journal(
+            path,
+            action_kind="voice",
+            transaction_id="voice-action-1",
+            conversation_id="conversation-1",
+            origin_read_run_id="read-1",
+            canonical_action_id="voice-action-1",
+            reserved_worker_stable_id="worker-message-8",
+            prepare_evidence={
+                "pre_frame_id": "frame-before",
+                "selected_pre_observation_id": "voice-before",
+                "selected_action_token": "voice-token-8",
+                "selected_target_fingerprint": "voice-fingerprint-8",
+            },
+            pre_frame_id="frame-before",
+            pre_action_identity_sequence=pre_sequence,
+            items=[
+                {
+                    "source_message_key": "voice-action-1",
+                    "physical_anchor_keys": ["frame-local-anchor"],
+                }
+            ],
+        )
+        evidence = {
+            "alignment_status": "unique",
+            "pre_frame_id": "frame-before",
+            "post_frame_id": "frame-after",
+            "candidate_alignment_count": 1,
+            "matched_pairs": [],
+            "old_tail_fully_consumed": True,
+            "new_suffix_observation_ids": [],
+        }
+
+        record_action_sequence_alignment(path, evidence)
+        saved = read_action_journal(path)
+
+        self.assertEqual(saved["schema_version"], 4)
+        self.assertEqual(saved["pre_action_identity_sequence"], pre_sequence)
+        self.assertEqual(
+            saved["reserved_worker_stable_id"], "worker-message-8"
+        )
+        self.assertEqual(
+            saved["sequence_alignment_evidence"], evidence
+        )
 
 
 if __name__ == "__main__":
