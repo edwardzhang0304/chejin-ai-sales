@@ -905,6 +905,31 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         self.assertEqual(alignment["role"], "")
         self.assertEqual(messages, [])
 
+    def test_tall_customer_image_recovers_avatar_above_bubble_top(self) -> None:
+        image = Image.new("RGB", (981, 860), (247, 247, 247))
+        draw = ImageDraw.Draw(image)
+        for y in range(416, 460):
+            for x in range(408, 453):
+                draw.point(
+                    (x, y),
+                    fill=(
+                        (x * 7) % 256,
+                        (y * 5) % 256,
+                        ((x + y) * 3) % 256,
+                    ),
+                )
+
+        alignment = sidecar.message_row_avatar_role_details(
+            image,
+            [464, 438, 637, 573],
+            image.size,
+        )
+
+        self.assertEqual(alignment["role"], "customer")
+        self.assertTrue(alignment["customer"]["present"])
+        self.assertLess(alignment["customer"]["bounds"][1], 438)
+        self.assertFalse(alignment["self"]["present"])
+
     def test_call_duration_bubble_is_typed_as_non_chat_call_event(self) -> None:
         image = Image.new("RGB", (965, 852), (247, 247, 247))
         draw = ImageDraw.Draw(image)

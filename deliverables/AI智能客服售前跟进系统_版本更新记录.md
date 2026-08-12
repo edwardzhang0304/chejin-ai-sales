@@ -23,9 +23,9 @@
 | 项目 | 当前值 |
 |---|---|
 | 隔离候选目录 | `/private/tmp/chejin-feishu-c3-integration` |
-| 当前候选 HEAD | `663543ba8f45d7c5a6e74d0d61ff6aef4e53ab1d` |
+| 本轮整改父基线 | `7b3447b1d9d165775e9384ea70104a74e9614bbd`；最终候选 HEAD 由提交及包内 manifest 动态记录 |
 | 当前机器合同文件 | `3.13.3`；Sidecar、Worker、后端校验、生成 schema、样例和定向测试已同步；规范化 SHA 为 `3e3637b39a4d6d80c9e1b8dafa376c2f316512a84d78ace6094556a5287290eb` |
-| 来源治理 | 独立 OmniAuto 固定提交 `f743f562d0f56115142ebcf74c102c7e01ee88bb` 已形成并推送；`.chejin-source.json` 已同步，车金候选由本次 Git 提交与包清单记录 |
+| 来源治理 | 独立 OmniAuto 固定提交 `9c1583c940b3c45b0c75f9d5a30482410e87eeb5` 已形成并推送；`.chejin-source.json` 已同步，车金候选由本次 Git 提交与包清单记录 |
 | PRD | v0.5.7 |
 | 技术方案 | v0.8.11 |
 | 全流程图 | v0.4 源文件 |

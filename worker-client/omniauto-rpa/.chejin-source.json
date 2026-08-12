@@ -4,7 +4,7 @@
   "upstream_base_commit": "a563e6688c47a8922510794101967823fe1389d7",
   "selective_integrations": [
     {
-      "source_commit": "f743f562d0f56115142ebcf74c102c7e01ee88bb",
+      "source_commit": "9c1583c940b3c45b0c75f9d5a30482410e87eeb5",
       "scope": [
         "exact_wechat_context_menu_classification",
         "same_popup_menu_panel_evidence_contract",
@@ -19,7 +19,8 @@
         "ambiguous_voice_finite_terminal_settlement",
         "c2_contract_3_13_3_generated_schema",
         "sidebar_title_preview_physical_line_separation",
-        "safe_visible_target_stale_after_click_relocation_contract"
+        "safe_visible_target_stale_after_click_relocation_contract",
+        "tall_image_bubble_same_row_avatar_role_recovery"
       ]
     }
   ],
@@ -45,5 +46,5 @@
       ]
     }
   ],
-  "integration_note": "当前内嵌副本基于 OmniAuto a563e6688c47a8922510794101967823fe1389d7，并选择性同步固定提交 f743f562d0f56115142ebcf74c102c7e01ee88bb。该提交在原有微信菜单精确分类、真实弹窗证据、非图片剪贴板失败结算、正式菜单失败原因、复制点击前安全落盘、可靠消息类型优先于结构图片且不依赖动作成功的仲裁，以及语音 prepare/execute 单目标协议、逐边连续跟踪、统一语音 observation 与序列仲裁、ActionJournal 单调终态、歧义语音有限终态和侧栏标题/预览严格分层基础上，将生成 schema 升至 3.13.3，并新增可见会话行误点后的有界恢复合同：只有点击后非空标题明确未确认目标短码且尚未读取消息、操作媒体、输入或发送时，才允许 Worker 重新校验授权并精确搜索一次。车金 overlay 继续固定 C2 会话身份的单一决策边界：OmniAuto 独占标题 OCR、单聊/群聊/unknown 分类、固定八位正式短码提取与准入决策；Worker 只校验 `c2_remark_code_candidates` 与 `c2_conversation_admission` 合同并匹配后端授权，不读取 `raw_title`、不提取短码、不重新分类会话；缺字段或矛盾结果必须拒绝并告警。C3 发送前上下文守卫是车金专属 overlay：只比较已确认当前 private 会话的消息视口和序列，侧栏红点或其他会话变化不得阻断发送；当前会话视口变化时仍严格拒绝点击。车金继续保留悬浮球/F8/键鼠守护删除、hard_opt_out 以及专属适配。最终车金提交和完整目录 tree SHA 由打包 manifest 动态记录。"
+  "integration_note": "当前内嵌副本基于 OmniAuto a563e6688c47a8922510794101967823fe1389d7，并选择性同步固定提交 9c1583c940b3c45b0c75f9d5a30482410e87eeb5。该提交在原有微信菜单精确分类、真实弹窗证据、非图片剪贴板失败结算、正式菜单失败原因、复制点击前安全落盘、可靠消息类型优先于结构图片且不依赖动作成功的仲裁，以及语音 prepare/execute 单目标协议、逐边连续跟踪、统一语音 observation 与序列仲裁、ActionJournal 单调终态、歧义语音有限终态和侧栏标题/预览严格分层基础上，将生成 schema 升至 3.13.3，新增可见会话行误点后的有界恢复合同，并修复高图片气泡只截取气泡顶部头像带导致客户图片角色证据丢失的问题；头像恢复仍严格限制在同一行左侧头像通道，不扩大角色判定范围。车金 overlay 继续固定 C2 会话身份的单一决策边界：OmniAuto 独占标题 OCR、单聊/群聊/unknown 分类、固定八位正式短码提取与准入决策；Worker 只校验 `c2_remark_code_candidates` 与 `c2_conversation_admission` 合同并匹配后端授权，不读取 `raw_title`、不提取短码、不重新分类会话；缺字段或矛盾结果必须拒绝并告警。C3 发送前上下文守卫是车金专属 overlay：只比较已确认当前 private 会话的消息视口和序列，侧栏红点或其他会话变化不得阻断发送；当前会话视口变化时仍严格拒绝点击。AI 发送确认回执通过统一序列身份单调持久化，后续权威读取不得把已确认的自方回复误判为跨轮歧义。车金继续保留悬浮球/F8/键鼠守护删除、hard_opt_out 以及专属适配。最终车金提交和完整目录 tree SHA 由打包 manifest 动态记录。"
 }

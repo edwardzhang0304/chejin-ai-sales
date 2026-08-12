@@ -16972,6 +16972,197 @@ class TaskRunnerTest(unittest.TestCase):
             ["worker-message-42", "worker-message-43"],
         )
 
+    def test_ai_send_receipt_commits_action_when_media_history_is_weak(self):
+        pre = [
+            {
+                "observation_id": "old-image",
+                "row_kind": "image_bubble",
+                "message_type": "image",
+                "sender_role": "customer",
+                "_worker_stable_id": "worker-message-70",
+            },
+            {
+                "observation_id": "old-voice-1",
+                "row_kind": "voice_transcript",
+                "message_type": "voice",
+                "sender_role": "customer",
+                "content_clean": "第一条语音",
+                "_worker_stable_id": "worker-message-71",
+            },
+            {
+                "observation_id": "old-voice-2",
+                "row_kind": "voice_transcript",
+                "message_type": "voice",
+                "sender_role": "customer",
+                "content_clean": "第二条语音",
+                "_worker_stable_id": "worker-message-72",
+            },
+        ]
+        runner, _bridge, target, action_id, reserved_id, state_key = (
+            self._prepare_ai_send_receipt_fixture(
+                conversation_id="conv-send-media-history",
+                pre_observations=pre,
+                next_sequence=73,
+            )
+        )
+        sent = self._ai_send_observation(
+            "sent-after-media",
+            sender_role="self",
+            content="中午好，在的，您想咨询什么事？",
+        )
+
+        recorded = runner._record_confirmed_ai_reply_receipt(
+            target=target,
+            reply_action_id=action_id,
+            reply_text_hash=runner._reply_text_hash(
+                sent["content_clean"]
+            ),
+            sidecar_result=self._confirmed_send_sidecar_result(
+                observations=[*pre, sent],
+                confirmed_observation_id="sent-after-media",
+                run_id="send-media-history",
+            ),
+            confirmed_at="2026-08-12T07:24:35+00:00",
+        )
+
+        self.assertTrue(recorded)
+        receipt = load_c2_state(state_key)["ai_reply_receipts"][0]
+        self.assertEqual(receipt["worker_stable_id"], reserved_id)
+        self.assertTrue(
+            receipt["sequence_alignment_evidence"][
+                "action_identity_only"
+            ]
+        )
+        self.assertFalse(
+            receipt["sequence_alignment_evidence"][
+                "old_tail_fully_consumed"
+            ]
+        )
+
+    def test_recent_ai_sent_alignment_merges_confirmed_receipt_before_history(self):
+        conversation_id = "conv-recent-ai-sent-media-history"
+        reply_text = "中午好，在的，您想咨询什么事？"
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        save_c2_state(
+            f"message_identity:{conversation_id}",
+            {
+                "version": 4,
+                "next_sequence": 74,
+                "ai_reply_receipts": [
+                    {
+                        "reply_action_id": "reply-media-history",
+                        "reply_text_hash": runner._reply_text_hash(
+                            reply_text
+                        ),
+                        "worker_stable_id": "worker-message-73",
+                        "confirmed_at": "2026-08-12T07:24:35+00:00",
+                    }
+                ],
+            },
+        )
+        recent_messages = [
+            {
+                "stable_id": "worker-message-70",
+                "source_message_key": "source:image",
+                "sender_role": "customer",
+                "message_type": "image",
+                "normalized_content_hash": normalized_content_hash(""),
+            },
+            {
+                "stable_id": "worker-message-71",
+                "source_message_key": "source:voice-1",
+                "sender_role": "customer",
+                "message_type": "voice",
+                "normalized_content_hash": normalized_content_hash(
+                    "第一条语音"
+                ),
+            },
+            {
+                "stable_id": "worker-message-72",
+                "source_message_key": "source:voice-2",
+                "sender_role": "customer",
+                "message_type": "voice",
+                "normalized_content_hash": normalized_content_hash(
+                    "第二条语音"
+                ),
+            },
+        ]
+        target = WechatReadTarget(
+            conversation_id=conversation_id,
+            rpa_session_key="",
+            display_name="CJK7M4Q2",
+            remark_code="CJK7M4Q2",
+            read_reason="recent_ai_sent",
+            authorization_revision="revision-recent-ai-sent",
+            raw={
+                "identity_checkpoint": {
+                    "version": 2,
+                    "next_sequence_floor": 74,
+                    "recent_messages": recent_messages,
+                }
+            },
+        )
+        observations = [
+            {
+                "observation_id": "current-image",
+                "row_kind": "image_bubble",
+                "message_type": "image",
+                "sender_role": "customer",
+            },
+            {
+                "observation_id": "current-voice-1",
+                "row_kind": "voice_transcript",
+                "message_type": "voice",
+                "sender_role": "customer",
+                "content_clean": "第一条语音",
+            },
+            {
+                "observation_id": "current-voice-2",
+                "row_kind": "voice_transcript",
+                "message_type": "voice",
+                "sender_role": "customer",
+                "content_clean": "第二条语音",
+            },
+            self._ai_send_observation(
+                "current-ai-reply",
+                sender_role="self",
+                content=reply_text,
+            ),
+        ]
+
+        aligned, errors = runner._align_initial_identity_frame(
+            target=target,
+            sidecar_payload={
+                "ok": True,
+                "frame_id": "recent-ai-sent-frame",
+                "observations": observations,
+            },
+            read_run_id="read-recent-ai-sent",
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            [
+                item.get("_worker_stable_id")
+                for item in aligned["observations"]
+            ],
+            [
+                "worker-message-70",
+                "worker-message-71",
+                "worker-message-72",
+                "worker-message-73",
+            ],
+        )
+        self.assertEqual(
+            aligned["sequence_alignment_evidence"]["alignment_status"],
+            "unique",
+        )
+
     def test_ai_send_crash_state_keeps_possible_sent_and_reuses_reservation(self):
         pre = [
             self._ai_send_observation(

@@ -506,7 +506,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "f743f562d0f56115142ebcf74c102c7e01ee88bb"
+                        "9c1583c940b3c45b0c75f9d5a30482410e87eeb5"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -532,6 +532,7 @@ class PackagingScriptsTest(unittest.TestCase):
                             "safe_visible_target_stale_after_click_"
                             "relocation_contract"
                         ),
+                        "tall_image_bubble_same_row_avatar_role_recovery",
                     ],
                 }
             ],
@@ -549,7 +550,7 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["chejin_overlays"],
         )
         self.assertIn(
-            "f743f562d0f56115142ebcf74c102c7e01ee88bb",
+            "9c1583c940b3c45b0c75f9d5a30482410e87eeb5",
             provenance["integration_note"],
         )
         self.assertIn("3.13.3", provenance["integration_note"])
@@ -565,6 +566,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("Worker 只校验", provenance["integration_note"])
         self.assertIn("不读取 `raw_title`", provenance["integration_note"])
         self.assertIn("侧栏红点或其他会话变化不得阻断发送", provenance["integration_note"])
+        self.assertIn("高图片气泡", provenance["integration_note"])
+        self.assertIn("AI 发送确认回执", provenance["integration_note"])
         self.assertEqual(
             provenance["historical_integrations"][0][
                 "chejin_integration_commit"
