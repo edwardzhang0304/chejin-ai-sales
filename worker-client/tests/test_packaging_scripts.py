@@ -184,7 +184,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("delivery ZIP does not contain the packaged runtime directory", workflow)
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v16.145.0-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v0.9.0-windows-x64.delivery.json", workflow)
         self.assertIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn("vision_credential_embedded", workflow)
         self.assertIn("vision_configuration_locked", workflow)
@@ -506,7 +506,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "9c1583c940b3c45b0c75f9d5a30482410e87eeb5"
+                        "156d1a9c4384de90dc226c65b23b1b701e25878a"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -526,7 +526,7 @@ class PackagingScriptsTest(unittest.TestCase):
                             "settlement"
                         ),
                         "ambiguous_voice_finite_terminal_settlement",
-                        "c2_contract_3_13_3_generated_schema",
+                        "c2_contract_0_9_0_generated_schema",
                         "sidebar_title_preview_physical_line_separation",
                         (
                             "safe_visible_target_stale_after_click_"
@@ -550,10 +550,10 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["chejin_overlays"],
         )
         self.assertIn(
-            "9c1583c940b3c45b0c75f9d5a30482410e87eeb5",
+            "156d1a9c4384de90dc226c65b23b1b701e25878a",
             provenance["integration_note"],
         )
-        self.assertIn("3.13.3", provenance["integration_note"])
+        self.assertIn("0.9.0", provenance["integration_note"])
         self.assertIn("有界恢复合同", provenance["integration_note"])
         self.assertIn(
             "可靠消息类型优先于结构图片且不依赖动作成功",
@@ -887,7 +887,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "16.145.0"', workflow)
+        self.assertIn('version -ne "0.9.0"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)
