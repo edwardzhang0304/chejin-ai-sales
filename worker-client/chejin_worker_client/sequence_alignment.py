@@ -232,18 +232,25 @@ def _compatible(
     post_native = _token(post.get("native_source_message_id"))
     if pre_native and post_native and pre_native != post_native:
         return False, ""
+    message_type = _token(pre.get("message_type"))
     pre_visual = _token(pre.get("canonical_visual_id"))
     post_visual = _token(post.get("canonical_visual_id"))
+    # Text/system visual ids are frame-local OCR geometry fingerprints.  A
+    # viewport scroll rebuilds them even when the ordered message facts are
+    # unchanged, so they may strengthen an equal match but never contradict
+    # the content/role/type sequence.  Media visual ids remain durable safety
+    # evidence and a mismatch must still fail closed.
     if (
         pre_visual
         and post_visual
         and pre_visual != post_visual
+        and message_type not in {"text", "system"}
         and strong_basis != "confirmed_action"
     ):
         return False, ""
     if pre.get("identity_state") == "selected_action" and not strong_basis:
         return False, ""
-    if _token(pre.get("message_type")) in {"text", "system"} and _token(
+    if message_type in {"text", "system"} and _token(
         pre.get("normalized_content_hash")
     ) != _token(post.get("normalized_content_hash")):
         return False, ""

@@ -1329,6 +1329,7 @@ class TaskRunnerTest(unittest.TestCase):
         content: str,
         stable_id: str = "",
         native_id: str = "",
+        visual_id: str = "",
     ) -> dict:
         observation = {
             "schema_version": 3,
@@ -1352,6 +1353,9 @@ class TaskRunnerTest(unittest.TestCase):
             observation["source_message"][
                 "native_source_message_id"
             ] = native_id
+        if visual_id:
+            observation["canonical_visual_id"] = visual_id
+            observation["source_message"]["canonical_visual_id"] = visual_id
         return observation
 
     @staticmethod
@@ -16970,6 +16974,161 @@ class TaskRunnerTest(unittest.TestCase):
                 ]
             ],
             ["worker-message-42", "worker-message-43"],
+        )
+
+    def test_ai_send_receipt_aligns_live_scroll_when_all_ocr_ids_rebuild(self):
+        pre_specs = [
+            ("pre-top", "self", "好嘞，有需要随时跟我说。"),
+            ("pre-long", "self", "这是一条保留在窗口里的较长历史消息"),
+            ("pre-ok-1", "customer", "好"),
+            ("pre-middle", "self", "小号回我一局"),
+            ("pre-ok-2", "customer", "好"),
+        ]
+        pre = [
+            self._ai_send_observation(
+                observation_id,
+                sender_role=sender_role,
+                content=content,
+                stable_id=f"worker-message-{index + 1}",
+                visual_id=f"visual-{observation_id}",
+            )
+            for index, (observation_id, sender_role, content) in enumerate(
+                pre_specs
+            )
+        ]
+        runner, _bridge, target, action_id, reserved_id, state_key = (
+            self._prepare_ai_send_receipt_fixture(
+                conversation_id="conv-send-live-scroll-rebuilt-ids",
+                pre_observations=pre,
+                next_sequence=6,
+            )
+        )
+        post = [
+            self._ai_send_observation(
+                f"post-{index}",
+                sender_role=sender_role,
+                content=content,
+                visual_id=f"visual-post-{index}",
+            )
+            for index, (_old_id, sender_role, content) in enumerate(
+                pre_specs[1:]
+            )
+        ]
+        post.append(
+            self._ai_send_observation(
+                "post-ai-reply",
+                sender_role="self",
+                content="好的，您有需要随时发我。",
+                native_id="native-post-ai-reply",
+                visual_id="visual-post-ai-reply",
+            )
+        )
+
+        reply_text = "好的，您有需要随时发我。"
+        recorded = runner._record_confirmed_ai_reply_receipt(
+            target=target,
+            reply_action_id=action_id,
+            reply_text_hash=runner._reply_text_hash(reply_text),
+            sidecar_result=self._confirmed_send_sidecar_result(
+                observations=post,
+                confirmed_observation_id="post-ai-reply",
+                run_id="send-live-scroll-rebuilt-ids",
+            ),
+            confirmed_at="2026-08-12T10:27:26+00:00",
+        )
+
+        self.assertTrue(recorded)
+        state = load_c2_state(state_key)
+        self.assertEqual(state["sequence_commits"][action_id], reserved_id)
+        receipt = state["ai_reply_receipts"][0]
+        self.assertEqual(receipt["worker_stable_id"], reserved_id)
+        evidence = receipt["sequence_alignment_evidence"]
+        self.assertEqual(evidence["alignment_status"], "unique")
+        self.assertEqual(
+            [pair["pre_index"] for pair in evidence["matched_pairs"]],
+            [1, 2, 3, 4],
+        )
+        self.assertEqual(
+            [pair["post_index"] for pair in evidence["matched_pairs"]],
+            [0, 1, 2, 3],
+        )
+        self.assertEqual(
+            evidence["new_suffix_observation_ids"],
+            ["post-ai-reply"],
+        )
+
+        target.raw["identity_checkpoint"] = {
+            "version": 2,
+            "next_sequence_floor": 7,
+            "recent_messages": [
+                {
+                    "stable_id": f"worker-message-{index + 1}",
+                    "source_message_key": f"source-history-{index + 1}",
+                    "sender_role": sender_role,
+                    "message_type": "text",
+                    "normalized_content_hash": normalized_content_hash(
+                        content
+                    ),
+                    "canonical_visual_id": f"checkpoint-visual-{index + 1}",
+                }
+                for index, (_observation_id, sender_role, content) in enumerate(
+                    pre_specs
+                )
+            ],
+        }
+        later_read = [
+            self._ai_send_observation(
+                f"later-{index}",
+                sender_role=sender_role,
+                content=content,
+                visual_id=f"later-visual-{index}",
+            )
+            for index, (_old_id, sender_role, content) in enumerate(
+                pre_specs[1:]
+            )
+        ]
+        later_read.append(
+            self._ai_send_observation(
+                "later-ai-reply",
+                sender_role="self",
+                content=reply_text,
+                visual_id="later-visual-ai-reply",
+            )
+        )
+
+        aligned, errors = runner._align_initial_identity_frame(
+            target=target,
+            sidecar_payload={
+                "ok": True,
+                "frame_id": "later-no-change-frame",
+                "observations": later_read,
+            },
+            read_run_id="read-after-confirmed-ai-reply",
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            [
+                item.get("_worker_stable_id")
+                for item in aligned["observations"]
+            ],
+            [
+                "worker-message-2",
+                "worker-message-3",
+                "worker-message-4",
+                "worker-message-5",
+                reserved_id,
+            ],
+        )
+        self.assertEqual(
+            aligned["sequence_alignment_evidence"]["alignment_status"],
+            "unique",
+        )
+        self.assertEqual(
+            aligned["sequence_alignment_evidence"][
+                "new_suffix_observation_ids"
+            ],
+            [],
         )
 
     def test_ai_send_receipt_commits_action_when_media_history_is_weak(self):
