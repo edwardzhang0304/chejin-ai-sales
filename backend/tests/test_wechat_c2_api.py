@@ -4912,8 +4912,35 @@ def test_lightweight_read_authorization_returns_current_recovery_target():
     )
     binding = scan.json()["data"]["bindings"][0]
     with SessionLocal() as db:
+        binding_row = db.get(WechatSessionBinding, binding["id"])
         conversation = db.get(Conversation, binding["conversation_id"])
+        assert binding_row is not None
+        assert conversation is not None
         conversation.status = "waiting_sales_reply"
+        db.commit()
+
+    cooling_down = client.get(
+        (
+            f"/api/workers/{worker['id']}/wechat/conversations/"
+            f"{binding['conversation_id']}/read-authorization"
+        ),
+        headers=_worker_headers(worker),
+    )
+
+    assert cooling_down.status_code == 200, cooling_down.text
+    cooling_data = cooling_down.json()["data"]
+    assert cooling_data["allowed"] is False
+    assert cooling_data["recovery_decision"] == "retry_later"
+    assert cooling_data["read_reason"] == "waiting_sales_reply"
+    assert cooling_data["identity_checkpoint"]["version"] == 2
+    assert cooling_data["next_read_due_at"] is not None
+    assert "target" not in cooling_data
+
+    with SessionLocal() as db:
+        binding_row = db.get(WechatSessionBinding, binding["id"])
+        assert binding_row is not None
+        binding_row.last_read_conversation_status = "waiting_sales_reply"
+        binding_row.next_read_due_at = utcnow() - timedelta(seconds=1)
         db.commit()
 
     response = client.get(
@@ -5124,6 +5151,12 @@ def test_clean_authoritative_read_auto_recovers_temporary_c2_handoff(
         paused=False,
         reason_code=reason_code,
     )
+    with SessionLocal() as db:
+        binding_row = db.get(WechatSessionBinding, binding["id"])
+        assert binding_row is not None
+        binding_row.last_read_conversation_status = "waiting_sales_reply"
+        binding_row.next_read_due_at = utcnow() - timedelta(seconds=1)
+        db.commit()
 
     targets = client.get(
         f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
@@ -7926,6 +7959,8 @@ def test_server_identity_checkpoint_restores_worker_sequence_across_worker_chang
         assert binding_row is not None
         assert conversation is not None
         binding_row.unread_hint = False
+        binding_row.last_read_conversation_status = "waiting_sales_reply"
+        binding_row.next_read_due_at = utcnow() - timedelta(seconds=1)
         conversation.status = "waiting_sales_reply"
         db.add(
             MessageEvent(
