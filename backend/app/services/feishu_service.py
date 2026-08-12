@@ -13,6 +13,7 @@ from app.models.base import utcnow
 from app.models.c3 import Conversation, HandoffEvent
 from app.models.lead import Lead, LeadContact
 from app.models.sales import Sales
+from app.models.wechat import WechatSessionBinding
 from app.services.audit_service import write_system_log
 from app.services.feishu_adapter import FeishuAdapter, FeishuAdapterError, get_feishu_adapter
 
@@ -260,8 +261,23 @@ def _notification_context(handoff_event_id: str) -> tuple[str, str]:
         if not open_id:
             raise FeishuAdapterError("FEISHU_OPEN_ID_MISSING", "sales_open_id_missing")
 
+        binding = db.scalar(
+            select(WechatSessionBinding).where(
+                WechatSessionBinding.conversation_id == conversation.conversation_id,
+                WechatSessionBinding.bind_status == "bound",
+                WechatSessionBinding.deleted_at.is_(None),
+                WechatSessionBinding.remark_code.is_not(None),
+                WechatSessionBinding.remark_code != "",
+            )
+        )
+        customer_code = str(binding.remark_code if binding else "").strip()
+        if not customer_code:
+            raise FeishuAdapterError(
+                "FEISHU_MESSAGE_SEND_FAILED",
+                "conversation_remark_code_missing",
+            )
+
         lead = db.get(Lead, conversation.lead_id) if conversation.lead_id else None
-        customer_name = str(lead.customer_name if lead else "未知客户").strip() or "未知客户"
         phone_masked = "未提供"
         if lead:
             phone_masked = str(
@@ -286,7 +302,7 @@ def _notification_context(handoff_event_id: str) -> tuple[str, str]:
         message = "\n".join(
             [
                 "客户已转人工，请及时处理。",
-                f"客户：{customer_name}",
+                f"客户短码：{customer_code}",
                 f"手机号：{phone_masked}",
                 f"原因：{reason}",
                 f"转人工时间：{time_text}",
