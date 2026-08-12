@@ -27,7 +27,8 @@
     "c2_same_row_avatar_sender_role",
     "c2_error_and_observation_contract",
     "action_journal_authorization_and_cancel_checks",
-    "formal_vision_provider_security"
+    "formal_vision_provider_security",
+    "c3_active_chat_send_context_guard"
   ],
   "historical_integrations": [
     {
@@ -42,5 +43,5 @@
       ]
     }
   ],
-  "integration_note": "当前内嵌副本基于 OmniAuto a563e6688c47a8922510794101967823fe1389d7，并选择性同步固定提交 0ef552684d474be9fa95af8c8c5557f833e4ecbd。该提交在原有微信菜单精确分类、真实弹窗证据、非图片剪贴板失败结算、正式菜单失败原因、复制点击前安全落盘和可靠消息类型优先于结构图片且不依赖动作成功的仲裁基础上，新增 3.13.2 语音 prepare/execute 单目标协议、逐边连续跟踪、统一语音 observation 与序列仲裁、ActionJournal 单调终态、歧义语音有限终态及生成 schema，并由独立 OmniAuto 兼容测试固定。车金 overlay 继续固定 C2 会话身份的单一决策边界：OmniAuto 独占标题 OCR、单聊/群聊/unknown 分类、固定八位正式短码提取与准入决策；Worker 只校验 `c2_remark_code_candidates` 与 `c2_conversation_admission` 合同并匹配后端授权，不读取 `raw_title`、不提取短码、不重新分类会话；缺字段或矛盾结果必须拒绝并告警。车金继续保留悬浮球/F8/键鼠守护删除、hard_opt_out 以及专属适配。最终车金提交和完整目录 tree SHA 由打包 manifest 动态记录。"
+  "integration_note": "当前内嵌副本基于 OmniAuto a563e6688c47a8922510794101967823fe1389d7，并选择性同步固定提交 0ef552684d474be9fa95af8c8c5557f833e4ecbd。该提交在原有微信菜单精确分类、真实弹窗证据、非图片剪贴板失败结算、正式菜单失败原因、复制点击前安全落盘和可靠消息类型优先于结构图片且不依赖动作成功的仲裁基础上，新增 3.13.2 语音 prepare/execute 单目标协议、逐边连续跟踪、统一语音 observation 与序列仲裁、ActionJournal 单调终态、歧义语音有限终态及生成 schema，并由独立 OmniAuto 兼容测试固定。车金 overlay 继续固定 C2 会话身份的单一决策边界：OmniAuto 独占标题 OCR、单聊/群聊/unknown 分类、固定八位正式短码提取与准入决策；Worker 只校验 `c2_remark_code_candidates` 与 `c2_conversation_admission` 合同并匹配后端授权，不读取 `raw_title`、不提取短码、不重新分类会话；缺字段或矛盾结果必须拒绝并告警。C3 发送前上下文守卫是车金专属 overlay：只比较已确认当前 private 会话的消息视口和序列，侧栏红点或其他会话变化不得阻断发送；当前会话视口变化时仍严格拒绝点击。车金继续保留悬浮球/F8/键鼠守护删除、hard_opt_out 以及专属适配。最终车金提交和完整目录 tree SHA 由打包 manifest 动态记录。"
 }

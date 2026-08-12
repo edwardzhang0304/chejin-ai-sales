@@ -2020,8 +2020,8 @@ recall_precheck_queue 如果对应会话刚在 visible_hit_queue 或 state_targe
 -> 在原会话执行pre_send_refresh，不重新搜索或切换客户
 -> 服务端按dedupe_key入库，并判断旧reply_action是否已被新消息作废
 -> 没有上下文变化时，claim当前chat_reply/reply_action和claim-send
--> 把pre_send_refresh消息序列传入Sidecar
--> 输入前和点击前各复核一次消息序列
+-> 把pre_send_refresh消息序列和当前 private 会话消息视口指纹传入Sidecar
+-> 输入前和点击前各复核一次当前会话消息视口；视口变化时再严格比较消息序列
 -> 发送并上报sent_ack
 
 崩溃恢复链路：确认原C2 Flow已不存在
@@ -2038,7 +2038,7 @@ recall_precheck_queue 如果对应会话刚在 visible_hit_queue 或 state_targe
 | 没有新客户消息，且输入前/点击前消息序列均未变化 | 允许 Worker 发送原 reply_action。 |
 | 有新客户消息 | 原 reply_action 置为 `superseded`，不发送；新消息进入 message_batch 重新生成回复。 |
 | 读取失败/目标不确认 | 不发送；在原 UI 锁内将待处理 `chat_reply` 以 `C2_REPLY_CONTEXT_RECOVERY_FAILED` 结算，后端取消未发送 action/batch 并创建人工接管；结算无法确认时本地暂停接单，禁止扫描抢跑。 |
-| 输入前或点击前消息序列变化 | 返回 `C3_CONTEXT_CHANGED_BEFORE_SEND`；只允许清理能证明属于本次程序的草稿，不点击发送，新事实进入下一轮读取和 batch。 |
+| 输入前或点击前当前会话消息视口变化，且消息序列变化 | 返回 `C3_CONTEXT_CHANGED_BEFORE_SEND`；只允许清理能证明属于本次程序的草稿，不点击发送，新事实进入下一轮读取和 batch。侧栏未读红点、其他会话或无关窗口区域变化不得作为当前会话上下文变化。 |
 
 #### 6.0.4.5 召回前 recall_precheck
 

@@ -2,16 +2,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from pydantic_core import PydanticCustomError
 
 
-class SalesUpsert(BaseModel):
+class _SalesWriteBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
-    sales_name: str = Field(min_length=1, max_length=50)
-    phone: str = Field(min_length=1, max_length=64)
-    wechat: str | None = Field(default=None, max_length=64)
-    worker_id: str | None = Field(default=None, max_length=36)
-    enabled: bool = True
-    sort_order: int | None = None
-    remark: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -29,12 +21,57 @@ class SalesUpsert(BaseModel):
                 )
         return value
 
+
+class SalesCreate(_SalesWriteBase):
+    sales_name: str = Field(min_length=1, max_length=50)
+    phone: str = Field(min_length=1, max_length=64)
+    wechat: str | None = Field(default=None, max_length=64)
+    worker_id: str | None = Field(default=None, max_length=36)
+    enabled: bool = True
+    sort_order: int | None = None
+    remark: str | None = None
+
     @field_validator("sales_name")
     @classmethod
     def strip_sales_name(cls, value: str) -> str:
         value = value.strip()
         if not value:
             raise ValueError("销售姓名必填")
+        return value
+
+
+class SalesUpdate(_SalesWriteBase):
+    sales_name: str | None = Field(default=None, min_length=1, max_length=50)
+    phone: str | None = Field(default=None, min_length=1, max_length=64)
+    wechat: str | None = Field(default=None, max_length=64)
+    worker_id: str | None = Field(default=None, max_length=36)
+    enabled: bool | None = None
+    sort_order: int | None = None
+    remark: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_explicit_null_required_fields(cls, value):
+        if isinstance(value, dict):
+            if "phone" in value and value["phone"] is None:
+                raise PydanticCustomError(
+                    "sales_phone_invalid",
+                    "修改手机号时必须提交完整手机号",
+                )
+            if "sales_name" in value and value["sales_name"] is None:
+                raise ValueError("销售姓名不能为空")
+            if "enabled" in value and value["enabled"] is None:
+                raise ValueError("销售状态不能为空")
+        return value
+
+    @field_validator("sales_name")
+    @classmethod
+    def strip_optional_sales_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("销售姓名不能为空")
         return value
 
 

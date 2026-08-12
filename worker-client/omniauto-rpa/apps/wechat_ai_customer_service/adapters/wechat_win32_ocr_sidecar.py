@@ -2183,6 +2183,7 @@ def messages_payload(
         else {"detected": False}
     )
     observations = build_message_observations_v3(messages, visible_voice_hint)
+    message_region_fingerprint = send_context_message_region_fingerprint(screenshot)
     observation_validation_errors = [
         {
             "observation_id": str(observation.get("observation_id") or ""),
@@ -2205,7 +2206,15 @@ def messages_payload(
         "history_load": history_load,
         "messages": messages,
         "observations": observations,
-        "send_context_guard": build_send_context_guard(observations),
+        "send_context_guard": build_send_context_guard(
+            observations,
+            message_region_sha256=str(
+                message_region_fingerprint.get("sha256") or ""
+            ),
+            message_region_bounds=list(
+                message_region_fingerprint.get("bounds") or []
+            ),
+        ),
         "observation_validation_errors": observation_validation_errors,
         "observation_schema_version": C2_OBSERVATION_SCHEMA_VERSION,
         "visible_untranscribed_voice": visible_voice_hint,
@@ -13351,6 +13360,9 @@ def send_context_entry_from_observation(observation: dict[str, Any]) -> dict[str
 
 def build_send_context_guard(
     observations: list[dict[str, Any]] | None,
+    *,
+    message_region_sha256: str = "",
+    message_region_bounds: list[int] | None = None,
 ) -> dict[str, Any]:
     sequence = [
         send_context_entry_from_observation(observation)
@@ -13365,12 +13377,51 @@ def build_send_context_guard(
         sort_keys=True,
         separators=(",", ":"),
     )
-    return {
+    payload = {
         "schema_version": 1,
         "sequence": sequence,
         "sequence_sha256": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
         "message_count": len(sequence),
         "bottom": dict(sequence[-1]) if sequence else None,
+    }
+    clean_region_sha256 = str(message_region_sha256 or "").strip().lower()
+    if re.fullmatch(r"[0-9a-f]{64}", clean_region_sha256):
+        payload["message_region_sha256"] = clean_region_sha256
+        payload["message_region_bounds"] = list(message_region_bounds or [])
+    return payload
+
+
+def send_context_message_region_fingerprint(screenshot: Any) -> dict[str, Any]:
+    """Hash only the active chat message viewport, excluding sidebar and input.
+
+    Sidebar unread counters are unrelated to the active conversation and must
+    not invalidate a safe send.  The crop deliberately excludes the title,
+    scrollbar edge, toolbar and input surface; a changed viewport still falls
+    back to the existing strict observation-sequence comparison.
+    """
+
+    try:
+        image = screenshot.convert("RGB")
+        width = int(getattr(image, "width", 0) or 0)
+        height = int(getattr(image, "height", 0) or 0)
+    except Exception:
+        return {}
+    if width <= 0 or height <= 0:
+        return {}
+    input_top = input_text_region_bounds({"width": width, "height": height})[1]
+    left = min(width - 1, session_split_x(width) + 12)
+    top = min(height - 1, chat_header_cutoff_y(height) + 2)
+    right = max(left + 1, width - 18)
+    bottom = max(top + 1, min(height, input_top - 6))
+    if right <= left or bottom <= top:
+        return {}
+    crop = image.crop((left, top, right, bottom))
+    digest = hashlib.sha256()
+    digest.update(f"{crop.width}x{crop.height}:rgb:".encode("ascii"))
+    digest.update(crop.tobytes())
+    return {
+        "sha256": digest.hexdigest(),
+        "bounds": [left, top, right, bottom],
     }
 
 
@@ -13410,6 +13461,25 @@ def validate_send_context_guard(
             "ok": False,
             "reason": "current_context_guard_invalid",
             "error_code": "C3_SEND_CONTEXT_GUARD_INVALID",
+        }
+    expected_region_sha256 = str(
+        expected_payload.get("message_region_sha256") or ""
+    ).strip().lower()
+    current_region_sha256 = str(
+        current_payload.get("message_region_sha256") or ""
+    ).strip().lower()
+    if (
+        re.fullmatch(r"[0-9a-f]{64}", expected_region_sha256)
+        and re.fullmatch(r"[0-9a-f]{64}", current_region_sha256)
+        and expected_region_sha256 == current_region_sha256
+    ):
+        return {
+            "ok": True,
+            "reason": "message_region_unchanged",
+            "message_count": len(current_sequence),
+            "sequence_sha256": current_payload.get("sequence_sha256"),
+            "message_region_sha256": current_region_sha256,
+            "bottom": current_payload.get("bottom"),
         }
     if expected_sequence != current_sequence:
         return {
@@ -13504,6 +13574,7 @@ def build_send_fact_snapshot_from_frame(
         screenshot=screenshot,
     )
     observations = build_message_observations_v3(messages)
+    message_region_fingerprint = send_context_message_region_fingerprint(screenshot)
     input_region = input_text_region_state(screenshot, ocr_items, geometry=geometry)
     message_sequence = [
         {
@@ -13530,7 +13601,15 @@ def build_send_fact_snapshot_from_frame(
         "matching_self_message_count": send_reply_match_count(messages, text),
         "message_count": len(messages),
         "observations": observations,
-        "send_context_guard": build_send_context_guard(observations),
+        "send_context_guard": build_send_context_guard(
+            observations,
+            message_region_sha256=str(
+                message_region_fingerprint.get("sha256") or ""
+            ),
+            message_region_bounds=list(
+                message_region_fingerprint.get("bounds") or []
+            ),
+        ),
         "message_sequence": message_sequence,
         "matching_self_messages": [
             {

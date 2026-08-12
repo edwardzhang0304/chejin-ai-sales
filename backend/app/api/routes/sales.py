@@ -5,7 +5,7 @@ from app.api.response import ok
 from app.core.auth import require_admin_auth
 from app.core.database import get_db
 from app.core.request_context import ActorContext, get_actor_context
-from app.schemas.sales import SalesUpsert, SalesWorkerBindRequest
+from app.schemas.sales import SalesCreate, SalesUpdate, SalesWorkerBindRequest
 from app.services import sales_service
 
 
@@ -19,7 +19,7 @@ def list_sales(db: Session = Depends(get_db)):
 
 @router.post("/sales")
 def create_sales(
-    payload: SalesUpsert,
+    payload: SalesCreate,
     db: Session = Depends(get_db),
     actor: ActorContext = Depends(get_actor_context),
 ):
@@ -40,7 +40,7 @@ def get_sales(sales_id: str, db: Session = Depends(get_db)):
 @router.put("/sales/{sales_id}")
 def update_sales(
     sales_id: str,
-    payload: SalesUpsert,
+    payload: SalesUpdate,
     db: Session = Depends(get_db),
     actor: ActorContext = Depends(get_actor_context),
 ):

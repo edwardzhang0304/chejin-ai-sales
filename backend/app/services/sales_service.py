@@ -7,8 +7,7 @@ from app.models.base import utcnow
 from app.models.lead import Lead
 from app.models.sales import Sales
 from app.models.worker import Worker
-from app.schemas.sales import SalesWorkerBindRequest
-from app.schemas.sales import SalesUpsert
+from app.schemas.sales import SalesCreate, SalesUpdate, SalesWorkerBindRequest
 from app.services.audit_service import write_log
 from app.services.contact_utils import normalize_phone
 from app.services.feishu_service import enqueue_sales_open_id_sync
@@ -65,7 +64,7 @@ def list_sales(db: Session) -> list[dict]:
     ]
 
 
-def create_sales(db: Session, payload: SalesUpsert, actor: ActorContext) -> Sales:
+def create_sales(db: Session, payload: SalesCreate, actor: ActorContext) -> Sales:
     data = payload.model_dump()
     worker_id = data.pop("worker_id", None)
     normalized_phone = _normalize_sales_phone(data["phone"])
@@ -199,7 +198,7 @@ def bind_worker(db: Session, sales_id: str, payload: SalesWorkerBindRequest, act
     return get_sales_detail(db, sales.id)
 
 
-def update_sales(db: Session, sales_id: str, payload: SalesUpsert, actor: ActorContext) -> Sales:
+def update_sales(db: Session, sales_id: str, payload: SalesUpdate, actor: ActorContext) -> Sales:
     sales = db.get(Sales, sales_id)
     if not sales or sales.deleted_at:
         raise AppError("SALES_NOT_FOUND", "销售不存在", 404)
@@ -213,15 +212,19 @@ def update_sales(db: Session, sales_id: str, payload: SalesUpsert, actor: ActorC
     data = payload.model_dump(exclude_unset=True)
     worker_id_provided = "worker_id" in data
     worker_id = data.pop("worker_id", None)
-    normalized_phone = _normalize_sales_phone(data["phone"])
-    phone_changed = normalized_phone != sales.phone
-    data["phone"] = normalized_phone
+    phone_changed = False
+    normalized_phone: str | None = None
+    if "phone" in data:
+        normalized_phone = _normalize_sales_phone(data["phone"])
+        phone_changed = normalized_phone != sales.phone
+        data["phone"] = normalized_phone
     if phone_changed:
         sales.feishu_user_id = None
     for key, value in data.items():
         setattr(sales, key, value)
     db.flush()
     if phone_changed:
+        assert normalized_phone is not None
         enqueue_sales_open_id_sync(
             db,
             sales_id=sales.id,

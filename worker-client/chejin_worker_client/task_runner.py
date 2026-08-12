@@ -2545,6 +2545,16 @@ class TaskRunner:
         return ordered
 
     def _send_evidence(self, payload: dict[str, Any], *, target: str) -> dict[str, Any]:
+        send_baseline = (
+            payload.get("send_baseline")
+            if isinstance(payload.get("send_baseline"), dict)
+            else {}
+        )
+        baseline_guard = (
+            send_baseline.get("send_context_guard")
+            if isinstance(send_baseline.get("send_context_guard"), dict)
+            else {}
+        )
         return {
             "adapter": payload.get("adapter"),
             "state": payload.get("state"),
@@ -2552,6 +2562,15 @@ class TaskRunner:
             "window_probe": payload.get("window_probe"),
             "send_result": payload.get("send_result"),
             "guard": payload.get("guard"),
+            "context_validation": payload.get("context_validation"),
+            "send_baseline": {
+                "screenshot_path": send_baseline.get("screenshot_path"),
+                "message_region_sha256": baseline_guard.get(
+                    "message_region_sha256"
+                ),
+                "sequence_sha256": baseline_guard.get("sequence_sha256"),
+                "message_count": baseline_guard.get("message_count"),
+            },
             "timing": payload.get("timing"),
             "stdout_tail": payload.get("stdout_tail") or payload.get("stdout"),
             "stderr_tail": payload.get("stderr_tail") or payload.get("stderr"),
