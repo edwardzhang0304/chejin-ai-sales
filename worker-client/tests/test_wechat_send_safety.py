@@ -981,6 +981,82 @@ class WechatSendSafetyTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["error_code"], "C3_CONTEXT_CHANGED_BEFORE_SEND")
 
+    def test_pre_enter_target_switch_blocks_even_when_message_region_is_identical(self):
+        geometry = {
+            "left": 0,
+            "top": 0,
+            "right": 981,
+            "bottom": 860,
+            "width": 981,
+            "height": 860,
+        }
+        context_guard = {
+            "schema_version": 1,
+            "sequence": [],
+            "message_count": 0,
+            "bottom": None,
+            "message_region_sha256": "a" * 64,
+        }
+        strict_target = {
+            "ok": True,
+            "online": True,
+            "reason": "target_confirmed",
+            "confirmation_confidence": "active_title_strict",
+            "geometry": geometry,
+        }
+        baseline = {
+            "ok": True,
+            "validation": strict_target,
+            "input_region": {"has_visible_text": False},
+            "matching_self_message_count": 0,
+            "message_sequence": [],
+            "send_context_guard": context_guard,
+        }
+        switched_target = {
+            **baseline,
+            "ok": False,
+            "validation": {
+                "ok": False,
+                "reason": "active_title_target_mismatch",
+                "confirmation_confidence": "target_mismatch",
+                "geometry": geometry,
+            },
+        }
+        captured_check: dict[str, object] = {}
+
+        def reject_after_target_switch(*_args, **kwargs):
+            check = kwargs["before_send_trigger_check"]()
+            captured_check.update(check)
+            return {
+                **check,
+                "physical_send_triggered": False,
+            }
+
+        with (
+            patch.object(sidecar, "recover_send_window_guard", return_value={"ok": True}),
+            patch.object(sidecar, "active_send_guard_is_strong", side_effect=lambda value: value.get("confirmation_confidence") == "active_title_strict"),
+            patch.object(sidecar, "get_window_geometry", return_value=geometry),
+            patch.object(sidecar, "validate_send_geometry", return_value={"ok": True}),
+            patch.object(sidecar, "consume_input_region_precheck_ocr_seed", return_value=None),
+            patch.object(sidecar, "capture_send_fact_snapshot", side_effect=[baseline, switched_target]),
+            patch.object(sidecar, "send_with_visual_input", side_effect=reject_after_target_switch),
+        ):
+            result = sidecar.send_payload(
+                1,
+                {"ok": True},
+                target="CJV6P3R8",
+                text="AI回复",
+                exact=False,
+                skip_send_rate_guard=True,
+                expected_context_guard=context_guard,
+                validated_guard=strict_target,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_code"], "SEND_TARGET_NOT_CONFIRMED")
+        self.assertEqual(captured_check["reason"], "send_target_not_confirmed_before_enter")
+        self.assertFalse(result["physical_send_triggered"])
+
     def test_send_reply_match_count_requires_self_role_and_exact_normalized_text(self):
         messages = [
             {"sender_role": "customer", "content": "您好，可以继续沟通"},
@@ -1404,6 +1480,7 @@ class WechatSendSafetyTest(unittest.TestCase):
         }
         baseline = {
             "ok": True,
+            "validation": strict_guard,
             "input_region": input_region,
             "matching_self_message_count": 0,
             "message_sequence": [],
