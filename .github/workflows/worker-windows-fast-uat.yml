@@ -3,7 +3,7 @@ name: Worker Windows fast UAT ZIP
 on:
   push:
     branches:
-      - codex/worker-fast-uat-*
+      - codex/gray-release-0.9.x
   workflow_dispatch:
     inputs:
       uat_label:
@@ -123,7 +123,7 @@ jobs:
       - name: Upload Fast UAT ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: chejin-worker-fast-uat-${{ github.sha }}
+          name: chejin-worker-fast-uat-v0.9.0-${{ github.sha }}
           path: worker-client/dist/fast-uat-release/chejin-worker-fast-uat-*.zip
           if-no-files-found: error
           retention-days: 14
