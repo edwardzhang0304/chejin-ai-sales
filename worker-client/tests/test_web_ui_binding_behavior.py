@@ -69,6 +69,7 @@ def _headless_web_ui_module():
     qt_gui = types.ModuleType("PySide6.QtGui")
     qt_gui.QBitmap = _Widget
     qt_gui.QColor = _Widget
+    qt_gui.QGuiApplication = _Widget
     qt_gui.QPainter = _Widget
 
     qt_web_channel = types.ModuleType("PySide6.QtWebChannel")
@@ -125,6 +126,17 @@ class _Runner:
 class WebUiBindingBehaviorTest(unittest.TestCase):
     @staticmethod
     def _window(module, binding):
+        available = types.SimpleNamespace(
+            x=lambda: 0,
+            y=lambda: 0,
+            width=lambda: 1920,
+            height=lambda: 1080,
+        )
+        screen = types.SimpleNamespace(availableGeometry=lambda: available)
+        module.QGuiApplication = types.SimpleNamespace(
+            screenAt=lambda _point: screen,
+            primaryScreen=lambda: screen,
+        )
         window = module.WorkerWebWindow.__new__(module.WorkerWebWindow)
         window.binding = binding
         window.profile = None

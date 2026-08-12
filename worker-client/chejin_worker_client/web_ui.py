@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QEvent, QPoint, QObject, Qt, QUrl, Signal, Slot
-from PySide6.QtGui import QBitmap, QColor, QPainter
+from PySide6.QtGui import QBitmap, QColor, QGuiApplication, QPainter
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QFileDialog, QMainWindow
@@ -349,8 +349,40 @@ class WorkerWebWindow(QMainWindow):
         probe_payload = self.rpa_bridge.last_probe_payload
         if not probe_payload:
             return
+        geometry = probe_payload.get("geometry")
+        if not isinstance(geometry, dict):
+            self._startup_position_attempted = True
+            return
+        try:
+            center = QPoint(
+                (int(geometry["left"]) + int(geometry["right"])) // 2,
+                (int(geometry["top"]) + int(geometry["bottom"])) // 2,
+            )
+            screen = (
+                QGuiApplication.screenAt(center)
+                or QGuiApplication.primaryScreen()
+            )
+            available = screen.availableGeometry() if screen is not None else None
+            screen_bounds = (
+                (
+                    int(available.x()),
+                    int(available.y()),
+                    int(available.x() + available.width()),
+                    int(available.y() + available.height()),
+                )
+                if available is not None
+                else None
+            )
+        except (AttributeError, KeyError, TypeError, ValueError):
+            screen_bounds = None
+        if screen_bounds is None:
+            return
         self._startup_position_attempted = True
-        position = position_to_right_of_wechat(probe_payload)
+        position = position_to_right_of_wechat(
+            probe_payload,
+            window_size=(WINDOW_WIDTH, WINDOW_HEIGHT),
+            screen_bounds=screen_bounds,
+        )
         if position is None:
             return
         self.move(*position)

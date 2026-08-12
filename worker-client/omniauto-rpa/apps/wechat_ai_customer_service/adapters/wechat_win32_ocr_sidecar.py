@@ -7848,6 +7848,23 @@ def send_payload(
                 "error_code": "C3_SEND_PRE_CLICK_CONTEXT_UNAVAILABLE",
                 "error": repr(exc),
             }
+        target_validation = (
+            snapshot.get("validation")
+            if isinstance(snapshot.get("validation"), dict)
+            else {}
+        )
+        if (
+            snapshot.get("ok") is not True
+            or target_validation.get("ok") is not True
+            or not active_send_guard_is_strong(target_validation)
+        ):
+            return {
+                "ok": False,
+                "reason": "send_target_not_confirmed_before_enter",
+                "error_code": "SEND_TARGET_NOT_CONFIRMED",
+                "target_validation": target_validation,
+                "snapshot": snapshot,
+            }
         validation_result = validate_send_context_guard(
             expected_context_guard,
             snapshot.get("send_context_guard"),
