@@ -29,6 +29,46 @@ class StartupWindowPositionTest(unittest.TestCase):
         self.assertEqual(WECHAT_WINDOW_GAP, 12)
         self.assertEqual(result, (912, 80))
 
+    def test_normalizes_native_wechat_coordinates_for_scaled_qt_screen(self):
+        result = position_to_right_of_wechat(
+            {
+                "ok": True,
+                "geometry": {
+                    "left": 20,
+                    "top": 90,
+                    "right": 983,
+                    "bottom": 940,
+                    "width": 963,
+                    "height": 850,
+                },
+            },
+            window_size=(316, 628),
+            screen_bounds=(0, 0, 1536, 864),
+            native_device_pixel_ratio=1.25,
+        )
+
+        self.assertEqual(result, (798, 72))
+
+    def test_rejects_invalid_device_pixel_ratio(self):
+        result = position_to_right_of_wechat(
+            {
+                "ok": True,
+                "geometry": {
+                    "left": 100,
+                    "top": 80,
+                    "right": 900,
+                    "bottom": 700,
+                    "width": 800,
+                    "height": 620,
+                },
+            },
+            window_size=(316, 628),
+            screen_bounds=(0, 0, 1920, 1080),
+            native_device_pixel_ratio=0,
+        )
+
+        self.assertIsNone(result)
+
     def test_invalid_or_missing_probe_keeps_operating_system_default(self):
         self.assertIsNone(position_to_right_of_wechat(
             None,

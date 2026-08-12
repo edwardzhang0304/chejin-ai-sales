@@ -132,7 +132,10 @@ class WebUiBindingBehaviorTest(unittest.TestCase):
             width=lambda: 1920,
             height=lambda: 1080,
         )
-        screen = types.SimpleNamespace(availableGeometry=lambda: available)
+        screen = types.SimpleNamespace(
+            availableGeometry=lambda: available,
+            devicePixelRatio=lambda: 1.0,
+        )
         module.QGuiApplication = types.SimpleNamespace(
             screenAt=lambda _point: screen,
             primaryScreen=lambda: screen,
@@ -176,6 +179,40 @@ class WebUiBindingBehaviorTest(unittest.TestCase):
             window._position_next_to_wechat_once()
 
         window.move.assert_called_once_with(912, 80)
+
+    def test_startup_position_converts_native_pixels_at_125_percent_scaling(self):
+        with _headless_web_ui_module() as module:
+            window = self._window(module, None)
+            available = types.SimpleNamespace(
+                x=lambda: 0,
+                y=lambda: 0,
+                width=lambda: 1536,
+                height=lambda: 864,
+            )
+            screen = types.SimpleNamespace(
+                availableGeometry=lambda: available,
+                devicePixelRatio=lambda: 1.25,
+            )
+            module.QGuiApplication = types.SimpleNamespace(
+                screenAt=lambda _point: screen,
+                primaryScreen=lambda: screen,
+            )
+            window.rpa_bridge.last_probe_payload = {
+                "ok": True,
+                "geometry": {
+                    "left": 20,
+                    "top": 90,
+                    "right": 983,
+                    "bottom": 940,
+                    "width": 963,
+                    "height": 850,
+                },
+            }
+            window.move = Mock()
+
+            window._position_next_to_wechat_once()
+
+        window.move.assert_called_once_with(798, 72)
 
     def test_missing_wechat_geometry_keeps_default_window_position(self):
         with _headless_web_ui_module() as module:

@@ -15,6 +15,7 @@ if str(OMNIAUTO_ROOT) not in sys.path:
     sys.path.insert(0, str(OMNIAUTO_ROOT))
 
 from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar as sidecar
+from chejin_worker_client.wechat_c2 import build_scan_result_payload
 
 
 def ocr_item(text: str, center_y: float, *, enhanced: bool = False) -> dict:
@@ -34,6 +35,69 @@ def ocr_item(text: str, center_y: float, *, enhanced: bool = False) -> dict:
 
 
 class WechatWin32OcrSessionRowTest(unittest.TestCase):
+    def test_preview_short_code_cannot_impersonate_another_row_title(self):
+        sessions = sidecar.parse_sessions_from_ocr(
+            [
+                ocr_item("AI共创", 224.0),
+                ocr_item(
+                    "CJV6P3R8许聪：seedance 太...",
+                    253.0,
+                    enhanced=True,
+                ),
+                ocr_item("CJV6P3R8许聪", 548.0),
+                ocr_item("额度不够下 claude，我来上...", 577.0, enhanced=True),
+            ],
+            (966, 854),
+        )
+
+        self.assertEqual(len(sessions), 2)
+        self.assertEqual(sessions[0]["name"], "AI共创")
+        self.assertEqual(sessions[0]["c2_remark_code_candidates"], [])
+        self.assertIn("CJV6P3R8", sessions[0]["preview"])
+        self.assertEqual(sessions[1]["name"], "CJV6P3R8许聪")
+        self.assertEqual(
+            sessions[1]["c2_remark_code_candidates"],
+            ["CJV6P3R8"],
+        )
+        scan_payload = build_scan_result_payload({"ok": True, "sessions": sessions})
+        admitted = [
+            item
+            for item in scan_payload["sessions"]
+            if item["remark_code_candidates"] == ["CJV6P3R8"]
+        ]
+        self.assertEqual(len(admitted), 1)
+        self.assertEqual(admitted[0]["display_name"], "CJV6P3R8许聪")
+
+    def test_filtered_title_above_short_code_preview_still_fails_closed(self):
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse):
+                items = [
+                    ocr_item("普通客户名字被截断...", 128.0),
+                    ocr_item("请联系CJFAKE23处理...", 150.0, enhanced=True),
+                ]
+                if reverse:
+                    items.reverse()
+
+                sessions = sidecar.parse_sessions_from_ocr(items, (980, 860))
+
+                self.assertEqual(len(sessions), 1)
+                self.assertEqual(sessions[0]["name"], "普通客户名字被截断...")
+                self.assertEqual(sessions[0]["c2_remark_code_candidates"], [])
+                self.assertEqual(sessions[0]["conversation_type"], "unknown")
+
+    def test_different_code_in_preview_does_not_override_title_identity(self):
+        sessions = sidecar.parse_sessions_from_ocr(
+            [
+                ocr_item("CJV6P3R8许聪", 128.0),
+                ocr_item("请联系CJFAKE23处理...", 154.0, enhanced=True),
+            ],
+            (980, 860),
+        )
+
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0]["c2_remark_code_candidates"], ["CJV6P3R8"])
+        self.assertEqual(sessions[0]["conversation_type"], "private")
+
     def test_short_code_identity_precedes_all_display_suffix_heuristics(self):
         cases = (
             ("CJN8Q4K2 虾丸子...", "CJN8Q4K2"),

@@ -363,6 +363,11 @@ class WorkerWebWindow(QMainWindow):
                 or QGuiApplication.primaryScreen()
             )
             available = screen.availableGeometry() if screen is not None else None
+            device_pixel_ratio = (
+                float(screen.devicePixelRatio())
+                if screen is not None
+                else 1.0
+            )
             screen_bounds = (
                 (
                     int(available.x()),
@@ -382,6 +387,7 @@ class WorkerWebWindow(QMainWindow):
             probe_payload,
             window_size=(WINDOW_WIDTH, WINDOW_HEIGHT),
             screen_bounds=screen_bounds,
+            native_device_pixel_ratio=device_pixel_ratio,
         )
         if position is None:
             return

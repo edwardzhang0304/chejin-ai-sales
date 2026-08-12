@@ -14768,10 +14768,11 @@ def parse_sessions_from_ocr(
     left_min = max(42, int(width * 0.09))
     left_max = split_x - max(36, int(width * 0.07))
     right_limit = split_x + max(12, int(width * 0.03))
-    candidates: list[dict[str, Any]] = []
+    min_session_row_gap = max(34, int(height * 0.048))
+    geometric_items: list[dict[str, Any]] = []
     for item in ocr_items:
         text = str(item.get("text") or "").strip()
-        if not is_c2_session_title_candidate(text):
+        if not text:
             continue
         if item["center_y"] < min_header_y or item["center_y"] > height - 20:
             continue
@@ -14779,9 +14780,39 @@ def parse_sessions_from_ocr(
             continue
         if item["right"] > right_limit:
             continue
-        candidates.append(item)
+        geometric_items.append(item)
 
-    min_session_row_gap = max(34, int(height * 0.048))
+    candidates = [
+        item
+        for item in geometric_items
+        if is_c2_session_title_candidate(str(item.get("text") or ""))
+    ]
+    candidate_ids = {id(item) for item in candidates}
+    code_candidates = [
+        item
+        for item in candidates
+        if extract_c2_remark_codes(item.get("text"))
+    ]
+    # A truncated real title can fail the text heuristic while the preview
+    # below it contains a formal code.  Preserve the upper line as structural
+    # evidence so the preview cannot become the row title.  Arbitrary rejected
+    # preview text is not promoted into a standalone session candidate.
+    for item in geometric_items:
+        if id(item) in candidate_ids:
+            continue
+        text = str(item.get("text") or "").strip()
+        if is_session_time_text(text) or re.fullmatch(r"\d{1,4}", text):
+            continue
+        if text in {"搜索", "新对话", "?", "？", "+", "..."}:
+            continue
+        center_y = float(item.get("center_y") or 0)
+        if any(
+            8.0 <= float(code_item.get("center_y") or 0) - center_y < min_session_row_gap
+            and abs(float(code_item.get("left") or 0) - float(item.get("left") or 0)) <= 32.0
+            for code_item in code_candidates
+        ):
+            candidates.append(item)
+
     candidate_rows: list[list[dict[str, Any]]] = []
     for item in sorted(candidates, key=lambda row: float(row["center_y"])):
         center_y = float(item["center_y"])
@@ -14843,9 +14874,26 @@ def parse_sessions_from_ocr(
 def select_session_row_title_candidate(
     row_candidates: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
+    ordered = sorted(
+        row_candidates,
+        key=lambda item: (
+            float(item.get("center_y") or 0),
+            float(item.get("top") or 0),
+            float(item.get("left") or 0),
+        ),
+    )
+    top_center_y = float(ordered[0].get("center_y") or 0)
+    # Normal and enhanced OCR can place the same title baseline a few pixels
+    # apart.  Keep that bounded alias tolerance, but never let the lower
+    # preview line enter the title decision merely because it contains a code.
+    title_line_candidates = [
+        item
+        for item in ordered
+        if abs(float(item.get("center_y") or 0) - top_center_y) <= 6.0
+    ]
     details: list[dict[str, Any]] = []
     distinct_codes: list[str] = []
-    for item in row_candidates:
+    for item in title_line_candidates:
         raw_title = normalize_ocr_text(item.get("text"))
         codes = extract_c2_remark_codes(raw_title)
         for code in codes:

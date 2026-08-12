@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 
@@ -12,8 +13,14 @@ def position_to_right_of_wechat(
     window_size: tuple[int, int],
     screen_bounds: tuple[int, int, int, int],
     gap: int = WECHAT_WINDOW_GAP,
+    native_device_pixel_ratio: float = 1.0,
 ) -> tuple[int, int] | None:
-    """Place Worker beside WeChat while keeping it inside one display."""
+    """Place Worker beside WeChat while keeping it inside one display.
+
+    Win32 reports the WeChat rectangle in native pixels, while Qt ``move()``
+    expects device-independent coordinates.  Normalize the native rectangle
+    before combining it with Qt screen geometry.
+    """
 
     payload = status_payload if isinstance(status_payload, dict) else {}
     if payload.get("ok") is not True:
@@ -22,11 +29,14 @@ def position_to_right_of_wechat(
     if not isinstance(geometry, dict):
         return None
     try:
-        right = int(geometry["right"])
-        left = int(geometry["left"])
-        top = int(geometry["top"])
-        width = int(geometry["width"])
-        height = int(geometry["height"])
+        scale = float(native_device_pixel_ratio)
+        if not math.isfinite(scale) or scale <= 0:
+            return None
+        right = round(int(geometry["right"]) / scale)
+        left = round(int(geometry["left"]) / scale)
+        top = round(int(geometry["top"]) / scale)
+        width = round(int(geometry["width"]) / scale)
+        height = round(int(geometry["height"]) / scale)
         window_width = int(window_size[0])
         window_height = int(window_size[1])
         screen_left, screen_top, screen_right, screen_bottom = (

@@ -506,7 +506,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "0ef552684d474be9fa95af8c8c5557f833e4ecbd"
+                        "7824e825b5fa3823caf2f6142b52204b867f6b93"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -527,6 +527,7 @@ class PackagingScriptsTest(unittest.TestCase):
                         ),
                         "ambiguous_voice_finite_terminal_settlement",
                         "c2_contract_3_13_2_generated_schema",
+                        "sidebar_title_preview_physical_line_separation",
                     ],
                 }
             ],
@@ -544,7 +545,7 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["chejin_overlays"],
         )
         self.assertIn(
-            "0ef552684d474be9fa95af8c8c5557f833e4ecbd",
+            "7824e825b5fa3823caf2f6142b52204b867f6b93",
             provenance["integration_note"],
         )
         self.assertIn(
