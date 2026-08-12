@@ -14,6 +14,8 @@ from app.main import app
 from app.models.c3 import Conversation, HandoffEvent
 from app.models.lead import Lead, LeadContact
 from app.models.sales import Sales
+from app.models.wechat import WechatSessionBinding
+from app.models.worker import Worker
 from app.services import c3_service, feishu_service
 from app.services.feishu_adapter import FeishuAdapter, FeishuAdapterError
 
@@ -60,6 +62,11 @@ def _use_fake_adapter(monkeypatch, fake: FakeFeishuAdapter) -> None:
 
 def _seed_conversation(*, open_id: str | None = "ou_sales_current") -> tuple[str, str, str]:
     with SessionLocal() as db:
+        worker = Worker(
+            worker_name="飞书通知测试 Worker",
+            worker_token_hash="worker-token-hash",
+            worker_token_encrypted="worker-token-encrypted",
+        )
         sales = Sales(
             sales_name="张伟",
             phone="13900000001",
@@ -72,8 +79,9 @@ def _seed_conversation(*, open_id: str | None = "ou_sales_current") -> tuple[str
             source_name_snapshot="人工录入",
             created_by="system",
         )
-        db.add_all([sales, lead])
+        db.add_all([worker, sales, lead])
         db.flush()
+        sales.worker_id = worker.id
         db.add(
             LeadContact(
                 lead_id=lead.id,
@@ -88,10 +96,30 @@ def _seed_conversation(*, open_id: str | None = "ou_sales_current") -> tuple[str
         conversation = Conversation(
             lead_id=lead.id,
             sales_id=sales.id,
+            worker_id=worker.id,
             status="ai_active",
             ai_enabled=True,
         )
         db.add(conversation)
+        db.flush()
+        remark_code = (
+            "CJ" + conversation.conversation_id.replace("-", "")[:6]
+        ).upper()
+        db.add(
+            WechatSessionBinding(
+                conversation_id=conversation.conversation_id,
+                lead_id=lead.id,
+                sales_id=sales.id,
+                worker_id=worker.id,
+                remark_code=remark_code,
+                display_name=f"{remark_code}王先生",
+                rpa_session_key=f"wechat-row-{conversation.conversation_id}",
+                row_fingerprint=f"row-{conversation.conversation_id}",
+                bind_status="bound",
+                listen_status="listening",
+                allow_listening=True,
+            )
+        )
         db.commit()
         return conversation.conversation_id, sales.id, lead.id
 
@@ -321,7 +349,14 @@ def test_handoff_and_waiting_status_commit_before_single_notification(monkeypatc
     assert len(fake.send_calls) == 1
     sent_open_id, message = fake.send_calls[0]
     assert sent_open_id == "ou_sales_current"
-    assert "王先生" in message
+    with SessionLocal() as db:
+        remark_code = db.scalar(
+            select(WechatSessionBinding.remark_code).where(
+                WechatSessionBinding.conversation_id == conversation_id
+            )
+        )
+    assert f"客户短码：{remark_code}" in message
+    assert "客户：王先生" not in message
     assert "138****6678" in message
     assert "请前往微信处理" in message
     assert "13896676678" not in message
@@ -340,6 +375,7 @@ def test_handoff_and_waiting_status_commit_before_single_notification(monkeypatc
         ("missing_sales_id", "HANDOFF_SALES_ID_MISSING"),
         ("missing_sales", "HANDOFF_SALES_NOT_FOUND"),
         ("missing_open_id", "FEISHU_OPEN_ID_MISSING"),
+        ("missing_remark_code", "FEISHU_MESSAGE_SEND_FAILED"),
     ],
 )
 def test_notification_recipient_fails_closed_without_conversation_sales_route(
@@ -357,8 +393,16 @@ def test_notification_recipient_fails_closed_without_conversation_sales_route(
             conversation.sales_id = None
         elif context_change == "missing_sales":
             sales.deleted_at = c3_service.utcnow()
-        else:
+        elif context_change == "missing_open_id":
             sales.feishu_user_id = None
+        else:
+            binding = db.scalar(
+                select(WechatSessionBinding).where(
+                    WechatSessionBinding.conversation_id == conversation_id
+                )
+            )
+            assert binding is not None
+            binding.remark_code = None
         event = HandoffEvent(
             conversation_id=conversation_id,
             status="created",
