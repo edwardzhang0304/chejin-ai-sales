@@ -236,6 +236,12 @@ _C2_GENERATED_SCHEMA = json.loads(_C2_GENERATED_SCHEMA_PATH.read_text(encoding="
 C2_OBSERVATION_SCHEMA_VERSION = int(_C2_GENERATED_SCHEMA["observation_schema_version"])
 C2_OBSERVATION_CONTRACT_REVISION = str(_C2_GENERATED_SCHEMA["contract_revision"])
 C2_OBSERVATION_CONTRACT_SHA256 = str(_C2_GENERATED_SCHEMA["contract_sha256"])
+C2_TARGET_LOCATION_RECOVERY_CONTRACT = dict(
+    _C2_GENERATED_SCHEMA["target_location_recovery_contract"]
+)
+C2_VISIBLE_TARGET_STALE_AFTER_CLICK = str(
+    C2_TARGET_LOCATION_RECOVERY_CONTRACT["error_code"]
+)
 C2_ACTION_PHASES = tuple(
     str(value) for value in _C2_GENERATED_SCHEMA["action_phases"]
 )
@@ -781,14 +787,66 @@ def locate_chat_target_for_c2(
             "session_key_drift_semantic_candidate_ambiguous",
         }
         admission_code, admission_error = c2_target_admission_error(validation, failure_error_code)
+        visible_click_performed = bool(
+            normalized_mode == "visible"
+            and any(
+                key.endswith("_ui_click_performed") and value is True
+                for key, value in _LAST_OPEN_CHAT_TIMING.items()
+            )
+        )
+        title_evidence = (
+            validation.get("conversation_type_evidence")
+            if isinstance(validation, dict)
+            and isinstance(
+                validation.get("conversation_type_evidence"), dict
+            )
+            else validation
+            if isinstance(validation, dict)
+            else {}
+        )
+        active_title = normalize_ocr_text(
+            title_evidence.get("raw_title")
+            if isinstance(title_evidence, dict)
+            else ""
+        )
+        target_remark_code_confirmed = (
+            title_evidence.get("short_code_confirmed")
+            if isinstance(title_evidence, dict)
+            else None
+        )
+        stale_after_click = bool(
+            visible_click_performed
+            and not ambiguous_visible_target
+            and admission_code == failure_error_code
+            and active_title
+            and target_remark_code_confirmed is False
+        )
+        if stale_after_click:
+            targeting["stale_after_click"] = {
+                "ui_click_performed": True,
+                "active_title_nonempty": True,
+                "target_remark_code_confirmed": False,
+                "message_read_attempted": False,
+                "media_action_attempted": False,
+                "input_or_send_attempted": False,
+                "safe_relocation_allowed": True,
+            }
         return finish(
             ok=False,
             validation=validation,
             state=failure_state,
-            error_code="C2_VISIBLE_TARGET_AMBIGUOUS" if ambiguous_visible_target else admission_code,
+            error_code=(
+                "C2_VISIBLE_TARGET_AMBIGUOUS"
+                if ambiguous_visible_target
+                else C2_VISIBLE_TARGET_STALE_AFTER_CLICK
+                if stale_after_click
+                else admission_code
+            ),
             error=(
                 "Visible session target was ambiguous; stop before search fallback."
                 if ambiguous_visible_target
+                else "The visible row moved before the click; the opened title is not the authorized target."
+                if stale_after_click
                 else admission_error
             ),
         )
@@ -10462,6 +10520,7 @@ def activate_session_candidate(
     # window-image click path as search-result activation to avoid client
     # coordinate drift on Windows DPI / scaled WeChat windows.
     human_window_image_click(hwnd, click_x, click_y)
+    timing["ui_click_performed"] = True
     _sidecar_timing_finish(timing, "activation_click", click_started)
     for attempt in range(target_switch_passive_confirm_attempts()):
         timing["activation_confirm_attempts_observed"] = attempt + 1

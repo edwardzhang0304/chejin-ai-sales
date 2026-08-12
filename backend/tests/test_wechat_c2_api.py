@@ -2923,6 +2923,14 @@ def test_message_batch_status_rejects_other_worker_and_returns_terminal_state():
 
 
 def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revision():
+    assert contract_revision() == "3.13.3"
+    location_recovery = c2_contract_v3()[
+        "target_location_recovery_contract"
+    ]
+    assert (
+        location_recovery["error_code"]
+        == "C2_VISIBLE_TARGET_STALE_AFTER_CLICK"
+    )
     worker = _create_worker()
     _create_sales(worker["id"])
     _create_lead("王先生", "13896676678")
@@ -3040,6 +3048,19 @@ def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revi
     )
     assert wrong_contract.status_code == 409
     assert wrong_contract.json()["code"] == "MESSAGE_CONTRACT_SHA256_MISMATCH"
+    stale_contract_payload = copy.deepcopy(payload)
+    stale_contract_payload["contract_revision"] = "3.13.2"
+    stale_contract_payload["evidence"]["contract_revision"] = "3.13.2"
+    stale_contract = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=stale_contract_payload,
+        headers=_worker_headers(worker),
+    )
+    assert stale_contract.status_code == 409
+    assert (
+        stale_contract.json()["code"]
+        == "MESSAGE_CONTRACT_REVISION_MISMATCH"
+    )
     with SessionLocal() as db:
         event = db.query(MessageEvent).filter(MessageEvent.dedupe_key == "v3-voice-key").one()
         assert event.content == "我马上回去。"
@@ -5563,13 +5584,21 @@ def test_open_handoff_repairs_stale_conversation_projection_before_read_target()
         headers=_worker_headers(worker),
     )
     binding = scan.json()["data"]["bindings"][0]
-    _seed_open_handoff(binding, paused=False)
+    _batch_id, handoff_id = _seed_open_handoff(binding, paused=False)
+    handoff_at = utcnow()
+    notified_at = handoff_at - timedelta(seconds=1)
     with SessionLocal() as db:
         conversation = db.get(Conversation, binding["conversation_id"])
+        handoff = db.get(HandoffEvent, handoff_id)
+        assert handoff is not None
         conversation.status = "ai_active"
+        conversation.handoff_at = handoff_at
         conversation.recall_origin_status = "waiting_user_reply"
         conversation.recall_cycle_id = "stale-recall"
         conversation.next_recall_at = utcnow() - timedelta(minutes=1)
+        handoff.notify_status = "succeeded"
+        handoff.notify_attempted_at = notified_at
+        handoff.notify_completed_at = notified_at
         db.commit()
 
     response = client.get(
@@ -5578,15 +5607,66 @@ def test_open_handoff_repairs_stale_conversation_projection_before_read_target()
     )
 
     assert response.status_code == 200, response.text
-    target = response.json()["data"]["targets"][0]
-    assert target["conversation_id"] == binding["conversation_id"]
-    assert target["read_reason"] == "waiting_sales_reply"
+    assert response.json()["data"]["targets"] == []
     with SessionLocal() as db:
         conversation = db.get(Conversation, binding["conversation_id"])
+        binding_row = db.get(WechatSessionBinding, binding["id"])
+        handoffs = db.query(HandoffEvent).filter(
+            HandoffEvent.conversation_id == binding["conversation_id"]
+        ).all()
         assert conversation.status == "waiting_sales_reply"
+        assert binding_row is not None
+        assert binding_row.next_read_due_at is not None
+        due_at = binding_row.next_read_due_at
+        if due_at.tzinfo is None:
+            due_at = due_at.replace(tzinfo=timezone.utc)
+        assert abs(
+            (
+                due_at.astimezone(timezone.utc)
+                - handoff_at.astimezone(timezone.utc)
+            ).total_seconds()
+            - 120
+        ) < 1
+        assert [event.id for event in handoffs] == [handoff_id]
+        assert handoffs[0].notify_status == "succeeded"
+        assert handoffs[0].notify_attempted_at is not None
+        assert handoffs[0].notify_completed_at is not None
+        assert handoffs[0].notify_attempted_at.replace(
+            tzinfo=timezone.utc
+        ) == notified_at
+        assert handoffs[0].notify_completed_at.replace(
+            tzinfo=timezone.utc
+        ) == notified_at
         assert conversation.recall_origin_status == "waiting_user_reply"
         assert conversation.recall_cycle_id == "stale-recall"
         assert conversation.next_recall_at is not None
+        binding_row.next_read_due_at = utcnow() - timedelta(seconds=1)
+        db.commit()
+
+    due_response = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+
+    assert due_response.status_code == 200, due_response.text
+    targets = due_response.json()["data"]["targets"]
+    assert len(targets) == 1
+    assert targets[0]["conversation_id"] == binding["conversation_id"]
+    assert targets[0]["read_reason"] == "waiting_sales_reply"
+    with SessionLocal() as db:
+        handoffs = db.query(HandoffEvent).filter(
+            HandoffEvent.conversation_id == binding["conversation_id"]
+        ).all()
+        assert [event.id for event in handoffs] == [handoff_id]
+        assert handoffs[0].notify_status == "succeeded"
+        assert handoffs[0].notify_attempted_at is not None
+        assert handoffs[0].notify_completed_at is not None
+        assert handoffs[0].notify_attempted_at.replace(
+            tzinfo=timezone.utc
+        ) == notified_at
+        assert handoffs[0].notify_completed_at.replace(
+            tzinfo=timezone.utc
+        ) == notified_at
 
 
 def test_pause_keeps_customer_fact_without_409_or_brain_batch():
@@ -8217,6 +8297,57 @@ def test_same_voice_identity_is_duplicated_when_only_frame_anchor_moves():
         assert db.query(MessageEvent).filter(
             MessageEvent.conversation_id == binding["conversation_id"]
         ).count() == 1
+
+
+@pytest.mark.parametrize("previous_status", ["ai_active", ""])
+def test_entering_waiting_sales_reply_preserves_first_two_minute_cooldown(
+    previous_status: str,
+):
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("转人工首次冷却客户", "13896676672")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    _seed_open_handoff(binding, paused=False)
+    handoff_at = utcnow()
+    with SessionLocal() as db:
+        binding_row = db.get(WechatSessionBinding, binding["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert binding_row is not None
+        assert conversation is not None
+        binding_row.last_read_conversation_status = previous_status
+        binding_row.next_read_due_at = None
+        conversation.status = "waiting_sales_reply"
+        conversation.handoff_at = handoff_at
+        db.commit()
+
+    response = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["targets"] == []
+    with SessionLocal() as db:
+        binding_row = db.get(WechatSessionBinding, binding["id"])
+        assert binding_row is not None
+        assert binding_row.last_read_conversation_status == "waiting_sales_reply"
+        assert binding_row.next_read_due_at is not None
+        due_at = binding_row.next_read_due_at
+        if due_at.tzinfo is None:
+            due_at = due_at.replace(tzinfo=timezone.utc)
+        assert abs(
+            (
+                due_at.astimezone(timezone.utc)
+                - handoff_at.astimezone(timezone.utc)
+            ).total_seconds()
+            - 120
+        ) < 1
 
 
 def test_empty_reads_back_off_two_five_ten_minutes_and_unread_wakes_immediately():

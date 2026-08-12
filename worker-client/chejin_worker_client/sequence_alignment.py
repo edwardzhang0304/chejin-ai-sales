@@ -225,18 +225,22 @@ def _compatible(
     if _token(pre.get("message_type")) != _token(post.get("message_type")):
         return False, ""
 
+    strong_basis = _strong_anchor_basis(
+        pre, post, confirmed_action_mapping
+    )
     pre_native = _token(pre.get("native_source_message_id"))
     post_native = _token(post.get("native_source_message_id"))
     if pre_native and post_native and pre_native != post_native:
         return False, ""
     pre_visual = _token(pre.get("canonical_visual_id"))
     post_visual = _token(post.get("canonical_visual_id"))
-    if pre_visual and post_visual and pre_visual != post_visual:
+    if (
+        pre_visual
+        and post_visual
+        and pre_visual != post_visual
+        and strong_basis != "confirmed_action"
+    ):
         return False, ""
-
-    strong_basis = _strong_anchor_basis(
-        pre, post, confirmed_action_mapping
-    )
     if pre.get("identity_state") == "selected_action" and not strong_basis:
         return False, ""
     if _token(pre.get("message_type")) in {"text", "system"} and _token(

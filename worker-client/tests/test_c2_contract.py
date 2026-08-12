@@ -46,7 +46,20 @@ from chejin_worker_client.wechat_c2 import (
 class C2ContractTests(unittest.TestCase):
     def test_slot_ledger_contract_separates_fact_scope_from_delivery(self):
         schema = c2_contract_v3()["slot_ledger_state_schema"]
-        self.assertEqual(c2_contract_v3()["contract_revision"], "3.13.2")
+        self.assertEqual(c2_contract_v3()["contract_revision"], "3.13.3")
+        location_recovery = c2_contract_v3()[
+            "target_location_recovery_contract"
+        ]
+        self.assertEqual(
+            location_recovery["error_code"],
+            "C2_VISIBLE_TARGET_STALE_AFTER_CLICK",
+        )
+        self.assertEqual(
+            location_recovery["required_evidence_values"],
+            location_recovery["example"]["targeting"][
+                "stale_after_click"
+            ],
+        )
         quarantine = c2_contract_v3()["outbox_recovery_contract"][
             "state_machine"
         ]["state_properties"]["identity_quarantined"]

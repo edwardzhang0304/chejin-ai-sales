@@ -1,14 +1,14 @@
 # AI智能客服售前跟进系统 技术方案
 
-版本：v0.8.10
+版本：v0.8.11
 
 日期：2026-07-21
 
-最后更新：2026-08-11
+最后更新：2026-08-12
 
 适用范围：运营后台、车金后端、Windows Worker、OmniAuto Sidecar、C0—C4、车辆 Product Master、人工接管与飞书通知。
 
-当前唯一架构口径：服务端负责授权、状态机、事实持久化、Brain/Guard、任务和通知；OmniAuto 负责微信 UI 观察、物理目标判定和动作证据；Worker 只负责调度、合同校验、事务持久化与执行。C2 使用固定八位短码和 private 单聊门禁；文字、语音、图片按同一最终画面顺序入库，一条物理媒体只形成一个业务对象，所有已触发媒体动作必须有限终态。Brain 只在最新待回复尾部完整且证据足够时生成回复；当前客户媒体失败、高意向及必须人工批准的业务硬风险进入人工接管。人工接管以未关闭 `HandoffEvent` 为权威事实并投影 `waiting_sales_reply`，服务端按同一事件通过车金统一飞书应用立即且至多通知一次所属销售。机器合同目标固定为 `3.13.2`。
+当前唯一架构口径：服务端负责授权、状态机、事实持久化、Brain/Guard、任务和通知；OmniAuto 负责微信 UI 观察、物理目标判定和动作证据；Worker 只负责调度、合同校验、事务持久化与执行。C2 使用固定八位短码和 private 单聊门禁；文字、语音、图片按同一最终画面顺序入库，一条物理媒体只形成一个业务对象，所有已触发媒体动作必须有限终态。Brain 只在最新待回复尾部完整且证据足够时生成回复；当前客户媒体失败、高意向及必须人工批准的业务硬风险进入人工接管。人工接管以未关闭 `HandoffEvent` 为权威事实并投影 `waiting_sales_reply`，服务端按同一事件通过车金统一飞书应用立即且至多通知一次所属销售。微信列表在截图与点击之间重排时，点击后的短码校验仍是硬门禁，但明确点到其他会话时允许丢弃旧坐标并在同一授权内完整重新定位一次。当前机器合同为 `3.13.3`。
 
 ## 文档治理规则
 
@@ -95,7 +95,7 @@ Windows Worker -> OmniAuto Sidecar -> 微信桌面端
 
 ## 运营后台登录与会话鉴权
 
-本节是 PRD v0.5.6“指定账号登录、登录成功即全部权限”的唯一技术实现口径。
+本节是 PRD v0.5.7“指定账号登录、登录成功即全部权限”的唯一技术实现口径。
 鉴权只回答“是不是已登录的后台账号”，第一期不再回答“这个账号属于哪个权限角色”。
 
 ### 登录职责与边界
@@ -1638,7 +1638,7 @@ Worker 必须保留 Outbox 并执行身份刷新重传。在冲突解决前不�
 `fact_scope=current_read_run + delivery_state=not_enqueued`；历史图片和已进入 Outbox
 的图片不得重复处理。
 
-机器合同 `3.13.2` 必须同时表达读取轮次与传输状态、语音动作身份与业务身份分离、
+机器合同 `3.13.3` 必须继承 `3.13.2` 的媒体和读取轮次字段，同时表达读取轮次与传输状态、语音动作身份与业务身份分离、
 选中目标两阶段握手和逐相邻帧同对象证明。`identity_checkpoint.recent_messages[]` 回传
 `origin_read_run_id`；`ledger_state` 只允许作为诊断投影，业务门禁不得读取。
 
@@ -1648,7 +1648,7 @@ Worker 必须保留 Outbox 并执行身份刷新重传。在冲突解决前不�
 |---|---|
 | 缺少 `dedupe_key` | 拒绝该条消息，返回 `MESSAGE_DEDUPE_KEY_MISSING`。 |
 | `conversation_id` 未绑定当前 Worker、绑定缺少 `remark_code` 或监听状态不允许 | 拒绝整批或该会话消息，返回 `MESSAGE_CONVERSATION_NOT_BOUND`。 |
-| 读取目标未确认、搜索不到或搜索结果不唯一 | 本轮零读取、零点击、零回复，记录 `TARGET_NOT_CONFIRMED / SEARCH_NOT_FOUND / SEARCH_AMBIGUOUS` 并等待后续扫描证据改善；这属于目标准入失败，不得直接创建客户 handoff，也不能影响其他短码。 |
+| 读取目标未确认、搜索不到或搜索结果不唯一 | 本轮零消息读取、零媒体操作、零入库、零回复，记录 `TARGET_NOT_CONFIRMED / SEARCH_NOT_FOUND / SEARCH_AMBIGUOUS`。如果 visible 点击后明确打开了不含目标短码的其他会话，允许按安全误点恢复规则完整重新定位一次；其他目标准入失败等待后续扫描证据改善。不得直接创建客户 handoff，也不能影响其他短码。 |
 | 普通聊天文本缺少同行头像证明 | 不入库。只有 `lane_geometry`、没有 `same_row_avatar` 不足以证明 customer/self。 |
 | 语音转写文本缺少独立头像 | 只能继承已确认的父语音 `parent_voice` 角色；无法绑定父语音则不入库。 |
 | 普通文字/语音发送方无法判断 | 不猜角色、不入库；按 L2 `recoverable_hold` 自动重建一次。只在仍影响最新待回复尾部时停止该会话 AI，旧区间歧义不连坐最新完整消息。 |
@@ -1862,6 +1862,7 @@ messages target-mode=search_by_remark_code
 | 错误码 | 含义 | 处理 |
 |---|---|---|
 | `TARGET_SEARCH_NOT_FOUND` | 搜索短码未找到会话。 | 不读取、不入库，记录读取失败。 |
+| `C2_VISIBLE_TARGET_STALE_AFTER_CLICK` | visible 截图与点击之间列表重排，点击后标题明确不含目标短码。 | 不读取消息区、不操作媒体、不入库、不发送；丢弃全部旧坐标，复核授权后最多完整重新定位一次。 |
 | `TARGET_SEARCH_AMBIGUOUS` | 搜索结果存在多个疑似会话。 | 不读取，进入人工复核或等待下次扫描。 |
 | `C2_VISIBLE_TARGET_AMBIGUOUS` | 当前实时首屏中同一 `remark_code` 命中多条会话。 | 不点击、不读取，记录首屏截图和候选列表，等待人工复核或下轮数据修正。 |
 | `TARGET_CONFIRM_FAILED` | 点击后标题/备注未确认包含短码。 | 不读取，返回目标不确认。 |
@@ -1906,10 +1907,19 @@ artifact_dir=<本次证据目录>
 | 8 | 等待搜索结果稳定 | 仅搜索路径执行。等待搜索结果刷新，至少两帧 OCR 结果稳定，或达到配置超时。 | 候选结果列表稳定。 | 返回 `TARGET_SEARCH_TIMEOUT`；不得点击不稳定结果。 |
 | 9 | 解析候选结果 | 仅搜索路径执行。只接受“联系人/会话标题/备注”包含 `remark_code` 的候选；单纯消息内容命中不能作为目标。 | 唯一候选包含 `remark_code`。 | 0 个候选返回 `TARGET_SEARCH_NOT_FOUND`；多个候选返回 `TARGET_SEARCH_AMBIGUOUS`。 |
 | 10 | 点击唯一候选 | 仅搜索路径执行。使用候选行安全点击点进入会话，点击前后均记录截图和候选框。 | 微信进入候选会话。 | 返回 `TARGET_CLICK_FAILED`；不得读取当前窗口。 |
-| 11 | 二次确认目标 | 进入会话后 OCR 标题/备注/当前选中行，必须确认包含 `remark_code`。`display_name` 只能辅助，不能替代短码。 | `target_confirmed=true`，确认来源写入 evidence。 | 返回 `TARGET_CONFIRM_FAILED / TARGET_NOT_CONFIRMED_FOR_MESSAGES`；不得读取消息。 |
+| 11 | 二次确认目标 | 进入会话后 OCR 标题/备注/当前选中行，必须确认包含 `remark_code`。`display_name` 只能辅助，不能替代短码。 | `target_confirmed=true`，确认来源写入 evidence。 | 标题明确不含目标短码且本轮由 visible 坐标点击进入时，进入步骤 11A；其他情况返回 `TARGET_CONFIRM_FAILED / TARGET_NOT_CONFIRMED_FOR_MESSAGES`，不得读取消息。 |
+| 11A | 安全误点短码重新定位 | Sidecar 返回 `C2_VISIBLE_TARGET_STALE_AFTER_CLICK`，并证明已点击但未读取消息区、未操作媒体、未输入或发送。Worker 保持同一 UI 锁和 `read_run_id`，复核 `authorization_revision`，丢弃旧坐标/候选/截图，重新截取安全基线后直接进入 `search_by_remark_code`，不再重复 visible 坐标点击。 | 本轮只允许一次恢复定位，搜索结果必须是目标短码的唯一候选；点击后仍必须重复步骤 11 的 private + 精确短码确认。 | 授权失效、搜索无唯一候选、恢复点击仍不是目标、无法恢复搜索基线或任何副作用已越过标题校验边界时，立即结束当前客户；不创建 handoff，不影响其他短码。 |
 | 12 | 读取消息 | 复用 OmniAuto `messages` 解析能力读取当前会话可见消息，输出 `sender_role_hint / message_type / content / occurred_at / raw_payload`。 | 返回消息列表或明确空结果，并带 `target_confirmed=true`。 | 读取失败返回 `MESSAGE_READ_FAILED`；不得伪造空成功。 |
 | 13 | 生成结果与证据 | 输出 `read_run_id / conversation_id / remark_code / target_mode / target_confirmed / messages / evidence / step_events`。 | Worker 可上报后端 `/wechat/messages/ingest`。 | 结果缺关键字段视为 `C2_MESSAGE_READ_RESULT_INVALID`。 |
 | 14 | 清理或保持安全状态 | 成功读取后可保持目标会话打开，供 `pre_send_refresh` 后继续发送；失败时清理搜索框或回到安全状态。 | 不影响下一次 add_friend / scan / send 操作。 | 清理失败记录 `SEARCH_STATE_CLEANUP_FAILED`，但不得继续执行发送。 |
+
+安全误点恢复必须有以下定向验收，不得只测函数返回值：
+
+1. 目标在首帧任意行唯一命中，点击前列表因其他会话变化而重排，旧坐标打开任意非目标会话；标题复核后必须零消息区 OCR、零媒体动作、零 ingest、零 Brain 和零发送。
+2. 上述误点后授权仍有效；Worker 必须废弃旧坐标，在同一 UI 锁和 `read_run_id` 内重新截取安全基线并直接按目标短码精确搜索一次，最终只读取一次目标会话，不得对误点会话建立任何消息事实。
+3. 误点后授权被撤销时不得重新定位；第二次仍点错时必须有限结束，不得循环点击。
+4. 点击后标题已包含目标短码，但它是群聊或类型不明时，必须继续返回 `C2_GROUP_CHAT_NOT_ALLOWED / C2_CONVERSATION_TYPE_UNKNOWN`，不得借恢复分支降级为 private。
+5. 当前客户恢复失败只结束该客户，必须继续队列中其他短码；恢复成功不写入失败冷却，也不创建 handoff。
 
 短码输入策略：
 
@@ -2214,7 +2224,7 @@ Worker C2 读取某个会话时，执行顺序固定为：
 上述顺序是唯一合法流程。禁止在右键前提交正式 Worker 身份，禁止用 voice anchor 直接生成
 source key，禁止在动作后用相同正文、相同 anchor 或坐标找回编号。
 
-目标机器合同 `3.13.2` 必须在 Sidecar 请求/返回、ActionJournal、Worker 本地身份预留和最终 V3 evidence 中使用同一组字段，禁止新增同义字段：
+机器合同 `3.13.3` 在 Sidecar 请求/返回、ActionJournal、Worker 本地身份预留和最终 V3 evidence 中继续使用 `3.13.2` 的同一组媒体字段，禁止新增同义字段：
 
 | 字段 | 所有者 | 必填规则 |
 |---|---|---|
@@ -2295,7 +2305,7 @@ binding 证据字段不得声称已绑定；`failed` 只有在目标身份已由
 Worker 必须对上述逻辑矛盾失败关闭。例如 `identity_phase=sequence_reserved` 同时存在
 `worker_stable_id`、`transcript_binding_status=confirmed` 但候选数不是 1、或 Sidecar 改写 action ID，都必须在任何新微信动作和入库前返回 `C2_VOICE_IDENTITY_CONTRACT_INVALID`。
 
-##### 6.0.4.6.1 `3.13.2` 实施边界
+##### 6.0.4.6.1 `3.13.3` 实施边界（完整继承 `3.13.2` 媒体合同）
 
 本表是实施边界，不是可选重构建议。函数后续如改名，仍必须通过 AST/行为门禁证明不存在等价旧逻辑。
 
@@ -2309,7 +2319,7 @@ Worker 必须对上述逻辑矛盾失败关闭。例如 `identity_phase=sequence
 | `sidecar_new_message_occurrences` 及内容 multiset 比较 | 只可用于发现“画面可能新增了什么”，结果必须再进入新观察仲裁 | 用来证明正文属于被点击语音，或认定相同内容是旧消息 |
 | `storage.py` 消息序号状态 | 原子落盘 action ID、reserved ID、identity phase、trigger phase 和 terminal；预留号单调且永不复用 | 崩溃后回收预留号；新动作重用旧 action ID；`trigger_attempted` 后再点击 |
 | `storage.py` 动作前画面状态 | 与 ActionJournal 原子保存 `pre_action_identity_sequence`，覆盖 `committed/selected_action/frame_local_unselected`；动作终态后补齐 `sequence_alignment_evidence` | 只保存已编号项；崩溃后用新截图或相同内容伪造动作前序列 |
-| `contracts/c2_contract_v3.json` 及生成 schema | 一次性升到 `3.13.2`，显式限定 `authoritative_frame_source=initial_read/final_read/action_journal_recovery`，并仅使用本节字段与枚举；Sidecar、Worker、后端共用同一样例/哈希 | 在旧 revision 下静默改语义；产生 `voice_execute_final` 等临时值；保留 `tracking_candidate_counts` 兼容；新增同义字段、双字段兼容或 Worker 本地兜底重判 |
+| `contracts/c2_contract_v3.json` 及生成 schema | 一次性升到 `3.13.3`，完整继承 `3.13.2` 的 `authoritative_frame_source=initial_read/final_read/action_journal_recovery` 及全部媒体字段，增加安全误点错误码语义；Sidecar、Worker、后端共用同一样例/哈希 | 在旧 revision 下静默改语义；产生 `voice_execute_final` 等临时值；保留 `tracking_candidate_counts` 兼容；新增同义字段、双字段兼容或 Worker 本地兜底重判 |
 
 新流程的唯一落库时点为：预留表/ActionJournal 在点击前落盘；正式 identity catalog、
 Ledger、Outbox 和 `source_message_key` 只在 `historical_restored` 或 `business_committed` 后落盘。
@@ -2317,7 +2327,7 @@ Ledger、Outbox 和 `source_message_key` 只在 `historical_restored` 或 `busin
 
 语音转写不单独创建任务，不进入任务中心。它是 `message_ingest` 前的条件性本地预处理步骤，只有首次 `messages` 读取/探测发现未转写语音时才执行，和 `messages` 读取共享同一把 `Local WeChat UI Lock`。不得出现一边执行 `add_friend/chat_reply/send`，另一边点击语音转文字的并行操作。
 
-定位目标会话只能做一次：第一屏 visible 命中或 `search_by_remark_code` 定向搜索成功后，后续 `messages` 和 `voice-transcribe` 都必须在同一个已确认会话内执行。`voice-transcribe` 不得再次搜索客户，`messages` 二次读取也不得再次搜索客户；如果中途发现当前会话标题、短码或会话指纹不匹配，必须失败退出并记录证据，不能继续点击或读取。
+目标首次通过 private + 短码确认后，定位结果在本 `read_run_id` 内冻结：后续 `messages`、语音和图片动作都必须在同一个已确认会话内执行，不得再次搜索客户。唯一例外是目标尚未通过首次确认、visible 点击后标题明确不含目标短码且未读取消息区或触发任何会话内动作时，可按 `C2_VISIBLE_TARGET_STALE_AFTER_CLICK` 在同一授权、UI 锁和 `read_run_id` 内丢弃旧坐标并完整重新定位一次。目标一旦确认，或已经读取消息区/触发媒体动作，中途再发现标题、短码或会话指纹不匹配时必须失败退出，不能重新搜索。
 
 Worker 上报语音消息时：
 
@@ -3453,7 +3463,7 @@ failed 终态并进入 Ledger/Outbox，禁止永久停留在 `C2_IMAGE_FACT_PEND
 
 `structural_image_candidate / explained_voice_region` 是 OmniAuto 内部仲裁对象，不新增
 后端接口字段。但本次语音身份生命周期已改变跨进程机器语义，不得继续沿用
-`3.13.0`；本轮补齐权威画面枚举后目标为 `3.13.2`，并同步 OmniAuto、Worker、后端 schema/样例/合同测试。
+`3.13.0`；权威画面枚举和媒体编排在 `3.13.2` 收口，本轮安全误点恢复已升至 `3.13.3`，并同步 OmniAuto、Worker、后端 schema/样例/合同测试。
 
 ### 8.2 单会话图片处理流程
 

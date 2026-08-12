@@ -1,6 +1,6 @@
 {
   "contract_version": 3,
-  "contract_revision": "3.13.2",
+  "contract_revision": "3.13.3",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "sender_roles": ["customer", "self", "system", "unknown"],
@@ -288,6 +288,47 @@
     "voice_orchestrator_entry_rule": "voice prepare or execute may be called only when the current authoritative observations contain an executable untranscribed voice not already terminally settled",
     "forbidden_values": ["voice_execute_final"],
     "invalid_error_code": "C2_AUTHORITATIVE_FRAME_SOURCE_INVALID"
+  },
+  "target_location_recovery_contract": {
+    "owner": "omniauto_observation_worker_execution",
+    "error_code": "C2_VISIBLE_TARGET_STALE_AFTER_CLICK",
+    "source_target_mode": "visible",
+    "required_evidence_fields": [
+      "ui_click_performed",
+      "active_title_nonempty",
+      "target_remark_code_confirmed",
+      "message_read_attempted",
+      "media_action_attempted",
+      "input_or_send_attempted",
+      "safe_relocation_allowed"
+    ],
+    "required_evidence_values": {
+      "ui_click_performed": true,
+      "active_title_nonempty": true,
+      "target_remark_code_confirmed": false,
+      "message_read_attempted": false,
+      "media_action_attempted": false,
+      "input_or_send_attempted": false,
+      "safe_relocation_allowed": true
+    },
+    "classification_rule": "only a performed visible-row click followed by a non-empty active title that explicitly does not confirm the authorized remark code may enter safe relocation",
+    "terminal_rule": "group, unknown with the target remark code already confirmed, empty title evidence, revoked authorization, or any message/media/input/send side effect must fail closed",
+    "worker_rule": "preserve the same UI lock and read_run_id, revalidate authorization_revision, discard stale coordinates, and execute search_by_remark_code at most once",
+    "max_relocations_per_read_run": 1,
+    "example": {
+      "error_code": "C2_VISIBLE_TARGET_STALE_AFTER_CLICK",
+      "targeting": {
+        "stale_after_click": {
+          "ui_click_performed": true,
+          "active_title_nonempty": true,
+          "target_remark_code_confirmed": false,
+          "message_read_attempted": false,
+          "media_action_attempted": false,
+          "input_or_send_attempted": false,
+          "safe_relocation_allowed": true
+        }
+      }
+    }
   },
   "required_evidence_fields": [
     "contract_revision",

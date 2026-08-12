@@ -1097,8 +1097,22 @@ def _sync_read_backoff_with_conversation(
 ) -> None:
     current_status = str(conversation.status or "")
     previous_status = str(binding.last_read_conversation_status or "")
-    if previous_status and previous_status != current_status:
-        _reset_read_backoff(binding)
+    if previous_status != current_status:
+        if current_status == "waiting_sales_reply":
+            handoff_at = conversation.handoff_at or utcnow()
+            if handoff_at.tzinfo is None:
+                handoff_at = handoff_at.replace(tzinfo=timezone.utc)
+            minimum_due_at = handoff_at.astimezone(
+                timezone.utc
+            ) + timedelta(seconds=READ_SUCCESS_COOLDOWN_SECONDS)
+            current_due_at = binding.next_read_due_at
+            if current_due_at is not None and current_due_at.tzinfo is None:
+                current_due_at = current_due_at.replace(tzinfo=timezone.utc)
+            binding.no_change_read_count = 0
+            if current_due_at is None or current_due_at < minimum_due_at:
+                binding.next_read_due_at = minimum_due_at
+        elif previous_status:
+            _reset_read_backoff(binding)
     binding.last_read_conversation_status = current_status
 
 

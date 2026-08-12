@@ -33,6 +33,7 @@ from .c2_contract import (
     formal_image_failure_code,
     observation_role_is_trusted,
     sidecar_contract_error,
+    target_location_recovery_contract,
 )
 from .c2_outbox_recovery import (
     encoded_payload_size,
@@ -10864,6 +10865,7 @@ class TaskRunner:
             if not current_only and fallback_target_mode and fallback_target_mode not in locate_modes:
                 locate_modes.append(fallback_target_mode)
             locate_payload: dict[str, Any] = {}
+            safe_visible_relocation_used = False
             for locate_mode in locate_modes:
                 visible_target = locate_mode == "visible"
                 phase_started_at = time.perf_counter()
@@ -10908,7 +10910,74 @@ class TaskRunner:
                 )
                 if locate_payload.get("ok"):
                     break
-                if str(locate_payload.get("error_code") or "") in C2_LOCATE_TERMINAL_ERROR_CODES:
+                locate_error_code = str(
+                    locate_payload.get("error_code") or ""
+                )
+                location_recovery_contract = (
+                    target_location_recovery_contract()
+                )
+                location_recovery_error_code = str(
+                    location_recovery_contract.get("error_code") or ""
+                )
+                if locate_error_code == location_recovery_error_code:
+                    stale_evidence = (
+                        (locate_payload.get("targeting") or {}).get(
+                            "stale_after_click"
+                        )
+                        if isinstance(locate_payload.get("targeting"), dict)
+                        else None
+                    )
+                    required_evidence_values = dict(
+                        location_recovery_contract.get(
+                            "required_evidence_values"
+                        )
+                        or {}
+                    )
+                    safe_relocation_evidence = bool(
+                        isinstance(stale_evidence, dict)
+                        and required_evidence_values
+                        and all(
+                            stale_evidence.get(field) is expected
+                            for field, expected in required_evidence_values.items()
+                        )
+                    )
+                    if (
+                        locate_mode != "visible"
+                        or current_only
+                        or safe_visible_relocation_used
+                        or not safe_relocation_evidence
+                    ):
+                        locate_payload["error_code"] = (
+                            "C2_VISIBLE_TARGET_STALE_EVIDENCE_INVALID"
+                            if not safe_relocation_evidence
+                            else location_recovery_error_code
+                        )
+                        break
+                    if enforce_read_targets and not self._backend_still_allows_read_target(
+                        binding,
+                        target,
+                    ):
+                        return {
+                            "ok": False,
+                            "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
+                            "target_confirmation": locate_payload,
+                        }
+                    safe_visible_relocation_used = True
+                    self.c2_active_target_cache = {}
+                    append_log(
+                        "WARN",
+                        "c2_visible_target_stale_relocating",
+                        "会话列表在点击前发生重排；已确认误点无消息或媒体副作用，将在同一授权内重新定位一次。",
+                        error_code=locate_error_code,
+                        metadata={
+                            "conversation_id": target.conversation_id,
+                            "remark_code": target.remark_code,
+                            "read_run_id": read_run_id,
+                            "next_target_mode": "search_by_remark_code",
+                        },
+                    )
+                    continue
+                if locate_error_code in C2_LOCATE_TERMINAL_ERROR_CODES:
                     break
             locate_payload["visible_scan"] = real_time_visible_metadata
             append_log(
@@ -10926,6 +10995,7 @@ class TaskRunner:
                     "target_mode": locate_payload.get("target_mode"),
                     "visible_source": visible_source,
                     "attempted_target_modes": locate_modes,
+                    "safe_visible_relocation_used": safe_visible_relocation_used,
                     "targeting": locate_payload.get("targeting"),
                     "step_events": locate_payload.get("step_events"),
                     "open_chat_timing": locate_payload.get("open_chat_timing"),

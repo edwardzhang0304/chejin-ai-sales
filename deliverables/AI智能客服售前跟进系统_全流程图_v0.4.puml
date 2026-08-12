@@ -1,5 +1,5 @@
 @startuml
-' 文档版本：v0.3；最后更新：2026-08-11
+' 文档版本：v0.4；最后更新：2026-08-12
 title AI智能客服售前跟进系统 全流程图（C0-C4、媒体、回复、转人工与恢复）
 
 skinparam monochrome true
@@ -246,6 +246,22 @@ loop Worker运行中；每次循环最多完成一个会话事务
             WX --> OA: captured_frame（暂存在内存）
             OA -> OA: 先只读取标题和输入区ROI\n核对短码/人数后缀/chat_input_ready
             OA --> W: remark_code + conversation_type + chat_input_ready\nconfidence + captured_frame_ref
+
+            opt visible 点击后标题明确不含目标短码
+              OA --> W: C2_VISIBLE_TARGET_STALE_AFTER_CLICK\n零消息读取/媒体动作/入库/发送
+              W -> Auth: 重新校验 authorization_revision
+              alt 授权有效且本轮尚未恢复定位
+                W -> OA: 丢弃旧坐标和旧候选\n重新截取安全基线
+                OA -> WX: 直接按目标短码精确搜索一次\n只点击唯一候选
+                OA -> OA: 再次校验标题 + private + 短码
+                OA --> W: 恢复定位后的新标题和准入证据
+              else 授权失效或已恢复过一次
+                break 结束当前客户
+                  W -> W: 继续其他短码
+                  W -> Lock: finally release
+                end
+              end
+            end
 
             alt 短码不一致或目标未确认
               W -> W: TARGET_NOT_CONFIRMED\n不转写、不识图、不入库
