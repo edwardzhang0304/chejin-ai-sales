@@ -1,8 +1,8 @@
 {
   "generated_file": true,
   "source": "contracts/c2_contract_v3.json",
-  "contract_revision": "3.13.2",
-  "contract_sha256": "d2905e58d45118123db90e6fb706683c0a9bbb5d613dc3c1a5394babf70f3356",
+  "contract_revision": "3.13.3",
+  "contract_sha256": "3e3637b39a4d6d80c9e1b8dafa376c2f316512a84d78ace6094556a5287290eb",
   "observation_schema_version": 3,
   "action_phases": [
     "not_attempted",
@@ -800,6 +800,47 @@
               "maxLength": 128
             }
           }
+        }
+      }
+    }
+  },
+  "target_location_recovery_contract": {
+    "owner": "omniauto_observation_worker_execution",
+    "error_code": "C2_VISIBLE_TARGET_STALE_AFTER_CLICK",
+    "source_target_mode": "visible",
+    "required_evidence_fields": [
+      "ui_click_performed",
+      "active_title_nonempty",
+      "target_remark_code_confirmed",
+      "message_read_attempted",
+      "media_action_attempted",
+      "input_or_send_attempted",
+      "safe_relocation_allowed"
+    ],
+    "required_evidence_values": {
+      "ui_click_performed": true,
+      "active_title_nonempty": true,
+      "target_remark_code_confirmed": false,
+      "message_read_attempted": false,
+      "media_action_attempted": false,
+      "input_or_send_attempted": false,
+      "safe_relocation_allowed": true
+    },
+    "classification_rule": "only a performed visible-row click followed by a non-empty active title that explicitly does not confirm the authorized remark code may enter safe relocation",
+    "terminal_rule": "group, unknown with the target remark code already confirmed, empty title evidence, revoked authorization, or any message/media/input/send side effect must fail closed",
+    "worker_rule": "preserve the same UI lock and read_run_id, revalidate authorization_revision, discard stale coordinates, and execute search_by_remark_code at most once",
+    "max_relocations_per_read_run": 1,
+    "example": {
+      "error_code": "C2_VISIBLE_TARGET_STALE_AFTER_CLICK",
+      "targeting": {
+        "stale_after_click": {
+          "ui_click_performed": true,
+          "active_title_nonempty": true,
+          "target_remark_code_confirmed": false,
+          "message_read_attempted": false,
+          "media_action_attempted": false,
+          "input_or_send_attempted": false,
+          "safe_relocation_allowed": true
         }
       }
     }

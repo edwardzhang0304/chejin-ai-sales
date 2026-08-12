@@ -4548,6 +4548,9 @@ class TaskRunnerTest(unittest.TestCase):
                         "voice_duration": 2,
                         "content": '[语音] 2"',
                         "voice_anchor_stable_key": "voice-transcription-1",
+                        "canonical_visual_id": (
+                            "visual-untranscribed-voice-bubble"
+                        ),
                     }
                 ],
             }
@@ -4624,6 +4627,9 @@ class TaskRunnerTest(unittest.TestCase):
                         "voice_duration": 2,
                         "content": '[语音] 2"',
                         "voice_anchor_stable_key": "voice-transcription-1",
+                        "canonical_visual_id": (
+                            "visual-untranscribed-voice-bubble"
+                        ),
                     }
                 ],
             },
@@ -4642,6 +4648,9 @@ class TaskRunnerTest(unittest.TestCase):
                         "sender_role": "customer",
                         "content": "你好",
                         "voice_anchor_stable_key": "voice-transcription-1",
+                        "canonical_visual_id": (
+                            "visual-expanded-voice-transcript"
+                        ),
                     }
                 ],
             },
@@ -4739,6 +4748,132 @@ class TaskRunnerTest(unittest.TestCase):
                 "build_ingest_payload",
             ],
         )
+
+    def test_c2_two_same_duration_voices_are_both_transcribed_once(self):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-two-same-duration-voices",
+            rpa_session_key="wx:rpa:v1:two-same-duration-voices",
+            display_name="CJK7M4Q2",
+            remark_code="CJK7M4Q2",
+            read_reason="waiting_user_reply",
+            authorization_revision="revision-two-same-duration-voices",
+            raw={"identity_checkpoint": identity_checkpoint()},
+        )
+        api.read_targets = [target]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+
+        def voice(
+            message_id: str,
+            anchor: str,
+            *,
+            content: str,
+            visual_id: str,
+            top: int,
+        ) -> dict:
+            return {
+                "id": message_id,
+                "type": "voice",
+                "sender_role": "customer",
+                "voice_duration": 3,
+                "content": content,
+                "voice_anchor_stable_key": anchor,
+                "canonical_visual_id": visual_id,
+                "bubble_rect": [420, top, 620, top + 44],
+            }
+
+        upper_pre = voice(
+            "same-duration-upper-pre",
+            "same-duration-upper",
+            content='[语音] 3"',
+            visual_id="visual-upper-untranscribed",
+            top=220,
+        )
+        lower_pre = voice(
+            "same-duration-lower-pre",
+            "same-duration-lower",
+            content='[语音] 3"',
+            visual_id="visual-lower-untranscribed",
+            top=320,
+        )
+        upper_post = voice(
+            "same-duration-upper-post",
+            "same-duration-upper",
+            content="第一条三秒语音",
+            visual_id="visual-upper-expanded-transcript",
+            top=220,
+        )
+        lower_post = voice(
+            "same-duration-lower-post",
+            "same-duration-lower",
+            content="第二条三秒语音",
+            visual_id="visual-lower-expanded-transcript",
+            top=320,
+        )
+        bridge.get_messages_payloads = [
+            {"messages": [upper_pre, lower_pre]},
+            {"messages": [upper_post, lower_pre]},
+            {"messages": [upper_post, lower_post]},
+        ]
+        bridge.voice_payloads = [
+            {
+                "ok": True,
+                "state": "voice_transcribe_completed",
+                "processed_voice_anchor_keys": ["same-duration-upper"],
+                "failed_voice_anchor_keys": [],
+                "transcribed_messages": [upper_post],
+            },
+            {
+                "ok": True,
+                "state": "voice_transcribe_completed",
+                "processed_voice_anchor_keys": ["same-duration-lower"],
+                "failed_voice_anchor_keys": [],
+                "transcribed_messages": [lower_post],
+            },
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        result = runner._read_one_wechat_target(
+            binding,
+            target,
+            current_step="state_target_message_read",
+            enforce_read_targets=True,
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(len(bridge.voice_transcribes), 2)
+        self.assertEqual(
+            len(
+                {
+                    item["reserved_worker_stable_id"]
+                    for item in bridge.voice_transcribes
+                }
+            ),
+            2,
+        )
+        self.assertEqual(len(api.message_payloads), 1)
+        messages = api.message_payloads[0]["messages"]
+        self.assertEqual(
+            [item["content"] for item in messages],
+            ["第一条三秒语音", "第二条三秒语音"],
+        )
+        self.assertEqual(
+            [item["item_state"] for item in messages],
+            ["completed", "completed"],
+        )
+        self.assertEqual(
+            api.message_payloads[0]["evidence"]["flow_gate_errors"],
+            [],
+        )
+        self.assertFalse(result.get("identity_gate_reported", False))
 
     def test_action_journal_vertical_c2_voice_reaches_ingest_and_ledger(self):
         api = FakeApi(None)
@@ -9402,6 +9537,208 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(bridge.locate_chats[1]["rpa_session_key"], "")
         self.assertEqual(bridge.message_reads[0]["target_mode"], "current")
         self.assertIn("ingest:1", api.events)
+
+    def test_c2_visible_stale_after_click_reauthorizes_and_relocates_once(self):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-visible-reordered",
+            rpa_session_key="wx:rpa:v1:before-reorder",
+            display_name="CJK7M4Q2",
+            remark_code="CJK7M4Q2",
+            read_reason="waiting_sales_reply",
+            authorization_revision="revision-visible-reordered",
+        )
+        api.read_targets = [target]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.locate_payloads = [
+            {
+                "ok": False,
+                "state": "target_not_confirmed",
+                "error_code": "C2_VISIBLE_TARGET_STALE_AFTER_CLICK",
+                "target_mode": "visible",
+                "targeting": {
+                    "stale_after_click": {
+                        "ui_click_performed": True,
+                        "active_title_nonempty": True,
+                        "target_remark_code_confirmed": False,
+                        "message_read_attempted": False,
+                        "media_action_attempted": False,
+                        "input_or_send_attempted": False,
+                        "safe_relocation_allowed": True,
+                    }
+                },
+            },
+            {
+                "ok": True,
+                "state": "chat_target_confirmed",
+                "target_mode": "search_by_remark_code",
+            },
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        runner._read_state_target_queue(binding, targets=[target])
+
+        self.assertEqual(
+            [item["target_mode"] for item in bridge.locate_chats],
+            ["visible", "search_by_remark_code"],
+        )
+        self.assertEqual(len(bridge.message_reads), 1)
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertGreaterEqual(
+            api.events.count("read_authorization:conv-visible-reordered"),
+            3,
+        )
+
+    def test_c2_visible_stale_after_click_does_not_relocate_after_revocation(self):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-visible-reordered-revoked",
+            rpa_session_key="wx:rpa:v1:before-reorder",
+            display_name="CJK7M4Q2",
+            remark_code="CJK7M4Q2",
+            read_reason="waiting_sales_reply",
+            authorization_revision="revision-visible-reordered-revoked",
+        )
+        api.read_targets = [target]
+        authorization_calls = {"count": 0}
+
+        def revoke_before_relocation(
+            _binding: Binding,
+            conversation_id: str,
+            **_kwargs,
+        ):
+            api.events.append(f"read_authorization:{conversation_id}")
+            authorization_calls["count"] += 1
+            allowed = authorization_calls["count"] <= 2
+            return {
+                "allowed": allowed,
+                "conversation_id": conversation_id,
+                "authorization_revision": (
+                    target.authorization_revision if allowed else ""
+                ),
+                "read_reason": target.read_reason if allowed else "",
+            }
+
+        api.get_wechat_read_authorization = revoke_before_relocation  # type: ignore[method-assign]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.locate_payloads = [
+            {
+                "ok": False,
+                "state": "target_not_confirmed",
+                "error_code": "C2_VISIBLE_TARGET_STALE_AFTER_CLICK",
+                "target_mode": "visible",
+                "targeting": {
+                    "stale_after_click": {
+                        "ui_click_performed": True,
+                        "active_title_nonempty": True,
+                        "target_remark_code_confirmed": False,
+                        "message_read_attempted": False,
+                        "media_action_attempted": False,
+                        "input_or_send_attempted": False,
+                        "safe_relocation_allowed": True,
+                    }
+                },
+            }
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        runner._read_state_target_queue(binding, targets=[target])
+
+        self.assertEqual(
+            [item["target_mode"] for item in bridge.locate_chats],
+            ["visible"],
+        )
+        self.assertEqual(bridge.message_reads, [])
+        self.assertEqual(api.message_payloads, [])
+
+    def test_c2_second_wrong_relocation_ends_current_target_and_continues_queue(self):
+        api = FakeApi(None)
+        first = WechatReadTarget(
+            conversation_id="conv-reordered-first",
+            rpa_session_key="wx:rpa:v1:before-reorder",
+            display_name="CJK7M4Q2",
+            remark_code="CJK7M4Q2",
+            read_reason="waiting_sales_reply",
+            authorization_revision="revision-reordered-first",
+        )
+        second = WechatReadTarget(
+            conversation_id="conv-after-reordered",
+            rpa_session_key="wx:rpa:v1:next-target",
+            display_name="CJV6P3R8",
+            remark_code="CJV6P3R8",
+            read_reason="waiting_user_reply",
+            authorization_revision="revision-after-reordered",
+        )
+        api.read_targets = [first, second]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.locate_payloads = [
+            {
+                "ok": False,
+                "state": "target_not_confirmed",
+                "error_code": "C2_VISIBLE_TARGET_STALE_AFTER_CLICK",
+                "target_mode": "visible",
+                "targeting": {
+                    "stale_after_click": {
+                        "ui_click_performed": True,
+                        "active_title_nonempty": True,
+                        "target_remark_code_confirmed": False,
+                        "message_read_attempted": False,
+                        "media_action_attempted": False,
+                        "input_or_send_attempted": False,
+                        "safe_relocation_allowed": True,
+                    }
+                },
+            },
+            {
+                "ok": False,
+                "state": "target_not_confirmed",
+                "error_code": "TARGET_NOT_CONFIRMED",
+                "target_mode": "search_by_remark_code",
+            },
+            {
+                "ok": True,
+                "state": "chat_target_confirmed",
+                "target_mode": "visible",
+            },
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        runner._read_state_target_queue(binding, targets=[first, second])
+
+        self.assertEqual(
+            [item["target_mode"] for item in bridge.locate_chats],
+            ["visible", "search_by_remark_code", "visible"],
+        )
+        self.assertEqual(len(bridge.message_reads), 1)
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(
+            api.message_payloads[0]["conversation_id"],
+            "conv-after-reordered",
+        )
 
     def test_c2_visible_hit_queue_is_cleared_when_backend_read_targets_empty(self):
         api = FakeApi(None)

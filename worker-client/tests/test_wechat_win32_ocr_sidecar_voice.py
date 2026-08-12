@@ -3005,6 +3005,162 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         )
         validate.assert_not_called()
 
+    def test_visible_locate_reports_safe_stale_click_before_any_message_read(self) -> None:
+        previous_timing = dict(sidecar._LAST_OPEN_CHAT_TIMING)
+        wrong_target_validation = {
+            "ok": False,
+            "online": True,
+            "confirmation_confidence": "failed",
+            "conversation_type": "unknown",
+            "conversation_type_evidence": {
+                "short_code_confirmed": False,
+                "conversation_type": "unknown",
+                "raw_title": "公众号",
+            },
+        }
+
+        def fake_open_chat(*_args, **_kwargs):
+            sidecar._LAST_OPEN_CHAT_TIMING.clear()
+            sidecar._LAST_OPEN_CHAT_TIMING.update(
+                {
+                    "reason": "semantic_candidate_not_confirmed",
+                    "open_chat_semantic_ui_click_performed": True,
+                }
+            )
+            return False
+
+        try:
+            with (
+                patch.object(sidecar, "open_chat", side_effect=fake_open_chat),
+                patch.object(
+                    sidecar,
+                    "validate_active_send_target",
+                    return_value=wrong_target_validation,
+                ),
+                patch.object(sidecar, "humanized_action_sleep", return_value=None),
+            ):
+                result = sidecar.locate_chat_target_for_c2(
+                    1,
+                    target="CJK7M4Q2",
+                    session_key="wx:rpa:v1:before-reorder",
+                    remark_code="CJK7M4Q2",
+                    target_mode="visible",
+                    visible_session_candidate=None,
+                    exact=False,
+                    artifact_dir=None,
+                    sidecar_run_id="run-stale-after-click",
+                    failure_state="failed",
+                    failure_error_code="TARGET_NOT_CONFIRMED",
+                )
+        finally:
+            sidecar._LAST_OPEN_CHAT_TIMING.clear()
+            sidecar._LAST_OPEN_CHAT_TIMING.update(previous_timing)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["error_code"],
+            "C2_VISIBLE_TARGET_STALE_AFTER_CLICK",
+        )
+        self.assertEqual(
+            result["targeting"]["stale_after_click"],
+            {
+                "ui_click_performed": True,
+                "active_title_nonempty": True,
+                "target_remark_code_confirmed": False,
+                "message_read_attempted": False,
+                "media_action_attempted": False,
+                "input_or_send_attempted": False,
+                "safe_relocation_allowed": True,
+            },
+        )
+
+    def test_visible_locate_requires_explicit_nonempty_wrong_title_for_safe_relocation(
+        self,
+    ) -> None:
+        previous_timing = dict(sidecar._LAST_OPEN_CHAT_TIMING)
+
+        def fake_open_chat(*_args, **_kwargs):
+            sidecar._LAST_OPEN_CHAT_TIMING.clear()
+            sidecar._LAST_OPEN_CHAT_TIMING.update(
+                {
+                    "reason": "semantic_candidate_not_confirmed",
+                    "open_chat_semantic_ui_click_performed": True,
+                }
+            )
+            return False
+
+        cases = (
+            (
+                "empty-title",
+                {
+                    "ok": False,
+                    "conversation_type": "unknown",
+                    "conversation_type_evidence": {
+                        "short_code_confirmed": False,
+                        "conversation_type": "unknown",
+                        "raw_title": "",
+                    },
+                },
+                "TARGET_NOT_CONFIRMED",
+            ),
+            (
+                "target-code-confirmed-but-unknown",
+                {
+                    "ok": False,
+                    "conversation_type": "unknown",
+                    "conversation_type_evidence": {
+                        "short_code_confirmed": True,
+                        "conversation_type": "unknown",
+                        "raw_title": "CJK7M4Q2",
+                    },
+                },
+                "C2_CONVERSATION_TYPE_UNKNOWN",
+            ),
+        )
+        try:
+            for name, validation, expected_error_code in cases:
+                with self.subTest(name=name):
+                    with (
+                        patch.object(
+                            sidecar,
+                            "open_chat",
+                            side_effect=fake_open_chat,
+                        ),
+                        patch.object(
+                            sidecar,
+                            "validate_active_send_target",
+                            return_value=validation,
+                        ),
+                        patch.object(
+                            sidecar,
+                            "humanized_action_sleep",
+                            return_value=None,
+                        ),
+                    ):
+                        result = sidecar.locate_chat_target_for_c2(
+                            1,
+                            target="CJK7M4Q2",
+                            session_key="wx:rpa:v1:before-reorder",
+                            remark_code="CJK7M4Q2",
+                            target_mode="visible",
+                            visible_session_candidate=None,
+                            exact=False,
+                            artifact_dir=None,
+                            sidecar_run_id=f"run-{name}",
+                            failure_state="failed",
+                            failure_error_code="TARGET_NOT_CONFIRMED",
+                        )
+                    self.assertFalse(result["ok"])
+                    self.assertEqual(
+                        result["error_code"], expected_error_code
+                    )
+                    self.assertNotIn(
+                        "stale_after_click", result["targeting"]
+                    )
+        finally:
+            sidecar._LAST_OPEN_CHAT_TIMING.clear()
+            sidecar._LAST_OPEN_CHAT_TIMING.update(previous_timing)
+
     def test_open_chat_blocks_two_private_sessions_with_same_remark_code(self) -> None:
         image = Image.new("RGB", (965, 852), (247, 247, 247))
         items = [

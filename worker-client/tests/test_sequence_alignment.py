@@ -274,6 +274,147 @@ class SequenceAlignmentTests(unittest.TestCase):
         )
         self.assertNotIn("transcript-row", result["new_suffix_observation_ids"])
 
+    def test_confirmed_voice_action_survives_transcript_visual_id_change(self):
+        before = [
+            observation(
+                "voice-selected",
+                "voice",
+                visual_id="visual-untranscribed-bubble",
+            ),
+        ]
+        pre = build_pre_action_identity_sequence(
+            before,
+            selected_observation_id="voice-selected",
+            canonical_action_id="voice-action-visual-change",
+            reserved_worker_stable_id="worker-message-3",
+        )
+        mapping = {
+            "canonical_action_id": "voice-action-visual-change",
+            "binding_confirmed": True,
+            "post_observation_id": "voice-transcript",
+            "derived_observation_ids": [],
+        }
+        post = build_post_action_observation_sequence(
+            [
+                observation(
+                    "voice-transcript",
+                    "voice",
+                    "中午好，你在吗？有个事儿咨询你一下。",
+                    visual_id="visual-expanded-transcript",
+                ),
+            ],
+            confirmed_action_mapping=mapping,
+        )
+
+        result = self.align(pre, post, mapping)
+
+        self.assertEqual(result["alignment_status"], "unique")
+        self.assertEqual(result["candidate_alignment_count"], 1)
+        self.assertEqual(
+            result["matched_pairs"],
+            [
+                {
+                    "identity_state": "selected_action",
+                    "worker_stable_id": "worker-message-3",
+                    "pre_observation_id": "voice-selected",
+                    "post_observation_id": "voice-transcript",
+                    "pre_index": 0,
+                    "post_index": 0,
+                    "match_basis": "confirmed_action",
+                }
+            ],
+        )
+        self.assertEqual(result["new_suffix_observation_ids"], [])
+
+    def test_confirmed_action_selects_one_of_two_same_duration_voices(self):
+        before = [
+            observation(
+                "voice-upper",
+                "voice",
+                '[语音] 3"',
+                visual_id="visual-upper-untranscribed",
+            ),
+            observation(
+                "voice-lower-selected",
+                "voice",
+                '[语音] 3"',
+                visual_id="visual-lower-untranscribed",
+            ),
+        ]
+        pre = build_pre_action_identity_sequence(
+            before,
+            committed_ids={
+                "voice-upper": "worker-message-2",
+            },
+            selected_observation_id="voice-lower-selected",
+            canonical_action_id="voice-action-lower",
+            reserved_worker_stable_id="worker-message-3",
+        )
+        mapping = {
+            "canonical_action_id": "voice-action-lower",
+            "binding_confirmed": True,
+            "post_observation_id": "voice-lower-transcript",
+            "derived_observation_ids": [],
+        }
+        post = build_post_action_observation_sequence(
+            [
+                observation(
+                    "voice-upper-after",
+                    "voice",
+                    '[语音] 3"',
+                    visual_id="visual-upper-untranscribed",
+                ),
+                observation(
+                    "voice-lower-transcript",
+                    "voice",
+                    "中午好，你在吗？有个事儿咨询你一下。",
+                    visual_id="visual-lower-expanded-transcript",
+                ),
+            ],
+            confirmed_action_mapping=mapping,
+        )
+
+        result = self.align(pre, post, mapping)
+
+        self.assertEqual(result["alignment_status"], "unique")
+        self.assertEqual(result["candidate_alignment_count"], 1)
+        self.assertEqual(
+            inherited_worker_ids(result),
+            {
+                "voice-upper-after": "worker-message-2",
+                "voice-lower-transcript": "worker-message-3",
+            },
+        )
+        self.assertEqual(result["new_suffix_observation_ids"], [])
+
+    def test_unconfirmed_voice_visual_id_change_remains_unresolved(self):
+        pre = build_pre_action_identity_sequence(
+            [
+                observation(
+                    "historical-voice",
+                    "voice",
+                    visual_id="visual-before",
+                )
+            ],
+            committed_ids={
+                "historical-voice": "worker-message-2",
+            },
+        )
+        post = build_post_action_observation_sequence(
+            [
+                observation(
+                    "different-voice",
+                    "voice",
+                    visual_id="visual-after",
+                )
+            ]
+        )
+
+        result = self.align(pre, post)
+
+        self.assertEqual(result["alignment_status"], "unresolved")
+        self.assertEqual(result["matched_pairs"], [])
+
     def test_same_duration_voice_at_old_position_does_not_inherit(self):
         pre = build_pre_action_identity_sequence(
             [

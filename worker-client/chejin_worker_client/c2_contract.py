@@ -66,6 +66,18 @@ def contract_sha256() -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+def target_location_recovery_contract() -> dict[str, Any]:
+    value = c2_contract_v3().get("target_location_recovery_contract")
+    if not isinstance(value, dict):
+        raise RuntimeError("Invalid C2 target_location_recovery_contract")
+    required_values = value.get("required_evidence_values")
+    if not isinstance(required_values, dict):
+        raise RuntimeError(
+            "Invalid C2 target_location_recovery_contract evidence"
+        )
+    return dict(value)
+
+
 def contract_row_rules() -> dict[str, dict[str, Any]]:
     values = c2_contract_v3().get("row_rules")
     if not isinstance(values, dict):

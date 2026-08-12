@@ -506,7 +506,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "7824e825b5fa3823caf2f6142b52204b867f6b93"
+                        "f743f562d0f56115142ebcf74c102c7e01ee88bb"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -526,8 +526,12 @@ class PackagingScriptsTest(unittest.TestCase):
                             "settlement"
                         ),
                         "ambiguous_voice_finite_terminal_settlement",
-                        "c2_contract_3_13_2_generated_schema",
+                        "c2_contract_3_13_3_generated_schema",
                         "sidebar_title_preview_physical_line_separation",
+                        (
+                            "safe_visible_target_stale_after_click_"
+                            "relocation_contract"
+                        ),
                     ],
                 }
             ],
@@ -545,9 +549,11 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["chejin_overlays"],
         )
         self.assertIn(
-            "7824e825b5fa3823caf2f6142b52204b867f6b93",
+            "f743f562d0f56115142ebcf74c102c7e01ee88bb",
             provenance["integration_note"],
         )
+        self.assertIn("3.13.3", provenance["integration_note"])
+        self.assertIn("有界恢复合同", provenance["integration_note"])
         self.assertIn(
             "可靠消息类型优先于结构图片且不依赖动作成功",
             provenance["integration_note"],
