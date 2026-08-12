@@ -23,6 +23,7 @@ from .incident_evidence import incident_by_id, incident_directory, latest_incide
 from .models import Binding, RpaResult, RpaStep, Task, WorkerProfile, task_type_title
 from .qt_application import GuardedQApplication
 from .rpa_bridge import RpaBridge
+from .startup_window_position import position_to_right_of_wechat
 from .storage import (
     append_log,
     clear_binding,
@@ -260,6 +261,7 @@ class WorkerWebWindow(QMainWindow):
         self.state_revision = 0
         self.step_history: list[dict[str, Any]] = []
         self._drag_origin: QPoint | None = None
+        self._startup_position_attempted = False
 
         self.runner = TaskRunner(
             self.api,
@@ -340,6 +342,18 @@ class WorkerWebWindow(QMainWindow):
 
     def end_window_drag(self) -> None:
         self._drag_origin = None
+
+    def _position_next_to_wechat_once(self) -> None:
+        if self._startup_position_attempted:
+            return
+        probe_payload = self.rpa_bridge.last_probe_payload
+        if not probe_payload:
+            return
+        self._startup_position_attempted = True
+        position = position_to_right_of_wechat(probe_payload)
+        if position is None:
+            return
+        self.move(*position)
 
     def _wire_signals(self) -> None:
         self.profile_signal.connect(self.on_profile)
@@ -796,6 +810,7 @@ class WorkerWebWindow(QMainWindow):
 
     @Slot(object)
     def on_profile(self, profile: WorkerProfile) -> None:
+        self._position_next_to_wechat_once()
         self.profile = profile
         if self.binding:
             self.binding.run_status = profile.run_status
@@ -805,6 +820,7 @@ class WorkerWebWindow(QMainWindow):
     @Slot(str)
     def on_status(self, status: str) -> None:
         self.connection_status = status
+        self._position_next_to_wechat_once()
         if status == "invalid":
             clear_binding()
             self.binding = None

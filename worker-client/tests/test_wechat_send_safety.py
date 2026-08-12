@@ -904,6 +904,83 @@ class WechatSendSafetyTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
 
+    def test_send_context_guard_ignores_sidebar_only_visual_change(self):
+        before = Image.new("RGB", (981, 860), "white")
+        after = before.copy()
+        ImageDraw.Draw(before).rectangle((40, 210, 75, 235), fill="red")
+        ImageDraw.Draw(after).rectangle((40, 210, 88, 235), fill="red")
+        before_region = sidecar.send_context_message_region_fingerprint(before)
+        after_region = sidecar.send_context_message_region_fingerprint(after)
+        self.assertEqual(before_region["sha256"], after_region["sha256"])
+
+        expected = sidecar.build_send_context_guard(
+            [
+                {
+                    "row_kind": "text_bubble",
+                    "sender_role": "customer",
+                    "content_clean": "明天继续磨，有点烦了",
+                }
+            ],
+            message_region_sha256=before_region["sha256"],
+            message_region_bounds=before_region["bounds"],
+        )
+        # Full-window OCR can vary when an unrelated sidebar badge changes.
+        current = sidecar.build_send_context_guard(
+            [
+                {
+                    "row_kind": "text_bubble",
+                    "sender_role": "customer",
+                    "content_clean": "明天继续磨有点烦了",
+                }
+            ],
+            message_region_sha256=after_region["sha256"],
+            message_region_bounds=after_region["bounds"],
+        )
+
+        result = sidecar.validate_send_context_guard(expected, current)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["reason"], "message_region_unchanged")
+
+    def test_send_context_guard_still_blocks_current_chat_visual_change(self):
+        before = Image.new("RGB", (981, 860), "white")
+        after = before.copy()
+        ImageDraw.Draw(after).rectangle((520, 520, 800, 570), fill="gray")
+        before_region = sidecar.send_context_message_region_fingerprint(before)
+        after_region = sidecar.send_context_message_region_fingerprint(after)
+        self.assertNotEqual(before_region["sha256"], after_region["sha256"])
+
+        expected = sidecar.build_send_context_guard(
+            [
+                {
+                    "row_kind": "text_bubble",
+                    "sender_role": "customer",
+                    "content_clean": "在吗",
+                }
+            ],
+            message_region_sha256=before_region["sha256"],
+        )
+        current = sidecar.build_send_context_guard(
+            [
+                {
+                    "row_kind": "text_bubble",
+                    "sender_role": "customer",
+                    "content_clean": "在吗",
+                },
+                {
+                    "row_kind": "text_bubble",
+                    "sender_role": "customer",
+                    "content_clean": "补充一句",
+                },
+            ],
+            message_region_sha256=after_region["sha256"],
+        )
+
+        result = sidecar.validate_send_context_guard(expected, current)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_code"], "C3_CONTEXT_CHANGED_BEFORE_SEND")
+
     def test_send_reply_match_count_requires_self_role_and_exact_normalized_text(self):
         messages = [
             {"sender_role": "customer", "content": "您好，可以继续沟通"},

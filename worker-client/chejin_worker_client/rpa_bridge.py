@@ -49,13 +49,17 @@ class RpaBridge:
         self.mode = CONFIG.rpa_mode
         self._active_artifact_dirs: set[Path] = set()
         self._active_artifact_dirs_lock = threading.Lock()
+        self.last_probe_payload: dict[str, Any] = {}
 
     def probe(self) -> tuple[str, str]:
         if self.mode == "mock":
+            self.last_probe_payload = {}
             return "ready", "logged_in"
         if sys.platform != "win32":
+            self.last_probe_payload = {}
             return "unavailable", "unknown"
         payload = self._call_omniauto(["status"], timeout=30)
+        self.last_probe_payload = dict(payload)
         if payload.get("ok"):
             return "ready", "logged_in"
         error_code = str(payload.get("error_code") or "")

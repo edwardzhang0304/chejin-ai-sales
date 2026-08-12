@@ -7,7 +7,7 @@ import { listWorkers } from "../workers/api";
 import type { WorkerItem } from "../workers/types";
 import { createSales, getSales, listSales, updateSales } from "./api";
 import { CreateSalesModal } from "./components/CreateSalesModal";
-import type { SalesItem, SalesUpdatePayload, SalesUpsertPayload } from "./types";
+import type { SalesCreatePayload, SalesItem, SalesUpdatePayload } from "./types";
 
 type SalesFilter = {
   keyword: string;
@@ -37,6 +37,8 @@ const initialFilter: SalesFilter = {
   status: "all",
   worker: "all",
 };
+
+const PHONE_PATTERN = /^1[3-9]\d{9}$/;
 
 function statusClass(enabled: boolean) {
   return enabled ? "assigned" : "invalid";
@@ -75,7 +77,7 @@ function optionalText(value: string) {
 function toEditForm(item: SalesItem): SalesEditForm {
   return {
     sales_name: item.sales_name,
-    phone: item.phone ?? "",
+    phone: "",
     wechat: item.wechat ?? "",
     enabled: item.enabled,
     sort_order: item.sort_order === null || item.sort_order === undefined ? "" : String(item.sort_order),
@@ -199,7 +201,7 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
     return { enabledCount, boundCount, today, blocked };
   }, [items]);
 
-  async function handleCreateSales(payload: SalesUpsertPayload) {
+  async function handleCreateSales(payload: SalesCreatePayload) {
     setSubmitting(true);
     setCreateError(null);
     setMessage(null);
@@ -238,8 +240,13 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
       remark: optionalText(editForm.remark),
     };
 
-    if (editForm.phone !== (detail.phone ?? "")) {
-      payload.phone = optionalText(editForm.phone);
+    const nextPhone = editForm.phone.trim();
+    if (nextPhone) {
+      if (!PHONE_PATTERN.test(nextPhone)) {
+        setSaveError("请输入 11 位有效手机号；不修改请留空。");
+        return;
+      }
+      payload.phone = nextPhone;
     }
 
     setSubmitting(true);
@@ -427,7 +434,23 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
                   </div>
                   <div>
                     <dt>手机号</dt>
-                    <dd><span className="read-value">{display(detail.phone)}</span><input className="edit-value" value={editForm.phone} onChange={(event) => setEditForm({ ...editForm, phone: event.target.value })} /></dd>
+                    <dd>
+                      <span className="read-value">{display(detail.phone)}</span>
+                      <input
+                        className="edit-value"
+                        value={editForm.phone}
+                        onChange={(event) => setEditForm({ ...editForm, phone: event.target.value })}
+                        inputMode="tel"
+                        autoComplete="tel"
+                        maxLength={11}
+                        pattern="1[3-9][0-9]{9}"
+                        placeholder="不修改请留空；修改请输入完整手机号"
+                      />
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>飞书匹配</dt>
+                    <dd>{detail.feishu_binding_status === "matched" ? "飞书已匹配" : "飞书未匹配"}</dd>
                   </div>
                   <div>
                     <dt>微信号</dt>

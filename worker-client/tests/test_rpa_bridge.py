@@ -80,6 +80,31 @@ class RpaBridgeTest(unittest.TestCase):
 
         self.assertEqual(command, [sys.executable, "sidecar.py", "status"])
 
+    def test_probe_keeps_existing_status_payload_for_startup_window_position(self):
+        bridge = RpaBridge(sidecar_script=Path("sidecar.py"))
+        bridge.mode = "real"
+        payload = {
+            "ok": True,
+            "geometry": {
+                "left": 100,
+                "top": 80,
+                "right": 900,
+                "bottom": 700,
+                "width": 800,
+                "height": 620,
+            },
+        }
+
+        with patch.object(sys, "platform", "win32"), patch.object(
+            bridge,
+            "_call_omniauto",
+            return_value=payload,
+        ):
+            status = bridge.probe()
+
+        self.assertEqual(status, ("ready", "logged_in"))
+        self.assertEqual(bridge.last_probe_payload, payload)
+
     def test_call_omniauto_protects_artifact_directory_until_process_finishes(self):
         with tempfile.TemporaryDirectory(prefix="chejin-active-artifact-") as tmp:
             artifact_dir = Path(tmp) / "artifacts" / "wechat_c2" / "messages" / "flow-1"

@@ -1,11 +1,11 @@
 import { request } from "../../shared/api/client";
-import type { SalesItem, SalesUpdatePayload, SalesUpsertPayload } from "./types";
+import type { SalesCreatePayload, SalesItem, SalesUpdatePayload } from "./types";
 
 export function listSales(signal?: AbortSignal) {
   return request<{ items: SalesItem[] }>("/sales", { signal });
 }
 
-export function createSales(payload: SalesUpsertPayload) {
+export function createSales(payload: SalesCreatePayload) {
   return request<{ id: string }>("/sales", {
     method: "POST",
     body: payload,

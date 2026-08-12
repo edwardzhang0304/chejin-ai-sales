@@ -169,7 +169,94 @@ def test_sales_create_normalizes_phone_and_only_returns_binding_status(monkeypat
     assert detail["phone"] == "139****0001"
     assert detail["feishu_binding_status"] == "matched"
     assert "feishu_user_id" not in detail
+    listed = client.get("/api/sales", headers=HEADERS).json()["data"]["items"]
+    assert all("feishu_user_id" not in item for item in listed)
+    assert all("open_id" not in item for item in listed)
     assert fake.lookup_calls == ["13900000001"]
+
+
+def test_sales_update_without_phone_preserves_phone_and_open_id(monkeypatch):
+    fake = FakeFeishuAdapter()
+    _use_fake_adapter(monkeypatch, fake)
+    created = client.post(
+        "/api/sales",
+        json={"sales_name": "张伟", "phone": "13900000001", "enabled": True},
+        headers=HEADERS,
+    )
+    sales_id = created.json()["data"]["id"]
+    fake.lookup_calls.clear()
+
+    updated = client.put(
+        f"/api/sales/{sales_id}",
+        json={"sales_name": "张伟（华东）", "enabled": False},
+        headers=HEADERS,
+    )
+
+    assert updated.status_code == 200
+    assert fake.lookup_calls == []
+    with SessionLocal() as db:
+        sales = db.get(Sales, sales_id)
+        assert sales.sales_name == "张伟（华东）"
+        assert sales.phone == "13900000001"
+        assert sales.feishu_user_id == "ou_sales_current"
+
+
+def test_sales_update_new_phone_queries_open_id_once_and_rejects_masked_phone(monkeypatch):
+    fake = FakeFeishuAdapter()
+    _use_fake_adapter(monkeypatch, fake)
+    created = client.post(
+        "/api/sales",
+        json={"sales_name": "张伟", "phone": "13900000001", "enabled": True},
+        headers=HEADERS,
+    )
+    sales_id = created.json()["data"]["id"]
+    fake.lookup_calls.clear()
+
+    masked = client.put(
+        f"/api/sales/{sales_id}",
+        json={"phone": "139****0001"},
+        headers=HEADERS,
+    )
+    assert masked.status_code == 422
+    assert fake.lookup_calls == []
+
+    changed = client.put(
+        f"/api/sales/{sales_id}",
+        json={"phone": "13800000002"},
+        headers=HEADERS,
+    )
+    assert changed.status_code == 200
+    assert fake.lookup_calls == ["13800000002"]
+    with SessionLocal() as db:
+        sales = db.get(Sales, sales_id)
+        assert sales.phone == "13800000002"
+        assert sales.feishu_user_id == "ou_sales_current"
+
+
+def test_sales_update_rejects_every_server_managed_feishu_id(monkeypatch):
+    fake = FakeFeishuAdapter()
+    _use_fake_adapter(monkeypatch, fake)
+    created = client.post(
+        "/api/sales",
+        json={"sales_name": "张伟", "phone": "13900000001", "enabled": True},
+        headers=HEADERS,
+    )
+    sales_id = created.json()["data"]["id"]
+
+    for field in (
+        "feishu_user_id",
+        "open_id",
+        "feishu_open_id",
+        "user_id",
+        "union_id",
+    ):
+        response = client.put(
+            f"/api/sales/{sales_id}",
+            json={field: "ou_injected"},
+            headers=HEADERS,
+        )
+        assert response.status_code == 422
+        assert response.json()["code"] == "SALES_FEISHU_ID_SERVER_MANAGED"
 
 
 def test_phone_change_commits_empty_id_before_lookup_and_discards_stale_response(monkeypatch):

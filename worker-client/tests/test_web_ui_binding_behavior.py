@@ -139,8 +139,68 @@ class WebUiBindingBehaviorTest(unittest.TestCase):
         window.state_revision = 0
         window.step_history = []
         window.runner = _Runner()
+        window.rpa_bridge = types.SimpleNamespace(last_probe_payload={})
+        window._startup_position_attempted = False
         window.bridge = module.WorkerWebBridge(window)
         return window
+
+    def test_startup_wechat_probe_positions_window_once_and_keeps_dragging_free(self):
+        with _headless_web_ui_module() as module:
+            window = self._window(module, None)
+            window.rpa_bridge.last_probe_payload = {
+                "ok": True,
+                "geometry": {
+                    "left": 100,
+                    "top": 80,
+                    "right": 900,
+                    "bottom": 700,
+                    "width": 800,
+                    "height": 620,
+                },
+            }
+            window.move = Mock()
+
+            window._position_next_to_wechat_once()
+            window._position_next_to_wechat_once()
+
+        window.move.assert_called_once_with(912, 80)
+
+    def test_missing_wechat_geometry_keeps_default_window_position(self):
+        with _headless_web_ui_module() as module:
+            window = self._window(module, None)
+            window.move = Mock()
+
+            window._position_next_to_wechat_once()
+
+        window.move.assert_not_called()
+        self.assertFalse(window._startup_position_attempted)
+
+    def test_backend_profile_before_first_probe_does_not_consume_position_attempt(self):
+        with _headless_web_ui_module() as module:
+            window = self._window(module, None)
+            window.move = Mock()
+
+            window.on_profile(WorkerProfile(
+                id="worker-1",
+                worker_name="测试 Worker",
+                run_status="paused",
+            ))
+            self.assertFalse(window._startup_position_attempted)
+            window.rpa_bridge.last_probe_payload = {
+                "ok": True,
+                "geometry": {
+                    "left": 100,
+                    "top": 80,
+                    "right": 900,
+                    "bottom": 700,
+                    "width": 800,
+                    "height": 620,
+                },
+            }
+            window.on_status("connected")
+
+        window.move.assert_called_once_with(912, 80)
+        self.assertTrue(window._startup_position_attempted)
 
     def test_existing_binding_initial_state_restores_workbench(self):
         with _headless_web_ui_module() as module, patch.object(

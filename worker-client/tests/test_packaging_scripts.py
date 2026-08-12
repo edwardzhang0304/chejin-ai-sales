@@ -540,6 +540,10 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["chejin_overlays"],
         )
         self.assertIn(
+            "c3_active_chat_send_context_guard",
+            provenance["chejin_overlays"],
+        )
+        self.assertIn(
             "0ef552684d474be9fa95af8c8c5557f833e4ecbd",
             provenance["integration_note"],
         )
@@ -553,6 +557,7 @@ class PackagingScriptsTest(unittest.TestCase):
         )
         self.assertIn("Worker 只校验", provenance["integration_note"])
         self.assertIn("不读取 `raw_title`", provenance["integration_note"])
+        self.assertIn("侧栏红点或其他会话变化不得阻断发送", provenance["integration_note"])
         self.assertEqual(
             provenance["historical_integrations"][0][
                 "chejin_integration_commit"
