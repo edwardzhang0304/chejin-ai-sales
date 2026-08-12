@@ -534,6 +534,123 @@ class SequenceAlignmentTests(unittest.TestCase):
             },
         )
 
+    def test_text_sequence_survives_rebuilt_visual_ids_after_viewport_scroll(self):
+        pre = build_pre_action_identity_sequence(
+            [
+                observation(
+                    "before-top",
+                    "text",
+                    "顶部会滚出",
+                    sender_role="self",
+                    visual_id="visual-before-top",
+                ),
+                observation(
+                    "before-long",
+                    "text",
+                    "这是一条保留下来的长消息",
+                    sender_role="self",
+                    visual_id="visual-before-long",
+                ),
+                observation(
+                    "before-ok-1",
+                    "text",
+                    "好",
+                    visual_id="visual-before-ok-1",
+                ),
+                observation(
+                    "before-middle",
+                    "text",
+                    "小号回我一局",
+                    sender_role="self",
+                    visual_id="visual-before-middle",
+                ),
+                observation(
+                    "before-ok-2",
+                    "text",
+                    "好",
+                    visual_id="visual-before-ok-2",
+                ),
+            ],
+            committed_ids={
+                "before-top": "worker-message-1",
+                "before-long": "worker-message-2",
+                "before-ok-1": "worker-message-3",
+                "before-middle": "worker-message-4",
+                "before-ok-2": "worker-message-5",
+            },
+        )
+        post = build_post_action_observation_sequence(
+            [
+                observation(
+                    "after-long",
+                    "text",
+                    "这是一条保留下来的长消息",
+                    sender_role="self",
+                    visual_id="visual-after-long",
+                ),
+                observation(
+                    "after-ok-1",
+                    "text",
+                    "好",
+                    visual_id="visual-after-ok-1",
+                ),
+                observation(
+                    "after-middle",
+                    "text",
+                    "小号回我一局",
+                    sender_role="self",
+                    visual_id="visual-after-middle",
+                ),
+                observation(
+                    "after-ok-2",
+                    "text",
+                    "好",
+                    visual_id="visual-after-ok-2",
+                ),
+                observation("new-tail", "text", "新的尾部消息"),
+            ]
+        )
+
+        result = self.align(pre, post)
+
+        self.assertEqual(result["alignment_status"], "unique")
+        self.assertEqual(
+            inherited_worker_ids(result),
+            {
+                "after-long": "worker-message-2",
+                "after-ok-1": "worker-message-3",
+                "after-middle": "worker-message-4",
+                "after-ok-2": "worker-message-5",
+            },
+        )
+        self.assertEqual(result["new_suffix_observation_ids"], ["new-tail"])
+
+    def test_media_visual_id_mismatch_remains_unresolved(self):
+        pre = build_pre_action_identity_sequence(
+            [
+                observation(
+                    "image-before",
+                    "image",
+                    visual_id="visual-image-before",
+                )
+            ],
+            committed_ids={"image-before": "worker-message-1"},
+        )
+        post = build_post_action_observation_sequence(
+            [
+                observation(
+                    "image-after",
+                    "image",
+                    visual_id="visual-image-after",
+                )
+            ]
+        )
+
+        result = self.align(pre, post)
+
+        self.assertEqual(result["alignment_status"], "unresolved")
+        self.assertEqual(result["matched_pairs"], [])
+
     def test_repeated_text_suffix_has_one_monotonic_alignment(self):
         pre = build_pre_action_identity_sequence(
             [
