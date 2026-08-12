@@ -2896,14 +2896,70 @@ class TaskRunner:
             or not new_suffix
             or new_suffix[0] != confirmed_observation_id
         ):
-            self._mark_possible_ai_send_alignment(
-                conversation_id=target.conversation_id,
-                reply_action_id=reply_action_id,
-                reconciliation_state="identity_unconfirmed_possible_sent",
-                sequence_alignment_evidence=evidence,
-                physical_send_confirmed=True,
+            # The immediate Sidecar confirmation proves that this exact send
+            # action produced one unique bottom-most self bubble while the
+            # input became empty.  A newly appended bubble can clip the old
+            # viewport, and media-only history cannot prove full alignment.
+            # Commit only the action's reserved identity here.  Historical
+            # rows are deliberately not inherited from text, coordinates, or
+            # an old frame; the next authorized read must align them normally.
+            post_index = next(
+                index
+                for index, item in enumerate(post_sequence)
+                if str(item.get("post_observation_id") or "").strip()
+                == confirmed_observation_id
             )
-            return False
+            visible_prefix_ids = [
+                str(item.get("post_observation_id") or "").strip()
+                for item in post_sequence[:post_index]
+            ]
+            pre_observation_ids = [
+                str(item.get("pre_observation_id") or "").strip()
+                for item in pre_sequence
+            ]
+            prefix_is_unchanged_pre_suffix = bool(
+                all(visible_prefix_ids)
+                and len(visible_prefix_ids) <= len(pre_observation_ids)
+                and visible_prefix_ids
+                == pre_observation_ids[-len(visible_prefix_ids):]
+            )
+            if not prefix_is_unchanged_pre_suffix:
+                self._mark_possible_ai_send_alignment(
+                    conversation_id=target.conversation_id,
+                    reply_action_id=reply_action_id,
+                    reconciliation_state=(
+                        "identity_unconfirmed_possible_sent"
+                    ),
+                    sequence_alignment_evidence=evidence,
+                    physical_send_confirmed=True,
+                )
+                return False
+            history_alignment = dict(evidence)
+            evidence = {
+                "pre_sequence_source": "action_frame",
+                "pre_frame_id": pre_frame_id,
+                "post_frame_id": post_frame_id,
+                "alignment_status": "unique",
+                "candidate_alignment_count": 1,
+                "matched_pairs": [
+                    {
+                        "identity_state": "selected_action",
+                        "worker_stable_id": reserved_id,
+                        "pre_observation_id": reply_action_id,
+                        "post_observation_id": confirmed_observation_id,
+                        "pre_index": len(pre_sequence),
+                        "post_index": post_index,
+                        "match_basis": "confirmed_action",
+                    }
+                ],
+                "old_tail_fully_consumed": False,
+                "new_suffix_observation_ids": [
+                    confirmed_observation_id
+                ],
+                "confirmed_action_mapping": dict(mapping),
+                "action_identity_only": True,
+                "history_alignment_evidence": history_alignment,
+            }
         journal_path = self.bridge.send_transaction_journal_path(
             reply_action_id
         )
@@ -3137,6 +3193,73 @@ class TaskRunner:
                     ).strip(),
                 }
             )
+        checkpoint_stable_ids = {
+            str(item.get("worker_stable_id") or "").strip()
+            for item in pre_sequence
+            if str(item.get("worker_stable_id") or "").strip()
+        }
+        identity_state = load_c2_state(
+            f"message_identity:{target.conversation_id}"
+        )
+        for receipt in identity_state.get("ai_reply_receipts") or []:
+            if not isinstance(receipt, dict):
+                continue
+            stable_id = str(
+                receipt.get("worker_stable_id") or ""
+            ).strip()
+            stable_match = re.fullmatch(r"worker-message-(\d+)", stable_id)
+            if (
+                stable_match is None
+                or stable_id in checkpoint_stable_ids
+                or not str(
+                    receipt.get("reply_action_id") or ""
+                ).strip()
+                or not str(
+                    receipt.get("reply_text_hash") or ""
+                ).strip()
+            ):
+                continue
+            pre_sequence.append(
+                {
+                    "identity_state": "committed",
+                    "worker_stable_id": stable_id,
+                    "pre_observation_id": (
+                        "confirmed-ai-reply:"
+                        f"{receipt['reply_action_id']}"
+                    ),
+                    "pre_sequence_index": len(pre_sequence),
+                    "sender_role": "self",
+                    "message_type": "text",
+                    "normalized_content_hash": str(
+                        receipt.get("reply_text_hash") or ""
+                    ).strip(),
+                    "native_source_message_id": str(
+                        receipt.get("native_source_message_id") or ""
+                    ).strip(),
+                    "canonical_visual_id": str(
+                        receipt.get("canonical_visual_id") or ""
+                    ).strip(),
+                    "_worker_sequence_number": int(
+                        stable_match.group(1)
+                    ),
+                }
+            )
+            checkpoint_stable_ids.add(stable_id)
+        if any("_worker_sequence_number" in item for item in pre_sequence):
+            def sequence_number(item: dict[str, Any]) -> int:
+                explicit = item.get("_worker_sequence_number")
+                if isinstance(explicit, int):
+                    return explicit
+                match = re.fullmatch(
+                    r"worker-message-(\d+)",
+                    str(item.get("worker_stable_id") or "").strip(),
+                )
+                return int(match.group(1)) if match else 2**63 - 1
+
+            pre_sequence.sort(key=sequence_number)
+            for index, item in enumerate(pre_sequence):
+                item.pop("_worker_sequence_number", None)
+                item["pre_sequence_index"] = index
         post_sequence = build_post_action_observation_sequence(observations)
         frame_id = str(
             prepared.get("frame_id")
@@ -3151,7 +3274,7 @@ class TaskRunner:
                     "reason": "initial_frame_id_missing",
                 }
             ]
-        explicit_empty = not recent and int(
+        explicit_empty = not pre_sequence and int(
             checkpoint.get("next_sequence_floor") or 0
         ) <= 1
         if not pre_sequence and not explicit_empty:

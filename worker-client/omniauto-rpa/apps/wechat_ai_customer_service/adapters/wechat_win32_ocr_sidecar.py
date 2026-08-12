@@ -6271,99 +6271,140 @@ def avatar_lane_visual_score(
     else:
         lane_left = max(int(round(bubble_right + 4.0)), width - 150, split_x + 1)
         lane_right = width - 6
-    row_top, row_bottom = bubble_top, bubble_bottom
-    row_center = min((row_top + row_bottom) / 2.0, row_top + 24.0)
-    crop_top = max(chat_header_cutoff_y(height), int(round(row_center - 24.0)))
-    crop_bottom = min(height - DEFAULT_MESSAGE_BOTTOM_EXCLUDE_PX, crop_top + 48)
     lane_left = max(0, int(lane_left))
     lane_right = min(width, int(lane_right))
-    if lane_right - lane_left < 20 or crop_bottom - crop_top < 20:
+    if lane_right - lane_left < 20:
         return {"present": False, "score": 0.0, "reason": "avatar_lane_empty"}
-    crop = image.crop((lane_left, crop_top, lane_right, crop_bottom))
-    stat = ImageStat.Stat(crop)
-    color_stddev = sum(float(value) for value in stat.stddev[:3]) / 3.0
-    pixels = crop.load()
-    border_pixels: list[tuple[int, int, int]] = []
-    for y in range(crop.height):
-        for x in range(crop.width):
-            if x < 4 or x >= crop.width - 4 or y < 3 or y >= crop.height - 3:
-                border_pixels.append(pixels[x, y])
-    background = tuple(
-        sorted(int(pixel[channel]) for pixel in border_pixels)[len(border_pixels) // 2]
-        for channel in range(3)
-    ) if border_pixels else (247, 247, 247)
-    foreground_points: list[tuple[int, int]] = []
-    edge_hits = 0
-    edge_checks = 0
-    for y in range(crop.height):
-        for x in range(crop.width):
-            current = pixels[x, y]
-            if sum(abs(int(current[index]) - int(background[index])) for index in range(3)) / 3.0 >= 18.0:
-                foreground_points.append((x, y))
-            if x + 1 < crop.width:
-                adjacent = pixels[x + 1, y]
-                edge_hits += int(sum(abs(int(current[index]) - int(adjacent[index])) for index in range(3)) / 3.0 >= 18.0)
-                edge_checks += 1
-            if y + 1 < crop.height:
-                adjacent = pixels[x, y + 1]
-                edge_hits += int(sum(abs(int(current[index]) - int(adjacent[index])) for index in range(3)) / 3.0 >= 18.0)
-                edge_checks += 1
-    edge_ratio = edge_hits / max(1, edge_checks)
-    if foreground_points:
-        foreground_left = min(point[0] for point in foreground_points)
-        foreground_top = min(point[1] for point in foreground_points)
-        foreground_right = max(point[0] for point in foreground_points)
-        foreground_bottom = max(point[1] for point in foreground_points)
-        foreground_width = foreground_right - foreground_left + 1
-        foreground_height = foreground_bottom - foreground_top + 1
-    else:
-        foreground_left = foreground_top = foreground_right = foreground_bottom = 0
-        foreground_width = 0
-        foreground_height = 0
-    foreground_ratio = len(foreground_points) / max(1, crop.width * crop.height)
-    avatar_sized_component = bool(
-        30 <= foreground_width <= crop.width
-        and 30 <= foreground_height <= 48
-        and foreground_ratio >= 0.16
+    row_center = min((bubble_top + bubble_bottom) / 2.0, bubble_top + 24.0)
+    crop_centers = [row_center]
+    if bubble_bottom - bubble_top > 64.0:
+        # A tall image/card can begin below the avatar top.  The ordinary
+        # bubble-centred crop then sees only the avatar's lower strip and
+        # incorrectly reports an unknown sender.  Probe the row's leading
+        # edge as a second, bounded lane without widening horizontally or
+        # borrowing evidence from another message row.
+        crop_centers.append(bubble_top)
+
+    candidates: list[dict[str, Any]] = []
+    for crop_center in crop_centers:
+        crop_top = max(
+            chat_header_cutoff_y(height),
+            int(round(crop_center - 24.0)),
+        )
+        crop_bottom = min(
+            height - DEFAULT_MESSAGE_BOTTOM_EXCLUDE_PX,
+            crop_top + 48,
+        )
+        if crop_bottom - crop_top < 20:
+            continue
+        crop = image.crop((lane_left, crop_top, lane_right, crop_bottom))
+        stat = ImageStat.Stat(crop)
+        color_stddev = sum(float(value) for value in stat.stddev[:3]) / 3.0
+        pixels = crop.load()
+        border_pixels: list[tuple[int, int, int]] = []
+        for y in range(crop.height):
+            for x in range(crop.width):
+                if x < 4 or x >= crop.width - 4 or y < 3 or y >= crop.height - 3:
+                    border_pixels.append(pixels[x, y])
+        background = tuple(
+            sorted(int(pixel[channel]) for pixel in border_pixels)[len(border_pixels) // 2]
+            for channel in range(3)
+        ) if border_pixels else (247, 247, 247)
+        foreground_points: list[tuple[int, int]] = []
+        edge_hits = 0
+        edge_checks = 0
+        for y in range(crop.height):
+            for x in range(crop.width):
+                current = pixels[x, y]
+                if sum(abs(int(current[index]) - int(background[index])) for index in range(3)) / 3.0 >= 18.0:
+                    foreground_points.append((x, y))
+                if x + 1 < crop.width:
+                    adjacent = pixels[x + 1, y]
+                    edge_hits += int(sum(abs(int(current[index]) - int(adjacent[index])) for index in range(3)) / 3.0 >= 18.0)
+                    edge_checks += 1
+                if y + 1 < crop.height:
+                    adjacent = pixels[x, y + 1]
+                    edge_hits += int(sum(abs(int(current[index]) - int(adjacent[index])) for index in range(3)) / 3.0 >= 18.0)
+                    edge_checks += 1
+        edge_ratio = edge_hits / max(1, edge_checks)
+        if foreground_points:
+            foreground_left = min(point[0] for point in foreground_points)
+            foreground_top = min(point[1] for point in foreground_points)
+            foreground_right = max(point[0] for point in foreground_points)
+            foreground_bottom = max(point[1] for point in foreground_points)
+            foreground_width = foreground_right - foreground_left + 1
+            foreground_height = foreground_bottom - foreground_top + 1
+        else:
+            foreground_left = foreground_top = foreground_right = foreground_bottom = 0
+            foreground_width = 0
+            foreground_height = 0
+        foreground_ratio = len(foreground_points) / max(1, crop.width * crop.height)
+        avatar_sized_component = bool(
+            30 <= foreground_width <= crop.width
+            and 30 <= foreground_height <= 48
+            and foreground_ratio >= 0.16
+        )
+        component_bounds = [
+            lane_left + foreground_left,
+            crop_top + foreground_top,
+            lane_left + foreground_right,
+            crop_top + foreground_bottom,
+        ]
+        component_center_y = (component_bounds[1] + component_bounds[3]) / 2.0
+        bubble_leading_center_y = bubble_top
+        bubble_regular_center_y = min(
+            (bubble_top + bubble_bottom) / 2.0,
+            bubble_top + 24.0,
+        )
+        vertical_distance = min(
+            abs(component_center_y - bubble_regular_center_y),
+            abs(component_center_y - bubble_leading_center_y),
+        )
+        horizontal_gap = (
+            bubble_left - component_bounds[2]
+            if role == "customer"
+            else component_bounds[0] - bubble_right
+        )
+        max_gap = 150.0 if role == "customer" else 320.0
+        relative_alignment = bool(
+            -20.0 <= horizontal_gap <= max_gap
+            and vertical_distance <= 30.0
+        )
+        score = color_stddev + edge_ratio * 180.0
+        present = bool(
+            avatar_sized_component
+            and relative_alignment
+            and color_stddev >= 14.0
+            and edge_ratio >= 0.018
+            and score >= 22.0
+        )
+        candidates.append({
+            "present": present,
+            "score": round(score, 4),
+            "color_stddev": round(color_stddev, 4),
+            "edge_ratio": round(edge_ratio, 6),
+            "foreground_ratio": round(foreground_ratio, 6),
+            "foreground_bounds_size": [foreground_width, foreground_height],
+            "foreground_bounds": component_bounds,
+            "horizontal_gap": round(horizontal_gap, 2),
+            "vertical_distance": round(vertical_distance, 2),
+            "relative_alignment": relative_alignment,
+            "avatar_sized_component": avatar_sized_component,
+            "bounds": [lane_left, crop_top, lane_right, crop_bottom],
+            "position_source": "bubble_relative_avatar_adjacency",
+            "reason": "avatar_relative_structure" if present else "avatar_relative_structure_not_found",
+        })
+
+    if not candidates:
+        return {"present": False, "score": 0.0, "reason": "avatar_lane_empty"}
+    return max(
+        candidates,
+        key=lambda item: (
+            bool(item.get("present")),
+            bool(item.get("avatar_sized_component")),
+            float(item.get("score") or 0.0),
+        ),
     )
-    component_bounds = [
-        lane_left + foreground_left,
-        crop_top + foreground_top,
-        lane_left + foreground_right,
-        crop_top + foreground_bottom,
-    ]
-    component_center_y = (component_bounds[1] + component_bounds[3]) / 2.0
-    bubble_center_y = min((bubble_top + bubble_bottom) / 2.0, bubble_top + 24.0)
-    horizontal_gap = (
-        bubble_left - component_bounds[2]
-        if role == "customer"
-        else component_bounds[0] - bubble_right
-    )
-    max_gap = 150.0 if role == "customer" else 320.0
-    relative_alignment = bool(-20.0 <= horizontal_gap <= max_gap and abs(component_center_y - bubble_center_y) <= 30.0)
-    score = color_stddev + edge_ratio * 180.0
-    present = bool(
-        avatar_sized_component
-        and relative_alignment
-        and color_stddev >= 14.0
-        and edge_ratio >= 0.018
-        and score >= 22.0
-    )
-    return {
-        "present": present,
-        "score": round(score, 4),
-        "color_stddev": round(color_stddev, 4),
-        "edge_ratio": round(edge_ratio, 6),
-        "foreground_ratio": round(foreground_ratio, 6),
-        "foreground_bounds_size": [foreground_width, foreground_height],
-        "foreground_bounds": component_bounds,
-        "horizontal_gap": round(horizontal_gap, 2),
-        "relative_alignment": relative_alignment,
-        "avatar_sized_component": avatar_sized_component,
-        "bounds": [lane_left, crop_top, lane_right, crop_bottom],
-        "position_source": "bubble_relative_avatar_adjacency",
-        "reason": "avatar_relative_structure" if present else "avatar_relative_structure_not_found",
-    }
 
 
 def message_row_avatar_role_details(
