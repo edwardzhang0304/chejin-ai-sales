@@ -4,7 +4,7 @@
   "upstream_base_commit": "a563e6688c47a8922510794101967823fe1389d7",
   "selective_integrations": [
     {
-      "source_commit": "156d1a9c4384de90dc226c65b23b1b701e25878a",
+      "source_commit": "f1e59dbaffc5bfe1f1ccf6e0b166e413b93d7e06",
       "scope": [
         "exact_wechat_context_menu_classification",
         "same_popup_menu_panel_evidence_contract",
@@ -17,7 +17,7 @@
         "unified_voice_observation_sequence_arbitration",
         "voice_action_journal_monotonic_terminal_settlement",
         "ambiguous_voice_finite_terminal_settlement",
-        "c2_contract_0_9_0_generated_schema",
+        "c2_contract_0_9_1_generated_schema",
         "sidebar_title_preview_physical_line_separation",
         "safe_visible_target_stale_after_click_relocation_contract",
         "tall_image_bubble_same_row_avatar_role_recovery"
@@ -46,5 +46,5 @@
       ]
     }
   ],
-  "integration_note": "当前内嵌副本基于 OmniAuto a563e6688c47a8922510794101967823fe1389d7，并选择性同步固定提交 156d1a9c4384de90dc226c65b23b1b701e25878a。该提交完整继承微信菜单精确分类、真实弹窗证据、非图片剪贴板失败结算、正式菜单失败原因、复制点击前安全落盘、可靠消息类型优先于结构图片且不依赖动作成功的仲裁，以及语音 prepare/execute 单目标协议、逐边连续跟踪、统一语音 observation 与序列仲裁、ActionJournal 单调终态、歧义语音有限终态、侧栏标题/预览严格分层、可见会话行误点后的有界恢复合同和高图片气泡同排头像角色恢复，并将生成 schema 与 Sidecar 合同 revision 统一为灰度版本 0.9.0；头像恢复仍严格限制在同一行左侧头像通道，不扩大角色判定范围。车金 overlay 继续固定 C2 会话身份的单一决策边界：OmniAuto 独占标题 OCR、单聊/群聊/unknown 分类、固定八位正式短码提取与准入决策；Worker 只校验 `c2_remark_code_candidates` 与 `c2_conversation_admission` 合同并匹配后端授权，不读取 `raw_title`、不提取短码、不重新分类会话；缺字段或矛盾结果必须拒绝并告警。C3 发送前上下文守卫是车金专属 overlay：只比较已确认当前 private 会话的消息视口和序列，侧栏红点或其他会话变化不得阻断发送；当前会话视口变化时仍严格拒绝点击。AI 发送确认回执通过统一序列身份单调持久化，文字气泡在视口滚动后允许通过唯一单调序列恢复，不得把帧内 OCR 视觉 ID 当作跨帧硬身份证；语音与图片仍保持强身份门禁，后续权威读取不得把已确认的自方回复误判为跨轮歧义。车金继续保留悬浮球/F8/键鼠守护删除、hard_opt_out 以及专属适配。最终车金提交和完整目录 tree SHA 由打包 manifest 动态记录。"
+  "integration_note": "当前内嵌副本基于 OmniAuto a563e6688c47a8922510794101967823fe1389d7，并选择性同步固定提交 f1e59dbaffc5bfe1f1ccf6e0b166e413b93d7e06。该提交完整继承微信菜单精确分类、真实弹窗证据、非图片剪贴板失败结算、正式菜单失败原因、复制点击前安全落盘、可靠消息类型优先于结构图片且不依赖动作成功的仲裁，以及语音 prepare/execute 单目标协议、逐边连续跟踪、统一语音 observation 与序列仲裁、ActionJournal 单调终态、歧义语音有限终态、侧栏标题/预览严格分层、可见会话行误点后的有界恢复合同和高图片气泡同排头像角色恢复，并将生成 schema 与 Sidecar 合同 revision 统一为灰度版本 0.9.1；头像恢复仍严格限制在同一行左侧头像通道，不扩大角色判定范围。车金 overlay 继续固定 C2 会话身份的单一决策边界：OmniAuto 独占标题 OCR、单聊/群聊/unknown 分类、固定八位正式短码提取与准入决策；Worker 只校验 `c2_remark_code_candidates` 与 `c2_conversation_admission` 合同并匹配后端授权，不读取 `raw_title`、不提取短码、不重新分类会话；缺字段或矛盾结果必须拒绝并告警。C3 发送前上下文守卫是车金专属 overlay：只比较已确认当前 private 会话的消息视口和序列，侧栏红点或其他会话变化不得阻断发送；当前会话视口变化时仍严格拒绝点击。AI 发送确认回执通过统一序列身份单调持久化，文字气泡在视口滚动后允许通过唯一单调序列恢复，不得把帧内 OCR 视觉 ID 当作跨帧硬身份证；语音与图片仍保持强身份门禁，后续权威读取不得把已确认的自方回复误判为跨轮歧义。车金继续保留悬浮球/F8/键鼠守护删除、hard_opt_out 以及专属适配。最终车金提交和完整目录 tree SHA 由打包 manifest 动态记录。"
 }

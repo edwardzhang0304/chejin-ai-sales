@@ -23,6 +23,7 @@ from .incident_evidence import incident_by_id, incident_directory, latest_incide
 from .models import Binding, RpaResult, RpaStep, Task, WorkerProfile, task_type_title
 from .qt_application import GuardedQApplication
 from .rpa_bridge import RpaBridge
+from .runtime_process_timeline import RuntimeProcessTimeline
 from .startup_window_position import position_to_right_of_wechat
 from .storage import (
     append_log,
@@ -238,6 +239,7 @@ class WorkerWebWindow(QMainWindow):
     step_signal = Signal(object)
     result_signal = Signal(object)
     error_signal = Signal(str)
+    runtime_process_signal = Signal(object)
 
     def __init__(self) -> None:
         super().__init__()
@@ -260,6 +262,7 @@ class WorkerWebWindow(QMainWindow):
         self.notice = ""
         self.state_revision = 0
         self.step_history: list[dict[str, Any]] = []
+        self.runtime_process_timeline = RuntimeProcessTimeline()
         self._drag_origin: QPoint | None = None
         self._startup_position_attempted = False
 
@@ -273,6 +276,9 @@ class WorkerWebWindow(QMainWindow):
             on_result=lambda value: self.result_signal.emit(value),
             on_error=lambda value: self.error_signal.emit(value),
             can_pull_tasks=self.is_accept_schedule_active,
+            on_runtime_process=lambda value: self.runtime_process_signal.emit(
+                value
+            ),
         )
 
         self.bridge = WorkerWebBridge(self)
@@ -400,6 +406,7 @@ class WorkerWebWindow(QMainWindow):
         self.step_signal.connect(self.on_step)
         self.result_signal.connect(self.on_result)
         self.error_signal.connect(self.on_error)
+        self.runtime_process_signal.connect(self.on_runtime_process)
 
     def _load_web_assets(self) -> None:
         index_file = Path(__file__).resolve().parent / "web_assets" / "index.html"
@@ -463,6 +470,7 @@ class WorkerWebWindow(QMainWindow):
                         "replyRunningSteps": [],
                         "replyCompletedSteps": [],
                         "replyFailedSteps": [],
+                        "customerProcessSteps": [],
                         "logs": [],
                         "latestIncident": {},
                     },
@@ -500,10 +508,26 @@ class WorkerWebWindow(QMainWindow):
         if self.current_task and (self.binding.run_status == "paused" or not schedule_active):
             return "paused-running"
         if self.current_task:
-            return "ai-reply-running" if self.current_task.task_type == "chat_reply" else "running"
+            if (
+                self.current_task.task_type == "chat_reply"
+                and self.runtime_process_timeline.customer_steps
+            ):
+                return "target-read-running"
+            return "running"
         background_screen = runtime_process_screen(self.runner.current_step)
         if background_screen:
             return background_screen
+        if self.runtime_process_timeline.last_process_kind == "customer":
+            if self.runtime_process_timeline.customer_active:
+                return "target-read-running"
+            if self.runtime_process_timeline.customer_terminal_state == "failed":
+                return "ai-reply-failed"
+            return "target-read-completed"
+        if (
+            self.runtime_process_timeline.last_process_kind == "scan"
+            and self.runtime_process_timeline.scan_steps
+        ):
+            return "scan-completed"
         if self.last_result and self.last_result.ok:
             if self.last_task and self.last_task.task_type == "chat_reply":
                 return "ai-reply-completed"
@@ -554,6 +578,9 @@ class WorkerWebWindow(QMainWindow):
             "replyRunningSteps": self._running_steps(),
             "replyCompletedSteps": self._completed_steps(),
             "replyFailedSteps": self._failed_steps(),
+            "customerProcessSteps": (
+                self.runtime_process_timeline.customer_model()
+            ),
             "logs": _log_rows(),
             "latestIncident": latest_incident() or {},
         }
@@ -630,6 +657,9 @@ class WorkerWebWindow(QMainWindow):
         return steps or [{"state": "current", "title": "等待任务", "description": "接单中，等待服务端分配任务。"}]
 
     def _scan_running_steps(self) -> list[dict[str, Any]]:
+        projected = self.runtime_process_timeline.scan_model()
+        if projected:
+            return projected
         if runtime_process_screen(self.runner.current_step) != "scan-running":
             return []
         return [
@@ -641,6 +671,9 @@ class WorkerWebWindow(QMainWindow):
         ]
 
     def _scan_completed_steps(self) -> list[dict[str, Any]]:
+        projected = self.runtime_process_timeline.scan_model()
+        if projected:
+            return projected
         stats = dict(getattr(self.runner, "c2_stats", {}) or {})
         if not stats.get("last_scan_at"):
             return []
@@ -655,6 +688,9 @@ class WorkerWebWindow(QMainWindow):
         ]
 
     def _target_read_running_steps(self) -> list[dict[str, Any]]:
+        projected = self.runtime_process_timeline.customer_model()
+        if projected:
+            return projected
         if runtime_process_screen(self.runner.current_step) != "target-read-running":
             return []
         return [
@@ -666,6 +702,9 @@ class WorkerWebWindow(QMainWindow):
         ]
 
     def _target_read_completed_steps(self) -> list[dict[str, Any]]:
+        projected = self.runtime_process_timeline.customer_model()
+        if projected:
+            return projected
         stats = dict(getattr(self.runner, "c2_stats", {}) or {})
         if not stats.get("last_message_read_at"):
             return []
@@ -919,6 +958,13 @@ class WorkerWebWindow(QMainWindow):
     def on_error(self, message: str) -> None:
         if message:
             append_log("WARN", "client_notice", message)
+        self._publish()
+
+    @Slot(object)
+    def on_runtime_process(self, event: dict[str, Any]) -> None:
+        self.runtime_process_timeline.apply(
+            event if isinstance(event, dict) else {}
+        )
         self._publish()
 
 

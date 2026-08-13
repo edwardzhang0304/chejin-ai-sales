@@ -24,9 +24,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/react/cjs/react.development.js
+// frontend/node_modules/react/cjs/react.development.js
 var require_react_development = __commonJS({
-  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/react/cjs/react.development.js"(exports, module) {
+  "frontend/node_modules/react/cjs/react.development.js"(exports, module) {
     "use strict";
     (function() {
       function defineDeprecationWarning(methodName, info) {
@@ -996,9 +996,9 @@ var require_react_development = __commonJS({
   }
 });
 
-// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/react/index.js
+// frontend/node_modules/react/index.js
 var require_react = __commonJS({
-  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/react/index.js"(exports, module) {
+  "frontend/node_modules/react/index.js"(exports, module) {
     "use strict";
     if (false) {
       module.exports = null;
@@ -1008,9 +1008,9 @@ var require_react = __commonJS({
   }
 });
 
-// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/scheduler/cjs/scheduler.development.js
+// frontend/node_modules/scheduler/cjs/scheduler.development.js
 var require_scheduler_development = __commonJS({
-  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/scheduler/cjs/scheduler.development.js"(exports) {
+  "frontend/node_modules/scheduler/cjs/scheduler.development.js"(exports) {
     "use strict";
     (function() {
       function performWorkUntilDeadline() {
@@ -1267,9 +1267,9 @@ var require_scheduler_development = __commonJS({
   }
 });
 
-// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/scheduler/index.js
+// frontend/node_modules/scheduler/index.js
 var require_scheduler = __commonJS({
-  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/scheduler/index.js"(exports, module) {
+  "frontend/node_modules/scheduler/index.js"(exports, module) {
     "use strict";
     if (false) {
       module.exports = null;
@@ -1279,9 +1279,9 @@ var require_scheduler = __commonJS({
   }
 });
 
-// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/react-dom/cjs/react-dom.development.js
+// frontend/node_modules/react-dom/cjs/react-dom.development.js
 var require_react_dom_development = __commonJS({
-  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/react-dom/cjs/react-dom.development.js"(exports) {
+  "frontend/node_modules/react-dom/cjs/react-dom.development.js"(exports) {
     "use strict";
     (function() {
       function noop() {
@@ -1523,9 +1523,9 @@ var require_react_dom_development = __commonJS({
   }
 });
 
-// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/react-dom/index.js
+// frontend/node_modules/react-dom/index.js
 var require_react_dom = __commonJS({
-  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/react-dom/index.js"(exports, module) {
+  "frontend/node_modules/react-dom/index.js"(exports, module) {
     "use strict";
     if (false) {
       checkDCE();
@@ -1536,9 +1536,9 @@ var require_react_dom = __commonJS({
   }
 });
 
-// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/react-dom/cjs/react-dom-client.development.js
+// frontend/node_modules/react-dom/cjs/react-dom-client.development.js
 var require_react_dom_client_development = __commonJS({
-  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/react-dom/cjs/react-dom-client.development.js"(exports) {
+  "frontend/node_modules/react-dom/cjs/react-dom-client.development.js"(exports) {
     "use strict";
     (function() {
       function findHook(fiber, id) {
@@ -21435,9 +21435,9 @@ var require_react_dom_client_development = __commonJS({
   }
 });
 
-// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/react-dom/client.js
+// frontend/node_modules/react-dom/client.js
 var require_client = __commonJS({
-  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/react-dom/client.js"(exports, module) {
+  "frontend/node_modules/react-dom/client.js"(exports, module) {
     "use strict";
     if (false) {
       checkDCE();
@@ -21448,9 +21448,9 @@ var require_client = __commonJS({
   }
 });
 
-// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/react/cjs/react-jsx-runtime.development.js
+// frontend/node_modules/react/cjs/react-jsx-runtime.development.js
 var require_react_jsx_runtime_development = __commonJS({
-  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/react/cjs/react-jsx-runtime.development.js"(exports) {
+  "frontend/node_modules/react/cjs/react-jsx-runtime.development.js"(exports) {
     "use strict";
     (function() {
       function getComponentNameFromType(type) {
@@ -21705,9 +21705,9 @@ var require_react_jsx_runtime_development = __commonJS({
   }
 });
 
-// ../../../Users/zhangwentao/Documents/车金/frontend/node_modules/react/jsx-runtime.js
+// frontend/node_modules/react/jsx-runtime.js
 var require_jsx_runtime = __commonJS({
-  "../../../Users/zhangwentao/Documents/\u8F66\u91D1/frontend/node_modules/react/jsx-runtime.js"(exports, module) {
+  "frontend/node_modules/react/jsx-runtime.js"(exports, module) {
     "use strict";
     if (false) {
       module.exports = null;
@@ -21981,6 +21981,25 @@ function TimelineStep({ step }) {
 }
 function TaskTimeline({ steps }) {
   const viewportRef = (0, import_react.useRef)(null);
+  const dragCleanupRef = (0, import_react.useRef)(null);
+  const [scrollThumb, setScrollThumb] = (0, import_react.useState)({ visible: false, top: 0, height: 44 });
+  function updateScrollThumb() {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    if (!maxScrollTop) {
+      setScrollThumb((current) => !current.visible && current.top === 0 && current.height === viewport.clientHeight ? current : { visible: false, top: 0, height: viewport.clientHeight });
+      return;
+    }
+    const height = Math.max(44, Math.round(viewport.clientHeight * viewport.clientHeight / viewport.scrollHeight));
+    const travel = Math.max(0, viewport.clientHeight - height);
+    const next = {
+      visible: true,
+      height,
+      top: Math.round(viewport.scrollTop / maxScrollTop * travel)
+    };
+    setScrollThumb((current) => current.visible === next.visible && current.height === next.height && current.top === next.top ? current : next);
+  }
   (0, import_react.useEffect)(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
@@ -21996,8 +22015,66 @@ function TaskTimeline({ steps }) {
     const nextScrollTop = viewport.scrollTop + markerRect.top + markerRect.height / 2 - (viewportRect.top + viewportRect.height / 2);
     const maxScrollTop = viewport.scrollHeight - viewport.clientHeight;
     viewport.scrollTop = Math.max(0, Math.min(maxScrollTop, nextScrollTop));
+    updateScrollThumb();
   }, [steps]);
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("article", { className: "cw-timeline-card timeline-card focus-chain", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cw-chain-viewport chain-viewport", ref: viewportRef, children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("ol", { className: "cw-step-list step-list", children: steps.map((step, index) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TimelineStep, { step }, `${step.title}-${index}`)) }) }) });
+  (0, import_react.useEffect)(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const observer = new ResizeObserver(updateScrollThumb);
+    observer.observe(viewport);
+    viewport.addEventListener("scroll", updateScrollThumb, { passive: true });
+    updateScrollThumb();
+    return () => {
+      observer.disconnect();
+      viewport.removeEventListener("scroll", updateScrollThumb);
+      dragCleanupRef.current?.();
+    };
+  }, []);
+  function startThumbDrag(event) {
+    const viewport = viewportRef.current;
+    if (!viewport || !scrollThumb.visible) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const startY = event.clientY;
+    const startScrollTop = viewport.scrollTop;
+    const scrollRange = Math.max(1, viewport.scrollHeight - viewport.clientHeight);
+    const thumbRange = Math.max(1, viewport.clientHeight - scrollThumb.height);
+    const onMove = (moveEvent) => {
+      viewport.scrollTop = startScrollTop + (moveEvent.clientY - startY) / thumbRange * scrollRange;
+    };
+    const onEnd = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onEnd);
+      window.removeEventListener("pointercancel", onEnd);
+      dragCleanupRef.current = null;
+    };
+    dragCleanupRef.current?.();
+    dragCleanupRef.current = onEnd;
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onEnd, { once: true });
+    window.addEventListener("pointercancel", onEnd, { once: true });
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)("article", { className: "cw-timeline-card timeline-card focus-chain", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cw-chain-scroll-shell", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+      "div",
+      {
+        className: "cw-chain-viewport chain-viewport",
+        ref: viewportRef,
+        tabIndex: 0,
+        role: "region",
+        "aria-label": "\u5F53\u524D\u5BA2\u6237\u5904\u7406\u6B65\u9AA4",
+        children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("ol", { className: "cw-step-list step-list", children: steps.map((step, index) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TimelineStep, { step }, `${step.title}-${index}`)) })
+      }
+    ),
+    scrollThumb.visible ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "cw-chain-scroll-track", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+      "span",
+      {
+        className: "cw-chain-scroll-thumb",
+        style: { height: `${scrollThumb.height}px`, transform: `translateY(${scrollThumb.top}px)` },
+        onPointerDown: startThumbDrag
+      }
+    ) }) : null
+  ] }) });
 }
 function CurrentProcess({
   steps,
@@ -22357,8 +22434,17 @@ function LogsScreen({
     ] })
   ] }) });
 }
+function customerProcessStepsForScreen(screen, model) {
+  if (model.customerProcessSteps?.length) return model.customerProcessSteps;
+  if (screen === "ai-reply-running") return model.replyRunningSteps;
+  if (screen === "ai-reply-completed") return model.replyCompletedSteps;
+  if (screen === "ai-reply-failed") return model.replyFailedSteps;
+  if (screen === "target-read-completed") return model.targetReadCompletedSteps;
+  return model.targetReadRunningSteps;
+}
 function renderScreen(props) {
   const { screen, model, onScreenChange, onStartAccepting, onPauseAccepting, onUpdateAcceptSchedule } = props;
+  const customerProcessSteps = customerProcessStepsForScreen(screen, model);
   if (runtimePageKind(screen) === "bind") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BindScreen, { model, onBind: props.onBind, bindError: props.bindError });
   if (screen === "paused-empty") {
     return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
@@ -22412,16 +22498,16 @@ function renderScreen(props) {
   if (screen === "failed") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskScreen, { screen, model, steps: model.failedSteps, statusText: "\u5931\u8D25", dockState: model.status.receiveState, onStartAccepting, onPauseAccepting });
   if (screen === "scan-running") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BackgroundProcessScreen, { screen, model, steps: model.scanRunningSteps, dockState: model.status.receiveState, onPauseAccepting });
   if (screen === "scan-completed") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BackgroundProcessScreen, { screen, model, steps: model.scanCompletedSteps, dockState: model.status.receiveState, onPauseAccepting });
-  if (screen === "target-read-running") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BackgroundProcessScreen, { screen, model, steps: model.targetReadRunningSteps, dockState: model.status.receiveState, onPauseAccepting });
-  if (screen === "target-read-completed") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BackgroundProcessScreen, { screen, model, steps: model.targetReadCompletedSteps, dockState: model.status.receiveState, onPauseAccepting });
+  if (screen === "target-read-running") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BackgroundProcessScreen, { screen, model, steps: customerProcessSteps, dockState: model.status.receiveState, onPauseAccepting });
+  if (screen === "target-read-completed") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BackgroundProcessScreen, { screen, model, steps: customerProcessSteps, dockState: model.status.receiveState, onPauseAccepting });
   if (screen === "ai-reply-running") {
-    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskScreen, { screen, model, steps: model.replyRunningSteps, statusText: "\u5904\u7406\u4E2D", dockState: model.status.receiveState, onPauseAccepting });
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BackgroundProcessScreen, { screen, model, steps: customerProcessSteps, dockState: model.status.receiveState, onPauseAccepting });
   }
   if (screen === "ai-reply-completed") {
-    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskScreen, { screen, model, steps: model.replyCompletedSteps, statusText: "\u5DF2\u5B8C\u6210", dockState: model.status.receiveState, onPauseAccepting });
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BackgroundProcessScreen, { screen, model, steps: customerProcessSteps, dockState: model.status.receiveState, onPauseAccepting });
   }
   if (screen === "ai-reply-failed") {
-    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(TaskScreen, { screen, model, steps: model.replyFailedSteps, statusText: "\u5931\u8D25", dockState: model.status.receiveState, onPauseAccepting });
+    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(BackgroundProcessScreen, { screen, model, steps: customerProcessSteps, dockState: model.status.receiveState, onPauseAccepting });
   }
   if (screen === "settings") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(SettingsScreen, { model, onScreenChange });
   if (screen === "schedule-settings") return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(ScheduleSettingsScreen, { model, onUpdateAcceptSchedule });

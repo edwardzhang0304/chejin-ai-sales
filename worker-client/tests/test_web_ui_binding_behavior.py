@@ -153,6 +153,7 @@ class WebUiBindingBehaviorTest(unittest.TestCase):
         window.notice = ""
         window.state_revision = 0
         window.step_history = []
+        window.runtime_process_timeline = module.RuntimeProcessTimeline()
         window.runner = _Runner()
         window.rpa_bridge = types.SimpleNamespace(last_probe_payload={})
         window._startup_position_attempted = False
