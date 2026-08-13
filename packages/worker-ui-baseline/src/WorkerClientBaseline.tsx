@@ -263,6 +263,34 @@ function TimelineStep({ step }: { step: TimelineStepModel }) {
 
 function TaskTimeline({ steps }: { steps: TimelineStepModel[] }) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const dragCleanupRef = useRef<(() => void) | null>(null);
+  const [scrollThumb, setScrollThumb] = useState({ visible: false, top: 0, height: 44 });
+
+  function updateScrollThumb() {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    if (!maxScrollTop) {
+      setScrollThumb((current) => (
+        !current.visible && current.top === 0 && current.height === viewport.clientHeight
+          ? current
+          : { visible: false, top: 0, height: viewport.clientHeight }
+      ));
+      return;
+    }
+    const height = Math.max(44, Math.round((viewport.clientHeight * viewport.clientHeight) / viewport.scrollHeight));
+    const travel = Math.max(0, viewport.clientHeight - height);
+    const next = {
+      visible: true,
+      height,
+      top: Math.round((viewport.scrollTop / maxScrollTop) * travel),
+    };
+    setScrollThumb((current) => (
+      current.visible === next.visible && current.height === next.height && current.top === next.top
+        ? current
+        : next
+    ));
+  }
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -279,16 +307,73 @@ function TaskTimeline({ steps }: { steps: TimelineStepModel[] }) {
     const nextScrollTop = viewport.scrollTop + markerRect.top + markerRect.height / 2 - (viewportRect.top + viewportRect.height / 2);
     const maxScrollTop = viewport.scrollHeight - viewport.clientHeight;
     viewport.scrollTop = Math.max(0, Math.min(maxScrollTop, nextScrollTop));
+    updateScrollThumb();
   }, [steps]);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const observer = new ResizeObserver(updateScrollThumb);
+    observer.observe(viewport);
+    viewport.addEventListener("scroll", updateScrollThumb, { passive: true });
+    updateScrollThumb();
+    return () => {
+      observer.disconnect();
+      viewport.removeEventListener("scroll", updateScrollThumb);
+      dragCleanupRef.current?.();
+    };
+  }, []);
+
+  function startThumbDrag(event: React.PointerEvent<HTMLSpanElement>) {
+    const viewport = viewportRef.current;
+    if (!viewport || !scrollThumb.visible) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const startY = event.clientY;
+    const startScrollTop = viewport.scrollTop;
+    const scrollRange = Math.max(1, viewport.scrollHeight - viewport.clientHeight);
+    const thumbRange = Math.max(1, viewport.clientHeight - scrollThumb.height);
+    const onMove = (moveEvent: PointerEvent) => {
+      viewport.scrollTop = startScrollTop + ((moveEvent.clientY - startY) / thumbRange) * scrollRange;
+    };
+    const onEnd = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onEnd);
+      window.removeEventListener("pointercancel", onEnd);
+      dragCleanupRef.current = null;
+    };
+    dragCleanupRef.current?.();
+    dragCleanupRef.current = onEnd;
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onEnd, { once: true });
+    window.addEventListener("pointercancel", onEnd, { once: true });
+  }
 
   return (
     <article className="cw-timeline-card timeline-card focus-chain">
-      <div className="cw-chain-viewport chain-viewport" ref={viewportRef}>
-        <ol className="cw-step-list step-list">
-          {steps.map((step, index) => (
-            <TimelineStep key={`${step.title}-${index}`} step={step} />
-          ))}
-        </ol>
+      <div className="cw-chain-scroll-shell">
+        <div
+          className="cw-chain-viewport chain-viewport"
+          ref={viewportRef}
+          tabIndex={0}
+          role="region"
+          aria-label="当前客户处理步骤"
+        >
+          <ol className="cw-step-list step-list">
+            {steps.map((step, index) => (
+              <TimelineStep key={`${step.title}-${index}`} step={step} />
+            ))}
+          </ol>
+        </div>
+        {scrollThumb.visible ? (
+          <span className="cw-chain-scroll-track" aria-hidden="true">
+            <span
+              className="cw-chain-scroll-thumb"
+              style={{ height: `${scrollThumb.height}px`, transform: `translateY(${scrollThumb.top}px)` }}
+              onPointerDown={startThumbDrag}
+            />
+          </span>
+        ) : null}
       </div>
     </article>
   );
@@ -727,8 +812,21 @@ function LogsScreen({
   );
 }
 
+function customerProcessStepsForScreen(
+  screen: WorkerClientScreen,
+  model: WorkerClientModel,
+): TimelineStepModel[] {
+  if (model.customerProcessSteps?.length) return model.customerProcessSteps;
+  if (screen === "ai-reply-running") return model.replyRunningSteps;
+  if (screen === "ai-reply-completed") return model.replyCompletedSteps;
+  if (screen === "ai-reply-failed") return model.replyFailedSteps;
+  if (screen === "target-read-completed") return model.targetReadCompletedSteps;
+  return model.targetReadRunningSteps;
+}
+
 function renderScreen(props: WorkerClientBaselineProps) {
   const { screen, model, onScreenChange, onStartAccepting, onPauseAccepting, onUpdateAcceptSchedule } = props;
+  const customerProcessSteps = customerProcessStepsForScreen(screen, model);
   if (runtimePageKind(screen) === "bind") return <BindScreen model={model} onBind={props.onBind} bindError={props.bindError} />;
   if (screen === "paused-empty") {
     return (
@@ -779,16 +877,16 @@ function renderScreen(props: WorkerClientBaselineProps) {
   if (screen === "failed") return <TaskScreen screen={screen} model={model} steps={model.failedSteps} statusText="失败" dockState={model.status.receiveState} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />;
   if (screen === "scan-running") return <BackgroundProcessScreen screen={screen} model={model} steps={model.scanRunningSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
   if (screen === "scan-completed") return <BackgroundProcessScreen screen={screen} model={model} steps={model.scanCompletedSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
-  if (screen === "target-read-running") return <BackgroundProcessScreen screen={screen} model={model} steps={model.targetReadRunningSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
-  if (screen === "target-read-completed") return <BackgroundProcessScreen screen={screen} model={model} steps={model.targetReadCompletedSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
+  if (screen === "target-read-running") return <BackgroundProcessScreen screen={screen} model={model} steps={customerProcessSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
+  if (screen === "target-read-completed") return <BackgroundProcessScreen screen={screen} model={model} steps={customerProcessSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
   if (screen === "ai-reply-running") {
-    return <TaskScreen screen={screen} model={model} steps={model.replyRunningSteps} statusText="处理中" dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
+    return <BackgroundProcessScreen screen={screen} model={model} steps={customerProcessSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
   }
   if (screen === "ai-reply-completed") {
-    return <TaskScreen screen={screen} model={model} steps={model.replyCompletedSteps} statusText="已完成" dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
+    return <BackgroundProcessScreen screen={screen} model={model} steps={customerProcessSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
   }
   if (screen === "ai-reply-failed") {
-    return <TaskScreen screen={screen} model={model} steps={model.replyFailedSteps} statusText="失败" dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
+    return <BackgroundProcessScreen screen={screen} model={model} steps={customerProcessSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
   }
   if (screen === "settings") return <SettingsScreen model={model} onScreenChange={onScreenChange} />;
   if (screen === "schedule-settings") return <ScheduleSettingsScreen model={model} onUpdateAcceptSchedule={onUpdateAcceptSchedule} />;

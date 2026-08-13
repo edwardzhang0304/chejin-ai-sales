@@ -224,12 +224,36 @@ class UiContractTest(unittest.TestCase):
         ui_mapping = (ROOT / "chejin_worker_client" / "ui_state_mapping.py").read_text(encoding="utf-8")
 
         self.assertIn('return "offline" if has_local_process else "offline-empty"', web_ui)
-        self.assertIn('return "ai-reply-running" if self.current_task.task_type == "chat_reply" else "running"', web_ui)
+        self.assertIn('return "target-read-running"', web_ui)
         self.assertIn('return "scan-running"', ui_mapping)
         self.assertIn('return "target-read-running"', ui_mapping)
         self.assertIn('"scanRunningSteps": self._scan_running_steps()', web_ui)
         self.assertIn('"targetReadRunningSteps": self._target_read_running_steps()', web_ui)
         self.assertIn('"replyRunningSteps": self._running_steps()', web_ui)
+        self.assertIn('"customerProcessSteps": (', web_ui)
+        self.assertIn("RuntimeProcessTimeline", web_ui)
+
+    def test_current_process_uses_one_accessible_timeline_and_a_thin_scrollbar(self):
+        component = (
+            ROOT.parent
+            / "packages"
+            / "worker-ui-baseline"
+            / "src"
+            / "WorkerClientBaseline.tsx"
+        ).read_text(encoding="utf-8")
+        stylesheet = (
+            ROOT.parent
+            / "packages"
+            / "worker-ui-baseline"
+            / "src"
+            / "worker-ui.css"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("customerProcessSteps", component)
+        self.assertIn('aria-label="当前客户处理步骤"', component)
+        self.assertIn(".cw-chain-scroll-thumb", stylesheet)
+        self.assertIn("onPointerDown={startThumbDrag}", component)
+        self.assertIn("border-radius: 999px", stylesheet)
 
     def test_runtime_bridge_serializes_without_retired_feature_residue(self):
         web_ui = (ROOT / "chejin_worker_client" / "web_ui.py").read_text(encoding="utf-8")

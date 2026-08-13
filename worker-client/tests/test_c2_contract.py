@@ -46,7 +46,7 @@ from chejin_worker_client.wechat_c2 import (
 class C2ContractTests(unittest.TestCase):
     def test_slot_ledger_contract_separates_fact_scope_from_delivery(self):
         schema = c2_contract_v3()["slot_ledger_state_schema"]
-        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.0")
+        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.1")
         location_recovery = c2_contract_v3()[
             "target_location_recovery_contract"
         ]

@@ -1224,6 +1224,7 @@ class TaskRunner:
         on_result: Callable[[RpaResult | None], None],
         on_error: Callable[[str], None],
         can_pull_tasks: Callable[[], bool] | None = None,
+        on_runtime_process: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.api = api
         self.bridge = bridge
@@ -1233,10 +1234,12 @@ class TaskRunner:
         self.on_task = on_task
         self.on_result = on_result
         self.on_error = on_error
+        self.on_runtime_process = on_runtime_process or (lambda _event: None)
         self.can_pull_tasks = can_pull_tasks or (lambda: True)
         self.binding: Binding | None = None
         self.current_task: Task | None = None
-        self.current_step: str | None = None
+        self._current_step: str | None = None
+        self._runtime_process_context: dict[str, Any] = {}
         self.current_ui_lock: UiLockLease | None = None
         self.current_task_lease: TaskLeaseGuard | None = None
         self.last_rpa_component_status: str | None = None
@@ -1284,6 +1287,74 @@ class TaskRunner:
         self._pending_run_status_sync: str | None = None
         self._last_run_status_sync_attempt = 0.0
         self.run_status_sync_error: str | None = None
+
+    @property
+    def current_step(self) -> str | None:
+        return self._current_step
+
+    @current_step.setter
+    def current_step(self, value: str | None) -> None:
+        normalized = str(value or "").strip() or None
+        if normalized == self._current_step:
+            return
+        self._current_step = normalized
+        if normalized is None:
+            return
+        if normalized == "first_screen_session_scan":
+            self._emit_runtime_process({"event": "scan_started"})
+            return
+        if not self._runtime_process_context:
+            return
+        self._emit_runtime_process(
+            {
+                "event": "step",
+                "step": normalized,
+                **self._runtime_process_context,
+            }
+        )
+
+    def _emit_runtime_process(self, event: dict[str, Any]) -> None:
+        """Publish presentation-only progress without affecting business work."""
+
+        try:
+            self.on_runtime_process(dict(event))
+        except Exception as exc:
+            append_log(
+                "WARN",
+                "ui_runtime_process_projection_failed",
+                "当前运行过程展示更新失败；业务线程继续运行。",
+                error_code="UI_RUNTIME_PROCESS_PROJECTION_FAILED",
+                metadata={"exception_type": type(exc).__name__},
+            )
+
+    @staticmethod
+    def _runtime_terminal_for_result(result: dict[str, Any]) -> str:
+        brain_result = (
+            result.get("brain_result")
+            if isinstance(result.get("brain_result"), dict)
+            else {}
+        )
+        if brain_result.get("sent") is True:
+            return "reply_sent"
+        conversation_state = str(
+            result.get("conversation_terminal_state") or ""
+        ).lower()
+        if "handoff" in conversation_state or "waiting_sales" in conversation_state:
+            return "handoff"
+        if result.get("ok") is not True:
+            return "failed"
+        read_completion = (
+            (result.get("result") or {}).get("read_completion")
+            if isinstance(result.get("result"), dict)
+            else {}
+        )
+        if isinstance(read_completion, dict) and str(
+            read_completion.get("result") or ""
+        ) in {"no_change", "empty"}:
+            return "no_change"
+        if brain_result and brain_result.get("sent") is not True:
+            return "no_reply"
+        return "completed"
 
     def start(self, binding: Binding) -> None:
         self.binding = binding
@@ -4798,6 +4869,13 @@ class TaskRunner:
                     "last_error": payload.get("error_code"),
                 }
             )
+            self._emit_runtime_process(
+                {
+                    "event": "scan_completed",
+                    "visible_hit_count": len(self.visible_hit_queue),
+                    "session_count": self.c2_stats["last_scan_sessions"],
+                }
+            )
             append_log(
                 "INFO",
                 "c2_session_scan_reported",
@@ -4816,9 +4894,18 @@ class TaskRunner:
             )
         except UiLockError as exc:
             self.c2_stats["last_error"] = exc.code
+            self._emit_runtime_process(
+                {"event": "scan_failed", "error_code": exc.code}
+            )
             append_log("WARN", "c2_session_scan_lock_skipped", str(exc), error_code=exc.code, metadata=exc.data)
         except Exception as exc:
             self.c2_stats["last_error"] = str(exc)
+            self._emit_runtime_process(
+                {
+                    "event": "scan_failed",
+                    "error_code": type(exc).__name__,
+                }
+            )
             append_log("ERROR", "c2_session_scan_failed", str(exc))
             self.on_error(f"C2 会话扫描失败：{exc}")
         finally:
@@ -8375,6 +8462,9 @@ class TaskRunner:
                 else {}
             )
             reply_task_id = str(task_payload.get("id") or "").strip()
+            self._emit_runtime_process(
+                {"event": "reply_ready", **self._runtime_process_context}
+            )
             # Reuse the only complete C2 fact flow under the lease already held.
             # It may transcribe voice and run Vision, but it may only validate the
             # current chat; pre-send refresh must never search or switch sessions.
@@ -8777,6 +8867,9 @@ class TaskRunner:
                 reserved_worker_stable_id=reserved_send_stable_id,
                 pre_frame_id=pre_send_frame_id,
                 pre_action_identity_sequence=pre_send_identity_sequence,
+            )
+            self._emit_runtime_process(
+                {"event": "send_started", **self._runtime_process_context}
             )
             sidecar_result = self.bridge.send_reply(
                 target=target.remark_code or target.display_name,
@@ -10598,14 +10691,52 @@ class TaskRunner:
             ),
             origin_read_run_id=read_run_id,
         )
+        previous_runtime_context = self._runtime_process_context
+        operation_phase = str(
+            kwargs.get("operation_phase") or C2_AUTHORIZED_READ_PHASE
+        )
+        runtime_context = {
+            "conversation_id": target.conversation_id,
+            "remark_code": target.remark_code,
+            "transaction_id": read_run_id,
+            "operation_phase": operation_phase,
+        }
+        self._runtime_process_context = runtime_context
+        if operation_phase == C2_AUTHORIZED_READ_PHASE:
+            raw_target = target.raw if isinstance(target.raw, dict) else {}
+            source = (
+                "微信会话第一屏命中"
+                if target.read_reason == "visible_hit"
+                or raw_target.get("visible_hit") is True
+                else "状态机定向读取"
+            )
+            self._emit_runtime_process(
+                {
+                    "event": "customer_started",
+                    "source": source,
+                    **runtime_context,
+                }
+            )
         try:
-            return self._read_one_wechat_target_impl(
+            result = self._read_one_wechat_target_impl(
                 binding,
                 target,
                 flow_outcomes=flow_outcomes,
                 read_run_id=read_run_id,
                 **kwargs,
             )
+            if operation_phase == C2_AUTHORIZED_READ_PHASE:
+                self._emit_runtime_process(
+                    {
+                        "event": "customer_completed",
+                        "terminal_state": self._runtime_terminal_for_result(
+                            result
+                        ),
+                        "error_code": result.get("error_code"),
+                        **runtime_context,
+                    }
+                )
+            return result
         finally:
             current_journal_entries = [
                 (path, payload)
@@ -10622,6 +10753,7 @@ class TaskRunner:
             for path, payload in current_journal_entries:
                 if self._action_journal_can_be_removed(payload):
                     remove_action_journal(path)
+            self._runtime_process_context = previous_runtime_context
 
     def _recover_c2_action_journal(
         self,

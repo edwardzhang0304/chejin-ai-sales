@@ -99,6 +99,15 @@ export const workerClientMock: WorkerClientModel = {
     { state: "done", title: "执行发送前复核", time: "10:34:16" },
     { state: "error", title: "发送微信消息失败", description: "发送结果无法确认，自动发送已终止。", finalText: "任务执行失败" },
   ],
+  customerProcessSteps: [
+    { state: "done", title: "发现待处理客户", description: "来源：状态机定向读取 · CJP6M3R7" },
+    { state: "done", title: "定位并确认客户会话" },
+    { state: "done", title: "读取客户最新消息" },
+    { state: "done", title: "识别语音消息" },
+    { state: "done", title: "理解图片消息" },
+    { state: "done", title: "消息已回传服务端" },
+    { state: "current", title: "服务端正在判断处理方式" },
+  ],
   logs: [
     { time: "10:27:12", level: "ERROR", task: "TASK-1831", content: "微信窗口定位失败。", event: "task_failed", errorCode: "WECHAT_WINDOW_NOT_FOUND", incidentId: "INC-20260805-001", sidecarRunId: "message-20260805-001", evidencePath: "artifacts/incidents/INC-20260805-001.zip" },
     { time: "10:27:05", level: "INFO", task: "TASK-1831", content: "回传执行结果。", event: "task_result_reported", errorCode: "-", incidentId: "-", sidecarRunId: "-", evidencePath: "-" },
