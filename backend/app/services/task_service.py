@@ -865,6 +865,7 @@ def claim_task(
     actor: ActorContext,
     *,
     require_worker_ready: bool = False,
+    allow_registered_draining_flow: bool = False,
     claim_source: str | None = None,
     conversation_id: str | None = None,
     client_instance_id: str | None = None,
@@ -896,7 +897,12 @@ def claim_task(
     if require_worker_ready:
         from app.services.worker_service import worker_can_claim
 
-        can_claim, reason = worker_can_claim(worker)
+        can_claim, reason = worker_can_claim(
+            worker,
+            allow_registered_draining_flow=(
+                allow_registered_draining_flow
+            ),
+        )
         if not can_claim:
             raise AppError(reason or "WORKER_CANNOT_CLAIM", "当前 Worker 状态不允许领取任务", 409)
     running_task = _running_task_for_worker(db, worker.id)

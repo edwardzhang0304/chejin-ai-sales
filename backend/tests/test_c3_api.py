@@ -1453,6 +1453,107 @@ def test_c2_ingest_to_c3_sent_ack_complete_closure():
         assert conversation.reply_count == 1
 
 
+def test_pause_after_brain_allows_exact_c2_flow_to_claim_send_and_ack():
+    worker, binding = _setup_bound_conversation()
+    _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-pause-after-brain",
+        "请继续回复我",
+    )
+    with SessionLocal() as db:
+        action = db.query(ReplyAction).filter(
+            ReplyAction.conversation_id == binding["conversation_id"],
+            ReplyAction.current.is_(True),
+        ).one()
+        task = db.query(Task).filter(
+            Task.reply_action_id == action.id
+        ).one()
+        action_id = action.id
+        task_id = task.id
+
+    flow_id = "read-pause-after-brain"
+    worker_headers = _worker_headers(worker)
+    started = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/start",
+        json={"flow_id": flow_id, "flow_kind": "c2_read"},
+        headers=worker_headers,
+    )
+    assert started.status_code == 200, started.text
+    paused = client.post(
+        f"/api/workers/{worker['id']}/run-status",
+        json={"run_status": "paused", "client_instance_id": "client-c3"},
+        headers=worker_headers,
+    )
+    assert paused.status_code == 200, paused.text
+    continuation_headers = {
+        **worker_headers,
+        "X-Inflight-Flow-Id": flow_id,
+    }
+    claimed_task = client.post(
+        f"/api/tasks/{task_id}/claim",
+        json={
+            "worker_id": worker["id"],
+            "current_step": "chat_reply_claimed",
+            "claim_source": "c2_conversation_flow",
+            "conversation_id": binding["conversation_id"],
+        },
+        headers=continuation_headers,
+    )
+    assert claimed_task.status_code == 200, claimed_task.text
+    lease_headers = {
+        **continuation_headers,
+        "X-Task-Lease-Fencing-Token": str(
+            claimed_task.json()["data"]["lease_fencing_token"]
+        ),
+    }
+    send_claim = client.post(
+        f"/api/reply-actions/{action_id}/claim-send",
+        json={"task_id": task_id, "worker_id": worker["id"]},
+        headers=lease_headers,
+    )
+    assert send_claim.status_code == 200, send_claim.text
+    send_data = send_claim.json()["data"]
+    ack = client.post(
+        f"/api/reply-actions/{action_id}/sent-ack",
+        json={
+            "send_token": send_data["send_token"],
+            "task_id": task_id,
+            "worker_id": worker["id"],
+            "client_instance_id": "client-c3",
+            "send_result": "sent",
+            "action_phase": "confirmed",
+            "reply_text_hash": send_data["reply_text_hash"],
+            "sidecar_run_id": "pause-after-brain-sidecar",
+        },
+        headers=lease_headers,
+    )
+    assert ack.status_code == 200, ack.text
+    with SessionLocal() as db:
+        persisted_binding = db.get(
+            WechatSessionBinding, binding["id"]
+        )
+        persisted_binding.last_read_run_id = flow_id
+        persisted_binding.last_read_completed_at = utcnow()
+        persisted_binding.last_read_result = "new_facts"
+        db.commit()
+    finished = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/finish",
+        json={
+            "flow_id": flow_id,
+            "terminal_kind": "read_confirmed",
+            "conversation_id": binding["conversation_id"],
+            "error_code": None,
+        },
+        headers=continuation_headers,
+    )
+    assert finished.status_code == 200, finished.text
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert conversation.status == "waiting_user_reply"
+        assert db.get(Task, task_id).status == "completed"
+
+
 def test_reply_then_handoff_sends_one_brain_boundary_and_keeps_handoff_open(monkeypatch):
     class BoundaryHandoffAdapter:
         def generate_reply_decision(self, **_kwargs):

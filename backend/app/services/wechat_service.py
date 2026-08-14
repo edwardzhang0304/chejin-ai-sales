@@ -60,6 +60,21 @@ def _latest_datetime(*values: datetime | None) -> datetime:
         return value.astimezone(timezone.utc)
 
     return max(present, key=comparable)
+
+
+def _datetime_is_after(
+    value: datetime | None,
+    boundary: datetime | None,
+) -> bool:
+    if value is None or boundary is None:
+        return False
+
+    def comparable(item: datetime) -> datetime:
+        if item.tzinfo is None:
+            return item.replace(tzinfo=timezone.utc)
+        return item.astimezone(timezone.utc)
+
+    return comparable(value) > comparable(boundary)
 from app.services.message_contract import canonical_reply_text, reply_text_hash
 
 
@@ -82,6 +97,11 @@ LISTEN_STATUS_DISABLED = "disabled"
 NEXT_ACTION_NONE = "none"
 LOW_CONFIDENCE_THRESHOLD = 0.7
 CONVERSATION_CLOSED_STATUSES = {"closed", "rejected"}
+RECOVERABLE_REPLY_BOUNDARY_GATE_CODES = {
+    "MESSAGE_IDENTITY_UNCONFIRMED",
+    "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+    "C2_MESSAGE_HISTORY_GAP",
+}
 PERMANENT_BINDING_DISABLE_REASONS = {
     "customer_hard_opt_out",
     "conversation_closed",
@@ -505,6 +525,42 @@ def _identity_checkpoint(
         "version": 2,
         "next_sequence_floor": max_sequence + 1,
         "recent_messages": recent_messages,
+    }
+
+
+def _ai_reply_boundary(db: Session, *, conversation_id: str) -> dict:
+    action = db.scalar(
+        select(ReplyAction)
+        .where(
+            ReplyAction.conversation_id == conversation_id,
+            ReplyAction.status == "sent",
+            ReplyAction.sent_at.is_not(None),
+            ReplyAction.deleted_at.is_(None),
+        )
+        .order_by(ReplyAction.sent_at.desc(), ReplyAction.id.desc())
+        .limit(1)
+    )
+    if action is None:
+        return {}
+    worker_stable_id = ""
+    candidates = list(
+        db.scalars(
+            select(MessageEvent)
+            .where(MessageEvent.conversation_id == conversation_id)
+            .order_by(MessageEvent.ingested_at.desc(), MessageEvent.id.desc())
+            .limit(IDENTITY_CHECKPOINT_RECENT_LIMIT)
+        )
+    )
+    for event in candidates:
+        raw = event.raw_payload if isinstance(event.raw_payload, dict) else {}
+        if str(raw.get("ai_reply_action_id") or "") == action.id:
+            worker_stable_id = _worker_stable_id(event)
+            break
+    return {
+        "reply_action_id": action.id,
+        "sent_at": action.sent_at,
+        "reply_text_hash": str(action.reply_text_hash or ""),
+        "worker_stable_id": worker_stable_id,
     }
 
 
@@ -1406,12 +1462,168 @@ def _read_target_payload(
             recoverable_handoff_reason_codes
         ),
         "next_read_due_at": binding.next_read_due_at,
+        "recovery_hold": dict(binding.recovery_hold or {}),
     }
     if _clean_locator(binding.row_fingerprint):
         target["row_fingerprint"] = binding.row_fingerprint
     if binding.ocr_confidence is not None:
         target["ocr_confidence"] = binding.ocr_confidence
+    if read_reason == "recent_ai_sent":
+        target["ai_reply_boundary"] = _ai_reply_boundary(
+            db,
+            conversation_id=binding.conversation_id,
+        )
     return target
+
+
+def _apply_reply_boundary_recovery_hold(
+    db: Session,
+    *,
+    binding: WechatSessionBinding,
+    conversation: Conversation,
+    read_run_id: str,
+    evidence_payload: dict,
+    gate_codes: list[str],
+    details_by_code: dict[str, list[dict]],
+) -> tuple[list[str], dict | None]:
+    recoverable = [
+        code for code in gate_codes
+        if code in RECOVERABLE_REPLY_BOUNDARY_GATE_CODES
+    ]
+    remaining = [code for code in gate_codes if code not in recoverable]
+    if not recoverable:
+        current = dict(binding.recovery_hold or {})
+        if current.get("status") == "active":
+            current["status"] = "resolved"
+            current["last_seen_at"] = utcnow().isoformat()
+            binding.recovery_hold = current
+        return remaining, None
+
+    boundary = _ai_reply_boundary(
+        db, conversation_id=binding.conversation_id
+    )
+    reply_action_id = str(boundary.get("reply_action_id") or "")
+    now_iso = utcnow().isoformat()
+    ordered_codes = sorted(set(recoverable))
+    relation_by_code: dict[str, str] = {}
+    for code in ordered_codes:
+        code_relations = {
+            str(item.get("boundary_relation") or "unknown")
+            for item in (details_by_code.get(code) or [])
+        }
+        relation_by_code[code] = (
+            "after" if "after" in code_relations
+            else "unknown" if "unknown" in code_relations or not code_relations
+            else "before_or_equal"
+        )
+    relation = (
+        "after" if "after" in relation_by_code.values()
+        else "unknown" if "unknown" in relation_by_code.values()
+        else "before_or_equal"
+    )
+    selected_code = next(
+        code for code in ordered_codes if relation_by_code[code] == relation
+    )
+    selected_details = details_by_code.get(selected_code) or []
+    if relation == "before_or_equal":
+        current = dict(binding.recovery_hold or {})
+        if current.get("status") == "active":
+            current.update({"status": "resolved", "last_seen_at": now_iso})
+            binding.recovery_hold = current
+        return remaining, {
+            "batch_id": None,
+            "batch_status": "historical_warning",
+            "reason_codes": ordered_codes,
+        }
+
+    scope = "reply_suffix"
+    gate_key = hashlib.sha256(
+        (
+            binding.conversation_id
+            + "|"
+            + reply_action_id
+            + "|"
+            + "|".join(ordered_codes)
+            + "|"
+            + scope
+        ).encode("utf-8")
+    ).hexdigest()
+    detail = selected_details[0] if selected_details else {}
+    attempt_kind = str(
+        evidence_payload.get("recovery_attempt_kind") or ""
+    ).strip()
+    current = dict(binding.recovery_hold or {})
+    same_gate = current.get("gate_key") == gate_key
+    if same_gate:
+        current["last_seen_at"] = now_iso
+        if (
+            str(current.get("last_counted_read_run_id") or "") != read_run_id
+            and attempt_kind == "stable_reread"
+        ):
+            current["recovery_attempt_count"] = (
+                int(current.get("recovery_attempt_count") or 0) + 1
+            )
+            current["last_recovery_kind"] = "stable_reread"
+            current["last_counted_read_run_id"] = read_run_id
+    else:
+        initial_count = 1 if attempt_kind == "checkpoint_merge" else 0
+        current = {
+            "status": "active",
+            "gate_key": gate_key,
+            "reason_code": selected_code,
+            "gate_scope": scope,
+            "boundary_relation": relation,
+            "min_screen_order": int(detail.get("min_screen_order") or 0),
+            "max_screen_order": int(detail.get("max_screen_order") or 0),
+            "originating_read_run_id": read_run_id,
+            "first_seen_at": now_iso,
+            "last_seen_at": now_iso,
+            "recovery_attempt_count": initial_count,
+            "last_recovery_kind": attempt_kind or None,
+            "last_counted_read_run_id": (
+                read_run_id if initial_count else None
+            ),
+        }
+    current["boundary_relation"] = relation
+    binding.recovery_hold = current
+    conversation.status = "waiting_user_reply"
+    conversation.next_recall_at = None
+
+    if (
+        int(current.get("recovery_attempt_count") or 0) >= 2
+        and relation in {"after", "unknown"}
+    ):
+        from app.services.c3_service import create_deterministic_handoff_for_ingest
+
+        handoff = create_deterministic_handoff_for_ingest(
+            db,
+            conversation_id=binding.conversation_id,
+            message_event_ids=[],
+                reason_codes=ordered_codes,
+            trigger_key=f"recovery-hold:{gate_key}",
+            trace_id=get_request_id(),
+        )
+        handoff_event = db.scalar(
+            select(HandoffEvent).where(
+                HandoffEvent.batch_id == str(handoff.get("batch_id") or ""),
+                HandoffEvent.deleted_at.is_(None),
+            )
+        )
+        if handoff_event is not None:
+            refs = list(handoff_event.evidence_refs or [])
+            hold_ref = f"recovery_hold:{gate_key}"
+            if hold_ref not in refs:
+                refs.append(hold_ref)
+                handoff_event.evidence_refs = refs
+        current = {**current, "status": "escalated"}
+        binding.recovery_hold = current
+        return remaining, handoff
+    return remaining, {
+        "batch_id": None,
+        "batch_status": "recoverable_hold",
+        "reason_codes": recoverable,
+        "recovery_hold": current,
+    }
 
 
 def read_authorization_snapshot(
@@ -2578,6 +2790,20 @@ def _flow_gate_details_by_code(evidence_payload: dict) -> dict[str, list[dict]]:
             "error_code": code,
             "position_source": position_source,
         }
+        gate_scope = str(raw.get("gate_scope") or "").strip()
+        boundary_relation = str(
+            raw.get("boundary_relation") or ""
+        ).strip()
+        if gate_scope:
+            detail["gate_scope"] = gate_scope
+        if boundary_relation:
+            if boundary_relation not in {"before_or_equal", "after", "unknown"}:
+                raise AppError(
+                    "MESSAGE_FLOW_GATE_BOUNDARY_RELATION_INVALID",
+                    "AI 回复边界关系不合法",
+                    409,
+                )
+            detail["boundary_relation"] = boundary_relation
         subject_sender_role = str(raw.get("subject_sender_role") or "").strip()
         if subject_sender_role:
             if subject_sender_role not in {"customer", "self"}:
@@ -2599,10 +2825,10 @@ def _flow_gate_details_by_code(evidence_payload: dict) -> dict[str, list[dict]]:
                     "安全门禁 screen_order 不合法",
                     409,
                 ) from exc
-            if parsed < 1:
+            if parsed < 0:
                 raise AppError(
                     "MESSAGE_FLOW_GATE_POSITION_INVALID",
-                    "安全门禁 screen_order 必须大于零",
+                    "安全门禁 screen_order 不能小于零",
                     409,
                 )
             detail[key] = parsed
@@ -2616,9 +2842,9 @@ def _flow_gate_details_by_code(evidence_payload: dict) -> dict[str, list[dict]]:
                 "安全门禁位置范围前后颠倒",
                 409,
             )
-        has_position = (
-            detail.get("min_screen_order") is not None
-            or detail.get("max_screen_order") is not None
+        has_position = any(
+            int(detail.get(key) or 0) > 0
+            for key in ("min_screen_order", "max_screen_order")
         )
         if has_position and position_source not in strong_position_sources:
             raise AppError(
@@ -3157,7 +3383,16 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
                 )
             )
             if recovery_result["closed_count"] and not open_handoff_active:
-                conversation.status = "ai_active"
+                conversation.status = (
+                    "ai_active"
+                    if _datetime_is_after(
+                        conversation.last_inbound_at,
+                        conversation.last_ai_reply_at,
+                    )
+                    else "waiting_user_reply"
+                    if conversation.last_ai_reply_at is not None
+                    else "ai_active"
+                )
                 conversation.handoff_reason_code = None
                 conversation.handoff_at = None
                 conversation.recall_origin_status = None
@@ -3790,6 +4025,33 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
         for code in flow_gate_errors
         if code not in TEMPORARY_CAPABILITY_GATE_CODES_V3
     ]
+    boundary_gate_result = None
+    ai_boundary = (
+        evidence_payload.get("ai_reply_boundary")
+        if isinstance(evidence_payload.get("ai_reply_boundary"), dict)
+        else {}
+    )
+    boundary_hold_eligible = bool(
+        str(evidence_payload.get("authorization_read_reason") or "")
+        == "recent_ai_sent"
+        and str(ai_boundary.get("reply_action_id") or "").strip()
+        and str(ai_boundary.get("sent_at") or "").strip()
+        and str(ai_boundary.get("reply_text_hash") or "").strip()
+    )
+    if not open_handoff_active and boundary_hold_eligible:
+        handoff_flow_gates, boundary_gate_result = (
+            _apply_reply_boundary_recovery_hold(
+                db,
+                binding=binding,
+                conversation=conversation,
+                read_run_id=payload.read_run_id,
+                evidence_payload=evidence_payload,
+                gate_codes=handoff_flow_gates,
+                details_by_code=flow_gate_details_by_code,
+            )
+        )
+    if boundary_gate_result is not None:
+        message_batch = boundary_gate_result
     if open_handoff_active:
         if handoff_flow_gates:
             from app.services.c3_service import (
@@ -3853,6 +4115,10 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             "batch_status": "capability_paused",
             "reason_codes": temporary_capability_gates,
         }
+    elif message_batch is not None:
+        # A reply-boundary warning/hold is already fully projected.  It must
+        # not fall through into ordinary batching or Brain generation.
+        pass
     elif (
         recovery_batch_eligible
         and authoritative_customer_tail_ids

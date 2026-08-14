@@ -38,22 +38,27 @@ from chejin_worker_client.sequence_alignment import (
     normalized_content_hash,
 )
 from chejin_worker_client.storage import (
+    begin_runtime_flow,
     checkpoint_c2_action_outcomes,
     db_connection,
     enqueue_c2_outbox,
+    finish_runtime_flow,
     has_pending_c2_outbox,
     list_c2_action_journal,
     list_c2_ledger_entries,
     list_c2_outbox_waiting,
     load_c2_state,
+    load_runtime_control,
     load_c2_ledger_entry,
     load_c2_outbox_entry,
     load_reply_send_ack_outbox,
     read_logs,
+    request_runtime_pause,
     refresh_c2_outbox_payload,
     save_c2_state,
     save_c2_ledger_terminal as _save_c2_ledger_terminal,
     save_reply_send_intent,
+    transition_c2_outbox,
 )
 from chejin_worker_client.task_runner import (
     C2_RECENT_VISIBLE_CACHE_TTL_SECONDS,
@@ -177,6 +182,37 @@ class FakeApi:
         self.read_authorization_overrides: dict[str, dict] = {}
         self.claim_reply_text = "您好，可以继续沟通这台车。"
         self.claim_reply_hash = hashlib.sha256(self.claim_reply_text.encode("utf-8")).hexdigest()
+        self.inflight_flow_id: str | None = None
+        self.inflight_flow_state: dict = {}
+        self.inflight_flow_events: list[str] = []
+
+    def start_inflight_flow(self, binding: Binding, *, flow_id: str, flow_kind: str):
+        self.inflight_flow_id = flow_id
+        self.inflight_flow_events.append(f"start:{flow_kind}:{flow_id}")
+        self.inflight_flow_state = {
+            "status": "active",
+            "flow_id": flow_id,
+            "flow_kind": flow_kind,
+            "registered_at": "2026-08-14T00:00:00+00:00",
+            "pause_requested_at": None,
+        }
+        return dict(self.inflight_flow_state)
+
+    def finish_inflight_flow(
+        self,
+        binding: Binding,
+        *,
+        flow_id: str,
+        terminal_kind: str,
+        conversation_id: str | None = None,
+        error_code: str | None = None,
+    ):
+        self.inflight_flow_events.append(
+            f"finish:{flow_id}:{terminal_kind}:{conversation_id or ''}:{error_code or ''}"
+        )
+        self.inflight_flow_id = None
+        self.inflight_flow_state = {}
+        return {"finished": True, "flow_id": flow_id}
 
     def heartbeat(self, binding: Binding, **kwargs):
         self.heartbeat_payloads.append(dict(kwargs))
@@ -185,6 +221,7 @@ class FakeApi:
             id=binding.worker_id,
             worker_name="测试 Worker",
             run_status=self.heartbeat_run_status or binding.run_status,
+            inflight_flow_state=dict(self.inflight_flow_state),
         )
 
     def pull_task(self, binding: Binding):
@@ -276,7 +313,17 @@ class FakeApi:
             raise self.run_status_error
         self.run_status_updates.append(run_status)
         self.events.append(f"run_status:{run_status}")
-        return WorkerProfile(id=binding.worker_id, worker_name="测试 Worker", run_status=run_status)
+        if run_status == "paused" and self.inflight_flow_state:
+            self.inflight_flow_state["status"] = "draining"
+            self.inflight_flow_state["pause_requested_at"] = (
+                "2026-08-14T00:00:01+00:00"
+            )
+        return WorkerProfile(
+            id=binding.worker_id,
+            worker_name="测试 Worker",
+            run_status=run_status,
+            inflight_flow_state=dict(self.inflight_flow_state),
+        )
 
     def post_wechat_session_scan_result(self, binding: Binding, payload: dict):
         self.scan_payloads.append(payload)
@@ -1617,6 +1664,9 @@ class TaskRunnerTest(unittest.TestCase):
             conn.execute("DELETE FROM c2_ingest_outbox")
             conn.execute("DELETE FROM reply_send_ack_outbox")
             conn.execute("DELETE FROM c2_runtime_state")
+            conn.execute(
+                "DELETE FROM client_settings WHERE key = 'runtime_control_v1'"
+            )
             conn.commit()
 
     def tearDown(self):
@@ -2755,6 +2805,7 @@ class TaskRunnerTest(unittest.TestCase):
         runner.tick_once()
 
         self.assertEqual(binding.run_status, "paused")
+        self.assertTrue(load_runtime_control()["pause_requested"])
         self.assertNotIn("pull", api.events)
 
     def test_paused_worker_does_not_run_c2_scan_or_read(self):
@@ -2803,6 +2854,482 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertIsNone(runner._pending_run_status_sync)
         self.assertIsNone(runner.run_status_sync_error)
         self.assertEqual(api.run_status_updates[-1], "paused")
+
+    def test_pause_drains_registered_flow_but_emergency_stop_cancels_it(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-drain",
+            worker_token="token",
+            client_instance_id="client-drain",
+            run_status="running",
+        )
+        runner.binding = binding
+        self.assertTrue(
+            runner._start_inflight_flow(
+                binding,
+                flow_id="task-drain-1",
+                flow_kind="chat_reply",
+            )
+        )
+
+        self.assertTrue(runner.set_run_status("paused"))
+        self.assertFalse(runner._can_start_new_flow(binding))
+        self.assertTrue(
+            runner._can_continue_inflight_flow("task-drain-1")
+        )
+        control = load_runtime_control()
+        self.assertTrue(control["pause_requested"])
+        self.assertEqual(control["inflight_flow_id"], "task-drain-1")
+
+        from chejin_worker_client.emergency_stop import trigger_emergency_stop
+
+        trigger_emergency_stop(reason="test", origin="unit")
+        self.assertFalse(
+            runner._can_continue_inflight_flow("task-drain-1")
+        )
+
+    def test_pause_during_image_keeps_exact_read_flow_until_image_terminal(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(RpaResult(ok=True, result_code="unused", message="unused")),
+        )
+        binding = Binding(
+            worker_id="worker-image-drain",
+            worker_token="token",
+            client_instance_id="client-image-drain",
+            run_status="running",
+        )
+        runner.binding = binding
+        read_run_id = "read-image-drain"
+        self.assertTrue(
+            runner._start_inflight_flow(
+                binding,
+                flow_id=read_run_id,
+                flow_kind="c2_read",
+            )
+        )
+        self.assertTrue(runner.set_run_status("paused"))
+        self.assertTrue(runner._can_continue_inflight_flow(read_run_id))
+        target = WechatReadTarget(
+            conversation_id="conv-image-drain",
+            rpa_session_key="wx:image-drain",
+            display_name="CJIMGD01",
+            remark_code="CJIMGD01",
+            authorization_revision="revision-image-drain",
+        )
+        sidecar_payload = {
+            "frame_id": "frame-image-drain",
+            "authoritative_frame_source": "initial_read",
+            "observations": [
+                {
+                    "schema_version": 3,
+                    "observation_id": "image-observation-drain",
+                    "canonical_visual_id": "visual-image-drain",
+                    "row_kind": "image_bubble",
+                    "sender_role": "customer",
+                    "sender_role_source": "same_row_avatar",
+                    "message_type": "image",
+                    "voice_state": "not_voice",
+                    "item_state": "discovered",
+                    "bubble_rect": [420, 180, 650, 320],
+                    "source_message": {"id": "image-drain", "type": "image"},
+                }
+            ],
+        }
+
+        def settle_image(*_args, **kwargs):
+            self.assertFalse(kwargs["cancel_check"]())
+            return {
+                "state": "completed",
+                "action_phase": "confirmed",
+                "business_state": "completed",
+                "business_result_confirmed": True,
+                "customer_image_understanding": {
+                    "schema_version": 1,
+                    "vision_summary": "车辆外观图",
+                },
+                "visual_bridge_input": {"summary": "车辆外观图"},
+                "transaction": {"image_sha256": "a" * 64},
+                "diagnostics": {"events": [], "image_persisted": False},
+            }
+
+        with patch(
+            "chejin_worker_client.omniauto_vision.process_image_slot",
+            side_effect=settle_image,
+        ) as vision:
+            _payload, stats = runner._process_final_image_slots(
+                binding=binding,
+                target=target,
+                sidecar_payload=sidecar_payload,
+                enforce_read_targets=False,
+                cancel_check=lambda: not runner._can_continue_inflight_flow(
+                    read_run_id
+                ),
+                flow_outcomes=FlowOutcomeAccumulator(
+                    origin_read_run_id=read_run_id
+                ),
+            )
+
+        self.assertEqual(vision.call_count, 1)
+        self.assertEqual(stats["completed"], 1)
+        self.assertFalse(runner._can_start_new_flow(binding))
+
+    def test_restart_draining_flow_only_finishes_persisted_settlement(self):
+        api = FakeApi(None)
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-restart-drain",
+            worker_token="token",
+            client_instance_id="client-restart-drain",
+            run_status="paused",
+        )
+        runner.binding = binding
+        begin_runtime_flow("read-restart-drain", "c2_read")
+        request_runtime_pause()
+        runner._restart_recovery_flow_id = "read-restart-drain"
+        api.inflight_flow_id = "read-restart-drain"
+        api.inflight_flow_state = {
+            "status": "draining",
+            "flow_id": "read-restart-drain",
+            "flow_kind": "c2_read",
+            "registered_at": "2026-08-14T00:00:00+00:00",
+            "pause_requested_at": "2026-08-14T00:00:01+00:00",
+        }
+        runner._backend_inflight_flow_state = dict(
+            api.inflight_flow_state
+        )
+        save_c2_state(
+            "inflight_finish_receipt:read-restart-drain",
+            {
+                "terminal_kind": "read_confirmed",
+                "conversation_id": "conv-restart-drain",
+                "error_code": None,
+            },
+        )
+
+        runner._finish_restart_recovery_flow_if_settled(binding)
+
+        self.assertEqual(
+            api.inflight_flow_events,
+            [
+                "finish:read-restart-drain:read_confirmed:conv-restart-drain:"
+            ],
+        )
+        self.assertIsNone(load_runtime_control()["inflight_flow_id"])
+        self.assertEqual(bridge.locate_payloads, [])
+        self.assertEqual(bridge.sent_replies, [])
+
+    def test_restart_without_finish_receipt_keeps_draining_flow(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(RpaResult(ok=True, result_code="unused", message="unused")),
+        )
+        binding = Binding(
+            worker_id="worker-restart-no-receipt",
+            worker_token="token",
+            client_instance_id="client-restart-no-receipt",
+            run_status="paused",
+        )
+        runner.binding = binding
+        begin_runtime_flow("read-no-receipt", "c2_read")
+        request_runtime_pause()
+        runner._restart_recovery_flow_id = "read-no-receipt"
+        api.inflight_flow_id = "read-no-receipt"
+        api.inflight_flow_state = {
+            "status": "draining",
+            "flow_id": "read-no-receipt",
+            "flow_kind": "c2_read",
+        }
+        runner._backend_inflight_flow_state = dict(api.inflight_flow_state)
+
+        runner._finish_restart_recovery_flow_if_settled(binding)
+
+        self.assertEqual(api.inflight_flow_events, [])
+        self.assertEqual(
+            load_runtime_control()["inflight_flow_id"], "read-no-receipt"
+        )
+
+    def test_pending_same_flow_outbox_blocks_inflight_finish(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(RpaResult(ok=True, result_code="unused", message="unused")),
+        )
+        binding = Binding(
+            worker_id="worker-finish-pending-outbox",
+            worker_token="token",
+            client_instance_id="client-finish-pending-outbox",
+            run_status="paused",
+        )
+        runner.binding = binding
+        begin_runtime_flow("read-pending-outbox", "c2_read")
+        api.inflight_flow_id = "read-pending-outbox"
+        api.inflight_flow_state = {
+            "status": "draining",
+            "flow_id": "read-pending-outbox",
+            "flow_kind": "c2_read",
+        }
+        runner._backend_inflight_flow_state = dict(api.inflight_flow_state)
+        enqueue_c2_outbox(
+            {
+                "read_run_id": "read-pending-outbox",
+                "conversation_id": "conv-pending-outbox",
+                "authorization_revision": "revision-pending-outbox",
+                "messages": [],
+                "evidence": {},
+            }
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError, "RUNTIME_INFLIGHT_C2_OUTBOX_PENDING"
+        ):
+            runner._finish_inflight_flow(
+                binding,
+                "read-pending-outbox",
+                terminal_kind="read_confirmed",
+                conversation_id="conv-pending-outbox",
+            )
+
+        self.assertEqual(api.inflight_flow_events, [])
+        self.assertEqual(
+            load_runtime_control()["inflight_flow_id"],
+            "read-pending-outbox",
+        )
+
+    def test_failed_before_message_action_rejects_confirmed_same_flow_outbox(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(RpaResult(ok=True, result_code="unused", message="unused")),
+        )
+        binding = Binding(
+            worker_id="worker-finish-confirmed-outbox",
+            worker_token="token",
+            client_instance_id="client-finish-confirmed-outbox",
+            run_status="paused",
+        )
+        runner.binding = binding
+        begin_runtime_flow("read-confirmed-outbox", "c2_read")
+        api.inflight_flow_id = "read-confirmed-outbox"
+        api.inflight_flow_state = {
+            "status": "draining",
+            "flow_id": "read-confirmed-outbox",
+            "flow_kind": "c2_read",
+        }
+        runner._backend_inflight_flow_state = dict(api.inflight_flow_state)
+        outbox_id = enqueue_c2_outbox(
+            {
+                "read_run_id": "read-confirmed-outbox",
+                "conversation_id": "conv-confirmed-outbox",
+                "authorization_revision": "revision-confirmed-outbox",
+                "messages": [],
+                "evidence": {},
+            }
+        )
+        transition_c2_outbox(outbox_id, status="confirmed")
+
+        with self.assertRaisesRegex(
+            RuntimeError, "RUNTIME_INFLIGHT_PRE_ACTION_OUTBOX_CONFLICT"
+        ):
+            runner._finish_inflight_flow(
+                binding,
+                "read-confirmed-outbox",
+                terminal_kind="failed_before_message_action",
+                conversation_id="conv-confirmed-outbox",
+                error_code="C2_LOCATE_FAILED",
+            )
+
+        self.assertEqual(api.inflight_flow_events, [])
+
+    def test_sidecar_read_failure_finishes_as_read_failed_no_fact(self):
+        api = FakeApi(None)
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            {
+                "ok": False,
+                "state": "messages_ocr_failed",
+                "error_code": "C2_MESSAGE_OCR_FAILED",
+            }
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-read-no-fact",
+            worker_token="token",
+            client_instance_id="client-read-no-fact",
+            run_status="running",
+        )
+        runner.binding = binding
+        target = WechatReadTarget(
+            conversation_id="conv-read-no-fact",
+            rpa_session_key="wx:read-no-fact",
+            display_name="CJNOFACT",
+            remark_code="CJNOFACT",
+            authorization_revision="revision-read-no-fact",
+            raw={"identity_checkpoint": identity_checkpoint()},
+        )
+
+        result = runner._read_one_wechat_target(binding, target)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_code"], "C2_MESSAGE_OCR_FAILED")
+        self.assertEqual(len(api.inflight_flow_events), 2)
+        self.assertTrue(
+            api.inflight_flow_events[0].startswith("start:c2_read:read-")
+        )
+        self.assertIn(
+            ":read_failed_no_fact:conv-read-no-fact:C2_MESSAGE_OCR_FAILED",
+            api.inflight_flow_events[1],
+        )
+        self.assertIsNone(load_runtime_control()["inflight_flow_id"])
+
+    def test_task_terminal_waits_for_nested_c2_outbox(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(RpaResult(ok=True, result_code="unused", message="unused")),
+        )
+        binding = Binding(
+            worker_id="worker-task-nested-outbox",
+            worker_token="token",
+            client_instance_id="client-task-nested-outbox",
+            run_status="paused",
+        )
+        runner.binding = binding
+        flow_id = "task-nested-c2-outbox"
+        begin_runtime_flow(flow_id, "chat_reply")
+        api.inflight_flow_id = flow_id
+        api.inflight_flow_state = {
+            "status": "draining",
+            "flow_id": flow_id,
+            "flow_kind": "chat_reply",
+        }
+        runner._backend_inflight_flow_state = dict(api.inflight_flow_state)
+        enqueue_c2_outbox(
+            {
+                "read_run_id": flow_id,
+                "conversation_id": "conv-task-nested-outbox",
+                "authorization_revision": "revision-task-nested-outbox",
+                "messages": [],
+                "evidence": {},
+            }
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError, "RUNTIME_INFLIGHT_C2_OUTBOX_PENDING"
+        ):
+            runner._finish_inflight_flow(
+                binding,
+                flow_id,
+                terminal_kind="task_terminal",
+            )
+
+        self.assertEqual(api.inflight_flow_events, [])
+        self.assertEqual(load_runtime_control()["inflight_flow_id"], flow_id)
+
+    def test_task_terminal_waits_for_nested_c2_ledger_and_journal(self):
+        for artifact_kind, expected_error in (
+            ("ledger", "RUNTIME_INFLIGHT_C2_LEDGER_PENDING"),
+            ("journal", "RUNTIME_INFLIGHT_C2_ACTION_JOURNAL_PENDING"),
+            ("physical_journal", "RUNTIME_INFLIGHT_ACTION_JOURNAL_PENDING"),
+        ):
+            with self.subTest(artifact_kind=artifact_kind):
+                api = FakeApi(None)
+                runner, _ = self.make_runner(
+                    api,
+                    FakeBridge(
+                        RpaResult(
+                            ok=True,
+                            result_code="unused",
+                            message="unused",
+                        )
+                    ),
+                )
+                binding = Binding(
+                    worker_id=f"worker-task-{artifact_kind}",
+                    worker_token="token",
+                    client_instance_id=f"client-task-{artifact_kind}",
+                    run_status="paused",
+                )
+                runner.binding = binding
+                flow_id = f"task-nested-c2-{artifact_kind}"
+                begin_runtime_flow(flow_id, "chat_reply")
+                api.inflight_flow_id = flow_id
+                api.inflight_flow_state = {
+                    "status": "draining",
+                    "flow_id": flow_id,
+                    "flow_kind": "chat_reply",
+                }
+                runner._backend_inflight_flow_state = dict(
+                    api.inflight_flow_state
+                )
+                if artifact_kind == "ledger":
+                    save_c2_ledger_terminal(
+                        conversation_id=f"conv-{artifact_kind}",
+                        source_message_key=f"source-{artifact_kind}",
+                        origin_read_run_id=flow_id,
+                        dedupe_key=f"dedupe-{artifact_kind}",
+                        message_type="text",
+                        terminal_state="completed",
+                        ingest_state="waiting",
+                        result={"state": "completed"},
+                    )
+                else:
+                    if artifact_kind == "journal":
+                        checkpoint_c2_action_outcomes(
+                            flow_id=f"action-{artifact_kind}",
+                            conversation_id=f"conv-{artifact_kind}",
+                            origin_read_run_id=flow_id,
+                            outcomes=[
+                                {
+                                    "source_message_key": f"source-{artifact_kind}",
+                                    "result": "failed",
+                                    "evidence": {"action_kind": "image"},
+                                    "terminal_payload": {"state": "failed"},
+                                }
+                            ],
+                        )
+                    else:
+                        journal_path = action_journal_path(
+                            "image", f"action-{artifact_kind}"
+                        )
+                        initialize_action_journal(
+                            journal_path,
+                            action_kind="image",
+                            transaction_id=f"action-{artifact_kind}",
+                            conversation_id=f"conv-{artifact_kind}",
+                            origin_read_run_id=flow_id,
+                            items=[
+                                {
+                                    "source_message_key": f"source-{artifact_kind}",
+                                    "physical_anchor_keys": ["image-anchor"],
+                                }
+                            ],
+                        )
+
+                with self.assertRaisesRegex(RuntimeError, expected_error):
+                    runner._finish_inflight_flow(
+                        binding,
+                        flow_id,
+                        terminal_kind="task_terminal",
+                    )
+
+                self.assertEqual(api.inflight_flow_events, [])
+                if artifact_kind == "physical_journal":
+                    remove_action_journal(journal_path)
+                finish_runtime_flow(flow_id)
 
     def test_start_requires_backend_confirmation_before_local_running(self):
         api = FakeApi(None)
@@ -3014,6 +3541,198 @@ class TaskRunnerTest(unittest.TestCase):
             bridge.send_transaction_journal_path(
                 "reply-action-1"
             ).exists()
+        )
+
+    def test_pause_after_send_trigger_does_not_repeat_and_reaches_sent_ack(self):
+        task = self.make_chat_reply_task(
+            task_id="task-pause-after-send-trigger"
+        )
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        api.message_ingest_result = "duplicated"
+        runner_holder: dict[str, TaskRunner] = {}
+        send_call_count = 0
+
+        class PauseAfterTriggerBridge(FakeBridge):
+            def send_reply(
+                self,
+                *,
+                target: str,
+                rpa_session_key: str,
+                text: str,
+                task_id: str,
+                reply_action_id: str | None = None,
+                current_only: bool = True,
+                expected_context_guard: dict | None = None,
+                cancel_check=None,
+            ):
+                nonlocal send_call_count
+                send_call_count += 1
+                journal_path = self.send_transaction_journal_path(
+                    str(reply_action_id or "")
+                )
+                update_action_journal_item(
+                    journal_path,
+                    source_message_key=str(reply_action_id or ""),
+                    action_phase="trigger_attempted",
+                    business_state="send_button_click_starting",
+                )
+                self.pause_succeeded = runner_holder[
+                    "runner"
+                ].set_run_status("paused")
+                return super().send_reply(
+                    target=target,
+                    rpa_session_key=rpa_session_key,
+                    text=text,
+                    task_id=task_id,
+                    reply_action_id=reply_action_id,
+                    current_only=current_only,
+                    expected_context_guard=expected_context_guard,
+                    cancel_check=cancel_check,
+                )
+
+        bridge = PauseAfterTriggerBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        runner_holder["runner"] = runner
+        runner.binding = Binding(
+            worker_id="worker-pause-after-send-trigger",
+            worker_token="token",
+            client_instance_id="client-pause-after-send-trigger",
+            run_status="running",
+        )
+
+        runner.tick_once()
+
+        self.assertTrue(bridge.pause_succeeded)
+        self.assertEqual(send_call_count, 1)
+        self.assertEqual(len(bridge.sent_replies), 1)
+        self.assertEqual(
+            api.events.count("sent_ack:sent:None"),
+            1,
+        )
+        self.assertIn(
+            f"finish:{task.id}:task_terminal::",
+            api.inflight_flow_events,
+        )
+        self.assertFalse(
+            bridge.send_transaction_journal_path(
+                "reply-action-1"
+            ).exists()
+        )
+
+    def test_pause_after_brain_reply_keeps_same_flow_through_sent_ack(self):
+        task = self.make_chat_reply_task(task_id="task-pause-after-brain")
+        api = FakeApi(task)
+        self.authorize_chat_reply_target(api)
+        api.message_ingest_result = "duplicated"
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        runner.binding = Binding(
+            worker_id="worker-pause-after-brain",
+            worker_token="token",
+            client_instance_id="client-pause-after-brain",
+            run_status="running",
+        )
+
+        def pause_after_claim_send(_task):
+            self.assertTrue(runner.set_run_status("paused"))
+            self.assertTrue(
+                runner._can_continue_inflight_flow(task.id)
+            )
+
+        api.claim_send_callback = pause_after_claim_send
+
+        runner.tick_once()
+
+        self.assertEqual(runner.binding.run_status, "paused")
+        self.assertEqual(len(bridge.sent_replies), 1)
+        self.assertTrue(api.message_payloads)
+        self.assertEqual(api.message_payloads[0]["read_run_id"], task.id)
+        self.assertIn("sent_ack:sent:None", api.events)
+        self.assertIn(
+            f"finish:{task.id}:task_terminal::",
+            api.inflight_flow_events,
+        )
+        self.assertNotIn("pull", api.events[api.events.index("run_status:paused") + 1 :])
+
+    def test_pause_during_target_locating_finishes_current_read_only(self):
+        api = FakeApi(None)
+        api.read_targets = [
+            WechatReadTarget(
+                conversation_id="conv-pause-locate-1",
+                rpa_session_key="wx:rpa:v1:pause-locate-1",
+                display_name="CJTEST01 客户一",
+                remark_code="CJTEST01",
+                row_fingerprint={"title_text": "CJTEST01 客户一"},
+                ocr_confidence=0.98,
+                read_reason="recent_ai_sent",
+                authorization_revision="revision-pause-locate-1",
+            ),
+            WechatReadTarget(
+                conversation_id="conv-pause-locate-2",
+                rpa_session_key="wx:rpa:v1:pause-locate-2",
+                display_name="CJTEST02 客户二",
+                remark_code="CJTEST02",
+                row_fingerprint={"title_text": "CJTEST02 客户二"},
+                ocr_confidence=0.98,
+                read_reason="waiting_user_reply",
+                authorization_revision="revision-pause-locate-2",
+            ),
+        ]
+        runner_holder: dict[str, TaskRunner] = {}
+
+        class PauseDuringLocateBridge(FakeBridge):
+            def locate_chat(self, **kwargs):
+                result = super().locate_chat(**kwargs)
+                if len(self.locate_chats) == 1:
+                    self.assert_pause_succeeded = runner_holder[
+                        "runner"
+                    ].set_run_status("paused")
+                return result
+
+        bridge = PauseDuringLocateBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        runner_holder["runner"] = runner
+        binding = Binding(
+            worker_id="worker-pause-locate",
+            worker_token="token",
+            client_instance_id="client-pause-locate",
+            run_status="running",
+        )
+        runner.binding = binding
+
+        runner._read_state_target_queue(binding)
+
+        self.assertTrue(bridge.assert_pause_succeeded)
+        self.assertEqual(binding.run_status, "paused")
+        self.assertEqual(len(bridge.locate_chats), 1)
+        self.assertEqual(len(bridge.message_reads), 1)
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(
+            api.message_payloads[0]["conversation_id"],
+            "conv-pause-locate-1",
+        )
+        self.assertFalse(
+            any(
+                item.get("conversation_id") == "conv-pause-locate-2"
+                for item in api.message_payloads
+            )
+        )
+        self.assertEqual(
+            len(
+                [
+                    item
+                    for item in api.inflight_flow_events
+                    if item.startswith("finish:")
+                ]
+            ),
+            1,
         )
 
     def test_c2_claimed_chat_reply_is_visible_in_heartbeat_until_send_finishes(self):
@@ -6419,6 +7138,7 @@ class TaskRunnerTest(unittest.TestCase):
             lease=unittest.mock.Mock(),
             action_cancel_requested=lambda: False,
             enforce_read_targets=False,
+            read_run_id="read-failed-voice-moved",
             excluded_voice_anchor_keys=set(),
             flow_outcomes=FlowOutcomeAccumulator(
                 origin_read_run_id="read-failed-voice-moved"
@@ -6851,6 +7571,7 @@ class TaskRunnerTest(unittest.TestCase):
             lease=Lease(),  # type: ignore[arg-type]
             action_cancel_requested=lambda: False,
             enforce_read_targets=False,
+            read_run_id="read-mixed",
             excluded_voice_anchor_keys=set(),
             flow_outcomes=FlowOutcomeAccumulator(origin_read_run_id="read-mixed"),
         )
@@ -6931,6 +7652,7 @@ class TaskRunnerTest(unittest.TestCase):
             lease=unittest.mock.Mock(),
             action_cancel_requested=lambda: False,
             enforce_read_targets=False,
+            read_run_id="read-prepare-empty-same",
             excluded_voice_anchor_keys=set(),
             flow_outcomes=FlowOutcomeAccumulator(
                 origin_read_run_id="read-prepare-empty-same"
@@ -7053,6 +7775,7 @@ class TaskRunnerTest(unittest.TestCase):
             lease=unittest.mock.Mock(),
             action_cancel_requested=lambda: False,
             enforce_read_targets=False,
+            read_run_id="read-current",
             excluded_voice_anchor_keys=set(),
             flow_outcomes=FlowOutcomeAccumulator(
                 origin_read_run_id="read-current"
@@ -7170,6 +7893,7 @@ class TaskRunnerTest(unittest.TestCase):
             lease=unittest.mock.Mock(),
             action_cancel_requested=lambda: False,
             enforce_read_targets=False,
+            read_run_id="read-prepare-empty-page-change",
             excluded_voice_anchor_keys=set(),
             flow_outcomes=FlowOutcomeAccumulator(
                 origin_read_run_id="read-prepare-empty-page-change"
@@ -8229,6 +8953,7 @@ class TaskRunnerTest(unittest.TestCase):
                 lease=Lease(),  # type: ignore[arg-type]
                 action_cancel_requested=lambda: False,
                 enforce_read_targets=False,
+                read_run_id="read-voice-execute-exception",
                 excluded_voice_anchor_keys=set(),
                 flow_outcomes=FlowOutcomeAccumulator(
                     origin_read_run_id="read-voice-execute-exception"
@@ -17263,7 +17988,13 @@ class TaskRunnerTest(unittest.TestCase):
                     "version": 2,
                     "next_sequence_floor": 74,
                     "recent_messages": recent_messages,
-                }
+                },
+                "ai_reply_boundary": {
+                    "reply_action_id": "reply-media-history",
+                    "sent_at": "2026-08-12T07:24:35+00:00",
+                    "reply_text_hash": runner._reply_text_hash(reply_text),
+                    "worker_stable_id": "worker-message-73",
+                },
             },
         )
         observations = [
@@ -17320,6 +18051,104 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(
             aligned["sequence_alignment_evidence"]["alignment_status"],
             "unique",
+        )
+        self.assertEqual(
+            aligned["sequence_alignment_evidence"][
+                "new_suffix_observation_ids"
+            ],
+            [],
+        )
+
+    def test_recent_ai_sent_uses_matching_possible_send_after_restart(self):
+        conversation_id = "conv-recent-ai-possible-send"
+        reply_text = "我已经回复，等待您的新消息。"
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        reply_hash = runner._reply_text_hash(reply_text)
+        save_c2_state(
+            f"possible_ai_sends:{conversation_id}",
+            {
+                "sends": [
+                    {
+                        "reply_action_id": "reply-possible-restart",
+                        "reply_text_hash": reply_hash,
+                        "reserved_worker_stable_id": "worker-message-42",
+                        "reconciliation_state": "ai_unreconciled",
+                    }
+                ]
+            },
+        )
+        target = WechatReadTarget(
+            conversation_id=conversation_id,
+            rpa_session_key="",
+            display_name="CJWAIT01",
+            remark_code="CJWAIT01",
+            read_reason="recent_ai_sent",
+            authorization_revision="revision-possible-restart",
+            raw={
+                "identity_checkpoint": {
+                    "version": 2,
+                    "next_sequence_floor": 42,
+                    "recent_messages": [
+                        {
+                            "stable_id": "worker-message-41",
+                            "source_message_key": "source-customer-41",
+                            "sender_role": "customer",
+                            "message_type": "text",
+                            "normalized_content_hash": normalized_content_hash(
+                                "请回复我"
+                            ),
+                        }
+                    ],
+                },
+                "ai_reply_boundary": {
+                    "reply_action_id": "reply-possible-restart",
+                    "sent_at": "2026-08-14T08:00:00+00:00",
+                    "reply_text_hash": reply_hash,
+                    "worker_stable_id": "",
+                },
+            },
+        )
+        observations = [
+            self._ai_send_observation(
+                "customer-41",
+                sender_role="customer",
+                content="请回复我",
+            ),
+            self._ai_send_observation(
+                "possible-ai-42",
+                sender_role="self",
+                content=reply_text,
+            ),
+        ]
+
+        aligned, errors = runner._align_initial_identity_frame(
+            target=target,
+            sidecar_payload={
+                "ok": True,
+                "frame_id": "possible-restart-frame",
+                "observations": observations,
+            },
+            read_run_id="read-possible-restart",
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            [
+                item.get("_worker_stable_id")
+                for item in aligned["observations"]
+            ],
+            ["worker-message-41", "worker-message-42"],
+        )
+        self.assertEqual(
+            aligned["sequence_alignment_evidence"][
+                "new_suffix_observation_ids"
+            ],
+            [],
         )
 
     def test_ai_send_crash_state_keeps_possible_sent_and_reuses_reservation(self):

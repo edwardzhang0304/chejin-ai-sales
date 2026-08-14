@@ -85,6 +85,7 @@ class WechatSessionBinding(Base, TimestampMixin):
         nullable=True,
     )
     last_scan_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    recovery_hold: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     lead: Mapped["Lead | None"] = relationship()

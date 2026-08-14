@@ -98,8 +98,13 @@ class WechatMessageItem(BaseModel):
 class WechatFlowGateDetail(BaseModel):
     error_code: str = Field(min_length=1, max_length=64)
     position_source: str = Field(min_length=1, max_length=64)
-    min_screen_order: int | None = Field(default=None, ge=1)
-    max_screen_order: int | None = Field(default=None, ge=1)
+    min_screen_order: int | None = Field(default=None, ge=0)
+    max_screen_order: int | None = Field(default=None, ge=0)
+    gate_scope: str | None = Field(default=None, max_length=64)
+    boundary_relation: str | None = Field(
+        default=None,
+        pattern="^(before_or_equal|after|unknown)$",
+    )
     subject_sender_role: str | None = Field(
         default=None,
         pattern="^(customer|self)$",
@@ -369,6 +374,10 @@ class WechatMessageEvidence(BaseModel):
     ui_frame_invalidated: bool = False
     observations: list[dict] = Field(max_length=500)
     authorization_read_reason: str = Field(min_length=1, max_length=64)
+    recovery_attempt_kind: str | None = Field(
+        default=None,
+        pattern="^(checkpoint_merge|stable_reread)$",
+    )
     continuation_batch_id: str | None = Field(default=None, max_length=36)
     continuation_token: str | None = Field(default=None, max_length=64)
     finished_at: datetime
@@ -403,6 +412,21 @@ class WechatMessageEvidence(BaseModel):
             raise ValueError(
                 "媒体 UI 动作发生后不得继续使用 initial_read"
             )
+        recoverable_identity_codes = {
+            "MESSAGE_IDENTITY_UNCONFIRMED",
+            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+            "C2_MESSAGE_HISTORY_GAP",
+        }
+        for detail in self.flow_gate_details:
+            if detail.error_code not in recoverable_identity_codes:
+                continue
+            if (
+                not detail.gate_scope
+                or detail.min_screen_order is None
+                or detail.max_screen_order is None
+                or not detail.boundary_relation
+            ):
+                raise ValueError("身份/历史门禁缺少 AI 回复边界范围证据")
         if (
             self.ui_frame_invalidated
             and self.authoritative_frame_source

@@ -1,6 +1,6 @@
 # AI智能客服售前跟进系统 技术方案
 
-版本：v0.9.5
+版本：v0.9.6
 
 日期：2026-07-21
 
@@ -8,7 +8,7 @@
 
 适用范围：运营后台、车金后端、Windows Worker、OmniAuto Sidecar、C0—C4、车辆 Product Master、人工接管与飞书通知。
 
-当前唯一架构口径：服务端负责授权、状态机、事实持久化、Brain/Guard、任务和通知；OmniAuto 负责微信 UI 观察、物理目标判定和动作证据；Worker 只负责调度、合同校验、事务持久化与执行。C2 使用固定八位短码和 private 单聊门禁；文字、语音、图片按同一最终画面顺序入库，一条物理媒体只形成一个业务对象，所有已触发媒体动作必须有限终态。Brain 只在最新待回复尾部完整且证据足够时生成回复；当前客户媒体失败、高意向及必须人工批准的业务硬风险进入人工接管。人工接管以未关闭 `HandoffEvent` 为权威事实并投影 `waiting_sales_reply`，服务端按同一事件通过车金统一飞书应用立即且至多通知一次所属销售。微信列表在截图与点击之间重排时，点击后的短码校验仍是硬门禁，但明确点到其他会话时允许丢弃旧坐标并在同一授权内完整重新定位一次。当前灰度发布版本和机器合同 revision 统一为 `0.9.5`。
+当前唯一架构口径：服务端负责授权、状态机、事实持久化、Brain/Guard、任务和通知；OmniAuto 负责微信 UI 观察、物理目标判定和动作证据；Worker 只负责调度、合同校验、事务持久化与执行。C2 使用固定八位短码和 private 单聊门禁；文字、语音、图片按同一最终画面顺序入库，一条物理媒体只形成一个业务对象，所有已触发媒体动作必须有限终态。Brain 只在最新待回复尾部完整且证据足够时生成回复；当前客户媒体失败、高意向及必须人工批准的业务硬风险进入人工接管。人工接管以未关闭 `HandoffEvent` 为权威事实并投影 `waiting_sales_reply`，服务端按同一事件通过车金统一飞书应用立即且至多通知一次所属销售。微信列表在截图与点击之间重排时，点击后的短码校验仍是硬门禁，但明确点到其他会话时允许丢弃旧坐标并在同一授权内完整重新定位一次。当前灰度发布版本和机器合同 revision 统一为 `0.9.6`。
 
 ## 文档治理规则
 
@@ -32,12 +32,12 @@
    字段和领域对象字段使用 snake_case，两者不得被误认为两个接口。新增、改名或废弃
    接口必须先修改本文的权威目录和接口编号，不允许在代码、聊天记录或派生合同中另起
    同义名称。
-7. 灰度版本使用唯一 `0.9.x` 序列：`0.9.0`、`0.9.1`、`0.9.2`、`0.9.3`、`0.9.4` 已冻结，本轮基线为 `0.9.5`；
-   后续任何内容不同且进入测试的候选必须升为 `0.9.6、0.9.7……`。PRD、技术方案、全流程图、版本记录、客户端、
+7. 灰度版本使用唯一 `0.9.x` 序列：`0.9.0`、`0.9.1`、`0.9.2`、`0.9.3`、`0.9.4`、`0.9.5` 已冻结，本轮基线为 `0.9.6`；
+   后续任何内容不同且进入测试的候选必须升为 `0.9.7、0.9.8……`。PRD、技术方案、全流程图、版本记录、客户端、
    后端、OmniAuto 合同 `contract_revision`、生成 Schema、manifest 和安装包必须写入同一个
    精确版本，禁止各自升版、复用旧号覆盖新内容或把占位符 `0.9.X` 写入运行产物。
    `contract_version=3`、`observation_schema_version=3` 和文中 V3 仅是协议结构代号，不属于
-   灰度发布版本；对外沟通、兼容校验和发布追溯统一使用 `contract_revision=0.9.5 + SHA`。
+   灰度发布版本；对外沟通、兼容校验和发布追溯统一使用 `contract_revision=0.9.6 + SHA`。
 8. 灰度稳定分支固定为 `codex/gray-release-0.9.x`，只接收当前灰度版本的缺陷修复、合同同步、
    测试和发布治理，不在该分支增加下一期功能。每个不可变灰度候选使用精确标签
    `gray-v0.9.0、gray-v0.9.1、gray-v0.9.2、gray-v0.9.3、gray-v0.9.4、gray-v0.9.5……`。`main` 只接收已完成灰度验收的确切标签提交，不允许把
@@ -397,6 +397,151 @@ Worker RPA链路：
 - 任务证据上传：错误日志、截图 URL、日志片段等写入 `task_evidences`。
 - running 任务不因 Worker 离线自动失败；任务详情中 Worker 离线超过 10 分钟应提示运营介入。
 
+#### 3.1.1.1 暂停接单与紧急停止的唯一语义
+
+`暂停接单` 是“停止接收新工作，当前业务流程安全收口后停止”，
+不是强制中断按钮。`紧急停止` 才是立即禁止新 UI 动作的故障处置。
+两者不得共用一个取消布尔值或错误码。
+
+点击“暂停接单”后的状态转换固定为：
+
+```text
+用户点击暂停接单
+-> 本地立即持久化 pause_requested=true
+-> 服务端立即投影 worker.run_status=paused，禁止新 task pull、新首屏扫描、新 read-target 和新 UI 锁
+-> 当前无 inflight_flow_id：立即进入完全 paused
+-> 当前有 inflight_flow_id：仅该流程可继续使用或续租已有资源，并可按原流程重取必需的 UI 锁、授权票、任务 lease 和 batch continuation
+-> 该流程完成事实入库/Journal/Outbox/sent_ack/失败结算，到达业务终态
+-> 释放 UI 锁和 inflight_flow_id
+-> 完全 paused
+```
+
+`inflight_flow_id` 必须在进入某个具体客户的业务流程、首次获取该客户 UI 锁之前持久化，值为当前
+`task_id` 或 `read_run_id`，不得用会话短码、界面 `current_step` 或线程 ID 代替。
+暂停后只允许继续这一个 ID；任何其他会话、恢复队列、扫描或任务必须等待
+重新“开始接单”。客户端界面在收口期显示“正在暂停，当前客户处理完后停止”，
+不得提前显示“已暂停”。
+
+无客户目标的全局首屏扫描不登记 `inflight_flow_id`，暂停时允许直接终止，也不得改变
+任何 Conversation 状态。C2 主循环的唯一分支为：无在途流程且
+`_can_start_new_flow=true` 时允许首屏扫描和获取 read-target；存在在途流程时只允许
+原流程恢复或结算，禁止新扫描；`paused` 且无在途流程时两者都不得执行。禁止在正常
+空闲接单时用 `_can_continue_inflight_flow` 作为进入首屏扫描的前置条件。
+
+服务端在 `Worker.inflight_flow_state` 单一 JSON 字段保存权威在途登记，结构固定为：
+
+```json
+{
+  "status": "active|draining",
+  "flow_id": "task_id or read_run_id",
+  "flow_kind": "task|c2_read|chat_reply",
+  "registered_at": "ISO-8601 UTC",
+  "pause_requested_at": "ISO-8601 UTC or null"
+}
+```
+
+Worker 必须在具体客户业务流程首次获取 UI 锁之前调用 `API-WORKER-06` 登记，只有
+`run_status=running` 且当前没有另一个 active flow 时才能成功。点击暂停时，
+`API-WORKER-03` 必须在同一数据库事务内将 `run_status` 改为 `paused`，并把已有
+active flow 改为 `draining`、写入 `pause_requested_at`；不得接受暂停后新登记。
+当前流程达到业务终态并释放本地 UI 锁后，调用 `API-WORKER-07` 清除同一 flow。
+“业务终态”必须同时满足：本轮 Task/ReplyAction 已终态，本轮 Journal 已结算，
+本轮 Outbox 与 sent_ack 已得到后端确认或进入有同一 flow 凭证可继续重传的明确恢复态。
+任一条件不满足时不得清除本地或后端 `inflight_flow_id`。后端对 `c2_read` 的 finish
+同样必须校验本轮事实结算证明，不得只校验 `task/chat_reply`。
+
+`API-WORKER-07` 请求体固定为：
+
+```json
+{
+  "flow_id": "task_id or read_run_id",
+  "terminal_kind": "task_terminal|read_confirmed|failed_before_message_action|read_failed_no_fact",
+  "conversation_id": "c2_read 时必填，否则为 null",
+  "error_code": "failed_before_message_action/read_failed_no_fact 时必填，否则为 null"
+}
+```
+
+- `task_terminal`：只适用于 `task/chat_reply`，后端任务必须已是终态。
+- `read_confirmed`：只适用于 `c2_read`，后端 Binding 的 `last_read_run_id` 必须等于
+  `flow_id`，且 `last_read_completed_at` 非空、`last_read_result` 为 `new_facts/no_change`。
+- `failed_before_message_action`：只允许在尚未读取消息、尚未触发语音/图片/发送、
+  本地无本 flow 的 Journal/Outbox 时使用；后端必须记录 conversation、error_code 和审计时间。
+  一旦发生消息或媒体动作，只能完成 `read_confirmed`，不得用失败类型提前清除 flow。
+- `read_failed_no_fact`：已经调用当前会话消息读取，但 Sidecar、OCR 或合同校验在形成任何
+  可信消息、媒体动作、Ledger、Journal、Outbox、sent_ack 前失败时使用；后端确认同一
+  `read_run_id` 没有消息事实并记录审计。它不能用于绕过已经形成的事实或动作。
+
+所有 terminal kind 在本地调用 finish 前，都必须检查同一 flow 的待处理 Outbox、Ledger、
+ActionJournal 和 sent_ack；`task_terminal` 也不例外。发送前嵌套复读与外层任务复用同一
+flow 时，必须先结算嵌套产生的 C2 事实，再结束任务 flow。
+
+暂停后所有续行请求必须携带 `X-Inflight-Flow-Id`。服务端仅在该值与
+`Worker.inflight_flow_state.flow_id` 严格相等、状态为 `draining`，且原授权、lease、
+会话和幂等键仍有效时，允许该流程续租或重取完成收口所必需的资源；不得据此领取
+新任务、切换会话或扩大授权。客户端单独传任意 flow ID 不得绕过暂停。
+心跳和 UI 可以展示该字段的只读摘要，但不得成为第二权威来源。
+
+本地持久化位置固定为 Worker SQLite `client_settings` 中唯一键
+`runtime_control_v1`，值为 JSON：
+
+```json
+{
+  "pause_requested": true,
+  "pause_requested_at": "ISO-8601 UTC",
+  "inflight_flow_id": "task_id or read_run_id",
+  "inflight_flow_kind": "task|c2_read|chat_reply",
+  "inflight_started_at": "ISO-8601 UTC"
+}
+```
+
+禁止在 Binding、内存布尔值、UI 属性或另一个文件中再保存同义状态。
+`pause_requested / inflight_flow_id` 的建立、更新和清除必须在同一个 SQLite
+`BEGIN IMMEDIATE` 事务内完成读取、校验和 UPSERT，禁止先读后另开连接覆盖；
+流程终态已持久化后才能清空 `inflight_flow_id`。
+
+强制约束：
+
+- `_can_start_new_flow` 与 `_can_continue_inflight_flow` 必须是两个独立判定。
+  禁止再用 `binding.run_status == running` 同时表示“可接新工作”和“已开始流程可收口”。
+- 暂停期间，当前流程仍必须执行授权复核和安全门禁；暂停不会绕过短码、
+  `private`、消息顺序、claim-send 或发送结果结算。
+- 当前 `c2_read` 已进入语音或图片阶段后，授权复核使用
+  `_can_continue_inflight_flow(read_run_id)`；不得再用 `_can_start_new_flow` 取消当前媒体处理。
+- `pause_requested` 本身不是消息事实、身份门禁或业务风险，不得生成
+  `MESSAGE_IDENTITY_UNCONFIRMED`、`C2_MESSAGE_HISTORY_GAP`、`HandoffEvent`、
+  `waiting_sales_reply`、Brain 请求或飞书通知。
+- 暂停之前已经由业务事实决定的 handoff 可继续幂等结算，但 `HandoffEvent`
+  必须记录原始 `read_run_id / reason_code / created_at`，不得将后来的暂停写成原因。
+- 紧急停止触发后，未开始的 UI 动作立即禁止；已发生的物理点击只允许完成
+  Journal/Outbox 结算，不得重点、补发或把中断伪装成身份 handoff。
+- `API-WORKER-03/06/07` 对同一 Worker 的在途状态读写必须锁定 Worker 数据行
+  （PostgreSQL `SELECT ... FOR UPDATE` 或等价原子条件更新）。两个并发 start 最多一个成功；
+  pause 与 start 并发时不得出现两个 flow、丢失 pause 或把新 flow 伪装成 draining。
+
+客户端重启时如本地仍有 `pause_requested=true`，必须先同步 `run_status=paused`
+并结算已存在的 Journal/Outbox；在用户明确点击“开始接单”之前不得重建 UI 读取流程。
+
+暂停接单必须通过以下定向验收：
+
+1. 空闲时点击暂停：服务端进入 `paused`，之后零 task pull、零 C2 扫描、零 UI 点击。
+2. `target_chat_locating` 中点击暂停：仅原 `read_run_id` 继续到安全终态，其他短码不得开始。
+3. Brain 已返回 `send_reply` 但尚未发送时点击暂停：原 flow 仍按
+   `pre_send_refresh -> claim-send -> send -> sent_ack` 完成；UI 必须明示“当前客户仍会完成”。
+4. Journal 已进入 `trigger_attempted` 时点击暂停：只收口原动作，不得重发；终态后才释放 UI 锁。
+5. `recent_ai_sent` 读取中点击暂停：暂停前后 HandoffEvent 数量必须一致，
+   除非该 `read_run_id` 已有与暂停无关的业务硬门禁证据。
+6. 暂停收口期间重启：重启后仍为 `paused`，只重传已持久化终态，零新 UI 动作。
+7. 紧急停止与暂停分别回放：前者取消未开始动作，后者让原 flow 收口；
+   两者都不得产生身份 handoff。
+8. 正常 running、无 inflight flow 启动 C2 主循环：必须实际完成一次首屏扫描；
+   不得因 `_can_continue_inflight_flow=false` 永久空转。
+9. 当前 read_run 已定位并准备处理语音/图片时点击暂停：原媒体流程继续完成并落账，
+   后续客户不得开始。
+10. C2 ingest 或 sent_ack 暂时失败后点击暂停：保留同一 inflight flow 完成重传；
+    Outbox/Journal 未结算前 `API-WORKER-07` 必须拒绝。
+11. 真实 PostgreSQL 两个并发 start，以及 start 与 pause 并发：只能保留一个权威 flow，
+    不得绕过 paused。
+
 正式接口（下列编号、方法和完整路径是唯一正式名称）：
 
 | 接口编号 | 方法 | 路径 | 用途 |
@@ -406,6 +551,8 @@ Worker RPA链路：
 | `API-WORKER-03` | POST | `/api/workers/{worker_id}/run-status` | Worker 开始接单 / 暂停接单 |
 | `API-WORKER-04` | GET | `/api/workers/{worker_id}/tasks/pull` | Worker 拉取当前可处理任务 |
 | `API-WORKER-05` | POST | `/api/workers/{worker_id}/heartbeat` | Worker 心跳 |
+| `API-WORKER-06` | POST | `/api/workers/{worker_id}/inflight-flow/start` | 在具体客户业务流程首次 UI 锁前登记唯一在途流程；仅 running 可调用 |
+| `API-WORKER-07` | POST | `/api/workers/{worker_id}/inflight-flow/finish` | 业务终态及 UI 锁释放后清除同一在途流程 |
 | `API-TASK-01` | POST | `/api/tasks/{task_id}/claim` | Worker 领取任务 |
 | `API-TASK-02` | POST | `/api/tasks/{task_id}/lease/renew` | Worker 续租运行中的任务 |
 | `API-TASK-03` | POST | `/api/tasks/{task_id}/step` | Worker 上报步骤 |
@@ -1666,7 +1813,7 @@ Worker 必须保留 Outbox 并执行身份刷新重传。在冲突解决前不�
 `fact_scope=current_read_run + delivery_state=not_enqueued`；历史图片和已进入 Outbox
 的图片不得重复处理。
 
-机器合同 revision `0.9.5` 必须完整包含媒体和读取轮次字段，同时表达读取轮次与传输状态、语音动作身份与业务身份分离、
+机器合同 revision `0.9.6` 必须完整包含媒体和读取轮次字段，同时表达读取轮次与传输状态、语音动作身份与业务身份分离、
 选中目标两阶段握手和逐相邻帧同对象证明。`identity_checkpoint.recent_messages[]` 回传
 `origin_read_run_id`；`ledger_state` 只允许作为诊断投影，业务门禁不得读取。
 
@@ -2078,6 +2225,122 @@ recall_precheck_queue 如果对应会话刚在 visible_hit_queue 或 state_targe
 | 读取失败/目标不确认 | 不发送；在原 UI 锁内将待处理 `chat_reply` 以 `C2_REPLY_CONTEXT_RECOVERY_FAILED` 结算，后端取消未发送 action/batch 并创建人工接管；结算无法确认时本地暂停接单，禁止扫描抢跑。 |
 | 输入前或点击前当前会话消息视口变化，且消息序列变化 | 返回 `C3_CONTEXT_CHANGED_BEFORE_SEND`；只允许清理能证明属于本次程序的草稿，不点击发送，新事实进入下一轮读取和 batch。侧栏未读红点、其他会话或无关窗口区域变化不得作为当前会话上下文变化。 |
 
+#### 6.0.4.4.1 AI 回复成功后的 `recent_ai_sent` 监控读取
+
+`recent_ai_sent` 是 `sent_ack` 已被服务端确认后的后续监控读取，用于发现
+客户或销售在 AI 回复之后的新消息。它不是发送前 `pre_send_refresh`，也不是
+物理发送回执确认；三个阶段禁止共用一个“复读失败”分支。
+
+本节恢复逻辑只在 `read_reason=recent_ai_sent`，且服务端能提供非空
+`reply_action_id + sent_at + reply_text_hash` 时生效。缺少任一字段时不得生成
+AI 边界 `recoverable_hold`，也不得把普通 `ai_active/friend_activation_reading`
+会话改成 `waiting_user_reply`；应回到该读取原因原有的身份恢复或硬门禁流程。
+
+服务端确认 `sent_ack` 后，Conversation 的唯一业务状态是
+`waiting_user_reply`。`ai_active` 只表示 AI 能力可用，不是“AI 已回复后的等待状态”，
+不得在发送成功、监控无变化或身份恢复期间把 Conversation 投影为 `ai_active`。
+
+该流程必须使用以下边界：
+
+```text
+ai_reply_boundary = 服务端已确认 sent_ack 对应的 reply_action_id
+                    + sent_at
+                    + reply_text_hash
+                    + 已持久化 worker_stable_id（建立成功时）
+```
+
+Worker 每次读取时必须先合并服务端 `identity_checkpoint`、本地已确认 AI 回执和
+`possible_ai_send / ai_unreconciled` 事实，再判断画面候选是位于边界之前、等于边界，
+还是可能位于边界之后。禁止先把全屏身份异常上报为 handoff，再尝试区分新旧。
+
+唯一状态表：
+
+| 观察结果 | 证据条件 | 服务端处理 | 会话状态 |
+|---|---|---|---|
+| 无新消息 | 没有候选位于 `ai_reply_boundary` 之后 | 结算 `no_change`，更新读取冷却；不创建 batch、Brain 或 handoff | 保持 `waiting_user_reply` |
+| AI 本次回复未建立稳定气泡身份 | 候选与 `reply_action_id + reply_text_hash + sent_at` 对应，且没有更新的客户候选 | 保留/merge `ai_unreconciled`，记 warning；不把它当销售人工回复，不创建身份 handoff | 保持 `waiting_user_reply` |
+| 历史消息身份不清 | 异常范围可证明不晚于 `ai_reply_boundary` | 记 `historical_warning`，不创建 `recoverable_hold/HandoffEvent` | 保持 `waiting_user_reply` |
+| 可能存在新消息，但角色或顺序无法确认 | 候选可能位于边界之后，或缺少顺序证据而无法排除 | 首次只创建 `recoverable_hold`；先纯数据合并，仍不清时最多一次当前会话稳定重读 | 保持 `waiting_user_reply`，禁止立即投影 `waiting_sales_reply` |
+| 恢复耗尽后仍无法排除新客户消息 | 纯数据恢复和一次稳定重读均已实际执行且失败，异常仍切入最新待回复尾部 | 幂等创建一个身份 `HandoffEvent`，通知销售 | 进入 `waiting_sales_reply` |
+| 确认新客户消息 | 边界之后的 `customer` 事实身份、顺序和内容完整 | 正常入库，创建/合并新 batch 并进入 Brain | 按本轮 Brain/Guard 结果转移 |
+| 确认销售人工回复 | 边界之后的 `self` 事实不匹配任何 AI `reply_action/sent_ack` | 按销售已接管处理，不创建新 AI 回复 | 进入 `sales_replied_waiting_user` |
+
+硬约束：
+
+- `MESSAGE_IDENTITY_UNCONFIRMED`、`MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS` 和
+  `C2_MESSAGE_HISTORY_GAP` 不得被后端放入“非临时门禁即直接 handoff”的默认分支。
+- 上述门禁必须携带 `gate_scope + min/max_screen_order + boundary_relation`。
+  `boundary_relation` 只允许 `before_or_equal / after / unknown`；缺少时按 `unknown`
+  进入恢复，不得立即 handoff。
+- 同一读取包含多个身份/历史门禁时必须整体判定，不得只取列表第一项：任一门禁为
+  `after` 则整体按 `after`；否则任一门禁为 `unknown` 则整体按 `unknown`；只有全部
+  为 `before_or_equal` 才能按纯历史告警结束。不能用前面的历史告警掩盖后面的最新尾部异常。
+- `message_event_ids=[]` 且没有边界之后客户候选时，禁止仅因画面中某个旧槽位不清
+  创建 handoff。
+- `recent_ai_sent` 只是读取优先级来源，不是操作阶段，不得重复发送、
+  重复好友激活或改写已确认 `sent_ack`。
+- 若用户在该读取中点击“暂停接单”，按 3.1.1.1 让当前 `inflight_flow_id`
+  收口；`pause_requested` 不得改写任何门禁的 `boundary_relation`。
+
+`recoverable_hold` 不得复用 `HandoffEvent`、Conversation.status 或前端 Task。
+它固定保存在 `WechatSessionBinding.recovery_hold` 单一 JSON 字段，结构为：
+
+```json
+{
+  "status": "active|resolved|escalated",
+  "gate_key": "sha256",
+  "reason_code": "MESSAGE_IDENTITY_UNCONFIRMED",
+  "gate_scope": "reply_suffix",
+  "boundary_relation": "after|unknown",
+  "min_screen_order": 0,
+  "max_screen_order": 0,
+  "originating_read_run_id": "read_run_id",
+  "first_seen_at": "ISO-8601 UTC",
+  "last_seen_at": "ISO-8601 UTC",
+  "recovery_attempt_count": 1,
+  "last_recovery_kind": "checkpoint_merge|stable_reread"
+}
+```
+
+同一 `gate_key` 的重复 ingest 只更新 `last_seen_at`，不增加恢复次数。
+`recovery_attempt_count` 只在纯数据 `checkpoint_merge` 或实际 `stable_reread`
+完成且仍失败时递增；最多为 2。值为 2 后，`after` 必须 handoff；`unknown` 若在
+稳定权威重读后仍无法排除影响最新待回复尾部，也必须 handoff。只有能证明全部异常
+均为 `before_or_equal` 才可结束为历史告警，禁止永久停留在 active hold。
+“120 秒”是正常在线处理的最长目标时间，不是绕过第二次恢复的
+定时转人工条件；Worker 暂停、离线或无授权时不得仅因超时升级。
+权威干净读取证明门禁消失时将同一 `gate_key` 标记 `resolved`；升级成功时
+标记 `escalated` 并在 HandoffEvent 证据中引用该 `gate_key`。
+
+`recent_ai_sent` 状态链必须通过以下定向验收：
+
+1. `sent_ack=confirmed + messages=[] + identity_errors=[]`：结算 `no_change`，保持
+   `waiting_user_reply`，零 HandoffEvent、零 Brain。
+2. AI 已回复，下轮未能为该 AI 气泡建立稳定身份，且无边界之后候选：
+   保留 `ai_unreconciled`，保持 `waiting_user_reply`，零 HandoffEvent。
+3. 边界之前的历史文字/媒体身份不清：只记 `historical_warning`，不得创建 hold 或 handoff。
+4. 边界之后存在新候选，但角色或顺序不清：第一次只创建
+   `recoverable_hold`，HandoffEvent 为 0；纯数据恢复和一次稳定重读均失败后才允许一个 handoff。
+5. 读到边界之后新 `customer` 文字/语音/图片：正常入库并创建新 batch，
+   不得被旧 AI 气泡身份告警阻断。
+6. 读到边界之后新 `self` 消息，且不匹配任何 AI 回执：进入
+   `sales_replied_waiting_user`，不得误合并为 AI 回复。
+7. 构造 `flow_gate_errors=[MESSAGE_IDENTITY_UNCONFIRMED] + message_event_ids=[]`：
+   后端不得直接调用 `create_deterministic_handoff_for_ingest`。
+8. 在第 1—4 项每个阶段点击暂停：只改变 Worker 接单状态，不改变
+   `boundary_relation`、conversation.status 或 HandoffEvent 数量。
+9. 非 `recent_ai_sent` 或缺少有效 AI 边界的身份异常：不得进入本节 hold，
+   不得伪造 `waiting_user_reply`。
+10. 同一请求同时包含历史 `before_or_equal` 和最新 `after/unknown` 门禁：必须按
+    `after/unknown` 恢复，不能被第一条历史错误覆盖。
+11. 两次真实恢复后仍为 `unknown` 且无法排除最新尾部：必须只创建一个幂等 handoff，
+    不得永久保持 active hold。
+
+本节与 3.1.1.1 引入新的机器状态和门禁字段，属于下一个灰度候选
+`0.9.6`。已冻结的 `0.9.5` 不得覆盖发包。实施时 PRD、本文、全流程图、
+版本记录、`contract_revision`、生成 Schema、Worker、后端和安装包必须一次性统一为
+`0.9.6`；不得为 `0.9.5` 增加兼容分支或双字段。
+
 #### 6.0.4.5 召回前 recall_precheck
 
 `chat_reply` 任务不能仅按时间直接创建或发送。服务端发现召回到期后，先生成 `read_reason=recall_precheck` 的读取目标。
@@ -2252,7 +2515,7 @@ Worker C2 读取某个会话时，执行顺序固定为：
 上述顺序是唯一合法流程。禁止在右键前提交正式 Worker 身份，禁止用 voice anchor 直接生成
 source key，禁止在动作后用相同正文、相同 anchor 或坐标找回编号。
 
-机器合同 revision `0.9.5` 在 Sidecar 请求/返回、ActionJournal、Worker 本地身份预留和最终 V3 evidence 中使用以下唯一媒体字段，禁止新增同义字段：
+机器合同 revision `0.9.6` 在 Sidecar 请求/返回、ActionJournal、Worker 本地身份预留和最终 V3 evidence 中使用以下唯一媒体字段，禁止新增同义字段：
 
 | 字段 | 所有者 | 必填规则 |
 |---|---|---|
@@ -2347,7 +2610,7 @@ Worker 必须对上述逻辑矛盾失败关闭。例如 `identity_phase=sequence
 | `sidecar_new_message_occurrences` 及内容 multiset 比较 | 只可用于发现“画面可能新增了什么”，结果必须再进入新观察仲裁 | 用来证明正文属于被点击语音，或认定相同内容是旧消息 |
 | `storage.py` 消息序号状态 | 原子落盘 action ID、reserved ID、identity phase、trigger phase 和 terminal；预留号单调且永不复用 | 崩溃后回收预留号；新动作重用旧 action ID；`trigger_attempted` 后再点击 |
 | `storage.py` 动作前画面状态 | 与 ActionJournal 原子保存 `pre_action_identity_sequence`，覆盖 `committed/selected_action/frame_local_unselected`；动作终态后补齐 `sequence_alignment_evidence` | 只保存已编号项；崩溃后用新截图或相同内容伪造动作前序列 |
-| `contracts/c2_contract_v3.json` 及生成 schema | `contract_revision`、客户端、后端、Sidecar、生成 Schema、样例和 manifest 统一为 `0.9.5`；保留 `authoritative_frame_source=initial_read/final_read/action_journal_recovery`、全部媒体字段及安全误点错误码语义；共用同一样例/哈希 | 使用独立合同版本号；在同一 `0.9.5` 下静默改语义或覆盖已生成候选；产生 `voice_execute_final` 等临时值；保留 `tracking_candidate_counts` 兼容；新增同义字段、双字段兼容或 Worker 本地兜底重判 |
+| `contracts/c2_contract_v3.json` 及生成 schema | `contract_revision`、客户端、后端、Sidecar、生成 Schema、样例和 manifest 统一为 `0.9.6`；保留 `authoritative_frame_source=initial_read/final_read/action_journal_recovery`、全部媒体字段及安全误点错误码语义；共用同一样例/哈希 | 使用独立合同版本号；在同一 `0.9.6` 下静默改语义或覆盖已生成候选；产生 `voice_execute_final` 等临时值；保留 `tracking_candidate_counts` 兼容；新增同义字段、双字段兼容或 Worker 本地兜底重判 |
 
 新流程的唯一落库时点为：预留表/ActionJournal 在点击前落盘；正式 identity catalog、
 Ledger、Outbox 和 `source_message_key` 只在 `historical_restored` 或 `business_committed` 后落盘。
@@ -2685,7 +2948,7 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `contract_version` | integer | 是 | 协议结构代号固定为 `3`，不是发布版本；灰度版本由 `contract_revision=0.9.5` 表达，并同时校验 `contract_sha256 / observation_schema_version`。 |
+| `contract_version` | integer | 是 | 协议结构代号固定为 `3`，不是发布版本；灰度版本由 `contract_revision=0.9.6` 表达，并同时校验 `contract_sha256 / observation_schema_version`。 |
 | `read_run_id` | string | 是 | 本次读取运行 ID。 |
 | `conversation_id` | string | 是 | 服务端已绑定会话 ID。 |
 | `remark_code` | string | 是 | 本轮已确认的客户短码。 |
@@ -3509,7 +3772,7 @@ failed 终态并进入 Ledger/Outbox，禁止永久停留在 `C2_IMAGE_FACT_PEND
 
 `structural_image_candidate / explained_voice_region` 是 OmniAuto 内部仲裁对象，不新增
 后端接口字段。但本次语音身份生命周期已改变跨进程机器语义，不得继续沿用
-灰度 `0.9.5`；权威画面枚举、媒体编排和安全误点恢复必须在同一版本中同步 OmniAuto、Worker、后端 schema、样例和合同测试。
+灰度 `0.9.6`；权威画面枚举、媒体编排和安全误点恢复必须在同一版本中同步 OmniAuto、Worker、后端 schema、样例和合同测试。
 
 ### 8.2 单会话图片处理流程
 

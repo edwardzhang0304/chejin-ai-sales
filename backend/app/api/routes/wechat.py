@@ -31,6 +31,7 @@ def scan_result(
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
 ):
     worker = worker_service.authenticate_worker_client(db, worker_id, x_worker_token, x_client_instance_id)
+    worker_service.validate_inflight_continuation(worker, None, new_work=True)
     try:
         data = wechat_service.ingest_scan_result(db, worker, payload)
         db.commit()
@@ -49,6 +50,7 @@ def read_targets(
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
 ):
     worker = worker_service.authenticate_worker_client(db, worker_id, x_worker_token, x_client_instance_id)
+    worker_service.validate_inflight_continuation(worker, None, new_work=True)
     try:
         data = wechat_service.read_targets(db, worker, limit)
         db.commit()
@@ -83,6 +85,7 @@ def read_authorization(
         default=None,
         alias="X-Client-Instance-Id",
     ),
+    x_inflight_flow_id: str | None = Header(default=None, alias="X-Inflight-Flow-Id"),
 ):
     worker = worker_service.authenticate_worker_client(
         db,
@@ -90,6 +93,7 @@ def read_authorization(
         x_worker_token,
         x_client_instance_id,
     )
+    worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
     try:
         data = wechat_service.read_authorization_for_worker(
             db,
@@ -117,8 +121,10 @@ def confirm_friend_activation(
     db: Session = Depends(get_db),
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
+    x_inflight_flow_id: str | None = Header(default=None, alias="X-Inflight-Flow-Id"),
 ):
     worker = worker_service.authenticate_worker_client(db, worker_id, x_worker_token, x_client_instance_id)
+    worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
     try:
         data = wechat_service.confirm_friend_activation(db, worker, conversation_id, payload)
         db.commit()
@@ -140,8 +146,10 @@ def ingest_messages(
         default=None,
         alias="X-C2-Settlement-Token",
     ),
+    x_inflight_flow_id: str | None = Header(default=None, alias="X-Inflight-Flow-Id"),
 ):
     worker = worker_service.authenticate_worker_client(db, worker_id, x_worker_token, x_client_instance_id)
+    worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
     try:
         data = (
             wechat_service.settle_messages_without_ui(

@@ -271,6 +271,28 @@ class WebUiBindingBehaviorTest(unittest.TestCase):
         self.assertEqual(payload["model"]["workerId"], "worker-existing")
         self.assertNotEqual(payload["screen"], "bind")
 
+    def test_runtime_control_read_failure_does_not_project_client_offline(self):
+        with _headless_web_ui_module() as module, patch.object(
+            module, "_log_rows", return_value=[]
+        ), patch.object(module, "latest_incident", return_value=None), patch.object(
+            module, "lock_summary", return_value={}
+        ), patch.object(
+            module, "load_runtime_control", side_effect=PermissionError("locked")
+        ):
+            binding = Binding(
+                worker_id="worker-existing",
+                worker_token="token-existing",
+                client_instance_id="client-existing",
+                run_status="paused",
+            )
+            window = self._window(module, binding)
+            payload = json.loads(window.bridge.initialState())
+
+        self.assertEqual(payload["screen"], "paused-empty")
+        self.assertEqual(
+            payload["model"]["status"]["connectionState"], "连接正常"
+        )
+
     def test_binding_success_emits_workbench_state_and_starts_runner(self):
         with _headless_web_ui_module() as module, patch.object(
             module, "_log_rows", return_value=[]
