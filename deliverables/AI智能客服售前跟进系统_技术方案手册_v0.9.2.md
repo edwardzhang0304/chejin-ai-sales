@@ -1,14 +1,14 @@
 # AI智能客服售前跟进系统 技术方案
 
-版本：v0.9.1
+版本：v0.9.2
 
 日期：2026-07-21
 
-最后更新：2026-08-12
+最后更新：2026-08-14
 
 适用范围：运营后台、车金后端、Windows Worker、OmniAuto Sidecar、C0—C4、车辆 Product Master、人工接管与飞书通知。
 
-当前唯一架构口径：服务端负责授权、状态机、事实持久化、Brain/Guard、任务和通知；OmniAuto 负责微信 UI 观察、物理目标判定和动作证据；Worker 只负责调度、合同校验、事务持久化与执行。C2 使用固定八位短码和 private 单聊门禁；文字、语音、图片按同一最终画面顺序入库，一条物理媒体只形成一个业务对象，所有已触发媒体动作必须有限终态。Brain 只在最新待回复尾部完整且证据足够时生成回复；当前客户媒体失败、高意向及必须人工批准的业务硬风险进入人工接管。人工接管以未关闭 `HandoffEvent` 为权威事实并投影 `waiting_sales_reply`，服务端按同一事件通过车金统一飞书应用立即且至多通知一次所属销售。微信列表在截图与点击之间重排时，点击后的短码校验仍是硬门禁，但明确点到其他会话时允许丢弃旧坐标并在同一授权内完整重新定位一次。当前灰度发布版本和机器合同 revision 统一为 `0.9.1`。
+当前唯一架构口径：服务端负责授权、状态机、事实持久化、Brain/Guard、任务和通知；OmniAuto 负责微信 UI 观察、物理目标判定和动作证据；Worker 只负责调度、合同校验、事务持久化与执行。C2 使用固定八位短码和 private 单聊门禁；文字、语音、图片按同一最终画面顺序入库，一条物理媒体只形成一个业务对象，所有已触发媒体动作必须有限终态。Brain 只在最新待回复尾部完整且证据足够时生成回复；当前客户媒体失败、高意向及必须人工批准的业务硬风险进入人工接管。人工接管以未关闭 `HandoffEvent` 为权威事实并投影 `waiting_sales_reply`，服务端按同一事件通过车金统一飞书应用立即且至多通知一次所属销售。微信列表在截图与点击之间重排时，点击后的短码校验仍是硬门禁，但明确点到其他会话时允许丢弃旧坐标并在同一授权内完整重新定位一次。当前灰度发布版本和机器合同 revision 统一为 `0.9.2`。
 
 ## 文档治理规则
 
@@ -32,15 +32,15 @@
    字段和领域对象字段使用 snake_case，两者不得被误认为两个接口。新增、改名或废弃
    接口必须先修改本文的权威目录和接口编号，不允许在代码、聊天记录或派生合同中另起
    同义名称。
-7. 灰度版本使用唯一 `0.9.x` 序列：本轮基线为 `0.9.1`，后续每个内容不同且进入测试的
-   不可变候选依次升为 `0.9.1、0.9.2……`。PRD、技术方案、全流程图、版本记录、客户端、
+7. 灰度版本使用唯一 `0.9.x` 序列：`0.9.0`、`0.9.1` 已冻结，本轮基线为 `0.9.2`；
+   后续任何内容不同且进入测试的候选必须升为 `0.9.3、0.9.4……`。PRD、技术方案、全流程图、版本记录、客户端、
    后端、OmniAuto 合同 `contract_revision`、生成 Schema、manifest 和安装包必须写入同一个
    精确版本，禁止各自升版、复用旧号覆盖新内容或把占位符 `0.9.X` 写入运行产物。
    `contract_version=3`、`observation_schema_version=3` 和文中 V3 仅是协议结构代号，不属于
-   灰度发布版本；对外沟通、兼容校验和发布追溯统一使用 `contract_revision=0.9.1 + SHA`。
+   灰度发布版本；对外沟通、兼容校验和发布追溯统一使用 `contract_revision=0.9.2 + SHA`。
 8. 灰度稳定分支固定为 `codex/gray-release-0.9.x`，只接收当前灰度版本的缺陷修复、合同同步、
    测试和发布治理，不在该分支增加下一期功能。每个不可变灰度候选使用精确标签
-   `gray-v0.9.0、gray-v0.9.1……`。`main` 只接收已完成灰度验收的确切标签提交，不允许把
+   `gray-v0.9.0、gray-v0.9.1、gray-v0.9.2……`。`main` 只接收已完成灰度验收的确切标签提交，不允许把
    dirty 工作区、未固定的本地提交或多个并行开发分支直接合入 `main`。
 
 
@@ -105,7 +105,7 @@ Windows Worker -> OmniAuto Sidecar -> 微信桌面端
 
 ## 运营后台登录与会话鉴权
 
-本节是 PRD v0.9.1“指定账号登录、登录成功即全部权限”的唯一技术实现口径。
+本节是 PRD v0.9.2“指定账号登录、登录成功即全部权限”的唯一技术实现口径。
 鉴权只回答“是不是已登录的后台账号”，第一期不再回答“这个账号属于哪个权限角色”。
 
 ### 登录职责与边界
@@ -917,7 +917,8 @@ classify_outbox_recovery(http_result)
 - 正式 payload 必填字段为 `phone_or_wechat`、`verify_message`、`remark_name`、`remark_code`；缺任一字段必须返回 `TASK_PAYLOAD_INVALID`，且 `wechat_ui_action_attempted=false`，不得触达微信 UI。
 - `remark_name` 必须包含 `remark_code`；`remark_code` 由服务端生成，OmniAuto 只消费不生成。
 - 主链路不使用 `sales_name` 自动拼申请语，不使用 `remark` 兜底备注名，避免字段来源混乱。
-- 加好友结束点是申请添加朋友页最终“确定”按钮的物理点击函数明确返回成功；微信没有可依赖的后续成功状态，不等待成功页面或成功文案。点击成功且没有可靠识别到明确风控/失败提示时，上报 `task.status=completed` 且 `result_code=invite_sent`。点击后的截图/OCR只是诊断步骤，其自身失败不得改变该成功结果。
+- 加好友业务成功点仍是申请添加朋友页最终“确定”按钮的物理点击函数明确返回成功；微信没有可依赖的后续成功状态，不等待成功页面或成功文案。点击成功且没有可靠识别到明确风控/失败提示时，上报 `task.status=completed` 且 `result_code=invite_sent`。
+- 确定按钮点击后等待约 1—2 秒取得稳定画面；只有顶部标题 OCR 精确确认仍为“添加朋友”时，才点击该页面右上角 X 完成 UI 收尾。不得根据联系人资料正文、文字数量或“已通过好友”等正文猜测页面；标题不明确时零点击。该收尾只影响微信页面状态，其自身失败不得覆盖已经确认的 `invite_sent` 事实，也不得重新点击确定按钮。
 
 | 状态/异常 | 处理 |
 |---|---|
@@ -1656,7 +1657,7 @@ Worker 必须保留 Outbox 并执行身份刷新重传。在冲突解决前不�
 `fact_scope=current_read_run + delivery_state=not_enqueued`；历史图片和已进入 Outbox
 的图片不得重复处理。
 
-机器合同 revision `0.9.1` 必须完整包含媒体和读取轮次字段，同时表达读取轮次与传输状态、语音动作身份与业务身份分离、
+机器合同 revision `0.9.2` 必须完整包含媒体和读取轮次字段，同时表达读取轮次与传输状态、语音动作身份与业务身份分离、
 选中目标两阶段握手和逐相邻帧同对象证明。`identity_checkpoint.recent_messages[]` 回传
 `origin_read_run_id`；`ledger_state` 只允许作为诊断投影，业务门禁不得读取。
 
@@ -2242,7 +2243,7 @@ Worker C2 读取某个会话时，执行顺序固定为：
 上述顺序是唯一合法流程。禁止在右键前提交正式 Worker 身份，禁止用 voice anchor 直接生成
 source key，禁止在动作后用相同正文、相同 anchor 或坐标找回编号。
 
-机器合同 revision `0.9.1` 在 Sidecar 请求/返回、ActionJournal、Worker 本地身份预留和最终 V3 evidence 中使用以下唯一媒体字段，禁止新增同义字段：
+机器合同 revision `0.9.2` 在 Sidecar 请求/返回、ActionJournal、Worker 本地身份预留和最终 V3 evidence 中使用以下唯一媒体字段，禁止新增同义字段：
 
 | 字段 | 所有者 | 必填规则 |
 |---|---|---|
@@ -2323,7 +2324,7 @@ binding 证据字段不得声称已绑定；`failed` 只有在目标身份已由
 Worker 必须对上述逻辑矛盾失败关闭。例如 `identity_phase=sequence_reserved` 同时存在
 `worker_stable_id`、`transcript_binding_status=confirmed` 但候选数不是 1、或 Sidecar 改写 action ID，都必须在任何新微信动作和入库前返回 `C2_VOICE_IDENTITY_CONTRACT_INVALID`。
 
-##### 6.0.4.6.1 灰度 `0.9.1` 实施边界
+##### 6.0.4.6.1 灰度 `0.9.2` 实施边界
 
 本表是实施边界，不是可选重构建议。函数后续如改名，仍必须通过 AST/行为门禁证明不存在等价旧逻辑。
 
@@ -2337,7 +2338,7 @@ Worker 必须对上述逻辑矛盾失败关闭。例如 `identity_phase=sequence
 | `sidecar_new_message_occurrences` 及内容 multiset 比较 | 只可用于发现“画面可能新增了什么”，结果必须再进入新观察仲裁 | 用来证明正文属于被点击语音，或认定相同内容是旧消息 |
 | `storage.py` 消息序号状态 | 原子落盘 action ID、reserved ID、identity phase、trigger phase 和 terminal；预留号单调且永不复用 | 崩溃后回收预留号；新动作重用旧 action ID；`trigger_attempted` 后再点击 |
 | `storage.py` 动作前画面状态 | 与 ActionJournal 原子保存 `pre_action_identity_sequence`，覆盖 `committed/selected_action/frame_local_unselected`；动作终态后补齐 `sequence_alignment_evidence` | 只保存已编号项；崩溃后用新截图或相同内容伪造动作前序列 |
-| `contracts/c2_contract_v3.json` 及生成 schema | `contract_revision`、客户端、后端、Sidecar、生成 Schema、样例和 manifest 统一为 `0.9.1`；保留 `authoritative_frame_source=initial_read/final_read/action_journal_recovery`、全部媒体字段及安全误点错误码语义；共用同一样例/哈希 | 使用独立合同版本号；在同一 `0.9.1` 下静默改语义或覆盖已生成候选；产生 `voice_execute_final` 等临时值；保留 `tracking_candidate_counts` 兼容；新增同义字段、双字段兼容或 Worker 本地兜底重判 |
+| `contracts/c2_contract_v3.json` 及生成 schema | `contract_revision`、客户端、后端、Sidecar、生成 Schema、样例和 manifest 统一为 `0.9.2`；保留 `authoritative_frame_source=initial_read/final_read/action_journal_recovery`、全部媒体字段及安全误点错误码语义；共用同一样例/哈希 | 使用独立合同版本号；在同一 `0.9.2` 下静默改语义或覆盖已生成候选；产生 `voice_execute_final` 等临时值；保留 `tracking_candidate_counts` 兼容；新增同义字段、双字段兼容或 Worker 本地兜底重判 |
 
 新流程的唯一落库时点为：预留表/ActionJournal 在点击前落盘；正式 identity catalog、
 Ledger、Outbox 和 `source_message_key` 只在 `historical_restored` 或 `business_committed` 后落盘。
@@ -2667,7 +2668,7 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `contract_version` | integer | 是 | 协议结构代号固定为 `3`，不是发布版本；灰度版本由 `contract_revision=0.9.1` 表达，并同时校验 `contract_sha256 / observation_schema_version`。 |
+| `contract_version` | integer | 是 | 协议结构代号固定为 `3`，不是发布版本；灰度版本由 `contract_revision=0.9.2` 表达，并同时校验 `contract_sha256 / observation_schema_version`。 |
 | `read_run_id` | string | 是 | 本次读取运行 ID。 |
 | `conversation_id` | string | 是 | 服务端已绑定会话 ID。 |
 | `remark_code` | string | 是 | 本轮已确认的客户短码。 |
@@ -3481,7 +3482,7 @@ failed 终态并进入 Ledger/Outbox，禁止永久停留在 `C2_IMAGE_FACT_PEND
 
 `structural_image_candidate / explained_voice_region` 是 OmniAuto 内部仲裁对象，不新增
 后端接口字段。但本次语音身份生命周期已改变跨进程机器语义，不得继续沿用
-灰度 `0.9.1`；权威画面枚举、媒体编排和安全误点恢复必须在同一版本中同步 OmniAuto、Worker、后端 schema、样例和合同测试。
+灰度 `0.9.2`；权威画面枚举、媒体编排和安全误点恢复必须在同一版本中同步 OmniAuto、Worker、后端 schema、样例和合同测试。
 
 ### 8.2 单会话图片处理流程
 

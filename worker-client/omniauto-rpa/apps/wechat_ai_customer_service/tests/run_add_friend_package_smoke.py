@@ -1491,6 +1491,157 @@ def test_invite_confirm_uses_durable_action_journal_before_click() -> None:
     )
 
 
+def test_post_confirm_residual_dialog_uses_only_exact_top_title() -> None:
+    from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.add_friend_windows import (
+        add_friend_residual_dialog_close_target,
+    )
+
+    image_size = (468, 834)
+    sparse_title = [{
+        "text": "添加朋友",
+        "left": 188,
+        "top": 12,
+        "right": 280,
+        "bottom": 42,
+        "center_x": 234,
+        "center_y": 27,
+        "confidence": 0.99,
+    }]
+    target = add_friend_residual_dialog_close_target(sparse_title, image_size)
+    assert_true(target is not None, "sparse real add-friend page should be closable from its title")
+    assert_true(
+        target.get("click_bounds") == [412, 6, 462, 58],
+        f"close target must stay inside the dialog title bar: {target}",
+    )
+    body_only = [{**sparse_title[0], "top": 260, "bottom": 292, "center_y": 276}]
+    assert_true(
+        add_friend_residual_dialog_close_target(body_only, image_size) is None,
+        "body copy must not authorize a close click",
+    )
+    invite_form_title = [{**sparse_title[0], "text": "申请添加朋友"}]
+    assert_true(
+        add_friend_residual_dialog_close_target(invite_form_title, image_size) is None,
+        "the invite form title must not be mistaken for the residual profile dialog",
+    )
+
+
+def test_post_confirm_residual_dialog_is_closed_once() -> None:
+    from PIL import Image
+
+    from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import add_friend_windows
+
+    image = Image.new("RGB", (468, 834), (255, 255, 255))
+    title_item = {
+        "text": "添加朋友",
+        "left": 188,
+        "top": 12,
+        "right": 280,
+        "bottom": 42,
+        "center_x": 234,
+        "center_y": 27,
+        "confidence": 0.99,
+    }
+    targets_map = {
+        "invite_greeting_textarea": {"x": 120, "y": 220, "click_bounds": [40, 160, 428, 280]},
+        "invite_remark_input": {"x": 120, "y": 340, "click_bounds": [40, 300, 428, 380]},
+        "invite_confirm_button": {"x": 360, "y": 790, "click_bounds": [300, 750, 430, 820]},
+    }
+
+    class WindowApi:
+        def __init__(self) -> None:
+            self.exists = True
+
+        def IsWindow(self, _hwnd: int) -> bool:
+            return self.exists
+
+    class FakeOps:
+        def __init__(self) -> None:
+            self.capture_count = 0
+            self.capture_hwnds: list[int] = []
+            self.ocr_count = 0
+            self.click_names: list[str] = []
+            self.click_hwnds: list[int] = []
+            self.win32gui = WindowApi()
+
+        def add_friend_paced_pause(self, *_args, **_kwargs) -> float:
+            return 0.0
+
+        def capture_wechat_window_visible_screen(self, hwnd, *_args, **_kwargs):
+            self.capture_count += 1
+            self.capture_hwnds.append(int(hwnd))
+            return image, f"capture-{self.capture_count}.png"
+
+        def run_ocr_on_screen_region(self, *_args, **_kwargs):
+            self.ocr_count += 1
+            return [] if self.ocr_count == 1 else [title_item]
+
+        def paste_invite_form_text(self, *_args, **_kwargs):
+            return {"ok": True}
+
+        def capture_invite_form_field_review(self, *_args, **_kwargs):
+            return {
+                "shot": image,
+                "screenshot_path": "filled.png",
+                "annotated_path": "filled-annotated.png",
+                "ocr_items": [],
+                "ocr_seconds": 0.0,
+                "targets_map": targets_map,
+                "targets": list(targets_map.values()),
+                "field_verification": {
+                    "ok": True,
+                    "verify_message": {"ok": True},
+                    "remark_name": {"ok": True},
+                    "remark_code": {"ok": True},
+                },
+            }
+
+        def human_window_image_click_in_bounds(self, hwnd, *_args, **kwargs):
+            action_name = str(kwargs.get("action_name") or "")
+            self.click_names.append(action_name)
+            self.click_hwnds.append(int(hwnd))
+            if action_name == "post_confirm_add_friend_dialog_close":
+                self.win32gui.exists = False
+            return {"ok": True}
+
+    fake_ops = FakeOps()
+    original_ops = add_friend_windows._SIDECAR_OPS
+    try:
+        add_friend_windows.bind_sidecar_ops(fake_ops)
+        with (
+            patch.object(add_friend_windows, "add_friend_invite_form_targets", return_value=targets_map),
+            patch.object(add_friend_windows, "draw_add_friend_screen_annotation", return_value="annotated.png"),
+        ):
+            result = add_friend_windows.fill_add_friend_invite_form_and_confirm(
+                1001,
+                Path(tempfile.mkdtemp(prefix="add-friend-cleanup-test-")),
+                verify_message="您好",
+                remark_name="客户-CJ8K2P",
+                remark_code="CJ8K2P",
+                parent_dialog_hwnd=2002,
+            )
+    finally:
+        add_friend_windows.bind_sidecar_ops(original_ops)
+
+    assert_true(result.get("ok") is True, f"invite result should remain successful: {result}")
+    assert_true(
+        fake_ops.click_names == ["invite_confirm_button_click", "post_confirm_add_friend_dialog_close"],
+        f"residual dialog must be closed exactly once after confirm: {fake_ops.click_names}",
+    )
+    assert_true(
+        fake_ops.capture_hwnds == [1001, 2002]
+        and fake_ops.click_hwnds == [1001, 2002],
+        f"post-confirm OCR and close must target the surviving parent dialog: "
+        f"captures={fake_ops.capture_hwnds}, clicks={fake_ops.click_hwnds}",
+    )
+    cleanup = result.get("post_confirm_cleanup") or {}
+    assert_true(
+        cleanup.get("detected") is True
+        and cleanup.get("attempted") is True
+        and cleanup.get("closed") is True,
+        f"cleanup evidence mismatch: {cleanup}",
+    )
+
+
 def test_query_verify_invalid_dialog_handle_returns_structured_failure() -> None:
     source = (PROJECT_ROOT / "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/add_friend_windows.py").read_text(encoding="utf-8")
     section = source.split("def input_add_friend_query_and_search", 1)[1].split("def write_add_friend_entry_click_review", 1)[0]
@@ -1755,7 +1906,7 @@ def test_add_friend_pacing_tier_contract() -> None:
         pacing_range,
     )
 
-    for tier in ["critical_click", "input", "verify", "report", "default"]:
+    for tier in ["critical_click", "input", "post_confirm_cleanup", "verify", "report", "default"]:
         assert_true(tier in DEFAULT_ADD_FRIEND_PACING_TIERS, f"missing pacing tier: {tier}")
         low, high = pacing_range(tier)
         assert_true(0 <= low <= high, f"invalid pacing range for {tier}: {(low, high)}")
@@ -1969,6 +2120,8 @@ def main() -> int:
         test_invite_form_field_verification_blocks_confirm_click,
         test_invite_form_failed_field_retries_once_before_confirm,
         test_invite_confirm_uses_durable_action_journal_before_click,
+        test_post_confirm_residual_dialog_uses_only_exact_top_title,
+        test_post_confirm_residual_dialog_is_closed_once,
         test_query_verify_invalid_dialog_handle_returns_structured_failure,
         test_add_friend_primary_locator_contract,
         test_add_friend_live_window_paths_pass_screenshot_to_plus_locator,

@@ -438,6 +438,110 @@ def test_real_adapter_uses_guard_approved_brain_text_without_rewriting(monkeypat
     assert decision.raw_payload["omniauto_brain_result"]["brain_plan"] == brain_result["brain_plan"]
 
 
+def test_real_adapter_second_no_visible_attempt_receives_focused_recovery_instruction(
+    monkeypatch,
+):
+    adapter = RealOmniAutoAIEngineAdapter()
+    captured: dict = {}
+    brain_result = {
+        "rule_name": "customer_service_brain_reply",
+        "adoptable": True,
+        "visible_reply_source": "brain_plan.reply_segments",
+        "reply_text": "可以的，您主要是家用还是日常代步？",
+        "guard_verdict": "pass",
+        "brain_plan": {
+            "recommended_action": "send_reply",
+            "confidence": 0.9,
+            "risk_flags": [],
+            "evidence_refs": ["conversation:last_customer_need_text"],
+            "reply_segments": ["可以的，您主要是家用还是日常代步？"],
+        },
+    }
+
+    def fake_run_brain_isolated(**kwargs):
+        captured.update(kwargs["invocation"])
+        return brain_result
+
+    monkeypatch.setattr(
+        adapter,
+        "_load_config",
+        lambda: {
+            "customer_service_brain": {
+                "provider": "test",
+                "model": "test",
+                "api_key": "test-only",
+            }
+        },
+    )
+    monkeypatch.setattr(adapter, "_load_brain", lambda: object())
+    monkeypatch.setattr(adapter, "_run_brain_isolated", fake_run_brain_isolated)
+
+    decision = adapter.generate_reply_decision(
+        conversation_context={"conversation_id": "conv-no-visible-retry"},
+        message_batch={
+            "id": "batch-no-visible-retry",
+            "generation_attempt": 2,
+            "previous_ai_response_snapshot": {
+                "decision": "retry_later",
+                "error_code": "AI_ENGINE_NO_VISIBLE_REPLY",
+            },
+            "messages": [
+                {"content": "你好我想买10万的车有什么推荐吗"},
+            ],
+        },
+    )
+
+    instruction = captured["target_state"]["brain_retry_instruction"]
+    assert "上一次 Brain 尝试没有形成可发送" in instruction
+    assert "没有可依据的 product_master" in instruction
+    assert "ask_clarifying_question" in instruction
+    assert decision.decision == "send_reply"
+    assert decision.reply_text == "可以的，您主要是家用还是日常代步？"
+
+
+def test_real_adapter_first_attempt_does_not_claim_prior_failure(monkeypatch):
+    adapter = RealOmniAutoAIEngineAdapter()
+    captured: dict = {}
+    brain_result = {
+        "rule_name": "customer_service_brain_no_visible_reply",
+        "adoptable": False,
+        "no_visible_reply": {"class": "quality_failed"},
+        "brain_plan": {},
+    }
+
+    def fake_run_brain_isolated(**kwargs):
+        captured.update(kwargs["invocation"])
+        return brain_result
+
+    monkeypatch.setattr(
+        adapter,
+        "_load_config",
+        lambda: {
+            "customer_service_brain": {
+                "provider": "test",
+                "model": "test",
+                "api_key": "test-only",
+            }
+        },
+    )
+    monkeypatch.setattr(adapter, "_load_brain", lambda: object())
+    monkeypatch.setattr(adapter, "_run_brain_isolated", fake_run_brain_isolated)
+
+    decision = adapter.generate_reply_decision(
+        conversation_context={"conversation_id": "conv-first-attempt"},
+        message_batch={
+            "id": "batch-first-attempt",
+            "generation_attempt": 1,
+            "previous_ai_response_snapshot": {},
+            "messages": [{"content": "10万预算有什么推荐"}],
+        },
+    )
+
+    assert "brain_retry_instruction" not in captured["target_state"]
+    assert decision.decision == "retry_later"
+    assert decision.error_code == "AI_ENGINE_NO_VISIBLE_REPLY"
+
+
 def test_real_adapter_emits_structured_hard_opt_out_without_customer_reply(monkeypatch):
     adapter = RealOmniAutoAIEngineAdapter()
     brain_result = {
@@ -973,6 +1077,85 @@ def test_due_brain_retry_is_reclaimed_and_exhaustion_creates_handoff(monkeypatch
         assert db.query(HandoffEvent).filter(
             HandoffEvent.batch_id == batch["batch_id"]
         ).count() == 1
+
+
+def test_brain_retry_and_terminal_handoff_preserve_each_attempt_evidence(
+    monkeypatch,
+):
+    class NoVisibleAdapter:
+        def __init__(self):
+            self.requests: list[dict] = []
+
+        def generate_reply_decision(self, **kwargs):
+            request = dict(kwargs["message_batch"])
+            self.requests.append(request)
+            attempt = int(request.get("generation_attempt") or 0)
+            return c3_service.AIEngineDecision(
+                decision="retry_later",
+                guard_result="failed",
+                error_code="AI_ENGINE_NO_VISIBLE_REPLY",
+                suggested_action="retry_later",
+                raw_payload={
+                    "omniauto_brain_result": {
+                        "attempt_marker": attempt,
+                        "reason": "brain_quality_verification_failed",
+                    }
+                },
+            )
+
+    adapter = NoVisibleAdapter()
+    monkeypatch.setattr(c3_service, "get_ai_engine_adapter", lambda: adapter)
+    worker, binding = _setup_bound_conversation()
+    message_event_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-no-visible-attempt-history",
+        "你好我想买10万的车有什么推荐吗",
+    )
+    batch_id = _collect(binding["conversation_id"], message_event_id)["batch_id"]
+
+    first = _generate(batch_id)
+    assert first["decision"] == "retry_later"
+    with SessionLocal() as db:
+        claim = c3_service.claim_message_batch_generation(
+            db,
+            batch_id=batch_id,
+            force=True,
+        )
+        assert claim["run"] is True
+        assert claim["attempt"] == 2
+        second = c3_service.generate_for_batch(
+            db,
+            batch_id=batch_id,
+            expected_generation_attempt=2,
+        )
+        db.commit()
+    assert second["decision"] == "handoff"
+    assert second["error_code"] == "AI_ENGINE_RETRY_EXHAUSTED"
+    second_request = next(
+        request
+        for request in reversed(adapter.requests)
+        if int(request.get("generation_attempt") or 0) == 2
+    )
+    previous = second_request["previous_ai_response_snapshot"]
+    assert previous["error_code"] == "AI_ENGINE_NO_VISIBLE_REPLY"
+    assert previous["generation_attempt_history"][0]["attempt"] == 1
+
+    with SessionLocal() as db:
+        row = db.get(MessageBatch, batch_id)
+        event = db.query(HandoffEvent).filter(
+            HandoffEvent.batch_id == batch_id,
+        ).one()
+        history = row.ai_response_snapshot["generation_attempt_history"]
+        assert [item["attempt"] for item in history] == [1, 2]
+        assert [
+            item["response"]["raw_payload"]["omniauto_brain_result"][
+                "attempt_marker"
+            ]
+            for item in history
+        ] == [1, 2]
+        assert row.ai_response_snapshot["decision"] == "handoff"
+        assert event.ai_payload["generation_attempt_history"] == history
 
 
 def test_separate_ingest_calls_create_new_batch_after_prior_terminal_batch():

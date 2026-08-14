@@ -113,6 +113,13 @@ HIGH_INTENT_MARKERS = {
     "used_car_high_intent",
 }
 
+NO_VISIBLE_REPLY_RECOVERY_INSTRUCTION = (
+    "上一次 Brain 尝试没有形成可发送的客户可见回复。请基于同一批消息和同一权威证据重新生成完整 BrainPlan；"
+    "如果客户是低风险购车咨询，但当前没有可依据的 product_master 车型资料，不得编造车型、价格或库存，"
+    "应使用 ask_clarifying_question 或 collect_customer_info，自然追问 1到2 个能继续筛选的需求，"
+    "并且必须将完整客户可见文字放入 reply_segments。只有存在真实硬风险时才能转人工。"
+)
+
 
 def _is_structured_high_intent_handoff(
     result: dict,
@@ -146,6 +153,32 @@ def _is_structured_high_intent_handoff(
         if str(value or "").strip()
     }
     return bool(markers & HIGH_INTENT_MARKERS)
+
+
+def _brain_retry_instruction(message_batch: dict) -> str:
+    """Return a focused second-attempt instruction without inventing content.
+
+    Durable C3 retries used to submit the exact same Brain request after an
+    invisible-result failure.  The second attempt now receives only the prior
+    failure class plus a narrow recovery policy; customer-visible text remains
+    authored by Brain and still passes the existing validation and Guard.
+    """
+
+    try:
+        attempt = int(message_batch.get("generation_attempt") or 0)
+    except (TypeError, ValueError):
+        attempt = 0
+    if attempt <= 1:
+        return ""
+    previous = (
+        message_batch.get("previous_ai_response_snapshot")
+        if isinstance(message_batch.get("previous_ai_response_snapshot"), dict)
+        else {}
+    )
+    error_code = str(previous.get("error_code") or "").strip()
+    if error_code != "AI_ENGINE_NO_VISIBLE_REPLY":
+        return ""
+    return NO_VISIBLE_REPLY_RECOVERY_INSTRUCTION
 
 
 class RealOmniAutoAIEngineAdapter:
@@ -344,6 +377,9 @@ class RealOmniAutoAIEngineAdapter:
             "trigger_type": message_batch.get("trigger_type") or "customer_message",
             "recall_cycle_id": message_batch.get("recall_cycle_id"),
         }
+        retry_instruction = _brain_retry_instruction(message_batch)
+        if retry_instruction:
+            target_state["brain_retry_instruction"] = retry_instruction
         invocation = {
             "target_name": target_name,
             "target_state": target_state,

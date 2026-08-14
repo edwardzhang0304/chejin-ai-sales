@@ -12,6 +12,7 @@ DEFAULT_ADD_FRIEND_PACING_PROFILE = "balanced"
 DEFAULT_ADD_FRIEND_PACING_TIERS: dict[str, tuple[int, int]] = {
     "critical_click": (1000, 2000),
     "input": (180, 520),
+    "post_confirm_cleanup": (1000, 2000),
     "verify": (350, 900),
     "report": (0, 0),
     "default": (1000, 2000),
