@@ -773,7 +773,10 @@ def _reject_conversation_for_hard_opt_out(
     batch.decision = "hard_opt_out"
     batch.error_code = None
     batch.suggested_action = "do_not_contact"
-    batch.ai_response_snapshot = _decision_payload(decision)
+    batch.ai_response_snapshot = _preserve_generation_attempt_history(
+        batch,
+        _decision_payload(decision),
+    )
     batch.generated_at = utcnow()
     db.flush()
     return {
@@ -1211,6 +1214,66 @@ def _decision_payload(decision: AIEngineDecision) -> dict[str, Any]:
     }
 
 
+def _generation_attempt_history(batch: MessageBatch) -> list[dict[str, Any]]:
+    snapshot = batch.ai_response_snapshot if isinstance(batch.ai_response_snapshot, dict) else {}
+    history = snapshot.get("generation_attempt_history")
+    if not isinstance(history, list):
+        return []
+    return [dict(item) for item in history if isinstance(item, dict)]
+
+
+def _attempt_number(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _preserve_generation_attempt_history(
+    batch: MessageBatch,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    result = dict(payload)
+    history = _generation_attempt_history(batch)
+    if history:
+        result["generation_attempt_history"] = history
+    return result
+
+
+def _record_generation_attempt(
+    batch: MessageBatch,
+    *,
+    attempt: int,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Append one immutable provider result before terminal projection.
+
+    ``ai_response_snapshot`` remains the current batch projection, while the
+    bounded history keeps the raw result for every claimed generation attempt.
+    This prevents retry/handoff projection from destroying the evidence needed
+    to explain a no-visible-reply failure.
+    """
+
+    response = dict(payload)
+    response.pop("generation_attempt_history", None)
+    history = [
+        item
+        for item in _generation_attempt_history(batch)
+        if _attempt_number(item.get("attempt")) != _attempt_number(attempt)
+    ]
+    history.append(
+        {
+            "attempt": _attempt_number(attempt),
+            "recorded_at": utcnow().isoformat(),
+            "response": response,
+        }
+    )
+    history.sort(key=lambda item: _attempt_number(item.get("attempt")))
+    result = dict(response)
+    result["generation_attempt_history"] = history[-5:]
+    return result
+
+
 def open_handoff_events_for_conversation(
     db: Session,
     conversation_id: str,
@@ -1437,6 +1500,10 @@ def _create_handoff(
     decision: AIEngineDecision,
     handoff_reason_code: str,
 ) -> HandoffEvent:
+    handoff_payload = _preserve_generation_attempt_history(
+        batch,
+        _decision_payload(decision),
+    )
     event, _created = _create_or_reuse_open_handoff(
         db,
         conversation=conversation,
@@ -1446,7 +1513,7 @@ def _create_handoff(
         trigger_message_event_ids=list(batch.message_event_ids or []),
         risk_flags=decision.risk_flags or [],
         evidence_refs=decision.evidence_refs or [],
-        ai_payload=_decision_payload(decision),
+        ai_payload=handoff_payload,
     )
     conversation.status = "waiting_sales_reply"
     conversation.recall_origin_status = None
@@ -1459,7 +1526,7 @@ def _create_handoff(
     batch.decision = "handoff"
     batch.error_code = handoff_reason_code
     batch.suggested_action = "handoff"
-    batch.ai_response_snapshot = _decision_payload(decision)
+    batch.ai_response_snapshot = handoff_payload
     batch.generated_at = utcnow()
     batch.generation_started_at = None
     return event
@@ -1565,7 +1632,10 @@ def _pause_conversation_for_manual(
     batch.decision = "pause"
     batch.error_code = reason_code
     batch.suggested_action = "sales_handoff"
-    batch.ai_response_snapshot = _decision_payload(decision)
+    batch.ai_response_snapshot = _preserve_generation_attempt_history(
+        batch,
+        _decision_payload(decision),
+    )
     return event
 
 
@@ -1850,7 +1920,10 @@ def _schedule_retry_or_handoff(
     batch.decision = "retry_later"
     batch.error_code = decision.error_code
     batch.suggested_action = "retry_later"
-    batch.ai_response_snapshot = _decision_payload(decision)
+    batch.ai_response_snapshot = _preserve_generation_attempt_history(
+        batch,
+        _decision_payload(decision),
+    )
     batch.generated_at = utcnow()
     batch.generation_started_at = None
     db.flush()
@@ -2000,6 +2073,11 @@ def generate_for_batch(
     # provider network call. New customer/sales facts can then supersede this
     # generation while the model is thinking instead of waiting on our lock.
     generation_attempt = int(batch.generation_attempt_count or 0)
+    previous_ai_response_snapshot = (
+        dict(batch.ai_response_snapshot)
+        if isinstance(batch.ai_response_snapshot, dict)
+        else {}
+    )
     prepared_batch_id = batch.id
     prepared_trigger_type = batch.trigger_type
     prepared_recall_cycle_id = batch.recall_cycle_id
@@ -2014,6 +2092,8 @@ def generate_for_batch(
                 "messages": messages,
                 "trigger_type": prepared_trigger_type,
                 "recall_cycle_id": prepared_recall_cycle_id,
+                "generation_attempt": generation_attempt,
+                "previous_ai_response_snapshot": previous_ai_response_snapshot,
             },
         )
     except AppError as exc:
@@ -2059,7 +2139,11 @@ def generate_for_batch(
     conversation = _conversation_for_binding(db, binding)
 
     payload = _decision_payload(decision)
-    batch.ai_response_snapshot = payload
+    batch.ai_response_snapshot = _record_generation_attempt(
+        batch,
+        attempt=generation_attempt,
+        payload=payload,
+    )
 
     if decision.decision == "hard_opt_out":
         evidence_event = _validated_hard_opt_out_event(
@@ -2085,7 +2169,10 @@ def generate_for_batch(
             raw_payload=payload,
         )
         payload = _decision_payload(decision)
-        batch.ai_response_snapshot = payload
+        batch.ai_response_snapshot = _preserve_generation_attempt_history(
+            batch,
+            payload,
+        )
 
     if decision.decision == "send_reply":
         final_reply_text = _final_send_text(decision.reply_text)
@@ -2133,7 +2220,10 @@ def generate_for_batch(
                     raw_payload={"brain_decision": payload, "vehicle_ids": exc.data.get("vehicle_ids", [])},
                 )
                 payload = _decision_payload(decision)
-                batch.ai_response_snapshot = payload
+                batch.ai_response_snapshot = _preserve_generation_attempt_history(
+                    batch,
+                    payload,
+                )
             else:
                 task = _create_chat_reply_task(db, binding=binding, action=action)
                 batch.status = "reply_action_created"
@@ -2201,7 +2291,10 @@ def generate_for_batch(
         batch.decision = decision.decision
         batch.error_code = decision.error_code
         batch.suggested_action = decision.suggested_action or decision.decision
-        batch.ai_response_snapshot = payload
+        batch.ai_response_snapshot = _preserve_generation_attempt_history(
+            batch,
+            payload,
+        )
         batch.generated_at = utcnow()
         if decision.decision == "no_action":
             _restore_conversation_after_no_action(conversation, batch)

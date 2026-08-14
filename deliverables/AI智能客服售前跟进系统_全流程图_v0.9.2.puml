@@ -1,5 +1,5 @@
 @startuml
-' 文档版本：v0.9.1；灰度发布版本：0.9.1；最后更新：2026-08-13
+' 文档版本：v0.9.2；灰度发布版本：0.9.2；最后更新：2026-08-14
 title AI智能客服售前跟进系统 全流程图（C0-C4、媒体、回复、转人工与恢复）
 
 skinparam monochrome true
@@ -70,9 +70,10 @@ group C0-C1：线索进入、分配销售与加好友
   C01 -> C01: 手机号去重、分配唯一sales_id\n创建add_friend任务并绑定可用Worker
   C01 --> W: 下发add_friend任务\n手机号 + 正式短码 + 申请语
   W -> Lock: 获取本地微信UI锁
-  W -> OA: add_friend
+  W -> OA: add_friend\n最终确定后短暂等待稳定画面
   OA -> WX: 搜索手机号、填写短码备注、发送好友申请
-  OA --> W: invite_sent / already_friend / failed + 动作证据
+  OA -> OA: 若顶部标题精确为“添加朋友”\n点击右上角X完成UI收尾\n标题不明确则零点击
+  OA --> W: invite_sent / already_friend / failed + 动作证据\n收尾失败不得覆盖已确认invite_sent
   W -> C01: 幂等回传任务结果
   W -> Lock: 释放UI锁
   note over C01,Auth
@@ -779,7 +780,10 @@ loop Worker运行中；每次循环最多完成一个会话事务
                 end
               else Brain无可见回复/超时/供应商异常/结果合同非法
                 Brain --> C3: technical_error
-                C3 -> C3: 按同一batch重试策略处理\n不得伪装为no_action
+                C3 -> C3: 保存本次原始响应与适配结果\n按同一batch重试策略处理\n不得伪装为no_action
+                opt 首次为AI_ENGINE_NO_VISIBLE_REPLY
+                  C3 -> Brain: 第二次附加聚焦恢复指令\n无车辆证据不得编造\n必须输出可见澄清问题或硬风险handoff
+                end
                 C3 --> W: batch_status=failed\ndecision=retry_later\nerror_code + retryable
               end
             end
