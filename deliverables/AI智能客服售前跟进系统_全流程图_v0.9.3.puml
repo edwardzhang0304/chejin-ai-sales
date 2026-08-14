@@ -1,5 +1,5 @@
 @startuml
-' 文档版本：v0.9.2；灰度发布版本：0.9.2；最后更新：2026-08-14
+' 文档版本：v0.9.3；灰度发布版本：0.9.3；最后更新：2026-08-14
 title AI智能客服售前跟进系统 全流程图（C0-C4、媒体、回复、转人工与恢复）
 
 skinparam monochrome true
@@ -63,6 +63,8 @@ note over W,Reply
 5. 语音由Worker重新编排OmniAuto RPA完成；图片槽位和同行头像角色先由最终画面定案，Vision只处理已授权的新图片。
 6. 图片理解模型与回复Brain是两个独立模型阶段，不能合并或互相越权。
 7. 历史事务恢复先于能力预检；Vision只门禁新的C2 UI流程；会话内图片不得结束为pending/deferred。
+8. 缺少Product Master只禁止具体车源事实；低风险需求澄清仍由Brain生成并经Guard发送，不得被审稿层一律清空。
+9. 确需人工时优先由Brain生成一次边界承接并reply_then_handoff；只有无法安全生成可见文字时才静默handoff。
 end note
 
 group C0-C1：线索进入、分配销售与加好友

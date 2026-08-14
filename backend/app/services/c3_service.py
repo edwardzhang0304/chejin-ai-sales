@@ -304,6 +304,20 @@ def message_batch_continuation_authorization(
         == _authorization_revision(binding)
     )
     conversation = db.get(Conversation, batch.conversation_id)
+    reply_then_handoff_sendable = bool(
+        action
+        and action.decision == "reply_then_handoff"
+        and conversation
+        and conversation.status == "waiting_sales_reply"
+        and db.scalar(
+            select(HandoffEvent.id).where(
+                HandoffEvent.conversation_id == batch.conversation_id,
+                HandoffEvent.batch_id == batch.id,
+                HandoffEvent.closed_at.is_(None),
+                HandoffEvent.deleted_at.is_(None),
+            )
+        )
+    )
     allowed = bool(
         token_matches
         and revision_matches
@@ -314,7 +328,10 @@ def message_batch_continuation_authorization(
         and binding.allow_listening
         and binding.deleted_at is None
         and conversation
-        and conversation.status == "ai_active"
+        and (
+            conversation.status == "ai_active"
+            or reply_then_handoff_sendable
+        )
         and not batch.superseded_by_batch_id
         and (processing or sendable)
     )
@@ -413,6 +430,44 @@ def _ensure_conversation_eligible(binding: WechatSessionBinding, conversation: C
         "rejected",
     }:
         raise AppError("CONVERSATION_NOT_ELIGIBLE", "会话已关闭 AI 或处于人工接管状态", 409, {"suggested_action": "handoff"})
+
+
+def _ensure_reply_action_send_eligible(
+    db: Session,
+    *,
+    binding: WechatSessionBinding,
+    conversation: Conversation,
+    action: ReplyAction,
+) -> None:
+    if action.decision != "reply_then_handoff":
+        _ensure_conversation_eligible(binding, conversation)
+        return
+    if binding.bind_status != "bound" or not binding.allow_listening:
+        raise AppError(
+            "CONVERSATION_NOT_ELIGIBLE",
+            "会话未绑定或不允许监听",
+            409,
+            {"suggested_action": "do_not_send"},
+        )
+    handoff = db.scalar(
+        select(HandoffEvent.id).where(
+            HandoffEvent.conversation_id == action.conversation_id,
+            HandoffEvent.batch_id == action.batch_id,
+            HandoffEvent.closed_at.is_(None),
+            HandoffEvent.deleted_at.is_(None),
+        )
+    )
+    if (
+        not conversation.ai_enabled
+        or conversation.status != "waiting_sales_reply"
+        or not handoff
+    ):
+        raise AppError(
+            "REPLY_THEN_HANDOFF_NOT_ELIGIBLE",
+            "转人工边界回复已失效或人工接管事实不存在",
+            409,
+            {"suggested_action": "do_not_send"},
+        )
 
 
 def _batch_to_dict(batch: MessageBatch) -> dict[str, Any]:
@@ -2174,9 +2229,16 @@ def generate_for_batch(
             payload,
         )
 
-    if decision.decision == "send_reply":
+    if decision.decision in {"send_reply", "reply_then_handoff"}:
+        reply_then_handoff = decision.decision == "reply_then_handoff"
+        handoff_decision = decision if reply_then_handoff else None
         final_reply_text = _final_send_text(decision.reply_text)
-        if not final_reply_text or decision.guard_result not in {"pass", "rewrite_passed"}:
+        valid_guard_results = (
+            {"handoff", "pass", "rewrite_passed"}
+            if reply_then_handoff
+            else {"pass", "rewrite_passed"}
+        )
+        if not final_reply_text or decision.guard_result not in valid_guard_results:
             decision = AIEngineDecision(
                 decision="retry_later",
                 risk_flags=["ai_contract_invalid"],
@@ -2194,7 +2256,11 @@ def generate_for_batch(
                 status="queued",
                 current=True,
                 generation_no=batch.generation_no,
-                decision="send_reply",
+                decision=(
+                    "reply_then_handoff"
+                    if reply_then_handoff
+                    else "send_reply"
+                ),
                 reply_text=final_reply_text,
                 reply_text_hash=_hash_text(final_reply_text),
                 confidence=decision.confidence,
@@ -2211,6 +2277,29 @@ def generate_for_batch(
             except AppError as exc:
                 db.delete(action)
                 db.flush()
+                if handoff_decision is not None:
+                    handoff_reason_code = (
+                        handoff_decision.error_code
+                        or handoff_decision.handoff_reason_code
+                        or "HANDOFF_REQUIRED"
+                    )
+                    handoff = _create_handoff(
+                        db,
+                        binding=binding,
+                        conversation=conversation,
+                        batch=batch,
+                        decision=handoff_decision,
+                        handoff_reason_code=handoff_reason_code,
+                    )
+                    db.flush()
+                    return {
+                        "decision": "handoff",
+                        "batch": _batch_to_dict(batch),
+                        "handoff_event_id": handoff.id,
+                        "handoff_event": _handoff_to_dict(handoff),
+                        "error_code": handoff_reason_code,
+                        "suggested_action": "handoff",
+                    }
                 decision = AIEngineDecision(
                     decision="retry_later",
                     risk_flags=["vehicle_fact_stale"],
@@ -2229,21 +2318,53 @@ def generate_for_batch(
                 batch.status = "reply_action_created"
                 batch.active = False
                 batch.retryable = False
-                batch.decision = "send_reply"
-                batch.error_code = None
+                batch.decision = action.decision
+                batch.error_code = (
+                    decision.handoff_reason_code
+                    if reply_then_handoff
+                    else None
+                )
                 batch.suggested_action = "claim_send"
                 batch.generated_at = utcnow()
+                handoff = None
+                if reply_then_handoff:
+                    handoff_reason_code = (
+                        decision.error_code
+                        or decision.handoff_reason_code
+                        or "HANDOFF_REQUIRED"
+                    )
+                    handoff = _create_handoff(
+                        db,
+                        binding=binding,
+                        conversation=conversation,
+                        batch=batch,
+                        decision=decision,
+                        handoff_reason_code=handoff_reason_code,
+                    )
+                    # The handoff is already authoritative, but its one approved
+                    # boundary reply must remain claimable and sendable.
+                    batch.status = "reply_action_created"
+                    batch.active = False
+                    batch.retryable = False
+                    batch.decision = "reply_then_handoff"
+                    batch.error_code = handoff_reason_code
+                    batch.suggested_action = "claim_send"
+                    batch.generated_at = utcnow()
                 db.flush()
-                return {
-                    "decision": "send_reply",
+                result = {
+                    "decision": action.decision,
                     "batch": _batch_to_dict(batch),
                     "reply_action_id": action.id,
                     "reply_action": _reply_action_to_dict(action),
                     "task_id": task.id,
                     "task": task_to_detail(get_task_or_404(db, task.id)),
-                    "error_code": None,
+                    "error_code": batch.error_code,
                     "suggested_action": "claim_send",
                 }
+                if handoff is not None:
+                    result["handoff_event_id"] = handoff.id
+                    result["handoff_event"] = _handoff_to_dict(handoff)
+                return result
 
     if decision.decision in {"handoff", "handoff_for_approval"}:
         handoff_reason_code = decision.error_code or decision.handoff_reason_code or "HANDOFF_REQUIRED"
@@ -2426,7 +2547,12 @@ def claim_send(
         raise AppError("REPLY_ACTION_EXPIRED", "回复动作已过期", 409, {"suggested_action": "do_not_send"})
     binding = _binding_or_404(db, action.conversation_id)
     conversation = _conversation_for_binding(db, binding)
-    _ensure_conversation_eligible(binding, conversation)
+    _ensure_reply_action_send_eligible(
+        db,
+        binding=binding,
+        conversation=conversation,
+        action=action,
+    )
     send_token = secrets.token_urlsafe(32)
     action.status = "sending"
     action.send_token = send_token
@@ -2566,7 +2692,16 @@ def sent_ack(db: Session, *, reply_action_id: str, payload: Any) -> dict[str, An
         newer_sales_turn = bool(
             claim_boundary and last_sales and last_sales > claim_boundary
         )
-        if not newer_customer_turn and not newer_sales_turn:
+        if action.decision == "reply_then_handoff":
+            open_handoffs = open_handoff_events_for_conversation(
+                db,
+                action.conversation_id,
+                for_update=True,
+            )
+            if open_handoffs:
+                conversation.status = "waiting_sales_reply"
+                conversation.next_recall_at = None
+        elif not newer_customer_turn and not newer_sales_turn:
             conversation.status = "waiting_user_reply"
             if batch and batch.trigger_type == "recall":
                 conversation.status = "recalled_waiting_user"

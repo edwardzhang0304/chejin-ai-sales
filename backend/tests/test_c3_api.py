@@ -733,6 +733,48 @@ def test_real_adapter_does_not_label_combined_risk_reason_as_high_intent_without
     assert decision.error_code is None
 
 
+def test_real_adapter_preserves_brain_owned_boundary_as_reply_then_handoff(monkeypatch):
+    adapter = RealOmniAutoAIEngineAdapter()
+    brain_result = {
+        "rule_name": "customer_service_brain_handoff",
+        "adoptable": True,
+        "reason": "formal_policy_requires_manual_confirmation",
+        "reply_text": "这个需要结合可核实资料确认，我先为您保留需求。",
+        "visible_reply_source": "brain_plan.reply_segments",
+        "brain_plan": {
+            "recommended_action": "handoff",
+            "confidence": 0.92,
+            "risk": {
+                "risk_level": "medium",
+                "risk_tags": ["manual_confirmation"],
+                "needs_handoff": True,
+                "handoff_reason": "formal_policy_requires_manual_confirmation",
+            },
+            "reply_segments": ["这个需要结合可核实资料确认，我先为您保留需求。"],
+        },
+    }
+    monkeypatch.setattr(
+        adapter,
+        "_load_config",
+        lambda: {"customer_service_brain": {"provider": "test", "model": "test", "api_key": "test-only"}},
+    )
+    monkeypatch.setattr(adapter, "_load_brain", lambda: object())
+    monkeypatch.setattr(adapter, "_run_brain_isolated", lambda **_kwargs: brain_result)
+
+    decision = adapter.generate_reply_decision(
+        conversation_context={"conversation_id": "conv-boundary-handoff"},
+        message_batch={
+            "id": "batch-boundary-handoff",
+            "messages": [{"content": "这个情况能保证吗"}],
+        },
+    )
+
+    assert decision.decision == "reply_then_handoff"
+    assert decision.reply_text == brain_result["reply_text"]
+    assert decision.guard_result == "handoff"
+    assert decision.suggested_action == "reply_then_handoff"
+
+
 def test_real_adapter_provider_exception_is_explicit_retry_later(monkeypatch):
     adapter = RealOmniAutoAIEngineAdapter()
     monkeypatch.setattr(adapter, "_load_config", lambda: {"customer_service_brain": {"provider": "test", "model": "test", "api_key": "test-only"}})
@@ -1407,6 +1449,93 @@ def test_c2_ingest_to_c3_sent_ack_complete_closure():
         assert ack.send_result == "sent"
         assert conversation.status == "waiting_user_reply"
         assert conversation.reply_count == 1
+
+
+def test_reply_then_handoff_sends_one_brain_boundary_and_keeps_handoff_open(monkeypatch):
+    class BoundaryHandoffAdapter:
+        def generate_reply_decision(self, **_kwargs):
+            return c3_service.AIEngineDecision(
+                decision="reply_then_handoff",
+                reply_text="这个需要结合可核实资料确认，我先为您保留需求。",
+                confidence=0.92,
+                handoff_reason_code="FORMAL_POLICY_REQUIRES_MANUAL_CONFIRMATION",
+                risk_flags=["manual_confirmation"],
+                guard_result="handoff",
+                suggested_action="reply_then_handoff",
+            )
+
+    monkeypatch.setattr(c3_service, "get_ai_engine_adapter", lambda: BoundaryHandoffAdapter())
+    worker, binding = _setup_bound_conversation()
+    message_event_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-reply-then-handoff",
+        "这个情况能保证吗",
+    )
+    generated = _generate(_collect(binding["conversation_id"], message_event_id)["batch_id"])
+    assert generated["decision"] == "reply_then_handoff"
+    assert generated["handoff_event"]["handoff_reason_code"] == (
+        "FORMAL_POLICY_REQUIRES_MANUAL_CONFIRMATION"
+    )
+
+    action_id = generated["reply_action_id"]
+    task_id = generated["task_id"]
+    batch_status = client.get(
+        f"/api/workers/{worker['id']}/wechat/message-batches/{generated['batch']['id']}",
+        headers=_worker_headers(worker),
+    )
+    assert batch_status.status_code == 200, batch_status.text
+    assert batch_status.json()["data"]["authorization"]["allowed"] is True
+
+    claimed_task = client.post(
+        f"/api/tasks/{task_id}/claim",
+        json={
+            "worker_id": worker["id"],
+            "current_step": "chat_reply_claimed",
+            "claim_source": "c2_conversation_flow",
+            "conversation_id": binding["conversation_id"],
+        },
+        headers=_worker_headers(worker),
+    )
+    assert claimed_task.status_code == 200, claimed_task.text
+    send_claim = client.post(
+        f"/api/reply-actions/{action_id}/claim-send",
+        json={"task_id": task_id, "worker_id": worker["id"]},
+        headers=_task_lease_headers(worker, claimed_task),
+    )
+    assert send_claim.status_code == 200, send_claim.text
+    send_data = send_claim.json()["data"]
+    assert send_data["reply_text"] == "这个需要结合可核实资料确认，我先为您保留需求。"
+
+    sent_ack = client.post(
+        f"/api/reply-actions/{action_id}/sent-ack",
+        json={
+            "send_token": send_data["send_token"],
+            "task_id": task_id,
+            "worker_id": worker["id"],
+            "client_instance_id": "client-c3-boundary",
+            "send_result": "sent",
+            "action_phase": "confirmed",
+            "reply_text_hash": send_data["reply_text_hash"],
+            "sidecar_run_id": "sidecar-boundary-handoff",
+        },
+        headers=_worker_headers(worker),
+    )
+    assert sent_ack.status_code == 200, sent_ack.text
+
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        action = db.get(ReplyAction, action_id)
+        batch = db.get(MessageBatch, generated["batch"]["id"])
+        assert conversation.status == "waiting_sales_reply"
+        assert action.status == "sent"
+        assert action.decision == "reply_then_handoff"
+        assert batch.decision == "reply_then_handoff"
+        assert db.query(HandoffEvent).filter(
+            HandoffEvent.batch_id == batch.id,
+            HandoffEvent.closed_at.is_(None),
+        ).count() == 1
+        assert db.query(ReplyAction).filter(ReplyAction.batch_id == batch.id).count() == 1
 
 
 def test_recall_counts_only_after_confirmed_send_and_ack_is_idempotent():
