@@ -167,6 +167,11 @@ class UiContractTest(unittest.TestCase):
         self.assertIn("QWebEngineView", web_ui)
         self.assertIn("QWebChannel", web_ui)
         self.assertIn('CLIENT_VERSION = f"V{__version__} · Worker C2/C3 客户端"', web_ui)
+        self.assertIn(
+            "本地已停止接收新工作，当前客户继续安全处理；后端暂停状态正在重试同步。",
+            web_ui,
+        )
+        self.assertNotIn("本地微信操作已停止", web_ui)
         self.assertFalse((ROOT / "web-ui-src").exists())
         self.assertTrue((ROOT / "chejin_worker_client" / "web_assets" / "index.html").exists())
         self.assertTrue((ROOT / "chejin_worker_client" / "web_assets" / "worker-ui.css").exists())

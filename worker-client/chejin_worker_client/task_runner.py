@@ -62,11 +62,19 @@ from .storage import (
     clear_c2_state,
     clear_c2_action_journal,
     enqueue_c2_outbox,
+    begin_runtime_flow,
+    clear_runtime_pause,
+    finish_runtime_flow,
     finalize_reply_send_ack,
     discard_reply_send_intent,
     has_pending_c2_outbox,
+    has_pending_c2_outbox_for_read_run_id,
+    has_c2_outbox_for_read_run_id,
     has_c2_outbox_for_source_keys,
+    has_c2_action_journal_for_origin_read_run_id,
+    has_c2_ledger_for_origin_read_run_id,
     has_pending_reply_send_ack_outbox,
+    has_pending_reply_send_ack_for_task_id,
     list_c2_outbox_waiting,
     list_c2_action_journal,
     list_c2_ledger_entries,
@@ -75,6 +83,7 @@ from .storage import (
     load_c2_outbox_entry,
     load_c2_outbox_origin_read_run_ids,
     load_c2_state,
+    load_runtime_control,
     load_c2_ledger_entry,
     load_reply_send_ack_outbox,
     mark_c2_ledger_ingested,
@@ -93,6 +102,7 @@ from .storage import (
     save_c2_ledger_terminal,
     save_c2_state,
     save_reply_send_intent,
+    request_runtime_pause,
     set_c2_outbox_error,
     set_reply_send_ack_error,
     transition_c2_outbox,
@@ -1240,6 +1250,8 @@ class TaskRunner:
         self.current_task: Task | None = None
         self._current_step: str | None = None
         self._runtime_process_context: dict[str, Any] = {}
+        self._backend_inflight_flow_state: dict[str, Any] = {}
+        self._restart_recovery_flow_id: str | None = None
         self.current_ui_lock: UiLockLease | None = None
         self.current_task_lease: TaskLeaseGuard | None = None
         self.last_rpa_component_status: str | None = None
@@ -1358,6 +1370,10 @@ class TaskRunner:
 
     def start(self, binding: Binding) -> None:
         self.binding = binding
+        persisted_flow_id = str(
+            load_runtime_control().get("inflight_flow_id") or ""
+        ).strip()
+        self._restart_recovery_flow_id = persisted_flow_id or None
         self.stop_event.clear()
         with self._thread_health_lock:
             self._thread_failure_reported.clear()
@@ -1481,18 +1497,226 @@ class TaskRunner:
         suffix = f"，故障编号 {incident_id}" if incident_id else ""
         self.on_error(f"后台线程异常，客户端已自动暂停{suffix}。")
 
-    def _ui_actions_enabled(self, binding: Binding | None = None) -> bool:
+    def _can_start_new_flow(self, binding: Binding | None = None) -> bool:
         active = binding or self.binding
+        control = load_runtime_control()
         return bool(
             active
             and not self.stop_event.is_set()
             and not emergency_stop_requested()
             and active.run_status == "running"
+            and control.get("pause_requested") is not True
+            and not control.get("inflight_flow_id")
         )
+
+    def _can_continue_inflight_flow(self, flow_id: str | None = None) -> bool:
+        if self.stop_event.is_set() or emergency_stop_requested():
+            return False
+        control = load_runtime_control()
+        current_id = str(control.get("inflight_flow_id") or "").strip()
+        expected_id = str(flow_id or current_id).strip()
+        return bool(
+            current_id
+            and expected_id == current_id
+            and self.api.inflight_flow_id == current_id
+            and str(
+                self._backend_inflight_flow_state.get("flow_id") or ""
+            ) == current_id
+            and self._backend_inflight_flow_state.get("status")
+            in {"active", "draining"}
+        )
+
+    def _start_inflight_flow(
+        self,
+        binding: Binding,
+        *,
+        flow_id: str,
+        flow_kind: str,
+    ) -> bool:
+        control = load_runtime_control()
+        existing_id = str(control.get("inflight_flow_id") or "").strip()
+        if existing_id:
+            if existing_id != flow_id:
+                return False
+            self.api.inflight_flow_id = existing_id
+            return True
+        if not self._can_start_new_flow(binding):
+            return False
+        backend_state = self.api.start_inflight_flow(
+            binding,
+            flow_id=flow_id,
+            flow_kind=flow_kind,
+        )
+        self._backend_inflight_flow_state = dict(backend_state)
+        try:
+            begin_runtime_flow(flow_id, flow_kind)
+        except Exception:
+            append_log(
+                "ERROR",
+                "runtime_inflight_local_persist_failed",
+                "后端已登记在途流程，但本地持久化失败；保留后端流程禁止继续。",
+                error_code="RUNTIME_INFLIGHT_LOCAL_PERSIST_FAILED",
+                metadata={"flow_id": flow_id, "flow_kind": flow_kind},
+            )
+            raise
+        return True
+
+    @staticmethod
+    def _inflight_finish_receipt_key(flow_id: str) -> str:
+        return f"inflight_finish_receipt:{str(flow_id or '').strip()}"
+
+    @staticmethod
+    def _has_physical_action_journal_for_flow(flow_id: str) -> bool:
+        clean_id = str(flow_id or "").strip()
+        if not clean_id:
+            return False
+        for _, payload in list_action_journals():
+            if clean_id in {
+                str(payload.get("transaction_id") or "").strip(),
+                str(payload.get("origin_read_run_id") or "").strip(),
+                str(payload.get("read_run_id") or "").strip(),
+            }:
+                return True
+            items = payload.get("items")
+            item_values = items.values() if isinstance(items, dict) else (items or [])
+            for item in item_values:
+                if not isinstance(item, dict):
+                    continue
+                if clean_id in {
+                    str(item.get("transaction_id") or "").strip(),
+                    str(item.get("origin_read_run_id") or "").strip(),
+                    str(item.get("read_run_id") or "").strip(),
+                }:
+                    return True
+        return False
+
+    def _finish_inflight_flow(
+        self,
+        binding: Binding,
+        flow_id: str,
+        *,
+        terminal_kind: str,
+        conversation_id: str | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        if self.current_ui_lock is not None or bool(lock_summary().get("locked")):
+            raise RuntimeError("RUNTIME_INFLIGHT_FINISH_BEFORE_UI_UNLOCK")
+        if terminal_kind in {
+            "read_confirmed",
+            "failed_before_message_action",
+            "read_failed_no_fact",
+            "task_terminal",
+        }:
+            if has_pending_c2_outbox_for_read_run_id(flow_id):
+                raise RuntimeError("RUNTIME_INFLIGHT_C2_OUTBOX_PENDING")
+            if has_c2_action_journal_for_origin_read_run_id(flow_id):
+                raise RuntimeError("RUNTIME_INFLIGHT_C2_ACTION_JOURNAL_PENDING")
+            if self._has_physical_action_journal_for_flow(flow_id):
+                raise RuntimeError("RUNTIME_INFLIGHT_ACTION_JOURNAL_PENDING")
+        if has_c2_ledger_for_origin_read_run_id(flow_id, pending_only=True):
+            raise RuntimeError("RUNTIME_INFLIGHT_C2_LEDGER_PENDING")
+        if terminal_kind == "read_confirmed" and has_pending_reply_send_ack_outbox():
+            raise RuntimeError("RUNTIME_INFLIGHT_SENT_ACK_PENDING")
+        if terminal_kind == "failed_before_message_action" and has_c2_ledger_for_origin_read_run_id(
+            flow_id
+        ):
+            raise RuntimeError("RUNTIME_INFLIGHT_PRE_ACTION_LEDGER_CONFLICT")
+        if terminal_kind == "failed_before_message_action" and has_c2_outbox_for_read_run_id(
+            flow_id
+        ):
+            raise RuntimeError("RUNTIME_INFLIGHT_PRE_ACTION_OUTBOX_CONFLICT")
+        if terminal_kind == "failed_before_message_action" and has_pending_reply_send_ack_outbox():
+            raise RuntimeError("RUNTIME_INFLIGHT_SENT_ACK_PENDING")
+        if terminal_kind == "read_failed_no_fact" and has_c2_ledger_for_origin_read_run_id(
+            flow_id
+        ):
+            raise RuntimeError("RUNTIME_INFLIGHT_NO_FACT_LEDGER_CONFLICT")
+        if terminal_kind == "read_failed_no_fact" and has_c2_outbox_for_read_run_id(
+            flow_id
+        ):
+            raise RuntimeError("RUNTIME_INFLIGHT_NO_FACT_OUTBOX_CONFLICT")
+        if terminal_kind == "read_failed_no_fact" and has_pending_reply_send_ack_outbox():
+            raise RuntimeError("RUNTIME_INFLIGHT_SENT_ACK_PENDING")
+        if terminal_kind == "task_terminal" and has_pending_reply_send_ack_for_task_id(
+            flow_id
+        ):
+            raise RuntimeError("RUNTIME_INFLIGHT_SENT_ACK_PENDING")
+        self.api.finish_inflight_flow(
+            binding,
+            flow_id=flow_id,
+            terminal_kind=terminal_kind,
+            conversation_id=conversation_id,
+            error_code=error_code,
+        )
+        finish_runtime_flow(flow_id)
+        clear_c2_state(self._inflight_finish_receipt_key(flow_id))
+        self._backend_inflight_flow_state = {}
+        if self._restart_recovery_flow_id == flow_id:
+            self._restart_recovery_flow_id = None
+
+    def _finish_restart_recovery_flow_if_settled(
+        self,
+        binding: Binding,
+    ) -> None:
+        """Close a pre-restart flow only after durable replay needs no UI.
+
+        A restart never resumes locating, clicking, media handling or sending.
+        The normal transaction barrier may replay already-persisted Outbox and
+        sent-ack facts; the backend remains the authority on task terminality.
+        """
+
+        flow_id = str(self._restart_recovery_flow_id or "").strip()
+        if (
+            not flow_id
+            or self.current_task is not None
+            or self.current_ui_lock is not None
+            or bool(lock_summary().get("locked"))
+            or not self._can_continue_inflight_flow(flow_id)
+        ):
+            return
+        flow_kind = str(
+            load_runtime_control().get("inflight_flow_kind") or ""
+        ).strip()
+        receipt = load_c2_state(self._inflight_finish_receipt_key(flow_id))
+        terminal_kind = str(receipt.get("terminal_kind") or "").strip()
+        if flow_kind in {"task", "chat_reply"}:
+            terminal_kind = "task_terminal"
+        if terminal_kind not in {
+            "task_terminal",
+            "read_confirmed",
+            "failed_before_message_action",
+            "read_failed_no_fact",
+        }:
+            return
+        try:
+            self._finish_inflight_flow(
+                binding,
+                flow_id,
+                terminal_kind=terminal_kind,
+                conversation_id=(
+                    str(receipt.get("conversation_id") or "").strip()
+                    or None
+                ),
+                error_code=(
+                    str(receipt.get("error_code") or "").strip() or None
+                ),
+            )
+        except Exception as exc:
+            append_log(
+                "INFO",
+                "restart_inflight_flow_settlement_pending",
+                "重启前的原流程仍有业务终态未确认；继续保持暂停且不操作微信。",
+                error_code="RUNTIME_INFLIGHT_RECOVERY_PENDING",
+                metadata={"flow_id": flow_id, "error": str(exc)},
+            )
 
     def _apply_local_run_status(self, run_status: str) -> None:
         if not self.binding:
             return
+        if run_status == "paused":
+            request_runtime_pause()
+        else:
+            clear_runtime_pause()
         self.binding.run_status = run_status  # type: ignore[assignment]
         save_binding(self.binding)
 
@@ -1516,7 +1740,7 @@ class TaskRunner:
             append_log(
                 "WARN",
                 "run_status_sync_retry_failed",
-                "本地暂停已生效，但尚未同步到后端；客户端会继续重试。",
+                "本地已停止接收新工作，但暂停状态尚未同步到后端；当前在途流程仍按原凭证安全收口。",
                 error_code="RUN_STATUS_SYNC_FAILED",
                 metadata={"requested_run_status": pending, "error": str(exc)},
             )
@@ -1542,8 +1766,8 @@ class TaskRunner:
             self.on_error("客户端已触发紧急停止，请重启后再开始接单。")
             return False
         if run_status == "paused":
-            # Pause is fail-safe: stop every new/in-flight UI action locally
-            # before attempting to synchronize the server-side switch.
+            # Pause drains the registered flow. Emergency stop remains the
+            # separate fail-safe for not-yet-started physical actions.
             self._apply_local_run_status("paused")
         try:
             profile = self.api.set_run_status(self.binding, run_status)
@@ -1555,17 +1779,23 @@ class TaskRunner:
             self.run_status_sync_error = None
             self._apply_local_run_status(profile.run_status)
             self.on_profile(profile)
+            self._backend_inflight_flow_state = dict(
+                profile.inflight_flow_state or {}
+            )
             append_log("INFO", "run_status_changed", "开始接单。" if run_status == "running" else "暂停接单。")
             return True
         except Exception as exc:
             if run_status == "paused":
                 self._pending_run_status_sync = "paused"
                 self.run_status_sync_error = str(exc)
-                self.on_error("本地已暂停所有微信操作，但暂停状态尚未同步到后端，客户端会自动重试。")
+                self.on_error(
+                    "本地已停止接收新工作；暂停状态尚未同步到后端，"
+                    "当前客户仍会安全处理完，后端状态将自动重试同步。"
+                )
                 append_log(
                     "WARN",
                     "run_status_pause_sync_pending",
-                    "本地暂停已生效，后端同步失败并进入自动重试。",
+                    "本地新工作门禁已生效，后端暂停同步失败并进入自动重试。",
                     error_code="RUN_STATUS_SYNC_FAILED",
                     metadata={"error": str(exc)},
                 )
@@ -1662,6 +1892,17 @@ class TaskRunner:
                 # operator pause must not be overwritten by the next heartbeat
                 # carrying a stale local "running" value.
                 self._apply_local_run_status(profile.run_status)
+            self._backend_inflight_flow_state = dict(
+                profile.inflight_flow_state or {}
+            )
+            persisted_flow_id = str(
+                load_runtime_control().get("inflight_flow_id") or ""
+            ).strip()
+            backend_flow_id = str(
+                self._backend_inflight_flow_state.get("flow_id") or ""
+            ).strip()
+            if persisted_flow_id and persisted_flow_id == backend_flow_id:
+                self.api.inflight_flow_id = persisted_flow_id
             self.on_profile(profile)
             self.on_status("online")
             mark_incident_recovered("heartbeat_failed")
@@ -1692,8 +1933,10 @@ class TaskRunner:
         ):
             return
 
+        self._finish_restart_recovery_flow_if_settled(binding)
+
         if (
-            self._ui_actions_enabled(binding)
+            self._can_start_new_flow(binding)
             and rpa_status == "ready"
             and wechat_status == "logged_in"
             and not self.current_task
@@ -1704,7 +1947,7 @@ class TaskRunner:
 
     def _pull_and_execute(self, binding: Binding) -> None:
         with self.task_lock:
-            if not self._ui_actions_enabled(binding):
+            if not self._can_start_new_flow(binding):
                 return
             if self.current_ui_lock is not None or bool(lock_summary().get("locked")):
                 append_log(
@@ -1729,12 +1972,17 @@ class TaskRunner:
                 if reason and reason != "NO_PENDING_TASK":
                     self.on_error(reason)
                 return
-            if not self._ui_actions_enabled(binding):
+            if not self._can_start_new_flow(binding):
                 return
             self._execute_task(binding, task, mode)
 
     def _execute_task(self, binding: Binding, task: Task, mode: str) -> None:
-        if not self._ui_actions_enabled(binding):
+        flow_kind = "chat_reply" if task.task_type == "chat_reply" else "task"
+        if not self._start_inflight_flow(
+            binding,
+            flow_id=task.id,
+            flow_kind=flow_kind,
+        ):
             return
         self.current_task = task
         self.on_task(task)
@@ -1746,10 +1994,10 @@ class TaskRunner:
                     self._start_task_lease_guard(binding, task)
                 self._execute_c2_reply_recovery(binding, task, mode)
                 return
-            if not self._ui_actions_enabled(binding):
+            if not self._can_continue_inflight_flow(task.id):
                 return
             running_task = task if mode == "running" else self.api.claim_task(binding, task)
-            if not self._ui_actions_enabled(binding):
+            if not self._can_continue_inflight_flow(task.id):
                 return
             if not running_task.search_phone and task.search_phone:
                 running_task.phone = task.phone
@@ -1793,6 +2041,20 @@ class TaskRunner:
             self.current_step = None
             self.current_task = None
             self.on_task(None)
+            try:
+                self._finish_inflight_flow(
+                    binding,
+                    task.id,
+                    terminal_kind="task_terminal",
+                )
+            except Exception as exc:
+                append_log(
+                    "ERROR",
+                    "inflight_flow_finish_failed",
+                    "业务终态已处理，但在途流程结束登记失败，保留持久化状态等待恢复。",
+                    error_code="RUNTIME_INFLIGHT_FINISH_FAILED",
+                    metadata={"flow_id": task.id, "error": str(exc)},
+                )
 
     def _start_task_lease_guard(self, binding: Binding, task: Task) -> TaskLeaseGuard:
         self._stop_task_lease_guard()
@@ -2091,7 +2353,7 @@ class TaskRunner:
                 return ui_lock_reason
             if (
                 self.stop_event.is_set()
-                or binding.run_status != "running"
+                or not self._can_continue_inflight_flow(task.id)
                 or (
                     self.current_task_lease is not None
                     and self.current_task_lease.cancel_requested()
@@ -3272,6 +3534,21 @@ class TaskRunner:
         identity_state = load_c2_state(
             f"message_identity:{target.conversation_id}"
         )
+        ai_reply_boundary = (
+            target.raw.get("ai_reply_boundary")
+            if isinstance(target.raw, dict)
+            and isinstance(target.raw.get("ai_reply_boundary"), dict)
+            else {}
+        )
+        boundary_action_id = str(
+            ai_reply_boundary.get("reply_action_id") or ""
+        ).strip()
+        boundary_hash = str(
+            ai_reply_boundary.get("reply_text_hash") or ""
+        ).strip()
+        boundary_stable_id = str(
+            ai_reply_boundary.get("worker_stable_id") or ""
+        ).strip()
         for receipt in identity_state.get("ai_reply_receipts") or []:
             if not isinstance(receipt, dict):
                 continue
@@ -3310,12 +3587,95 @@ class TaskRunner:
                     "canonical_visual_id": str(
                         receipt.get("canonical_visual_id") or ""
                     ).strip(),
+                    "ai_reply_boundary": bool(
+                        boundary_action_id
+                        and boundary_hash
+                        and str(receipt.get("reply_action_id") or "").strip()
+                        == boundary_action_id
+                        and str(receipt.get("reply_text_hash") or "").strip()
+                        == boundary_hash
+                    ),
                     "_worker_sequence_number": int(
                         stable_match.group(1)
                     ),
                 }
             )
             checkpoint_stable_ids.add(stable_id)
+        if (
+            boundary_action_id
+            and boundary_hash
+            and boundary_stable_id
+            and boundary_stable_id not in checkpoint_stable_ids
+        ):
+            stable_match = re.fullmatch(
+                r"worker-message-(\d+)", boundary_stable_id
+            )
+            if stable_match is not None:
+                pre_sequence.append(
+                    {
+                        "identity_state": "committed",
+                        "worker_stable_id": boundary_stable_id,
+                        "pre_observation_id": (
+                            f"sent-ack-boundary:{boundary_action_id}"
+                        ),
+                        "pre_sequence_index": len(pre_sequence),
+                        "sender_role": "self",
+                        "message_type": "text",
+                        "normalized_content_hash": boundary_hash,
+                        "native_source_message_id": "",
+                        "canonical_visual_id": "",
+                        "ai_reply_boundary": True,
+                        "_worker_sequence_number": int(
+                            stable_match.group(1)
+                        ),
+                    }
+                )
+                checkpoint_stable_ids.add(boundary_stable_id)
+        possible_state = load_c2_state(
+            f"possible_ai_sends:{target.conversation_id}"
+        )
+        if boundary_action_id and boundary_hash:
+            for possible in possible_state.get("sends") or []:
+                if not isinstance(possible, dict):
+                    continue
+                reserved_id = str(
+                    possible.get("reserved_worker_stable_id") or ""
+                ).strip()
+                stable_match = re.fullmatch(
+                    r"worker-message-(\d+)", reserved_id
+                )
+                if (
+                    stable_match is None
+                    or reserved_id in checkpoint_stable_ids
+                    or str(possible.get("reply_action_id") or "").strip()
+                    != boundary_action_id
+                    or str(possible.get("reply_text_hash") or "").strip()
+                    != boundary_hash
+                ):
+                    continue
+                pre_sequence.append(
+                    {
+                        "identity_state": "committed",
+                        "worker_stable_id": reserved_id,
+                        "pre_observation_id": (
+                            f"sent-ack-possible:{boundary_action_id}"
+                        ),
+                        "pre_sequence_index": len(pre_sequence),
+                        "sender_role": "self",
+                        "message_type": "text",
+                        "normalized_content_hash": boundary_hash,
+                        "native_source_message_id": "",
+                        "canonical_visual_id": "",
+                        "ai_reply_boundary": True,
+                        "ai_reconciliation_state": str(
+                            possible.get("reconciliation_state") or ""
+                        ),
+                        "_worker_sequence_number": int(
+                            stable_match.group(1)
+                        ),
+                    }
+                )
+                checkpoint_stable_ids.add(reserved_id)
         if any("_worker_sequence_number" in item for item in pre_sequence):
             def sequence_number(item: dict[str, Any]) -> int:
                 explicit = item.get("_worker_sequence_number")
@@ -3774,7 +4134,7 @@ class TaskRunner:
             return RpaResult(ok=False, error_code=exc.code, failure_step="ui_lock_acquire", message=str(exc), evidence_metadata={"ui_lock": exc.data})
         try:
             def add_friend_cancel_reason() -> bool | str:
-                if not self._ui_actions_enabled(binding):
+                if not self._can_continue_inflight_flow():
                     return "WORKER_INTERRUPTED"
                 if (
                     self.current_task_lease is not None
@@ -3853,6 +4213,26 @@ class TaskRunner:
             if self.current_ui_lock is not None or bool(lock_summary().get("locked")):
                 self.stop_event.wait(0.5)
                 continue
+            runtime_control = load_runtime_control()
+            inflight_flow_id = str(
+                runtime_control.get("inflight_flow_id") or ""
+            ).strip()
+            if inflight_flow_id:
+                if self._can_continue_inflight_flow(inflight_flow_id):
+                    # A persisted flow is recovery-only in this listener.  Its
+                    # live owner (if any) continues the customer chain; after
+                    # restart only durable Journal/Outbox/sent_ack settlement
+                    # is allowed.  Never scan or select another conversation.
+                    self._worker_transaction_barrier_ready(
+                        binding,
+                        reason="c2_inflight_recovery",
+                    )
+                    self._finish_restart_recovery_flow_if_settled(binding)
+                self.stop_event.wait(1.0)
+                continue
+            if not self._can_start_new_flow(binding):
+                self.stop_event.wait(1.0)
+                continue
             # A reply already exists in WeChat once its bubble is confirmed.
             # Its durable sent_ack must reach the backend before C2 is allowed
             # to scan that bubble and classify its source.
@@ -3860,15 +4240,6 @@ class TaskRunner:
                 binding,
                 reason="c2_loop",
             ):
-                if (
-                    self._pending_image_recovery_conversation_ids()
-                    and self._ui_actions_enabled(binding)
-                    and self._wechat_ready_for_c2()
-                ):
-                    self._recover_pending_image_transaction(binding)
-                self.stop_event.wait(1.0)
-                continue
-            if not self._ui_actions_enabled(binding):
                 self.stop_event.wait(1.0)
                 continue
             if not self._wechat_ready_for_c2():
@@ -4714,7 +5085,7 @@ class TaskRunner:
             return None
 
     def _run_c2_scan_round(self, binding: Binding, *, reason: str) -> None:
-        if not self._ui_actions_enabled(binding):
+        if not self._can_start_new_flow(binding):
             return
         if not self._worker_transaction_barrier_ready(
             binding,
@@ -4723,7 +5094,7 @@ class TaskRunner:
             return
         self.c2_round_processed_conversation_ids = set()
         self._scan_wechat_sessions(binding, reason=reason)
-        if not self._ui_actions_enabled(binding):
+        if not self._can_start_new_flow(binding):
             return
         targets = self._fetch_read_targets(binding)
         allowed_keys = {self._target_dedupe_key(target) for target in targets}
@@ -4732,7 +5103,7 @@ class TaskRunner:
         self._read_state_target_queue(binding, targets=targets)
 
     def _scan_wechat_sessions(self, binding: Binding, *, reason: str = "scheduled") -> None:
-        if not self._ui_actions_enabled(binding):
+        if not self._can_start_new_flow(binding):
             return
         if self._high_priority_active():
             self.c2_stats["last_error"] = "C2_SCAN_SKIPPED_BY_HIGH_PRIORITY_ACTION"
@@ -4742,7 +5113,7 @@ class TaskRunner:
         lease: UiLockLease | None = None
         try:
             with self.task_lock:
-                if not self._ui_actions_enabled(binding):
+                if not self._can_start_new_flow(binding):
                     return
                 if not self._worker_transaction_barrier_ready(
                     binding,
@@ -4771,16 +5142,16 @@ class TaskRunner:
                 lease.start_auto_renew()
                 self.current_ui_lock = lease
             self.current_step = "first_screen_session_scan"
-            if not self._ui_actions_enabled(binding):
+            if not self._can_start_new_flow(binding):
                 return
             if self._high_priority_active():
                 self.c2_stats["last_error"] = "C2_SCAN_SKIPPED_BY_HIGH_PRIORITY_ACTION"
                 append_log("INFO", "c2_session_scan_skipped", "C2 第一屏扫描拿锁后发现高优先级动作，已跳过。", error_code="C2_SCAN_SKIPPED_BY_HIGH_PRIORITY_ACTION", metadata={"reason": reason})
                 return
             sidecar_payload = self.bridge.list_sessions(
-                cancel_check=lambda: not self._ui_actions_enabled(binding)
+                cancel_check=lambda: not self._can_start_new_flow(binding)
             )
-            if not self._ui_actions_enabled(binding):
+            if not self._can_start_new_flow(binding):
                 return
             payload = build_scan_result_payload(sidecar_payload)
             admission_evidence = (
@@ -5073,7 +5444,7 @@ class TaskRunner:
         *,
         authorized_targets: list[WechatReadTarget] | None = None,
     ) -> None:
-        if not self._ui_actions_enabled(binding):
+        if not self._can_start_new_flow(binding):
             return
         authorized_by_key = {
             self._target_dedupe_key(target): target
@@ -5087,7 +5458,7 @@ class TaskRunner:
                 append_log("INFO", "c2_visible_hit_queue_cleared", "后端 read-targets 为空，已清空本地第一屏命中读取队列。", metadata={"dropped_count": dropped})
             return
         while self.visible_hit_queue:
-            if not self._ui_actions_enabled(binding):
+            if not self._can_start_new_flow(binding):
                 return
             visible_target = self.visible_hit_queue.pop(0)
             dedupe_key = self._target_dedupe_key(visible_target)
@@ -5176,13 +5547,13 @@ class TaskRunner:
             return []
 
     def _read_state_target_queue(self, binding: Binding, *, targets: list[WechatReadTarget] | None = None) -> None:
-        if not self._ui_actions_enabled(binding):
+        if not self._can_start_new_flow(binding):
             return
         targets = self._fetch_read_targets(binding) if targets is None else list(targets)
         self.c2_read_allowlist_keys = {self._target_dedupe_key(target) for target in targets}
         self.c2_stats["last_state_target_count"] = len(targets)
         for target in targets:
-            if not self._ui_actions_enabled(binding):
+            if not self._can_start_new_flow(binding):
                 break
             dedupe_key = self._target_dedupe_key(target)
             if self._c2_identity_quarantine(target):
@@ -5524,8 +5895,14 @@ class TaskRunner:
             target.authorization_revision = frozen_revision
         return True
 
-    def _backend_still_allows_read_target_for_voice(self, binding: Binding, target: WechatReadTarget) -> bool:
-        if not self._ui_actions_enabled(binding):
+    def _backend_still_allows_read_target_for_voice(
+        self,
+        binding: Binding,
+        target: WechatReadTarget,
+        *,
+        read_run_id: str,
+    ) -> bool:
+        if not self._can_continue_inflight_flow(read_run_id):
             return False
         if not self._backend_still_allows_read_target(binding, target):
             return False
@@ -5533,7 +5910,7 @@ class TaskRunner:
         if guard_seconds <= 0:
             return True
         self.stop_event.wait(guard_seconds)
-        if not self._ui_actions_enabled(binding):
+        if not self._can_continue_inflight_flow(read_run_id):
             self.c2_stats["last_error"] = "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS"
             append_log(
                 "INFO",
@@ -6981,10 +7358,11 @@ class TaskRunner:
                 if has_visual_order_proof
                 else "position_unavailable"
             ),
+            "gate_scope": "reply_suffix",
+            "boundary_relation": "unknown",
+            "min_screen_order": gate_orders[0] if gate_orders else 0,
+            "max_screen_order": gate_orders[-1] if gate_orders else 0,
         }
-        if has_visual_order_proof:
-            gate_detail["min_screen_order"] = gate_orders[0]
-            gate_detail["max_screen_order"] = gate_orders[-1]
         payload = build_flow_gate_ingest_payload(
             target,
             read_run_id=read_run_id,
@@ -6993,6 +7371,14 @@ class TaskRunner:
                 "flow_gate_identity_key": stable_gate_key,
                 "identity_errors": normalized_errors,
                 "flow_gate_details": [gate_detail],
+                "recovery_attempt_kind": (
+                    "stable_reread"
+                    if isinstance(target.raw, dict)
+                    and isinstance(target.raw.get("recovery_hold"), dict)
+                    and target.raw.get("recovery_hold", {}).get("status")
+                    == "active"
+                    else "checkpoint_merge"
+                ),
                 "authoritative_frame_source": (
                     authoritative_frame_source
                 ),
@@ -7311,6 +7697,49 @@ class TaskRunner:
             and item["history_source"] == "current_read_run"
         }
         flow_gate_details: list[dict[str, Any]] = []
+        ai_reply_boundary = (
+            target.raw.get("ai_reply_boundary")
+            if isinstance(target.raw, dict)
+            and isinstance(target.raw.get("ai_reply_boundary"), dict)
+            else {}
+        )
+        boundary_stable_id = str(
+            ai_reply_boundary.get("worker_stable_id") or ""
+        ).strip()
+        boundary_screen_order = 0
+        if boundary_stable_id:
+            state_order_by_observation_id = {
+                str(item.get("observation_id") or ""): int(
+                    item.get("screen_order") or 0
+                )
+                for item in states
+                if isinstance(item, dict)
+            }
+            for observation in observations:
+                if not isinstance(observation, dict):
+                    continue
+                if str(
+                    observation.get("_worker_stable_id")
+                    or observation.get("worker_stable_id")
+                    or ""
+                ).strip() == boundary_stable_id:
+                    boundary_screen_order = int(
+                        state_order_by_observation_id.get(
+                            str(observation.get("observation_id") or ""),
+                            0,
+                        )
+                    )
+                    break
+
+        def boundary_relation(min_order: int, max_order: int) -> str:
+            if boundary_screen_order <= 0:
+                return "unknown"
+            if max_order > 0 and max_order <= boundary_screen_order:
+                return "before_or_equal"
+            if min_order > boundary_screen_order:
+                return "after"
+            return "unknown"
+
         if history_gap:
             history_gap_detail: dict[str, Any] = {
                 "error_code": "C2_MESSAGE_HISTORY_GAP",
@@ -7319,10 +7748,18 @@ class TaskRunner:
                     if frame_order_source == "visual_top"
                     else "position_unavailable"
                 ),
+                "gate_scope": "reply_suffix",
+                "boundary_relation": "unknown",
+                "min_screen_order": 0,
+                "max_screen_order": 0,
             }
             if frame_order_source == "visual_top":
                 history_gap_detail["min_screen_order"] = first_current_screen_order
                 history_gap_detail["max_screen_order"] = history_gap_screen_order
+                history_gap_detail["boundary_relation"] = boundary_relation(
+                    first_current_screen_order,
+                    history_gap_screen_order,
+                )
             flow_gate_details.append(history_gap_detail)
         if identity_errors:
             error_orders = sorted(
@@ -7339,10 +7776,17 @@ class TaskRunner:
                     if error_orders and frame_order_source == "visual_top"
                     else "position_unavailable"
                 ),
+                "gate_scope": "reply_suffix",
+                "boundary_relation": "unknown",
+                "min_screen_order": 0,
+                "max_screen_order": 0,
             }
             if error_orders and frame_order_source == "visual_top":
                 detail["min_screen_order"] = error_orders[0]
                 detail["max_screen_order"] = error_orders[-1]
+                detail["boundary_relation"] = boundary_relation(
+                    error_orders[0], error_orders[-1]
+                )
             flow_gate_details.append(detail)
         recoverable_reason_codes = sorted(
             {
@@ -8567,7 +9011,7 @@ class TaskRunner:
             if recovered_task is not None and recovered_task.id == pending_task.id:
                 task = recovered_task
             else:
-                if not self._ui_actions_enabled(binding):
+                if not self._can_continue_inflight_flow():
                     return {
                         "ok": False,
                         "error_code": "WORKER_EMERGENCY_STOPPED",
@@ -8588,7 +9032,7 @@ class TaskRunner:
                         "failure_step": "claim_task",
                         "batch": status,
                     }
-            if not self._ui_actions_enabled(binding):
+            if not self._can_continue_inflight_flow():
                 return {
                     "ok": False,
                     "error_code": "WORKER_EMERGENCY_STOPPED",
@@ -8613,7 +9057,7 @@ class TaskRunner:
                     "batch": status,
                 }
             if (
-                not self._ui_actions_enabled(binding)
+                not self._can_continue_inflight_flow()
                 or not self._backend_still_allows_read_target(binding, target)
             ):
                 return {
@@ -8839,7 +9283,7 @@ class TaskRunner:
                 if ui_lock_reason:
                     return ui_lock_reason
                 if (
-                    not self._ui_actions_enabled(binding)
+                    not self._can_continue_inflight_flow()
                     or (
                         self.current_task_lease is not None
                         and self.current_task_lease.cancel_requested()
@@ -8961,6 +9405,7 @@ class TaskRunner:
         lease: UiLockLease,
         action_cancel_requested: Callable[[], bool],
         enforce_read_targets: bool,
+        read_run_id: str,
         excluded_voice_anchor_keys: set[str],
         flow_outcomes: FlowOutcomeAccumulator | None = None,
     ) -> dict[str, Any]:
@@ -9042,7 +9487,11 @@ class TaskRunner:
         while remaining_actions > 0:
             if action_cancel_requested():
                 return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS", "payload": current_payload}
-            if enforce_read_targets and not self._backend_still_allows_read_target_for_voice(binding, target):
+            if enforce_read_targets and not self._backend_still_allows_read_target_for_voice(
+                binding,
+                target,
+                read_run_id=read_run_id,
+            ):
                 return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS", "payload": current_payload}
             current_executable_voices = (
                 _executable_untranscribed_voice_observations(
@@ -9427,7 +9876,11 @@ class TaskRunner:
                     },
                 )
 
-            if enforce_read_targets and not self._backend_still_allows_read_target_for_voice(binding, target):
+            if enforce_read_targets and not self._backend_still_allows_read_target_for_voice(
+                binding,
+                target,
+                read_run_id=read_run_id,
+            ):
                 terminate_created_voice_action(
                     "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
                     definitely_before_trigger=True,
@@ -9502,6 +9955,7 @@ class TaskRunner:
                         and not self._backend_still_allows_read_target_for_voice(
                             binding,
                             target,
+                            read_run_id=read_run_id,
                         )
                     )
                 ):
@@ -10123,6 +10577,7 @@ class TaskRunner:
                         lease=lease,
                         action_cancel_requested=action_cancel_requested,
                         enforce_read_targets=enforce_read_targets,
+                        read_run_id=flow_outcomes.origin_read_run_id,
                         excluded_voice_anchor_keys=set(),
                         flow_outcomes=flow_outcomes,
                     )
@@ -10682,7 +11137,26 @@ class TaskRunner:
                 "identity_errors": unresolved_action_journals,
             }
         self._recover_c2_action_journal(target)
-        read_run_id = f"read-{uuid.uuid4()}"
+        existing_runtime_flow_id = str(
+            load_runtime_control().get("inflight_flow_id") or ""
+        ).strip()
+        owns_inflight_flow = not existing_runtime_flow_id
+        # A nested pre-send/current-customer refresh is part of the already
+        # registered customer transaction. Reuse that exact durable id so
+        # media continuation checks cannot accidentally compare a fresh local
+        # UUID with the outer draining flow and abort the current customer.
+        read_run_id = existing_runtime_flow_id or f"read-{uuid.uuid4()}"
+        if owns_inflight_flow and not self._start_inflight_flow(
+            binding,
+            flow_id=read_run_id,
+            flow_kind="c2_read",
+        ):
+            return {
+                "ok": False,
+                "error_code": "WORKER_NEW_FLOW_NOT_ALLOWED",
+            }
+        if existing_runtime_flow_id:
+            self.api.inflight_flow_id = existing_runtime_flow_id
         flow_id = f"c2-action:{uuid.uuid4()}"
         flow_outcomes = FlowOutcomeAccumulator(
             checkpoint=lambda outcomes: checkpoint_c2_action_outcomes(
@@ -10704,6 +11178,8 @@ class TaskRunner:
             "operation_phase": operation_phase,
         }
         self._runtime_process_context = runtime_context
+        inflight_activity = {"message_read_attempted": False}
+        flow_result: dict[str, Any] = {}
         if operation_phase == C2_AUTHORIZED_READ_PHASE:
             raw_target = target.raw if isinstance(target.raw, dict) else {}
             source = (
@@ -10725,8 +11201,10 @@ class TaskRunner:
                 target,
                 flow_outcomes=flow_outcomes,
                 read_run_id=read_run_id,
+                inflight_activity=inflight_activity,
                 **kwargs,
             )
+            flow_result = dict(result)
             if operation_phase == C2_AUTHORIZED_READ_PHASE:
                 self._emit_runtime_process(
                     {
@@ -10756,6 +11234,64 @@ class TaskRunner:
                 if self._action_journal_can_be_removed(payload):
                     remove_action_journal(path)
             self._runtime_process_context = previous_runtime_context
+            if owns_inflight_flow:
+                error_code = str(
+                    flow_result.get("error_code") or "C2_READ_STOPPED"
+                ).strip()
+                durable_read_artifact_exists = bool(
+                    has_c2_outbox_for_read_run_id(read_run_id)
+                    or has_c2_ledger_for_origin_read_run_id(read_run_id)
+                    or has_c2_action_journal_for_origin_read_run_id(read_run_id)
+                    or self._has_physical_action_journal_for_flow(read_run_id)
+                )
+                read_completion = (
+                    (flow_result.get("result") or {}).get("read_completion")
+                    if isinstance(flow_result.get("result"), dict)
+                    else {}
+                )
+                backend_read_confirmed = bool(
+                    isinstance(read_completion, dict)
+                    and str(read_completion.get("result") or "")
+                    in {"new_facts", "no_change"}
+                )
+                if backend_read_confirmed or durable_read_artifact_exists:
+                    terminal_kind = "read_confirmed"
+                elif inflight_activity.get("message_read_attempted") is True:
+                    terminal_kind = "read_failed_no_fact"
+                else:
+                    terminal_kind = "failed_before_message_action"
+                receipt = {
+                    "terminal_kind": terminal_kind,
+                    "conversation_id": target.conversation_id,
+                    "error_code": (
+                        error_code
+                        if terminal_kind
+                        in {
+                            "failed_before_message_action",
+                            "read_failed_no_fact",
+                        }
+                        else None
+                    ),
+                }
+                save_c2_state(
+                    self._inflight_finish_receipt_key(read_run_id), receipt
+                )
+                try:
+                    self._finish_inflight_flow(
+                        binding,
+                        read_run_id,
+                        terminal_kind=terminal_kind,
+                        conversation_id=target.conversation_id,
+                        error_code=receipt["error_code"],
+                    )
+                except Exception as exc:
+                    append_log(
+                        "ERROR",
+                        "inflight_flow_finish_failed",
+                        "C2 结算完成，但在途流程结束登记失败。",
+                        error_code="RUNTIME_INFLIGHT_FINISH_FAILED",
+                        metadata={"flow_id": read_run_id, "error": str(exc)},
+                    )
 
     def _recover_c2_action_journal(
         self,
@@ -10881,6 +11417,7 @@ class TaskRunner:
         *,
         flow_outcomes: FlowOutcomeAccumulator,
         read_run_id: str,
+        inflight_activity: dict[str, bool],
         operation_phase: C2ReadOperationPhase = C2_AUTHORIZED_READ_PHASE,
         current_step: str = "message_read",
         allow_during_current_task: bool = False,
@@ -10929,7 +11466,7 @@ class TaskRunner:
                 return ui_lock_reason
             if (
                 self.stop_event.is_set()
-                or not self._ui_actions_enabled(binding)
+                or not self._can_continue_inflight_flow(read_run_id)
                 or (
                     self.current_task_lease is not None
                     and self.current_task_lease.cancel_requested()
@@ -11370,6 +11907,10 @@ class TaskRunner:
             lease.update_step(current_step)
             self.current_step = current_step
             phase_started_at = time.perf_counter()
+            # Starting OCR is not itself a durable message fact. If this
+            # attempt fails before a trusted observation or local artifact is
+            # formed, the flow uses the explicit read_failed_no_fact terminal.
+            inflight_activity["message_read_attempted"] = True
             reusable_initial_snapshot = (
                 locate_payload.get("initial_messages_snapshot")
                 if isinstance(locate_payload.get("initial_messages_snapshot"), dict)
@@ -11530,6 +12071,7 @@ class TaskRunner:
                     sidecar_payload=sidecar_payload, lease=lease,
                     action_cancel_requested=action_cancel_requested,
                     enforce_read_targets=enforce_read_targets,
+                    read_run_id=read_run_id,
                     excluded_voice_anchor_keys=excluded_voice_anchor_keys,
                     flow_outcomes=flow_outcomes,
                 )

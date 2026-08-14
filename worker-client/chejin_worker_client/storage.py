@@ -23,6 +23,14 @@ MAX_LOGS = 1000
 RETENTION_DAYS = 30
 MAX_C2_LEDGER_ROWS_PER_CONVERSATION = 2000
 DEFAULT_ACCEPT_SCHEDULE = {"enabled": False, "start": "09:00", "end": "21:00"}
+RUNTIME_CONTROL_KEY = "runtime_control_v1"
+DEFAULT_RUNTIME_CONTROL = {
+    "pause_requested": False,
+    "pause_requested_at": None,
+    "inflight_flow_id": None,
+    "inflight_flow_kind": None,
+    "inflight_started_at": None,
+}
 TIME_RE = re.compile(r"^\d{2}:\d{2}$")
 T = TypeVar("T")
 
@@ -403,6 +411,170 @@ def save_accept_schedule(*, enabled: bool, start: str, end: str) -> dict[str, An
         )
         conn.commit()
     return schedule
+
+
+def _normalize_runtime_control(payload: dict[str, Any] | None) -> dict[str, Any]:
+    source = payload if isinstance(payload, dict) else {}
+    flow_id = str(source.get("inflight_flow_id") or "").strip() or None
+    flow_kind = str(source.get("inflight_flow_kind") or "").strip() or None
+    if flow_kind not in {None, "task", "c2_read", "chat_reply"}:
+        flow_kind = None
+    if not flow_id:
+        flow_kind = None
+    return {
+        "pause_requested": bool(source.get("pause_requested")),
+        "pause_requested_at": (
+            str(source.get("pause_requested_at") or "").strip() or None
+        ),
+        "inflight_flow_id": flow_id,
+        "inflight_flow_kind": flow_kind,
+        "inflight_started_at": (
+            str(source.get("inflight_started_at") or "").strip()
+            or None
+        ) if flow_id else None,
+    }
+
+
+def load_runtime_control() -> dict[str, Any]:
+    with db_connection() as conn:
+        row = conn.execute(
+            "SELECT value FROM client_settings WHERE key = ?",
+            (RUNTIME_CONTROL_KEY,),
+        ).fetchone()
+    if not row:
+        return dict(DEFAULT_RUNTIME_CONTROL)
+    try:
+        payload = json.loads(row["value"])
+    except (json.JSONDecodeError, TypeError):
+        return dict(DEFAULT_RUNTIME_CONTROL)
+    return _normalize_runtime_control(payload)
+
+
+def save_runtime_control(payload: dict[str, Any]) -> dict[str, Any]:
+    state = _normalize_runtime_control(payload)
+    with db_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO client_settings (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+              value = excluded.value,
+              updated_at = excluded.updated_at
+            """,
+            (
+                RUNTIME_CONTROL_KEY,
+                json.dumps(state, ensure_ascii=False, sort_keys=True),
+                utc_now_iso(),
+            ),
+        )
+        conn.commit()
+    return state
+
+
+def _mutate_runtime_control(
+    mutate: Callable[[dict[str, Any]], dict[str, Any] | None],
+) -> dict[str, Any]:
+    """Read, validate and write runtime control under one SQLite lock."""
+
+    with db_connection() as conn:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT value FROM client_settings WHERE key = ?",
+                (RUNTIME_CONTROL_KEY,),
+            ).fetchone()
+            if row:
+                try:
+                    decoded = json.loads(row["value"])
+                except (json.JSONDecodeError, TypeError):
+                    decoded = {}
+            else:
+                decoded = {}
+            current = _normalize_runtime_control(decoded)
+            candidate = mutate(dict(current))
+            state = _normalize_runtime_control(
+                candidate if isinstance(candidate, dict) else current
+            )
+            conn.execute(
+                """
+                INSERT INTO client_settings (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                  value = excluded.value,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    RUNTIME_CONTROL_KEY,
+                    json.dumps(state, ensure_ascii=False, sort_keys=True),
+                    utc_now_iso(),
+                ),
+            )
+            conn.commit()
+            return state
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def request_runtime_pause() -> dict[str, Any]:
+    def mutate(state: dict[str, Any]) -> dict[str, Any]:
+        state["pause_requested"] = True
+        state["pause_requested_at"] = (
+            state.get("pause_requested_at") or utc_now_iso()
+        )
+        return state
+
+    return _mutate_runtime_control(mutate)
+
+
+def clear_runtime_pause() -> dict[str, Any]:
+    def mutate(state: dict[str, Any]) -> dict[str, Any]:
+        state["pause_requested"] = False
+        state["pause_requested_at"] = None
+        return state
+
+    return _mutate_runtime_control(mutate)
+
+
+def begin_runtime_flow(flow_id: str, flow_kind: str) -> dict[str, Any]:
+    clean_flow_id = str(flow_id or "").strip()
+    if not clean_flow_id or flow_kind not in {"task", "c2_read", "chat_reply"}:
+        raise ValueError("RUNTIME_INFLIGHT_FLOW_INVALID")
+
+    def mutate(state: dict[str, Any]) -> dict[str, Any]:
+        existing = str(state.get("inflight_flow_id") or "")
+        if existing and existing != clean_flow_id:
+            raise ValueError("RUNTIME_INFLIGHT_FLOW_CONFLICT")
+        state.update(
+            {
+                "inflight_flow_id": clean_flow_id,
+                "inflight_flow_kind": flow_kind,
+                "inflight_started_at": (
+                    state.get("inflight_started_at") or utc_now_iso()
+                ),
+            }
+        )
+        return state
+
+    return _mutate_runtime_control(mutate)
+
+
+def finish_runtime_flow(flow_id: str) -> dict[str, Any]:
+    clean_flow_id = str(flow_id or "").strip()
+
+    def mutate(state: dict[str, Any]) -> dict[str, Any]:
+        if str(state.get("inflight_flow_id") or "") != clean_flow_id:
+            raise ValueError("RUNTIME_INFLIGHT_FLOW_MISMATCH")
+        state.update(
+            {
+                "inflight_flow_id": None,
+                "inflight_flow_kind": None,
+                "inflight_started_at": None,
+            }
+        )
+        return state
+
+    return _mutate_runtime_control(mutate)
 
 
 def save_c2_state(key: str, value: dict[str, Any]) -> None:
@@ -1051,6 +1223,81 @@ def has_pending_c2_outbox() -> bool:
         return row is not None
 
 
+def has_pending_c2_outbox_for_read_run_id(read_run_id: str) -> bool:
+    clean_id = str(read_run_id or "").strip()
+    if not clean_id:
+        return False
+    with db_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM c2_ingest_outbox
+            WHERE read_run_id = ?
+              AND status IN (
+                'waiting', 'retry_waiting', 'refresh_pending',
+                'rebuild_pending', 'split_pending', 'capability_paused'
+              )
+            LIMIT 1
+            """,
+            (clean_id,),
+        ).fetchone()
+    return row is not None
+
+
+def has_c2_outbox_for_read_run_id(read_run_id: str) -> bool:
+    """Return whether the read run has created any durable Outbox artifact."""
+
+    clean_id = str(read_run_id or "").strip()
+    if not clean_id:
+        return False
+    with db_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM c2_ingest_outbox
+            WHERE read_run_id = ?
+            LIMIT 1
+            """,
+            (clean_id,),
+        ).fetchone()
+    return row is not None
+
+
+def has_c2_ledger_for_origin_read_run_id(
+    read_run_id: str,
+    *,
+    pending_only: bool = False,
+) -> bool:
+    clean_id = str(read_run_id or "").strip()
+    if not clean_id:
+        return False
+    pending_clause = "AND ingest_state = 'waiting'" if pending_only else ""
+    with db_connection() as conn:
+        row = conn.execute(
+            f"""
+            SELECT 1 FROM c2_message_ledger
+            WHERE origin_read_run_id = ? {pending_clause}
+            LIMIT 1
+            """,
+            (clean_id,),
+        ).fetchone()
+    return row is not None
+
+
+def has_c2_action_journal_for_origin_read_run_id(read_run_id: str) -> bool:
+    clean_id = str(read_run_id or "").strip()
+    if not clean_id:
+        return False
+    with db_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM c2_action_journal
+            WHERE origin_read_run_id = ?
+            LIMIT 1
+            """,
+            (clean_id,),
+        ).fetchone()
+    return row is not None
+
+
 def has_c2_outbox_for_source_keys(
     conversation_id: str,
     source_message_keys: list[str] | set[str] | tuple[str, ...],
@@ -1624,6 +1871,23 @@ def has_pending_reply_send_ack_outbox() -> bool:
             WHERE status IN ('intent', 'waiting', 'capability_paused')
             LIMIT 1
             """
+        ).fetchone()
+    return row is not None
+
+
+def has_pending_reply_send_ack_for_task_id(task_id: str) -> bool:
+    clean_id = str(task_id or "").strip()
+    if not clean_id:
+        return False
+    with db_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM reply_send_ack_outbox
+            WHERE task_id = ?
+              AND status IN ('intent', 'waiting', 'capability_paused')
+            LIMIT 1
+            """,
+            (clean_id,),
         ).fetchone()
     return row is not None
 

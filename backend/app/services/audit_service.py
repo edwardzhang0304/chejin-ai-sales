@@ -34,6 +34,8 @@ EVENT_NAMES: dict[str, str] = {
     "worker_updated": "编辑 Worker",
     "worker_enabled_changed": "启用/停用 Worker",
     "worker_binding_reset": "重置 Worker 绑定",
+    "worker_inflight_failed_before_message_action": "读取动作前失败结算",
+    "worker_inflight_read_failed_no_fact": "读取无可信事实失败结算",
     "leads_exported": "导出选中线索",
     "task_created": "创建任务",
     "task_unblocked": "解除任务阻塞",

@@ -310,6 +310,12 @@ def _candidate(
             in {"text", "system"}
             and strong_count == 0
         ),
+        "ai_reply_boundary_candidate": bool(
+            len(pre_suffix) == 1
+            and pre_suffix[0].get("ai_reply_boundary") is True
+            and pre_suffix[0].get("identity_state") == "committed"
+            and _token(pre_suffix[0].get("message_type")) == "text"
+        ),
     }
 
 
@@ -419,6 +425,21 @@ def align_committed_message_sequence(
     # "old row + new tail" case: there must be exactly one monotonic
     # explanation, it must begin at the visible top, and it must expose a
     # non-empty tail. A lone repeated "好的" therefore remains ambiguous.
+    boundary_candidates = [
+        item
+        for item in raw_candidates
+        if item.get("ai_reply_boundary_candidate") is True
+        and int(item["post_start"]) == 0
+        and int(item["length"]) == len(post_sequence)
+    ]
+    if len(boundary_candidates) == 1:
+        # A confirmed sent_ack identifies which equal-text self bubble is the
+        # current reply boundary; ordinary historical equal-text candidates
+        # cannot outvote that explicit action identity.
+        boundary_candidates[0]["proof_sufficient"] = True
+        for item in raw_candidates:
+            if item is not boundary_candidates[0]:
+                item["proof_sufficient"] = False
     if len(raw_candidates) == 1:
         weak = raw_candidates[0]
         if (
@@ -427,6 +448,15 @@ def align_committed_message_sequence(
             and int(weak["post_start"]) + int(weak["length"])
             < len(post_sequence)
         ):
+            weak["proof_sufficient"] = True
+        if (
+            weak.get("ai_reply_boundary_candidate") is True
+            and int(weak["post_start"]) == 0
+            and int(weak["length"]) == len(post_sequence)
+        ):
+            # A backend sent_ack plus its committed Worker stable identity is
+            # a stronger boundary than an ordinary repeated text row.  It may
+            # prove the exact no-new-message frame without inventing a tail.
             weak["proof_sufficient"] = True
     proven = [item for item in raw_candidates if item["proof_sufficient"]]
     if proven:

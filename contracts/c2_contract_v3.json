@@ -1,8 +1,51 @@
 {
   "contract_version": 3,
-  "contract_revision": "0.9.5",
+  "contract_revision": "0.9.6",
   "observation_schema_version": 3,
   "control_schema_version": 1,
+  "runtime_control_contract": {
+    "local_settings_key": "runtime_control_v1",
+    "flow_kinds": ["task", "c2_read", "chat_reply"],
+    "backend_states": ["active", "draining"],
+    "continuation_header": "X-Inflight-Flow-Id",
+    "pause_rule": "reject_new_work_and_allow_only_the_exact_registered_flow_to_settle",
+    "emergency_stop_rule": "prevent_every_not_yet_started_wechat_ui_action",
+    "finish_request": {
+      "required_fields": ["flow_id", "terminal_kind"],
+      "terminal_kinds": [
+        "task_terminal",
+        "read_confirmed",
+        "failed_before_message_action",
+        "read_failed_no_fact"
+      ],
+      "conversation_id_rule": "required_for_c2_read_and_null_for_task_terminal",
+      "error_code_rule": "required_for_failed_before_message_action_and_read_failed_no_fact",
+      "backend_proof_rule": "task_terminal_requires_a_terminal_task; read_confirmed_requires_matching last_read_run_id plus completed_at and new_facts_or_no_change; failed_before_message_action requires no attempted message read and no message fact; read_failed_no_fact requires an attempted read with no trusted message fact; both failure terminals require an audit log",
+      "local_proof_rule": "every terminal kind requires the UI lock plus same-flow pending Outbox, Ledger, ActionJournal, and sent_ack to be settled; both no-fact failure terminals additionally forbid any same-flow Outbox, Ledger, or Journal artifact"
+    },
+    "local_atomicity_rule": "request_pause, clear_pause, begin_flow, and finish_flow must read, validate, and update runtime_control_v1 in one SQLite BEGIN IMMEDIATE transaction",
+    "row_lock_rule": "set_run_status, start_inflight_flow, and finish_inflight_flow must serialize on the same Worker row with SELECT FOR UPDATE"
+  },
+  "ai_reply_boundary_contract": {
+    "read_reason": "recent_ai_sent",
+    "required_fields": [
+      "reply_action_id",
+      "sent_at",
+      "reply_text_hash"
+    ],
+    "boundary_relations": ["before_or_equal", "after", "unknown"],
+    "recoverable_gate_codes": [
+      "MESSAGE_IDENTITY_UNCONFIRMED",
+      "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+      "C2_MESSAGE_HISTORY_GAP"
+    ],
+    "eligibility_rule": "the recovery hold is allowed only for authorization_read_reason=recent_ai_sent with all required boundary fields; otherwise the original hard gate remains in force",
+    "gate_key_rule": "sha256(conversation_id + '|' + reply_action_id + '|' + '|'.join(sorted(all_recoverable_codes)) + '|reply_suffix')",
+    "relation_rule": "aggregate every recoverable gate: any after wins, otherwise any unknown wins, otherwise before_or_equal",
+    "attempt_rule": "checkpoint_merge counts once; only a different-read-run stable_reread counts again; duplicate transport, pause, offline, and timeout do not count",
+    "unknown_rule": "after_two_real_attempts an unresolved reply-suffix unknown creates one idempotent handoff",
+    "no_new_message_rule": "no_change_and_keep_waiting_user_reply"
+  },
   "unread_generation_contract": {
     "owner": "backend",
     "current_field": "unread_generation",
@@ -367,8 +410,15 @@
   ],
   "optional_evidence_fields": [
     "continuation_batch_id",
-    "continuation_token"
+    "continuation_token",
+    "recovery_attempt_kind",
+    "ai_reply_boundary"
   ],
+  "recovery_attempt_kind_values": [
+    "checkpoint_merge",
+    "stable_reread"
+  ],
+  "recovery_attempt_rule": "only a real checkpoint merge or a different-read-run stable reread may increment the reply-boundary recovery hold; transport retry, duplicate read_run, pause, offline, or timeout must not increment it",
   "batch_continuation_rule": "continuation_batch_id and continuation_token must be present together and may only advance the exact backend-issued batch",
   "flow_gate_detail_schema": {
     "required_fields": ["error_code", "position_source"],

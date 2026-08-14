@@ -31,6 +31,7 @@ from .storage import (
     is_accept_schedule_active,
     load_accept_schedule,
     load_binding,
+    load_runtime_control,
     new_client_instance_id,
     read_logs,
     save_accept_schedule,
@@ -604,14 +605,18 @@ class WorkerWebWindow(QMainWindow):
         if self.runner.run_status_sync_error and run_status == "paused":
             model["statusText"] = "暂停接单 · 同步失败"
             model["metaText"] = (
-                "本地微信操作已停止，暂停状态尚未同步到后端，客户端正在自动重试。"
+                "本地已停止接收新工作，当前客户继续安全处理；后端暂停状态正在重试同步。"
             )
             return model
         if task:
             if offline:
                 model["statusText"] = "离线"
             elif run_status == "paused":
-                model["statusText"] = "暂停接单"
+                if self._runtime_flow_active_for_display():
+                    model["statusText"] = "正在暂停"
+                    model["metaText"] = "正在暂停，当前客户处理完后停止"
+                else:
+                    model["statusText"] = "已暂停接单"
             return model
         if offline:
             model["statusText"] = "离线"
@@ -623,9 +628,21 @@ class WorkerWebWindow(QMainWindow):
             model["statusText"] = "非接单时段"
             model["metaText"] = "当前不在自动接单时段内，客户端保持连接但不领取新任务。"
         else:
-            model["statusText"] = "暂停接单"
-            model["metaText"] = "暂停接单后不会领取新的任务。"
+            if self._runtime_flow_active_for_display():
+                model["statusText"] = "正在暂停"
+                model["metaText"] = "正在暂停，当前客户处理完后停止"
+            else:
+                model["statusText"] = "已暂停接单"
+                model["metaText"] = "已停止领取新任务。"
         return model
+
+    @staticmethod
+    def _runtime_flow_active_for_display() -> bool:
+        """Best-effort UI projection; storage failure must not imply offline."""
+        try:
+            return bool(load_runtime_control().get("inflight_flow_id"))
+        except Exception:
+            return False
 
     def is_accept_schedule_active(self) -> bool:
         return is_accept_schedule_active(self.accept_schedule)

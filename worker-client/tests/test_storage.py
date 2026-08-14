@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import os
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 
@@ -65,6 +66,57 @@ class StorageTest(unittest.TestCase):
         sanitized = self.storage.save_accept_schedule(enabled=True, start="99:99", end="bad")
         self.assertEqual(sanitized["start"], "09:00")
         self.assertEqual(sanitized["end"], "21:00")
+
+    def test_runtime_control_pause_start_and_pause_finish_are_atomic(self):
+        def run_concurrently(*operations):
+            barrier = threading.Barrier(len(operations))
+            errors: list[BaseException] = []
+
+            def run(operation):
+                try:
+                    barrier.wait(timeout=5)
+                    operation()
+                except BaseException as exc:  # captured for the main test thread
+                    errors.append(exc)
+
+            threads = [
+                threading.Thread(target=run, args=(operation,), daemon=True)
+                for operation in operations
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+                self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, [])
+
+        for index in range(10):
+            self.storage.clear_runtime_pause()
+            flow_id = f"read-pause-start-{index}"
+            run_concurrently(
+                self.storage.request_runtime_pause,
+                lambda flow_id=flow_id: self.storage.begin_runtime_flow(
+                    flow_id, "c2_read"
+                ),
+            )
+            state = self.storage.load_runtime_control()
+            self.assertTrue(state["pause_requested"])
+            self.assertEqual(state["inflight_flow_id"], flow_id)
+            self.storage.finish_runtime_flow(flow_id)
+
+        for index in range(10):
+            self.storage.clear_runtime_pause()
+            flow_id = f"read-pause-finish-{index}"
+            self.storage.begin_runtime_flow(flow_id, "c2_read")
+            run_concurrently(
+                self.storage.request_runtime_pause,
+                lambda flow_id=flow_id: self.storage.finish_runtime_flow(
+                    flow_id
+                ),
+            )
+            state = self.storage.load_runtime_control()
+            self.assertTrue(state["pause_requested"])
+            self.assertIsNone(state["inflight_flow_id"])
 
     def test_action_journal_survives_until_common_flow_finalize(self):
         outcome = {

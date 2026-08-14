@@ -145,10 +145,27 @@ def claim_task(
     db: Session = Depends(get_db),
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
+    x_inflight_flow_id: str | None = Header(default=None, alias="X-Inflight-Flow-Id"),
 ):
     try:
         worker = worker_service.authenticate_worker_client(
             db, payload.worker_id, x_worker_token, x_client_instance_id
+        )
+        worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
+        inflight = dict(worker.inflight_flow_state or {})
+        allow_c2_draining_reply = bool(
+            worker.run_status == "paused"
+            and inflight.get("status") == "draining"
+            and inflight.get("flow_id") == x_inflight_flow_id
+            and inflight.get("flow_kind") == "c2_read"
+            and payload.claim_source == "c2_conversation_flow"
+            and payload.conversation_id
+        )
+        allow_exact_registered_task = bool(
+            worker.run_status == "paused"
+            and inflight.get("status") == "draining"
+            and inflight.get("flow_id") == x_inflight_flow_id == task_id
+            and inflight.get("flow_kind") in {"task", "chat_reply"}
         )
         actor = worker_actor_context(request, worker_id=worker.id, worker_name=worker.worker_name)
         data = task_service.claim_task(
@@ -159,6 +176,9 @@ def claim_task(
             payload.remark,
             actor,
             require_worker_ready=True,
+            allow_registered_draining_flow=(
+                allow_c2_draining_reply or allow_exact_registered_task
+            ),
             claim_source=payload.claim_source,
             conversation_id=payload.conversation_id,
             client_instance_id=x_client_instance_id,
@@ -177,6 +197,7 @@ def renew_task_lease(
     db: Session = Depends(get_db),
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
+    x_inflight_flow_id: str | None = Header(default=None, alias="X-Inflight-Flow-Id"),
 ):
     try:
         task = task_service.get_task_or_404(db, task_id)
@@ -186,6 +207,7 @@ def renew_task_lease(
             x_worker_token,
             x_client_instance_id,
         )
+        worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
         data = task_service.renew_task_lease(
             db,
             task_id,
@@ -210,10 +232,12 @@ def update_step(
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
     x_task_lease_fencing_token: int | None = Header(default=None, alias="X-Task-Lease-Fencing-Token"),
+    x_inflight_flow_id: str | None = Header(default=None, alias="X-Inflight-Flow-Id"),
 ):
     try:
         task = task_service.get_task_or_404(db, task_id)
         worker = worker_service.authenticate_worker_client(db, task.worker_id or "", x_worker_token, x_client_instance_id)
+        worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
         task_service.validate_task_lease(
             task,
             worker_id=worker.id,
@@ -238,10 +262,12 @@ def invite_sent(
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
     x_task_lease_fencing_token: int | None = Header(default=None, alias="X-Task-Lease-Fencing-Token"),
+    x_inflight_flow_id: str | None = Header(default=None, alias="X-Inflight-Flow-Id"),
 ):
     try:
         task = task_service.get_task_or_404(db, task_id)
         worker = worker_service.authenticate_worker_client(db, task.worker_id or "", x_worker_token, x_client_instance_id)
+        worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
         task_service.validate_task_lease(
             task,
             worker_id=worker.id,
@@ -266,10 +292,12 @@ def already_friend(
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
     x_task_lease_fencing_token: int | None = Header(default=None, alias="X-Task-Lease-Fencing-Token"),
+    x_inflight_flow_id: str | None = Header(default=None, alias="X-Inflight-Flow-Id"),
 ):
     try:
         task = task_service.get_task_or_404(db, task_id)
         worker = worker_service.authenticate_worker_client(db, task.worker_id or "", x_worker_token, x_client_instance_id)
+        worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
         task_service.validate_task_lease(
             task,
             worker_id=worker.id,
@@ -294,10 +322,12 @@ def fail_task(
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
     x_task_lease_fencing_token: int | None = Header(default=None, alias="X-Task-Lease-Fencing-Token"),
+    x_inflight_flow_id: str | None = Header(default=None, alias="X-Inflight-Flow-Id"),
 ):
     try:
         task = task_service.get_task_or_404(db, task_id)
         worker = worker_service.authenticate_worker_client(db, task.worker_id or "", x_worker_token, x_client_instance_id)
+        worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
         actor = worker_actor_context(request, worker_id=worker.id, worker_name=worker.worker_name)
         is_pending_reply_recovery = task.status == "pending" and task.task_type == "chat_reply"
         if not is_pending_reply_recovery:
@@ -331,11 +361,13 @@ def add_task_evidence(
     db: Session = Depends(get_db),
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
+    x_inflight_flow_id: str | None = Header(default=None, alias="X-Inflight-Flow-Id"),
 ):
     try:
         task = task_service.get_task_or_404(db, task_id)
         worker_id = task.worker_id
         worker = worker_service.authenticate_worker_client(db, worker_id or "", x_worker_token, x_client_instance_id)
+        worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
         worker_id = worker.id
         data = task_service.add_evidence(
             db,

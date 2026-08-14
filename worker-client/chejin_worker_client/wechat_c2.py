@@ -1320,6 +1320,12 @@ def _build_message_ingest_payload_v3(
         and isinstance(target.raw.get("batch_continuation"), dict)
         else {}
     )
+    ai_reply_boundary = (
+        dict(target.raw.get("ai_reply_boundary"))
+        if isinstance(target.raw, dict)
+        and isinstance(target.raw.get("ai_reply_boundary"), dict)
+        else {}
+    )
     flow_gate_details = [
         dict(item)
         for item in (sidecar_payload.get("flow_gate_details") or [])
@@ -1379,6 +1385,7 @@ def _build_message_ingest_payload_v3(
             "target_row_fingerprint": target.row_fingerprint,
             "read_reason": target.read_reason,
             "authorization_read_reason": authorization_read_reason,
+            "ai_reply_boundary": ai_reply_boundary or None,
             "continuation_batch_id": (
                 str(continuation.get("batch_id") or "").strip() or None
             ),
@@ -1471,6 +1478,12 @@ def build_flow_gate_ingest_payload(
         and isinstance(target.raw.get("batch_continuation"), dict)
         else {}
     )
+    ai_reply_boundary = (
+        dict(target.raw.get("ai_reply_boundary"))
+        if isinstance(target.raw, dict)
+        and isinstance(target.raw.get("ai_reply_boundary"), dict)
+        else {}
+    )
     flow_gate_details = [
         dict(item)
         for item in (clean_evidence.get("flow_gate_details") or [])
@@ -1506,6 +1519,7 @@ def build_flow_gate_ingest_payload(
             "observations": [],
             "read_reason": target.read_reason,
             "authorization_read_reason": authorization_read_reason,
+            "ai_reply_boundary": ai_reply_boundary or None,
             "continuation_batch_id": (
                 str(continuation.get("batch_id") or "").strip() or None
             ),

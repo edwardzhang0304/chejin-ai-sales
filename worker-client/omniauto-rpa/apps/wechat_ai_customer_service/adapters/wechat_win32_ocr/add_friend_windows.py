@@ -1344,6 +1344,37 @@ def add_friend_residual_dialog_close_target(
     }
 
 
+def _known_add_friend_dialog_close_target(
+    image_size: tuple[int, int],
+) -> dict[str, Any] | None:
+    """Return the title-bar close target for an already proven dialog HWND.
+
+    ``fill_add_friend_invite_form_and_confirm`` receives handles that were
+    established by the add-friend window discovery flow before any click.
+    When that same handle is still capturable after confirm, its survival is
+    stronger evidence than a second OCR pass: title OCR may legitimately be
+    absent on the sparse post-confirm profile.  This helper must never be used
+    for an arbitrary WeChat window.
+    """
+
+    width, height = image_size
+    if width < 240 or height < 180:
+        return None
+    close_bounds = [
+        max(0, width - 56),
+        6,
+        max(1, width - 6),
+        min(height - 1, 58),
+    ]
+    return {
+        "name": "post_confirm_add_friend_dialog_close",
+        "x": max(close_bounds[0], min(close_bounds[2], width - 27)),
+        "y": max(close_bounds[1], min(close_bounds[3], 29)),
+        "click_bounds": close_bounds,
+        "reason": "previously_proven_add_friend_dialog_hwnd_still_visible",
+    }
+
+
 def add_friend_invite_form_surface_detected(ocr_items: list[dict[str, Any]]) -> dict[str, Any]:
     surface = add_friend_surface_text(ocr_items)
     has_title = "申请添加朋友" in surface or "朋友验证" in surface
@@ -1689,6 +1720,10 @@ def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, veri
                 'result_code': RESULT_INVITE_SENT,
                 'error_code': '',
                 'current_step': 'task_completed',
+                'post_confirm_cleanup': {
+                    'state': 'pending',
+                    'closed': False,
+                },
             },
         )
     pause_seconds = _ops().add_friend_paced_pause('post_confirm_cleanup', reason='after_invite_confirm_click_before_capture')
@@ -1700,13 +1735,38 @@ def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, veri
     after_items = _ops().run_ocr_on_screen_region(after_shot, [0, 0, after_shot.size[0], after_shot.size[1]])
     final_status = classify_add_friend_after_confirm_surface(after_items, after_shot.size, confirm_ok=bool(confirm_result.get('ok')))
     result_ok = bool(final_status.get('ok'))
-    cleanup_target = add_friend_residual_dialog_close_target(after_items, after_shot.size)
+    ocr_cleanup_target = add_friend_residual_dialog_close_target(
+        after_items,
+        after_shot.size,
+    )
+    # ``post_confirm_hwnd`` is not an arbitrary WeChat window.  It is either
+    # the previously proven add-friend search/profile dialog or the previously
+    # proven invite form, and the capture above proves that the same HWND is
+    # still alive after confirm.  Do not turn a missed title OCR into a false
+    # "already closed" result.
+    cleanup_target = ocr_cleanup_target or _known_add_friend_dialog_close_target(
+        after_shot.size
+    )
     post_confirm_cleanup: dict[str, Any] = {
         'detected': cleanup_target is not None,
         'attempted': False,
-        'closed': cleanup_target is None,
-        'reason': 'residual_dialog_not_detected' if cleanup_target is None else 'residual_dialog_detected',
+        'closed': False,
+        'reason': (
+            'residual_dialog_detected_by_ocr'
+            if ocr_cleanup_target is not None
+            else (
+                'residual_known_dialog_detected_by_surviving_hwnd'
+                if cleanup_target is not None
+                else 'residual_dialog_close_target_unavailable'
+            )
+        ),
         'target': cleanup_target,
+        'detection_source': (
+            'ocr_title'
+            if ocr_cleanup_target is not None
+            else ('known_dialog_hwnd' if cleanup_target is not None else 'unknown')
+        ),
+        'window_exists_before_cleanup': True,
     }
     if result_ok and confirm_result.get('ok') and cleanup_target is not None:
         cleanup_click_started_at = time.perf_counter()
@@ -1723,7 +1783,9 @@ def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, veri
             'result': cleanup_click,
         })
         post_confirm_cleanup.update({'attempted': True, 'click': cleanup_click, 'closed': False})
-        if cleanup_click.get('ok'):
+        if not cleanup_click.get('ok'):
+            post_confirm_cleanup['reason'] = 'dialog_close_click_failed'
+        else:
             pause_seconds = _ops().add_friend_paced_pause(
                 'verify',
                 reason='after_post_confirm_dialog_close_before_verify',
@@ -1733,11 +1795,33 @@ def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, veri
                 'seconds': round(pause_seconds, 3),
             })
             window_exists = bool(is_window_fn(post_confirm_hwnd)) if callable(is_window_fn) else True
+            is_window_visible_fn = getattr(
+                getattr(_ops(), 'win32gui', None),
+                'IsWindowVisible',
+                None,
+            )
+            window_visible = (
+                bool(is_window_visible_fn(post_confirm_hwnd))
+                if callable(is_window_visible_fn) and window_exists
+                else None
+            )
             if not window_exists:
                 post_confirm_cleanup.update({
                     'closed': True,
                     'reason': 'dialog_window_destroyed_after_close',
-                    'verification': {'window_exists': False},
+                    'verification': {
+                        'window_exists': False,
+                        'window_visible': False,
+                    },
+                })
+            elif window_visible is False:
+                post_confirm_cleanup.update({
+                    'closed': True,
+                    'reason': 'dialog_window_hidden_after_close',
+                    'verification': {
+                        'window_exists': True,
+                        'window_visible': False,
+                    },
                 })
             else:
                 try:
@@ -1751,11 +1835,14 @@ def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, veri
                         [0, 0, cleanup_shot.size[0], cleanup_shot.size[1]],
                     )
                     residual_target = add_friend_residual_dialog_close_target(cleanup_items, cleanup_shot.size)
+                    # The same proven dialog HWND is still visible and
+                    # capturable.  Missing title OCR cannot prove closure.
                     post_confirm_cleanup.update({
-                        'closed': residual_target is None,
-                        'reason': 'residual_dialog_closed' if residual_target is None else 'residual_dialog_still_visible',
+                        'closed': False,
+                        'reason': 'residual_dialog_still_visible',
                         'verification': {
                             'window_exists': True,
+                            'window_visible': window_visible,
                             'screenshot_path': cleanup_path,
                             'ocr_items': add_friend_ocr_snapshots(cleanup_items, cleanup_shot.size),
                             'residual_target': residual_target,
@@ -1781,6 +1868,19 @@ def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, veri
                 'result_code': str(final_status.get('result_code') or ''),
                 'error_code': str(final_status.get('error_code') or ''),
                 'current_step': str(final_status.get('current_step') or 'invite_confirm_clicked'),
+                'post_confirm_cleanup': {
+                    'state': (
+                        'closed'
+                        if post_confirm_cleanup.get('closed') is True
+                        else 'unclosed'
+                    ),
+                    'attempted': bool(post_confirm_cleanup.get('attempted')),
+                    'closed': bool(post_confirm_cleanup.get('closed')),
+                    'reason': str(post_confirm_cleanup.get('reason') or ''),
+                    'detection_source': str(
+                        post_confirm_cleanup.get('detection_source') or ''
+                    ),
+                },
             },
         )
     after_annotated_path = output_dir / 'add_friend_invite_form_after_confirm_window_annotated.png'

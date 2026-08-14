@@ -42,6 +42,7 @@ class WorkerApiClient:
         self.session = requests.Session()
         self.timeout = CONFIG.api_timeout_seconds
         self.task_lease_fencing_tokens: dict[str, int] = {}
+        self.inflight_flow_id: str | None = None
 
     def _remember_task_lease(self, task: Task | None) -> Task | None:
         if task and task.lease_fencing_token > 0:
@@ -96,6 +97,43 @@ class WorkerApiClient:
             json={"client_instance_id": binding.client_instance_id, "run_status": run_status},
         )
         return WorkerProfile.from_api(payload)
+
+    def start_inflight_flow(
+        self, binding: Binding, *, flow_id: str, flow_kind: str
+    ) -> dict[str, Any]:
+        payload = self._request(
+            "POST",
+            f"/workers/{binding.worker_id}/inflight-flow/start",
+            binding=binding,
+            json={"flow_id": flow_id, "flow_kind": flow_kind},
+        )
+        self.inflight_flow_id = flow_id
+        return dict(payload or {})
+
+    def finish_inflight_flow(
+        self,
+        binding: Binding,
+        *,
+        flow_id: str,
+        terminal_kind: str,
+        conversation_id: str | None = None,
+        error_code: str | None = None,
+    ) -> dict[str, Any]:
+        payload = self._request(
+            "POST",
+            f"/workers/{binding.worker_id}/inflight-flow/finish",
+            binding=binding,
+            json={
+                "flow_id": flow_id,
+                "terminal_kind": terminal_kind,
+                "conversation_id": conversation_id,
+                "error_code": error_code,
+            },
+            extra_headers={"X-Inflight-Flow-Id": flow_id},
+        )
+        if self.inflight_flow_id == flow_id:
+            self.inflight_flow_id = None
+        return dict(payload or {})
 
     def pull_task(self, binding: Binding) -> tuple[str, Task | None, str | None]:
         payload = self._request("GET", f"/workers/{binding.worker_id}/tasks/pull", binding=binding)
@@ -376,6 +414,8 @@ class WorkerApiClient:
         if binding:
             headers["X-Worker-Token"] = binding.worker_token
             headers["X-Client-Instance-Id"] = binding.client_instance_id
+            if self.inflight_flow_id:
+                headers["X-Inflight-Flow-Id"] = self.inflight_flow_id
         headers.update(extra_headers or {})
         response = self.session.request(method, f"{self.base_url}{path}", headers=headers, json=json, timeout=self.timeout)
         try:

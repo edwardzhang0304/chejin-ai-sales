@@ -1525,22 +1525,17 @@ def test_post_confirm_residual_dialog_uses_only_exact_top_title() -> None:
     )
 
 
-def test_post_confirm_residual_dialog_is_closed_once() -> None:
+def _run_post_confirm_cleanup_case(
+    *,
+    close_click_ok: bool,
+    window_disappears: bool,
+    window_visible_after_click: bool = True,
+) -> tuple[dict[str, object], object]:
     from PIL import Image
 
     from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import add_friend_windows
 
     image = Image.new("RGB", (468, 834), (255, 255, 255))
-    title_item = {
-        "text": "添加朋友",
-        "left": 188,
-        "top": 12,
-        "right": 280,
-        "bottom": 42,
-        "center_x": 234,
-        "center_y": 27,
-        "confidence": 0.99,
-    }
     targets_map = {
         "invite_greeting_textarea": {"x": 120, "y": 220, "click_bounds": [40, 160, 428, 280]},
         "invite_remark_input": {"x": 120, "y": 340, "click_bounds": [40, 300, 428, 380]},
@@ -1550,9 +1545,13 @@ def test_post_confirm_residual_dialog_is_closed_once() -> None:
     class WindowApi:
         def __init__(self) -> None:
             self.exists = True
+            self.visible = True
 
         def IsWindow(self, _hwnd: int) -> bool:
             return self.exists
+
+        def IsWindowVisible(self, _hwnd: int) -> bool:
+            return self.exists and self.visible
 
     class FakeOps:
         def __init__(self) -> None:
@@ -1561,6 +1560,7 @@ def test_post_confirm_residual_dialog_is_closed_once() -> None:
             self.ocr_count = 0
             self.click_names: list[str] = []
             self.click_hwnds: list[int] = []
+            self.journal_writes: list[dict[str, object]] = []
             self.win32gui = WindowApi()
 
         def add_friend_paced_pause(self, *_args, **_kwargs) -> float:
@@ -1573,7 +1573,9 @@ def test_post_confirm_residual_dialog_is_closed_once() -> None:
 
         def run_ocr_on_screen_region(self, *_args, **_kwargs):
             self.ocr_count += 1
-            return [] if self.ocr_count == 1 else [title_item]
+            # Reproduce the live failure: the sparse post-confirm profile is
+            # still open, but OCR never returns its title.
+            return []
 
         def paste_invite_form_text(self, *_args, **_kwargs):
             return {"ok": True}
@@ -1595,12 +1597,22 @@ def test_post_confirm_residual_dialog_is_closed_once() -> None:
                 },
             }
 
+        def write_action_phase_journal(self, _path, phase, **kwargs):
+            self.journal_writes.append({"phase": phase, **kwargs})
+            return {"ok": True}
+
         def human_window_image_click_in_bounds(self, hwnd, *_args, **kwargs):
             action_name = str(kwargs.get("action_name") or "")
             self.click_names.append(action_name)
             self.click_hwnds.append(int(hwnd))
             if action_name == "post_confirm_add_friend_dialog_close":
-                self.win32gui.exists = False
+                if not close_click_ok:
+                    return {"ok": False, "reason": "simulated_close_click_failure"}
+                if window_disappears:
+                    self.win32gui.exists = False
+                    self.win32gui.visible = False
+                else:
+                    self.win32gui.visible = window_visible_after_click
             return {"ok": True}
 
     fake_ops = FakeOps()
@@ -1617,10 +1629,20 @@ def test_post_confirm_residual_dialog_is_closed_once() -> None:
                 verify_message="您好",
                 remark_name="客户-CJ8K2P",
                 remark_code="CJ8K2P",
+                action_journal_path="action-journal.json",
                 parent_dialog_hwnd=2002,
             )
     finally:
         add_friend_windows.bind_sidecar_ops(original_ops)
+
+    return result, fake_ops
+
+
+def test_post_confirm_residual_dialog_is_closed_once_when_title_ocr_misses() -> None:
+    result, fake_ops = _run_post_confirm_cleanup_case(
+        close_click_ok=True,
+        window_disappears=True,
+    )
 
     assert_true(result.get("ok") is True, f"invite result should remain successful: {result}")
     assert_true(
@@ -1639,6 +1661,64 @@ def test_post_confirm_residual_dialog_is_closed_once() -> None:
         and cleanup.get("attempted") is True
         and cleanup.get("closed") is True,
         f"cleanup evidence mismatch: {cleanup}",
+    )
+    assert_true(
+        cleanup.get("detection_source") == "known_dialog_hwnd",
+        f"known dialog HWND must authorize cleanup when title OCR misses: {cleanup}",
+    )
+    journal_terminal = (fake_ops.journal_writes[-1].get("terminal_payload") or {})
+    assert_true(
+        (journal_terminal.get("post_confirm_cleanup") or {}).get("state") == "closed",
+        f"durable terminal evidence must record successful cleanup: {journal_terminal}",
+    )
+
+
+def test_post_confirm_close_click_failure_is_not_reported_as_closed() -> None:
+    result, fake_ops = _run_post_confirm_cleanup_case(
+        close_click_ok=False,
+        window_disappears=False,
+    )
+
+    assert_true(result.get("ok") is True, f"irreversible invite result must remain successful: {result}")
+    cleanup = result.get("post_confirm_cleanup") or {}
+    assert_true(
+        fake_ops.click_names == ["invite_confirm_button_click", "post_confirm_add_friend_dialog_close"],
+        f"cleanup must be attempted exactly once: {fake_ops.click_names}",
+    )
+    assert_true(
+        cleanup.get("attempted") is True
+        and cleanup.get("closed") is False
+        and cleanup.get("reason") == "dialog_close_click_failed",
+        f"failed close click must remain an explicit unclosed result: {cleanup}",
+    )
+    journal_terminal = (fake_ops.journal_writes[-1].get("terminal_payload") or {})
+    assert_true(
+        (journal_terminal.get("post_confirm_cleanup") or {}).get("state") == "unclosed",
+        f"durable terminal evidence must not hide cleanup failure: {journal_terminal}",
+    )
+
+
+def test_post_confirm_visible_window_is_not_reported_closed_when_verify_ocr_misses() -> None:
+    result, _fake_ops = _run_post_confirm_cleanup_case(
+        close_click_ok=True,
+        window_disappears=False,
+        window_visible_after_click=True,
+    )
+
+    assert_true(result.get("ok") is True, f"irreversible invite result must remain successful: {result}")
+    cleanup = result.get("post_confirm_cleanup") or {}
+    verification = cleanup.get("verification") or {}
+    assert_true(
+        cleanup.get("attempted") is True
+        and cleanup.get("closed") is False
+        and cleanup.get("reason") == "residual_dialog_still_visible",
+        f"a surviving visible HWND must never be inferred closed from missing OCR: {cleanup}",
+    )
+    assert_true(
+        verification.get("window_exists") is True
+        and verification.get("window_visible") is True
+        and verification.get("residual_target") is None,
+        f"verification must preserve the OCR miss and live-window evidence: {verification}",
     )
 
 
@@ -2121,7 +2201,9 @@ def main() -> int:
         test_invite_form_failed_field_retries_once_before_confirm,
         test_invite_confirm_uses_durable_action_journal_before_click,
         test_post_confirm_residual_dialog_uses_only_exact_top_title,
-        test_post_confirm_residual_dialog_is_closed_once,
+        test_post_confirm_residual_dialog_is_closed_once_when_title_ocr_misses,
+        test_post_confirm_close_click_failure_is_not_reported_as_closed,
+        test_post_confirm_visible_window_is_not_reported_closed_when_verify_ocr_misses,
         test_query_verify_invalid_dialog_handle_returns_structured_failure,
         test_add_friend_primary_locator_contract,
         test_add_friend_live_window_paths_pass_screenshot_to_plus_locator,
