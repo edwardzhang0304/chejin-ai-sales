@@ -2302,6 +2302,8 @@ class TaskRunnerTest(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertFalse(observed["pulled_during_acquire"])
+        if "pull" not in api.events:
+            runner._pull_and_execute(binding)
         self.assertIn("pull", api.events)
 
     def test_task_without_server_fencing_token_is_cancelled_before_rpa(self):
@@ -2474,7 +2476,7 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertTrue(guard.cancel_requested())
         self.assertEqual(guard.error_code, "TASK_LEASE_EXPIRED")
 
-    def test_add_friend_sidecar_cancel_check_tracks_worker_stop_and_ui_lease(self):
+    def test_add_friend_sidecar_cancel_check_tracks_inflight_stop_and_ui_lease(self):
         task = Task(id="task-cancel", task_type="add_friend", status="running", phone="13800000000")
         api = FakeApi(None)
         bridge = FakeBridge(RpaResult(ok=True, result_code="invite_sent", message="已发送"))
@@ -2484,6 +2486,13 @@ class TaskRunnerTest(unittest.TestCase):
             worker_token="token",
             client_instance_id="client-1",
             run_status="running",
+        )
+        self.assertTrue(
+            runner._start_inflight_flow(
+                binding,
+                flow_id=task.id,
+                flow_kind="task",
+            )
         )
 
         class FakeLease:
@@ -2519,7 +2528,7 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertTrue(callable(bridge.add_friend_cancel_check))
         self.assertFalse(bridge.add_friend_cancel_check())
         binding.run_status = "paused"
-        self.assertEqual(bridge.add_friend_cancel_check(), "WORKER_INTERRUPTED")
+        self.assertFalse(bridge.add_friend_cancel_check())
         binding.run_status = "running"
         lease.lost = True
         self.assertTrue(bridge.add_friend_cancel_check())

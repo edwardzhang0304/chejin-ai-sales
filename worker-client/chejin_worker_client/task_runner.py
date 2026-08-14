@@ -1571,14 +1571,16 @@ class TaskRunner:
         if not clean_id:
             return False
         for _, payload in list_action_journals():
-            if clean_id in {
+            payload_matches = clean_id in {
                 str(payload.get("transaction_id") or "").strip(),
                 str(payload.get("origin_read_run_id") or "").strip(),
                 str(payload.get("read_run_id") or "").strip(),
-            }:
-                return True
+            }
             items = payload.get("items")
-            item_values = items.values() if isinstance(items, dict) else (items or [])
+            item_values = list(
+                items.values() if isinstance(items, dict) else (items or [])
+            )
+            item_matches = False
             for item in item_values:
                 if not isinstance(item, dict):
                     continue
@@ -1587,7 +1589,28 @@ class TaskRunner:
                     str(item.get("origin_read_run_id") or "").strip(),
                     str(item.get("read_run_id") or "").strip(),
                 }:
-                    return True
+                    item_matches = True
+            if not (payload_matches or item_matches):
+                continue
+
+            # A quarantined media action intentionally has no durable message
+            # identity, so it cannot produce a normal Ledger fact.  The
+            # Journal remains as the no-repeat audit record and is checked on
+            # the next authorized read, but the quarantine itself is already
+            # a finite terminal state rather than pending transaction work.
+            # Any non-terminal item keeps the normal hard barrier.
+            journal_items = [
+                item
+                for item in item_values
+                if isinstance(item, dict)
+            ]
+            if journal_items and all(
+                str(item.get("action_phase") or "").strip()
+                in {"quarantined", "cancelled_before_trigger"}
+                for item in journal_items
+            ):
+                continue
+            return True
         return False
 
     def _finish_inflight_flow(
@@ -4240,6 +4263,19 @@ class TaskRunner:
                 binding,
                 reason="c2_loop",
             ):
+                # A settled image fact may still be waiting for its backend
+                # acknowledgement after a crash.  This is durable recovery,
+                # not a new scan: only the oldest affected conversation may
+                # proceed, and _recover_pending_image_transaction performs
+                # its own authorization and identity checks before any UI
+                # action.  Do not leave the listener waiting forever on the
+                # very barrier that this recovery is responsible for clearing.
+                if (
+                    self._pending_image_recovery_conversation_ids()
+                    and self._can_start_new_flow(binding)
+                    and self._wechat_ready_for_c2()
+                ):
+                    self._recover_pending_image_transaction(binding)
                 self.stop_event.wait(1.0)
                 continue
             if not self._wechat_ready_for_c2():
