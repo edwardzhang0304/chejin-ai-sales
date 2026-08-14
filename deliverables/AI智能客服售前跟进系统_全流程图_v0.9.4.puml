@@ -1,5 +1,5 @@
 @startuml
-' 文档版本：v0.9.3；灰度发布版本：0.9.3；最后更新：2026-08-14
+' 文档版本：v0.9.4；灰度发布版本：0.9.4；最后更新：2026-08-14
 title AI智能客服售前跟进系统 全流程图（C0-C4、媒体、回复、转人工与恢复）
 
 skinparam monochrome true
@@ -831,6 +831,7 @@ loop Worker运行中；每次循环最多完成一个会话事务
                 OA -> OA: 发送物理点击前先落盘\naction_phase=trigger_attempted\n落盘失败则禁止点击
                 OA -> WX: 截图校验
                 WX --> OA: 发送结果画面
+                OA -> OA: 全屏OCR确认右侧文字\n若漏识别且结构候选为图片\n仅对最底部同排头像=self的候选做局部增强OCR\n全文必须与本次批准正文完全一致
                 alt 新增右侧气泡身份确认
                   OA --> W: action_phase=confirmed + sent
                   W -> L: 可靠写入sent_ack Outbox\nsend_result=sent + 稳定气泡凭证

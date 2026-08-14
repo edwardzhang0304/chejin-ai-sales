@@ -1228,6 +1228,324 @@ class WechatSendSafetyTest(unittest.TestCase):
         self.assertEqual(result["attempt"], 2)
         self.assertEqual(result["confirmed_observation"]["observation_id"], "self-new")
 
+    def test_post_send_enhanced_ocr_recovers_exact_self_text_from_image_candidate(self):
+        frame = Image.new("RGB", (980, 860), "white")
+        structural_image = {
+            "id": "visual-self-candidate",
+            "type": "image",
+            "message_type": "image",
+            "sender": "unknown",
+            "sender_role": "unknown",
+            "visual_side": "self",
+            "is_self_image": True,
+            "content": "[图片]",
+            "bubble_rect": [489, 505, 878, 613],
+            "avatar_alignment": {"role": "self", "confirmed": True},
+        }
+
+        def enhanced_ocr(_image):
+            return [
+                {
+                    "text": "你好，10万左右我可以按预算帮你筛选。",
+                    "left": 20,
+                    "top": 16,
+                    "right": 410,
+                    "bottom": 48,
+                    "center_x": 215,
+                    "center_y": 32,
+                    "confidence": 0.99,
+                },
+                {
+                    "text": "你更偏向轿车还是SUV？",
+                    "left": 20,
+                    "top": 58,
+                    "right": 310,
+                    "bottom": 90,
+                    "center_x": 165,
+                    "center_y": 74,
+                    "confidence": 0.98,
+                },
+            ]
+
+        expected = "你好，10万左右我可以按预算帮你筛选。你更偏向轿车还是SUV？"
+        messages, diagnostics = (
+            sidecar.recover_expected_self_text_from_structural_candidates(
+                frame,
+                [structural_image],
+                target="CJTEST01",
+                expected_text=expected,
+                ocr_runner=enhanced_ocr,
+            )
+        )
+
+        self.assertTrue(diagnostics["attempted"])
+        self.assertTrue(diagnostics["recovered"])
+        self.assertEqual(messages[0]["type"], "text")
+        self.assertEqual(messages[0]["sender_role"], "self")
+        self.assertEqual(messages[0]["content"], expected)
+        self.assertIn(
+            "send_confirmation_enhanced_roi_ocr",
+            messages[0]["quality_flags"],
+        )
+
+    def test_post_send_enhanced_ocr_does_not_retype_unmatched_or_untrusted_image(self):
+        frame = Image.new("RGB", (980, 860), "white")
+        candidates = [
+            {
+                "id": "self-real-image",
+                "type": "image",
+                "sender_role": "self",
+                "bubble_rect": [520, 420, 850, 620],
+                "avatar_alignment": {"role": "self"},
+            },
+            {
+                "id": "customer-image",
+                "type": "image",
+                "sender_role": "customer",
+                "bubble_rect": [400, 640, 710, 790],
+                "avatar_alignment": {"role": "customer"},
+            },
+        ]
+        calls = []
+
+        def enhanced_ocr(_image):
+            calls.append(True)
+            return [
+                {
+                    "text": "图片里的其他文字",
+                    "left": 10,
+                    "top": 10,
+                    "right": 180,
+                    "bottom": 40,
+                    "confidence": 0.99,
+                }
+            ]
+
+        messages, diagnostics = (
+            sidecar.recover_expected_self_text_from_structural_candidates(
+                frame,
+                candidates,
+                target="CJTEST01",
+                expected_text="这是程序本次真正发送的回复",
+                ocr_runner=enhanced_ocr,
+            )
+        )
+
+        self.assertEqual(calls, [True])
+        self.assertFalse(diagnostics["recovered"])
+        self.assertEqual([item["type"] for item in messages], ["image", "image"])
+
+    def test_post_send_global_ocr_text_wins_without_redundant_local_ocr(self):
+        frame = Image.new("RGB", (980, 860), "white")
+        global_text = {
+            "id": "global-self-text",
+            "type": "text",
+            "sender": "self",
+            "sender_role": "self",
+            "content": "AI回复",
+            "bubble_rect": [700, 650, 860, 710],
+        }
+
+        def unexpected_local_ocr(_image):
+            self.fail("全局 OCR 已确认全文时不应再运行局部 OCR")
+
+        messages, diagnostics = (
+            sidecar.recover_expected_self_text_from_structural_candidates(
+                frame,
+                [global_text],
+                target="CJTEST01",
+                expected_text="AI回复",
+                ocr_runner=unexpected_local_ocr,
+            )
+        )
+
+        self.assertFalse(diagnostics["attempted"])
+        self.assertFalse(diagnostics["recovered"])
+        self.assertEqual(diagnostics["reason"], "already_observed_as_self_text")
+        self.assertEqual(messages, [global_text])
+
+    def test_post_send_local_ocr_cannot_replace_self_candidate_without_avatar_confirmation(self):
+        frame = Image.new("RGB", (980, 860), "white")
+        structural_image = {
+            "id": "visual-self-without-avatar",
+            "type": "image",
+            "visual_side": "self",
+            "sender_role": "unknown",
+            "bubble_rect": [600, 520, 870, 610],
+            "avatar_alignment": {"role": "unknown"},
+        }
+
+        def unexpected_local_ocr(_image):
+            self.fail("同排头像未确认 self 时不应运行类型恢复")
+
+        messages, diagnostics = (
+            sidecar.recover_expected_self_text_from_structural_candidates(
+                frame,
+                [structural_image],
+                target="CJTEST01",
+                expected_text="AI回复",
+                ocr_runner=unexpected_local_ocr,
+            )
+        )
+
+        self.assertFalse(diagnostics["attempted"])
+        self.assertFalse(diagnostics["recovered"])
+        self.assertEqual(messages[0]["type"], "image")
+
+    def test_post_send_snapshot_wires_structural_candidate_recovery_into_sequence(self):
+        frame = Image.new("RGB", (980, 860), "white")
+        geometry = {
+            "left": 0,
+            "top": 0,
+            "right": 980,
+            "bottom": 860,
+            "width": 980,
+            "height": 860,
+        }
+        validation = {
+            "ok": True,
+            "online": True,
+            "reason": "target_confirmed",
+            "confirmation_confidence": "active_title_strict",
+            "geometry": geometry,
+        }
+        structural_image = {
+            "id": "visual-self-candidate",
+            "message_id": "visual-self-candidate",
+            "type": "image",
+            "message_type": "image",
+            "visual_side": "self",
+            "sender_role": "self",
+            "bubble_rect": [489, 505, 878, 613],
+            "avatar_alignment": {"role": "self", "confirmed": True},
+        }
+        enhanced_items = [
+            {
+                "text": "AI回复",
+                "left": 520,
+                "top": 530,
+                "right": 650,
+                "bottom": 560,
+                "center_x": 585,
+                "center_y": 545,
+                "confidence": 0.99,
+            }
+        ]
+        with (
+            patch.object(sidecar, "get_window_geometry", return_value=geometry),
+            patch.object(sidecar, "validate_active_send_target", return_value=validation),
+            patch.object(sidecar, "active_send_guard_is_strong", return_value=True),
+            patch.object(
+                sidecar,
+                "parse_current_chat_frame_messages",
+                return_value=[structural_image],
+            ),
+            patch.object(
+                sidecar,
+                "enhanced_ocr_items_for_structural_chat_candidate",
+                return_value=enhanced_items,
+            ),
+            patch.object(
+                sidecar,
+                "send_context_message_region_fingerprint",
+                return_value={"sha256": "frame-sha", "bounds": [390, 100, 980, 720]},
+            ),
+            patch.object(
+                sidecar,
+                "input_text_region_state",
+                return_value={"has_visible_text": False},
+            ),
+        ):
+            snapshot = sidecar.build_send_fact_snapshot_from_frame(
+                1,
+                target="CJTEST01",
+                text="AI回复",
+                exact=False,
+                artifact_dir=None,
+                label="send_result_confirm_test",
+                screenshot=frame,
+                screenshot_path="send-result.png",
+                ocr_items=[],
+                recover_expected_self_text=True,
+            )
+
+        self.assertTrue(snapshot["ok"])
+        self.assertTrue(snapshot["enhanced_text_recovery"]["recovered"])
+        self.assertEqual(snapshot["matching_self_message_count"], 1)
+        self.assertEqual(snapshot["message_sequence"][0]["row_kind"], "text_bubble")
+        self.assertEqual(snapshot["message_sequence"][0]["content_normalized"], "AI回复")
+
+    def test_sent_confirmation_requests_enhanced_recovery_only_for_post_send_snapshot(self):
+        snapshot = {
+            "ok": True,
+            "matching_self_message_count": 1,
+            "input_region": {"has_visible_text": False},
+            "message_sequence": [
+                {
+                    "sequence_index": 0,
+                    "observation_id": "self-new",
+                    "row_kind": "text_bubble",
+                    "sender_role": "self",
+                    "content_normalized": "AI回复",
+                }
+            ],
+            "observations": [
+                {
+                    "observation_id": "self-new",
+                    "row_kind": "text_bubble",
+                    "sender_role": "self",
+                    "content_clean": "AI回复",
+                }
+            ],
+        }
+        with patch.object(
+            sidecar,
+            "capture_send_fact_snapshot",
+            return_value=snapshot,
+        ) as capture:
+            result = sidecar.confirm_reply_sent(
+                1,
+                target="CJTEST01",
+                text="AI回复",
+                exact=False,
+                baseline_match_count=0,
+                baseline_message_sequence=[],
+                artifact_dir=None,
+                max_attempts=1,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(capture.call_args.kwargs["recover_expected_self_text"])
+
+    def test_enhanced_recovery_cannot_turn_an_old_image_candidate_into_new_send_fact(self):
+        baseline = [
+            {
+                "sequence_index": 0,
+                "observation_id": "visual-self-old",
+                "row_kind": "image_bubble",
+                "sender_role": "self",
+                "content_normalized": "[图片]",
+            }
+        ]
+        current = [
+            {
+                "sequence_index": 0,
+                "observation_id": "enhanced-text-old",
+                "row_kind": "text_bubble",
+                "sender_role": "self",
+                "content_normalized": "AI回复",
+                "recovered_from_structural_observation_id": "visual-self-old",
+            }
+        ]
+
+        self.assertIsNone(
+            sidecar.find_new_matching_self_message(
+                baseline,
+                current,
+                "AI回复",
+            )
+        )
+
     def test_sent_confirmation_returns_unknown_when_only_window_is_readable(self):
         with (
             patch.object(
