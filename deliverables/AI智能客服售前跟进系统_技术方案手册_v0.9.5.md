@@ -1,6 +1,6 @@
 # AI智能客服售前跟进系统 技术方案
 
-版本：v0.9.4
+版本：v0.9.5
 
 日期：2026-07-21
 
@@ -8,7 +8,7 @@
 
 适用范围：运营后台、车金后端、Windows Worker、OmniAuto Sidecar、C0—C4、车辆 Product Master、人工接管与飞书通知。
 
-当前唯一架构口径：服务端负责授权、状态机、事实持久化、Brain/Guard、任务和通知；OmniAuto 负责微信 UI 观察、物理目标判定和动作证据；Worker 只负责调度、合同校验、事务持久化与执行。C2 使用固定八位短码和 private 单聊门禁；文字、语音、图片按同一最终画面顺序入库，一条物理媒体只形成一个业务对象，所有已触发媒体动作必须有限终态。Brain 只在最新待回复尾部完整且证据足够时生成回复；当前客户媒体失败、高意向及必须人工批准的业务硬风险进入人工接管。人工接管以未关闭 `HandoffEvent` 为权威事实并投影 `waiting_sales_reply`，服务端按同一事件通过车金统一飞书应用立即且至多通知一次所属销售。微信列表在截图与点击之间重排时，点击后的短码校验仍是硬门禁，但明确点到其他会话时允许丢弃旧坐标并在同一授权内完整重新定位一次。当前灰度发布版本和机器合同 revision 统一为 `0.9.4`。
+当前唯一架构口径：服务端负责授权、状态机、事实持久化、Brain/Guard、任务和通知；OmniAuto 负责微信 UI 观察、物理目标判定和动作证据；Worker 只负责调度、合同校验、事务持久化与执行。C2 使用固定八位短码和 private 单聊门禁；文字、语音、图片按同一最终画面顺序入库，一条物理媒体只形成一个业务对象，所有已触发媒体动作必须有限终态。Brain 只在最新待回复尾部完整且证据足够时生成回复；当前客户媒体失败、高意向及必须人工批准的业务硬风险进入人工接管。人工接管以未关闭 `HandoffEvent` 为权威事实并投影 `waiting_sales_reply`，服务端按同一事件通过车金统一飞书应用立即且至多通知一次所属销售。微信列表在截图与点击之间重排时，点击后的短码校验仍是硬门禁，但明确点到其他会话时允许丢弃旧坐标并在同一授权内完整重新定位一次。当前灰度发布版本和机器合同 revision 统一为 `0.9.5`。
 
 ## 文档治理规则
 
@@ -32,15 +32,15 @@
    字段和领域对象字段使用 snake_case，两者不得被误认为两个接口。新增、改名或废弃
    接口必须先修改本文的权威目录和接口编号，不允许在代码、聊天记录或派生合同中另起
    同义名称。
-7. 灰度版本使用唯一 `0.9.x` 序列：`0.9.0`、`0.9.1`、`0.9.2`、`0.9.3` 已冻结，本轮基线为 `0.9.4`；
-   后续任何内容不同且进入测试的候选必须升为 `0.9.5、0.9.6……`。PRD、技术方案、全流程图、版本记录、客户端、
+7. 灰度版本使用唯一 `0.9.x` 序列：`0.9.0`、`0.9.1`、`0.9.2`、`0.9.3`、`0.9.4` 已冻结，本轮基线为 `0.9.5`；
+   后续任何内容不同且进入测试的候选必须升为 `0.9.6、0.9.7……`。PRD、技术方案、全流程图、版本记录、客户端、
    后端、OmniAuto 合同 `contract_revision`、生成 Schema、manifest 和安装包必须写入同一个
    精确版本，禁止各自升版、复用旧号覆盖新内容或把占位符 `0.9.X` 写入运行产物。
    `contract_version=3`、`observation_schema_version=3` 和文中 V3 仅是协议结构代号，不属于
-   灰度发布版本；对外沟通、兼容校验和发布追溯统一使用 `contract_revision=0.9.4 + SHA`。
+   灰度发布版本；对外沟通、兼容校验和发布追溯统一使用 `contract_revision=0.9.5 + SHA`。
 8. 灰度稳定分支固定为 `codex/gray-release-0.9.x`，只接收当前灰度版本的缺陷修复、合同同步、
    测试和发布治理，不在该分支增加下一期功能。每个不可变灰度候选使用精确标签
-   `gray-v0.9.0、gray-v0.9.1、gray-v0.9.2、gray-v0.9.3、gray-v0.9.4……`。`main` 只接收已完成灰度验收的确切标签提交，不允许把
+   `gray-v0.9.0、gray-v0.9.1、gray-v0.9.2、gray-v0.9.3、gray-v0.9.4、gray-v0.9.5……`。`main` 只接收已完成灰度验收的确切标签提交，不允许把
    dirty 工作区、未固定的本地提交或多个并行开发分支直接合入 `main`。
 
 
@@ -105,7 +105,7 @@ Windows Worker -> OmniAuto Sidecar -> 微信桌面端
 
 ## 运营后台登录与会话鉴权
 
-本节是 PRD v0.9.4“指定账号登录、登录成功即全部权限”的唯一技术实现口径。
+本节是 PRD v0.9.5“指定账号登录、登录成功即全部权限”的唯一技术实现口径。
 鉴权只回答“是不是已登录的后台账号”，第一期不再回答“这个账号属于哪个权限角色”。
 
 ### 登录职责与边界
@@ -1292,14 +1292,17 @@ conversation.status=ai_active
 其生命周期固定为：
 
 ```text
-首屏未读事实上报
--> 后端生成visible_unread read-target
--> Worker按授权交集读取
--> 后端确认本次active_read完整入库/结算：消费unread_hint
--> 或新扫描明确unread_hint=false：撤销该事实
+首屏未读观察上报
+-> 后端根据稳定语义证据建立 unread_generation=N
+-> 后端生成读取票，并在票上冻结N（无待处理代次则为0）
+-> Worker按授权交集读取；授权复核只验证票仍有效，不把票上N替换成最新值
+-> Worker在入库时回传读取票冻结的N
+-> 后端确认本次active_read完整入库/结算：仅消费N
+-> 后续扫描仍是同一红点/预览证据：仍属于N，不清空冷却、不提前派发
+-> 能证明新未读事实时建立N+1；或到next_read_due_at后允许低频复核
 ```
 
-定位失败、窗口不可控、类型无法确认、读取失败或入库未被后端确认时，不得消费 `unread_hint`；保留证据并按现有冷却/重试规则处理。新的成功扫描事实可以将其改为 `false`，防止用过期红点无限次读取。
+定位失败、窗口不可控、类型无法确认、读取失败或入库未被后端确认时，不得消费当前 `unread_generation`；保留证据并按现有冷却/重试规则处理。扫描中的 `unread_hint` 是物理画面电平，`unread_generation` 是后端持久化的业务事件代次，两者不得继续共用一个布尔状态。
 
 长期状态不能等于“每轮都要打开微信”。后端必须区分“这个会话仍需监听”和“现在已经
 到下一次读取时间”。一次完整 `messages/ingest` 即使 `messages=[]` 或全部返回
@@ -1318,12 +1321,18 @@ next_read_due_at = 下次允许定向读取时间
 30 秒扫描立即重新派发。只有下列带有“完成时间之后的新证据”的事件可以提前唤醒：
 
 ```text
-最新首屏扫描从无未读变为有未读，且该扫描事实晚于last_read_completed_at
+后端建立了高于已消费代次的新 unread_generation
 首次好友激活待首读
 conversation.status 或授权版本发生有效变化
 召回到期进入 recall_precheck
 上一批读取/Brain明确签发同会话continuation_token
 ```
+
+`unread_generation` 只能由后端对同一绑定单调分配。新代次必须至少有一项可证明的新事实：规范化消息预览/预览时间发生稳定变化；OmniAuto 获得微信提供的稳定消息观察 ID；后端收到新的消息或业务事件；或成功扫描曾明确观察为 `unread_hint=false`，之后再观察为 `true`。单纯“红点仍亮”、新 `scan_id`、OCR 置信度波动、会话行坐标/顺序变化或红点边框变化不得创建新代次。`row_fingerprint` 包含位置证据，禁止将其整体作为未读事件版本。
+
+当无法仅凭侧栏证据区分“客户连续发了完全相同的消息”与“原红点未消失”时，不得猜测新代次来绕过冷却；到 `next_read_due_at` 后仍必须允许低频完整复核，因此不会永久漏读。读取N执行期间如已建立N+1，N的完成结算只能消费N，N+1必须保持待处理。
+
+被动首屏扫描仍是只读操作，禁止为了消除红点而点击当前会话。完整读取已获后端结算且仍持有本会话 UI 锁时，Worker 可在再次确认 `private + 目标短码一致 + 唯一会话行` 后，最多尝试一次“点击当前行消红点”。该动作只是最佳努力的 UI 收尾：失败、红点未消失或无法唯一确认时直接跳过，不得改写已消费代次、不得重读、搜索、转写、Vision、Brain 或创建新任务。
 
 `waiting_sales_reply` 仍需低频轮询，因为销售从同一微信账号发出的消息不一定产生未读
 红点；它同样遵守 2/5/10 分钟退避，不能每 30 秒切换会话。`waiting_user_reply` 优先由
@@ -1657,7 +1666,7 @@ Worker 必须保留 Outbox 并执行身份刷新重传。在冲突解决前不�
 `fact_scope=current_read_run + delivery_state=not_enqueued`；历史图片和已进入 Outbox
 的图片不得重复处理。
 
-机器合同 revision `0.9.4` 必须完整包含媒体和读取轮次字段，同时表达读取轮次与传输状态、语音动作身份与业务身份分离、
+机器合同 revision `0.9.5` 必须完整包含媒体和读取轮次字段，同时表达读取轮次与传输状态、语音动作身份与业务身份分离、
 选中目标两阶段握手和逐相邻帧同对象证明。`identity_checkpoint.recent_messages[]` 回传
 `origin_read_run_id`；`ledger_state` 只允许作为诊断投影，业务门禁不得读取。
 
@@ -2243,7 +2252,7 @@ Worker C2 读取某个会话时，执行顺序固定为：
 上述顺序是唯一合法流程。禁止在右键前提交正式 Worker 身份，禁止用 voice anchor 直接生成
 source key，禁止在动作后用相同正文、相同 anchor 或坐标找回编号。
 
-机器合同 revision `0.9.4` 在 Sidecar 请求/返回、ActionJournal、Worker 本地身份预留和最终 V3 evidence 中使用以下唯一媒体字段，禁止新增同义字段：
+机器合同 revision `0.9.5` 在 Sidecar 请求/返回、ActionJournal、Worker 本地身份预留和最终 V3 evidence 中使用以下唯一媒体字段，禁止新增同义字段：
 
 | 字段 | 所有者 | 必填规则 |
 |---|---|---|
@@ -2324,7 +2333,7 @@ binding 证据字段不得声称已绑定；`failed` 只有在目标身份已由
 Worker 必须对上述逻辑矛盾失败关闭。例如 `identity_phase=sequence_reserved` 同时存在
 `worker_stable_id`、`transcript_binding_status=confirmed` 但候选数不是 1、或 Sidecar 改写 action ID，都必须在任何新微信动作和入库前返回 `C2_VOICE_IDENTITY_CONTRACT_INVALID`。
 
-##### 6.0.4.6.1 灰度 `0.9.4` 实施边界
+##### 6.0.4.6.1 灰度 `0.9.5` 实施边界
 
 本表是实施边界，不是可选重构建议。函数后续如改名，仍必须通过 AST/行为门禁证明不存在等价旧逻辑。
 
@@ -2338,7 +2347,7 @@ Worker 必须对上述逻辑矛盾失败关闭。例如 `identity_phase=sequence
 | `sidecar_new_message_occurrences` 及内容 multiset 比较 | 只可用于发现“画面可能新增了什么”，结果必须再进入新观察仲裁 | 用来证明正文属于被点击语音，或认定相同内容是旧消息 |
 | `storage.py` 消息序号状态 | 原子落盘 action ID、reserved ID、identity phase、trigger phase 和 terminal；预留号单调且永不复用 | 崩溃后回收预留号；新动作重用旧 action ID；`trigger_attempted` 后再点击 |
 | `storage.py` 动作前画面状态 | 与 ActionJournal 原子保存 `pre_action_identity_sequence`，覆盖 `committed/selected_action/frame_local_unselected`；动作终态后补齐 `sequence_alignment_evidence` | 只保存已编号项；崩溃后用新截图或相同内容伪造动作前序列 |
-| `contracts/c2_contract_v3.json` 及生成 schema | `contract_revision`、客户端、后端、Sidecar、生成 Schema、样例和 manifest 统一为 `0.9.4`；保留 `authoritative_frame_source=initial_read/final_read/action_journal_recovery`、全部媒体字段及安全误点错误码语义；共用同一样例/哈希 | 使用独立合同版本号；在同一 `0.9.4` 下静默改语义或覆盖已生成候选；产生 `voice_execute_final` 等临时值；保留 `tracking_candidate_counts` 兼容；新增同义字段、双字段兼容或 Worker 本地兜底重判 |
+| `contracts/c2_contract_v3.json` 及生成 schema | `contract_revision`、客户端、后端、Sidecar、生成 Schema、样例和 manifest 统一为 `0.9.5`；保留 `authoritative_frame_source=initial_read/final_read/action_journal_recovery`、全部媒体字段及安全误点错误码语义；共用同一样例/哈希 | 使用独立合同版本号；在同一 `0.9.5` 下静默改语义或覆盖已生成候选；产生 `voice_execute_final` 等临时值；保留 `tracking_candidate_counts` 兼容；新增同义字段、双字段兼容或 Worker 本地兜底重判 |
 
 新流程的唯一落库时点为：预留表/ActionJournal 在点击前落盘；正式 identity catalog、
 Ledger、Outbox 和 `source_message_key` 只在 `historical_restored` 或 `business_committed` 后落盘。
@@ -2526,6 +2535,8 @@ POST /api/workers/{worker_id}/wechat/sessions/scan-result
 | `row_fingerprint` | string | 否 | 会话列表行特征，仅作辅助证据，不作为绑定或定向读取必填条件。 |
 | `unread_hint` | boolean | 否 | 当前首屏是否存在未读/红点观察事实，缺省按 `false` 处理。该字段只能触发后端重算 `visible_unread` 读取许可，不能被 Worker 直接当作点击、入库或回复授权。 |
 | `last_message_preview` | string | 否 | 列表预览文本。 |
+| `last_message_preview_time` | string | 否 | 列表可靠识别到的预览时间文本；无法可靠识别时为空，不得用扫描时间伪造。只作为后端判定新未读代次的语义证据之一。 |
+| `last_message_observation_id` | string | 否 | 仅允许上报微信/底层能力对同一物理消息稳定不变、对新物理消息变化的原生观察 ID。无这种能力时必须为空；禁止用 `scan_id`、截图哈希、OCR 框、行号、坐标或随机值伪造。 |
 | `ocr_confidence` | number | 否 | OCR 置信度。 |
 
 C2 会话身份只允许一个决策点：OmniAuto Sidecar 负责从微信界面确认标题行、判定
@@ -2596,6 +2607,7 @@ GET /api/workers/{worker_id}/wechat/sessions/read-targets?limit=20
 | `last_ingested_at` | 服务端最后入库消息时间。 |
 | `read_reason` | `friend_acceptance_visible_hit / recall_precheck / visible_unread / recent_ai_sent / waiting_user_reply / waiting_sales_reply`。其中 `visible_unread` 是由最新首屏未读事实触发的临时读取原因，不是会话主状态。 |
 | `authorization_revision` | 当前监听授权版本；必填。停止监听或重新授权后会变化，旧版本请求不得入库。 |
+| `unread_generation` | 后端必填的未读代次快照。读取票创建时冻结当时代次；无任何待处理未读代次时为 `0`。 |
 | `identity_checkpoint` | 本会话服务端身份检查点；包含下一编号下限和最近消息身份，Worker 本地状态丢失后必须先合并。 |
 | `next_read_due_at` | 本次目标的服务端到期时间；未到期的长期状态目标原则上不应出现在列表中，Worker 即使收到也不得提前点击。 |
 
@@ -2603,7 +2615,7 @@ GET /api/workers/{worker_id}/wechat/sessions/read-targets?limit=20
 
 - 正常 `read-targets.targets[]` 必须包含 `conversation_id + remark_code + authorization_revision`。
 - `read_reason=visible_unread` 时，后端必须能证明当前绑定的最新成功扫描事实为 `unread_hint=true`，且会话为 `ai_active`。Worker 不得自行把本地 `visible_hit` 改写成该服务端 `read_reason`，也不得因本轮没有 `visible_hit/local_unread_hint` 而否决后端当前授权；首屏未命中必须进入正式短码搜索。
-- 后端确认 `visible_unread` 的完整 `active_read` 入库/结算后消费当前 `unread_hint`；中途失败、未确认入库或仅写本地 ledger 不得消费。后续首屏扫描可以根据微信当前事实重新置 `true/false`。
+- 所有 `read-targets` 都必须携带创建读取票时冻结的 `unread_generation`；Worker 必须原样保留到 `messages/ingest`。一次由 `waiting_sales_reply`等其他原因触发的完整读取，也可以结算该票已覆盖的未读代次；但后端只能消费票上冻结的值。中途失败、未确认入库或仅写本地 ledger 不得消费。
 - 已绑定会话如果缺少 `remark_code`，不得出现在正常 `read-targets` 中，应进入 `needs_review / degraded` 并记录 `C2_TARGET_REMARK_CODE_MISSING`。
 - Worker 收到缺少 `remark_code` 的读取目标时，必须跳过读取，不得继续打开微信会话或上报消息。
 - Worker 本轮读取去重以 `conversation_id + remark_code` 作为身份键；服务端身份收口必须满足 `conversation_id + remark_code`。
@@ -2616,12 +2628,16 @@ GET /api/workers/{worker_id}/wechat/sessions/read-targets?limit=20
 
 1. 新绑定 `ai_active` 会话首次上报 `unread_hint=true`，立即进入 `read-targets`，`read_reason=visible_unread`。
 2. 已绑定但无其他待处理状态的 `ai_active` 会话再次发生未读，同样能获得读取许可。
-3. 完整入库/结算确认后 `unread_hint` 被消费，同一过期事实不再重复派发。
+3. 完整入库/结算确认后当前 `unread_generation` 被消费；后续扫描仍观察到同一红点和同一预览证据时，不清空 `next_read_due_at`、不在冷却内重复派发。
 4. 定位、类型确认、读取或入库中途失败时不消费，冷却后可安全重试。
-5. 后续成功扫描上报 `unread_hint=false` 后不再派发 `visible_unread`。
+5. 后续成功扫描上报 `unread_hint=false` 后不再派发 `visible_unread`，并为下一次可证明的 `false -> true` 重新触发做好状态记忆。
 6. 无短码、多短码、同码多会话、绑定冲突、错 Worker、监听暂停/禁用、授权过期和关闭/拒绝会话均不得获得该授权。
 7. Worker 本地仅有 `visible_hit` 而服务端没有同一会话的当前 `read-target` 时，必须不点击、不读取、不转写、不入库。
 8. 重复上报同一 `scan_id` 不得创建新绑定、改变授权版本或制造第二份未读事实。
+9. 不同 `scan_id` 但红点、规范化预览和预览时间均未变时，必须复用原 `unread_generation`；会话行上下移动、OCR bbox 变化和置信度波动不得制造新代次。
+10. 读取N期间到达新消息并建立N+1时，N结算后N+1仍能获得读取许可，不得被误消费。
+11. 完全相同的新预览无法证明新代次时，冷却内不提前读取，但到 `next_read_due_at` 后必须能完整复核。
+12. 被动扫描零点击；结算后的消红点点击最多一次且只是 UI 收尾。点击失败、红点不消失或 Worker 重启后，同一已消费代次仍不得在冷却内重读。
 
 #### 6.2.3 单会话读取前复核授权
 
@@ -2635,6 +2651,7 @@ GET /api/workers/{worker_id}/wechat/conversations/{conversation_id}/read-authori
 一致，其中返回的 `read_reason` 只作为 `authorization_read_reason` 保存和匹配，不决定
 Worker 当前 `operation_phase`；批次续读可增加查询参数 `continuation_batch_id` 和 Header
 `X-C2-Continuation-Token`，两者仍属于 `API-C2-03`。
+单会话授权响应应返回后端当前 `unread_generation / consumed_unread_generation` 用于审计，但不得替换 Worker 已领取票据上冻结的 `unread_generation`。复核时已出现N+1不影响Worker完成N；N结算后N+1仍保持待处理。
 
 授权撤销、版本过期、Worker/会话不匹配或 continuation 不匹配时必须返回不允许，
 Worker 不得继续点击、转写、图片读取或消息入库。
@@ -2668,16 +2685,21 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `contract_version` | integer | 是 | 协议结构代号固定为 `3`，不是发布版本；灰度版本由 `contract_revision=0.9.4` 表达，并同时校验 `contract_sha256 / observation_schema_version`。 |
+| `contract_version` | integer | 是 | 协议结构代号固定为 `3`，不是发布版本；灰度版本由 `contract_revision=0.9.5` 表达，并同时校验 `contract_sha256 / observation_schema_version`。 |
 | `read_run_id` | string | 是 | 本次读取运行 ID。 |
 | `conversation_id` | string | 是 | 服务端已绑定会话 ID。 |
 | `remark_code` | string | 是 | 本轮已确认的客户短码。 |
 | `authorization_revision` | string | 是 | 必须与服务端当前 read-target 授权一致。 |
+| `unread_generation` | integer | 是 | 必须原样回传本次 read-target 冻结的代次，无待处理代次时为 `0`。后端仅能消费该值，不得用绑定当前最新值兜底。 |
 | `rpa_session_key` | string | 否 | 本机会话定位键；第一屏读取时建议上报，短码搜索读取时可为空或上报搜索后重新识别到的定位键。 |
 | `messages` | array | 是 | 本次读取到的消息事实。 |
 | `evidence` | object | 否 | 截图、日志、OCR摘要。 |
 
 `sidecar_run_id` 放入 `evidence.sidecar_run_id` 和每条原始证据中，不新增为后端请求顶层必填字段，避免 Worker 与后端产生一组实际未消费的冗余接口字段。
+
+上述 `last_message_preview_time / last_message_observation_id / unread_generation` 已作为 `0.9.5` 机器合同变更一次性同步到客户端、Sidecar、后端、生成 Schema、样例和测试。旧 `0.9.4` 请求必须返回 revision mismatch，不得静默兼容或用旧包冒充。
+
+`0.9.4 -> 0.9.5` 替换前必须暂停旧 Worker，确认消息 Outbox、媒体 Journal 和发送回执均无未结算事实；如仍有 pending 事实，必须先用原 `0.9.4` 后端结算，不得直接删除。然后先升级后端及迁移 `20260814_0027`，再替换 `0.9.5` Worker 并恢复接单，禁止新旧合同混跑。
 
 `messages[]` 字段：
 
@@ -3487,7 +3509,7 @@ failed 终态并进入 Ledger/Outbox，禁止永久停留在 `C2_IMAGE_FACT_PEND
 
 `structural_image_candidate / explained_voice_region` 是 OmniAuto 内部仲裁对象，不新增
 后端接口字段。但本次语音身份生命周期已改变跨进程机器语义，不得继续沿用
-灰度 `0.9.4`；权威画面枚举、媒体编排和安全误点恢复必须在同一版本中同步 OmniAuto、Worker、后端 schema、样例和合同测试。
+灰度 `0.9.5`；权威画面枚举、媒体编排和安全误点恢复必须在同一版本中同步 OmniAuto、Worker、后端 schema、样例和合同测试。
 
 ### 8.2 单会话图片处理流程
 
@@ -3767,8 +3789,9 @@ V3 消息并正常应用角色状态机；只有 `fact_settlement` 时才固定�
     handoff 且不得生成请求重发/改发文字的自动回复；self 媒体失败不得阻断。高意向和
     其他硬风险仍必须阻断自由回答。
 25. 首屏、定向和恢复队列必须共用冷却准入：读取成功后 30 秒扫描不得再次点击；有新
-    事实时后端也保留至少 2 分钟 `next_read_due_at`，只有完成时间之后的新未读或正式
-    continuation token 可提前唤醒。
+    事实时后端也保留至少 2 分钟 `next_read_due_at`，只有高于已消费代次的新
+    `unread_generation` 或正式 continuation token 可提前唤醒。必须固定回放“同一红点连续多轮扫描”：
+    已消费代次不得反复清空冷却；并回放“读取N期间到达N+1”，证明N结算不会误消费N+1。
 26. 初始帧同时有两条相同 3 秒语音：首帧只为选中的一条生成 action ID/预留号；
     完成后必须从新帧重新仲裁另一条并生成不同 action ID/预留号。不得因时长、相同菜单或相似图形合并，也不得继续使用旧帧未执行候选。
 27. 点击旧 3 秒语音后微信自动滚动，旧语音上移、又到达一条新 3 秒语音并占据旧位置：

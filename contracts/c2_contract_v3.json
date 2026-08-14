@@ -1,8 +1,29 @@
 {
   "contract_version": 3,
-  "contract_revision": "0.9.4",
+  "contract_revision": "0.9.5",
   "observation_schema_version": 3,
   "control_schema_version": 1,
+  "unread_generation_contract": {
+    "owner": "backend",
+    "current_field": "unread_generation",
+    "consumed_field": "consumed_unread_generation",
+    "request_field": "unread_generation",
+    "new_generation_evidence": [
+      "normalized_message_preview",
+      "preview_time",
+      "reliable_message_observation_id",
+      "observed_unread_false_then_true"
+    ],
+    "forbidden_generation_evidence": [
+      "absolute_coordinates",
+      "row_y_bucket",
+      "unread_badge_bounds",
+      "whole_row_fingerprint"
+    ],
+    "completion_rule": "consume_only_the_generation_carried_by_the_authorized_read",
+    "same_generation_rule": "a_repeated_visible_badge_for_the_same_semantic_evidence_must_not_reset_read_backoff",
+    "identical_preview_rule": "when_a_new_generation_cannot_be_proven_from_stable_evidence_wait_until_the_normal_read_due_time"
+  },
   "sender_roles": ["customer", "self", "system", "unknown"],
   "message_types": ["text", "image", "voice", "system", "file", "unknown"],
   "row_kinds": [
@@ -248,6 +269,7 @@
     "conversation_id",
     "remark_code",
     "authorization_revision",
+    "unread_generation",
     "messages",
     "evidence"
   ],

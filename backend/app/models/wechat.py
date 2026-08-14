@@ -34,6 +34,33 @@ class WechatSessionBinding(Base, TimestampMixin):
     )
     unread_hint: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     last_message_preview: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_message_preview_time: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    last_message_observation_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+    last_observed_unread_hint: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+    unread_evidence_key: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    unread_generation: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
+    consumed_unread_generation: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
     ocr_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

@@ -139,6 +139,7 @@ class StorageTest(unittest.TestCase):
             "conversation_id": "conv-outbox-origin",
             "authorization_revision": "revision-outbox-origin",
             "read_run_id": "read-current-outbox-envelope",
+            "unread_generation": 17,
             "messages": [{"source_message_key": "source-outbox-origin"}],
             "evidence": {
                 "slot_ledger_states": [
@@ -156,6 +157,8 @@ class StorageTest(unittest.TestCase):
             ),
             {"source-outbox-origin": "read-outbox-origin"},
         )
+        stored = self.storage.list_c2_outbox_waiting(limit=1)[0]
+        self.assertEqual(stored["payload"]["unread_generation"], 17)
 
     def test_outbox_storage_rejects_states_outside_machine_contract(self):
         payload = {

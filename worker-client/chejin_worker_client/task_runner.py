@@ -5057,6 +5057,7 @@ class TaskRunner:
             ),
             read_reason=authorized_target.read_reason,
             authorization_revision=authorized_target.authorization_revision,
+            unread_generation=authorized_target.unread_generation,
             raw={
                 **authorized_target.raw,
                 **visible_target.raw,
@@ -5301,6 +5302,7 @@ class TaskRunner:
             ocr_confidence=session.get("ocr_confidence") if session.get("ocr_confidence") is not None else target.ocr_confidence,
             read_reason=target.read_reason,
             authorization_revision=target.authorization_revision,
+            unread_generation=target.unread_generation,
             raw={
                 **target.raw,
                 "visible_session_candidate": self._sidecar_visible_session_candidate(session),
