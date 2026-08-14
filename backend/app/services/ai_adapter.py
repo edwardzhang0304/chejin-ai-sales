@@ -479,12 +479,19 @@ class RealOmniAutoAIEngineAdapter:
                 raw_payload=raw_payload,
             )
         if rule_name == "customer_service_brain_handoff" or recommended_action in {"handoff", "handoff_for_approval"}:
+            reply_text = str(result.get("reply_text") or "").strip()
+            brain_owned_boundary = bool(
+                result.get("adoptable")
+                and reply_text
+                and result.get("visible_reply_source") == "brain_plan.reply_segments"
+            )
             return AIEngineDecision(
-                decision=(
+                decision="reply_then_handoff" if brain_owned_boundary else (
                     recommended_action
                     if recommended_action in {"handoff", "handoff_for_approval"}
                     else "handoff"
                 ),
+                reply_text=reply_text if brain_owned_boundary else None,
                 confidence=confidence,
                 handoff_reason_code=str(
                     result.get("reason") or "HANDOFF_REQUIRED"
@@ -493,7 +500,11 @@ class RealOmniAutoAIEngineAdapter:
                 evidence_refs=evidence_refs,
                 guard_result="handoff",
                 error_code=None,
-                suggested_action="handoff",
+                suggested_action=(
+                    "reply_then_handoff"
+                    if brain_owned_boundary
+                    else "handoff"
+                ),
                 raw_payload=raw_payload,
             )
         if (
