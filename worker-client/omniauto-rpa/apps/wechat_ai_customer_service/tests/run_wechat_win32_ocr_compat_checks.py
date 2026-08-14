@@ -4801,13 +4801,12 @@ def test_recover_send_window_guard_recovers_foreground_mismatch() -> None:
         "basic_send_window_guard": sidecar_mod.basic_send_window_guard,
         "activate_window": sidecar_mod.activate_window,
         "sleep": sidecar_mod.time.sleep,
-        "uniform": sidecar_mod.random.uniform,
     }
-    calls = {"guard": 0, "activate": 0}
+    calls = {"guard": 0, "activate": 0, "sleeps": []}
     try:
         def fake_guard(_hwnd: int) -> dict[str, object]:
             calls["guard"] += 1
-            if calls["guard"] == 1:
+            if calls["guard"] <= 2:
                 return {"ok": False, "reason": "foreground_not_wechat_target"}
             return {"ok": True, "reason": "window_valid"}
 
@@ -4816,18 +4815,52 @@ def test_recover_send_window_guard_recovers_foreground_mismatch() -> None:
 
         sidecar_mod.basic_send_window_guard = fake_guard
         sidecar_mod.activate_window = fake_activate
-        sidecar_mod.time.sleep = lambda _seconds: None
-        sidecar_mod.random.uniform = lambda _a, _b: 0.0
-        result = sidecar_mod.recover_send_window_guard(1001, max_attempts=1)
+        sidecar_mod.time.sleep = lambda seconds: calls["sleeps"].append(seconds)
+        result = sidecar_mod.recover_send_window_guard(1001, max_attempts=2)
         assert_true(result.get("ok") is True, f"expected focus recovery success: {result}")
         assert_true(result.get("focus_recovered") is True, f"expected focus_recovered flag: {result}")
-        assert_true(int(result.get("focus_recovery_attempts") or 0) == 1, f"expected single recovery attempt: {result}")
-        assert_true(calls["activate"] == 1, f"expected one activate call: {calls}")
+        assert_true(int(result.get("focus_recovery_attempts") or 0) == 2, f"expected two recovery attempts: {result}")
+        assert_true(calls["activate"] == 2, f"expected two activate calls: {calls}")
+        assert_true(calls["sleeps"] == [0.30, 0.70], f"unexpected bounded recovery delays: {calls}")
     finally:
         sidecar_mod.basic_send_window_guard = originals["basic_send_window_guard"]
         sidecar_mod.activate_window = originals["activate_window"]
         sidecar_mod.time.sleep = originals["sleep"]
-        sidecar_mod.random.uniform = originals["uniform"]
+
+
+def test_recover_send_window_guard_stops_after_two_failed_attempts() -> None:
+    sidecar_mod = sys.modules["apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar"]
+    originals = {
+        "basic_send_window_guard": sidecar_mod.basic_send_window_guard,
+        "activate_window": sidecar_mod.activate_window,
+        "sleep": sidecar_mod.time.sleep,
+    }
+    calls = {"guard": 0, "activate": 0, "sleeps": []}
+    try:
+        def fake_guard(_hwnd: int) -> dict[str, object]:
+            calls["guard"] += 1
+            return {
+                "ok": False,
+                "reason": "foreground_not_wechat_target",
+                "foreground_window": {"title": f"other-{calls['guard']}"},
+            }
+
+        sidecar_mod.basic_send_window_guard = fake_guard
+        sidecar_mod.activate_window = lambda _hwnd: calls.__setitem__("activate", calls["activate"] + 1)
+        sidecar_mod.time.sleep = lambda seconds: calls["sleeps"].append(seconds)
+        result = sidecar_mod.recover_send_window_guard(1001, max_attempts=2)
+        assert_true(result.get("ok") is False, f"focus recovery must fail closed: {result}")
+        assert_true(result.get("focus_recovered") is False, f"failed recovery must be explicit: {result}")
+        assert_true(int(result.get("focus_recovery_attempts") or 0) == 2, f"recovery must be bounded: {result}")
+        assert_true(calls["guard"] == 3, f"expected initial guard plus two retries: {calls}")
+        assert_true(calls["activate"] == 2, f"expected exactly two activation attempts: {calls}")
+        assert_true(calls["sleeps"] == [0.30, 0.70], f"unexpected bounded recovery delays: {calls}")
+        foreground = result.get("foreground_window") if isinstance(result.get("foreground_window"), dict) else {}
+        assert_true(foreground.get("title") == "other-3", f"final foreground evidence must be preserved: {result}")
+    finally:
+        sidecar_mod.basic_send_window_guard = originals["basic_send_window_guard"]
+        sidecar_mod.activate_window = originals["activate_window"]
+        sidecar_mod.time.sleep = originals["sleep"]
 
 
 def test_recover_send_window_guard_does_not_retry_non_focus_failures() -> None:
@@ -4847,6 +4880,52 @@ def test_recover_send_window_guard_does_not_retry_non_focus_failures() -> None:
     finally:
         sidecar_mod.basic_send_window_guard = originals["basic_send_window_guard"]
         sidecar_mod.activate_window = originals["activate_window"]
+
+
+def test_send_payload_stops_before_input_after_two_focus_recovery_failures() -> None:
+    sidecar_mod = sys.modules["apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar"]
+    originals = {
+        "recover_send_window_guard": sidecar_mod.recover_send_window_guard,
+        "capture_send_fact_snapshot": sidecar_mod.capture_send_fact_snapshot,
+    }
+    calls = {"attempts": [], "capture": 0}
+    try:
+        def fail_focus(_hwnd, *, max_attempts=1):
+            calls["attempts"].append(max_attempts)
+            return {
+                "ok": False,
+                "reason": "foreground_not_wechat_target",
+                "focus_recovery_attempts": max_attempts,
+                "foreground_window": {"title": "QQ"},
+            }
+
+        def unexpected_capture(*_args, **_kwargs):
+            calls["capture"] += 1
+            raise AssertionError("send baseline must not run without WeChat focus")
+
+        sidecar_mod.recover_send_window_guard = fail_focus
+        sidecar_mod.capture_send_fact_snapshot = unexpected_capture
+        result = sidecar_mod.send_payload(
+            1001,
+            {"windows": [], "visible_main_windows": []},
+            target="CJFOCUS1",
+            text="焦点恢复失败时不得输入",
+            exact=True,
+            validated_guard={
+                "ok": True,
+                "online": True,
+                "reason": "target_confirmed",
+                "confirmation_confidence": "active_title_strict",
+            },
+        )
+        assert_true(result.get("ok") is False, f"focus failure must stop send: {result}")
+        assert_true(result.get("state") == "send_guard_blocked", f"unexpected state: {result}")
+        assert_true(result.get("action_phase") == "not_attempted", f"focus failure must be zero-input: {result}")
+        assert_true(calls["attempts"] == [2], f"pre-send recovery must be bounded to two attempts: {calls}")
+        assert_true(calls["capture"] == 0, f"send flow advanced after failed focus guard: {calls}")
+    finally:
+        sidecar_mod.recover_send_window_guard = originals["recover_send_window_guard"]
+        sidecar_mod.capture_send_fact_snapshot = originals["capture_send_fact_snapshot"]
 
 
 def test_blank_input_focus_retry_keeps_single_confirm_semantics() -> None:
@@ -5485,7 +5564,7 @@ def test_send_payload_uses_single_fresh_baseline_before_typing() -> None:
         "confirm_reply_sent": sidecar_mod.confirm_reply_sent,
         "humanized_action_sleep": sidecar_mod.humanized_action_sleep,
     }
-    calls = {"validate_active": 0, "capture": 0}
+    calls = {"validate_active": 0, "capture": 0, "focus_recovery_attempts": []}
     try:
         def pass_validate(*_args, **_kwargs):
             calls["validate_active"] += 1
@@ -5499,7 +5578,11 @@ def test_send_payload_uses_single_fresh_baseline_before_typing() -> None:
             }
 
         sidecar_mod.validate_active_send_target = pass_validate
-        sidecar_mod.recover_send_window_guard = lambda _hwnd, max_attempts=1: {"ok": True, "reason": "window_valid"}
+        def pass_focus_guard(_hwnd, max_attempts=1):
+            calls["focus_recovery_attempts"].append(max_attempts)
+            return {"ok": True, "reason": "window_valid"}
+
+        sidecar_mod.recover_send_window_guard = pass_focus_guard
         sidecar_mod.get_window_geometry = lambda _hwnd: dict(geometry)
         sidecar_mod.validate_send_geometry = lambda _g: {"ok": True}
         def capture_snapshot(*_args, **_kwargs):
@@ -5565,6 +5648,7 @@ def test_send_payload_uses_single_fresh_baseline_before_typing() -> None:
         )
         assert_true(calls["validate_active"] == 2, f"the baseline and post-send frame should each validate once: {calls}")
         assert_true(calls["capture"] == 2, f"send should use one baseline and one post-send frame: {calls}")
+        assert_true(calls["focus_recovery_attempts"] == [2], f"pre-send focus recovery must allow exactly two retries: {calls}")
         pre_guard = send_result.get("pre_send_guard") if isinstance(send_result.get("pre_send_guard"), dict) else {}
         assert_true(pre_guard.get("single_frame_send_baseline") is True, f"pre-send guard should record baseline reuse: {pre_guard}")
     finally:
@@ -6979,7 +7063,9 @@ def main() -> int:
         test_foreground_guard_zero_hwnd_can_degrade_when_enabled,
         test_foreground_guard_zero_hwnd_blocks_when_disabled,
         test_recover_send_window_guard_recovers_foreground_mismatch,
+        test_recover_send_window_guard_stops_after_two_failed_attempts,
         test_recover_send_window_guard_does_not_retry_non_focus_failures,
+        test_send_payload_stops_before_input_after_two_focus_recovery_failures,
         test_blank_input_focus_retry_keeps_single_confirm_semantics,
         test_validate_active_send_target_exposes_internal_timing,
         test_validate_active_send_target_accepts_right_panel_roi_without_full_ocr,

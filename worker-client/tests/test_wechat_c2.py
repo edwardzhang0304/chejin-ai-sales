@@ -139,6 +139,7 @@ class WechatC2Test(unittest.TestCase):
             remark_code="CJREAD01",
             authorization_revision="revision-explicit-read-run",
             read_reason="waiting_user_reply",
+            unread_generation=7,
         )
         sidecar_payload = {
             "contract_version": 3,
@@ -167,6 +168,7 @@ class WechatC2Test(unittest.TestCase):
         )
 
         self.assertEqual(payload["read_run_id"], "read-explicit-caller")
+        self.assertEqual(payload["unread_generation"], 7)
         with self.assertRaises(TypeError):
             _build_message_ingest_payload_v3(target, sidecar_payload)
         self.assertNotIn(
@@ -668,6 +670,8 @@ class WechatC2Test(unittest.TestCase):
                         code="CJ8K2P34",
                         row_fingerprint={"row": 1, "text": "王先生"},
                         content="你好",
+                        time="14:17",
+                        last_message_observation_id="preview-observation-1",
                         unread_signal=True,
                         ocr_confidence=0.97,
                     )
@@ -679,6 +683,14 @@ class WechatC2Test(unittest.TestCase):
         self.assertEqual(payload["sessions"][0]["rpa_session_key"], "wx:rpa:v1:a")
         self.assertEqual(payload["sessions"][0]["remark_code_candidates"], ["CJ8K2P34"])
         self.assertTrue(payload["sessions"][0]["unread_hint"])
+        self.assertEqual(
+            payload["sessions"][0]["last_message_preview_time"],
+            "14:17",
+        )
+        self.assertEqual(
+            payload["sessions"][0]["last_message_observation_id"],
+            "preview-observation-1",
+        )
 
     def test_scan_payload_admits_short_code_before_glued_time_suffix(self):
         payload = build_scan_result_payload(

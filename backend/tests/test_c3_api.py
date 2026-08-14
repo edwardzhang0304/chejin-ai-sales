@@ -180,6 +180,7 @@ def _ingest_with_role(worker: dict, conversation_id: str, dedupe_key: str, conte
         binding = db.query(WechatSessionBinding).filter(WechatSessionBinding.conversation_id == conversation_id).one()
         remark_code = binding.remark_code
         authorization_revision = _authorization_revision(binding)
+        unread_generation = int(binding.unread_generation or 0)
         conversation = db.get(Conversation, conversation_id)
         authorization_read_reason = _read_reason(binding, conversation) or "waiting_sales_reply"
         continuation_batch = (
@@ -241,7 +242,8 @@ def _ingest_with_role(worker: dict, conversation_id: str, dedupe_key: str, conte
             "conversation_id": conversation_id,
             "remark_code": remark_code,
             "rpa_session_key": "wx-c3-row-001",
-            "authorization_revision": authorization_revision,
+                "authorization_revision": authorization_revision,
+                "unread_generation": unread_generation,
             "messages": [
                 {
                     "dedupe_key": dedupe_key,

@@ -329,6 +329,17 @@ def build_scan_result_payload(
                 "row_fingerprint": fingerprint or None,
                 "unread_hint": bool(item.get("unread_signal") or item.get("unread") or item.get("unread_badge")),
                 "last_message_preview": preview[:1000] or None,
+                "last_message_preview_time": str(
+                    item.get("time")
+                    or item.get("last_message_preview_time")
+                    or ""
+                )[:64]
+                or None,
+                "last_message_observation_id": str(
+                    item.get("last_message_observation_id")
+                    or ""
+                )[:255]
+                or None,
                 "ocr_confidence": item.get("ocr_confidence"),
             }
         )
@@ -1345,6 +1356,7 @@ def _build_message_ingest_payload_v3(
         "remark_code": target.remark_code,
         "rpa_session_key": target.rpa_session_key,
         "authorization_revision": target.authorization_revision,
+        "unread_generation": int(target.unread_generation or 0),
         "messages": mapped,
         "evidence": {
             "contract_version": 3,
@@ -1481,6 +1493,7 @@ def build_flow_gate_ingest_payload(
         "remark_code": target.remark_code,
         "rpa_session_key": target.rpa_session_key,
         "authorization_revision": target.authorization_revision,
+        "unread_generation": int(target.unread_generation or 0),
         "messages": [],
         "evidence": {
             **clean_evidence,

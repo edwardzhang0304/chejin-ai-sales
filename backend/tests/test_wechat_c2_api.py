@@ -456,6 +456,7 @@ def _v3_ingest_payload(
     messages: list[dict],
     rpa_session_key: str | None = None,
     read_reason: str = "waiting_sales_reply",
+    unread_generation: int | None = None,
 ) -> dict:
     with SessionLocal() as db:
         conversation = db.get(Conversation, binding["conversation_id"])
@@ -485,6 +486,11 @@ def _v3_ingest_payload(
         "remark_code": remark_code,
         "rpa_session_key": binding.get("rpa_session_key") if rpa_session_key is None else rpa_session_key,
         "authorization_revision": _binding_authorization_revision(binding["id"]),
+        "unread_generation": (
+            int(binding.get("unread_generation") or 0)
+            if unread_generation is None
+            else max(0, int(unread_generation))
+        ),
         "messages": messages,
         "evidence": {
             "contract_revision": contract_revision(),
@@ -697,6 +703,7 @@ def test_authoritative_frame_source_rejects_current_media_action_on_initial_read
         "conversation_id": "11111111-1111-1111-1111-111111111111",
         "remark_code": "CJFRAME1",
         "authorization_revision": "revision-frame-source",
+        "unread_generation": 0,
         "messages": [
             {
                 "dedupe_key": "dedupe-current-image",
@@ -1314,7 +1321,11 @@ def test_visible_unread_successful_ingest_consumes_current_scan_fact():
     with SessionLocal() as db:
         binding_row = db.get(WechatSessionBinding, binding["id"])
         assert binding_row is not None
-        assert binding_row.unread_hint is False
+        # unread_hint remains the latest physical screen observation. Logical
+        # consumption is tracked independently by the generation counters.
+        assert binding_row.unread_hint is True
+        assert binding_row.unread_generation == 1
+        assert binding_row.consumed_unread_generation == 1
         conversation = db.get(Conversation, binding["conversation_id"])
         assert conversation is not None
         assert conversation.status == "ai_active"
@@ -1408,7 +1419,7 @@ def test_visible_unread_false_scan_revokes_temporary_read_reason():
     assert targets.json()["data"]["targets"] == []
 
 
-def test_duplicate_scan_id_cannot_restore_consumed_visible_unread_but_new_scan_can():
+def test_scan_id_changes_cannot_restore_consumed_visible_unread_without_new_semantic_evidence():
     worker = _create_worker()
     _create_sales(worker["id"])
     _create_lead("未读去重客户", "13896676684")
@@ -1460,7 +1471,7 @@ def test_duplicate_scan_id_cannot_restore_consumed_visible_unread_but_new_scan_c
         f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
         headers=_worker_headers(worker),
     )
-    assert targets.json()["data"]["targets"][0]["read_reason"] == "visible_unread"
+    assert targets.json()["data"]["targets"] == []
 
 
 def test_read_targets_uses_empty_identity_checkpoint_without_legacy_transition():
@@ -2923,7 +2934,7 @@ def test_message_batch_status_rejects_other_worker_and_returns_terminal_state():
 
 
 def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revision():
-    assert contract_revision() == "0.9.4"
+    assert contract_revision() == "0.9.5"
     location_recovery = c2_contract_v3()[
         "target_location_recovery_contract"
     ]
@@ -2958,6 +2969,12 @@ def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revi
         "remark_code": remark_code,
         "rpa_session_key": "wx-row-1",
         "authorization_revision": revision,
+        "unread_generation": int(
+            targets.json()["data"]["targets"][0].get(
+                "unread_generation"
+            )
+            or 0
+        ),
         "messages": [
             {
                 "dedupe_key": "v3-voice-key",
@@ -3049,8 +3066,8 @@ def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revi
     assert wrong_contract.status_code == 409
     assert wrong_contract.json()["code"] == "MESSAGE_CONTRACT_SHA256_MISMATCH"
     stale_contract_payload = copy.deepcopy(payload)
-    stale_contract_payload["contract_revision"] = "0.9.3"
-    stale_contract_payload["evidence"]["contract_revision"] = "0.9.3"
+    stale_contract_payload["contract_revision"] = "0.9.4"
+    stale_contract_payload["evidence"]["contract_revision"] = "0.9.4"
     stale_contract = client.post(
         f"/api/workers/{worker['id']}/wechat/messages/ingest",
         json=stale_contract_payload,
@@ -8385,7 +8402,7 @@ def test_entering_waiting_sales_reply_preserves_first_two_minute_cooldown(
         ) < 1
 
 
-def test_empty_reads_back_off_two_five_ten_minutes_and_unread_wakes_immediately():
+def test_empty_reads_back_off_and_same_unread_generation_does_not_wake_early():
     worker = _create_worker()
     _create_sales(worker["id"])
     _create_lead("读取退避客户", "13896676673")
@@ -8446,27 +8463,27 @@ def test_empty_reads_back_off_two_five_ten_minutes_and_unread_wakes_immediately(
                 binding_row.next_read_due_at = utcnow() - timedelta(seconds=1)
                 db.commit()
 
-    unread_scan = _scan_payload(remark_code)
-    unread_scan["scan_id"] = "scan-break-read-backoff"
-    unread = client.post(
+    same_unread_scan = _scan_payload(remark_code)
+    same_unread_scan["scan_id"] = "scan-same-unread-generation"
+    same_unread = client.post(
         f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
-        json=unread_scan,
+        json=same_unread_scan,
         headers=_worker_headers(worker),
     )
-    assert unread.status_code == 200
+    assert same_unread.status_code == 200
     targets = client.get(
         f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
         headers=_worker_headers(worker),
     )
     assert targets.status_code == 200
-    assert targets.json()["data"]["targets"][0]["conversation_id"] == (
-        binding["conversation_id"]
-    )
+    assert targets.json()["data"]["targets"] == []
     with SessionLocal() as db:
         binding_row = db.get(WechatSessionBinding, binding["id"])
         assert binding_row is not None
-        assert binding_row.no_change_read_count == 0
-        assert binding_row.next_read_due_at is None
+        assert binding_row.unread_generation == 1
+        assert binding_row.consumed_unread_generation == 1
+        assert binding_row.no_change_read_count == 3
+        assert binding_row.next_read_due_at is not None
 
 
 def test_new_facts_keep_success_cooldown_until_new_unread_transition():
@@ -8541,6 +8558,158 @@ def test_new_facts_keep_success_cooldown_until_new_unread_transition():
         binding_row = db.get(WechatSessionBinding, binding["id"])
         assert binding_row is not None
         assert binding_row.next_read_due_at is None
+        assert binding_row.unread_generation == 2
+        assert binding_row.consumed_unread_generation == 1
+
+
+def test_changed_preview_creates_new_unread_generation_without_row_position_identity():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("未读代次稳定证据客户", "13896676680")
+    remark_code = _pull_remark_code(worker)
+    initial_scan = _scan_payload(remark_code)
+    initial_scan["sessions"][0]["last_message_preview_time"] = "14:17"
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=initial_scan,
+        headers=_worker_headers(worker),
+    )
+    assert scan.status_code == 200, scan.text
+    binding = scan.json()["data"]["bindings"][0]
+    assert binding["unread_generation"] == 1
+
+    completed = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=_v3_ingest_payload(
+            binding,
+            remark_code,
+            read_run_id="unread-generation-one",
+            messages=[],
+            read_reason="waiting_sales_reply",
+        ),
+        headers=_worker_headers(worker),
+    )
+    assert completed.status_code == 200, completed.text
+    assert completed.json()["data"]["read_completion"][
+        "consumed_unread_generation"
+    ] == 1
+
+    moved_row = copy.deepcopy(initial_scan)
+    moved_row["scan_id"] = "scan-row-moved-same-preview"
+    moved_row["sessions"][0]["row_fingerprint"] = "different-row-position"
+    moved = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=moved_row,
+        headers=_worker_headers(worker),
+    )
+    assert moved.status_code == 200, moved.text
+    with SessionLocal() as db:
+        binding_row = db.get(WechatSessionBinding, binding["id"])
+        assert binding_row is not None
+        assert binding_row.unread_generation == 1
+        assert binding_row.next_read_due_at is not None
+
+    changed_preview = copy.deepcopy(moved_row)
+    changed_preview["scan_id"] = "scan-new-semantic-preview"
+    changed_preview["sessions"][0]["last_message_preview"] = "新的客户消息"
+    changed_preview["sessions"][0]["last_message_preview_time"] = "14:19"
+    changed = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=changed_preview,
+        headers=_worker_headers(worker),
+    )
+    assert changed.status_code == 200, changed.text
+    target_response = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+    assert target_response.status_code == 200, target_response.text
+    target = target_response.json()["data"]["targets"][0]
+    assert target["unread_generation"] == 2
+    assert target["consumed_unread_generation"] == 1
+
+
+def test_read_completion_consumes_only_generation_authorized_at_read_start():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("读取期间新增代次客户", "13896676681")
+    remark_code = _pull_remark_code(worker)
+    first_scan = _scan_payload(remark_code)
+    first_scan["sessions"][0]["last_message_preview"] = "代次十"
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=first_scan,
+        headers=_worker_headers(worker),
+    )
+    assert scan.status_code == 200, scan.text
+    binding_generation_one = scan.json()["data"]["bindings"][0]
+    assert binding_generation_one["unread_generation"] == 1
+
+    second_scan = copy.deepcopy(first_scan)
+    second_scan["scan_id"] = "scan-generation-arrived-during-read"
+    second_scan["sessions"][0]["last_message_preview"] = "代次十一"
+    advanced = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=second_scan,
+        headers=_worker_headers(worker),
+    )
+    assert advanced.status_code == 200, advanced.text
+    assert advanced.json()["data"]["bindings"][0]["unread_generation"] == 2
+
+    completion = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=_v3_ingest_payload(
+            binding_generation_one,
+            remark_code,
+            read_run_id="read-started-at-generation-one",
+            messages=[],
+            read_reason="visible_unread",
+            unread_generation=1,
+        ),
+        headers=_worker_headers(worker),
+    )
+    assert completion.status_code == 200, completion.text
+    settled = completion.json()["data"]["read_completion"]
+    assert settled["unread_generation"] == 2
+    assert settled["consumed_unread_generation"] == 1
+
+    pending = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+    assert pending.status_code == 200, pending.text
+    pending_target = pending.json()["data"]["targets"][0]
+    assert pending_target["unread_generation"] == 2
+    assert pending_target["consumed_unread_generation"] == 1
+
+
+def test_ingest_rejects_unread_generation_never_issued_by_backend():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("伪造未读代次客户", "13896676682")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    assert scan.status_code == 200, scan.text
+    binding = scan.json()["data"]["bindings"][0]
+    forged = _v3_ingest_payload(
+        binding,
+        remark_code,
+        read_run_id="forged-unread-generation",
+        messages=[],
+        read_reason="visible_unread",
+        unread_generation=int(binding["unread_generation"]) + 1,
+    )
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=forged,
+        headers=_worker_headers(worker),
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "MESSAGE_UNREAD_GENERATION_INVALID"
 
 
 def test_temporary_paused_binding_restore_is_audited_and_requires_rescan():

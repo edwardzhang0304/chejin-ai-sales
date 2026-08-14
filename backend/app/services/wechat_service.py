@@ -8,6 +8,7 @@ import hmac
 import json
 import logging
 import re
+import unicodedata
 import uuid
 from zoneinfo import ZoneInfo
 
@@ -198,6 +199,13 @@ def _binding_to_dict(binding: WechatSessionBinding) -> dict:
         "replacement_binding_id": binding.replacement_binding_id,
         "unread_hint": binding.unread_hint,
         "last_message_preview": binding.last_message_preview,
+        "last_message_preview_time": binding.last_message_preview_time,
+        "last_message_observation_id": binding.last_message_observation_id,
+        "last_observed_unread_hint": binding.last_observed_unread_hint,
+        "unread_generation": int(binding.unread_generation or 0),
+        "consumed_unread_generation": int(
+            binding.consumed_unread_generation or 0
+        ),
         "ocr_confidence": binding.ocr_confidence,
         "first_seen_at": binding.first_seen_at,
         "last_seen_at": binding.last_seen_at,
@@ -565,6 +573,10 @@ def _scan_snapshot(payload: WechatSessionScanResultRequest, item: WechatSessionS
         "finished_at": payload.finished_at.isoformat(),
         "evidence": payload.evidence or {},
         "remark_code_candidates": item.remark_code_candidates,
+        "unread_hint": bool(item.unread_hint),
+        "last_message_preview": item.last_message_preview,
+        "last_message_preview_time": item.last_message_preview_time,
+        "last_message_observation_id": item.last_message_observation_id,
     }
 
 
@@ -574,11 +586,13 @@ def _clean_locator(value: str | None) -> str:
 
 def _session_binding(db: Session, worker: Worker, rpa_session_key: str) -> WechatSessionBinding | None:
     return db.scalar(
-        select(WechatSessionBinding).where(
+        select(WechatSessionBinding)
+        .where(
             WechatSessionBinding.worker_id == worker.id,
             WechatSessionBinding.rpa_session_key == rpa_session_key,
             WechatSessionBinding.deleted_at.is_(None),
         )
+        .with_for_update()
     )
 
 
@@ -596,10 +610,12 @@ def _binding_has_messages(db: Session, binding: WechatSessionBinding) -> bool:
 def _remark_code_binding(db: Session, worker: Worker, remark_code: str) -> WechatSessionBinding | None:
     rows = list(
         db.scalars(
-            select(WechatSessionBinding).where(
+            select(WechatSessionBinding)
+            .where(
                 WechatSessionBinding.remark_code == remark_code,
                 WechatSessionBinding.deleted_at.is_(None),
             )
+            .with_for_update()
         )
     )
     if not rows:
@@ -648,19 +664,91 @@ def _retire_duplicate_effective_remark_bindings(
         db.flush()
 
 
+def _normalize_unread_evidence_text(value: object) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value or ""))
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _unread_evidence_key(
+    binding: WechatSessionBinding,
+    item: WechatSessionScanItem,
+) -> str:
+    remark_candidates = sorted(
+        {
+            _normalize_unread_evidence_text(value).upper()
+            for value in item.remark_code_candidates
+            if _normalize_unread_evidence_text(value)
+        }
+    )
+    remark_code = (
+        _normalize_unread_evidence_text(binding.remark_code).upper()
+        or (remark_candidates[0] if len(remark_candidates) == 1 else "")
+    )
+    preview = _normalize_unread_evidence_text(item.last_message_preview)
+    preview_time = _normalize_unread_evidence_text(
+        item.last_message_preview_time
+    )
+    observation_id = _normalize_unread_evidence_text(
+        item.last_message_observation_id
+    )
+    if not (preview or preview_time or observation_id):
+        return ""
+    payload = {
+        "remark_code": remark_code,
+        "last_message_preview": preview,
+        "last_message_preview_time": preview_time,
+        "last_message_observation_id": observation_id,
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def _apply_scan_fields(binding: WechatSessionBinding, payload: WechatSessionScanResultRequest, item: WechatSessionScanItem) -> None:
     now = utcnow()
-    unread_became_visible = not bool(binding.unread_hint) and bool(item.unread_hint)
+    incoming_unread = bool(item.unread_hint)
+    previously_observed_unread = bool(binding.last_observed_unread_hint)
+    current_generation = max(0, int(binding.unread_generation or 0))
+    current_evidence_key = str(binding.unread_evidence_key or "").strip()
+    incoming_evidence_key = (
+        _unread_evidence_key(binding, item) if incoming_unread else ""
+    )
+    new_unread_generation = bool(
+        incoming_unread
+        and (
+            current_generation == 0
+            or not previously_observed_unread
+            or (
+                incoming_evidence_key
+                and current_evidence_key
+                and incoming_evidence_key != current_evidence_key
+            )
+        )
+    )
+    if new_unread_generation:
+        binding.unread_generation = current_generation + 1
+        binding.unread_evidence_key = incoming_evidence_key or None
+        _reset_read_backoff(binding)
+    elif incoming_unread and incoming_evidence_key and not current_evidence_key:
+        # Backfilled rows may have a generation but no semantic evidence key.
+        # Attaching the first stable key must not manufacture a new generation.
+        binding.unread_evidence_key = incoming_evidence_key
     binding.display_name = item.display_name
     binding.rpa_session_key = item.rpa_session_key
     binding.row_fingerprint = item.row_fingerprint or ""
-    binding.unread_hint = item.unread_hint
+    binding.unread_hint = incoming_unread
+    binding.last_observed_unread_hint = incoming_unread
     binding.last_message_preview = item.last_message_preview
+    binding.last_message_preview_time = item.last_message_preview_time
+    binding.last_message_observation_id = item.last_message_observation_id
     binding.ocr_confidence = item.ocr_confidence
     binding.last_seen_at = now
     binding.last_scan_snapshot = _scan_snapshot(payload, item)
-    if unread_became_visible:
-        _reset_read_backoff(binding)
 
 
 def _retire_stale_session_binding(binding: WechatSessionBinding, *, replacement_binding_id: str) -> None:
@@ -1121,17 +1209,30 @@ def _read_is_due(
     *,
     read_reason: str,
 ) -> bool:
+    due_at = binding.next_read_due_at
+    if due_at is not None and due_at.tzinfo is None:
+        due_at = due_at.replace(tzinfo=timezone.utc)
+    if (
+        read_reason == "waiting_sales_reply"
+        and due_at is not None
+        and due_at.astimezone(timezone.utc) > utcnow().astimezone(timezone.utc)
+    ):
+        # An open handoff deliberately uses the 2/5/10 minute monitoring
+        # schedule. A badge generation observed before or during handoff must
+        # not turn that restricted monitoring loop back into an immediate
+        # normal-read loop.
+        return False
+    if int(binding.unread_generation or 0) > int(
+        binding.consumed_unread_generation or 0
+    ):
+        return True
     if read_reason in {
-        "visible_unread",
         "friend_acceptance_visible_hit",
         "recall_precheck",
     }:
         return True
-    due_at = binding.next_read_due_at
     if due_at is None:
         return True
-    if due_at.tzinfo is None:
-        due_at = due_at.replace(tzinfo=timezone.utc)
     return due_at.astimezone(timezone.utc) <= utcnow().astimezone(timezone.utc)
 
 
@@ -1141,6 +1242,10 @@ def _read_completion_payload(binding: WechatSessionBinding) -> dict:
         "completed_at": binding.last_read_completed_at,
         "no_change_read_count": int(binding.no_change_read_count or 0),
         "next_read_due_at": binding.next_read_due_at,
+        "unread_generation": int(binding.unread_generation or 0),
+        "consumed_unread_generation": int(
+            binding.consumed_unread_generation or 0
+        ),
     }
 
 
@@ -1150,6 +1255,7 @@ def _settle_completed_read(
     *,
     read_run_id: str,
     has_new_facts: bool,
+    unread_generation: int,
 ) -> dict:
     if (
         binding.last_read_run_id == read_run_id
@@ -1161,6 +1267,15 @@ def _settle_completed_read(
     binding.last_read_run_id = read_run_id
     binding.last_read_completed_at = now
     binding.last_read_conversation_status = str(conversation.status or "")
+    requested_unread_generation = max(0, int(unread_generation or 0))
+    current_unread_generation = max(
+        0,
+        int(binding.unread_generation or 0),
+    )
+    binding.consumed_unread_generation = max(
+        int(binding.consumed_unread_generation or 0),
+        min(requested_unread_generation, current_unread_generation),
+    )
     if has_new_facts:
         binding.last_read_result = "new_facts"
         binding.no_change_read_count = 0
@@ -1279,6 +1394,10 @@ def _read_target_payload(
         "last_ingested_at": binding.last_ingested_at,
         "read_reason": read_reason,
         "authorization_revision": _authorization_revision(binding),
+        "unread_generation": int(binding.unread_generation or 0),
+        "consumed_unread_generation": int(
+            binding.consumed_unread_generation or 0
+        ),
         "identity_checkpoint": _identity_checkpoint(
             db,
             conversation_id=binding.conversation_id,
@@ -1333,6 +1452,10 @@ def read_authorization_snapshot(
         "recovery_decision": "allowed" if allowed else "retry_later",
         "conversation_id": binding.conversation_id,
         "authorization_revision": _authorization_revision(binding),
+        "unread_generation": int(binding.unread_generation or 0),
+        "consumed_unread_generation": int(
+            binding.consumed_unread_generation or 0
+        ),
         "read_reason": read_reason or "",
         "identity_checkpoint": checkpoint,
         "next_read_due_at": binding.next_read_due_at,
@@ -2779,6 +2902,14 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
         raise AppError("MESSAGE_TARGET_IDENTITY_MISMATCH", "读取目标与绑定会话不一致，已拒绝入库", 409)
     if str(payload.authorization_revision or "") != _authorization_revision(binding):
         raise AppError("MESSAGE_AUTHORIZATION_REVISION_EXPIRED", "读取授权已过期，已拒绝旧任务入库", 409)
+    if int(payload.unread_generation or 0) > int(
+        binding.unread_generation or 0
+    ):
+        raise AppError(
+            "MESSAGE_UNREAD_GENERATION_INVALID",
+            "读取请求携带了后端尚未签发的未读代次",
+            409,
+        )
     _validate_v3_request_contract(payload)
     ordered_messages = _ordered_v3_messages(payload)
     evidence_payload = payload.evidence.model_dump(mode="json")
@@ -3492,13 +3623,6 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             "next_action": NEXT_ACTION_NONE,
         }
 
-    if (
-        current_authorization_matches
-        and binding.unread_hint
-        and (not partitioned or partition_final)
-    ):
-        binding.unread_hint = False
-
     message_batch = None
     flow_gate_errors = list(flow_gate_error_codes)
     failed_images = [
@@ -3798,6 +3922,7 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             conversation,
             read_run_id=payload.read_run_id,
             has_new_facts=read_has_new_facts,
+            unread_generation=payload.unread_generation,
         )
     db.flush()
     response = {

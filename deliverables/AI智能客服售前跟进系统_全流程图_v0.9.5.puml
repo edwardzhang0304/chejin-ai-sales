@@ -1,5 +1,5 @@
 @startuml
-' 文档版本：v0.9.4；灰度发布版本：0.9.4；最后更新：2026-08-14
+' 文档版本：v0.9.5；灰度发布版本：0.9.5；最后更新：2026-08-14
 title AI智能客服售前跟进系统 全流程图（C0-C4、媒体、回复、转人工与恢复）
 
 skinparam monochrome true
@@ -214,7 +214,7 @@ loop Worker运行中；每次循环最多完成一个会话事务
         end
       end
       W -> Auth: GET read-targets
-      Auth --> W: 仅返回后端已许可的目标\nconversation_id + remark_code\nauthorization_revision + read_reason
+      Auth --> W: 仅返回后端已许可的目标\nconversation_id + remark_code\nauthorization_revision + read_reason\nunread_generation=N
 
       alt read-targets为空
         W -> W: 清空visible_hit_queue\n不点击、不读消息、不转写、不识图、不入库
@@ -224,7 +224,8 @@ loop Worker运行中；每次循环最多完成一个会话事务
         W -> W: 首屏/定向/恢复共用同一读取准入\n同时检查成功冷却、失败冷却、后端next_read_due_at
         note right
           成功且有新事实也至少冷却2分钟。
-          只有完成时间之后的新未读或正式continuation_token可提前唤醒。
+          只有高于已消费代次的新unread_generation或正式continuation_token可提前唤醒。
+          同一红点/预览不新建代次；行坐标、row_fingerprint和新scan_id不得制造新事件。
           未到期目标不得点击或搜索。
         end note
 

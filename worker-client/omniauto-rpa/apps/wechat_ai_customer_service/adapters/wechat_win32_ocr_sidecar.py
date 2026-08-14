@@ -285,6 +285,7 @@ DEFAULT_SEND_TRIGGER_MODE = win32_ocr_env.DEFAULT_SEND_TRIGGER_MODE
 DEFAULT_STRICT_SEND_FOCUS_GUARD = True
 DEFAULT_FOCUS_CLICK_FALLBACK = True
 DEFAULT_ALLOW_UNKNOWN_FOREGROUND_GUARD = True
+SEND_WINDOW_FOCUS_RECOVERY_DELAYS_SECONDS = (0.30, 0.70)
 INPUT_TEXT_DARK_RATIO_MIN = 0.0025
 INPUT_TEXT_SOFT_BLANK_DARK_RATIO_MAX = 0.035
 INPUT_TEXT_SOFT_BLANK_MEAN_MIN = 242.0
@@ -7853,7 +7854,7 @@ def send_payload(
         })
 
     pre_send_guard_started = _sidecar_timing_start(timing, "pre_send_guard")
-    focus_guard = recover_send_window_guard(hwnd, max_attempts=1)
+    focus_guard = recover_send_window_guard(hwnd, max_attempts=2)
     if not focus_guard.get("ok"):
         _sidecar_timing_finish(timing, "pre_send_guard", pre_send_guard_started)
         return finish({
@@ -9192,7 +9193,11 @@ def recover_send_window_guard(hwnd: int, *, max_attempts: int = 1) -> dict[str, 
     last_guard = guard
     for attempt in range(1, attempts + 1):
         activate_window(hwnd)
-        time.sleep(random.uniform(0.06, 0.14))
+        delay_index = min(
+            attempt - 1,
+            len(SEND_WINDOW_FOCUS_RECOVERY_DELAYS_SECONDS) - 1,
+        )
+        time.sleep(SEND_WINDOW_FOCUS_RECOVERY_DELAYS_SECONDS[delay_index])
         retry_guard = basic_send_window_guard(hwnd)
         if retry_guard.get("ok"):
             return {
