@@ -1,6 +1,6 @@
 {
   "contract_version": 3,
-  "contract_revision": "0.9.3",
+  "contract_revision": "0.9.4",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "sender_roles": ["customer", "self", "system", "unknown"],

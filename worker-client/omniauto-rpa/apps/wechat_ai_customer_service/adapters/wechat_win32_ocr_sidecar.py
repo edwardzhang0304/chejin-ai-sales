@@ -6957,6 +6957,106 @@ def run_ocr_on_screen_region(
     return items
 
 
+def enhanced_ocr_items_for_structural_chat_candidate(
+    screenshot: Any,
+    bounds: list[float] | tuple[float, ...],
+    *,
+    ocr_runner: Callable[[Any], list[dict[str, Any]]] | None = None,
+) -> list[dict[str, Any]]:
+    """Run one enhanced OCR pass inside a structural chat candidate.
+
+    The full-window OCR can miss pale or coloured native WeChat bubbles while
+    the structural observer still sees their rectangular surface.  This pass
+    is deliberately scoped to a previously observed candidate; callers must
+    still provide independent type/identity evidence before changing the
+    candidate's message type.
+    """
+
+    if screenshot is None or not hasattr(screenshot, "crop") or len(bounds) < 4:
+        return []
+    width, height = getattr(screenshot, "size", (0, 0))
+    if int(width or 0) <= 0 or int(height or 0) <= 0:
+        return []
+    try:
+        raw_left, raw_top, raw_right, raw_bottom = [
+            float(value) for value in bounds[:4]
+        ]
+    except (TypeError, ValueError):
+        return []
+    padding = 4
+    left = max(0, min(int(width) - 1, int(raw_left) - padding))
+    top = max(0, min(int(height) - 1, int(raw_top) - padding))
+    right = max(left + 1, min(int(width), int(raw_right) + padding))
+    bottom = max(top + 1, min(int(height), int(raw_bottom) + padding))
+    try:
+        crop = screenshot.crop((left, top, right, bottom)).convert("RGB")
+        crop = ImageEnhance.Contrast(crop).enhance(1.55)
+        crop = ImageEnhance.Sharpness(crop).enhance(1.45)
+        scale = 2.0
+        resampling = getattr(
+            getattr(Image, "Resampling", Image),
+            "LANCZOS",
+            1,
+        )
+        enhanced = crop.resize(
+            (max(1, int(crop.width * scale)), max(1, int(crop.height * scale))),
+            resampling,
+        )
+        if ocr_runner is None:
+            crop_items = run_ocr_traced(
+                enhanced,
+                "structural_chat_candidate_enhanced_ocr",
+                region="roi",
+                source="enhanced_ocr_items_for_structural_chat_candidate",
+            )
+        else:
+            crop_items = ocr_runner(enhanced)
+    except Exception:
+        return []
+
+    mapped: list[dict[str, Any]] = []
+    for item in crop_items or []:
+        if not isinstance(item, dict) or not str(item.get("text") or "").strip():
+            continue
+        row = dict(item)
+        for key in ("left", "right", "center_x"):
+            if key in row:
+                try:
+                    row[key] = float(row[key]) / scale + left
+                except (TypeError, ValueError):
+                    pass
+        for key in ("top", "bottom", "center_y"):
+            if key in row:
+                try:
+                    row[key] = float(row[key]) / scale + top
+                except (TypeError, ValueError):
+                    pass
+        box = row.get("box")
+        if isinstance(box, list):
+            mapped_box: list[list[float]] = []
+            for point in box:
+                if not isinstance(point, (list, tuple)) or len(point) < 2:
+                    continue
+                try:
+                    mapped_box.append(
+                        [float(point[0]) / scale + left, float(point[1]) / scale + top]
+                    )
+                except (TypeError, ValueError):
+                    continue
+            row["box"] = mapped_box
+        row.setdefault(
+            "center_x",
+            (float(row.get("left") or 0) + float(row.get("right") or 0)) / 2,
+        )
+        row.setdefault(
+            "center_y",
+            (float(row.get("top") or 0) + float(row.get("bottom") or 0)) / 2,
+        )
+        row["ocr_source"] = "structural_chat_candidate_enhanced"
+        mapped.append(row)
+    return mapped
+
+
 def active_send_target_roi_ocr_enabled() -> bool:
     return env_flag("WECHAT_WIN32_OCR_ACTIVE_SEND_TARGET_ROI_OCR", default=DEFAULT_ACTIVE_SEND_TARGET_ROI_OCR)
 
@@ -8062,6 +8162,7 @@ def send_payload(
             exact=exact,
             artifact_dir=artifact_dir,
             label="send_post_guard_and_result_confirm_1",
+            recover_expected_self_text=True,
         )
     except Exception as exc:
         post_send_snapshot = {
@@ -13634,6 +13735,175 @@ def send_reply_match_count(messages: list[dict[str, Any]], text: str) -> int:
     return count
 
 
+def recover_expected_self_text_from_structural_candidates(
+    screenshot: Any,
+    messages: list[dict[str, Any]],
+    *,
+    target: str,
+    expected_text: str,
+    ocr_runner: Callable[[Any], list[dict[str, Any]]] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Recover a sent text bubble that full-frame OCR classified as an image.
+
+    This is a post-send fact recovery path, not a general image-to-text guess.
+    A candidate is retyped only when the structural observer independently
+    places it on the self/right side, its same-row avatar confirms ``self``,
+    and enhanced ROI OCR equals the exact program text whose physical send
+    was just triggered.
+    """
+
+    current = [dict(item) for item in messages if isinstance(item, dict)]
+    expected = normalized_send_confirmation_text(expected_text)
+    diagnostics: dict[str, Any] = {
+        "attempted": False,
+        "recovered": False,
+        "candidate_count": 0,
+        "expected_text_sha256": hashlib.sha256(
+            expected.encode("utf-8")
+        ).hexdigest() if expected else "",
+    }
+    if not expected or send_reply_match_count(current, expected_text) > 0:
+        diagnostics["reason"] = (
+            "expected_text_empty" if not expected else "already_observed_as_self_text"
+        )
+        return current, diagnostics
+
+    candidates: list[tuple[int, dict[str, Any], list[float]]] = []
+    for index, message in enumerate(current):
+        if str(
+            message.get("type") or message.get("message_type") or ""
+        ).strip().lower() != "image":
+            continue
+        structural_side = str(
+            message.get("visual_side")
+            or message.get("sender_role")
+            or message.get("sender")
+            or ("self" if message.get("is_self_image") else "")
+        ).strip().lower()
+        avatar = (
+            message.get("avatar_alignment")
+            if isinstance(message.get("avatar_alignment"), dict)
+            else {}
+        )
+        avatar_role = str(avatar.get("role") or "").strip().lower()
+        bounds = message_rect_bounds(message)
+        if structural_side != "self" or avatar_role != "self" or bounds is None:
+            continue
+        candidates.append((index, message, bounds))
+    diagnostics["candidate_count"] = len(candidates)
+    if not candidates:
+        diagnostics["reason"] = "no_avatar_confirmed_self_structural_candidate"
+        return current, diagnostics
+
+    # The send contract accepts only a newly added bottom-most self bubble.
+    # OCR only that same bottom-most candidate; scanning older images would
+    # add latency and could not produce an admissible send fact anyway.
+    for index, candidate, bounds in sorted(
+        candidates,
+        key=lambda item: (item[2][1], item[2][0]),
+        reverse=True,
+    )[:1]:
+        diagnostics["attempted"] = True
+        enhanced_items = enhanced_ocr_items_for_structural_chat_candidate(
+            screenshot,
+            bounds,
+            ocr_runner=ocr_runner,
+        )
+        raw_text = "\n".join(
+            str(item.get("text") or "").strip()
+            for item in sorted(
+                enhanced_items,
+                key=lambda item: (
+                    float(item.get("center_y") or item.get("top") or 0),
+                    float(item.get("left") or 0),
+                ),
+            )
+            if str(item.get("text") or "").strip()
+        )
+        if normalized_send_confirmation_text(raw_text) != expected:
+            continue
+        rect = {
+            "left": int(bounds[0]),
+            "top": int(bounds[1]),
+            "right": int(bounds[2]),
+            "bottom": int(bounds[3]),
+        }
+        digest = hashlib.sha1(
+            json.dumps(
+                {
+                    "target": str(target or "").strip().upper(),
+                    "sender_role": "self",
+                    "bounds": list(rect.values()),
+                    "expected_text_sha256": diagnostics["expected_text_sha256"],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()[:16]
+        confidences = [
+            float(item.get("confidence") or 0)
+            for item in enhanced_items
+            if item.get("confidence") not in (None, "")
+        ]
+        record = {
+            "id": f"win32_ocr_enhanced:{digest}",
+            "type": "text",
+            "message_type": "text",
+            "sender": "self",
+            "sender_role": "self",
+            "sender_role_algorithm": "wechat_avatar_row_structure_v2",
+            "sender_role_confidence": float(
+                candidate.get("sender_role_confidence") or 0.98
+            ),
+            "sender_role_evidence": [
+                "structural_candidate_visual_side=self",
+                "structural_candidate_same_row_avatar=self",
+                "enhanced_roi_ocr_exact_program_text",
+            ],
+            "content": str(expected_text or "").strip(),
+            "content_raw_ocr": raw_text,
+            "time": str(candidate.get("time") or ""),
+            "source_adapter": "win32_ocr_structural_text_recovery",
+            "ocr_confidence": min(confidences) if confidences else None,
+            "bubble_rect": rect,
+            "ocr_items": enhanced_items,
+            "quality_flags": [
+                "send_confirmation_enhanced_roi_ocr",
+                "structural_image_candidate_reclassified_as_text",
+            ],
+            "recovered_from_structural_observation_id": str(
+                candidate.get("observation_id")
+                or candidate.get("message_id")
+                or candidate.get("id")
+                or ""
+            ),
+            "avatar_alignment": dict(candidate.get("avatar_alignment") or {}),
+        }
+        envelope = build_message_envelope(
+            record,
+            source_adapter="win32_ocr_structural_text_recovery",
+            conversation={
+                "target_name": target,
+                "conversation_type": infer_conversation_type(target),
+            },
+            ocr_items=enhanced_items,
+            bubble_rect=rect,
+        )
+        current[index] = apply_message_envelope_to_record(record, envelope)
+        diagnostics.update(
+            {
+                "recovered": True,
+                "reason": "exact_program_text_recovered_from_self_structural_candidate",
+                "candidate_bounds": list(rect.values()),
+                "enhanced_ocr_item_count": len(enhanced_items),
+            }
+        )
+        return current, diagnostics
+
+    diagnostics["reason"] = "enhanced_ocr_did_not_match_exact_program_text"
+    return current, diagnostics
+
+
 def capture_send_fact_snapshot(
     hwnd: int,
     *,
@@ -13642,6 +13912,7 @@ def capture_send_fact_snapshot(
     exact: bool,
     artifact_dir: str | None,
     label: str,
+    recover_expected_self_text: bool = False,
 ) -> dict[str, Any]:
     screenshot, path = capture_wechat(hwnd, artifact_dir=artifact_dir, label=label)
     return build_send_fact_snapshot_from_frame(
@@ -13653,6 +13924,7 @@ def capture_send_fact_snapshot(
         label=label,
         screenshot=screenshot,
         screenshot_path=path,
+        recover_expected_self_text=recover_expected_self_text,
     )
 
 
@@ -13667,6 +13939,7 @@ def build_send_fact_snapshot_from_frame(
     screenshot: Any,
     screenshot_path: str | None = None,
     ocr_items: list[dict[str, Any]] | None = None,
+    recover_expected_self_text: bool = False,
 ) -> dict[str, Any]:
     if ocr_items is None:
         ocr_items = run_ocr_traced(
@@ -13684,12 +13957,31 @@ def build_send_fact_snapshot_from_frame(
         ocr_items=ocr_items,
         screenshot_path=screenshot_path,
     )
+    snapshot_target_ok = bool(
+        validation.get("ok") and active_send_guard_is_strong(validation)
+    )
     messages = parse_current_chat_frame_messages(
         ocr_items,
         screenshot.size,
         target=target,
         screenshot=screenshot,
     )
+    enhanced_text_recovery: dict[str, Any] = {
+        "attempted": False,
+        "recovered": False,
+        "reason": "not_requested",
+    }
+    if recover_expected_self_text and snapshot_target_ok:
+        messages, enhanced_text_recovery = (
+            recover_expected_self_text_from_structural_candidates(
+                screenshot,
+                messages,
+                target=target,
+                expected_text=text,
+            )
+        )
+    elif recover_expected_self_text:
+        enhanced_text_recovery["reason"] = "send_target_not_strongly_confirmed"
     observations = build_message_observations_v3(messages)
     message_region_fingerprint = send_context_message_region_fingerprint(screenshot)
     input_region = input_text_region_state(screenshot, ocr_items, geometry=geometry)
@@ -13704,6 +13996,14 @@ def build_send_fact_snapshot_from_frame(
                 observation.get("content_clean")
             ),
             "bubble_rect": observation.get("bubble_rect"),
+            "recovered_from_structural_observation_id": str(
+                (
+                    observation.get("source_message")
+                    if isinstance(observation.get("source_message"), dict)
+                    else {}
+                ).get("recovered_from_structural_observation_id")
+                or ""
+            ),
         }
         for index, observation in enumerate(observations)
         if isinstance(observation, dict)
@@ -13711,11 +14011,12 @@ def build_send_fact_snapshot_from_frame(
         in {"text_bubble", "voice_transcript", "image_bubble", "system_message"}
     ]
     return {
-        "ok": bool(validation.get("ok") and active_send_guard_is_strong(validation)),
+        "ok": snapshot_target_ok,
         "screenshot_path": screenshot_path,
         "validation": validation,
         "input_region": input_region,
         "matching_self_message_count": send_reply_match_count(messages, text),
+        "enhanced_text_recovery": enhanced_text_recovery,
         "message_count": len(messages),
         "observations": observations,
         "send_context_guard": build_send_context_guard(
@@ -13785,6 +14086,11 @@ def find_new_matching_self_message(
             after_index += 1
 
     expected = normalized_send_confirmation_text(text)
+    baseline_observation_ids = {
+        str(item.get("observation_id") or "")
+        for item in before
+        if str(item.get("observation_id") or "")
+    }
     candidates = [
         (index, item)
         for index, item in enumerate(after)
@@ -13792,6 +14098,11 @@ def find_new_matching_self_message(
         and str(item.get("row_kind") or "") == "text_bubble"
         and str(item.get("sender_role") or "") in {"self", "sales"}
         and str(item.get("content_normalized") or "") == expected
+        and (
+            not str(item.get("recovered_from_structural_observation_id") or "")
+            or str(item.get("recovered_from_structural_observation_id") or "")
+            not in baseline_observation_ids
+        )
     ]
     if not candidates:
         return None
@@ -13834,6 +14145,7 @@ def confirm_reply_sent(
                     exact=exact,
                     artifact_dir=artifact_dir,
                     label=f"send_result_confirm_{attempt}",
+                    recover_expected_self_text=True,
                 )
         except Exception as exc:
             attempts.append({"attempt": attempt, "ok": False, "error": repr(exc)})
