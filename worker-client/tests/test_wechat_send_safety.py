@@ -1798,6 +1798,229 @@ class WechatSendSafetyTest(unittest.TestCase):
         self.assertEqual(diagnostics["reason"], "enhanced_ocr_has_no_readable_text")
         self.assertEqual(messages[0]["type"], "image")
 
+    def test_authorized_reread_only_retypes_the_matching_confirmed_ai_reply(self):
+        frame = Image.new("RGB", (980, 860), "white")
+        structural_image = {
+            "id": "incident-long-self-bubble",
+            "type": "image",
+            "message_type": "image",
+            "sender_role": "self",
+            "visual_side": "self",
+            "bubble_rect": [489, 532, 878, 653],
+            "avatar_alignment": {"role": "self", "confirmed": True},
+        }
+        expected = (
+            "你好，10万左右可以先按你的用车需求筛选合适车型。"
+            "你主要是日常通勤、家庭出行，还是更看重大空间？"
+            "另外你更偏轿车、SUV，还是燃油、混动、纯电呢？"
+        )
+        current_items = [
+            {
+                "text": line,
+                "left": 16,
+                "top": 12 + index * 24,
+                "right": 370,
+                "bottom": 32 + index * 24,
+                "center_y": 22 + index * 24,
+                "confidence": 0.99,
+            }
+            for index, line in enumerate(
+                [
+                    "你好，10万左右可以先按你的用车需求筛选合适车型。",
+                    "你主要是日常通勤、家庭出行，还是更看重大空间?",
+                    "另外你更偏轿车、SUV，还是燃油、混动、纯电呢?",
+                ]
+            )
+        ]
+
+        recovered, diagnostics = (
+            sidecar.recover_expected_self_text_from_structural_candidates(
+                frame,
+                [structural_image],
+                target="CJNCXB8R",
+                expected_text=expected,
+                ocr_runner=lambda _image: current_items,
+                require_correspondence=True,
+            )
+        )
+        unrelated, unrelated_diagnostics = (
+            sidecar.recover_expected_self_text_from_structural_candidates(
+                frame,
+                [structural_image],
+                target="CJNCXB8R",
+                expected_text=expected,
+                ocr_runner=lambda _image: [
+                    {
+                        "text": "图片里的其他文字",
+                        "left": 10,
+                        "top": 10,
+                        "right": 180,
+                        "bottom": 40,
+                        "confidence": 0.99,
+                    }
+                ],
+                require_correspondence=True,
+            )
+        )
+
+        self.assertTrue(diagnostics["recovered"])
+        self.assertEqual(recovered[0]["type"], "text")
+        self.assertFalse(unrelated_diagnostics["recovered"])
+        self.assertEqual(
+            unrelated_diagnostics["reason"],
+            "current_text_does_not_match_confirmed_reply",
+        )
+        self.assertEqual(unrelated[0]["type"], "image")
+
+    def test_messages_payload_applies_confirmed_reply_recovery_before_observations(self):
+        frame = Image.new("RGB", (980, 860), "white")
+        structural_image = {
+            "id": "incident-structural-self-image",
+            "type": "image",
+            "message_type": "image",
+            "sender_role": "self",
+            "visual_side": "self",
+            "bubble_rect": [489, 532, 878, 653],
+            "avatar_alignment": {"role": "self", "confirmed": True},
+        }
+        expected = "你好，10万左右可以先按你的用车需求筛选合适车型。"
+        enhanced_items = [
+            {
+                "text": expected,
+                "left": 12,
+                "top": 12,
+                "right": 370,
+                "bottom": 42,
+                "center_y": 27,
+                "confidence": 0.99,
+            }
+        ]
+        seed = {
+            "label": "incident-current-frame",
+            "screenshot_path": "incident-current-frame.png",
+            "screenshot": frame,
+            "ocr_items": [],
+            "messages": [],
+        }
+        geometry = {
+            "left": 0,
+            "top": 0,
+            "right": 980,
+            "bottom": 860,
+            "width": 980,
+            "height": 860,
+        }
+
+        with (
+            patch.object(sidecar, "get_window_geometry", return_value=geometry),
+            patch.object(sidecar, "quick_login_like", return_value=False),
+            patch.object(sidecar, "blocking_screen_reason", return_value=""),
+            patch.object(
+                sidecar,
+                "merge_structural_image_messages",
+                return_value=[structural_image],
+            ),
+            patch.object(
+                sidecar,
+                "enhanced_ocr_items_for_structural_chat_candidate",
+                return_value=enhanced_items,
+            ),
+            patch.object(
+                sidecar,
+                "visible_untranscribed_voice_hint",
+                return_value={"detected": False},
+            ),
+        ):
+            payload = sidecar.messages_payload(
+                1,
+                {},
+                target="CJNCXB8R",
+                history_load_times=0,
+                expected_confirmed_self_text=expected,
+                seed_snapshot=seed,
+            )
+
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["confirmed_self_text_recovery"]["recovered"])
+        self.assertEqual(
+            [item["row_kind"] for item in payload["observations"]],
+            ["text_bubble"],
+        )
+        self.assertEqual(payload["observations"][0]["sender_role"], "self")
+
+    def test_daemon_preserves_confirmed_reply_text_for_all_c2_read_actions(self):
+        expected = "已确认发送的 AI 回复"
+
+        for action in ("open-chat", "messages", "voice-transcribe"):
+            with self.subTest(action=action):
+                argv = sidecar.args_for_daemon_request(
+                    {
+                        "action": action,
+                        "target": "CJNCXB8R",
+                        "expected_confirmed_self_text": expected,
+                    }
+                )
+                flag_index = argv.index("--expected-confirmed-self-text")
+                self.assertEqual(argv[flag_index + 1], expected)
+
+    def test_voice_prepare_reuses_confirmed_reply_text_recovery(self):
+        frame = Image.new("RGB", (980, 860), "white")
+        expected = "已确认发送的 AI 回复"
+        structural_image = {
+            "id": "voice-frame-self-text",
+            "type": "image",
+            "message_type": "image",
+            "sender_role": "self",
+            "visual_side": "self",
+            "bubble_rect": [489, 532, 878, 653],
+            "avatar_alignment": {"role": "self", "confirmed": True},
+        }
+        enhanced_items = [
+            {
+                "text": expected,
+                "left": 12,
+                "top": 12,
+                "right": 320,
+                "bottom": 42,
+                "confidence": 0.99,
+            }
+        ]
+        with (
+            patch.object(
+                sidecar,
+                "capture_wechat",
+                return_value=(frame, "voice-prepare.png"),
+            ),
+            patch.object(sidecar, "run_ocr", return_value=[]),
+            patch.object(
+                sidecar,
+                "parse_current_chat_frame_messages",
+                return_value=[structural_image],
+            ),
+            patch.object(
+                sidecar,
+                "enhanced_ocr_items_for_structural_chat_candidate",
+                return_value=enhanced_items,
+            ),
+            patch.object(
+                sidecar,
+                "build_unified_voice_observations_v3",
+                return_value=[],
+            ),
+        ):
+            payload = sidecar.prepare_voice_action_payload(
+                1,
+                {},
+                target="CJNCXB8R",
+                expected_confirmed_self_text=expected,
+            )
+
+        self.assertEqual(payload["state"], "voice_action_prepare_empty")
+        self.assertEqual(
+            [item["row_kind"] for item in payload["observations"]],
+            ["text_bubble"],
+        )
+
     def test_post_send_global_ocr_text_wins_without_redundant_local_ocr(self):
         frame = Image.new("RGB", (980, 860), "white")
         global_text = {

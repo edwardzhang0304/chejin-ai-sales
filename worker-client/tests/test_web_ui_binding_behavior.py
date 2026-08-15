@@ -323,6 +323,25 @@ class WebUiBindingBehaviorTest(unittest.TestCase):
         self.assertEqual(emitted[-1]["notice"], "绑定成功，已进入 Worker 工作台。")
         save_binding.assert_called()
 
+    def test_paused_idle_worker_does_not_keep_stale_scan_card(self):
+        with _headless_web_ui_module() as module, patch.object(
+            module, "load_runtime_control", return_value={"inflight_flow_id": ""}
+        ):
+            binding = Binding(
+                worker_id="worker-existing",
+                worker_token="token-existing",
+                client_instance_id="client-existing",
+                run_status="paused",
+            )
+            window = self._window(module, binding)
+            window.connection_status = "online"
+            window.runtime_process_timeline.apply({"event": "scan_started"})
+            window.runtime_process_timeline.apply({"event": "scan_cancelled"})
+
+            screen = window._screen()
+
+        self.assertEqual(screen, "paused-empty")
+
     def test_lock_projection_permission_error_keeps_worker_running(self):
         with _headless_web_ui_module() as module, patch.object(
             module, "_log_rows", return_value=[]

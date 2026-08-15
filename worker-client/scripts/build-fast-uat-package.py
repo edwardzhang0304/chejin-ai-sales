@@ -125,6 +125,7 @@ def build(*, runtime_root: Path, output_dir: Path, git_commit: str, git_branch: 
     shutil.copytree(PROJECT_ROOT / "contracts", app_root / "contracts")
     shutil.copy2(ROOT / "packaging" / "start-fast-uat.ps1", package_root / "start-fast-uat.ps1")
     shutil.copy2(ROOT / "packaging" / "collect-uat-evidence.ps1", package_root / "collect-uat-evidence.ps1")
+    shutil.copy2(ROOT / "packaging" / "collect_uat_evidence.py", package_root / "collect_uat_evidence.py")
 
     provenance = load_source_provenance(OMNIAUTO_ROOT)
     omniauto_source = tree_manifest(OMNIAUTO_ROOT, client_delivery=True)

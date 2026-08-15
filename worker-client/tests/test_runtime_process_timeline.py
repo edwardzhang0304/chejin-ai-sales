@@ -28,6 +28,22 @@ def test_scan_without_hit_stays_a_short_standalone_flow() -> None:
     assert timeline.customer_model() == []
 
 
+def test_cancelled_scan_has_a_terminal_step_and_no_running_card() -> None:
+    timeline = RuntimeProcessTimeline()
+
+    timeline.apply({"event": "scan_started"})
+    timeline.apply({"event": "scan_cancelled"})
+
+    assert [step["title"] for step in timeline.scan_model()] == [
+        "扫描微信会话第一屏",
+        "首屏扫描已停止",
+    ]
+    assert all(
+        step["state"] != "current" for step in timeline.scan_model()
+    )
+    assert timeline.scan_model()[-1]["finalText"] == "已暂停接单"
+
+
 def test_one_customer_transaction_accumulates_without_restarting_for_ai_reply() -> None:
     timeline = RuntimeProcessTimeline()
     timeline.apply(

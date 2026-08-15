@@ -497,6 +497,14 @@ def main() -> int:
         help="Caller metadata only; C2 private admission still requires title OCR evidence.",
     )
     parser.add_argument("--target-mode", default="", help="Targeting mode for messages, e.g. search_by_remark_code.")
+    parser.add_argument(
+        "--expected-confirmed-self-text",
+        default="",
+        help=(
+            "Locally confirmed AI reply text used only to recover an OCR-missed "
+            "self text bubble during the next authorized read."
+        ),
+    )
     parser.add_argument("--visible-session-candidate", default="", help="JSON row candidate from the same Worker visible-session scan.")
     parser.add_argument("--text", help="Message text for send.")
     parser.add_argument("--phone", default="", help="Phone number for add-friend.")
@@ -1080,6 +1088,9 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
                         artifact_dir=args.artifact_dir,
                         confirm_target=validation_target,
                         confirm_exact=False if str(args.remark_code or "").strip() else bool(args.exact),
+                        expected_confirmed_self_text=str(
+                            args.expected_confirmed_self_text or ""
+                        ),
                         seed_snapshot=snapshot,
                     )
                     if initial_messages.get("ok"):
@@ -1163,6 +1174,9 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
             artifact_dir=args.artifact_dir,
             confirm_target=confirmation_target if single_frame_confirmation else "",
             confirm_exact=False if str(args.remark_code or "").strip() else bool(args.exact),
+            expected_confirmed_self_text=str(
+                args.expected_confirmed_self_text or ""
+            ),
         )
         if args.target:
             if single_frame_confirmation:
@@ -1256,6 +1270,9 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
         common_voice_args = {
             "target": args.target or "",
             "artifact_dir": args.artifact_dir,
+            "expected_confirmed_self_text": str(
+                args.expected_confirmed_self_text or ""
+            ),
             "confirm_target": (
                 confirmation_target if single_frame_confirmation else ""
             ),
@@ -2124,6 +2141,7 @@ def messages_payload(
     artifact_dir: str | None = None,
     confirm_target: str = "",
     confirm_exact: bool = False,
+    expected_confirmed_self_text: str = "",
     seed_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     mode = str(history_mode or "").strip().lower()
@@ -2233,6 +2251,21 @@ def messages_payload(
         target=target,
         observation_validation_errors=image_observation_errors,
     )
+    confirmed_self_text_recovery: dict[str, Any] = {
+        "attempted": False,
+        "recovered": False,
+        "reason": "not_requested",
+    }
+    if str(expected_confirmed_self_text or "").strip() and screenshot is not None:
+        messages, confirmed_self_text_recovery = (
+            recover_expected_self_text_from_structural_candidates(
+                screenshot,
+                messages,
+                target=target,
+                expected_text=expected_confirmed_self_text,
+                require_correspondence=True,
+            )
+        )
     visible_voice_hint = (
         visible_untranscribed_voice_hint(
             screenshot,
@@ -2277,6 +2310,7 @@ def messages_payload(
             ),
         ),
         "observation_validation_errors": observation_validation_errors,
+        "confirmed_self_text_recovery": confirmed_self_text_recovery,
         "observation_schema_version": C2_OBSERVATION_SCHEMA_VERSION,
         "visible_untranscribed_voice": visible_voice_hint,
         "ocr_items_count": len(ocr_items),
@@ -2377,6 +2411,7 @@ def prepare_voice_action_payload(
     artifact_dir: str | None = None,
     confirm_target: str = "",
     confirm_exact: bool = False,
+    expected_confirmed_self_text: str = "",
     excluded_voice_anchor_keys: set[str] | None = None,
 ) -> dict[str, Any]:
     """Capture and select exactly one physical voice; never touch WeChat UI."""
@@ -2418,6 +2453,16 @@ def prepare_voice_action_payload(
         target=target,
         screenshot=screenshot,
     )
+    if str(expected_confirmed_self_text or "").strip():
+        messages, _confirmed_self_text_recovery = (
+            recover_expected_self_text_from_structural_candidates(
+                screenshot,
+                messages,
+                target=target,
+                expected_text=expected_confirmed_self_text,
+                require_correspondence=True,
+            )
+        )
     candidates = [
         observation
         for observation in build_unified_voice_observations_v3(
@@ -2544,6 +2589,7 @@ def execute_voice_action_payload(
     artifact_dir: str | None,
     confirm_target: str,
     confirm_exact: bool,
+    expected_confirmed_self_text: str = "",
     action_journal_path: str,
     canonical_voice_action_id: str,
     reserved_worker_stable_id: str,
@@ -2599,6 +2645,16 @@ def execute_voice_action_payload(
             screenshot_path=screenshot_path,
         )
     messages = parse_current_chat_frame_messages(ocr_items, image_size, target=target, screenshot=screenshot)
+    if str(expected_confirmed_self_text or "").strip():
+        messages, _confirmed_self_text_recovery = (
+            recover_expected_self_text_from_structural_candidates(
+                screenshot,
+                messages,
+                target=target,
+                expected_text=expected_confirmed_self_text,
+                require_correspondence=True,
+            )
+        )
     candidates = [
         item for item in build_unified_voice_observations_v3(
             screenshot,
@@ -2750,6 +2806,16 @@ def execute_voice_action_payload(
             target=target,
             screenshot=failed_screenshot,
         )
+        if str(expected_confirmed_self_text or "").strip():
+            failed_messages, _confirmed_self_text_recovery = (
+                recover_expected_self_text_from_structural_candidates(
+                    failed_screenshot,
+                    failed_messages,
+                    target=target,
+                    expected_text=expected_confirmed_self_text,
+                    require_correspondence=True,
+                )
+            )
         failed_observations = build_message_observations_v3(
             failed_messages
         )
@@ -2921,6 +2987,16 @@ def execute_voice_action_payload(
             target=target,
             screenshot=final_screenshot,
         )
+        if str(expected_confirmed_self_text or "").strip():
+            final_messages, _confirmed_self_text_recovery = (
+                recover_expected_self_text_from_structural_candidates(
+                    final_screenshot,
+                    final_messages,
+                    target=target,
+                    expected_text=expected_confirmed_self_text,
+                    require_correspondence=True,
+                )
+            )
         bound = _bind_voice_transcripts_for_action(
             final_messages,
             anchor,
@@ -13882,6 +13958,7 @@ def recover_expected_self_text_from_structural_candidates(
     target: str,
     expected_text: str,
     ocr_runner: Callable[[Any], list[dict[str, Any]]] | None = None,
+    require_correspondence: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Recover a sent text bubble that full-frame OCR classified as an image.
 
@@ -13994,6 +14071,14 @@ def recover_expected_self_text_from_structural_candidates(
                 "text_correspondence_reason": correspondence["reason"],
             }
         )
+        if require_correspondence and not correspondence["accepted"]:
+            diagnostics.update(
+                {
+                    "reason": "current_text_does_not_match_confirmed_reply",
+                    "recovered": False,
+                }
+            )
+            return current, diagnostics
         rect = {
             "left": int(bounds[0]),
             "top": int(bounds[1]),
@@ -17284,6 +17369,17 @@ def args_for_daemon_request(request: dict[str, Any]) -> list[str]:
         argv.append("--skip-send-rate-guard")
     if action in ADD_FRIEND_ROUTES and bool(request.get("calibration_only")):
         argv.append("--calibration-only")
+    if action in {"messages", "open-chat", "voice-transcribe"}:
+        expected_confirmed_self_text = str(
+            request.get("expected_confirmed_self_text") or ""
+        )
+        if expected_confirmed_self_text:
+            argv.extend(
+                [
+                    "--expected-confirmed-self-text",
+                    expected_confirmed_self_text,
+                ]
+            )
     if action == "messages":
         target_mode = str(request.get("target_mode") or "").strip()
         if target_mode:
@@ -17389,6 +17485,14 @@ def run_sidecar_cli(argv: list[str] | None = None) -> dict[str, Any]:
     parser.add_argument("--target", help="Chat name for messages/send.")
     parser.add_argument("--session-key", default="", help="Internal session key for row-level RPA targeting.")
     parser.add_argument("--target-mode", default="", help="Targeting mode for messages, e.g. search_by_remark_code.")
+    parser.add_argument(
+        "--expected-confirmed-self-text",
+        default="",
+        help=(
+            "Locally confirmed AI reply text used only to recover an OCR-missed "
+            "self text bubble during the next authorized read."
+        ),
+    )
     parser.add_argument("--visible-session-candidate", default="", help="JSON row candidate from the same Worker visible-session scan.")
     parser.add_argument("--text", help="Message text for send.")
     parser.add_argument("--phone", default="", help="Phone number for add-friend.")

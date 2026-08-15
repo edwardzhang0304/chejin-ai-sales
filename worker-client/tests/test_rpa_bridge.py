@@ -199,6 +199,7 @@ class RpaBridgeTest(unittest.TestCase):
                 rpa_session_key="",
                 remark_code="CJK7M4Q2",
                 target_mode="current",
+                expected_confirmed_self_text="已确认的 AI 回复",
             )
             bridge.execute_voice_action(
                 display_name="CJK7M4Q2",
@@ -211,6 +212,7 @@ class RpaBridgeTest(unittest.TestCase):
                 selected_target_fingerprint="target-fingerprint",
                 remark_code="CJK7M4Q2",
                 target_mode="current",
+                expected_confirmed_self_text="已确认的 AI 回复",
                 action_journal=Path("voice-action.json"),
             )
 
@@ -221,8 +223,20 @@ class RpaBridgeTest(unittest.TestCase):
         )
         self.assertNotIn("--selected-action-token", prepare_args)
         self.assertEqual(
+            prepare_args[
+                prepare_args.index("--expected-confirmed-self-text") + 1
+            ],
+            "已确认的 AI 回复",
+        )
+        self.assertEqual(
             execute_args[execute_args.index("--voice-action-stage") + 1],
             "execute",
+        )
+        self.assertEqual(
+            execute_args[
+                execute_args.index("--expected-confirmed-self-text") + 1
+            ],
+            "已确认的 AI 回复",
         )
         self.assertEqual(
             execute_args[execute_args.index("--selected-action-token") + 1],
@@ -422,6 +436,7 @@ class RpaBridgeTest(unittest.TestCase):
                 rpa_session_key="",
                 remark_code="CJTEST01",
                 target_mode="search_by_remark_code",
+                expected_confirmed_self_text="已确认的 AI 回复",
             )
 
         self.assertTrue(result["ok"])
@@ -432,6 +447,8 @@ class RpaBridgeTest(unittest.TestCase):
         self.assertIn("search_by_remark_code", captured["args"])
         self.assertIn("--remark-code", captured["args"])
         self.assertIn("CJTEST01", captured["args"])
+        self.assertIn("--expected-confirmed-self-text", captured["args"])
+        self.assertIn("已确认的 AI 回复", captured["args"])
         self.assertIn("--sidecar-run-id", captured["args"])
         self.assertNotIn("--session-key", captured["args"])
         self.assertIn("--max-duration-seconds", captured["args"])
@@ -479,6 +496,7 @@ class RpaBridgeTest(unittest.TestCase):
                 rpa_session_key="",
                 remark_code="CJTEST01",
                 target_mode="search_by_remark_code",
+                expected_confirmed_self_text="已确认的 AI 回复",
             )
 
         self.assertTrue(result["ok"])
@@ -489,6 +507,8 @@ class RpaBridgeTest(unittest.TestCase):
         self.assertIn("search_by_remark_code", captured["args"])
         self.assertIn("--remark-code", captured["args"])
         self.assertIn("CJTEST01", captured["args"])
+        self.assertIn("--expected-confirmed-self-text", captured["args"])
+        self.assertIn("已确认的 AI 回复", captured["args"])
         self.assertIn("--sidecar-run-id", captured["args"])
         self.assertNotIn("--session-key", captured["args"])
         self.assertIn("sidecar_run_id", result)
