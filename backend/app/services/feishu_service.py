@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import re
+import time
+import uuid
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -185,6 +187,7 @@ def _settle_notification(
     status: str,
     error_code: str | None,
     error_summary: str | None,
+    duration_ms: int,
 ) -> None:
     with SessionLocal() as db:
         event = db.scalar(
@@ -198,6 +201,27 @@ def _settle_notification(
         event.notify_completed_at = utcnow()
         event.notify_error_code = error_code
         event.notify_error_summary = _safe_error_summary(error_summary) if error_summary else None
+        from app.services.observability_service import (
+            process_run_id_for_handoff_event,
+            record_server_stage_best_effort,
+        )
+
+        record_server_stage_best_effort(
+            db,
+            process_run_id=process_run_id_for_handoff_event(db, event),
+            conversation_id=event.conversation_id,
+            stage_name="handoff.feishu_notify",
+            component="backend",
+            duration_ms=duration_ms,
+            status=(
+                "succeeded"
+                if status == NOTIFY_SUCCEEDED
+                else "failed"
+            ),
+            error_code=error_code,
+            trace_id=str(uuid.uuid4()),
+            stable_key=event.id,
+        )
         write_system_log(
             db,
             event_type=(
@@ -319,6 +343,7 @@ def dispatch_handoff_notification(
 ) -> str:
     if not _claim_notification(handoff_event_id):
         return "not_claimed"
+    started_at = time.perf_counter()
     try:
         open_id, message = _notification_context(handoff_event_id)
         (adapter or get_feishu_adapter()).send_text_message(open_id, message)
@@ -329,6 +354,7 @@ def dispatch_handoff_notification(
             status=NOTIFY_FAILED,
             error_code=error_code,
             error_summary=exc.summary,
+            duration_ms=int(round((time.perf_counter() - started_at) * 1000)),
         )
         return error_code
     except Exception as exc:
@@ -337,6 +363,7 @@ def dispatch_handoff_notification(
             status=NOTIFY_FAILED,
             error_code="FEISHU_NOTIFY_RESULT_UNKNOWN",
             error_summary=f"unexpected_exception={type(exc).__name__}",
+            duration_ms=int(round((time.perf_counter() - started_at) * 1000)),
         )
         return "FEISHU_NOTIFY_RESULT_UNKNOWN"
 
@@ -345,6 +372,7 @@ def dispatch_handoff_notification(
         status=NOTIFY_SUCCEEDED,
         error_code=None,
         error_summary=None,
+        duration_ms=int(round((time.perf_counter() - started_at) * 1000)),
     )
     return NOTIFY_SUCCEEDED
 

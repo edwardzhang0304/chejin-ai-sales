@@ -1,4 +1,6 @@
 import logging
+import time
+import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query
 from sqlalchemy.orm import Session
@@ -7,6 +9,7 @@ from app.api.response import ok
 from app.core.auth import require_admin_auth
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.core.request_id import get_request_id
 from app.core.request_context import ActorContext, get_actor_context
 from app.errors import AppError
 from app.schemas.wechat import (
@@ -20,6 +23,51 @@ from app.services import c3_service, wechat_service, worker_service
 
 router = APIRouter(tags=["wechat-c2"])
 logger = logging.getLogger(__name__)
+
+
+def _record_failed_ingest_stage_best_effort(
+    *,
+    process_run_id: str | None,
+    conversation_id: str,
+    worker_id: str,
+    stage_stable_key: str,
+    attempt: int,
+    trace_id: str,
+    ingest_started: float,
+    error_code: str,
+) -> None:
+    if not process_run_id:
+        return
+    try:
+        from app.core.database import SessionLocal
+        from app.services.observability_service import (
+            record_server_stage_best_effort,
+        )
+
+        with SessionLocal() as telemetry_db:
+            record_server_stage_best_effort(
+                telemetry_db,
+                process_run_id=process_run_id,
+                conversation_id=conversation_id,
+                worker_id=worker_id,
+                stage_name="c2.message_ingest",
+                component="backend",
+                attempt=attempt,
+                duration_ms=int(
+                    round((time.perf_counter() - ingest_started) * 1000)
+                ),
+                status="failed",
+                error_code=str(error_code or "MESSAGE_INGEST_FAILED")[:64],
+                trace_id=trace_id,
+                stable_key=stage_stable_key,
+            )
+            telemetry_db.commit()
+    except Exception:
+        # Failure reporting is explicitly forbidden from affecting ingest.
+        logger.warning(
+            "failed ingest observability write ignored",
+            exc_info=True,
+        )
 
 
 @router.post("/workers/{worker_id}/wechat/sessions/scan-result")
@@ -147,10 +195,55 @@ def ingest_messages(
         alias="X-C2-Settlement-Token",
     ),
     x_inflight_flow_id: str | None = Header(default=None, alias="X-Inflight-Flow-Id"),
+    x_process_run_id: str | None = Header(
+        default=None,
+        alias="X-Process-Run-Id",
+    ),
 ):
+    ingest_started = time.perf_counter()
     worker = worker_service.authenticate_worker_client(db, worker_id, x_worker_token, x_client_instance_id)
     worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
+    telemetry_process_run_id: str | None = None
+    telemetry_trace_id = get_request_id()
+    telemetry_ingest_stage_key = (
+        f"{payload.read_run_id}:{telemetry_trace_id}"
+    )
+    telemetry_ingest_attempt = 1
+    if x_process_run_id:
+        try:
+            telemetry_process_run_id = str(uuid.UUID(x_process_run_id))
+        except (TypeError, ValueError):
+            # Observability metadata never participates in business validation.
+            telemetry_process_run_id = None
     try:
+        if telemetry_process_run_id:
+            from app.services.observability_service import (
+                next_stage_attempt,
+                record_server_stage_best_effort,
+            )
+
+            telemetry_ingest_attempt = next_stage_attempt(
+                db,
+                process_run_id=telemetry_process_run_id,
+                stage_name="c2.message_ingest",
+            )
+
+            # Establish the server-owned process link before ingest may create
+            # a C3 batch or a HandoffEvent. The terminal update below reuses
+            # the same stage id and never creates a second attempt.
+            record_server_stage_best_effort(
+                db,
+                process_run_id=telemetry_process_run_id,
+                conversation_id=payload.conversation_id,
+                worker_id=worker.id,
+                stage_name="c2.message_ingest",
+                component="backend",
+                attempt=telemetry_ingest_attempt,
+                duration_ms=None,
+                status="running",
+                trace_id=telemetry_trace_id,
+                stable_key=telemetry_ingest_stage_key,
+            )
         data = (
             wechat_service.settle_messages_without_ui(
                 db,
@@ -161,6 +254,22 @@ def ingest_messages(
             if payload.authorization_scope == "fact_settlement"
             else wechat_service.ingest_messages(db, worker, payload)
         )
+        if telemetry_process_run_id:
+            record_server_stage_best_effort(
+                db,
+                process_run_id=telemetry_process_run_id,
+                conversation_id=payload.conversation_id,
+                worker_id=worker.id,
+                stage_name="c2.message_ingest",
+                component="backend",
+                attempt=telemetry_ingest_attempt,
+                duration_ms=int(
+                    round((time.perf_counter() - ingest_started) * 1000)
+                ),
+                status="succeeded",
+                trace_id=telemetry_trace_id,
+                stable_key=telemetry_ingest_stage_key,
+            )
         db.commit()
         message_batch = data.get("message_batch") if isinstance(data, dict) else None
         if (
@@ -187,9 +296,29 @@ def ingest_messages(
         return ok(data)
     except AppError as exc:
         db.rollback()
+        _record_failed_ingest_stage_best_effort(
+            process_run_id=telemetry_process_run_id,
+            conversation_id=payload.conversation_id,
+            worker_id=worker.id,
+            stage_stable_key=telemetry_ingest_stage_key,
+            attempt=telemetry_ingest_attempt,
+            trace_id=telemetry_trace_id,
+            ingest_started=ingest_started,
+            error_code=exc.code,
+        )
         raise
-    except Exception:
+    except Exception as exc:
         db.rollback()
+        _record_failed_ingest_stage_best_effort(
+            process_run_id=telemetry_process_run_id,
+            conversation_id=payload.conversation_id,
+            worker_id=worker.id,
+            stage_stable_key=telemetry_ingest_stage_key,
+            attempt=telemetry_ingest_attempt,
+            trace_id=telemetry_trace_id,
+            ingest_started=ingest_started,
+            error_code=type(exc).__name__,
+        )
         raise
 
 

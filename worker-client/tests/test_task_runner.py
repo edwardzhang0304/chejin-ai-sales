@@ -1816,6 +1816,52 @@ class TaskRunnerTest(unittest.TestCase):
             [],
         )
 
+    def test_pre_send_refresh_exception_finishes_telemetry_as_failed(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        target = WechatReadTarget(
+            conversation_id="conv-pre-send-telemetry-failure",
+            rpa_session_key="wx:rpa:v1:pre-send-telemetry-failure",
+            display_name="CJPRE999",
+            remark_code="CJPRE999",
+            authorization_revision="revision-pre-send-telemetry-failure",
+            process_run_id="42f76212-1bad-4b5f-b88e-7cf48f4e0dd4",
+        )
+        timer = Mock()
+
+        with patch(
+            "chejin_worker_client.task_runner.StageTimer",
+            return_value=timer,
+        ), patch(
+            "chejin_worker_client.task_runner.schedule_stage_event_upload"
+        ) as schedule_upload, patch.object(
+            runner,
+            "_read_one_wechat_target_impl",
+            side_effect=RuntimeError("pre-send read crashed"),
+        ), self.assertRaisesRegex(RuntimeError, "pre-send read crashed"):
+            runner._read_one_wechat_target(
+                binding,
+                target,
+                operation_phase="pre_send_refresh",
+            )
+
+        timer.finish.assert_called_once_with(
+            status="failed",
+            error_code="RuntimeError",
+        )
+        schedule_upload.assert_called_once_with(api, binding)
+
     def test_c2_flow_recovers_durable_action_checkpoint_before_next_action(self):
         api = FakeApi(None)
         runner, _ = self.make_runner(
@@ -2213,6 +2259,44 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertIn("claim:task-1", api.events)
         self.assertIn("step:checking_rpa", api.events)
         self.assertIn("complete_invite_sent:task-1", api.events)
+        self.assertIsNone(runner.current_task)
+
+    def test_telemetry_sqlite_failure_does_not_change_add_friend_actions(self):
+        task = Task(
+            id="task-telemetry-failure",
+            task_type="add_friend",
+            status="pending",
+            phone="13800000000",
+            process_run_id="11111111-1111-4111-8111-111111111111",
+        )
+        api = FakeApi(task)
+        bridge = FakeBridge(
+            RpaResult(
+                ok=True,
+                result_code="invite_sent",
+                message="已发送添加通讯录邀请",
+            )
+        )
+        runner, seen = self.make_runner(api, bridge)
+        runner.binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        with patch(
+            "chejin_worker_client.telemetry._connect",
+            side_effect=OSError("telemetry sqlite unavailable"),
+        ):
+            runner.tick_once()
+
+        self.assertEqual(
+            [step.current_step for step in seen["steps"]],
+            ["checking_rpa", "invite_sent"],
+        )
+        self.assertIn("complete_invite_sent:task-telemetry-failure", api.events)
+        self.assertEqual([item.id for item in bridge.tasks], [task.id])
         self.assertIsNone(runner.current_task)
 
     def test_task_pull_rechecks_ui_lock_before_claiming(self):
