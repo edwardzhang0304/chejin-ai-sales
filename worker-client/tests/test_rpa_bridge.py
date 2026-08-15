@@ -476,6 +476,16 @@ class RpaBridgeTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(captured["args"][0], "sessions")
+        self.assertIn("--sidecar-run-id", captured["args"])
+        self.assertIn("--scan-id", captured["args"])
+        self.assertEqual(
+            result["sidecar_run_id"],
+            captured["args"][captured["args"].index("--sidecar-run-id") + 1],
+        )
+        self.assertEqual(
+            result["scan_id"],
+            captured["args"][captured["args"].index("--scan-id") + 1],
+        )
         self.assertIn("--artifact-dir", captured["args"])
         self.assertIn("artifact_dir", result)
         self.assertTrue(str(result["screenshot_path"]).endswith("sessions.png"))

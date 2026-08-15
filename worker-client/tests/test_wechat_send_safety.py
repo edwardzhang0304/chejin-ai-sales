@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -670,6 +671,230 @@ class WechatSendSafetyTest(unittest.TestCase):
             "send_post_guard_and_result_confirm_1",
         )
         old_post_guard.assert_not_called()
+
+    def test_send_uses_three_distinct_physical_frame_ids(self):
+        geometry = {
+            "left": 0,
+            "top": 0,
+            "right": 960,
+            "bottom": 820,
+            "width": 960,
+            "height": 820,
+        }
+        validation = {
+            "ok": True,
+            "online": True,
+            "reason": "target_confirmed",
+            "confirmation_confidence": "active_title_strict",
+            "geometry": geometry,
+        }
+        context_guard = {
+            "schema_version": 1,
+            "sequence": [],
+            "message_count": 0,
+            "bottom": None,
+        }
+
+        def snapshot(frame_id: str, *, sent: bool = False) -> dict:
+            return {
+                "ok": True,
+                "validation": validation,
+                "input_region": {"has_visible_text": False},
+                "matching_self_message_count": 1 if sent else 0,
+                "message_sequence": (
+                    [
+                        {
+                            "sequence_index": 0,
+                            "observation_id": "self-new",
+                            "row_kind": "text_bubble",
+                            "sender_role": "self",
+                            "content_normalized": "AI回复",
+                        }
+                    ]
+                    if sent
+                    else []
+                ),
+                "observations": (
+                    [
+                        {
+                            "observation_id": "self-new",
+                            "row_kind": "text_bubble",
+                            "sender_role": "self",
+                            "content_clean": "AI回复",
+                        }
+                    ]
+                    if sent
+                    else []
+                ),
+                "send_context_guard": context_guard,
+                "frame_observation": {
+                    "frame_id": frame_id,
+                    "screenshot_sha256": frame_id * 8,
+                },
+            }
+
+        def visual_send(*_args, **kwargs):
+            context_check = kwargs["before_send_trigger_check"]()
+            return {
+                "ok": bool(context_check.get("ok")),
+                "method": "visual_input.sendinput_unicode+keyboard_enter",
+                "physical_send_triggered": bool(context_check.get("ok")),
+                "context_check": context_check,
+                "error_code": context_check.get("error_code"),
+            }
+
+        with (
+            patch.object(sidecar, "recover_send_window_guard", return_value={"ok": True}),
+            patch.object(sidecar, "active_send_guard_is_strong", return_value=True),
+            patch.object(sidecar, "validate_send_geometry", return_value={"ok": True}),
+            patch.object(
+                sidecar,
+                "capture_send_fact_snapshot",
+                side_effect=[snapshot("s0"), snapshot("s1"), snapshot("s2", sent=True)],
+            ) as capture,
+            patch.object(sidecar, "validate_send_context_guard", return_value={"ok": True}),
+            patch.object(sidecar, "send_with_visual_input", side_effect=visual_send),
+            patch.object(sidecar, "humanized_action_sleep"),
+        ):
+            result = sidecar.send_payload(
+                1,
+                {"ok": True},
+                target="CJUAT728",
+                text="AI回复",
+                exact=False,
+                skip_send_rate_guard=True,
+                expected_context_guard=context_guard,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(capture.call_count, 3)
+        self.assertEqual(
+            [result["send_frame_reuse"][key]["frame_id"] for key in ("s0", "s1", "s2")],
+            ["s0", "s1", "s2"],
+        )
+        self.assertTrue(result["send_frame_reuse"]["fast_path_used"])
+
+    def test_send_blocks_before_enter_when_s1_reuses_s0_frame_id(self):
+        geometry = {
+            "left": 0,
+            "top": 0,
+            "right": 960,
+            "bottom": 820,
+            "width": 960,
+            "height": 820,
+        }
+        validation = {
+            "ok": True,
+            "confirmation_confidence": "active_title_strict",
+            "geometry": geometry,
+        }
+        context_guard = {"schema_version": 1, "sequence": []}
+        snapshot = {
+            "ok": True,
+            "validation": validation,
+            "input_region": {"has_visible_text": False},
+            "matching_self_message_count": 0,
+            "message_sequence": [],
+            "send_context_guard": context_guard,
+            "frame_observation": {
+                "frame_id": "same-frame",
+                "screenshot_sha256": "a" * 64,
+            },
+        }
+
+        def visual_send(*_args, **kwargs):
+            context_check = kwargs["before_send_trigger_check"]()
+            return {
+                "ok": bool(context_check.get("ok")),
+                "physical_send_triggered": bool(context_check.get("ok")),
+                "context_check": context_check,
+                "error_code": context_check.get("error_code"),
+                "reason": context_check.get("reason"),
+            }
+
+        with (
+            patch.object(sidecar, "recover_send_window_guard", return_value={"ok": True}),
+            patch.object(sidecar, "active_send_guard_is_strong", return_value=True),
+            patch.object(sidecar, "validate_send_geometry", return_value={"ok": True}),
+            patch.object(
+                sidecar,
+                "capture_send_fact_snapshot",
+                side_effect=[dict(snapshot), dict(snapshot)],
+            ) as capture,
+            patch.object(sidecar, "validate_send_context_guard", return_value={"ok": True}),
+            patch.object(sidecar, "send_with_visual_input", side_effect=visual_send),
+        ):
+            result = sidecar.send_payload(
+                1,
+                {"ok": True},
+                target="CJUAT728",
+                text="AI回复",
+                exact=False,
+                skip_send_rate_guard=True,
+                expected_context_guard=context_guard,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["physical_send_triggered"])
+        self.assertEqual(result["error_code"], "C3_SEND_FRAME_TIMEPOINT_INVALID")
+        self.assertEqual(capture.call_count, 2)
+
+        post_snapshot = {
+            **snapshot,
+            "matching_self_message_count": 1,
+            "message_sequence": [
+                {
+                    "sequence_index": 0,
+                    "observation_id": "self-new",
+                    "row_kind": "text_bubble",
+                    "sender_role": "self",
+                    "content_normalized": "AI回复",
+                }
+            ],
+            "observations": [
+                {
+                    "observation_id": "self-new",
+                    "row_kind": "text_bubble",
+                    "sender_role": "self",
+                    "content_clean": "AI回复",
+                }
+            ],
+            "frame_observation": {
+                "frame_id": "s2",
+                "screenshot_sha256": "b" * 64,
+            },
+        }
+        with (
+            patch.dict(
+                os.environ,
+                {"CHEJIN_C3_SEND_FRAME_LOCAL_REUSE_ENABLED": "0"},
+            ),
+            patch.object(sidecar, "recover_send_window_guard", return_value={"ok": True}),
+            patch.object(sidecar, "active_send_guard_is_strong", return_value=True),
+            patch.object(sidecar, "validate_send_geometry", return_value={"ok": True}),
+            patch.object(
+                sidecar,
+                "capture_send_fact_snapshot",
+                side_effect=[dict(snapshot), dict(snapshot), post_snapshot],
+            ),
+            patch.object(sidecar, "validate_send_context_guard", return_value={"ok": True}),
+            patch.object(sidecar, "send_with_visual_input", side_effect=visual_send),
+            patch.object(sidecar, "humanized_action_sleep"),
+        ):
+            fallback_result = sidecar.send_payload(
+                1,
+                {"ok": True},
+                target="CJUAT728",
+                text="AI回复",
+                exact=False,
+                skip_send_rate_guard=True,
+                expected_context_guard=context_guard,
+            )
+
+        self.assertTrue(fallback_result["ok"])
+        self.assertFalse(
+            fallback_result["send_frame_reuse"]["fast_path_attempted"]
+        )
 
     def test_all_pre_send_pacing_finishes_before_final_frame_capture(self):
         frame = Image.new("RGB", (960, 820), "white")
@@ -1939,6 +2164,18 @@ class WechatSendSafetyTest(unittest.TestCase):
                 expected_confirmed_self_text=expected,
                 seed_snapshot=seed,
             )
+            with patch.dict(
+                os.environ,
+                {"CHEJIN_C3_PRE_SEND_ROI_REUSE_ENABLED": "0"},
+            ):
+                fallback_payload = sidecar.messages_payload(
+                    1,
+                    {},
+                    target="CJNCXB8R",
+                    history_load_times=0,
+                    expected_confirmed_self_text=expected,
+                    seed_snapshot=seed,
+                )
 
         self.assertTrue(payload["ok"])
         self.assertTrue(payload["confirmed_self_text_recovery"]["recovered"])
@@ -1947,6 +2184,19 @@ class WechatSendSafetyTest(unittest.TestCase):
             ["text_bubble"],
         )
         self.assertEqual(payload["observations"][0]["sender_role"], "self")
+        self.assertTrue(payload["pre_send_frame_reuse"]["fast_path_used"])
+        self.assertEqual(
+            payload["pre_send_frame_reuse"]["shared_consumers"],
+            [
+                "target_confirmation",
+                "message_viewport",
+                "message_sequence",
+                "input_region",
+            ],
+        )
+        self.assertIn("frame_id", payload["frame_observation"])
+        self.assertNotIn("pre_send_frame_reuse", fallback_payload)
+        self.assertNotIn("frame_observation", fallback_payload)
 
     def test_daemon_preserves_confirmed_reply_text_for_all_c2_read_actions(self):
         expected = "已确认发送的 AI 回复"

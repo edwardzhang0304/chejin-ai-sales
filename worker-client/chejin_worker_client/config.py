@@ -50,6 +50,10 @@ class ClientConfig:
     observability_enabled: bool
     observability_upload_batch_size: int
     observability_upload_timeout_seconds: float
+    task_safe_wake_enabled: bool
+    c2_locate_frame_reuse_enabled: bool
+    c3_pre_send_roi_reuse_enabled: bool
+    c3_send_frame_local_reuse_enabled: bool
 
     @classmethod
     def from_env(cls) -> "ClientConfig":
@@ -119,6 +123,18 @@ class ClientConfig:
             observability_upload_timeout_seconds=max(
                 0.2,
                 float(os.environ.get("CHEJIN_OBSERVABILITY_UPLOAD_TIMEOUT_SECONDS", "3")),
+            ),
+            task_safe_wake_enabled=env_bool(
+                "CHEJIN_TASK_SAFE_WAKE_ENABLED", True
+            ),
+            c2_locate_frame_reuse_enabled=env_bool(
+                "CHEJIN_C2_LOCATE_FRAME_REUSE_ENABLED", True
+            ),
+            c3_pre_send_roi_reuse_enabled=env_bool(
+                "CHEJIN_C3_PRE_SEND_ROI_REUSE_ENABLED", True
+            ),
+            c3_send_frame_local_reuse_enabled=env_bool(
+                "CHEJIN_C3_SEND_FRAME_LOCAL_REUSE_ENABLED", True
             ),
         )
 

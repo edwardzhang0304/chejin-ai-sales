@@ -344,7 +344,8 @@ def build_scan_result_payload(
             }
         )
     payload = {
-        "scan_id": f"scan-{uuid.uuid4()}",
+        "scan_id": str(sidecar_payload.get("scan_id") or "").strip()
+        or f"scan-{uuid.uuid4()}",
         "sidecar_run_id": sidecar_run_id(sidecar_payload, "sessions"),
         "wechat_account_hint": str(((sidecar_payload.get("window_probe") or {}).get("title") if isinstance(sidecar_payload.get("window_probe"), dict) else "") or "")[:128] or None,
         "started_at": started_at,

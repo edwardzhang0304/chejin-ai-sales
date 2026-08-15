@@ -1,8 +1,30 @@
 {
   "contract_version": 3,
-  "contract_revision": "0.9.10",
+  "contract_revision": "0.9.11",
   "observation_schema_version": 3,
   "control_schema_version": 1,
+  "performance_fast_path_contract": {
+    "release": "0.9.11",
+    "business_semantics_unchanged": true,
+    "flags": [
+      "CHEJIN_TASK_SAFE_WAKE_ENABLED",
+      "CHEJIN_C2_LOCATE_FRAME_REUSE_ENABLED",
+      "CHEJIN_C3_PRE_SEND_ROI_REUSE_ENABLED",
+      "CHEJIN_C3_SEND_FRAME_LOCAL_REUSE_ENABLED"
+    ],
+    "required_diagnostics": [
+      "fast_path_attempted",
+      "fast_path_used",
+      "fallback_reason",
+      "frame_digest_equal",
+      "ocr_call_count",
+      "ocr_total_duration_ms"
+    ],
+    "locate_reuse_rule": "only a fresh frame with identical hwnd, geometry, dpi, and sidebar pixel digest may reuse the immutable visible scan candidate; the full screenshot digest remains bound diagnostic evidence, and every click still requires a fresh strict private-title confirmation",
+    "pre_send_rule": "the post-Brain pre_send_refresh must use a fresh physical frame; validators may share only immutable observations from that exact frame",
+    "send_frame_rule": "S0, S1, and S2 are distinct physical captures; OCR and calculations may be shared only within one frame",
+    "fallback_rule": "missing, conflicting, or unequal evidence executes the 0.9.10 full path without changing business state"
+  },
   "runtime_control_contract": {
     "local_settings_key": "runtime_control_v1",
     "flow_kinds": ["task", "c2_read", "chat_reply"],
