@@ -3443,7 +3443,7 @@ def test_message_batch_status_rejects_other_worker_and_returns_terminal_state():
 
 
 def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revision():
-    assert contract_revision() == "0.9.12"
+    assert contract_revision() == "0.9.13"
     location_recovery = c2_contract_v3()[
         "target_location_recovery_contract"
     ]
@@ -3575,8 +3575,8 @@ def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revi
     assert wrong_contract.status_code == 409
     assert wrong_contract.json()["code"] == "MESSAGE_CONTRACT_SHA256_MISMATCH"
     stale_contract_payload = copy.deepcopy(payload)
-    stale_contract_payload["contract_revision"] = "0.9.11"
-    stale_contract_payload["evidence"]["contract_revision"] = "0.9.11"
+    stale_contract_payload["contract_revision"] = "0.9.12"
+    stale_contract_payload["evidence"]["contract_revision"] = "0.9.12"
     stale_contract = client.post(
         f"/api/workers/{worker['id']}/wechat/messages/ingest",
         json=stale_contract_payload,
