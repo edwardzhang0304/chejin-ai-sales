@@ -1,7 +1,5 @@
 import { useState } from "react";
 
-import { CopyIcon } from "./Icons";
-
 type Props = {
   label: string;
   value: string | null | undefined;
@@ -26,8 +24,7 @@ export function CopyButton({ label, value }: Props) {
         });
       }}
     >
-      <CopyIcon />
-      <span className="sr-only" aria-live="polite">{copied ? "已复制" : ""}</span>
+      <span aria-live="polite">{copied ? "已复制" : "复制"}</span>
     </button>
   );
 }
