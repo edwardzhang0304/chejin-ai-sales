@@ -1279,6 +1279,11 @@ class TaskRunner:
         self.visible_hit_queue: list[WechatReadTarget] = []
         self.c2_round_processed_conversation_ids: set[str] = set()
         self.stop_event = threading.Event()
+        self._task_wake_event = threading.Event()
+        self._task_wake_state_lock = threading.Lock()
+        self._transaction_barrier_was_ready: bool | None = None
+        self._transaction_barrier_blocked_since_monotonic: float | None = None
+        self._task_wake_requested_at_monotonic: float | None = None
         self.thread: threading.Thread | None = None
         self.c2_thread: threading.Thread | None = None
         self.thread_monitor: threading.Thread | None = None
@@ -1300,6 +1305,7 @@ class TaskRunner:
         self.c2_read_allowlist_keys: set[str] = set()
         self.c2_active_target_cache: dict[str, Any] = {}
         self.c2_last_visible_sessions: list[dict[str, Any]] = []
+        self.c2_last_visible_frame_reuse_evidence: dict[str, Any] = {}
         self.c2_last_visible_sessions_monotonic = 0.0
         self.c2_recent_visible_hits_by_remark_code: dict[str, dict[str, Any]] = {}
         self.c2_voice_binding_blocked_authorizations: set[str] = set()
@@ -1385,6 +1391,7 @@ class TaskRunner:
         ).strip()
         self._restart_recovery_flow_id = persisted_flow_id or None
         self.stop_event.clear()
+        self._task_wake_event.clear()
         with self._thread_health_lock:
             self._thread_failure_reported.clear()
         self._maybe_cleanup_artifacts(force=True)
@@ -1415,7 +1422,79 @@ class TaskRunner:
 
     def stop(self) -> None:
         self.stop_event.set()
+        self._task_wake_event.set()
         self.c2_manual_scan_requested.set()
+
+    def _safe_task_wake_boundary_ready(self) -> bool:
+        """Return whether an event may request an early scheduler check.
+
+        This is deliberately stricter than ``_can_start_new_flow``.  The event
+        is only a coalescing hint to the existing task thread; it never grants
+        permission and it never runs ``tick_once`` itself.
+        """
+
+        binding = self.binding
+        return bool(
+            CONFIG.task_safe_wake_enabled
+            and binding
+            and self._can_start_new_flow(binding)
+            and self.current_task is None
+            and self.current_ui_lock is None
+            and not bool(lock_summary().get("locked"))
+            and not self.task_lock.locked()
+            and self.can_pull_tasks()
+        )
+
+    def _request_task_wake_if_safe(
+        self,
+        *,
+        reason: str,
+        barrier_occupied_duration_ms: int | None = None,
+    ) -> bool:
+        if not self._safe_task_wake_boundary_ready():
+            return False
+        with self._task_wake_state_lock:
+            if not self._task_wake_event.is_set():
+                self._task_wake_requested_at_monotonic = time.monotonic()
+            self._task_wake_event.set()
+        append_log(
+            "INFO",
+            "task_safe_wake_requested",
+            "安全边界已释放，通知现有任务循环提前检查一次。",
+            metadata={
+                "reason": reason,
+                "coalescing": True,
+                "barrier_occupied_duration_ms": (
+                    barrier_occupied_duration_ms
+                ),
+            },
+        )
+        return True
+
+    def _remember_transaction_barrier_state(self, ready: bool) -> None:
+        should_wake = False
+        barrier_occupied_duration_ms: int | None = None
+        now = time.monotonic()
+        with self._task_wake_state_lock:
+            previous = self._transaction_barrier_was_ready
+            self._transaction_barrier_was_ready = bool(ready)
+            if not ready and previous is not False:
+                self._transaction_barrier_blocked_since_monotonic = now
+            elif ready and self._transaction_barrier_blocked_since_monotonic is not None:
+                barrier_occupied_duration_ms = round(
+                    max(
+                        0.0,
+                        now - self._transaction_barrier_blocked_since_monotonic,
+                    )
+                    * 1000
+                )
+                self._transaction_barrier_blocked_since_monotonic = None
+            should_wake = previous is False and ready is True
+        if should_wake:
+            self._request_task_wake_if_safe(
+                reason="transaction_barrier_settled",
+                barrier_occupied_duration_ms=barrier_occupied_duration_ms,
+            )
 
     def request_immediate_scan(self) -> None:
         self.c2_manual_scan_requested.set()
@@ -1686,6 +1765,7 @@ class TaskRunner:
         self._backend_inflight_flow_state = {}
         if self._restart_recovery_flow_id == flow_id:
             self._restart_recovery_flow_id = None
+        self._request_task_wake_if_safe(reason="inflight_flow_finished")
 
     def _finish_restart_recovery_flow_if_settled(
         self,
@@ -1815,6 +1895,10 @@ class TaskRunner:
             self._backend_inflight_flow_state = dict(
                 profile.inflight_flow_state or {}
             )
+            if run_status == "running":
+                self._request_task_wake_if_safe(
+                    reason="backend_run_status_running"
+                )
             append_log("INFO", "run_status_changed", "开始接单。" if run_status == "running" else "暂停接单。")
             return True
         except Exception as exc:
@@ -1847,8 +1931,34 @@ class TaskRunner:
     def _loop(self) -> None:
         append_log("INFO", "client_started", "Worker 客户端任务循环启动。")
         while not self.stop_event.is_set():
+            wake_requested_at: float | None = None
+            with self._task_wake_state_lock:
+                wake_requested_at = self._task_wake_requested_at_monotonic
+                self._task_wake_requested_at_monotonic = None
+            if wake_requested_at is not None:
+                append_log(
+                    "INFO",
+                    "task_safe_wake_consumed",
+                    "现有任务循环已消费合并唤醒。",
+                    metadata={
+                        "idle_scheduler_wait_ms": round(
+                            max(0.0, time.monotonic() - wake_requested_at)
+                            * 1000
+                        ),
+                    },
+                )
+            # Clear before the check.  Any event arriving during ``tick_once``
+            # remains set and causes one immediate follow-up check; multiple
+            # producers coalesce on the same Event and cannot create a second
+            # pull thread.
+            self._task_wake_event.clear()
             self.tick_once()
-            self.stop_event.wait(self.poll_interval_seconds)
+            if self.stop_event.is_set():
+                break
+            if CONFIG.task_safe_wake_enabled:
+                self._task_wake_event.wait(self.poll_interval_seconds)
+            else:
+                self.stop_event.wait(self.poll_interval_seconds)
 
     def tick_once(self) -> None:
         binding = self.binding
@@ -2008,6 +2118,14 @@ class TaskRunner:
             if not self._can_start_new_flow(binding):
                 return
             self._execute_task(binding, task, mode)
+        # _execute_task settles the task and its durable facts while this
+        # method still owns task_lock.  Requesting the coalesced wake from the
+        # inner terminal handler is therefore intentionally rejected.  Retry
+        # once after the lock is physically released so the existing task
+        # loop can check the next queued task without waiting a full poll.
+        self._request_task_wake_if_safe(
+            reason="task_execution_boundary_released"
+        )
 
     def _execute_task(self, binding: Binding, task: Task, mode: str) -> None:
         flow_kind = "chat_reply" if task.task_type == "chat_reply" else "task"
@@ -2764,6 +2882,23 @@ class TaskRunner:
         return ready
 
     def _worker_transaction_barrier_ready(
+        self,
+        binding: Binding,
+        *,
+        reason: str,
+        allowed_image_recovery_conversation_id: str = "",
+    ) -> bool:
+        ready = self._worker_transaction_barrier_ready_impl(
+            binding,
+            reason=reason,
+            allowed_image_recovery_conversation_id=(
+                allowed_image_recovery_conversation_id
+            ),
+        )
+        self._remember_transaction_barrier_state(ready)
+        return ready
+
+    def _worker_transaction_barrier_ready_impl(
         self,
         binding: Binding,
         *,
@@ -5102,6 +5237,21 @@ class TaskRunner:
                         session[target_key] = raw.get(source_key)
                 if not isinstance(session.get("row_fingerprint"), dict) and raw.get("row_fingerprint"):
                     session["row_fingerprint"] = raw.get("row_fingerprint")
+                for authoritative_key in (
+                    "c2_conversation_type",
+                    "c2_conversation_admission",
+                    "c2_remark_code_candidates",
+                    "visible_frame_reuse_evidence",
+                ):
+                    if raw.get(authoritative_key) not in (None, "", {}):
+                        value = raw.get(authoritative_key)
+                        session[authoritative_key] = (
+                            dict(value)
+                            if isinstance(value, dict)
+                            else list(value)
+                            if isinstance(value, list)
+                            else value
+                        )
                 if session.get("center_y") is None:
                     row_fingerprint = session.get("row_fingerprint")
                     if isinstance(row_fingerprint, dict):
@@ -5150,7 +5300,20 @@ class TaskRunner:
             "row_fingerprint": row_fingerprint,
             "confidence": session.get("confidence") if session.get("confidence") is not None else session.get("ocr_confidence"),
             "preview": session.get("preview") or session.get("content") or session.get("last_message_preview"),
+            "c2_conversation_type": session.get("c2_conversation_type"),
+            "c2_conversation_admission": session.get(
+                "c2_conversation_admission"
+            ),
+            "c2_remark_code_candidates": session.get(
+                "c2_remark_code_candidates"
+            ),
         }
+        if CONFIG.c2_locate_frame_reuse_enabled:
+            reuse_evidence = session.get("visible_frame_reuse_evidence")
+            if isinstance(reuse_evidence, dict) and reuse_evidence:
+                candidate["visible_frame_reuse_evidence"] = dict(
+                    reuse_evidence
+                )
         for key in ("center_y", "left", "right", "top", "bottom"):
             value = session.get(key)
             if value is None:
@@ -5339,11 +5502,23 @@ class TaskRunner:
                 )
             review_path = self._write_c2_sessions_review(reason=reason, sidecar_payload=sidecar_payload, scan_payload=payload)
             raw_sessions = sidecar_payload.get("sessions") if isinstance(sidecar_payload.get("sessions"), list) else []
-            self.c2_last_visible_sessions = [
-                item
-                for item in self._visible_sessions_with_click_geometry(payload.get("sessions") or [], raw_sessions)
-                if isinstance(item, dict)
-            ]
+            reuse_evidence = (
+                sidecar_payload.get("visible_frame_reuse_evidence")
+                if CONFIG.c2_locate_frame_reuse_enabled
+                and isinstance(
+                    sidecar_payload.get("visible_frame_reuse_evidence"), dict
+                )
+                else {}
+            )
+            self.c2_last_visible_frame_reuse_evidence = dict(reuse_evidence)
+            self.c2_last_visible_sessions = []
+            for item in self._visible_sessions_with_click_geometry(
+                payload.get("sessions") or [], raw_sessions
+            ):
+                if not isinstance(item, dict):
+                    continue
+                session = dict(item)
+                self.c2_last_visible_sessions.append(session)
             self.c2_last_visible_sessions_monotonic = time.monotonic()
             self._remember_recent_visible_hits(self.c2_last_visible_sessions)
             result = self.api.post_wechat_session_scan_result(binding, payload)

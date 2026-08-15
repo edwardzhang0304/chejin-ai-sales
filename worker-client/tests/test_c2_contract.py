@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault(
     "CHEJIN_WORKER_HOME",
@@ -19,6 +20,7 @@ from chejin_worker_client.c2_contract import (
     temporary_capability_gate_codes,
     validate_slot_ledger_states,
 )
+from chejin_worker_client.config import ClientConfig
 from chejin_worker_client.api import ApiError
 from chejin_worker_client.c2_outbox_recovery import rebuild_identity_collision
 from chejin_worker_client.transaction_outcomes import (
@@ -44,9 +46,63 @@ from chejin_worker_client.wechat_c2 import (
 
 
 class C2ContractTests(unittest.TestCase):
+    def test_performance_fast_path_flags_can_be_disabled_independently(self):
+        env_names = [
+            "CHEJIN_TASK_SAFE_WAKE_ENABLED",
+            "CHEJIN_C2_LOCATE_FRAME_REUSE_ENABLED",
+            "CHEJIN_C3_PRE_SEND_ROI_REUSE_ENABLED",
+            "CHEJIN_C3_SEND_FRAME_LOCAL_REUSE_ENABLED",
+        ]
+        attrs = [
+            "task_safe_wake_enabled",
+            "c2_locate_frame_reuse_enabled",
+            "c3_pre_send_roi_reuse_enabled",
+            "c3_send_frame_local_reuse_enabled",
+        ]
+        disabled = {name: "0" for name in env_names}
+        with patch.dict(os.environ, disabled):
+            config = ClientConfig.from_env()
+        self.assertEqual([getattr(config, attr) for attr in attrs], [False] * 4)
+
+        for selected_name, selected_attr in zip(env_names, attrs, strict=True):
+            values = {**disabled, selected_name: "1"}
+            with self.subTest(selected=selected_name), patch.dict(
+                os.environ, values
+            ):
+                config = ClientConfig.from_env()
+                self.assertTrue(getattr(config, selected_attr))
+                self.assertEqual(
+                    sum(bool(getattr(config, attr)) for attr in attrs),
+                    1,
+                )
+
     def test_slot_ledger_contract_separates_fact_scope_from_delivery(self):
         schema = c2_contract_v3()["slot_ledger_state_schema"]
-        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.10")
+        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.11")
+        performance = c2_contract_v3()["performance_fast_path_contract"]
+        self.assertTrue(performance["business_semantics_unchanged"])
+        self.assertEqual(
+            performance["flags"],
+            [
+                "CHEJIN_TASK_SAFE_WAKE_ENABLED",
+                "CHEJIN_C2_LOCATE_FRAME_REUSE_ENABLED",
+                "CHEJIN_C3_PRE_SEND_ROI_REUSE_ENABLED",
+                "CHEJIN_C3_SEND_FRAME_LOCAL_REUSE_ENABLED",
+            ],
+        )
+        self.assertEqual(
+            set(performance["required_diagnostics"]),
+            {
+                "fast_path_attempted",
+                "fast_path_used",
+                "fallback_reason",
+                "frame_digest_equal",
+                "ocr_call_count",
+                "ocr_total_duration_ms",
+            },
+        )
+        self.assertIn("sidebar pixel digest", performance["locate_reuse_rule"])
+        self.assertIn("0.9.10 full path", performance["fallback_rule"])
         location_recovery = c2_contract_v3()[
             "target_location_recovery_contract"
         ]

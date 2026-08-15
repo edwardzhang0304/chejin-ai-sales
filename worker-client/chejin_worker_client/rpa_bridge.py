@@ -90,11 +90,23 @@ class RpaBridge:
             }
         resolved_artifact_dir = artifact_dir or CONFIG.app_dir / "artifacts" / "wechat_c2" / "sessions" / time.strftime("%Y%m%d_%H%M%S")
         resolved_artifact_dir.mkdir(parents=True, exist_ok=True)
+        sidecar_run_id = f"sessions-{uuid.uuid4().hex}"
+        scan_id = f"scan-{uuid.uuid4()}"
         payload = self._call_omniauto(
-            ["sessions", "--artifact-dir", str(resolved_artifact_dir)],
+            [
+                "sessions",
+                "--sidecar-run-id",
+                sidecar_run_id,
+                "--scan-id",
+                scan_id,
+                "--artifact-dir",
+                str(resolved_artifact_dir),
+            ],
             timeout=60,
             cancel_check=cancel_check,
         )
+        payload.setdefault("sidecar_run_id", sidecar_run_id)
+        payload.setdefault("scan_id", scan_id)
         payload.setdefault("artifact_dir", str(resolved_artifact_dir))
         if not payload.get("screenshot_path"):
             screenshots = sorted(

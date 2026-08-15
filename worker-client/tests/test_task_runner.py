@@ -12,6 +12,7 @@ import time
 import unittest
 import zipfile
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -30,6 +31,7 @@ from chejin_worker_client.action_journal import (
     update_action_journal_item,
 )
 from chejin_worker_client.c2_contract import contract_revision, contract_sha256
+from chejin_worker_client.config import CONFIG
 from chejin_worker_client.models import Binding, RpaResult, RpaStep, Task, WechatReadTarget, WorkerProfile
 from chejin_worker_client.incident_evidence import wait_for_incident
 from chejin_worker_client.rpa_bridge import RpaBridge
@@ -3447,6 +3449,215 @@ class TaskRunnerTest(unittest.TestCase):
         api.run_status_error = None
         self.assertTrue(runner.set_run_status("running"))
         self.assertEqual(binding.run_status, "running")
+
+    def test_task_safe_wake_coalesces_repeated_events_into_one_followup_tick(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        observed: list[int] = []
+
+        def tick_once() -> None:
+            observed.append(len(observed) + 1)
+            if len(observed) == 1:
+                for _ in range(8):
+                    runner._task_wake_event.set()
+            else:
+                runner.stop_event.set()
+
+        runner.tick_once = tick_once  # type: ignore[method-assign]
+        runner.poll_interval_seconds = 60
+
+        runner._loop()
+
+        self.assertEqual(observed, [1, 2])
+
+    def test_task_safe_wake_never_bypasses_runtime_gates(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+
+        with (
+            patch(
+                "chejin_worker_client.task_runner.load_runtime_control",
+                return_value={
+                    "pause_requested": False,
+                    "inflight_flow_id": None,
+                },
+            ),
+            patch(
+                "chejin_worker_client.task_runner.lock_summary",
+                return_value={"locked": False},
+            ),
+        ):
+            self.assertTrue(runner._request_task_wake_if_safe(reason="idle"))
+            runner._task_wake_event.clear()
+
+            runner.current_task = self.make_chat_reply_task(task_id="busy")
+            self.assertFalse(
+                runner._request_task_wake_if_safe(reason="current_task")
+            )
+            runner.current_task = None
+
+            runner.current_ui_lock = object()  # type: ignore[assignment]
+            self.assertFalse(
+                runner._request_task_wake_if_safe(reason="ui_lock")
+            )
+            runner.current_ui_lock = None
+
+            binding.run_status = "paused"
+            self.assertFalse(
+                runner._request_task_wake_if_safe(reason="paused")
+            )
+            binding.run_status = "running"
+
+            with patch(
+                "chejin_worker_client.task_runner.load_runtime_control",
+                return_value={
+                    "pause_requested": True,
+                    "inflight_flow_id": None,
+                },
+            ):
+                self.assertFalse(
+                    runner._request_task_wake_if_safe(reason="pause_requested")
+                )
+
+            with patch(
+                "chejin_worker_client.task_runner.load_runtime_control",
+                return_value={
+                    "pause_requested": False,
+                    "inflight_flow_id": "flow-1",
+                },
+            ):
+                self.assertFalse(
+                    runner._request_task_wake_if_safe(reason="inflight")
+                )
+
+            with patch(
+                "chejin_worker_client.task_runner.emergency_stop_requested",
+                return_value=True,
+            ):
+                self.assertFalse(
+                    runner._request_task_wake_if_safe(reason="emergency")
+                )
+
+            runner.can_pull_tasks = lambda: False
+            self.assertFalse(
+                runner._request_task_wake_if_safe(reason="cannot_pull")
+            )
+            runner.can_pull_tasks = lambda: True
+
+            runner.task_lock.acquire()
+            try:
+                self.assertFalse(
+                    runner._request_task_wake_if_safe(reason="task_lock")
+                )
+            finally:
+                runner.task_lock.release()
+
+            with patch(
+                "chejin_worker_client.task_runner.CONFIG",
+                replace(CONFIG, task_safe_wake_enabled=False),
+            ):
+                self.assertFalse(
+                    runner._request_task_wake_if_safe(reason="feature_off")
+                )
+
+        with (
+            patch(
+                "chejin_worker_client.task_runner.load_runtime_control",
+                return_value={
+                    "pause_requested": False,
+                    "inflight_flow_id": None,
+                },
+            ),
+            patch(
+                "chejin_worker_client.task_runner.lock_summary",
+                return_value={"locked": True},
+            ),
+        ):
+            self.assertFalse(
+                runner._request_task_wake_if_safe(reason="persisted_ui_lock")
+            )
+
+        self.assertFalse(runner._task_wake_event.is_set())
+
+    def test_transaction_barrier_wakes_only_on_unsettled_to_settled_edge(self):
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        with patch.object(
+            runner,
+            "_request_task_wake_if_safe",
+            return_value=True,
+        ) as wake:
+            runner._remember_transaction_barrier_state(False)
+            runner._remember_transaction_barrier_state(True)
+            runner._remember_transaction_barrier_state(True)
+
+        wake.assert_called_once()
+        self.assertEqual(
+            wake.call_args.kwargs["reason"], "transaction_barrier_settled"
+        )
+        self.assertIsInstance(
+            wake.call_args.kwargs["barrier_occupied_duration_ms"], int
+        )
+
+    def test_task_completion_requests_wake_only_after_task_lock_release(self):
+        task = self.make_chat_reply_task(task_id="task-safe-wake")
+        api = FakeApi(task)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        lock_states: list[bool] = []
+
+        def observe_wake(*, reason: str) -> bool:
+            self.assertEqual(reason, "task_execution_boundary_released")
+            lock_states.append(runner.task_lock.locked())
+            return True
+
+        with (
+            patch.object(
+                runner, "_worker_transaction_barrier_ready", return_value=True
+            ),
+            patch.object(runner, "_execute_task"),
+            patch.object(
+                runner,
+                "_request_task_wake_if_safe",
+                side_effect=observe_wake,
+            ) as wake,
+        ):
+            runner._pull_and_execute(binding)
+
+        wake.assert_called_once()
+        self.assertEqual(lock_states, [False])
 
     def test_run_status_rejects_mismatched_backend_confirmation(self):
         api = FakeApi(None)
@@ -10249,6 +10460,42 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(bridge.locate_chats[0]["target_mode"], "visible")
         self.assertEqual(bridge.locate_chats[0]["rpa_session_key"], "wx:rpa:v1:backend")
         self.assertEqual(bridge.locate_chats[0]["remark_code"], "CJVOIC01")
+
+    def test_worker_passes_omniauto_visible_frame_evidence_without_interpreting_it(self):
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        evidence = {
+            "frame_id": "frame-1",
+            "scan_id": "scan-1",
+            "sidecar_run_id": "sessions-1",
+            "sidebar_sha256": "a" * 64,
+            "opaque_future_field": {"must": "survive"},
+        }
+        candidate = runner._sidecar_visible_session_candidate(
+            {
+                "name": "CJP6M3R7许聪",
+                "session_key": "wx:rpa:v1:one",
+                "c2_conversation_type": "private",
+                "c2_remark_code_candidates": ["CJP6M3R7"],
+                "c2_conversation_admission": {
+                    "conversation_type": "private",
+                    "admission_allowed": True,
+                    "remark_code": "CJP6M3R7",
+                },
+                "visible_frame_reuse_evidence": evidence,
+                "center_y": 120,
+            }
+        )
+
+        self.assertEqual(candidate["visible_frame_reuse_evidence"], evidence)
+        self.assertEqual(
+            candidate["visible_frame_reuse_evidence"]["opaque_future_field"],
+            {"must": "survive"},
+        )
 
     def test_c2_state_target_passes_short_code_to_atomic_visible_locate(self):
         api = FakeApi(None)

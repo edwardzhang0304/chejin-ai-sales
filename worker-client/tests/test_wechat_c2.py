@@ -660,6 +660,7 @@ class WechatC2Test(unittest.TestCase):
                 "ok": True,
                 "adapter": "win32_ocr",
                 "state": "sessions_ocr",
+                "scan_id": "scan-worker-sidecar-shared",
                 "screenshot_path": "C:/scan.png",
                 "sessions": [
                     sidecar_session_identity(
@@ -680,6 +681,7 @@ class WechatC2Test(unittest.TestCase):
         )
 
         self.assertFalse(payload["scan_failed"])
+        self.assertEqual(payload["scan_id"], "scan-worker-sidecar-shared")
         self.assertEqual(payload["sessions"][0]["rpa_session_key"], "wx:rpa:v1:a")
         self.assertEqual(payload["sessions"][0]["remark_code_candidates"], ["CJ8K2P34"])
         self.assertTrue(payload["sessions"][0]["unread_hint"])

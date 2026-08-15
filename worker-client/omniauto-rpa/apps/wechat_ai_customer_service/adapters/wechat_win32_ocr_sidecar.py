@@ -482,6 +482,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=SIDECAR_ACTION_CHOICES, nargs="?")
     parser.add_argument("--sidecar-run-id", default="", help="Correlation id for one Worker-to-sidecar run.")
+    parser.add_argument("--scan-id", default="", help="Correlation id for one sessions scan.")
     parser.add_argument("--canonical-voice-action-id", default="")
     parser.add_argument("--reserved-worker-stable-id", default="")
     parser.add_argument("--voice-action-stage", choices=("prepare", "execute"), default="prepare")
@@ -568,6 +569,216 @@ def main() -> int:
     # Keep it ASCII-safe so Chinese OCR/window text round-trips after json.loads.
     print(json.dumps(payload, ensure_ascii=True, indent=2))
     return 0 if payload.get("ok") else 1
+
+
+def try_activate_visible_candidate_from_equivalent_frame(
+    hwnd: int,
+    *,
+    candidate: dict[str, Any],
+    remark_code: str,
+    artifact_dir: str | None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "fast_path_attempted": False,
+        "fast_path_used": False,
+        "fallback_reason": "feature_disabled",
+        "frame_digest_equal": False,
+        "ocr_call_count": 0,
+        "ocr_total_duration_ms": 0,
+        "ui_click_performed": False,
+    }
+    if not env_flag("CHEJIN_C2_LOCATE_FRAME_REUSE_ENABLED", default=True):
+        return result
+    result["fast_path_attempted"] = True
+    evidence = candidate.get("visible_frame_reuse_evidence")
+    if not isinstance(evidence, dict):
+        result["fallback_reason"] = "reuse_evidence_missing"
+        return result
+    required = (
+        "hwnd",
+        "geometry",
+        "dpi_scale",
+        "sidebar_sha256",
+        "screenshot_sha256",
+        "frame_id",
+        "scan_id",
+        "sidecar_run_id",
+        "captured_monotonic",
+        "candidate_bounds",
+        "candidate_remark_code_candidates",
+        "candidate_session_key",
+        "ocr_result_sha256",
+    )
+    if any(evidence.get(key) in (None, "", {}) for key in required):
+        result["fallback_reason"] = "reuse_evidence_incomplete"
+        return result
+    if any(
+        re.fullmatch(r"[0-9a-f]{64}", str(evidence.get(key) or "").lower())
+        is None
+        for key in (
+            "sidebar_sha256",
+            "screenshot_sha256",
+            "ocr_result_sha256",
+        )
+    ):
+        result["fallback_reason"] = "reuse_evidence_digest_invalid"
+        return result
+    admission = (
+        candidate.get("c2_conversation_admission")
+        if isinstance(candidate.get("c2_conversation_admission"), dict)
+        else {}
+    )
+    candidates = [
+        str(value or "").strip().upper()
+        for value in (candidate.get("c2_remark_code_candidates") or [])
+        if str(value or "").strip()
+    ]
+    clean_remark = str(remark_code or "").strip().upper()
+    if not (
+        admission.get("admission_allowed") is True
+        and str(admission.get("conversation_type") or "") == "private"
+        and candidates == [clean_remark]
+        and str(admission.get("remark_code") or "").strip().upper()
+        == clean_remark
+    ):
+        result["fallback_reason"] = "candidate_identity_not_strict"
+        return result
+    evidence_candidates = [
+        str(value or "").strip().upper()
+        for value in (
+            evidence.get("candidate_remark_code_candidates") or []
+        )
+        if str(value or "").strip()
+    ]
+    candidate_bounds = [
+        float(candidate.get(key) or 0.0)
+        for key in ("left", "top", "right", "bottom")
+    ]
+    evidence_bounds = [
+        float(value or 0.0)
+        for value in (evidence.get("candidate_bounds") or [])[:4]
+    ]
+    if not (
+        evidence_candidates == [clean_remark]
+        and len(evidence_bounds) == 4
+        and evidence_bounds == candidate_bounds
+        and str(evidence.get("candidate_session_key") or "")
+        == str(candidate.get("session_key") or "")
+    ):
+        result["fallback_reason"] = "candidate_evidence_binding_mismatch"
+        return result
+    geometry = get_window_geometry(hwnd)
+    if int(evidence.get("hwnd") or 0) != int(hwnd or 0):
+        result["fallback_reason"] = "hwnd_changed"
+        return result
+    expected_geometry = {
+        key: int((evidence.get("geometry") or {}).get(key) or 0)
+        for key in ("left", "top", "right", "bottom", "width", "height")
+    }
+    current_geometry = {
+        key: int(geometry.get(key) or 0)
+        for key in ("left", "top", "right", "bottom", "width", "height")
+    }
+    if current_geometry != expected_geometry:
+        result["fallback_reason"] = "geometry_changed"
+        return result
+    current_dpi = float(window_dpi_scale(hwnd))
+    if abs(float(evidence.get("dpi_scale") or 0.0) - current_dpi) > 1e-9:
+        result["fallback_reason"] = "dpi_changed"
+        return result
+    screenshot, screenshot_path = capture_wechat(
+        hwnd,
+        artifact_dir=artifact_dir,
+        label="visible_frame_reuse_check",
+    )
+    current = immutable_frame_pixel_evidence(
+        screenshot,
+        hwnd=hwnd,
+        geometry=geometry,
+        screenshot_path=screenshot_path,
+    )
+    sidebar_digest_equal = bool(
+        str(current.get("sidebar_sha256") or "")
+        == str(evidence.get("sidebar_sha256") or "")
+    )
+    full_frame_digest_equal = bool(
+        str(current.get("screenshot_sha256") or "")
+        == str(evidence.get("screenshot_sha256") or "")
+    )
+    # The reusable evidence belongs to the session-list observation. The
+    # active chat viewport can legitimately render while the sidebar remains
+    # byte-identical, so it is diagnostic evidence rather than an eligibility
+    # condition. A changed sidebar always falls back before any click.
+    result["frame_digest_equal"] = sidebar_digest_equal
+    result["full_frame_digest_equal"] = full_frame_digest_equal
+    result["current_frame_id"] = current.get("frame_id")
+    result["source_frame_id"] = evidence.get("frame_id")
+    if not sidebar_digest_equal:
+        result["fallback_reason"] = "frame_digest_changed"
+        return result
+    try:
+        session = dict(candidate)
+        session.pop("visible_frame_reuse_evidence", None)
+        opened = activate_session_candidate(
+            hwnd,
+            session,
+            target=clean_remark,
+            exact=False,
+            geometry=geometry,
+            default_click_x=session_click_x_for_geometry(geometry),
+            artifact_dir=artifact_dir,
+        )
+    except Exception as exc:
+        result["fallback_reason"] = "candidate_activation_exception"
+        result["error"] = repr(exc)
+        return result
+    result["opened"] = bool(opened)
+    result["ui_click_performed"] = bool(
+        _LAST_SESSION_ACTIVATION_TIMING.get("activation_ui_click_performed")
+        or _LAST_SESSION_ACTIVATION_TIMING.get("ui_click_performed")
+    )
+    result["fast_path_used"] = bool(
+        opened or result["ui_click_performed"]
+    )
+    result["fallback_reason"] = (
+        ""
+        if result["fast_path_used"]
+        else "candidate_rejected_before_click"
+    )
+    if not result["fast_path_used"]:
+        return result
+    validation = consume_recent_target_switch_validation(
+        hwnd=hwnd,
+        target=clean_remark,
+        exact=False,
+        session_key=str(candidate.get("session_key") or ""),
+        require_session_key_match=False,
+    )
+    if validation is None:
+        validation = validate_active_send_target(
+            hwnd,
+            clean_remark,
+            exact=False,
+            artifact_dir=artifact_dir,
+        )
+    result["validation"] = validation
+    validation_timing = (
+        validation.get("timing")
+        if isinstance(validation, dict)
+        and isinstance(validation.get("timing"), dict)
+        else {}
+    )
+    result["ocr_call_count"] = int(
+        validation_timing.get("validate_active_send_target_ocr_call_count")
+        or validation_timing.get("ocr_call_count")
+        or 0
+    )
+    result["ocr_total_duration_ms"] = int(
+        validation_timing.get("validate_active_send_target_ocr_total_duration_ms")
+        or validation_timing.get("ocr_total_duration_ms")
+        or 0
+    )
+    return result
 
 
 def locate_chat_target_for_c2(
@@ -731,15 +942,61 @@ def locate_chat_target_for_c2(
         }
         targeting["visible_session_candidate_fallback"] = "open_chat_fresh_rescan"
     open_chat_started_at = time.monotonic()
-    opened = open_chat(
-        hwnd,
-        clean_target or clean_remark_code,
-        exact=bool(exact),
-        artifact_dir=artifact_dir,
-        session_key=clean_session_key,
-        semantic_target=clean_remark_code,
+    fast_path = (
+        try_activate_visible_candidate_from_equivalent_frame(
+            hwnd,
+            candidate=visible_candidate,
+            remark_code=clean_remark_code,
+            artifact_dir=artifact_dir,
+        )
+        if normalized_mode == "visible" and visible_candidate
+        else {
+            "fast_path_attempted": False,
+            "fast_path_used": False,
+            "fallback_reason": "visible_candidate_missing",
+            "frame_digest_equal": False,
+            "ocr_call_count": 0,
+            "ocr_total_duration_ms": 0,
+        }
     )
-    validation = None
+    targeting["visible_frame_reuse"] = fast_path
+    if fast_path.get("fast_path_used"):
+        opened = bool(fast_path.get("opened"))
+        validation = (
+            fast_path.get("validation")
+            if isinstance(fast_path.get("validation"), dict)
+            else None
+        )
+        global _LAST_OPEN_CHAT_TIMING
+        _LAST_OPEN_CHAT_TIMING = {
+            "opened": opened,
+            "reason": (
+                "visible_frame_reuse_candidate_activated"
+                if opened
+                else "visible_frame_reuse_candidate_not_confirmed"
+            ),
+            "fast_path_attempted": True,
+            "fast_path_used": True,
+            "fallback_reason": "",
+            "frame_digest_equal": True,
+            "ocr_call_count": fast_path.get("ocr_call_count", 0),
+            "ocr_total_duration_ms": fast_path.get(
+                "ocr_total_duration_ms", 0
+            ),
+            "visible_frame_reuse_ui_click_performed": bool(
+                fast_path.get("ui_click_performed")
+            ),
+        }
+    else:
+        opened = open_chat(
+            hwnd,
+            clean_target or clean_remark_code,
+            exact=bool(exact),
+            artifact_dir=artifact_dir,
+            session_key=clean_session_key,
+            semantic_target=clean_remark_code,
+        )
+        validation = None
     initial_title_evidence = _LAST_OPEN_CHAT_TIMING.get("open_chat_initial_active_evidence")
     if (
         not opened
@@ -1008,7 +1265,15 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
     if action == "recover-render":
         return recover_blank_render_payload(hwnd, probe, artifact_dir=args.artifact_dir)
     if action == "sessions":
-        return sessions_payload(hwnd, probe, artifact_dir=args.artifact_dir)
+        return sessions_payload(
+            hwnd,
+            probe,
+            artifact_dir=args.artifact_dir,
+            scan_id=str(getattr(args, "scan_id", "") or "").strip(),
+            sidecar_run_id=str(
+                getattr(args, "sidecar_run_id", "") or ""
+            ).strip(),
+        )
     if action == "open-chat":
         clean_sidecar_run_id = str(getattr(args, "sidecar_run_id", "") or "").strip()
         if not args.target:
@@ -2050,9 +2315,64 @@ def capabilities_payload(hwnd: int, probe: dict[str, Any], *, artifact_dir: str 
         },
         "compat_reason": "rpa_primary",
     }
-def sessions_payload(hwnd: int, probe: dict[str, Any], *, artifact_dir: str | None = None) -> dict[str, Any]:
+def immutable_frame_pixel_evidence(
+    screenshot: Image.Image,
+    *,
+    hwnd: int,
+    geometry: dict[str, Any],
+    screenshot_path: str = "",
+    captured_monotonic: float | None = None,
+) -> dict[str, Any]:
+    image = screenshot.convert("RGB")
+    width, height = image.size
+    sidebar_right = max(0, min(width, session_split_x(width)))
+    sidebar = image.crop((0, 0, sidebar_right, height))
+    full_digest = hashlib.sha256(bytes(image.tobytes())).hexdigest()
+    sidebar_digest = hashlib.sha256(bytes(sidebar.tobytes())).hexdigest()
+    captured_at_monotonic = (
+        float(captured_monotonic)
+        if captured_monotonic is not None
+        else time.monotonic()
+    )
+    return {
+        # A frame id identifies one physical capture, not merely equal pixels.
+        # Equal screenshots at S0/S1/S2 must still remain separate timepoints.
+        "frame_id": (
+            f"frame:{time.monotonic_ns()}:{full_digest[:16]}"
+        ),
+        "screenshot_sha256": full_digest,
+        "hwnd": int(hwnd or 0),
+        "geometry": {
+            key: int(geometry.get(key) or 0)
+            for key in ("left", "top", "right", "bottom", "width", "height")
+        },
+        "dpi_scale": float(window_dpi_scale(hwnd)),
+        "sidebar_bounds": [0, 0, sidebar_right, height],
+        "sidebar_sha256": sidebar_digest,
+        "captured_monotonic": captured_at_monotonic,
+        "screenshot_path": str(screenshot_path or ""),
+    }
+
+
+def sessions_payload(
+    hwnd: int,
+    probe: dict[str, Any],
+    *,
+    artifact_dir: str | None = None,
+    scan_id: str = "",
+    sidecar_run_id: str = "",
+) -> dict[str, Any]:
     screenshot, path = capture_wechat(hwnd, artifact_dir=artifact_dir, label="sessions")
+    frame_captured_monotonic = time.monotonic()
+    ocr_started = time.perf_counter()
     items, enhanced_count = session_list_ocr_items(screenshot, run_ocr(screenshot))
+    ocr_total_duration_ms = round(
+        (time.perf_counter() - ocr_started) * 1000
+    )
+    # session_list_ocr_items always performs the enhanced sidebar pass unless
+    # the caller already supplied enhanced rows.  sessions_payload supplies a
+    # fresh base pass, so the actual invocation count is two.
+    ocr_call_count = 2
     geometry = get_window_geometry(hwnd)
     page_fingerprint = ocr_page_fingerprint(items, geometry=geometry)
     if quick_login_like(items, geometry=geometry):
@@ -2084,6 +2404,55 @@ def sessions_payload(hwnd: int, probe: dict[str, Any], *, artifact_dir: str | No
             "error": f"WeChat session list is blocked by: {blocking_reason}",
         }
     sessions = parse_sessions_from_ocr(items, screenshot.size, screenshot=screenshot)
+    visible_frame_reuse_evidence: dict[str, Any] = {}
+    if env_flag("CHEJIN_C2_LOCATE_FRAME_REUSE_ENABLED", default=True):
+        compact_ocr_items = compact_ocr_items_for_report(items)
+        ocr_result_sha256 = hashlib.sha256(
+            json.dumps(
+                compact_ocr_items,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        visible_frame_reuse_evidence = {
+            "schema_version": 1,
+            **immutable_frame_pixel_evidence(
+                screenshot,
+                hwnd=hwnd,
+                geometry=geometry,
+                screenshot_path=path,
+                captured_monotonic=frame_captured_monotonic,
+            ),
+            "scan_id": str(scan_id or ""),
+            "sidecar_run_id": str(sidecar_run_id or ""),
+            "ocr_result_sha256": ocr_result_sha256,
+            "ocr_item_count": len(compact_ocr_items),
+            "ocr_call_count": ocr_call_count,
+            "ocr_total_duration_ms": ocr_total_duration_ms,
+        }
+        for session in sessions:
+            if not isinstance(session, dict):
+                continue
+            session["visible_frame_reuse_evidence"] = {
+                **visible_frame_reuse_evidence,
+                "candidate_session_key": str(
+                    session.get("session_key") or ""
+                ),
+                "candidate_remark_code_candidates": list(
+                    session.get("c2_remark_code_candidates") or []
+                ),
+                "candidate_conversation_type": str(
+                    session.get("c2_conversation_type") or ""
+                ),
+                "candidate_admission": dict(
+                    session.get("c2_conversation_admission") or {}
+                ),
+                "candidate_bounds": [
+                    float(session.get(key) or 0.0)
+                    for key in ("left", "top", "right", "bottom")
+                ],
+            }
     return {
         "ok": True,
         "online": True,
@@ -2111,6 +2480,10 @@ def sessions_payload(hwnd: int, probe: dict[str, Any], *, artifact_dir: str | No
                 "c2_conversation_type": item.get("c2_conversation_type") or "unknown",
                 "c2_conversation_admission": item.get("c2_conversation_admission") or {},
                 "c2_remark_code_candidates": item.get("c2_remark_code_candidates") or [],
+                "visible_frame_reuse_evidence": item.get(
+                    "visible_frame_reuse_evidence"
+                )
+                or {},
                 "source_adapter": "win32_ocr",
             "ocr_confidence": item.get("confidence"),
             }
@@ -2119,6 +2492,8 @@ def sessions_payload(hwnd: int, probe: dict[str, Any], *, artifact_dir: str | No
         "ocr_items_count": len(items),
         "ocr_items_enhanced_count": enhanced_count,
         "ocr_items": compact_ocr_items_for_report(items),
+        "scan_id": str(scan_id or ""),
+        "visible_frame_reuse_evidence": visible_frame_reuse_evidence,
     }
 
 
@@ -2316,6 +2691,46 @@ def messages_payload(
         "ocr_items_count": len(ocr_items),
         "target_confirmation": target_confirmation,
     }
+    if (
+        screenshot is not None
+        and env_flag("CHEJIN_C3_PRE_SEND_ROI_REUSE_ENABLED", default=True)
+    ):
+        frame_observation = immutable_frame_pixel_evidence(
+            screenshot,
+            hwnd=hwnd,
+            geometry=geometry,
+            screenshot_path=str(latest.get("screenshot_path") or ""),
+        )
+        frame_observation.update(
+            {
+                "schema_version": 1,
+                "ocr_regions": ["full_frame"],
+                "ocr_engine": "rapidocr",
+                "ocr_parameters": {"mode": "default"},
+                "ocr_cache_key": (
+                    f"{frame_observation['frame_id']}:full_frame:rapidocr:default"
+                ),
+            }
+        )
+        payload["frame_observation"] = frame_observation
+        payload["pre_send_frame_reuse"] = {
+            "fast_path_attempted": True,
+            "fast_path_used": True,
+            "fallback_reason": "",
+            "frame_digest_equal": True,
+            "ocr_call_count": int(latest.get("ocr_call_count") or 1),
+            "ocr_total_duration_ms": (
+                int(latest.get("ocr_total_duration_ms"))
+                if latest.get("ocr_total_duration_ms") is not None
+                else None
+            ),
+            "shared_consumers": [
+                "target_confirmation",
+                "message_viewport",
+                "message_sequence",
+                "input_region",
+            ],
+        }
     if artifact_dir:
         try:
             review_path = write_messages_frame_review(Path(artifact_dir), payload)
@@ -6541,7 +6956,11 @@ def capture_message_history_snapshots(
 
     def capture(label: str) -> None:
         screenshot, path = capture_wechat(hwnd, artifact_dir=artifact_dir, label=label)
+        ocr_started = time.perf_counter()
         ocr_items = run_ocr(screenshot)
+        ocr_total_duration_ms = round(
+            (time.perf_counter() - ocr_started) * 1000
+        )
         parsed_messages = parse_current_chat_frame_messages(
             ocr_items,
             screenshot.size,
@@ -6554,6 +6973,8 @@ def capture_message_history_snapshots(
                 "screenshot_path": path,
                 "screenshot": screenshot,
                 "ocr_items": ocr_items,
+                "ocr_call_count": 1,
+                "ocr_total_duration_ms": ocr_total_duration_ms,
                 "messages": parsed_messages,
                 "visible_untranscribed_voice": visible_untranscribed_voice_hint(
                     screenshot,
@@ -6613,7 +7034,11 @@ def capture_message_history_snapshots_until_anchor(
 
     def capture(label: str) -> None:
         screenshot, path = capture_wechat(hwnd, artifact_dir=artifact_dir, label=label)
+        ocr_started = time.perf_counter()
         ocr_items = run_ocr(screenshot)
+        ocr_total_duration_ms = round(
+            (time.perf_counter() - ocr_started) * 1000
+        )
         parsed_messages = parse_current_chat_frame_messages(
             ocr_items,
             screenshot.size,
@@ -6626,6 +7051,8 @@ def capture_message_history_snapshots_until_anchor(
                 "screenshot_path": path,
                 "screenshot": screenshot,
                 "ocr_items": ocr_items,
+                "ocr_call_count": 1,
+                "ocr_total_duration_ms": ocr_total_duration_ms,
                 "messages": parsed_messages,
                 "visible_untranscribed_voice": visible_untranscribed_voice_hint(
                     screenshot,
@@ -7858,6 +8285,17 @@ def send_payload(
     def finish(payload: dict[str, Any]) -> dict[str, Any]:
         _sidecar_timing_finish(timing, "send_payload", send_payload_started)
         _sidecar_timing_merge_ocr_trace(timing, "send_payload", _ocr_trace_finish(ocr_trace_token))
+        send_frame_reuse = payload.get("send_frame_reuse")
+        if isinstance(send_frame_reuse, dict):
+            send_frame_reuse["ocr_call_count"] = int(
+                timing.get("send_payload_ocr_call_count") or 0
+            )
+            send_frame_reuse["ocr_total_duration_ms"] = round(
+                float(
+                    timing.get("send_payload_ocr_total_duration_seconds") or 0.0
+                )
+                * 1000
+            )
         payload["timing"] = dict(timing)
         send_result = payload.get("send_result")
         nested_send_result = send_result if isinstance(send_result, dict) else {}
@@ -8063,6 +8501,11 @@ def send_payload(
     }
     timing["input_region_precheck_seed_reused"] = True
     timing["input_region_precheck_seed_age_seconds"] = 0.0
+    baseline_frame = (
+        baseline_snapshot.get("frame_observation")
+        if isinstance(baseline_snapshot.get("frame_observation"), dict)
+        else {}
+    )
 
     send_mode = DEFAULT_SEND_MODE
     settings = adapt_humanized_input_settings(humanized_input_settings(), text)
@@ -8131,6 +8574,40 @@ def send_payload(
             if isinstance(snapshot.get("validation"), dict)
             else {}
         )
+        snapshot_frame = (
+            snapshot.get("frame_observation")
+            if isinstance(snapshot.get("frame_observation"), dict)
+            else {}
+        )
+        if env_flag(
+            "CHEJIN_C3_SEND_FRAME_LOCAL_REUSE_ENABLED", default=True
+        ):
+            baseline_frame_id = str(baseline_frame.get("frame_id") or "")
+            snapshot_frame_id = str(snapshot_frame.get("frame_id") or "")
+            baseline_digest = str(
+                baseline_frame.get("screenshot_sha256") or ""
+            )
+            snapshot_digest = str(
+                snapshot_frame.get("screenshot_sha256") or ""
+            )
+            if (
+                baseline_frame_id
+                and snapshot_frame_id
+                and (
+                    baseline_frame_id == snapshot_frame_id
+                    or (
+                        baseline_digest
+                        and snapshot_digest
+                        and baseline_digest == snapshot_digest
+                    )
+                )
+            ):
+                return {
+                    "ok": False,
+                    "reason": "send_s1_not_distinct_from_s0",
+                    "error_code": "C3_SEND_FRAME_TIMEPOINT_INVALID",
+                    "snapshot": snapshot,
+                }
         if (
             snapshot.get("ok") is not True
             or target_validation.get("ok") is not True
@@ -8150,6 +8627,7 @@ def send_payload(
         return {
             **validation_result,
             "snapshot": snapshot,
+            "frame_observation": snapshot_frame,
         }
 
     uia_result: dict[str, Any] = {
@@ -8257,6 +8735,71 @@ def send_payload(
         if isinstance(post_send_snapshot.get("validation"), dict)
         else {}
     )
+    post_send_frame = (
+        post_send_snapshot.get("frame_observation")
+        if isinstance(post_send_snapshot.get("frame_observation"), dict)
+        else {}
+    )
+    pre_trigger_snapshot = (
+        ((visual_result.get("context_check") or {}).get("snapshot"))
+        if isinstance(visual_result.get("context_check"), dict)
+        and isinstance(
+            (visual_result.get("context_check") or {}).get("snapshot"), dict
+        )
+        else {}
+    )
+    pre_trigger_frame = (
+        pre_trigger_snapshot.get("frame_observation")
+        if isinstance(pre_trigger_snapshot.get("frame_observation"), dict)
+        else {}
+    )
+    if env_flag("CHEJIN_C3_SEND_FRAME_LOCAL_REUSE_ENABLED", default=True):
+        frame_ids = [
+            str(item.get("frame_id") or "")
+            for item in (baseline_frame, pre_trigger_frame, post_send_frame)
+            if isinstance(item, dict)
+        ]
+        nonempty_frame_ids = [value for value in frame_ids if value]
+        frame_digests = [
+            str(item.get("screenshot_sha256") or "")
+            for item in (baseline_frame, pre_trigger_frame, post_send_frame)
+            if isinstance(item, dict)
+        ]
+        nonempty_frame_digests = [value for value in frame_digests if value]
+        if len(nonempty_frame_ids) == 3 and (
+            len(set(nonempty_frame_ids)) != 3
+            or (
+                len(nonempty_frame_digests) == 3
+                and len(set(nonempty_frame_digests)) != 3
+            )
+        ):
+            return finish({
+                "ok": False,
+                "online": True,
+                "adapter": "win32_ocr",
+                "state": "send_result_unknown",
+                "error_code": "SEND_RESULT_UNKNOWN",
+                "physical_send_triggered": True,
+                "target": target,
+                "send_result": {
+                    "ok": False,
+                    "confirmed": False,
+                    "result": "unknown",
+                    "physical_send_triggered": True,
+                },
+                "send_frame_reuse": {
+                    "fast_path_attempted": True,
+                    "fast_path_used": False,
+                    "fallback_reason": "cross_timepoint_frame_reuse_detected",
+                    "frame_digest_equal": None,
+                    "ocr_call_count": None,
+                    "ocr_total_duration_ms": None,
+                    "s0": baseline_frame,
+                    "s1": pre_trigger_frame,
+                    "s2": post_send_frame,
+                },
+                "error": "S0, S1 and S2 must be independent physical captures.",
+            })
     _sidecar_timing_finish(timing, "post_send_guard", post_send_guard_started)
     if str(post_validation.get("reason") or "") == "blank_render":
         return finish({
@@ -8352,6 +8895,43 @@ def send_payload(
             "confirmed": True,
             "result": "sent",
             "physical_send_triggered": True,
+        },
+        "send_frame_reuse": {
+            "fast_path_attempted": env_flag(
+                "CHEJIN_C3_SEND_FRAME_LOCAL_REUSE_ENABLED", default=True
+            ),
+            "fast_path_used": bool(
+                env_flag(
+                    "CHEJIN_C3_SEND_FRAME_LOCAL_REUSE_ENABLED", default=True
+                )
+                and baseline_frame
+                and pre_trigger_frame
+                and post_send_frame
+            ),
+            "fallback_reason": (
+                ""
+                if baseline_frame and pre_trigger_frame and post_send_frame
+                else "frame_observation_incomplete_fallback_original_flow"
+            ),
+            "frame_digest_equal": False,
+            "ocr_call_count": timing.get("send_payload_ocr_call_count"),
+            "ocr_total_duration_ms": (
+                round(
+                    float(
+                        timing.get(
+                            "send_payload_ocr_total_duration_seconds", 0.0
+                        )
+                        or 0.0
+                    )
+                    * 1000
+                )
+                if timing.get("send_payload_ocr_total_duration_seconds")
+                is not None
+                else None
+            ),
+            "s0": baseline_frame,
+            "s1": pre_trigger_frame,
+            "s2": post_send_frame,
         },
     })
 
@@ -14214,6 +14794,7 @@ def build_send_fact_snapshot_from_frame(
     ocr_items: list[dict[str, Any]] | None = None,
     recover_expected_self_text: bool = False,
 ) -> dict[str, Any]:
+    supplied_ocr_items = ocr_items is not None
     if ocr_items is None:
         ocr_items = run_ocr_traced(
             screenshot,
@@ -14283,6 +14864,23 @@ def build_send_fact_snapshot_from_frame(
         and str(observation.get("row_kind") or "")
         in {"text_bubble", "voice_transcript", "image_bubble", "system_message"}
     ]
+    frame_observation = immutable_frame_pixel_evidence(
+        screenshot,
+        hwnd=hwnd,
+        geometry=geometry,
+        screenshot_path=str(screenshot_path or ""),
+    )
+    frame_observation.update(
+        {
+            "schema_version": 1,
+            "ocr_regions": ["full_frame"],
+            "ocr_engine": "rapidocr",
+            "ocr_parameters": {"mode": "default"},
+            "ocr_cache_key": (
+                f"{frame_observation['frame_id']}:full_frame:rapidocr:default"
+            ),
+        }
+    )
     return {
         "ok": snapshot_target_ok,
         "screenshot_path": screenshot_path,
@@ -14314,6 +14912,26 @@ def build_send_fact_snapshot_from_frame(
                 message.get("content"),
             )["accepted"]
         ],
+        "frame_observation": frame_observation,
+        "frame_local_reuse": {
+            "fast_path_attempted": env_flag(
+                "CHEJIN_C3_SEND_FRAME_LOCAL_REUSE_ENABLED", default=True
+            ),
+            "fast_path_used": bool(
+                env_flag(
+                    "CHEJIN_C3_SEND_FRAME_LOCAL_REUSE_ENABLED", default=True
+                )
+                and supplied_ocr_items
+            ),
+            "fallback_reason": (
+                ""
+                if supplied_ocr_items
+                else "frame_main_ocr_created_for_this_snapshot"
+            ),
+            "frame_digest_equal": True,
+            "ocr_call_count": 0 if supplied_ocr_items else 1,
+            "ocr_total_duration_ms": None,
+        },
     }
 
 
@@ -17311,6 +17929,9 @@ def args_for_daemon_request(request: dict[str, Any]) -> list[str]:
     sidecar_run_id = str(request.get("sidecar_run_id") or request.get("run_id") or "").strip()
     if sidecar_run_id:
         argv.extend(["--sidecar-run-id", sidecar_run_id])
+    scan_id = str(request.get("scan_id") or "").strip()
+    if scan_id:
+        argv.extend(["--scan-id", scan_id])
     for key, flag in (
         ("canonical_voice_action_id", "--canonical-voice-action-id"),
         ("reserved_worker_stable_id", "--reserved-worker-stable-id"),
@@ -17475,6 +18096,7 @@ def run_sidecar_cli(argv: list[str] | None = None) -> dict[str, Any]:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=SIDECAR_ACTION_CHOICES, nargs="?")
     parser.add_argument("--sidecar-run-id", default="", help="Correlation id for one Worker-to-sidecar run.")
+    parser.add_argument("--scan-id", default="", help="Correlation id for one sessions scan.")
     parser.add_argument("--canonical-voice-action-id", default="")
     parser.add_argument("--reserved-worker-stable-id", default="")
     parser.add_argument("--voice-action-stage", choices=("prepare", "execute"), default="prepare")
