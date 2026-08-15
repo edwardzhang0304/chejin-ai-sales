@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SalesItem } from "./types";
 
@@ -29,6 +29,13 @@ const sales: SalesItem = {
   remark: null,
   lead_count: 0,
 };
+
+beforeEach(() => {
+  Object.defineProperty(window, "scrollTo", {
+    value: vi.fn(),
+    writable: true,
+  });
+});
 
 afterEach(() => {
   cleanup();
@@ -70,6 +77,7 @@ describe("销售手机号与飞书绑定合同", () => {
     workerApi.listWorkers.mockResolvedValue({ items: [] });
     render(<SalesPage />);
 
+    fireEvent.click(await screen.findByRole("row", { name: /张伟/ }));
     expect(await screen.findByText("飞书已匹配")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "编辑销售" }));
     fireEvent.change(screen.getByDisplayValue("张伟"), {

@@ -1,6 +1,7 @@
 import { FormEvent, useState } from "react";
 
 import { useLockBodyScroll } from "../../../shared/hooks/useLockBodyScroll";
+import { optionalText } from "../../../shared/utils/display";
 import type { SalesCreatePayload, SalesWorkerSummary } from "../types";
 
 type Props = {
@@ -12,11 +13,6 @@ type Props = {
 };
 
 const PHONE_PATTERN = /^1[3-9]\d{9}$/;
-
-function optionalText(value: string) {
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
-}
 
 export function CreateSalesModal({ submitting, error, workerOptions, onClose, onSubmit }: Props) {
   useLockBodyScroll();

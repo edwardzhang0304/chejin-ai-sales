@@ -80,7 +80,6 @@ export function LeadsTable({
               </td>
               <td className="lead-cell">
                 <strong>{item.customer_name}</strong>
-                <small>{item.source_name_snapshot}</small>
               </td>
               <td className="contact-cell">
                 <strong>{item.primary_phone_masked || "-"}</strong>

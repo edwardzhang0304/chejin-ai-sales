@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { formatBusinessError } from "../../shared/api/client";
-import { CopyButton } from "../../shared/ui/CopyButton";
+import { ClickToCopyText } from "../../shared/ui/ClickToCopyText";
 import { CloseIcon } from "../../shared/ui/Icons";
+import { Pagination } from "../../shared/ui/Pagination";
+import { displayValue as display } from "../../shared/utils/display";
 import { postMutationMessage, runPostMutationRefresh } from "../../shared/utils/postMutation";
 import { listSales } from "../sales/api";
 import type { SalesItem } from "../sales/types";
@@ -28,6 +30,8 @@ const initialQuery: TaskQuery = {
   page_size: 20,
 };
 
+const taskPageSizeOptions = [20, 50] as const;
+
 const statusMeta: Record<TaskStatus, { label: string; className: string }> = {
   blocked: { label: "阻塞", className: "blocked" },
   pending: { label: "待处理", className: "pending" },
@@ -45,8 +49,9 @@ const taskTypeMeta: Record<string, string> = {
 const resultCodeMeta: Record<string, string> = {
   invite_sent: "已发送添加通讯录邀请",
   already_friend: "已是好友",
-  chat_reply_sent: "AI 回复已发送",
+  chat_reply_sent: "回复已发送",
   skipped_by_rule: "规则跳过",
+  manual_closed: "人工关闭",
   send_unknown: "自动发送已终止，已转销售接管",
 };
 
@@ -65,27 +70,67 @@ const reasonCodeMeta: Record<string, string> = {
   SEND_RESULT_UNKNOWN: "发送结果未知",
   RPA_SEND_REPLY_FAILED: "回复发送失败",
   REPLY_ACTION_EXPIRED: "回复动作已过期",
+  C2_REPLY_CONTEXT_MISSING: "缺少客户会话上下文",
+  C2_REPLY_CONTEXT_RECOVERY_FAILED: "未能恢复客户会话上下文",
+  C2_REPLY_TARGET_NOT_AUTHORIZED: "客户会话读取授权已失效",
+  C3_CONTEXT_CHANGED_BEFORE_SEND: "发送前发现客户会话已变化",
+  C3_SEND_CONTEXT_GUARD_MISSING: "发送前复核信息不完整",
+  C3_SEND_CONTEXT_GUARD_INVALID: "发送前复核未通过",
+  C3_SEND_PRE_CLICK_CONTEXT_UNAVAILABLE: "发送前无法确认当前客户会话",
+  C3_REPLY_TASK_MISSING: "回复任务信息不完整",
+  C3_BRAIN_NETWORK_NO_PROGRESS_WATCHDOG: "等待服务端回复时网络中断",
+  C3_BRAIN_STATE_NO_PROGRESS_WATCHDOG: "服务端生成回复超时",
+  C3_REPLACEMENT_BATCH_MISSING: "客户发来新消息，旧回复已终止",
+  WECHAT_INPUT_DRAFT_PRESENT: "输入框存在未发送内容",
+  SEND_INPUT_NOT_READY: "微信输入框未准备好",
+  TASK_LEASE_RENEW_FAILED: "任务执行授权已失效",
   OTHER: "其他执行异常",
 };
 
 const stepMeta: Record<string, string> = {
+  add_friend_starting: "正在执行微信加好友",
+  checking_rpa: "检查自动化组件",
+  rpa_sidecar_starting: "启动自动化组件",
+  wechat_preflight_starting: "检查微信连接",
+  operator_guard_starting: "检查当前操作环境",
+  preflight_window_ready: "确认微信窗口可用",
+  window_layout_calibration: "确认微信窗口布局",
+  payload_validation: "校验任务资料",
   searching_contact: "搜索手机号",
+  searching_phone: "搜索手机号",
+  add_friend_menu_click: "打开添加朋友入口",
+  add_contact_entry_clicked: "打开添加通讯录页面",
+  invite_form: "填写添加通讯录邀请",
+  invite_fields_review: "复核邀请信息",
+  invite_confirming: "确认发送添加通讯录邀请",
+  invite_confirm_clicked: "已提交添加通讯录邀请",
   opening_wechat: "打开微信",
   filling_request: "填写申请说明",
   sending_invite: "发送邀请",
+  c2_reply_context_recovering: "恢复客户会话上下文",
+  state_target_message_read: "读取客户最新消息",
+  visible_hit_message_read: "读取客户最新消息",
+  target_chat_locating: "定位客户会话",
+  target_chat_reconfirming: "确认客户会话",
+  pre_send_refresh: "执行发送前复核",
+  c3_brain_waiting: "等待服务端生成回复",
+  image_understanding_current_chat: "识别客户发送的图片",
+  image_post_vision_final_read: "复核图片识别结果",
+  voice_transcribe_current_chat: "识别客户发送的语音",
+  task_completed: "已完成",
 };
 
 const eventTypeMeta: Record<string, string> = {
-  created: "创建任务",
+  created: "任务已创建",
   blocked: "任务阻塞",
   unblocked: "解除阻塞",
   resolved_block: "解除阻塞",
   comment_added: "补充备注",
-  claimed: "领取任务",
+  claimed: "任务已领取",
   step_updated: "步骤更新",
-  completed: "任务完成",
+  completed: "任务已完成",
   failed: "任务失败",
-  cancelled: "取消任务",
+  cancelled: "任务已取消",
   retried: "历史重试记录",
   commented: "补充备注",
 };
@@ -113,24 +158,26 @@ const c3CodeMeta: Record<string, string> = {
   idle: "空闲",
   worker: "Worker 客户端",
   sales_replied_waiting_user: "销售已回复，等待客户消息",
+  assigned: "已分配",
+  unassigned: "未分配",
+  invalid: "无效",
+  busy: "忙碌",
 };
 
-function display(value: string | number | null | undefined, fallback = "-") {
-  return value === null || value === undefined || value === "" ? fallback : String(value);
-}
-
 function formatTaskType(type: TaskType) {
-  return taskTypeMeta[type] ?? display(type);
+  return taskTypeMeta[type] ?? "-";
 }
 
 function formatStatus(status: TaskStatus) {
-  return statusMeta[status] ?? { label: status, className: "pending" };
+  return statusMeta[status] ?? { label: "-", className: "pending" };
 }
 
-function formatCode(code?: string | null) {
+export function formatTaskBusinessCode(code?: string | null) {
   if (!code) return "-";
-  return resultCodeMeta[code] ?? reasonCodeMeta[code] ?? stepMeta[code] ?? eventTypeMeta[code] ?? c3CodeMeta[code] ?? "其他业务状态";
+  return resultCodeMeta[code] ?? reasonCodeMeta[code] ?? stepMeta[code] ?? eventTypeMeta[code] ?? c3CodeMeta[code] ?? "-";
 }
+
+const formatCode = formatTaskBusinessCode;
 
 function formatMetric(value?: number | null) {
   return value === null || value === undefined ? "-" : String(value);
@@ -219,13 +266,13 @@ function isSendUnknownTask(task: Pick<TaskListItem, "task_type" | "error_code"> 
   );
 }
 
-function buildActions(task: TaskDetail | TaskListItem) {
+export function buildActions(task: TaskDetail | TaskListItem) {
   const actions: string[] = [];
   if (task.status === "blocked") actions.push("处理阻塞", "取消任务", "补充备注");
   if (task.status === "pending") actions.push("取消任务", "补充备注");
   if (task.status === "running") actions.push("查看执行方", "取消任务", "补充备注");
   if (task.status === "completed") actions.push("查看执行结果", "查看执行方", "补充备注");
-  if (task.status === "failed") actions.push("查看失败原因", "查看执行方", "补充备注");
+  if (task.status === "failed") actions.push("查看执行方", "补充备注");
   if (task.status === "cancelled") actions.push("查看取消信息", "补充备注");
   if (isLeadQualityFailure(task)) actions.push("标记线索无效");
   return actions;
@@ -251,38 +298,35 @@ function adviceForTask(task: TaskDetail | null) {
   if (task.status === "failed" && task.error_code) {
     if (isSendUnknownTask(task)) {
       return {
-        title: "销售接管",
+        title: "处理建议",
         text: "自动发送已终止，禁止补发；会话已转销售正常接管。",
       };
     }
     return {
-      title: "失败原因",
-      text: `${formatCode(task.error_code)}。可查看执行证据排查失败原因。`,
+      title: "处理建议",
+      text: task.error_code === "C2_REPLY_CONTEXT_RECOVERY_FAILED"
+        ? "未能确认目标客户会话，请核对销售绑定和客户识别信息后重新创建任务。"
+        : `${formatCode(task.error_code)}。请核对客户资料和执行方状态后重新创建任务。`,
     };
   }
   if (task.status === "cancelled") {
-    return { title: "取消信息", text: task.cancel_reason || task.remark || "该任务已被取消。" };
+    return { title: "取消说明", text: task.cancel_reason || task.remark || "该任务已被取消。" };
   }
   return null;
 }
 
-function hasC3Summary(task: TaskDetail) {
-  return Boolean(task.c3?.message_batch || task.c3?.reply_action || task.c3?.sent_ack || task.c3?.handoff_event);
-}
-
-function hasUnknownSendResult(task: TaskDetail) {
-  return (
-    task.error_code === "SEND_RESULT_UNKNOWN" ||
-    task.c3?.reply_action?.status === "unknown_send_result" ||
-    task.c3?.sent_ack?.send_result === "unknown"
-  );
-}
-
 function eventLine(event: TaskEvent) {
-  const status = event.to_status ?? event.from_status ?? null;
   const actor = event.operator_name || "服务端";
-  const payload = event.current_step || event.result_code || event.error_code || event.block_code || actor;
-  return `${status ? formatStatus(status).label : "-"} · ${formatDate(event.created_at)} · ${formatCode(payload)}`;
+  return `${formatDate(event.created_at)} · ${actor}`;
+}
+
+export function taskEventTitle(event: TaskEvent) {
+  const step = formatCode(event.current_step);
+  const reason = formatCode(event.error_code || event.block_code);
+  if (event.event_type === "failed" && reason !== "-") {
+    return step === "-" ? `执行失败：${reason}` : `${step}失败：${reason}`;
+  }
+  return step !== "-" ? step : formatCode(event.event_type);
 }
 
 export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
@@ -293,7 +337,7 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<TaskDetail | null>(null);
   const [events, setEvents] = useState<TaskEvent[]>([]);
-  const [drawerOpen, setDrawerOpen] = useState(true);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [salesOptions, setSalesOptions] = useState<SalesItem[]>([]);
   const [workerOptions, setWorkerOptions] = useState<WorkerItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -321,9 +365,8 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
       setMetrics(taskData.metrics ?? null);
       setSelectedId((current) => {
         if (current && taskData.items.some((item) => item.id === current)) return current;
-        return taskData.items[0]?.id ?? null;
+        return null;
       });
-      setDrawerOpen(Boolean(taskData.items[0]));
       return true;
     } catch (err) {
       if (!signal?.aborted) {
@@ -425,14 +468,6 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
       }
       if (label === "查看取消信息") {
         setMessage(`取消信息：${display(detail.cancel_reason || detail.remark, "暂无取消备注")}。`);
-        return;
-      }
-      if (label === "查看失败原因") {
-        setMessage(
-          isSendUnknownTask(detail)
-            ? "自动发送已终止，禁止补发；会话已转销售正常接管。"
-            : "请根据失败原因和执行证据排查。",
-        );
         return;
       }
       if (label === "标记线索无效") {
@@ -545,7 +580,7 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
                 <option value="all">全部结果</option>
                 <option value="invite_sent">已发送添加通讯录邀请</option>
                 <option value="already_friend">已是好友</option>
-                <option value="chat_reply_sent">AI 回复已发送</option>
+                <option value="chat_reply_sent">回复已发送</option>
                 <option value="send_unknown">自动发送已终止，已转销售接管</option>
               </select>
             </label>
@@ -557,6 +592,7 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
                 <option value="PHONE_NOT_FOUND">手机号未找到客户</option>
                 <option value="WECHAT_WINDOW_NOT_FOUND">微信窗口未找到</option>
                 <option value="WORKER_INTERRUPTED">Worker 执行中断</option>
+                <option value="C2_REPLY_CONTEXT_RECOVERY_FAILED">未能恢复客户会话上下文</option>
                 <option value="SEND_RESULT_UNKNOWN">发送结果未知</option>
               </select>
             </label>
@@ -613,13 +649,13 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
                           if (event.key === "Enter" || event.key === " ") selectRow(item);
                         }}
                       >
-                        <td className="copy-value"><span title={item.id}>{item.id}</span><CopyButton label="任务 ID" value={item.id} /></td>
+                        <td><ClickToCopyText label="任务 ID" value={item.id} /></td>
                         <td>{formatTaskType(item.task_type)}</td>
                         <td className="lead-cell"><strong>{display(taskCustomerName(item))}</strong><small>{display(taskCustomerPhone(item))}</small></td>
                         <td>{display(item.sales_name)}</td>
                         <td>{display(taskWorkerName(item), item.worker_id ? "Worker" : "未绑定")}</td>
                         <td className="status-cell"><span className={`status ${status.className}`}>{status.label}</span></td>
-                        <td className="copy-value"><span title={aggregateResult(item)}>{aggregateResult(item)}</span><CopyButton label="业务结果或异常原因" value={aggregateResult(item)} /></td>
+                        <td><ClickToCopyText label="业务结果或异常原因" value={aggregateResult(item)} /></td>
                         <td>{formatCode(item.current_step)}</td>
                         <td>{formatDate(item.updated_at)}</td>
                       </tr>
@@ -630,23 +666,22 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
             </table>
           </div>
 
-          <div className="pagination-row task-pagination">
-            <div className="pagination-total">
-              <span>共</span>
-              <strong>{total}</strong>
-              <span>条</span>
-              <select value={query.page_size} onChange={(event) => updateQuery({ page_size: Number(event.target.value), page: 1 })} aria-label="每页条数">
-                <option value={20}>20条/页</option>
-                <option value={50}>50条/页</option>
-              </select>
-            </div>
-            <nav aria-label="任务分页">
-              <button type="button" disabled={query.page <= 1 || loading} onClick={() => updateQuery({ page: query.page - 1 })}>上一页</button>
-              <strong>{query.page}</strong>
-              <span>/ {pageCount}</span>
-              <button type="button" disabled={query.page >= pageCount || loading} onClick={() => updateQuery({ page: query.page + 1 })}>下一页</button>
-            </nav>
-          </div>
+          <Pagination
+            as="div"
+            ariaLabel="任务分页"
+            className="task-pagination"
+            currentPage={query.page}
+            disabled={loading}
+            pageSize={query.page_size}
+            pageSizeAriaLabel="每页条数"
+            pageSizeOptions={taskPageSizeOptions}
+            splitTotal
+            total={total}
+            totalPages={pageCount}
+            totalUnit="条"
+            onPageChange={(value) => updateQuery({ page: value })}
+            onPageSizeChange={(value) => updateQuery({ page_size: value, page: 1 })}
+          />
         </section>
 
         <aside className={`panel management-drawer task-detail-drawer ${drawerOpen ? "" : "closed"}`}>
@@ -659,7 +694,7 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
               <div className="drawer-head">
                 <div>
                   <p>任务详情</p>
-                  <h2 className="copy-value" title={detail.id}><span>{detail.id}</span><CopyButton label="任务 ID" value={detail.id} /></h2>
+                  <h2><ClickToCopyText label="任务 ID" value={detail.id} /></h2>
                 </div>
                 <button className="icon-button drawer-close-button" type="button" onClick={() => setDrawerOpen(false)} aria-label="关闭任务详情"><CloseIcon /></button>
               </div>
@@ -675,12 +710,11 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
                 <dl className="drawer-dl">
                   <div><dt>任务类型</dt><dd>{formatTaskType(detail.task_type)}</dd></div>
                   <div><dt>执行状态</dt><dd>{formatStatus(detail.status).label}</dd></div>
-                  <div><dt>业务结果</dt><dd>{formatCode(detail.result_code)}</dd></div>
-                  <div><dt>异常原因</dt><dd>{formatCode(detail.error_code || detail.block_code)}</dd></div>
+                  <div><dt>业务结果</dt><dd><ClickToCopyText label="业务结果" value={formatCode(detail.result_code)} /></dd></div>
+                  <div><dt>异常原因</dt><dd><ClickToCopyText label="异常原因" value={formatCode(detail.error_code || detail.block_code)} /></dd></div>
                   <div><dt>当前步骤</dt><dd>{formatCode(detail.current_step)}</dd></div>
                   <div><dt>创建时间</dt><dd>{formatDateTime(detail.created_at)}</dd></div>
                   <div><dt>更新时间</dt><dd>{formatDateTime(detail.updated_at)}</dd></div>
-                  <div><dt>完成时间</dt><dd>{formatDateTime(detail.execution?.completed_at ?? detail.completed_at)}</dd></div>
                 </dl>
               </section>
 
@@ -705,28 +739,6 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
                 </dl>
               </section>
 
-              {hasC3Summary(detail) ? (
-                <section className="drawer-section">
-                  <h3>C3 发送链路</h3>
-                  {hasUnknownSendResult(detail) ? (
-                    <div className="inline-alert warning">
-                      自动发送已终止，禁止补发；会话已转销售正常接管。
-                    </div>
-                  ) : null}
-                  <dl className="drawer-dl">
-                    <div><dt>批次状态</dt><dd>{formatCode(detail.c3?.message_batch?.status)}</dd></div>
-                    <div><dt>回复动作</dt><dd>{formatCode(detail.c3?.reply_action?.status)}</dd></div>
-                    <div><dt>任务状态</dt><dd>{formatStatus(detail.status).label}</dd></div>
-                    <div><dt>发送回执</dt><dd>{formatCode(detail.c3?.sent_ack?.send_result)}</dd></div>
-                    <div><dt>销售接管</dt><dd>{formatCode(detail.c3?.handoff_event?.status)}</dd></div>
-                    <div><dt>会话ID</dt><dd>{display(detail.c3?.reply_action?.conversation_id ?? detail.c3?.message_batch?.conversation_id)}</dd></div>
-                    <div><dt>发送过期</dt><dd>{formatDateTime(detail.c3?.reply_action?.expire_at)}</dd></div>
-                    <div><dt>接管原因</dt><dd>{formatCode(detail.c3?.handoff_event?.handoff_reason_code ?? detail.c3?.reply_action?.handoff_reason_code)}</dd></div>
-                    <div><dt>发送错误</dt><dd>{formatCode(detail.c3?.sent_ack?.error_code ?? detail.c3?.reply_action?.error_code)}</dd></div>
-                  </dl>
-                </section>
-              ) : null}
-
               {detailAdvice ? (
                 <section className="drawer-section">
                   <h3>{detailAdvice.title}</h3>
@@ -735,15 +747,16 @@ export function TasksPage({ onOpenWorker, onOpenSalesWorkerBinding }: Props) {
               ) : null}
 
               <section className="drawer-section">
-                <h3>状态流转</h3>
+                <h3>任务链路</h3>
                 <ol className="flow-list task-flow-list">
                   {events.map((event) => (
                     <li key={event.id}>
-                      <strong>{formatCode(event.event_type)}</strong>
+                      <strong>{taskEventTitle(event)}</strong>
                       <span>{eventLine(event)}</span>
                     </li>
                   ))}
                 </ol>
+                {events.length === 0 ? <p className="task-note">暂无任务链路</p> : null}
               </section>
 
               <section className="drawer-section">
