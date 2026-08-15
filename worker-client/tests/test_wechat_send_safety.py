@@ -19,6 +19,55 @@ if str(OMNIAUTO_ROOT) not in sys.path:
 from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar as sidecar
 
 
+INCIDENT_LONG_REPLY = (
+    "可以，10万左右可以按你的需求帮你筛选合适的二手车。"
+    "你主要家用、通勤还是跑长途，更偏轿车还是SUV，"
+    "对空间、油耗或能源类型有要求吗？"
+)
+
+
+def incident_post_send_enhanced_ocr_items() -> list[dict[str, object]]:
+    """Exact seven OCR records captured from the 2026-08-15 incident."""
+
+    texts = [
+        "可以，10万左右可以按你的需求帮你筛选合适",
+        "的二手车。",
+        "你主要家用、",
+        "通勤还是跑长途，更",
+        "偏轿车还是SUV，对空间、",
+        "油耗或能源类型有",
+        "要求吗?",
+    ]
+    boxes = [
+        (505.0, 552.0, 859.5, 571.5),
+        (506.5, 577.0, 601.0, 594.5),
+        (597.0, 577.0, 708.0, 594.5),
+        (701.0, 578.0, 860.5, 594.5),
+        (505.5, 600.5, 705.5, 619.0),
+        (714.0, 601.0, 855.0, 619.5),
+        (505.5, 623.5, 571.5, 642.5),
+    ]
+    confidences = [0.9969, 0.9204, 0.9975, 0.9965, 0.9760, 0.9988, 0.9276]
+    return [
+        {
+            "text": text,
+            "left": left,
+            "top": top,
+            "right": right,
+            "bottom": bottom,
+            "center_x": (left + right) / 2,
+            "center_y": (top + bottom) / 2,
+            "confidence": confidence,
+        }
+        for text, (left, top, right, bottom), confidence in zip(
+            texts,
+            boxes,
+            confidences,
+            strict=True,
+        )
+    ]
+
+
 class WechatSendSafetyTest(unittest.TestCase):
     def test_generic_journal_updates_matching_voice_item_before_click(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1282,13 +1331,391 @@ class WechatSendSafetyTest(unittest.TestCase):
         self.assertTrue(diagnostics["recovered"])
         self.assertEqual(messages[0]["type"], "text")
         self.assertEqual(messages[0]["sender_role"], "self")
-        self.assertEqual(messages[0]["content"], expected)
+        self.assertEqual(
+            sidecar.normalized_send_confirmation_text(messages[0]["content"]),
+            sidecar.normalized_send_confirmation_text(expected),
+        )
         self.assertIn(
             "send_confirmation_enhanced_roi_ocr",
             messages[0]["quality_flags"],
         )
 
-    def test_post_send_enhanced_ocr_does_not_retype_unmatched_or_untrusted_image(self):
+    def test_post_send_enhanced_ocr_recovers_incident_fullwidth_question_mark(self):
+        """Regression for the 2026-08-15 long green-bubble incident.
+
+        OCR recognized all content but emitted an ASCII question mark for the
+        visible full-width Chinese question mark. Raw equality kept the text
+        bubble classified as an image for all six confirmation attempts.
+        """
+
+        frame = Image.new("RGB", (980, 860), "white")
+        structural_image = {
+            "id": "incident-self-structural-candidate",
+            "type": "image",
+            "message_type": "image",
+            "sender": "self",
+            "sender_role": "self",
+            "visual_side": "self",
+            "is_self_image": True,
+            "content": "[图片]",
+            "bubble_rect": [489, 532, 878, 653],
+            "avatar_alignment": {"role": "self", "confirmed": True},
+        }
+
+        def incident_enhanced_ocr(_image):
+            return incident_post_send_enhanced_ocr_items()
+
+        messages, diagnostics = (
+            sidecar.recover_expected_self_text_from_structural_candidates(
+                frame,
+                [structural_image],
+                target="CJMU5YT9",
+                expected_text=INCIDENT_LONG_REPLY,
+                ocr_runner=incident_enhanced_ocr,
+            )
+        )
+
+        self.assertTrue(diagnostics["attempted"])
+        self.assertTrue(diagnostics["recovered"])
+        self.assertEqual(messages[0]["type"], "text")
+        self.assertEqual(messages[0]["sender_role"], "self")
+        self.assertEqual(
+            sidecar._normalized_send_ocr_correspondence_text(
+                messages[0]["content"]
+            ),
+            sidecar._normalized_send_ocr_correspondence_text(INCIDENT_LONG_REPLY),
+        )
+        self.assertEqual(diagnostics["expected_coverage"], 1.0)
+        self.assertEqual(diagnostics["observed_coverage"], 1.0)
+        self.assertEqual(
+            diagnostics["text_correspondence_reason"],
+            "unicode_normalized_exact_program_text",
+        )
+
+    def test_post_send_enhanced_ocr_one_real_character_change_is_high_overlap_text(self):
+        frame = Image.new("RGB", (980, 860), "white")
+        structural_image = {
+            "id": "self-image-one-character-different",
+            "type": "image",
+            "message_type": "image",
+            "sender_role": "self",
+            "visual_side": "self",
+            "bubble_rect": [489, 532, 878, 653],
+            "avatar_alignment": {"role": "self", "confirmed": True},
+        }
+        changed_items = incident_post_send_enhanced_ocr_items()
+        changed_items[3]["text"] = "通勤还是跑短途，更"
+
+        messages, diagnostics = (
+            sidecar.recover_expected_self_text_from_structural_candidates(
+                frame,
+                [structural_image],
+                target="CJMU5YT9",
+                expected_text=INCIDENT_LONG_REPLY,
+                ocr_runner=lambda _image: changed_items,
+            )
+        )
+
+        self.assertTrue(diagnostics["attempted"])
+        self.assertTrue(diagnostics["reclassified_as_text"])
+        self.assertTrue(diagnostics["recovered"])
+        self.assertEqual(
+            diagnostics["text_correspondence_reason"],
+            "high_overlap_program_text",
+        )
+        self.assertGreater(diagnostics["expected_coverage"], 0.95)
+        self.assertEqual(messages[0]["type"], "text")
+
+    def test_post_send_enhanced_ocr_low_overlap_does_not_confirm_ai_reply(self):
+        correspondence = sidecar._send_ocr_text_correspondence(
+            INCIDENT_LONG_REPLY,
+            "10万左右二手车推荐，点击图片查看车型和价格",
+        )
+
+        self.assertFalse(correspondence["accepted"])
+        self.assertEqual(correspondence["reason"], "ocr_text_low_overlap")
+        self.assertLess(correspondence["expected_coverage"], 0.80)
+
+    def test_send_ocr_format_canonicalization_matrix(self):
+        equivalent_pairs = [
+            ("ＡＩ回复１２３！？", "ai回复123!?"),
+            ("好的。", "好的."),
+            ("“可以”", '"可以"'),
+            ("‘可以’", "'可以'"),
+            ("稍等……", "稍等..."),
+            ("A—B–C", "a-b-c"),
+            ("【推荐】", "[推荐]"),
+            ("「推荐」", '"推荐"'),
+            ("SUV\u00a0推荐\u200b", "suv推荐"),
+            ("已完成👍️", "已完成👍"),
+        ]
+
+        for expected, observed in equivalent_pairs:
+            with self.subTest(expected=expected, observed=observed):
+                correspondence = sidecar._send_ocr_text_correspondence(
+                    expected,
+                    observed,
+                )
+                self.assertTrue(correspondence["accepted"])
+                self.assertTrue(correspondence["exact"])
+
+    def test_send_ocr_high_overlap_threshold_boundaries(self):
+        expected = "abcdefghijklmnopqrst"
+
+        accepted = sidecar._send_ocr_text_correspondence(
+            expected,
+            "abcdefghijklmnop",
+        )
+        rejected = sidecar._send_ocr_text_correspondence(
+            expected,
+            "abcdefghijklmno",
+        )
+        reordered = sidecar._send_ocr_text_correspondence(
+            expected,
+            "ponmlkjihgfedcba",
+        )
+
+        self.assertTrue(accepted["accepted"])
+        self.assertEqual(accepted["expected_coverage"], 0.8)
+        self.assertEqual(accepted["reason"], "high_overlap_program_text")
+        self.assertFalse(rejected["accepted"])
+        self.assertLess(rejected["expected_coverage"], 0.8)
+        self.assertFalse(reordered["accepted"])
+
+    def test_send_context_sequence_ignores_ocr_format_only_differences(self):
+        expected = sidecar.build_send_context_guard(
+            [
+                {
+                    "row_kind": "text_bubble",
+                    "sender_role": "customer",
+                    "content_clean": "请看【车型Ａ】……",
+                }
+            ]
+        )
+        current = sidecar.build_send_context_guard(
+            [
+                {
+                    "row_kind": "text_bubble",
+                    "sender_role": "customer",
+                    "content_clean": "请看[车型a]...",
+                }
+            ]
+        )
+
+        result = sidecar.validate_send_context_guard(expected, current)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["reason"], "message_sequence_unchanged")
+
+    def test_format_drift_on_old_row_cannot_become_new_send_fact(self):
+        baseline = [
+            {
+                "sequence_index": 0,
+                "observation_id": "self-old",
+                "row_kind": "text_bubble",
+                "sender_role": "self",
+                "content_normalized": "好的……",
+            }
+        ]
+        current = [
+            {
+                "sequence_index": 0,
+                "observation_id": "self-old-new-ocr-id",
+                "row_kind": "text_bubble",
+                "sender_role": "self",
+                "content_normalized": "好的...",
+            }
+        ]
+
+        self.assertIsNone(
+            sidecar.find_new_matching_self_message(
+                baseline,
+                current,
+                "好的……",
+            )
+        )
+
+    def test_post_send_enhanced_ocr_nearby_text_is_text_but_not_ai_reply(self):
+        frame = Image.new("RGB", (980, 860), "white")
+        structural_image = {
+            "id": "real-self-image-with-marketing-copy",
+            "type": "image",
+            "message_type": "image",
+            "sender_role": "self",
+            "visual_side": "self",
+            "bubble_rect": [489, 532, 878, 653],
+            "avatar_alignment": {"role": "self", "confirmed": True},
+        }
+
+        def image_text_ocr(_image):
+            return [
+                {
+                    "text": "10万左右二手车推荐，点击图片查看车型和价格",
+                    "left": 20,
+                    "top": 20,
+                    "right": 620,
+                    "bottom": 52,
+                    "center_x": 320,
+                    "center_y": 36,
+                    "confidence": 0.99,
+                }
+            ]
+
+        messages, diagnostics = (
+            sidecar.recover_expected_self_text_from_structural_candidates(
+                frame,
+                [structural_image],
+                target="CJMU5YT9",
+                expected_text=(
+                    "可以，10万左右可以按你的需求帮你筛选合适的二手车。"
+                    "你主要家用、通勤还是跑长途？"
+                ),
+                ocr_runner=image_text_ocr,
+            )
+        )
+
+        self.assertTrue(diagnostics["attempted"])
+        self.assertTrue(diagnostics["reclassified_as_text"])
+        self.assertFalse(diagnostics["recovered"])
+        self.assertFalse(diagnostics["ai_reply_correspondence_confirmed"])
+        self.assertEqual(messages[0]["type"], "text")
+        self.assertEqual(
+            sidecar.normalized_send_confirmation_text(messages[0]["content"]),
+            "10万左右二手车推荐，点击图片查看车型和价格",
+        )
+        self.assertIsNone(
+            sidecar.find_new_matching_self_message(
+                [],
+                [
+                    {
+                        "sequence_index": 0,
+                        "observation_id": "real-self-image-with-marketing-copy",
+                        "row_kind": "text_bubble",
+                        "sender_role": "self",
+                        "content_normalized": sidecar.normalized_send_confirmation_text(
+                            messages[0]["content"]
+                        ),
+                    }
+                ],
+                (
+                    "可以，10万左右可以按你的需求帮你筛选合适的二手车。"
+                    "你主要家用、通勤还是跑长途？"
+                ),
+            )
+        )
+
+    def test_incident_long_text_recovery_completes_sent_confirmation_chain(self):
+        frame = Image.new("RGB", (980, 860), "white")
+        geometry = {
+            "left": 0,
+            "top": 0,
+            "right": 980,
+            "bottom": 860,
+            "width": 980,
+            "height": 860,
+        }
+        validation = {
+            "ok": True,
+            "online": True,
+            "reason": "target_confirmed",
+            "confirmation_confidence": "active_title_strict",
+            "geometry": geometry,
+        }
+        structural_image = {
+            "id": "incident-self-structural-candidate",
+            "message_id": "incident-self-structural-candidate",
+            "type": "image",
+            "message_type": "image",
+            "visual_side": "self",
+            "sender_role": "self",
+            "bubble_rect": [489, 532, 878, 653],
+            "avatar_alignment": {"role": "self", "confirmed": True},
+        }
+        customer_message = {
+            "id": "customer-question",
+            "message_id": "customer-question",
+            "observation_id": "customer-question",
+            "type": "text",
+            "message_type": "text",
+            "sender": "customer",
+            "sender_role": "customer",
+            "content": "你好我想问10万左右的二手车有推荐的么",
+            "bubble_rect": [487, 431, 803, 451],
+        }
+        enhanced_items = incident_post_send_enhanced_ocr_items()
+        enhanced_items[0]["text"] = "可以，10万左右可以按需求帮你筛选合适"
+        baseline_sequence = [
+            {
+                "sequence_index": 0,
+                "observation_id": "customer-question",
+                "row_kind": "text_bubble",
+                "sender_role": "customer",
+                "content_normalized": "你好我想问10万左右的二手车有推荐的么",
+            }
+        ]
+        with (
+            patch.object(sidecar, "get_window_geometry", return_value=geometry),
+            patch.object(sidecar, "validate_active_send_target", return_value=validation),
+            patch.object(sidecar, "active_send_guard_is_strong", return_value=True),
+            patch.object(
+                sidecar,
+                "parse_current_chat_frame_messages",
+                return_value=[customer_message, structural_image],
+            ),
+            patch.object(
+                sidecar,
+                "enhanced_ocr_items_for_structural_chat_candidate",
+                return_value=enhanced_items,
+            ),
+            patch.object(
+                sidecar,
+                "send_context_message_region_fingerprint",
+                return_value={"sha256": "post-send-frame", "bounds": [390, 100, 980, 690]},
+            ),
+            patch.object(
+                sidecar,
+                "input_text_region_state",
+                return_value={"has_visible_text": False},
+            ),
+        ):
+            snapshot = sidecar.build_send_fact_snapshot_from_frame(
+                1,
+                target="CJMU5YT9",
+                text=INCIDENT_LONG_REPLY,
+                exact=False,
+                artifact_dir=None,
+                label="incident_send_result_confirm",
+                screenshot=frame,
+                screenshot_path="incident-send-result.png",
+                ocr_items=[],
+                recover_expected_self_text=True,
+            )
+
+        with patch.object(
+            sidecar,
+            "capture_send_fact_snapshot",
+            side_effect=AssertionError("initial snapshot should settle the send"),
+        ):
+            result = sidecar.confirm_reply_sent(
+                1,
+                target="CJMU5YT9",
+                text=INCIDENT_LONG_REPLY,
+                exact=False,
+                baseline_match_count=0,
+                baseline_message_sequence=baseline_sequence,
+                artifact_dir=None,
+                max_attempts=1,
+                initial_snapshot=snapshot,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["attempt"], 1)
+        self.assertEqual(
+            result["confirmed_message"]["recovered_from_structural_observation_id"],
+            "incident-self-structural-candidate",
+        )
+
+    def test_post_send_enhanced_ocr_retypes_readable_self_only(self):
         frame = Image.new("RGB", (980, 860), "white")
         candidates = [
             {
@@ -1333,7 +1760,43 @@ class WechatSendSafetyTest(unittest.TestCase):
 
         self.assertEqual(calls, [True])
         self.assertFalse(diagnostics["recovered"])
-        self.assertEqual([item["type"] for item in messages], ["image", "image"])
+        self.assertTrue(diagnostics["reclassified_as_text"])
+        self.assertEqual([item["type"] for item in messages], ["text", "image"])
+
+    def test_post_send_enhanced_ocr_without_readable_text_stays_image(self):
+        frame = Image.new("RGB", (980, 860), "white")
+        structural_image = {
+            "id": "self-image-no-readable-text",
+            "type": "image",
+            "sender_role": "self",
+            "visual_side": "self",
+            "bubble_rect": [520, 420, 850, 620],
+            "avatar_alignment": {"role": "self"},
+        }
+
+        messages, diagnostics = (
+            sidecar.recover_expected_self_text_from_structural_candidates(
+                frame,
+                [structural_image],
+                target="CJTEST01",
+                expected_text="AI回复",
+                ocr_runner=lambda _image: [
+                    {
+                        "text": "……",
+                        "left": 10,
+                        "top": 10,
+                        "right": 50,
+                        "bottom": 40,
+                        "confidence": 0.99,
+                    }
+                ],
+            )
+        )
+
+        self.assertFalse(diagnostics["recovered"])
+        self.assertFalse(diagnostics.get("reclassified_as_text", False))
+        self.assertEqual(diagnostics["reason"], "enhanced_ocr_has_no_readable_text")
+        self.assertEqual(messages[0]["type"], "image")
 
     def test_post_send_global_ocr_text_wins_without_redundant_local_ocr(self):
         frame = Image.new("RGB", (980, 860), "white")
@@ -1473,7 +1936,7 @@ class WechatSendSafetyTest(unittest.TestCase):
         self.assertTrue(snapshot["enhanced_text_recovery"]["recovered"])
         self.assertEqual(snapshot["matching_self_message_count"], 1)
         self.assertEqual(snapshot["message_sequence"][0]["row_kind"], "text_bubble")
-        self.assertEqual(snapshot["message_sequence"][0]["content_normalized"], "AI回复")
+        self.assertEqual(snapshot["message_sequence"][0]["content_normalized"], "ai回复")
 
     def test_sent_confirmation_requests_enhanced_recovery_only_for_post_send_snapshot(self):
         snapshot = {

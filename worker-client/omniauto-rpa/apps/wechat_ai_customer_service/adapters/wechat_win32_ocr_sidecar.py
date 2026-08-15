@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+from difflib import SequenceMatcher
 import hashlib
 import io
 import json
@@ -20,6 +21,7 @@ import re
 import subprocess
 import sys
 import time
+import unicodedata
 from ctypes import wintypes
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13543,6 +13545,137 @@ def normalized_send_confirmation_text(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or "")).strip()
 
 
+_SEND_OCR_PUNCTUATION_TRANSLATION = str.maketrans(
+    {
+        "。": ".",
+        "｡": ".",
+        "、": ",",
+        "､": ",",
+        "“": '"',
+        "”": '"',
+        "„": '"',
+        "‟": '"',
+        "「": '"',
+        "」": '"',
+        "『": '"',
+        "』": '"',
+        "‘": "'",
+        "’": "'",
+        "‚": "'",
+        "‛": "'",
+        "—": "-",
+        "–": "-",
+        "―": "-",
+        "−": "-",
+        "‐": "-",
+        "‑": "-",
+        "…": "...",
+        "‥": "..",
+        "【": "[",
+        "】": "]",
+        "〔": "[",
+        "〕": "]",
+    }
+)
+SEND_OCR_MIN_EXPECTED_COVERAGE = 0.80
+SEND_OCR_MIN_OBSERVED_COVERAGE = 0.80
+SEND_OCR_MIN_SIMILARITY = 0.80
+SEND_OCR_MIN_MATCHING_CHARACTERS = 4
+SEND_OCR_MAX_REQUIRED_CONTIGUOUS_MATCH = 8
+
+
+def _normalized_send_ocr_correspondence_text(value: Any) -> str:
+    """Canonicalize OCR presentation differences without rewriting content."""
+
+    normalized = unicodedata.normalize("NFKC", str(value or ""))
+    normalized = normalized.translate(_SEND_OCR_PUNCTUATION_TRANSLATION)
+    normalized = "".join(
+        character
+        for character in normalized
+        if not character.isspace()
+        and unicodedata.category(character) != "Cf"
+        and ord(character) not in {0xFE0E, 0xFE0F}
+    )
+    normalized = re.sub(r"\.{2,}", "...", normalized)
+    return normalized.casefold()
+
+
+def _send_ocr_has_readable_text(value: Any) -> bool:
+    normalized = _normalized_send_ocr_correspondence_text(value)
+    return bool(re.search(r"[0-9a-z\u3400-\u9fff]", normalized))
+
+
+def _send_ocr_text_correspondence(
+    expected_text: Any,
+    observed_text: Any,
+) -> dict[str, Any]:
+    """Correlate OCR text with the just-triggered AI reply.
+
+    Message type and send ownership are deliberately separate decisions. A
+    readable self-side OCR result is text even when this correspondence check
+    fails. Send ownership additionally requires high ordered overlap in both
+    directions so a short shared phrase inside unrelated text cannot confirm
+    a send.
+    """
+
+    raw_expected = normalized_send_confirmation_text(expected_text)
+    raw_observed = normalized_send_confirmation_text(observed_text)
+    expected = _normalized_send_ocr_correspondence_text(expected_text)
+    observed = _normalized_send_ocr_correspondence_text(observed_text)
+    matcher = SequenceMatcher(None, expected, observed, autojunk=False)
+    blocks = [block for block in matcher.get_matching_blocks() if block.size > 0]
+    matching_characters = sum(block.size for block in blocks)
+    longest_matching_block = max((block.size for block in blocks), default=0)
+    expected_coverage = (
+        matching_characters / len(expected) if expected else 0.0
+    )
+    observed_coverage = (
+        matching_characters / len(observed) if observed else 0.0
+    )
+    similarity = matcher.ratio() if expected and observed else 0.0
+    normalized_exact = bool(expected and observed and expected == observed)
+    min_comparable_length = min(len(expected), len(observed))
+    required_contiguous_match = min(
+        SEND_OCR_MAX_REQUIRED_CONTIGUOUS_MATCH,
+        max(SEND_OCR_MIN_MATCHING_CHARACTERS, int(min_comparable_length * 0.20)),
+    )
+    high_overlap = bool(
+        expected
+        and observed
+        and matching_characters >= SEND_OCR_MIN_MATCHING_CHARACTERS
+        and longest_matching_block >= required_contiguous_match
+        and expected_coverage >= SEND_OCR_MIN_EXPECTED_COVERAGE
+        and observed_coverage >= SEND_OCR_MIN_OBSERVED_COVERAGE
+        and similarity >= SEND_OCR_MIN_SIMILARITY
+    )
+    accepted = bool(normalized_exact or high_overlap)
+    if normalized_exact and raw_expected == raw_observed:
+        reason = "exact_program_text"
+    elif normalized_exact:
+        reason = "unicode_normalized_exact_program_text"
+    elif high_overlap:
+        reason = "high_overlap_program_text"
+    elif not expected or not observed:
+        reason = "ocr_text_empty"
+    else:
+        reason = "ocr_text_low_overlap"
+    result: dict[str, Any] = {
+        "accepted": accepted,
+        "exact": normalized_exact,
+        "raw_exact": bool(raw_expected and raw_expected == raw_observed),
+        "reason": reason,
+        "expected_length": len(expected),
+        "observed_length": len(observed),
+        "matching_characters": matching_characters,
+        "longest_matching_block": longest_matching_block,
+        "required_contiguous_match": required_contiguous_match,
+        "expected_coverage": round(expected_coverage, 6),
+        "observed_coverage": round(observed_coverage, 6),
+        "similarity": round(similarity, 6),
+    }
+    return result
+
+
 SEND_CONTEXT_ROW_KINDS = {
     "text_bubble",
     "voice_transcript",
@@ -13568,7 +13701,7 @@ def send_context_entry_from_observation(observation: dict[str, Any]) -> dict[str
     return {
         "row_kind": row_kind,
         "sender_role": str(observation.get("sender_role") or "").strip().lower(),
-        "content_normalized": normalized_send_confirmation_text(
+        "content_normalized": _normalized_send_ocr_correspondence_text(
             observation.get("content_clean")
         ),
         "voice_anchor": _send_context_anchor_value(
@@ -13726,16 +13859,18 @@ def validate_send_context_guard(
 
 
 def send_reply_match_count(messages: list[dict[str, Any]], text: str) -> int:
-    expected = normalized_send_confirmation_text(text)
-    if not expected:
+    if not normalized_send_confirmation_text(text):
         return 0
     count = 0
     for message in messages:
         role = str(message.get("sender_role") or message.get("sender") or "").strip().lower()
         if role not in {"self", "sales"}:
             continue
-        actual = normalized_send_confirmation_text(message.get("content"))
-        if actual == expected:
+        correspondence = _send_ocr_text_correspondence(
+            text,
+            message.get("content"),
+        )
+        if correspondence["accepted"]:
             count += 1
     return count
 
@@ -13751,10 +13886,10 @@ def recover_expected_self_text_from_structural_candidates(
     """Recover a sent text bubble that full-frame OCR classified as an image.
 
     This is a post-send fact recovery path, not a general image-to-text guess.
-    A candidate is retyped only when the structural observer independently
-    places it on the self/right side, its same-row avatar confirms ``self``,
-    and enhanced ROI OCR equals the exact program text whose physical send
-    was just triggered.
+    A candidate is retyped when the structural observer independently places
+    it on the self/right side, its same-row avatar confirms ``self``, and the
+    enhanced ROI OCR contains readable text. Whether that text belongs to the
+    just-triggered AI reply is a separate high-overlap decision.
     """
 
     current = [dict(item) for item in messages if isinstance(item, dict)]
@@ -13767,10 +13902,8 @@ def recover_expected_self_text_from_structural_candidates(
             expected.encode("utf-8")
         ).hexdigest() if expected else "",
     }
-    if not expected or send_reply_match_count(current, expected_text) > 0:
-        diagnostics["reason"] = (
-            "expected_text_empty" if not expected else "already_observed_as_self_text"
-        )
+    if not expected:
+        diagnostics["reason"] = "expected_text_empty"
         return current, diagnostics
 
     candidates: list[tuple[int, dict[str, Any], list[float]]] = []
@@ -13797,7 +13930,11 @@ def recover_expected_self_text_from_structural_candidates(
         candidates.append((index, message, bounds))
     diagnostics["candidate_count"] = len(candidates)
     if not candidates:
-        diagnostics["reason"] = "no_avatar_confirmed_self_structural_candidate"
+        diagnostics["reason"] = (
+            "already_observed_as_self_text"
+            if send_reply_match_count(current, expected_text) > 0
+            else "no_avatar_confirmed_self_structural_candidate"
+        )
         return current, diagnostics
 
     # The send contract accepts only a newly added bottom-most self bubble.
@@ -13825,8 +13962,38 @@ def recover_expected_self_text_from_structural_candidates(
             )
             if str(item.get("text") or "").strip()
         )
-        if normalized_send_confirmation_text(raw_text) != expected:
+        if not _send_ocr_has_readable_text(raw_text):
+            diagnostics.update(
+                {
+                    "reason": "enhanced_ocr_has_no_readable_text",
+                    "enhanced_ocr_item_count": len(enhanced_items),
+                }
+            )
             continue
+        correspondence = _send_ocr_text_correspondence(expected_text, raw_text)
+        observed_text_sha256 = hashlib.sha256(
+            _normalized_send_ocr_correspondence_text(raw_text).encode("utf-8")
+        ).hexdigest()
+        diagnostics.update(
+            {
+                "reclassified_as_text": True,
+                "ai_reply_correspondence_confirmed": correspondence["accepted"],
+                "observed_text_sha256": observed_text_sha256,
+                "expected_length": correspondence["expected_length"],
+                "observed_length": correspondence["observed_length"],
+                "matching_characters": correspondence["matching_characters"],
+                "longest_matching_block": correspondence[
+                    "longest_matching_block"
+                ],
+                "required_contiguous_match": correspondence[
+                    "required_contiguous_match"
+                ],
+                "expected_coverage": correspondence["expected_coverage"],
+                "observed_coverage": correspondence["observed_coverage"],
+                "similarity": correspondence["similarity"],
+                "text_correspondence_reason": correspondence["reason"],
+            }
+        )
         rect = {
             "left": int(bounds[0]),
             "top": int(bounds[1]),
@@ -13839,7 +14006,13 @@ def recover_expected_self_text_from_structural_candidates(
                     "target": str(target or "").strip().upper(),
                     "sender_role": "self",
                     "bounds": list(rect.values()),
-                    "expected_text_sha256": diagnostics["expected_text_sha256"],
+                    "observed_text_sha256": observed_text_sha256,
+                    "structural_observation_id": str(
+                        candidate.get("observation_id")
+                        or candidate.get("message_id")
+                        or candidate.get("id")
+                        or ""
+                    ),
                 },
                 ensure_ascii=False,
                 sort_keys=True,
@@ -13863,9 +14036,9 @@ def recover_expected_self_text_from_structural_candidates(
             "sender_role_evidence": [
                 "structural_candidate_visual_side=self",
                 "structural_candidate_same_row_avatar=self",
-                "enhanced_roi_ocr_exact_program_text",
+                "enhanced_roi_ocr_readable_text",
             ],
-            "content": str(expected_text or "").strip(),
+            "content": raw_text.strip(),
             "content_raw_ocr": raw_text,
             "time": str(candidate.get("time") or ""),
             "source_adapter": "win32_ocr_structural_text_recovery",
@@ -13875,7 +14048,13 @@ def recover_expected_self_text_from_structural_candidates(
             "quality_flags": [
                 "send_confirmation_enhanced_roi_ocr",
                 "structural_image_candidate_reclassified_as_text",
+                (
+                    "ai_reply_correspondence_confirmed"
+                    if correspondence["accepted"]
+                    else "ai_reply_correspondence_not_confirmed"
+                ),
             ],
+            "send_text_correspondence": correspondence,
             "recovered_from_structural_observation_id": str(
                 candidate.get("observation_id")
                 or candidate.get("message_id")
@@ -13897,15 +14076,19 @@ def recover_expected_self_text_from_structural_candidates(
         current[index] = apply_message_envelope_to_record(record, envelope)
         diagnostics.update(
             {
-                "recovered": True,
-                "reason": "exact_program_text_recovered_from_self_structural_candidate",
+                "recovered": correspondence["accepted"],
+                "reason": (
+                    "self_text_reclassified_and_ai_reply_correspondence_confirmed"
+                    if correspondence["accepted"]
+                    else "self_text_reclassified_but_ai_reply_correspondence_not_confirmed"
+                ),
                 "candidate_bounds": list(rect.values()),
                 "enhanced_ocr_item_count": len(enhanced_items),
             }
         )
         return current, diagnostics
 
-    diagnostics["reason"] = "enhanced_ocr_did_not_match_exact_program_text"
+    diagnostics.setdefault("reason", "enhanced_ocr_has_no_readable_text")
     return current, diagnostics
 
 
@@ -13997,7 +14180,7 @@ def build_send_fact_snapshot_from_frame(
             "row_kind": str(observation.get("row_kind") or ""),
             "sender_role": str(observation.get("sender_role") or ""),
             "content": str(observation.get("content_clean") or ""),
-            "content_normalized": normalized_send_confirmation_text(
+            "content_normalized": _normalized_send_ocr_correspondence_text(
                 observation.get("content_clean")
             ),
             "bubble_rect": observation.get("bubble_rect"),
@@ -14041,8 +14224,10 @@ def build_send_fact_snapshot_from_frame(
             }
             for message in messages
             if str(message.get("sender_role") or message.get("sender") or "").strip().lower() in {"self", "sales"}
-            and normalized_send_confirmation_text(message.get("content"))
-            == normalized_send_confirmation_text(text)
+            and _send_ocr_text_correspondence(
+                text,
+                message.get("content"),
+            )["accepted"]
         ],
     }
 
@@ -14058,7 +14243,9 @@ def find_new_matching_self_message(
         return (
             str(item.get("row_kind") or ""),
             str(item.get("sender_role") or ""),
-            str(item.get("content_normalized") or ""),
+            _normalized_send_ocr_correspondence_text(
+                item.get("content_normalized")
+            ),
         )
 
     before = [item for item in baseline_sequence if isinstance(item, dict)]
@@ -14090,7 +14277,6 @@ def find_new_matching_self_message(
         else:
             after_index += 1
 
-    expected = normalized_send_confirmation_text(text)
     baseline_observation_ids = {
         str(item.get("observation_id") or "")
         for item in before
@@ -14102,7 +14288,10 @@ def find_new_matching_self_message(
         if index not in matched_after
         and str(item.get("row_kind") or "") == "text_bubble"
         and str(item.get("sender_role") or "") in {"self", "sales"}
-        and str(item.get("content_normalized") or "") == expected
+        and _send_ocr_text_correspondence(
+            text,
+            item.get("content_normalized"),
+        )["accepted"]
         and (
             not str(item.get("recovered_from_structural_observation_id") or "")
             or str(item.get("recovered_from_structural_observation_id") or "")
@@ -14120,7 +14309,12 @@ def find_new_matching_self_message(
     ]
     if later_chat_messages:
         return None
-    return dict(candidate)
+    result = dict(candidate)
+    result["send_text_correspondence"] = _send_ocr_text_correspondence(
+        text,
+        candidate.get("content_normalized"),
+    )
+    return result
 
 
 def confirm_reply_sent(
