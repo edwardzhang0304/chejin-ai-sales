@@ -75,7 +75,11 @@ def _datetime_is_after(
         return item.astimezone(timezone.utc)
 
     return comparable(value) > comparable(boundary)
-from app.services.message_contract import canonical_reply_text, reply_text_hash
+from app.services.message_contract import (
+    canonical_message_identity_text,
+    canonical_reply_text,
+    reply_text_hash,
+)
 
 
 BIND_STATUS_BOUND = "bound"
@@ -268,7 +272,7 @@ def _message_to_dict(message: MessageEvent) -> dict:
 
 
 def _normalized_content_hash(value: object) -> str:
-    normalized = canonical_reply_text(value)
+    normalized = canonical_message_identity_text(value)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 

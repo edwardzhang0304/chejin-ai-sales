@@ -10,6 +10,9 @@ from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.models.c3 import MessageBatch, ReplyAction
 from app.services import c3_service
+from app.services.feishu_service import (
+    recover_pending_handoff_notifications_once,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -123,6 +126,11 @@ class C3BatchRecoveryLoop:
     def _run(self) -> None:
         while not self._stop_event.is_set():
             try:
+                # Durable human-takeover delivery is latency-sensitive and
+                # must not wait behind a potentially slow Brain recovery.
+                notify_result: dict[str, Any] = (
+                    recover_pending_handoff_notifications_once()
+                )
                 batch_result: dict[str, Any] = recover_due_message_batches_once()
                 send_result: dict[str, Any] = recover_stale_reply_sends_once()
                 if (
@@ -130,11 +138,13 @@ class C3BatchRecoveryLoop:
                     or batch_result.get("failed")
                     or send_result.get("recovered")
                     or send_result.get("failed")
+                    or notify_result.get("attempted")
                 ):
                     logger.info(
-                        "C3 durable recovery pass: batches=%s sends=%s",
+                        "C3 durable recovery pass: batches=%s sends=%s notifications=%s",
                         batch_result,
                         send_result,
+                        notify_result,
                     )
             except Exception:
                 logger.exception("C3 durable batch recovery pass crashed")

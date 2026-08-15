@@ -11634,6 +11634,8 @@ class TaskRunner:
             "operation_phase": operation_phase,
             "phases": [],
         }
+        message_read_phase_started_at: float | None = None
+        message_read_phase_metadata: dict[str, Any] = {}
 
         def record_phase(name: str, started_at: float, **metadata: Any) -> None:
             phase = {
@@ -11650,6 +11652,24 @@ class TaskRunner:
                 )
             )
             flow_timing["phases"].append(phase)
+
+        def settle_message_read_phase(
+            *,
+            succeeded: bool,
+            error_code: str | None = None,
+        ) -> None:
+            nonlocal message_read_phase_started_at
+            if message_read_phase_started_at is None:
+                return
+            record_phase(
+                "initial_message_read",
+                message_read_phase_started_at,
+                **message_read_phase_metadata,
+                completed=succeeded,
+                failed=not succeeded,
+                error_code=error_code if not succeeded else None,
+            )
+            message_read_phase_started_at = None
 
         last_authorization_check = 0.0
 
@@ -12101,6 +12121,7 @@ class TaskRunner:
             lease.update_step(current_step)
             self.current_step = current_step
             phase_started_at = time.perf_counter()
+            message_read_phase_started_at = phase_started_at
             # Starting OCR is not itself a durable message fact. If this
             # attempt fails before a trusted observation or local artifact is
             # formed, the flow uses the explicit read_failed_no_fact terminal.
@@ -12124,18 +12145,21 @@ class TaskRunner:
                     max_duration_seconds=20,
                     cancel_check=action_cancel_requested,
                 )
-            record_phase(
-                "initial_message_read",
-                phase_started_at,
-                state=sidecar_payload.get("state"),
-                sidecar_run_id=sidecar_payload.get("sidecar_run_id"),
-                reused_open_chat_confirmation_frame=bool(reusable_initial_snapshot),
+            message_read_phase_metadata.update(
+                {
+                    "state": sidecar_payload.get("state"),
+                    "sidecar_run_id": sidecar_payload.get("sidecar_run_id"),
+                    "reused_open_chat_confirmation_frame": bool(
+                        reusable_initial_snapshot
+                    ),
+                }
             )
             sidecar_payload["target_confirmation"] = locate_payload
             sidecar_payload["authoritative_frame_source"] = "initial_read"
             sidecar_payload["ui_frame_invalidated"] = False
             if not sidecar_payload.get("ok"):
                 code = str(sidecar_payload.get("error_code") or sidecar_payload.get("state") or "MESSAGE_READ_FAILED")
+                settle_message_read_phase(succeeded=False, error_code=code)
                 self.c2_stats["last_error"] = code
                 append_log(
                     "WARN",
@@ -12159,6 +12183,10 @@ class TaskRunner:
                 return {"ok": False, "error_code": code}
             initial_contract_error = sidecar_contract_error(sidecar_payload)
             if initial_contract_error:
+                settle_message_read_phase(
+                    succeeded=False,
+                    error_code=initial_contract_error,
+                )
                 self.c2_stats["last_error"] = initial_contract_error
                 append_log(
                     "WARN",
@@ -12181,6 +12209,10 @@ class TaskRunner:
                     "initial_messages": sidecar_payload,
                 }
             if enforce_read_targets and not self._backend_still_allows_read_target(binding, target):
+                settle_message_read_phase(
+                    succeeded=False,
+                    error_code="C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
+                )
                 return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS", "target_confirmation": locate_payload, "initial_messages": sidecar_payload}
             sidecar_payload, initial_identity_errors = (
                 self._align_initial_identity_frame(
@@ -12195,6 +12227,7 @@ class TaskRunner:
                     or "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
                 )
                 self.c2_stats["last_error"] = code
+                settle_message_read_phase(succeeded=False, error_code=code)
                 append_log(
                     "WARN",
                     "c2_initial_sequence_alignment_blocked",
@@ -12221,6 +12254,7 @@ class TaskRunner:
                     "error_code": code,
                     "initial_messages": sidecar_payload,
                 }
+            settle_message_read_phase(succeeded=True)
             voice_binding_guard_key = (
                 f"{target_cache_key}:{str(target.authorization_revision).strip()}"
             )
@@ -12927,6 +12961,14 @@ class TaskRunner:
             append_log("ERROR", "c2_message_read_failed", str(exc), metadata={"conversation_id": target.conversation_id, "remark_code": target.remark_code})
             return {"ok": False, "error_code": "MESSAGE_READ_FAILED", "message": str(exc)}
         finally:
+            if message_read_phase_started_at is not None:
+                settle_message_read_phase(
+                    succeeded=False,
+                    error_code=str(
+                        self.c2_stats.get("last_error")
+                        or "C2_MESSAGE_READ_INCOMPLETE"
+                    ),
+                )
             if lease and owns_lease:
                 self._release_current_ui_lock(reason="message_ingest_finished")
             flow_timing["total_duration_seconds"] = round(max(0.0, time.perf_counter() - flow_started_at), 4)

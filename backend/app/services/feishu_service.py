@@ -390,20 +390,44 @@ def recover_handoff_notifications(*, adapter: FeishuAdapter | None = None) -> di
                 notify_error_summary="service_restarted_after_send_claim",
             )
         ).rowcount
+        db.commit()
+    pending = recover_pending_handoff_notifications_once(adapter=adapter)
+    return {
+        "unknown_settled": int(unknown or 0),
+        "pending_attempted": int(pending["attempted"]),
+    }
+
+
+def recover_pending_handoff_notifications_once(
+    *,
+    adapter: FeishuAdapter | None = None,
+    limit: int = 20,
+) -> dict[str, int]:
+    """Drain durable, never-attempted notifications without a service restart."""
+
+    with SessionLocal() as db:
         pending_ids = list(
             db.scalars(
-                select(HandoffEvent.id).where(
+                select(HandoffEvent.id)
+                .where(
                     HandoffEvent.notify_status == NOTIFY_PENDING,
                     HandoffEvent.notify_attempted_at.is_(None),
                     HandoffEvent.closed_at.is_(None),
                     HandoffEvent.deleted_at.is_(None),
                 )
+                .order_by(HandoffEvent.created_at.asc(), HandoffEvent.id.asc())
+                .limit(max(1, int(limit)))
             ).all()
         )
-        db.commit()
 
     attempted = 0
     for handoff_event_id in pending_ids:
-        if dispatch_handoff_notification(handoff_event_id, adapter=adapter) != "not_claimed":
+        if (
+            dispatch_handoff_notification(
+                handoff_event_id,
+                adapter=adapter,
+            )
+            != "not_claimed"
+        ):
             attempted += 1
-    return {"unknown_settled": int(unknown or 0), "pending_attempted": attempted}
+    return {"examined": len(pending_ids), "attempted": attempted}

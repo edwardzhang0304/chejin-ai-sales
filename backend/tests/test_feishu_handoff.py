@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import uuid
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,6 +18,7 @@ from app.models.sales import Sales
 from app.models.wechat import WechatSessionBinding
 from app.models.worker import Worker
 from app.services import c3_service, feishu_service
+from app.services.observability_service import record_server_stage_best_effort
 from app.services.feishu_adapter import FeishuAdapter, FeishuAdapterError
 
 
@@ -367,6 +369,116 @@ def test_handoff_and_waiting_status_commit_before_single_notification(monkeypatc
         assert event.notify_status == "succeeded"
         assert event.notify_attempted_at is not None
         assert event.notify_completed_at is not None
+
+
+def test_handoff_notification_waits_for_outer_commit_across_telemetry_savepoint(
+    monkeypatch,
+):
+    """A telemetry SAVEPOINT is not a business commit and cannot consume delivery."""
+
+    fake = FakeFeishuAdapter()
+    _use_fake_adapter(monkeypatch, fake)
+    conversation_id, _, _ = _seed_conversation()
+
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, conversation_id)
+        assert conversation is not None
+        event, created = c3_service._create_or_reuse_open_handoff(
+            db,
+            conversation=conversation,
+            batch_id="batch-with-telemetry-savepoint",
+            handoff_reason_code="MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+            reason_detail="MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+            trigger_message_event_ids=[],
+            risk_flags=["identity_ambiguous"],
+            evidence_refs=["c2_flow_gate:identity_ambiguous"],
+            ai_payload={},
+        )
+        assert created is True
+        conversation.status = "waiting_sales_reply"
+
+        record_server_stage_best_effort(
+            db,
+            process_run_id=str(uuid.uuid4()),
+            conversation_id=conversation_id,
+            stage_name="c2.message_ingest",
+            component="backend",
+            duration_ms=1,
+            status="succeeded",
+            stable_key="ingest-after-handoff",
+        )
+
+        assert fake.send_calls == []
+        assert event.notify_status == "pending"
+        event_id = event.id
+        db.commit()
+
+    assert len(fake.send_calls) == 1
+    with SessionLocal() as db:
+        settled = db.get(HandoffEvent, event_id)
+        assert settled is not None
+        assert settled.notify_status == "succeeded"
+        assert settled.notify_attempted_at is not None
+
+
+def test_telemetry_savepoint_rollback_cannot_discard_handoff_notification(
+    monkeypatch,
+):
+    fake = FakeFeishuAdapter()
+    _use_fake_adapter(monkeypatch, fake)
+    conversation_id, _, _ = _seed_conversation()
+
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, conversation_id)
+        assert conversation is not None
+        event, _created = c3_service._create_or_reuse_open_handoff(
+            db,
+            conversation=conversation,
+            batch_id="batch-with-telemetry-rollback",
+            handoff_reason_code="MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+            reason_detail="MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+            trigger_message_event_ids=[],
+            risk_flags=["identity_ambiguous"],
+            evidence_refs=["c2_flow_gate:identity_ambiguous"],
+            ai_payload={},
+        )
+        conversation.status = "waiting_sales_reply"
+        savepoint = db.begin_nested()
+        savepoint.rollback()
+        assert fake.send_calls == []
+        event_id = event.id
+        db.commit()
+
+    assert len(fake.send_calls) == 1
+    with SessionLocal() as db:
+        assert db.get(HandoffEvent, event_id).notify_status == "succeeded"
+
+
+def test_periodic_recovery_sends_committed_pending_without_restart(monkeypatch):
+    fake = FakeFeishuAdapter()
+    _use_fake_adapter(monkeypatch, fake)
+    conversation_id, _, _ = _seed_conversation()
+    with SessionLocal() as db:
+        event = HandoffEvent(
+            conversation_id=conversation_id,
+            status="created",
+            handoff_reason_code="MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+            notify_status="pending",
+        )
+        db.add(event)
+        db.commit()
+        event_id = event.id
+
+    result = feishu_service.recover_pending_handoff_notifications_once(
+        adapter=fake,
+    )
+
+    assert result == {"examined": 1, "attempted": 1}
+    assert len(fake.send_calls) == 1
+    with SessionLocal() as db:
+        settled = db.get(HandoffEvent, event_id)
+        assert settled.notify_status == "succeeded"
+        assert settled.notify_attempted_at is not None
 
 
 @pytest.mark.parametrize(

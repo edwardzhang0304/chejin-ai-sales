@@ -1,6 +1,6 @@
 {
   "contract_version": 3,
-  "contract_revision": "0.9.8",
+  "contract_revision": "0.9.9",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "runtime_control_contract": {
@@ -159,6 +159,16 @@
     "hash": "sha256_utf8_canonical_text",
     "backend_behavior": "issue_only_canonical_text_and_hash",
     "worker_behavior": "reject_noncanonical_claim_and_ack_exact_hash"
+  },
+  "message_identity_text_contract": {
+    "owner": "shared_machine_contract",
+    "normalization": "legacy_preserving_visual_cjk_line_wrap",
+    "hash": "sha256_utf8_canonical_identity_text",
+    "line_wrap_behavior": "remove_visual_newline_adjacent_to_east_asian_text_or_punctuation",
+    "horizontal_whitespace_behavior": "collapse_to_single_space",
+    "upgrade_behavior": "unwrapped_legacy_hashes_remain_unchanged",
+    "backend_behavior": "persist_checkpoint_hash_from_canonical_identity_text",
+    "worker_behavior": "align_cross_round_text_from_canonical_identity_text"
   },
   "message_limits": {
     "content_max_chars": 20000,
