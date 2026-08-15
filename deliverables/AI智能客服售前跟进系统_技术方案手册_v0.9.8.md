@@ -1,6 +1,6 @@
 # AI智能客服售前跟进系统 技术方案
 
-版本：v0.9.7
+版本：v0.9.8
 
 日期：2026-07-21
 
@@ -8,7 +8,7 @@
 
 适用范围：运营后台、车金后端、Windows Worker、OmniAuto Sidecar、C0—C4、车辆 Product Master、人工接管与飞书通知。
 
-当前唯一架构口径：服务端负责授权、状态机、事实持久化、Brain/Guard、任务和通知；OmniAuto 负责微信 UI 观察、物理目标判定和动作证据；Worker 只负责调度、合同校验、事务持久化与执行。C2 使用固定八位短码和 private 单聊门禁；文字、语音、图片按同一最终画面顺序入库，一条物理媒体只形成一个业务对象，所有已触发媒体动作必须有限终态。Brain 只在最新待回复尾部完整且证据足够时生成回复；当前客户媒体失败、高意向及必须人工批准的业务硬风险进入人工接管。人工接管以未关闭 `HandoffEvent` 为权威事实并投影 `waiting_sales_reply`，服务端按同一事件通过车金统一飞书应用立即且至多通知一次所属销售。微信列表在截图与点击之间重排时，点击后的短码校验仍是硬门禁，但明确点到其他会话时允许丢弃旧坐标并在同一授权内完整重新定位一次。当前灰度发布版本和机器合同 revision 统一为 `0.9.7`。
+当前唯一架构口径：服务端负责授权、状态机、事实持久化、Brain/Guard、任务和通知；OmniAuto 负责微信 UI 观察、物理目标判定和动作证据；Worker 只负责调度、合同校验、事务持久化与执行。C2 使用固定八位短码和 private 单聊门禁；文字、语音、图片按同一最终画面顺序入库，一条物理媒体只形成一个业务对象，所有已触发媒体动作必须有限终态。Brain 只在最新待回复尾部完整且证据足够时生成回复；当前客户媒体失败、高意向及必须人工批准的业务硬风险进入人工接管。人工接管以未关闭 `HandoffEvent` 为权威事实并投影 `waiting_sales_reply`，服务端按同一事件通过车金统一飞书应用立即且至多通知一次所属销售。微信列表在截图与点击之间重排时，点击后的短码校验仍是硬门禁，但明确点到其他会话时允许丢弃旧坐标并在同一授权内完整重新定位一次。当前灰度发布版本和机器合同 revision 统一为 `0.9.8`。
 
 ## 文档治理规则
 
@@ -32,12 +32,12 @@
    字段和领域对象字段使用 snake_case，两者不得被误认为两个接口。新增、改名或废弃
    接口必须先修改本文的权威目录和接口编号，不允许在代码、聊天记录或派生合同中另起
    同义名称。
-7. 灰度版本使用唯一 `0.9.x` 序列：`0.9.0` 至 `0.9.6` 已冻结，本轮基线为 `0.9.7`；
-   后续任何内容不同且进入测试的候选必须升为 `0.9.8、0.9.9……`。PRD、技术方案、全流程图、版本记录、客户端、
+7. 灰度版本使用唯一 `0.9.x` 序列：`0.9.0` 至 `0.9.7` 已冻结，本轮基线为 `0.9.8`；
+   后续任何内容不同且进入测试的候选必须升为 `0.9.9、0.9.10……`。PRD、技术方案、全流程图、版本记录、客户端、
    后端、OmniAuto 合同 `contract_revision`、生成 Schema、manifest 和安装包必须写入同一个
    精确版本，禁止各自升版、复用旧号覆盖新内容或把占位符 `0.9.X` 写入运行产物。
    `contract_version=3`、`observation_schema_version=3` 和文中 V3 仅是协议结构代号，不属于
-   灰度发布版本；对外沟通、兼容校验和发布追溯统一使用 `contract_revision=0.9.7 + SHA`。
+   灰度发布版本；对外沟通、兼容校验和发布追溯统一使用 `contract_revision=0.9.8 + SHA`。
 8. 灰度稳定分支固定为 `codex/gray-release-0.9.x`，只接收当前灰度版本的缺陷修复、合同同步、
    测试和发布治理，不在该分支增加下一期功能。每个不可变灰度候选使用精确标签
    `gray-v0.9.0、gray-v0.9.1、gray-v0.9.2、gray-v0.9.3、gray-v0.9.4、gray-v0.9.5、gray-v0.9.6……`。`main` 只接收已完成灰度验收的确切标签提交，不允许把
@@ -1813,7 +1813,7 @@ Worker 必须保留 Outbox 并执行身份刷新重传。在冲突解决前不�
 `fact_scope=current_read_run + delivery_state=not_enqueued`；历史图片和已进入 Outbox
 的图片不得重复处理。
 
-机器合同 revision `0.9.7` 必须完整包含媒体和读取轮次字段，同时表达读取轮次与传输状态、语音动作身份与业务身份分离、
+机器合同 revision `0.9.8` 必须完整包含媒体和读取轮次字段，同时表达读取轮次与传输状态、语音动作身份与业务身份分离、
 选中目标两阶段握手和逐相邻帧同对象证明。`identity_checkpoint.recent_messages[]` 回传
 `origin_read_run_id`；`ledger_state` 只允许作为诊断投影，业务门禁不得读取。
 
@@ -2337,9 +2337,9 @@ Worker 每次读取时必须先合并服务端 `identity_checkpoint`、本地已
     不得永久保持 active hold。
 
 本节与 3.1.1.1 引入新的机器状态和门禁字段，属于下一个灰度候选
-`0.9.7`。已冻结的 `0.9.5` 不得覆盖发包。实施时 PRD、本文、全流程图、
+`0.9.8`。已冻结的 `0.9.5` 不得覆盖发包。实施时 PRD、本文、全流程图、
 版本记录、`contract_revision`、生成 Schema、Worker、后端和安装包必须一次性统一为
-`0.9.7`；不得为 `0.9.5` 增加兼容分支或双字段。
+`0.9.8`；不得为 `0.9.5` 增加兼容分支或双字段。
 
 #### 6.0.4.5 召回前 recall_precheck
 
@@ -2515,7 +2515,7 @@ Worker C2 读取某个会话时，执行顺序固定为：
 上述顺序是唯一合法流程。禁止在右键前提交正式 Worker 身份，禁止用 voice anchor 直接生成
 source key，禁止在动作后用相同正文、相同 anchor 或坐标找回编号。
 
-机器合同 revision `0.9.7` 在 Sidecar 请求/返回、ActionJournal、Worker 本地身份预留和最终 V3 evidence 中使用以下唯一媒体字段，禁止新增同义字段：
+机器合同 revision `0.9.8` 在 Sidecar 请求/返回、ActionJournal、Worker 本地身份预留和最终 V3 evidence 中使用以下唯一媒体字段，禁止新增同义字段：
 
 | 字段 | 所有者 | 必填规则 |
 |---|---|---|
@@ -2610,7 +2610,7 @@ Worker 必须对上述逻辑矛盾失败关闭。例如 `identity_phase=sequence
 | `sidecar_new_message_occurrences` 及内容 multiset 比较 | 只可用于发现“画面可能新增了什么”，结果必须再进入新观察仲裁 | 用来证明正文属于被点击语音，或认定相同内容是旧消息 |
 | `storage.py` 消息序号状态 | 原子落盘 action ID、reserved ID、identity phase、trigger phase 和 terminal；预留号单调且永不复用 | 崩溃后回收预留号；新动作重用旧 action ID；`trigger_attempted` 后再点击 |
 | `storage.py` 动作前画面状态 | 与 ActionJournal 原子保存 `pre_action_identity_sequence`，覆盖 `committed/selected_action/frame_local_unselected`；动作终态后补齐 `sequence_alignment_evidence` | 只保存已编号项；崩溃后用新截图或相同内容伪造动作前序列 |
-| `contracts/c2_contract_v3.json` 及生成 schema | `contract_revision`、客户端、后端、Sidecar、生成 Schema、样例和 manifest 统一为 `0.9.7`；保留 `authoritative_frame_source=initial_read/final_read/action_journal_recovery`、全部媒体字段及安全误点错误码语义；共用同一样例/哈希 | 使用独立合同版本号；在同一 `0.9.7` 下静默改语义或覆盖已生成候选；产生 `voice_execute_final` 等临时值；保留 `tracking_candidate_counts` 兼容；新增同义字段、双字段兼容或 Worker 本地兜底重判 |
+| `contracts/c2_contract_v3.json` 及生成 schema | `contract_revision`、客户端、后端、Sidecar、生成 Schema、样例和 manifest 统一为 `0.9.8`；保留 `authoritative_frame_source=initial_read/final_read/action_journal_recovery`、全部媒体字段及安全误点错误码语义；共用同一样例/哈希 | 使用独立合同版本号；在同一 `0.9.8` 下静默改语义或覆盖已生成候选；产生 `voice_execute_final` 等临时值；保留 `tracking_candidate_counts` 兼容；新增同义字段、双字段兼容或 Worker 本地兜底重判 |
 
 新流程的唯一落库时点为：预留表/ActionJournal 在点击前落盘；正式 identity catalog、
 Ledger、Outbox 和 `source_message_key` 只在 `historical_restored` 或 `business_committed` 后落盘。
@@ -2948,7 +2948,7 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `contract_version` | integer | 是 | 协议结构代号固定为 `3`，不是发布版本；灰度版本由 `contract_revision=0.9.7` 表达，并同时校验 `contract_sha256 / observation_schema_version`。 |
+| `contract_version` | integer | 是 | 协议结构代号固定为 `3`，不是发布版本；灰度版本由 `contract_revision=0.9.8` 表达，并同时校验 `contract_sha256 / observation_schema_version`。 |
 | `read_run_id` | string | 是 | 本次读取运行 ID。 |
 | `conversation_id` | string | 是 | 服务端已绑定会话 ID。 |
 | `remark_code` | string | 是 | 本轮已确认的客户短码。 |
@@ -3467,7 +3467,7 @@ POST /api/internal/conversations/{conversation_id}/message-batches/collect
 |---|---|
 | `conversation_id` | 会话ID。 |
 | `trigger_message_event_id` | 触发本次收集的消息ID。 |
-| `trace_id` | 全链路追踪ID。 |
+| `trace_id` | 单次技术请求或调用尝试的追踪ID；不得作为跨 C0—C4 的业务流程ID。跨阶段业务关联统一使用 15.2 定义的 `process_run_id`。 |
 
 响应核心字段：
 
@@ -3772,7 +3772,7 @@ failed 终态并进入 Ledger/Outbox，禁止永久停留在 `C2_IMAGE_FACT_PEND
 
 `structural_image_candidate / explained_voice_region` 是 OmniAuto 内部仲裁对象，不新增
 后端接口字段。但本次语音身份生命周期已改变跨进程机器语义，不得继续沿用
-灰度 `0.9.7`；权威画面枚举、媒体编排和安全误点恢复必须在同一版本中同步 OmniAuto、Worker、后端 schema、样例和合同测试。
+灰度 `0.9.8`；权威画面枚举、媒体编排和安全误点恢复必须在同一版本中同步 OmniAuto、Worker、后端 schema、样例和合同测试。
 
 ### 8.2 单会话图片处理流程
 
@@ -4397,7 +4397,109 @@ send_reply / reply_then_handoff / handoff / retry_later / no_action
 | Worker兼容性管理 | 记录Windows、微信、Worker版本；每次微信升级前跑核心回归；支持暂停Worker和人工降级。 |
 | 异常恢复任务 | 定时扫描 `stale running`、未确认 Outbox 和车辆/知识迁移异常并按安全规则处理；`unknown_send_result` 是已确认终态，只用于防重复与后续气泡自动对账，不生成消息人工待办。 |
 
-## 15. 剩余上线前确认清单
+## 15. C0—C4统一耗时观测（0.9.8）
+
+本节是 `0.9.8` 的唯一开发口径，目的仅是把现有分散耗时统一成可查询、可比较的报告，
+不改变 C0—C4 业务状态机、任务领取、UI 锁、微信动作、授权、重试、暂停接单、
+Handoff 或防重复发送规则。`0.9.7` 已发布候选和机器合同不回写、不覆盖；实现完成后再按
+灰度版本规则同步 `0.9.8` 客户端、后端、生成物、manifest 和候选包。
+
+### 15.1 范围与边界
+
+统一观测必须覆盖：
+
+| 业务段 | 标准阶段 |
+|---|---|
+| C0 线索 | `c0.lead_received`、`c0.lead_assigned` |
+| C1 加好友 | `c1.add_friend_queued`、`c1.add_friend_execute`、`c1.friend_acceptance_wait` |
+| C2 读取 | `c2.scan`、`c2.read_queued`、`c2.target_locate`、`c2.message_read`、`c2.voice_transcription`、`c2.image_vision`、`c2.message_ingest` |
+| C3 回复 | `c3.brain_queued`、`c3.brain_generate`、`c3.pre_send_refresh`、`c3.reply_queued`、`c3.reply_send_confirm` |
+| C4 召回 | `c4.recall_wait`、`c4.recall_precheck`、`c4.brain_generate`、`c4.reply_queued`、`c4.reply_send_confirm` |
+| 横向人工接管分支 | `handoff.event_create`、`handoff.feishu_notify`、`handoff.wait_sales`、`handoff.close` |
+
+C4 只表示自动召回。人工接管不是 C4；它是在 C2、C3 或 C4 触发后沿用当前
+`process_run_id` 的横向分支。不是每次业务处理都会经过全部 C0—C4：初次线索从 C0 开始，
+客户新消息通常从 C2 开始，召回周期从 C4 开始。
+
+本轮禁止顺带增加新的业务状态、`Task.task_type`、微信 UI 操作、OCR、截图、Brain/Vision
+调用、业务重试或性能优化。统一耗时观测不是业务门禁，不能参与是否读取、是否发送、是否
+Handoff 或是否释放 UI 锁的判断。
+
+### 15.2 关联ID与时间语义
+
+| 字段 | 唯一含义 |
+|---|---|
+| `conversation_id` | 同一客户会话的长期业务关联。 |
+| `process_run_id` | 一次业务处理的稳定ID。初次线索处理、一次客户消息处理、一次召回周期分别形成独立 run；由服务端在该次处理起点生成，跨后端、Worker、Sidecar 和 Brain 传递，重试或进程重启不得更换。 |
+| `stage_run_id` | 一个标准阶段的一次执行尝试；每次重试生成新值。 |
+| `parent_stage_run_id` | 可选；只在 Sidecar、Brain 等子阶段需要归属到上级阶段时填写。没有父阶段时为 `null`。 |
+| `trace_id` | 单次 HTTP、进程调用或技术尝试的排障ID；允许随请求和重试变化，不得冒充 `process_run_id`。 |
+
+每条阶段记录固定包含：
+
+```text
+process_run_id, stage_run_id, parent_stage_run_id, conversation_id,
+stage_name, component, attempt, queued_at, started_at, ended_at,
+queue_duration_ms, execution_duration_ms, status, error_code, trace_id
+```
+
+`status` 只允许 `running / succeeded / failed / cancelled / abandoned`。`attempt` 从 1 开始，
+同一阶段重试只能新增 `stage_run_id`，不得覆盖前一次结果。排队耗时和实际执行耗时必须分开：
+`queue_duration_ms` 只表示从可执行到真正开始，`execution_duration_ms` 只表示实际执行。
+`friend_acceptance_wait` 和 `recall_wait` 属于正常业务等待，报告必须单列，不得计入系统执行性能。
+
+单阶段耗时由执行该阶段的同一进程使用单调时钟计算；UTC 墙上时间只用于排序和展示。
+禁止直接用两台电脑的系统时间相减计算耗时。异常退出后无法可靠恢复的开放阶段写
+`abandoned`，耗时未知则为 `null`，不得用重启时间补算或编造。
+
+### 15.3 采集、存储与接口
+
+- 后端在现有任务/状态事务提交成功的边界记录服务端阶段；不得为了计时改变原事务提交顺序。
+- Worker 在现有生产流程入口和终态记录；不得另建第二套业务编排器。
+- Sidecar 不直接访问后端。Sidecar 使用现有结果合同返回标准阶段耗时，Worker 校验后批量上报。
+- Brain 已有 `stage_timings/stage_timeline` 映射为上述标准阶段；不得再次执行 Brain 获取耗时。
+- 后端使用独立 `process_stage_runs` 表保存观测记录，不写入 `Task`、MessageEvent、业务 Outbox、
+  ActionJournal、Ledger 或 HandoffEvent，也不得由观测记录反向修正这些业务事实。
+- `stage_run_id` 是幂等键；重复开始/结束事件只能补全同一记录，不能生成重复耗时。
+- Worker 离线时只写独立的 telemetry 缓冲；该缓冲不得复用业务 Outbox，不得持有或延长微信
+  UI 锁。上传失败只记录告警并留待后续批量上报。
+
+正式接口固定为：
+
+| 接口编号 | 方法 | 路径 | 约束 |
+|---|---|---|---|
+| `API-OBS-01` | POST | `/api/workers/{worker_id}/observability/stage-events` | Worker Token、worker 绑定和事件 schema 校验；批量幂等写入。 |
+| `API-OBS-02` | GET | `/api/observability/process-runs/{process_run_id}` | 仅运营后台有效会话可查；返回标准阶段、排队/执行耗时、重试和终态。 |
+
+观测失败必须旁路处理：接口超时、后端拒绝、SQLite 暂不可写、字段缺失或 UI 展示失败，均不得
+改变业务状态、触发 Handoff、暂停接单、取消任务、重新操作微信或阻止回复发送。业务线程不得
+等待观测接口重试；UI 只读取聚合结果，展示失败不得影响 Worker 运行。
+
+### 15.4 旧计时迁移与删除规则
+
+现有 `flow_timing`、Sidecar `timing_ms`、Brain `stage_timings/stage_timeline`、发送确认 OCR
+耗时等不得一次性删除：
+
+1. 先建立唯一映射表，把已有计时映射到 15.1 的标准阶段；禁止同一阶段在不同模块自行改名。
+2. 新旧输出在定向测试中并行比对；同一执行的阶段次数、终态和耗时误差满足测试口径后，
+   才允许删除旧的重复字段、重复日志和重复上报。
+3. 被统一合同直接消费的底层单调计时保留；删除的是重复的输出和第二套汇总，不是先删计时再重写。
+4. 仅用于 OCR、窗口定位等故障排查的细粒度诊断耗时可以保留在组件日志中，但不得混入
+   C0—C4 业务耗时汇总，也不得再形成另一套运营报告。
+5. 迁移结束后生产路径只允许一套标准阶段汇总；永久双写、同义字段和两份运营耗时报告均不允许。
+
+### 15.5 验收与回滚
+
+- 使用同一真实 `process_run_id` 验证后端、Worker、Sidecar 和 Brain 阶段可以按顺序汇总；
+  C4 召回与 Handoff 横向分支不得互相混名。
+- 验证排队与执行分离、重试不覆盖、重复事件幂等、进程重启产生 `abandoned` 而不编造耗时。
+- 强制让观测接口超时、拒绝和本地缓冲失败，原 C0—C4 状态、微信动作次数、UI 锁持有范围、
+  Brain/Vision 调用次数、Handoff 和发送结果必须与未启用观测时完全一致。
+- 对比旧计时与统一报告后再清理重复输出；没有比对证据不得删除旧字段。
+- 功能必须具有独立开关。关闭时只停止新增观测事件，不删除历史记录、不改变任何业务流程；
+  出现问题时可关闭观测并回到 `0.9.7` 业务路径，不需要回滚业务数据。
+
+## 16. 剩余上线前确认清单
 
 - Windows UAT 阻塞项：按 3.2.4 从当前源码、测试、打包、CI 和运行时彻底删除悬浮球、
   键盘鼠标 Hook、F8 守护、守护进程/文件/错误码及全部兼容尾巴；保留独立逻辑 UI 锁、

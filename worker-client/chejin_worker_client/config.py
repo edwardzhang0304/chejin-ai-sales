@@ -47,6 +47,9 @@ class ClientConfig:
     outbox_terminal_retention_days: int
     outbox_max_terminal_rows: int
     task_lease_renew_interval_seconds: float
+    observability_enabled: bool
+    observability_upload_batch_size: int
+    observability_upload_timeout_seconds: float
 
     @classmethod
     def from_env(cls) -> "ClientConfig":
@@ -104,6 +107,18 @@ class ClientConfig:
             ),
             task_lease_renew_interval_seconds=float(
                 os.environ.get("CHEJIN_TASK_LEASE_RENEW_INTERVAL_SECONDS", "15")
+            ),
+            observability_enabled=env_bool("CHEJIN_OBSERVABILITY_ENABLED", True),
+            observability_upload_batch_size=max(
+                1,
+                min(
+                    200,
+                    int(os.environ.get("CHEJIN_OBSERVABILITY_UPLOAD_BATCH_SIZE", "100")),
+                ),
+            ),
+            observability_upload_timeout_seconds=max(
+                0.2,
+                float(os.environ.get("CHEJIN_OBSERVABILITY_UPLOAD_TIMEOUT_SECONDS", "3")),
             ),
         )
 

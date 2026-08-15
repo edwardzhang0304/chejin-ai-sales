@@ -1,5 +1,6 @@
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+import time
 from typing import Any
 
 from sqlalchemy import and_, func, or_, select
@@ -191,6 +192,7 @@ def _record_duplicate(
 
 
 def create_lead(db: Session, payload: LeadCreate, actor: ActorContext) -> dict:
+    lead_received_started = time.perf_counter()
     normalized = _normalize_payload_contacts(payload)
     phone_hashes = [c.contact_hash for c in normalized["phones"]]
     existing = _find_existing_active_by_phone_hashes(db, phone_hashes)
@@ -257,7 +259,47 @@ def create_lead(db: Session, payload: LeadCreate, actor: ActorContext) -> dict:
         lead_id=lead.id,
         after_data={"customer_name": lead.customer_name, "status": lead.status},
     )
+    from app.services.observability_service import (
+        process_run_id_for_key,
+        record_server_stage_best_effort,
+    )
+    from app.core.request_id import get_request_id
+
+    process_run_id = process_run_id_for_key("c0_lead", lead.id)
+    observability_trace_id = get_request_id()
+    record_server_stage_best_effort(
+        db,
+        process_run_id=process_run_id,
+        stage_name="c0.lead_received",
+        component="backend",
+        duration_ms=int(
+            round((time.perf_counter() - lead_received_started) * 1000)
+        ),
+        trace_id=observability_trace_id,
+        stable_key=lead.id,
+    )
+    assignment_started = time.perf_counter()
     assignment = assign_lead_round_robin(db, lead, actor)
+    db.flush()
+    record_server_stage_best_effort(
+        db,
+        process_run_id=process_run_id,
+        stage_name="c0.lead_assigned",
+        component="backend",
+        duration_ms=int(round((time.perf_counter() - assignment_started) * 1000)),
+        status=(
+            "succeeded"
+            if assignment.assignment_status == "succeeded"
+            else "failed"
+        ),
+        error_code=(
+            None
+            if assignment.assignment_status == "succeeded"
+            else "LEAD_ASSIGN_FAILED"
+        ),
+        trace_id=observability_trace_id,
+        stable_key=str(assignment.id),
+    )
     db.flush()
     db.refresh(lead)
 

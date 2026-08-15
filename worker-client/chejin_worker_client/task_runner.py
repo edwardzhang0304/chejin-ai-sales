@@ -109,6 +109,15 @@ from .storage import (
     terminate_waiting_c2_image_ledger,
     update_c2_state_atomic,
 )
+from .telemetry import (
+    StageTimer,
+    abandon_buffered_running_stages,
+    enqueue_c2_flow_timing_stages,
+    enqueue_existing_duration,
+    load_process_run,
+    remember_process_run,
+    schedule_stage_event_upload,
+)
 from .sequence_alignment import (
     align_committed_message_sequence,
     apply_inherited_worker_ids,
@@ -1299,6 +1308,7 @@ class TaskRunner:
         self._pending_run_status_sync: str | None = None
         self._last_run_status_sync_attempt = 0.0
         self.run_status_sync_error: str | None = None
+        abandon_buffered_running_stages()
 
     @property
     def current_step(self) -> str | None:
@@ -2167,7 +2177,33 @@ class TaskRunner:
 
     def _execute_add_friend_task(self, binding: Binding, task: Task) -> None:
         journal_path = action_journal_path("add_friend", task.id)
-        result = self._run_add_friend_with_ui_lock(binding, task)
+        stage_timer = (
+            StageTimer(
+                process_run_id=task.process_run_id,
+                conversation_id=None,
+                stage_name="c1.add_friend_execute",
+                component="worker",
+                trace_id=str(uuid.uuid4()),
+            )
+            if task.process_run_id
+            else None
+        )
+        try:
+            result = self._run_add_friend_with_ui_lock(binding, task)
+        except Exception as exc:
+            if stage_timer is not None:
+                stage_timer.finish(
+                    status="failed",
+                    error_code=type(exc).__name__,
+                )
+                schedule_stage_event_upload(self.api, binding)
+            raise
+        if stage_timer is not None:
+            stage_timer.finish(
+                status="succeeded" if result.ok else "failed",
+                error_code=result.error_code,
+            )
+            schedule_stage_event_upload(self.api, binding)
         if result.ok:
             completed = (
                 self.api.complete_already_friend(binding, task.id)
@@ -2343,6 +2379,7 @@ class TaskRunner:
                 str(authorization.get("authorization_revision") or "")
                 or None
             ),
+            process_run_id=task.process_run_id,
             raw={
                 "authorization_read_reason": str(
                     authorization.get("read_reason") or ""
@@ -5147,6 +5184,7 @@ class TaskRunner:
             return
         owner = f"{binding.worker_id}:{binding.client_instance_id}:session_scan:first_screen"
         lease: UiLockLease | None = None
+        sidecar_scan_duration_ms: int | None = None
         try:
             with self.task_lock:
                 if not self._can_start_new_flow(binding):
@@ -5184,9 +5222,17 @@ class TaskRunner:
                 self.c2_stats["last_error"] = "C2_SCAN_SKIPPED_BY_HIGH_PRIORITY_ACTION"
                 append_log("INFO", "c2_session_scan_skipped", "C2 第一屏扫描拿锁后发现高优先级动作，已跳过。", error_code="C2_SCAN_SKIPPED_BY_HIGH_PRIORITY_ACTION", metadata={"reason": reason})
                 return
-            sidecar_payload = self.bridge.list_sessions(
-                cancel_check=lambda: not self._can_start_new_flow(binding)
-            )
+            sidecar_scan_started_at = time.perf_counter()
+            try:
+                sidecar_payload = self.bridge.list_sessions(
+                    cancel_check=lambda: not self._can_start_new_flow(binding)
+                )
+            finally:
+                sidecar_scan_duration_ms = int(
+                    round(
+                        (time.perf_counter() - sidecar_scan_started_at) * 1000
+                    )
+                )
             if not self._can_start_new_flow(binding):
                 return
             payload = build_scan_result_payload(sidecar_payload)
@@ -5222,6 +5268,35 @@ class TaskRunner:
             self.c2_last_visible_sessions_monotonic = time.monotonic()
             self._remember_recent_visible_hits(self.c2_last_visible_sessions)
             result = self.api.post_wechat_session_scan_result(binding, payload)
+            scan_process_run_id = str(
+                (result or {}).get("process_run_id")
+                if isinstance(result, dict)
+                else ""
+            ).strip()
+            if scan_process_run_id:
+                enqueue_existing_duration(
+                    process_run_id=scan_process_run_id,
+                    conversation_id=None,
+                    stage_name="c2.scan",
+                    component="worker",
+                    execution_duration_ms=sidecar_scan_duration_ms,
+                    status=(
+                        "failed" if payload.get("scan_failed") else "succeeded"
+                    ),
+                    error_code=(
+                        str(payload.get("error_code") or "C2_SCAN_FAILED")
+                        if payload.get("scan_failed")
+                        else None
+                    ),
+                    trace_id=str(payload.get("scan_id") or "") or None,
+                    stage_run_id=str(
+                        uuid.uuid5(
+                            uuid.NAMESPACE_URL,
+                            f"chejin:c2.scan:{payload.get('scan_id')}",
+                        )
+                    ),
+                )
+                schedule_stage_event_upload(self.api, binding)
             for binding_result in (
                 result.get("bindings")
                 if isinstance(result, dict)
@@ -5464,6 +5539,7 @@ class TaskRunner:
             ),
             read_reason=authorized_target.read_reason,
             authorization_revision=authorized_target.authorization_revision,
+            process_run_id=authorized_target.process_run_id,
             unread_generation=authorized_target.unread_generation,
             raw={
                 **authorized_target.raw,
@@ -6211,14 +6287,18 @@ class TaskRunner:
                         "后端未返回事实结算凭据",
                         409,
                     )
-            result = (
-                self.api.post_wechat_messages_ingest(
-                    binding,
-                    payload,
-                    settlement_token=settlement_token,
-                )
-                if settlement_token
-                else self.api.post_wechat_messages_ingest(binding, payload)
+            process_run_id = load_process_run(
+                str(payload.get("read_run_id") or "")
+            )
+            ingest_kwargs: dict[str, Any] = {}
+            if settlement_token:
+                ingest_kwargs["settlement_token"] = settlement_token
+            if process_run_id:
+                ingest_kwargs["process_run_id"] = process_run_id
+            result = self.api.post_wechat_messages_ingest(
+                binding,
+                payload,
+                **ingest_kwargs,
             )
         except Exception as exc:
             error_code = str(
@@ -9353,19 +9433,64 @@ class TaskRunner:
             self._emit_runtime_process(
                 {"event": "send_started", **self._runtime_process_context}
             )
-            sidecar_result = self.bridge.send_reply(
-                target=target.remark_code or target.display_name,
-                rpa_session_key="",
-                text=final_send_text,
-                task_id=task.id,
-                reply_action_id=claim.reply_action_id,
-                current_only=True,
-                expected_context_guard=expected_context_guard,
-                cancel_check=send_cancel_requested,
+            reply_send_stage = (
+                StageTimer(
+                    process_run_id=(
+                        task.process_run_id
+                        or target.process_run_id
+                        or ""
+                    ),
+                    conversation_id=target.conversation_id,
+                    stage_name=(
+                        "c4.reply_send_confirm"
+                        if str(status.get("trigger_type") or "") == "recall"
+                        else "c3.reply_send_confirm"
+                    ),
+                    component="worker",
+                    trace_id=str(uuid.uuid4()),
+                )
+                if (task.process_run_id or target.process_run_id)
+                else None
             )
+            try:
+                sidecar_result = self.bridge.send_reply(
+                    target=target.remark_code or target.display_name,
+                    rpa_session_key="",
+                    text=final_send_text,
+                    task_id=task.id,
+                    reply_action_id=claim.reply_action_id,
+                    current_only=True,
+                    expected_context_guard=expected_context_guard,
+                    cancel_check=send_cancel_requested,
+                )
+            except Exception as exc:
+                if reply_send_stage is not None:
+                    reply_send_stage.finish(
+                        status="failed",
+                        error_code=type(exc).__name__,
+                    )
+                    schedule_stage_event_upload(self.api, binding)
+                raise
             evidence = self._send_evidence(sidecar_result, target=target.remark_code or target.display_name)
             run_id = str(sidecar_result.get("sidecar_run_id") or sidecar_result.get("run_id") or "") or None
             action_outcome = classify_action_result("send", sidecar_result)
+            if reply_send_stage is not None:
+                reply_send_stage.finish(
+                    status=(
+                        "succeeded"
+                        if action_outcome["result"] == "sent"
+                        else "failed"
+                    ),
+                    error_code=(
+                        None
+                        if action_outcome["result"] == "sent"
+                        else str(
+                            action_outcome.get("error_code")
+                            or "RPA_SEND_REPLY_FAILED"
+                        )
+                    ),
+                )
+                schedule_stage_event_upload(self.api, binding)
             if action_outcome["result"] == "sent":
                 sent_at = self._utc_now_iso()
                 receipt_recorded = self._record_confirmed_ai_reply_receipt(
@@ -11182,6 +11307,13 @@ class TaskRunner:
         # media continuation checks cannot accidentally compare a fresh local
         # UUID with the outer draining flow and abort the current customer.
         read_run_id = existing_runtime_flow_id or f"read-{uuid.uuid4()}"
+        process_run_id = str(target.process_run_id or "").strip()
+        if process_run_id:
+            remember_process_run(
+                read_run_id,
+                process_run_id,
+                conversation_id=target.conversation_id,
+            )
         if owns_inflight_flow and not self._start_inflight_flow(
             binding,
             flow_id=read_run_id,
@@ -11216,6 +11348,17 @@ class TaskRunner:
         self._runtime_process_context = runtime_context
         inflight_activity = {"message_read_attempted": False}
         flow_result: dict[str, Any] = {}
+        pre_send_stage_timer = (
+            StageTimer(
+                process_run_id=process_run_id,
+                conversation_id=target.conversation_id,
+                stage_name="c3.pre_send_refresh",
+                component="worker",
+                trace_id=str(uuid.uuid4()),
+            )
+            if process_run_id and operation_phase == C2_PRE_SEND_REFRESH_PHASE
+            else None
+        )
         if operation_phase == C2_AUTHORIZED_READ_PHASE:
             raw_target = target.raw if isinstance(target.raw, dict) else {}
             source = (
@@ -11232,15 +11375,30 @@ class TaskRunner:
                 }
             )
         try:
-            result = self._read_one_wechat_target_impl(
-                binding,
-                target,
-                flow_outcomes=flow_outcomes,
-                read_run_id=read_run_id,
-                inflight_activity=inflight_activity,
-                **kwargs,
-            )
+            try:
+                result = self._read_one_wechat_target_impl(
+                    binding,
+                    target,
+                    flow_outcomes=flow_outcomes,
+                    read_run_id=read_run_id,
+                    inflight_activity=inflight_activity,
+                    **kwargs,
+                )
+            except Exception as exc:
+                if pre_send_stage_timer is not None:
+                    pre_send_stage_timer.finish(
+                        status="failed",
+                        error_code=type(exc).__name__,
+                    )
+                    schedule_stage_event_upload(self.api, binding)
+                raise
             flow_result = dict(result)
+            if pre_send_stage_timer is not None:
+                pre_send_stage_timer.finish(
+                    status="succeeded" if result.get("ok") else "failed",
+                    error_code=str(result.get("error_code") or "") or None,
+                )
+                schedule_stage_event_upload(self.api, binding)
             if operation_phase == C2_AUTHORIZED_READ_PHASE:
                 self._emit_runtime_process(
                     {
@@ -12772,6 +12930,21 @@ class TaskRunner:
             if lease and owns_lease:
                 self._release_current_ui_lock(reason="message_ingest_finished")
             flow_timing["total_duration_seconds"] = round(max(0.0, time.perf_counter() - flow_started_at), 4)
+            process_run_id = load_process_run(read_run_id)
+            if process_run_id and operation_phase != C2_PRE_SEND_REFRESH_PHASE:
+                enqueue_c2_flow_timing_stages(
+                    process_run_id=process_run_id,
+                    conversation_id=target.conversation_id,
+                    read_run_id=read_run_id,
+                    flow_timing=flow_timing,
+                    trace_id=str(
+                        sidecar_payload.get("sidecar_run_id")
+                        if isinstance(locals().get("sidecar_payload"), dict)
+                        else ""
+                    )
+                    or None,
+                )
+                schedule_stage_event_upload(self.api, binding)
             try:
                 append_log(
                     "INFO",

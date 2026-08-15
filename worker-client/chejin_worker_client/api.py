@@ -381,17 +381,19 @@ class WorkerApiClient:
         payload: dict[str, Any],
         *,
         settlement_token: str | None = None,
+        process_run_id: str | None = None,
     ) -> dict[str, Any]:
+        headers: dict[str, str] = {}
+        if settlement_token:
+            headers["X-C2-Settlement-Token"] = settlement_token
+        if process_run_id:
+            headers["X-Process-Run-Id"] = process_run_id
         return self._request(
             "POST",
             f"/workers/{binding.worker_id}/wechat/messages/ingest",
             binding=binding,
             json=payload,
-            extra_headers=(
-                {"X-C2-Settlement-Token": settlement_token}
-                if settlement_token
-                else None
-            ),
+            extra_headers=headers or None,
         )
 
     def get_wechat_message_batch(self, binding: Binding, batch_id: str) -> dict[str, Any]:
@@ -401,6 +403,50 @@ class WorkerApiClient:
             binding=binding,
         )
 
+    def post_observability_stage_events(
+        self,
+        binding: Binding,
+        events: list[dict[str, Any]],
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Upload side-channel telemetry without changing normal API timeout state."""
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-Worker-Token": binding.worker_token,
+            "X-Client-Instance-Id": binding.client_instance_id,
+        }
+        # A private Session avoids sharing connection-pool state with the
+        # business API client from the telemetry daemon thread.
+        with requests.Session() as isolated_session:
+            response = isolated_session.post(
+                (
+                    f"{self.base_url}/workers/{binding.worker_id}"
+                    "/observability/stage-events"
+                ),
+                headers=headers,
+                json={"events": events},
+                timeout=self.timeout if timeout is None else timeout,
+            )
+        try:
+            envelope = response.json()
+        except ValueError as exc:
+            raise ApiError(
+                "HTTP_ERROR",
+                response.text or "观测接口响应不是 JSON",
+                response.status_code,
+            ) from exc
+        if response.status_code >= 400 or envelope.get("code") != "OK":
+            raise ApiError(
+                str(envelope.get("code") or "API_ERROR"),
+                str(envelope.get("message") or "观测上报失败"),
+                response.status_code,
+                envelope.get("data"),
+                envelope.get("trace_id"),
+            )
+        return dict(envelope.get("data") or {})
+
     def _request(
         self,
         method: str,
@@ -409,6 +455,7 @@ class WorkerApiClient:
         binding: Binding | None = None,
         json: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,
+        timeout: float | None = None,
     ) -> Any:
         headers = {"Content-Type": "application/json"}
         if binding:
@@ -417,7 +464,13 @@ class WorkerApiClient:
             if self.inflight_flow_id:
                 headers["X-Inflight-Flow-Id"] = self.inflight_flow_id
         headers.update(extra_headers or {})
-        response = self.session.request(method, f"{self.base_url}{path}", headers=headers, json=json, timeout=self.timeout)
+        response = self.session.request(
+            method,
+            f"{self.base_url}{path}",
+            headers=headers,
+            json=json,
+            timeout=self.timeout if timeout is None else timeout,
+        )
         try:
             envelope = response.json()
         except ValueError as exc:

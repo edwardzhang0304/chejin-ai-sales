@@ -16,6 +16,7 @@ from app.models.lead import (
     LeadDuplicateEvent,
     LeadNote,
 )
+from app.models.observability import ProcessStageRun
 from app.models.sales import Sales
 from app.models.task import Task, TaskEvent, TaskEvidence, TaskNote
 from app.models.wechat import (
@@ -50,6 +51,7 @@ __all__ = [
     "MessageEvent",
     "MessageBatch",
     "OperationLog",
+    "ProcessStageRun",
     "ReplyAction",
     "ReplyActionVehicleFact",
     "Sales",

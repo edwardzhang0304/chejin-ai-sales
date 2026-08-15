@@ -1192,6 +1192,9 @@ def _bind_one_session(
 
 
 def ingest_scan_result(db: Session, worker: Worker, payload: WechatSessionScanResultRequest) -> dict:
+    from app.services.observability_service import process_run_id_for_key
+
+    scan_process_run_id = process_run_id_for_key("c2_scan", payload.scan_id)
     existing = db.scalar(select(WechatScanRun).where(WechatScanRun.scan_id == payload.scan_id))
     if existing:
         if existing.worker_id != worker.id:
@@ -1206,6 +1209,7 @@ def ingest_scan_result(db: Session, worker: Worker, payload: WechatSessionScanRe
             "bindings": [],
             "next_action": NEXT_ACTION_NONE,
             "error_code": payload.error_code or "SESSION_SCAN_FAILED",
+            "process_run_id": scan_process_run_id,
         }
         db.add(WechatScanRun(worker_id=worker.id, scan_id=payload.scan_id, status="failed", response_snapshot=jsonable_encoder(response)))
         db.flush()
@@ -1229,6 +1233,7 @@ def ingest_scan_result(db: Session, worker: Worker, payload: WechatSessionScanRe
         "needs_review_count": sum(1 for item in bindings if item["bind_status"] == BIND_STATUS_NEEDS_REVIEW),
         "bindings": bindings,
         "next_action": NEXT_ACTION_NONE,
+        "process_run_id": scan_process_run_id,
     }
     db.add(WechatScanRun(worker_id=worker.id, scan_id=payload.scan_id, status="processed", response_snapshot=jsonable_encoder(response)))
     db.flush()
@@ -1376,7 +1381,7 @@ def read_targets(db: Session, worker: Worker, limit: int = 20) -> dict:
         from app.services.c3_service import enforce_open_handoff_gate
 
         enforce_open_handoff_gate(db, conversation)
-        _prepare_due_recall(conversation)
+        _prepare_due_recall(conversation, db=db)
         _sync_read_backoff_with_conversation(item, conversation)
         if conversation.status in CONVERSATION_CLOSED_STATUSES:
             continue
@@ -1410,7 +1415,36 @@ def read_targets(db: Session, worker: Worker, limit: int = 20) -> dict:
     targets = targets[:limit]
     dispatched_at = utcnow()
     for target in targets:
-        target.pop("_dispatch_binding").last_read_dispatched_at = dispatched_at
+        dispatch_binding = target.pop("_dispatch_binding")
+        dispatch_binding.last_read_dispatched_at = dispatched_at
+        try:
+            from app.services.observability_service import (
+                next_stage_attempt,
+                record_server_stage_best_effort,
+            )
+
+            due_at = dispatch_binding.next_read_due_at
+            record_server_stage_best_effort(
+                db,
+                process_run_id=str(target["process_run_id"]),
+                conversation_id=str(target["conversation_id"]),
+                worker_id=worker.id,
+                stage_name="c2.read_queued",
+                component="backend",
+                attempt=next_stage_attempt(
+                    db,
+                    process_run_id=str(target["process_run_id"]),
+                    stage_name="c2.read_queued",
+                ),
+                duration_ms=None,
+                queued_at=_latest_datetime(due_at) if due_at is not None else None,
+                started_at=_latest_datetime(dispatched_at),
+                ended_at=_latest_datetime(dispatched_at),
+                trace_id=get_request_id(),
+            )
+        except Exception:
+            # Observability is deliberately outside the read authorization path.
+            pass
     return {
         "targets": targets,
         "poll_after_seconds": 10,
@@ -1440,6 +1474,25 @@ def _read_target_payload(
             in RECOVERABLE_C2_HANDOFF_REASON_CODES
         }
     )
+    from app.services.observability_service import process_run_id_for_read_target
+
+    conversation = (
+        db.get(Conversation, binding.conversation_id)
+        if binding.conversation_id
+        else None
+    )
+    authorization_revision = _authorization_revision(binding)
+    process_run_id = process_run_id_for_read_target(
+        conversation_id=str(binding.conversation_id),
+        authorization_revision=authorization_revision,
+        unread_generation=int(binding.unread_generation or 0),
+        read_reason=read_reason,
+        recall_cycle_id=(
+            str(conversation.recall_cycle_id or "").strip()
+            if conversation is not None
+            else None
+        ),
+    )
     target = {
         "conversation_id": binding.conversation_id,
         "lead_id": binding.lead_id,
@@ -1449,7 +1502,8 @@ def _read_target_payload(
         "display_name": binding.display_name,
         "last_ingested_at": binding.last_ingested_at,
         "read_reason": read_reason,
-        "authorization_revision": _authorization_revision(binding),
+        "authorization_revision": authorization_revision,
+        "process_run_id": process_run_id,
         "unread_generation": int(binding.unread_generation or 0),
         "consumed_unread_generation": int(
             binding.consumed_unread_generation or 0
@@ -1638,7 +1692,7 @@ def read_authorization_snapshot(
     from app.services.c3_service import enforce_open_handoff_gate
 
     enforce_open_handoff_gate(db, conversation)
-    _prepare_due_recall(conversation)
+    _prepare_due_recall(conversation, db=db)
     _sync_read_backoff_with_conversation(binding, conversation)
     read_reason = _read_reason(binding, conversation)
     allowed = bool(
@@ -2013,6 +2067,40 @@ def confirm_friend_activation(
         and conversation.status == "friend_activation_reading"
     ):
         raise AppError("C2_FRIEND_ACTIVATION_STATE_INVALID", "当前好友状态不允许执行激活确认", 409)
+    if binding.lead_id:
+        add_friend_task = db.scalar(
+            select(Task)
+            .where(
+                Task.lead_id == binding.lead_id,
+                Task.task_type == "add_friend",
+                Task.completed_at.is_not(None),
+                Task.deleted_at.is_(None),
+            )
+            .order_by(Task.completed_at.desc())
+        )
+        if add_friend_task and add_friend_task.completed_at:
+            from app.services.observability_service import (
+                process_run_id_for_key,
+                record_server_stage_best_effort,
+            )
+
+            now = utcnow()
+            record_server_stage_best_effort(
+                db,
+                process_run_id=process_run_id_for_key(
+                    "c0_lead",
+                    binding.lead_id,
+                ),
+                conversation_id=conversation_id,
+                worker_id=worker.id,
+                stage_name="c1.friend_acceptance_wait",
+                component="backend",
+                duration_ms=None,
+                started_at=add_friend_task.completed_at,
+                ended_at=now,
+                trace_id=get_request_id(),
+                stable_key=f"{add_friend_task.id}:{conversation_id}",
+            )
     db.flush()
     return {
         "conversation_id": conversation_id,
@@ -2111,7 +2199,11 @@ def _read_reason(binding: WechatSessionBinding, conversation: Conversation) -> s
     return None
 
 
-def _prepare_due_recall(conversation: Conversation) -> None:
+def _prepare_due_recall(
+    conversation: Conversation,
+    *,
+    db: Session | None = None,
+) -> None:
     settings = get_settings()
     if conversation.status not in {"waiting_user_reply", "sales_replied_waiting_user", "recalled_waiting_user"}:
         return
@@ -2137,6 +2229,40 @@ def _prepare_due_recall(conversation: Conversation) -> None:
     conversation.recall_origin_status = conversation.status
     conversation.status = "recall_precheck"
     conversation.recall_cycle_id = conversation.recall_cycle_id or f"recall-{uuid.uuid4()}"
+    if db is not None:
+        from app.services.observability_service import (
+            process_run_id_for_key,
+            record_server_stage_best_effort,
+        )
+
+        process_run_id = process_run_id_for_key(
+            "c4",
+            conversation.recall_cycle_id,
+        )
+        record_server_stage_best_effort(
+            db,
+            process_run_id=process_run_id,
+            conversation_id=conversation.conversation_id,
+            worker_id=conversation.worker_id,
+            stage_name="c4.recall_wait",
+            component="backend",
+            duration_ms=None,
+            status="succeeded",
+            trace_id=get_request_id(),
+            stable_key=conversation.recall_cycle_id,
+        )
+        record_server_stage_best_effort(
+            db,
+            process_run_id=process_run_id,
+            conversation_id=conversation.conversation_id,
+            worker_id=conversation.worker_id,
+            stage_name="c4.recall_precheck",
+            component="backend",
+            duration_ms=None,
+            status="running",
+            trace_id=get_request_id(),
+            stable_key=conversation.recall_cycle_id,
+        )
 
 
 def _looks_like_voice_payload_text(value: str) -> bool:
@@ -3263,6 +3389,11 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
         else conversation.status
         or ""
     )
+    origin_recall_cycle_id = str(
+        conversation.recall_cycle_id
+        if conversation.status == "recall_precheck"
+        else ""
+    ).strip()
     current_authorization = read_authorization_snapshot(
         db,
         binding=binding,
@@ -4181,6 +4312,56 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             )
             conversation.status = "ai_active"
             conversation.next_recall_at = None
+            from app.services.observability_service import (
+                process_run_id_for_key,
+                record_server_stage_best_effort,
+            )
+
+            record_server_stage_best_effort(
+                db,
+                process_run_id=process_run_id_for_key("c4", cycle_id),
+                conversation_id=payload.conversation_id,
+                worker_id=worker.id,
+                stage_name="c4.recall_precheck",
+                component="backend",
+                duration_ms=None,
+                status="succeeded",
+                trace_id=get_request_id(),
+                stable_key=cycle_id,
+            )
+    if origin_recall_cycle_id:
+        recall_batch_active = False
+        if isinstance(message_batch, dict) and message_batch.get("batch_id"):
+            observed_batch = db.get(
+                MessageBatch,
+                str(message_batch["batch_id"]),
+            )
+            recall_batch_active = bool(
+                observed_batch
+                and observed_batch.trigger_type == "recall"
+                and observed_batch.recall_cycle_id == origin_recall_cycle_id
+            )
+        if not recall_batch_active:
+            from app.services.observability_service import (
+                process_run_id_for_key,
+                record_server_stage_best_effort,
+            )
+
+            record_server_stage_best_effort(
+                db,
+                process_run_id=process_run_id_for_key(
+                    "c4", origin_recall_cycle_id
+                ),
+                conversation_id=payload.conversation_id,
+                worker_id=worker.id,
+                stage_name="c4.recall_precheck",
+                component="backend",
+                duration_ms=None,
+                status="cancelled",
+                error_code="C4_RECALL_PRECHECK_SUPERSEDED",
+                trace_id=get_request_id(),
+                stable_key=origin_recall_cycle_id,
+            )
     read_completion = None
     if not partitioned or partition_final:
         read_completion = _settle_completed_read(

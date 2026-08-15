@@ -6,6 +6,8 @@ import hmac
 import json
 import logging
 import secrets
+import time
+import uuid
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -1359,6 +1361,42 @@ RECOVERABLE_C2_HANDOFF_REASON_CODES = frozenset(
 )
 
 
+def _record_handoff_closed_best_effort(
+    db: Session,
+    event: HandoffEvent,
+) -> None:
+    from app.core.request_id import get_request_id
+    from app.services.observability_service import (
+        process_run_id_for_handoff_event,
+        record_server_stage_best_effort,
+    )
+
+    process_run_id = process_run_id_for_handoff_event(db, event)
+    trace_id = get_request_id()
+    record_server_stage_best_effort(
+        db,
+        process_run_id=process_run_id,
+        conversation_id=event.conversation_id,
+        stage_name="handoff.wait_sales",
+        component="backend",
+        duration_ms=None,
+        status="succeeded",
+        trace_id=trace_id,
+        stable_key=event.id,
+    )
+    record_server_stage_best_effort(
+        db,
+        process_run_id=process_run_id,
+        conversation_id=event.conversation_id,
+        stage_name="handoff.close",
+        component="backend",
+        duration_ms=0,
+        status="succeeded",
+        trace_id=trace_id,
+        stable_key=event.id,
+    )
+
+
 def close_open_recoverable_c2_handoffs(
     db: Session,
     *,
@@ -1390,6 +1428,10 @@ def close_open_recoverable_c2_handoffs(
         event.evidence_refs = evidence_refs
         event.status = "auto_recovered_clean_read"
         event.closed_at = closed_at
+        _record_handoff_closed_best_effort(
+            db,
+            event,
+        )
         closed.append(event)
     db.flush()
     remaining = open_handoff_events_for_conversation(
@@ -1523,6 +1565,10 @@ def close_open_handoffs_for_human_sales(
         event.evidence_refs = evidence_refs
         event.status = "sales_replied"
         event.closed_at = closed_at
+        _record_handoff_closed_best_effort(
+            db,
+            event,
+        )
         closed.append(event)
         proof_sources.add(proof_source)
     db.flush()
@@ -1655,6 +1701,36 @@ def _create_or_reuse_open_handoff(
     )
     db.add(event)
     db.flush()
+    from app.services.observability_service import (
+        process_run_id_for_handoff_event,
+        record_server_stage_best_effort,
+    )
+    from app.core.request_id import get_request_id
+
+    process_run_id = process_run_id_for_handoff_event(db, event)
+    handoff_trace_id = get_request_id()
+    record_server_stage_best_effort(
+        db,
+        process_run_id=process_run_id,
+        conversation_id=event.conversation_id,
+        stage_name="handoff.event_create",
+        component="backend",
+        duration_ms=0,
+        status="succeeded",
+        trace_id=handoff_trace_id,
+        stable_key=event.id,
+    )
+    record_server_stage_best_effort(
+        db,
+        process_run_id=process_run_id,
+        conversation_id=event.conversation_id,
+        stage_name="handoff.wait_sales",
+        component="backend",
+        duration_ms=None,
+        status="running",
+        trace_id=handoff_trace_id,
+        stable_key=event.id,
+    )
     enqueue_handoff_notification(db, handoff_event_id=event.id)
     return event, True
 
@@ -2041,6 +2117,28 @@ def claim_message_batch_generation(
     batch.retryable = False
     batch.error_code = None
     batch.suggested_action = "generate"
+    from app.services.observability_service import (
+        process_run_id_for_batch,
+        record_server_stage_best_effort,
+    )
+
+    if batch.trigger_type != "recall":
+        from app.core.request_id import get_request_id
+
+        record_server_stage_best_effort(
+            db,
+            process_run_id=process_run_id_for_batch(db, batch),
+            conversation_id=batch.conversation_id,
+            stage_name="c3.brain_queued",
+            component="backend",
+            duration_ms=None,
+            queued_at=batch.created_at,
+            started_at=batch.generation_started_at,
+            ended_at=batch.generation_started_at,
+            trace_id=get_request_id(),
+            stable_key=f"{batch.id}:{batch.generation_attempt_count}",
+            attempt=batch.generation_attempt_count,
+        )
     db.flush()
     return {
         "run": True,
@@ -2136,9 +2234,13 @@ def generate_for_batch(
     prepared_batch_id = batch.id
     prepared_trigger_type = batch.trigger_type
     prepared_recall_cycle_id = batch.recall_cycle_id
+    from app.services.observability_service import process_run_id_for_batch
+
+    generation_process_run_id = process_run_id_for_batch(db, batch)
     db.flush()
     db.commit()
 
+    generation_started_monotonic = time.perf_counter()
     try:
         decision = get_ai_engine_adapter().generate_reply_decision(
             conversation_context=context["conversation"],
@@ -2169,6 +2271,9 @@ def generate_for_batch(
             suggested_action="retry_later",
             raw_payload={"exception_type": type(exc).__name__},
         )
+    generation_duration_ms = int(
+        round((time.perf_counter() - generation_started_monotonic) * 1000)
+    )
 
     batch = db.scalar(
         select(MessageBatch)
@@ -2180,6 +2285,30 @@ def generate_for_batch(
     )
     if not batch:
         raise AppError("MESSAGE_BATCH_NOT_FOUND", "消息批次不存在", 404)
+    from app.services.observability_service import record_server_stage_best_effort
+
+    record_server_stage_best_effort(
+        db,
+        process_run_id=generation_process_run_id,
+        conversation_id=batch.conversation_id,
+        stage_name=(
+            "c4.brain_generate"
+            if prepared_trigger_type == "recall"
+            else "c3.brain_generate"
+        ),
+        component="brain",
+        attempt=max(1, generation_attempt),
+        duration_ms=generation_duration_ms,
+        status=(
+            "failed"
+            if decision.decision == "retry_later"
+            and bool(decision.error_code)
+            else "succeeded"
+        ),
+        error_code=decision.error_code,
+        trace_id=str(uuid.uuid4()),
+        stable_key=f"{batch.id}:{generation_attempt}",
+    )
     if (
         batch.status != "generating"
         or int(batch.generation_attempt_count or 0) != generation_attempt

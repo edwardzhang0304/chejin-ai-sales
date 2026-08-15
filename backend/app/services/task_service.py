@@ -249,6 +249,8 @@ def _message_batch_summary(batch: MessageBatch | None) -> dict[str, Any] | None:
         "status": batch.status,
         "active": batch.active,
         "message_count": batch.message_count,
+        "trigger_type": batch.trigger_type,
+        "recall_cycle_id": batch.recall_cycle_id,
         "generation_no": batch.generation_no,
         "decision": batch.decision,
         "error_code": batch.error_code,
@@ -431,6 +433,35 @@ def _time_sort_value(value: datetime | None) -> float:
     return value.timestamp() if value else 0.0
 
 
+def _task_process_run_id(task: Task) -> str | None:
+    from app.services.observability_service import process_run_id_for_key
+
+    if task.task_type == TaskType.add_friend.value and task.lead_id:
+        return process_run_id_for_key("c0_lead", task.lead_id)
+    if task.task_type != TaskType.chat_reply.value or not task.reply_action_id:
+        return None
+    db = object_session(task)
+    action = db.get(ReplyAction, task.reply_action_id) if db is not None else None
+    batch = db.get(MessageBatch, action.batch_id) if db is not None and action else None
+    if batch is None:
+        return None
+    if db is not None and batch.trace_id:
+        from app.models.observability import ProcessStageRun
+
+        linked = db.scalar(
+            select(ProcessStageRun)
+            .where(
+                ProcessStageRun.conversation_id == batch.conversation_id,
+                ProcessStageRun.trace_id == batch.trace_id,
+            )
+            .order_by(ProcessStageRun.created_at.desc())
+        )
+        if linked is not None:
+            return linked.process_run_id
+    kind = "c4" if batch.trigger_type == "recall" else "c3"
+    return process_run_id_for_key(kind, batch.recall_cycle_id or batch.id)
+
+
 def task_to_list_item(task: Task) -> dict[str, Any]:
     lead = _lead_summary(task)
     return {
@@ -446,6 +477,7 @@ def task_to_list_item(task: Task) -> dict[str, Any]:
         "worker_id": task.worker_id,
         "original_task_id": task.original_task_id,
         "reply_action_id": task.reply_action_id,
+        "process_run_id": _task_process_run_id(task),
         "created_at": task.created_at,
         "updated_at": task.updated_at,
         "claimed_at": task.claimed_at,
@@ -932,6 +964,42 @@ def claim_task(
     worker.running_status = "running"
     worker.current_task = task.id
     _write_event(db, task, TaskEventType.claimed, actor=actor, from_status=before, to_status=task.status, worker_id=worker.id, remark=remark)
+    process_run_id = _task_process_run_id(task)
+    if process_run_id:
+        from app.core.request_id import get_request_id
+        from app.services.observability_service import (
+            record_server_stage_best_effort,
+        )
+
+        if task.task_type == TaskType.add_friend.value:
+            stage_name = "c1.add_friend_queued"
+        else:
+            c3 = _c3_summary(task) or {}
+            batch_summary = (
+                c3.get("message_batch")
+                if isinstance(c3.get("message_batch"), dict)
+                else {}
+            )
+            stage_name = (
+                "c4.reply_queued"
+                if str(batch_summary.get("trigger_type") or "") == "recall"
+                else "c3.reply_queued"
+            )
+        record_server_stage_best_effort(
+            db,
+            process_run_id=process_run_id,
+            conversation_id=conversation_id,
+            worker_id=worker.id,
+            stage_name=stage_name,
+            component="backend",
+            duration_ms=None,
+            queued_at=task.created_at,
+            started_at=now,
+            ended_at=now,
+            trace_id=get_request_id(),
+            stable_key=f"{task.id}:{task.lease_fencing_token}",
+            attempt=max(1, int(task.lease_fencing_token or 1)),
+        )
     db.flush()
     return task_to_detail(get_task_or_404(db, task.id))
 

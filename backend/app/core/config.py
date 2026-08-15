@@ -80,6 +80,7 @@ class Settings(BaseSettings):
     feishu_app_secret: str | None = None
     feishu_base_url: str = "https://open.feishu.cn"
     feishu_http_timeout_seconds: float = 10.0
+    observability_enabled: bool = True
 
     # The same runtime env file also carries provider-owned variables such as
     # OPENAI_API_KEY. Chejin reads only its own settings while OmniAuto
