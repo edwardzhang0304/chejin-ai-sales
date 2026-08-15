@@ -25,6 +25,26 @@ router = APIRouter(tags=["wechat-c2"])
 logger = logging.getLogger(__name__)
 
 
+def _ingest_telemetry_terminal(
+    data: object,
+) -> tuple[str, str | None]:
+    """Project the customer-processing terminal, not merely the HTTP result."""
+
+    message_batch = data.get("message_batch") if isinstance(data, dict) else None
+    if (
+        isinstance(message_batch, dict)
+        and str(message_batch.get("batch_status") or "") == "handoff_created"
+    ):
+        return (
+            "failed",
+            str(
+                message_batch.get("error_code")
+                or "C2_INGEST_HANDOFF_CREATED"
+            )[:64],
+        )
+    return "succeeded", None
+
+
 def _record_failed_ingest_stage_best_effort(
     *,
     process_run_id: str | None,
@@ -254,6 +274,11 @@ def ingest_messages(
             if payload.authorization_scope == "fact_settlement"
             else wechat_service.ingest_messages(db, worker, payload)
         )
+        # The HTTP request may safely persist a handoff gate while the
+        # customer process itself fails. Do not report that as success.
+        telemetry_ingest_status, telemetry_ingest_error_code = (
+            _ingest_telemetry_terminal(data)
+        )
         if telemetry_process_run_id:
             record_server_stage_best_effort(
                 db,
@@ -266,7 +291,8 @@ def ingest_messages(
                 duration_ms=int(
                     round((time.perf_counter() - ingest_started) * 1000)
                 ),
-                status="succeeded",
+                status=telemetry_ingest_status,
+                error_code=telemetry_ingest_error_code,
                 trace_id=telemetry_trace_id,
                 stable_key=telemetry_ingest_stage_key,
             )

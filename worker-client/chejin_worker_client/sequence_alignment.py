@@ -10,6 +10,8 @@ never establish a durable message identity.
 import hashlib
 from typing import Any
 
+from .message_contract import canonical_message_identity_text
+
 
 IDENTITY_STATES = {
     "committed",
@@ -19,7 +21,7 @@ IDENTITY_STATES = {
 
 
 def normalized_content_hash(value: Any) -> str:
-    normalized = " ".join(str(value or "").strip().split())
+    normalized = canonical_message_identity_text(value)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 

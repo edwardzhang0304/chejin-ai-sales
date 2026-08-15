@@ -90,6 +90,47 @@ class SequenceAlignmentTests(unittest.TestCase):
         )
         self.assertEqual(result["new_suffix_observation_ids"], ["text-3"])
 
+    def test_visual_line_wrap_in_confirmed_reply_does_not_hide_new_voice(self):
+        """OCR layout wraps cannot turn a valid new voice into an identity gate."""
+
+        before = [
+            observation("old-customer", "text", "你好在吗"),
+            observation(
+                "old-self",
+                "text",
+                "你好，欢迎加上好友，很高兴认识你！请问有什么可以帮您？",
+                sender_role="self",
+            ),
+        ]
+        pre = build_pre_action_identity_sequence(
+            before,
+            committed_ids={
+                "old-customer": "worker-message-1",
+                "old-self": "worker-message-2",
+            },
+        )
+        after = [
+            observation("current-customer", "text", "你好在吗"),
+            observation(
+                "current-self",
+                "text",
+                "你好，欢迎加上好友，很高兴认识你！请问有\n什么可以帮您？",
+                sender_role="self",
+            ),
+            observation("new-five-second-voice", "voice"),
+        ]
+
+        result = self.align(
+            pre,
+            build_post_action_observation_sequence(after),
+        )
+
+        self.assertEqual(result["alignment_status"], "unique")
+        self.assertEqual(
+            result["new_suffix_observation_ids"],
+            ["new-five-second-voice"],
+        )
+
     def test_one_historical_text_uniquely_exposes_new_tail(self):
         pre = build_pre_action_identity_sequence(
             [observation("old-hello", "text", "你好")],

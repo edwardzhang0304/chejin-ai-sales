@@ -21,6 +21,7 @@ if str(OMNIAUTO_ROOT) not in sys.path:
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar import build_message_observations_v3
 from chejin_worker_client.models import WechatReadTarget as WorkerWechatReadTarget
 from chejin_worker_client.message_contract import (
+    canonical_message_identity_text as worker_canonical_message_identity_text,
     canonical_reply_text as worker_canonical_reply_text,
     reply_text_hash as worker_reply_text_hash,
 )
@@ -33,6 +34,9 @@ from chejin_worker_client.wechat_c2 import (
     worker_source_message_key,
 )
 from chejin_worker_client.task_runner import should_submit_c2_ingest_payload
+from chejin_worker_client.sequence_alignment import (
+    normalized_content_hash as worker_normalized_content_hash,
+)
 
 from app.contracts.c2 import c2_contract_v3, contract_revision, contract_sha256
 from app.contracts.message_limits import (
@@ -62,6 +66,7 @@ from app.schemas.wechat import (
 )
 from app.services import c3_service, wechat_service
 from app.services.message_contract import (
+    canonical_message_identity_text as backend_canonical_message_identity_text,
     canonical_reply_text as backend_canonical_reply_text,
     reply_text_hash as backend_reply_text_hash,
 )
@@ -95,6 +100,37 @@ def test_reply_text_contract_is_identical_in_worker_and_backend():
     } == {
         backend_reply_text_hash(value) for value in values
     }
+
+
+def test_message_identity_contract_ignores_only_visual_cjk_line_wraps():
+    contract = c2_contract_v3()["message_identity_text_contract"]
+    wrapped = "请问有\n什么可以帮您？"
+    unwrapped = "请问有什么可以帮您？"
+
+    assert (
+        contract["normalization"]
+        == "legacy_preserving_visual_cjk_line_wrap"
+    )
+    assert worker_canonical_message_identity_text(wrapped) == unwrapped
+    assert backend_canonical_message_identity_text(wrapped) == unwrapped
+    assert worker_canonical_message_identity_text("hello\nworld") == "hello world"
+    assert backend_canonical_message_identity_text("hello\nworld") == "hello world"
+    assert worker_canonical_message_identity_text("hello world") != "helloworld"
+    legacy_values = ["全角？标点！", "保留  水平\t空白"]
+    for value in legacy_values:
+        legacy_hash = hashlib.sha256(
+            backend_canonical_reply_text(value).encode("utf-8")
+        ).hexdigest()
+        assert (
+            worker_canonical_message_identity_text(value)
+            == backend_canonical_reply_text(value)
+        )
+        assert (
+            backend_canonical_message_identity_text(value)
+            == backend_canonical_reply_text(value)
+        )
+        assert worker_normalized_content_hash(value) == legacy_hash
+        assert wechat_service._normalized_content_hash(value) == legacy_hash
 
 
 def _v3_contract_fields() -> dict:
@@ -3410,7 +3446,7 @@ def test_message_batch_status_rejects_other_worker_and_returns_terminal_state():
 
 
 def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revision():
-    assert contract_revision() == "0.9.8"
+    assert contract_revision() == "0.9.9"
     location_recovery = c2_contract_v3()[
         "target_location_recovery_contract"
     ]

@@ -5565,6 +5565,142 @@ class TaskRunnerTest(unittest.TestCase):
             ],
         )
 
+    def test_wrapped_ai_history_still_transcribes_and_ingests_new_voice(self):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-wrapped-history-full-voice",
+            rpa_session_key="wx:rpa:v1:wrapped-history-full-voice",
+            display_name="CJVOICE9",
+            remark_code="CJVOICE9",
+            read_reason="recent_ai_sent",
+            authorization_revision="revision-wrapped-history-full-voice",
+            raw={
+                "identity_checkpoint": {
+                    "version": 2,
+                    "next_sequence_floor": 3,
+                    "recent_messages": [
+                        {
+                            "stable_id": "worker-message-1",
+                            "source_message_key": "source-customer-1",
+                            "origin_read_run_id": "read-history-1",
+                            "sender_role": "customer",
+                            "message_type": "text",
+                            "normalized_content_hash": normalized_content_hash(
+                                "你好在吗"
+                            ),
+                        },
+                        {
+                            "stable_id": "worker-message-2",
+                            "source_message_key": "source-ai-2",
+                            "origin_read_run_id": "read-history-2",
+                            "sender_role": "self",
+                            "message_type": "text",
+                            "normalized_content_hash": normalized_content_hash(
+                                "你好，欢迎加上好友，很高兴认识你！请问有什么可以帮您？"
+                            ),
+                        },
+                    ],
+                }
+            },
+        )
+        api.read_targets = [target]
+        wrapped_ai = "你好，欢迎加上好友，很高兴认识你！请问有\n什么可以帮您？"
+        raw_voice = {
+            "id": "new-five-second-voice",
+            "type": "voice",
+            "sender_role": "customer",
+            "voice_duration": 5,
+            "content": '[语音] 5"',
+            "voice_anchor_stable_key": "voice-new-five-seconds",
+            "canonical_visual_id": "visual-new-five-seconds",
+        }
+        history = [
+            {
+                "id": "visible-customer-1",
+                "type": "text",
+                "sender_role": "customer",
+                "content": "你好在吗",
+            },
+            {
+                "id": "visible-ai-2",
+                "type": "text",
+                "sender_role": "self",
+                "content": wrapped_ai,
+            },
+        ]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            {"ok": True, "messages": [*history, raw_voice]},
+            {
+                "ok": True,
+                "messages": [
+                    *history,
+                    {
+                        **raw_voice,
+                        "id": "new-five-second-voice-transcribed",
+                        "content": "你好，我想咨询一下",
+                    },
+                ],
+            },
+        ]
+        bridge.voice_payload = {
+            "ok": True,
+            "adapter": "mock",
+            "state": "voice_transcribe_completed",
+            "action_phase": "confirmed",
+            "business_state": "completed",
+            "business_result_confirmed": True,
+            "ui_action_performed": True,
+            "sidecar_run_id": "voice-run-wrapped-history",
+            "artifact_dir": "C:/voice-run-wrapped-history",
+            "attempt_count": 1,
+            "quality_flags": [],
+            "transcribed_messages": [
+                {"content": "你好，我想咨询一下", "sender_role": "customer"}
+            ],
+            "item_action_outcomes": [
+                {
+                    "action_phase": "confirmed",
+                    "business_state": "completed",
+                    "business_result_confirmed": True,
+                    "physical_anchor_keys": ["voice-new-five-seconds"],
+                }
+            ],
+        }
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-wrapped-history",
+            worker_token="token",
+            client_instance_id="client-wrapped-history",
+            run_status="running",
+        )
+
+        result = runner._read_one_wechat_target(
+            binding,
+            target,
+            current_step="state_target_message_read",
+            enforce_read_targets=True,
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(len(bridge.voice_transcribes), 1)
+        self.assertEqual(len(api.message_payloads), 1)
+        submitted_messages = api.message_payloads[0]["messages"]
+        self.assertEqual(
+            [
+                message["content"]
+                for message in submitted_messages
+                if message["message_type"] == "voice"
+            ],
+            ["你好，我想咨询一下"],
+        )
+        self.assertEqual(
+            api.message_payloads[0]["evidence"]["flow_gate_errors"],
+            [],
+        )
+
     def test_c2_two_same_duration_voices_are_both_transcribed_once(self):
         api = FakeApi(None)
         target = WechatReadTarget(
@@ -8531,6 +8667,84 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(
             api.message_payloads[0]["evidence"]["flow_gate_errors"],
             ["MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"],
+        )
+
+    def test_identity_alignment_failure_marks_message_read_timing_failed(self):
+        api = FakeApi(None)
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        bridge.get_messages_payloads = [
+            {
+                "ok": True,
+                "observations": [
+                    {
+                        "schema_version": 3,
+                        "observation_id": "timing-ambiguous-text",
+                        "row_kind": "text_bubble",
+                        "sender_role": "customer",
+                        "sender_role_source": "same_row_avatar",
+                        "message_type": "text",
+                        "voice_state": "not_voice",
+                        "content_clean": "当前文字",
+                    }
+                ],
+            }
+        ]
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-timing-gate",
+            worker_token="token",
+            client_instance_id="client-timing-gate",
+            run_status="running",
+        )
+        target = WechatReadTarget(
+            conversation_id="conv-timing-identity-gate",
+            rpa_session_key="",
+            display_name="CJTIME01",
+            remark_code="CJTIME01",
+            authorization_revision="revision-timing-identity-gate",
+            raw={"identity_checkpoint": identity_checkpoint()},
+        )
+
+        with patch(
+            "chejin_worker_client.task_runner.align_committed_message_sequence",
+            return_value={
+                "pre_sequence_source": "empty_checkpoint",
+                "pre_frame_id": "checkpoint:none:timing",
+                "post_frame_id": "frame:timing",
+                "alignment_status": "ambiguous",
+                "candidate_alignment_count": 2,
+                "matched_pairs": [],
+                "old_tail_fully_consumed": False,
+                "new_suffix_observation_ids": [],
+            },
+        ):
+            result = runner._read_one_wechat_target(
+                binding,
+                target,
+                current_step="state_target_message_read",
+                enforce_read_targets=False,
+            )
+
+        self.assertFalse(result["ok"])
+        timing_log = next(
+            row
+            for row in read_logs(limit=50)
+            if row.get("event") == "c2_message_read_timing"
+            and (row.get("metadata") or {}).get("conversation_id")
+            == target.conversation_id
+        )
+        read_phase = next(
+            phase
+            for phase in timing_log["metadata"]["phases"]
+            if phase["name"] == "initial_message_read"
+        )
+        self.assertIs(read_phase["completed"], False)
+        self.assertIs(read_phase["failed"], True)
+        self.assertEqual(
+            read_phase["error_code"],
+            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
         )
 
     def test_all_c2_outbox_submit_types_preserve_original_json_after_network_failure(self):
@@ -18150,6 +18364,99 @@ class TaskRunnerTest(unittest.TestCase):
                 "new_suffix_observation_ids"
             ],
             [],
+        )
+
+    def test_wrapped_confirmed_ai_reply_keeps_new_voice_executable(self):
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        target = WechatReadTarget(
+            conversation_id="conv-wrapped-ai-reply-new-voice",
+            rpa_session_key="",
+            display_name="CJVOICE9",
+            remark_code="CJVOICE9",
+            read_reason="recent_ai_sent",
+            authorization_revision="revision-wrapped-ai-reply",
+            raw={
+                "identity_checkpoint": {
+                    "version": 2,
+                    "next_sequence_floor": 3,
+                    "recent_messages": [
+                        {
+                            "stable_id": "worker-message-1",
+                            "source_message_key": "source-customer-1",
+                            "sender_role": "customer",
+                            "message_type": "text",
+                            "normalized_content_hash": normalized_content_hash(
+                                "你好在吗"
+                            ),
+                        },
+                        {
+                            "stable_id": "worker-message-2",
+                            "source_message_key": "source-ai-2",
+                            "sender_role": "self",
+                            "message_type": "text",
+                            "normalized_content_hash": normalized_content_hash(
+                                "你好，欢迎加上好友，很高兴认识你！请问有什么可以帮您？"
+                            ),
+                        },
+                    ],
+                }
+            },
+        )
+        observations = [
+            self._ai_send_observation(
+                "current-customer",
+                sender_role="customer",
+                content="你好在吗",
+            ),
+            self._ai_send_observation(
+                "current-ai",
+                sender_role="self",
+                content="你好，欢迎加上好友，很高兴认识你！请问有\n什么可以帮您？",
+            ),
+            {
+                "observation_id": "new-five-second-voice",
+                "row_kind": "voice_bubble",
+                "message_type": "voice",
+                "sender_role": "customer",
+                "sender_role_source": "same_row_avatar",
+                "voice_state": "untranscribed",
+                "canonical_visual_id": "visual-new-five-second-voice",
+                "bubble_rect": [420, 300, 620, 344],
+                "source_message": {
+                    "id": "new-five-second-voice",
+                    "type": "voice",
+                    "sender_role": "customer",
+                },
+            },
+        ]
+
+        aligned, errors = runner._align_initial_identity_frame(
+            target=target,
+            sidecar_payload={
+                "ok": True,
+                "frame_id": "frame-wrapped-ai-new-voice",
+                "observations": observations,
+            },
+            read_run_id="read-wrapped-ai-new-voice",
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            aligned["sequence_alignment_evidence"]["alignment_status"],
+            "unique",
+        )
+        executable = _executable_untranscribed_voice_observations(
+            target,
+            aligned,
+        )
+        self.assertEqual(
+            [item["observation_id"] for item in executable],
+            ["new-five-second-voice"],
         )
 
     def test_recent_ai_sent_uses_matching_possible_send_after_restart(self):

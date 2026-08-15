@@ -23,6 +23,7 @@ from app.services.observability_service import (
     record_server_stage_best_effort,
 )
 import app.services.observability_service as observability_service
+from app.api.routes.wechat import _ingest_telemetry_terminal
 
 
 def _event(**overrides):
@@ -336,3 +337,17 @@ def test_backend_and_worker_use_exact_same_standard_stage_catalog():
         sys.path.remove(str(worker_root))
 
     assert WORKER_STAGE_NAMES == observability_service.STANDARD_STAGE_NAMES
+
+
+def test_identity_handoff_ingest_is_not_reported_as_success():
+    assert _ingest_telemetry_terminal(
+        {
+            "message_batch": {
+                "batch_status": "handoff_created",
+                "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+            }
+        }
+    ) == ("failed", "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS")
+    assert _ingest_telemetry_terminal(
+        {"message_batch": {"batch_status": "collecting"}}
+    ) == ("succeeded", None)
