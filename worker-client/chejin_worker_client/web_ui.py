@@ -518,6 +518,12 @@ class WorkerWebWindow(QMainWindow):
         background_screen = runtime_process_screen(self.runner.current_step)
         if background_screen:
             return background_screen
+        if (
+            self.binding.run_status == "paused"
+            and not self._runtime_flow_active_for_display()
+            and self.runtime_process_timeline.last_process_kind == "scan"
+        ):
+            return "paused-empty"
         if self.runtime_process_timeline.last_process_kind == "customer":
             if self.runtime_process_timeline.customer_active:
                 return "target-read-running"

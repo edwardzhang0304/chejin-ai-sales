@@ -22,6 +22,8 @@ $UatLauncherSourcePath = Join-Path $Root "packaging\start-uat.ps1"
 $UatLauncherPath = Join-Path $PackageDir "start-uat.ps1"
 $UatEvidenceCollectorSourcePath = Join-Path $Root "packaging\collect-uat-evidence.ps1"
 $UatEvidenceCollectorPath = Join-Path $PackageDir "collect-uat-evidence.ps1"
+$UatEvidenceHelperSourcePath = Join-Path $Root "packaging\collect_uat_evidence.py"
+$UatEvidenceHelperPath = Join-Path $PackageDir "collect_uat_evidence.py"
 $UatLauncherValidatorPath = Join-Path $Root "scripts\validate-uat-launcher.ps1"
 $VisionCredentialPath = Join-Path $ReportsDir "vision-runtime.json"
 $OmniAutoSourcePath = Join-Path $Root "omniauto-rpa"
@@ -218,12 +220,16 @@ if (-not (Test-Path $UatLauncherValidatorPath)) {
 if (-not (Test-Path $UatEvidenceCollectorSourcePath)) {
   throw "打包失败：未找到 UAT 证据收集脚本 $UatEvidenceCollectorSourcePath"
 }
+if (-not (Test-Path $UatEvidenceHelperSourcePath)) {
+  throw "打包失败：未找到 UAT 证据脱敏导出器 $UatEvidenceHelperSourcePath"
+}
 Copy-Item -LiteralPath $UatLauncherSourcePath -Destination $UatLauncherPath -Force
 & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $UatLauncherValidatorPath -ScriptPath $UatLauncherPath
 if ($LASTEXITCODE -ne 0) {
   throw "打包失败：UAT 启动脚本未通过 Windows PowerShell 5.1 BOM/语法门禁"
 }
 Copy-Item -LiteralPath $UatEvidenceCollectorSourcePath -Destination $UatEvidenceCollectorPath -Force
+Copy-Item -LiteralPath $UatEvidenceHelperSourcePath -Destination $UatEvidenceHelperPath -Force
 & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $UatLauncherValidatorPath -ScriptPath $UatEvidenceCollectorPath
 if ($LASTEXITCODE -ne 0) {
   throw "打包失败：UAT 证据收集脚本未通过 Windows PowerShell 5.1 BOM/语法门禁"

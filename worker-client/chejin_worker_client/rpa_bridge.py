@@ -113,6 +113,7 @@ class RpaBridge:
         rpa_session_key: str,
         remark_code: str = "",
         target_mode: str = "",
+        expected_confirmed_self_text: str = "",
         max_duration_seconds: int = 12,
         cancel_check: CancellationCheck | None = None,
     ) -> dict[str, Any]:
@@ -161,6 +162,11 @@ class RpaBridge:
             args[3:3] = ["--remark-code", remark_code]
         if normalized_target_mode:
             args[3:3] = ["--target-mode", normalized_target_mode]
+        if str(expected_confirmed_self_text or "").strip():
+            args[3:3] = [
+                "--expected-confirmed-self-text",
+                str(expected_confirmed_self_text),
+            ]
         sidecar_timeout = (
             max(30, min(240, effective_max_duration_seconds + 75))
             if normalized_target_mode == "search_by_remark_code"
@@ -185,6 +191,7 @@ class RpaBridge:
         target_mode: str = "",
         visible_session_candidate: dict[str, Any] | None = None,
         capture_initial_messages: bool = True,
+        expected_confirmed_self_text: str = "",
         max_duration_seconds: int = 75,
         cancel_check: CancellationCheck | None = None,
     ) -> dict[str, Any]:
@@ -219,6 +226,11 @@ class RpaBridge:
             args[3:3] = ["--remark-code", remark_code]
         if normalized_target_mode:
             args[3:3] = ["--target-mode", normalized_target_mode]
+        if str(expected_confirmed_self_text or "").strip():
+            args[3:3] = [
+                "--expected-confirmed-self-text",
+                str(expected_confirmed_self_text),
+            ]
         if capture_initial_messages:
             args.append("--capture-initial-messages")
         if normalized_target_mode == "visible" and isinstance(visible_session_candidate, dict) and visible_session_candidate:
@@ -248,6 +260,7 @@ class RpaBridge:
         selected_target_fingerprint: str = "",
         remark_code: str = "",
         target_mode: str = "",
+        expected_confirmed_self_text: str = "",
         max_duration_seconds: int = 90,
         excluded_voice_anchor_keys: list[str] | None = None,
         action_journal: Path | None = None,
@@ -325,6 +338,11 @@ class RpaBridge:
             args[3:3] = ["--remark-code", remark_code]
         if normalized_target_mode:
             args[3:3] = ["--target-mode", normalized_target_mode]
+        if str(expected_confirmed_self_text or "").strip():
+            args[3:3] = [
+                "--expected-confirmed-self-text",
+                str(expected_confirmed_self_text),
+            ]
         clean_excluded_anchor_keys = sorted(
             {str(value).strip() for value in (excluded_voice_anchor_keys or []) if str(value).strip()}
         )

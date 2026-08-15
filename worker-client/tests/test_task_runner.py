@@ -1435,6 +1435,7 @@ class TaskRunnerTest(unittest.TestCase):
         pre_observations: list[dict],
         next_sequence: int,
         state_version: int = 4,
+        reply_text: str,
     ):
         runner, _states = self.make_runner(
             FakeApi(None),
@@ -1500,7 +1501,8 @@ class TaskRunnerTest(unittest.TestCase):
         runner._record_possible_ai_send(
             target=target,
             reply_action_id=action_id,
-            reply_text_hash="transport-only-hash",
+            reply_text=reply_text,
+            reply_text_hash=runner._reply_text_hash(reply_text),
             reserved_worker_stable_id=reserved_id,
             pre_frame_id=pre_frame_id,
             pre_action_identity_sequence=pre_sequence,
@@ -4878,6 +4880,40 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(api.scan_payloads[0]["sessions"][0]["remark_code_candidates"], ["CJTEST01"])
         self.assertEqual(bridge.session_scans[0], {})
         self.assertNotIn("scan_mode", api.scan_payloads[0]["evidence"])
+
+    def test_c2_scan_paused_after_sidecar_returns_closes_ui_timeline(self):
+        api = FakeApi(None)
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="invite_sent", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        runner.binding = binding
+        runtime_events: list[dict] = []
+        runner.on_runtime_process = runtime_events.append
+        original_list_sessions = bridge.list_sessions
+
+        def pause_after_scan(**kwargs):
+            payload = original_list_sessions(**kwargs)
+            binding.run_status = "paused"
+            return payload
+
+        bridge.list_sessions = pause_after_scan  # type: ignore[method-assign]
+
+        runner._scan_wechat_sessions(binding, reason="unit")
+
+        self.assertEqual(
+            [event["event"] for event in runtime_events],
+            ["scan_started", "scan_cancelled"],
+        )
+        self.assertIsNone(runner.current_step)
+        self.assertEqual(api.scan_payloads, [])
+        self.assertFalse(LOCK_FILE.exists())
 
     def test_c2_message_read_allows_target_without_row_fingerprint(self):
         api = FakeApi(None)
@@ -11971,6 +12007,68 @@ class TaskRunnerTest(unittest.TestCase):
                     dedupe_key, runner.c2_read_failure_cooldowns
                 )
 
+    def test_recent_ai_sent_read_carries_confirmed_text_through_locate_and_messages(self):
+        api = FakeApi(None)
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        conversation_id = "conv-recent-ai-reread-plumbing"
+        reply_text = (
+            "你好，10万左右可以先按你的用车需求筛选合适车型。"
+            "你主要是日常通勤、家庭出行，还是更看重大空间？"
+        )
+        runner, _ = self.make_runner(api, bridge)
+        reply_hash = runner._reply_text_hash(reply_text)
+        target = WechatReadTarget(
+            conversation_id=conversation_id,
+            rpa_session_key="wx:rpa:v1:recent-ai-reread",
+            display_name="CJNCXB8R",
+            remark_code="CJNCXB8R",
+            read_reason="recent_ai_sent",
+            authorization_revision="revision-recent-ai-reread",
+            raw={
+                "identity_checkpoint": identity_checkpoint(),
+                "ai_reply_boundary": {
+                    "reply_action_id": "reply-recent-ai-reread",
+                    "reply_text_hash": reply_hash,
+                },
+            },
+        )
+        api.read_targets = [target]
+        save_c2_state(
+            f"message_identity:{conversation_id}",
+            {
+                "version": 4,
+                "ai_reply_receipts": [
+                    {
+                        "reply_action_id": "reply-recent-ai-reread",
+                        "reply_text": reply_text,
+                        "reply_text_hash": reply_hash,
+                        "worker_stable_id": "worker-message-8",
+                    }
+                ],
+            },
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        runner._read_state_target_queue(binding, targets=[target])
+
+        self.assertEqual(len(bridge.locate_chats), 1)
+        self.assertEqual(len(bridge.message_reads), 1)
+        self.assertEqual(
+            bridge.locate_chats[0]["expected_confirmed_self_text"],
+            reply_text,
+        )
+        self.assertEqual(
+            bridge.message_reads[0]["expected_confirmed_self_text"],
+            reply_text,
+        )
+
     def test_no_read_reason_specific_return_exists_before_target_chat_locating(self):
         source = textwrap.dedent(
             inspect.getsource(TaskRunner._read_one_wechat_target_impl)
@@ -15630,7 +15728,11 @@ class TaskRunnerTest(unittest.TestCase):
                     },
                 ),
             ],
-        ) as process_images:
+        ) as process_images, patch.object(
+            runner,
+            "_confirmed_ai_reply_text_for_read",
+            return_value="已确认的 AI 回复",
+        ):
             result = runner._converge_current_screen_after_images(
                 binding=binding,
                 target=target,
@@ -15662,6 +15764,10 @@ class TaskRunnerTest(unittest.TestCase):
                 "current",
             )
             self.assertNotIn("max_scroll_steps", read_call.kwargs)
+            self.assertEqual(
+                read_call.kwargs["expected_confirmed_self_text"],
+                "已确认的 AI 回复",
+            )
         self.assertGreaterEqual(lease.update_step.call_count, 3)
 
     def test_post_vision_refresh_finishes_new_voice_before_return(self):
@@ -17808,6 +17914,7 @@ class TaskRunnerTest(unittest.TestCase):
                 conversation_id="conv-send-after-concurrent",
                 pre_observations=pre,
                 next_sequence=12,
+                reply_text="好的",
             )
         )
         post = [
@@ -17829,7 +17936,7 @@ class TaskRunnerTest(unittest.TestCase):
         recorded = runner._record_confirmed_ai_reply_receipt(
             target=target,
             reply_action_id=action_id,
-            reply_text_hash="transport-only-hash",
+            reply_text_hash=runner._reply_text_hash("好的"),
             sidecar_result=self._confirmed_send_sidecar_result(
                 observations=post,
                 confirmed_observation_id="sent-ai",
@@ -17862,6 +17969,7 @@ class TaskRunnerTest(unittest.TestCase):
                 conversation_id="conv-send-before-concurrent",
                 pre_observations=pre,
                 next_sequence=21,
+                reply_text="好的",
             )
         )
         post = [
@@ -17882,7 +17990,7 @@ class TaskRunnerTest(unittest.TestCase):
         recorded = runner._record_confirmed_ai_reply_receipt(
             target=target,
             reply_action_id=action_id,
-            reply_text_hash="transport-only-hash",
+            reply_text_hash=runner._reply_text_hash("好的"),
             sidecar_result=self._confirmed_send_sidecar_result(
                 observations=post,
                 confirmed_observation_id="sent-ai",
@@ -17922,6 +18030,7 @@ class TaskRunnerTest(unittest.TestCase):
                 conversation_id="conv-send-identical-text",
                 pre_observations=pre,
                 next_sequence=32,
+                reply_text="好的",
             )
         )
         post = [
@@ -17938,7 +18047,7 @@ class TaskRunnerTest(unittest.TestCase):
         recorded = runner._record_confirmed_ai_reply_receipt(
             target=target,
             reply_action_id=action_id,
-            reply_text_hash="same-text-hash-is-not-identity",
+            reply_text_hash=runner._reply_text_hash("好的"),
             sidecar_result=self._confirmed_send_sidecar_result(
                 observations=post,
                 confirmed_observation_id="new-same-text",
@@ -17970,6 +18079,7 @@ class TaskRunnerTest(unittest.TestCase):
                 conversation_id="conv-send-scroll",
                 pre_observations=pre,
                 next_sequence=44,
+                reply_text="收到",
             )
         )
         post = [
@@ -17986,7 +18096,7 @@ class TaskRunnerTest(unittest.TestCase):
         recorded = runner._record_confirmed_ai_reply_receipt(
             target=target,
             reply_action_id=action_id,
-            reply_text_hash="scroll-hash",
+            reply_text_hash=runner._reply_text_hash("收到"),
             sidecar_result=self._confirmed_send_sidecar_result(
                 observations=post,
                 confirmed_observation_id="sent-after-scroll",
@@ -18033,6 +18143,7 @@ class TaskRunnerTest(unittest.TestCase):
                 conversation_id="conv-send-live-scroll-rebuilt-ids",
                 pre_observations=pre,
                 next_sequence=6,
+                reply_text="好的，您有需要随时发我。",
             )
         )
         post = [
@@ -18194,6 +18305,7 @@ class TaskRunnerTest(unittest.TestCase):
                 conversation_id="conv-send-media-history",
                 pre_observations=pre,
                 next_sequence=73,
+                reply_text="中午好，在的，您想咨询什么事？",
             )
         )
         sent = self._ai_send_observation(
@@ -18365,6 +18477,62 @@ class TaskRunnerTest(unittest.TestCase):
             ],
             [],
         )
+
+    def test_recent_ai_sent_exposes_only_the_matching_locally_confirmed_text_to_sidecar(self):
+        conversation_id = "conv-recent-ai-text-recovery"
+        reply_text = (
+            "你好，10万左右可以先按你的用车需求筛选合适车型。"
+            "你主要是日常通勤、家庭出行，还是更看重大空间？"
+        )
+        runner, _ = self.make_runner(
+            FakeApi(None),
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        reply_hash = runner._reply_text_hash(reply_text)
+        save_c2_state(
+            f"message_identity:{conversation_id}",
+            {
+                "version": 4,
+                "ai_reply_receipts": [
+                    {
+                        "reply_action_id": "reply-current",
+                        "reply_text": reply_text,
+                        "reply_text_hash": reply_hash,
+                        "worker_stable_id": "worker-message-9",
+                    },
+                    {
+                        "reply_action_id": "reply-old",
+                        "reply_text": "旧回复",
+                        "reply_text_hash": runner._reply_text_hash("旧回复"),
+                        "worker_stable_id": "worker-message-8",
+                    },
+                ],
+            },
+        )
+        target = WechatReadTarget(
+            conversation_id=conversation_id,
+            rpa_session_key="",
+            display_name="CJNCXB8R",
+            remark_code="CJNCXB8R",
+            read_reason="recent_ai_sent",
+            authorization_revision="revision-current",
+            raw={
+                "ai_reply_boundary": {
+                    "reply_action_id": "reply-current",
+                    "reply_text_hash": reply_hash,
+                    "worker_stable_id": "worker-message-9",
+                }
+            },
+        )
+
+        self.assertEqual(
+            runner._confirmed_ai_reply_text_for_read(target),
+            reply_text,
+        )
+        target.read_reason = "waiting_sales_reply"
+        self.assertEqual(runner._confirmed_ai_reply_text_for_read(target), "")
 
     def test_wrapped_confirmed_ai_reply_keeps_new_voice_executable(self):
         runner, _ = self.make_runner(
@@ -18565,6 +18733,7 @@ class TaskRunnerTest(unittest.TestCase):
                 conversation_id="conv-send-crash",
                 pre_observations=pre,
                 next_sequence=61,
+                reply_text="请回复",
             )
         )
         journal_path = runner.bridge.send_transaction_journal_path(action_id)
@@ -18617,6 +18786,7 @@ class TaskRunnerTest(unittest.TestCase):
                 pre_observations=pre,
                 next_sequence=100,
                 state_version=9,
+                reply_text="已收到",
             )
         )
         post = [
@@ -18633,7 +18803,7 @@ class TaskRunnerTest(unittest.TestCase):
             runner._record_confirmed_ai_reply_receipt(
                 target=target,
                 reply_action_id=action_id,
-                reply_text_hash="version-hash",
+                reply_text_hash=runner._reply_text_hash("已收到"),
                 sidecar_result=self._confirmed_send_sidecar_result(
                     observations=post,
                     confirmed_observation_id="version-sent",

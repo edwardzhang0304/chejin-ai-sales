@@ -1937,10 +1937,7 @@ def test_shared_mixed_roundtrip_fixture_crosses_worker_and_backend_without_secon
         headers=_worker_headers(worker),
     )
     binding = scan.json()["data"]["bindings"][0]
-    with SessionLocal() as db:
-        conversation = db.get(Conversation, binding["conversation_id"])
-        conversation.status = "waiting_sales_reply"
-        db.commit()
+    _seed_open_handoff(binding, paused=False)
     target = WorkerWechatReadTarget(
         conversation_id=binding["conversation_id"],
         remark_code=remark_code,
@@ -3446,7 +3443,7 @@ def test_message_batch_status_rejects_other_worker_and_returns_terminal_state():
 
 
 def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revision():
-    assert contract_revision() == "0.9.9"
+    assert contract_revision() == "0.9.10"
     location_recovery = c2_contract_v3()[
         "target_location_recovery_contract"
     ]
@@ -3578,8 +3575,8 @@ def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revi
     assert wrong_contract.status_code == 409
     assert wrong_contract.json()["code"] == "MESSAGE_CONTRACT_SHA256_MISMATCH"
     stale_contract_payload = copy.deepcopy(payload)
-    stale_contract_payload["contract_revision"] = "0.9.7"
-    stale_contract_payload["evidence"]["contract_revision"] = "0.9.7"
+    stale_contract_payload["contract_revision"] = "0.9.9"
+    stale_contract_payload["evidence"]["contract_revision"] = "0.9.9"
     stale_contract = client.post(
         f"/api/workers/{worker['id']}/wechat/messages/ingest",
         json=stale_contract_payload,

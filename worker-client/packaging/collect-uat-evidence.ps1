@@ -1,47 +1,48 @@
-﻿param()
+﻿param(
+  [Parameter(Mandatory = $true)]
+  [datetimeoffset]$From,
+  [Parameter(Mandatory = $true)]
+  [datetimeoffset]$To,
+  [string]$OutputPath = ""
+)
 
 $ErrorActionPreference = "Stop"
 
-$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$desktop = [Environment]::GetFolderPath("Desktop")
-$staging = Join-Path $env:TEMP ("chejin-uat-evidence-" + $timestamp)
-$output = Join-Path $desktop ("chejin-uat-evidence-" + $timestamp + ".zip")
-$incidentRoot = Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "CheJinWorker\incidents"
-$diagnosticsRoot = Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "CheJinWorker\diagnostics"
-
-New-Item -ItemType Directory -Force -Path $staging | Out-Null
-
-if (Test-Path -LiteralPath $incidentRoot) {
-  $incidentDestination = Join-Path $staging "incidents"
-  New-Item -ItemType Directory -Force -Path $incidentDestination | Out-Null
-  $incidents = @(
-    Get-ChildItem -LiteralPath $incidentRoot -File -ErrorAction SilentlyContinue |
-      Where-Object { $_.Name -like "INC-*" } |
-      Sort-Object LastWriteTime -Descending |
-      Select-Object -First 8
-  )
-  foreach ($incident in $incidents) {
-    Copy-Item -LiteralPath $incident.FullName -Destination $incidentDestination -Force
-  }
+if ($To -le $From) {
+  throw "-To must be later than -From."
 }
 
-if (Test-Path -LiteralPath $diagnosticsRoot) {
-  $diagnosticsDestination = Join-Path $staging "diagnostics"
-  & robocopy.exe $diagnosticsRoot $diagnosticsDestination /E /R:3 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
-  if ($LASTEXITCODE -ge 8) {
-    throw "Failed to collect startup diagnostics."
-  }
+$packageRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$collector = Join-Path $packageRoot "collect_uat_evidence.py"
+$python = Join-Path $packageRoot "runtime\python.exe"
+$workerHome = Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "CheJinWorker"
+
+if (-not (Test-Path -LiteralPath $collector)) {
+  throw "Evidence collector helper is missing: $collector"
+}
+if (-not (Test-Path -LiteralPath $python)) {
+  throw "Bundled read-only evidence runtime is missing: $python"
 }
 
-$evidenceFiles = @(Get-ChildItem -LiteralPath $staging -File -Recurse -ErrorAction SilentlyContinue)
-if ($evidenceFiles.Count -eq 0) {
-  throw "No UAT evidence files were found. Keep the Worker open after the failure and run this script again."
+if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+  $desktop = [Environment]::GetFolderPath("Desktop")
+  $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+  $OutputPath = Join-Path $desktop ("chejin-uat-evidence-" + $stamp + ".zip")
+}
+$OutputPath = [System.IO.Path]::GetFullPath($OutputPath)
+
+& $python $collector `
+  --app-dir $workerHome `
+  --package-dir $packageRoot `
+  --from-iso $From.ToUniversalTime().ToString("o") `
+  --to-iso $To.ToUniversalTime().ToString("o") `
+  --output $OutputPath
+
+if ($LASTEXITCODE -ne 0) {
+  throw "UAT evidence collection failed with exit code $LASTEXITCODE."
+}
+if (-not (Test-Path -LiteralPath $OutputPath)) {
+  throw "UAT evidence archive was not created: $OutputPath"
 }
 
-Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $output -Force
-if (-not (Test-Path -LiteralPath $output)) {
-  throw "UAT evidence archive was not created."
-}
-
-Write-Host "UAT evidence archive created: $output" -ForegroundColor Green
-explorer.exe /select,$output
+Write-Host "UAT evidence archive created: $OutputPath" -ForegroundColor Green

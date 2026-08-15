@@ -133,6 +133,18 @@ class RuntimeProcessTimeline:
                 }
             )
             return
+        if event_name == "scan_cancelled":
+            self._finish_current(self.scan_steps)
+            self.scan_steps.append(
+                {
+                    "_phase": "scan_cancelled",
+                    "state": "done",
+                    "title": "首屏扫描已停止",
+                    "description": "暂停接单后不再继续本轮扫描。",
+                    "finalText": "已暂停接单",
+                }
+            )
+            return
 
         conversation_id = str(event.get("conversation_id") or "").strip()
         transaction_id = str(event.get("transaction_id") or "").strip()

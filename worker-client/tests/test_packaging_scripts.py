@@ -184,7 +184,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("delivery ZIP does not contain the packaged runtime directory", workflow)
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v0.9.9-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v0.9.10-windows-x64.delivery.json", workflow)
         self.assertIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn("vision_credential_embedded", workflow)
         self.assertIn("vision_configuration_locked", workflow)
@@ -506,7 +506,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "392a8f09e58fc0db23f821c631d61447104df4c7"
+                        "639e01ef7bc5532eb3ed3948d995b2a3cfc7b33a"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -526,7 +526,7 @@ class PackagingScriptsTest(unittest.TestCase):
                             "settlement"
                         ),
                         "ambiguous_voice_finite_terminal_settlement",
-                        "c2_contract_0_9_9_generated_schema",
+                        "c2_contract_0_9_10_generated_schema",
                         "bounded_send_foreground_focus_recovery_contract",
                         (
                             "brain_soft_evidence_clarification_and_"
@@ -560,10 +560,10 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["chejin_overlays"],
         )
         self.assertIn(
-            "392a8f09e58fc0db23f821c631d61447104df4c7",
+            "639e01ef7bc5532eb3ed3948d995b2a3cfc7b33a",
             provenance["integration_note"],
         )
-        self.assertIn("0.9.9", provenance["integration_note"])
+        self.assertIn("0.9.10", provenance["integration_note"])
         self.assertIn("有界恢复合同", provenance["integration_note"])
         self.assertIn("两次有界恢复合同", provenance["integration_note"])
         self.assertIn(
@@ -904,7 +904,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "0.9.9"', workflow)
+        self.assertIn('version -ne "0.9.10"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)
@@ -924,8 +924,10 @@ class PackagingScriptsTest(unittest.TestCase):
 
     def test_package_includes_one_command_uat_evidence_collector(self):
         collector = ROOT / "packaging" / "collect-uat-evidence.ps1"
+        helper = ROOT / "packaging" / "collect_uat_evidence.py"
         raw = collector.read_bytes()
         text = raw.decode("utf-8-sig")
+        helper_text = helper.read_text(encoding="utf-8")
         build = (ROOT / "scripts" / "build-windows.ps1").read_text(
             encoding="utf-8-sig"
         )
@@ -934,10 +936,17 @@ class PackagingScriptsTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertEqual(raw[:3], b"\xef\xbb\xbf")
-        self.assertIn("CheJinWorker\\incidents", text)
-        self.assertIn("CheJinWorker\\diagnostics", text)
+        self.assertIn("[datetimeoffset]$From", text)
+        self.assertIn("[datetimeoffset]$To", text)
+        self.assertIn("collect_uat_evidence.py", text)
+        self.assertIn("mode=ro", helper_text)
+        self.assertIn("PRAGMA query_only=ON", helper_text)
+        self.assertIn('"worker_client.sqlite3"', helper_text)
+        self.assertIn('"chat_screenshots"', helper_text)
         self.assertIn("collect-uat-evidence.ps1", build)
+        self.assertIn("collect_uat_evidence.py", build)
         self.assertIn("collect-uat-evidence.ps1", workflow)
+        self.assertIn("collect_uat_evidence.py", workflow)
 
     def test_packaging_entry_imports_main_with_package_context(self):
         environment = dict(os.environ)

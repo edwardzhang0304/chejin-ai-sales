@@ -3008,6 +3008,7 @@ class TaskRunner:
         *,
         target: WechatReadTarget,
         reply_action_id: str,
+        reply_text: str,
         reply_text_hash: str,
         reserved_worker_stable_id: str,
         pre_frame_id: str,
@@ -3018,7 +3019,15 @@ class TaskRunner:
         action_id = str(reply_action_id or "").strip()
         reserved_id = str(reserved_worker_stable_id or "").strip()
         frame_id = str(pre_frame_id or "").strip()
-        if not action_id or not reserved_id or not frame_id:
+        canonical_text = self._canonical_reply_text(reply_text)
+        if (
+            not action_id
+            or not reserved_id
+            or not frame_id
+            or not canonical_text
+            or self._reply_text_hash(canonical_text)
+            != str(reply_text_hash or "").strip()
+        ):
             raise ValueError("AI_REPLY_IDENTITY_RESERVATION_INCOMPLETE")
         if not isinstance(pre_action_identity_sequence, list):
             raise ValueError("AI_REPLY_PRE_SEQUENCE_MISSING")
@@ -3035,6 +3044,7 @@ class TaskRunner:
             sends.append(
                 {
                     "reply_action_id": action_id,
+                    "reply_text": canonical_text,
                     "reply_text_hash": str(reply_text_hash or "").strip(),
                     "reserved_worker_stable_id": reserved_id,
                     "pre_frame_id": frame_id,
@@ -3375,6 +3385,7 @@ class TaskRunner:
         )
         receipt = {
             "reply_action_id": reply_action_id,
+            "reply_text": str(possible.get("reply_text") or "").strip(),
             "reply_text_hash": reply_text_hash,
             "worker_stable_id": reserved_id,
             "confirmed_at": confirmed_at,
@@ -3386,6 +3397,12 @@ class TaskRunner:
             ).strip(),
             "sequence_alignment_evidence": evidence,
         }
+        if (
+            not receipt["reply_text"]
+            or self._reply_text_hash(receipt["reply_text"])
+            != str(reply_text_hash or "").strip()
+        ):
+            return False
         state_key = f"message_identity:{target.conversation_id}"
 
         def commit(previous: dict[str, Any]):
@@ -3874,6 +3891,9 @@ class TaskRunner:
             rpa_session_key="",
             remark_code=target.remark_code or "",
             target_mode="current",
+            expected_confirmed_self_text=(
+                self._confirmed_ai_reply_text_for_read(target)
+            ),
             max_duration_seconds=20,
             cancel_check=cancel_check,
         )
@@ -4089,6 +4109,62 @@ class TaskRunner:
                 observation["_worker_ai_reply_receipt"] = receipt
             enriched.append(observation)
         return enriched
+
+    def _confirmed_ai_reply_text_for_read(
+        self,
+        target: WechatReadTarget,
+    ) -> str:
+        """Return only the locally committed text for the backend sent boundary.
+
+        This text is not used to choose a message identity. It lets the
+        Sidecar run current-frame ROI OCR when the already confirmed AI text
+        bubble was structurally mistaken for an image. The subsequent
+        sequence alignment remains the only identity decision.
+        """
+
+        if str(target.read_reason or "").strip() != "recent_ai_sent":
+            return ""
+        boundary = (
+            target.raw.get("ai_reply_boundary")
+            if isinstance(target.raw, dict)
+            and isinstance(target.raw.get("ai_reply_boundary"), dict)
+            else {}
+        )
+        action_id = str(boundary.get("reply_action_id") or "").strip()
+        expected_hash = str(boundary.get("reply_text_hash") or "").strip()
+        if not action_id or not expected_hash:
+            return ""
+
+        candidates: list[dict[str, Any]] = []
+        identity_state = load_c2_state(
+            f"message_identity:{target.conversation_id}"
+        )
+        candidates.extend(
+            dict(item)
+            for item in (identity_state.get("ai_reply_receipts") or [])
+            if isinstance(item, dict)
+        )
+        possible_state = load_c2_state(
+            f"possible_ai_sends:{target.conversation_id}"
+        )
+        candidates.extend(
+            dict(item)
+            for item in (possible_state.get("sends") or [])
+            if isinstance(item, dict)
+        )
+        matching_texts = {
+            self._canonical_reply_text(item.get("reply_text") or "")
+            for item in candidates
+            if str(item.get("reply_action_id") or "").strip() == action_id
+            and str(item.get("reply_text_hash") or "").strip()
+            == expected_hash
+            and self._canonical_reply_text(item.get("reply_text") or "")
+            and self._reply_text_hash(
+                self._canonical_reply_text(item.get("reply_text") or "")
+            )
+            == expected_hash
+        }
+        return next(iter(matching_texts)) if len(matching_texts) == 1 else ""
 
     def _consume_confirmed_ai_reply_receipts(
         self,
@@ -5185,6 +5261,8 @@ class TaskRunner:
         owner = f"{binding.worker_id}:{binding.client_instance_id}:session_scan:first_screen"
         lease: UiLockLease | None = None
         sidecar_scan_duration_ms: int | None = None
+        scan_process_started = False
+        scan_terminal_emitted = False
         try:
             with self.task_lock:
                 if not self._can_start_new_flow(binding):
@@ -5216,6 +5294,7 @@ class TaskRunner:
                 lease.start_auto_renew()
                 self.current_ui_lock = lease
             self.current_step = "first_screen_session_scan"
+            scan_process_started = True
             if not self._can_start_new_flow(binding):
                 return
             if self._high_priority_active():
@@ -5358,6 +5437,7 @@ class TaskRunner:
                     "session_count": self.c2_stats["last_scan_sessions"],
                 }
             )
+            scan_terminal_emitted = True
             append_log(
                 "INFO",
                 "c2_session_scan_reported",
@@ -5379,6 +5459,7 @@ class TaskRunner:
             self._emit_runtime_process(
                 {"event": "scan_failed", "error_code": exc.code}
             )
+            scan_terminal_emitted = True
             append_log("WARN", "c2_session_scan_lock_skipped", str(exc), error_code=exc.code, metadata=exc.data)
         except Exception as exc:
             self.c2_stats["last_error"] = str(exc)
@@ -5388,11 +5469,14 @@ class TaskRunner:
                     "error_code": type(exc).__name__,
                 }
             )
+            scan_terminal_emitted = True
             append_log("ERROR", "c2_session_scan_failed", str(exc))
             self.on_error(f"C2 会话扫描失败：{exc}")
         finally:
             if lease:
                 self._release_current_ui_lock(reason="session_scan_finished")
+            if scan_process_started and not scan_terminal_emitted:
+                self._emit_runtime_process({"event": "scan_cancelled"})
             self.current_step = None
 
     def _enqueue_visible_hits(self, payload: dict[str, Any], result: dict[str, Any] | None, *, sidecar_payload: dict[str, Any] | None = None) -> None:
@@ -9425,6 +9509,7 @@ class TaskRunner:
             self._record_possible_ai_send(
                 target=target,
                 reply_action_id=claim.reply_action_id,
+                reply_text=final_send_text,
                 reply_text_hash=actual_hash,
                 reserved_worker_stable_id=reserved_send_stable_id,
                 pre_frame_id=pre_send_frame_id,
@@ -9671,6 +9756,9 @@ class TaskRunner:
                 rpa_session_key="",
                 remark_code=target.remark_code or "",
                 target_mode="current",
+                expected_confirmed_self_text=(
+                    self._confirmed_ai_reply_text_for_read(target)
+                ),
                 max_duration_seconds=20,
                 excluded_voice_anchor_keys=sorted(excluded_voice_anchor_keys),
                 cancel_check=action_cancel_requested,
@@ -10062,6 +10150,9 @@ class TaskRunner:
                     selected_target_fingerprint=fingerprint,
                     remark_code=target.remark_code or "",
                     target_mode="current",
+                    expected_confirmed_self_text=(
+                        self._confirmed_ai_reply_text_for_read(target)
+                    ),
                     max_duration_seconds=CONFIG.c2_voice_transcribe_max_duration_seconds,
                     action_journal=journal,
                     cancel_check=action_cancel_requested,
@@ -10582,6 +10673,9 @@ class TaskRunner:
                 rpa_session_key="",
                 remark_code=target.remark_code or "",
                 target_mode="current",
+                expected_confirmed_self_text=(
+                    self._confirmed_ai_reply_text_for_read(target)
+                ),
                 max_duration_seconds=20,
                 cancel_check=action_cancel_requested,
             )
@@ -11810,6 +11904,9 @@ class TaskRunner:
                 return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS"}
             effective_target = target
             target_label = str(effective_target.remark_code or "").strip()
+            expected_confirmed_self_text = (
+                self._confirmed_ai_reply_text_for_read(target)
+            )
             real_time_visible_metadata: dict[str, Any] = {}
             visible_source = ""
             fallback_target_mode = ""
@@ -11884,6 +11981,9 @@ class TaskRunner:
                     target_mode=locate_mode,
                     visible_session_candidate=effective_target.raw.get("visible_session_candidate") if visible_target and isinstance(effective_target.raw, dict) else None,
                     capture_initial_messages=not friend_activation_read,
+                    expected_confirmed_self_text=(
+                        expected_confirmed_self_text
+                    ),
                     max_duration_seconds=20 if locate_mode == "current" else 30 if visible_target else 90,
                     cancel_check=action_cancel_requested,
                 )
@@ -12142,6 +12242,9 @@ class TaskRunner:
                     rpa_session_key="",
                     remark_code=effective_target.remark_code or "",
                     target_mode="current",
+                    expected_confirmed_self_text=(
+                        expected_confirmed_self_text
+                    ),
                     max_duration_seconds=20,
                     cancel_check=action_cancel_requested,
                 )
