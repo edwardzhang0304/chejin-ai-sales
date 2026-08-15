@@ -224,7 +224,15 @@ class WechatWin32OcrSessionRowTest(unittest.TestCase):
     def test_equal_pixels_at_different_timepoints_get_distinct_frame_ids(self):
         frame = Image.new("RGB", (980, 860), "white")
         geometry = {"width": 980, "height": 860}
-        with patch.object(sidecar, "window_dpi_scale", return_value=1.0):
+        with (
+            patch.object(sidecar, "window_dpi_scale", return_value=1.0),
+            patch.object(sidecar.time, "monotonic_ns", return_value=510703000000),
+            patch.object(
+                sidecar.os,
+                "urandom",
+                side_effect=(b"a" * 8, b"b" * 8),
+            ),
+        ):
             first = sidecar.immutable_frame_pixel_evidence(
                 frame, hwnd=101, geometry=geometry
             )

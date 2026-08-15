@@ -2338,7 +2338,7 @@ def immutable_frame_pixel_evidence(
         # A frame id identifies one physical capture, not merely equal pixels.
         # Equal screenshots at S0/S1/S2 must still remain separate timepoints.
         "frame_id": (
-            f"frame:{time.monotonic_ns()}:{full_digest[:16]}"
+            f"frame:{time.monotonic_ns()}:{os.urandom(8).hex()}:{full_digest[:16]}"
         ),
         "screenshot_sha256": full_digest,
         "hwnd": int(hwnd or 0),
