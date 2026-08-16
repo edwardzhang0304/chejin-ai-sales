@@ -7,7 +7,6 @@ import json
 from typing import Any, Callable
 
 from .wechat import (
-    MEDIA_ROLE_EDGE_CONTINUITY_RATIO,
     attach_image_physical_anchors,
     detect_visual_image_bubbles,
     explained_non_image_conflict,
@@ -96,23 +95,13 @@ def image_candidates_without_reliable_typed_message_conflicts(
                 side=image_role,
                 regions=protected_regions,
             )
-            if (
-                typed_conflict is not None
-                and typed_conflict["message_type"] == "text"
-                and (
-                    candidate.get(
-                        "role_facing_edge_surface_continuity"
-                    )
-                    is None
-                    or float(
-                        candidate.get(
-                            "role_facing_edge_surface_continuity"
-                        )
-                    )
-                    >= MEDIA_ROLE_EDGE_CONTINUITY_RATIO
-                )
-            ):
-                typed_conflict = None
+            # Type arbitration is monotonic.  Once the chat parser has
+            # established a text/voice row with trusted sender-role evidence,
+            # a weaker structural surface candidate must not replace it.
+            # Bubble-edge continuity is useful while discovering media, but a
+            # normal WeChat text bubble also has a continuous role-facing edge;
+            # it is therefore not evidence capable of overturning a reliable
+            # message type.
         if typed_conflict is None:
             kept.append(dict(candidate))
         elif diagnostics is not None:
@@ -164,6 +153,14 @@ def messages_outside_image_bubbles(
         if not isinstance(item, dict):
             continue
         if str(item.get("type") or item.get("message_type") or "").lower() == "image":
+            kept.append(dict(item))
+            continue
+        # Final defensive gate: even if an upstream/reused structural image
+        # observation overlaps this row, a reliably typed text/voice fact is
+        # monotonic and cannot be erased during merge.  OCR-like fragments
+        # inside a real image do not pass explained_non_image_regions() unless
+        # they also carry trusted chat-row role/type evidence.
+        if explained_non_image_regions([item]):
             kept.append(dict(item))
             continue
         rect = _surface_bounds(item.get("bubble_rect"))

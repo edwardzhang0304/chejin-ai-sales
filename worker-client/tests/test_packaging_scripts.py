@@ -184,7 +184,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("delivery ZIP does not contain the packaged runtime directory", workflow)
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v0.9.13-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v0.9.14-windows-x64.delivery.json", workflow)
         self.assertIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn("vision_credential_embedded", workflow)
         self.assertIn("vision_configuration_locked", workflow)
@@ -506,7 +506,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "dd9730c20e798fcc858912c77aa095ea9bbf4faa"
+                        "53288af9051b797a80428491190476f65be2abc8"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -518,6 +518,10 @@ class PackagingScriptsTest(unittest.TestCase):
                             "reliable_message_type_before_structural_"
                             "image_arbitration"
                         ),
+                        (
+                            "monotonic_reliable_text_voice_type_"
+                            "arbitration"
+                        ),
                         "voice_prepare_execute_single_target_contract",
                         "continuous_voice_tracking_edges_contract",
                         "unified_voice_observation_sequence_arbitration",
@@ -526,7 +530,7 @@ class PackagingScriptsTest(unittest.TestCase):
                             "settlement"
                         ),
                         "ambiguous_voice_finite_terminal_settlement",
-                        "c2_contract_0_9_13_generated_schema",
+                        "c2_contract_0_9_14_generated_schema",
                         "bounded_send_foreground_focus_recovery_contract",
                         (
                             "brain_soft_evidence_clarification_and_"
@@ -560,10 +564,10 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["chejin_overlays"],
         )
         self.assertIn(
-            "dd9730c20e798fcc858912c77aa095ea9bbf4faa",
+            "53288af9051b797a80428491190476f65be2abc8",
             provenance["integration_note"],
         )
-        self.assertIn("0.9.13", provenance["integration_note"])
+        self.assertIn("0.9.14", provenance["integration_note"])
         self.assertIn(
             "immutable_visible_scan_frame_reuse_contract",
             provenance["chejin_overlays"],
@@ -583,7 +587,7 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["integration_note"],
         )
         self.assertIn(
-            "可靠消息类型优先于结构图片且不依赖动作成功",
+            "可靠文字/语音类型一经确认即不可被结构图片覆盖且不依赖动作成功",
             provenance["integration_note"],
         )
         self.assertIn(
@@ -916,7 +920,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "0.9.13"', workflow)
+        self.assertIn('version -ne "0.9.14"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)

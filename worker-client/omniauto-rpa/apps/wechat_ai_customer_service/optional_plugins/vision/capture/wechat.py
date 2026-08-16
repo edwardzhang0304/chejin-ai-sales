@@ -1173,14 +1173,12 @@ def detect_visual_image_bubbles(
                 side=side,
                 regions=protected_regions,
             )
-            reliable_type_veto = bool(
-                typed_conflict is not None
-                and (
-                    typed_conflict["message_type"] == "voice"
-                    or role_edge_continuity
-                    < MEDIA_ROLE_EDGE_CONTINUITY_RATIO
-                )
-            )
+            # Reliable type evidence is terminal for this frame.  Structural
+            # media geometry is deliberately weaker evidence and must never
+            # turn a trusted text or voice row back into an image.  In
+            # particular, role-facing edge continuity cannot distinguish a
+            # solid WeChat text bubble from an image surface.
+            reliable_type_veto = typed_conflict is not None
             if reliable_type_veto:
                 if diagnostics is not None:
                     diagnostics.append(

@@ -30,7 +30,7 @@ def test_time_window_evidence_export_is_read_only_redacted_and_complete(tmp_path
     (package_dir / "fast-uat-manifest.json").write_text(
         json.dumps(
             {
-                "version": "0.9.13",
+                "version": "0.9.14",
                 "git_commit": "commit-123",
                 "git_branch": "codex/gray-release-0.9.x",
                 "git_dirty": False,
@@ -41,7 +41,7 @@ def test_time_window_evidence_export_is_read_only_redacted_and_complete(tmp_path
     )
     contract = {
         "contract_version": 3,
-        "contract_revision": "0.9.13",
+        "contract_revision": "0.9.14",
         "observation_schema_version": 3,
     }
     (package_dir / "app" / "contracts" / "c2_contract_v3.json").write_text(
@@ -186,7 +186,7 @@ def test_time_window_evidence_export_is_read_only_redacted_and_complete(tmp_path
     assert "send-secret" not in combined
     assert "13800138000" not in combined
     assert "客户原文" not in combined
-    assert manifest["build"]["worker_version"] == "0.9.13"
+    assert manifest["build"]["worker_version"] == "0.9.14"
     assert manifest["worker"]["worker_id"] == "worker-1"
     assert manifest["worker"]["client_instance_id"] == "client-1"
     assert related_ids["conversation_id"] == ["conversation-1"]
