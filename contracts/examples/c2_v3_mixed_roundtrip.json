@@ -64,6 +64,7 @@
         "reserved_worker_stable_id": "worker-message-2",
         "pre_observation_id": "fixture-voice-1",
         "post_observation_id": "fixture-voice-1",
+        "selected_action_token": "fixture-voice-token-1",
         "binding_confirmed": true
       }
         },
@@ -73,6 +74,7 @@
             "reserved_worker_stable_id": "worker-message-2",
             "pre_observation_id": "fixture-voice-1",
             "post_observation_id": "fixture-voice-1",
+            "selected_action_token": "fixture-voice-token-1",
             "binding_confirmed": true
           }
         },

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import ast
+from contextlib import contextmanager
 import copy
 import hashlib
 import json
 from pathlib import Path
-
-import pytest
+import re
+import unittest
 
 from chejin_worker_client.message_identity_commit import (
     CommittedMessage,
@@ -25,6 +26,49 @@ from chejin_worker_client.wechat_c2 import (
 
 
 CONVERSATION_ID = "conversation-identity-lifecycle"
+
+
+def _parametrize(argnames, argvalues):
+    """Keep table-driven tests runnable by both unittest and pytest."""
+
+    names = (
+        tuple(argnames)
+        if isinstance(argnames, (tuple, list))
+        else tuple(part.strip() for part in str(argnames).split(","))
+    )
+
+    def decorate(function):
+        def wrapped():
+            for raw_values in argvalues:
+                values = raw_values if len(names) > 1 else (raw_values,)
+                function(*values)
+
+        wrapped.__name__ = function.__name__
+        wrapped.__doc__ = function.__doc__
+        return wrapped
+
+    return decorate
+
+
+@contextmanager
+def _raises(exception_type, *, match: str = ""):
+    try:
+        yield
+    except exception_type as exc:
+        if match and re.search(match, str(exc)) is None:
+            raise AssertionError(
+                f"exception {exc!r} does not match {match!r}"
+            ) from exc
+    else:
+        raise AssertionError(f"{exception_type.__name__} was not raised")
+
+
+def load_tests(_loader, _tests, _pattern):
+    suite = unittest.TestSuite()
+    for name, value in sorted(globals().items()):
+        if name.startswith("test_") and callable(value):
+            suite.addTest(unittest.FunctionTestCase(value, description=name))
+    return suite
 
 
 def _observation(
@@ -118,7 +162,7 @@ def _observation(
     return item
 
 
-@pytest.mark.parametrize(
+@_parametrize(
     ("message_type", "basis"),
     [
         ("text", MessageCommitBasis.HISTORICAL_CHECKPOINT_ALIGNMENT),
@@ -168,7 +212,7 @@ def test_commit_gate_preserves_existing_worker_sequence_source_key_bytes():
     )
 
 
-@pytest.mark.parametrize(
+@_parametrize(
     "runtime_object",
     [
         RuntimeIdentityObject.FRAME_OBSERVATION,
@@ -201,9 +245,9 @@ def test_noncommitted_runtime_objects_hit_real_source_and_v3_gates(
         remark_code="CJIDM001",
         authorization_revision="revision-identity-consumer-matrix",
     )
-    with pytest.raises(ValueError, match="C2_IMAGE_IDENTITY_CONTRACT_INVALID"):
+    with _raises(ValueError, match="C2_IMAGE_IDENTITY_CONTRACT_INVALID"):
         image_observation_source_key(target, item)
-    with pytest.raises(ValueError, match="C2_IMAGE_IDENTITY_CONTRACT_INVALID"):
+    with _raises(ValueError, match="C2_IMAGE_IDENTITY_CONTRACT_INVALID"):
         build_message_ingest_payload(
             target,
             {
@@ -215,7 +259,7 @@ def test_noncommitted_runtime_objects_hit_real_source_and_v3_gates(
         )
 
 
-@pytest.mark.parametrize(
+@_parametrize(
     ("field", "value"),
     [
         ("_worker_committed_message", None),
@@ -242,7 +286,7 @@ def test_missing_blank_unknown_and_contradictory_identity_fail_closed(field, val
     assert isinstance(result, IdentityCommitRejection)
 
 
-@pytest.mark.parametrize("message_type", ["voice", "image"])
+@_parametrize("message_type", ["voice", "image"])
 def test_media_with_reserved_id_but_no_confirmed_receipt_is_not_committed(message_type):
     basis = (
         MessageCommitBasis.CONFIRMED_VOICE_ACTION
@@ -342,7 +386,7 @@ def test_each_voice_receipt_field_is_mandatory():
         assert isinstance(result, IdentityCommitRejection), field
 
 
-@pytest.mark.parametrize("message_type", ["voice", "image"])
+@_parametrize("message_type", ["voice", "image"])
 def test_historical_media_rejects_single_sided_or_order_only_proof(message_type):
     item = _observation(
         message_type=message_type,
@@ -360,7 +404,7 @@ def test_historical_media_rejects_single_sided_or_order_only_proof(message_type)
         assert isinstance(result, IdentityCommitRejection), match_basis
 
 
-@pytest.mark.parametrize("message_type", ["voice", "image"])
+@_parametrize("message_type", ["voice", "image"])
 def test_action_summary_and_commit_record_must_describe_the_same_receipt(message_type):
     basis = (
         MessageCommitBasis.CONFIRMED_VOICE_ACTION
