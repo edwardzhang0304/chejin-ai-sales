@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "category_id": "policies",
+  "display_name": "车金业务政策",
+  "item_title_field": "title",
+  "fields": [
+    {"id": "title", "label": "标题", "type": "short_text", "required": true},
+    {"id": "keywords", "label": "触发关键词", "type": "tags", "required": false},
+    {"id": "policy_type", "label": "政策类型", "type": "short_text", "required": true},
+    {"id": "answer", "label": "处理规则", "type": "long_text", "required": true},
+    {"id": "applicability_scope", "label": "适用范围", "type": "short_text", "required": false, "default": "global"},
+    {"id": "additional_details", "label": "补充信息", "type": "object", "required": false}
+  ]
+}
