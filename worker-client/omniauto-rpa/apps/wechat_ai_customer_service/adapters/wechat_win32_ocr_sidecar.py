@@ -245,6 +245,18 @@ C2_SOURCE_MESSAGE_TRANSPORT_FIELDS = frozenset(
         "source_message_transport_fields"
     ]
 )
+C2_VOICE_ACTION_BINDING_CONTRACT = dict(
+    _C2_GENERATED_SCHEMA["voice_action_binding_contract"]
+)
+C2_FRAME_ACTION_BINDING_CONTAINER = str(
+    C2_VOICE_ACTION_BINDING_CONTRACT["frame_binding_container"]
+)
+C2_FRAME_ACTION_BINDING_FIELDS = tuple(
+    str(value)
+    for value in C2_VOICE_ACTION_BINDING_CONTRACT[
+        "frame_binding_fields"
+    ]
+)
 C2_TARGET_LOCATION_RECOVERY_CONTRACT = dict(
     _C2_GENERATED_SCHEMA["target_location_recovery_contract"]
 )
@@ -2964,6 +2976,8 @@ def _bind_voice_transcripts_for_action(
     *,
     canonical_voice_action_id: str,
     reserved_worker_stable_id: str,
+    selected_action_token: str,
+    pre_observation_id: str,
 ) -> list[dict[str, Any]]:
     anchor_role = voice_anchor_sender_role(anchor, image_size)
     anchor_keys = sorted(voice_context_anchor_exclusion_keys(anchor, image_size))
@@ -2980,8 +2994,18 @@ def _bind_voice_transcripts_for_action(
         item.update(
             {
                 "type": "voice",
-                "canonical_voice_action_id": canonical_voice_action_id,
-                "reserved_worker_stable_id": reserved_worker_stable_id,
+                # This is an in-memory action receipt, not formal message
+                # identity.  build_message_observations_v3 projects it beside
+                # source_message and the execute flow consumes it before the
+                # observations leave the Sidecar.
+                "_frame_action_binding": {
+                    "canonical_voice_action_id": canonical_voice_action_id,
+                    "reserved_worker_stable_id": reserved_worker_stable_id,
+                    "selected_action_token": selected_action_token,
+                    "pre_observation_id": pre_observation_id,
+                    "post_observation_id": "",
+                    "binding_confirmed": True,
+                },
                 "voice_anchor": {
                     "anchor_key": str(anchor.get("anchor_key") or ""),
                     "anchor_stable_key": str(anchor.get("anchor_stable_key") or ""),
@@ -3001,6 +3025,47 @@ def _bind_voice_transcripts_for_action(
         bound.append(item)
     combined = [item for item in bound if message_is_combined_voice_transcript_record(item)]
     return combined or bound
+
+
+def confirmed_voice_frame_action_observations(
+    observations: list[dict[str, Any]],
+    *,
+    canonical_voice_action_id: str,
+    reserved_worker_stable_id: str,
+    selected_action_token: str,
+    pre_observation_id: str,
+) -> list[dict[str, Any]]:
+    """Select the exact post observation using only frame-local action proof."""
+
+    confirmed: list[dict[str, Any]] = []
+    expected = {
+        "canonical_voice_action_id": canonical_voice_action_id,
+        "reserved_worker_stable_id": reserved_worker_stable_id,
+        "selected_action_token": selected_action_token,
+        "pre_observation_id": pre_observation_id,
+    }
+    if any(not str(value or "").strip() for value in expected.values()):
+        return []
+    for item in observations:
+        if not isinstance(item, dict):
+            continue
+        binding = item.get(C2_FRAME_ACTION_BINDING_CONTAINER)
+        if not isinstance(binding, dict):
+            continue
+        observation_id = str(item.get("observation_id") or "").strip()
+        if (
+            observation_id
+            and all(
+                str(binding.get(key) or "").strip()
+                == str(value or "").strip()
+                for key, value in expected.items()
+            )
+            and str(binding.get("post_observation_id") or "").strip()
+            == observation_id
+            and binding.get("binding_confirmed") is True
+        ):
+            confirmed.append(item)
+    return confirmed
 
 
 def execute_voice_action_payload(
@@ -3040,6 +3105,9 @@ def execute_voice_action_payload(
     if (
         not journal.get("ok")
         or journal.get("action_phase") != "not_attempted"
+        or not str(canonical_voice_action_id or "").strip()
+        or not str(reserved_worker_stable_id or "").strip()
+        or any(not str(value or "").strip() for value in expected.values())
         or str(journal_payload.get("canonical_action_id") or "") != canonical_voice_action_id
         or str(journal_payload.get("reserved_worker_stable_id") or "") != reserved_worker_stable_id
         or any(str(prepare_evidence.get(key) or "") != str(value) for key, value in expected.items())
@@ -3346,6 +3414,8 @@ def execute_voice_action_payload(
                 "confirmed_action_mapping": {
                     "canonical_action_id": canonical_voice_action_id,
                     "reserved_worker_stable_id": reserved_worker_stable_id,
+                    "selected_action_token": selected_action_token,
+                    "pre_observation_id": selected_pre_observation_id,
                     "binding_confirmed": True,
                     "post_observation_id": post_observation_id,
                     "derived_observation_ids": [],
@@ -3386,6 +3456,8 @@ def execute_voice_action_payload(
             "confirmed_action_mapping": {
                 "canonical_action_id": canonical_voice_action_id,
                 "reserved_worker_stable_id": reserved_worker_stable_id,
+                "selected_action_token": selected_action_token,
+                "pre_observation_id": selected_pre_observation_id,
                 "binding_confirmed": False,
                 "post_observation_id": "",
                 "derived_observation_ids": [],
@@ -3439,6 +3511,8 @@ def execute_voice_action_payload(
             image_size,
             canonical_voice_action_id=canonical_voice_action_id,
             reserved_worker_stable_id=reserved_worker_stable_id,
+            selected_action_token=selected_action_token,
+            pre_observation_id=selected_pre_observation_id,
         )
         if len(bound) == 1:
             break
@@ -3456,11 +3530,13 @@ def execute_voice_action_payload(
         final_screenshot,
         final_path,
     )
-    action_observations = [
-        item for item in observations
-        if isinstance(item.get("source_message"), dict)
-        and str(item["source_message"].get("canonical_voice_action_id") or "") == canonical_voice_action_id
-    ]
+    action_observations = confirmed_voice_frame_action_observations(
+        observations,
+        canonical_voice_action_id=canonical_voice_action_id,
+        reserved_worker_stable_id=reserved_worker_stable_id,
+        selected_action_token=selected_action_token,
+        pre_observation_id=selected_pre_observation_id,
+    )
     if len(action_observations) != 1:
         write_action_phase_journal(
             action_journal_path,
@@ -3498,6 +3574,8 @@ def execute_voice_action_payload(
             "confirmed_action_mapping": {
                 "canonical_action_id": canonical_voice_action_id,
                 "reserved_worker_stable_id": reserved_worker_stable_id,
+                "selected_action_token": selected_action_token,
+                "pre_observation_id": selected_pre_observation_id,
                 "binding_confirmed": False,
                 "post_observation_id": "",
                 "derived_observation_ids": [],
@@ -3552,6 +3630,8 @@ def execute_voice_action_payload(
         "confirmed_action_mapping": {
             "canonical_action_id": canonical_voice_action_id,
             "reserved_worker_stable_id": reserved_worker_stable_id,
+            "selected_action_token": selected_action_token,
+            "pre_observation_id": selected_pre_observation_id,
             "binding_confirmed": True,
             "post_observation_id": post_observation_id,
             "derived_observation_ids": [],
@@ -3567,7 +3647,14 @@ def execute_voice_action_payload(
             }
         ],
         "messages": authoritative_messages,
-        "observations": observations,
+        "observations": [
+            {
+                key: value
+                for key, value in observation.items()
+                if key != C2_FRAME_ACTION_BINDING_CONTAINER
+            }
+            for observation in observations
+        ],
         "target_confirmation": target_confirmation,
         "final_frame_reusable": True,
         "ui_action_performed": True,
@@ -5543,6 +5630,20 @@ def build_message_observations_v3(
             "quality_flags": quality_flags,
             "source_message": source_message,
         }
+        frame_action_binding = (
+            message.get("_frame_action_binding")
+            if isinstance(message.get("_frame_action_binding"), dict)
+            else None
+        )
+        if frame_action_binding is not None:
+            projected_binding = {
+                field: frame_action_binding.get(field)
+                for field in C2_FRAME_ACTION_BINDING_FIELDS
+            }
+            projected_binding["post_observation_id"] = observation_id
+            observation[C2_FRAME_ACTION_BINDING_CONTAINER] = (
+                projected_binding
+            )
         if row_kind == "image_bubble":
             observation["item_state"] = "discovered"
         contract_errors = validate_message_observation_v3(observation)

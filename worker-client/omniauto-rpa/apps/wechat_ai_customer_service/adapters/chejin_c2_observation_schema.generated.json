@@ -1,8 +1,8 @@
 {
   "generated_file": true,
   "source": "contracts/c2_contract_v3.json",
-  "contract_revision": "0.9.17",
-  "contract_sha256": "a529986901e9e23e2cbfc57472229f680903487c67747668212b68930b782a5d",
+  "contract_revision": "0.9.18",
+  "contract_sha256": "cda58c5b0cfb53d21655f87128b35029b434d275ac929a23c09b0f8265b2919a",
   "observation_schema_version": 3,
   "action_phases": [
     "not_attempted",
@@ -878,6 +878,94 @@
       "voice_state"
     ],
     "preflight_rule": "persist the original complete outbox before compaction, size validation, or partitioning; transport compaction may remove only fields outside these allowlists"
+  },
+  "voice_action_binding_contract": {
+    "owner": "omniauto",
+    "stages": [
+      "prepare",
+      "execute"
+    ],
+    "prepare_ui_action_performed": false,
+    "required_prepare_response_fields": [
+      "pre_frame_id",
+      "selected_pre_observation_id",
+      "selected_action_token",
+      "selected_target_fingerprint",
+      "candidate_group_count",
+      "ui_action_performed"
+    ],
+    "required_request_fields": [
+      "canonical_voice_action_id",
+      "reserved_worker_stable_id",
+      "pre_frame_id",
+      "selected_pre_observation_id",
+      "selected_action_token",
+      "selected_target_fingerprint"
+    ],
+    "required_response_fields": [
+      "voice_action_stage",
+      "canonical_voice_action_id",
+      "reserved_worker_stable_id",
+      "pre_frame_id",
+      "post_frame_id",
+      "selected_pre_observation_id",
+      "selected_action_token",
+      "selected_target_fingerprint",
+      "transcript_binding_status",
+      "transcript_binding_method",
+      "binding_candidate_count",
+      "tracking_frame_ids",
+      "tracking_edges",
+      "confirmed_action_mapping"
+    ],
+    "frame_binding_container": "frame_action_binding",
+    "frame_binding_fields": [
+      "canonical_voice_action_id",
+      "reserved_worker_stable_id",
+      "selected_action_token",
+      "pre_observation_id",
+      "post_observation_id",
+      "binding_confirmed"
+    ],
+    "frame_binding_lifetime": "execute_memory_only_until_confirmed_action_mapping_is_built",
+    "frame_binding_projection_rule": "build_message_observations_v3_may_project_the_in_memory_binding_beside_source_message_for_the_exact_execute_call_only_then_must_strip_it_before_returning_formal_observations",
+    "formal_source_message_forbidden_fields": [
+      "canonical_voice_action_id",
+      "reserved_worker_stable_id",
+      "selected_action_token",
+      "pre_observation_id",
+      "post_observation_id",
+      "binding_confirmed"
+    ],
+    "confirmed_mapping_rule": "action_id_reserved_id_action_token_pre_observation_id_and_exactly_one_post_observation_id_must_match_the_execute_request_before_binding_confirmed",
+    "binding_statuses": [
+      "confirmed",
+      "ambiguous",
+      "failed"
+    ],
+    "identity_bound_terminal_statuses": [
+      "confirmed",
+      "failed"
+    ],
+    "identity_unbound_statuses": [
+      "not_attempted",
+      "ambiguous"
+    ],
+    "confirmed_methods": [
+      "native_source_id",
+      "continuous_target_tracking",
+      "neighbor_scroll_alignment"
+    ],
+    "confirmed_candidate_count": 1,
+    "continuous_tracking_rule": "at_least_three_real_capture_frame_ids_and_a_contiguous_chain_of_exactly_adjacent_unique_tracking_edges_from_selected_pre_observation_to_final_bound_observation",
+    "forbidden_compatibility_fields": [
+      "tracking_candidate_counts"
+    ],
+    "cancel_before_trigger_rule": "token_or_target_revalidation_failure_must_return_cancelled_before_trigger_with_zero_ui_actions_and_burn_the_reservation",
+    "ambiguous_terminal_rule": "persist_quarantined_without_body_binding_or_repeat_click_then_allow_at_most_two_evidence_only_reads_or_120_seconds_before_one_idempotent_handoff",
+    "neighbor_alignment_rule": "at_least_two_trusted_independent_neighbors_with_consistent_measured_scroll_delta_and_exactly_one_same_role_voice_at_the_projected_target_slot",
+    "worker_behavior": "validate_and_forward_sidecar_mapping_without_anchor_content_or_coordinate_reconstruction",
+    "invalid_behavior": "C2_VOICE_IDENTITY_CONTRACT_INVALID"
   },
   "target_location_recovery_contract": {
     "owner": "omniauto_observation_worker_execution",

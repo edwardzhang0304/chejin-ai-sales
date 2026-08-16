@@ -1,10 +1,10 @@
 {
   "contract_version": 3,
-  "contract_revision": "0.9.17",
+  "contract_revision": "0.9.18",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "performance_fast_path_contract": {
-    "release": "0.9.17",
+    "release": "0.9.18",
     "business_semantics_unchanged": true,
     "flags": [
       "CHEJIN_TASK_SAFE_WAKE_ENABLED",
@@ -1391,6 +1391,26 @@
       "tracking_edges",
       "confirmed_action_mapping"
     ],
+    "frame_binding_container": "frame_action_binding",
+    "frame_binding_fields": [
+      "canonical_voice_action_id",
+      "reserved_worker_stable_id",
+      "selected_action_token",
+      "pre_observation_id",
+      "post_observation_id",
+      "binding_confirmed"
+    ],
+    "frame_binding_lifetime": "execute_memory_only_until_confirmed_action_mapping_is_built",
+    "frame_binding_projection_rule": "build_message_observations_v3_may_project_the_in_memory_binding_beside_source_message_for_the_exact_execute_call_only_then_must_strip_it_before_returning_formal_observations",
+    "formal_source_message_forbidden_fields": [
+      "canonical_voice_action_id",
+      "reserved_worker_stable_id",
+      "selected_action_token",
+      "pre_observation_id",
+      "post_observation_id",
+      "binding_confirmed"
+    ],
+    "confirmed_mapping_rule": "action_id_reserved_id_action_token_pre_observation_id_and_exactly_one_post_observation_id_must_match_the_execute_request_before_binding_confirmed",
     "binding_statuses": ["confirmed", "ambiguous", "failed"],
     "identity_bound_terminal_statuses": ["confirmed", "failed"],
     "identity_unbound_statuses": ["not_attempted", "ambiguous"],

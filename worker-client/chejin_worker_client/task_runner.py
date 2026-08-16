@@ -479,6 +479,7 @@ def confirmed_voice_action_mapping(
     reserved_worker_stable_id: str,
     expected_pre_frame_id: str,
     pre_observation_id: str,
+    selected_action_token: str,
     selected_anchor_keys: set[str],
 ) -> dict[str, Any]:
     """Validate the Sidecar decision without reconstructing its binding."""
@@ -623,6 +624,10 @@ def confirmed_voice_action_mapping(
             mapping.get("reserved_worker_stable_id") or ""
         ).strip()
         != reserved_worker_stable_id
+        or str(mapping.get("selected_action_token") or "").strip()
+        != str(selected_action_token or "").strip()
+        or str(mapping.get("pre_observation_id") or "").strip()
+        != str(pre_observation_id or "").strip()
         or mapping.get("binding_confirmed") is not True
         or not post_observation_id
         or observation_ids.count(post_observation_id) != 1
@@ -810,6 +815,7 @@ def confirmed_voice_action_mapping(
     return {
         "canonical_action_id": canonical_action_id,
         "reserved_worker_stable_id": reserved_worker_stable_id,
+        "selected_action_token": selected_action_token,
         "pre_observation_id": pre_observation_id,
         "binding_confirmed": True,
         "post_observation_id": post_observation_id,
@@ -1161,6 +1167,14 @@ def _committed_action_identity_from_journal(
     ).strip()
     sender_role = str(selected.get("sender_role") or "").strip().lower()
     if action_kind == "voice" and not mapping:
+        prepare_evidence = (
+            payload.get("prepare_evidence")
+            if isinstance(payload.get("prepare_evidence"), dict)
+            else {}
+        )
+        selected_action_token = str(
+            prepare_evidence.get("selected_action_token") or ""
+        ).strip()
         selected_pairs = [
             pair
             for pair in (evidence.get("matched_pairs") or [])
@@ -1175,10 +1189,12 @@ def _committed_action_identity_from_journal(
         if (
             evidence.get("alignment_status") == "unique"
             and len(selected_pairs) == 1
+            and selected_action_token
         ):
             mapping = {
                 "canonical_action_id": action_id,
                 "reserved_worker_stable_id": reserved_id,
+                "selected_action_token": selected_action_token,
                 "pre_observation_id": str(
                     selected.get("pre_observation_id") or ""
                 ).strip(),
@@ -11559,6 +11575,14 @@ class TaskRunner:
                     or ""
                 ).strip()
                 == reserved_id
+                and str(
+                    confirmed_mapping.get("selected_action_token") or ""
+                ).strip()
+                == prepare_fields["selected_action_token"]
+                and str(
+                    confirmed_mapping.get("pre_observation_id") or ""
+                ).strip()
+                == selected_id
                 and isinstance(executed.get("ui_action_performed"), bool)
             )
             if execute_state == "voice_transcribe_completed":
@@ -11645,6 +11669,9 @@ class TaskRunner:
                             prepare_fields["pre_frame_id"]
                         ),
                         pre_observation_id=selected_id,
+                        selected_action_token=(
+                            prepare_fields["selected_action_token"]
+                        ),
                         selected_anchor_keys=set(physical_anchor_keys),
                     )
                 except ValueError:
@@ -11830,6 +11857,9 @@ class TaskRunner:
                         prepare_fields["pre_frame_id"]
                     ),
                     pre_observation_id=selected_id,
+                    selected_action_token=(
+                        prepare_fields["selected_action_token"]
+                    ),
                     selected_anchor_keys=set(physical_anchor_keys),
                 )
             except ValueError:
