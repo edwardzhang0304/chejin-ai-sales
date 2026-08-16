@@ -4776,6 +4776,19 @@ Vision、Brain、Handoff 或发送流程。类型仲裁必须单调：一旦当�
 `contract_revision`、OmniAuto 生成 Schema、来源提交、manifest 和 ZIP 文件名必须一致；旧 `0.9.13` 请求必须明确
 revision mismatch，不得静默兼容或覆盖旧包。
 
+### 16.10 0.9.15 车金正式知识种子
+
+`0.9.15` 完整继承 `0.9.14` 的可靠消息类型单调仲裁，只新增经审查的车金正式知识种子导入能力。
+八条知识不得随部署自动写入或自动激活，必须由后端运维依次执行 dry-run、幂等导入和显式 activate；
+导入但未激活的条目不得进入 OmniAuto Knowledge Runtime。两条 `always_include=true` 规则进入每次 Brain
+知识上下文，其余六条只在问题匹配时进入；未匹配时不得强行使用，也不得回退到其他租户的历史知识。
+
+静态 registry、schema 和 resolver 属于车金业务 overlay，只定义分类合同，不包含正式业务条目；八条条目仅
+由后端导入器写入 PostgreSQL。导入、重复导入、冲突失败、激活、回滚和租户隔离必须自动化验证，且不得
+改变 C2 授权、媒体编排、消息身份、Brain 调用次数、Handoff 或 C3 发送流程。`0.9.15` 的 Worker、后端
+合同 revision、OmniAuto 生成 Schema、来源清单、manifest 和 ZIP 文件名必须一致；旧 `0.9.14` 请求必须
+明确 revision mismatch，既有 `gray-v0.9.14` 标签和 ZIP 不得覆盖。
+
 ## 17. 剩余上线前确认清单
 
 - Windows UAT 阻塞项：按 3.2.4 从当前源码、测试、打包、CI 和运行时彻底删除悬浮球、
