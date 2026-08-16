@@ -416,17 +416,33 @@ class WechatMessageEvidence(BaseModel):
             "MESSAGE_IDENTITY_UNCONFIRMED",
             "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
             "C2_MESSAGE_HISTORY_GAP",
+            "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+            "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+            "C2_VOICE_RESULT_AMBIGUOUS",
         }
         for detail in self.flow_gate_details:
             if detail.error_code not in recoverable_identity_codes:
                 continue
+            if detail.gate_scope not in {
+                None,
+                "conversation_identity",
+                "reply_suffix",
+            }:
+                raise ValueError("身份门禁范围不合法")
             if (
-                not detail.gate_scope
-                or detail.min_screen_order is None
-                or detail.max_screen_order is None
-                or not detail.boundary_relation
+                detail.gate_scope == "reply_suffix"
+                and (
+                    detail.min_screen_order is None
+                    or detail.max_screen_order is None
+                    or not detail.boundary_relation
+                )
             ):
-                raise ValueError("身份/历史门禁缺少 AI 回复边界范围证据")
+                raise ValueError("回复后缀门禁缺少 AI 回复边界范围证据")
+            if (
+                detail.gate_scope == "conversation_identity"
+                and detail.boundary_relation not in {None, "unknown"}
+            ):
+                raise ValueError("普通身份门禁不得伪造 AI 回复边界关系")
         if (
             self.ui_frame_invalidated
             and self.authoritative_frame_source

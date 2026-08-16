@@ -102,7 +102,8 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
                 origin_read_run_id="read-1",
                 items=[
                     {
-                        "source_message_key": action_id,
+                        "journal_item_id": action_id,
+                        "action_local_id": action_id,
                         "physical_anchor_keys": ["anchor-a"],
                     }
                 ],

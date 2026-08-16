@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 import inspect
+import importlib.util
+from pathlib import Path
 
 import chejin_worker_client.sequence_alignment as alignment_module
 import chejin_worker_client.task_runner as task_runner_module
@@ -14,6 +16,26 @@ from chejin_worker_client.sequence_alignment import (
     inherited_worker_ids,
 )
 from chejin_worker_client.task_runner import confirmed_voice_action_mapping
+
+
+_MESSAGE_IDENTITY_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "omniauto-rpa"
+    / "apps"
+    / "wechat_ai_customer_service"
+    / "message_identity.py"
+)
+_MESSAGE_IDENTITY_SPEC = importlib.util.spec_from_file_location(
+    "chejin_test_omniauto_message_identity",
+    _MESSAGE_IDENTITY_PATH,
+)
+assert _MESSAGE_IDENTITY_SPEC is not None
+assert _MESSAGE_IDENTITY_SPEC.loader is not None
+_MESSAGE_IDENTITY_MODULE = importlib.util.module_from_spec(
+    _MESSAGE_IDENTITY_SPEC
+)
+_MESSAGE_IDENTITY_SPEC.loader.exec_module(_MESSAGE_IDENTITY_MODULE)
+frame_visual_message_id = _MESSAGE_IDENTITY_MODULE.frame_visual_message_id
 
 
 def observation(
@@ -38,7 +60,7 @@ def observation(
         "sender_role": sender_role,
         "content_clean": content,
         "native_source_message_id": native_id,
-        "canonical_visual_id": visual_id,
+        "frame_visual_id": visual_id,
         "voice_state": "untranscribed" if message_type == "voice" else "not_voice",
     }
     if bubble_rect is not None:
@@ -254,7 +276,7 @@ class SequenceAlignmentTests(unittest.TestCase):
         self.assertEqual(result["new_suffix_observation_ids"], [])
         self.assertEqual(inherited_worker_ids(result), {})
 
-    def test_frame_local_unselected_is_consumed_but_does_not_inherit(self):
+    def test_frame_local_unselected_tail_media_carries_no_durable_identity(self):
         before = [
             observation("text-1", "text", "您好"),
             observation("voice-unselected", "voice", native_id="voice-native"),
@@ -422,13 +444,12 @@ class SequenceAlignmentTests(unittest.TestCase):
         self.assertEqual(
             inherited_worker_ids(result),
             {
-                "voice-upper-after": "worker-message-2",
                 "voice-lower-transcript": "worker-message-3",
             },
         )
         self.assertEqual(result["new_suffix_observation_ids"], [])
 
-    def test_unconfirmed_voice_visual_id_change_remains_unresolved(self):
+    def test_unconfirmed_voice_visual_id_change_remains_ambiguous(self):
         pre = build_pre_action_identity_sequence(
             [
                 observation(
@@ -453,7 +474,7 @@ class SequenceAlignmentTests(unittest.TestCase):
 
         result = self.align(pre, post)
 
-        self.assertEqual(result["alignment_status"], "unresolved")
+        self.assertEqual(result["alignment_status"], "ambiguous")
         self.assertEqual(result["matched_pairs"], [])
 
     def test_same_duration_voice_at_old_position_does_not_inherit(self):
@@ -532,7 +553,7 @@ class SequenceAlignmentTests(unittest.TestCase):
         self.assertEqual(result["matched_pairs"][0]["match_basis"], "native_source_message_id")
         self.assertEqual(result["new_suffix_observation_ids"], ["new"])
 
-    def test_canonical_visual_id_is_a_single_message_strong_anchor(self):
+    def test_frame_visual_id_is_not_a_single_message_strong_anchor(self):
         pre = build_pre_action_identity_sequence(
             [observation("before", "image", visual_id="visual-1")],
             committed_ids={"before": "worker-message-41"},
@@ -543,8 +564,8 @@ class SequenceAlignmentTests(unittest.TestCase):
 
         result = self.align(pre, post)
 
-        self.assertEqual(result["alignment_status"], "unique")
-        self.assertEqual(result["matched_pairs"][0]["match_basis"], "canonical_visual_id")
+        self.assertEqual(result["alignment_status"], "ambiguous")
+        self.assertEqual(result["matched_pairs"], [])
 
     def test_text_identity_survives_page_shift_without_using_coordinates(self):
         pre = build_pre_action_identity_sequence(
@@ -666,7 +687,7 @@ class SequenceAlignmentTests(unittest.TestCase):
         )
         self.assertEqual(result["new_suffix_observation_ids"], ["new-tail"])
 
-    def test_media_visual_id_mismatch_remains_unresolved(self):
+    def test_media_frame_visual_id_mismatch_does_not_create_identity(self):
         pre = build_pre_action_identity_sequence(
             [
                 observation(
@@ -689,7 +710,7 @@ class SequenceAlignmentTests(unittest.TestCase):
 
         result = self.align(pre, post)
 
-        self.assertEqual(result["alignment_status"], "unresolved")
+        self.assertEqual(result["alignment_status"], "ambiguous")
         self.assertEqual(result["matched_pairs"], [])
 
     def test_repeated_text_suffix_has_one_monotonic_alignment(self):
@@ -725,7 +746,7 @@ class SequenceAlignmentTests(unittest.TestCase):
         )
         self.assertEqual(result["new_suffix_observation_ids"], ["new-c"])
 
-    def test_image_ocr_drift_keeps_identity_only_with_canonical_visual_id(self):
+    def test_image_frame_visual_id_never_restores_identity_by_itself(self):
         pre = build_pre_action_identity_sequence(
             [
                 observation(
@@ -750,11 +771,200 @@ class SequenceAlignmentTests(unittest.TestCase):
 
         result = self.align(pre, post)
 
+        self.assertEqual(result["alignment_status"], "ambiguous")
+        self.assertEqual(inherited_worker_ids(result), {})
+
+    def test_one_sided_text_cannot_give_missing_old_voice_to_new_voice(self):
+        pre = build_pre_action_identity_sequence(
+            [
+                observation("old-text", "text", "前文"),
+                observation(
+                    "old-voice-5",
+                    "voice",
+                    "旧语音转写",
+                    sender_role="customer",
+                ),
+            ],
+            committed_ids={
+                "old-text": "worker-message-10",
+                "old-voice-5": "worker-message-11",
+            },
+        )
+        post = build_post_action_observation_sequence(
+            [
+                observation("current-text", "text", "前文"),
+                observation(
+                    "new-voice-3",
+                    "voice",
+                    "",
+                    sender_role="customer",
+                ),
+            ]
+        )
+
+        result = self.align(pre, post)
+
+        self.assertEqual(result["alignment_status"], "ambiguous")
+        self.assertEqual(inherited_worker_ids(result), {})
+        self.assertEqual(result["new_suffix_observation_ids"], [])
+
+    def test_one_sided_text_cannot_give_missing_old_image_to_new_image(self):
+        pre = build_pre_action_identity_sequence(
+            [
+                observation("old-text", "text", "前文"),
+                observation("old-image", "image", ""),
+            ],
+            committed_ids={
+                "old-text": "worker-message-20",
+                "old-image": "worker-message-21",
+            },
+        )
+        post = build_post_action_observation_sequence(
+            [
+                observation("current-text", "text", "前文"),
+                observation("new-image", "image", ""),
+            ]
+        )
+
+        result = self.align(pre, post)
+
+        self.assertEqual(result["alignment_status"], "ambiguous")
+        self.assertEqual(inherited_worker_ids(result), {})
+
+    def test_trailing_text_alone_cannot_prove_leading_media_identity(self):
+        pre = build_pre_action_identity_sequence(
+            [
+                observation("old-image", "image", ""),
+                observation("old-text", "text", "后文"),
+            ],
+            committed_ids={
+                "old-image": "worker-message-30",
+                "old-text": "worker-message-31",
+            },
+        )
+        post = build_post_action_observation_sequence(
+            [
+                observation("new-image", "image", ""),
+                observation("current-text", "text", "后文"),
+            ]
+        )
+
+        result = self.align(pre, post)
+
+        self.assertEqual(result["alignment_status"], "ambiguous")
+        self.assertEqual(inherited_worker_ids(result), {})
+
+    def test_two_unique_historical_boundaries_prove_enclosed_media(self):
+        pre = build_pre_action_identity_sequence(
+            [
+                observation("old-before", "text", "前文"),
+                observation("old-voice", "voice", "已转写语音"),
+                observation("old-after", "text", "后文"),
+            ],
+            committed_ids={
+                "old-before": "worker-message-40",
+                "old-voice": "worker-message-41",
+                "old-after": "worker-message-42",
+            },
+        )
+        post = build_post_action_observation_sequence(
+            [
+                observation("current-before", "text", "前文"),
+                observation("current-voice", "voice", "已转写语音"),
+                observation("current-after", "text", "后文"),
+                observation("new-tail", "text", "新消息"),
+            ]
+        )
+
+        result = self.align(pre, post)
+
+        self.assertEqual(result["alignment_status"], "unique")
+        self.assertEqual(
+            inherited_worker_ids(result)["current-voice"],
+            "worker-message-41",
+        )
+        voice_pair = next(
+            pair
+            for pair in result["matched_pairs"]
+            if pair["post_observation_id"] == "current-voice"
+        )
+        self.assertEqual(
+            voice_pair["match_basis"],
+            "two_sided_historical_context",
+        )
+        self.assertEqual(result["new_suffix_observation_ids"], ["new-tail"])
+
+    def test_real_frame_ids_change_on_scroll_but_mixed_history_still_aligns(self):
+        def observed(
+            observation_id: str,
+            message_type: str,
+            content: str,
+            *,
+            sender_role: str,
+            top: int,
+        ) -> dict:
+            raw = {
+                "id": f"win32_ocr:{observation_id}",
+                "source_adapter": "win32_ocr",
+                "type": message_type,
+                "sender_role": sender_role,
+                "content": content,
+                "bubble_rect": {
+                    "left": 460,
+                    "top": top,
+                    "right": 850,
+                    "bottom": top + 60,
+                },
+                "target_name": "CJNCXB8R",
+                "conversation_type": "private",
+            }
+            return {
+                **observation(
+                    observation_id,
+                    message_type,
+                    content,
+                    sender_role=sender_role,
+                ),
+                "frame_visual_id": frame_visual_message_id(raw),
+                "bubble_rect": raw["bubble_rect"],
+            }
+
+        before = [
+            observed("old-self-1", "text", "欢迎你，很高兴认识你", sender_role="self", top=170),
+            observed("old-voice-5", "voice", "你好，10万块钱左右的二手车有什么推荐吗？", sender_role="customer", top=495),
+            observed("old-self-2", "text", "可以先按你的用车需求筛选合适车型", sender_role="self", top=610),
+        ]
+        after = [
+            observed("current-self-1", "text", "欢迎你，很高兴认识你", sender_role="self", top=40),
+            observed("current-voice-5", "voice", "你好，10万块钱左右的二手车有什么推荐吗？", sender_role="customer", top=262),
+            observed("current-self-2", "text", "可以先按你的用车需求筛选合适车型", sender_role="self", top=430),
+            observed("new-voice-3", "voice", "", sender_role="customer", top=620),
+        ]
+        self.assertNotEqual(
+            before[1]["frame_visual_id"],
+            after[1]["frame_visual_id"],
+        )
+        result = self.align(
+            build_pre_action_identity_sequence(
+                before,
+                committed_ids={
+                    "old-self-1": "worker-message-3",
+                    "old-voice-5": "worker-message-5",
+                    "old-self-2": "worker-message-6",
+                },
+            ),
+            build_post_action_observation_sequence(after),
+        )
         self.assertEqual(result["alignment_status"], "unique")
         self.assertEqual(
             inherited_worker_ids(result),
-            {"image-after": "worker-message-7"},
+            {
+                "current-self-1": "worker-message-3",
+                "current-voice-5": "worker-message-5",
+                "current-self-2": "worker-message-6",
+            },
         )
+        self.assertEqual(result["new_suffix_observation_ids"], ["new-voice-3"])
 
     def test_zero_legal_alignment_is_unresolved_and_has_no_new_suffix(self):
         pre = build_pre_action_identity_sequence(
@@ -1083,11 +1293,21 @@ class SequenceAlignmentTests(unittest.TestCase):
         binding_source = inspect.getsource(
             task_runner_module.confirmed_voice_action_mapping
         )
+        compatibility_source = inspect.getsource(
+            alignment_module._compatible
+        )
+        strong_anchor_source = inspect.getsource(
+            alignment_module._strong_anchor_basis
+        )
         self.assertNotIn("voice_action_journal_anchor_keys", binding_source)
         self.assertNotIn("bubble_rect", binding_source)
         self.assertNotIn("bubble_rect", aligner_source)
         self.assertNotIn("occurrence_index", aligner_source)
         self.assertNotIn("voice_duration", aligner_source)
+        self.assertNotIn("frame_visual_id", compatibility_source)
+        self.assertNotIn("canonical_visual_id", compatibility_source)
+        self.assertNotIn("frame_visual_id", strong_anchor_source)
+        self.assertNotIn("canonical_visual_id", strong_anchor_source)
         self.assertNotIn("source_message_key_from_dedupe", ingest_source)
         self.assertNotIn("ocr_message_identity_context", ingest_source)
 

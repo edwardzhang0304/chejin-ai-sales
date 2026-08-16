@@ -10,6 +10,11 @@ never establish a durable message identity.
 import hashlib
 from typing import Any
 
+from .message_identity_commit import (
+    MessageCommitBasis,
+    committed_identity_record,
+)
+
 from .message_contract import canonical_message_identity_text
 
 
@@ -73,6 +78,22 @@ def observation_sequence_item(
     content = observation.get("content_clean")
     if content is None:
         content = observation.get("content")
+    action_summary = next(
+        (
+            observation.get(key)
+            for key in (
+                "_worker_voice_action_summary",
+                "_worker_image_action_summary",
+            )
+            if isinstance(observation.get(key), dict)
+        ),
+        {},
+    )
+    prior_mapping = (
+        action_summary.get("confirmed_action_mapping")
+        if isinstance(action_summary.get("confirmed_action_mapping"), dict)
+        else {}
+    )
     return {
         "post_observation_id": _token(observation.get("observation_id")),
         "post_sequence_index": int(sequence_index),
@@ -82,10 +103,32 @@ def observation_sequence_item(
         "native_source_message_id": _source_value(
             observation, "native_source_message_id"
         ),
-        "canonical_visual_id": _source_value(
-            observation, "canonical_visual_id"
+        # Frame visual ids are diagnostic/click-local evidence only.  Keep
+        # them in the sequence report so an incident can be reconstructed,
+        # but never use them to establish or reject a cross-round identity.
+        "frame_visual_id": _source_value(
+            observation, "frame_visual_id"
         ),
         "voice_state": _token(observation.get("voice_state")).lower(),
+        "image_visual_fingerprint": _token(
+            (
+                observation.get("image_physical_anchor") or {}
+            ).get("bubble_visual_fingerprint")
+            if isinstance(observation.get("image_physical_anchor"), dict)
+            else ""
+        ).lower(),
+        "prior_confirmed_action_id": _token(
+            prior_mapping.get("canonical_action_id")
+        ),
+        "prior_confirmed_action_post_observation_id": _token(
+            prior_mapping.get("post_observation_id")
+        ),
+        "prior_confirmed_action_binding": (
+            prior_mapping.get("binding_confirmed") is True
+        ),
+        "prior_confirmed_action_image_fingerprint": _token(
+            action_summary.get("image_visual_fingerprint")
+        ).lower(),
     }
 
 
@@ -135,6 +178,7 @@ def build_pre_action_identity_sequence(
     observations: list[Any],
     *,
     committed_ids: dict[str, str] | None = None,
+    provisional_ids: dict[str, str] | None = None,
     selected_observation_id: str = "",
     canonical_action_id: str = "",
     reserved_worker_stable_id: str = "",
@@ -142,6 +186,11 @@ def build_pre_action_identity_sequence(
     committed = {
         _token(key): _token(value)
         for key, value in (committed_ids or {}).items()
+        if _token(key) and _token(value)
+    }
+    provisional = {
+        _token(key): _token(value)
+        for key, value in (provisional_ids or {}).items()
         if _token(key) and _token(value)
     }
     selected_id = _token(selected_observation_id)
@@ -185,6 +234,10 @@ def build_pre_action_identity_sequence(
             )
         else:
             item["identity_state"] = "frame_local_unselected"
+            if observation_id in provisional:
+                item["provisional_worker_stable_id"] = provisional[
+                    observation_id
+                ]
         sequence.append(item)
     return sequence
 
@@ -198,10 +251,6 @@ def _strong_anchor_basis(
     post_native = _token(post.get("native_source_message_id"))
     if pre_native and post_native and pre_native == post_native:
         return "native_source_message_id"
-    pre_visual = _token(pre.get("canonical_visual_id"))
-    post_visual = _token(post.get("canonical_visual_id"))
-    if pre_visual and post_visual and pre_visual == post_visual:
-        return "canonical_visual_id"
     if pre.get("identity_state") == "selected_action":
         action_id = _token(pre.get("canonical_action_id"))
         if (
@@ -214,6 +263,28 @@ def _strong_anchor_basis(
             and confirmed_action_mapping.get("binding_confirmed") is True
         ):
             return "confirmed_action"
+    prior_action_id = _token(pre.get("prior_confirmed_action_id"))
+    prior_post_id = _token(
+        pre.get("prior_confirmed_action_post_observation_id")
+    )
+    if (
+        prior_action_id
+        and prior_post_id
+        and pre.get("prior_confirmed_action_binding") is True
+        and prior_post_id == _token(pre.get("pre_observation_id"))
+        and prior_post_id == _token(post.get("post_observation_id"))
+    ):
+        if _token(pre.get("message_type")) == "image":
+            expected_fingerprint = _token(
+                pre.get("prior_confirmed_action_image_fingerprint")
+            ).lower()
+            if (
+                not expected_fingerprint
+                or expected_fingerprint
+                != _token(post.get("image_visual_fingerprint")).lower()
+            ):
+                return ""
+        return "prior_confirmed_action"
     return ""
 
 
@@ -234,24 +305,9 @@ def _compatible(
     post_native = _token(post.get("native_source_message_id"))
     if pre_native and post_native and pre_native != post_native:
         return False, ""
-    message_type = _token(pre.get("message_type"))
-    pre_visual = _token(pre.get("canonical_visual_id"))
-    post_visual = _token(post.get("canonical_visual_id"))
-    # Text/system visual ids are frame-local OCR geometry fingerprints.  A
-    # viewport scroll rebuilds them even when the ordered message facts are
-    # unchanged, so they may strengthen an equal match but never contradict
-    # the content/role/type sequence.  Media visual ids remain durable safety
-    # evidence and a mismatch must still fail closed.
-    if (
-        pre_visual
-        and post_visual
-        and pre_visual != post_visual
-        and message_type not in {"text", "system"}
-        and strong_basis != "confirmed_action"
-    ):
-        return False, ""
     if pre.get("identity_state") == "selected_action" and not strong_basis:
         return False, ""
+    message_type = _token(pre.get("message_type"))
     if message_type in {"text", "system"} and _token(
         pre.get("normalized_content_hash")
     ) != _token(post.get("normalized_content_hash")):
@@ -289,22 +345,49 @@ def _candidate(
         and _token(item.get("message_type")) in {"text", "system"}
         for item in pre_suffix
     )
-    # Multiple weak committed rows remain the general proof. A single
-    # text/system row is considered separately only after all monotonic
-    # candidates are known, so this is no longer a global minimum-count gate.
-    # A run made solely of voice/image rows cannot prove durable identity by
-    # role, type, and order: after viewport shift, a new same-type media row
-    # can occupy the old row's position. Such a run needs a native/visual/
-    # confirmed-action anchor or surrounding text/system sequence context.
-    proof_sufficient = strong_count > 0 or (
+    # Weak voice/image rows need their own proof.  A text row on only one side
+    # proves that text row, not the neighbouring media: when the old media is
+    # clipped or missed, a new same-role media row can otherwise inherit its
+    # worker id.  A weak committed media row is reusable only when two
+    # already-matched historical boundaries enclose it in this complete,
+    # contiguous frame.  Native ids and confirmed actions remain self-proving.
+    boundary_offsets = {
+        offset
+        for offset, (item, basis) in enumerate(zip(pre_suffix, bases, strict=True))
+        if basis != "ordered_compatible"
+        or (
+            item.get("identity_state") == "committed"
+            and _token(item.get("message_type")) in {"text", "system"}
+        )
+    }
+    weak_media_offsets = [
+        offset
+        for offset, (item, basis) in enumerate(zip(pre_suffix, bases, strict=True))
+        if basis == "ordered_compatible"
+        and item.get("identity_state") == "committed"
+        and _token(item.get("message_type")) in {"voice", "image"}
+    ]
+    weak_media_proven = all(
+        pre_suffix[offset].get("identity_state") == "committed"
+        and any(boundary < offset for boundary in boundary_offsets)
+        and any(boundary > offset for boundary in boundary_offsets)
+        for offset in weak_media_offsets
+    )
+    if weak_media_proven:
+        for offset in weak_media_offsets:
+            bases[offset] = "two_sided_historical_context"
+
+    general_context_proven = strong_count > 0 or (
         committed_count > 1 and weak_text_context_count > 0
     )
+    proof_sufficient = general_context_proven and weak_media_proven
     return {
         "pre_start": pre_start,
         "post_start": post_start,
         "length": len(pre_suffix),
         "bases": bases,
         "proof_sufficient": proof_sufficient,
+        "weak_media_proven": weak_media_proven,
         "single_weak_text_candidate": bool(
             len(pre_suffix) == 1
             and pre_suffix[0].get("identity_state") == "committed"
@@ -317,6 +400,12 @@ def _candidate(
             and pre_suffix[0].get("ai_reply_boundary") is True
             and pre_suffix[0].get("identity_state") == "committed"
             and _token(pre_suffix[0].get("message_type")) == "text"
+        ),
+        "contains_ai_reply_boundary": any(
+            item.get("ai_reply_boundary") is True
+            and item.get("identity_state") == "committed"
+            and _token(item.get("message_type")) == "text"
+            for item in pre_suffix
         ),
     }
 
@@ -427,20 +516,26 @@ def align_committed_message_sequence(
     # "old row + new tail" case: there must be exactly one monotonic
     # explanation, it must begin at the visible top, and it must expose a
     # non-empty tail. A lone repeated "好的" therefore remains ambiguous.
-    boundary_candidates = [
+    single_boundary_candidates = [
         item
         for item in raw_candidates
         if item.get("ai_reply_boundary_candidate") is True
-        and int(item["post_start"]) == 0
-        and int(item["length"]) == len(post_sequence)
     ]
-    if len(boundary_candidates) == 1:
+    if len(single_boundary_candidates) == 1:
         # A confirmed sent_ack identifies which equal-text self bubble is the
-        # current reply boundary; ordinary historical equal-text candidates
-        # cannot outvote that explicit action identity.
-        boundary_candidates[0]["proof_sufficient"] = True
+        # current reply boundary. Rows above that bubble are already-history
+        # and need not reacquire weak media identities merely to prove the
+        # latest unreplied tail. Ordinary candidates cannot outvote that
+        # explicit action identity.
+        single_boundary_candidates[0]["proof_sufficient"] = True
+        boundary_candidates = [
+            item
+            for item in raw_candidates
+            if item.get("contains_ai_reply_boundary") is True
+            and item.get("proof_sufficient") is True
+        ]
         for item in raw_candidates:
-            if item is not boundary_candidates[0]:
+            if item not in boundary_candidates:
                 item["proof_sufficient"] = False
     if len(raw_candidates) == 1:
         weak = raw_candidates[0]
@@ -514,6 +609,12 @@ def align_committed_message_sequence(
             ),
             "match_basis": candidate["bases"][offset],
         }
+        if state == "frame_local_unselected":
+            provisional_id = _token(
+                pre_item.get("provisional_worker_stable_id")
+            )
+            if provisional_id:
+                pair["provisional_worker_stable_id"] = provisional_id
         pairs.append(pair)
     suffix_start = post_start + length
     evidence.update(
@@ -529,7 +630,21 @@ def align_committed_message_sequence(
             ],
         }
     )
-    if candidate.get("appended_action_proof"):
+    selected_action_pairs = [
+        pair
+        for pair in pairs
+        if pair.get("identity_state") == "selected_action"
+    ]
+    if (
+        len(selected_action_pairs) == 1
+        and mapping.get("binding_confirmed") is True
+        and _token(mapping.get("canonical_action_id"))
+        and _token(mapping.get("reserved_worker_stable_id"))
+        and _token(mapping.get("pre_observation_id"))
+        == _token(selected_action_pairs[0].get("pre_observation_id"))
+        and _token(mapping.get("post_observation_id"))
+        == _token(selected_action_pairs[0].get("post_observation_id"))
+    ):
         evidence["confirmed_action_mapping"] = {
             "canonical_action_id": _token(
                 mapping.get("canonical_action_id")
@@ -537,11 +652,16 @@ def align_committed_message_sequence(
             "reserved_worker_stable_id": _token(
                 mapping.get("reserved_worker_stable_id")
             ),
+            "pre_observation_id": _token(
+                mapping.get("pre_observation_id")
+            ),
             "post_observation_id": _token(
                 mapping.get("post_observation_id")
             ),
             "binding_confirmed": True,
-            "action_appended": True,
+            "action_appended": bool(
+                candidate.get("appended_action_proof")
+            ),
         }
     return evidence
 
@@ -567,6 +687,22 @@ def apply_inherited_worker_ids(
     evidence: dict[str, Any],
 ) -> list[Any]:
     identities = inherited_worker_ids(evidence)
+    pairs_by_observation = {
+        _token(pair.get("post_observation_id")): pair
+        for pair in (evidence.get("matched_pairs") or [])
+        if isinstance(pair, dict)
+        and _token(pair.get("post_observation_id"))
+    }
+    provisional_identities = {
+        _token(pair.get("post_observation_id")): _token(
+            pair.get("provisional_worker_stable_id")
+        )
+        for pair in (evidence.get("matched_pairs") or [])
+        if isinstance(pair, dict)
+        and pair.get("identity_state") == "frame_local_unselected"
+        and _token(pair.get("post_observation_id"))
+        and _token(pair.get("provisional_worker_stable_id"))
+    }
     result: list[Any] = []
     for raw in observations:
         if not isinstance(raw, dict):
@@ -575,7 +711,63 @@ def apply_inherited_worker_ids(
         observation = dict(raw)
         observation_id = _token(observation.get("observation_id"))
         observation.pop("_worker_stable_id", None)
+        observation.pop("_worker_identity_scope", None)
+        observation.pop("_worker_committed_message", None)
         if observation_id in identities:
-            observation["_worker_stable_id"] = identities[observation_id]
+            stable_id = identities[observation_id]
+            observation["_worker_stable_id"] = stable_id
+            observation["_worker_identity_scope"] = "committed"
+            pair = pairs_by_observation.get(observation_id) or {}
+            basis = (
+                MessageCommitBasis.CONFIRMED_SENT_ACK
+                if pair.get("identity_state") == "selected_action"
+                and str(observation.get("message_type") or "").strip().lower()
+                == "text"
+                and str(observation.get("sender_role") or "").strip().lower()
+                == "self"
+                else MessageCommitBasis.CONFIRMED_VOICE_ACTION
+                if pair.get("identity_state") == "selected_action"
+                and str(observation.get("message_type") or "").strip().lower()
+                == "voice"
+                else MessageCommitBasis.CONFIRMED_IMAGE_ACTION
+                if pair.get("identity_state") == "selected_action"
+                and str(observation.get("message_type") or "").strip().lower()
+                == "image"
+                else MessageCommitBasis.HISTORICAL_CHECKPOINT_ALIGNMENT
+            )
+            proof = {
+                "alignment_status": str(
+                    evidence.get("alignment_status") or ""
+                ),
+                "worker_stable_id": stable_id,
+                "pre_observation_id": _token(
+                    pair.get("pre_observation_id")
+                ),
+                "post_observation_id": observation_id,
+                "match_basis": _token(pair.get("match_basis")),
+            }
+            mapping = evidence.get("confirmed_action_mapping")
+            if (
+                pair.get("identity_state") == "selected_action"
+                and isinstance(mapping, dict)
+            ):
+                proof.update(dict(mapping))
+            observation["_worker_committed_message"] = (
+                committed_identity_record(
+                    worker_stable_id=stable_id,
+                    commit_basis=basis,
+                    observation_id=observation_id,
+                    sender_role=str(observation.get("sender_role") or ""),
+                    message_type=str(observation.get("message_type") or ""),
+                    proof=proof,
+                )
+            )
+        elif observation_id in provisional_identities:
+            observation["_worker_stable_id"] = provisional_identities[
+                observation_id
+            ]
+            observation["_worker_identity_scope"] = (
+                "current_read_provisional"
+            )
         result.append(observation)
     return result

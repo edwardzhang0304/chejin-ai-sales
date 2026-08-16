@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import os
 from pathlib import Path
 import subprocess
@@ -14,6 +15,7 @@ os.environ.setdefault(
 
 from chejin_worker_client.action_journal import (
     action_journal_phase,
+    commit_action_journal_item_identity,
     initialize_action_journal,
     read_action_journal,
     record_action_sequence_alignment,
@@ -36,7 +38,8 @@ class ActionJournalTest(unittest.TestCase):
             origin_read_run_id="read-voice-transaction",
             items=[
                 {
-                    "source_message_key": "message-1",
+                    "journal_item_id": "message-1",
+                    "action_local_id": "message-1",
                     "physical_anchor_keys": ["voice-anchor-1"],
                 }
             ],
@@ -83,7 +86,7 @@ class ActionJournalTest(unittest.TestCase):
             "from chejin_worker_client.action_journal import "
             "update_action_journal_item; "
             "update_action_journal_item(sys.argv[1],"
-            "source_message_key='message-1',"
+            "journal_item_id='message-1',"
             "action_phase='trigger_attempted'); "
             "os._exit(18)"
         )
@@ -100,7 +103,7 @@ class ActionJournalTest(unittest.TestCase):
             "from chejin_worker_client.action_journal import "
             "update_action_journal_item; "
             "update_action_journal_item(sys.argv[1],"
-            "source_message_key='message-1',"
+            "journal_item_id='message-1',"
             "action_phase='confirmed',"
             "business_state='completed',"
             "business_result_confirmed=True,"
@@ -156,14 +159,14 @@ class ActionJournalTest(unittest.TestCase):
 
         update_action_journal_item(
             self.path,
-            source_message_key="message-1",
+            journal_item_id="message-1",
             action_phase="confirmed",
             business_state="completed",
             business_result_confirmed=True,
         )
         update_action_journal_item(
             self.path,
-            source_message_key="message-1",
+            journal_item_id="message-1",
             action_phase="not_attempted",
             business_state="failed",
             business_result_confirmed=False,
@@ -211,7 +214,8 @@ class ActionJournalTest(unittest.TestCase):
             pre_action_identity_sequence=pre_sequence,
             items=[
                 {
-                    "source_message_key": "voice-action-1",
+                    "journal_item_id": "voice-action-1",
+                    "action_local_id": "voice-action-1",
                     "physical_anchor_keys": ["frame-local-anchor"],
                 }
             ],
@@ -229,7 +233,15 @@ class ActionJournalTest(unittest.TestCase):
         record_action_sequence_alignment(path, evidence)
         saved = read_action_journal(path)
 
-        self.assertEqual(saved["schema_version"], 4)
+        self.assertEqual(saved["schema_version"], 5)
+        self.assertEqual(set(saved["items"]), {"voice-action-1"})
+        self.assertEqual(
+            saved["items"]["voice-action-1"]["journal_item_id"],
+            "voice-action-1",
+        )
+        self.assertIsNone(
+            saved["items"]["voice-action-1"]["source_message_key"]
+        )
         self.assertEqual(saved["pre_action_identity_sequence"], pre_sequence)
         self.assertEqual(
             saved["reserved_worker_stable_id"], "worker-message-8"
@@ -237,6 +249,116 @@ class ActionJournalTest(unittest.TestCase):
         self.assertEqual(
             saved["sequence_alignment_evidence"], evidence
         )
+
+    def test_identity_commit_never_rekeys_the_action_local_item(self) -> None:
+        committed = commit_action_journal_item_identity(
+            self.path,
+            journal_item_id="message-1",
+            source_message_key="source:formal-message-1",
+        )
+
+        self.assertEqual(set(committed["items"]), {"message-1"})
+        item = committed["items"]["message-1"]
+        self.assertEqual(item["journal_item_id"], "message-1")
+        self.assertEqual(item["action_local_id"], "message-1")
+        self.assertEqual(
+            item["source_message_key"],
+            "source:formal-message-1",
+        )
+
+    def test_precommit_journal_rejects_source_only_identity_and_strips_nested_key(
+        self,
+    ) -> None:
+        source_only = Path(self.tmp.name) / "source-only.json"
+        with self.assertRaisesRegex(
+            ValueError,
+            "ACTION_JOURNAL_ITEMS_MISSING",
+        ):
+            initialize_action_journal(
+                source_only,
+                action_kind="image",
+                transaction_id="image-source-only",
+                conversation_id="conversation-1",
+                origin_read_run_id="read-source-only",
+                items=[{"source_message_key": "image-action-local"}],
+            )
+
+        replay = Path(self.tmp.name) / "replay-source.json"
+        initialize_action_journal(
+            replay,
+            action_kind="image",
+            transaction_id="image-replay",
+            conversation_id="conversation-1",
+            origin_read_run_id="read-image-replay",
+            items=[
+                {
+                    "journal_item_id": "image-action-local",
+                    "action_local_id": "image-action-local",
+                    "replayable_observation": {
+                        "observation_id": "image-observation",
+                        "source_message_key": "image-action-local",
+                        "source_message": {
+                            "source_message_key": "image-action-local"
+                        },
+                    },
+                }
+            ],
+        )
+        saved = read_action_journal(replay)["items"]["image-action-local"]
+        self.assertIsNone(saved["source_message_key"])
+        self.assertNotIn(
+            "source_message_key",
+            saved["replayable_observation"],
+        )
+        self.assertNotIn(
+            "source_message_key",
+            saved["replayable_observation"]["source_message"],
+        )
+
+    def test_production_journal_initializers_have_no_formal_source_key_literal(
+        self,
+    ) -> None:
+        root = Path(__file__).resolve().parents[1] / "chejin_worker_client"
+        violations = []
+        for path in (root / "rpa_bridge.py", root / "task_runner.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for call in (
+                node for node in ast.walk(tree) if isinstance(node, ast.Call)
+            ):
+                name = (
+                    call.func.id
+                    if isinstance(call.func, ast.Name)
+                    else call.func.attr
+                    if isinstance(call.func, ast.Attribute)
+                    else ""
+                )
+                if name not in {
+                    "initialize_action_journal",
+                    "_start_irreversible_action_journal",
+                }:
+                    continue
+                items = next(
+                    (
+                        keyword.value
+                        for keyword in call.keywords
+                        if keyword.arg == "items"
+                    ),
+                    None,
+                )
+                if items is None:
+                    continue
+                for mapping in (
+                    node for node in ast.walk(items) if isinstance(node, ast.Dict)
+                ):
+                    keys = {
+                        key.value
+                        for key in mapping.keys
+                        if isinstance(key, ast.Constant)
+                        and isinstance(key.value, str)
+                    }
+                    if "source_message_key" in keys:
+                        violations.append((path.name, call.lineno))
+        self.assertEqual(violations, [])
 
 
 if __name__ == "__main__":

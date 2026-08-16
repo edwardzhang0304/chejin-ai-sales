@@ -42,7 +42,7 @@ class RpaBridgeTest(unittest.TestCase):
         journal_path = Path(args[args.index("--action-journal") + 1])
         update_action_journal_item(
             journal_path,
-            source_message_key=task_id,
+            journal_item_id=task_id,
             action_phase="confirmed",
             business_state=result_code or error_code,
             business_result_confirmed=True,
@@ -687,11 +687,11 @@ print(json.dumps({"ok": True, "task_status": "completed", "result_code": "invite
             action_kind="add_friend",
             transaction_id=task.id,
             conversation_id=f"task:{task.id}",
-            items=[{"source_message_key": task.id}],
+            items=[{"journal_item_id": task.id, "action_local_id": task.id}],
         )
         update_action_journal_item(
             journal_path,
-            source_message_key=task.id,
+            journal_item_id=task.id,
             action_phase="trigger_attempted",
             business_state="invite_confirm_click_starting",
         )
@@ -722,11 +722,11 @@ print(json.dumps({"ok": True, "task_status": "completed", "result_code": "invite
             action_kind="add_friend",
             transaction_id=task.id,
             conversation_id=f"task:{task.id}",
-            items=[{"source_message_key": task.id}],
+            items=[{"journal_item_id": task.id, "action_local_id": task.id}],
         )
         update_action_journal_item(
             journal_path,
-            source_message_key=task.id,
+            journal_item_id=task.id,
             action_phase="confirmed",
             business_state="invite_sent",
             business_result_confirmed=True,

@@ -18,7 +18,21 @@
       {
         "schema_version": 3,
         "observation_id": "fixture-text-1",
-        "_worker_stable_id": "11111111-1111-1111-1111-111111111111:message:1",
+        "_worker_stable_id": "worker-message-1",
+        "_worker_identity_scope": "committed",
+        "_worker_committed_message": {
+          "object_type": "committed_message",
+          "worker_stable_id": "worker-message-1",
+          "commit_basis": "new_suffix",
+          "observation_id": "fixture-text-1",
+          "sender_role": "customer",
+          "message_type": "text",
+          "proof": {
+            "alignment_status": "not_required",
+            "old_tail_fully_consumed": true,
+            "new_suffix_observation_id": "fixture-text-1"
+          }
+        },
         "row_kind": "text_bubble",
         "sender_role": "customer",
         "sender_role_source": "same_row_avatar",
@@ -36,7 +50,32 @@
       {
         "schema_version": 3,
         "observation_id": "fixture-voice-1",
-        "_worker_stable_id": "11111111-1111-1111-1111-111111111111:message:2",
+        "_worker_stable_id": "worker-message-2",
+        "_worker_identity_scope": "committed",
+        "_worker_committed_message": {
+          "object_type": "committed_message",
+          "worker_stable_id": "worker-message-2",
+          "commit_basis": "confirmed_voice_action",
+          "observation_id": "fixture-voice-1",
+          "sender_role": "customer",
+          "message_type": "voice",
+      "proof": {
+        "canonical_action_id": "fixture-voice-action-1",
+        "reserved_worker_stable_id": "worker-message-2",
+        "pre_observation_id": "fixture-voice-1",
+        "post_observation_id": "fixture-voice-1",
+        "binding_confirmed": true
+      }
+        },
+        "_worker_voice_action_summary": {
+          "confirmed_action_mapping": {
+            "canonical_action_id": "fixture-voice-action-1",
+            "reserved_worker_stable_id": "worker-message-2",
+            "pre_observation_id": "fixture-voice-1",
+            "post_observation_id": "fixture-voice-1",
+            "binding_confirmed": true
+          }
+        },
         "row_kind": "voice_transcript",
         "sender_role": "customer",
         "sender_role_source": "parent_voice",
@@ -56,7 +95,34 @@
       {
         "schema_version": 3,
         "observation_id": "fixture-image-1",
-        "_worker_stable_id": "11111111-1111-1111-1111-111111111111:message:3",
+        "_worker_stable_id": "worker-message-3",
+        "_worker_identity_scope": "committed",
+        "_worker_image_action_summary": {
+          "confirmed_action_mapping": {
+            "canonical_action_id": "fixture-image-action-1",
+            "reserved_worker_stable_id": "worker-message-3",
+            "pre_observation_id": "fixture-image-1",
+            "post_observation_id": "fixture-image-1",
+            "binding_confirmed": true
+          },
+          "image_visual_fingerprint": "dhash64:0123456789abcdef"
+        },
+        "_worker_committed_message": {
+          "object_type": "committed_message",
+          "worker_stable_id": "worker-message-3",
+          "commit_basis": "confirmed_image_action",
+          "observation_id": "fixture-image-1",
+          "sender_role": "self",
+          "message_type": "image",
+      "proof": {
+        "canonical_action_id": "fixture-image-action-1",
+        "reserved_worker_stable_id": "worker-message-3",
+        "pre_observation_id": "fixture-image-1",
+        "post_observation_id": "fixture-image-1",
+        "binding_confirmed": true,
+        "image_visual_fingerprint": "dhash64:0123456789abcdef"
+      }
+        },
         "row_kind": "image_bubble",
         "sender_role": "self",
         "sender_role_source": "same_row_avatar",
@@ -67,7 +133,8 @@
           "sender_role": "self",
           "preceding_stable_message": "fixture-voice-1",
           "following_stable_message": "",
-          "occurrence_index": 0
+          "occurrence_index": 0,
+          "bubble_visual_fingerprint": "dhash64:0123456789abcdef"
         },
         "content_clean": "销售发送了一张白色 SUV 外观图。",
         "bubble_rect": [690, 324, 930, 500],

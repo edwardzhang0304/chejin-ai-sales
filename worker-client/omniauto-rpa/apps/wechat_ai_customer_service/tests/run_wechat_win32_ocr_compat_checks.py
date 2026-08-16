@@ -1166,6 +1166,7 @@ def test_parse_messages_outputs_message_envelope_fields() -> None:
     assert_true(isinstance(message.get("message_envelope"), dict), f"message envelope should be attached: {message}")
     assert_true(str(message.get("canonical_input_id") or "").startswith("canonical_"), f"canonical input id should be attached: {message}")
     assert_true(str(message.get("canonical_visual_id") or "").startswith("canonical_visual_"), f"canonical visual id should be attached: {message}")
+    assert_true(str(message.get("frame_visual_id") or "").startswith("frame_visual_"), f"frame visual id should be attached: {message}")
     envelope = message.get("message_envelope") or {}
     assert_true(envelope.get("schema_version") == 2, f"message envelope should use schema v2: {envelope}")
     assert_true(str(envelope.get("observation_id") or "").startswith("observation_"), f"observation id should be attached: {envelope}")
@@ -1173,6 +1174,10 @@ def test_parse_messages_outputs_message_envelope_fields() -> None:
     assert_true(
         envelope.get("canonical_input_id") == message.get("canonical_input_id"),
         f"record and envelope canonical input ids should match: {message}",
+    )
+    assert_true(
+        envelope.get("frame_visual_id") == message.get("frame_visual_id"),
+        f"record and envelope frame visual ids should match: {message}",
     )
 
 
@@ -1184,6 +1189,10 @@ def test_c2_observations_are_standalone_without_business_contract_file() -> None
                 "sender_role": "contact",
                 "type": "text",
                 "content": "hello",
+                "frame_visual_id": "frame_visual_test",
+                "canonical_visual_id": "canonical_visual_forbidden",
+                "canonical_input_id": "canonical_input_forbidden",
+                "source_message_key": "legacy-frame-derived-key",
                 "avatar_alignment": {"role": "customer"},
                 "sender_role_evidence": [],
                 "quality_flags": [],
@@ -1195,6 +1204,11 @@ def test_c2_observations_are_standalone_without_business_contract_file() -> None
     assert_true(observation.get("schema_version") == 3, f"unexpected observation schema: {observation}")
     assert_true(observation.get("sender_role") == "customer", f"contact should normalize to customer: {observation}")
     assert_true(observation.get("row_kind") == "text_bubble", f"text should map to text bubble: {observation}")
+    source = observation.get("source_message") or {}
+    assert_true(source.get("frame_visual_id") == "frame_visual_test", f"frame-local diagnostic id should be transported: {source}")
+    assert_true("canonical_visual_id" not in source, f"legacy visual id must not enter formal C2 transport: {source}")
+    assert_true("canonical_input_id" not in source, f"legacy input id must not enter formal C2 transport: {source}")
+    assert_true("source_message_key" not in source, f"OmniAuto must not assign Worker's durable source key: {source}")
 
 
 def test_messages_frame_reuses_screenshot_and_falls_back_to_same_frame_title_roi() -> None:

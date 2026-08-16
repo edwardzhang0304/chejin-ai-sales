@@ -262,6 +262,21 @@ def classify_outbox_recovery(value: BaseException | str | None) -> str:
     ).strip()
     if action in allowed:
         return action
+    if isinstance(value, ApiError):
+        code = str(value.code or "").strip()
+        for field, mapped_action in (
+            ("identity_quarantined_codes", "identity_quarantined"),
+            ("refresh_and_rebuild_codes", "refresh_and_rebuild"),
+            ("split_and_retry_codes", "split_and_retry"),
+            ("target_terminated_codes", "target_terminated"),
+            ("conversation_terminated_codes", "conversation_terminated"),
+            ("capability_paused_codes", "capability_paused"),
+        ):
+            if code in {
+                str(item)
+                for item in (contract.get(field) or [])
+            }:
+                return mapped_action
     return str(
         contract.get("unknown_api_error_action")
         or "capability_paused"

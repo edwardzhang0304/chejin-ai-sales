@@ -160,7 +160,8 @@ class VoiceActionV3132Test(unittest.TestCase):
             origin_read_run_id="read-1",
             items=[
                 {
-                    "source_message_key": "action-1",
+                    "journal_item_id": "action-1",
+                    "action_local_id": "action-1",
                     "physical_anchor_keys": ["anchor-a"],
                 }
             ],
@@ -495,7 +496,6 @@ class VoiceActionV3132Test(unittest.TestCase):
                     "right_click_ok": True,
                 },
             },
-            source_key="image-1",
         )
 
         self.assertFalse(normalized["action_was_attempted"])
@@ -512,7 +512,6 @@ class VoiceActionV3132Test(unittest.TestCase):
                 "ui_action_performed": True,
                 "transaction": {"status": "menu_evidence_incomplete"},
             },
-            source_key="image-explicit-ui-action",
         )
 
         self.assertFalse(normalized["action_was_attempted"])
@@ -527,7 +526,6 @@ class VoiceActionV3132Test(unittest.TestCase):
                 "ui_action_performed": True,
                 "transaction": {"status": "menu_dismissed"},
             },
-            source_key="image-not-visible-after-ui-action",
         )
 
         self.assertFalse(normalized["removed_from_final_screen"])

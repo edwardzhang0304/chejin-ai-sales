@@ -8,6 +8,14 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .models import WechatReadTarget
+from .message_identity_commit import (
+    CommittedMessage,
+    IdentityCommitRejection,
+    MessageCommitBasis,
+    committed_identity_record,
+    commit_message_identity,
+    require_committed_message,
+)
 from .c2_contract import (
     c2_contract_v3,
     contract_revision,
@@ -531,68 +539,164 @@ def sender_role_group(message: dict[str, Any]) -> str:
     return role or "unknown"
 
 
-def worker_source_message_key(
-    target: WechatReadTarget,
+def validate_committed_image_identity(
+    observation: dict[str, Any],
     *,
-    identity_kind: str,
-    identity: Any,
-) -> str:
-    """Create the only cross-round source identity owned by Worker."""
+    conversation_id: str,
+    require_formalization_proof: bool = False,
+) -> dict[str, Any]:
+    """Validate the only image identity allowed to cross a read boundary.
 
-    clean_kind = str(identity_kind or "").strip().lower()
-    if not clean_kind or identity in (None, "", {}, []):
-        raise ValueError("MESSAGE_SOURCE_IDENTITY_MISSING")
-    return (
-        "source:"
-        + stable_digest(
-            {
-                "conversation_id": target.conversation_id,
-                "identity_kind": clean_kind,
-                "identity": identity,
-            },
-            length=40,
+    This is deliberately a whitelist.  Missing, empty, unknown and
+    provisional scopes are all non-identities.  Consumers that create a
+    formal message additionally require the exact action receipt that
+    committed the reserved sequence number.
+    """
+
+    if str(observation.get("row_kind") or "").strip().lower() != "image_bubble":
+        raise ValueError("C2_IMAGE_IDENTITY_CONTRACT_INVALID")
+    clean_conversation_id = str(conversation_id or "").strip()
+    if not clean_conversation_id:
+        raise ValueError("C2_IMAGE_IDENTITY_CONTRACT_INVALID")
+    try:
+        committed = require_committed_message(
+            conversation_id=clean_conversation_id,
+            observation=observation,
         )
-    )[:255]
+    except ValueError as exc:
+        raise ValueError("C2_IMAGE_IDENTITY_CONTRACT_INVALID") from exc
+    if committed.message_type != "image":
+        raise ValueError("C2_IMAGE_IDENTITY_CONTRACT_INVALID")
+    worker_stable_id = committed.worker_stable_id
+
+    normalized: dict[str, Any] = {
+        "worker_stable_id": worker_stable_id,
+        "formalization_proof": None,
+    }
+    if not require_formalization_proof:
+        return normalized
+
+    observation_id = str(observation.get("observation_id") or "").strip()
+    image_anchor = (
+        observation.get("image_physical_anchor")
+        if isinstance(observation.get("image_physical_anchor"), dict)
+        else {}
+    )
+    fingerprint = str(
+        image_anchor.get("bubble_visual_fingerprint") or ""
+    ).strip()
+    summary = observation.get("_worker_image_action_summary")
+    mapping = (
+        summary.get("confirmed_action_mapping")
+        if isinstance(summary, dict)
+        and isinstance(summary.get("confirmed_action_mapping"), dict)
+        else {}
+    )
+    action_id = str(mapping.get("canonical_action_id") or "").strip()
+    if not all((observation_id, fingerprint, action_id)):
+        raise ValueError("C2_IMAGE_IDENTITY_CONTRACT_INVALID")
+    if (
+        str(mapping.get("reserved_worker_stable_id") or "").strip()
+        != worker_stable_id
+        or not str(mapping.get("pre_observation_id") or "").strip()
+        or str(mapping.get("post_observation_id") or "").strip()
+        != observation_id
+        or mapping.get("binding_confirmed") is not True
+        or str(summary.get("image_visual_fingerprint") or "").strip()
+        != fingerprint
+    ):
+        raise ValueError("C2_IMAGE_IDENTITY_CONTRACT_INVALID")
+    normalized["formalization_proof"] = {
+        "canonical_action_id": action_id,
+        "reserved_worker_stable_id": worker_stable_id,
+        "pre_observation_id": str(
+            mapping.get("pre_observation_id") or ""
+        ).strip(),
+        "post_observation_id": observation_id,
+        "binding_confirmed": True,
+        "image_visual_fingerprint": fingerprint,
+    }
+    return normalized
 
 
 def image_observation_source_key(target: WechatReadTarget, observation: dict[str, Any]) -> str:
-    source = (
-        observation.get("source_message")
-        if isinstance(observation.get("source_message"), dict)
+    try:
+        committed = require_committed_message(
+            conversation_id=target.conversation_id,
+            observation=observation,
+        )
+    except ValueError as exc:
+        raise ValueError("C2_IMAGE_IDENTITY_CONTRACT_INVALID") from exc
+    if committed.message_type != "image":
+        raise ValueError("C2_IMAGE_IDENTITY_CONTRACT_INVALID")
+    return committed.source_message_key
+
+
+def confirmed_image_identity_receipt(
+    observation: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Validate the sole provisional-to-committed image transition.
+
+    A Vision success is only business content.  It cannot commit the message
+    identity unless the exact selected action, reservation, observation and
+    stable image fingerprint are all confirmed by the same action receipt.
+    """
+
+    if str(
+        observation.get("_worker_identity_scope") or ""
+    ).strip() != "current_read_provisional":
+        return None
+    receipt = result.get("_confirmed_image_action_receipt")
+    if not isinstance(receipt, dict):
+        return None
+    stable_id = str(observation.get("_worker_stable_id") or "").strip()
+    observation_id = str(observation.get("observation_id") or "").strip()
+    image_anchor = (
+        observation.get("image_physical_anchor")
+        if isinstance(observation.get("image_physical_anchor"), dict)
         else {}
     )
-    canonical_visual_id = str(
-        observation.get("canonical_visual_id")
-        or source.get("canonical_visual_id")
-        or ""
+    fingerprint = str(
+        image_anchor.get("bubble_visual_fingerprint") or ""
     ).strip()
-    if canonical_visual_id:
-        return worker_source_message_key(
-            target,
-            identity_kind="canonical_visual_id",
-            identity=canonical_visual_id,
-        )
-    worker_stable_id = str(observation.get("_worker_stable_id") or "").strip()
-    if worker_stable_id:
-        return worker_source_message_key(
-            target,
-            identity_kind="worker_sequence",
-            identity=worker_stable_id,
-        )
-    raise ValueError("MESSAGE_SEQUENCE_IDENTITY_MISSING")
+    action_id = str(receipt.get("canonical_action_id") or "").strip()
+    if not all((stable_id, observation_id, fingerprint, action_id)):
+        return None
+    if (
+        str(receipt.get("reserved_worker_stable_id") or "").strip()
+        != stable_id
+        or not str(receipt.get("pre_observation_id") or "").strip()
+        or str(receipt.get("post_observation_id") or "").strip()
+        != observation_id
+        or receipt.get("binding_confirmed") is not True
+        or str(receipt.get("image_visual_fingerprint") or "").strip()
+        != fingerprint
+    ):
+        return None
+    return {
+        "canonical_action_id": action_id,
+        "reserved_worker_stable_id": stable_id,
+        "pre_observation_id": str(
+            receipt.get("pre_observation_id") or ""
+        ).strip(),
+        "post_observation_id": observation_id,
+        "binding_confirmed": True,
+        "image_visual_fingerprint": fingerprint,
+    }
 
 
 def voice_observation_source_key(target: WechatReadTarget, observation: dict[str, Any]) -> str:
-    worker_stable_id = str(
-        observation.get("_worker_stable_id") or ""
-    ).strip()
-    if not worker_stable_id:
-        raise ValueError("MESSAGE_SEQUENCE_IDENTITY_MISSING")
-    return worker_source_message_key(
-        target,
-        identity_kind="worker_sequence",
-        identity=worker_stable_id,
-    )
+    try:
+        committed = require_committed_message(
+            conversation_id=target.conversation_id,
+            observation=observation,
+        )
+    except ValueError as exc:
+        raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID") from exc
+    if committed.message_type != "voice":
+        raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+    return committed.source_message_key
 
 
 def apply_image_terminal_result(observation: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
@@ -611,6 +715,58 @@ def apply_image_terminal_result(observation: dict[str, Any], result: dict[str, A
     state = str(result.get("state") or "failed").strip().lower()
     if state not in {"completed", "failed"}:
         state = "failed"
+    identity_scope = str(
+        enriched.get("_worker_identity_scope") or ""
+    ).strip()
+    if identity_scope == "current_read_provisional":
+        receipt = confirmed_image_identity_receipt(enriched, result)
+        if receipt is None:
+            state = "failed"
+            result = {
+                **result,
+                "state": "failed",
+                "reason": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                "reason_detail": "confirmed_image_identity_receipt_missing_or_invalid",
+            }
+        else:
+            enriched["_worker_identity_scope"] = "committed"
+            enriched["_worker_image_action_summary"] = {
+                "confirmed_action_mapping": {
+                    key: receipt[key]
+                    for key in (
+                        "canonical_action_id",
+                        "reserved_worker_stable_id",
+                        "pre_observation_id",
+                        "post_observation_id",
+                        "binding_confirmed",
+                    )
+                },
+                "image_visual_fingerprint": receipt[
+                    "image_visual_fingerprint"
+                ],
+            }
+            enriched["_worker_committed_message"] = (
+                committed_identity_record(
+                    worker_stable_id=str(
+                        receipt["reserved_worker_stable_id"]
+                    ),
+                    commit_basis=(
+                        MessageCommitBasis.CONFIRMED_IMAGE_ACTION
+                    ),
+                    observation_id=str(receipt["post_observation_id"]),
+                    sender_role=str(enriched.get("sender_role") or ""),
+                    message_type="image",
+                    proof=dict(receipt),
+                )
+            )
+    elif identity_scope != "committed":
+        state = "failed"
+        result = {
+            **result,
+            "state": "failed",
+            "reason": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+            "reason_detail": "committed_image_identity_missing",
+        }
     enriched["item_state"] = state
     error_code = str(result.get("reason") or "").strip()
     reason_detail = str(
@@ -650,7 +806,7 @@ def apply_image_terminal_result(observation: dict[str, Any], result: dict[str, A
 def replayable_image_observation(
     observation: dict[str, Any],
     *,
-    source_message_key: str,
+    source_message_key: str | None = None,
 ) -> dict[str, Any]:
     """Freeze one terminal image fact without image bytes or runtime paths."""
 
@@ -660,10 +816,13 @@ def replayable_image_observation(
         if isinstance(projected.get("source_message"), dict)
         else {}
     )
-    projected["source_message"] = {
-        **_drop_image_runtime_fields(dict(source)),
-        "source_message_key": str(source_message_key or "").strip(),
-    }
+    projected_source = _drop_image_runtime_fields(dict(source))
+    committed_source_key = str(source_message_key or "").strip()
+    if committed_source_key:
+        projected_source["source_message_key"] = committed_source_key
+    else:
+        projected_source.pop("source_message_key", None)
+    projected["source_message"] = projected_source
     return json.loads(
         json.dumps(
             projected,
@@ -688,41 +847,21 @@ def normalized_voice_flow_state(value: Any) -> str:
 
 def unified_message_dedupe_metadata(
     target: WechatReadTarget,
-    message: dict[str, Any],
+    committed: CommittedMessage,
 ) -> tuple[str, str, dict[str, Any]]:
     """Build V3 dedupe metadata only from committed durable identity."""
 
-    worker_stable_id = str(message.get("_worker_stable_id") or "").strip()
-    if worker_stable_id:
-        base = {
-            "conversation_id": target.conversation_id,
-            "worker_stable_id": worker_stable_id,
-        }
-        return (
-            f"{target.conversation_id}:{stable_digest(base, length=32)}"[:255],
-            "high",
-            {"source": "worker_cross_round_sequence", **base},
-        )
-    if message_type(message) == "image":
-        observation = (
-            message.get("observation")
-            if isinstance(message.get("observation"), dict)
-            else {}
-        )
-        image_source_key = image_observation_source_key(target, observation)
-        base = {
-            "conversation_id": target.conversation_id,
-            "remark_code": target.remark_code,
-            "sender": sender_role_group(message),
-            "type": "image",
-            "source_message_key": image_source_key,
-        }
-        return (
-            f"{target.conversation_id}:{stable_digest(base, length=32)}"[:255],
-            "high",
-            {"source": "worker_image_stable_identity", **base},
-        )
-    raise ValueError("MESSAGE_SEQUENCE_IDENTITY_MISSING")
+    if committed.conversation_id != target.conversation_id:
+        raise ValueError("MESSAGE_IDENTITY_CONTRACT_INVALID")
+    base = {
+        "conversation_id": target.conversation_id,
+        "worker_stable_id": committed.worker_stable_id,
+    }
+    return (
+        f"{target.conversation_id}:{stable_digest(base, length=32)}"[:255],
+        "high",
+        {"source": "worker_cross_round_sequence", **base},
+    )
 
 
 def voice_text_looks_like_payload(value: str) -> bool:
@@ -876,6 +1015,7 @@ def _build_message_ingest_payload_v3(
     sidecar_payload: dict[str, Any],
     *,
     read_run_id: str,
+    allow_provisional_discovery: bool = False,
 ) -> dict[str, Any]:
     if not target.authorization_revision:
         raise ValueError("C2_TARGET_AUTHORIZATION_REVISION_MISSING")
@@ -888,8 +1028,14 @@ def _build_message_ingest_payload_v3(
     if not isinstance(observations, list):
         raise ValueError("C2 V3 payload is missing observations")
     worker_stable_ids: dict[str, str] = {}
+    worker_committed_messages: dict[str, dict[str, Any]] = {}
     worker_ai_reply_receipts: dict[str, dict[str, Any]] = {}
     worker_voice_action_summaries: dict[str, dict[str, Any]] = {}
+    worker_identity_scopes: dict[str, str] = {}
+    worker_image_action_summaries: dict[str, dict[str, Any]] = {}
+    invalid_image_observation_ids: set[str] = set()
+    historical_image_observation_ids: set[str] = set()
+    backend_confirmed_source_keys: set[str] | None = None
     sanitized_observations: list[Any] = []
     for item in observations:
         if not isinstance(item, dict):
@@ -897,7 +1043,118 @@ def _build_message_ingest_payload_v3(
             continue
         observation = _drop_image_runtime_fields(dict(item))
         observation_id = str(observation.get("observation_id") or "").strip()
-        worker_stable_id = str(observation.pop("_worker_stable_id", "") or "").strip()
+        row_kind = str(observation.get("row_kind") or "").strip().lower()
+        original_identity_observation = dict(observation)
+        worker_stable_id = str(observation.get("_worker_stable_id") or "").strip()
+        worker_identity_scope = str(
+            observation.get("_worker_identity_scope") or ""
+        ).strip()
+        image_action_summary = observation.get("_worker_image_action_summary")
+        committed_message_record = observation.get(
+            "_worker_committed_message"
+        )
+        if observation_id and isinstance(committed_message_record, dict):
+            worker_committed_messages[observation_id] = dict(
+                committed_message_record
+            )
+        if observation_id:
+            worker_identity_scopes[observation_id] = worker_identity_scope
+        if row_kind == "image_bubble" and observation_id:
+            if isinstance(image_action_summary, dict):
+                worker_image_action_summaries[observation_id] = dict(
+                    image_action_summary
+                )
+        if row_kind == "image_bubble" and worker_identity_scope == "current_read_provisional":
+            provisional_discovery_allowed = bool(
+                allow_provisional_discovery
+                and str(observation.get("item_state") or "discovered")
+                .strip()
+                .lower()
+                == "discovered"
+            )
+            if not provisional_discovery_allowed:
+                raise ValueError("C2_IMAGE_IDENTITY_CONTRACT_INVALID")
+            # A preliminary slot plan may inspect this row's geometry and
+            # role, but the provisional number is not a message identity.
+            worker_stable_id = ""
+        elif row_kind == "image_bubble":
+            try:
+                validate_committed_image_identity(
+                    original_identity_observation,
+                    conversation_id=target.conversation_id,
+                )
+            except ValueError:
+                if not allow_provisional_discovery:
+                    raise ValueError("C2_IMAGE_IDENTITY_CONTRACT_INVALID")
+                invalid_image_observation_ids.add(observation_id)
+                worker_stable_id = ""
+            else:
+                if not allow_provisional_discovery:
+                    try:
+                        validate_committed_image_identity(
+                            original_identity_observation,
+                            conversation_id=target.conversation_id,
+                            require_formalization_proof=True,
+                        )
+                    except ValueError:
+                        source_key = image_observation_source_key(
+                            target,
+                            original_identity_observation,
+                        )
+                        if backend_confirmed_source_keys is None:
+                            backend_confirmed_source_keys = {
+                                str(
+                                    checkpoint.get("source_message_key")
+                                    or ""
+                                ).strip()
+                                for checkpoint in (
+                                    (
+                                        target.raw.get(
+                                            "identity_checkpoint"
+                                        )
+                                        or {}
+                                    ).get("recent_messages")
+                                    if isinstance(target.raw, dict)
+                                    and isinstance(
+                                        target.raw.get(
+                                            "identity_checkpoint"
+                                        ),
+                                        dict,
+                                    )
+                                    else []
+                                )
+                                if isinstance(checkpoint, dict)
+                                and str(
+                                    checkpoint.get("source_message_key")
+                                    or ""
+                                ).strip()
+                            }
+                        if source_key not in backend_confirmed_source_keys:
+                            raise ValueError(
+                                "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                            )
+                        # A backend-confirmed historical image may be used to
+                        # identify/query the old fact, but it must never be
+                        # regenerated as a new formal image message without
+                        # its terminal action proof.
+                        historical_image_observation_ids.add(observation_id)
+        committed_identity = None
+        if observation_id and worker_stable_id:
+            # The unique commit gate must run while every Worker-only proof is
+            # still present.  Sanitization is only allowed after the identity
+            # has become a typed CommittedMessage.
+            committed_identity = require_committed_message(
+                conversation_id=target.conversation_id,
+                observation=original_identity_observation,
+            )
+        observation.pop("_worker_stable_id", None)
+        # Worker-only identity bookkeeping must never leak into the
+        # Sidecar/backend observation contract.  The durable stable id is
+        # projected below as source_message_key; provisional scope and action
+        # receipts remain local alignment evidence.
+        observation.pop("_worker_identity_scope", None)
+        observation.pop("_worker_image_action_summary", None)
+        observation.pop("_worker_committed_message", None)
         if "_worker_legacy_dedupe_key" in observation:
             raise ValueError("C2_LEGACY_IDENTITY_FIELD_FORBIDDEN")
         worker_ai_reply_receipt = observation.pop(
@@ -906,20 +1163,17 @@ def _build_message_ingest_payload_v3(
         worker_voice_action_summary = observation.pop(
             "_worker_voice_action_summary", None
         )
-        if observation_id and worker_stable_id:
+        if observation_id and committed_identity is not None:
             worker_stable_ids[observation_id] = worker_stable_id
             source_message = (
                 observation.get("source_message")
                 if isinstance(observation.get("source_message"), dict)
                 else {}
             )
+            durable_source_key = committed_identity.source_message_key
             observation["source_message"] = {
                 **source_message,
-                "source_message_key": worker_source_message_key(
-                    target,
-                    identity_kind="worker_sequence",
-                    identity=worker_stable_id,
-                ),
+                "source_message_key": durable_source_key,
             }
         if observation_id and isinstance(worker_ai_reply_receipt, dict):
             worker_ai_reply_receipts[observation_id] = dict(
@@ -981,30 +1235,37 @@ def _build_message_ingest_payload_v3(
         ):
             raise RuntimeError("validated C2 observation lost content during canonical assembly")
         normalized_source = {**source, "sender_role": role, "sender": role, "type": msg_type, "content": content}
-        dedupe_key, confidence, basis = unified_message_dedupe_metadata(
-            target,
-            normalized_source,
-        )
         source_observation = source.get("observation") if isinstance(source.get("observation"), dict) else {}
         worker_stable_id = str(source.get("_worker_stable_id") or "").strip()
-        if msg_type == "image":
-            image_identity_observation = dict(source_observation)
-            if worker_stable_id:
-                image_identity_observation["_worker_stable_id"] = (
-                    worker_stable_id
-                )
-            canonical_source_key = image_observation_source_key(
-                target,
-                image_identity_observation,
-            )
-        else:
-            if not worker_stable_id:
-                raise ValueError("MESSAGE_SEQUENCE_IDENTITY_MISSING")
-            canonical_source_key = worker_source_message_key(
-                target,
-                identity_kind="worker_sequence",
-                identity=worker_stable_id,
-            )
+        identity_observation = dict(source_observation)
+        identity_observation["_worker_stable_id"] = worker_stable_id
+        identity_observation["_worker_identity_scope"] = str(
+            source.get("_worker_identity_scope") or ""
+        ).strip()
+        identity_observation["_worker_committed_message"] = (
+            dict(source.get("_worker_committed_message") or {})
+            if isinstance(source.get("_worker_committed_message"), dict)
+            else {}
+        )
+        for summary_key in (
+            "_worker_image_action_summary",
+            "_worker_voice_action_summary",
+            "_worker_ai_reply_receipt",
+        ):
+            summary = source.get(summary_key)
+            if isinstance(summary, dict):
+                identity_observation[summary_key] = dict(summary)
+        committed = require_committed_message(
+            conversation_id=target.conversation_id,
+            observation=identity_observation,
+        )
+        if committed.message_type != msg_type or committed.sender_role != role:
+            raise ValueError("MESSAGE_IDENTITY_CONTRACT_INVALID")
+        dedupe_key, confidence, basis = unified_message_dedupe_metadata(
+            target,
+            committed,
+        )
+        canonical_source_key = committed.source_message_key
         if canonical_source_key in source_keys:
             observation_validation_errors.append(
                 {
@@ -1024,6 +1285,9 @@ def _build_message_ingest_payload_v3(
                 if key not in {
                     "_worker_stable_id",
                     "_worker_voice_action_summary",
+                    "_worker_identity_scope",
+                    "_worker_image_action_summary",
+                    "_worker_committed_message",
                 }
             },
             "contract_version": 3,
@@ -1142,6 +1406,28 @@ def _build_message_ingest_payload_v3(
                     {},
                 )
             ),
+            "_worker_identity_scope": worker_identity_scopes.get(
+                str(observation.get("observation_id") or "").strip(),
+                "",
+            ),
+            "_worker_image_action_summary": (
+                worker_image_action_summaries.get(
+                    str(observation.get("observation_id") or "").strip(),
+                    {},
+                )
+            ),
+            "_worker_committed_message": (
+                worker_committed_messages.get(
+                    str(observation.get("observation_id") or "").strip(),
+                    {},
+                )
+            ),
+            "_worker_ai_reply_receipt": (
+                worker_ai_reply_receipts.get(
+                    str(observation.get("observation_id") or "").strip(),
+                    {},
+                )
+            ),
         }
         rect = message_rect({"bubble_rect": observation.get("bubble_rect") or source.get("bubble_rect")})
         candidate: dict[str, Any] | None = None
@@ -1151,7 +1437,13 @@ def _build_message_ingest_payload_v3(
             observation.get("item_state")
             or ("discovered" if row_kind == "image_bubble" else "completed")
         ).strip().lower()
-        if int(observation.get("schema_version") or 0) != 3:
+        if (
+            row_kind == "image_bubble"
+            and str(observation.get("observation_id") or "").strip()
+            in invalid_image_observation_ids
+        ):
+            validation_code = "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+        elif int(observation.get("schema_version") or 0) != 3:
             validation_code = "OBSERVATION_SCHEMA_VERSION_MISMATCH"
         elif not isinstance(rule, dict):
             validation_code = "OBSERVATION_ROW_KIND_UNKNOWN"
@@ -1243,7 +1535,12 @@ def _build_message_ingest_payload_v3(
                     "voice_meta": None,
                     "item_state": "failed",
                 }
-            elif row_kind == "image_bubble" and item_state in {"completed", "failed"}:
+            elif (
+                row_kind == "image_bubble"
+                and item_state in {"completed", "failed"}
+                and str(observation.get("observation_id") or "").strip()
+                not in historical_image_observation_ids
+            ):
                 candidate = {
                     "source": source,
                     "role": role,
@@ -1428,6 +1725,29 @@ def build_message_ingest_payload(
         target,
         sidecar_payload,
         read_run_id=read_run_id,
+    )
+
+
+def build_preliminary_slot_payload(
+    target: WechatReadTarget,
+    sidecar_payload: dict[str, Any],
+    *,
+    read_run_id: str,
+) -> dict[str, Any]:
+    """Build read-only canonical evidence without formalizing images.
+
+    This helper exists only for the current-frame incremental planner.  It may
+    observe a discovered provisional image, but it deliberately withholds the
+    reserved sequence number and therefore cannot create a durable source key.
+    """
+
+    if int(sidecar_payload.get("observation_schema_version") or 0) != 3:
+        raise ValueError("C2_OBSERVATION_SCHEMA_VERSION_REQUIRED")
+    return _build_message_ingest_payload_v3(
+        target,
+        sidecar_payload,
+        read_run_id=read_run_id,
+        allow_provisional_discovery=True,
     )
 
 

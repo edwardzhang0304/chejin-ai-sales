@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import inspect
 import os
 from pathlib import Path
 import tempfile
@@ -22,7 +23,6 @@ from chejin_worker_client.c2_contract import (
 )
 from chejin_worker_client.config import ClientConfig
 from chejin_worker_client.api import ApiError
-from chejin_worker_client.c2_outbox_recovery import rebuild_identity_collision
 from chejin_worker_client.transaction_outcomes import (
     FlowOutcomeAccumulator,
     classify_action_result,
@@ -78,7 +78,7 @@ class C2ContractTests(unittest.TestCase):
 
     def test_slot_ledger_contract_separates_fact_scope_from_delivery(self):
         schema = c2_contract_v3()["slot_ledger_state_schema"]
-        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.15")
+        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.17")
         performance = c2_contract_v3()["performance_fast_path_contract"]
         self.assertTrue(performance["business_semantics_unchanged"])
         self.assertEqual(
@@ -128,6 +128,47 @@ class C2ContractTests(unittest.TestCase):
         )
         self.assertEqual(alignment["owner"], "worker")
         self.assertEqual(
+            alignment["strong_anchor_fields"],
+            ["native_source_message_id", "confirmed_action_mapping"],
+        )
+        self.assertEqual(alignment["frame_visual_field"], "frame_visual_id")
+        self.assertIn(
+            "two_uniquely_aligned_historical_boundaries",
+            alignment["weak_media_identity_rule"],
+        )
+        self.assertIn(
+            "one_sided_text_or_system_context_never_proves_media_identity",
+            alignment["one_sided_media_context_rule"],
+        )
+        self.assertIn(
+            "frame_local",
+            alignment["provisional_media_identity_rule"],
+        )
+        self.assertIn(
+            "adjacent_action_frames",
+            alignment["confirmed_action_continuity_rule"],
+        )
+        self.assertIn(
+            "stable_image_fingerprint",
+            alignment["confirmed_image_action_rule"],
+        )
+        self.assertIn(
+            "persisted_confirmed_receipt",
+            alignment["image_identity_commit_gate"],
+        )
+        self.assertIn(
+            "no_consumer_may_query_historical_ledger_or_outbox",
+            alignment["image_identity_consumer_gate"],
+        )
+        self.assertIn(
+            "idempotent_empty_message_gate",
+            alignment["image_identity_failure_behavior"],
+        )
+        self.assertIn(
+            "without_restoring_unproven_weak_media",
+            alignment["recent_ai_boundary_rule"],
+        )
+        self.assertEqual(
             alignment["new_suffix_rule"],
             "only_after_unique_alignment_consumes_pre_tail",
         )
@@ -141,6 +182,10 @@ class C2ContractTests(unittest.TestCase):
         )
         identity_contract = c2_contract_v3()["message_identity_contract"]
         self.assertEqual(
+            identity_contract["ocr_cross_round_identity_field"],
+            "worker_stable_id",
+        )
+        self.assertEqual(
             identity_contract["frame_local_action_inputs"],
             ["physical_anchor"],
         )
@@ -148,7 +193,21 @@ class C2ContractTests(unittest.TestCase):
             "physical_anchor",
             identity_contract["omniauto_inputs"],
         )
+        source_fields = c2_contract_v3()["message_limits"][
+            "source_message_transport_fields"
+        ]
+        self.assertIn("frame_visual_id", source_fields)
+        self.assertIn("native_source_message_id", source_fields)
+        self.assertIn("voice_duration", source_fields)
+        self.assertIn("quality_flags", source_fields)
+        self.assertIn("avatar_alignment", source_fields)
+        self.assertNotIn("source_message_key", source_fields)
+        self.assertNotIn("canonical_visual_id", source_fields)
+        self.assertNotIn("canonical_input_id", source_fields)
         for forbidden in (
+            "frame_visual_id",
+            "canonical_visual_id",
+            "canonical_input_id",
             "voice_anchor_alias",
             "image_physical_anchor",
             "message_body_alone",
@@ -276,11 +335,10 @@ class C2ContractTests(unittest.TestCase):
     def test_outbox_recovery_uses_only_backend_action(self):
         for recovery_action in (
             "retry",
-            "refresh_identity_and_retry",
             "refresh_and_rebuild",
-            "rebuild_failed_facts",
             "split_and_retry",
             "capability_paused",
+            "identity_quarantined",
             "target_terminated",
             "conversation_terminated",
         ):
@@ -314,102 +372,22 @@ class C2ContractTests(unittest.TestCase):
             "capability_paused",
         )
 
-    def test_identity_collision_rebuilds_only_the_identity_envelope(self):
-        payload = {
-            "conversation_id": "conv-1",
-            "messages": [
-                {
-                    "source_message_key": "source-old",
-                    "dedupe_key": "dedupe-old",
-                    "sender_role_hint": "customer",
-                    "message_type": "text",
-                    "content": "原消息正文",
-                    "raw_payload": {
-                        "source_message_key": "source-old",
-                        "dedupe_basis": {
-                            "source": "worker_cross_round_sequence",
-                            "worker_stable_id": "worker-message-1",
-                        },
-                        "observation": {"content_clean": "原消息正文"},
-                    },
-                }
-            ],
-            "evidence": {
-                "ingest_partition": {
-                    "expected_source_message_keys": ["source-old"]
-                }
-            },
-        }
-
-        rebuilt, replacement = rebuild_identity_collision(
-            payload,
-            source_message_key="source-old",
-            dedupe_key="dedupe-old",
-            next_sequence_floor=8,
+    def test_identity_collision_is_quarantined_without_rekeying_outbox(self):
+        recovery = c2_contract_v3()["outbox_recovery_contract"]
+        self.assertTrue(
+            {
+                "MESSAGE_IDENTITY_COLLISION",
+                "MESSAGE_IDENTITY_COLLISION_NOT_REKEYABLE",
+                "VOICE_TRANSCRIBE_INVALID_CONTENT",
+                "IMAGE_UNDERSTANDING_EVIDENCE_MISMATCH",
+            }.issubset(recovery["identity_quarantined_codes"]),
         )
-
-        item = rebuilt["messages"][0]
-        self.assertEqual(item["content"], "原消息正文")
-        self.assertEqual(item["sender_role_hint"], "customer")
-        self.assertEqual(replacement["new_stable_id"], "worker-message-8")
-        self.assertNotEqual(item["source_message_key"], "source-old")
-        self.assertNotEqual(item["dedupe_key"], "dedupe-old")
+        self.assertNotIn("refresh_identity_and_retry", recovery["actions"])
+        self.assertNotIn("rebuild_failed_facts", recovery["actions"])
         self.assertEqual(
-            item["raw_payload"]["dedupe_basis"]["worker_stable_id"],
-            "worker-message-8",
+            classify_outbox_recovery("identity_quarantined"),
+            "identity_quarantined",
         )
-        self.assertEqual(
-            rebuilt["evidence"]["ingest_partition"][
-                "expected_source_message_keys"
-            ],
-            [item["source_message_key"]],
-        )
-        self.assertEqual(
-            classify_outbox_recovery("unrecognized_action"),
-            "capability_paused",
-        )
-
-    def test_identity_collision_refuses_shared_stable_id(self):
-        payload = {
-            "conversation_id": "conv-1",
-            "messages": [
-                {
-                    "source_message_key": "source-conflict",
-                    "dedupe_key": "dedupe-conflict",
-                    "message_type": "text",
-                    "content": "冲突消息",
-                    "raw_payload": {
-                        "dedupe_basis": {
-                            "source": "worker_cross_round_sequence",
-                            "worker_stable_id": "worker-message-7",
-                        }
-                    },
-                },
-                {
-                    "source_message_key": "source-other",
-                    "dedupe_key": "dedupe-other",
-                    "message_type": "text",
-                    "content": "另一条消息",
-                    "raw_payload": {
-                        "dedupe_basis": {
-                            "source": "worker_cross_round_sequence",
-                            "worker_stable_id": "worker-message-7",
-                        }
-                    },
-                },
-            ],
-        }
-
-        with self.assertRaisesRegex(
-            ValueError,
-            "MESSAGE_IDENTITY_COLLISION_ITEM_AMBIGUOUS",
-        ):
-            rebuild_identity_collision(
-                payload,
-                source_message_key="source-conflict",
-                dedupe_key="dedupe-conflict",
-                next_sequence_floor=8,
-            )
 
     def test_action_result_matrix_is_contract_driven(self):
         cases = (

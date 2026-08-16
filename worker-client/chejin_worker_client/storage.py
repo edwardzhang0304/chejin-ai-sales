@@ -1458,8 +1458,6 @@ def refresh_c2_outbox_payload(
     payload: dict[str, Any],
     *,
     next_status: str,
-    identity_replacement: dict[str, str] | None = None,
-    identity_state_key: str | None = None,
 ) -> None:
     _assert_outbox_text_only(payload)
     encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -1471,90 +1469,6 @@ def refresh_c2_outbox_payload(
     if str(next_status) not in _c2_outbox_states():
         raise ValueError("C2_OUTBOX_TARGET_STATE_INVALID")
     with db_connection() as conn:
-        if isinstance(identity_replacement, dict):
-            conversation_id = str(
-                payload.get("conversation_id") or ""
-            ).strip()
-            old_source_message_key = str(
-                identity_replacement.get("old_source_message_key") or ""
-            ).strip()
-            new_source_message_key = str(
-                identity_replacement.get("new_source_message_key") or ""
-            ).strip()
-            new_dedupe_key = str(
-                identity_replacement.get("new_dedupe_key") or ""
-            ).strip()
-            if not all(
-                (
-                    conversation_id,
-                    old_source_message_key,
-                    new_source_message_key,
-                    new_dedupe_key,
-                )
-            ):
-                raise ValueError("C2_LEDGER_REPLACEMENT_IDENTITY_INVALID")
-            existing = conn.execute(
-                """
-                SELECT 1 FROM c2_message_ledger
-                WHERE conversation_id = ? AND source_message_key = ?
-                """,
-                (conversation_id, new_source_message_key),
-            ).fetchone()
-            if existing:
-                raise ValueError("C2_LEDGER_REPLACEMENT_IDENTITY_EXISTS")
-            ledger_cursor = conn.execute(
-                """
-                UPDATE c2_message_ledger
-                SET source_message_key = ?, dedupe_key = ?, updated_at = ?
-                WHERE conversation_id = ? AND source_message_key = ?
-                """,
-                (
-                    new_source_message_key,
-                    new_dedupe_key,
-                    utc_now_iso(),
-                    conversation_id,
-                    old_source_message_key,
-                ),
-            )
-            if ledger_cursor.rowcount != 1:
-                raise ValueError("C2_LEDGER_COLLISION_SOURCE_NOT_FOUND")
-            clean_state_key = str(identity_state_key or "").strip()
-            stable_id_match = re.fullmatch(
-                r"worker-message-(\d+)",
-                str(identity_replacement.get("new_stable_id") or "").strip(),
-            )
-            if not clean_state_key or stable_id_match is None:
-                raise ValueError("C2_IDENTITY_REPLACEMENT_STATE_INVALID")
-            state_row = conn.execute(
-                "SELECT value FROM c2_runtime_state WHERE key = ?",
-                (clean_state_key,),
-            ).fetchone()
-            identity_state: dict[str, Any] = {}
-            if state_row:
-                try:
-                    decoded_state = json.loads(state_row["value"])
-                except (TypeError, json.JSONDecodeError):
-                    decoded_state = {}
-                if isinstance(decoded_state, dict):
-                    identity_state = decoded_state
-            identity_state["next_sequence"] = max(
-                int(identity_state.get("next_sequence") or 1),
-                int(stable_id_match.group(1)) + 1,
-            )
-            conn.execute(
-                """
-                INSERT INTO c2_runtime_state (key, value, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(key) DO UPDATE SET
-                  value = excluded.value,
-                  updated_at = excluded.updated_at
-                """,
-                (
-                    clean_state_key,
-                    json.dumps(identity_state, ensure_ascii=False),
-                    utc_now_iso(),
-                ),
-            )
         cursor = conn.execute(
             """
             UPDATE c2_ingest_outbox
@@ -1573,27 +1487,6 @@ def refresh_c2_outbox_payload(
         )
         if cursor.rowcount != 1:
             raise ValueError("C2_OUTBOX_NOT_WAITING")
-        conn.commit()
-
-
-def rebuild_c2_outbox_payload(
-    outbox_id: str,
-    payload: dict[str, Any],
-) -> None:
-    _assert_outbox_text_only(payload)
-    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    with db_connection() as conn:
-        cursor = conn.execute(
-            """
-            UPDATE c2_ingest_outbox
-            SET payload_json = ?, status = 'waiting', last_error = NULL,
-                next_attempt_at = NULL, updated_at = ?
-            WHERE outbox_id = ? AND status = 'rebuild_pending'
-            """,
-            (encoded, utc_now_iso(), str(outbox_id)),
-        )
-        if cursor.rowcount != 1:
-            raise ValueError("C2_OUTBOX_NOT_REBUILD_PENDING")
         conn.commit()
 
 
