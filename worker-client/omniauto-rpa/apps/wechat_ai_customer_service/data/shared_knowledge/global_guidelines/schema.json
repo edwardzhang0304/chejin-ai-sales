@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "category_id": "global_guidelines",
+  "display_name": "共享通用客服原则",
+  "item_title_field": "title",
+  "fields": [
+    {"id": "title", "label": "标题", "type": "short_text", "required": true},
+    {"id": "keywords", "label": "关键词", "type": "tags", "required": false},
+    {"id": "guideline_text", "label": "规则内容", "type": "long_text", "required": true},
+    {"id": "applies_to", "label": "适用场景", "type": "long_text", "required": false},
+    {"id": "always_include", "label": "默认纳入上下文", "type": "boolean", "required": false, "default": false}
+  ]
+}

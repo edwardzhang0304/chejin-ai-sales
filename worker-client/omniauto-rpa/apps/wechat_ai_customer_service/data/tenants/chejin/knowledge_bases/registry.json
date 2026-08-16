@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "tenant_id": "chejin",
+  "categories": [
+    {
+      "id": "policies",
+      "name": "车金业务政策",
+      "kind": "classified",
+      "path": "policies",
+      "enabled": true,
+      "participates_in_reply": true,
+      "participates_in_learning": false,
+      "participates_in_diagnostics": true,
+      "sort_order": 30
+    }
+  ]
+}
