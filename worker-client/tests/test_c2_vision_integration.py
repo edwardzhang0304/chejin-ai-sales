@@ -5054,6 +5054,130 @@ class C2VisionIntegrationTests(unittest.TestCase):
             "image_candidate_suppressed_by_reliable_message_type",
         )
 
+    def test_reliable_text_type_cannot_be_overridden_by_continuous_image_surface(self):
+        """A solid chat bubble edge is not evidence that a text row is an image."""
+        from apps.wechat_ai_customer_service.optional_plugins.vision.capture import (
+            surface,
+        )
+
+        for role, candidate_bounds, text_bounds in (
+            ("self", [489, 411, 878, 532], [510, 419, 858, 531]),
+            ("customer", [470, 411, 820, 532], [490, 419, 800, 531]),
+        ):
+            with self.subTest(role=role):
+                candidate = {
+                    "bounds": candidate_bounds,
+                    "side": role,
+                    "role_facing_edge_surface_continuity": 0.98,
+                }
+                reliable_text = {
+                    "id": f"confirmed-{role}-long-text",
+                    "type": "text",
+                    "sender_role": role,
+                    "sender_role_source": "same_row_avatar",
+                    "content": "你好，10万左右可以先按你的用车需求筛选合适车型。",
+                    "bubble_rect": text_bounds,
+                    "avatar_alignment": {"role": role},
+                }
+                diagnostics = []
+
+                kept = surface.image_candidates_without_reliable_typed_message_conflicts(
+                    [candidate],
+                    [reliable_text],
+                    [],
+                    diagnostics=diagnostics,
+                )
+
+                self.assertEqual(kept, [])
+                self.assertEqual(
+                    diagnostics[0]["event"],
+                    "image_candidate_suppressed_by_reliable_message_type",
+                )
+                self.assertEqual(diagnostics[0]["message_type"], "text")
+                self.assertEqual(
+                    surface.messages_outside_image_bubbles(
+                        [reliable_text],
+                        [
+                            {
+                                "type": "image",
+                                "sender_role": role,
+                                "bubble_rect": candidate_bounds,
+                            }
+                        ],
+                    ),
+                    [reliable_text],
+                )
+
+    def test_incident_long_self_text_survives_full_parse_and_image_merge(self):
+        """Regression for CJNCXB8R: parsed OCR text must survive image merge."""
+        from apps.wechat_ai_customer_service.optional_plugins.vision.capture import (
+            surface,
+        )
+
+        screenshot = Image.new("RGB", (981, 860), (245, 245, 245))
+        draw = ImageDraw.Draw(screenshot)
+        draw.rounded_rectangle((489, 411, 878, 532), radius=10, fill=(149, 236, 149))
+        # Same-row avatar evidence used by the production role classifier.
+        for y in range(411, 459, 5):
+            for x in range(904, 952, 5):
+                tone = 48 if ((x + y) // 5) % 2 else 205
+                draw.rectangle((x, y, x + 4, y + 4), fill=(tone, 105, 165))
+        raw_rows = [
+            ("你好，10万左右可以先按你的用车需求筛选合适车型。", 510, 419, 858, 442),
+            ("你主要是日常通勤、家庭出行，还是更看重大空间？", 510, 445, 858, 468),
+            ("另外你更偏轿车、SUV，还是燃油、混动、", 510, 471, 858, 494),
+            ("纯电呢？", 510, 503, 590, 531),
+        ]
+        ocr_items = [
+            {
+                "text": text,
+                "left": left,
+                "top": top,
+                "right": right,
+                "bottom": bottom,
+                "center_x": (left + right) / 2,
+                "center_y": (top + bottom) / 2,
+                "confidence": 0.99,
+            }
+            for text, left, top, right, bottom in raw_rows
+        ]
+        structural_candidate = {
+            "bounds": [489, 411, 878, 532],
+            "side": "self",
+            "role_facing_edge_surface_continuity": 0.98,
+            "visual_fingerprint": "incident-continuous-green-surface",
+        }
+        try:
+            parsed = wechat_win32_ocr_sidecar.parse_messages_from_ocr(
+                ocr_items,
+                screenshot.size,
+                target="CJNCXB8R",
+                screenshot=screenshot,
+            )
+            self.assertTrue(parsed)
+            self.assertTrue(all(item["type"] == "text" for item in parsed))
+            self.assertTrue(all(item["sender_role"] == "self" for item in parsed))
+            with patch.object(
+                surface,
+                "detect_visual_image_bubbles",
+                return_value=[structural_candidate],
+            ):
+                merged = wechat_win32_ocr_sidecar.merge_structural_image_messages(
+                    screenshot,
+                    ocr_items,
+                    parsed,
+                    target="CJNCXB8R",
+                )
+        finally:
+            screenshot.close()
+
+        self.assertTrue(merged)
+        self.assertFalse(any(item.get("type") == "image" for item in merged))
+        self.assertEqual(
+            "".join(str(item.get("content") or "") for item in merged).replace("\n", ""),
+            "".join(row[0] for row in raw_rows),
+        )
+
     def test_expanded_voice_surface_is_rejected_before_image_candidate_output(self):
         screenshot = Image.new("RGB", (974, 853), (242, 242, 242))
         draw = ImageDraw.Draw(screenshot)
