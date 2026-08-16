@@ -7846,6 +7846,10 @@ class TaskRunnerTest(unittest.TestCase):
                     "confirmed_action_mapping": {
                         "canonical_action_id": action_id,
                         "reserved_worker_stable_id": reserved_id,
+                        "selected_action_token": str(
+                            kwargs["selected_action_token"]
+                        ),
+                        "pre_observation_id": pre_id,
                         "binding_confirmed": True,
                         "post_observation_id": post_id,
                         "derived_observation_ids": [],
@@ -13417,7 +13421,11 @@ class TaskRunnerTest(unittest.TestCase):
             },
         )
         with tempfile.TemporaryDirectory(
-            prefix="chejin-missing-identity-db-"
+            prefix="chejin-missing-identity-db-",
+            # Windows runners can retain a transient SQLite/WAL handle after
+            # the assertions have completed.  Cleanup is not the behavior
+            # under test and must not turn a passing identity test red.
+            ignore_cleanup_errors=True,
         ) as temp_dir:
             app_dir = Path(temp_dir)
             missing_db = app_dir / "worker_client.sqlite3"
@@ -18045,6 +18053,9 @@ class TaskRunnerTest(unittest.TestCase):
                                 "reserved_worker_stable_id": stable_id,
                                 "pre_observation_id": observation_id,
                                 "post_observation_id": observation_id,
+                                "selected_action_token": (
+                                    f"voice-token-{unique}"
+                                ),
                                 "binding_confirmed": True,
                             }
                         }

@@ -1085,6 +1085,7 @@ class WechatC2Test(unittest.TestCase):
                                 "reserved_worker_stable_id": "worker-message-30",
                                 "pre_observation_id": "voice-pre-30",
                                 "post_observation_id": "voice-transcript",
+                                "selected_action_token": "voice-token-30",
                                 "binding_confirmed": True,
                             },
                         ),
@@ -1094,6 +1095,7 @@ class WechatC2Test(unittest.TestCase):
                                 "reserved_worker_stable_id": "worker-message-30",
                                 "pre_observation_id": "voice-pre-30",
                                 "post_observation_id": "voice-transcript",
+                                "selected_action_token": "voice-token-30",
                                 "binding_confirmed": True,
                             }
                         },
@@ -1281,6 +1283,7 @@ class WechatC2Test(unittest.TestCase):
                         "reserved_worker_stable_id": stable_id,
                         "pre_observation_id": observation_id,
                         "post_observation_id": observation_id,
+                        "selected_action_token": f"token-{observation_id}",
                         "binding_confirmed": True,
                     }
                 }
