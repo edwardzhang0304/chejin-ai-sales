@@ -652,6 +652,15 @@ def align_committed_message_sequence(
             "reserved_worker_stable_id": _token(
                 mapping.get("reserved_worker_stable_id")
             ),
+            **(
+                {
+                    "selected_action_token": _token(
+                        mapping.get("selected_action_token")
+                    )
+                }
+                if _token(mapping.get("selected_action_token"))
+                else {}
+            ),
             "pre_observation_id": _token(
                 mapping.get("pre_observation_id")
             ),

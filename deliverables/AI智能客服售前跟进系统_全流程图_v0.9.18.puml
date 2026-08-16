@@ -1,5 +1,5 @@
 @startuml
-' 文档版本：v0.9.17；灰度候选版本：0.9.17；最后更新：2026-08-16
+' 文档版本：v0.9.18；灰度候选版本：0.9.18；最后更新：2026-08-16
 title AI智能客服售前跟进系统 全流程图（C0-C4、媒体、回复、转人工与恢复）
 
 skinparam monochrome true
@@ -367,12 +367,14 @@ loop Worker运行中；每次循环最多完成一个会话事务
                 OA -> WX: 点击语音转文字入口
                 OA -> WX: 点击后自动滚动属正常路径\n立即废弃旧坐标并取post_frame
                 WX --> OA: 转写后的新画面
+                OA -> OA: 将action/reserved/token/pre/post观察映射\n保存在本execute内存frame_action_binding\n不写入正式source_message
                 OA -> OA: native ID / >=3帧逐相邻帧tracking_edges / >=2可信邻居滚动对齐\n边链从selected pre observation到最终观察且每边唯一
                 OA -> OA: 将本次完整截图和OCR结果\n更新为current_valid_frame
                 W -> W: 先将confirmed action的转写衍生行\n折叠回selected_action，不当新消息
                 W -> W: 对pre_action_identity_sequence与post_frame\n执行唯一单调一对一对齐
                 alt 转写成功且binding唯一confirmed
-                  OA --> W: 回显原action_id\nbinding=confirmed + candidate_count=1\n前后帧 + 邻居证据
+                  OA -> OA: 帧内binding唯一命中post observation\n生成confirmed_action_mapping后删除帧内binding
+                  OA --> W: 回显原action_id/reserved/token/pre/post\nbinding=confirmed + candidate_count=1\n前后帧 + 邻居证据
                   W -> L: commit_message_identity\ncommitted_completed；此后才生成source key
                 else 操作对象唯一且已触发，但转写内容失败
                   OA --> W: binding=failed + candidate_count=1\nvoice error_code + 完整动作映射

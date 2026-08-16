@@ -75,6 +75,8 @@ def _observation(
             "post_observation_id": observation_id,
             "binding_confirmed": True,
         }
+        if message_type == "voice":
+            mapping["selected_action_token"] = "voice-token-7"
         proof = dict(mapping)
         if message_type == "voice":
             item["_worker_voice_action_summary"] = {

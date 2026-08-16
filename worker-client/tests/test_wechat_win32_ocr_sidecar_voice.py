@@ -78,10 +78,32 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         anchor = dict(candidate["action_target"])
         final_message = dict(bound_message or {})
         if final_message:
+            duration_text = str(
+                (anchor.get("item") or {}).get("voice_duration_text")
+                or (anchor.get("item") or {}).get("text")
+                or final_message.get("voice_duration_text")
+                or '1"'
+            )
+            content = str(
+                final_message.get("content_clean")
+                or final_message.get("content")
+                or "测试语音正文"
+            )
+            quality_flags = list(final_message.get("quality_flags") or [])
+            if "voice_duration_prefix_removed" not in quality_flags:
+                quality_flags.append("voice_duration_prefix_removed")
             final_message.update(
                 {
-                    "canonical_voice_action_id": action_id,
-                    "reserved_worker_stable_id": reserved_id,
+                    "id": str(final_message.get("id") or "voice-post"),
+                    "type": "voice",
+                    "content": content,
+                    "content_clean": content,
+                    "content_raw_ocr": str(
+                        final_message.get("content_raw_ocr")
+                        or f"{duration_text}\n{content}"
+                    ),
+                    "voice_duration_text": duration_text,
+                    "quality_flags": quality_flags,
                 }
             )
         image = Image.new("RGB", (965, 852), (247, 247, 247))
@@ -119,27 +141,27 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
                 },
             )
 
-            def observations(messages: list[dict]) -> list[dict]:
-                if click_ok:
-                    return [
+            builder_patch = nullcontext()
+            if not click_ok:
+                builder_patch = patch.object(
+                    sidecar,
+                    "build_message_observations_v3",
+                    return_value=[
                         {
-                            "observation_id": "voice-post",
-                            "row_kind": "voice_transcript",
+                            "observation_id": "voice-failed-post",
+                            "row_kind": "voice_bubble",
                             "message_type": "voice",
-                            "sender_role": final_message.get("sender_role", "customer"),
-                            "source_message": dict(final_message),
+                            "sender_role": candidate.get(
+                                "sender_role", "customer"
+                            ),
+                            "action_target": anchor,
+                            "source_message": {
+                                "id": "voice-failed-post",
+                                "type": "voice",
+                            },
                         }
-                    ]
-                return [
-                    {
-                        "observation_id": "voice-failed-post",
-                        "row_kind": "voice_bubble",
-                        "message_type": "voice",
-                        "sender_role": candidate.get("sender_role", "customer"),
-                        "action_target": anchor,
-                        "source_message": {"id": "voice-failed-post", "type": "voice"},
-                    }
-                ]
+                    ],
+                )
 
             with patch.object(
                 sidecar,
@@ -166,14 +188,6 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
                 return_value={"anchor-a"},
             ), patch.object(
                 sidecar,
-                "build_message_observations_v3",
-                side_effect=observations,
-            ), patch.object(
-                sidecar,
-                "_bind_voice_transcripts_for_action",
-                return_value=[final_message] if final_message else [],
-            ), patch.object(
-                sidecar,
                 "validate_active_send_target",
                 return_value=target_confirmation
                 or {"ok": True, "conversation_type": "private", "short_code_confirmed": True},
@@ -189,7 +203,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
                 sidecar, "human_window_image_click_in_bounds", click
             ), patch.object(
                 sidecar, "humanized_action_sleep", return_value=None
-            ):
+            ), builder_patch:
                 result = sidecar.execute_voice_action_payload(
                     1,
                     {},
@@ -207,6 +221,153 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
                 )
             phase = action_journal_phase(journal_path)
         return result, click, menu, phase
+
+    def test_frame_action_binding_survives_real_observation_builder_only_in_memory(
+        self,
+    ) -> None:
+        anchor = {
+            "source": "parser_voice_message_context_menu_anchor",
+            "click_bounds": [488, 220, 536, 248],
+            "item": {
+                "text": '3"',
+                "voice_duration_text": '3"',
+                "left": 488,
+                "top": 220,
+                "right": 536,
+                "bottom": 248,
+                "center_x": 512,
+                "center_y": 234,
+                "sender_role": "customer",
+                "parser_bubble_rect": [488, 220, 536, 248],
+            },
+        }
+        transcript = {
+            "id": "voice-post",
+            "type": "voice",
+            "sender": "customer",
+            "sender_role": "customer",
+            "content": "你好，我想咨询一下",
+            "content_clean": "你好，我想咨询一下",
+            "content_raw_ocr": '3"\n你好，我想咨询一下',
+            "voice_duration_text": '3"',
+            "bubble_rect": [488, 220, 700, 294],
+            "quality_flags": ["voice_duration_prefix_removed"],
+        }
+
+        bound = sidecar._bind_voice_transcripts_for_action(
+            [transcript],
+            anchor,
+            (965, 852),
+            canonical_voice_action_id="action-1",
+            reserved_worker_stable_id="worker-message-5",
+            selected_action_token="token-1",
+            pre_observation_id="voice-pre",
+        )
+        self.assertEqual(len(bound), 1)
+        observations = sidecar.build_message_observations_v3(bound)
+        self.assertEqual(len(observations), 1)
+        source_message = observations[0]["source_message"]
+        self.assertNotIn("canonical_voice_action_id", source_message)
+        self.assertNotIn("reserved_worker_stable_id", source_message)
+        frame_binding = observations[0]["frame_action_binding"]
+        self.assertEqual(
+            frame_binding,
+            {
+                "canonical_voice_action_id": "action-1",
+                "reserved_worker_stable_id": "worker-message-5",
+                "selected_action_token": "token-1",
+                "pre_observation_id": "voice-pre",
+                "post_observation_id": "voice-post",
+                "binding_confirmed": True,
+            },
+        )
+        confirmed = sidecar.confirmed_voice_frame_action_observations(
+            observations,
+            canonical_voice_action_id="action-1",
+            reserved_worker_stable_id="worker-message-5",
+            selected_action_token="token-1",
+            pre_observation_id="voice-pre",
+        )
+        self.assertEqual(
+            [item["observation_id"] for item in confirmed],
+            ["voice-post"],
+        )
+
+    def test_frame_action_binding_mismatch_or_missing_is_never_confirmed(
+        self,
+    ) -> None:
+        valid = {
+            "observation_id": "voice-post",
+            "row_kind": "voice_transcript",
+            "message_type": "voice",
+            "sender_role": "customer",
+            "source_message": {"id": "voice-post", "type": "voice"},
+            "frame_action_binding": {
+                "canonical_voice_action_id": "action-1",
+                "reserved_worker_stable_id": "worker-message-5",
+                "selected_action_token": "token-1",
+                "pre_observation_id": "voice-pre",
+                "post_observation_id": "voice-post",
+                "binding_confirmed": True,
+            },
+        }
+        selectors = {
+            "canonical_voice_action_id": "action-1",
+            "reserved_worker_stable_id": "worker-message-5",
+            "selected_action_token": "token-1",
+            "pre_observation_id": "voice-pre",
+        }
+        for field, bad_value in (
+            ("canonical_voice_action_id", "action-other"),
+            ("reserved_worker_stable_id", "worker-message-6"),
+            ("selected_action_token", "token-other"),
+            ("pre_observation_id", "voice-other"),
+            ("post_observation_id", "voice-other"),
+        ):
+            invalid = {
+                **valid,
+                "frame_action_binding": {
+                    **valid["frame_action_binding"],
+                    field: bad_value,
+                },
+            }
+            with self.subTest(field=field):
+                self.assertEqual(
+                    sidecar.confirmed_voice_frame_action_observations(
+                        [invalid], **selectors
+                    ),
+                    [],
+                )
+        missing = dict(valid)
+        missing.pop("frame_action_binding")
+        self.assertEqual(
+            sidecar.confirmed_voice_frame_action_observations(
+                [missing], **selectors
+            ),
+            [],
+        )
+        self.assertEqual(
+            len(
+                sidecar.confirmed_voice_frame_action_observations(
+                    [valid, dict(valid)], **selectors
+                )
+            ),
+            2,
+        )
+        empty_token = {
+            **valid,
+            "frame_action_binding": {
+                **valid["frame_action_binding"],
+                "selected_action_token": "",
+            },
+        }
+        self.assertEqual(
+            sidecar.confirmed_voice_frame_action_observations(
+                [empty_token],
+                **{**selectors, "selected_action_token": ""},
+            ),
+            [],
+        )
 
     @staticmethod
     def draw_avatar(draw: ImageDraw.ImageDraw, bounds: tuple[int, int, int, int]) -> None:
@@ -1219,6 +1380,31 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         )
         self.assertEqual(result["messages"][0]["content"], "今天天气真不错")
         self.assertNotIn("海鲜", [item.get("content") for item in result["messages"]])
+        mapping = result["confirmed_action_mapping"]
+        self.assertEqual(mapping["canonical_action_id"], "action-voice-3")
+        self.assertEqual(
+            mapping["reserved_worker_stable_id"], "worker-voice-3"
+        )
+        self.assertEqual(mapping["selected_action_token"], "token-a")
+        self.assertEqual(mapping["pre_observation_id"], "voice-3")
+        self.assertTrue(mapping["binding_confirmed"])
+        self.assertEqual(
+            [item["observation_id"] for item in result["observations"]],
+            [mapping["post_observation_id"]],
+        )
+        self.assertNotIn(
+            "frame_action_binding", result["observations"][0]
+        )
+        formal_source = result["observations"][0]["source_message"]
+        for temporary_field in (
+            "canonical_voice_action_id",
+            "reserved_worker_stable_id",
+            "selected_action_token",
+            "pre_observation_id",
+            "post_observation_id",
+            "binding_confirmed",
+        ):
+            self.assertNotIn(temporary_field, formal_source)
         self.assertEqual(phase, "confirmed")
         self.assertEqual(click.call_count, 1)
         scroll_mock.assert_not_called()

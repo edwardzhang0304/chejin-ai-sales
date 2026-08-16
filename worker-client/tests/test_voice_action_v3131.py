@@ -47,6 +47,7 @@ class VoiceActionV3132Test(unittest.TestCase):
         payload = {
             "canonical_voice_action_id": "action-1",
             "reserved_worker_stable_id": "worker-message-1",
+            "selected_action_token": "token-a",
             "transcript_binding_status": "confirmed",
             "transcript_binding_method": "continuous_target_tracking",
             "binding_candidate_count": 1,
@@ -69,6 +70,8 @@ class VoiceActionV3132Test(unittest.TestCase):
             "confirmed_action_mapping": {
                 "canonical_action_id": "action-1",
                 "reserved_worker_stable_id": "worker-message-1",
+                "selected_action_token": "token-a",
+                "pre_observation_id": "voice-a",
                 "binding_confirmed": True,
                 "post_observation_id": "voice-post",
                 "derived_observation_ids": [],
@@ -88,6 +91,7 @@ class VoiceActionV3132Test(unittest.TestCase):
                 reserved_worker_stable_id="worker-message-1",
                 expected_pre_frame_id="frame-a",
                 pre_observation_id="voice-a",
+                selected_action_token="token-a",
                 selected_anchor_keys=set(),
             )
 
@@ -95,6 +99,7 @@ class VoiceActionV3132Test(unittest.TestCase):
         payload = {
             "canonical_voice_action_id": "action-1",
             "reserved_worker_stable_id": "worker-message-1",
+            "selected_action_token": "token-a",
             "transcript_binding_status": "confirmed",
             "transcript_binding_method": "continuous_target_tracking",
             "binding_candidate_count": 1,
@@ -128,6 +133,8 @@ class VoiceActionV3132Test(unittest.TestCase):
             "confirmed_action_mapping": {
                 "canonical_action_id": "action-1",
                 "reserved_worker_stable_id": "worker-message-1",
+                "selected_action_token": "token-a",
+                "pre_observation_id": "voice-a",
                 "binding_confirmed": True,
                 "post_observation_id": "voice-post",
                 "derived_observation_ids": [],
@@ -147,6 +154,7 @@ class VoiceActionV3132Test(unittest.TestCase):
                 reserved_worker_stable_id="worker-message-1",
                 expected_pre_frame_id="frame-a",
                 pre_observation_id="voice-a",
+                selected_action_token="token-a",
                 selected_anchor_keys=set(),
             )
 

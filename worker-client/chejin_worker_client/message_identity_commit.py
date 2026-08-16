@@ -238,6 +238,7 @@ def _validate_basis(
             stable_id,
             observation_id,
             require_fingerprint=False,
+            require_action_token=True,
         )
 
     if basis is MessageCommitBasis.CONFIRMED_IMAGE_ACTION:
@@ -251,6 +252,7 @@ def _validate_basis(
             stable_id,
             observation_id,
             require_fingerprint=True,
+            require_action_token=False,
         )
         if reason:
             return reason
@@ -299,6 +301,7 @@ def _validate_action_mapping(
     observation_id: str,
     *,
     require_fingerprint: bool,
+    require_action_token: bool,
 ) -> str:
     if not isinstance(mapping, Mapping):
         return "confirmed_action_mapping_missing"
@@ -312,13 +315,20 @@ def _validate_action_mapping(
         return "confirmed_action_pre_observation_missing"
     if mapping.get("binding_confirmed") is not True:
         return "confirmed_action_binding_not_confirmed"
-    for field in (
+    if require_action_token and not str(
+        mapping.get("selected_action_token") or ""
+    ).strip():
+        return "confirmed_action_token_missing"
+    fields = [
         "canonical_action_id",
         "reserved_worker_stable_id",
         "pre_observation_id",
         "post_observation_id",
         "binding_confirmed",
-    ):
+    ]
+    if require_action_token:
+        fields.insert(2, "selected_action_token")
+    for field in fields:
         if proof.get(field) != mapping.get(field):
             return "confirmed_action_commit_proof_mismatch"
     return ""

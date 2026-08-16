@@ -1019,6 +1019,7 @@ class SequenceAlignmentTests(unittest.TestCase):
             voice_payload={
                 "canonical_voice_action_id": "voice-action-1",
                 "reserved_worker_stable_id": "worker-message-9",
+                "selected_action_token": "token-a",
                 "transcript_binding_status": "confirmed",
                 "transcript_binding_method": (
                     "continuous_target_tracking"
@@ -1054,6 +1055,8 @@ class SequenceAlignmentTests(unittest.TestCase):
                 "confirmed_action_mapping": {
                     "canonical_action_id": "voice-action-1",
                     "reserved_worker_stable_id": "worker-message-9",
+                    "selected_action_token": "token-a",
+                    "pre_observation_id": "voice-pre",
                     "binding_confirmed": True,
                     "post_observation_id": "voice-post",
                     "derived_observation_ids": [],
@@ -1065,6 +1068,7 @@ class SequenceAlignmentTests(unittest.TestCase):
             reserved_worker_stable_id="worker-message-9",
             expected_pre_frame_id="pre",
             pre_observation_id="voice-pre",
+            selected_action_token="token-a",
             selected_anchor_keys={"old-frame-anchor"},
         )
 
@@ -1082,6 +1086,7 @@ class SequenceAlignmentTests(unittest.TestCase):
                 voice_payload={
                     "canonical_voice_action_id": "voice-action-1",
                     "reserved_worker_stable_id": "worker-message-9",
+                    "selected_action_token": "token-a",
                     "transcript_binding_status": "confirmed",
                     "transcript_binding_method": (
                         "continuous_target_tracking"
@@ -1121,6 +1126,8 @@ class SequenceAlignmentTests(unittest.TestCase):
                     "confirmed_action_mapping": {
                         "canonical_action_id": "voice-action-1",
                         "reserved_worker_stable_id": "worker-message-9",
+                        "selected_action_token": "token-a",
+                        "pre_observation_id": "voice-pre",
                         "binding_confirmed": True,
                         "post_observation_id": "voice-post",
                         "derived_observation_ids": [],
@@ -1134,6 +1141,7 @@ class SequenceAlignmentTests(unittest.TestCase):
                 reserved_worker_stable_id="worker-message-9",
                 expected_pre_frame_id="pre",
                 pre_observation_id="voice-pre",
+                selected_action_token="token-a",
                 selected_anchor_keys={"old-frame-anchor"},
             )
 
@@ -1168,6 +1176,7 @@ class SequenceAlignmentTests(unittest.TestCase):
             return {
                 "canonical_voice_action_id": "voice-action-2",
                 "reserved_worker_stable_id": "worker-message-10",
+                "selected_action_token": "token-a",
                 "transcript_binding_status": "confirmed",
                 "transcript_binding_method": method,
                 "binding_candidate_count": 1,
@@ -1178,6 +1187,8 @@ class SequenceAlignmentTests(unittest.TestCase):
                 "confirmed_action_mapping": {
                     "canonical_action_id": "voice-action-2",
                     "reserved_worker_stable_id": "worker-message-10",
+                    "selected_action_token": "token-a",
+                    "pre_observation_id": "voice-pre",
                     "binding_confirmed": True,
                     "post_observation_id": "voice-post",
                     "derived_observation_ids": [],
@@ -1213,6 +1224,7 @@ class SequenceAlignmentTests(unittest.TestCase):
                 reserved_worker_stable_id="worker-message-10",
                 expected_pre_frame_id="pre",
                 pre_observation_id="voice-pre",
+                selected_action_token="token-a",
                 selected_anchor_keys=set(),
             )
             self.assertTrue(mapping["binding_confirmed"])
@@ -1221,6 +1233,7 @@ class SequenceAlignmentTests(unittest.TestCase):
         payload = {
             "canonical_voice_action_id": "voice-action-3",
             "reserved_worker_stable_id": "worker-message-11",
+            "selected_action_token": "token-a",
             "transcript_binding_status": "confirmed",
             "transcript_binding_method": "neighbor_scroll_alignment",
             "binding_candidate_count": 1,
@@ -1244,6 +1257,8 @@ class SequenceAlignmentTests(unittest.TestCase):
             "confirmed_action_mapping": {
                 "canonical_action_id": "voice-action-3",
                 "reserved_worker_stable_id": "worker-message-11",
+                "selected_action_token": "token-a",
+                "pre_observation_id": "voice-pre",
                 "binding_confirmed": True,
                 "post_observation_id": "voice-post-a",
                 "derived_observation_ids": [],
@@ -1273,6 +1288,7 @@ class SequenceAlignmentTests(unittest.TestCase):
                 reserved_worker_stable_id="worker-message-11",
                 expected_pre_frame_id="pre",
                 pre_observation_id="voice-pre",
+                selected_action_token="token-a",
                 selected_anchor_keys=set(),
             )
 

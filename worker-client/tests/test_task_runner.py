@@ -1217,6 +1217,12 @@ class FakeBridge:
                     "confirmed_action_mapping": {
                         "canonical_action_id": action_id,
                         "reserved_worker_stable_id": reserved_id,
+                        "selected_action_token": str(
+                            kwargs.get("selected_action_token") or ""
+                        ),
+                        "pre_observation_id": str(
+                            kwargs.get("selected_pre_observation_id") or ""
+                        ),
                         "binding_confirmed": bool(post_observation_id),
                         "post_observation_id": post_observation_id,
                         "derived_observation_ids": [],
@@ -1353,6 +1359,12 @@ class FakeBridge:
                     "confirmed_action_mapping": {
                         "canonical_action_id": action_id,
                         "reserved_worker_stable_id": reserved_id,
+                        "selected_action_token": str(
+                            kwargs.get("selected_action_token") or ""
+                        ),
+                        "pre_observation_id": str(
+                            kwargs.get("selected_pre_observation_id") or ""
+                        ),
                         "binding_confirmed": bool(post_observation_id),
                         "post_observation_id": post_observation_id,
                         "derived_observation_ids": [],
