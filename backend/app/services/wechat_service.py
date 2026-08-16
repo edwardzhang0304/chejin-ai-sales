@@ -101,11 +101,16 @@ LISTEN_STATUS_DISABLED = "disabled"
 NEXT_ACTION_NONE = "none"
 LOW_CONFIDENCE_THRESHOLD = 0.7
 CONVERSATION_CLOSED_STATUSES = {"closed", "rejected"}
-RECOVERABLE_REPLY_BOUNDARY_GATE_CODES = {
+RECOVERABLE_IDENTITY_UNRESOLVED_GATE_CODES = {
     "MESSAGE_IDENTITY_UNCONFIRMED",
     "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
     "C2_MESSAGE_HISTORY_GAP",
+    "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+    "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+    "C2_VOICE_RESULT_AMBIGUOUS",
 }
+IDENTITY_UNRESOLVED_MAX_PASSIVE_REREADS = 2
+IDENTITY_UNRESOLVED_MAX_ELAPSED_SECONDS = 120
 PERMANENT_BINDING_DISABLE_REASONS = {
     "customer_hard_opt_out",
     "conversation_closed",
@@ -315,10 +320,9 @@ def _media_identity_hash(message_type: str, raw_payload: dict | None) -> str:
         )
     elif normalized_type == "image":
         identity = _first_stable_value(
-            raw.get("canonical_visual_id"),
-            raw.get("canonical_input_id"),
-            observation.get("canonical_visual_id"),
-            source.get("canonical_visual_id"),
+            raw.get("native_source_message_id"),
+            observation.get("native_source_message_id"),
+            source.get("native_source_message_id"),
             worker_stable_id,
         )
     elif normalized_type == "file":
@@ -386,7 +390,43 @@ def _worker_stable_id(message: MessageEvent) -> str:
     return _worker_stable_id_from_raw(message.raw_payload)
 
 
-def _checkpoint_strong_identity(message: MessageEvent) -> tuple[str, str]:
+def _validate_cross_round_message_identity(raw_payload: dict) -> str:
+    """Require the sole durable identity produced by Worker alignment.
+
+    Frame-local visual fingerprints may be transported for diagnostics, but
+    they must never substitute for a committed Worker sequence identity.
+    """
+
+    raw = raw_payload if isinstance(raw_payload, dict) else {}
+    observation = _nested_dict(raw, "observation")
+    source = _nested_dict(raw, "observation", "source_message")
+    for payload in (raw, observation, source):
+        if any(
+            str(payload.get(field) or "").strip()
+            for field in ("canonical_visual_id", "canonical_input_id")
+        ):
+            raise AppError(
+                "MESSAGE_FRAME_IDENTITY_FORBIDDEN",
+                "帧内视觉编号不能作为跨轮消息身份",
+                409,
+            )
+    basis = raw.get("dedupe_basis")
+    basis = basis if isinstance(basis, dict) else {}
+    worker_stable_id = str(basis.get("worker_stable_id") or "").strip()
+    if (
+        str(basis.get("source") or "").strip()
+        != "worker_cross_round_sequence"
+        or not worker_stable_id
+    ):
+        raise AppError(
+            "MESSAGE_SEQUENCE_IDENTITY_MISSING",
+            "消息缺少已提交的 Worker 跨轮序列身份",
+            409,
+        )
+    return worker_stable_id
+
+
+def _checkpoint_identity_evidence(message: MessageEvent) -> tuple[str, str]:
     raw = message.raw_payload if isinstance(message.raw_payload, dict) else {}
     observation = _nested_dict(raw, "observation")
     source = _nested_dict(raw, "observation", "source_message")
@@ -398,15 +438,15 @@ def _checkpoint_strong_identity(message: MessageEvent) -> tuple[str, str]:
         )
         or ""
     ).strip()
-    canonical_visual_id = str(
+    frame_visual_id = str(
         _first_stable_value(
-            raw.get("canonical_visual_id"),
-            observation.get("canonical_visual_id"),
-            source.get("canonical_visual_id"),
+            raw.get("frame_visual_id"),
+            observation.get("frame_visual_id"),
+            source.get("frame_visual_id"),
         )
         or ""
     ).strip()
-    return native_source_message_id, canonical_visual_id
+    return native_source_message_id, frame_visual_id
 
 
 def _checkpoint_alignment_signature(message: MessageEvent) -> str:
@@ -427,18 +467,11 @@ def _checkpoint_alignment_signature(message: MessageEvent) -> str:
         observation.get("message_type") or message.message_type or ""
     ).strip().lower()
     if row_kind == "image_bubble":
-        source = observation.get("source_message")
-        source = source if isinstance(source, dict) else {}
         worker_stable_id = _worker_stable_id_from_raw(raw)
         basis = {
             "row_kind": row_kind,
             "sender_role": sender_role,
             "message_type": message_type,
-            "canonical_visual_id": str(
-                observation.get("canonical_visual_id")
-                or source.get("canonical_visual_id")
-                or ""
-            ),
             "worker_stable_id": worker_stable_id,
         }
     else:
@@ -497,8 +530,8 @@ def _identity_checkpoint(
     recent_messages: list[dict[str, str]] = []
     for message in reversed(events):
         stable_id = _worker_stable_id(message)
-        native_source_message_id, canonical_visual_id = (
-            _checkpoint_strong_identity(message)
+        native_source_message_id, frame_visual_id = (
+            _checkpoint_identity_evidence(message)
         )
         summary = _message_identity_summary(
             sender_role=message.sender_role,
@@ -522,7 +555,7 @@ def _identity_checkpoint(
                     message
                 ),
                 "native_source_message_id": native_source_message_id,
-                "canonical_visual_id": canonical_visual_id,
+                "frame_visual_id": frame_visual_id,
             }
         )
     return {
@@ -1385,6 +1418,11 @@ def read_targets(db: Session, worker: Worker, limit: int = 20) -> dict:
         from app.services.c3_service import enforce_open_handoff_gate
 
         enforce_open_handoff_gate(db, conversation)
+        _expire_identity_unresolved_recovery_hold(
+            db,
+            binding=item,
+            conversation=conversation,
+        )
         _prepare_due_recall(conversation, db=db)
         _sync_read_backoff_with_conversation(item, conversation)
         if conversation.status in CONVERSATION_CLOSED_STATUSES:
@@ -1534,7 +1572,7 @@ def _read_target_payload(
     return target
 
 
-def _apply_reply_boundary_recovery_hold(
+def _apply_identity_unresolved_recovery_hold(
     db: Session,
     *,
     binding: WechatSessionBinding,
@@ -1546,7 +1584,7 @@ def _apply_reply_boundary_recovery_hold(
 ) -> tuple[list[str], dict | None]:
     recoverable = [
         code for code in gate_codes
-        if code in RECOVERABLE_REPLY_BOUNDARY_GATE_CODES
+        if code in RECOVERABLE_IDENTITY_UNRESOLVED_GATE_CODES
     ]
     remaining = [code for code in gate_codes if code not in recoverable]
     if not recoverable:
@@ -1563,6 +1601,20 @@ def _apply_reply_boundary_recovery_hold(
     reply_action_id = str(boundary.get("reply_action_id") or "")
     now_iso = utcnow().isoformat()
     ordered_codes = sorted(set(recoverable))
+    existing_hold = dict(binding.recovery_hold or {})
+    has_reply_boundary = bool(
+        reply_action_id
+        and str(boundary.get("sent_at") or "").strip()
+        and str(boundary.get("reply_text_hash") or "").strip()
+        and (
+            str(evidence_payload.get("authorization_read_reason") or "")
+            == "recent_ai_sent"
+            or (
+                existing_hold.get("status") == "active"
+                and existing_hold.get("gate_scope") == "reply_suffix"
+            )
+        )
+    )
     relation_by_code: dict[str, str] = {}
     for code in ordered_codes:
         code_relations = {
@@ -1570,9 +1622,12 @@ def _apply_reply_boundary_recovery_hold(
             for item in (details_by_code.get(code) or [])
         }
         relation_by_code[code] = (
-            "after" if "after" in code_relations
-            else "unknown" if "unknown" in code_relations or not code_relations
+            "after" if has_reply_boundary and "after" in code_relations
             else "before_or_equal"
+            if has_reply_boundary
+            and code_relations
+            and code_relations == {"before_or_equal"}
+            else "unknown"
         )
     relation = (
         "after" if "after" in relation_by_code.values()
@@ -1583,7 +1638,7 @@ def _apply_reply_boundary_recovery_hold(
         code for code in ordered_codes if relation_by_code[code] == relation
     )
     selected_details = details_by_code.get(selected_code) or []
-    if relation == "before_or_equal":
+    if has_reply_boundary and relation == "before_or_equal":
         current = dict(binding.recovery_hold or {})
         if current.get("status") == "active":
             current.update({"status": "resolved", "last_seen_at": now_iso})
@@ -1594,12 +1649,15 @@ def _apply_reply_boundary_recovery_hold(
             "reason_codes": ordered_codes,
         }
 
-    scope = "reply_suffix"
+    scope = "reply_suffix" if has_reply_boundary else "conversation_identity"
+    stable_identity_key = str(
+        evidence_payload.get("flow_gate_identity_key") or ""
+    ).strip()
     gate_key = hashlib.sha256(
         (
             binding.conversation_id
             + "|"
-            + reply_action_id
+            + (reply_action_id if has_reply_boundary else stable_identity_key)
             + "|"
             + "|".join(ordered_codes)
             + "|"
@@ -1610,7 +1668,7 @@ def _apply_reply_boundary_recovery_hold(
     attempt_kind = str(
         evidence_payload.get("recovery_attempt_kind") or ""
     ).strip()
-    current = dict(binding.recovery_hold or {})
+    current = existing_hold
     same_gate = current.get("gate_key") == gate_key
     if same_gate:
         current["last_seen_at"] = now_iso
@@ -1624,11 +1682,14 @@ def _apply_reply_boundary_recovery_hold(
             current["last_recovery_kind"] = "stable_reread"
             current["last_counted_read_run_id"] = read_run_id
     else:
-        initial_count = 1 if attempt_kind == "checkpoint_merge" else 0
+        # The discovery/checkpoint-merge request establishes the hold; it is
+        # not one of the two permitted passive rereads.
+        initial_count = 0
         current = {
             "status": "active",
             "gate_key": gate_key,
             "reason_code": selected_code,
+            "reason_codes": ordered_codes,
             "gate_scope": scope,
             "boundary_relation": relation,
             "min_screen_order": int(detail.get("min_screen_order") or 0),
@@ -1647,17 +1708,31 @@ def _apply_reply_boundary_recovery_hold(
     conversation.status = "waiting_user_reply"
     conversation.next_recall_at = None
 
+    try:
+        first_seen_at = datetime.fromisoformat(
+            str(current.get("first_seen_at") or "")
+        )
+        if first_seen_at.tzinfo is None:
+            first_seen_at = first_seen_at.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        first_seen_at = None
+    elapsed_seconds = (
+        max(0.0, (utcnow() - first_seen_at).total_seconds())
+        if first_seen_at is not None
+        else 0.0
+    )
     if (
-        int(current.get("recovery_attempt_count") or 0) >= 2
-        and relation in {"after", "unknown"}
-    ):
+        int(current.get("recovery_attempt_count") or 0)
+        >= IDENTITY_UNRESOLVED_MAX_PASSIVE_REREADS
+        or elapsed_seconds >= IDENTITY_UNRESOLVED_MAX_ELAPSED_SECONDS
+    ) and (not has_reply_boundary or relation in {"after", "unknown"}):
         from app.services.c3_service import create_deterministic_handoff_for_ingest
 
         handoff = create_deterministic_handoff_for_ingest(
             db,
             conversation_id=binding.conversation_id,
             message_event_ids=[],
-                reason_codes=ordered_codes,
+            reason_codes=ordered_codes,
             trigger_key=f"recovery-hold:{gate_key}",
             trace_id=get_request_id(),
         )
@@ -1684,6 +1759,58 @@ def _apply_reply_boundary_recovery_hold(
     }
 
 
+def _expire_identity_unresolved_recovery_hold(
+    db: Session,
+    *,
+    binding: WechatSessionBinding,
+    conversation: Conversation,
+) -> None:
+    """Escalate an untouched identity hold after its bounded 120s window."""
+
+    current = dict(binding.recovery_hold or {})
+    if current.get("status") != "active":
+        return
+    try:
+        first_seen_at = datetime.fromisoformat(
+            str(current.get("first_seen_at") or "")
+        )
+        if first_seen_at.tzinfo is None:
+            first_seen_at = first_seen_at.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return
+    if (
+        utcnow() - first_seen_at
+    ).total_seconds() < IDENTITY_UNRESOLVED_MAX_ELAPSED_SECONDS:
+        return
+    from app.services.c3_service import create_deterministic_handoff_for_ingest
+
+    gate_key = str(current.get("gate_key") or "").strip()
+    reason_codes = sorted(
+        {
+            str(value or "").strip()
+            for value in (
+                current.get("reason_codes")
+                or [current.get("reason_code")]
+            )
+            if str(value or "").strip()
+        }
+    )
+    if not gate_key or not reason_codes:
+        return
+    create_deterministic_handoff_for_ingest(
+        db,
+        conversation_id=binding.conversation_id,
+        message_event_ids=[],
+        reason_codes=reason_codes,
+        trigger_key=f"recovery-hold:{gate_key}",
+        trace_id=get_request_id(),
+    )
+    current["status"] = "escalated"
+    current["last_seen_at"] = utcnow().isoformat()
+    binding.recovery_hold = current
+    conversation.status = "waiting_sales_reply"
+
+
 def read_authorization_snapshot(
     db: Session,
     *,
@@ -1696,6 +1823,11 @@ def read_authorization_snapshot(
     from app.services.c3_service import enforce_open_handoff_gate
 
     enforce_open_handoff_gate(db, conversation)
+    _expire_identity_unresolved_recovery_hold(
+        db,
+        binding=binding,
+        conversation=conversation,
+    )
     _prepare_due_recall(conversation, db=db)
     _sync_read_backoff_with_conversation(binding, conversation)
     read_reason = _read_reason(binding, conversation)
@@ -2167,6 +2299,12 @@ def _friend_acceptance_recently_visible(binding: WechatSessionBinding) -> bool:
 
 
 def _read_reason(binding: WechatSessionBinding, conversation: Conversation) -> str | None:
+    recovery_hold = dict(binding.recovery_hold or {})
+    if recovery_hold.get("status") == "active":
+        # Identity recovery is a passive authoritative reread.  It is not a
+        # new unread authorization and must not depend on a red dot surviving
+        # the first attempt.
+        return "waiting_user_reply"
     if (
         conversation.friend_state == "friend_request_sent"
         and conversation.status == "friend_request_sent"
@@ -2692,6 +2830,7 @@ def _validate_v3_request_contract(payload: WechatMessageIngestRequest) -> None:
             raise AppError("MESSAGE_RAW_OBSERVATION_SCHEMA_MISMATCH", "V3 原始证据 schema 版本不一致", 409)
         if str(raw_payload.get("source_message_key") or "").strip() != source_key:
             raise AppError("MESSAGE_RAW_SOURCE_IDENTITY_MISMATCH", "V3 原始证据与最终消息身份不一致", 409)
+        _validate_cross_round_message_identity(raw_payload)
 
         observation = raw_payload.get("observation")
         observation_id, rule = _validate_v3_observation(observation, require_ingestible=True)
@@ -4160,22 +4299,10 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
         for code in flow_gate_errors
         if code not in TEMPORARY_CAPABILITY_GATE_CODES_V3
     ]
-    boundary_gate_result = None
-    ai_boundary = (
-        evidence_payload.get("ai_reply_boundary")
-        if isinstance(evidence_payload.get("ai_reply_boundary"), dict)
-        else {}
-    )
-    boundary_hold_eligible = bool(
-        str(evidence_payload.get("authorization_read_reason") or "")
-        == "recent_ai_sent"
-        and str(ai_boundary.get("reply_action_id") or "").strip()
-        and str(ai_boundary.get("sent_at") or "").strip()
-        and str(ai_boundary.get("reply_text_hash") or "").strip()
-    )
-    if not open_handoff_active and boundary_hold_eligible:
-        handoff_flow_gates, boundary_gate_result = (
-            _apply_reply_boundary_recovery_hold(
+    identity_recovery_result = None
+    if not open_handoff_active:
+        handoff_flow_gates, identity_recovery_result = (
+            _apply_identity_unresolved_recovery_hold(
                 db,
                 binding=binding,
                 conversation=conversation,
@@ -4185,8 +4312,8 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
                 details_by_code=flow_gate_details_by_code,
             )
         )
-    if boundary_gate_result is not None:
-        message_batch = boundary_gate_result
+    if identity_recovery_result is not None:
+        message_batch = identity_recovery_result
     if open_handoff_active:
         if handoff_flow_gates:
             from app.services.c3_service import (

@@ -27,6 +27,14 @@ class StorageTest(unittest.TestCase):
             os.environ.pop("CHEJIN_WORKER_HOME", None)
         else:
             os.environ["CHEJIN_WORKER_HOME"] = self.previous_home
+        import chejin_worker_client.config as config
+        import chejin_worker_client.storage as storage
+
+        # Restore the process-wide module constants for tests collected after
+        # this class.  Without this, storage.DB_FILE keeps pointing at the
+        # deleted TemporaryDirectory even though the environment was restored.
+        importlib.reload(config)
+        importlib.reload(storage)
         self.tmp.cleanup()
 
     def test_binding_and_logs_are_persisted_in_sqlite(self):

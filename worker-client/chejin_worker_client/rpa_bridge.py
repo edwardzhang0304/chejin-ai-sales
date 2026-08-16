@@ -497,7 +497,8 @@ class RpaBridge:
                 conversation_id=f"task:{task.id}",
                 items=[
                     {
-                        "source_message_key": task.id,
+                        "journal_item_id": task.id,
+                        "action_local_id": task.id,
                         "physical_anchor_keys": [],
                     }
                 ],

@@ -478,6 +478,9 @@ def observe_structural_image_messages(
             + hashlib.sha256(visual_seed.encode("utf-8")).hexdigest()[:24]
         )
         image_message["canonical_visual_id"] = canonical_visual_id
+        image_message["frame_visual_id"] = canonical_visual_id.replace(
+            "canonical_visual_", "frame_visual_", 1
+        )
         image_message["id"] = canonical_visual_id
         image_message["message_id"] = canonical_visual_id
         image_message["bounds"] = list(

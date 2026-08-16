@@ -37,8 +37,6 @@ from .c2_contract import (
 )
 from .c2_outbox_recovery import (
     encoded_payload_size,
-    rebuild_identity_collision,
-    rebuild_invalid_media_as_failed,
     split_ingest_payload,
 )
 from .config import CONFIG
@@ -54,6 +52,14 @@ from .image_phase import (
 )
 from .incident_evidence import mark_incident_recovered, redact_diagnostic
 from .message_contract import canonical_reply_text, reply_text_hash
+from .message_identity_commit import (
+    IdentityCommitRejection,
+    MediaActionTerminal,
+    MessageCommitBasis,
+    committed_identity_record,
+    commit_message_identity,
+    require_committed_message,
+)
 from .models import Binding, ReplySendClaim, RpaResult, RpaStep, Task, WechatReadTarget, WorkerProfile
 from .rpa_bridge import RpaBridge
 from .storage import (
@@ -95,7 +101,6 @@ from .storage import (
     mark_reply_send_ack_confirmed,
     prepare_c2_outbox_payload,
     prune_terminal_outboxes,
-    rebuild_c2_outbox_payload,
     refresh_c2_outbox_payload,
     replace_c2_outbox_with_partitions,
     save_binding,
@@ -137,15 +142,17 @@ from .wechat_c2 import (
     authoritative_order_source,
     build_flow_gate_ingest_payload,
     build_message_ingest_payload,
+    build_preliminary_slot_payload,
     build_scan_result_payload,
+    confirmed_image_identity_receipt,
     image_observation_source_key,
     is_formal_c2_remark_code,
     message_rect,
     order_authoritative_slots,
     project_final_slot_flow_gates,
     replayable_image_observation,
+    validate_committed_image_identity,
     voice_observation_source_key,
-    worker_source_message_key,
 )
 
 
@@ -356,15 +363,42 @@ def align_post_action_observations(
 ) -> tuple[list[Any], dict[str, Any]]:
     """Use the unified sequence aligner after a frame-changing UI action."""
 
-    committed_ids = {
-        str(item.get("observation_id") or "").strip(): str(
-            item.get("_worker_stable_id") or ""
-        ).strip()
-        for item in pre_observations
-        if isinstance(item, dict)
-        and str(item.get("observation_id") or "").strip()
-        and str(item.get("_worker_stable_id") or "").strip()
-    }
+    committed_ids: dict[str, str] = {}
+    provisional_ids: dict[str, str] = {}
+    for item in pre_observations:
+        if not isinstance(item, dict):
+            continue
+        observation_id = str(item.get("observation_id") or "").strip()
+        stable_id = str(item.get("_worker_stable_id") or "").strip()
+        row_kind = str(item.get("row_kind") or "").strip().lower()
+        item_state = str(item.get("item_state") or "").strip().lower()
+        voice_action_summary = (
+            item.get("_worker_voice_action_summary")
+            if isinstance(item.get("_worker_voice_action_summary"), dict)
+            else {}
+        )
+        prior_action_confirmed = bool(
+            isinstance(
+                voice_action_summary.get("confirmed_action_mapping"), dict
+            )
+            and voice_action_summary["confirmed_action_mapping"].get(
+                "binding_confirmed"
+            )
+            is True
+        )
+        if not observation_id or not stable_id:
+            continue
+        # A newly numbered but still-unprocessed media row is only a
+        # frame-local candidate across a UI action.  Treating that provisional
+        # number as committed would let a replacement media row inherit it.
+        # Text/system rows and terminal media facts are already durable.
+        if row_kind in {"voice_bubble", "image_bubble"} and item_state not in {
+            "completed",
+            "failed",
+        } and not prior_action_confirmed:
+            provisional_ids[observation_id] = stable_id
+            continue
+        committed_ids[observation_id] = stable_id
     mapping = (
         dict(confirmed_action_mapping)
         if isinstance(confirmed_action_mapping, dict)
@@ -373,6 +407,7 @@ def align_post_action_observations(
     pre_sequence = build_pre_action_identity_sequence(
         pre_observations,
         committed_ids=committed_ids,
+        provisional_ids=provisional_ids,
         selected_observation_id=str(
             mapping.get("pre_observation_id") or ""
         ),
@@ -400,17 +435,24 @@ def align_post_action_observations(
         post_frame_id=f"action-post:{post_digest}",
     )
     aligned = apply_inherited_worker_ids(post_observations, evidence)
-    voice_action_summary_by_stable_id = {
-        str(item.get("_worker_stable_id") or "").strip(): dict(
-            item.get("_worker_voice_action_summary") or {}
-        )
-        for item in pre_observations
-        if isinstance(item, dict)
-        and str(item.get("_worker_stable_id") or "").strip()
-        and isinstance(item.get("_worker_voice_action_summary"), dict)
-        and item.get("_worker_voice_action_summary")
-    }
-    if voice_action_summary_by_stable_id:
+    action_summaries_by_stable_id: dict[str, dict[str, dict[str, Any]]] = {}
+    for item in pre_observations:
+        if not isinstance(item, dict):
+            continue
+        stable_id = str(item.get("_worker_stable_id") or "").strip()
+        if not stable_id:
+            continue
+        for key in (
+            "_worker_voice_action_summary",
+            "_worker_image_action_summary",
+        ):
+            summary = item.get(key)
+            if isinstance(summary, dict) and summary:
+                action_summaries_by_stable_id.setdefault(
+                    stable_id,
+                    {},
+                )[key] = dict(summary)
+    if action_summaries_by_stable_id:
         carried: list[Any] = []
         for raw in aligned:
             if not isinstance(raw, dict):
@@ -420,11 +462,9 @@ def align_post_action_observations(
             stable_id = str(
                 observation.get("_worker_stable_id") or ""
             ).strip()
-            summary = voice_action_summary_by_stable_id.get(stable_id)
-            if summary:
-                observation["_worker_voice_action_summary"] = dict(
-                    summary
-                )
+            summaries = action_summaries_by_stable_id.get(stable_id) or {}
+            for key, summary in summaries.items():
+                observation[key] = dict(summary)
             carried.append(observation)
         aligned = carried
     return aligned, evidence
@@ -997,6 +1037,214 @@ def _safe_c2_image_diagnostic_event(value: Any) -> dict[str, Any]:
     return safe
 
 
+def _confirmed_image_receipt_from_journal(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str]:
+    """Return the one exact persisted image identity receipt and item id."""
+
+    action_id = str(payload.get("canonical_action_id") or "").strip()
+    reserved_id = str(
+        payload.get("reserved_worker_stable_id") or ""
+    ).strip()
+    selected_rows = [
+        item
+        for item in (payload.get("pre_action_identity_sequence") or [])
+        if isinstance(item, dict)
+        and item.get("identity_state") == "selected_action"
+        and str(item.get("canonical_action_id") or "").strip()
+        == action_id
+        and str(
+            item.get("reserved_worker_stable_id") or ""
+        ).strip()
+        == reserved_id
+    ]
+    if len(selected_rows) != 1:
+        return None, ""
+    observation_id = str(
+        selected_rows[0].get("pre_observation_id") or ""
+    ).strip()
+    fingerprint = str(
+        selected_rows[0].get("image_visual_fingerprint") or ""
+    ).strip()
+    if not all((action_id, reserved_id, observation_id, fingerprint)):
+        return None, ""
+    items = (
+        payload.get("items")
+        if isinstance(payload.get("items"), dict)
+        else {}
+    )
+    matches: list[tuple[dict[str, Any], str]] = []
+    for item_id, item in items.items():
+        if not isinstance(item, dict):
+            continue
+        terminal = (
+            item.get("terminal_payload")
+            if isinstance(item.get("terminal_payload"), dict)
+            else {}
+        )
+        mapping = (
+            terminal.get("confirmed_action_mapping")
+            if isinstance(
+                terminal.get("confirmed_action_mapping"), dict
+            )
+            else {}
+        )
+        if (
+            str(mapping.get("canonical_action_id") or "").strip()
+            == action_id
+            and str(
+                mapping.get("reserved_worker_stable_id") or ""
+            ).strip()
+            == reserved_id
+            and str(mapping.get("pre_observation_id") or "").strip()
+            == observation_id
+            and str(mapping.get("post_observation_id") or "").strip()
+            == observation_id
+            and mapping.get("binding_confirmed") is True
+            and str(
+                terminal.get("image_visual_fingerprint") or ""
+            ).strip()
+            == fingerprint
+        ):
+            matches.append(
+                (
+                    {
+                        "canonical_action_id": action_id,
+                        "reserved_worker_stable_id": reserved_id,
+                        "pre_observation_id": observation_id,
+                        "post_observation_id": observation_id,
+                        "binding_confirmed": True,
+                        "image_visual_fingerprint": fingerprint,
+                    },
+                    str(item_id or "").strip(),
+                )
+            )
+    if len(matches) != 1:
+        return None, ""
+    return matches[0]
+
+
+def _committed_action_identity_from_journal(
+    *,
+    target: WechatReadTarget,
+    payload: dict[str, Any],
+    action_kind: str,
+    evidence: dict[str, Any],
+    image_receipt: dict[str, Any] | None = None,
+):
+    """Re-enter the same commit gate without touching the current WeChat UI."""
+
+    action_id = str(payload.get("canonical_action_id") or "").strip()
+    reserved_id = str(
+        payload.get("reserved_worker_stable_id") or ""
+    ).strip()
+    mapping = (
+        dict(image_receipt)
+        if action_kind == "image" and isinstance(image_receipt, dict)
+        else dict(evidence.get("confirmed_action_mapping") or {})
+        if isinstance(evidence.get("confirmed_action_mapping"), dict)
+        else {}
+    )
+    selected = next(
+        (
+            dict(item)
+            for item in (payload.get("pre_action_identity_sequence") or [])
+            if isinstance(item, dict)
+            and item.get("identity_state") == "selected_action"
+            and str(item.get("canonical_action_id") or "").strip()
+            == action_id
+        ),
+        {},
+    )
+    post_observation_id = str(
+        mapping.get("post_observation_id") or ""
+    ).strip()
+    sender_role = str(selected.get("sender_role") or "").strip().lower()
+    if action_kind == "voice" and not mapping:
+        selected_pairs = [
+            pair
+            for pair in (evidence.get("matched_pairs") or [])
+            if isinstance(pair, dict)
+            and pair.get("identity_state") == "selected_action"
+            and str(pair.get("worker_stable_id") or "").strip()
+            == reserved_id
+            and str(pair.get("pre_observation_id") or "").strip()
+            == str(selected.get("pre_observation_id") or "").strip()
+            and str(pair.get("post_observation_id") or "").strip()
+        ]
+        if (
+            evidence.get("alignment_status") == "unique"
+            and len(selected_pairs) == 1
+        ):
+            mapping = {
+                "canonical_action_id": action_id,
+                "reserved_worker_stable_id": reserved_id,
+                "pre_observation_id": str(
+                    selected.get("pre_observation_id") or ""
+                ).strip(),
+                "post_observation_id": str(
+                    selected_pairs[0].get("post_observation_id") or ""
+                ).strip(),
+                "binding_confirmed": True,
+            }
+            post_observation_id = str(
+                mapping["post_observation_id"]
+            )
+    if not all((action_id, reserved_id, post_observation_id, sender_role)):
+        return IdentityCommitRejection(
+            error_code=(
+                "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                if action_kind == "image"
+                else "C2_VOICE_IDENTITY_CONTRACT_INVALID"
+            ),
+            reason="action_journal_commit_evidence_incomplete",
+            observation_id=post_observation_id,
+        )
+    row_kind = "image_bubble" if action_kind == "image" else "voice_bubble"
+    summary_key = (
+        "_worker_image_action_summary"
+        if action_kind == "image"
+        else "_worker_voice_action_summary"
+    )
+    summary: dict[str, Any] = {"confirmed_action_mapping": dict(mapping)}
+    proof = dict(mapping)
+    observation: dict[str, Any] = {
+        "observation_id": post_observation_id,
+        "row_kind": row_kind,
+        "sender_role": sender_role,
+        "message_type": action_kind,
+        "_worker_stable_id": reserved_id,
+        "_worker_identity_scope": "committed",
+        summary_key: summary,
+    }
+    basis = (
+        MessageCommitBasis.CONFIRMED_IMAGE_ACTION
+        if action_kind == "image"
+        else MessageCommitBasis.CONFIRMED_VOICE_ACTION
+    )
+    if action_kind == "image":
+        fingerprint = str(
+            (image_receipt or {}).get("image_visual_fingerprint") or ""
+        ).strip()
+        observation["image_physical_anchor"] = {
+            "bubble_visual_fingerprint": fingerprint
+        }
+        summary["image_visual_fingerprint"] = fingerprint
+        proof["image_visual_fingerprint"] = fingerprint
+    observation["_worker_committed_message"] = committed_identity_record(
+        worker_stable_id=reserved_id,
+        commit_basis=basis,
+        observation_id=post_observation_id,
+        sender_role=sender_role,
+        message_type=action_kind,
+        proof=proof,
+    )
+    return commit_message_identity(
+        conversation_id=target.conversation_id,
+        observation=observation,
+    )
+
+
 def _c2_image_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         item
@@ -1071,27 +1319,27 @@ def _executable_untranscribed_voice_observations(
         )
         if aliases & excluded:
             continue
-        stable_id = str(
-            observation.get("_worker_stable_id") or ""
-        ).strip()
-        if stable_id and stable_id in confirmed_stable_ids:
-            continue
-        try:
-            source_key = voice_observation_source_key(target, observation)
-        except ValueError:
-            source_key = ""
-        if source_key and source_key in confirmed_source_keys:
-            continue
-        ledger = (
-            load_c2_ledger_entry(target.conversation_id, source_key)
-            if source_key
-            else None
+        identity = commit_message_identity(
+            conversation_id=target.conversation_id,
+            observation=observation,
         )
-        if ledger and str(ledger.get("terminal_state") or "") in {
-            "completed",
-            "failed",
-        }:
-            continue
+        if not isinstance(identity, IdentityCommitRejection):
+            if identity.message_type != "voice":
+                continue
+            if (
+                identity.worker_stable_id in confirmed_stable_ids
+                or identity.source_message_key in confirmed_source_keys
+            ):
+                continue
+            ledger = load_c2_ledger_entry(
+                target.conversation_id,
+                identity.source_message_key,
+            )
+            if ledger and str(ledger.get("terminal_state") or "") in {
+                "completed",
+                "failed",
+            }:
+                continue
         if str(observation.get("item_state") or "") in {
             "completed",
             "failed",
@@ -1121,6 +1369,7 @@ def _voice_terminal_payload(
     anchor_keys: list[str],
     result: str,
     error_code: str | None,
+    identity_confirmed: bool = False,
 ) -> dict[str, Any]:
     aliases = {str(value).strip() for value in anchor_keys if str(value).strip()}
     matched_transcript: dict[str, Any] | None = None
@@ -1154,6 +1403,13 @@ def _voice_terminal_payload(
         "state": result,
         "error_code": error_code,
         "transcribed_message": matched_transcript,
+        "media_action_terminal": (
+            MediaActionTerminal.COMMITTED_COMPLETED.value
+            if identity_confirmed and result == "completed"
+            else MediaActionTerminal.COMMITTED_FAILED.value
+            if identity_confirmed and result == "failed"
+            else MediaActionTerminal.IDENTITY_UNRESOLVED.value
+        ),
     }
 
 
@@ -1211,9 +1467,27 @@ def _checkpoint_voice_outcome_in_action_journal(
     result = str(outcome.get("result") or "").strip().lower()
     if not source_key or result not in {"completed", "failed"}:
         return
+    journal_payload = read_action_journal(journal_path)
+    journal_items = (
+        journal_payload.get("items")
+        if isinstance(journal_payload.get("items"), dict)
+        else {}
+    )
+    journal_item_id = next(
+        (
+            str(item_id)
+            for item_id, item in journal_items.items()
+            if isinstance(item, dict)
+            and str(item.get("source_message_key") or "").strip()
+            == source_key
+        ),
+        "",
+    )
+    if not journal_item_id:
+        return
     update_action_journal_item(
         journal_path,
-        source_message_key=source_key,
+        journal_item_id=journal_item_id,
         action_phase=str(
             outcome.get("action_phase") or "not_attempted"
         ),
@@ -3065,6 +3339,28 @@ class TaskRunner:
             ),
         )
         for _path, payload in journal_entries:
+            if (
+                str(payload.get("action_kind") or "").strip() == "image"
+                and str(
+                    payload.get("canonical_action_id") or ""
+                ).strip()
+                and not str(
+                    payload.get("committed_worker_stable_id") or ""
+                ).strip()
+                and any(
+                    isinstance(item, dict)
+                    and str(item.get("error_code") or "").strip()
+                    == "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                    for item in (
+                        payload.get("items") or {}
+                    ).values()
+                )
+            ):
+                # This is an action-local identity gate, not a durable image
+                # message fact. Its idempotent gate Outbox/retry may remain,
+                # but it must not enter the global image-fact recovery barrier
+                # or block unrelated conversations.
+                continue
             conversation_id = str(
                 payload.get("conversation_id") or ""
             ).strip()
@@ -3527,8 +3823,8 @@ class TaskRunner:
             "native_source_message_id": str(
                 confirmed_sequence_item.get("native_source_message_id") or ""
             ).strip(),
-            "canonical_visual_id": str(
-                confirmed_sequence_item.get("canonical_visual_id") or ""
+            "frame_visual_id": str(
+                confirmed_sequence_item.get("frame_visual_id") or ""
             ).strip(),
             "sequence_alignment_evidence": evidence,
         }
@@ -3537,6 +3833,30 @@ class TaskRunner:
             or self._reply_text_hash(receipt["reply_text"])
             != str(reply_text_hash or "").strip()
         ):
+            return False
+        committed_send_observation = {
+            "observation_id": confirmed_observation_id,
+            "row_kind": "text_bubble",
+            "sender_role": "self",
+            "message_type": "text",
+            "_worker_stable_id": reserved_id,
+            "_worker_identity_scope": "committed",
+            "_worker_ai_reply_receipt": dict(receipt),
+            "_worker_committed_message": committed_identity_record(
+                worker_stable_id=reserved_id,
+                commit_basis=MessageCommitBasis.CONFIRMED_SENT_ACK,
+                observation_id=confirmed_observation_id,
+                sender_role="self",
+                message_type="text",
+                proof={"reply_action_id": reply_action_id},
+            ),
+        }
+        try:
+            committed_send = require_committed_message(
+                conversation_id=target.conversation_id,
+                observation=committed_send_observation,
+            )
+        except ValueError:
             return False
         state_key = f"message_identity:{target.conversation_id}"
 
@@ -3596,11 +3916,7 @@ class TaskRunner:
             commit_action_journal_item_identity(
                 journal_path,
                 journal_item_id=reply_action_id,
-                source_message_key=worker_source_message_key(
-                    target,
-                    identity_kind="worker_sequence",
-                    identity=reserved_id,
-                ),
+                source_message_key=committed_send.source_message_key,
             )
         except (OSError, ValueError) as exc:
             append_log(
@@ -3733,8 +4049,8 @@ class TaskRunner:
                     "native_source_message_id": str(
                         item.get("native_source_message_id") or ""
                     ).strip(),
-                    "canonical_visual_id": str(
-                        item.get("canonical_visual_id") or ""
+                    "frame_visual_id": str(
+                        item.get("frame_visual_id") or ""
                     ).strip(),
                 }
             )
@@ -3796,8 +4112,8 @@ class TaskRunner:
                     "native_source_message_id": str(
                         receipt.get("native_source_message_id") or ""
                     ).strip(),
-                    "canonical_visual_id": str(
-                        receipt.get("canonical_visual_id") or ""
+                    "frame_visual_id": str(
+                        receipt.get("frame_visual_id") or ""
                     ).strip(),
                     "ai_reply_boundary": bool(
                         boundary_action_id
@@ -3835,7 +4151,7 @@ class TaskRunner:
                         "message_type": "text",
                         "normalized_content_hash": boundary_hash,
                         "native_source_message_id": "",
-                        "canonical_visual_id": "",
+                        "frame_visual_id": "",
                         "ai_reply_boundary": True,
                         "_worker_sequence_number": int(
                             stable_match.group(1)
@@ -3877,7 +4193,7 @@ class TaskRunner:
                         "message_type": "text",
                         "normalized_content_hash": boundary_hash,
                         "native_source_message_id": "",
-                        "canonical_visual_id": "",
+                        "frame_visual_id": "",
                         "ai_reply_boundary": True,
                         "ai_reconciliation_state": str(
                             possible.get("reconciliation_state") or ""
@@ -3992,22 +4308,112 @@ class TaskRunner:
             message_type = str(
                 observation.get("message_type") or ""
             ).strip().lower()
-            uncommitted_media = (
-                message_type == "voice"
-                and str(observation.get("voice_state") or "").strip().lower()
-                == "untranscribed"
-            )
+            row_kind = str(
+                observation.get("row_kind") or ""
+            ).strip().lower()
             if (
                 observation_id in new_suffix
-                and not uncommitted_media
                 and observation_role_is_trusted(observation)
             ):
-                observation["_worker_stable_id"] = self._reserve_worker_sequence(
-                    target,
-                    reservation_key=(
-                        f"committed:{read_run_id}:{observation_id}"
-                    ),
+                source_message = (
+                    observation.get("source_message")
+                    if isinstance(observation.get("source_message"), dict)
+                    else {}
                 )
+                native_source_message_id = str(
+                    observation.get("native_source_message_id")
+                    or source_message.get("native_source_message_id")
+                    or source_message.get("native_message_id")
+                    or ""
+                ).strip()
+                if native_source_message_id and message_type in {
+                    "text",
+                    "system",
+                    "voice",
+                    "image",
+                }:
+                    stable_id = self._reserve_worker_sequence(
+                        target,
+                        reservation_key=(
+                            f"native:{native_source_message_id}"
+                        ),
+                    )
+                    observation["_worker_stable_id"] = stable_id
+                    observation["_worker_identity_scope"] = "committed"
+                    observation["_worker_committed_message"] = (
+                        committed_identity_record(
+                            worker_stable_id=stable_id,
+                            commit_basis=(
+                                MessageCommitBasis.NATIVE_SOURCE_MESSAGE_ID
+                            ),
+                            observation_id=observation_id,
+                            sender_role=str(
+                                observation.get("sender_role") or ""
+                            ),
+                            message_type=message_type,
+                            proof={
+                                "native_source_message_id": (
+                                    native_source_message_id
+                                ),
+                                "sender_role": str(
+                                    observation.get("sender_role") or ""
+                                ),
+                                "message_type": message_type,
+                            },
+                        )
+                    )
+                elif (
+                    message_type == "text"
+                    and row_kind == "text_bubble"
+                ) or (
+                    message_type == "system"
+                    and row_kind in {"system_row", "system_message"}
+                ):
+                    stable_id = self._reserve_worker_sequence(
+                        target,
+                        reservation_key=(
+                            f"committed:{read_run_id}:{observation_id}"
+                        ),
+                    )
+                    observation["_worker_stable_id"] = stable_id
+                    observation["_worker_identity_scope"] = "committed"
+                    observation["_worker_committed_message"] = (
+                        committed_identity_record(
+                            worker_stable_id=stable_id,
+                            commit_basis=MessageCommitBasis.NEW_SUFFIX,
+                            observation_id=observation_id,
+                            sender_role=str(
+                                observation.get("sender_role") or ""
+                            ),
+                            message_type=message_type,
+                            proof={
+                                "alignment_status": str(
+                                    evidence.get("alignment_status") or ""
+                                ),
+                                "old_tail_fully_consumed": True,
+                                "new_suffix_observation_id": observation_id,
+                            },
+                        )
+                    )
+                elif message_type == "image":
+                    observation["_worker_stable_id"] = (
+                        self._reserve_worker_sequence(
+                            target,
+                            reservation_key=(
+                                f"media-action:{read_run_id}:"
+                                f"{observation_id}"
+                            ),
+                        )
+                    )
+                    observation["_worker_identity_scope"] = (
+                        "current_read_provisional"
+                    )
+                    observation.pop("_worker_committed_message", None)
+                else:
+                    # A voice, including a transcript produced by Sidecar,
+                    # becomes durable only through its confirmed prepare/
+                    # execute mapping.  new_suffix alone is not identity.
+                    observation.pop("_worker_committed_message", None)
             assigned.append(observation)
         return assigned
 
@@ -4555,6 +4961,78 @@ class TaskRunner:
         if not pending_conversations:
             return True
         conversation_id = pending_conversations[0]
+        recovery_target = WechatReadTarget(
+            conversation_id=conversation_id,
+            rpa_session_key="",
+            display_name="",
+        )
+        identity_errors = self._recover_physical_action_journals(
+            recovery_target,
+            image_identity_commit_only=True,
+        )
+        if identity_errors:
+            first_error = identity_errors[0]
+            prepare_evidence = (
+                first_error.get("prepare_evidence")
+                if isinstance(
+                    first_error.get("prepare_evidence"), dict
+                )
+                else {}
+            )
+            authorization_revision = str(
+                prepare_evidence.get("authorization_revision") or ""
+            ).strip()
+            remark_code = str(
+                prepare_evidence.get("remark_code") or ""
+            ).strip()
+            if not authorization_revision or not remark_code:
+                append_log(
+                    "ERROR",
+                    "c2_image_identity_recovery_authorization_missing",
+                    "图片身份失败恢复缺少原授权摘要；保留 Journal，禁止伪造正式图片事实。",
+                    error_code="C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    metadata={"conversation_id": conversation_id},
+                )
+                return False
+            gate_target = WechatReadTarget(
+                conversation_id=conversation_id,
+                rpa_session_key=str(
+                    prepare_evidence.get("rpa_session_key") or ""
+                ),
+                display_name=str(
+                    prepare_evidence.get("display_name") or remark_code
+                ),
+                remark_code=remark_code,
+                read_reason=str(
+                    prepare_evidence.get("read_reason") or ""
+                ),
+                authorization_revision=authorization_revision,
+            )
+            reported = self._report_identity_failure_gate(
+                binding=binding,
+                target=gate_target,
+                read_run_id=str(
+                    first_error.get("origin_read_run_id") or ""
+                ).strip()
+                or f"recovery-{uuid.uuid4()}",
+                error_code="C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                identity_errors=identity_errors,
+                authoritative_frame_source=(
+                    "action_journal_recovery"
+                ),
+                ui_frame_invalidated=False,
+            )
+            if reported:
+                for item in identity_errors:
+                    journal_path = str(
+                        item.get("action_journal_path") or ""
+                    ).strip()
+                    if journal_path:
+                        remove_action_journal(journal_path)
+            # Even when transport is waiting, the idempotent gate Outbox now
+            # owns delivery.  No uncommitted image fact may keep the global
+            # media recovery barrier closed or force another UI action.
+            return True
         journal_entries = list_action_journals(
             conversation_id=conversation_id,
             action_kinds=("image",),
@@ -4580,11 +5058,7 @@ class TaskRunner:
         ]
         if missing_ledger_outcomes:
             self._persist_c2_flow_outcomes(
-                WechatReadTarget(
-                    conversation_id=conversation_id,
-                    rpa_session_key="",
-                    display_name="",
-                ),
+                recovery_target,
                 missing_ledger_outcomes,
             )
         entries = list_c2_ledger_entries(
@@ -6563,7 +7037,8 @@ class TaskRunner:
             error_code = str(
                 exc.code if isinstance(exc, ApiError) else type(exc).__name__
             )
-            if error_code == "MESSAGE_IDENTITY_COLLISION_NOT_REKEYABLE":
+            recovery_action = classify_outbox_recovery(exc)
+            if recovery_action == "identity_quarantined":
                 conversation_id = str(
                     payload.get("conversation_id") or ""
                 )
@@ -6593,7 +7068,7 @@ class TaskRunner:
                 append_log(
                     "ERROR",
                     "c2_identity_collision_quarantined",
-                    "消息身份碰撞无法安全换号；已保留 Outbox 证据并仅隔离当前客户，不再自动重试。",
+                    "已提交消息事实被后端判定为不可安全接收；已原样保留 Outbox 并仅隔离当前客户，不改写事实、不再自动重试。",
                     error_code=error_code,
                     metadata={
                         "outbox_id": outbox_id,
@@ -6622,7 +7097,6 @@ class TaskRunner:
                     "recovery_action": "identity_quarantined",
                     "conversation_quarantined": True,
                 }
-            recovery_action = classify_outbox_recovery(exc)
             next_state = transition_outbox_state(
                 current_state=str(outbox_entry.get("status") or "waiting"),
                 event=recovery_action,
@@ -6631,60 +7105,6 @@ class TaskRunner:
                     int(outbox_entry.get("refresh_attempt_count") or 0) + 1
                 ),
             )
-            if next_state == "rebuild_pending":
-                transition_c2_outbox(
-                    outbox_id,
-                    status="rebuild_pending",
-                    error=error_code,
-                )
-                try:
-                    rebuilt = rebuild_invalid_media_as_failed(
-                        payload,
-                        error_code=error_code,
-                        source_message_key=str(
-                            exc.data.get("source_message_key") or ""
-                        )
-                        if isinstance(exc, ApiError)
-                        and isinstance(exc.data, dict)
-                        else "",
-                    )
-                    rebuild_c2_outbox_payload(outbox_id, rebuilt)
-                except Exception as rebuild_exc:
-                    transition_c2_outbox(
-                        outbox_id,
-                        status="capability_paused",
-                        error=str(
-                            rebuild_exc
-                            if isinstance(rebuild_exc, ValueError)
-                            else type(rebuild_exc).__name__
-                        ),
-                    )
-                    return {
-                        "ok": False,
-                        "outbox_id": outbox_id,
-                        "error_code": error_code,
-                        "exception": exc,
-                        "capability_paused": True,
-                        "recovery_action": "capability_paused",
-                    }
-                append_log(
-                    "WARN",
-                    "c2_outbox_rebuilt_failed_media_fact",
-                    "后端拒绝了不完整媒体结果；已保留同一消息身份并重建为明确失败事实，等待重新入库。",
-                    error_code=error_code,
-                    metadata={
-                        "outbox_id": outbox_id,
-                        "conversation_id": payload.get("conversation_id"),
-                    },
-                )
-                return {
-                    "ok": False,
-                    "outbox_id": outbox_id,
-                    "error_code": error_code,
-                    "exception": exc,
-                    "recovery_action": "rebuild_failed_facts",
-                    "rebuild_prepared": True,
-                }
             if next_state == "split_pending":
                 transition_c2_outbox(
                     outbox_id,
@@ -6821,13 +7241,6 @@ class TaskRunner:
                     binding=binding,
                     payload=payload,
                     outbox_id=outbox_id,
-                    identity_collision=(
-                        exc.data
-                        if recovery_action == "refresh_identity_and_retry"
-                        and isinstance(exc, ApiError)
-                        and isinstance(exc.data, dict)
-                        else None
-                    ),
                 )
                 return {
                     "ok": False,
@@ -6881,34 +7294,6 @@ class TaskRunner:
             outbox_id,
             status=confirmed_state,
         )
-        recovery_evidence = (
-            payload.get("evidence", {}).get("identity_collision_recovery")
-            if isinstance(payload.get("evidence"), dict)
-            and isinstance(
-                payload.get("evidence", {}).get(
-                    "identity_collision_recovery"
-                ),
-                dict,
-            )
-            else None
-        )
-        if recovery_evidence:
-            append_log(
-                "INFO",
-                "c2_identity_collision_retransmit_confirmed",
-                "身份冲突消息已使用原 Outbox 和新编号重传成功。",
-                metadata={
-                    "outbox_id": outbox_id,
-                    "conversation_id": payload.get("conversation_id"),
-                    "old_stable_id": recovery_evidence.get(
-                        "old_stable_id"
-                    ),
-                    "new_stable_id": recovery_evidence.get(
-                        "new_stable_id"
-                    ),
-                    "retransmit_result": "confirmed",
-                },
-            )
         return {
             "ok": True,
             "outbox_id": outbox_id,
@@ -6921,7 +7306,6 @@ class TaskRunner:
         binding: Binding,
         payload: dict[str, Any],
         outbox_id: str,
-        identity_collision: dict[str, Any] | None = None,
     ) -> bool:
         evidence = (
             payload.get("evidence")
@@ -6958,45 +7342,6 @@ class TaskRunner:
         refreshed = json.loads(
             json.dumps(payload, ensure_ascii=False, default=str)
         )
-        identity_replacement = None
-        if isinstance(identity_collision, dict):
-            checkpoint = authorization.get("identity_checkpoint")
-            checkpoint = checkpoint if isinstance(checkpoint, dict) else {}
-            try:
-                sequence_floor = max(
-                    int(
-                        identity_collision.get("next_sequence_floor")
-                        or 1
-                    ),
-                    int(checkpoint.get("next_sequence_floor") or 1),
-                )
-                refreshed, replacement = rebuild_identity_collision(
-                    refreshed,
-                    source_message_key=str(
-                        identity_collision.get("source_message_key") or ""
-                    ),
-                    dedupe_key=str(
-                        identity_collision.get("dedupe_key") or ""
-                    ),
-                    next_sequence_floor=sequence_floor,
-                )
-                identity_replacement = replacement
-                refreshed_evidence = dict(refreshed.get("evidence") or {})
-                refreshed_evidence["identity_collision_recovery"] = {
-                    "old_stable_id": replacement.get("old_stable_id"),
-                    "new_stable_id": replacement.get("new_stable_id"),
-                    "old_source_message_key": replacement.get(
-                        "old_source_message_key"
-                    ),
-                    "new_source_message_key": replacement.get(
-                        "new_source_message_key"
-                    ),
-                    "state": "waiting_retransmit",
-                }
-                refreshed["evidence"] = refreshed_evidence
-            except (TypeError, ValueError) as exc:
-                set_c2_outbox_error(outbox_id, str(exc))
-                return False
         refreshed["authorization_revision"] = str(
             authorization.get("authorization_revision") or ""
         )
@@ -7016,12 +7361,6 @@ class TaskRunner:
                 outbox_id,
                 refreshed,
                 next_status=refreshed_state,
-                identity_replacement=identity_replacement,
-                identity_state_key=(
-                    f"message_identity:{refreshed.get('conversation_id')}"
-                    if identity_replacement
-                    else None
-                ),
             )
         except ValueError as exc:
             set_c2_outbox_error(outbox_id, str(exc))
@@ -7029,31 +7368,12 @@ class TaskRunner:
         append_log(
             "INFO",
             "c2_outbox_authorization_refreshed",
-            (
-                "C2 Outbox 已按服务端检查点原子重建冲突身份；消息内容和动作证据保持不变。"
-                if identity_replacement
-                else "C2 Outbox 只刷新了授权外壳，消息身份、内容和动作证据保持不变。"
-            ),
+            "C2 Outbox 只刷新了授权外壳，消息身份、内容和动作证据保持不变。",
             metadata={
                 "outbox_id": outbox_id,
                 "conversation_id": refreshed.get("conversation_id"),
                 "authorization_revision": refreshed.get(
                     "authorization_revision"
-                ),
-                "old_stable_id": (
-                    identity_replacement.get("old_stable_id")
-                    if identity_replacement
-                    else None
-                ),
-                "new_stable_id": (
-                    identity_replacement.get("new_stable_id")
-                    if identity_replacement
-                    else None
-                ),
-                "retransmit_result": (
-                    "waiting"
-                    if identity_replacement
-                    else None
                 ),
             },
         )
@@ -7252,7 +7572,6 @@ class TaskRunner:
                     delivery.get("recovery_action")
                 )
                 if recovery_action in {
-                    "rebuild_failed_facts",
                     "split_and_retry",
                 }:
                     return False
@@ -7286,7 +7605,6 @@ class TaskRunner:
                     return False
                 if recovery_action in {
                     "refresh_and_rebuild",
-                    "refresh_identity_and_retry",
                 }:
                     append_log(
                         "INFO",
@@ -7802,7 +8120,7 @@ class TaskRunner:
         clean_read_run_id = str(read_run_id or "").strip()
         if not clean_read_run_id:
             raise ValueError("C2_READ_RUN_ID_MISSING")
-        preliminary_payload = build_message_ingest_payload(
+        preliminary_payload = build_preliminary_slot_payload(
             target,
             sidecar_payload,
             read_run_id=clean_read_run_id,
@@ -7835,28 +8153,12 @@ class TaskRunner:
         ]
 
         states: list[dict[str, Any]] = []
+        provisional_continuity_states: list[dict[str, Any]] = []
         identity_errors: list[dict[str, Any]] = []
+        new_image_observation_ids: set[str] = set()
         seen_source_keys: set[str] = set()
-        backend_confirmed_origins = {
-            str(item.get("source_message_key") or "").strip(): str(
-                item.get("origin_read_run_id") or ""
-            ).strip()
-            for item in (
-                (
-                    target.raw.get("identity_checkpoint") or {}
-                ).get("recent_messages")
-                if isinstance(target.raw, dict)
-                and isinstance(
-                    target.raw.get("identity_checkpoint"), dict
-                )
-                else []
-            )
-            if isinstance(item, dict)
-            and str(item.get("source_message_key") or "").strip()
-        }
-        outbox_origins = load_c2_outbox_origin_read_run_ids(
-            target.conversation_id
-        )
+        backend_confirmed_origins: dict[str, str] | None = None
+        outbox_origins: dict[str, str] | None = None
         for screen_order, (index, observation) in enumerate(ordered, start=1):
             row_kind = str(observation.get("row_kind") or "").strip().lower()
             voice_state = str(observation.get("voice_state") or "").strip().lower()
@@ -7879,6 +8181,75 @@ class TaskRunner:
                     }
                 )
                 continue
+            identity_scope = str(
+                observation.get("_worker_identity_scope") or ""
+            ).strip()
+            item_state = str(
+                observation.get("item_state") or "discovered"
+            ).strip().lower()
+            if (
+                row_kind == "image_bubble"
+                and identity_scope == "current_read_provisional"
+                and item_state == "discovered"
+            ):
+                if observation_id:
+                    new_image_observation_ids.add(observation_id)
+                    # The row is not yet a durable message and therefore has
+                    # no source key or Ledger state.  Its visual order still
+                    # participates in the current-frame continuity check so
+                    # a historical row below a newly discovered image cannot
+                    # be hidden merely because identity commitment happens
+                    # later in the action transaction.
+                    provisional_continuity_states.append(
+                        {
+                            "observation_id": observation_id,
+                            "screen_order": screen_order,
+                            "order_source": frame_order_source,
+                            "row_kind": row_kind,
+                            "sender_role": str(
+                                observation.get("sender_role") or ""
+                            ).strip().lower(),
+                            "fact_scope": "current_read_run",
+                        }
+                    )
+                else:
+                    identity_errors.append(
+                        {
+                            "observation_id": f"observation-{index}",
+                            "screen_order": screen_order,
+                            "order_source": frame_order_source,
+                            "row_kind": row_kind,
+                            "error_code": "MESSAGE_IDENTITY_UNCONFIRMED",
+                        }
+                    )
+                # A provisional image is an action candidate, not a message
+                # fact.  Do not derive a source key or consult any cross-run
+                # Ledger, Outbox or backend checkpoint until its confirmed
+                # action receipt commits the reserved sequence number.
+                continue
+            if row_kind == "image_bubble":
+                try:
+                    validate_committed_image_identity(
+                        observation,
+                        conversation_id=target.conversation_id,
+                    )
+                except ValueError:
+                    identity_errors.append(
+                        {
+                            "observation_id": (
+                                observation_id or f"observation-{index}"
+                            ),
+                            "screen_order": screen_order,
+                            "order_source": frame_order_source,
+                            "row_kind": row_kind,
+                            "error_code": (
+                                "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                            ),
+                        }
+                    )
+                    # Invalid image identities cannot reach source-key,
+                    # checkpoint, Ledger or Outbox consumers.
+                    continue
             canonical = canonical_by_observation_id.get(observation_id)
             try:
                 if canonical:
@@ -7918,6 +8289,28 @@ class TaskRunner:
                 identity_errors.append(error)
                 continue
             seen_source_keys.add(source_key)
+            if backend_confirmed_origins is None:
+                backend_confirmed_origins = {
+                    str(item.get("source_message_key") or "").strip(): str(
+                        item.get("origin_read_run_id") or ""
+                    ).strip()
+                    for item in (
+                        (
+                            target.raw.get("identity_checkpoint") or {}
+                        ).get("recent_messages")
+                        if isinstance(target.raw, dict)
+                        and isinstance(
+                            target.raw.get("identity_checkpoint"), dict
+                        )
+                        else []
+                    )
+                    if isinstance(item, dict)
+                    and str(item.get("source_message_key") or "").strip()
+                }
+            if outbox_origins is None:
+                outbox_origins = load_c2_outbox_origin_read_run_ids(
+                    target.conversation_id
+                )
             ledger = load_c2_ledger_entry(target.conversation_id, source_key)
             ledger_origin = str(
                 (ledger or {}).get("origin_read_run_id") or ""
@@ -8015,11 +8408,15 @@ class TaskRunner:
                 state_payload["ledger_state"] = legacy_ledger_state
             states.append(state_payload)
 
+        continuity_states = sorted(
+            [*states, *provisional_continuity_states],
+            key=lambda item: int(item.get("screen_order") or 0),
+        )
         seen_current = False
         first_current_screen_order = 0
         history_gap_screen_order = 0
         raw_history_gap = False
-        for item in states:
+        for item in continuity_states:
             if item["fact_scope"] == "current_read_run":
                 seen_current = True
                 if not first_current_screen_order:
@@ -8031,14 +8428,14 @@ class TaskRunner:
         latest_self_screen_order = max(
             (
                 int(item["screen_order"])
-                for item in states
+                for item in continuity_states
                 if item.get("sender_role") == "self"
             ),
             default=0,
         )
         pending_customer_orders = [
             int(item["screen_order"])
-            for item in states
+            for item in continuity_states
             if item.get("sender_role") == "customer"
             and int(item["screen_order"]) > latest_self_screen_order
         ]
@@ -8063,14 +8460,6 @@ class TaskRunner:
                     "latest_self_screen_order": latest_self_screen_order,
                 }
             )
-        new_image_source_keys = {
-            item["source_message_key"]
-            for item in states
-            if item["row_kind"] == "image_bubble"
-            and item["fact_scope"] == "current_read_run"
-            and item["delivery_state"] == "not_enqueued"
-            and item["history_source"] == "current_read_run"
-        }
         flow_gate_details: list[dict[str, Any]] = []
         ai_reply_boundary = (
             target.raw.get("ai_reply_boundary")
@@ -8207,7 +8596,7 @@ class TaskRunner:
             "slot_ledger_states": states,
             "history_gap": history_gap,
             "identity_errors": identity_errors,
-            "new_image_source_keys": new_image_source_keys,
+            "new_image_observation_ids": new_image_observation_ids,
             "flow_gate_details": flow_gate_details,
             "historical_warnings": historical_warnings,
             "recoverable_handoff_resolution": recovery_resolution,
@@ -8219,15 +8608,15 @@ class TaskRunner:
         binding: Binding,
         target: WechatReadTarget,
         observation: dict[str, Any],
-        source_key: str,
-        allowed_new_source_keys: set[str] | None,
+        observation_id: str,
+        allowed_new_observation_ids: set[str] | None,
         enforce_read_targets: bool,
     ) -> str:
         if not observation_role_is_trusted(observation):
             return "role_untrusted"
         if (
-            allowed_new_source_keys is not None
-            and source_key not in allowed_new_source_keys
+            allowed_new_observation_ids is not None
+            and observation_id not in allowed_new_observation_ids
         ):
             return "not_new"
         if (
@@ -8246,14 +8635,56 @@ class TaskRunner:
         target: WechatReadTarget,
         payload: dict[str, Any],
         observation: dict[str, Any],
-        source_key: str,
+        action_local_id: str,
         cancel_check: Callable[[], bool | str] | None,
         flow_outcomes: FlowOutcomeAccumulator | None,
     ) -> dict[str, Any]:
         image_action_journal: Path | None = None
+        image_action_id = ""
         if flow_outcomes is not None:
             payload_observations = list(payload.get("observations") or [])
-            committed_ids = {
+            image_action_id = str(action_local_id or "").strip() or (
+                f"image:{target.conversation_id}:{uuid.uuid4()}"
+            )
+            selected_observation_id = str(
+                observation.get("observation_id") or ""
+            ).strip()
+            reserved_worker_stable_id = str(
+                observation.get("_worker_stable_id") or ""
+            ).strip()
+            if not selected_observation_id or not reserved_worker_stable_id:
+                return {
+                    "state": "failed",
+                    "reason": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    "action_phase": "not_attempted",
+                    "diagnostics": {"events": [], "image_persisted": False},
+                }
+            committed_ids: dict[str, str] = {}
+            for item in payload_observations:
+                if not isinstance(item, dict):
+                    continue
+                item_observation_id = str(
+                    item.get("observation_id") or ""
+                ).strip()
+                item_worker_stable_id = str(
+                    item.get("_worker_stable_id") or ""
+                ).strip()
+                if (
+                    not item_observation_id
+                    or not item_worker_stable_id
+                    or item_observation_id == selected_observation_id
+                ):
+                    continue
+                if str(item.get("row_kind") or "").strip().lower() == "image_bubble":
+                    try:
+                        validate_committed_image_identity(
+                            item,
+                            conversation_id=target.conversation_id,
+                        )
+                    except ValueError:
+                        continue
+                committed_ids[item_observation_id] = item_worker_stable_id
+            provisional_ids = {
                 str(item.get("observation_id") or "").strip(): str(
                     item.get("_worker_stable_id") or ""
                 ).strip()
@@ -8261,10 +8692,18 @@ class TaskRunner:
                 if isinstance(item, dict)
                 and str(item.get("observation_id") or "").strip()
                 and str(item.get("_worker_stable_id") or "").strip()
+                and str(item.get("observation_id") or "").strip()
+                != selected_observation_id
+                and str(item.get("_worker_identity_scope") or "").strip()
+                == "current_read_provisional"
             }
             pre_action_sequence = build_pre_action_identity_sequence(
                 payload_observations,
                 committed_ids=committed_ids,
+                provisional_ids=provisional_ids,
+                selected_observation_id=selected_observation_id,
+                canonical_action_id=image_action_id,
+                reserved_worker_stable_id=reserved_worker_stable_id,
             )
             pre_frame_id = str(
                 payload.get("frame_id")
@@ -8284,7 +8723,8 @@ class TaskRunner:
                 target=target,
                 items=[
                     {
-                        "source_message_key": source_key,
+                        "journal_item_id": image_action_id,
+                        "action_local_id": image_action_id,
                         "physical_anchor_keys": [
                             str(
                                 observation.get("observation_id") or ""
@@ -8293,14 +8733,26 @@ class TaskRunner:
                         "replayable_observation": (
                             replayable_image_observation(
                                 observation,
-                                source_message_key=source_key,
                             )
                         ),
                     }
                 ],
                 flow_outcomes=flow_outcomes,
+                transaction_id=image_action_id,
                 pre_action_identity_sequence=pre_action_sequence,
                 pre_frame_id=pre_frame_id,
+                reserved_worker_stable_id=reserved_worker_stable_id,
+                prepare_evidence={
+                    "authorization_revision": str(
+                        target.authorization_revision or ""
+                    ),
+                    "remark_code": str(target.remark_code or ""),
+                    "rpa_session_key": str(
+                        target.rpa_session_key or ""
+                    ),
+                    "display_name": str(target.display_name or ""),
+                    "read_reason": str(target.read_reason or ""),
+                },
             )
         try:
             from .omniauto_vision import process_image_slot
@@ -8314,10 +8766,10 @@ class TaskRunner:
                     if isinstance(payload.get("window_context"), dict)
                     else None
                 ),
-                trace_id=source_key,
+                trace_id=action_local_id,
                 cancel_check=cancel_check,
                 action_journal_path=image_action_journal,
-                source_message_key=source_key,
+                action_local_id=image_action_id,
                 artifact_dir=str(payload.get("artifact_dir") or "") or None,
             )
         except Exception as exc:
@@ -8335,12 +8787,176 @@ class TaskRunner:
                     "image_persisted": False,
                 },
             }
+        transaction = (
+            result.get("transaction")
+            if isinstance(result.get("transaction"), dict)
+            else {}
+        )
+        returned_action_phase = str(
+            result.get("action_phase")
+            or transaction.get("action_phase")
+            or "not_attempted"
+        ).strip()
+        returned_ui_action = bool(
+            result.get("ui_action_performed") is True
+            or transaction.get("ui_action_performed") is True
+            or transaction.get("right_click_ok") is True
+            or transaction.get("menu_opened") is True
+            or transaction.get("menu_dismissed") is True
+            or transaction.get("copy_click_ok") is True
+        )
+        if (
+            image_action_journal is not None
+            and returned_action_phase
+            in {"not_attempted", "cancelled_before_trigger"}
+            and not returned_ui_action
+        ):
+            # Capture/OCR/authorization failures before the irreversible UI
+            # trigger are not failed image messages. Burn the reservation and
+            # let a fresh authoritative frame arbitrate again.
+            update_action_journal_item(
+                image_action_journal,
+                journal_item_id=image_action_id,
+                action_phase="cancelled_before_trigger",
+                business_state="not_attempted",
+                business_result_confirmed=False,
+                error_code=str(result.get("reason") or "") or None,
+                terminal_payload={
+                    "state": "cancelled_before_trigger",
+                    "media_action_terminal": (
+                        MediaActionTerminal.CANCELLED_BEFORE_TRIGGER.value
+                    ),
+                    "error_code": str(result.get("reason") or "") or None,
+                },
+            )
+            result = {
+                **result,
+                "state": (
+                    "cancelled"
+                    if str(result.get("state") or "").strip()
+                    == "cancelled"
+                    else "cancelled_before_trigger"
+                ),
+                "action_phase": "cancelled_before_trigger",
+                "ui_action_performed": False,
+                "media_action_terminal": (
+                    MediaActionTerminal.CANCELLED_BEFORE_TRIGGER.value
+                ),
+                "_image_action_id": image_action_id,
+                "_image_action_journal_path": str(image_action_journal),
+                "_image_action_journal_item_id": image_action_id,
+            }
+            return result
+        image_anchor = (
+            observation.get("image_physical_anchor")
+            if isinstance(observation.get("image_physical_anchor"), dict)
+            else {}
+        )
+        selected_observation_id = str(
+            observation.get("observation_id") or ""
+        ).strip()
+        reserved_worker_stable_id = str(
+            observation.get("_worker_stable_id") or ""
+        ).strip()
+        image_fingerprint = str(
+            image_anchor.get("bubble_visual_fingerprint") or ""
+        ).strip()
+        selected_rows: list[dict[str, Any]] = []
+        persisted_receipt: dict[str, Any] | None = None
+        if image_action_journal is not None:
+            pre_action_journal = read_action_journal(image_action_journal)
+            selected_rows = [
+                item
+                for item in (
+                    pre_action_journal.get("pre_action_identity_sequence")
+                    or []
+                )
+                if isinstance(item, dict)
+                and item.get("identity_state") == "selected_action"
+                and str(item.get("canonical_action_id") or "").strip()
+                == image_action_id
+                and str(
+                    item.get("reserved_worker_stable_id") or ""
+                ).strip()
+                == reserved_worker_stable_id
+                and str(item.get("pre_observation_id") or "").strip()
+                == selected_observation_id
+                and str(
+                    item.get("image_visual_fingerprint") or ""
+                ).strip()
+                == image_fingerprint
+            ]
+            candidate_receipt, receipt_item_id = (
+                _confirmed_image_receipt_from_journal(
+                    pre_action_journal
+                )
+            )
+            if candidate_receipt is not None and (
+                receipt_item_id == image_action_id
+            ):
+                if confirmed_image_identity_receipt(
+                    observation,
+                    {
+                        "_confirmed_image_action_receipt": (
+                            candidate_receipt
+                        )
+                    },
+                ) is not None:
+                    persisted_receipt = candidate_receipt
+        if persisted_receipt is not None:
+            result["_confirmed_image_action_receipt"] = (
+                persisted_receipt
+            )
+        if (
+            image_action_id
+            and str(
+                result.get("action_phase")
+                or transaction.get("action_phase")
+                or ""
+            )
+            == "confirmed"
+            and transaction.get("slot_identity_confirmed") is True
+            and reserved_worker_stable_id
+            and selected_observation_id
+            and image_fingerprint
+            and len(selected_rows) == 1
+            and persisted_receipt is None
+        ):
+            result["_confirmed_image_action_receipt"] = {
+                "canonical_action_id": image_action_id,
+                "reserved_worker_stable_id": reserved_worker_stable_id,
+                "pre_observation_id": selected_observation_id,
+                "post_observation_id": selected_observation_id,
+                "binding_confirmed": True,
+                "image_visual_fingerprint": image_fingerprint,
+            }
+        if (
+            str(result.get("state") or "").strip() == "completed"
+            and confirmed_image_identity_receipt(observation, result) is None
+        ):
+            # Vision success is not identity success.  Preserve that a UI
+            # action may have happened, but discard all business content and
+            # force the independent identity gate before any durable message
+            # consumer can see this candidate.
+            result = {
+                **result,
+                "state": "failed",
+                "business_state": "failed",
+                "business_result_confirmed": False,
+                "reason": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                "reason_detail": (
+                    "confirmed_image_identity_receipt_missing_or_invalid"
+                ),
+            }
+            result.pop("customer_image_understanding", None)
+            result.pop("visual_bridge_input", None)
+
         if image_action_journal is not None and str(
             result.get("state") or ""
         ).strip() in {"completed", "failed"}:
             journal_payload = read_action_journal(image_action_journal)
             journal_item = (
-                (journal_payload.get("items") or {}).get(source_key)
+                (journal_payload.get("items") or {}).get(image_action_id)
                 if isinstance(journal_payload.get("items"), dict)
                 else None
             )
@@ -8368,9 +8984,65 @@ class TaskRunner:
                 error_code = None if completed else str(
                     result.get("reason") or "IMAGE_RESULT_UNCONFIRMED"
                 )
+                terminal_payload = {
+                    "state": str(result.get("state") or "failed"),
+                    "error_code": error_code,
+                    "reason_detail": str(
+                        transaction.get("status")
+                        or result.get("reason_detail")
+                        or error_code
+                        or ""
+                    ),
+                    "customer_image_understanding": (
+                        dict(
+                            result.get(
+                                "customer_image_understanding"
+                            )
+                            or {}
+                        )
+                        if isinstance(
+                            result.get("customer_image_understanding"),
+                            dict,
+                        )
+                        else None
+                    ),
+                    "visual_bridge_input": (
+                        result.get("visual_bridge_input")
+                        if isinstance(
+                            result.get("visual_bridge_input"),
+                            (dict, list, str),
+                        )
+                        else None
+                    ),
+                }
+                receipt = confirmed_image_identity_receipt(
+                    observation,
+                    result,
+                )
+                terminal_payload["media_action_terminal"] = (
+                    MediaActionTerminal.COMMITTED_COMPLETED.value
+                    if receipt is not None and completed
+                    else MediaActionTerminal.COMMITTED_FAILED.value
+                    if receipt is not None
+                    else MediaActionTerminal.IDENTITY_UNRESOLVED.value
+                )
+                if receipt is not None:
+                    terminal_payload["confirmed_action_mapping"] = {
+                        key: receipt[key]
+                        for key in (
+                            "canonical_action_id",
+                            "reserved_worker_stable_id",
+                            "pre_observation_id",
+                            "post_observation_id",
+                            "binding_confirmed",
+                        )
+                    }
+                    terminal_payload["image_visual_fingerprint"] = (
+                        receipt["image_visual_fingerprint"]
+                    )
                 update_action_journal_item(
                     image_action_journal,
-                    source_message_key=source_key,
+                    journal_item_id=image_action_id,
                     action_phase=str(
                         result.get("action_phase") or "not_attempted"
                     ),
@@ -8379,47 +9051,80 @@ class TaskRunner:
                     ),
                     business_result_confirmed=completed,
                     error_code=error_code,
+                    terminal_payload=terminal_payload,
+                )
+        journal_receipt_confirmed = False
+        receipt = confirmed_image_identity_receipt(observation, result)
+        if image_action_journal is not None and receipt is not None:
+            committed_journal = read_action_journal(image_action_journal)
+            journal_receipt, receipt_item_id = (
+                _confirmed_image_receipt_from_journal(
+                    committed_journal
+                )
+            )
+            journal_receipt_confirmed = bool(
+                journal_receipt == receipt
+                and receipt_item_id == image_action_id
+            )
+        result["_image_identity_receipt_confirmed"] = (
+            journal_receipt_confirmed
+        )
+        if not journal_receipt_confirmed:
+            result.pop("_confirmed_image_action_receipt", None)
+            if image_action_journal is not None:
+                current_phase = str(
+                    result.get("action_phase")
+                    or transaction.get("action_phase")
+                    or action_journal_phase(image_action_journal)
+                    or "not_attempted"
+                ).strip()
+                update_action_journal_item(
+                    image_action_journal,
+                    journal_item_id=image_action_id,
+                    action_phase=current_phase,
+                    business_state="failed",
+                    business_result_confirmed=False,
+                    error_code="C2_IMAGE_IDENTITY_CONTRACT_INVALID",
                     terminal_payload={
-                        "state": str(result.get("state") or "failed"),
-                        "error_code": error_code,
-                        "reason_detail": str(
-                            transaction.get("status")
-                            or result.get("reason_detail")
-                            or error_code
-                            or ""
+                        "state": "failed",
+                        "media_action_terminal": (
+                            MediaActionTerminal.IDENTITY_UNRESOLVED.value
                         ),
-                        "customer_image_understanding": (
-                            dict(
-                                result.get(
-                                    "customer_image_understanding"
-                                )
-                                or {}
-                            )
-                            if isinstance(
-                                result.get(
-                                    "customer_image_understanding"
-                                ),
-                                dict,
-                            )
-                            else None
+                        "error_code": (
+                            "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
                         ),
-                        "visual_bridge_input": (
-                            result.get("visual_bridge_input")
-                            if isinstance(
-                                result.get("visual_bridge_input"),
-                                (dict, list, str),
-                            )
-                            else None
+                        "reason_detail": (
+                            "confirmed_image_identity_receipt_not_persisted"
                         ),
                     },
                 )
+        if (
+            str(result.get("state") or "").strip() == "completed"
+            and not journal_receipt_confirmed
+        ):
+            result.update(
+                {
+                    "state": "failed",
+                    "business_state": "failed",
+                    "business_result_confirmed": False,
+                    "reason": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    "reason_detail": (
+                        "confirmed_image_identity_receipt_not_persisted"
+                    ),
+                }
+            )
+            result.pop("customer_image_understanding", None)
+            result.pop("visual_bridge_input", None)
+        result["_image_action_id"] = image_action_id
+        result["_image_action_journal_path"] = (
+            str(image_action_journal) if image_action_journal else ""
+        )
+        result["_image_action_journal_item_id"] = image_action_id
         return result
 
     @staticmethod
     def _normalize_one_image_slot_result(
         result: dict[str, Any],
-        *,
-        source_key: str,
     ) -> dict[str, Any]:
         normalized = dict(result or {})
         transaction = (
@@ -8449,10 +9154,13 @@ class TaskRunner:
             not in {"not_attempted", "cancelled_before_trigger"}
         )
         if (
-            action_phase == "not_attempted"
-            and str(normalized.get("state") or "")
-            in {"image_not_visible", "not_visible"}
+            action_phase in {
+                "not_attempted",
+                "cancelled_before_trigger",
+            }
             and not ui_frame_invalidated
+            and str(normalized.get("state") or "").strip()
+            != "cancelled"
         ):
             return {
                 "result": normalized,
@@ -8464,6 +9172,33 @@ class TaskRunner:
                 "ui_frame_invalidated": ui_frame_invalidated,
                 "terminal_state": "",
             }
+        if (
+            action_phase == "cancelled_before_trigger"
+            and str(normalized.get("state") or "").strip()
+            == "cancelled"
+            and not ui_frame_invalidated
+        ):
+            action_outcome = classify_action_result(
+                "image",
+                {
+                    **normalized,
+                    "action_phase": "not_attempted",
+                    "error_code": normalized.get("reason"),
+                    "evidence": transaction,
+                },
+            )
+            return {
+                "result": normalized,
+                "transaction": transaction,
+                "diagnostics": diagnostics,
+                "action_outcome": action_outcome,
+                "action_phase": action_phase,
+                "removed_from_final_screen": False,
+                "action_was_attempted": False,
+                "ui_frame_invalidated": False,
+                "raw_terminal_state": "cancelled",
+                "terminal_state": "cancelled",
+            }
         action_outcome = classify_action_result(
             "image",
             {
@@ -8472,7 +9207,6 @@ class TaskRunner:
                 "error_code": normalized.get("reason"),
                 "evidence": transaction,
             },
-            source_message_key=source_key,
         )
         normalized["action_outcome"] = action_outcome
         raw_terminal_state = str(
@@ -8517,7 +9251,7 @@ class TaskRunner:
         *,
         target: WechatReadTarget,
         payload: dict[str, Any],
-        observation: dict[str, Any],
+        terminal_observation: dict[str, Any],
         source_key: str,
         origin_read_run_id: str,
         result: dict[str, Any],
@@ -8531,10 +9265,16 @@ class TaskRunner:
                 "state": "failed",
                 "reason": "vision_terminal_state_invalid",
             }
-        terminal_observation = apply_image_terminal_result(
-            observation,
-            result,
+        validate_committed_image_identity(
+            terminal_observation,
+            conversation_id=target.conversation_id,
+            require_formalization_proof=True,
         )
+        if image_observation_source_key(
+            target,
+            terminal_observation,
+        ) != str(source_key or "").strip():
+            raise ValueError("C2_IMAGE_IDENTITY_CONTRACT_INVALID")
         projected_state = str(
             terminal_observation.get("item_state") or terminal_state
         )
@@ -8627,22 +9367,13 @@ class TaskRunner:
                 or observation.get("row_kind") != "image_bubble"
             ):
                 continue
-            source = (
-                observation.get("source_message")
-                if isinstance(observation.get("source_message"), dict)
-                else {}
-            )
-            source_key = str(
-                source.get("source_message_key") or ""
-            ).strip()
-            if not source_key:
-                try:
-                    source_key = image_observation_source_key(
-                        target,
-                        observation,
-                    )
-                except ValueError:
-                    source_key = ""
+            try:
+                source_key = image_observation_source_key(
+                    target,
+                    observation,
+                )
+            except ValueError:
+                source_key = ""
             if source_key:
                 visible_source_keys.add(source_key)
 
@@ -8676,6 +9407,33 @@ class TaskRunner:
                 or str(replayable.get("item_state") or "")
                 not in {"completed", "failed"}
             ):
+                continue
+            try:
+                validate_committed_image_identity(
+                    replayable,
+                    conversation_id=target.conversation_id,
+                    require_formalization_proof=True,
+                )
+                if image_observation_source_key(
+                    target,
+                    replayable,
+                ) != source_key:
+                    raise ValueError(
+                        "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                    )
+            except ValueError:
+                append_log(
+                    "ERROR",
+                    "c2_image_ledger_identity_rejected",
+                    "图片 Ledger 缺少合法 committed 身份和正式化证明；禁止恢复为正式消息。",
+                    error_code="C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    metadata={
+                        "conversation_id": target.conversation_id,
+                        "source_message_key": source_key,
+                        "image_persisted": False,
+                    },
+                    force_incident=True,
+                )
                 continue
             restored_observation = dict(replayable)
             # This fact is durable, but its last visible coordinates are not
@@ -8799,7 +9557,7 @@ class TaskRunner:
         sidecar_payload: dict[str, Any],
         enforce_read_targets: bool,
         cancel_check: Callable[[], bool | str] | None = None,
-        allowed_new_source_keys: set[str] | None = None,
+        allowed_new_observation_ids: set[str] | None = None,
         flow_outcomes: FlowOutcomeAccumulator | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         observations = sidecar_payload.get("observations")
@@ -8826,19 +9584,117 @@ class TaskRunner:
         image_action_started = False
         for index, observation in sorted(indexed, key=lambda value: (visual_top(value[1]), value[0])):
             source = observation.get("source_message") if isinstance(observation.get("source_message"), dict) else {}
-            try:
-                source_key = image_observation_source_key(
-                    target,
-                    observation,
+            observation_id = str(
+                observation.get("observation_id") or ""
+            ).strip()
+            if not observation_role_is_trusted(observation):
+                append_log(
+                    "WARN",
+                    "c2_image_role_rejected",
+                    "C2 图片初始同行头像角色不可信；本轮不建立图片身份、不落终态、不调用 Vision。",
+                    error_code="MESSAGE_IDENTITY_UNCONFIRMED",
+                    metadata={
+                        "conversation_id": target.conversation_id,
+                        "remark_code": target.remark_code,
+                        "observation_id": observation_id,
+                        "sender_role": str(
+                            observation.get("sender_role") or ""
+                        ),
+                        "sender_role_source": str(
+                            observation.get("sender_role_source") or ""
+                        ),
+                        "image_persisted": False,
+                    },
                 )
-            except ValueError:
-                source_key = ""
+                continue
+            identity_scope = str(
+                observation.get("_worker_identity_scope") or ""
+            ).strip()
+            item_state = str(
+                observation.get("item_state") or "discovered"
+            ).strip().lower()
+            provisional = (
+                identity_scope == "current_read_provisional"
+                and item_state == "discovered"
+            )
+            source_key = ""
+            if not provisional:
+                try:
+                    validate_committed_image_identity(
+                        observation,
+                        conversation_id=target.conversation_id,
+                    )
+                    source_key = image_observation_source_key(
+                        target,
+                        observation,
+                    )
+                except ValueError:
+                    stats["terminal_gate"] = {
+                        "error_code": (
+                            "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                        ),
+                        "identity_errors": [
+                            {
+                                "observation_id": observation_id,
+                                "row_kind": "image_bubble",
+                                "error_code": (
+                                    "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                                ),
+                                "reason": (
+                                    "committed_image_identity_missing_or_invalid"
+                                ),
+                            }
+                        ],
+                        "authoritative_frame_source": str(
+                            payload.get("authoritative_frame_source")
+                            or "initial_read"
+                        ),
+                        "ui_frame_invalidated": False,
+                    }
+                    enriched_observations[index] = None
+                    append_log(
+                        "ERROR",
+                        "c2_image_identity_scope_rejected",
+                        "图片身份不是唯一白名单 committed；已在任何图片动作、Ledger、Outbox 和正式消息前失败关闭。",
+                        error_code=(
+                            "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                        ),
+                        metadata={
+                            "conversation_id": target.conversation_id,
+                            "remark_code": target.remark_code,
+                            "observation_id": observation_id,
+                            "identity_scope": identity_scope,
+                            "item_state": item_state,
+                            "image_persisted": False,
+                        },
+                        force_incident=True,
+                    )
+                    break
+            action_local_key = (
+                "image-action-candidate:"
+                + hashlib.sha256(
+                    json.dumps(
+                        {
+                            "conversation_id": target.conversation_id,
+                            "read_run_id": (
+                                flow_outcomes.origin_read_run_id
+                                if flow_outcomes is not None
+                                else ""
+                            ),
+                            "observation_id": observation_id,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()[:40]
+            )
             common_metadata = {
                 "conversation_id": target.conversation_id,
                 "remark_code": target.remark_code,
                 "authorization_revision": target.authorization_revision,
                 "source_message_key": source_key,
-                "observation_id": str(observation.get("observation_id") or ""),
+                "observation_id": observation_id,
                 "sender_role": str(observation.get("sender_role") or ""),
                 "sender_role_source": str(observation.get("sender_role_source") or ""),
                 "bubble_rect": observation.get("bubble_rect"),
@@ -8851,35 +9707,131 @@ class TaskRunner:
                 "review_path": payload.get("review_path"),
                 "image_persisted": False,
             }
+            if provisional:
+                prior_journal_path = action_journal_path(
+                    "image",
+                    action_local_key,
+                )
+                if prior_journal_path.exists():
+                    prior_journal = read_action_journal(
+                        prior_journal_path
+                    )
+                    prior_items = (
+                        prior_journal.get("items")
+                        if isinstance(prior_journal.get("items"), dict)
+                        else {}
+                    )
+                    prior_item = (
+                        prior_items.get(action_local_key)
+                        if isinstance(
+                            prior_items.get(action_local_key), dict
+                        )
+                        else {}
+                    )
+                    prior_terminal = (
+                        prior_item.get("terminal_payload")
+                        if isinstance(
+                            prior_item.get("terminal_payload"), dict
+                        )
+                        else {}
+                    )
+                    prior_error = str(
+                        prior_item.get("error_code")
+                        or prior_terminal.get("error_code")
+                        or ""
+                    ).strip()
+                    if str(
+                        prior_item.get("action_phase") or ""
+                    ).strip() == "cancelled_before_trigger":
+                        # This reservation is burned for the current read
+                        # run. A retry requires a newly arbitrated frame and
+                        # therefore a new action-local identity.
+                        stats["removed_from_final_screen"] += 1
+                        mark_image_removed_from_final_screen(
+                            stats,
+                            action_local_key,
+                        )
+                        enriched_observations[index] = None
+                        append_log(
+                            "INFO",
+                            "c2_image_cancelled_reservation_reused",
+                            "图片动作已在点击前取消；同一读取轮次不复用预留号、不重复调用 Vision。",
+                            metadata=common_metadata,
+                        )
+                        continue
+                    if (
+                        prior_error
+                        == "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                        and not str(
+                            prior_journal.get(
+                                "committed_worker_stable_id"
+                            )
+                            or ""
+                        ).strip()
+                    ):
+                        stats["terminal_gate"] = {
+                            "error_code": prior_error,
+                            "identity_errors": [
+                                {
+                                    "observation_id": observation_id,
+                                    "row_kind": "image_bubble",
+                                    "error_code": prior_error,
+                                    "reason": str(
+                                        prior_terminal.get(
+                                            "reason_detail"
+                                        )
+                                        or "confirmed_image_identity_receipt_missing_or_invalid"
+                                    ),
+                                }
+                            ],
+                            "authoritative_frame_source": (
+                                "action_journal_recovery"
+                            ),
+                            "ui_frame_invalidated": False,
+                            "action_journal_path": str(
+                                prior_journal_path
+                            ),
+                        }
+                        enriched_observations[index] = None
+                        append_log(
+                            "WARN",
+                            "c2_image_identity_gate_reused",
+                            "图片身份失败已持久化；本轮复用同一门禁，不重复右键、复制或调用 Vision。",
+                            error_code=prior_error,
+                            metadata=common_metadata,
+                        )
+                        break
             append_log(
                 "INFO",
                 "c2_image_slot_discovered",
                 "C2 在最终权威画面发现图片槽位。",
                 metadata=common_metadata,
             )
-            if not observation_role_is_trusted(observation):
-                append_log(
-                    "WARN",
-                    "c2_image_role_rejected",
-                    "C2 图片初始同行头像角色不可信；本轮不建立图片身份、不落终态、不调用 Vision。",
-                    error_code="MESSAGE_IDENTITY_UNCONFIRMED",
-                    metadata=common_metadata,
-                )
-                continue
-            if not source_key:
+            if provisional and (
+                not observation_id
+                or not str(
+                    observation.get("_worker_stable_id") or ""
+                ).strip()
+            ):
                 append_log(
                     "WARN",
                     "c2_image_identity_rejected",
-                    "C2 图片缺少 canonical_visual_id 或统一序列身份；本轮不落终态、不调用 Vision。",
-                    error_code="MESSAGE_SEQUENCE_IDENTITY_MISSING",
+                    "C2 图片临时身份合同不完整；本轮不调用 Vision。",
+                    error_code="C2_IMAGE_IDENTITY_CONTRACT_INVALID",
                     metadata=common_metadata,
                 )
                 continue
-            observation["source_message"] = {
-                **source,
-                "source_message_key": source_key,
-            }
-            ledger = load_c2_ledger_entry(target.conversation_id, source_key)
+            if source_key:
+                observation["source_message"] = {
+                    **source,
+                    "source_message_key": source_key,
+                }
+            # Only a committed identity may consult cross-run facts.
+            ledger = (
+                load_c2_ledger_entry(target.conversation_id, source_key)
+                if source_key
+                else None
+            )
             if ledger and ledger.get("terminal_state") in {"completed", "failed"}:
                 result = ledger.get("result") if isinstance(ledger.get("result"), dict) else {}
                 result = {**result, "state": ledger.get("terminal_state")}
@@ -8905,8 +9857,8 @@ class TaskRunner:
                 binding=binding,
                 target=target,
                 observation=observation,
-                source_key=source_key,
-                allowed_new_source_keys=allowed_new_source_keys,
+                observation_id=observation_id,
+                allowed_new_observation_ids=allowed_new_observation_ids,
                 enforce_read_targets=enforce_read_targets,
             )
             if access_decision == "role_untrusted":
@@ -8964,13 +9916,12 @@ class TaskRunner:
                     target=target,
                     payload=payload,
                     observation=observation,
-                    source_key=source_key,
+                    action_local_id=action_local_key,
                     cancel_check=cancel_check,
                     flow_outcomes=flow_outcomes,
                 )
             normalized = self._normalize_one_image_slot_result(
                 result,
-                source_key=source_key,
             )
             result = normalized["result"]
             transaction = normalized["transaction"]
@@ -8982,7 +9933,7 @@ class TaskRunner:
                 stats["removed_from_final_screen"] += 1
                 mark_image_removed_from_final_screen(
                     stats,
-                    source_key,
+                    action_local_key,
                 )
                 enriched_observations[index] = None
                 append_log(
@@ -9001,48 +9952,12 @@ class TaskRunner:
             action_was_attempted = normalized["action_was_attempted"]
             if normalized["ui_frame_invalidated"]:
                 image_action_started = True
-                mark_image_ui_frame_invalidated(stats, source_key)
-            if action_was_attempted:
-                mark_image_action(stats, source_key)
-            if (
-                flow_outcomes is not None
-                and (
-                    action_was_attempted
-                    or raw_terminal_state in {"completed", "failed"}
+                mark_image_ui_frame_invalidated(
+                    stats,
+                    action_local_key,
                 )
-            ):
-                image_evidence = dict(image_action.get("evidence") or {})
-                image_evidence["action_kind"] = "image"
-                image_action["evidence"] = image_evidence
-                image_action["terminal_payload"] = {
-                    "state": raw_terminal_state,
-                    "error_code": (
-                        str(result.get("reason") or "")
-                        if raw_terminal_state == "failed"
-                        else None
-                    ),
-                    "reason_detail": (
-                        str(transaction.get("status") or result_reason)
-                        if raw_terminal_state == "failed"
-                        else None
-                    ),
-                    "customer_image_understanding": (
-                        dict(result.get("customer_image_understanding") or {})
-                        if isinstance(
-                            result.get("customer_image_understanding"), dict
-                        )
-                        else None
-                    ),
-                    "visual_bridge_input": (
-                        dict(result.get("visual_bridge_input") or {})
-                        if isinstance(result.get("visual_bridge_input"), dict)
-                        else None
-                    ),
-                    "transaction": _safe_c2_image_transaction(
-                        result.get("transaction")
-                    ),
-                }
-                flow_outcomes.record(image_action)
+            if action_was_attempted:
+                mark_image_action(stats, action_local_key)
             for diagnostic_event in diagnostics.get("events") or []:
                 safe_event = _safe_c2_image_diagnostic_event(diagnostic_event)
                 append_log(
@@ -9088,6 +10003,177 @@ class TaskRunner:
                     metadata={**common_metadata, "image_persisted": False},
                 )
                 break
+            terminal_observation = apply_image_terminal_result(
+                observation,
+                result,
+            )
+            try:
+                validate_committed_image_identity(
+                    terminal_observation,
+                    conversation_id=target.conversation_id,
+                    require_formalization_proof=True,
+                )
+            except ValueError:
+                journal_path = str(
+                    result.get("_image_action_journal_path") or ""
+                ).strip()
+                stats["terminal_gate"] = {
+                    "error_code": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    "identity_errors": [
+                        {
+                            "observation_id": observation_id,
+                            "row_kind": "image_bubble",
+                            "error_code": (
+                                "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                            ),
+                            "reason": str(
+                                terminal_observation.get("reason_detail")
+                                or "confirmed_image_identity_receipt_missing_or_invalid"
+                            ),
+                        }
+                    ],
+                    "authoritative_frame_source": (
+                        "action_journal_recovery"
+                    ),
+                    "ui_frame_invalidated": False,
+                    "action_journal_path": journal_path,
+                }
+                enriched_observations[index] = None
+                append_log(
+                    "ERROR",
+                    "c2_image_identity_receipt_rejected",
+                    "图片动作缺少合法身份确认回执；未生成正式消息、Ledger 或 Outbox，已转入独立身份门禁。",
+                    error_code="C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    metadata={
+                        **common_metadata,
+                        "action_phase": result_action_phase,
+                        "action_journal_path": journal_path,
+                        "reason": result_reason,
+                        "reason_detail": str(
+                            result.get("reason_detail") or ""
+                        ),
+                        "diagnostics": {
+                            "events": [
+                                _safe_c2_image_diagnostic_event(item)
+                                for item in (
+                                    diagnostics.get("events") or []
+                                )
+                                if isinstance(item, dict)
+                            ],
+                            "image_persisted": False,
+                        },
+                    },
+                    force_incident=True,
+                )
+                break
+            source_key = image_observation_source_key(
+                target,
+                terminal_observation,
+            )
+            terminal_source = (
+                terminal_observation.get("source_message")
+                if isinstance(
+                    terminal_observation.get("source_message"), dict
+                )
+                else {}
+            )
+            terminal_observation["source_message"] = {
+                **terminal_source,
+                "source_message_key": source_key,
+            }
+            journal_path = str(
+                result.get("_image_action_journal_path") or ""
+            ).strip()
+            journal_item_id = str(
+                result.get("_image_action_journal_item_id")
+                or action_local_key
+            ).strip()
+            if journal_path:
+                try:
+                    commit_action_journal_item_identity(
+                        journal_path,
+                        journal_item_id=journal_item_id,
+                        source_message_key=source_key,
+                    )
+                except (OSError, ValueError) as exc:
+                    stats["terminal_gate"] = {
+                        "error_code": (
+                            "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                        ),
+                        "identity_errors": [
+                            {
+                                "observation_id": observation_id,
+                                "row_kind": "image_bubble",
+                                "error_code": (
+                                    "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                                ),
+                                "reason": "image_identity_journal_commit_failed",
+                                "signature": type(exc).__name__,
+                            }
+                        ],
+                        "authoritative_frame_source": (
+                            "action_journal_recovery"
+                        ),
+                        "ui_frame_invalidated": False,
+                        "action_journal_path": journal_path,
+                    }
+                    enriched_observations[index] = None
+                    append_log(
+                        "ERROR",
+                        "c2_image_identity_journal_commit_failed",
+                        "图片身份回执有效，但 ActionJournal 正式化失败；已禁止 Ledger、Outbox、入库和 Brain。",
+                        error_code=(
+                            "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                        ),
+                        metadata={
+                            **common_metadata,
+                            "error_type": type(exc).__name__,
+                        },
+                        force_incident=True,
+                    )
+                    break
+            image_action["source_message_key"] = source_key
+            image_evidence = dict(image_action.get("evidence") or {})
+            image_evidence["action_kind"] = "image"
+            image_action["evidence"] = image_evidence
+            image_action["terminal_payload"] = {
+                "state": str(result.get("state") or "failed"),
+                "media_action_terminal": (
+                    MediaActionTerminal.COMMITTED_COMPLETED.value
+                    if str(result.get("state") or "") == "completed"
+                    else MediaActionTerminal.COMMITTED_FAILED.value
+                ),
+                "error_code": (
+                    str(result.get("reason") or "")
+                    if str(result.get("state") or "") == "failed"
+                    else None
+                ),
+                "reason_detail": (
+                    str(transaction.get("status") or result_reason)
+                    if str(result.get("state") or "") == "failed"
+                    else None
+                ),
+                "customer_image_understanding": (
+                    dict(result.get("customer_image_understanding") or {})
+                    if isinstance(
+                        result.get("customer_image_understanding"), dict
+                    )
+                    else None
+                ),
+                "visual_bridge_input": (
+                    dict(result.get("visual_bridge_input") or {})
+                    if isinstance(result.get("visual_bridge_input"), dict)
+                    else None
+                ),
+                "transaction": _safe_c2_image_transaction(
+                    result.get("transaction")
+                ),
+            }
+            if flow_outcomes is not None and (
+                action_was_attempted
+                or raw_terminal_state in {"completed", "failed"}
+            ):
+                flow_outcomes.record(image_action)
             append_log(
                 "INFO" if terminal_state == "completed" else "WARN",
                 "c2_image_slot_finished",
@@ -9112,7 +10198,7 @@ class TaskRunner:
             ) = self._persist_one_image_slot_terminal(
                 target=target,
                 payload=payload,
-                observation=observation,
+                terminal_observation=terminal_observation,
                 source_key=source_key,
                 origin_read_run_id=(
                     flow_outcomes.origin_read_run_id
@@ -9572,7 +10658,8 @@ class TaskRunner:
                     conversation_id=target.conversation_id,
                     items=[
                         {
-                            "source_message_key": claim.reply_action_id,
+                            "journal_item_id": claim.reply_action_id,
+                            "action_local_id": claim.reply_action_id,
                             "physical_anchor_keys": [],
                         }
                     ],
@@ -10233,7 +11320,11 @@ class TaskRunner:
             journal = self._start_irreversible_action_journal(
                 action_kind="voice",
                 target=target,
-                items=[{"source_message_key": action_id, "physical_anchor_keys": physical_anchor_keys}],
+                items=[{
+                    "journal_item_id": action_id,
+                    "action_local_id": action_id,
+                    "physical_anchor_keys": physical_anchor_keys,
+                }],
                 flow_outcomes=flow_outcomes,
                 transaction_id=action_id,
                 pre_action_identity_sequence=pre_sequence,
@@ -10275,13 +11366,16 @@ class TaskRunner:
                 if definitely_before_trigger and phase == "not_attempted":
                     update_action_journal_item(
                         journal,
-                        source_message_key=action_id,
+                        journal_item_id=action_id,
                         action_phase="cancelled_before_trigger",
                         business_state="not_attempted",
                         business_result_confirmed=False,
                         error_code=error_code,
                         terminal_payload={
                             "state": "cancelled_before_trigger",
+                            "media_action_terminal": (
+                                MediaActionTerminal.CANCELLED_BEFORE_TRIGGER.value
+                            ),
                             "error_code": error_code,
                         },
                     )
@@ -10290,11 +11384,14 @@ class TaskRunner:
                     return
                 update_action_journal_item(
                     journal,
-                    source_message_key=action_id,
+                    journal_item_id=action_id,
                     action_phase="quarantined",
                     error_code=error_code,
                     terminal_payload={
                         "state": "quarantined",
+                        "media_action_terminal": (
+                            MediaActionTerminal.IDENTITY_UNRESOLVED.value
+                        ),
                         "error_code": error_code,
                         "previous_action_phase": phase,
                     },
@@ -10505,11 +11602,6 @@ class TaskRunner:
 
             remaining_actions -= 1
             attempted_fingerprints.add(fingerprint)
-            durable_source_key = worker_source_message_key(
-                target,
-                identity_kind="worker_sequence",
-                identity=reserved_id,
-            )
             sender_role = str((prepared.get("selected_voice_observation") or {}).get("sender_role") or "")
             if execute_state == "voice_transcribe_ambiguous":
                 # Sidecar has exhausted its bounded evidence-only reads but
@@ -10601,6 +11693,7 @@ class TaskRunner:
                     mapping.get("post_observation_id") or ""
                 ).strip()
                 confirmed_post_anchor_keys: set[str] = set()
+                committed_voice_observation: dict[str, Any] | None = None
                 for observation in aligned:
                     if (
                         isinstance(observation, dict)
@@ -10609,9 +11702,15 @@ class TaskRunner:
                         ).strip()
                         == confirmed_post_observation_id
                     ):
-                        observation["_worker_voice_action_summary"] = dict(
-                            executed
-                        )
+                        observation["_worker_voice_action_summary"] = {
+                            **dict(executed),
+                            # The normalized mapping is the Worker-verified
+                            # commit proof.  Do not persist a weaker raw
+                            # Sidecar projection that omits the selected pre
+                            # observation.
+                            "confirmed_action_mapping": dict(mapping),
+                        }
+                        committed_voice_observation = observation
                         # Exclusions are deliberately frame-local.  The
                         # failed bubble may have moved after a new message
                         # arrived, so carrying the pre-click seat/anchor into
@@ -10634,6 +11733,30 @@ class TaskRunner:
                         ),
                         "payload": current_payload,
                     }
+                if committed_voice_observation is None:
+                    terminate_created_voice_action(
+                        "C2_VOICE_IDENTITY_CONTRACT_INVALID"
+                    )
+                    return {
+                        "ok": False,
+                        "error_code": "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+                        "payload": current_payload,
+                    }
+                committed_voice = commit_message_identity(
+                    conversation_id=target.conversation_id,
+                    observation=committed_voice_observation,
+                )
+                if isinstance(committed_voice, IdentityCommitRejection):
+                    terminate_created_voice_action(
+                        "C2_VOICE_IDENTITY_CONTRACT_INVALID"
+                    )
+                    return {
+                        "ok": False,
+                        "error_code": "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+                        "identity_rejection_reason": committed_voice.reason,
+                        "payload": current_payload,
+                    }
+                durable_source_key = committed_voice.source_message_key
                 commit_action_journal_item_identity(
                     journal,
                     journal_item_id=action_id,
@@ -10657,10 +11780,11 @@ class TaskRunner:
                         executed.get("error_code")
                         or "C2_VOICE_TRANSCRIBE_FAILED"
                     ),
+                    identity_confirmed=True,
                 )
                 update_action_journal_item(
                     journal,
-                    source_message_key=durable_source_key,
+                    journal_item_id=action_id,
                     action_phase=action_phase,
                     business_state="failed",
                     business_result_confirmed=False,
@@ -10749,15 +11873,42 @@ class TaskRunner:
             confirmed_post_observation_id = str(
                 mapping.get("post_observation_id") or ""
             ).strip()
+            committed_voice_observation: dict[str, Any] | None = None
             for observation in aligned:
                 if (
                     isinstance(observation, dict)
                     and str(observation.get("observation_id") or "").strip()
                     == confirmed_post_observation_id
                 ):
-                    observation["_worker_voice_action_summary"] = dict(
-                        executed
-                    )
+                    observation["_worker_voice_action_summary"] = {
+                        **dict(executed),
+                        "confirmed_action_mapping": dict(mapping),
+                    }
+                    committed_voice_observation = observation
+            if committed_voice_observation is None:
+                terminate_created_voice_action(
+                    "C2_VOICE_IDENTITY_CONTRACT_INVALID"
+                )
+                return {
+                    "ok": False,
+                    "error_code": "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+                    "payload": current_payload,
+                }
+            committed_voice = commit_message_identity(
+                conversation_id=target.conversation_id,
+                observation=committed_voice_observation,
+            )
+            if isinstance(committed_voice, IdentityCommitRejection):
+                terminate_created_voice_action(
+                    "C2_VOICE_IDENTITY_CONTRACT_INVALID"
+                )
+                return {
+                    "ok": False,
+                    "error_code": "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+                    "identity_rejection_reason": committed_voice.reason,
+                    "payload": current_payload,
+                }
+            durable_source_key = committed_voice.source_message_key
             commit_action_journal_item_identity(
                 journal,
                 journal_item_id=action_id,
@@ -10772,10 +11923,11 @@ class TaskRunner:
                 anchor_keys=physical_anchor_keys,
                 result="completed",
                 error_code=None,
+                identity_confirmed=True,
             )
             update_action_journal_item(
                 journal,
-                source_message_key=durable_source_key,
+                journal_item_id=action_id,
                 action_phase=action_phase,
                 business_state="completed",
                 business_result_confirmed=True,
@@ -11088,14 +12240,16 @@ class TaskRunner:
                     "payload": current_payload,
                     "image_stats": aggregate_image_stats,
                 }
-            pending_image_keys = tuple(
-                sorted(incremental_plan["new_image_source_keys"])
+            pending_image_observation_ids = tuple(
+                sorted(incremental_plan["new_image_observation_ids"])
             )
             # One image action per stable frame. The next candidate is chosen
             # only after the loop obtains and aligns a fresh authoritative
             # frame.
-            allowed_image_keys = (
-                {pending_image_keys[0]} if pending_image_keys else set()
+            allowed_image_observation_ids = (
+                {pending_image_observation_ids[0]}
+                if pending_image_observation_ids
+                else set()
             )
             image_observations = [
                 item
@@ -11114,7 +12268,7 @@ class TaskRunner:
                     "failed_voice_roles": failed_voice_roles,
                 }
 
-            if pending_image_keys in seen_pending_image_sets:
+            if pending_image_observation_ids in seen_pending_image_sets:
                 append_log(
                     "ERROR",
                     "c2_post_vision_current_screen_no_progress",
@@ -11123,8 +12277,8 @@ class TaskRunner:
                     metadata={
                         "conversation_id": target.conversation_id,
                         "remark_code": target.remark_code,
-                        "pending_image_source_keys": list(
-                            pending_image_keys
+                        "pending_image_observation_ids": list(
+                            pending_image_observation_ids
                         ),
                     },
                 )
@@ -11138,7 +12292,7 @@ class TaskRunner:
                     ),
                     "failed_voice_roles": failed_voice_roles,
                 }
-            seen_pending_image_sets.add(pending_image_keys)
+            seen_pending_image_sets.add(pending_image_observation_ids)
 
             lease.update_step("image_understanding_current_chat")
             self.current_step = "image_understanding_current_chat"
@@ -11149,14 +12303,28 @@ class TaskRunner:
                     sidecar_payload=current_payload,
                     enforce_read_targets=enforce_read_targets,
                     cancel_check=action_cancel_requested,
-                    allowed_new_source_keys=allowed_image_keys,
+                    allowed_new_observation_ids=(
+                        allowed_image_observation_ids
+                    ),
                     flow_outcomes=flow_outcomes,
                 )
             )
+            if isinstance(image_stats.get("terminal_gate"), dict):
+                return {
+                    "ok": False,
+                    "error_code": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    "terminal_gate": dict(image_stats["terminal_gate"]),
+                    "payload": current_payload,
+                    "image_stats": aggregate_image_stats,
+                    "failed_voice_source_keys": sorted(
+                        failed_voice_source_keys
+                    ),
+                    "failed_voice_roles": failed_voice_roles,
+                }
             if image_stats.get("ui_frame_invalidated"):
                 current_payload["ui_frame_invalidated"] = True
             add_image_stats(image_stats)
-            if not pending_image_keys:
+            if not pending_image_observation_ids:
                 return {
                     "ok": True,
                     "payload": current_payload,
@@ -11175,7 +12343,7 @@ class TaskRunner:
                     "payload": current_payload,
                     "image_stats": aggregate_image_stats,
                 }
-            if pending_image_keys and not any(
+            if pending_image_observation_ids and not any(
                 image_stats.get(key)
                 for key in (
                     "completed",
@@ -11228,6 +12396,8 @@ class TaskRunner:
     def _recover_physical_action_journals(
         self,
         target: WechatReadTarget,
+        *,
+        image_identity_commit_only: bool = False,
     ) -> list[dict[str, Any]]:
         journal_entries = list_action_journals(
             conversation_id=target.conversation_id,
@@ -11249,43 +12419,83 @@ class TaskRunner:
                 else {}
             )
             action_kind = str(payload.get("action_kind") or "").strip()
+            if image_identity_commit_only and action_kind != "image":
+                continue
             action_item = (
                 dict(items.get(action_id) or {})
                 if action_id and isinstance(items.get(action_id), dict)
                 else {}
             )
-            if (
-                action_kind == "voice"
-                and action_id
-                and str(action_item.get("action_phase") or "").strip()
-                == "trigger_attempted"
-                and not isinstance(
+            alignment_evidence = (
+                payload.get("sequence_alignment_evidence")
+                if isinstance(
                     payload.get("sequence_alignment_evidence"), dict
                 )
-            ):
-                # A crash/transport loss after the durable no-repeat barrier
-                # cannot remain pending forever.  No body or reserved
-                # sequence identity may be guessed; close the physical action
-                # as quarantined and let the idempotent identity gate isolate
-                # only this conversation.
-                payload = update_action_journal_item(
-                    path,
-                    source_message_key=action_id,
-                    action_phase="quarantined",
-                    error_code="C2_VOICE_RESULT_AMBIGUOUS",
-                    terminal_payload={
-                        "state": "quarantined",
-                        "error_code": "C2_VOICE_RESULT_AMBIGUOUS",
-                        "reason": (
-                            "recovered_trigger_without_post_alignment"
+                else {}
+            )
+            unresolved_voice_item_ids = [
+                str(item_id or "").strip()
+                for item_id, item in items.items()
+                if action_kind == "voice"
+                and isinstance(item, dict)
+                and str(item.get("action_phase") or "").strip()
+                in {"trigger_attempted", "quarantined"}
+                and not alignment_evidence
+            ]
+            if unresolved_voice_item_ids:
+                # Legacy journals may predate canonical_action_id and the
+                # reserved sequence field.  A physical trigger without a
+                # confirmed post-action mapping is nevertheless the same
+                # identity_unresolved terminal: preserve the journal, never
+                # manufacture a failed message/Ledger entry, and never click
+                # again.
+                for item_id in unresolved_voice_item_ids:
+                    item = (
+                        items.get(item_id)
+                        if isinstance(items.get(item_id), dict)
+                        else {}
+                    )
+                    if str(item.get("action_phase") or "").strip() != "quarantined":
+                        payload = update_action_journal_item(
+                            path,
+                            journal_item_id=item_id,
+                            action_phase="quarantined",
+                            error_code="C2_VOICE_RESULT_AMBIGUOUS",
+                            terminal_payload={
+                                "state": "quarantined",
+                                "media_action_terminal": (
+                                    MediaActionTerminal.IDENTITY_UNRESOLVED.value
+                                ),
+                                "error_code": "C2_VOICE_RESULT_AMBIGUOUS",
+                                "reason": (
+                                    "recovered_trigger_without_post_alignment"
+                                ),
+                            },
+                        )
+                unresolved.append(
+                    {
+                        "error_code": (
+                            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
                         ),
-                    },
+                        "reason": (
+                            "action_triggered_without_confirmed_post_alignment"
+                        ),
+                        "row_kind": "voice_bubble",
+                        "signature": (
+                            action_id
+                            or str(payload.get("transaction_id") or "").strip()
+                            or unresolved_voice_item_ids[0]
+                        ),
+                        "transaction_id": str(
+                            payload.get("transaction_id") or ""
+                        ),
+                        "origin_read_run_id": str(
+                            payload.get("origin_read_run_id") or ""
+                        ),
+                        "sequence_alignment_evidence": {},
+                    }
                 )
-                items = (
-                    payload.get("items")
-                    if isinstance(payload.get("items"), dict)
-                    else {}
-                )
+                continue
             formed_fact = any(
                 isinstance(item, dict)
                 and action_journal_item_has_formed_fact(item)
@@ -11299,36 +12509,194 @@ class TaskRunner:
                     )
                     else {}
                 )
+                if action_kind == "voice" and not evidence:
+                    unresolved.append(
+                        {
+                            "error_code": (
+                                "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                            ),
+                            "reason": (
+                                "action_triggered_without_confirmed_post_alignment"
+                            ),
+                            "row_kind": "voice_bubble",
+                            "signature": action_id,
+                            "transaction_id": str(
+                                payload.get("transaction_id") or ""
+                            ),
+                            "origin_read_run_id": str(
+                                payload.get("origin_read_run_id") or ""
+                            ),
+                            "sequence_alignment_evidence": {},
+                        }
+                    )
+                    continue
                 selected_pair_confirmed = any(
                     isinstance(pair, dict)
-                    and pair.get("identity_state") == "selected_action"
                     and str(pair.get("worker_stable_id") or "").strip()
                     == reserved_id
+                    and (
+                        pair.get("identity_state") == "selected_action"
+                        or (
+                            action_kind == "image"
+                            and pair.get("match_basis")
+                            == "prior_confirmed_action"
+                        )
+                    )
                     for pair in (evidence.get("matched_pairs") or [])
                 )
-                if (
-                    evidence.get("alignment_status") == "unique"
-                    and selected_pair_confirmed
-                    and action_id in items
-                ):
-                    durable_source_key = worker_source_message_key(
-                        target,
-                        identity_kind="worker_sequence",
-                        identity=reserved_id,
+                image_receipt, image_receipt_item_id = (
+                    _confirmed_image_receipt_from_journal(payload)
+                )
+                image_receipt_confirmed = bool(
+                    action_kind == "image"
+                    and image_receipt is not None
+                )
+                if image_identity_commit_only and not image_receipt_confirmed:
+                    action_item_id = next(
+                        (
+                            str(item_id or "").strip()
+                            for item_id, item in items.items()
+                            if isinstance(item, dict)
+                            and action_journal_item_has_formed_fact(item)
+                        ),
+                        action_id,
                     )
+                    action_item = (
+                        items.get(action_item_id)
+                        if isinstance(items.get(action_item_id), dict)
+                        else {}
+                    )
+                    original_terminal = (
+                        dict(action_item.get("terminal_payload") or {})
+                        if isinstance(
+                            action_item.get("terminal_payload"), dict
+                        )
+                        else {}
+                    )
+                    if action_item_id:
+                        payload = update_action_journal_item(
+                            path,
+                            journal_item_id=action_item_id,
+                            action_phase=str(
+                                action_item.get("action_phase")
+                                or "not_attempted"
+                            ),
+                            error_code=(
+                                "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                            ),
+                            terminal_payload={
+                                **original_terminal,
+                                "identity_gate_error_code": (
+                                    "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                                ),
+                                "identity_gate_reason": (
+                                    "confirmed_image_identity_receipt_missing_or_invalid"
+                                ),
+                            },
+                        )
+                    prepare_evidence = (
+                        dict(payload.get("prepare_evidence") or {})
+                        if isinstance(
+                            payload.get("prepare_evidence"), dict
+                        )
+                        else {}
+                    )
+                    unresolved.append(
+                        {
+                            "error_code": (
+                                "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                            ),
+                            "reason": (
+                                "confirmed_image_identity_receipt_missing_or_invalid"
+                            ),
+                            "row_kind": "image_bubble",
+                            "signature": action_id,
+                            "transaction_id": str(
+                                payload.get("transaction_id") or ""
+                            ),
+                            "origin_read_run_id": str(
+                                payload.get("origin_read_run_id") or ""
+                            ),
+                            "action_journal_path": str(path),
+                            "prepare_evidence": prepare_evidence,
+                        }
+                    )
+                    continue
+                committed_action = _committed_action_identity_from_journal(
+                    target=target,
+                    payload=payload,
+                    action_kind=action_kind,
+                    evidence=evidence,
+                    image_receipt=image_receipt,
+                )
+                if isinstance(committed_action, IdentityCommitRejection):
+                    unresolved.append(
+                        {
+                            "error_code": committed_action.error_code,
+                            "reason": committed_action.reason,
+                            "row_kind": (
+                                "image_bubble"
+                                if action_kind == "image"
+                                else "voice_bubble"
+                            ),
+                            "signature": action_id,
+                            "transaction_id": str(
+                                payload.get("transaction_id") or ""
+                            ),
+                            "origin_read_run_id": str(
+                                payload.get("origin_read_run_id") or ""
+                            ),
+                            "sequence_alignment_evidence": evidence,
+                        }
+                    )
+                    continue
+                durable_source_key = committed_action.source_message_key
+                journal_item_id = (
+                    image_receipt_item_id
+                    if action_kind == "image"
+                    and image_receipt_item_id
+                    else action_id
+                    if action_id in items
+                    else (
+                        durable_source_key
+                        if action_kind == "image"
+                        and durable_source_key in items
+                        else ""
+                    )
+                )
+                if (
+                    (
+                        image_receipt_confirmed
+                        or (
+                            evidence.get("alignment_status") == "unique"
+                            and selected_pair_confirmed
+                        )
+                    )
+                    and journal_item_id
+                ):
                     payload = commit_action_journal_item_identity(
                         path,
-                        journal_item_id=action_id,
+                        journal_item_id=journal_item_id,
                         source_message_key=durable_source_key,
                     )
                 else:
                     unresolved.append(
                         {
                             "error_code": (
-                                "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                                "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                                if action_kind == "image"
+                                else "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
                             ),
-                            "reason": "action_triggered_without_confirmed_post_alignment",
-                            "row_kind": "voice_bubble",
+                            "reason": (
+                                "confirmed_image_identity_receipt_missing_or_invalid"
+                                if action_kind == "image"
+                                else "action_triggered_without_confirmed_post_alignment"
+                            ),
+                            "row_kind": (
+                                "image_bubble"
+                                if action_kind == "image"
+                                else "voice_bubble"
+                            ),
                             "signature": action_id,
                             "transaction_id": str(
                                 payload.get("transaction_id") or ""
@@ -11341,6 +12709,8 @@ class TaskRunner:
                     )
                     continue
             recovered_entries.append((path, payload))
+        if image_identity_commit_only:
+            return unresolved
         recovered_outcomes = self._physical_action_journal_outcomes(
             recovered_entries,
         )
@@ -11378,8 +12748,12 @@ class TaskRunner:
             else {}
         )
         formed_source_keys: set[str] = set()
-        for source_key, item in items.items():
-            source_key = str(source_key or "").strip()
+        for item in items.values():
+            source_key = (
+                str(item.get("source_message_key") or "").strip()
+                if isinstance(item, dict)
+                else ""
+            )
             if not source_key or not isinstance(item, dict):
                 continue
             if action_journal_item_has_formed_fact(item):
@@ -11430,8 +12804,15 @@ class TaskRunner:
                 if isinstance(payload.get("items"), dict)
                 else {}
             )
-            for source_key, item in items.items():
+            for _journal_item_id, item in items.items():
                 if not isinstance(item, dict):
+                    continue
+                source_key = str(
+                    item.get("source_message_key") or ""
+                ).strip()
+                if not source_key:
+                    # Action-local/quarantined entries have no durable
+                    # identity and must never be projected as facts.
                     continue
                 business_confirmed = (
                     item.get("business_result_confirmed") is True
@@ -11473,6 +12854,29 @@ class TaskRunner:
                             else "IMAGE_INTERRUPTED_AFTER_TRIGGER"
                         )
                     )
+                    confirmed_mapping = (
+                        terminal_payload.get("confirmed_action_mapping")
+                        if isinstance(
+                            terminal_payload.get(
+                                "confirmed_action_mapping"
+                            ),
+                            dict,
+                        )
+                        else {}
+                    )
+                    recovered_receipt = (
+                        {
+                            **confirmed_mapping,
+                            "image_visual_fingerprint": str(
+                                terminal_payload.get(
+                                    "image_visual_fingerprint"
+                                )
+                                or ""
+                            ).strip(),
+                        }
+                        if confirmed_mapping
+                        else None
+                    )
                     terminal_observation = apply_image_terminal_result(
                         dict(item["replayable_observation"]),
                         {
@@ -11486,6 +12890,9 @@ class TaskRunner:
                             ),
                             "visual_bridge_input": terminal_payload.get(
                                 "visual_bridge_input"
+                            ),
+                            "_confirmed_image_action_receipt": (
+                                recovered_receipt
                             ),
                         },
                     )
@@ -11554,16 +12961,20 @@ class TaskRunner:
             read_run_id = str(
                 unresolved_action_journals[0].get("origin_read_run_id") or ""
             ).strip() or f"recovery-{uuid.uuid4()}"
+            recovery_error_code = str(
+                unresolved_action_journals[0].get("error_code")
+                or "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+            ).strip()
             self._report_identity_failure_gate(
                 binding=binding,
                 target=target,
                 read_run_id=read_run_id,
-                error_code="MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+                error_code=recovery_error_code,
                 identity_errors=unresolved_action_journals,
             )
             return {
                 "ok": False,
-                "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+                "error_code": recovery_error_code,
                 "identity_errors": unresolved_action_journals,
             }
         self._recover_c2_action_journal(target)
@@ -11999,6 +13410,15 @@ class TaskRunner:
                     terminal_gate.get("ui_frame_invalidated") is True
                 ),
             )
+            action_journal_path_value = str(
+                terminal_gate.get("action_journal_path") or ""
+            ).strip()
+            if gate_reported and action_journal_path_value:
+                # The independent backend gate is now the durable settlement
+                # for this unidentifiable action.  Only after that ack may the
+                # action-local Journal be removed; it must never be projected
+                # into Ledger or Outbox under its provisional key.
+                remove_action_journal(action_journal_path_value)
             self.c2_stats["last_error"] = gate_error_code
             return {
                 "ok": False,
@@ -12691,8 +14111,8 @@ class TaskRunner:
                         "slot_ledger_states": incremental_plan["slot_ledger_states"],
                     },
                 )
-            allowed_new_image_source_keys = set(
-                incremental_plan["new_image_source_keys"]
+            allowed_new_image_observation_ids = set(
+                incremental_plan["new_image_observation_ids"]
             )
             image_observations = [
                 item
@@ -12709,9 +14129,19 @@ class TaskRunner:
                     sidecar_payload=sidecar_payload,
                     enforce_read_targets=enforce_read_targets,
                     cancel_check=action_cancel_requested,
-                    allowed_new_source_keys=allowed_new_image_source_keys,
+                    allowed_new_observation_ids=(
+                        allowed_new_image_observation_ids
+                    ),
                     flow_outcomes=flow_outcomes,
                 )
+                image_terminal_gate = image_stats.get("terminal_gate")
+                if isinstance(image_terminal_gate, dict):
+                    return settle_identity_terminal_gate(
+                        image_terminal_gate,
+                        final_payload=sidecar_payload,
+                        target_confirmation=locate_payload,
+                        initial_observations=initial_read_observations,
+                    )
                 if image_stats.get("ui_frame_invalidated"):
                     sidecar_payload["ui_frame_invalidated"] = True
                 record_phase("image_understanding", phase_started_at, **image_stats)

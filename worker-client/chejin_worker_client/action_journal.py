@@ -11,7 +11,7 @@ from .config import CONFIG
 from .c2_contract import c2_contract_v3
 
 
-ACTION_JOURNAL_SCHEMA_VERSION = 4
+ACTION_JOURNAL_SCHEMA_VERSION = 5
 ACTION_PHASES = tuple(
     str(value)
     for value in (c2_contract_v3().get("action_phases") or [])
@@ -91,11 +91,20 @@ def initialize_action_journal(
         raise ValueError("ACTION_JOURNAL_ORIGIN_READ_RUN_ID_MISSING")
     normalized_items: dict[str, dict[str, Any]] = {}
     for item in items:
-        source_key = str(item.get("source_message_key") or "").strip()
-        if not source_key:
+        journal_item_id = str(item.get("journal_item_id") or "").strip()
+        if not journal_item_id:
             continue
-        normalized_items[source_key] = {
-            "source_message_key": source_key,
+        if journal_item_id in normalized_items:
+            raise ValueError("ACTION_JOURNAL_ITEM_ID_DUPLICATE")
+        normalized_items[journal_item_id] = {
+            "journal_item_id": journal_item_id,
+            "action_local_id": str(
+                item.get("action_local_id") or journal_item_id
+            ).strip(),
+            # A durable source key does not exist until the unique identity
+            # commit gate succeeds.  The journal's dictionary key stays local
+            # for its entire lifetime and is never renamed to a message key.
+            "source_message_key": None,
             "origin_read_run_id": normalized_origin_read_run_id or None,
             "physical_anchor_keys": sorted(
                 {
@@ -113,14 +122,22 @@ def initialize_action_journal(
         }
         replayable_observation = item.get("replayable_observation")
         if isinstance(replayable_observation, dict):
-            normalized_items[source_key]["replayable_observation"] = (
-                json.loads(
-                    json.dumps(
-                        replayable_observation,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
+            replayable = json.loads(
+                json.dumps(
+                    replayable_observation,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
                 )
+            )
+            # Before the commit gate this snapshot is action evidence, not a
+            # durable message.  Strip any caller-supplied source key so an
+            # action-local identifier cannot be smuggled into recovery data.
+            replayable.pop("source_message_key", None)
+            replayable_source = replayable.get("source_message")
+            if isinstance(replayable_source, dict):
+                replayable_source.pop("source_message_key", None)
+            normalized_items[journal_item_id]["replayable_observation"] = (
+                replayable
             )
     if not normalized_items:
         raise ValueError("ACTION_JOURNAL_ITEMS_MISSING")
@@ -210,7 +227,7 @@ def commit_action_journal_item_identity(
     journal_item_id: str,
     source_message_key: str,
 ) -> dict[str, Any]:
-    """Replace the action-local item key only after identity is confirmed."""
+    """Attach a durable identity without replacing the action-local key."""
 
     target = Path(path)
     payload = read_action_journal(target)
@@ -219,13 +236,14 @@ def commit_action_journal_item_identity(
     source_key = str(source_message_key or "").strip()
     if not item_id or not source_key or item_id not in items:
         raise ValueError("ACTION_JOURNAL_ITEM_IDENTITY_INVALID")
-    if source_key != item_id and source_key in items:
+    item = dict(items[item_id])
+    existing_source_key = str(item.get("source_message_key") or "").strip()
+    if existing_source_key and existing_source_key != source_key:
         raise ValueError("ACTION_JOURNAL_ITEM_IDENTITY_CONFLICT")
-    item = dict(items.pop(item_id))
     item["source_message_key"] = source_key
-    item["committed_from_action_id"] = item_id
+    item["identity_committed_at"] = _now_iso()
     item["updated_at"] = _now_iso()
-    items[source_key] = item
+    items[item_id] = item
     payload["items"] = items
     payload["committed_worker_stable_id"] = str(
         payload.get("reserved_worker_stable_id") or ""
@@ -238,7 +256,7 @@ def commit_action_journal_item_identity(
 def update_action_journal_item(
     path: str | Path,
     *,
-    source_message_key: str,
+    journal_item_id: str,
     action_phase: str | None = None,
     business_state: str | None = None,
     business_result_confirmed: bool | None = None,
@@ -248,8 +266,8 @@ def update_action_journal_item(
     target = Path(path)
     payload = read_action_journal(target)
     items = payload.get("items") if isinstance(payload.get("items"), dict) else {}
-    source_key = str(source_message_key or "").strip()
-    item = dict(items.get(source_key) or {})
+    item_id = str(journal_item_id or "").strip()
+    item = dict(items.get(item_id) or {})
     if not item:
         raise ValueError("ACTION_JOURNAL_ITEM_NOT_FOUND")
     current_phase = str(item.get("action_phase") or "not_attempted")
@@ -274,7 +292,7 @@ def update_action_journal_item(
     if terminal_payload is not None:
         item["terminal_payload"] = dict(terminal_payload)
     item["updated_at"] = _now_iso()
-    items[source_key] = item
+    items[item_id] = item
     payload["items"] = items
     payload["action_phase"] = max(
         (

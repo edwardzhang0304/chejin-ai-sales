@@ -129,7 +129,7 @@ def non_ocr_raw_message_id(message: dict[str, Any]) -> str:
     return raw_id
 
 
-def canonical_visual_message_id(
+def frame_visual_message_id(
     message: dict[str, Any] | None,
     *,
     target_name: Any = "",
@@ -137,7 +137,7 @@ def canonical_visual_message_id(
 ) -> str:
     if not isinstance(message, dict):
         return ""
-    explicit = envelope_or_message_value(message, "canonical_visual_id")
+    explicit = envelope_or_message_value(message, "frame_visual_id")
     if explicit:
         return explicit
     legacy_non_ocr_id = non_ocr_raw_message_id(message)
@@ -179,7 +179,33 @@ def canonical_visual_message_id(
     }
     if not any(str(value or "").strip() for value in seed.values() if not isinstance(value, dict)) and not rect:
         return ""
-    return stable_id("canonical_visual", seed, length=24)
+    return stable_id("frame_visual", seed, length=24)
+
+
+def canonical_visual_message_id(
+    message: dict[str, Any] | None,
+    *,
+    target_name: Any = "",
+    conversation_type: Any = "",
+) -> str:
+    """Return OmniAuto's legacy frame-local visual fingerprint.
+
+    CheJin C2 no longer transports or consumes this name as durable identity.
+    New C2 code must use ``frame_visual_id`` and Worker ``worker_stable_id``.
+    The wrapper remains only for OmniAuto flows outside the CheJin contract.
+    """
+
+    if not isinstance(message, dict):
+        return ""
+    explicit = envelope_or_message_value(message, "canonical_visual_id")
+    if explicit:
+        return explicit
+    frame_id = frame_visual_message_id(
+        message,
+        target_name=target_name,
+        conversation_type=conversation_type,
+    )
+    return frame_id.replace("frame_visual_", "canonical_visual_", 1)
 
 
 def occurrence_marker_for_message(message: dict[str, Any], *, allow_repeatable_fallback: bool = True) -> str:
@@ -241,7 +267,14 @@ def apply_canonical_identity_fields(
     force_recompute: bool = False,
 ) -> dict[str, Any]:
     next_message = dict(message or {})
+    frame_visual_id = frame_visual_message_id(
+        next_message,
+        target_name=target_name,
+        conversation_type=conversation_type,
+    )
     visual_id = canonical_visual_message_id(next_message, target_name=target_name, conversation_type=conversation_type)
+    if frame_visual_id:
+        next_message["frame_visual_id"] = frame_visual_id
     if visual_id:
         next_message["canonical_visual_id"] = visual_id
     input_id = canonical_input_message_id(
@@ -255,6 +288,8 @@ def apply_canonical_identity_fields(
     envelope = existing_envelope(next_message)
     if envelope:
         envelope = dict(envelope)
+        if frame_visual_id:
+            envelope["frame_visual_id"] = frame_visual_id
         if visual_id:
             envelope["canonical_visual_id"] = visual_id
         if input_id:

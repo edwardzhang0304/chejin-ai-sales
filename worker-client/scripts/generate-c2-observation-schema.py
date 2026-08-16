@@ -50,6 +50,7 @@ def generated_payload(contract: dict) -> dict:
         "sender_roles": list(contract["sender_roles"]),
         "row_rules": dict(contract["row_rules"]),
         "image_contract": dict(contract["image_contract"]),
+        "message_limits": dict(contract["message_limits"]),
         "target_location_recovery_contract": dict(
             contract["target_location_recovery_contract"]
         ),

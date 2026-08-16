@@ -21,6 +21,7 @@ from .c2_contract import (
 )
 from .action_journal import (
     action_journal_phase,
+    read_action_journal,
     update_action_journal_item,
 )
 from .emergency_stop import emergency_stop_requested
@@ -1031,13 +1032,13 @@ def process_image_slot(
     trace_id: str = "",
     cancel_check: Callable[[], bool] | None = None,
     action_journal_path: str | Path | None = None,
-    source_message_key: str = "",
+    action_local_id: str = "",
     artifact_dir: str | None = None,
 ) -> dict[str, Any]:
     """Run one authorized image slot through OmniAuto Vision in memory."""
 
     resolved_trace_id = str(trace_id or observation.get("observation_id") or "")
-    normalized_source_key = str(source_message_key or "").strip()
+    normalized_action_local_id = str(action_local_id or "").strip()
 
     def journal_update(
         *,
@@ -1045,11 +1046,11 @@ def process_image_slot(
         business_state: str | None,
         business_result_confirmed: bool,
     ) -> None:
-        if action_journal_path is None or not normalized_source_key:
+        if action_journal_path is None or not normalized_action_local_id:
             return
         update_action_journal_item(
             action_journal_path,
-            source_message_key=normalized_source_key,
+            journal_item_id=normalized_action_local_id,
             action_phase=action_phase,
             business_state=business_state,
             business_result_confirmed=business_result_confirmed,
@@ -1062,7 +1063,7 @@ def process_image_slot(
             "completed" if completed else "failed"
         )
         result["business_result_confirmed"] = completed
-        if action_journal_path is None or not normalized_source_key:
+        if action_journal_path is None or not normalized_action_local_id:
             return result
         phase = str(
             result.get("action_phase")
@@ -1111,9 +1112,65 @@ def process_image_slot(
                     else None
                 ),
             }
+            journal_payload = read_action_journal(action_journal_path)
+            action_id = str(
+                journal_payload.get("canonical_action_id") or ""
+            ).strip()
+            reserved_id = str(
+                journal_payload.get("reserved_worker_stable_id") or ""
+            ).strip()
+            observation_id = str(
+                observation.get("observation_id") or ""
+            ).strip()
+            image_anchor = (
+                observation.get("image_physical_anchor")
+                if isinstance(
+                    observation.get("image_physical_anchor"), dict
+                )
+                else {}
+            )
+            image_fingerprint = str(
+                image_anchor.get("bubble_visual_fingerprint") or ""
+            ).strip()
+            selected_rows = [
+                item
+                for item in (
+                    journal_payload.get("pre_action_identity_sequence")
+                    or []
+                )
+                if isinstance(item, dict)
+                and item.get("identity_state") == "selected_action"
+                and str(item.get("canonical_action_id") or "").strip()
+                == action_id
+                and str(
+                    item.get("reserved_worker_stable_id") or ""
+                ).strip()
+                == reserved_id
+                and str(item.get("pre_observation_id") or "").strip()
+                == observation_id
+            ]
+            if (
+                phase == "confirmed"
+                and transaction.get("slot_identity_confirmed") is True
+                and action_id
+                and reserved_id
+                and observation_id
+                and image_fingerprint
+                and len(selected_rows) == 1
+            ):
+                terminal_payload["confirmed_action_mapping"] = {
+                    "canonical_action_id": action_id,
+                    "reserved_worker_stable_id": reserved_id,
+                    "pre_observation_id": observation_id,
+                    "post_observation_id": observation_id,
+                    "binding_confirmed": True,
+                }
+                terminal_payload[
+                    "image_visual_fingerprint"
+                ] = image_fingerprint
             update_action_journal_item(
                 action_journal_path,
-                source_message_key=normalized_source_key,
+                journal_item_id=normalized_action_local_id,
                 action_phase=phase,
                 business_state=result["business_state"],
                 business_result_confirmed=result[

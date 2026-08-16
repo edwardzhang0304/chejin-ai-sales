@@ -3430,7 +3430,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 origin_read_run_id="read-image-cancel-after-copy",
                 items=[
                     {
-                        "source_message_key": "image-source-1",
+                        "journal_item_id": "image-source-1",
                         "physical_anchor_keys": ["image-anchor-1"],
                     }
                 ],
@@ -3472,7 +3472,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         }
                     },
                     action_journal_path=journal_path,
-                    source_message_key="image-source-1",
+                    action_local_id="image-source-1",
                 )
 
             self.assertEqual(result["state"], "cancelled")
@@ -3484,6 +3484,154 @@ class C2VisionIntegrationTests(unittest.TestCase):
             self.assertEqual(item["business_state"], "failed")
             self.assertFalse(item["business_result_confirmed"])
 
+    def test_confirmed_image_action_persists_exact_identity_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            journal_path = Path(tmp) / "image-confirmed-receipt.json"
+            observation = self.image_observation()
+            action_id = "image-action-confirmed-receipt"
+            reserved_id = "worker-message-1"
+            source_key = "image-source-confirmed-receipt"
+            initialize_action_journal(
+                journal_path,
+                action_kind="image",
+                transaction_id=action_id,
+                conversation_id="conversation-image-confirmed-receipt",
+                origin_read_run_id="read-image-confirmed-receipt",
+                canonical_action_id=action_id,
+                reserved_worker_stable_id=reserved_id,
+                pre_frame_id="frame-image-confirmed-receipt",
+                pre_action_identity_sequence=[
+                    {
+                        "identity_state": "selected_action",
+                        "canonical_action_id": action_id,
+                        "reserved_worker_stable_id": reserved_id,
+                        "pre_observation_id": observation[
+                            "observation_id"
+                        ],
+                        "pre_sequence_index": 0,
+                        "sender_role": "customer",
+                        "message_type": "image",
+                        "image_visual_fingerprint": (
+                            observation["image_physical_anchor"][
+                                "bubble_visual_fingerprint"
+                            ]
+                        ),
+                    }
+                ],
+                items=[
+                    {
+                        "journal_item_id": source_key,
+                        "physical_anchor_keys": [
+                            observation["observation_id"]
+                        ],
+                    }
+                ],
+            )
+            understanding = {
+                "schema_version": 1,
+                "enabled": True,
+                "applied": True,
+                "adoptable": True,
+                "reason": "vision_ready",
+                "provider": DEFAULT_VISION_BASE_URL,
+                "request_style": DEFAULT_VISION_REQUEST_STYLE,
+                "model": DEFAULT_VISION_MODEL,
+                **self.strict_provider_payload("车辆外观图"),
+                "audit": {
+                    "latency_ms": 1,
+                    "used_fallback": False,
+                    "provider_error": "",
+                    "retry_error": "",
+                    "retry_after_non_json": False,
+                    "catalog_identity_candidate_count": 0,
+                },
+            }
+
+            class FakePlugin:
+                def __init__(self, *, ports, config):
+                    pass
+
+                def run(self, context):
+                    context["action_journal_update"](
+                        action_phase="confirmed",
+                        business_state="clipboard_confirmed",
+                        business_result_confirmed=False,
+                    )
+                    return {
+                        "applied": True,
+                        "reason": "vision_ready",
+                        "customer_image_understanding": understanding,
+                        "visual_bridge_input": {
+                            "schema_version": 1,
+                            "present": True,
+                            "vision_summary": "车辆外观图",
+                            "classification": {
+                                "is_vehicle": True,
+                                "vehicle_confidence": 0.9,
+                                "unknown": False,
+                            },
+                            "catalog_assist": {
+                                "normalized_vehicle_query": "",
+                                "candidate_names": [],
+                                "exact_candidate_name": "",
+                            },
+                            "intent_hints": {
+                                "wants_catalog_match": False,
+                                "wants_similar_recommendation": False,
+                                "needs_clarification": False,
+                            },
+                            "vehicle_image_retrieval": {
+                                "matched": False,
+                                "candidate_names": [],
+                            },
+                            "source_message_ids": [],
+                        },
+                        "clipboard_transaction": {
+                            "action_phase": "confirmed",
+                            "slot_identity_confirmed": True,
+                        },
+                    }
+
+            with patch(
+                "apps.wechat_ai_customer_service.optional_plugins."
+                "vision.plugin.BuiltinVisionPlugin",
+                FakePlugin,
+            ):
+                result = process_image_slot(
+                    observation=observation,
+                    remark_code="CJTEST01",
+                    session_key="wx-row-1",
+                    window_context=self.window_context(),
+                    config={
+                        "customer_image_understanding": {"enabled": True}
+                    },
+                    action_journal_path=journal_path,
+                    action_local_id=source_key,
+                )
+
+            self.assertEqual(result["state"], "completed")
+            terminal = read_action_journal(journal_path)["items"][
+                source_key
+            ]["terminal_payload"]
+            self.assertEqual(
+                terminal["confirmed_action_mapping"][
+                    "canonical_action_id"
+                ],
+                action_id,
+            )
+            self.assertEqual(
+                terminal["confirmed_action_mapping"][
+                    "reserved_worker_stable_id"
+                ],
+                reserved_id,
+            )
+            self.assertEqual(
+                terminal["image_visual_fingerprint"],
+                observation["image_physical_anchor"][
+                    "bubble_visual_fingerprint"
+                ],
+            )
+
     def test_not_attempted_menu_failure_is_terminalized_by_production_result_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             journal_path = Path(tmp) / "image-menu-failure.json"
@@ -3494,7 +3642,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 conversation_id="conversation-image-menu-failure",
                 origin_read_run_id="read-image-menu-failure",
                 items=[{
-                    "source_message_key": "image-source-menu-failure",
+                    "journal_item_id": "image-source-menu-failure",
                     "physical_anchor_keys": ["image-anchor-menu-failure"],
                     "replayable_observation": self.image_observation(),
                 }],
@@ -3528,7 +3676,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         "customer_image_understanding": {"enabled": True}
                     },
                     action_journal_path=journal_path,
-                    source_message_key="image-source-menu-failure",
+                    action_local_id="image-source-menu-failure",
                 )
 
             self.assertEqual(result["state"], "failed")
@@ -3559,7 +3707,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 origin_read_run_id="read-image-empty-result",
                 items=[
                     {
-                        "source_message_key": "image-source-empty",
+                        "journal_item_id": "image-source-empty",
                         "physical_anchor_keys": ["image-anchor-empty"],
                     }
                 ],
@@ -3645,7 +3793,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         }
                     },
                     action_journal_path=journal_path,
-                    source_message_key="image-source-empty",
+                    action_local_id="image-source-empty",
                 )
 
             self.assertEqual(result["state"], "failed")
@@ -4695,10 +4843,25 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertIsNone(payload)
 
     def test_persisted_projection_drops_runtime_image_fields(self):
+        observation = self.image_observation()
+        observation["_worker_stable_id"] = "worker-message-1"
+        observation["_worker_identity_scope"] = (
+            "current_read_provisional"
+        )
         projected = apply_image_terminal_result(
-            self.image_observation(),
+            observation,
             {
                 "state": "completed",
+                "_confirmed_image_action_receipt": {
+                    "canonical_action_id": "image-action-1",
+                    "reserved_worker_stable_id": "worker-message-1",
+                    "pre_observation_id": "canonical_visual_image_1",
+                    "post_observation_id": "canonical_visual_image_1",
+                    "binding_confirmed": True,
+                    "image_visual_fingerprint": (
+                        "dhash64:0000000000000000"
+                    ),
+                },
                 "customer_image_understanding": {
                     "schema_version": 1,
                     "vision_summary": "车辆外观图",
@@ -6028,7 +6191,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
 
                 self.assertEqual(candidates, [])
 
-    def test_image_internal_ocr_drift_cannot_break_cross_round_identity(self):
+    def test_image_frame_fingerprint_never_becomes_cross_round_identity(self):
         screenshot = Image.new("RGB", (980, 860), (250, 250, 250))
         draw = ImageDraw.Draw(screenshot)
         draw.rectangle((556, 300, 890, 487), fill=(28, 28, 28))
@@ -6072,18 +6235,23 @@ class C2VisionIntegrationTests(unittest.TestCase):
             self.assertEqual([item["row_kind"] for item in first], ["image_bubble"])
             self.assertEqual([item["row_kind"] for item in second], ["image_bubble"])
             first_visual_id = str(
-                first[0].get("canonical_visual_id")
-                or (first[0].get("source_message") or {}).get("canonical_visual_id")
+                first[0].get("frame_visual_id")
+                or (first[0].get("source_message") or {}).get("frame_visual_id")
                 or ""
             )
             second_visual_id = str(
-                second[0].get("canonical_visual_id")
-                or (second[0].get("source_message") or {}).get("canonical_visual_id")
+                second[0].get("frame_visual_id")
+                or (second[0].get("source_message") or {}).get("frame_visual_id")
                 or ""
             )
             self.assertTrue(first_visual_id)
             self.assertEqual(first_visual_id, second_visual_id)
-            native_result = align_committed_message_sequence(
+            self.assertNotIn("canonical_visual_id", first[0])
+            self.assertNotIn(
+                "canonical_visual_id",
+                first[0].get("source_message") or {},
+            )
+            result = align_committed_message_sequence(
                 build_pre_action_identity_sequence(
                     first,
                     committed_ids={
@@ -6095,33 +6263,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 pre_frame_id="frame-before-ocr-drift-weak",
                 post_frame_id="frame-after-ocr-drift-weak",
             )
-            self.assertEqual(native_result["alignment_status"], "unique")
-            self.assertEqual(
-                native_result["matched_pairs"][0]["match_basis"],
-                "canonical_visual_id",
-            )
-            first[0]["canonical_visual_id"] = "visual-confirmed-image"
-            second[0]["canonical_visual_id"] = "visual-confirmed-image"
-            result = align_committed_message_sequence(
-                build_pre_action_identity_sequence(
-                    first,
-                    committed_ids={
-                        str(first[0]["observation_id"]): "worker-message-1"
-                    },
-                ),
-                build_post_action_observation_sequence(second),
-                pre_sequence_source="checkpoint",
-                pre_frame_id="frame-before-ocr-drift",
-                post_frame_id="frame-after-ocr-drift",
-            )
         finally:
             screenshot.close()
 
-        self.assertEqual(result["alignment_status"], "unique")
-        self.assertEqual(
-            inherited_worker_ids(result),
-            {str(second[0]["observation_id"]): "worker-message-1"},
-        )
+        self.assertEqual(result["alignment_status"], "ambiguous")
+        self.assertEqual(inherited_worker_ids(result), {})
 
     def test_initial_read_and_preclick_refresh_share_real_image_observer(self):
         screenshot = Image.new("RGB", (974, 853), (242, 242, 242))

@@ -238,6 +238,13 @@ _C2_GENERATED_SCHEMA = json.loads(_C2_GENERATED_SCHEMA_PATH.read_text(encoding="
 C2_OBSERVATION_SCHEMA_VERSION = int(_C2_GENERATED_SCHEMA["observation_schema_version"])
 C2_OBSERVATION_CONTRACT_REVISION = str(_C2_GENERATED_SCHEMA["contract_revision"])
 C2_OBSERVATION_CONTRACT_SHA256 = str(_C2_GENERATED_SCHEMA["contract_sha256"])
+C2_MESSAGE_LIMITS = dict(_C2_GENERATED_SCHEMA["message_limits"])
+C2_SOURCE_MESSAGE_TRANSPORT_FIELDS = frozenset(
+    str(value)
+    for value in C2_MESSAGE_LIMITS[
+        "source_message_transport_fields"
+    ]
+)
 C2_TARGET_LOCATION_RECOVERY_CONTRACT = dict(
     _C2_GENERATED_SCHEMA["target_location_recovery_contract"]
 )
@@ -3097,6 +3104,7 @@ def execute_voice_action_payload(
             "cancelled_before_trigger",
             terminal_payload={
                 "state": "cancelled_before_trigger",
+                "media_action_terminal": "cancelled_before_trigger",
                 "reason": "prepared_voice_target_changed",
             },
         )
@@ -3154,6 +3162,7 @@ def execute_voice_action_payload(
                 physical_anchor_keys=physical_anchor_keys,
                 terminal_payload={
                     "state": "cancelled_before_trigger",
+                    "media_action_terminal": "cancelled_before_trigger",
                     "reason": "visible_button_bounds_invalid",
                 },
             )
@@ -3314,6 +3323,7 @@ def execute_voice_action_payload(
                 error_code="VOICE_TRANSCRIBE_TRIGGER_FAILED",
                 terminal_payload={
                     "state": "failed",
+                    "media_action_terminal": "committed_failed",
                     "click": click_result,
                 },
             )
@@ -3352,7 +3362,10 @@ def execute_voice_action_payload(
             business_state="failed",
             business_result_confirmed=False,
             error_code="C2_VOICE_RESULT_AMBIGUOUS",
-            terminal_payload={"state": "quarantined"},
+            terminal_payload={
+                "state": "quarantined",
+                "media_action_terminal": "identity_unresolved",
+            },
         )
         return {
             "ok": True,
@@ -3387,8 +3400,15 @@ def execute_voice_action_payload(
     final_path = screenshot_path
     final_items = ocr_items
     final_messages = messages
+    evidence_recovery_started_at = time.monotonic()
+    evidence_recovery_deadline = evidence_recovery_started_at + 120.0
+    evidence_read_count = 0
     for evidence_read in range(2):
+        if time.monotonic() >= evidence_recovery_deadline:
+            break
         humanized_action_sleep(500, 1100)
+        if time.monotonic() >= evidence_recovery_deadline:
+            break
         final_screenshot, final_path = capture_wechat(
             hwnd,
             artifact_dir=artifact_dir,
@@ -3402,6 +3422,7 @@ def execute_voice_action_payload(
             target=target,
             screenshot=final_screenshot,
         )
+        evidence_read_count = evidence_read + 1
         if str(expected_confirmed_self_text or "").strip():
             final_messages, _confirmed_self_text_recovery = (
                 recover_expected_self_text_from_structural_candidates(
@@ -3448,7 +3469,15 @@ def execute_voice_action_payload(
             business_state="failed",
             business_result_confirmed=False,
             error_code="C2_VOICE_RESULT_AMBIGUOUS",
-            terminal_payload={"state": "quarantined", "evidence_read_count": 2},
+            terminal_payload={
+                "state": "quarantined",
+                "media_action_terminal": "identity_unresolved",
+                "evidence_read_count": evidence_read_count,
+                "evidence_elapsed_seconds": min(
+                    120.0,
+                    max(0.0, time.monotonic() - evidence_recovery_started_at),
+                ),
+            },
         )
         return {
             "ok": True,
@@ -3498,7 +3527,11 @@ def execute_voice_action_payload(
         physical_anchor_keys=physical_anchor_keys,
         business_state="completed",
         business_result_confirmed=True,
-        terminal_payload={"state": "completed", "transcribed_messages": bound},
+        terminal_payload={
+            "state": "completed",
+            "media_action_terminal": "committed_completed",
+            "transcribed_messages": bound,
+        },
     )
     return {
         "ok": True,
@@ -5463,6 +5496,33 @@ def build_message_observations_v3(
         if observation_id in seen_ids:
             observation_id = f"{observation_id}:{index}"
         seen_ids.add(observation_id)
+        source_message = {
+            str(key): value
+            for key, value in message.items()
+            if str(key) in C2_SOURCE_MESSAGE_TRANSPORT_FIELDS
+        }
+        # Worker owns durable source identity.  OmniAuto must not leak its
+        # legacy frame-local envelope key into the formal C2 contract.
+        source_message.pop("source_message_key", None)
+        source_message.update(
+            {
+                "message_type": (
+                    "voice" if msg_type == "voice" else msg_type
+                ),
+                "sender_role": role,
+                "sender_role_source": role_source,
+                "content": (
+                    ""
+                    if untranscribed
+                    else str(message.get("content") or "").strip()
+                ),
+                "content_clean": (
+                    ""
+                    if untranscribed
+                    else str(message.get("content") or "").strip()
+                ),
+            }
+        )
         observation = {
             "schema_version": C2_OBSERVATION_SCHEMA_VERSION,
             "observation_id": observation_id,
@@ -5481,7 +5541,7 @@ def build_message_observations_v3(
             "image_physical_anchor": message.get("image_physical_anchor"),
             "ocr_confidence": message.get("ocr_confidence"),
             "quality_flags": quality_flags,
-            "source_message": message,
+            "source_message": source_message,
         }
         if row_kind == "image_bubble":
             observation["item_state"] = "discovered"
@@ -5531,7 +5591,7 @@ def _structural_image_identity(message: dict[str, Any]) -> str:
     ).strip().lower() != "image":
         return ""
     return str(
-        message.get("canonical_visual_id")
+        message.get("frame_visual_id")
         or message.get("message_id")
         or message.get("id")
         or ""
@@ -8150,8 +8210,8 @@ def write_action_phase_journal(
         for value in (physical_anchor_keys or [])
         if str(value).strip()
     }
-    selected_source_keys: list[str] = []
-    for source_key, item in items.items():
+    selected_journal_item_ids: list[str] = []
+    for journal_item_id, item in items.items():
         if not isinstance(item, dict):
             continue
         item_anchors = {
@@ -8160,28 +8220,28 @@ def write_action_phase_journal(
             if str(value).strip()
         }
         if anchor_keys and item_anchors & anchor_keys:
-            selected_source_keys.append(str(source_key))
-    if not selected_source_keys and len(items) == 1:
-        selected_source_keys.append(str(next(iter(items))))
-    if items and not selected_source_keys:
+            selected_journal_item_ids.append(str(journal_item_id))
+    if not selected_journal_item_ids and len(items) == 1:
+        selected_journal_item_ids.append(str(next(iter(items))))
+    if items and not selected_journal_item_ids:
         raise ValueError("ACTION_JOURNAL_ITEM_NOT_FOUND")
     if any(
         phase_rank[requested_phase]
         < phase_rank.get(
             str(
-                (items.get(source_key) or {}).get("action_phase")
+                (items.get(journal_item_id) or {}).get("action_phase")
                 or "not_attempted"
             ).strip(),
             0,
         )
-        for source_key in selected_source_keys
+        for journal_item_id in selected_journal_item_ids
     ):
         # All selected aliases describe one physical action. A stale writer
         # must not partially mutate the aliases that happen to lag behind.
         return
     updated_at = datetime.now(timezone.utc).isoformat()
-    for selected_source_key in selected_source_keys:
-        item = dict(items.get(selected_source_key) or {})
+    for journal_item_id in selected_journal_item_ids:
+        item = dict(items.get(journal_item_id) or {})
         current_phase = str(
             item.get("action_phase") or "not_attempted"
         ).strip()
@@ -8200,7 +8260,7 @@ def write_action_phase_journal(
         if terminal_payload is not None:
             item["terminal_payload"] = terminal_payload
         item["updated_at"] = updated_at
-        items[selected_source_key] = item
+        items[journal_item_id] = item
     payload["items"] = items
     payload["action_phase"] = max(
         (
@@ -14837,6 +14897,29 @@ def build_send_fact_snapshot_from_frame(
     elif recover_expected_self_text:
         enhanced_text_recovery["reason"] = "send_target_not_strongly_confirmed"
     observations = build_message_observations_v3(messages)
+    # This relation is frame-local send-confirmation evidence.  It must not be
+    # added to the durable source-message transport allowlist, but the send
+    # snapshot still needs it to prove that an old structural candidate was
+    # retyped rather than treating the same bubble as a newly sent reply.
+    recovered_structural_id_by_observation = {
+        str(
+            message.get("id")
+            or message.get("observation_id")
+            or ""
+        ).strip(): str(
+            message.get("recovered_from_structural_observation_id") or ""
+        ).strip()
+        for message in messages
+        if isinstance(message, dict)
+        and str(
+            message.get("id")
+            or message.get("observation_id")
+            or ""
+        ).strip()
+        and str(
+            message.get("recovered_from_structural_observation_id") or ""
+        ).strip()
+    }
     message_region_fingerprint = send_context_message_region_fingerprint(screenshot)
     input_region = input_text_region_state(screenshot, ocr_items, geometry=geometry)
     message_sequence = [
@@ -14856,6 +14939,9 @@ def build_send_fact_snapshot_from_frame(
                     if isinstance(observation.get("source_message"), dict)
                     else {}
                 ).get("recovered_from_structural_observation_id")
+                or recovered_structural_id_by_observation.get(
+                    str(observation.get("observation_id") or "").strip()
+                )
                 or ""
             ),
         }

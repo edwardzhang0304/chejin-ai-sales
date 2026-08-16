@@ -20,18 +20,21 @@ if str(OMNIAUTO_ROOT) not in sys.path:
 
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar import build_message_observations_v3
 from chejin_worker_client.models import WechatReadTarget as WorkerWechatReadTarget
+from chejin_worker_client.message_identity_commit import (
+    MessageCommitBasis,
+    committed_identity_record,
+)
 from chejin_worker_client.message_contract import (
     canonical_message_identity_text as worker_canonical_message_identity_text,
     canonical_reply_text as worker_canonical_reply_text,
     reply_text_hash as worker_reply_text_hash,
 )
 from chejin_worker_client.c2_outbox_recovery import (
-    rebuild_invalid_media_as_failed,
     split_ingest_payload,
 )
 from chejin_worker_client.wechat_c2 import (
     build_message_ingest_payload as build_worker_message_ingest_payload,
-    worker_source_message_key,
+    voice_observation_source_key,
 )
 from chejin_worker_client.task_runner import should_submit_c2_ingest_payload
 from chejin_worker_client.sequence_alignment import (
@@ -72,6 +75,22 @@ from app.services.message_contract import (
 )
 
 
+def worker_source_message_key(target, *, identity_kind, identity):
+    """Construct a historical fixture key without a production bypass."""
+
+    raw = json.dumps(
+        {
+            "conversation_id": target.conversation_id,
+            "identity_kind": str(identity_kind).strip().lower(),
+            "identity": identity,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+    return "source:" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:40]
+
+
 client = TestClient(app)
 HEADERS = {
     "X-Operator-Id": "00000000-0000-0000-0000-000000000001",
@@ -100,6 +119,79 @@ def test_reply_text_contract_is_identical_in_worker_and_backend():
     } == {
         backend_reply_text_hash(value) for value in values
     }
+
+
+def test_frame_visual_identity_never_changes_backend_media_identity():
+    contract = c2_contract_v3()
+    alignment = contract["sequence_alignment_contract"]
+    identity = contract["message_identity_contract"]
+    assert alignment["strong_anchor_fields"] == [
+        "native_source_message_id",
+        "confirmed_action_mapping",
+    ]
+    assert "frame_visual_id" in alignment[
+        "forbidden_cross_action_identity_inputs"
+    ]
+    assert identity["ocr_cross_round_identity_field"] == "worker_stable_id"
+
+    def raw(stable_id: str, frame_visual_id: str) -> dict:
+        return {
+            "dedupe_basis": {
+                "source": "worker_cross_round_sequence",
+                "worker_stable_id": stable_id,
+            },
+            "observation": {
+                "row_kind": "image_bubble",
+                "frame_visual_id": frame_visual_id,
+                "source_message": {
+                    "frame_visual_id": frame_visual_id,
+                },
+            },
+        }
+
+    before = wechat_service._media_identity_hash(
+        "image", raw("worker-message-7", "frame-before")
+    )
+    shifted = wechat_service._media_identity_hash(
+        "image", raw("worker-message-7", "frame-after")
+    )
+    another = wechat_service._media_identity_hash(
+        "image", raw("worker-message-8", "frame-after")
+    )
+    assert before
+    assert shifted == before
+    assert another != before
+    assert (
+        wechat_service._validate_cross_round_message_identity(
+            raw("worker-message-7", "frame-before")
+        )
+        == "worker-message-7"
+    )
+
+    missing_stable = raw("worker-message-7", "frame-before")
+    missing_stable["dedupe_basis"] = {
+        "source": "frame_visual_id",
+        "frame_visual_id": "frame-before",
+    }
+    with pytest.raises(AppError) as missing_error:
+        wechat_service._validate_cross_round_message_identity(
+            missing_stable
+        )
+    assert getattr(missing_error.value, "code", "") == (
+        "MESSAGE_SEQUENCE_IDENTITY_MISSING"
+    )
+
+    forbidden_legacy = raw("worker-message-7", "frame-before")
+    forbidden_legacy["observation"]["canonical_visual_id"] = (
+        "canonical_visual_old-position"
+    )
+    with pytest.raises(AppError) as legacy_error:
+        wechat_service._validate_cross_round_message_identity(
+            forbidden_legacy
+        )
+    assert getattr(legacy_error.value, "code", "") == (
+        "MESSAGE_FRAME_IDENTITY_FORBIDDEN"
+    )
 
 
 def test_message_identity_contract_ignores_only_visual_cjk_line_wraps():
@@ -146,6 +238,15 @@ def _v3_raw_fields(source_message_key: str) -> dict:
     return {
         **_v3_contract_fields(),
         "source_message_key": source_message_key,
+        "dedupe_basis": {
+            "source": "worker_cross_round_sequence",
+            "worker_stable_id": (
+                "worker-message-test-"
+                + hashlib.sha256(
+                    source_message_key.encode("utf-8")
+                ).hexdigest()[:16]
+            ),
+        },
     }
 
 
@@ -1330,12 +1431,23 @@ def test_scan_result_binds_unique_remark_code_and_authorizes_visible_unread():
     assert read_target["display_name"] == remark_code
     assert "last_ingested_at" in read_target
     assert read_target["read_reason"] == "recent_ai_sent"
-    assert read_target["ai_reply_boundary"] == {
+    boundary = read_target["ai_reply_boundary"]
+    assert {
+        key: value
+        for key, value in boundary.items()
+        if key != "sent_at"
+    } == {
         "reply_action_id": sent_action_id,
-        "sent_at": sent_action_time,
         "reply_text_hash": sent_action_hash,
         "worker_stable_id": "",
     }
+    actual_sent_at = datetime.fromisoformat(boundary["sent_at"])
+    expected_sent_at = datetime.fromisoformat(sent_action_time)
+    if actual_sent_at.tzinfo is None:
+        actual_sent_at = actual_sent_at.replace(tzinfo=timezone.utc)
+    if expected_sent_at.tzinfo is None:
+        expected_sent_at = expected_sent_at.replace(tzinfo=timezone.utc)
+    assert actual_sent_at == expected_sent_at
     assert read_target["row_fingerprint"] == "fingerprint-wx-row-1"
     assert read_target["ocr_confidence"] == 0.98
     assert len(read_target["authorization_revision"]) == 32
@@ -1353,7 +1465,7 @@ def test_scan_result_binds_unique_remark_code_and_authorizes_visible_unread():
     assert checkpoint_message["media_identity_hash"] == ""
     assert checkpoint_message["alignment_signature"]
     assert checkpoint_message["native_source_message_id"] == ""
-    assert checkpoint_message["canonical_visual_id"] == ""
+    assert checkpoint_message["frame_visual_id"] == ""
 
     admin_binding = client.get(f"/api/conversations/{binding['conversation_id']}/wechat-binding", headers=HEADERS)
     assert admin_binding.status_code == 200
@@ -2097,7 +2209,7 @@ def test_failed_self_image_is_sales_intervention_not_waiting_for_sales():
         assert db.query(ReplyAction).count() == 0
 
 
-def test_identity_gate_without_recent_ai_boundary_uses_original_hard_handoff():
+def test_identity_gate_without_recent_ai_boundary_uses_unified_recovery_hold():
     worker = _create_worker()
     _create_sales(worker["id"])
     _create_lead("历史断层客户", "13896676683")
@@ -2135,18 +2247,18 @@ def test_identity_gate_without_recent_ai_boundary_uses_original_hard_handoff():
     assert response.status_code == 200, response.text
     data = response.json()["data"]
     assert data["ingested_count"] == 0
-    assert data["message_batch"]["batch_status"] in {
-        "handoff_created",
-        "handoff_pending",
-        "handoff",
-    }
+    assert data["message_batch"]["batch_status"] == "recoverable_hold"
     with SessionLocal() as db:
         assert db.query(MessageEvent).count() == 0
-        assert db.query(HandoffEvent).count() == 1
+        assert db.query(HandoffEvent).count() == 0
         persisted_binding = db.get(
             WechatSessionBinding, binding["id"]
         )
-        assert persisted_binding.recovery_hold in ({}, None)
+        assert persisted_binding.recovery_hold["status"] == "active"
+        assert persisted_binding.recovery_hold["gate_scope"] == (
+            "conversation_identity"
+        )
+        assert persisted_binding.recovery_hold["recovery_attempt_count"] == 0
         assert db.query(ReplyAction).count() == 0
         assert db.query(Task).filter(Task.task_type == "chat_reply").count() == 0
 
@@ -2340,12 +2452,21 @@ def test_identity_gate_without_ai_boundary_is_one_idempotent_handoff():
     )
     binding = scan.json()["data"]["bindings"][0]
 
-    for read_run_id in ("read-identity-gate-1", "read-identity-gate-2"):
+    statuses = []
+    last_payload = None
+    for index, read_run_id in enumerate(
+        (
+            "read-identity-gate-discovery",
+            "read-identity-gate-reread-1",
+            "read-identity-gate-reread-2",
+        )
+    ):
         payload = _v3_ingest_payload(
             binding,
             remark_code,
             read_run_id=read_run_id,
             messages=[],
+            read_reason="waiting_user_reply",
         )
         payload["evidence"]["flow_gate_errors"] = [
             "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
@@ -2361,6 +2482,17 @@ def test_identity_gate_without_ai_boundary_is_one_idempotent_handoff():
             }
         ]
         payload["evidence"]["flow_gate_identity_key"] = "stable-identity-gate"
+        if index > 0:
+            payload["evidence"]["recovery_attempt_kind"] = "stable_reread"
+            authorization = client.get(
+                f"/api/workers/{worker['id']}/wechat/conversations/"
+                f"{binding['conversation_id']}/read-authorization",
+                headers=_worker_headers(worker),
+            )
+            assert authorization.status_code == 200, authorization.text
+            payload["authorization_revision"] = authorization.json()["data"][
+                "authorization_revision"
+            ]
         response = client.post(
             f"/api/workers/{worker['id']}/wechat/messages/ingest",
             json=payload,
@@ -2369,11 +2501,18 @@ def test_identity_gate_without_ai_boundary_is_one_idempotent_handoff():
         assert response.status_code == 200, response.text
         message_batch = response.json()["data"].get("message_batch")
         if message_batch is not None:
-            assert message_batch["batch_status"] in {
-                "handoff_created",
-                "handoff_pending",
-                "handoff",
-            }
+            statuses.append(message_batch["batch_status"])
+        last_payload = payload
+
+    assert statuses[:2] == ["recoverable_hold", "recoverable_hold"]
+    assert statuses[2] in {"handoff_created", "handoff_pending", "handoff"}
+
+    retry = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=last_payload,
+        headers=_worker_headers(worker),
+    )
+    assert retry.status_code == 200, retry.text
 
     with SessionLocal() as db:
         assert db.query(MessageBatch).count() == 1
@@ -2381,7 +2520,8 @@ def test_identity_gate_without_ai_boundary_is_one_idempotent_handoff():
         persisted_binding = db.get(
             WechatSessionBinding, binding["id"]
         )
-        assert persisted_binding.recovery_hold in ({}, None)
+        assert persisted_binding.recovery_hold["status"] == "escalated"
+        assert persisted_binding.recovery_hold["recovery_attempt_count"] == 2
 
 
 def test_identity_gate_before_ai_boundary_is_warning_without_hold_or_handoff():
@@ -2460,7 +2600,7 @@ def test_identity_gate_before_ai_boundary_is_warning_without_hold_or_handoff():
         )
 
 
-def test_recent_ai_gate_with_incomplete_boundary_does_not_enter_recovery_hold():
+def test_recent_ai_gate_with_incomplete_boundary_enters_generic_identity_hold():
     worker = _create_worker()
     _create_sales(worker["id"])
     _create_lead("AI边界不完整客户", "13896676672")
@@ -2518,14 +2658,158 @@ def test_recent_ai_gate_with_incomplete_boundary_does_not_enter_recovery_hold():
     )
 
     assert response.status_code == 200, response.text
-    assert response.json()["data"]["message_batch"]["batch_status"] in {
-        "handoff_created",
-        "handoff_pending",
-        "handoff",
-    }
+    assert response.json()["data"]["message_batch"]["batch_status"] == (
+        "recoverable_hold"
+    )
     with SessionLocal() as db:
         persisted_binding = db.get(WechatSessionBinding, binding["id"])
-        assert persisted_binding.recovery_hold in ({}, None)
+        assert persisted_binding.recovery_hold["status"] == "active"
+        assert persisted_binding.recovery_hold["gate_scope"] == "reply_suffix"
+        assert db.query(HandoffEvent).count() == 0
+
+
+@pytest.mark.parametrize(
+    "gate_code",
+    [
+        "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+        "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+        "C2_VOICE_RESULT_AMBIGUOUS",
+    ],
+)
+def test_ordinary_media_identity_unresolved_gets_two_passive_rereads_before_handoff(
+    gate_code: str,
+):
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead(f"媒体身份隔离{gate_code}", "13896676674")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        conversation.status = "waiting_user_reply"
+        db.commit()
+
+    def gate_payload(read_run_id: str, recovery_kind: str) -> dict:
+        payload = _v3_ingest_payload(
+            binding,
+            remark_code,
+            read_run_id=read_run_id,
+            messages=[],
+            read_reason="waiting_user_reply",
+        )
+        payload["evidence"]["flow_gate_errors"] = [gate_code]
+        payload["evidence"]["flow_gate_identity_key"] = (
+            f"stable-{gate_code}"
+        )
+        payload["evidence"]["flow_gate_details"] = [
+            {
+                "error_code": gate_code,
+                "position_source": "position_unavailable",
+                "gate_scope": "conversation_identity",
+                "min_screen_order": 0,
+                "max_screen_order": 0,
+                "boundary_relation": "unknown",
+            }
+        ]
+        payload["evidence"]["recovery_attempt_kind"] = recovery_kind
+        return payload
+
+    endpoint = (
+        f"/api/workers/{worker['id']}/wechat/messages/ingest"
+    )
+    first = client.post(
+        endpoint,
+        json=gate_payload(f"read-{gate_code}-initial", "checkpoint_merge"),
+        headers=_worker_headers(worker),
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["data"]["message_batch"]["batch_status"] == (
+        "recoverable_hold"
+    )
+
+    for attempt in (1, 2):
+        authorization = client.get(
+            f"/api/workers/{worker['id']}/wechat/conversations/"
+            f"{binding['conversation_id']}/read-authorization",
+            headers=_worker_headers(worker),
+        )
+        assert authorization.status_code == 200
+        payload = gate_payload(
+            f"read-{gate_code}-reread-{attempt}",
+            "stable_reread",
+        )
+        payload["authorization_revision"] = authorization.json()["data"][
+            "authorization_revision"
+        ]
+        response = client.post(
+            endpoint,
+            json=payload,
+            headers=_worker_headers(worker),
+        )
+        assert response.status_code == 200, response.text
+        batch_status = response.json()["data"]["message_batch"][
+            "batch_status"
+        ]
+        if attempt == 1:
+            assert batch_status == "recoverable_hold"
+        else:
+            assert batch_status in {
+                "handoff_created",
+                "handoff_pending",
+                "handoff",
+            }
+
+    with SessionLocal() as db:
+        persisted_binding = db.get(WechatSessionBinding, binding["id"])
+        assert persisted_binding.recovery_hold["status"] == "escalated"
+        assert persisted_binding.recovery_hold["recovery_attempt_count"] == 2
+        assert db.query(HandoffEvent).count() == 1
+
+
+def test_identity_unresolved_hold_escalates_after_120_seconds_without_more_ui_actions():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("身份隔离超时客户", "13896676675")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    with SessionLocal() as db:
+        persisted = db.get(WechatSessionBinding, binding["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        conversation.status = "waiting_user_reply"
+        persisted.recovery_hold = {
+            "status": "active",
+            "gate_key": "expired-identity-gate",
+            "reason_code": "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+            "reason_codes": ["C2_VOICE_IDENTITY_CONTRACT_INVALID"],
+            "first_seen_at": (
+                utcnow() - timedelta(seconds=121)
+            ).isoformat(),
+            "last_seen_at": utcnow().isoformat(),
+            "recovery_attempt_count": 0,
+        }
+        db.commit()
+
+    response = client.get(
+        f"/api/workers/{worker['id']}/wechat/sessions/read-targets",
+        headers=_worker_headers(worker),
+    )
+
+    assert response.status_code == 200, response.text
+    with SessionLocal() as db:
+        persisted = db.get(WechatSessionBinding, binding["id"])
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert persisted.recovery_hold["status"] == "escalated"
+        assert conversation.status == "waiting_sales_reply"
         assert db.query(HandoffEvent).count() == 1
 
 
@@ -2622,7 +2906,11 @@ def test_reply_suffix_hold_aggregates_all_gates_and_escalates_after_real_reread(
             remark_code,
             read_run_id=read_run_id,
             messages=[],
-            read_reason="recent_ai_sent",
+            read_reason=(
+                "recent_ai_sent"
+                if recovery_kind == "checkpoint_merge"
+                else "waiting_user_reply"
+            ),
         )
         payload["evidence"]["flow_gate_errors"] = [
             "C2_MESSAGE_HISTORY_GAP",
@@ -2660,7 +2948,7 @@ def test_reply_suffix_hold_aggregates_all_gates_and_escalates_after_real_reread(
     )
     with SessionLocal() as db:
         persisted_binding = db.get(WechatSessionBinding, binding["id"])
-        assert persisted_binding.recovery_hold["recovery_attempt_count"] == 1
+        assert persisted_binding.recovery_hold["recovery_attempt_count"] == 0
         assert persisted_binding.recovery_hold["boundary_relation"] == tail_relation
         sent_action = db.query(ReplyAction).filter(
             ReplyAction.conversation_id == binding["conversation_id"],
@@ -2686,7 +2974,7 @@ def test_reply_suffix_hold_aggregates_all_gates_and_escalates_after_real_reread(
     assert duplicate_first.status_code == 200, duplicate_first.text
     with SessionLocal() as db:
         persisted_binding = db.get(WechatSessionBinding, binding["id"])
-        assert persisted_binding.recovery_hold["recovery_attempt_count"] == 1
+        assert persisted_binding.recovery_hold["recovery_attempt_count"] == 0
 
     second_payload = gate_payload("read-hold-reread", "stable_reread")
     refreshed_authorization = client.get(
@@ -2704,20 +2992,42 @@ def test_reply_suffix_hold_aggregates_all_gates_and_escalates_after_real_reread(
         headers=_worker_headers(worker),
     )
     assert second.status_code == 200, second.text
-    assert second.json()["data"]["state_transition_applied"] is True, (
-        second.json()
+    assert second.json()["data"]["message_batch"]["batch_status"] == (
+        "recoverable_hold"
     )
-    assert second.json()["data"]["message_batch"]["batch_status"] in {
-        "handoff_created",
-        "handoff_pending",
-        "handoff",
-    }, second.json()
     duplicate = client.post(
         f"/api/workers/{worker['id']}/wechat/messages/ingest",
         json=second_payload,
         headers=_worker_headers(worker),
     )
     assert duplicate.status_code == 200, duplicate.text
+    with SessionLocal() as db:
+        persisted_binding = db.get(WechatSessionBinding, binding["id"])
+        assert persisted_binding.recovery_hold["status"] == "active"
+        assert persisted_binding.recovery_hold["recovery_attempt_count"] == 1
+        assert db.query(HandoffEvent).count() == 0
+
+    third_payload = gate_payload("read-hold-reread-2", "stable_reread")
+    refreshed_authorization = client.get(
+        f"/api/workers/{worker['id']}/wechat/conversations/"
+        f"{binding['conversation_id']}/read-authorization",
+        headers=_worker_headers(worker),
+    )
+    assert refreshed_authorization.status_code == 200
+    third_payload["authorization_revision"] = (
+        refreshed_authorization.json()["data"]["authorization_revision"]
+    )
+    third = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=third_payload,
+        headers=_worker_headers(worker),
+    )
+    assert third.status_code == 200, third.text
+    assert third.json()["data"]["message_batch"]["batch_status"] in {
+        "handoff_created",
+        "handoff_pending",
+        "handoff",
+    }
     with SessionLocal() as db:
         persisted_binding = db.get(WechatSessionBinding, binding["id"])
         assert persisted_binding.recovery_hold["status"] == "escalated"
@@ -3443,7 +3753,7 @@ def test_message_batch_status_rejects_other_worker_and_returns_terminal_state():
 
 
 def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revision():
-    assert contract_revision() == "0.9.15"
+    assert contract_revision() == "0.9.17"
     location_recovery = c2_contract_v3()[
         "target_location_recovery_contract"
     ]
@@ -3575,8 +3885,8 @@ def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revi
     assert wrong_contract.status_code == 409
     assert wrong_contract.json()["code"] == "MESSAGE_CONTRACT_SHA256_MISMATCH"
     stale_contract_payload = copy.deepcopy(payload)
-    stale_contract_payload["contract_revision"] = "0.9.14"
-    stale_contract_payload["evidence"]["contract_revision"] = "0.9.14"
+    stale_contract_payload["contract_revision"] = "0.9.16"
+    stale_contract_payload["evidence"]["contract_revision"] = "0.9.16"
     stale_contract = client.post(
         f"/api/workers/{worker['id']}/wechat/messages/ingest",
         json=stale_contract_payload,
@@ -3674,8 +3984,31 @@ def test_worker_v3_five_second_voice_transcript_is_accepted_by_backend():
     observations = build_message_observations_v3(sidecar_messages)
     assert observations[0]["sender_role_source"] == "parent_voice"
     read_run_id = "read-worker-v3-five-second-voice"
-    observations[0]["_worker_stable_id"] = (
-        f"{binding['conversation_id']}:message:1"
+    stable_id = "worker-message-1"
+    observation_id = str(observations[0]["observation_id"])
+    action_mapping = {
+        "canonical_action_id": "voice-action-five-second",
+        "reserved_worker_stable_id": stable_id,
+        "pre_observation_id": "voice-pre-five-second",
+        "post_observation_id": observation_id,
+        "binding_confirmed": True,
+    }
+    observations[0].update(
+        {
+            "_worker_stable_id": stable_id,
+            "_worker_identity_scope": "committed",
+            "_worker_voice_action_summary": {
+                "confirmed_action_mapping": action_mapping,
+            },
+            "_worker_committed_message": committed_identity_record(
+                worker_stable_id=stable_id,
+                commit_basis=MessageCommitBasis.CONFIRMED_VOICE_ACTION,
+                observation_id=observation_id,
+                sender_role="customer",
+                message_type="voice",
+                proof=action_mapping,
+            ),
+        }
     )
     worker_payload = build_worker_message_ingest_payload(
         worker_target,
@@ -3690,10 +4023,8 @@ def test_worker_v3_five_second_voice_transcript_is_accepted_by_backend():
                     "screen_order": 1,
                     "order_source": "observation_index_fallback",
                     "row_kind": observations[0]["row_kind"],
-                    "source_message_key": worker_source_message_key(
-                        worker_target,
-                        identity_kind="worker_sequence",
-                        identity=observations[0]["_worker_stable_id"],
+                    "source_message_key": voice_observation_source_key(
+                        worker_target, observations[0]
                     ),
                     "origin_read_run_id": read_run_id,
                     "fact_scope": "current_read_run",
@@ -4939,8 +5270,10 @@ def test_older_safety_gate_cannot_override_later_human_sales_reply(gate_code: st
                 if gate_code == "C2_MESSAGE_HISTORY_GAP"
                 else "identity_error_visual_top"
             ),
+            "gate_scope": "reply_suffix",
             "min_screen_order": 1,
             "max_screen_order": 1,
+            "boundary_relation": "before_or_equal",
         }
     ]
 
@@ -7455,12 +7788,62 @@ def test_safety_gate_after_human_sales_reply_is_not_cleared():
     )
 
     assert response.status_code == 200, response.text
-    assert response.json()["data"]["message_batch"]["batch_status"] == "handoff_created"
+    assert response.json()["data"]["message_batch"]["batch_status"] == (
+        "recoverable_hold"
+    )
     with SessionLocal() as db:
         conversation = db.get(Conversation, binding["conversation_id"])
+        persisted_binding = db.get(WechatSessionBinding, binding["id"])
+        assert conversation.status == "waiting_user_reply"
+        assert persisted_binding.recovery_hold["status"] == "active"
+        assert db.query(HandoffEvent).count() == 0
+        assert db.query(MessageBatch).count() == 0
+
+    endpoint = f"/api/workers/{worker['id']}/wechat/messages/ingest"
+    for attempt in (1, 2):
+        authorization = client.get(
+            f"/api/workers/{worker['id']}/wechat/conversations/"
+            f"{binding['conversation_id']}/read-authorization",
+            headers=_worker_headers(worker),
+        )
+        assert authorization.status_code == 200
+        reread = _v3_ingest_payload(
+            binding,
+            remark_code,
+            read_run_id=f"read-gate-after-sales-reread-{attempt}",
+            messages=[],
+            read_reason="waiting_user_reply",
+        )
+        reread["authorization_revision"] = authorization.json()["data"][
+            "authorization_revision"
+        ]
+        reread["evidence"]["flow_gate_errors"] = [
+            "C2_MESSAGE_HISTORY_GAP"
+        ]
+        reread["evidence"]["flow_gate_details"] = [
+            {
+                "error_code": "C2_MESSAGE_HISTORY_GAP",
+                "position_source": "slot_ledger_visual_top",
+                "gate_scope": "conversation_identity",
+                "min_screen_order": 3,
+                "max_screen_order": 3,
+                "boundary_relation": "unknown",
+            }
+        ]
+        reread["evidence"]["recovery_attempt_kind"] = "stable_reread"
+        retry = client.post(
+            endpoint,
+            json=reread,
+            headers=_worker_headers(worker),
+        )
+        assert retry.status_code == 200, retry.text
+
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        persisted_binding = db.get(WechatSessionBinding, binding["id"])
         assert conversation.status == "waiting_sales_reply"
+        assert persisted_binding.recovery_hold["status"] == "escalated"
         assert db.query(HandoffEvent).count() == 1
-        assert db.query(MessageBatch).count() == 1
 
 
 def test_voice_transcription_dict_metadata_does_not_become_message_content():
@@ -7571,7 +7954,7 @@ def test_voice_transcription_failures_are_rejected_and_create_no_reply_action():
         assert db.query(ReplyAction).count() == 0
 
 
-def test_worker_rebuilds_invalid_voice_as_explicit_failed_fact():
+def test_invalid_committed_voice_requires_outbox_quarantine_without_fact_rewrite():
     worker = _create_worker()
     _create_sales(worker["id"])
     _create_lead("失败语音重建客户", "13896676692")
@@ -7616,42 +7999,16 @@ def test_worker_rebuilds_invalid_voice_as_explicit_failed_fact():
         rejected.json()["data"]["source_message_key"]
         == "rebuilt-failed-voice"
     )
-    rebuilt = rebuild_invalid_media_as_failed(
-        invalid,
-        error_code="VOICE_TRANSCRIBE_INVALID_CONTENT",
-        source_message_key="rebuilt-failed-voice",
+    assert (
+        rejected.json()["data"]["recovery_action"]
+        == "identity_quarantined"
     )
-    assert rebuilt["messages"][0]["item_state"] == "completed"
-    assert rebuilt["messages"][0]["content"] == "这条语音已经成功转写。"
-    assert rebuilt["messages"][1]["item_state"] == "failed"
-    assert rebuilt["messages"][1]["content"] is None
-
-    response = client.post(
-        f"/api/workers/{worker['id']}/wechat/messages/ingest",
-        json=rebuilt,
-        headers=_worker_headers(worker),
-    )
-
-    assert response.status_code == 200, response.text
+    assert invalid["messages"][0]["item_state"] == "completed"
+    assert invalid["messages"][1]["item_state"] == "completed"
+    assert invalid["messages"][1]["content"] == '5"'
     with SessionLocal() as db:
-        messages = {
-            item.source_message_key: item
-            for item in db.query(MessageEvent).all()
-        }
-        assert set(messages) == {
-            "preserved-valid-voice",
-            "rebuilt-failed-voice",
-        }
-        preserved = messages["preserved-valid-voice"]
-        assert preserved.message_type == "voice"
-        assert preserved.item_state == "completed"
-        assert preserved.content == "这条语音已经成功转写。"
-        failed = messages["rebuilt-failed-voice"]
-        assert failed.message_type == "voice"
-        assert failed.item_state == "failed"
-        assert failed.content is None
-        assert failed.error_code == "VOICE_TRANSCRIBE_INVALID_CONTENT"
-        assert db.query(HandoffEvent).count() == 1
+        assert db.query(MessageEvent).count() == 0
+        assert db.query(HandoffEvent).count() == 0
 
 
 def test_repeated_scan_after_worker_restart_keeps_single_binding_and_returns_already_bound():
@@ -8552,7 +8909,7 @@ def test_server_identity_checkpoint_restores_worker_sequence_across_worker_chang
                 "alignment_signature"
             ],
             "native_source_message_id": "",
-            "canonical_visual_id": "",
+            "frame_visual_id": "",
         }
     ]
 
@@ -8639,7 +8996,7 @@ def test_duplicate_key_identity_collision_rolls_back_without_consuming_or_brain(
     assert response.status_code == 409
     assert response.json()["code"] == "MESSAGE_IDENTITY_COLLISION"
     assert response.json()["data"]["recovery_action"] == (
-        "refresh_identity_and_retry"
+        "identity_quarantined"
     )
     assert response.json()["data"]["source_message_key"]
     assert response.json()["data"]["next_sequence_floor"] >= 1
@@ -8797,8 +9154,15 @@ def test_duplicate_voice_key_with_different_media_anchor_is_identity_collision()
     assert response.json()["code"] == "MESSAGE_IDENTITY_COLLISION"
     collision = response.json()["data"]
     assert collision["source_message_key"] == "voice-anchor-two"
-    assert collision["existing_identity"]["media_identity_hash"] == ""
-    assert collision["incoming_identity"]["media_identity_hash"] == ""
+    existing_media_hash = collision["existing_identity"][
+        "media_identity_hash"
+    ]
+    incoming_media_hash = collision["incoming_identity"][
+        "media_identity_hash"
+    ]
+    assert existing_media_hash
+    assert incoming_media_hash
+    assert existing_media_hash != incoming_media_hash
 
 
 def test_same_voice_identity_is_duplicated_when_only_frame_anchor_moves():
@@ -8819,7 +9183,10 @@ def test_same_voice_identity_is_duplicated_when_only_frame_anchor_moves():
         content="同一条语音转写",
         screen_order=1,
         raw_extra={
-            "dedupe_basis": {"worker_stable_id": "worker-message-31"}
+            "dedupe_basis": {
+                "source": "worker_cross_round_sequence",
+                "worker_stable_id": "worker-message-31",
+            }
         },
     )
     original = client.post(
