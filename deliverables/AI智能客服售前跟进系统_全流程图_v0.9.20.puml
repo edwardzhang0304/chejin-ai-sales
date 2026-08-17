@@ -1,5 +1,5 @@
 @startuml
-' 文档版本：v0.9.19；灰度候选版本：0.9.19；最后更新：2026-08-16
+' 文档版本：v0.9.20；灰度候选版本：0.9.20；最后更新：2026-08-17
 title AI智能客服售前跟进系统 全流程图（C0-C4、媒体、回复、转人工与恢复）
 
 skinparam monochrome true
@@ -77,8 +77,8 @@ group C0-C1：线索进入、分配销售与加好友
   W -> Lock: 获取本地微信UI锁
   W -> OA: add_friend\n最终确定后短暂等待稳定画面
   OA -> WX: 搜索手机号、填写短码备注、发送好友申请
-  OA -> OA: 若顶部标题精确为“添加朋友”\n点击右上角X完成UI收尾\n标题不明确则零点击
-  OA --> W: invite_sent / already_friend / failed + 动作证据\n收尾失败不得覆盖已确认invite_sent
+  OA -> OA: invite_sent或already_friend后等待1—2秒\n仅对精确标题或本次已证明且存活的添加朋友HWND\n点击右上角X一次并验证；未知窗口零点击
+  OA --> W: invite_sent / already_friend / failed + 动作证据\n收尾失败不得覆盖已确认完成事实
   W -> C01: 幂等回传任务结果
   W -> Lock: 释放UI锁
   note over C01,Auth

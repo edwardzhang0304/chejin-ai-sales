@@ -858,6 +858,127 @@ def test_add_friend_already_friend_terminal_event_contract() -> None:
     assert_true(terminal.get("result", {}).get("result_code") == "already_friend", f"already_friend result mismatch: {terminal}")
 
 
+def _run_already_friend_cleanup_case(*, close_click_ok: bool) -> tuple[dict[str, object], object]:
+    from PIL import Image
+
+    from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import add_friend_windows
+
+    image = Image.new("RGB", (468, 834), (255, 255, 255))
+    already_friend_items = [
+        {
+            "text": "发消息",
+            "left": 72,
+            "top": 680,
+            "right": 148,
+            "bottom": 718,
+            "center_x": 110,
+            "center_y": 699,
+            "confidence": 0.99,
+        }
+    ]
+
+    class WindowApi:
+        def __init__(self) -> None:
+            self.exists = True
+
+        def IsWindow(self, _hwnd: int) -> bool:
+            return self.exists
+
+        def IsWindowVisible(self, _hwnd: int) -> bool:
+            return self.exists
+
+    class FakeOps:
+        def __init__(self) -> None:
+            self.win32gui = WindowApi()
+            self.click_names: list[str] = []
+            self.click_hwnds: list[int] = []
+            self.pause_reasons: list[str] = []
+
+        def add_friend_paced_pause(self, *_args, **kwargs) -> float:
+            self.pause_reasons.append(str(kwargs.get("reason") or ""))
+            return 0.0
+
+        def human_window_image_click_in_bounds(self, hwnd, *_args, **kwargs):
+            self.click_names.append(str(kwargs.get("action_name") or ""))
+            self.click_hwnds.append(int(hwnd))
+            if close_click_ok:
+                self.win32gui.exists = False
+                return {"ok": True}
+            return {"ok": False, "reason": "simulated_close_click_failure"}
+
+        def capture_wechat_window_visible_screen(self, *_args, **_kwargs):
+            raise AssertionError("a destroyed or failed-close dialog must not be recaptured")
+
+        def run_ocr_on_screen_region(self, *_args, **_kwargs):
+            raise AssertionError("a destroyed or failed-close dialog must not be re-OCRed")
+
+    fake_ops = FakeOps()
+    original_ops = add_friend_windows._SIDECAR_OPS
+    try:
+        add_friend_windows.bind_sidecar_ops(fake_ops)
+        with (
+            patch.object(add_friend_windows, "add_friend_search_result_add_contact_target", return_value=None),
+            patch.object(add_friend_windows, "draw_add_friend_screen_annotation", return_value="annotated.png"),
+        ):
+            result = add_friend_windows.click_add_contact_entry_from_search_result(
+                3003,
+                Path(tempfile.mkdtemp(prefix="add-friend-already-friend-cleanup-test-")),
+                result_shot=image,
+                result_path="already-friend.png",
+                result_items=already_friend_items,
+                query="17368746889",
+            )
+    finally:
+        add_friend_windows.bind_sidecar_ops(original_ops)
+    return result, fake_ops
+
+
+def test_already_friend_residual_dialog_is_closed_once() -> None:
+    result, fake_ops = _run_already_friend_cleanup_case(close_click_ok=True)
+
+    assert_true(result.get("ok") is True, f"already_friend must remain successful: {result}")
+    assert_true(result.get("result_code") == "already_friend", f"unexpected result: {result}")
+    assert_true(
+        fake_ops.pause_reasons == [
+            "after_already_friend_detection_before_cleanup",
+            "after_already_friend_add_friend_dialog_close_before_verify",
+        ],
+        f"already_friend cleanup pacing mismatch: {fake_ops.pause_reasons}",
+    )
+    assert_true(
+        fake_ops.click_names == ["already_friend_add_friend_dialog_close"]
+        and fake_ops.click_hwnds == [3003],
+        f"already_friend must close the proven dialog exactly once: "
+        f"names={fake_ops.click_names}, hwnds={fake_ops.click_hwnds}",
+    )
+    cleanup = result.get("post_confirm_cleanup") or {}
+    assert_true(
+        cleanup.get("attempted") is True and cleanup.get("closed") is True,
+        f"already_friend close evidence mismatch: {cleanup}",
+    )
+    assert_true(
+        cleanup.get("detection_source") == "known_dialog_hwnd",
+        f"the proven search/profile HWND must authorize sparse-page cleanup: {cleanup}",
+    )
+
+
+def test_already_friend_close_failure_does_not_hide_success_or_claim_closed() -> None:
+    result, fake_ops = _run_already_friend_cleanup_case(close_click_ok=False)
+
+    assert_true(result.get("ok") is True, f"already_friend fact must remain successful: {result}")
+    assert_true(
+        fake_ops.click_names == ["already_friend_add_friend_dialog_close"],
+        f"failed cleanup must not retry the click: {fake_ops.click_names}",
+    )
+    cleanup = result.get("post_confirm_cleanup") or {}
+    assert_true(
+        cleanup.get("attempted") is True
+        and cleanup.get("closed") is False
+        and cleanup.get("reason") == "dialog_close_click_failed",
+        f"failed cleanup evidence mismatch: {cleanup}",
+    )
+
+
 def test_sidecar_uses_flow_context_for_entry_click() -> None:
     sidecar = (
         PROJECT_ROOT / "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py"
@@ -2187,6 +2308,8 @@ def main() -> int:
         test_add_friend_flow_events_contract,
         test_add_friend_flow_context_contract,
         test_add_friend_already_friend_terminal_event_contract,
+        test_already_friend_residual_dialog_is_closed_once,
+        test_already_friend_close_failure_does_not_hide_success_or_claim_closed,
         test_sidecar_uses_flow_context_for_entry_click,
         test_add_friend_flow_forwards_action_journal_on_every_query_path,
         test_sidecar_uses_add_friend_payload_builders,

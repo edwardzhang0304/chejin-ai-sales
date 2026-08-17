@@ -1375,6 +1375,152 @@ def _known_add_friend_dialog_close_target(
     }
 
 
+def close_proven_add_friend_dialog(
+    hwnd: int,
+    output_dir: Path,
+    *,
+    current_shot: Image.Image,
+    current_items: list[dict[str, Any]],
+    action_name: str,
+    verify_label: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Best-effort close of an HWND already proven to be Add Friend.
+
+    The caller must establish the window identity before calling this helper.
+    This function never guesses from body copy and never retries a close click.
+    """
+
+    timings: list[dict[str, Any]] = []
+    ocr_cleanup_target = add_friend_residual_dialog_close_target(
+        current_items,
+        current_shot.size,
+    )
+    cleanup_target = ocr_cleanup_target or _known_add_friend_dialog_close_target(
+        current_shot.size
+    )
+    cleanup: dict[str, Any] = {
+        "detected": cleanup_target is not None,
+        "attempted": False,
+        "closed": False,
+        "reason": (
+            "residual_dialog_detected_by_ocr"
+            if ocr_cleanup_target is not None
+            else (
+                "residual_known_dialog_detected_by_surviving_hwnd"
+                if cleanup_target is not None
+                else "residual_dialog_close_target_unavailable"
+            )
+        ),
+        "target": cleanup_target,
+        "detection_source": (
+            "ocr_title"
+            if ocr_cleanup_target is not None
+            else ("known_dialog_hwnd" if cleanup_target is not None else "unknown")
+        ),
+        "window_exists_before_cleanup": True,
+    }
+    if cleanup_target is None:
+        return cleanup, timings
+
+    cleanup_click_started_at = time.perf_counter()
+    cleanup_click = _ops().human_window_image_click_in_bounds(
+        int(hwnd),
+        int(cleanup_target["x"]),
+        int(cleanup_target["y"]),
+        bounds=list(cleanup_target["click_bounds"]),
+        action_name=action_name,
+    )
+    timings.append(
+        {
+            "name": action_name,
+            "seconds": round(time.perf_counter() - cleanup_click_started_at, 3),
+            "result": cleanup_click,
+        }
+    )
+    cleanup.update({"attempted": True, "click": cleanup_click, "closed": False})
+    if not cleanup_click.get("ok"):
+        cleanup["reason"] = "dialog_close_click_failed"
+        return cleanup, timings
+
+    pause_seconds = _ops().add_friend_paced_pause(
+        "verify",
+        reason=f"after_{action_name}_before_verify",
+    )
+    timings.append(
+        {
+            "name": f"after_{action_name}_before_verify_pause",
+            "seconds": round(pause_seconds, 3),
+        }
+    )
+    window_api = getattr(_ops(), "win32gui", None)
+    is_window_fn = getattr(window_api, "IsWindow", None)
+    is_window_visible_fn = getattr(window_api, "IsWindowVisible", None)
+    window_exists = bool(is_window_fn(hwnd)) if callable(is_window_fn) else True
+    window_visible = (
+        bool(is_window_visible_fn(hwnd))
+        if callable(is_window_visible_fn) and window_exists
+        else None
+    )
+    if not window_exists:
+        cleanup.update(
+            {
+                "closed": True,
+                "reason": "dialog_window_destroyed_after_close",
+                "verification": {"window_exists": False, "window_visible": False},
+            }
+        )
+        return cleanup, timings
+    if window_visible is False:
+        cleanup.update(
+            {
+                "closed": True,
+                "reason": "dialog_window_hidden_after_close",
+                "verification": {"window_exists": True, "window_visible": False},
+            }
+        )
+        return cleanup, timings
+
+    try:
+        cleanup_shot, cleanup_path = _ops().capture_wechat_window_visible_screen(
+            int(hwnd),
+            artifact_dir=str(output_dir),
+            label=verify_label,
+        )
+        cleanup_items = _ops().run_ocr_on_screen_region(
+            cleanup_shot,
+            [0, 0, cleanup_shot.size[0], cleanup_shot.size[1]],
+        )
+        residual_target = add_friend_residual_dialog_close_target(
+            cleanup_items,
+            cleanup_shot.size,
+        )
+        cleanup.update(
+            {
+                "closed": False,
+                "reason": "residual_dialog_still_visible",
+                "verification": {
+                    "window_exists": True,
+                    "window_visible": window_visible,
+                    "screenshot_path": cleanup_path,
+                    "ocr_items": add_friend_ocr_snapshots(
+                        cleanup_items,
+                        cleanup_shot.size,
+                    ),
+                    "residual_target": residual_target,
+                },
+            }
+        )
+    except Exception as exc:
+        cleanup.update(
+            {
+                "closed": False,
+                "reason": "cleanup_verification_failed",
+                "verification": {"window_exists": True, "error": repr(exc)},
+            }
+        )
+    return cleanup, timings
+
+
 def add_friend_invite_form_surface_detected(ocr_items: list[dict[str, Any]]) -> dict[str, Any]:
     surface = add_friend_surface_text(ocr_items)
     has_title = "申请添加朋友" in surface or "朋友验证" in surface
@@ -1466,7 +1612,37 @@ def click_add_contact_entry_from_search_result(hwnd: int, output_dir: Path, *, r
     if target is None:
         surface = classify_add_friend_ocr_surface(result_items, result_shot.size)
         if surface.get('result_code') == RESULT_ALREADY_FRIEND:
-            return add_friend_completed_result(state='already_friend', result_code=RESULT_ALREADY_FRIEND, current_step='searching_contact', screenshot_path=result_path, annotated_path=annotated_before, targets=[], ocr_items=add_friend_ocr_snapshots(result_items, result_shot.size), result_basis='search_result_profile_has_message_actions')
+            pause_seconds = _ops().add_friend_paced_pause(
+                'post_confirm_cleanup',
+                reason='after_already_friend_detection_before_cleanup',
+            )
+            cleanup, close_timings = close_proven_add_friend_dialog(
+                hwnd,
+                output_dir,
+                current_shot=result_shot,
+                current_items=result_items,
+                action_name='already_friend_add_friend_dialog_close',
+                verify_label='add_friend_already_friend_cleanup_verify_window',
+            )
+            cleanup_timings = [
+                {
+                    'name': 'after_already_friend_detection_before_cleanup_pause',
+                    'seconds': round(pause_seconds, 3),
+                },
+                *close_timings,
+            ]
+            return add_friend_completed_result(
+                state='already_friend',
+                result_code=RESULT_ALREADY_FRIEND,
+                current_step='searching_contact',
+                screenshot_path=result_path,
+                annotated_path=annotated_before,
+                targets=[],
+                ocr_items=add_friend_ocr_snapshots(result_items, result_shot.size),
+                result_basis='search_result_profile_has_message_actions',
+                post_confirm_cleanup=cleanup,
+                timings=cleanup_timings,
+            )
         return add_friend_add_contact_entry_not_found_payload(phone=query, screenshot_path=result_path, annotated_path=annotated_before, targets=[], ocr_items=add_friend_ocr_snapshots(result_items, result_shot.size))
     timings: list[dict[str, Any]] = []
     pause_seconds = _ops().add_friend_paced_pause('critical_click', reason='before_add_contact_entry_click')
@@ -1735,125 +1911,24 @@ def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, veri
     after_items = _ops().run_ocr_on_screen_region(after_shot, [0, 0, after_shot.size[0], after_shot.size[1]])
     final_status = classify_add_friend_after_confirm_surface(after_items, after_shot.size, confirm_ok=bool(confirm_result.get('ok')))
     result_ok = bool(final_status.get('ok'))
-    ocr_cleanup_target = add_friend_residual_dialog_close_target(
-        after_items,
-        after_shot.size,
-    )
-    # ``post_confirm_hwnd`` is not an arbitrary WeChat window.  It is either
-    # the previously proven add-friend search/profile dialog or the previously
-    # proven invite form, and the capture above proves that the same HWND is
-    # still alive after confirm.  Do not turn a missed title OCR into a false
-    # "already closed" result.
-    cleanup_target = ocr_cleanup_target or _known_add_friend_dialog_close_target(
-        after_shot.size
-    )
     post_confirm_cleanup: dict[str, Any] = {
-        'detected': cleanup_target is not None,
+        'detected': False,
         'attempted': False,
         'closed': False,
-        'reason': (
-            'residual_dialog_detected_by_ocr'
-            if ocr_cleanup_target is not None
-            else (
-                'residual_known_dialog_detected_by_surviving_hwnd'
-                if cleanup_target is not None
-                else 'residual_dialog_close_target_unavailable'
-            )
-        ),
-        'target': cleanup_target,
-        'detection_source': (
-            'ocr_title'
-            if ocr_cleanup_target is not None
-            else ('known_dialog_hwnd' if cleanup_target is not None else 'unknown')
-        ),
+        'reason': 'invite_result_not_confirmed_for_cleanup',
+        'detection_source': 'none',
         'window_exists_before_cleanup': True,
     }
-    if result_ok and confirm_result.get('ok') and cleanup_target is not None:
-        cleanup_click_started_at = time.perf_counter()
-        cleanup_click = _ops().human_window_image_click_in_bounds(
+    if result_ok and confirm_result.get('ok'):
+        post_confirm_cleanup, cleanup_timings = close_proven_add_friend_dialog(
             post_confirm_hwnd,
-            int(cleanup_target['x']),
-            int(cleanup_target['y']),
-            bounds=list(cleanup_target['click_bounds']),
+            output_dir,
+            current_shot=after_shot,
+            current_items=after_items,
             action_name='post_confirm_add_friend_dialog_close',
+            verify_label='add_friend_post_confirm_cleanup_verify_window',
         )
-        timings.append({
-            'name': 'post_confirm_add_friend_dialog_close',
-            'seconds': round(time.perf_counter() - cleanup_click_started_at, 3),
-            'result': cleanup_click,
-        })
-        post_confirm_cleanup.update({'attempted': True, 'click': cleanup_click, 'closed': False})
-        if not cleanup_click.get('ok'):
-            post_confirm_cleanup['reason'] = 'dialog_close_click_failed'
-        else:
-            pause_seconds = _ops().add_friend_paced_pause(
-                'verify',
-                reason='after_post_confirm_dialog_close_before_verify',
-            )
-            timings.append({
-                'name': 'after_post_confirm_dialog_close_before_verify_pause',
-                'seconds': round(pause_seconds, 3),
-            })
-            window_exists = bool(is_window_fn(post_confirm_hwnd)) if callable(is_window_fn) else True
-            is_window_visible_fn = getattr(
-                getattr(_ops(), 'win32gui', None),
-                'IsWindowVisible',
-                None,
-            )
-            window_visible = (
-                bool(is_window_visible_fn(post_confirm_hwnd))
-                if callable(is_window_visible_fn) and window_exists
-                else None
-            )
-            if not window_exists:
-                post_confirm_cleanup.update({
-                    'closed': True,
-                    'reason': 'dialog_window_destroyed_after_close',
-                    'verification': {
-                        'window_exists': False,
-                        'window_visible': False,
-                    },
-                })
-            elif window_visible is False:
-                post_confirm_cleanup.update({
-                    'closed': True,
-                    'reason': 'dialog_window_hidden_after_close',
-                    'verification': {
-                        'window_exists': True,
-                        'window_visible': False,
-                    },
-                })
-            else:
-                try:
-                    cleanup_shot, cleanup_path = _ops().capture_wechat_window_visible_screen(
-                        post_confirm_hwnd,
-                        artifact_dir=str(output_dir),
-                        label='add_friend_post_confirm_cleanup_verify_window',
-                    )
-                    cleanup_items = _ops().run_ocr_on_screen_region(
-                        cleanup_shot,
-                        [0, 0, cleanup_shot.size[0], cleanup_shot.size[1]],
-                    )
-                    residual_target = add_friend_residual_dialog_close_target(cleanup_items, cleanup_shot.size)
-                    # The same proven dialog HWND is still visible and
-                    # capturable.  Missing title OCR cannot prove closure.
-                    post_confirm_cleanup.update({
-                        'closed': False,
-                        'reason': 'residual_dialog_still_visible',
-                        'verification': {
-                            'window_exists': True,
-                            'window_visible': window_visible,
-                            'screenshot_path': cleanup_path,
-                            'ocr_items': add_friend_ocr_snapshots(cleanup_items, cleanup_shot.size),
-                            'residual_target': residual_target,
-                        },
-                    })
-                except Exception as exc:
-                    post_confirm_cleanup.update({
-                        'closed': False,
-                        'reason': 'cleanup_verification_failed',
-                        'verification': {'window_exists': True, 'error': repr(exc)},
-                    })
+        timings.extend(cleanup_timings)
     if action_journal_path and confirm_result.get('ok'):
         _ops().write_action_phase_journal(
             action_journal_path,
