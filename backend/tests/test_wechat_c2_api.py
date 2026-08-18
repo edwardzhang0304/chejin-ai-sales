@@ -292,6 +292,7 @@ def _voice_action_evidence(
         "confirmed_action_mapping": {
             "canonical_action_id": action_id,
             "reserved_worker_stable_id": stable_id,
+            "selected_action_token": "voice-token-test",
             "binding_confirmed": True,
             "post_observation_id": observations[-1],
             "derived_observation_ids": [],
@@ -3989,6 +3990,7 @@ def test_worker_v3_five_second_voice_transcript_is_accepted_by_backend():
     action_mapping = {
         "canonical_action_id": "voice-action-five-second",
         "reserved_worker_stable_id": stable_id,
+        "selected_action_token": "voice-token-five-second",
         "pre_observation_id": "voice-pre-five-second",
         "post_observation_id": observation_id,
         "binding_confirmed": True,

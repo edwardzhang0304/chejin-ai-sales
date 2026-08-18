@@ -408,6 +408,9 @@ def test_route_inventory_enforces_admin_and_worker_identity_boundaries():
         "already_friend",
         "fail_task",
         "add_task_evidence",
+        "start_worker_inflight_flow",
+        "finish_worker_inflight_flow",
+        "ingest_stage_events",
     }
     internal_names = {"collect_message_batch", "generate_message_batch"}
     api_routes = [
