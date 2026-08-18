@@ -4211,7 +4211,7 @@ def test_auxiliary_wechat_shell_is_blocked() -> None:
     assert_true(chat.get("detected") is False, f"real chat surface should pass: {chat}")
 
 
-def test_normalize_wechat_window_clamps_offscreen_when_size_is_already_safe() -> None:
+def test_normalize_wechat_window_uses_shared_safe_origin_when_size_is_already_safe() -> None:
     sidecar_mod = sys.modules["apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar"]
     if not hasattr(sidecar_mod.ctypes, "windll"):
         return
@@ -4257,9 +4257,9 @@ def test_normalize_wechat_window_clamps_offscreen_when_size_is_already_safe() ->
         result = normalize_wechat_window(1001)
         assert_true(result.get("ok") is True, f"normalization should pass: {result}")
         assert_true(result.get("applied") is True, f"offscreen same-size window must be moved: {result}")
-        assert_true(calls == [(0, 80, 980, 860)], f"unexpected move call: {calls}")
+        assert_true(calls == [(0, 0, 980, 860)], f"unexpected move call: {calls}")
         assert_true((result.get("after") or {}).get("left") == 0, f"window should be clamped on-screen: {result}")
-        assert_true((result.get("after") or {}).get("top") == 80, f"window should preserve an already safe top: {result}")
+        assert_true((result.get("after") or {}).get("top") == 0, f"window should use the shared safe origin: {result}")
     finally:
         if previous_fixed_origin is None:
             os.environ.pop("WECHAT_WIN32_OCR_WINDOW_FIXED_ORIGIN", None)
@@ -7075,7 +7075,7 @@ def main() -> int:
         test_window_selection_prefers_readable_window_over_larger_blank_window,
         test_dismiss_blank_foreground_minimizes_only_blank_wechat_window,
         test_auxiliary_wechat_shell_is_blocked,
-        test_normalize_wechat_window_clamps_offscreen_when_size_is_already_safe,
+        test_normalize_wechat_window_uses_shared_safe_origin_when_size_is_already_safe,
         test_capabilities_success_exposes_top_level_geometry,
         test_blank_render_detection_for_empty_white_capture,
         test_blank_render_detection_for_bordered_white_capture,
