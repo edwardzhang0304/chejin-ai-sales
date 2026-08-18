@@ -107,7 +107,7 @@ def test_plan_1920_class_displays_ignore_dpi_scale_for_default_window() -> None:
         ("1920x1080@100", 1920, 1080, 1.0, (0, 0, 980, 860)),
         ("1920x1080@125-logical", 1536, 864, 1.25, (0, 0, 980, 816)),
         ("local-1920x1200@125-logical", 1536, 960, 1.25, (0, 0, 980, 860)),
-        ("1920x1080@150-logical", 1280, 720, 1.5, (0, 0, 980, 672)),
+        ("1920x1080@150-logical", 1280, 720, 1.5, None),
     ]
     for label, screen_width, screen_height, dpi_scale, expected_rect in cases:
         result = plan(
@@ -116,6 +116,13 @@ def test_plan_1920_class_displays_ignore_dpi_scale_for_default_window() -> None:
             screen_width=screen_width,
             screen_height=screen_height,
         )
+        if expected_rect is None:
+            assert_true(
+                result.get("ok") is False
+                and result.get("reason") == "screen_work_area_too_small_for_minimum_safe_window",
+                f"{label} must block when the work area cannot hold the minimum safe window: {result}",
+            )
+            continue
         assert_true(
             (result.get("left"), result.get("top"), result.get("width"), result.get("height")) == expected_rect,
             f"{label} should keep the 980x860 default class and only clamp to visible bounds: {result}",
@@ -177,13 +184,21 @@ def test_plan_tiny_screen_never_exceeds_visible_screen_bounds() -> None:
         screen_width=500,
         screen_height=420,
     )
-    assert_true((result.get("left"), result.get("top"), result.get("width"), result.get("height")) == (0, 0, 500, 420), f"tiny screen should clamp to visible bounds: {result}")
+    assert_true(
+        result.get("ok") is False
+        and result.get("reason") == "screen_work_area_too_small_for_minimum_safe_window",
+        f"tiny screen must block instead of squeezing the window: {result}",
+    )
 
 
 def test_plan_small_screen_clamps_size_to_visible_screen() -> None:
     before = {"left": 0, "top": 0, "width": 980, "height": 860}
     result = plan(before, screen_width=900, screen_height=760)
-    assert_true((result.get("left"), result.get("top"), result.get("width"), result.get("height")) == (0, 0, 888, 712), f"small screen target mismatch: {result}")
+    assert_true(
+        result.get("ok") is False
+        and result.get("reason") == "screen_work_area_too_small_for_minimum_safe_window",
+        f"small screen must block instead of squeezing the window: {result}",
+    )
 
 
 def test_plan_non_fixed_origin_clamps_existing_origin() -> None:

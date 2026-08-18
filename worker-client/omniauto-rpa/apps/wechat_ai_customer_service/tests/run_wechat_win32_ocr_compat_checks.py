@@ -712,6 +712,15 @@ def test_add_friend_menu_click_handles_stale_dialog_hwnd() -> None:
         "click_bounds": [280, 120, 380, 180],
         "click_screen_bounds": [280, 120, 380, 180],
     }
+    layout_regions = {
+        "left_nav_bounds": [0, 0, 120, 860],
+        "sidebar_bounds": [120, 0, 390, 860],
+        "sidebar_header_bounds": [120, 0, 390, 150],
+        "session_list_bounds": [120, 150, 390, 860],
+        "chat_header_bounds": [390, 0, 980, 120],
+        "message_viewport_bounds": [390, 120, 980, 700],
+        "input_bounds": [390, 700, 980, 860],
+    }
     originals = {
         "add_friend_paced_pause": sidecar_mod.add_friend_paced_pause,
         "human_screen_hover": sidecar_mod.human_screen_hover,
@@ -720,13 +729,43 @@ def test_add_friend_menu_click_handles_stale_dialog_hwnd() -> None:
         "get_window_geometry": sidecar_mod.get_window_geometry,
         "capture_wechat_window_visible_screen": sidecar_mod.capture_wechat_window_visible_screen,
         "draw_add_friend_screen_annotation": sidecar_mod.draw_add_friend_screen_annotation,
+        "get_window_client_geometry": sidecar_mod.get_window_client_geometry,
+        "window_dpi_scale": sidecar_mod.window_dpi_scale,
+        "activate_window": sidecar_mod.activate_window,
+        "ensure_left_button_released": sidecar_mod.ensure_left_button_released,
+        "layout_store": sidecar_mod._LAYOUT_SNAPSHOT_STORE,
+        "latest_layout": dict(sidecar_mod._LATEST_LAYOUT_SNAPSHOT_BY_HWND),
     }
     try:
+        snapshot = sidecar_mod.win32_ocr_layout.build_layout_snapshot(
+            hwnd=1001,
+            frame_id="compat-menu-frame",
+            capture_mode=sidecar_mod.win32_ocr_layout.CAPTURE_MODE_WINDOW_VISIBLE_SCREEN,
+            image_size=(980, 860),
+            capture_screen_origin=[0, 0],
+            window_rect=geometry,
+            client_rect=[0, 0, 962, 820],
+            client_screen_origin=[9, 32],
+            dpi_scale=1.0,
+            regions=layout_regions,
+            anchors=[],
+            confidence=0.95,
+            executable=True,
+        )
+        sidecar_mod._LAYOUT_SNAPSHOT_STORE = sidecar_mod.win32_ocr_layout.LayoutSnapshotStore()
+        sidecar_mod._LAYOUT_SNAPSHOT_STORE.put(snapshot)
+        sidecar_mod._LATEST_LAYOUT_SNAPSHOT_BY_HWND.clear()
+        sidecar_mod._LATEST_LAYOUT_SNAPSHOT_BY_HWND[1001] = snapshot["layout_snapshot_id"]
+        target["layout_snapshot_id"] = snapshot["layout_snapshot_id"]
         sidecar_mod.add_friend_paced_pause = lambda *_args, **_kwargs: 0.0
         sidecar_mod.human_screen_hover = lambda *_args, **_kwargs: {"ok": True}
         sidecar_mod.human_screen_click_in_bounds = lambda *_args, **_kwargs: {"ok": True}
+        sidecar_mod.activate_window = lambda *_args, **_kwargs: None
+        sidecar_mod.ensure_left_button_released = lambda *_args, **_kwargs: None
         sidecar_mod.wait_for_add_friend_dialog_window = lambda **_kwargs: {"ok": True, "hwnd": 2002}
         sidecar_mod.get_window_geometry = lambda hwnd: (_ for _ in ()).throw(RuntimeError("invalid hwnd")) if int(hwnd) == 2002 else dict(geometry)
+        sidecar_mod.get_window_client_geometry = lambda _hwnd: {"left": 0, "top": 0, "right": 962, "bottom": 820, "width": 962, "height": 820, "screen_left": 9, "screen_top": 32}
+        sidecar_mod.window_dpi_scale = lambda _hwnd: 1.0
         sidecar_mod.capture_wechat_window_visible_screen = lambda hwnd, **_kwargs: (screenshot, f"capture_{hwnd}.png")
         sidecar_mod.draw_add_friend_screen_annotation = lambda *_args, **_kwargs: "annotated.png"
         with tempfile.TemporaryDirectory() as artifact_dir:
@@ -738,7 +777,12 @@ def test_add_friend_menu_click_handles_stale_dialog_hwnd() -> None:
         assert_true(result.get("readiness", {}).get("dialog_handle_invalid") is True, f"readiness should record stale hwnd: {result}")
     finally:
         for name, value in originals.items():
+            if name in {"layout_store", "latest_layout"}:
+                continue
             setattr(sidecar_mod, name, value)
+        sidecar_mod._LAYOUT_SNAPSHOT_STORE = originals["layout_store"]
+        sidecar_mod._LATEST_LAYOUT_SNAPSHOT_BY_HWND.clear()
+        sidecar_mod._LATEST_LAYOUT_SNAPSHOT_BY_HWND.update(originals["latest_layout"])
 
 
 def test_add_friend_uses_serialized_human_pacing() -> None:
@@ -3846,8 +3890,9 @@ def test_rpa_action_pacing_covers_keyboard_mouse_and_window_image_clicks() -> No
     )
     image_click_body = source[source.find("def human_window_image_click") : source.find("def client_to_screen")]
     assert_true(
-        "jitter_window_image_click_surface_point" in image_click_body,
-        "window-image clicks should jitter fixed screenshot coordinates before clicking",
+        "_map_window_image_target" in image_click_body
+        and "layout_snapshot_id" in image_click_body,
+        "window-image clicks should pass through the current layout snapshot coordinate mapper",
     )
     key_body = source[source.find("def key_press") : source.find("def is_wechat_main_window")]
     hotkey_body = source[source.find("def hotkey") : source.find("def key_press")]

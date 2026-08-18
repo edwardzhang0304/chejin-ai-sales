@@ -326,7 +326,13 @@ def add_friend_plus_entry_target(
     *,
     screenshot: Any | None = None,
     route_kind: str = "windows",
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    dynamic_bounds = None
+    if isinstance(layout_snapshot, dict):
+        candidate_bounds = layout_snapshot.get("sidebar_header_bounds")
+        if isinstance(candidate_bounds, list) and len(candidate_bounds) >= 4:
+            dynamic_bounds = [int(value) for value in candidate_bounds[:4]]
     return layout_plus_entry_target(
         geometry,
         image_size,
@@ -336,6 +342,7 @@ def add_friend_plus_entry_target(
         split_x_fn=session_split_x,
         search_box_point_fn=search_box_point_for_geometry,
         region_for_point_fn=add_friend_region_for_point,
+        dynamic_sidebar_header_bounds=dynamic_bounds,
     )
 
 def normalize_point_for_add_friend_target(point: Any) -> list[int]:
@@ -629,14 +636,14 @@ def draw_add_friend_layout_calibration_annotation(
 def add_friend_popup_menu_bounds(
     image_size: tuple[int, int],
     *,
-    plus_screen_x: int,
-    plus_screen_y: int,
+    plus_image_x: int,
+    plus_image_y: int,
 ) -> list[int]:
     width, height = image_size
-    left = max(0, int(plus_screen_x) - 86)
-    top = max(0, int(plus_screen_y) + 24)
-    right = min(width, int(plus_screen_x) + 132)
-    bottom = min(height, int(plus_screen_y) + 206)
+    left = max(0, int(plus_image_x) - 86)
+    top = max(0, int(plus_image_y) + 24)
+    right = min(width, int(plus_image_x) + 132)
+    bottom = min(height, int(plus_image_y) + 206)
     return [left, top, right, bottom]
 
 def add_friend_menu_text_matches(text: str, tokens: tuple[str, ...]) -> bool:
@@ -681,18 +688,18 @@ def add_friend_expected_menu_target(
     *,
     name: str,
     label: str,
-    plus_screen_x: int,
-    plus_screen_y: int,
+    plus_image_x: int,
+    plus_image_y: int,
     y_offset: int,
     image_size: tuple[int, int],
 ) -> dict[str, Any]:
     width, height = image_size
-    target_x = bounded_int(plus_screen_x + 36, default=plus_screen_x + 36, minimum=0, maximum=max(0, width - 1))
-    target_y = bounded_int(plus_screen_y + y_offset, default=plus_screen_y + y_offset, minimum=0, maximum=max(0, height - 1))
+    target_x = bounded_int(plus_image_x + 36, default=plus_image_x + 36, minimum=0, maximum=max(0, width - 1))
+    target_y = bounded_int(plus_image_y + y_offset, default=plus_image_y + y_offset, minimum=0, maximum=max(0, height - 1))
     bounds = add_friend_expected_menu_click_bounds(
         image_size=image_size,
-        plus_screen_x=plus_screen_x,
-        plus_screen_y=plus_screen_y,
+        plus_image_x=plus_image_x,
+        plus_image_y=plus_image_y,
         y_offset=y_offset,
     )
     target = geometry_fallback_locator(
@@ -705,7 +712,7 @@ def add_friend_expected_menu_target(
         fallback_reason="ocr_menu_item_not_detected",
         risk="diagnostic_expected_popup_menu_item_center",
         source="expected_popup_geometry",
-        metadata={"image_size": [width, height], "plus_point": [plus_screen_x, plus_screen_y], "y_offset": y_offset},
+        metadata={"image_size": [width, height], "plus_point": [plus_image_x, plus_image_y], "y_offset": y_offset},
     )
     target["screen_x"] = target_x
     target["screen_y"] = target_y
@@ -732,21 +739,21 @@ def add_friend_popup_menu_item_click_bounds(item: dict[str, Any], popup_bounds: 
 def add_friend_expected_menu_click_bounds(
     *,
     image_size: tuple[int, int],
-    plus_screen_x: int,
-    plus_screen_y: int,
+    plus_image_x: int,
+    plus_image_y: int,
     y_offset: int,
 ) -> list[int]:
-    popup_bounds = add_friend_popup_menu_bounds(image_size, plus_screen_x=plus_screen_x, plus_screen_y=plus_screen_y)
+    popup_bounds = add_friend_popup_menu_bounds(image_size, plus_image_x=plus_image_x, plus_image_y=plus_image_y)
     left, top, right, bottom = [int(value) for value in popup_bounds[:4]]
-    center_y = bounded_int(plus_screen_y + y_offset, default=plus_screen_y + y_offset, minimum=top + 8, maximum=bottom - 8)
+    center_y = bounded_int(plus_image_y + y_offset, default=plus_image_y + y_offset, minimum=top + 8, maximum=bottom - 8)
     return [left + 10, max(top + 4, center_y - 22), right - 10, min(bottom - 4, center_y + 22)]
 
 def add_friend_menu_candidate_targets(
     ocr_items: list[dict[str, Any]],
     image_size: tuple[int, int],
     *,
-    plus_screen_x: int | None = None,
-    plus_screen_y: int | None = None,
+    plus_image_x: int | None = None,
+    plus_image_y: int | None = None,
     include_expected: bool = True,
 ) -> list[dict[str, Any]]:
     candidates = [
@@ -756,8 +763,8 @@ def add_friend_menu_candidate_targets(
         ("new_note_menu_entry", "Menu candidate: 新建笔记", ("新建笔记",)),
     ]
     popup_bounds = (
-        add_friend_popup_menu_bounds(image_size, plus_screen_x=int(plus_screen_x), plus_screen_y=int(plus_screen_y))
-        if plus_screen_x is not None and plus_screen_y is not None
+        add_friend_popup_menu_bounds(image_size, plus_image_x=int(plus_image_x), plus_image_y=int(plus_image_y))
+        if plus_image_x is not None and plus_image_y is not None
         else [0, 0, image_size[0], image_size[1]]
     )
     targets: list[dict[str, Any]] = []
@@ -784,7 +791,7 @@ def add_friend_menu_candidate_targets(
         target["raw_y"] = center_y
         target["item"] = add_friend_item_snapshot(item, image_size)
         targets.append(target)
-    if include_expected and plus_screen_x is not None and plus_screen_y is not None:
+    if include_expected and plus_image_x is not None and plus_image_y is not None:
         existing = {str(target.get("name") or "") for target in targets}
         expected_offsets = [
             ("start_group_chat_menu_entry", "Expected popup center: 发起群聊", 60),
@@ -797,8 +804,8 @@ def add_friend_menu_candidate_targets(
             expected = add_friend_expected_menu_target(
                 name=name,
                 label=label,
-                plus_screen_x=int(plus_screen_x),
-                plus_screen_y=int(plus_screen_y),
+                plus_image_x=int(plus_image_x),
+                plus_image_y=int(plus_image_y),
                 y_offset=y_offset,
                 image_size=image_size,
             )
@@ -853,26 +860,6 @@ def add_friend_target_by_name(targets: list[dict[str, Any]], name: str) -> dict[
         if isinstance(target, dict) and str(target.get("name") or "") == name:
             return target
     return None
-
-def add_friend_target_screen_point(target: dict[str, Any]) -> tuple[int, int]:
-    return int(target.get("click_screen_x", target.get("screen_x", target.get("x") or 0)) or 0), int(target.get("click_screen_y", target.get("screen_y", target.get("y") or 0)) or 0)
-
-def add_click_screen_origin_to_targets(targets: list[dict[str, Any]], *, origin_x: int, origin_y: int) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    for target in targets:
-        copied = dict(target)
-        copied["click_screen_x"] = int(origin_x) + int(copied.get("x") or 0)
-        copied["click_screen_y"] = int(origin_y) + int(copied.get("y") or 0)
-        bounds = copied.get("click_bounds")
-        if isinstance(bounds, list) and len(bounds) >= 4:
-            copied["click_screen_bounds"] = [
-                int(origin_x) + int(bounds[0]),
-                int(origin_y) + int(bounds[1]),
-                int(origin_x) + int(bounds[2]),
-                int(origin_y) + int(bounds[3]),
-            ]
-        result.append(copied)
-    return result
 
 def add_friend_page_search_region(image_size: tuple[int, int]) -> list[int]:
     width, height = image_size
@@ -2103,26 +2090,35 @@ def click_add_friend_menu_entry_and_capture(hwnd: int, output_dir: Path, *, menu
     if str(target.get('source') or '') != 'ocr_popup_menu_item':
         return {'clicked': False, 'reason': 'add_friend_menu_entry_requires_ocr_confirmation', 'target': target}
     click_bounds = target.get('click_bounds')
-    screen_bounds = target.get('click_screen_bounds')
-    if not (isinstance(click_bounds, list) and len(click_bounds) >= 4 and isinstance(screen_bounds, list) and (len(screen_bounds) >= 4)):
+    if not (isinstance(click_bounds, list) and len(click_bounds) >= 4):
         return {'clicked': False, 'reason': 'add_friend_menu_entry_missing_click_bounds', 'target': target}
     target_x = int(target.get('x') or 0)
     target_y = int(target.get('y') or 0)
     if not point_in_bounds(target_x, target_y, click_bounds):
         return {'clicked': False, 'reason': 'add_friend_menu_entry_target_outside_click_bounds', 'target': target, 'click_bounds': click_bounds}
-    screen_x, screen_y = add_friend_target_screen_point(target)
-    if not point_in_bounds(screen_x, screen_y, screen_bounds):
-        screen_x, screen_y = clamp_point_to_bounds(screen_x, screen_y, screen_bounds)
+    layout_snapshot_id = str(target.get('layout_snapshot_id') or '')
     timings: list[dict[str, Any]] = []
     pause_seconds = _ops().add_friend_paced_pause('critical_click', reason='before_add_friend_menu_hover')
     timings.append({'name': 'before_add_friend_menu_hover_pause', 'seconds': round(pause_seconds, 3)})
     hover_started_at = time.perf_counter()
-    hover_result = _ops().human_screen_hover(screen_x, screen_y, action_name='add_friend_menu_entry_hover')
+    hover_result = _ops().human_window_image_hover(
+        hwnd,
+        target_x,
+        target_y,
+        expected_snapshot_id=layout_snapshot_id,
+    )
     timings.append({'name': 'add_friend_menu_entry_hover', 'seconds': round(time.perf_counter() - hover_started_at, 3), 'result': hover_result})
     pause_seconds = _ops().add_friend_paced_pause('critical_click', reason='after_add_friend_menu_hover_before_click')
     timings.append({'name': 'after_add_friend_menu_hover_before_click_pause', 'seconds': round(pause_seconds, 3)})
     click_started_at = time.perf_counter()
-    click_result = _ops().human_screen_click_in_bounds(screen_x, screen_y, bounds=screen_bounds, action_name='add_friend_menu_entry_click')
+    click_result = _ops().human_window_image_click_in_bounds(
+        hwnd,
+        target_x,
+        target_y,
+        bounds=list(click_bounds),
+        action_name='add_friend_menu_entry_click',
+        expected_snapshot_id=layout_snapshot_id,
+    )
     timings.append({'name': 'add_friend_menu_entry_click', 'seconds': round(time.perf_counter() - click_started_at, 3), 'result': click_result})
     pause_seconds = _ops().add_friend_paced_pause('verify', reason='after_add_friend_menu_click_before_screen_capture')
     timings.append({'name': 'after_add_friend_menu_click_before_screen_capture_pause', 'seconds': round(pause_seconds, 3)})

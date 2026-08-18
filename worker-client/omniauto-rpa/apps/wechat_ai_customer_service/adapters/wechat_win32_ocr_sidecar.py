@@ -164,6 +164,7 @@ from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import window_vis
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import window_metrics as win32_ocr_window_metrics
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import windowing as win32_ocr_windowing
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import add_friend_windows as win32_ocr_add_friend_windows
+from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import window_layout as win32_ocr_layout
 
 try:
     from rapidocr_onnxruntime import RapidOCR
@@ -184,6 +185,8 @@ _LAST_ACTIVATE_MONOTONIC_BY_HWND: dict[int, float] = {}
 _LAST_RPA_ACTION_STATE: dict[str, Any] = {}
 _LAST_OPEN_CHAT_TIMING: dict[str, Any] = {}
 _LAST_SESSION_ACTIVATION_TIMING: dict[str, Any] = {}
+_LAYOUT_SNAPSHOT_STORE = win32_ocr_layout.LayoutSnapshotStore()
+_LATEST_LAYOUT_SNAPSHOT_BY_HWND: dict[int, str] = {}
 RENDER_RECOVERY_GUARD_PATH = PROJECT_ROOT / "runtime" / "wechat_win32_ocr_render_recovery_guard.json"
 MIN_SEND_CLIENT_WIDTH = 700
 MIN_SEND_CLIENT_HEIGHT = 720
@@ -7487,8 +7490,23 @@ def find_sidebar_search_anchor_item(ocr_items: list[dict[str, Any]], image_size:
     return win32_ocr_add_friend_windows.find_sidebar_search_anchor_item(ocr_items, image_size)
 
 
-def add_friend_plus_entry_target(geometry: dict[str, Any], image_size: tuple[int, int], ocr_items: list[dict[str, Any]] | None = None, *, screenshot: Any | None = None, route_kind: str = 'windows') -> dict[str, Any]:
-    return win32_ocr_add_friend_windows.add_friend_plus_entry_target(geometry, image_size, ocr_items, screenshot=screenshot, route_kind=route_kind)
+def add_friend_plus_entry_target(
+    geometry: dict[str, Any],
+    image_size: tuple[int, int],
+    ocr_items: list[dict[str, Any]] | None = None,
+    *,
+    screenshot: Any | None = None,
+    route_kind: str = 'windows',
+    layout_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return win32_ocr_add_friend_windows.add_friend_plus_entry_target(
+        geometry,
+        image_size,
+        ocr_items,
+        screenshot=screenshot,
+        route_kind=route_kind,
+        layout_snapshot=layout_snapshot,
+    )
 
 
 def normalize_point_for_add_friend_target(point: Any) -> list[int]:
@@ -7594,8 +7612,8 @@ def draw_add_friend_layout_calibration_annotation(screenshot: Image.Image, *, la
     return win32_ocr_add_friend_windows.draw_add_friend_layout_calibration_annotation(screenshot, layout_calibration=layout_calibration, output_path=output_path)
 
 
-def add_friend_popup_menu_bounds(image_size: tuple[int, int], *, plus_screen_x: int, plus_screen_y: int) -> list[int]:
-    return win32_ocr_add_friend_windows.add_friend_popup_menu_bounds(image_size, plus_screen_x=plus_screen_x, plus_screen_y=plus_screen_y)
+def add_friend_popup_menu_bounds(image_size: tuple[int, int], *, plus_image_x: int, plus_image_y: int) -> list[int]:
+    return win32_ocr_add_friend_windows.add_friend_popup_menu_bounds(image_size, plus_image_x=plus_image_x, plus_image_y=plus_image_y)
 
 
 def run_ocr_on_screen_region(
@@ -7948,20 +7966,20 @@ def find_add_friend_menu_item(ocr_items: list[dict[str, Any]], tokens: tuple[str
     return win32_ocr_add_friend_windows.find_add_friend_menu_item(ocr_items, tokens, image_size, popup_bounds=popup_bounds)
 
 
-def add_friend_expected_menu_target(*, name: str, label: str, plus_screen_x: int, plus_screen_y: int, y_offset: int, image_size: tuple[int, int]) -> dict[str, Any]:
-    return win32_ocr_add_friend_windows.add_friend_expected_menu_target(name=name, label=label, plus_screen_x=plus_screen_x, plus_screen_y=plus_screen_y, y_offset=y_offset, image_size=image_size)
+def add_friend_expected_menu_target(*, name: str, label: str, plus_image_x: int, plus_image_y: int, y_offset: int, image_size: tuple[int, int]) -> dict[str, Any]:
+    return win32_ocr_add_friend_windows.add_friend_expected_menu_target(name=name, label=label, plus_image_x=plus_image_x, plus_image_y=plus_image_y, y_offset=y_offset, image_size=image_size)
 
 
 def add_friend_popup_menu_item_click_bounds(item: dict[str, Any], popup_bounds: list[int]) -> list[int]:
     return win32_ocr_add_friend_windows.add_friend_popup_menu_item_click_bounds(item, popup_bounds)
 
 
-def add_friend_expected_menu_click_bounds(*, image_size: tuple[int, int], plus_screen_x: int, plus_screen_y: int, y_offset: int) -> list[int]:
-    return win32_ocr_add_friend_windows.add_friend_expected_menu_click_bounds(image_size=image_size, plus_screen_x=plus_screen_x, plus_screen_y=plus_screen_y, y_offset=y_offset)
+def add_friend_expected_menu_click_bounds(*, image_size: tuple[int, int], plus_image_x: int, plus_image_y: int, y_offset: int) -> list[int]:
+    return win32_ocr_add_friend_windows.add_friend_expected_menu_click_bounds(image_size=image_size, plus_image_x=plus_image_x, plus_image_y=plus_image_y, y_offset=y_offset)
 
 
-def add_friend_menu_candidate_targets(ocr_items: list[dict[str, Any]], image_size: tuple[int, int], *, plus_screen_x: int | None = None, plus_screen_y: int | None = None, include_expected: bool = True) -> list[dict[str, Any]]:
-    return win32_ocr_add_friend_windows.add_friend_menu_candidate_targets(ocr_items, image_size, plus_screen_x=plus_screen_x, plus_screen_y=plus_screen_y, include_expected=include_expected)
+def add_friend_menu_candidate_targets(ocr_items: list[dict[str, Any]], image_size: tuple[int, int], *, plus_image_x: int | None = None, plus_image_y: int | None = None, include_expected: bool = True) -> list[dict[str, Any]]:
+    return win32_ocr_add_friend_windows.add_friend_menu_candidate_targets(ocr_items, image_size, plus_image_x=plus_image_x, plus_image_y=plus_image_y, include_expected=include_expected)
 
 
 def plus_entry_popup_menu_detected(ocr_items: list[dict[str, Any]], targets: list[dict[str, Any]]) -> dict[str, Any]:
@@ -7974,14 +7992,6 @@ def add_friend_target_review_text(targets: list[dict[str, Any]]) -> str:
 
 def add_friend_target_by_name(targets: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
     return win32_ocr_add_friend_windows.add_friend_target_by_name(targets, name)
-
-
-def add_friend_target_screen_point(target: dict[str, Any]) -> tuple[int, int]:
-    return win32_ocr_add_friend_windows.add_friend_target_screen_point(target)
-
-
-def add_click_screen_origin_to_targets(targets: list[dict[str, Any]], *, origin_x: int, origin_y: int) -> list[dict[str, Any]]:
-    return win32_ocr_add_friend_windows.add_click_screen_origin_to_targets(targets, origin_x=origin_x, origin_y=origin_y)
 
 
 def add_friend_page_search_region(image_size: tuple[int, int]) -> list[int]:
@@ -16051,14 +16061,205 @@ def scroll_chat_to_latest(hwnd: int, *, attempts: int = 16) -> None:
     ensure_left_button_released()
 
 
+def _register_layout_snapshot(
+    hwnd: int,
+    image: Any,
+    *,
+    capture_mode: str,
+    screenshot_path: str,
+    capture_screen_origin: list[int] | tuple[int, int] | None,
+) -> dict[str, Any]:
+    image_size = getattr(image, "size", (0, 0))
+    geometry = get_window_geometry(hwnd)
+    client_geometry = get_window_client_geometry(hwnd)
+    client_origin = None
+    if isinstance(client_geometry, dict):
+        if client_geometry.get("screen_left") is not None and client_geometry.get("screen_top") is not None:
+            client_origin = [
+                int(client_geometry.get("screen_left") or 0),
+                int(client_geometry.get("screen_top") or 0),
+            ]
+    layout = win32_ocr_layout.build_structural_layout_regions(image)
+    snapshot = win32_ocr_layout.build_layout_snapshot(
+        hwnd=int(hwnd),
+        frame_id=win32_ocr_layout.new_frame_id(int(hwnd)),
+        capture_mode=capture_mode,
+        image_size=(int(image_size[0] or 0), int(image_size[1] or 0)),
+        capture_screen_origin=capture_screen_origin,
+        window_rect=geometry,
+        client_rect=client_geometry,
+        client_screen_origin=client_origin,
+        dpi_scale=window_dpi_scale(hwnd),
+        regions=layout.get("regions") or {},
+        anchors=layout.get("anchors") or [],
+        confidence=float(layout.get("confidence") or 0.0),
+        conflicts=list(layout.get("conflicts") or []),
+        executable=bool(layout.get("ok")),
+        screenshot_path=screenshot_path,
+    )
+    snapshot["layout_builder"] = {
+        "ok": bool(layout.get("ok")),
+        "confidence": float(layout.get("confidence") or 0.0),
+        "conflicts": list(layout.get("conflicts") or []),
+        "vertical_candidates": list(layout.get("vertical_candidates") or []),
+    }
+    previous_id = _LATEST_LAYOUT_SNAPSHOT_BY_HWND.get(int(hwnd))
+    if previous_id:
+        _LAYOUT_SNAPSHOT_STORE.invalidate(previous_id, reason="new_frame_captured")
+    _LAYOUT_SNAPSHOT_STORE.put(snapshot)
+    _LATEST_LAYOUT_SNAPSHOT_BY_HWND[int(hwnd)] = str(snapshot["layout_snapshot_id"])
+    return snapshot
+
+
+def current_layout_snapshot(hwnd: int) -> dict[str, Any] | None:
+    snapshot_id = _LATEST_LAYOUT_SNAPSHOT_BY_HWND.get(int(hwnd or 0))
+    if not snapshot_id:
+        return None
+    return _LAYOUT_SNAPSHOT_STORE.get(snapshot_id)
+
+
+def layout_snapshot_metadata(hwnd: int) -> dict[str, Any]:
+    snapshot = current_layout_snapshot(hwnd)
+    if snapshot is None:
+        return {
+            "ok": False,
+            "error_code": win32_ocr_layout.ERROR_LAYOUT_UNRESOLVED,
+            "reason": "layout_snapshot_missing",
+        }
+    return {"ok": True, "snapshot": snapshot}
+
+
+def invalidate_layout_snapshot(hwnd: int, *, reason: str) -> None:
+    snapshot_id = _LATEST_LAYOUT_SNAPSHOT_BY_HWND.get(int(hwnd or 0))
+    if snapshot_id:
+        _LAYOUT_SNAPSHOT_STORE.invalidate(snapshot_id, reason=reason)
+
+
+def _current_click_snapshot(hwnd: int, *, expected_snapshot_id: str = "") -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    snapshot = current_layout_snapshot(hwnd)
+    if snapshot is None:
+        return None, {
+            "ok": False,
+            "error_code": win32_ocr_layout.ERROR_LAYOUT_UNRESOLVED,
+            "reason": "layout_snapshot_missing",
+        }
+    if expected_snapshot_id and str(snapshot.get("layout_snapshot_id") or "") != str(expected_snapshot_id):
+        return None, {
+            "ok": False,
+            "error_code": win32_ocr_layout.ERROR_LAYOUT_STALE,
+            "reason": "layout_snapshot_id_mismatch",
+            "expected_layout_snapshot_id": str(expected_snapshot_id),
+            "actual_layout_snapshot_id": str(snapshot.get("layout_snapshot_id") or ""),
+        }
+    if not bool(snapshot.get("executable")) or not bool(snapshot.get("clickable")):
+        return None, {
+            "ok": False,
+            "error_code": win32_ocr_layout.ERROR_LAYOUT_UNRESOLVED,
+            "reason": "layout_snapshot_not_executable",
+            "layout_snapshot_id": str(snapshot.get("layout_snapshot_id") or ""),
+            "conflicts": list(snapshot.get("conflicts") or []),
+        }
+    if not win32_ocr_layout.current_geometry_matches(
+        snapshot,
+        geometry_provider=get_window_geometry,
+        client_geometry_provider=get_window_client_geometry,
+        dpi_provider=window_dpi_scale,
+    ):
+        invalidate_layout_snapshot(hwnd, reason="window_geometry_changed_before_click")
+        return None, {
+            "ok": False,
+            "error_code": win32_ocr_layout.ERROR_LAYOUT_STALE,
+            "reason": "window_geometry_changed_before_click",
+            "layout_snapshot_id": str(snapshot.get("layout_snapshot_id") or ""),
+        }
+    return snapshot, None
+
+
+def _layout_region_for_point(snapshot: dict[str, Any], x: int, y: int, bounds: list[int] | None) -> list[int]:
+    if isinstance(bounds, list) and len(bounds) >= 4:
+        normalized = win32_ocr_layout.normalize_rect(bounds)
+        if win32_ocr_layout.point_in_bounds([x, y], normalized):
+            return normalized
+        return win32_ocr_layout.clamp_point([x, y], normalized) and normalized
+    for region_name in win32_ocr_layout.REQUIRED_LAYOUT_REGION_NAMES:
+        region = snapshot.get(region_name)
+        if win32_ocr_layout.point_in_bounds([x, y], region):
+            return win32_ocr_layout.normalize_rect(region)
+    raise win32_ocr_layout.LayoutSnapshotError(
+        "target_point_outside_layout_regions",
+        code=win32_ocr_layout.ERROR_COORDINATE_MAPPING_INVALID,
+    )
+
+
+def _map_window_image_target(
+    hwnd: int,
+    x: int,
+    y: int,
+    *,
+    bounds: list[int] | None = None,
+    expected_snapshot_id: str = "",
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    snapshot, failure = _current_click_snapshot(hwnd, expected_snapshot_id=expected_snapshot_id)
+    if failure:
+        return None, failure
+    assert snapshot is not None
+    try:
+        target_bounds = _layout_region_for_point(snapshot, int(x), int(y), bounds)
+        mapped = win32_ocr_layout.transform_target_to_screen(
+            snapshot,
+            point=[int(x), int(y)],
+            bounds=target_bounds,
+        )
+        mapped["image_bounds"] = target_bounds
+        return mapped, None
+    except win32_ocr_layout.LayoutSnapshotError as exc:
+        return None, {
+            "ok": False,
+            "error_code": win32_ocr_layout.ERROR_COORDINATE_MAPPING_INVALID,
+            "reason": exc.reason,
+            "details": exc.details,
+            "layout_snapshot_id": str(snapshot.get("layout_snapshot_id") or ""),
+        }
+
+
 def capture_wechat(hwnd: int, *, artifact_dir: str | None = None, label: str = "wechat") -> tuple[Any, str]:
-    image = capture_window_image(hwnd)
+    geometry = get_window_geometry(hwnd)
+    rect = (
+        int(geometry.get("left") or 0),
+        int(geometry.get("top") or 0),
+        int(geometry.get("right") or 0),
+        int(geometry.get("bottom") or 0),
+    )
+    image = try_image_grab(rect)
+    capture_mode = win32_ocr_layout.CAPTURE_MODE_WINDOW_VISIBLE_SCREEN
+    expected_size = (max(0, rect[2] - rect[0]), max(0, rect[3] - rect[1]))
+    capture_origin: list[int] | None = (
+        [rect[0], rect[1]]
+        if image is not None and tuple(getattr(image, "size", (0, 0))[:2]) == expected_size
+        else None
+    )
+    if image is None:
+        image = capture_window_image(hwnd)
+        capture_mode = win32_ocr_layout.CAPTURE_MODE_PRINT_WINDOW
     if image is None:
         candidates = capture_window_by_rect(hwnd)
         if not candidates:
             raise RuntimeError("capture_wechat_failed: no screenshot candidate is available")
         image = win32_ocr_capture.select_best_capture_candidate(candidates, score=image_information_score)
+        capture_mode = win32_ocr_layout.CAPTURE_MODE_WINDOW_VISIBLE_SCREEN
+        capture_origin = (
+            [rect[0], rect[1]]
+            if tuple(getattr(image, "size", (0, 0))[:2]) == expected_size
+            else None
+        )
     saved = save_screenshot_artifact(image, artifact_dir=artifact_dir, label=label)
+    _register_layout_snapshot(
+        hwnd,
+        image,
+        capture_mode=capture_mode,
+        screenshot_path=saved,
+        capture_screen_origin=capture_origin,
+    )
     return image, saved
 
 
@@ -16077,6 +16278,18 @@ def capture_wechat_window_visible_screen(hwnd: int, *, artifact_dir: str | None 
     if image is None:
         raise RuntimeError("capture_wechat_window_visible_screen_failed")
     saved = save_screenshot_artifact(image, artifact_dir=artifact_dir, label=label)
+    expected_size = (max(0, int(rect[2] - rect[0])), max(0, int(rect[3] - rect[1])))
+    _register_layout_snapshot(
+        hwnd,
+        image,
+        capture_mode=win32_ocr_layout.CAPTURE_MODE_WINDOW_VISIBLE_SCREEN,
+        screenshot_path=saved,
+        capture_screen_origin=(
+            [int(rect[0]), int(rect[1])]
+            if tuple(getattr(image, "size", (0, 0))[:2]) == expected_size
+            else None
+        ),
+    )
     return image, saved
 
 
@@ -17471,74 +17684,73 @@ def human_client_click(hwnd: int, x: int, y: int) -> None:
             ensure_left_button_released()
 
 
-def human_window_image_hover(hwnd: int, x: int, y: int) -> dict[str, Any]:
+def human_window_image_hover(hwnd: int, x: int, y: int, *, expected_snapshot_id: str = "") -> dict[str, Any]:
     """Move the real cursor toward a screenshot-space point without clicking."""
-    target_x, target_y, jitter_meta = jitter_window_image_click_surface_point(hwnd, int(x), int(y))
+    mapped, failure = _map_window_image_target(hwnd, int(x), int(y), expected_snapshot_id=expected_snapshot_id)
+    if failure:
+        return failure
+    assert mapped is not None
+    target_x, target_y = mapped["image_point"]
+    screen_x, screen_y = mapped["screen_point"]
     require_active_ui_action_budget(
         "human_window_image_hover",
-        metadata={"hwnd": int(hwnd or 0), "x": target_x, "y": target_y, "jitter": jitter_meta},
+        metadata={
+            "hwnd": int(hwnd or 0),
+            "x": target_x,
+            "y": target_y,
+            "screen_x": screen_x,
+            "screen_y": screen_y,
+            "layout_snapshot_id": mapped.get("layout_snapshot_id"),
+        },
     )
     activate_window(hwnd)
     ensure_left_button_released()
     try:
-        left, top, _right, _bottom = win32gui.GetWindowRect(hwnd)
-        screen_x = int(left) + int(target_x)
-        screen_y = int(top) + int(target_y)
-        start_x, start_y = win32api.GetCursorPos()
-        steps = random.randint(8, 14)
-        for step in range(1, steps + 1):
-            ratio = step / steps
-            ease = ratio * ratio * (3 - 2 * ratio)
-            drift_x = random.randint(-3, 3) if step < steps else 0
-            drift_y = random.randint(-3, 3) if step < steps else 0
-            next_x = int(start_x + (screen_x - start_x) * ease) + drift_x
-            next_y = int(start_y + (screen_y - start_y) * ease) + drift_y
-            win32api.SetCursorPos((next_x, next_y))
-            time.sleep(random.uniform(0.018, 0.055))
-        time.sleep(random.uniform(0.18, 0.55))
-        return {"ok": True, "x": target_x, "y": target_y, "screen_x": screen_x, "screen_y": screen_y, "steps": steps, "jitter": jitter_meta}
+        result = human_screen_hover(screen_x, screen_y, action_name="human_window_image_hover")
+        return {
+            **result,
+            "x": target_x,
+            "y": target_y,
+            "screen_x": screen_x,
+            "screen_y": screen_y,
+            "layout_snapshot_id": mapped.get("layout_snapshot_id"),
+            "frame_id": mapped.get("frame_id"),
+        }
     except Exception as exc:
-        return {"ok": False, "x": target_x, "y": target_y, "error": repr(exc), "jitter": jitter_meta}
+        return {
+            "ok": False,
+            "x": target_x,
+            "y": target_y,
+            "screen_x": screen_x,
+            "screen_y": screen_y,
+            "error": repr(exc),
+            "layout_snapshot_id": mapped.get("layout_snapshot_id"),
+        }
 
 
-def human_window_image_click(hwnd: int, x: int, y: int) -> None:
+def human_window_image_click(hwnd: int, x: int, y: int, *, expected_snapshot_id: str = "") -> None:
     """Click a point measured in the same coordinate space as screenshots."""
-    click_x, click_y, jitter_meta = jitter_window_image_click_surface_point(hwnd, int(x), int(y))
+    mapped, failure = _map_window_image_target(hwnd, int(x), int(y), expected_snapshot_id=expected_snapshot_id)
+    if failure:
+        raise RuntimeError(f"{failure.get('error_code')}: {failure.get('reason')}")
+    assert mapped is not None
+    click_x, click_y = mapped["image_point"]
+    screen_x, screen_y = mapped["screen_point"]
     require_active_ui_action_budget(
         "human_window_image_click",
-        metadata={"hwnd": int(hwnd or 0), "x": click_x, "y": click_y, "jitter": jitter_meta},
+        metadata={
+            "hwnd": int(hwnd or 0),
+            "x": click_x,
+            "y": click_y,
+            "screen_x": screen_x,
+            "screen_y": screen_y,
+            "layout_snapshot_id": mapped.get("layout_snapshot_id"),
+        },
     )
+    invalidate_layout_snapshot(hwnd, reason="physical_click_started")
     activate_window(hwnd)
     ensure_left_button_released()
-    left_down_sent = False
-    try:
-        left, top, _right, _bottom = win32gui.GetWindowRect(hwnd)
-        screen_x = int(left) + int(click_x)
-        screen_y = int(top) + int(click_y)
-        start_x, start_y = win32api.GetCursorPos()
-        steps = random.randint(5, 9)
-        for step in range(1, steps + 1):
-            ratio = step / steps
-            ease = ratio * ratio * (3 - 2 * ratio)
-            jitter_x = random.randint(-2, 2) if step < steps else 0
-            jitter_y = random.randint(-2, 2) if step < steps else 0
-            next_x = int(start_x + (screen_x - start_x) * ease) + jitter_x
-            next_y = int(start_y + (screen_y - start_y) * ease) + jitter_y
-            win32api.SetCursorPos((next_x, next_y))
-            time.sleep(random.uniform(0.015, 0.045))
-        time.sleep(random.uniform(0.04, 0.12))
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-        left_down_sent = True
-        time.sleep(random.uniform(0.05, 0.12))
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-        left_down_sent = False
-        time.sleep(random.uniform(0.12, 0.28))
-    except Exception:
-        screen_x, screen_y = client_to_screen(hwnd, int(click_x), int(click_y))
-        click(screen_x, screen_y)
-    finally:
-        if left_down_sent:
-            ensure_left_button_released()
+    human_screen_click(screen_x, screen_y, action_name="human_window_image_click")
 
 
 def human_window_image_click_in_bounds(
@@ -17548,56 +17760,69 @@ def human_window_image_click_in_bounds(
     *,
     bounds: list[int],
     action_name: str = "human_window_image_click_in_bounds",
+    expected_snapshot_id: str = "",
 ) -> dict[str, Any]:
     """Click a screenshot-space point, clamped to a known safe window rectangle."""
-    raw_x, raw_y, jitter_meta = jitter_window_image_click_surface_point(hwnd, int(x), int(y))
-    click_x, click_y = clamp_point_to_bounds(raw_x, raw_y, bounds)
+    mapped, failure = _map_window_image_target(
+        hwnd,
+        int(x),
+        int(y),
+        bounds=list(bounds or []),
+        expected_snapshot_id=expected_snapshot_id,
+    )
+    if failure:
+        return failure
+    assert mapped is not None
+    click_x, click_y = mapped["image_point"]
+    screen_x, screen_y = mapped["screen_point"]
     require_active_ui_action_budget(
         action_name,
-        metadata={"hwnd": int(hwnd or 0), "x": click_x, "y": click_y, "bounds": bounds, "jitter": jitter_meta},
-    )
-    activate_window(hwnd)
-    ensure_left_button_released()
-    left_down_sent = False
-    try:
-        left, top, _right, _bottom = win32gui.GetWindowRect(hwnd)
-        screen_x = int(left) + int(click_x)
-        screen_y = int(top) + int(click_y)
-        start_x, start_y = win32api.GetCursorPos()
-        steps = random.randint(6, 11)
-        for step in range(1, steps + 1):
-            ratio = step / steps
-            ease = ratio * ratio * (3 - 2 * ratio)
-            jitter_x = random.randint(-2, 2) if step < steps else 0
-            jitter_y = random.randint(-2, 2) if step < steps else 0
-            next_x = int(start_x + (screen_x - start_x) * ease) + jitter_x
-            next_y = int(start_y + (screen_y - start_y) * ease) + jitter_y
-            win32api.SetCursorPos((next_x, next_y))
-            time.sleep(random.uniform(0.016, 0.052))
-        time.sleep(random.uniform(0.08, 0.22))
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-        left_down_sent = True
-        time.sleep(random.uniform(0.055, 0.145))
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-        left_down_sent = False
-        time.sleep(random.uniform(0.16, 0.34))
-        return {
-            "ok": True,
+        metadata={
+            "hwnd": int(hwnd or 0),
             "x": click_x,
             "y": click_y,
             "screen_x": screen_x,
             "screen_y": screen_y,
-            "raw_x": raw_x,
-            "raw_y": raw_y,
             "bounds": bounds,
-            "steps": steps,
-            "jitter": jitter_meta,
+            "layout_snapshot_id": mapped.get("layout_snapshot_id"),
+        },
+    )
+    invalidate_layout_snapshot(hwnd, reason="physical_click_started")
+    activate_window(hwnd)
+    ensure_left_button_released()
+    try:
+        result = human_screen_click_in_bounds(
+            screen_x,
+            screen_y,
+            bounds=list(mapped["screen_bounds"]),
+            action_name=action_name,
+        )
+        return {
+            **result,
+            "x": click_x,
+            "y": click_y,
+            "screen_x": screen_x,
+            "screen_y": screen_y,
+            "raw_x": int(x),
+            "raw_y": int(y),
+            "bounds": bounds,
+            "image_bounds": mapped.get("image_bounds"),
+            "layout_snapshot_id": mapped.get("layout_snapshot_id"),
+            "frame_id": mapped.get("frame_id"),
         }
     except Exception as exc:
-        return {"ok": False, "x": click_x, "y": click_y, "bounds": bounds, "error": repr(exc), "jitter": jitter_meta}
+        return {
+            "ok": False,
+            "x": click_x,
+            "y": click_y,
+            "screen_x": screen_x,
+            "screen_y": screen_y,
+            "bounds": bounds,
+            "error": repr(exc),
+            "layout_snapshot_id": mapped.get("layout_snapshot_id"),
+        }
     finally:
-        if left_down_sent:
-            ensure_left_button_released()
+        ensure_left_button_released()
 
 
 def human_window_image_right_click_in_bounds(
@@ -17607,21 +17832,38 @@ def human_window_image_right_click_in_bounds(
     *,
     bounds: list[int],
     action_name: str = "human_window_image_right_click_in_bounds",
+    expected_snapshot_id: str = "",
 ) -> dict[str, Any]:
     """Right-click a screenshot-space point, clamped to a known safe window rectangle."""
-    raw_x, raw_y, jitter_meta = jitter_window_image_click_surface_point(hwnd, int(x), int(y))
-    click_x, click_y = clamp_point_to_bounds(raw_x, raw_y, bounds)
+    mapped, failure = _map_window_image_target(
+        hwnd,
+        int(x),
+        int(y),
+        bounds=list(bounds or []),
+        expected_snapshot_id=expected_snapshot_id,
+    )
+    if failure:
+        return failure
+    assert mapped is not None
+    click_x, click_y = mapped["image_point"]
+    screen_x, screen_y = mapped["screen_point"]
     require_active_ui_action_budget(
         action_name,
-        metadata={"hwnd": int(hwnd or 0), "x": click_x, "y": click_y, "bounds": bounds, "jitter": jitter_meta},
+        metadata={
+            "hwnd": int(hwnd or 0),
+            "x": click_x,
+            "y": click_y,
+            "screen_x": screen_x,
+            "screen_y": screen_y,
+            "bounds": bounds,
+            "layout_snapshot_id": mapped.get("layout_snapshot_id"),
+        },
     )
+    invalidate_layout_snapshot(hwnd, reason="physical_right_click_started")
     activate_window(hwnd)
     ensure_left_button_released()
     right_down_sent = False
     try:
-        left, top, _right, _bottom = win32gui.GetWindowRect(hwnd)
-        screen_x = int(left) + int(click_x)
-        screen_y = int(top) + int(click_y)
         start_x, start_y = win32api.GetCursorPos()
         steps = random.randint(6, 11)
         for step in range(1, steps + 1):
@@ -17646,14 +17888,22 @@ def human_window_image_right_click_in_bounds(
             "y": click_y,
             "screen_x": screen_x,
             "screen_y": screen_y,
-            "raw_x": raw_x,
-            "raw_y": raw_y,
+            "raw_x": int(x),
+            "raw_y": int(y),
             "bounds": bounds,
             "steps": steps,
-            "jitter": jitter_meta,
+            "layout_snapshot_id": mapped.get("layout_snapshot_id"),
+            "frame_id": mapped.get("frame_id"),
         }
     except Exception as exc:
-        return {"ok": False, "x": click_x, "y": click_y, "bounds": bounds, "error": repr(exc), "jitter": jitter_meta}
+        return {
+            "ok": False,
+            "x": click_x,
+            "y": click_y,
+            "bounds": bounds,
+            "error": repr(exc),
+            "layout_snapshot_id": mapped.get("layout_snapshot_id"),
+        }
     finally:
         if right_down_sent:
             try:
@@ -17971,6 +18221,47 @@ def session_click_x_for_geometry(geometry: dict[str, Any]) -> int:
     return win32_ocr_geometry.session_click_x_for_geometry(geometry)
 
 
+def screen_work_area() -> dict[str, int]:
+    """Return the usable desktop work area, excluding taskbar and reserved edges."""
+    try:
+        user32 = ctypes.windll.user32
+        work_area = wintypes.RECT()
+        spi_get_work_area = 0x0030
+        if hasattr(user32, "SystemParametersInfoW") and user32.SystemParametersInfoW(
+            spi_get_work_area,
+            0,
+            ctypes.byref(work_area),
+            0,
+        ):
+            return {
+                "left": int(work_area.left),
+                "top": int(work_area.top),
+                "right": int(work_area.right),
+                "bottom": int(work_area.bottom),
+                "width": max(0, int(work_area.right - work_area.left)),
+                "height": max(0, int(work_area.bottom - work_area.top)),
+                "source": "SystemParametersInfoW_SPI_GETWORKAREA",
+            }
+    except Exception:
+        pass
+    try:
+        user32 = ctypes.windll.user32
+        width = int(user32.GetSystemMetrics(0) or 0)
+        height = int(user32.GetSystemMetrics(1) or 0)
+    except Exception:
+        width = 0
+        height = 0
+    return {
+        "left": 0,
+        "top": 0,
+        "right": max(0, width),
+        "bottom": max(0, height),
+        "width": max(0, width),
+        "height": max(0, height),
+        "source": "GetSystemMetrics_fallback",
+    }
+
+
 def normalize_wechat_window(hwnd: int) -> dict[str, Any]:
     enabled = env_flag("WECHAT_WIN32_OCR_WINDOW_NORMALIZE", default=True)
     before = get_window_geometry(hwnd)
@@ -17979,16 +18270,11 @@ def normalize_wechat_window(hwnd: int) -> dict[str, Any]:
         return {"ok": True, "enabled": False, "applied": False, "before": before}
 
     enforce_recommended = env_flag("WECHAT_WIN32_OCR_ENFORCE_RECOMMENDED_WINDOW", default=True)
-    fixed_origin = env_flag("WECHAT_WIN32_OCR_WINDOW_FIXED_ORIGIN", default=False)
-    try:
-        user32 = ctypes.windll.user32
-        screen_width = int(user32.GetSystemMetrics(0) or 0)
-        screen_height = int(user32.GetSystemMetrics(1) or 0)
-        screen_metrics_available = True
-    except Exception:
-        screen_width = 0
-        screen_height = 0
-        screen_metrics_available = False
+    fixed_origin = True
+    work_area = screen_work_area()
+    screen_width = int(work_area.get("width") or 0)
+    screen_height = int(work_area.get("height") or 0)
+    screen_metrics_available = screen_width > 0 and screen_height > 0
 
     plan = win32_ocr_window_actions.plan_normalize_wechat_window(
         before,
@@ -18009,6 +18295,8 @@ def normalize_wechat_window(hwnd: int) -> dict[str, Any]:
         min_height=MIN_SAFE_WINDOW_HEIGHT,
         max_width=MAX_SAFE_WINDOW_WIDTH,
         max_height=MAX_SAFE_WINDOW_HEIGHT,
+        screen_left=int(work_area.get("left") or 0),
+        screen_top=int(work_area.get("top") or 0),
     )
     left = int(plan.get("left") or 0)
     top = int(plan.get("top") or 0)
@@ -18018,6 +18306,24 @@ def normalize_wechat_window(hwnd: int) -> dict[str, Any]:
     requested_target = dict(plan.get("requested_target") or {})
     recommended_floor_applied = bool(plan.get("recommended_floor_applied"))
     resolution_scale = float(plan.get("resolution_scale") or 1.0)
+    if not bool(plan.get("ok")):
+        return {
+            "ok": False,
+            "enabled": True,
+            "applied": False,
+            "before": before,
+            "target": effective_target,
+            "requested_target": requested_target,
+            "dpi_scale": dpi_scale,
+            "resolution_scale": resolution_scale,
+            "enforce_recommended": enforce_recommended,
+            "recommended_floor_applied": recommended_floor_applied,
+            "fixed_origin": fixed_origin,
+            "screen": {"width": screen_width, "height": screen_height},
+            "work_area": work_area,
+            "error_code": win32_ocr_layout.ERROR_WINDOW_NORMALIZATION_FAILED,
+            "reason": str(plan.get("reason") or "window_normalization_plan_failed"),
+        }
     if not bool(plan.get("move")):
         return {
             "ok": True,
@@ -18033,6 +18339,7 @@ def normalize_wechat_window(hwnd: int) -> dict[str, Any]:
             "recommended_floor_applied": recommended_floor_applied,
             "fixed_origin": fixed_origin,
             "screen": {"width": screen_width, "height": screen_height},
+            "work_area": work_area,
             "reason": "already_near_target",
         }
 
@@ -18046,6 +18353,31 @@ def normalize_wechat_window(hwnd: int) -> dict[str, Any]:
             or abs(int(after.get("left") or 0) - int(before.get("left") or 0)) > 4
             or abs(int(after.get("top") or 0) - int(before.get("top") or 0)) > 4
         )
+        matches_plan = (
+            abs(int(after.get("left") or 0) - left) <= 6
+            and abs(int(after.get("top") or 0) - top) <= 6
+            and abs(int(after.get("width") or 0) - safe_width) <= 6
+            and abs(int(after.get("height") or 0) - safe_height) <= 6
+        )
+        if not matches_plan:
+            return {
+                "ok": False,
+                "enabled": True,
+                "applied": applied,
+                "before": before,
+                "after": after,
+                "target": effective_target,
+                "requested_target": requested_target,
+                "dpi_scale": dpi_scale,
+                "resolution_scale": resolution_scale,
+                "enforce_recommended": enforce_recommended,
+                "recommended_floor_applied": recommended_floor_applied,
+                "fixed_origin": fixed_origin,
+                "screen": {"width": screen_width, "height": screen_height},
+                "work_area": work_area,
+                "error_code": win32_ocr_layout.ERROR_WINDOW_NORMALIZATION_FAILED,
+                "reason": "window_geometry_did_not_match_normalization_plan",
+            }
         return {
             "ok": True,
             "enabled": True,
@@ -18060,6 +18392,7 @@ def normalize_wechat_window(hwnd: int) -> dict[str, Any]:
             "recommended_floor_applied": recommended_floor_applied,
             "fixed_origin": fixed_origin,
             "screen": {"width": screen_width, "height": screen_height},
+            "work_area": work_area,
             "reason": "normalized" if applied else "move_attempt_no_change",
         }
     except Exception as exc:
@@ -18076,6 +18409,7 @@ def normalize_wechat_window(hwnd: int) -> dict[str, Any]:
             "recommended_floor_applied": recommended_floor_applied,
             "fixed_origin": fixed_origin,
             "error": repr(exc),
+            "error_code": win32_ocr_layout.ERROR_WINDOW_NORMALIZATION_FAILED,
             "reason": "normalize_failed",
         }
 
