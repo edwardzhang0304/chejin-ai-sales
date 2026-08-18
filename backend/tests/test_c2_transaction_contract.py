@@ -20,8 +20,8 @@ def _ack_payload(*, send_result: str, action_phase: str) -> dict:
 def test_backend_recovery_actions_are_owned_by_the_machine_contract():
     contract = c2_contract_v3()["outbox_recovery_contract"]
     code_groups = (
+        ("identity_quarantined_codes", "identity_quarantined"),
         ("refresh_and_rebuild_codes", "refresh_and_rebuild"),
-        ("rebuild_failed_fact_codes", "rebuild_failed_facts"),
         ("split_and_retry_codes", "split_and_retry"),
         ("target_terminated_codes", "target_terminated"),
         ("conversation_terminated_codes", "conversation_terminated"),
@@ -46,7 +46,7 @@ def test_backend_uses_the_shared_image_menu_failure_code():
     assert "C2_IMAGE_MENU_OPERATION_FAILED" in image_contract["error_codes"]
     assert (
         image_contract["failure_reason_to_error_code"][
-            "image_context_menu_copy_item_missing"
+            "C2_IMAGE_MENU_OPERATION_FAILED"
         ]
         == "C2_IMAGE_MENU_OPERATION_FAILED"
     )
@@ -56,6 +56,23 @@ def test_backend_uses_the_shared_image_menu_failure_code():
         ]
         == "C2_IMAGE_CLIPBOARD_TRANSACTION_FAILED"
     )
+
+
+def test_backend_uses_shared_flow_gate_action_contract():
+    contract = c2_contract_v3()["flow_gate_action_contract"]
+    assert contract["classes"] == [
+        "non_blocking_warning",
+        "item_handoff",
+        "recoverable_hold",
+        "hard_stop",
+    ]
+    assert contract["customer_media_failure"] == (
+        "settle_each_failed_fact_then_handoff_without_brain_or_automatic_clarification"
+    )
+    assert contract["self_media_failure"] == (
+        "persist_warning_and_continue_latest_complete_customer_tail"
+    )
+    assert contract["high_intent_reason_code"] == "CUSTOMER_HIGH_INTENT"
 
 
 @pytest.mark.parametrize(

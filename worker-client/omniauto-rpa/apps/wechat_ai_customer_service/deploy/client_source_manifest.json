@@ -14,12 +14,12 @@
     "apps/wechat_ai_customer_service/llm_config.py",
     "apps/wechat_ai_customer_service/storage/",
     "apps/wechat_ai_customer_service/sync/",
-    "apps/wechat_ai_customer_service/workflows/",
-    "apps/wechat_ai_customer_service/scripts/run_customer_service_listener.py"
+    "apps/wechat_ai_customer_service/workflows/"
   ],
   "exclude_paths": [
     "apps/wechat_ai_customer_service/vps_admin/",
     "apps/wechat_ai_customer_service/scripts/seed_vps_test_customer.py",
+    "apps/wechat_ai_customer_service/scripts/run_customer_service_listener.py",
     "apps/wechat_ai_customer_service/data/shared_knowledge/",
     "apps/wechat_ai_customer_service/data/versions/",
     "apps/wechat_ai_customer_service/data/raw_inbox/",

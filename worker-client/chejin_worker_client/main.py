@@ -14,6 +14,16 @@ from .single_instance import (
 )
 
 
+def emit_cli_output(value: str) -> None:
+    """Windowed PyInstaller builds may intentionally have no stdout stream."""
+
+    stream = getattr(sys, "stdout", None)
+    if stream is None:
+        return
+    stream.write(str(value) + "\n")
+    stream.flush()
+
+
 def bootstrap_qt_plugins() -> None:
     if os.environ.get("QT_QPA_PLATFORM_PLUGIN_PATH"):
         return
@@ -51,7 +61,7 @@ def run_bundled_omniauto_sidecar(argv: list[str]) -> int:
             exc,
             state="win32_ocr_failed",
         )
-    print(json.dumps(payload, ensure_ascii=True), flush=True)
+    emit_cli_output(json.dumps(payload, ensure_ascii=True))
     return 0 if bool(payload.get("ok")) else 1
 
 
@@ -75,8 +85,46 @@ def run_bundled_omniauto_ocr_probe() -> int:
     from .omniauto_ocr_client import probe_omniauto_ocr_subprocess
 
     result = probe_omniauto_ocr_subprocess()
-    print(json.dumps(result, ensure_ascii=False), flush=True)
+    diagnostic_path = os.environ.get("CHEJIN_PACKAGING_DIAGNOSTIC_PATH")
+    if diagnostic_path:
+        try:
+            with Path(diagnostic_path).open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "pid": os.getpid(),
+                            "argv": list(sys.argv),
+                            "ocr_probe_result": result,
+                        },
+                        ensure_ascii=True,
+                    )
+                    + "\n"
+                )
+        except Exception:
+            pass
+    emit_cli_output(json.dumps(result, ensure_ascii=False))
     return 0 if result.get("ok") is True else 1
+
+
+def _bundled_omniauto_root() -> Path:
+    frozen_root = getattr(sys, "_MEIPASS", None)
+    if not frozen_root:
+        raise RuntimeError("bundled_omniauto_worker_requires_frozen_runtime")
+    omniauto_root = Path(frozen_root) / "omniauto-rpa"
+    if str(omniauto_root) not in sys.path:
+        sys.path.insert(0, str(omniauto_root))
+    return omniauto_root
+
+
+def run_bundled_omniauto_vision_wechat_worker(argv: list[str]) -> int:
+    """Run the Vision-owned WeChat desktop worker in the frozen executable."""
+
+    _bundled_omniauto_root()
+    from apps.wechat_ai_customer_service.optional_plugins.vision.integrations import (
+        wechat_worker,
+    )
+
+    return int(wechat_worker.main(argv))
 
 
 def main() -> int:
@@ -88,6 +136,8 @@ def main() -> int:
         return run_bundled_omniauto_ocr_worker()
     if len(sys.argv) >= 2 and sys.argv[1] == "--omniauto-ocr-probe":
         return run_bundled_omniauto_ocr_probe()
+    if len(sys.argv) >= 2 and sys.argv[1] == "--omniauto-vision-wechat-worker":
+        return run_bundled_omniauto_vision_wechat_worker(sys.argv[2:])
 
     parser = argparse.ArgumentParser(prog="chejin-worker-client")
     parser.add_argument("--preflight", action="store_true", help="运行客户端环境预检后退出。")
@@ -101,14 +151,20 @@ def main() -> int:
     if args.wechat_diagnostics:
         from .rpa_bridge import RpaBridge
 
-        print(json.dumps(RpaBridge().diagnose_wechat(), ensure_ascii=False, indent=2))
+        emit_cli_output(
+            json.dumps(RpaBridge().diagnose_wechat(), ensure_ascii=False, indent=2)
+        )
         return 0
 
     if args.preflight:
         checks = run_preflight(check_backend=not args.skip_backend, check_wechat=not args.skip_wechat)
         if args.write_report is not None:
             write_report(checks, args.write_report)
-        print(format_json(checks) if args.preflight_format == "json" else format_text(checks))
+        emit_cli_output(
+            format_json(checks)
+            if args.preflight_format == "json"
+            else format_text(checks)
+        )
         return 1 if has_blocking_failures(checks) else 0
 
     try:

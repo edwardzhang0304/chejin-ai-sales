@@ -78,6 +78,8 @@ def main() -> int:
 
 def run_contract_checks() -> int:
     results = [
+        check_hard_opt_out_requires_exact_current_customer_evidence(),
+        check_soft_refusal_is_not_a_hard_opt_out(),
         check_normalize_and_candidate(),
         check_rejects_style_only_price_fact(),
         check_requires_fact_claims_for_factual_modes(),
@@ -99,6 +101,9 @@ def run_contract_checks() -> int:
         check_source_id_multiple_alias_requires_multiple_product_evidence(),
         check_formal_policy_source_id_prefixes_validate_against_evidence(),
         check_semantic_reviewer_authority_summary_reads_evidence_formal_ids(),
+        check_semantic_reviewer_keeps_soft_no_evidence_advisory(),
+        check_semantic_reviewer_accepts_fact_free_vehicle_need_clarification(),
+        check_brain_runner_sends_fact_free_vehicle_need_clarification_without_catalog(),
         check_social_visible_contract_rejects_empty_or_handoff_plan(),
         check_conversation_strategy_state_tracks_social_fatigue_and_resets_on_business(),
         check_conversation_strategy_identity_resistance_overrides_business_terms(),
@@ -340,6 +345,78 @@ def base_plan() -> dict[str, Any]:
         "confidence": 0.86,
         "reason": "商品库命中具体车型和价格。",
     }
+
+
+def check_hard_opt_out_requires_exact_current_customer_evidence() -> CaseResult:
+    plan = normalize_brain_plan(
+        {
+            **base_plan(),
+            "answer_mode": "stop_contact",
+            "recommended_action": "hard_opt_out",
+            "reply_segments": [],
+            "facts_claimed": [],
+            "hard_opt_out": {
+                "detected": True,
+                "message_event_id": "event-stop-1",
+                "source_message_key": "source-stop-1",
+                "customer_text": "请不要再联系我",
+                "reason": "explicit_stop_contact",
+            },
+        }
+    )
+    brain_input = {
+        "current_message": {
+            "message_evidence": [
+                {
+                    "message_event_id": "event-stop-1",
+                    "source_message_key": "source-stop-1",
+                    "sender_role": "customer",
+                    "customer_text": "请不要再联系我",
+                }
+            ]
+        }
+    }
+    contract = validate_brain_plan(plan)
+    exact = brain_module.validate_hard_opt_out_evidence(plan, brain_input)
+    mismatched = brain_module.validate_hard_opt_out_evidence(
+        plan,
+        {
+            "current_message": {
+                "message_evidence": [
+                    {
+                        "message_event_id": "event-stop-1",
+                        "source_message_key": "source-stop-1",
+                        "sender_role": "customer",
+                        "customer_text": "暂时不考虑",
+                    }
+                ]
+            }
+        },
+    )
+    return CaseResult(
+        "hard_opt_out_requires_exact_current_customer_evidence",
+        bool(contract.get("ok") and exact.get("ok") and not mismatched.get("ok")),
+        {"contract": contract, "exact": exact, "mismatched": mismatched},
+    )
+
+
+def check_soft_refusal_is_not_a_hard_opt_out() -> CaseResult:
+    plan = normalize_brain_plan(
+        {
+            **base_plan(),
+            "reply_segments": ["没问题，您后面想继续了解时再找我。"],
+            "facts_claimed": [],
+            "recommended_action": "send_reply",
+            "hard_opt_out": {"detected": False},
+            "reason": "temporary_or_price_objection",
+        }
+    )
+    validation = validate_brain_plan(plan)
+    return CaseResult(
+        "soft_refusal_is_not_a_hard_opt_out",
+        bool(validation.get("ok") and plan.get("recommended_action") == "send_reply"),
+        {"validation": validation, "recommended_action": plan.get("recommended_action")},
+    )
 
 
 def check_normalize_and_candidate() -> CaseResult:
@@ -1013,6 +1090,188 @@ def check_semantic_reviewer_authority_summary_reads_evidence_formal_ids() -> Cas
         "semantic_reviewer_authority_summary_reads_evidence_formal_ids",
         True,
         {"formal_knowledge_ids": formal_ids},
+    )
+
+
+def check_semantic_reviewer_keeps_soft_no_evidence_advisory() -> CaseResult:
+    pack = fake_evidence_pack(include_product=False)
+    pack["safety"] = {
+        "must_handoff": True,
+        "reasons": ["no_relevant_business_evidence"],
+        "allowed_auto_reply": False,
+    }
+    summary = reviewer_module.compact_authority_evidence_for_review(pack)
+    safety = summary.get("safety") or {}
+    assert_true(safety.get("soft_advisory_guard") is True, f"soft evidence must stay advisory: {summary}")
+    assert_true("must_handoff" not in safety, f"reviewer must not receive a hard handoff projection: {summary}")
+    assert_true("allowed_auto_reply" not in safety, f"reviewer must not receive legacy auto-reply veto: {summary}")
+
+    pack["safety"] = {
+        "must_handoff": True,
+        "reasons": ["used_car_contract_manual_review"],
+        "allowed_auto_reply": False,
+    }
+    hard_summary = reviewer_module.compact_authority_evidence_for_review(pack)
+    hard_safety = hard_summary.get("safety") or {}
+    assert_true(hard_safety.get("must_handoff") is True, f"hard handoff must remain hard: {hard_summary}")
+    return CaseResult(
+        "semantic_reviewer_keeps_soft_no_evidence_advisory",
+        True,
+        {"soft_safety": safety, "hard_safety": hard_safety},
+    )
+
+
+def check_semantic_reviewer_accepts_fact_free_vehicle_need_clarification() -> CaseResult:
+    plan = normalize_brain_plan(
+        {
+            "can_answer": True,
+            "answer_mode": "ask_clarifying_question",
+            "recommended_action": "send_reply",
+            "reply_segments": [
+                "20万左右可以先按您的实际用途缩小范围。",
+                "您平时更看重空间、油耗还是驾驶感？",
+            ],
+            "evidence_used": {"common_sense_topics": ["vehicle_need_clarification"]},
+            "facts_claimed": [],
+            "risk": {"risk_level": "low", "risk_tags": [], "needs_handoff": False},
+            "confidence": 0.91,
+        }
+    )
+    pack = fake_evidence_pack(include_product=False)
+    pack["current_message"] = "我想买20万左右的车有什么推荐吗"
+    pack["safety"] = {
+        "must_handoff": True,
+        "reasons": ["no_relevant_business_evidence"],
+        "allowed_auto_reply": False,
+    }
+    review = reviewer_module.review_brain_reply_semantics(
+        settings={
+            "quality_gate_v2_enabled": True,
+            "semantic_reviewer_enabled": True,
+            "semantic_reviewer_mode": "always",
+            "semantic_reviewer_cache_enabled": False,
+            "semantic_reviewer_result": {
+                "status": "ok",
+                "verdict": "block",
+                "confidence": 0.99,
+                "semantic_errors": [],
+                "hard_boundary_concerns": [
+                    "authority_evidence_summary标记无相关业务证据、must_handoff=true且allowed_auto_reply=false；当前回复虽未承诺商品事实，但购车方向不能自动发送。"
+                ],
+                "repair_instruction": "没有product_master，建议转人工。",
+                "customer_visible_risk": "medium",
+                "reason": "legacy_soft_evidence_promoted_to_hard_veto",
+            },
+        },
+        brain_input={
+            "current_message": {"clean_text": pack["current_message"]},
+            "conversation": {},
+            "target": {"name": "许聪", "conversation_id": "c1", "chat_type": "private"},
+        },
+        evidence_pack=pack,
+        plan=plan,
+        deterministic_quality={"ok": True, "errors": [], "warnings": []},
+    )
+    assert_true(review.get("ok"), f"fact-free clarification must not be erased by soft evidence: {review}")
+    assert_equal(review.get("verdict"), "pass", "soft no-evidence clarification must pass")
+
+    unsafe_review = reviewer_module.relax_soft_evidence_clarification_review(
+        review={
+            "ok": False,
+            "status": "ok",
+            "invoked": True,
+            "verdict": "block",
+            "semantic_errors": [],
+            "hard_boundary_concerns": ["回复编造了具体车型库存，且没有product_master授权。"],
+            "errors": ["hard_boundary_concern:unsupported_product_fact"],
+            "warnings": [],
+            "repair_instruction": "删除未经授权的具体车型库存。",
+            "customer_visible_risk": "high",
+            "reason": "unsupported_product_fact",
+        },
+        plan=plan,
+    )
+    assert_true(not unsafe_review.get("ok"), f"real unsupported product facts must remain blocked: {unsafe_review}")
+    return CaseResult(
+        "semantic_reviewer_accepts_fact_free_vehicle_need_clarification",
+        True,
+        {"review": review, "unsafe_review": unsafe_review},
+    )
+
+
+def check_brain_runner_sends_fact_free_vehicle_need_clarification_without_catalog() -> CaseResult:
+    message = "我想买20万左右的车有什么推荐吗"
+    plan = {
+        "can_answer": True,
+        "answer_mode": "ask_clarifying_question",
+        "recommended_action": "send_reply",
+        "reply_segments": [
+            "20万左右可以先按您的实际用途缩小范围。",
+            "您平时更看重空间、油耗还是驾驶感？",
+        ],
+        "evidence_used": {"common_sense_topics": ["vehicle_need_clarification"]},
+        "facts_claimed": [],
+        "risk": {"risk_level": "low", "risk_tags": [], "needs_handoff": False},
+        "confidence": 0.91,
+        "reason": "没有商品库候选，先收集安全需求偏好。",
+    }
+    pack = fake_evidence_pack(include_product=False)
+    pack["current_message"] = message
+    pack["current_batch"] = [{"id": "msg-no-catalog", "sender": "许聪", "content": message}]
+    pack["conversation"]["current_batch_text"] = f"[许聪] {message}"
+    pack["safety"] = {
+        "must_handoff": True,
+        "reasons": ["no_relevant_business_evidence"],
+        "allowed_auto_reply": False,
+    }
+    pack["knowledge"]["safety"] = dict(pack["safety"])
+    config = base_config(plan, include_product=False)
+    config["customer_service_brain"].update(
+        {
+            "mode": "brain_first",
+            "fallback_to_legacy_on_error": False,
+            "semantic_reviewer_mode": "always",
+            "semantic_reviewer_cache_enabled": False,
+            "semantic_reviewer_result": {
+                "status": "ok",
+                "verdict": "block",
+                "confidence": 0.99,
+                "semantic_errors": [],
+                "hard_boundary_concerns": [
+                    "authority_evidence_summary标记无相关业务证据、must_handoff=true且allowed_auto_reply=false；当前回复虽未承诺商品事实，但购车方向不能自动发送。"
+                ],
+                "repair_instruction": "没有product_master，建议转人工。",
+                "customer_visible_risk": "medium",
+                "reason": "legacy_soft_evidence_promoted_to_hard_veto",
+            },
+        }
+    )
+    with patched_evidence_pack(pack):
+        event = brain_module.maybe_run_customer_service_brain(
+            config=config,
+            target_name="许聪",
+            target_state={"conversation_context": {}},
+            batch=[{"id": "msg-no-catalog", "sender": "许聪", "content": message}],
+            combined=message,
+            decision=ReplyDecision("", "", False, False, ""),
+            reply_text="",
+            intent_assist={},
+            rag_reply={},
+            llm_reply={},
+            product_knowledge={},
+            data_capture={},
+            raw_capture={"conversation": {"conversation_id": "c1", "chat_type": "private"}},
+            customer_profile=None,
+        )
+    assert_true(event.get("applied"), f"safe clarification should be adopted: {event}")
+    assert_equal(event.get("rule_name"), "customer_service_brain_reply", "safe clarification should remain a reply")
+    assert_true(not event.get("needs_handoff"), f"soft evidence must not create handoff: {event}")
+    assert_true("更看重空间" in str(event.get("reply_text") or ""), f"Brain visible text was lost: {event}")
+    assert_true(event.get("reason") != "brain_quality_verification_failed", f"quality gate erased Brain reply: {event}")
+    return CaseResult(
+        "brain_runner_sends_fact_free_vehicle_need_clarification_without_catalog",
+        True,
+        {"rule_name": event.get("rule_name"), "reply_text": event.get("reply_text")},
     )
 
 

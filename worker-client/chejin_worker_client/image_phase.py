@@ -29,11 +29,13 @@ def new_image_phase_result() -> dict[str, Any]:
             "terminal_source_keys": [],
             "removed_source_keys": [],
             "refresh_source_keys": [],
+            "ui_frame_invalidated_source_keys": [],
             **{
                 field: []
                 for field in IMAGE_PHASE_STATE_SOURCE_FIELDS.values()
             },
             "new_action_count": 0,
+            "ui_frame_invalidated": False,
             "requires_final_refresh": False,
         }
     )
@@ -54,22 +56,28 @@ def finalize_image_phase_result(
     action_keys = _clean_keys(result.get("new_action_source_keys"))
     terminal_keys = _clean_keys(result.get("terminal_source_keys"))
     removed_keys = _clean_keys(result.get("removed_source_keys"))
+    invalidated_keys = _clean_keys(
+        result.get("ui_frame_invalidated_source_keys")
+    )
     refresh_keys = (
         _clean_keys(result.get("refresh_source_keys"))
         | action_keys
         | removed_keys
+        | invalidated_keys
     )
 
     result["new_action_source_keys"] = sorted(action_keys)
     result["terminal_source_keys"] = sorted(terminal_keys)
     result["removed_source_keys"] = sorted(removed_keys)
     result["refresh_source_keys"] = sorted(refresh_keys)
+    result["ui_frame_invalidated_source_keys"] = sorted(invalidated_keys)
     for state, field in IMAGE_PHASE_STATE_SOURCE_FIELDS.items():
         state_keys = _clean_keys(result.get(field))
         result[field] = sorted(state_keys)
         result[state] = len(state_keys)
     result["removed_from_final_screen"] = len(removed_keys)
     result["new_action_count"] = len(action_keys)
+    result["ui_frame_invalidated"] = bool(invalidated_keys)
     result["requires_final_refresh"] = bool(refresh_keys)
     return result
 
@@ -81,6 +89,18 @@ def mark_image_action(
     result.setdefault("new_action_source_keys", []).append(
         str(source_message_key or "").strip()
     )
+    finalize_image_phase_result(result)
+
+
+def mark_image_ui_frame_invalidated(
+    result: dict[str, Any],
+    source_message_key: str,
+) -> None:
+    key = str(source_message_key or "").strip()
+    if not key:
+        return
+    result.setdefault("ui_frame_invalidated_source_keys", []).append(key)
+    result.setdefault("refresh_source_keys", []).append(key)
     finalize_image_phase_result(result)
 
 
@@ -139,5 +159,8 @@ def merge_image_phase_results(
     )
     target.setdefault("refresh_source_keys", []).extend(
         incoming.get("refresh_source_keys") or []
+    )
+    target.setdefault("ui_frame_invalidated_source_keys", []).extend(
+        incoming.get("ui_frame_invalidated_source_keys") or []
     )
     return finalize_image_phase_result(target)

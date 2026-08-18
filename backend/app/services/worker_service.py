@@ -9,8 +9,16 @@ from app.errors import AppError
 from app.models.base import utcnow
 from app.models.sales import Sales
 from app.models.task import Task
+from app.models.wechat import MessageEvent, WechatSessionBinding
 from app.models.worker import Worker, WorkerHeartbeatLog
-from app.schemas.worker import WorkerClientBindRequest, WorkerHeartbeat, WorkerRunStatusRequest, WorkerUpdate
+from app.schemas.worker import (
+    WorkerClientBindRequest,
+    WorkerHeartbeat,
+    WorkerInflightFlowFinishRequest,
+    WorkerInflightFlowStartRequest,
+    WorkerRunStatusRequest,
+    WorkerUpdate,
+)
 from app.schemas.worker import WorkerCreate
 from app.services.audit_service import write_log
 from app.services.worker_token_service import (
@@ -26,6 +34,23 @@ RUN_STATUS_VALUES = {"running", "paused"}
 RPA_COMPONENT_STATUS_VALUES = {"ready", "unavailable"}
 RUNNING_TASK_STATUSES = {"running"}
 RUNNING_STATUS_VALUES = {"idle", "running"}
+INFLIGHT_FLOW_KINDS = {"task", "c2_read", "chat_reply"}
+
+
+def _lock_worker(db: Session, worker_id: str) -> Worker:
+    # Authentication may have loaded the same ORM identity before a competing
+    # transaction committed. Expire it before the locking SELECT so the state
+    # inspected below is always the row version acquired under FOR UPDATE.
+    db.expire_all()
+    worker = db.scalar(
+        select(Worker)
+        .where(Worker.id == worker_id, Worker.deleted_at.is_(None))
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if worker is None:
+        raise AppError("WORKER_NOT_FOUND", "Worker 不存在", 404)
+    return worker
 
 
 def computed_online_status(worker: Worker) -> str:
@@ -72,6 +97,7 @@ def worker_summary(db: Session, worker: Worker | None, *, include_token: bool = 
         "current_task": worker.current_task,
         "current_step": worker.current_step,
         "local_lock_summary": worker.local_lock_summary,
+        "inflight_flow_state": worker.inflight_flow_state or {},
         "last_heartbeat_at": worker.last_heartbeat_at,
         "client_binding_state": worker.client_binding_state,
         "client_instance_id": worker.client_instance_id,
@@ -207,7 +233,10 @@ def bind_worker_client(db: Session, worker_id: str, payload: WorkerClientBindReq
 
 
 def heartbeat_worker(db: Session, worker_id: str, worker_token: str | None, payload: WorkerHeartbeat) -> dict:
-    worker = authenticate_worker_client(db, worker_id, worker_token, payload.client_instance_id)
+    authenticated = authenticate_worker_client(
+        db, worker_id, worker_token, payload.client_instance_id
+    )
+    worker = _lock_worker(db, authenticated.id)
 
     worker.online_status = "online"
     if payload.run_status is not None:
@@ -252,18 +281,221 @@ def set_worker_run_status(
     worker_token: str | None,
     payload: WorkerRunStatusRequest,
 ) -> dict:
-    worker = authenticate_worker_client(db, worker_id, worker_token, payload.client_instance_id)
+    authenticated = authenticate_worker_client(
+        db, worker_id, worker_token, payload.client_instance_id
+    )
+    worker = _lock_worker(db, authenticated.id)
     if payload.run_status not in RUN_STATUS_VALUES:
         raise AppError("WORKER_RUN_STATUS_INVALID", "Worker 接单状态不合法", 400)
     worker.run_status = payload.run_status
+    if payload.run_status == "paused":
+        current = dict(worker.inflight_flow_state or {})
+        if current.get("status") == "active" and current.get("flow_id"):
+            current["status"] = "draining"
+            current["pause_requested_at"] = utcnow().isoformat()
+            worker.inflight_flow_state = current
     db.flush()
     return worker_summary(db, worker, include_token=False)
 
 
-def worker_can_claim(worker: Worker) -> tuple[bool, str | None]:
+def start_inflight_flow(
+    db: Session,
+    worker: Worker,
+    payload: WorkerInflightFlowStartRequest,
+) -> dict:
+    worker = _lock_worker(db, worker.id)
+    if worker.run_status != "running":
+        raise AppError("WORKER_NOT_ACCEPTING_TASKS", "Worker 已暂停，不能开始新流程", 409)
+    if payload.flow_kind not in INFLIGHT_FLOW_KINDS:
+        raise AppError("WORKER_INFLIGHT_FLOW_KIND_INVALID", "在途流程类型不合法", 400)
+    current = dict(worker.inflight_flow_state or {})
+    if current.get("flow_id"):
+        if (
+            current.get("flow_id") == payload.flow_id
+            and current.get("flow_kind") == payload.flow_kind
+            and current.get("status") in {"active", "draining"}
+        ):
+            return current
+        raise AppError("WORKER_INFLIGHT_FLOW_CONFLICT", "Worker 已有其他在途流程", 409)
+    state = {
+        "status": "active",
+        "flow_id": payload.flow_id,
+        "flow_kind": payload.flow_kind,
+        "registered_at": utcnow().isoformat(),
+        "pause_requested_at": None,
+    }
+    worker.inflight_flow_state = state
+    db.flush()
+    return state
+
+
+def finish_inflight_flow(
+    db: Session,
+    worker: Worker,
+    payload: WorkerInflightFlowFinishRequest,
+    actor: ActorContext,
+) -> dict:
+    worker = _lock_worker(db, worker.id)
+    current = dict(worker.inflight_flow_state or {})
+    if current.get("flow_id") != payload.flow_id:
+        raise AppError("WORKER_INFLIGHT_FLOW_MISMATCH", "只能结束当前同一在途流程", 409)
+    flow_kind = str(current.get("flow_kind") or "")
+    if payload.terminal_kind == "task_terminal":
+        if flow_kind not in {"task", "chat_reply"}:
+            raise AppError(
+                "WORKER_INFLIGHT_FLOW_TERMINAL_KIND_INVALID",
+                "C2 读取流程不能按任务终态结束",
+                409,
+            )
+        task = db.get(Task, payload.flow_id)
+        if task is None or task.status not in {
+            TaskStatus.completed.value,
+            TaskStatus.failed.value,
+            TaskStatus.cancelled.value,
+        }:
+            raise AppError(
+                "WORKER_INFLIGHT_FLOW_NOT_SETTLED",
+                "任务终态持久化前不能结束在途流程",
+                409,
+            )
+    elif payload.terminal_kind == "read_confirmed":
+        if flow_kind != "c2_read" or not payload.conversation_id or payload.error_code:
+            raise AppError(
+                "WORKER_INFLIGHT_FLOW_TERMINAL_KIND_INVALID",
+                "读取确认终态字段不完整",
+                409,
+            )
+        binding = db.scalar(
+            select(WechatSessionBinding)
+            .where(
+                WechatSessionBinding.worker_id == worker.id,
+                WechatSessionBinding.conversation_id == payload.conversation_id,
+                WechatSessionBinding.deleted_at.is_(None),
+            )
+            .with_for_update()
+        )
+        if (
+            binding is None
+            or binding.last_read_run_id != payload.flow_id
+            or binding.last_read_completed_at is None
+            or binding.last_read_result not in {"new_facts", "no_change"}
+        ):
+            raise AppError(
+                "WORKER_INFLIGHT_FLOW_NOT_SETTLED",
+                "后端尚未确认本次 C2 读取结算",
+                409,
+            )
+    elif payload.terminal_kind == "failed_before_message_action":
+        if (
+            flow_kind != "c2_read"
+            or not payload.conversation_id
+            or not payload.error_code
+        ):
+            raise AppError(
+                "WORKER_INFLIGHT_FLOW_TERMINAL_KIND_INVALID",
+                "动作前失败终态必须携带会话和错误码",
+                409,
+            )
+        event_exists = db.scalar(
+            select(MessageEvent.id).where(
+                MessageEvent.worker_id == worker.id,
+                MessageEvent.conversation_id == payload.conversation_id,
+                MessageEvent.read_run_id == payload.flow_id,
+            ).limit(1)
+        )
+        if event_exists:
+            raise AppError(
+                "WORKER_INFLIGHT_FLOW_NOT_SETTLED",
+                "已形成消息事实的读取不得声明为动作前失败",
+                409,
+            )
+        write_log(
+            db,
+            actor,
+            event_type="worker_inflight_failed_before_message_action",
+            module="worker",
+            target_type="worker",
+            target_id=worker.id,
+            metadata={
+                "flow_id": payload.flow_id,
+                "conversation_id": payload.conversation_id,
+                "error_code": payload.error_code,
+            },
+        )
+    else:
+        if (
+            flow_kind != "c2_read"
+            or not payload.conversation_id
+            or not payload.error_code
+        ):
+            raise AppError(
+                "WORKER_INFLIGHT_FLOW_TERMINAL_KIND_INVALID",
+                "无可信事实读取失败必须携带会话和错误码",
+                409,
+            )
+        event_exists = db.scalar(
+            select(MessageEvent.id).where(
+                MessageEvent.worker_id == worker.id,
+                MessageEvent.conversation_id == payload.conversation_id,
+                MessageEvent.read_run_id == payload.flow_id,
+            ).limit(1)
+        )
+        if event_exists:
+            raise AppError(
+                "WORKER_INFLIGHT_FLOW_NOT_SETTLED",
+                "已经形成消息事实的读取不能声明为无可信事实失败",
+                409,
+            )
+        write_log(
+            db,
+            actor,
+            event_type="worker_inflight_read_failed_no_fact",
+            module="worker",
+            target_type="worker",
+            target_id=worker.id,
+            metadata={
+                "flow_id": payload.flow_id,
+                "conversation_id": payload.conversation_id,
+                "error_code": payload.error_code,
+            },
+        )
+    worker.inflight_flow_state = {}
+    db.flush()
+    return {"finished": True, "flow_id": payload.flow_id}
+
+
+def validate_inflight_continuation(
+    worker: Worker,
+    presented_flow_id: str | None,
+    *,
+    new_work: bool = False,
+) -> None:
+    current = dict(worker.inflight_flow_state or {})
+    if new_work:
+        if worker.run_status != "running" or current.get("flow_id"):
+            raise AppError("WORKER_NEW_FLOW_NOT_ALLOWED", "Worker 已暂停或正在处理当前客户", 409)
+        return
+    if worker.run_status == "running" and not current.get("flow_id"):
+        return
+    if (
+        not presented_flow_id
+        or presented_flow_id != current.get("flow_id")
+        or current.get("status") not in {"active", "draining"}
+    ):
+        raise AppError("WORKER_INFLIGHT_FLOW_MISMATCH", "在途流程凭证不匹配", 409)
+
+
+def worker_can_claim(
+    worker: Worker,
+    *,
+    allow_registered_draining_flow: bool = False,
+) -> tuple[bool, str | None]:
     if computed_online_status(worker) != "online":
         return False, "WORKER_OFFLINE"
-    if worker.run_status != "running":
+    if (
+        worker.run_status != "running"
+        and not allow_registered_draining_flow
+    ):
         return False, "WORKER_NOT_ACCEPTING_TASKS"
     if worker.rpa_component_status != "ready":
         return False, "RPA_COMPONENT_UNAVAILABLE"

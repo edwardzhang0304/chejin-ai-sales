@@ -61,6 +61,7 @@ def run_preflight(*, check_backend: bool = True, check_wechat: bool = True) -> l
     checks.append(sidecar_check(default_sidecar_script()))
     if CONFIG.rpa_mode == "real" and sys.platform == "win32":
         checks.append(omniauto_vision_ocr_check())
+    checks.append(vision_credential_check())
     checks.append(app_dir_check(APP_DIR))
     checks.append(binding_check())
 
@@ -107,6 +108,52 @@ def omniauto_vision_ocr_check() -> PreflightCheck:
             else "图片复核 OCR 独立进程不可用。"
         ),
         detail=result,
+    )
+
+
+def vision_credential_check() -> PreflightCheck:
+    from .vision_credentials import (
+        is_official_vision_runtime,
+        probe_official_vision_provider,
+        vision_credential_status,
+    )
+
+    status = vision_credential_status()
+    configured = status.get("configured") is True
+    official = is_official_vision_runtime()
+    live_probe = (
+        probe_official_vision_provider()
+        if configured and official
+        else None
+    )
+    capability_ready = configured and (
+        not official
+        or isinstance(live_probe, dict)
+        and live_probe.get("ok") is True
+    )
+    safe_detail = {
+        key: value
+        for key, value in status.items()
+        if key != "configured"
+    }
+    if isinstance(live_probe, dict):
+        safe_detail["live_probe"] = live_probe
+    return PreflightCheck(
+        name="vision_credential",
+        ok=capability_ready,
+        severity="error" if official else "warning",
+        message=(
+            "内置 Vision 能力可用。"
+            if capability_ready and official
+            else "Vision 开发凭据已配置。"
+            if capability_ready
+            else "内置 Vision 能力不可用。"
+            if configured and official
+            else "内置 Vision 凭据未配置。"
+            if official
+            else "Vision 开发凭据未配置。"
+        ),
+        detail=safe_detail,
     )
 
 

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { formatBusinessError } from "../../shared/api/client";
 import { ConfirmModal } from "../../shared/ui/ConfirmModal";
+import { Pagination } from "../../shared/ui/Pagination";
 import { Toast } from "../../shared/ui/Toast";
 import { postMutationMessage, runPostMutationRefresh } from "../../shared/utils/postMutation";
 import { createVehicle, getVehicle, listVehicles } from "./api";
@@ -18,13 +19,6 @@ type PendingDirtyAction =
   | { kind: "close" };
 
 const pageSizeOptions = [20, 50];
-
-function getPaginationItems(currentPage: number, totalPages: number): Array<number | "..."> {
-  if (totalPages <= 5) return Array.from({ length: totalPages }, (_, index) => index + 1);
-  if (currentPage <= 3) return [1, 2, 3, "...", totalPages];
-  if (currentPage >= totalPages - 2) return [1, "...", totalPages - 2, totalPages - 1, totalPages];
-  return [1, "...", currentPage - 1, currentPage, currentPage + 1, "...", totalPages];
-}
 
 function formatMoney(value: number | string | null) {
   if (value === null || value === "") return "-";
@@ -236,7 +230,6 @@ export function VehiclesPage() {
   }
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const paginationItems = useMemo(() => getPaginationItems(page, totalPages), [page, totalPages]);
   const hasFilter = Boolean(debouncedKeyword || status !== "all");
 
   return (
@@ -248,7 +241,7 @@ export function VehiclesPage() {
       </header>
 
       <section className="metric-grid" aria-label="车辆管理指标">
-        <article><span>车辆总数</span><strong>{counts.all}</strong><p>当前车辆资料总量</p></article>
+        <article><span>车辆总数</span><strong>{counts.all}</strong><p>近 30 天新增 — 辆</p></article>
         <article><span>已上架</span><strong>{counts.listed}</strong><p>可用于客服查询与推荐</p></article>
         <article><span>已下架</span><strong>{counts.unlisted}</strong><p>仍可在后台维护</p></article>
         <article><span>待补充资料</span><strong className="warning-text">—</strong><p>缺价格或有效图片</p></article>
@@ -263,11 +256,11 @@ export function VehiclesPage() {
           </div>
 
           <div className="vehicle-table-card">
-            {loading ? <div className="state-box">正在加载车辆列表...</div> : error ? <div className="state-box error"><span>{error}</span><button type="button" onClick={() => void refreshList()}>重试</button></div> : items.length === 0 ? (
+            {loading ? <div className="vehicle-empty state-box"><span className="loading-spinner" aria-hidden="true" /><strong>正在加载车辆</strong><span>请稍候。</span></div> : error ? <div className="vehicle-empty state-box error"><strong>车辆列表加载失败</strong><span>{error}</span><button type="button" onClick={() => void refreshList()}>重新加载</button></div> : items.length === 0 ? (
               <div className="vehicle-empty state-box">
-                <strong>{hasFilter ? "没有找到符合条件的车辆" : "暂无车辆"}</strong>
-                <span>{hasFilter ? "请调整搜索词或状态筛选后重试。" : "可新增单辆车辆，或通过最新 Excel 模板批量导入。"}</span>
-                {!hasFilter ? <div><button type="button" onClick={openImportVehicles}>导入车辆</button><button type="button" className="primary-button" onClick={openCreateVehicle}>新增车辆</button></div> : null}
+                <strong>{hasFilter ? "未找到匹配车辆" : "暂无车辆"}</strong>
+                <span>{hasFilter ? "请调整搜索关键词或筛选条件。" : "新增车辆或使用 Excel 导入现有车源。"}</span>
+                {hasFilter ? <button type="button" onClick={() => { setKeyword(""); setStatus("all"); setPage(1); }}>清空筛选</button> : <div><button type="button" className="primary-button" onClick={openCreateVehicle}>新增车辆</button><button type="button" onClick={openImportVehicles}>导入车辆</button></div>}
               </div>
             ) : (
               <table className="vehicle-table">
@@ -287,10 +280,27 @@ export function VehiclesPage() {
             )}
           </div>
 
-          <footer className="pagination-row vehicle-pagination-row">
-            <div className="pagination-total"><span>共 <strong>{total}</strong> 辆</span><select aria-label="车辆每页条数" value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}>{pageSizeOptions.map((value) => <option key={value} value={value}>{value} 条/页</option>)}</select></div>
-            <nav aria-label="车辆分页"><button type="button" disabled={page <= 1 || loading} onClick={() => setPage(page - 1)}>上一页</button>{paginationItems.map((item, index) => item === "..." ? <span className="pagination-ellipsis" key={`ellipsis-${index}`}>…</span> : item === page ? <strong key={item}>{item}</strong> : <button type="button" key={item} onClick={() => setPage(item)}>{item}</button>)}<button type="button" disabled={page >= totalPages || loading} onClick={() => setPage(page + 1)}>下一页</button></nav>
-          </footer>
+          {!loading && !error && items.length > 0 ? (
+            <Pagination
+              ariaLabel="车辆分页"
+              className="vehicle-pagination-row"
+              currentPage={page}
+              disabled={loading}
+              ellipsis="…"
+              pageSize={pageSize}
+              pageSizeAriaLabel="车辆每页条数"
+              pageSizeOptions={pageSizeOptions}
+              spacedPageSizeLabel
+              total={total}
+              totalPages={totalPages}
+              totalUnit="辆"
+              onPageChange={setPage}
+              onPageSizeChange={(value) => {
+                setPageSize(value);
+                setPage(1);
+              }}
+            />
+          ) : null}
         </section>
 
         {activeCode ? <VehicleDetailDrawer vehicle={detail} loading={detailLoading} error={detailError} onRetry={() => void refreshDetail()} onClose={closeVehicleDetail} onDirtyChange={setDrawerDirty} onVehicleChanged={syncVehicle} onNotify={notify} /> : null}

@@ -42,7 +42,7 @@ class RpaBridgeTest(unittest.TestCase):
         journal_path = Path(args[args.index("--action-journal") + 1])
         update_action_journal_item(
             journal_path,
-            source_message_key=task_id,
+            journal_item_id=task_id,
             action_phase="confirmed",
             business_state=result_code or error_code,
             business_result_confirmed=True,
@@ -79,6 +79,31 @@ class RpaBridgeTest(unittest.TestCase):
             command = bridge._sidecar_command(["status"])
 
         self.assertEqual(command, [sys.executable, "sidecar.py", "status"])
+
+    def test_probe_keeps_existing_status_payload_for_startup_window_position(self):
+        bridge = RpaBridge(sidecar_script=Path("sidecar.py"))
+        bridge.mode = "real"
+        payload = {
+            "ok": True,
+            "geometry": {
+                "left": 100,
+                "top": 80,
+                "right": 900,
+                "bottom": 700,
+                "width": 800,
+                "height": 620,
+            },
+        }
+
+        with patch.object(sys, "platform", "win32"), patch.object(
+            bridge,
+            "_call_omniauto",
+            return_value=payload,
+        ):
+            status = bridge.probe()
+
+        self.assertEqual(status, ("ready", "logged_in"))
+        self.assertEqual(bridge.last_probe_payload, payload)
 
     def test_call_omniauto_protects_artifact_directory_until_process_finishes(self):
         with tempfile.TemporaryDirectory(prefix="chejin-active-artifact-") as tmp:
@@ -159,6 +184,71 @@ class RpaBridgeTest(unittest.TestCase):
         self.assertEqual(path.name, "wechat_win32_ocr_sidecar.py")
         self.assertIn("wechat_ai_customer_service", str(path))
 
+    def test_voice_prepare_is_read_only_and_execute_carries_exact_token(self):
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        bridge.mode = "real"
+        calls: list[list[str]] = []
+
+        def fake_call(args, **_kwargs):
+            calls.append(list(args))
+            return {"ok": True}
+
+        with patch.object(bridge, "_call_omniauto", side_effect=fake_call):
+            bridge.prepare_voice_action(
+                display_name="CJK7M4Q2",
+                rpa_session_key="",
+                remark_code="CJK7M4Q2",
+                target_mode="current",
+                expected_confirmed_self_text="已确认的 AI 回复",
+            )
+            bridge.execute_voice_action(
+                display_name="CJK7M4Q2",
+                rpa_session_key="",
+                canonical_voice_action_id="voice-action-1",
+                reserved_worker_stable_id="worker-message-9",
+                pre_frame_id="voice-frame-1",
+                selected_pre_observation_id="voice-observation-1",
+                selected_action_token="single-use-token",
+                selected_target_fingerprint="target-fingerprint",
+                remark_code="CJK7M4Q2",
+                target_mode="current",
+                expected_confirmed_self_text="已确认的 AI 回复",
+                action_journal=Path("voice-action.json"),
+            )
+
+        prepare_args, execute_args = calls
+        self.assertEqual(
+            prepare_args[prepare_args.index("--voice-action-stage") + 1],
+            "prepare",
+        )
+        self.assertNotIn("--selected-action-token", prepare_args)
+        self.assertEqual(
+            prepare_args[
+                prepare_args.index("--expected-confirmed-self-text") + 1
+            ],
+            "已确认的 AI 回复",
+        )
+        self.assertEqual(
+            execute_args[execute_args.index("--voice-action-stage") + 1],
+            "execute",
+        )
+        self.assertEqual(
+            execute_args[
+                execute_args.index("--expected-confirmed-self-text") + 1
+            ],
+            "已确认的 AI 回复",
+        )
+        self.assertEqual(
+            execute_args[execute_args.index("--selected-action-token") + 1],
+            "single-use-token",
+        )
+        self.assertEqual(
+            execute_args[
+                execute_args.index("--selected-target-fingerprint") + 1
+            ],
+            "target-fingerprint",
+        )
+
     def test_mock_bridge_emits_add_friend_steps_and_result(self):
         bridge = RpaBridge()
         bridge.mode = "mock"
@@ -219,8 +309,8 @@ class RpaBridgeTest(unittest.TestCase):
 
         self.assertTrue(result.ok)
         self.assertEqual(
-            [step.current_step for step in steps[:3]],
-            ["rpa_sidecar_starting", "wechat_preflight_starting", "operator_guard_starting"],
+            [step.current_step for step in steps[:2]],
+            ["rpa_sidecar_starting", "wechat_preflight_starting"],
         )
         self.assertEqual(captured["args"][0], OMNIAUTO_ADD_FRIEND_ACTION)
         self.assertIn("--phone", captured["args"])
@@ -346,6 +436,7 @@ class RpaBridgeTest(unittest.TestCase):
                 rpa_session_key="",
                 remark_code="CJTEST01",
                 target_mode="search_by_remark_code",
+                expected_confirmed_self_text="已确认的 AI 回复",
             )
 
         self.assertTrue(result["ok"])
@@ -356,6 +447,8 @@ class RpaBridgeTest(unittest.TestCase):
         self.assertIn("search_by_remark_code", captured["args"])
         self.assertIn("--remark-code", captured["args"])
         self.assertIn("CJTEST01", captured["args"])
+        self.assertIn("--expected-confirmed-self-text", captured["args"])
+        self.assertIn("已确认的 AI 回复", captured["args"])
         self.assertIn("--sidecar-run-id", captured["args"])
         self.assertNotIn("--session-key", captured["args"])
         self.assertIn("--max-duration-seconds", captured["args"])
@@ -383,6 +476,16 @@ class RpaBridgeTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(captured["args"][0], "sessions")
+        self.assertIn("--sidecar-run-id", captured["args"])
+        self.assertIn("--scan-id", captured["args"])
+        self.assertEqual(
+            result["sidecar_run_id"],
+            captured["args"][captured["args"].index("--sidecar-run-id") + 1],
+        )
+        self.assertEqual(
+            result["scan_id"],
+            captured["args"][captured["args"].index("--scan-id") + 1],
+        )
         self.assertIn("--artifact-dir", captured["args"])
         self.assertIn("artifact_dir", result)
         self.assertTrue(str(result["screenshot_path"]).endswith("sessions.png"))
@@ -403,6 +506,7 @@ class RpaBridgeTest(unittest.TestCase):
                 rpa_session_key="",
                 remark_code="CJTEST01",
                 target_mode="search_by_remark_code",
+                expected_confirmed_self_text="已确认的 AI 回复",
             )
 
         self.assertTrue(result["ok"])
@@ -413,6 +517,8 @@ class RpaBridgeTest(unittest.TestCase):
         self.assertIn("search_by_remark_code", captured["args"])
         self.assertIn("--remark-code", captured["args"])
         self.assertIn("CJTEST01", captured["args"])
+        self.assertIn("--expected-confirmed-self-text", captured["args"])
+        self.assertIn("已确认的 AI 回复", captured["args"])
         self.assertIn("--sidecar-run-id", captured["args"])
         self.assertNotIn("--session-key", captured["args"])
         self.assertIn("sidecar_run_id", result)
@@ -454,38 +560,6 @@ class RpaBridgeTest(unittest.TestCase):
         self.assertEqual(parsed["session_key"], candidate["session_key"])
         self.assertEqual(parsed["center_y"], candidate["center_y"])
 
-    def test_real_bridge_voice_transcribe_current_chat_validates_target_without_switching(self):
-        bridge = RpaBridge(sidecar_script=Path(__file__))
-        bridge.mode = "real"
-        captured = {"args": [], "timeout": None}
-
-        def fake_call_omniauto(args, timeout=30, cancel_check=None):
-            captured["args"] = args
-            captured["timeout"] = timeout
-            return {"ok": True, "adapter": "win32_ocr", "state": "voice_transcribe_no_new_text", "transcribed_messages": []}
-
-        with patch.object(bridge, "_call_omniauto", side_effect=fake_call_omniauto):
-            result = bridge.voice_transcribe(
-                display_name="CJTEST01 许聪",
-                rpa_session_key="",
-                remark_code="CJTEST01",
-                target_mode="current",
-            )
-
-        self.assertTrue(result["ok"])
-        self.assertEqual(captured["args"][0], "voice-transcribe")
-        self.assertIn("--target", captured["args"])
-        self.assertEqual(captured["args"][captured["args"].index("--target") + 1], "CJTEST01 许聪")
-        self.assertIn("--target-mode", captured["args"])
-        self.assertEqual(captured["args"][captured["args"].index("--target-mode") + 1], "current")
-        self.assertIn("--remark-code", captured["args"])
-        self.assertIn("--max-duration-seconds", captured["args"])
-        self.assertIn("--sidecar-run-id", captured["args"])
-        self.assertNotIn("--session-key", captured["args"])
-        self.assertGreaterEqual(int(captured["timeout"]), 150)
-        self.assertIn("sidecar_run_id", result)
-        self.assertIn(str(result["sidecar_run_id"]), str(result["artifact_dir"]))
-
     def test_real_bridge_emits_preflight_steps_before_sidecar_call(self):
         bridge = RpaBridge(sidecar_script=Path(__file__))
         bridge.mode = "real"
@@ -525,10 +599,8 @@ class RpaBridgeTest(unittest.TestCase):
         call_omniauto.assert_called_once()
         self.assertEqual(steps[0].current_step, "rpa_sidecar_starting")
         self.assertEqual(steps[1].current_step, "wechat_preflight_starting")
-        self.assertEqual(steps[2].current_step, "operator_guard_starting")
         self.assertIn("启动 OmniAuto", steps[0].title)
         self.assertIn("17368746889", steps[1].remark)
-        self.assertIn("键鼠守护", steps[2].title)
 
     def test_real_bridge_accepts_confirmed_journal_written_by_sidecar_process(self):
         bridge = RpaBridge(sidecar_script=Path(__file__))
@@ -615,11 +687,11 @@ print(json.dumps({"ok": True, "task_status": "completed", "result_code": "invite
             action_kind="add_friend",
             transaction_id=task.id,
             conversation_id=f"task:{task.id}",
-            items=[{"source_message_key": task.id}],
+            items=[{"journal_item_id": task.id, "action_local_id": task.id}],
         )
         update_action_journal_item(
             journal_path,
-            source_message_key=task.id,
+            journal_item_id=task.id,
             action_phase="trigger_attempted",
             business_state="invite_confirm_click_starting",
         )
@@ -650,11 +722,11 @@ print(json.dumps({"ok": True, "task_status": "completed", "result_code": "invite
             action_kind="add_friend",
             transaction_id=task.id,
             conversation_id=f"task:{task.id}",
-            items=[{"source_message_key": task.id}],
+            items=[{"journal_item_id": task.id, "action_local_id": task.id}],
         )
         update_action_journal_item(
             journal_path,
-            source_message_key=task.id,
+            journal_item_id=task.id,
             action_phase="confirmed",
             business_state="invite_sent",
             business_result_confirmed=True,

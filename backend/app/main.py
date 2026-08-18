@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.api.response import error_response
-from app.api.routes import assignment, auth_session, c3, debug, leads, operation_logs, sales, tasks, vehicles, wechat, workers
+from app.api.routes import assignment, auth_session, c3, debug, leads, observability, operation_logs, sales, tasks, vehicles, wechat, workers
 from app.core.config import get_settings
 from app.core.database import Base, SessionLocal, engine
 from app.core.request_id import new_request_id, reset_request_id, set_request_id
@@ -17,6 +17,8 @@ from app.errors import AppError
 from app import models  # noqa: F401
 from app.services.ai_adapter import check_ai_engine_readiness
 from app.services.c3_recovery import C3BatchRecoveryLoop
+from app.services.feishu_adapter import check_feishu_readiness
+from app.services.feishu_service import recover_handoff_notifications
 from app.services.vehicle_service import knowledge_runtime_readiness, retry_pending_vehicle_file_cleanups
 
 
@@ -123,6 +125,13 @@ def create_app() -> FastAPI:
         cleanup = retry_pending_vehicle_file_cleanups()
         if cleanup["pending"]:
             logger.warning("vehicle file cleanup remains pending count=%s", cleanup["pending"])
+        feishu_recovery = recover_handoff_notifications()
+        if feishu_recovery["unknown_settled"] or feishu_recovery["pending_attempted"]:
+            logger.info(
+                "Feishu handoff recovery unknown_settled=%s pending_attempted=%s",
+                feishu_recovery["unknown_settled"],
+                feishu_recovery["pending_attempted"],
+            )
         recovery = C3BatchRecoveryLoop()
         recovery.start()
         app.state.c3_batch_recovery = recovery
@@ -141,6 +150,16 @@ def create_app() -> FastAPI:
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(request: Request, exc: RequestValidationError):
         trace_id = getattr(request.state, "request_id", None)
+        if any(
+            error.get("type") == "sales_feishu_id_server_managed"
+            for error in exc.errors()
+        ):
+            return error_response(
+                422,
+                "SALES_FEISHU_ID_SERVER_MANAGED",
+                "飞书用户标识只能由服务端维护",
+                trace_id=trace_id,
+            )
         return error_response(400, "VALIDATION_ERROR", "参数错误", {"errors": exc.errors()}, trace_id=trace_id)
 
     @app.exception_handler(Exception)
@@ -159,7 +178,14 @@ def create_app() -> FastAPI:
             db.execute(text("select 1"))
             knowledge = knowledge_runtime_readiness(db)
         brain = check_ai_engine_readiness()
-        return {"status": "ok", "database": "ok", "knowledge": knowledge, "brain": brain}
+        feishu = check_feishu_readiness()
+        return {
+            "status": "ok",
+            "database": "ok",
+            "knowledge": knowledge,
+            "brain": brain,
+            "feishu": feishu,
+        }
 
     app.include_router(leads.router, prefix=settings.api_prefix)
     app.include_router(auth_session.router, prefix=settings.api_prefix)
@@ -169,6 +195,7 @@ def create_app() -> FastAPI:
     app.include_router(c3.router, prefix=settings.api_prefix)
     app.include_router(tasks.router, prefix=settings.api_prefix)
     app.include_router(operation_logs.router, prefix=settings.api_prefix)
+    app.include_router(observability.router, prefix=settings.api_prefix)
     app.include_router(assignment.router, prefix=settings.api_prefix)
     app.include_router(vehicles.router, prefix=settings.api_prefix)
     if not settings.is_production:

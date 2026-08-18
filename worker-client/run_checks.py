@@ -16,6 +16,8 @@ def main() -> int:
     env["CHEJIN_RPA_MODE"] = "mock"
     env["CHEJIN_RPA_MOCK_STEP_DELAY_SECONDS"] = "0"
     env["CHEJIN_WORKER_HOME"] = tempfile.mkdtemp(prefix="chejin-worker-checks-")
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     generated_contract = subprocess.run(
         [sys.executable, "scripts/generate-c2-observation-schema.py", "--check"],
         cwd=ROOT,
@@ -30,8 +32,26 @@ def main() -> int:
     )
     if test.returncode:
         return test.returncode
+    runtime_ui_test = subprocess.run(
+        [
+            "node",
+            "--test",
+            str(
+                ROOT.parent
+                / "packages"
+                / "worker-ui-baseline"
+                / "tests"
+                / "runtime-bridge-state.test.mjs"
+            ),
+        ],
+        cwd=ROOT.parent,
+        env=env,
+    )
+    if runtime_ui_test.returncode:
+        return runtime_ui_test.returncode
     omniauto_test_dir = ROOT / "omniauto-rpa" / "apps" / "wechat_ai_customer_service" / "tests"
     omniauto_check_scripts = (
+        "run_add_friend_package_smoke.py",
         "run_wechat_win32_ocr_compat_checks.py",
         "run_wechat_win32_ocr_env_config_checks.py",
         "run_wechat_win32_ocr_interaction_evidence_checks.py",

@@ -47,5 +47,29 @@ class WorkerRunStatusRequest(BaseModel):
     client_instance_id: str | None = Field(default=None, max_length=128)
 
 
+class WorkerInflightFlowStartRequest(BaseModel):
+    flow_id: str = Field(min_length=1, max_length=128)
+    flow_kind: str = Field(min_length=1, max_length=32)
+
+
+class WorkerInflightFlowFinishRequest(BaseModel):
+    flow_id: str = Field(min_length=1, max_length=128)
+    terminal_kind: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern="^(task_terminal|read_confirmed|failed_before_message_action|read_failed_no_fact)$",
+    )
+    conversation_id: str | None = Field(default=None, max_length=36)
+    error_code: str | None = Field(default=None, max_length=64)
+
+    @field_validator("conversation_id", "error_code")
+    @classmethod
+    def strip_optional_finish_value(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+
 class WorkerResetBindingRequest(BaseModel):
     force: bool = True

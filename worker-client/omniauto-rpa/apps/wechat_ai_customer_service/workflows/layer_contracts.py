@@ -77,7 +77,6 @@ CODE_MECHANISM_FIELDS = {
     "preview_signal",
     "ocr_observation",
     "rpa_action_guard",
-    "operator_guard",
     "conversation_strategy_state",
     "redirect_fatigue_level",
     "suggested_engagement_mode",

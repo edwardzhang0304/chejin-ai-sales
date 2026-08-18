@@ -24,8 +24,43 @@ class WechatSessionBinding(Base, TimestampMixin):
     allow_listening: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     authorization_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    disable_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    disabled_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    replacement_binding_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("wechat_session_bindings.id"),
+        nullable=True,
+    )
     unread_hint: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     last_message_preview: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_message_preview_time: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    last_message_observation_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+    last_observed_unread_hint: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+    unread_evidence_key: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    unread_generation: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
+    consumed_unread_generation: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
     ocr_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
@@ -34,7 +69,23 @@ class WechatSessionBinding(Base, TimestampMixin):
         DateTime(timezone=True),
         nullable=True,
     )
+    last_read_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_read_result: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_read_run_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    no_change_read_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_read_due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_read_conversation_status: Mapped[str | None] = mapped_column(
+        String(32),
+        nullable=True,
+    )
     last_scan_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    recovery_hold: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     lead: Mapped["Lead | None"] = relationship()
@@ -50,6 +101,13 @@ class WechatSessionBinding(Base, TimestampMixin):
 Index("idx_wechat_bindings_lead_status", WechatSessionBinding.lead_id, WechatSessionBinding.bind_status)
 Index("idx_wechat_bindings_worker_status", WechatSessionBinding.worker_id, WechatSessionBinding.bind_status, WechatSessionBinding.listen_status)
 Index("idx_wechat_bindings_remark_code", WechatSessionBinding.remark_code)
+Index(
+    "idx_wechat_bindings_worker_read_due",
+    WechatSessionBinding.worker_id,
+    WechatSessionBinding.bind_status,
+    WechatSessionBinding.listen_status,
+    WechatSessionBinding.next_read_due_at,
+)
 Index(
     "uq_wechat_bindings_effective_remark_code",
     WechatSessionBinding.remark_code,
@@ -112,6 +170,47 @@ Index(
 )
 Index("idx_message_events_worker_ingested", MessageEvent.worker_id, MessageEvent.ingested_at.desc())
 Index("idx_message_events_lead_ingested", MessageEvent.lead_id, MessageEvent.ingested_at.desc())
+
+
+class WechatRecoverySettlement(Base):
+    """Backend-owned terminal record for UI-free media fact recovery."""
+
+    __tablename__ = "wechat_recovery_settlements"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    worker_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("workers.id"), nullable=False
+    )
+    conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    recovery_transaction_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    action_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_message_key_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    settlement_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="authorized")
+    source_results_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    trace_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    settled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    worker: Mapped["Worker"] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint(
+            "worker_id",
+            "recovery_transaction_id",
+            name="uq_wechat_recovery_settlement_worker_transaction",
+        ),
+    )
+
+
+Index(
+    "idx_wechat_recovery_settlement_conversation",
+    WechatRecoverySettlement.conversation_id,
+    WechatRecoverySettlement.settled_at.desc(),
+)
 
 
 class WechatScanRun(Base):

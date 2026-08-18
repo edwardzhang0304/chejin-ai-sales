@@ -40,15 +40,6 @@
     "adaptive_speed_enabled": true,
     "fast_send_confirmation_enabled": true
   },
-  "rpa_operator_guard": {
-    "enabled": false,
-    "block_manual_input": true,
-    "floating_indicator_enabled": true,
-    "control_hotkey": "f8",
-    "esc_double_press_window_ms": 420,
-    "pause_poll_interval_ms": 550,
-    "bootstrap_timeout_seconds": 15
-  },
   "state_lock": {
     "timeout_seconds": 120,
     "stale_seconds": 900

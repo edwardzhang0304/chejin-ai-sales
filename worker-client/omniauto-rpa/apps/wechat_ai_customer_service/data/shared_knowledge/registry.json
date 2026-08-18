@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "scope": "wechat_ai_customer_service_shared",
+  "categories": [
+    {
+      "id": "global_guidelines",
+      "name": "共享通用客服原则",
+      "kind": "global",
+      "path": "global_guidelines",
+      "enabled": true,
+      "participates_in_reply": true,
+      "participates_in_learning": false,
+      "participates_in_diagnostics": true,
+      "sort_order": 10
+    },
+    {
+      "id": "reply_style",
+      "name": "共享回复口吻",
+      "kind": "global",
+      "path": "reply_style",
+      "enabled": true,
+      "participates_in_reply": true,
+      "participates_in_learning": false,
+      "participates_in_diagnostics": true,
+      "sort_order": 75
+    }
+  ]
+}

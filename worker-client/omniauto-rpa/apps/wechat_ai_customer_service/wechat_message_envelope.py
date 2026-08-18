@@ -19,6 +19,7 @@ from apps.wechat_ai_customer_service.wechat_message_normalizer import (
 from apps.wechat_ai_customer_service.message_identity import (
     canonical_input_message_id,
     canonical_visual_message_id,
+    frame_visual_message_id,
 )
 
 
@@ -386,6 +387,11 @@ def build_message_envelope(
         "last_message_time": record.get("last_message_time") or "",
         "screen_time_text": str(record.get("screen_time_text") or existing.get("screen_time_text") or screen_time_text or ""),
     }
+    frame_visual_id = frame_visual_message_id(
+        identity_record,
+        target_name=target_name,
+        conversation_type=conversation_type,
+    )
     canonical_visual_id = canonical_visual_message_id(
         identity_record,
         target_name=target_name,
@@ -408,6 +414,7 @@ def build_message_envelope(
         "source_message_key": source_message_key,
         "message_id": message_id,
         "canonical_visual_id": canonical_visual_id,
+        "frame_visual_id": frame_visual_id,
         "canonical_input_id": canonical_input_id,
         "bubble_id": bubble_id,
         "conversation_id": conversation_id,
@@ -442,6 +449,7 @@ def apply_message_envelope_to_record(record: dict[str, Any], envelope: dict[str,
     next_record["id"] = str(next_record.get("id") or envelope.get("message_id") or "")
     next_record["message_id"] = str(next_record.get("message_id") or envelope.get("message_id") or "")
     next_record["canonical_visual_id"] = str(envelope.get("canonical_visual_id") or next_record.get("canonical_visual_id") or "")
+    next_record["frame_visual_id"] = str(envelope.get("frame_visual_id") or next_record.get("frame_visual_id") or "")
     next_record["canonical_input_id"] = str(envelope.get("canonical_input_id") or next_record.get("canonical_input_id") or "")
     next_record["observation_id"] = str(envelope.get("observation_id") or next_record.get("observation_id") or "")
     next_record["source_message_key"] = str(envelope.get("source_message_key") or next_record.get("source_message_key") or "")
@@ -488,6 +496,7 @@ def recorder_view_from_message(message: dict[str, Any]) -> dict[str, Any]:
         "speaker_name": str(envelope.get("speaker_name") or ""),
         "canonical_input_id": str(envelope.get("canonical_input_id") or ""),
         "canonical_visual_id": str(envelope.get("canonical_visual_id") or ""),
+        "frame_visual_id": str(envelope.get("frame_visual_id") or ""),
         "bubble_id": str(envelope.get("bubble_id") or ""),
     }
 
@@ -503,6 +512,7 @@ def customer_service_view_from_message(message: dict[str, Any]) -> dict[str, Any
         "message_id": str(envelope.get("message_id") or ""),
         "canonical_input_id": str(envelope.get("canonical_input_id") or ""),
         "canonical_visual_id": str(envelope.get("canonical_visual_id") or ""),
+        "frame_visual_id": str(envelope.get("frame_visual_id") or ""),
         "bubble_id": str(envelope.get("bubble_id") or ""),
     }
 

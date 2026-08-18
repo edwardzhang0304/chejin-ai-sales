@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import ast
+import inspect
 import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault(
     "CHEJIN_WORKER_HOME",
@@ -12,11 +14,14 @@ os.environ.setdefault(
 )
 
 from chejin_worker_client.c2_contract import (
+    c2_contract_v3,
     formal_image_failure_code,
     image_contract,
     observation_role_is_trusted,
     temporary_capability_gate_codes,
+    validate_slot_ledger_states,
 )
+from chejin_worker_client.config import ClientConfig
 from chejin_worker_client.api import ApiError
 from chejin_worker_client.transaction_outcomes import (
     FlowOutcomeAccumulator,
@@ -27,6 +32,7 @@ from chejin_worker_client.transaction_outcomes import (
 )
 from chejin_worker_client.image_phase import (
     mark_image_action,
+    mark_image_ui_frame_invalidated,
     mark_image_terminal,
     merge_image_phase_results,
     new_image_phase_result,
@@ -40,13 +46,299 @@ from chejin_worker_client.wechat_c2 import (
 
 
 class C2ContractTests(unittest.TestCase):
+    def test_performance_fast_path_flags_can_be_disabled_independently(self):
+        env_names = [
+            "CHEJIN_TASK_SAFE_WAKE_ENABLED",
+            "CHEJIN_C2_LOCATE_FRAME_REUSE_ENABLED",
+            "CHEJIN_C3_PRE_SEND_ROI_REUSE_ENABLED",
+            "CHEJIN_C3_SEND_FRAME_LOCAL_REUSE_ENABLED",
+        ]
+        attrs = [
+            "task_safe_wake_enabled",
+            "c2_locate_frame_reuse_enabled",
+            "c3_pre_send_roi_reuse_enabled",
+            "c3_send_frame_local_reuse_enabled",
+        ]
+        disabled = {name: "0" for name in env_names}
+        with patch.dict(os.environ, disabled):
+            config = ClientConfig.from_env()
+        self.assertEqual([getattr(config, attr) for attr in attrs], [False] * 4)
+
+        for selected_name, selected_attr in zip(env_names, attrs, strict=True):
+            values = {**disabled, selected_name: "1"}
+            with self.subTest(selected=selected_name), patch.dict(
+                os.environ, values
+            ):
+                config = ClientConfig.from_env()
+                self.assertTrue(getattr(config, selected_attr))
+                self.assertEqual(
+                    sum(bool(getattr(config, attr)) for attr in attrs),
+                    1,
+                )
+
+    def test_slot_ledger_contract_separates_fact_scope_from_delivery(self):
+        schema = c2_contract_v3()["slot_ledger_state_schema"]
+        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.20")
+        performance = c2_contract_v3()["performance_fast_path_contract"]
+        self.assertTrue(performance["business_semantics_unchanged"])
+        self.assertEqual(
+            performance["flags"],
+            [
+                "CHEJIN_TASK_SAFE_WAKE_ENABLED",
+                "CHEJIN_C2_LOCATE_FRAME_REUSE_ENABLED",
+                "CHEJIN_C3_PRE_SEND_ROI_REUSE_ENABLED",
+                "CHEJIN_C3_SEND_FRAME_LOCAL_REUSE_ENABLED",
+            ],
+        )
+        self.assertEqual(
+            set(performance["required_diagnostics"]),
+            {
+                "fast_path_attempted",
+                "fast_path_used",
+                "fallback_reason",
+                "frame_digest_equal",
+                "ocr_call_count",
+                "ocr_total_duration_ms",
+            },
+        )
+        self.assertIn("sidebar pixel digest", performance["locate_reuse_rule"])
+        self.assertIn("0.9.10 full path", performance["fallback_rule"])
+        location_recovery = c2_contract_v3()[
+            "target_location_recovery_contract"
+        ]
+        self.assertEqual(
+            location_recovery["error_code"],
+            "C2_VISIBLE_TARGET_STALE_AFTER_CLICK",
+        )
+        self.assertEqual(
+            location_recovery["required_evidence_values"],
+            location_recovery["example"]["targeting"][
+                "stale_after_click"
+            ],
+        )
+        quarantine = c2_contract_v3()["outbox_recovery_contract"][
+            "state_machine"
+        ]["state_properties"]["identity_quarantined"]
+        self.assertFalse(quarantine["automatic_retry"])
+        self.assertFalse(quarantine["blocks_new_ui_actions"])
+        alignment = c2_contract_v3()["sequence_alignment_contract"]
+        self.assertNotIn(
+            "legacy_transition",
+            c2_contract_v3()["message_identity_contract"],
+        )
+        self.assertEqual(alignment["owner"], "worker")
+        self.assertEqual(
+            alignment["strong_anchor_fields"],
+            ["native_source_message_id", "confirmed_action_mapping"],
+        )
+        self.assertEqual(alignment["frame_visual_field"], "frame_visual_id")
+        self.assertIn(
+            "two_uniquely_aligned_historical_boundaries",
+            alignment["weak_media_identity_rule"],
+        )
+        self.assertIn(
+            "one_sided_text_or_system_context_never_proves_media_identity",
+            alignment["one_sided_media_context_rule"],
+        )
+        self.assertIn(
+            "frame_local",
+            alignment["provisional_media_identity_rule"],
+        )
+        self.assertIn(
+            "adjacent_action_frames",
+            alignment["confirmed_action_continuity_rule"],
+        )
+        self.assertIn(
+            "stable_image_fingerprint",
+            alignment["confirmed_image_action_rule"],
+        )
+        self.assertIn(
+            "persisted_confirmed_receipt",
+            alignment["image_identity_commit_gate"],
+        )
+        self.assertIn(
+            "no_consumer_may_query_historical_ledger_or_outbox",
+            alignment["image_identity_consumer_gate"],
+        )
+        self.assertIn(
+            "idempotent_empty_message_gate",
+            alignment["image_identity_failure_behavior"],
+        )
+        self.assertIn(
+            "without_restoring_unproven_weak_media",
+            alignment["recent_ai_boundary_rule"],
+        )
+        self.assertEqual(
+            alignment["new_suffix_rule"],
+            "only_after_unique_alignment_consumes_pre_tail",
+        )
+        self.assertIn(
+            "voice_anchor_alias",
+            alignment["forbidden_cross_action_identity_inputs"],
+        )
+        self.assertIn(
+            "image_physical_anchor",
+            alignment["forbidden_cross_action_identity_inputs"],
+        )
+        identity_contract = c2_contract_v3()["message_identity_contract"]
+        self.assertEqual(
+            identity_contract["ocr_cross_round_identity_field"],
+            "worker_stable_id",
+        )
+        self.assertEqual(
+            identity_contract["frame_local_action_inputs"],
+            ["physical_anchor"],
+        )
+        self.assertNotIn(
+            "physical_anchor",
+            identity_contract["omniauto_inputs"],
+        )
+        source_fields = c2_contract_v3()["message_limits"][
+            "source_message_transport_fields"
+        ]
+        self.assertIn("frame_visual_id", source_fields)
+        self.assertIn("native_source_message_id", source_fields)
+        self.assertIn("voice_duration", source_fields)
+        self.assertIn("quality_flags", source_fields)
+        self.assertIn("avatar_alignment", source_fields)
+        self.assertNotIn("source_message_key", source_fields)
+        self.assertNotIn("canonical_visual_id", source_fields)
+        self.assertNotIn("canonical_input_id", source_fields)
+        for forbidden in (
+            "frame_visual_id",
+            "canonical_visual_id",
+            "canonical_input_id",
+            "voice_anchor_alias",
+            "image_physical_anchor",
+            "message_body_alone",
+            "same_type_occurrence_index",
+        ):
+            self.assertIn(
+                forbidden,
+                identity_contract["forbidden_identity_inputs"],
+            )
+        voice_binding = c2_contract_v3()[
+            "voice_action_binding_contract"
+        ]
+        self.assertEqual(voice_binding["owner"], "omniauto")
+        self.assertEqual(
+            voice_binding["confirmed_candidate_count"], 1
+        )
+        self.assertIn(
+            "continuous_target_tracking",
+            voice_binding["confirmed_methods"],
+        )
+        for field in (
+            "voice_action_stage",
+            "canonical_voice_action_id",
+            "reserved_worker_stable_id",
+            "pre_frame_id",
+            "post_frame_id",
+            "selected_pre_observation_id",
+            "selected_action_token",
+            "selected_target_fingerprint",
+            "tracking_frame_ids",
+            "tracking_edges",
+            "confirmed_action_mapping",
+        ):
+            self.assertIn(
+                field,
+                voice_binding["required_response_fields"],
+            )
+        self.assertIn(
+            "at_least_three_real_capture_frame_ids",
+            voice_binding["continuous_tracking_rule"],
+        )
+        self.assertIn(
+            "slot_ledger_states",
+            c2_contract_v3()["required_evidence_fields"],
+        )
+        self.assertIn(
+            "sequence_alignment_evidence",
+            c2_contract_v3()["required_evidence_fields"],
+        )
+        self.assertNotIn(
+            "slot_ledger_states",
+            c2_contract_v3()["optional_evidence_fields"],
+        )
+        self.assertEqual(
+            set(schema["required_fields"]),
+            {
+                "observation_id",
+                "screen_order",
+                "order_source",
+                "row_kind",
+                "source_message_key",
+                "origin_read_run_id",
+                "fact_scope",
+                "delivery_state",
+                "item_state",
+            },
+        )
+        states = validate_slot_ledger_states(
+            [
+                {
+                    "observation_id": "image-1",
+                    "screen_order": 1,
+                    "order_source": "visual_top",
+                    "row_kind": "image_bubble",
+                    "source_message_key": "source:image-1",
+                    "origin_read_run_id": "read-current",
+                    "fact_scope": "current_read_run",
+                    "delivery_state": "outbox_waiting",
+                    "item_state": "completed",
+                    "ledger_state": "OUTBOX_WAITING",
+                }
+            ],
+            read_run_id="read-current",
+        )
+        self.assertEqual(states[0]["fact_scope"], "current_read_run")
+        not_attempted_rule = c2_contract_v3()[
+            "image_transaction_recovery_contract"
+        ]["not_attempted_rule"]
+        for required_guard in (
+            "no terminal payload",
+            "no completed or failed ledger fact",
+            "no corresponding outbox record",
+            "regardless of action_phase",
+        ):
+            self.assertIn(required_guard, not_attempted_rule)
+        with self.assertRaisesRegex(
+            ValueError,
+            "C2_SLOT_LEDGER_CURRENT_ORIGIN_MISMATCH",
+        ):
+            validate_slot_ledger_states(
+                [{**states[0], "origin_read_run_id": "read-other"}],
+                read_run_id="read-current",
+            )
+
+    def test_flow_gate_actions_match_backend_orchestration(self):
+        contract = c2_contract_v3()["flow_gate_action_contract"]
+        self.assertEqual(
+            contract["classes"],
+            [
+                "non_blocking_warning",
+                "item_handoff",
+                "recoverable_hold",
+                "hard_stop",
+            ],
+        )
+        self.assertEqual(
+            contract["self_media_failure"],
+            "persist_warning_and_continue_latest_complete_customer_tail",
+        )
+        self.assertEqual(
+            contract["high_intent_reason_code"],
+            "CUSTOMER_HIGH_INTENT",
+        )
+
     def test_outbox_recovery_uses_only_backend_action(self):
         for recovery_action in (
             "retry",
             "refresh_and_rebuild",
-            "rebuild_failed_facts",
             "split_and_retry",
             "capability_paused",
+            "identity_quarantined",
             "target_terminated",
             "conversation_terminated",
         ):
@@ -79,9 +371,22 @@ class C2ContractTests(unittest.TestCase):
             classify_outbox_recovery(None),
             "capability_paused",
         )
+
+    def test_identity_collision_is_quarantined_without_rekeying_outbox(self):
+        recovery = c2_contract_v3()["outbox_recovery_contract"]
+        self.assertTrue(
+            {
+                "MESSAGE_IDENTITY_COLLISION",
+                "MESSAGE_IDENTITY_COLLISION_NOT_REKEYABLE",
+                "VOICE_TRANSCRIBE_INVALID_CONTENT",
+                "IMAGE_UNDERSTANDING_EVIDENCE_MISMATCH",
+            }.issubset(recovery["identity_quarantined_codes"]),
+        )
+        self.assertNotIn("refresh_identity_and_retry", recovery["actions"])
+        self.assertNotIn("rebuild_failed_facts", recovery["actions"])
         self.assertEqual(
-            classify_outbox_recovery("unrecognized_action"),
-            "capability_paused",
+            classify_outbox_recovery("identity_quarantined"),
+            "identity_quarantined",
         )
 
     def test_action_result_matrix_is_contract_driven(self):
@@ -164,10 +469,7 @@ class C2ContractTests(unittest.TestCase):
 
     def test_image_failure_reason_mapping_is_exact_and_contract_driven(self):
         expected = {
-            "image_context_menu_copy_item_missing": (
-                "C2_IMAGE_MENU_OPERATION_FAILED"
-            ),
-            "image_context_menu_copy_click_failed": (
+            "C2_IMAGE_MENU_OPERATION_FAILED": (
                 "C2_IMAGE_MENU_OPERATION_FAILED"
             ),
             "clipboard_sequence_missing_before_copy": (
@@ -265,7 +567,6 @@ class C2ContractTests(unittest.TestCase):
             "clipboard_owner_check_failed",
         }
         self.assertTrue(retired_owner_reasons.isdisjoint(reason_map))
-
     def test_send_confirmation_requires_a_physical_trigger(self):
         classified = classify_action_result(
             "send",
@@ -436,6 +737,22 @@ class C2ContractTests(unittest.TestCase):
             first["completed_source_keys"],
             ["image-1", "image-2"],
         )
+
+    def test_any_image_ui_action_requires_chat_refresh(self):
+        result = new_image_phase_result()
+        mark_image_action(result, "invalid-image")
+        mark_image_ui_frame_invalidated(result, "invalid-image")
+        mark_image_terminal(
+            result,
+            "invalid-image",
+            terminal_state="failed",
+        )
+
+        self.assertEqual(result["new_action_count"], 1)
+        self.assertEqual(result["failed"], 1)
+        self.assertTrue(result["ui_frame_invalidated"])
+        self.assertTrue(result["requires_final_refresh"])
+        self.assertEqual(result["refresh_source_keys"], ["invalid-image"])
 
     def test_role_trust_is_derived_from_each_contract_row_rule(self):
         self.assertTrue(

@@ -8,8 +8,10 @@ from sqlalchemy.dialects import postgresql
 
 from app.core.database import Base, SessionLocal, engine
 from app.main import app
+from app.models.audit import OperationLog
 from app.models.base import utcnow
 from app.models.task import Task
+from app.models.wechat import MessageEvent, WechatSessionBinding
 from app.services import task_service
 from app.errors import AppError
 
@@ -64,7 +66,7 @@ def _heartbeat(worker: dict, client_instance_id: str = "client-a", run_status: s
 def _create_sales(worker_id: str) -> str:
     response = client.post(
         "/api/sales",
-        json={"sales_name": "张伟", "enabled": True, "sort_order": 10, "worker_id": worker_id},
+        json={"sales_name": "张伟", "phone": "13900000001", "enabled": True, "sort_order": 10, "worker_id": worker_id},
         headers=HEADERS,
     )
     assert response.status_code == 200
@@ -333,6 +335,420 @@ def test_worker_heartbeat_rejects_legacy_running_status_values():
     )
     assert invalid.status_code == 400
     assert invalid.json()["code"] == "WORKER_RUNNING_STATUS_INVALID"
+
+
+def test_pause_drains_only_exact_registered_flow_and_rejects_new_work():
+    worker = _create_worker()
+    _bind_worker(worker)
+    assert _heartbeat(worker).status_code == 200
+    headers = {
+        "X-Worker-Token": worker["worker_token"],
+        "X-Client-Instance-Id": "client-a",
+    }
+    started = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/start",
+        json={"flow_id": "read-runtime-1", "flow_kind": "c2_read"},
+        headers=headers,
+    )
+    assert started.status_code == 200, started.text
+    assert started.json()["data"]["status"] == "active"
+
+    paused = client.post(
+        f"/api/workers/{worker['id']}/run-status",
+        json={"run_status": "paused", "client_instance_id": "client-a"},
+        headers=headers,
+    )
+    assert paused.status_code == 200, paused.text
+    state = paused.json()["data"]["inflight_flow_state"]
+    assert state["status"] == "draining"
+    assert state["flow_id"] == "read-runtime-1"
+    assert state["pause_requested_at"]
+
+    forged_new_work = client.get(
+        f"/api/workers/{worker['id']}/tasks/pull",
+        headers={**headers, "X-Inflight-Flow-Id": "read-runtime-1"},
+    )
+    assert forged_new_work.status_code == 409
+    assert forged_new_work.json()["code"] == "WORKER_NEW_FLOW_NOT_ALLOWED"
+
+    wrong_finish = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/finish",
+        json={
+            "flow_id": "read-runtime-1",
+            "terminal_kind": "failed_before_message_action",
+            "conversation_id": "conv-runtime-1",
+            "error_code": "C2_TARGET_NOT_FOUND",
+        },
+        headers={**headers, "X-Inflight-Flow-Id": "forged-flow"},
+    )
+    assert wrong_finish.status_code == 409
+    assert wrong_finish.json()["code"] == "WORKER_INFLIGHT_FLOW_MISMATCH"
+
+    finished = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/finish",
+        json={
+            "flow_id": "read-runtime-1",
+            "terminal_kind": "failed_before_message_action",
+            "conversation_id": "conv-runtime-1",
+            "error_code": "C2_TARGET_NOT_FOUND",
+        },
+        headers={**headers, "X-Inflight-Flow-Id": "read-runtime-1"},
+    )
+    assert finished.status_code == 200, finished.text
+    assert finished.json()["data"]["finished"] is True
+
+
+def test_c2_inflight_finish_requires_backend_read_completion_proof():
+    worker = _create_worker("C2 结算证明 Worker")
+    _bind_worker(worker)
+    assert _heartbeat(worker).status_code == 200
+    headers = {
+        "X-Worker-Token": worker["worker_token"],
+        "X-Client-Instance-Id": "client-a",
+    }
+    conversation_id = "11111111-2222-3333-4444-555555555555"
+    with SessionLocal() as db:
+        db.add(
+            WechatSessionBinding(
+                conversation_id=conversation_id,
+                worker_id=worker["id"],
+                display_name="CJPROOF1",
+                remark_code="CJPROOF1",
+                rpa_session_key="wx:proof:1",
+                row_fingerprint="proof-row",
+                bind_status="bound",
+                listen_status="listening",
+                allow_listening=True,
+            )
+        )
+        db.commit()
+    flow_id = "read-proof-required"
+    assert client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/start",
+        json={"flow_id": flow_id, "flow_kind": "c2_read"},
+        headers=headers,
+    ).status_code == 200
+    finish_payload = {
+        "flow_id": flow_id,
+        "terminal_kind": "read_confirmed",
+        "conversation_id": conversation_id,
+        "error_code": None,
+    }
+    premature = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/finish",
+        json=finish_payload,
+        headers={**headers, "X-Inflight-Flow-Id": flow_id},
+    )
+    assert premature.status_code == 409
+    assert premature.json()["code"] == "WORKER_INFLIGHT_FLOW_NOT_SETTLED"
+    with SessionLocal() as db:
+        binding = db.query(WechatSessionBinding).filter(
+            WechatSessionBinding.conversation_id == conversation_id
+        ).one()
+        binding.last_read_run_id = flow_id
+        binding.last_read_completed_at = utcnow()
+        binding.last_read_result = "no_change"
+        db.commit()
+    finished = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/finish",
+        json=finish_payload,
+        headers={**headers, "X-Inflight-Flow-Id": flow_id},
+    )
+    assert finished.status_code == 200, finished.text
+
+
+def test_c2_inflight_read_failed_no_fact_is_an_audited_terminal():
+    worker = _create_worker("C2 无事实失败 Worker")
+    _bind_worker(worker)
+    assert _heartbeat(worker).status_code == 200
+    headers = {
+        "X-Worker-Token": worker["worker_token"],
+        "X-Client-Instance-Id": "client-a",
+    }
+    flow_id = "read-sidecar-no-fact"
+    assert client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/start",
+        json={"flow_id": flow_id, "flow_kind": "c2_read"},
+        headers=headers,
+    ).status_code == 200
+
+    finished = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/finish",
+        json={
+            "flow_id": flow_id,
+            "terminal_kind": "read_failed_no_fact",
+            "conversation_id": "11111111-2222-3333-4444-666666666666",
+            "error_code": "C2_MESSAGE_OCR_FAILED",
+        },
+        headers={**headers, "X-Inflight-Flow-Id": flow_id},
+    )
+
+    assert finished.status_code == 200, finished.text
+    with SessionLocal() as db:
+        audit = db.query(OperationLog).filter(
+            OperationLog.event_type == "worker_inflight_read_failed_no_fact"
+        ).one()
+        assert audit.extra_metadata["flow_id"] == flow_id
+        assert audit.extra_metadata["error_code"] == "C2_MESSAGE_OCR_FAILED"
+
+    conflicting_flow_id = "read-sidecar-formed-fact"
+    assert client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/start",
+        json={"flow_id": conflicting_flow_id, "flow_kind": "c2_read"},
+        headers=headers,
+    ).status_code == 200
+    with SessionLocal() as db:
+        db.add(
+            MessageEvent(
+                conversation_id="11111111-2222-3333-4444-777777777777",
+                worker_id=worker["id"],
+                rpa_session_key="wx:formed-fact",
+                read_run_id=conflicting_flow_id,
+                contract_version=3,
+                source_message_key="source-formed-fact",
+                dedupe_key="dedupe-formed-fact",
+                sender_role="customer",
+                message_type="text",
+                content="已形成事实",
+                raw_payload={},
+                evidence={},
+            )
+        )
+        db.commit()
+    rejected = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/finish",
+        json={
+            "flow_id": conflicting_flow_id,
+            "terminal_kind": "read_failed_no_fact",
+            "conversation_id": "11111111-2222-3333-4444-777777777777",
+            "error_code": "C2_MESSAGE_OCR_FAILED",
+        },
+        headers={
+            **headers,
+            "X-Inflight-Flow-Id": conflicting_flow_id,
+        },
+    )
+    assert rejected.status_code == 409
+    assert rejected.json()["code"] == "WORKER_INFLIGHT_FLOW_NOT_SETTLED"
+
+
+def test_postgres_inflight_start_pause_finish_are_serialized():
+    if engine.dialect.name != "postgresql":
+        pytest.skip("PostgreSQL inflight row-lock concurrency test")
+
+    worker = _create_worker("在途流程并发 Worker")
+    _bind_worker(worker)
+    assert _heartbeat(worker).status_code == 200
+    headers = {
+        "X-Worker-Token": worker["worker_token"],
+        "X-Client-Instance-Id": "client-a",
+    }
+
+    def concurrent_posts(requests: list[tuple[str, dict, dict]]) -> list[tuple[int, str]]:
+        barrier = threading.Barrier(len(requests))
+        outcomes: list[tuple[int, str]] = []
+
+        def run(path: str, payload: dict, request_headers: dict) -> None:
+            barrier.wait(timeout=5)
+            response = client.post(path, json=payload, headers=request_headers)
+            outcomes.append(
+                (response.status_code, str(response.json().get("code") or ""))
+            )
+
+        threads = [
+            threading.Thread(target=run, args=item, daemon=True)
+            for item in requests
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+            assert not thread.is_alive()
+        return outcomes
+
+    start_path = f"/api/workers/{worker['id']}/inflight-flow/start"
+    finish_path = f"/api/workers/{worker['id']}/inflight-flow/finish"
+    pause_path = f"/api/workers/{worker['id']}/run-status"
+
+    start_start = concurrent_posts(
+        [
+            (start_path, {"flow_id": "read-concurrent-a", "flow_kind": "c2_read"}, headers),
+            (start_path, {"flow_id": "read-concurrent-b", "flow_kind": "c2_read"}, headers),
+        ]
+    )
+    assert sorted(code for code, _ in start_start) == [200, 409]
+    profile = client.get(f"/api/workers/{worker['id']}", headers=HEADERS).json()["data"]
+    winner = profile["inflight_flow_state"]["flow_id"]
+    finish_headers = {**headers, "X-Inflight-Flow-Id": winner}
+    assert client.post(
+        finish_path,
+        json={
+            "flow_id": winner,
+            "terminal_kind": "failed_before_message_action",
+            "conversation_id": "conv-concurrent-start",
+            "error_code": "C2_TARGET_NOT_FOUND",
+        },
+        headers=finish_headers,
+    ).status_code == 200
+
+    start_pause = concurrent_posts(
+        [
+            (start_path, {"flow_id": "read-concurrent-pause", "flow_kind": "c2_read"}, headers),
+            (pause_path, {"run_status": "paused", "client_instance_id": "client-a"}, headers),
+        ]
+    )
+    assert all(code in {200, 409} for code, _ in start_pause)
+    profile = client.get(f"/api/workers/{worker['id']}", headers=HEADERS).json()["data"]
+    assert profile["run_status"] == "paused"
+    state = profile["inflight_flow_state"]
+    if state:
+        assert state["flow_id"] == "read-concurrent-pause"
+        assert state["status"] == "draining", (start_pause, profile)
+        assert client.post(
+            finish_path,
+            json={
+                "flow_id": "read-concurrent-pause",
+                "terminal_kind": "failed_before_message_action",
+                "conversation_id": "conv-concurrent-pause",
+                "error_code": "C2_TARGET_NOT_FOUND",
+            },
+            headers={**headers, "X-Inflight-Flow-Id": "read-concurrent-pause"},
+        ).status_code == 200
+
+    assert client.post(
+        pause_path,
+        json={"run_status": "running", "client_instance_id": "client-a"},
+        headers=headers,
+    ).status_code == 200
+    assert client.post(
+        start_path,
+        json={"flow_id": "read-concurrent-finish", "flow_kind": "c2_read"},
+        headers=headers,
+    ).status_code == 200
+    pause_finish = concurrent_posts(
+        [
+            (pause_path, {"run_status": "paused", "client_instance_id": "client-a"}, headers),
+            (
+                finish_path,
+                {
+                    "flow_id": "read-concurrent-finish",
+                    "terminal_kind": "failed_before_message_action",
+                    "conversation_id": "conv-concurrent-finish",
+                    "error_code": "C2_TARGET_NOT_FOUND",
+                },
+                {**headers, "X-Inflight-Flow-Id": "read-concurrent-finish"},
+            ),
+        ]
+    )
+    assert sorted(code for code, _ in pause_finish) == [200, 200]
+    profile = client.get(f"/api/workers/{worker['id']}", headers=HEADERS).json()["data"]
+    assert profile["run_status"] == "paused"
+    assert profile["inflight_flow_state"] == {}
+
+
+def test_paused_draining_task_renews_only_with_exact_flow_header():
+    worker = _create_worker()
+    _bind_worker(worker)
+    assert _heartbeat(worker).status_code == 200
+    _create_sales(worker["id"])
+    _create_lead("暂停续租客户", "13896676672")
+    task = _first_task()
+    headers = {
+        "X-Worker-Token": worker["worker_token"],
+        "X-Client-Instance-Id": "client-a",
+    }
+    started = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/start",
+        json={"flow_id": task["id"], "flow_kind": "task"},
+        headers=headers,
+    )
+    assert started.status_code == 200, started.text
+    claimed = client.post(
+        f"/api/tasks/{task['id']}/claim",
+        json={"worker_id": worker["id"], "current_step": "claimed"},
+        headers={**headers, "X-Inflight-Flow-Id": task["id"]},
+    )
+    assert claimed.status_code == 200, claimed.text
+    fencing = claimed.json()["data"]["lease_fencing_token"]
+    paused = client.post(
+        f"/api/workers/{worker['id']}/run-status",
+        json={"run_status": "paused", "client_instance_id": "client-a"},
+        headers=headers,
+    )
+    assert paused.status_code == 200, paused.text
+
+    forged = client.post(
+        f"/api/tasks/{task['id']}/lease/renew",
+        json={"lease_fencing_token": fencing},
+        headers={**headers, "X-Inflight-Flow-Id": "other-flow"},
+    )
+    assert forged.status_code == 409
+    assert forged.json()["code"] == "WORKER_INFLIGHT_FLOW_MISMATCH"
+
+    renewed = client.post(
+        f"/api/tasks/{task['id']}/lease/renew",
+        json={"lease_fencing_token": fencing},
+        headers={**headers, "X-Inflight-Flow-Id": task["id"]},
+    )
+    assert renewed.status_code == 200, renewed.text
+    assert renewed.json()["data"]["status"] == "running"
+
+    premature_finish = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/finish",
+        json={
+            "flow_id": task["id"],
+            "terminal_kind": "task_terminal",
+            "conversation_id": None,
+            "error_code": None,
+        },
+        headers={**headers, "X-Inflight-Flow-Id": task["id"]},
+    )
+    assert premature_finish.status_code == 409
+    assert premature_finish.json()["code"] == (
+        "WORKER_INFLIGHT_FLOW_NOT_SETTLED"
+    )
+
+
+def test_pause_after_exact_task_registration_still_allows_original_claim():
+    worker = _create_worker()
+    _bind_worker(worker)
+    assert _heartbeat(worker).status_code == 200
+    _create_sales(worker["id"])
+    _create_lead("暂停登记窗口客户", "13896676673")
+    task = _first_task()
+    headers = {
+        "X-Worker-Token": worker["worker_token"],
+        "X-Client-Instance-Id": "client-a",
+    }
+    started = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/start",
+        json={"flow_id": task["id"], "flow_kind": "task"},
+        headers=headers,
+    )
+    assert started.status_code == 200, started.text
+    paused = client.post(
+        f"/api/workers/{worker['id']}/run-status",
+        json={"run_status": "paused", "client_instance_id": "client-a"},
+        headers=headers,
+    )
+    assert paused.status_code == 200, paused.text
+
+    forged = client.post(
+        f"/api/tasks/{task['id']}/claim",
+        json={"worker_id": worker["id"], "current_step": "claimed"},
+        headers={**headers, "X-Inflight-Flow-Id": "forged-flow"},
+    )
+    assert forged.status_code == 409
+    assert forged.json()["code"] == "WORKER_INFLIGHT_FLOW_MISMATCH"
+
+    claimed = client.post(
+        f"/api/tasks/{task['id']}/claim",
+        json={"worker_id": worker["id"], "current_step": "claimed"},
+        headers={**headers, "X-Inflight-Flow-Id": task["id"]},
+    )
+    assert claimed.status_code == 200, claimed.text
+    assert claimed.json()["data"]["id"] == task["id"]
+    assert claimed.json()["data"]["status"] == "running"
 
 
 def test_task_lease_renewal_rejects_stale_fencing_and_expiry_is_terminal():

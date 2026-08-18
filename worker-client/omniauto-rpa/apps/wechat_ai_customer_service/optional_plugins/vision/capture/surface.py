@@ -9,6 +9,8 @@ from typing import Any, Callable
 from .wechat import (
     attach_image_physical_anchors,
     detect_visual_image_bubbles,
+    explained_non_image_conflict,
+    explained_non_image_regions,
     extract_chat_time_markers,
 )
 
@@ -22,6 +24,110 @@ class ImageSurfaceObservationError(RuntimeError):
         )
 
 
+def _surface_bounds(value: Any) -> tuple[float, float, float, float] | None:
+    if isinstance(value, dict):
+        raw = (
+            value.get("left"),
+            value.get("top"),
+            value.get("right"),
+            value.get("bottom"),
+        )
+    elif isinstance(value, (list, tuple)) and len(value) >= 4:
+        raw = value[:4]
+    else:
+        return None
+    try:
+        left, top, right, bottom = (float(item) for item in raw)
+    except (TypeError, ValueError):
+        return None
+    if right <= left or bottom <= top:
+        return None
+    return left, top, right, bottom
+
+
+def _contained_area_ratio(
+    inner: tuple[float, float, float, float],
+    outer: tuple[float, float, float, float],
+) -> float:
+    left, top, right, bottom = inner
+    outer_left, outer_top, outer_right, outer_bottom = outer
+    overlap_width = max(0.0, min(right, outer_right) - max(left, outer_left))
+    overlap_height = max(0.0, min(bottom, outer_bottom) - max(top, outer_top))
+    inner_area = max(1.0, (right - left) * (bottom - top))
+    return (overlap_width * overlap_height) / inner_area
+
+
+def image_candidates_without_reliable_typed_message_conflicts(
+    image_candidates: list[dict[str, Any]] | None,
+    transcribed_messages: list[dict[str, Any]] | None,
+    voice_action_attempts: list[dict[str, Any]] | None,
+    *,
+    diagnostics: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Let reliable parsed type evidence veto weak structural image geometry.
+
+    ``voice_action_attempts`` remains in the internal call signature for
+    compatibility with older callers, but action success is intentionally not
+    consulted: it belongs to transaction settlement, not type arbitration.
+    """
+
+    _ = voice_action_attempts
+    protected_regions = explained_non_image_regions(transcribed_messages)
+
+    kept: list[dict[str, Any]] = []
+    for candidate in image_candidates or []:
+        if not isinstance(candidate, dict):
+            continue
+        image_rect = _surface_bounds(
+            candidate.get("bubble_rect") or candidate.get("bounds")
+        )
+        image_role = str(
+            candidate.get("sender_role")
+            or candidate.get("sender")
+            or candidate.get("visual_side")
+            or candidate.get("side")
+            or ""
+        ).strip().lower()
+        typed_conflict = None
+        if image_rect is not None and image_role in {"customer", "self"}:
+            typed_conflict = explained_non_image_conflict(
+                tuple(int(value) for value in image_rect),
+                side=image_role,
+                regions=protected_regions,
+            )
+            # Type arbitration is monotonic.  Once the chat parser has
+            # established a text/voice row with trusted sender-role evidence,
+            # a weaker structural surface candidate must not replace it.
+            # Bubble-edge continuity is useful while discovering media, but a
+            # normal WeChat text bubble also has a continuous role-facing edge;
+            # it is therefore not evidence capable of overturning a reliable
+            # message type.
+        if typed_conflict is None:
+            kept.append(dict(candidate))
+        elif diagnostics is not None:
+            diagnostics.append(
+                {
+                    "event": (
+                        "image_candidate_suppressed_by_reliable_message_type"
+                    ),
+                    "reason": "reliable_non_image_region_overlap",
+                    "image_bounds": list(image_rect or []),
+                    "protected_bounds": list(typed_conflict["bounds"]),
+                    "sender_role": image_role,
+                    "message_type": typed_conflict["message_type"],
+                    "voice_anchor_key": typed_conflict[
+                        "voice_anchor_key"
+                    ],
+                    "protected_evidence": typed_conflict["evidence"],
+                    "contained_ratio": typed_conflict[
+                        "contained_ratio"
+                    ],
+                    "candidate": dict(candidate),
+                }
+            )
+    return kept
+
+
 def messages_outside_image_bubbles(
     messages: list[dict[str, Any]] | None,
     image_messages: list[dict[str, Any]] | None,
@@ -32,31 +138,11 @@ def messages_outside_image_bubbles(
     that image and must reach the system through Vision, not the chat parser.
     """
 
-    def bounds(value: Any) -> tuple[float, float, float, float] | None:
-        if isinstance(value, dict):
-            raw = (
-                value.get("left"),
-                value.get("top"),
-                value.get("right"),
-                value.get("bottom"),
-            )
-        elif isinstance(value, (list, tuple)) and len(value) >= 4:
-            raw = value[:4]
-        else:
-            return None
-        try:
-            left, top, right, bottom = (float(item) for item in raw)
-        except (TypeError, ValueError):
-            return None
-        if right <= left or bottom <= top:
-            return None
-        return left, top, right, bottom
-
     image_bounds = [
         rect
         for item in image_messages or []
         if isinstance(item, dict)
-        for rect in [bounds(item.get("bubble_rect") or item.get("bounds"))]
+        for rect in [_surface_bounds(item.get("bubble_rect") or item.get("bounds"))]
         if rect is not None
     ]
     if not image_bounds:
@@ -69,17 +155,25 @@ def messages_outside_image_bubbles(
         if str(item.get("type") or item.get("message_type") or "").lower() == "image":
             kept.append(dict(item))
             continue
-        rect = bounds(item.get("bubble_rect"))
+        # Final defensive gate: even if an upstream/reused structural image
+        # observation overlaps this row, a reliably typed text/voice fact is
+        # monotonic and cannot be erased during merge.  OCR-like fragments
+        # inside a real image do not pass explained_non_image_regions() unless
+        # they also carry trusted chat-row role/type evidence.
+        if explained_non_image_regions([item]):
+            kept.append(dict(item))
+            continue
+        rect = _surface_bounds(item.get("bubble_rect"))
         if rect is None:
             kept.append(dict(item))
             continue
         left, top, right, bottom = rect
-        row_area = max(1.0, (right - left) * (bottom - top))
         embedded = False
         for image_left, image_top, image_right, image_bottom in image_bounds:
-            overlap_width = max(0.0, min(right, image_right) - max(left, image_left))
-            overlap_height = max(0.0, min(bottom, image_bottom) - max(top, image_top))
-            if (overlap_width * overlap_height) / row_area >= 0.90:
+            if _contained_area_ratio(
+                (left, top, right, bottom),
+                (image_left, image_top, image_right, image_bottom),
+            ) >= 0.90:
                 embedded = True
                 break
         if not embedded:
@@ -235,6 +329,8 @@ def visual_image_messages_from_current_surface(
     target: str,
     side_filter: str,
     max_images: int,
+    voice_action_attempts: list[dict[str, Any]] | None = None,
+    diagnostics: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     if screenshot is None:
         return []
@@ -248,12 +344,19 @@ def visual_image_messages_from_current_surface(
                 list(ocr_items or []),
                 tuple(getattr(screenshot, "size", (0, 0))),
             ),
+            diagnostics=diagnostics,
         )
     except Exception as exc:
         raise ImageSurfaceObservationError(
             "detect_visual_image_bubbles",
             exc,
         ) from exc
+    bubbles = image_candidates_without_reliable_typed_message_conflicts(
+        bubbles,
+        existing_messages,
+        voice_action_attempts,
+        diagnostics=diagnostics,
+    )
     anchor_messages = messages_outside_image_bubbles(
         existing_messages,
         bubbles,
@@ -273,6 +376,8 @@ def observe_structural_image_messages(
     target: str,
     role_resolver: Callable[[Any, Any, Any], dict[str, Any]],
     max_images: int = 64,
+    voice_action_attempts: list[dict[str, Any]] | None = None,
+    diagnostics: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Run the one formal C2 image observation pipeline for the current frame."""
 
@@ -289,6 +394,8 @@ def observe_structural_image_messages(
             target=target,
             side_filter="all",
             max_images=max_images,
+            voice_action_attempts=voice_action_attempts,
+            diagnostics=diagnostics,
         )
     except ImageSurfaceObservationError:
         raise
@@ -371,6 +478,9 @@ def observe_structural_image_messages(
             + hashlib.sha256(visual_seed.encode("utf-8")).hexdigest()[:24]
         )
         image_message["canonical_visual_id"] = canonical_visual_id
+        image_message["frame_visual_id"] = canonical_visual_id.replace(
+            "canonical_visual_", "frame_visual_", 1
+        )
         image_message["id"] = canonical_visual_id
         image_message["message_id"] = canonical_visual_id
         image_message["bounds"] = list(

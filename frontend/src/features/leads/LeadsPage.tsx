@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { ApiError, formatBusinessError } from "../../shared/api/client";
+import { Pagination } from "../../shared/ui/Pagination";
 import { postMutationMessage, runPostMutationRefresh } from "../../shared/utils/postMutation";
 import { batchMarkInvalid, createLead, exportLeads, markLeadInvalid, restoreLead as restoreLeadApi, retryAutoAssign, revealContact } from "./api";
 import { CreateLeadModal } from "./components/CreateLeadModal";
@@ -24,22 +25,6 @@ const pageSizeOptions = [20, 50, 100];
 
 function statValue(value: number | undefined) {
   return value === undefined ? "-" : value.toLocaleString("zh-CN");
-}
-
-function getPaginationItems(currentPage: number, totalPages: number): Array<number | "..."> {
-  if (totalPages <= 5) {
-    return Array.from({ length: totalPages }, (_, index) => index + 1);
-  }
-
-  if (currentPage <= 3) {
-    return [1, 2, 3, "...", totalPages];
-  }
-
-  if (currentPage >= totalPages - 2) {
-    return [1, "...", totalPages - 2, totalPages - 1, totalPages];
-  }
-
-  return [1, "...", currentPage - 1, currentPage, currentPage + 1, "...", totalPages];
 }
 
 export function LeadsPage() {
@@ -240,7 +225,6 @@ export function LeadsPage() {
     ? "-"
     : `${leads.stats.assignment_success_rate.toFixed(1)}%`;
   const totalPages = Math.max(1, Math.ceil(leads.total / leads.query.page_size));
-  const paginationItems = getPaginationItems(leads.query.page, totalPages);
   const restoreLeadItem = restoreLeadId
     ? leads.items.find((item) => item.id === restoreLeadId) || (leads.detail?.id === restoreLeadId ? leads.detail : null)
     : null;
@@ -250,7 +234,7 @@ export function LeadsPage() {
       <header className="page-header">
         <div>
           <p className="eyebrow">线索运营</p>
-          <h1>客户线索导入与分配</h1>
+          <h1>线索管理</h1>
         </div>
         <button type="button" className="primary-button" onClick={() => setCreateOpen(true)}>
           新增客户
@@ -261,12 +245,12 @@ export function LeadsPage() {
         <article>
           <span>今日新增</span>
           <strong>{statValue(leads.stats?.today_new_count)}</strong>
-          <p>人工录入 {statValue(leads.stats?.today_new_count)} 条</p>
+          <p>今日创建 {statValue(leads.stats?.today_new_count)} 条</p>
         </article>
         <article>
           <span>已分配</span>
           <strong>{statValue(leads.stats?.assigned_count)}</strong>
-          <p>今日轮询成功率 {successRate}</p>
+          <p>轮询成功率 {successRate}</p>
         </article>
         <article>
           <span>未分配</span>
@@ -383,55 +367,24 @@ export function LeadsPage() {
             onOpenDetail={leads.setActiveLeadId}
           />
 
-          <footer className="pagination-row">
-            <div className="pagination-total">
-              <span>
-                共 <strong>{leads.total}</strong> 条
-              </span>
-              <select
-                aria-label="每页条数"
-                value={leads.query.page_size}
-                onChange={(event) => {
-                  leads.setPageSize(Number(event.target.value));
-                  leads.setPage(1);
-                }}
-              >
-                {pageSizeOptions.map((pageSize) => (
-                  <option key={pageSize} value={pageSize}>
-                    {pageSize}条/页
-                  </option>
-                ))}
-              </select>
-            </div>
-            <nav aria-label="线索分页">
-              <button type="button" disabled={leads.query.page <= 1} onClick={() => leads.setPage(leads.query.page - 1)}>
-                上一页
-              </button>
-              {paginationItems.map((item, index) =>
-                item === "..." ? (
-                  <span className="pagination-ellipsis" key={`ellipsis-${index}`}>
-                    ...
-                  </span>
-                ) : item === leads.query.page ? (
-                  <strong key={item}>{item}</strong>
-                ) : (
-                  <button type="button" key={item} onClick={() => leads.setPage(item)}>
-                    {item}
-                  </button>
-                ),
-              )}
-              <button
-                type="button"
-                disabled={leads.query.page * leads.query.page_size >= leads.total}
-                onClick={() => leads.setPage(leads.query.page + 1)}
-              >
-                下一页
-              </button>
-            </nav>
-          </footer>
+          <Pagination
+            ariaLabel="线索分页"
+            currentPage={leads.query.page}
+            pageSize={leads.query.page_size}
+            pageSizeAriaLabel="每页条数"
+            pageSizeOptions={pageSizeOptions}
+            total={leads.total}
+            totalPages={totalPages}
+            totalUnit="条"
+            onPageChange={leads.setPage}
+            onPageSizeChange={(value) => {
+              leads.setPageSize(value);
+              leads.setPage(1);
+            }}
+          />
         </section>
 
-        <LeadDetailDrawer
+        {leads.activeLeadId ? <LeadDetailDrawer
           detail={leads.detail}
           loading={leads.detailLoading}
           error={leads.detailError}
@@ -447,7 +400,7 @@ export function LeadsPage() {
           }}
           revealedPhones={revealedPhones}
           onRevealPhone={(contactId) => void handleRevealPhone(contactId)}
-        />
+        /> : null}
       </div>
 
       {createOpen ? (

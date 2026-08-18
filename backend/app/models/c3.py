@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, Float, Index, Integer, JSON, String, Text, text
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, Float, Index, Integer, JSON, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -197,10 +197,29 @@ class HandoffEvent(Base, TimestampMixin):
     risk_flags: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     evidence_refs: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     ai_payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    notify_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    notify_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    notify_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     notify_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    notify_error_summary: Mapped[str | None] = mapped_column(String(512), nullable=True)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "notify_status IS NULL OR notify_status IN ('pending','sending','succeeded','failed')",
+            name="ck_handoff_events_notify_status",
+        ),
+    )
 
 
 Index("idx_handoff_events_conversation_created", HandoffEvent.conversation_id, HandoffEvent.created_at.desc())
 Index("idx_handoff_events_status_created", HandoffEvent.status, HandoffEvent.created_at.desc())
+Index("idx_handoff_events_notify_status", HandoffEvent.notify_status, HandoffEvent.created_at)
+Index(
+    "uq_handoff_events_open_conversation",
+    HandoffEvent.conversation_id,
+    unique=True,
+    sqlite_where=text("closed_at IS NULL AND deleted_at IS NULL"),
+    postgresql_where=text("closed_at IS NULL AND deleted_at IS NULL"),
+)

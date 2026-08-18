@@ -318,7 +318,6 @@ def is_obvious_bot_or_control_message(text: str) -> bool:
         "手动粘贴：",
         "演示批次：",
         "统一回复已经转接人工",
-        "按f8",
         "已收到",
         "监听已停止",
         "实盘压测",

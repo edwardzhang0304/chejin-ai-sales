@@ -23,6 +23,7 @@ class Worker(Base, TimestampMixin):
     current_task: Mapped[str | None] = mapped_column(String(255), nullable=True)
     current_step: Mapped[str | None] = mapped_column(String(64), nullable=True)
     local_lock_summary: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    inflight_flow_state: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     worker_token_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     worker_token_encrypted: Mapped[str] = mapped_column(Text, nullable=False)

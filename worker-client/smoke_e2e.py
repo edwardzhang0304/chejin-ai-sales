@@ -29,10 +29,49 @@ class SmokeApi:
             remark_code_valid=True,
         )
         self.events: list[str] = []
+        self.inflight_flow_id: str | None = None
+        self.inflight_flow_state: dict = {}
+
+    def start_inflight_flow(
+        self,
+        binding: Binding,
+        *,
+        flow_id: str,
+        flow_kind: str,
+    ):
+        self.inflight_flow_id = flow_id
+        self.inflight_flow_state = {
+            "status": "active",
+            "flow_id": flow_id,
+            "flow_kind": flow_kind,
+            "registered_at": "2026-08-14T00:00:00+00:00",
+            "pause_requested_at": None,
+        }
+        self.events.append(f"flow_start:{flow_kind}:{flow_id}")
+        return dict(self.inflight_flow_state)
+
+    def finish_inflight_flow(
+        self,
+        binding: Binding,
+        *,
+        flow_id: str,
+        terminal_kind: str,
+        conversation_id: str | None = None,
+        error_code: str | None = None,
+    ):
+        self.events.append(f"flow_finish:{terminal_kind}:{flow_id}")
+        self.inflight_flow_id = None
+        self.inflight_flow_state = {}
+        return {"finished": True, "flow_id": flow_id}
 
     def heartbeat(self, binding: Binding, **kwargs):
         self.events.append(f"heartbeat:{kwargs['rpa_component_status']}:{kwargs['wechat_status']}")
-        return WorkerProfile(id=binding.worker_id, worker_name="冒烟 Worker", run_status=binding.run_status)
+        return WorkerProfile(
+            id=binding.worker_id,
+            worker_name="冒烟 Worker",
+            run_status=binding.run_status,
+            inflight_flow_state=dict(self.inflight_flow_state),
+        )
 
     def pull_task(self, binding: Binding):
         self.events.append("pull")

@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "category_id": "reply_style",
+  "display_name": "共享回复口吻",
+  "item_title_field": "title",
+  "fields": [
+    {"id": "title", "label": "标题", "type": "short_text", "required": true},
+    {"id": "keywords", "label": "触发关键词", "type": "tags", "required": false},
+    {"id": "guideline_text", "label": "表达方式", "type": "long_text", "required": true},
+    {"id": "applies_to", "label": "适用场景", "type": "long_text", "required": false}
+  ]
+}

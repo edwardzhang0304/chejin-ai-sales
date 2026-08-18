@@ -1,14 +1,16 @@
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.orm import Session
 
 from app.api.response import ok
 from app.core.auth import require_admin_auth
 from app.core.database import get_db
-from app.core.request_context import ActorContext, get_actor_context
+from app.core.request_context import ActorContext, get_actor_context, worker_actor_context
 from app.schemas.worker import (
     WorkerClientBindRequest,
     WorkerCreate,
     WorkerHeartbeat,
+    WorkerInflightFlowFinishRequest,
+    WorkerInflightFlowStartRequest,
     WorkerResetBindingRequest,
     WorkerRunStatusRequest,
     WorkerUpdate,
@@ -148,6 +150,54 @@ def set_worker_run_status(
         raise
 
 
+@router.post("/workers/{worker_id}/inflight-flow/start")
+def start_worker_inflight_flow(
+    worker_id: str,
+    payload: WorkerInflightFlowStartRequest,
+    db: Session = Depends(get_db),
+    x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
+    x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
+):
+    try:
+        worker = worker_service.authenticate_worker_client(
+            db, worker_id, x_worker_token, x_client_instance_id
+        )
+        data = worker_service.start_inflight_flow(db, worker, payload)
+        db.commit()
+        return ok(data)
+    except Exception:
+        db.rollback()
+        raise
+
+
+@router.post("/workers/{worker_id}/inflight-flow/finish")
+def finish_worker_inflight_flow(
+    request: Request,
+    worker_id: str,
+    payload: WorkerInflightFlowFinishRequest,
+    db: Session = Depends(get_db),
+    x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
+    x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
+    x_inflight_flow_id: str | None = Header(default=None, alias="X-Inflight-Flow-Id"),
+):
+    try:
+        worker = worker_service.authenticate_worker_client(
+            db, worker_id, x_worker_token, x_client_instance_id
+        )
+        worker_service.validate_inflight_continuation(
+            worker, x_inflight_flow_id
+        )
+        actor = worker_actor_context(
+            request, worker_id=worker.id, worker_name=worker.worker_name
+        )
+        data = worker_service.finish_inflight_flow(db, worker, payload, actor)
+        db.commit()
+        return ok(data)
+    except Exception:
+        db.rollback()
+        raise
+
+
 @router.get("/workers/{worker_id}/tasks/pull")
 def pull_worker_task(
     worker_id: str,
@@ -157,6 +207,7 @@ def pull_worker_task(
 ):
     try:
         worker = worker_service.authenticate_worker_client(db, worker_id, x_worker_token, x_client_instance_id)
+        worker_service.validate_inflight_continuation(worker, None, new_work=True)
         data = task_service.pull_task_for_worker(db, worker)
         db.commit()
         return ok(data)

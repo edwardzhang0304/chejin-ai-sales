@@ -61,6 +61,29 @@ class _ErrorSession:
 
 
 class WorkerApiClientTest(unittest.TestCase):
+    def test_heartbeat_does_not_send_local_run_status(self):
+        client = WorkerApiClient("http://127.0.0.1:8000/api")
+        session = _Session()
+        client.session = session
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="worker-token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+
+        client.heartbeat(
+            binding,
+            running_status="idle",
+            current_task=None,
+            rpa_component_status="ready",
+            wechat_status="logged_in",
+        )
+
+        payload = session.calls[0]["json"]
+        self.assertNotIn("run_status", payload)
+        self.assertEqual(payload["running_status"], "idle")
+
     def test_continuation_token_is_sent_in_header_not_url(self):
         client = WorkerApiClient("http://127.0.0.1:8000/api")
         session = _Session()

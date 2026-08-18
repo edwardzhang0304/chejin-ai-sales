@@ -1,9 +1,9 @@
 export type SalesItem = {
   id: string;
   sales_name: string;
-  phone: string | null;
+  phone: string;
   wechat: string | null;
-  feishu_user_id: string | null;
+  feishu_binding_status: "matched" | "unmatched";
   worker_id: string | null;
   current_worker?: SalesWorkerSummary | null;
   enabled: boolean;
@@ -16,19 +16,19 @@ export type SalesItem = {
   updated_at?: string;
 };
 
-export type SalesUpsertPayload = {
+export type SalesCreatePayload = {
   sales_name: string;
-  phone?: string | null;
+  phone: string;
   wechat?: string | null;
-  feishu_user_id?: string | null;
   worker_id?: string | null;
   enabled: boolean;
   sort_order?: number | null;
   remark?: string | null;
 };
 
-export type SalesUpdatePayload = Partial<SalesUpsertPayload> & {
+export type SalesUpdatePayload = Partial<Omit<SalesCreatePayload, "phone">> & {
   sales_name?: string;
+  phone?: string;
 };
 
 export type SalesWorkerSummary = {

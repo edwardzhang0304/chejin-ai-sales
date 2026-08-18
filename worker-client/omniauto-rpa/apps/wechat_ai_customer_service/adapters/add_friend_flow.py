@@ -47,7 +47,6 @@ class AddFriendOpsProtocol(Protocol):
     def input_add_friend_query_and_search(self, hwnd: int, output_dir: Any, **kwargs: Any) -> dict[str, Any]: ...
     def write_add_friend_entry_click_review(self, output_dir: Any, payload: dict[str, Any]) -> str: ...
     def add_friend_paced_pause(self, tier: str, **kwargs: Any) -> float: ...
-    def add_friend_operator_guard_checkpoint(self, **kwargs: Any) -> dict[str, Any]: ...
     def write_action_phase_journal(self, path: str, phase: str, **kwargs: Any) -> None: ...
     def human_window_image_hover(self, hwnd: int, x: int, y: int) -> dict[str, Any]: ...
     def human_window_image_click_in_bounds(self, hwnd: int, x: int, y: int, *, bounds: list[int], action_name: str = "human_window_image_click_in_bounds") -> dict[str, Any]: ...
@@ -165,8 +164,6 @@ def run_add_friend_entry_click_plan_flow(
     ]
 
     timings = flow.timings
-    guard_checkpoint = ops.add_friend_operator_guard_checkpoint(reason="before_entry_capture")
-    timings.append({"name": "operator_guard_before_entry_capture", "seconds": 0.0, "result": guard_checkpoint})
     before_shot, before_screenshot_path = ops.capture_wechat_window_visible_screen(
         hwnd,
         artifact_dir=str(output_dir),
@@ -498,8 +495,6 @@ def run_add_friend_entry_click_plan_flow(
         if attempt > 1:
             pause_seconds = ops.add_friend_paced_pause("critical_click", reason=f"before_plus_entry_retry_{attempt}")
             timings.append({"name": f"before_plus_entry_retry_{attempt}_pause", "seconds": round(pause_seconds, 3)})
-        guard_checkpoint = ops.add_friend_operator_guard_checkpoint(reason=f"before_plus_entry_click_{attempt}")
-        timings.append({"name": f"operator_guard_before_plus_entry_click_{attempt}", "seconds": 0.0, "result": guard_checkpoint})
         click_bounds = list(plus_target.get("click_bounds") or plus_target.get("bounds") or [])
         click_started_at = time.perf_counter()
         click_result = ops.human_window_image_click_in_bounds(

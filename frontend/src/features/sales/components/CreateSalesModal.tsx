@@ -1,20 +1,18 @@
 import { FormEvent, useState } from "react";
 
 import { useLockBodyScroll } from "../../../shared/hooks/useLockBodyScroll";
-import type { SalesUpsertPayload, SalesWorkerSummary } from "../types";
+import { optionalText } from "../../../shared/utils/display";
+import type { SalesCreatePayload, SalesWorkerSummary } from "../types";
 
 type Props = {
   submitting: boolean;
   error: string | null;
   workerOptions: SalesWorkerSummary[];
   onClose: () => void;
-  onSubmit: (payload: SalesUpsertPayload) => Promise<boolean>;
+  onSubmit: (payload: SalesCreatePayload) => Promise<boolean>;
 };
 
-function optionalText(value: string) {
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
-}
+const PHONE_PATTERN = /^1[3-9]\d{9}$/;
 
 export function CreateSalesModal({ submitting, error, workerOptions, onClose, onSubmit }: Props) {
   useLockBodyScroll();
@@ -24,14 +22,20 @@ export function CreateSalesModal({ submitting, error, workerOptions, onClose, on
   const [wechat, setWechat] = useState("");
   const [enabled, setEnabled] = useState(true);
   const [workerId, setWorkerId] = useState("");
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const normalizedPhone = phone.trim();
+    if (!PHONE_PATTERN.test(normalizedPhone)) {
+      setValidationError("请输入 11 位有效手机号。");
+      return;
+    }
+    setValidationError(null);
     const saved = await onSubmit({
       sales_name: salesName.trim(),
-      phone: optionalText(phone),
+      phone: normalizedPhone,
       wechat: optionalText(wechat),
-      feishu_user_id: null,
       worker_id: optionalText(workerId),
       enabled,
       sort_order: null,
@@ -51,9 +55,9 @@ export function CreateSalesModal({ submitting, error, workerOptions, onClose, on
         </header>
 
         <div className="form-stack">
-          {error ? (
+          {error || validationError ? (
             <div className="inline-alert error" role="alert">
-              <strong>{error}</strong>
+              <strong>{validationError || error}</strong>
             </div>
           ) : null}
 
@@ -67,8 +71,19 @@ export function CreateSalesModal({ submitting, error, workerOptions, onClose, on
               </label>
 
               <label>
-                <span>手机号</span>
-                <input value={phone} onChange={(event) => setPhone(event.target.value)} inputMode="tel" placeholder="请输入手机号" />
+                <span>
+                  手机号 <b>*</b>
+                </span>
+                <input
+                  value={phone}
+                  onChange={(event) => setPhone(event.target.value)}
+                  inputMode="tel"
+                  autoComplete="tel"
+                  maxLength={11}
+                  pattern="1[3-9][0-9]{9}"
+                  placeholder="请输入 11 位手机号"
+                  required
+                />
               </label>
 
               <label>

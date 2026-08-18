@@ -48,6 +48,7 @@ class WorkerProfile:
     local_lock_summary: dict[str, Any] = field(default_factory=dict)
     last_heartbeat_at: str | None = None
     bound_sales_name: str | None = None
+    inflight_flow_state: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_api(cls, payload: dict[str, Any]) -> "WorkerProfile":
@@ -65,6 +66,11 @@ class WorkerProfile:
             local_lock_summary=payload.get("local_lock_summary") if isinstance(payload.get("local_lock_summary"), dict) else {},
             last_heartbeat_at=payload.get("last_heartbeat_at"),
             bound_sales_name=payload.get("bound_sales_name"),
+            inflight_flow_state=(
+                dict(payload.get("inflight_flow_state") or {})
+                if isinstance(payload.get("inflight_flow_state"), dict)
+                else {}
+            ),
         )
 
 
@@ -86,6 +92,7 @@ class Task:
     result_code: str | None = None
     error_code: str | None = None
     reply_action_id: str | None = None
+    process_run_id: str | None = None
     lease_expires_at: str | None = None
     lease_fencing_token: int = 0
     raw: dict[str, Any] = field(default_factory=dict)
@@ -130,6 +137,7 @@ class Task:
             result_code=payload.get("result_code"),
             error_code=payload.get("error_code"),
             reply_action_id=payload.get("reply_action_id"),
+            process_run_id=str(payload.get("process_run_id") or "").strip() or None,
             lease_expires_at=payload.get("lease_expires_at")
             or execution.get("lease_expires_at"),
             lease_fencing_token=int(
@@ -206,6 +214,8 @@ class WechatReadTarget:
     sales_id: str | None = None
     read_reason: str | None = None
     authorization_revision: str | None = None
+    process_run_id: str | None = None
+    unread_generation: int = 0
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -215,6 +225,13 @@ class WechatReadTarget:
             ocr_confidence = float(raw_confidence) if raw_confidence is not None else None
         except (TypeError, ValueError):
             ocr_confidence = None
+        try:
+            unread_generation = max(
+                0,
+                int(payload.get("unread_generation") or 0),
+            )
+        except (TypeError, ValueError):
+            unread_generation = 0
         raw_fingerprint = payload.get("row_fingerprint")
         row_fingerprint = raw_fingerprint if isinstance(raw_fingerprint, dict) else {"value": str(raw_fingerprint or "")} if raw_fingerprint else {}
         return cls(
@@ -228,5 +245,7 @@ class WechatReadTarget:
             sales_id=payload.get("sales_id"),
             read_reason=payload.get("read_reason"),
             authorization_revision=str(payload.get("authorization_revision") or "").strip() or None,
+            process_run_id=str(payload.get("process_run_id") or "").strip() or None,
+            unread_generation=unread_generation,
             raw=payload,
         )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import re
 import threading
 import time
@@ -10,27 +11,32 @@ import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal, TypeAlias
 
 from .api import ApiError, WorkerApiClient
 from .action_journal import (
+    action_journal_item_has_formed_fact,
     action_journal_is_strictly_not_attempted,
     action_journal_path,
     action_journal_phase,
+    commit_action_journal_item_identity,
     initialize_action_journal,
     list_action_journals,
     remove_action_journal,
     read_action_journal,
+    record_action_sequence_alignment,
+    update_action_journal_item,
 )
 from .artifact_retention import cleanup_artifacts, record_artifact_outcome
 from .c2_contract import (
+    contract_revision,
     formal_image_failure_code,
     observation_role_is_trusted,
     sidecar_contract_error,
+    target_location_recovery_contract,
 )
 from .c2_outbox_recovery import (
     encoded_payload_size,
-    rebuild_invalid_media_as_failed,
     split_ingest_payload,
 )
 from .config import CONFIG
@@ -39,12 +45,21 @@ from .image_phase import (
     finalize_image_phase_result,
     mark_image_action,
     mark_image_removed_from_final_screen,
+    mark_image_ui_frame_invalidated,
     mark_image_terminal,
     merge_image_phase_results,
     new_image_phase_result,
 )
 from .incident_evidence import mark_incident_recovered, redact_diagnostic
 from .message_contract import canonical_reply_text, reply_text_hash
+from .message_identity_commit import (
+    IdentityCommitRejection,
+    MediaActionTerminal,
+    MessageCommitBasis,
+    committed_identity_record,
+    commit_message_identity,
+    require_committed_message,
+)
 from .models import Binding, ReplySendClaim, RpaResult, RpaStep, Task, WechatReadTarget, WorkerProfile
 from .rpa_bridge import RpaBridge
 from .storage import (
@@ -53,38 +68,66 @@ from .storage import (
     clear_c2_state,
     clear_c2_action_journal,
     enqueue_c2_outbox,
+    begin_runtime_flow,
+    clear_runtime_pause,
+    finish_runtime_flow,
     finalize_reply_send_ack,
     discard_reply_send_intent,
     has_pending_c2_outbox,
+    has_pending_c2_outbox_for_read_run_id,
+    has_c2_outbox_for_read_run_id,
+    has_c2_outbox_for_source_keys,
+    has_c2_action_journal_for_origin_read_run_id,
+    has_c2_ledger_for_origin_read_run_id,
     has_pending_reply_send_ack_outbox,
+    has_pending_reply_send_ack_for_task_id,
     list_c2_outbox_waiting,
     list_c2_action_journal,
     list_c2_ledger_entries,
     list_waiting_c2_ledger_conversation_ids,
     list_reply_send_ack_outbox,
     load_c2_outbox_entry,
+    load_c2_outbox_origin_read_run_ids,
     load_c2_state,
+    load_runtime_control,
     load_c2_ledger_entry,
     load_reply_send_ack_outbox,
     mark_c2_ledger_ingested,
     mark_c2_ledger_rejected,
     mark_c2_outbox_attempt,
     mark_c2_outbox_capability_paused,
+    mark_c2_outbox_identity_quarantined,
     mark_reply_send_ack_attempt,
     mark_reply_send_ack_confirmed,
     prepare_c2_outbox_payload,
     prune_terminal_outboxes,
-    rebuild_c2_outbox_payload,
     refresh_c2_outbox_payload,
     replace_c2_outbox_with_partitions,
     save_binding,
     save_c2_ledger_terminal,
     save_c2_state,
     save_reply_send_intent,
+    request_runtime_pause,
     set_c2_outbox_error,
     set_reply_send_ack_error,
     transition_c2_outbox,
     terminate_waiting_c2_image_ledger,
+    update_c2_state_atomic,
+)
+from .telemetry import (
+    StageTimer,
+    abandon_buffered_running_stages,
+    enqueue_c2_flow_timing_stages,
+    enqueue_existing_duration,
+    load_process_run,
+    remember_process_run,
+    schedule_stage_event_upload,
+)
+from .sequence_alignment import (
+    align_committed_message_sequence,
+    apply_inherited_worker_ids,
+    build_post_action_observation_sequence,
+    build_pre_action_identity_sequence,
 )
 from .transaction_outcomes import (
     FlowOutcomeAccumulator,
@@ -99,18 +142,41 @@ from .wechat_c2 import (
     authoritative_order_source,
     build_flow_gate_ingest_payload,
     build_message_ingest_payload,
+    build_preliminary_slot_payload,
     build_scan_result_payload,
-    extract_remark_codes,
+    confirmed_image_identity_receipt,
     image_observation_source_key,
+    is_formal_c2_remark_code,
     message_rect,
     order_authoritative_slots,
     project_final_slot_flow_gates,
-    reconcile_cross_round_observation_identities,
-    reconcile_v16104_identity_transition,
     replayable_image_observation,
-    voice_observation_anchor_key,
+    validate_committed_image_identity,
     voice_observation_source_key,
 )
+
+
+C2ReadOperationPhase: TypeAlias = Literal[
+    "authorized_read",
+    "pre_send_refresh",
+]
+C2_AUTHORIZED_READ_PHASE: C2ReadOperationPhase = "authorized_read"
+C2_PRE_SEND_REFRESH_PHASE: C2ReadOperationPhase = "pre_send_refresh"
+
+
+def should_submit_c2_ingest_payload(
+    *,
+    read_reason: str,
+    messages: list[Any] | None,
+    has_flow_gate: bool,
+) -> bool:
+    """Return whether an opened authorized chat must be acknowledged by C2."""
+
+    return (
+        bool(messages)
+        or bool(str(read_reason or "").strip())
+        or has_flow_gate
+    )
 
 
 ENV_STOP_ERRORS = {
@@ -130,6 +196,13 @@ ENV_STOP_ERRORS = {
     "UI_LOCK_RENEW_FAILED",
     "OTHER",
 }
+
+
+def _ui_lock_cancel_reason(lease: UiLockLease | None) -> bool | str:
+    if lease is None or not lease.cancel_requested():
+        return False
+    error = getattr(lease, "lease_error", None)
+    return str(error.code if error is not None else "UI_LOCK_RENEW_FAILED")
 
 C2_RECENT_VISIBLE_CACHE_TTL_SECONDS = 90.0
 LEGACY_FOLLOW_UP_REMOVAL_CONDITION = (
@@ -188,6 +261,7 @@ def voice_action_journal_anchor_keys(
         else {}
     )
     values = [
+        *(observation.get("_voice_action_anchor_keys") or []),
         observation.get("parent_voice_anchor_key"),
         observation.get("voice_anchor_key"),
         observation.get("voice_anchor_stable_key"),
@@ -207,6 +281,547 @@ def voice_action_journal_anchor_keys(
             if str(value or "").strip()
         }
     )
+
+
+def _same_frame_voice_rect_matches(
+    left: dict[str, Any],
+    right: dict[str, Any],
+) -> bool:
+    """Use geometry only to prove aliases in one captured frame."""
+
+    left_rect = message_rect({"bubble_rect": left.get("bubble_rect")})
+    right_rect = message_rect({"bubble_rect": right.get("bubble_rect")})
+    if not left_rect or not right_rect:
+        return False
+    if str(left.get("sender_role") or "").strip().lower() != str(
+        right.get("sender_role") or ""
+    ).strip().lower():
+        return False
+    return all(
+        abs(float(left_rect[key]) - float(right_rect[key])) <= 3.0
+        for key in ("left", "top", "right", "bottom")
+    )
+
+
+def collapse_same_frame_voice_aliases(
+    observations: list[Any],
+) -> list[Any]:
+    """Collapse OCR/visual aliases before allocating a business identity."""
+
+    result: list[Any] = []
+    voice_indexes: list[int] = []
+    for raw in observations:
+        if not isinstance(raw, dict):
+            result.append(raw)
+            continue
+        observation = dict(raw)
+        if not (
+            str(observation.get("row_kind") or "").strip().lower()
+            == "voice_bubble"
+            and str(observation.get("voice_state") or "").strip().lower()
+            == "untranscribed"
+        ):
+            result.append(observation)
+            continue
+        aliases = set(voice_action_journal_anchor_keys(observation))
+        matching_index = next(
+            (
+                index
+                for index in voice_indexes
+                if aliases
+                & set(
+                    result[index].get("_voice_action_anchor_keys")
+                    or voice_action_journal_anchor_keys(result[index])
+                )
+                or _same_frame_voice_rect_matches(
+                    result[index], observation
+                )
+            ),
+            None,
+        )
+        if matching_index is None:
+            observation["_voice_action_anchor_keys"] = sorted(aliases)
+            result.append(observation)
+            voice_indexes.append(len(result) - 1)
+            continue
+        existing = dict(result[matching_index])
+        existing["_voice_action_anchor_keys"] = sorted(
+            {
+                *voice_action_journal_anchor_keys(existing),
+                *aliases,
+            }
+        )
+        result[matching_index] = existing
+    return result
+
+
+def align_post_action_observations(
+    pre_observations: list[Any],
+    post_observations: list[Any],
+    *,
+    confirmed_action_mapping: dict[str, Any] | None = None,
+) -> tuple[list[Any], dict[str, Any]]:
+    """Use the unified sequence aligner after a frame-changing UI action."""
+
+    committed_ids: dict[str, str] = {}
+    provisional_ids: dict[str, str] = {}
+    for item in pre_observations:
+        if not isinstance(item, dict):
+            continue
+        observation_id = str(item.get("observation_id") or "").strip()
+        stable_id = str(item.get("_worker_stable_id") or "").strip()
+        row_kind = str(item.get("row_kind") or "").strip().lower()
+        item_state = str(item.get("item_state") or "").strip().lower()
+        voice_action_summary = (
+            item.get("_worker_voice_action_summary")
+            if isinstance(item.get("_worker_voice_action_summary"), dict)
+            else {}
+        )
+        prior_action_confirmed = bool(
+            isinstance(
+                voice_action_summary.get("confirmed_action_mapping"), dict
+            )
+            and voice_action_summary["confirmed_action_mapping"].get(
+                "binding_confirmed"
+            )
+            is True
+        )
+        if not observation_id or not stable_id:
+            continue
+        # A newly numbered but still-unprocessed media row is only a
+        # frame-local candidate across a UI action.  Treating that provisional
+        # number as committed would let a replacement media row inherit it.
+        # Text/system rows and terminal media facts are already durable.
+        if row_kind in {"voice_bubble", "image_bubble"} and item_state not in {
+            "completed",
+            "failed",
+        } and not prior_action_confirmed:
+            provisional_ids[observation_id] = stable_id
+            continue
+        committed_ids[observation_id] = stable_id
+    mapping = (
+        dict(confirmed_action_mapping)
+        if isinstance(confirmed_action_mapping, dict)
+        else {}
+    )
+    pre_sequence = build_pre_action_identity_sequence(
+        pre_observations,
+        committed_ids=committed_ids,
+        provisional_ids=provisional_ids,
+        selected_observation_id=str(
+            mapping.get("pre_observation_id") or ""
+        ),
+        canonical_action_id=str(mapping.get("canonical_action_id") or ""),
+        reserved_worker_stable_id=str(
+            mapping.get("reserved_worker_stable_id") or ""
+        ),
+    )
+    post_sequence = build_post_action_observation_sequence(
+        post_observations,
+        confirmed_action_mapping=mapping,
+    )
+    pre_digest = hashlib.sha256(
+        json.dumps(pre_sequence, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:20]
+    post_digest = hashlib.sha256(
+        json.dumps(post_sequence, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:20]
+    evidence = align_committed_message_sequence(
+        pre_sequence,
+        post_sequence,
+        mapping,
+        pre_sequence_source="action_frame",
+        pre_frame_id=f"action-pre:{pre_digest}",
+        post_frame_id=f"action-post:{post_digest}",
+    )
+    aligned = apply_inherited_worker_ids(post_observations, evidence)
+    action_summaries_by_stable_id: dict[str, dict[str, dict[str, Any]]] = {}
+    for item in pre_observations:
+        if not isinstance(item, dict):
+            continue
+        stable_id = str(item.get("_worker_stable_id") or "").strip()
+        if not stable_id:
+            continue
+        for key in (
+            "_worker_voice_action_summary",
+            "_worker_image_action_summary",
+        ):
+            summary = item.get(key)
+            if isinstance(summary, dict) and summary:
+                action_summaries_by_stable_id.setdefault(
+                    stable_id,
+                    {},
+                )[key] = dict(summary)
+    if action_summaries_by_stable_id:
+        carried: list[Any] = []
+        for raw in aligned:
+            if not isinstance(raw, dict):
+                carried.append(raw)
+                continue
+            observation = dict(raw)
+            stable_id = str(
+                observation.get("_worker_stable_id") or ""
+            ).strip()
+            summaries = action_summaries_by_stable_id.get(stable_id) or {}
+            for key, summary in summaries.items():
+                observation[key] = dict(summary)
+            carried.append(observation)
+        aligned = carried
+    return aligned, evidence
+
+
+def confirmed_voice_action_mapping(
+    *,
+    voice_payload: dict[str, Any],
+    pre_observations: list[Any],
+    post_observations: list[Any],
+    canonical_action_id: str,
+    reserved_worker_stable_id: str,
+    expected_pre_frame_id: str,
+    pre_observation_id: str,
+    selected_action_token: str,
+    selected_anchor_keys: set[str],
+) -> dict[str, Any]:
+    """Validate the Sidecar decision without reconstructing its binding."""
+
+    del selected_anchor_keys
+    if (
+        str(voice_payload.get("canonical_voice_action_id") or "").strip()
+        != canonical_action_id
+        or str(
+            voice_payload.get("reserved_worker_stable_id") or ""
+        ).strip()
+        != reserved_worker_stable_id
+        or str(
+            voice_payload.get("transcript_binding_status") or ""
+        ).strip()
+        not in {"confirmed", "failed"}
+        or int(voice_payload.get("binding_candidate_count") or 0) != 1
+    ):
+        raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+
+    method = str(
+        voice_payload.get("transcript_binding_method") or ""
+    ).strip()
+    tracking_frame_ids = [
+        str(value or "").strip()
+        for value in (voice_payload.get("tracking_frame_ids") or [])
+        if str(value or "").strip()
+    ]
+    tracking_edges = list(voice_payload.get("tracking_edges") or [])
+    neighbor_pairs = list(
+        voice_payload.get("matched_neighbor_pairs") or []
+    )
+    native_id = str(
+        voice_payload.get("native_source_message_id") or ""
+    ).strip()
+    if method == "native_source_id":
+        evidence_valid = bool(
+            native_id
+            and not tracking_frame_ids
+            and not tracking_edges
+            and not neighbor_pairs
+        )
+    elif method == "continuous_target_tracking":
+        evidence_valid = bool(
+            not native_id
+            and not neighbor_pairs
+            and len(tracking_frame_ids) >= 3
+            and len(set(tracking_frame_ids))
+            == len(tracking_frame_ids)
+            and len(tracking_edges) == len(tracking_frame_ids) - 1
+            and tracking_frame_ids[0]
+            == str(expected_pre_frame_id or "").strip()
+        )
+        expected_observation_id = str(pre_observation_id or "").strip()
+        previous_to_frame = ""
+        tracking_role = ""
+        for index, edge in enumerate(tracking_edges):
+            if not isinstance(edge, dict):
+                evidence_valid = False
+                continue
+            from_frame = str(edge.get("from_frame_id") or "").strip()
+            from_observation = str(
+                edge.get("from_observation_id") or ""
+            ).strip()
+            to_frame = str(edge.get("to_frame_id") or "").strip()
+            to_observation = str(
+                edge.get("to_observation_id") or ""
+            ).strip()
+            structural = edge.get("structural_evidence")
+            displacement = edge.get("displacement_evidence")
+            edge_role = str(edge.get("sender_role") or "").lower()
+            if (
+                not from_frame
+                or not from_observation
+                or not to_frame
+                or not to_observation
+                or str(edge.get("message_type") or "").lower() != "voice"
+                or edge_role not in {"customer", "self"}
+                or (tracking_role and edge_role != tracking_role)
+                or int(edge.get("edge_candidate_count") or 0) != 1
+                or not isinstance(structural, dict)
+                or not structural
+                or not isinstance(displacement, dict)
+                or not displacement
+                or from_frame != tracking_frame_ids[index]
+                or to_frame != tracking_frame_ids[index + 1]
+                or (index == 0 and from_observation != expected_observation_id)
+                or (index > 0 and from_frame != previous_to_frame)
+                or (index > 0 and from_observation != expected_observation_id)
+            ):
+                evidence_valid = False
+            tracking_role = tracking_role or edge_role
+            expected_observation_id = to_observation
+            previous_to_frame = to_frame
+    elif method == "neighbor_scroll_alignment":
+        deltas = []
+        evidence_valid = bool(
+            not native_id
+            and not tracking_frame_ids
+            and not tracking_edges
+            and len(neighbor_pairs) >= 2
+        )
+        for pair in neighbor_pairs:
+            if not isinstance(pair, dict):
+                evidence_valid = False
+                continue
+            if (
+                not str(pair.get("pre_observation_id") or "").strip()
+                or not str(
+                    pair.get("post_observation_id") or ""
+                ).strip()
+                or str(pair.get("sender_role") or "").strip().lower()
+                not in {"customer", "self"}
+            ):
+                evidence_valid = False
+            try:
+                deltas.append(float(pair["scroll_delta_y"]))
+            except (KeyError, TypeError, ValueError):
+                evidence_valid = False
+        if deltas and max(deltas) - min(deltas) > 8.0:
+            evidence_valid = False
+    else:
+        evidence_valid = False
+    if not evidence_valid:
+        raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+
+    mapping = voice_payload.get("confirmed_action_mapping")
+    if not isinstance(mapping, dict):
+        raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+    post_observation_id = str(
+        mapping.get("post_observation_id") or ""
+    ).strip()
+    observation_ids = [
+        str(item.get("observation_id") or "").strip()
+        for item in post_observations
+        if isinstance(item, dict)
+    ]
+    if (
+        str(mapping.get("canonical_action_id") or "").strip()
+        != canonical_action_id
+        or str(
+            mapping.get("reserved_worker_stable_id") or ""
+        ).strip()
+        != reserved_worker_stable_id
+        or str(mapping.get("selected_action_token") or "").strip()
+        != str(selected_action_token or "").strip()
+        or str(mapping.get("pre_observation_id") or "").strip()
+        != str(pre_observation_id or "").strip()
+        or mapping.get("binding_confirmed") is not True
+        or not post_observation_id
+        or observation_ids.count(post_observation_id) != 1
+        or (
+            method == "continuous_target_tracking"
+            and tracking_edges
+            and str(tracking_edges[-1].get("to_observation_id") or "").strip()
+            != post_observation_id
+        )
+    ):
+        raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+
+    def unique_observation(
+        observations: list[Any] | None,
+        observation_id: str,
+    ) -> dict[str, Any] | None:
+        matches = [
+            item
+            for item in (observations or [])
+            if isinstance(item, dict)
+            and str(item.get("observation_id") or "").strip()
+            == observation_id
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    def observation_native_id(observation: dict[str, Any] | None) -> str:
+        if not isinstance(observation, dict):
+            return ""
+        source = (
+            observation.get("source_message")
+            if isinstance(observation.get("source_message"), dict)
+            else {}
+        )
+        return str(
+            observation.get("native_source_message_id")
+            or source.get("native_source_message_id")
+            or source.get("native_message_id")
+            or ""
+        ).strip()
+
+    if method == "native_source_id":
+        pre_observation = unique_observation(
+            pre_observations,
+            str(pre_observation_id or "").strip(),
+        )
+        post_observation = unique_observation(
+            post_observations,
+            post_observation_id,
+        )
+        if (
+            observation_native_id(pre_observation) != native_id
+            or observation_native_id(post_observation) != native_id
+            or str((pre_observation or {}).get("message_type") or "")
+            .strip().lower()
+            != "voice"
+            or str((post_observation or {}).get("message_type") or "")
+            .strip().lower()
+            != "voice"
+            or str((pre_observation or {}).get("sender_role") or "")
+            .strip().lower()
+            != str((post_observation or {}).get("sender_role") or "")
+            .strip().lower()
+        ):
+            raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+    elif method == "continuous_target_tracking":
+        pre_observation = unique_observation(
+            pre_observations,
+            str(pre_observation_id or "").strip(),
+        )
+        post_observation = unique_observation(
+            post_observations,
+            post_observation_id,
+        )
+        pre_role = str(
+            (pre_observation or {}).get("sender_role") or ""
+        ).strip().lower()
+        post_role = str(
+            (post_observation or {}).get("sender_role") or ""
+        ).strip().lower()
+        if (
+            not pre_observation
+            or not post_observation
+            or pre_role not in {"customer", "self"}
+            or post_role != pre_role
+            or tracking_role != pre_role
+            or str(pre_observation.get("message_type") or "")
+            .strip().lower()
+            != "voice"
+            or str(post_observation.get("message_type") or "")
+            .strip().lower()
+            != "voice"
+        ):
+            raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+    elif method == "neighbor_scroll_alignment":
+        pre_by_id = {
+            str(item.get("observation_id") or "").strip(): item
+            for item in (pre_observations or [])
+            if isinstance(item, dict)
+            and str(item.get("observation_id") or "").strip()
+        }
+        post_by_id = {
+            str(item.get("observation_id") or "").strip(): item
+            for item in post_observations
+            if isinstance(item, dict)
+            and str(item.get("observation_id") or "").strip()
+        }
+        measured_deltas: list[float] = []
+        used_pre_ids: set[str] = set()
+        used_post_ids: set[str] = set()
+        for pair in neighbor_pairs:
+            pre_id = str(pair.get("pre_observation_id") or "").strip()
+            post_id = str(pair.get("post_observation_id") or "").strip()
+            pre_item = pre_by_id.get(pre_id)
+            post_item = post_by_id.get(post_id)
+            pre_rect = message_rect(pre_item or {})
+            post_rect = message_rect(post_item or {})
+            role = str(pair.get("sender_role") or "").strip().lower()
+            if (
+                not pre_item
+                or not post_item
+                or not pre_rect
+                or not post_rect
+                or pre_id in used_pre_ids
+                or post_id in used_post_ids
+                or str(pre_item.get("sender_role") or "").strip().lower()
+                != role
+                or str(post_item.get("sender_role") or "").strip().lower()
+                != role
+            ):
+                raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+            measured = float(post_rect["center_y"]) - float(
+                pre_rect["center_y"]
+            )
+            if abs(measured - float(pair["scroll_delta_y"])) > 8.0:
+                raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+            used_pre_ids.add(pre_id)
+            used_post_ids.add(post_id)
+            measured_deltas.append(measured)
+        if (
+            len(measured_deltas) < 2
+            or max(measured_deltas) - min(measured_deltas) > 8.0
+        ):
+            raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+        expected_delta = sum(measured_deltas) / len(measured_deltas)
+        selected_pre = unique_observation(
+            pre_observations,
+            str(pre_observation_id or "").strip(),
+        )
+        selected_pre_rect = message_rect(selected_pre or {})
+        if not selected_pre or not selected_pre_rect:
+            raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+        selected_role = str(
+            selected_pre.get("sender_role") or ""
+        ).strip().lower()
+        projected_y = float(selected_pre_rect["center_y"]) + expected_delta
+        projected_candidates = []
+        for item in post_observations:
+            if not isinstance(item, dict):
+                continue
+            item_rect = message_rect(item)
+            if (
+                not item_rect
+                or str(item.get("message_type") or "").strip().lower()
+                != "voice"
+                or str(item.get("sender_role") or "").strip().lower()
+                != selected_role
+                or abs(float(item_rect["center_y"]) - projected_y) > 8.0
+            ):
+                continue
+            projected_candidates.append(
+                str(item.get("observation_id") or "").strip()
+            )
+        if projected_candidates != [post_observation_id]:
+            raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+    derived_ids = [
+        str(value or "").strip()
+        for value in (mapping.get("derived_observation_ids") or [])
+        if str(value or "").strip()
+    ]
+    if (
+        post_observation_id in derived_ids
+        or any(observation_ids.count(value) != 1 for value in derived_ids)
+    ):
+        raise ValueError("C2_VOICE_IDENTITY_CONTRACT_INVALID")
+    return {
+        "canonical_action_id": canonical_action_id,
+        "reserved_worker_stable_id": reserved_worker_stable_id,
+        "selected_action_token": selected_action_token,
+        "pre_observation_id": pre_observation_id,
+        "binding_confirmed": True,
+        "post_observation_id": post_observation_id,
+        "derived_observation_ids": derived_ids,
+        "binding_method": method,
+    }
 
 
 class TaskLeaseGuard:
@@ -350,6 +965,8 @@ _C2_IMAGE_DIAGNOSTIC_FIELDS = {
     "local_ocr_item_count",
     "ocr_roi",
     "ocr_execution",
+    "menu_panel_bounds",
+    "menu_window_evidence",
     "menu_structure_evidence",
     "local_ocr_evidence",
     "parsed_message_count",
@@ -393,6 +1010,10 @@ def _safe_c2_image_transaction(value: Any) -> dict[str, Any]:
             "clipboard_sequence_changed",
             "clipboard_sequence_before",
             "clipboard_sequence_after",
+            "clipboard_content_read",
+            "clipboard_image_valid",
+            "menu_labels",
+            "menu_panel_bounds",
             "image_sha256",
             "image_width",
             "image_height",
@@ -422,6 +1043,224 @@ def _safe_c2_image_diagnostic_event(value: Any) -> dict[str, Any]:
     return safe
 
 
+def _confirmed_image_receipt_from_journal(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str]:
+    """Return the one exact persisted image identity receipt and item id."""
+
+    action_id = str(payload.get("canonical_action_id") or "").strip()
+    reserved_id = str(
+        payload.get("reserved_worker_stable_id") or ""
+    ).strip()
+    selected_rows = [
+        item
+        for item in (payload.get("pre_action_identity_sequence") or [])
+        if isinstance(item, dict)
+        and item.get("identity_state") == "selected_action"
+        and str(item.get("canonical_action_id") or "").strip()
+        == action_id
+        and str(
+            item.get("reserved_worker_stable_id") or ""
+        ).strip()
+        == reserved_id
+    ]
+    if len(selected_rows) != 1:
+        return None, ""
+    observation_id = str(
+        selected_rows[0].get("pre_observation_id") or ""
+    ).strip()
+    fingerprint = str(
+        selected_rows[0].get("image_visual_fingerprint") or ""
+    ).strip()
+    if not all((action_id, reserved_id, observation_id, fingerprint)):
+        return None, ""
+    items = (
+        payload.get("items")
+        if isinstance(payload.get("items"), dict)
+        else {}
+    )
+    matches: list[tuple[dict[str, Any], str]] = []
+    for item_id, item in items.items():
+        if not isinstance(item, dict):
+            continue
+        terminal = (
+            item.get("terminal_payload")
+            if isinstance(item.get("terminal_payload"), dict)
+            else {}
+        )
+        mapping = (
+            terminal.get("confirmed_action_mapping")
+            if isinstance(
+                terminal.get("confirmed_action_mapping"), dict
+            )
+            else {}
+        )
+        if (
+            str(mapping.get("canonical_action_id") or "").strip()
+            == action_id
+            and str(
+                mapping.get("reserved_worker_stable_id") or ""
+            ).strip()
+            == reserved_id
+            and str(mapping.get("pre_observation_id") or "").strip()
+            == observation_id
+            and str(mapping.get("post_observation_id") or "").strip()
+            == observation_id
+            and mapping.get("binding_confirmed") is True
+            and str(
+                terminal.get("image_visual_fingerprint") or ""
+            ).strip()
+            == fingerprint
+        ):
+            matches.append(
+                (
+                    {
+                        "canonical_action_id": action_id,
+                        "reserved_worker_stable_id": reserved_id,
+                        "pre_observation_id": observation_id,
+                        "post_observation_id": observation_id,
+                        "binding_confirmed": True,
+                        "image_visual_fingerprint": fingerprint,
+                    },
+                    str(item_id or "").strip(),
+                )
+            )
+    if len(matches) != 1:
+        return None, ""
+    return matches[0]
+
+
+def _committed_action_identity_from_journal(
+    *,
+    target: WechatReadTarget,
+    payload: dict[str, Any],
+    action_kind: str,
+    evidence: dict[str, Any],
+    image_receipt: dict[str, Any] | None = None,
+):
+    """Re-enter the same commit gate without touching the current WeChat UI."""
+
+    action_id = str(payload.get("canonical_action_id") or "").strip()
+    reserved_id = str(
+        payload.get("reserved_worker_stable_id") or ""
+    ).strip()
+    mapping = (
+        dict(image_receipt)
+        if action_kind == "image" and isinstance(image_receipt, dict)
+        else dict(evidence.get("confirmed_action_mapping") or {})
+        if isinstance(evidence.get("confirmed_action_mapping"), dict)
+        else {}
+    )
+    selected = next(
+        (
+            dict(item)
+            for item in (payload.get("pre_action_identity_sequence") or [])
+            if isinstance(item, dict)
+            and item.get("identity_state") == "selected_action"
+            and str(item.get("canonical_action_id") or "").strip()
+            == action_id
+        ),
+        {},
+    )
+    post_observation_id = str(
+        mapping.get("post_observation_id") or ""
+    ).strip()
+    sender_role = str(selected.get("sender_role") or "").strip().lower()
+    if action_kind == "voice" and not mapping:
+        prepare_evidence = (
+            payload.get("prepare_evidence")
+            if isinstance(payload.get("prepare_evidence"), dict)
+            else {}
+        )
+        selected_action_token = str(
+            prepare_evidence.get("selected_action_token") or ""
+        ).strip()
+        selected_pairs = [
+            pair
+            for pair in (evidence.get("matched_pairs") or [])
+            if isinstance(pair, dict)
+            and pair.get("identity_state") == "selected_action"
+            and str(pair.get("worker_stable_id") or "").strip()
+            == reserved_id
+            and str(pair.get("pre_observation_id") or "").strip()
+            == str(selected.get("pre_observation_id") or "").strip()
+            and str(pair.get("post_observation_id") or "").strip()
+        ]
+        if (
+            evidence.get("alignment_status") == "unique"
+            and len(selected_pairs) == 1
+            and selected_action_token
+        ):
+            mapping = {
+                "canonical_action_id": action_id,
+                "reserved_worker_stable_id": reserved_id,
+                "selected_action_token": selected_action_token,
+                "pre_observation_id": str(
+                    selected.get("pre_observation_id") or ""
+                ).strip(),
+                "post_observation_id": str(
+                    selected_pairs[0].get("post_observation_id") or ""
+                ).strip(),
+                "binding_confirmed": True,
+            }
+            post_observation_id = str(
+                mapping["post_observation_id"]
+            )
+    if not all((action_id, reserved_id, post_observation_id, sender_role)):
+        return IdentityCommitRejection(
+            error_code=(
+                "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                if action_kind == "image"
+                else "C2_VOICE_IDENTITY_CONTRACT_INVALID"
+            ),
+            reason="action_journal_commit_evidence_incomplete",
+            observation_id=post_observation_id,
+        )
+    row_kind = "image_bubble" if action_kind == "image" else "voice_bubble"
+    summary_key = (
+        "_worker_image_action_summary"
+        if action_kind == "image"
+        else "_worker_voice_action_summary"
+    )
+    summary: dict[str, Any] = {"confirmed_action_mapping": dict(mapping)}
+    proof = dict(mapping)
+    observation: dict[str, Any] = {
+        "observation_id": post_observation_id,
+        "row_kind": row_kind,
+        "sender_role": sender_role,
+        "message_type": action_kind,
+        "_worker_stable_id": reserved_id,
+        "_worker_identity_scope": "committed",
+        summary_key: summary,
+    }
+    basis = (
+        MessageCommitBasis.CONFIRMED_IMAGE_ACTION
+        if action_kind == "image"
+        else MessageCommitBasis.CONFIRMED_VOICE_ACTION
+    )
+    if action_kind == "image":
+        fingerprint = str(
+            (image_receipt or {}).get("image_visual_fingerprint") or ""
+        ).strip()
+        observation["image_physical_anchor"] = {
+            "bubble_visual_fingerprint": fingerprint
+        }
+        summary["image_visual_fingerprint"] = fingerprint
+        proof["image_visual_fingerprint"] = fingerprint
+    observation["_worker_committed_message"] = committed_identity_record(
+        worker_stable_id=reserved_id,
+        commit_basis=basis,
+        observation_id=post_observation_id,
+        sender_role=sender_role,
+        message_type=action_kind,
+        proof=proof,
+    )
+    return commit_message_identity(
+        conversation_id=target.conversation_id,
+        observation=observation,
+    )
+
+
 def _c2_image_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         item
@@ -446,6 +1285,86 @@ def _untranscribed_voice_observations(sidecar_payload: dict[str, Any]) -> list[d
     ]
 
 
+def _executable_untranscribed_voice_observations(
+    target: WechatReadTarget,
+    sidecar_payload: dict[str, Any],
+    *,
+    excluded_anchor_keys: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Return only voices that may enter the one production orchestrator.
+
+    A trusted untranscribed row is not automatically actionable.  A stable
+    identity already present in the backend checkpoint, or any local terminal
+    ledger fact, proves that the physical message was settled previously.
+    Frame-local anchors may suppress a voice only inside the current
+    orchestrator run; they never become a cross-round identity.
+    """
+
+    excluded = {
+        str(value).strip()
+        for value in (excluded_anchor_keys or set())
+        if str(value).strip()
+    }
+    checkpoint = (
+        target.raw.get("identity_checkpoint")
+        if isinstance(target.raw, dict)
+        and isinstance(target.raw.get("identity_checkpoint"), dict)
+        else {}
+    )
+    confirmed_stable_ids = {
+        str(item.get("stable_id") or "").strip()
+        for item in (checkpoint.get("recent_messages") or [])
+        if isinstance(item, dict)
+        and str(item.get("stable_id") or "").strip()
+    }
+    confirmed_source_keys = {
+        str(item.get("source_message_key") or "").strip()
+        for item in (checkpoint.get("recent_messages") or [])
+        if isinstance(item, dict)
+        and str(item.get("source_message_key") or "").strip()
+    }
+    executable: list[dict[str, Any]] = []
+    for observation in _untranscribed_voice_observations(sidecar_payload):
+        aliases = set(voice_action_journal_anchor_keys(observation))
+        aliases.update(
+            str(value).strip()
+            for value in (
+                observation.get("_voice_action_anchor_keys") or []
+            )
+            if str(value).strip()
+        )
+        if aliases & excluded:
+            continue
+        identity = commit_message_identity(
+            conversation_id=target.conversation_id,
+            observation=observation,
+        )
+        if not isinstance(identity, IdentityCommitRejection):
+            if identity.message_type != "voice":
+                continue
+            if (
+                identity.worker_stable_id in confirmed_stable_ids
+                or identity.source_message_key in confirmed_source_keys
+            ):
+                continue
+            ledger = load_c2_ledger_entry(
+                target.conversation_id,
+                identity.source_message_key,
+            )
+            if ledger and str(ledger.get("terminal_state") or "") in {
+                "completed",
+                "failed",
+            }:
+                continue
+        if str(observation.get("item_state") or "") in {
+            "completed",
+            "failed",
+        }:
+            continue
+        executable.append(observation)
+    return executable
+
+
 def _voice_payload_has_unbound_transcript(sidecar_payload: dict[str, Any]) -> bool:
     transcribed = sidecar_payload.get("transcribed_messages")
     if isinstance(transcribed, list) and any(isinstance(item, dict) for item in transcribed):
@@ -466,6 +1385,7 @@ def _voice_terminal_payload(
     anchor_keys: list[str],
     result: str,
     error_code: str | None,
+    identity_confirmed: bool = False,
 ) -> dict[str, Any]:
     aliases = {str(value).strip() for value in anchor_keys if str(value).strip()}
     matched_transcript: dict[str, Any] | None = None
@@ -499,6 +1419,13 @@ def _voice_terminal_payload(
         "state": result,
         "error_code": error_code,
         "transcribed_message": matched_transcript,
+        "media_action_terminal": (
+            MediaActionTerminal.COMMITTED_COMPLETED.value
+            if identity_confirmed and result == "completed"
+            else MediaActionTerminal.COMMITTED_FAILED.value
+            if identity_confirmed and result == "failed"
+            else MediaActionTerminal.IDENTITY_UNRESOLVED.value
+        ),
     }
 
 
@@ -544,6 +1471,55 @@ def _unconfirmed_voice_action_outcomes(
     return outcomes
 
 
+def _checkpoint_voice_outcome_in_action_journal(
+    journal_path: Path | None,
+    outcome: dict[str, Any],
+) -> None:
+    """Durably save the physical result before any identity alignment gate."""
+
+    if journal_path is None:
+        return
+    source_key = str(outcome.get("source_message_key") or "").strip()
+    result = str(outcome.get("result") or "").strip().lower()
+    if not source_key or result not in {"completed", "failed"}:
+        return
+    journal_payload = read_action_journal(journal_path)
+    journal_items = (
+        journal_payload.get("items")
+        if isinstance(journal_payload.get("items"), dict)
+        else {}
+    )
+    journal_item_id = next(
+        (
+            str(item_id)
+            for item_id, item in journal_items.items()
+            if isinstance(item, dict)
+            and str(item.get("source_message_key") or "").strip()
+            == source_key
+        ),
+        "",
+    )
+    if not journal_item_id:
+        return
+    update_action_journal_item(
+        journal_path,
+        journal_item_id=journal_item_id,
+        action_phase=str(
+            outcome.get("action_phase") or "not_attempted"
+        ),
+        business_state=result,
+        business_result_confirmed=(result == "completed"),
+        error_code=(
+            str(outcome.get("error_code") or "").strip() or None
+        ),
+        terminal_payload=(
+            dict(outcome.get("terminal_payload") or {})
+            if isinstance(outcome.get("terminal_payload"), dict)
+            else {"state": result}
+        ),
+    )
+
+
 class TaskRunner:
     def __init__(
         self,
@@ -557,6 +1533,7 @@ class TaskRunner:
         on_result: Callable[[RpaResult | None], None],
         on_error: Callable[[str], None],
         can_pull_tasks: Callable[[], bool] | None = None,
+        on_runtime_process: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.api = api
         self.bridge = bridge
@@ -566,10 +1543,14 @@ class TaskRunner:
         self.on_task = on_task
         self.on_result = on_result
         self.on_error = on_error
+        self.on_runtime_process = on_runtime_process or (lambda _event: None)
         self.can_pull_tasks = can_pull_tasks or (lambda: True)
         self.binding: Binding | None = None
         self.current_task: Task | None = None
-        self.current_step: str | None = None
+        self._current_step: str | None = None
+        self._runtime_process_context: dict[str, Any] = {}
+        self._backend_inflight_flow_state: dict[str, Any] = {}
+        self._restart_recovery_flow_id: str | None = None
         self.current_ui_lock: UiLockLease | None = None
         self.current_task_lease: TaskLeaseGuard | None = None
         self.last_rpa_component_status: str | None = None
@@ -588,6 +1569,11 @@ class TaskRunner:
         self.visible_hit_queue: list[WechatReadTarget] = []
         self.c2_round_processed_conversation_ids: set[str] = set()
         self.stop_event = threading.Event()
+        self._task_wake_event = threading.Event()
+        self._task_wake_state_lock = threading.Lock()
+        self._transaction_barrier_was_ready: bool | None = None
+        self._transaction_barrier_blocked_since_monotonic: float | None = None
+        self._task_wake_requested_at_monotonic: float | None = None
         self.thread: threading.Thread | None = None
         self.c2_thread: threading.Thread | None = None
         self.thread_monitor: threading.Thread | None = None
@@ -609,6 +1595,7 @@ class TaskRunner:
         self.c2_read_allowlist_keys: set[str] = set()
         self.c2_active_target_cache: dict[str, Any] = {}
         self.c2_last_visible_sessions: list[dict[str, Any]] = []
+        self.c2_last_visible_frame_reuse_evidence: dict[str, Any] = {}
         self.c2_last_visible_sessions_monotonic = 0.0
         self.c2_recent_visible_hits_by_remark_code: dict[str, dict[str, Any]] = {}
         self.c2_voice_binding_blocked_authorizations: set[str] = set()
@@ -617,10 +1604,84 @@ class TaskRunner:
         self._pending_run_status_sync: str | None = None
         self._last_run_status_sync_attempt = 0.0
         self.run_status_sync_error: str | None = None
+        abandon_buffered_running_stages()
+
+    @property
+    def current_step(self) -> str | None:
+        return self._current_step
+
+    @current_step.setter
+    def current_step(self, value: str | None) -> None:
+        normalized = str(value or "").strip() or None
+        if normalized == self._current_step:
+            return
+        self._current_step = normalized
+        if normalized is None:
+            return
+        if normalized == "first_screen_session_scan":
+            self._emit_runtime_process({"event": "scan_started"})
+            return
+        if not self._runtime_process_context:
+            return
+        self._emit_runtime_process(
+            {
+                "event": "step",
+                "step": normalized,
+                **self._runtime_process_context,
+            }
+        )
+
+    def _emit_runtime_process(self, event: dict[str, Any]) -> None:
+        """Publish presentation-only progress without affecting business work."""
+
+        try:
+            self.on_runtime_process(dict(event))
+        except Exception as exc:
+            append_log(
+                "WARN",
+                "ui_runtime_process_projection_failed",
+                "当前运行过程展示更新失败；业务线程继续运行。",
+                error_code="UI_RUNTIME_PROCESS_PROJECTION_FAILED",
+                metadata={"exception_type": type(exc).__name__},
+            )
+
+    @staticmethod
+    def _runtime_terminal_for_result(result: dict[str, Any]) -> str:
+        brain_result = (
+            result.get("brain_result")
+            if isinstance(result.get("brain_result"), dict)
+            else {}
+        )
+        if brain_result.get("sent") is True:
+            return "reply_sent"
+        conversation_state = str(
+            result.get("conversation_terminal_state") or ""
+        ).lower()
+        if "handoff" in conversation_state or "waiting_sales" in conversation_state:
+            return "handoff"
+        if result.get("ok") is not True:
+            return "failed"
+        read_completion = (
+            (result.get("result") or {}).get("read_completion")
+            if isinstance(result.get("result"), dict)
+            else {}
+        )
+        if isinstance(read_completion, dict) and str(
+            read_completion.get("result") or ""
+        ) in {"no_change", "empty"}:
+            return "no_change"
+        if brain_result and brain_result.get("sent") is not True:
+            return "no_reply"
+        return "completed"
 
     def start(self, binding: Binding) -> None:
         self.binding = binding
+        persisted_flow_id = str(
+            load_runtime_control().get("inflight_flow_id") or ""
+        ).strip()
+        self._restart_recovery_flow_id = persisted_flow_id or None
         self.stop_event.clear()
+        self._task_wake_event.clear()
         with self._thread_health_lock:
             self._thread_failure_reported.clear()
         self._maybe_cleanup_artifacts(force=True)
@@ -651,7 +1712,79 @@ class TaskRunner:
 
     def stop(self) -> None:
         self.stop_event.set()
+        self._task_wake_event.set()
         self.c2_manual_scan_requested.set()
+
+    def _safe_task_wake_boundary_ready(self) -> bool:
+        """Return whether an event may request an early scheduler check.
+
+        This is deliberately stricter than ``_can_start_new_flow``.  The event
+        is only a coalescing hint to the existing task thread; it never grants
+        permission and it never runs ``tick_once`` itself.
+        """
+
+        binding = self.binding
+        return bool(
+            CONFIG.task_safe_wake_enabled
+            and binding
+            and self._can_start_new_flow(binding)
+            and self.current_task is None
+            and self.current_ui_lock is None
+            and not bool(lock_summary().get("locked"))
+            and not self.task_lock.locked()
+            and self.can_pull_tasks()
+        )
+
+    def _request_task_wake_if_safe(
+        self,
+        *,
+        reason: str,
+        barrier_occupied_duration_ms: int | None = None,
+    ) -> bool:
+        if not self._safe_task_wake_boundary_ready():
+            return False
+        with self._task_wake_state_lock:
+            if not self._task_wake_event.is_set():
+                self._task_wake_requested_at_monotonic = time.monotonic()
+            self._task_wake_event.set()
+        append_log(
+            "INFO",
+            "task_safe_wake_requested",
+            "安全边界已释放，通知现有任务循环提前检查一次。",
+            metadata={
+                "reason": reason,
+                "coalescing": True,
+                "barrier_occupied_duration_ms": (
+                    barrier_occupied_duration_ms
+                ),
+            },
+        )
+        return True
+
+    def _remember_transaction_barrier_state(self, ready: bool) -> None:
+        should_wake = False
+        barrier_occupied_duration_ms: int | None = None
+        now = time.monotonic()
+        with self._task_wake_state_lock:
+            previous = self._transaction_barrier_was_ready
+            self._transaction_barrier_was_ready = bool(ready)
+            if not ready and previous is not False:
+                self._transaction_barrier_blocked_since_monotonic = now
+            elif ready and self._transaction_barrier_blocked_since_monotonic is not None:
+                barrier_occupied_duration_ms = round(
+                    max(
+                        0.0,
+                        now - self._transaction_barrier_blocked_since_monotonic,
+                    )
+                    * 1000
+                )
+                self._transaction_barrier_blocked_since_monotonic = None
+            should_wake = previous is False and ready is True
+        if should_wake:
+            self._request_task_wake_if_safe(
+                reason="transaction_barrier_settled",
+                barrier_occupied_duration_ms=barrier_occupied_duration_ms,
+            )
 
     def request_immediate_scan(self) -> None:
         self.c2_manual_scan_requested.set()
@@ -682,7 +1815,7 @@ class TaskRunner:
             )
 
     def _monitor_background_threads(self) -> None:
-        while not self.stop_event.wait(1.0):
+        while not self.stop_event.wait(0.25):
             if (
                 self._pending_run_status_sync == "paused"
                 and not (self.thread and self.thread.is_alive())
@@ -743,18 +1876,250 @@ class TaskRunner:
         suffix = f"，故障编号 {incident_id}" if incident_id else ""
         self.on_error(f"后台线程异常，客户端已自动暂停{suffix}。")
 
-    def _ui_actions_enabled(self, binding: Binding | None = None) -> bool:
+    def _can_start_new_flow(self, binding: Binding | None = None) -> bool:
         active = binding or self.binding
+        control = load_runtime_control()
         return bool(
             active
             and not self.stop_event.is_set()
             and not emergency_stop_requested()
             and active.run_status == "running"
+            and control.get("pause_requested") is not True
+            and not control.get("inflight_flow_id")
         )
+
+    def _can_continue_inflight_flow(self, flow_id: str | None = None) -> bool:
+        if self.stop_event.is_set() or emergency_stop_requested():
+            return False
+        control = load_runtime_control()
+        current_id = str(control.get("inflight_flow_id") or "").strip()
+        expected_id = str(flow_id or current_id).strip()
+        return bool(
+            current_id
+            and expected_id == current_id
+            and self.api.inflight_flow_id == current_id
+            and str(
+                self._backend_inflight_flow_state.get("flow_id") or ""
+            ) == current_id
+            and self._backend_inflight_flow_state.get("status")
+            in {"active", "draining"}
+        )
+
+    def _start_inflight_flow(
+        self,
+        binding: Binding,
+        *,
+        flow_id: str,
+        flow_kind: str,
+    ) -> bool:
+        control = load_runtime_control()
+        existing_id = str(control.get("inflight_flow_id") or "").strip()
+        if existing_id:
+            if existing_id != flow_id:
+                return False
+            self.api.inflight_flow_id = existing_id
+            return True
+        if not self._can_start_new_flow(binding):
+            return False
+        backend_state = self.api.start_inflight_flow(
+            binding,
+            flow_id=flow_id,
+            flow_kind=flow_kind,
+        )
+        self._backend_inflight_flow_state = dict(backend_state)
+        try:
+            begin_runtime_flow(flow_id, flow_kind)
+        except Exception:
+            append_log(
+                "ERROR",
+                "runtime_inflight_local_persist_failed",
+                "后端已登记在途流程，但本地持久化失败；保留后端流程禁止继续。",
+                error_code="RUNTIME_INFLIGHT_LOCAL_PERSIST_FAILED",
+                metadata={"flow_id": flow_id, "flow_kind": flow_kind},
+            )
+            raise
+        return True
+
+    @staticmethod
+    def _inflight_finish_receipt_key(flow_id: str) -> str:
+        return f"inflight_finish_receipt:{str(flow_id or '').strip()}"
+
+    @staticmethod
+    def _has_physical_action_journal_for_flow(flow_id: str) -> bool:
+        clean_id = str(flow_id or "").strip()
+        if not clean_id:
+            return False
+        for _, payload in list_action_journals():
+            payload_matches = clean_id in {
+                str(payload.get("transaction_id") or "").strip(),
+                str(payload.get("origin_read_run_id") or "").strip(),
+                str(payload.get("read_run_id") or "").strip(),
+            }
+            items = payload.get("items")
+            item_values = list(
+                items.values() if isinstance(items, dict) else (items or [])
+            )
+            item_matches = False
+            for item in item_values:
+                if not isinstance(item, dict):
+                    continue
+                if clean_id in {
+                    str(item.get("transaction_id") or "").strip(),
+                    str(item.get("origin_read_run_id") or "").strip(),
+                    str(item.get("read_run_id") or "").strip(),
+                }:
+                    item_matches = True
+            if not (payload_matches or item_matches):
+                continue
+
+            # A quarantined media action intentionally has no durable message
+            # identity, so it cannot produce a normal Ledger fact.  The
+            # Journal remains as the no-repeat audit record and is checked on
+            # the next authorized read, but the quarantine itself is already
+            # a finite terminal state rather than pending transaction work.
+            # Any non-terminal item keeps the normal hard barrier.
+            journal_items = [
+                item
+                for item in item_values
+                if isinstance(item, dict)
+            ]
+            if journal_items and all(
+                str(item.get("action_phase") or "").strip()
+                in {"quarantined", "cancelled_before_trigger"}
+                for item in journal_items
+            ):
+                continue
+            return True
+        return False
+
+    def _finish_inflight_flow(
+        self,
+        binding: Binding,
+        flow_id: str,
+        *,
+        terminal_kind: str,
+        conversation_id: str | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        if self.current_ui_lock is not None or bool(lock_summary().get("locked")):
+            raise RuntimeError("RUNTIME_INFLIGHT_FINISH_BEFORE_UI_UNLOCK")
+        if terminal_kind in {
+            "read_confirmed",
+            "failed_before_message_action",
+            "read_failed_no_fact",
+            "task_terminal",
+        }:
+            if has_pending_c2_outbox_for_read_run_id(flow_id):
+                raise RuntimeError("RUNTIME_INFLIGHT_C2_OUTBOX_PENDING")
+            if has_c2_action_journal_for_origin_read_run_id(flow_id):
+                raise RuntimeError("RUNTIME_INFLIGHT_C2_ACTION_JOURNAL_PENDING")
+            if self._has_physical_action_journal_for_flow(flow_id):
+                raise RuntimeError("RUNTIME_INFLIGHT_ACTION_JOURNAL_PENDING")
+        if has_c2_ledger_for_origin_read_run_id(flow_id, pending_only=True):
+            raise RuntimeError("RUNTIME_INFLIGHT_C2_LEDGER_PENDING")
+        if terminal_kind == "read_confirmed" and has_pending_reply_send_ack_outbox():
+            raise RuntimeError("RUNTIME_INFLIGHT_SENT_ACK_PENDING")
+        if terminal_kind == "failed_before_message_action" and has_c2_ledger_for_origin_read_run_id(
+            flow_id
+        ):
+            raise RuntimeError("RUNTIME_INFLIGHT_PRE_ACTION_LEDGER_CONFLICT")
+        if terminal_kind == "failed_before_message_action" and has_c2_outbox_for_read_run_id(
+            flow_id
+        ):
+            raise RuntimeError("RUNTIME_INFLIGHT_PRE_ACTION_OUTBOX_CONFLICT")
+        if terminal_kind == "failed_before_message_action" and has_pending_reply_send_ack_outbox():
+            raise RuntimeError("RUNTIME_INFLIGHT_SENT_ACK_PENDING")
+        if terminal_kind == "read_failed_no_fact" and has_c2_ledger_for_origin_read_run_id(
+            flow_id
+        ):
+            raise RuntimeError("RUNTIME_INFLIGHT_NO_FACT_LEDGER_CONFLICT")
+        if terminal_kind == "read_failed_no_fact" and has_c2_outbox_for_read_run_id(
+            flow_id
+        ):
+            raise RuntimeError("RUNTIME_INFLIGHT_NO_FACT_OUTBOX_CONFLICT")
+        if terminal_kind == "read_failed_no_fact" and has_pending_reply_send_ack_outbox():
+            raise RuntimeError("RUNTIME_INFLIGHT_SENT_ACK_PENDING")
+        if terminal_kind == "task_terminal" and has_pending_reply_send_ack_for_task_id(
+            flow_id
+        ):
+            raise RuntimeError("RUNTIME_INFLIGHT_SENT_ACK_PENDING")
+        self.api.finish_inflight_flow(
+            binding,
+            flow_id=flow_id,
+            terminal_kind=terminal_kind,
+            conversation_id=conversation_id,
+            error_code=error_code,
+        )
+        finish_runtime_flow(flow_id)
+        clear_c2_state(self._inflight_finish_receipt_key(flow_id))
+        self._backend_inflight_flow_state = {}
+        if self._restart_recovery_flow_id == flow_id:
+            self._restart_recovery_flow_id = None
+        self._request_task_wake_if_safe(reason="inflight_flow_finished")
+
+    def _finish_restart_recovery_flow_if_settled(
+        self,
+        binding: Binding,
+    ) -> None:
+        """Close a pre-restart flow only after durable replay needs no UI.
+
+        A restart never resumes locating, clicking, media handling or sending.
+        The normal transaction barrier may replay already-persisted Outbox and
+        sent-ack facts; the backend remains the authority on task terminality.
+        """
+
+        flow_id = str(self._restart_recovery_flow_id or "").strip()
+        if (
+            not flow_id
+            or self.current_task is not None
+            or self.current_ui_lock is not None
+            or bool(lock_summary().get("locked"))
+            or not self._can_continue_inflight_flow(flow_id)
+        ):
+            return
+        flow_kind = str(
+            load_runtime_control().get("inflight_flow_kind") or ""
+        ).strip()
+        receipt = load_c2_state(self._inflight_finish_receipt_key(flow_id))
+        terminal_kind = str(receipt.get("terminal_kind") or "").strip()
+        if flow_kind in {"task", "chat_reply"}:
+            terminal_kind = "task_terminal"
+        if terminal_kind not in {
+            "task_terminal",
+            "read_confirmed",
+            "failed_before_message_action",
+            "read_failed_no_fact",
+        }:
+            return
+        try:
+            self._finish_inflight_flow(
+                binding,
+                flow_id,
+                terminal_kind=terminal_kind,
+                conversation_id=(
+                    str(receipt.get("conversation_id") or "").strip()
+                    or None
+                ),
+                error_code=(
+                    str(receipt.get("error_code") or "").strip() or None
+                ),
+            )
+        except Exception as exc:
+            append_log(
+                "INFO",
+                "restart_inflight_flow_settlement_pending",
+                "重启前的原流程仍有业务终态未确认；继续保持暂停且不操作微信。",
+                error_code="RUNTIME_INFLIGHT_RECOVERY_PENDING",
+                metadata={"flow_id": flow_id, "error": str(exc)},
+            )
 
     def _apply_local_run_status(self, run_status: str) -> None:
         if not self.binding:
             return
+        if run_status == "paused":
+            request_runtime_pause()
+        else:
+            clear_runtime_pause()
         self.binding.run_status = run_status  # type: ignore[assignment]
         save_binding(self.binding)
 
@@ -778,7 +2143,7 @@ class TaskRunner:
             append_log(
                 "WARN",
                 "run_status_sync_retry_failed",
-                "本地暂停已生效，但尚未同步到后端；客户端会继续重试。",
+                "本地已停止接收新工作，但暂停状态尚未同步到后端；当前在途流程仍按原凭证安全收口。",
                 error_code="RUN_STATUS_SYNC_FAILED",
                 metadata={"requested_run_status": pending, "error": str(exc)},
             )
@@ -804,8 +2169,8 @@ class TaskRunner:
             self.on_error("客户端已触发紧急停止，请重启后再开始接单。")
             return False
         if run_status == "paused":
-            # Pause is fail-safe: stop every new/in-flight UI action locally
-            # before attempting to synchronize the server-side switch.
+            # Pause drains the registered flow. Emergency stop remains the
+            # separate fail-safe for not-yet-started physical actions.
             self._apply_local_run_status("paused")
         try:
             profile = self.api.set_run_status(self.binding, run_status)
@@ -817,17 +2182,27 @@ class TaskRunner:
             self.run_status_sync_error = None
             self._apply_local_run_status(profile.run_status)
             self.on_profile(profile)
+            self._backend_inflight_flow_state = dict(
+                profile.inflight_flow_state or {}
+            )
+            if run_status == "running":
+                self._request_task_wake_if_safe(
+                    reason="backend_run_status_running"
+                )
             append_log("INFO", "run_status_changed", "开始接单。" if run_status == "running" else "暂停接单。")
             return True
         except Exception as exc:
             if run_status == "paused":
                 self._pending_run_status_sync = "paused"
                 self.run_status_sync_error = str(exc)
-                self.on_error("本地已暂停所有微信操作，但暂停状态尚未同步到后端，客户端会自动重试。")
+                self.on_error(
+                    "本地已停止接收新工作；暂停状态尚未同步到后端，"
+                    "当前客户仍会安全处理完，后端状态将自动重试同步。"
+                )
                 append_log(
                     "WARN",
                     "run_status_pause_sync_pending",
-                    "本地暂停已生效，后端同步失败并进入自动重试。",
+                    "本地新工作门禁已生效，后端暂停同步失败并进入自动重试。",
                     error_code="RUN_STATUS_SYNC_FAILED",
                     metadata={"error": str(exc)},
                 )
@@ -846,8 +2221,34 @@ class TaskRunner:
     def _loop(self) -> None:
         append_log("INFO", "client_started", "Worker 客户端任务循环启动。")
         while not self.stop_event.is_set():
+            wake_requested_at: float | None = None
+            with self._task_wake_state_lock:
+                wake_requested_at = self._task_wake_requested_at_monotonic
+                self._task_wake_requested_at_monotonic = None
+            if wake_requested_at is not None:
+                append_log(
+                    "INFO",
+                    "task_safe_wake_consumed",
+                    "现有任务循环已消费合并唤醒。",
+                    metadata={
+                        "idle_scheduler_wait_ms": round(
+                            max(0.0, time.monotonic() - wake_requested_at)
+                            * 1000
+                        ),
+                    },
+                )
+            # Clear before the check.  Any event arriving during ``tick_once``
+            # remains set and causes one immediate follow-up check; multiple
+            # producers coalesce on the same Event and cannot create a second
+            # pull thread.
+            self._task_wake_event.clear()
             self.tick_once()
-            self.stop_event.wait(self.poll_interval_seconds)
+            if self.stop_event.is_set():
+                break
+            if CONFIG.task_safe_wake_enabled:
+                self._task_wake_event.wait(self.poll_interval_seconds)
+            else:
+                self.stop_event.wait(self.poll_interval_seconds)
 
     def tick_once(self) -> None:
         binding = self.binding
@@ -919,6 +2320,22 @@ class TaskRunner:
                     self.run_status_sync_error = None
                 else:
                     profile.run_status = "paused"
+            elif profile.run_status != binding.run_status:
+                # The run-status endpoint is authoritative. In particular, an
+                # operator pause must not be overwritten by the next heartbeat
+                # carrying a stale local "running" value.
+                self._apply_local_run_status(profile.run_status)
+            self._backend_inflight_flow_state = dict(
+                profile.inflight_flow_state or {}
+            )
+            persisted_flow_id = str(
+                load_runtime_control().get("inflight_flow_id") or ""
+            ).strip()
+            backend_flow_id = str(
+                self._backend_inflight_flow_state.get("flow_id") or ""
+            ).strip()
+            if persisted_flow_id and persisted_flow_id == backend_flow_id:
+                self.api.inflight_flow_id = persisted_flow_id
             self.on_profile(profile)
             self.on_status("online")
             mark_incident_recovered("heartbeat_failed")
@@ -949,8 +2366,10 @@ class TaskRunner:
         ):
             return
 
+        self._finish_restart_recovery_flow_if_settled(binding)
+
         if (
-            self._ui_actions_enabled(binding)
+            self._can_start_new_flow(binding)
             and rpa_status == "ready"
             and wechat_status == "logged_in"
             and not self.current_task
@@ -961,7 +2380,7 @@ class TaskRunner:
 
     def _pull_and_execute(self, binding: Binding) -> None:
         with self.task_lock:
-            if not self._ui_actions_enabled(binding):
+            if not self._can_start_new_flow(binding):
                 return
             if self.current_ui_lock is not None or bool(lock_summary().get("locked")):
                 append_log(
@@ -986,12 +2405,25 @@ class TaskRunner:
                 if reason and reason != "NO_PENDING_TASK":
                     self.on_error(reason)
                 return
-            if not self._ui_actions_enabled(binding):
+            if not self._can_start_new_flow(binding):
                 return
             self._execute_task(binding, task, mode)
+        # _execute_task settles the task and its durable facts while this
+        # method still owns task_lock.  Requesting the coalesced wake from the
+        # inner terminal handler is therefore intentionally rejected.  Retry
+        # once after the lock is physically released so the existing task
+        # loop can check the next queued task without waiting a full poll.
+        self._request_task_wake_if_safe(
+            reason="task_execution_boundary_released"
+        )
 
     def _execute_task(self, binding: Binding, task: Task, mode: str) -> None:
-        if not self._ui_actions_enabled(binding):
+        flow_kind = "chat_reply" if task.task_type == "chat_reply" else "task"
+        if not self._start_inflight_flow(
+            binding,
+            flow_id=task.id,
+            flow_kind=flow_kind,
+        ):
             return
         self.current_task = task
         self.on_task(task)
@@ -1003,10 +2435,10 @@ class TaskRunner:
                     self._start_task_lease_guard(binding, task)
                 self._execute_c2_reply_recovery(binding, task, mode)
                 return
-            if not self._ui_actions_enabled(binding):
+            if not self._can_continue_inflight_flow(task.id):
                 return
             running_task = task if mode == "running" else self.api.claim_task(binding, task)
-            if not self._ui_actions_enabled(binding):
+            if not self._can_continue_inflight_flow(task.id):
                 return
             if not running_task.search_phone and task.search_phone:
                 running_task.phone = task.phone
@@ -1050,6 +2482,20 @@ class TaskRunner:
             self.current_step = None
             self.current_task = None
             self.on_task(None)
+            try:
+                self._finish_inflight_flow(
+                    binding,
+                    task.id,
+                    terminal_kind="task_terminal",
+                )
+            except Exception as exc:
+                append_log(
+                    "ERROR",
+                    "inflight_flow_finish_failed",
+                    "业务终态已处理，但在途流程结束登记失败，保留持久化状态等待恢复。",
+                    error_code="RUNTIME_INFLIGHT_FINISH_FAILED",
+                    metadata={"flow_id": task.id, "error": str(exc)},
+                )
 
     def _start_task_lease_guard(self, binding: Binding, task: Task) -> TaskLeaseGuard:
         self._stop_task_lease_guard()
@@ -1139,7 +2585,33 @@ class TaskRunner:
 
     def _execute_add_friend_task(self, binding: Binding, task: Task) -> None:
         journal_path = action_journal_path("add_friend", task.id)
-        result = self._run_add_friend_with_ui_lock(binding, task)
+        stage_timer = (
+            StageTimer(
+                process_run_id=task.process_run_id,
+                conversation_id=None,
+                stage_name="c1.add_friend_execute",
+                component="worker",
+                trace_id=str(uuid.uuid4()),
+            )
+            if task.process_run_id
+            else None
+        )
+        try:
+            result = self._run_add_friend_with_ui_lock(binding, task)
+        except Exception as exc:
+            if stage_timer is not None:
+                stage_timer.finish(
+                    status="failed",
+                    error_code=type(exc).__name__,
+                )
+                schedule_stage_event_upload(self.api, binding)
+            raise
+        if stage_timer is not None:
+            stage_timer.finish(
+                status="succeeded" if result.ok else "failed",
+                error_code=result.error_code,
+            )
+            schedule_stage_event_upload(self.api, binding)
         if result.ok:
             completed = (
                 self.api.complete_already_friend(binding, task.id)
@@ -1195,6 +2667,63 @@ class TaskRunner:
         if result.error_code in ENV_STOP_ERRORS:
             self.set_run_status("paused")
             self.on_error("运行环境异常，已暂停接单。")
+
+    def _settle_chat_reply_context_failure_before_unlock(
+        self,
+        binding: Binding,
+        *,
+        task_id: str,
+        source_error_code: str,
+    ) -> bool:
+        """Make a pre-send read failure durable before C2 may scan again."""
+
+        normalized_task_id = str(task_id or "").strip()
+        normalized_source_error = str(
+            source_error_code or "PRE_SEND_REFRESH_FAILED"
+        ).strip()
+        if not normalized_task_id:
+            append_log(
+                "ERROR",
+                "c3_pre_send_failure_task_missing",
+                "发送前复读失败，但批次没有可结算的 chat_reply 任务；已暂停接单，禁止 C2 扫描重新介入。",
+                error_code="C3_REPLY_TASK_MISSING",
+                metadata={"source_error_code": normalized_source_error},
+                force_incident=True,
+            )
+            self.set_run_status("paused")
+            return False
+        try:
+            self.api.fail_task(
+                binding,
+                normalized_task_id,
+                "C2_REPLY_CONTEXT_RECOVERY_FAILED",
+                "pre_send_refresh",
+                normalized_source_error,
+            )
+        except Exception as exc:
+            append_log(
+                "ERROR",
+                "c3_pre_send_failure_settlement_failed",
+                "发送前复读失败后未能确认 chat_reply 终态；已暂停接单，禁止释放锁后恢复 C2 扫描。",
+                task_id=normalized_task_id,
+                error_code="C3_REPLY_FAILURE_SETTLEMENT_UNCONFIRMED",
+                metadata={
+                    "source_error_code": normalized_source_error,
+                    "exception_type": type(exc).__name__,
+                },
+                force_incident=True,
+            )
+            self.set_run_status("paused")
+            return False
+        append_log(
+            "INFO",
+            "c3_pre_send_failure_settled",
+            "发送前复读失败已在原 C2 单会话流程内结算，释放 UI 锁后不会留下待领取回复任务。",
+            task_id=normalized_task_id,
+            error_code="C2_REPLY_CONTEXT_RECOVERY_FAILED",
+            metadata={"source_error_code": normalized_source_error},
+        )
+        return True
 
     def _execute_c2_reply_recovery(self, binding: Binding, task: Task, mode: str) -> None:
         if not self._c2_vision_ready_before_scan():
@@ -1258,6 +2787,7 @@ class TaskRunner:
                 str(authorization.get("authorization_revision") or "")
                 or None
             ),
+            process_run_id=task.process_run_id,
             raw={
                 "authorization_read_reason": str(
                     authorization.get("read_reason") or ""
@@ -1284,12 +2814,14 @@ class TaskRunner:
             return
         last_authorization_check = 0.0
 
-        def recovery_cancel_requested() -> bool:
+        def recovery_cancel_requested() -> bool | str:
             nonlocal last_authorization_check
+            ui_lock_reason = _ui_lock_cancel_reason(self.current_ui_lock)
+            if ui_lock_reason:
+                return ui_lock_reason
             if (
                 self.stop_event.is_set()
-                or binding.run_status != "running"
-                or (self.current_ui_lock is not None and self.current_ui_lock.cancel_requested())
+                or not self._can_continue_inflight_flow(task.id)
                 or (
                     self.current_task_lease is not None
                     and self.current_task_lease.cancel_requested()
@@ -1320,6 +2852,7 @@ class TaskRunner:
                 binding,
                 target,
                 current_step="pre_send_refresh",
+                operation_phase=C2_PRE_SEND_REFRESH_PHASE,
                 allow_during_current_task=True,
                 enforce_read_targets=True,
                 held_lease=lease,
@@ -1327,25 +2860,14 @@ class TaskRunner:
                 wait_for_brain=False,
             )
             if not refresh.get("ok"):
-                try:
-                    self.api.fail_task(
-                        binding,
-                        task.id,
-                        "C2_REPLY_CONTEXT_RECOVERY_FAILED",
-                        "pre_send_refresh",
-                        str(
-                            refresh.get("error_code")
-                            or "恢复回复任务时未能安全重建当前会话"
-                        ),
-                    )
-                except Exception as report_exc:
-                    append_log(
-                        "ERROR",
-                        "c2_reply_recovery_failure_report_failed",
-                        str(report_exc),
-                        task_id=task.id,
-                        error_code="C2_REPLY_CONTEXT_RECOVERY_FAILED",
-                    )
+                self._settle_chat_reply_context_failure_before_unlock(
+                    binding,
+                    task_id=task.id,
+                    source_error_code=str(
+                        refresh.get("error_code")
+                        or "恢复回复任务时未能安全重建当前会话"
+                    ),
+                )
                 self.on_result(
                     RpaResult(
                         ok=False,
@@ -1656,6 +3178,23 @@ class TaskRunner:
         reason: str,
         allowed_image_recovery_conversation_id: str = "",
     ) -> bool:
+        ready = self._worker_transaction_barrier_ready_impl(
+            binding,
+            reason=reason,
+            allowed_image_recovery_conversation_id=(
+                allowed_image_recovery_conversation_id
+            ),
+        )
+        self._remember_transaction_barrier_state(ready)
+        return ready
+
+    def _worker_transaction_barrier_ready_impl(
+        self,
+        binding: Binding,
+        *,
+        reason: str,
+        allowed_image_recovery_conversation_id: str = "",
+    ) -> bool:
         """Recover durable work before authorizing any new WeChat UI action."""
 
         if not self._c2_sent_ack_barrier_ready(
@@ -1722,7 +3261,9 @@ class TaskRunner:
             ),
         )
         for path, payload in journal_entries:
-            if action_journal_is_strictly_not_attempted(payload):
+            if TaskRunner._strict_not_attempted_journal_can_be_removed(
+                payload
+            ):
                 try:
                     remove_action_journal(path)
                 except OSError as exc:
@@ -1756,6 +3297,51 @@ class TaskRunner:
         return removed_count
 
     @staticmethod
+    def _strict_not_attempted_journal_can_be_removed(
+        payload: dict[str, Any],
+    ) -> bool:
+        """Allow pure intents to settle only when no durable work remains.
+
+        A legacy producer could leave an empty ``not_attempted`` journal even
+        after the same source fact reached a confirmed Ledger/Outbox. That
+        residue is safe to remove; waiting/retry facts remain a hard barrier.
+        """
+
+        if not action_journal_is_strictly_not_attempted(payload):
+            return False
+        conversation_id = str(
+            payload.get("conversation_id") or ""
+        ).strip()
+        items = (
+            payload.get("items")
+            if isinstance(payload.get("items"), dict)
+            else {}
+        )
+        for raw_source_key in items:
+            source_key = str(raw_source_key or "").strip()
+            if not source_key:
+                continue
+            ledger = load_c2_ledger_entry(
+                conversation_id,
+                source_key,
+            )
+            if ledger:
+                if (
+                    str(ledger.get("terminal_state") or "")
+                    in {"completed", "failed"}
+                    and str(ledger.get("ingest_state") or "")
+                    == "confirmed"
+                ):
+                    continue
+                return False
+            if has_c2_outbox_for_source_keys(
+                conversation_id,
+                {source_key},
+            ):
+                return False
+        return True
+
+    @staticmethod
     def _pending_image_recovery_conversation_ids() -> list[str]:
         ordered = list_waiting_c2_ledger_conversation_ids(
             message_type="image",
@@ -1769,6 +3355,28 @@ class TaskRunner:
             ),
         )
         for _path, payload in journal_entries:
+            if (
+                str(payload.get("action_kind") or "").strip() == "image"
+                and str(
+                    payload.get("canonical_action_id") or ""
+                ).strip()
+                and not str(
+                    payload.get("committed_worker_stable_id") or ""
+                ).strip()
+                and any(
+                    isinstance(item, dict)
+                    and str(item.get("error_code") or "").strip()
+                    == "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                    for item in (
+                        payload.get("items") or {}
+                    ).values()
+                )
+            ):
+                # This is an action-local identity gate, not a durable image
+                # message fact. Its idempotent gate Outbox/retry may remain,
+                # but it must not enter the global image-fact recovery barrier
+                # or block unrelated conversations.
+                continue
             conversation_id = str(
                 payload.get("conversation_id") or ""
             ).strip()
@@ -1778,6 +3386,16 @@ class TaskRunner:
         return ordered
 
     def _send_evidence(self, payload: dict[str, Any], *, target: str) -> dict[str, Any]:
+        send_baseline = (
+            payload.get("send_baseline")
+            if isinstance(payload.get("send_baseline"), dict)
+            else {}
+        )
+        baseline_guard = (
+            send_baseline.get("send_context_guard")
+            if isinstance(send_baseline.get("send_context_guard"), dict)
+            else {}
+        )
         return {
             "adapter": payload.get("adapter"),
             "state": payload.get("state"),
@@ -1785,6 +3403,15 @@ class TaskRunner:
             "window_probe": payload.get("window_probe"),
             "send_result": payload.get("send_result"),
             "guard": payload.get("guard"),
+            "context_validation": payload.get("context_validation"),
+            "send_baseline": {
+                "screenshot_path": send_baseline.get("screenshot_path"),
+                "message_region_sha256": baseline_guard.get(
+                    "message_region_sha256"
+                ),
+                "sequence_sha256": baseline_guard.get("sequence_sha256"),
+                "message_count": baseline_guard.get("message_count"),
+            },
             "timing": payload.get("timing"),
             "stdout_tail": payload.get("stdout_tail") or payload.get("stdout"),
             "stderr_tail": payload.get("stderr_tail") or payload.get("stderr"),
@@ -1800,47 +3427,142 @@ class TaskRunner:
     def _utc_now_iso(self) -> str:
         return datetime.now(timezone.utc).isoformat()
 
+    def _send_identity_frame(
+        self,
+        sidecar_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        frame_token = str(
+            sidecar_payload.get("frame_id")
+            or sidecar_payload.get("sidecar_run_id")
+            or sidecar_payload.get("run_id")
+            or ""
+        ).strip()
+        observations = [
+            dict(item)
+            for item in (sidecar_payload.get("observations") or [])
+            if isinstance(item, dict)
+        ]
+        if not frame_token or not observations:
+            return {}
+        return {
+            "contract_revision": contract_revision(),
+            "frame_id": f"send-pre:{frame_token}",
+            "observations": observations,
+        }
+
     def _record_possible_ai_send(
         self,
         *,
         target: WechatReadTarget,
         reply_action_id: str,
+        reply_text: str,
         reply_text_hash: str,
+        reserved_worker_stable_id: str,
+        pre_frame_id: str,
+        pre_action_identity_sequence: list[dict[str, Any]],
     ) -> None:
-        """Persist the send possibility before the physical send trigger."""
+        """Persist the exact pre-send identity frame before any send trigger."""
 
-        identity_state = load_c2_state(
-            f"message_identity:{target.conversation_id}"
-        )
+        action_id = str(reply_action_id or "").strip()
+        reserved_id = str(reserved_worker_stable_id or "").strip()
+        frame_id = str(pre_frame_id or "").strip()
+        canonical_text = self._canonical_reply_text(reply_text)
+        if (
+            not action_id
+            or not reserved_id
+            or not frame_id
+            or not canonical_text
+            or self._reply_text_hash(canonical_text)
+            != str(reply_text_hash or "").strip()
+        ):
+            raise ValueError("AI_REPLY_IDENTITY_RESERVATION_INCOMPLETE")
+        if not isinstance(pre_action_identity_sequence, list):
+            raise ValueError("AI_REPLY_PRE_SEQUENCE_MISSING")
         state_key = f"possible_ai_sends:{target.conversation_id}"
-        state = load_c2_state(state_key)
-        sends = [
-            dict(item)
-            for item in (state.get("sends") or [])
-            if isinstance(item, dict)
-            and str(item.get("reply_action_id") or "").strip()
-            != reply_action_id
-        ]
-        sends.append(
-            {
-                "reply_action_id": reply_action_id,
-                "reply_text_hash": reply_text_hash,
-                "identity_sequence_floor": max(
-                    1,
-                    int(identity_state.get("next_sequence") or 1),
-                ),
-                "armed_at": self._utc_now_iso(),
-                "reconciliation_state": "ai_unreconciled",
-            }
-        )
-        save_c2_state(
-            state_key,
-            {
-                "version": 1,
-                "sends": sends,
-                "updated_at": self._utc_now_iso(),
-            },
-        )
+
+        def persist(previous: dict[str, Any]):
+            sends = [
+                dict(item)
+                for item in (previous.get("sends") or [])
+                if isinstance(item, dict)
+                and str(item.get("reply_action_id") or "").strip()
+                != action_id
+            ]
+            sends.append(
+                {
+                    "reply_action_id": action_id,
+                    "reply_text": canonical_text,
+                    "reply_text_hash": str(reply_text_hash or "").strip(),
+                    "reserved_worker_stable_id": reserved_id,
+                    "pre_frame_id": frame_id,
+                    "pre_action_identity_sequence": json.loads(
+                        json.dumps(
+                            pre_action_identity_sequence,
+                            ensure_ascii=False,
+                        )
+                    ),
+                    "armed_at": self._utc_now_iso(),
+                    "physical_send_possible": True,
+                    "reconciliation_state": "armed_before_trigger",
+                }
+            )
+            try:
+                previous_version = int(previous.get("version") or 0)
+            except (TypeError, ValueError):
+                previous_version = 0
+            state = dict(previous)
+            state.update(
+                {
+                    "version": max(2, previous_version),
+                    "sends": sends,
+                    "updated_at": self._utc_now_iso(),
+                }
+            )
+            return state, None
+
+        update_c2_state_atomic(state_key, persist)
+
+    def _mark_possible_ai_send_alignment(
+        self,
+        *,
+        conversation_id: str,
+        reply_action_id: str,
+        reconciliation_state: str,
+        sequence_alignment_evidence: dict[str, Any] | None = None,
+        physical_send_confirmed: bool = False,
+    ) -> None:
+        state_key = f"possible_ai_sends:{conversation_id}"
+
+        def mark(previous: dict[str, Any]):
+            sends: list[dict[str, Any]] = []
+            for raw in previous.get("sends") or []:
+                if not isinstance(raw, dict):
+                    continue
+                item = dict(raw)
+                if (
+                    str(item.get("reply_action_id") or "").strip()
+                    == reply_action_id
+                ):
+                    item["reconciliation_state"] = reconciliation_state
+                    item["physical_send_possible"] = True
+                    item["physical_send_confirmed"] = bool(
+                        physical_send_confirmed
+                    )
+                    if isinstance(sequence_alignment_evidence, dict):
+                        item["sequence_alignment_evidence"] = json.loads(
+                            json.dumps(
+                                sequence_alignment_evidence,
+                                ensure_ascii=False,
+                            )
+                        )
+                    item["updated_at"] = self._utc_now_iso()
+                sends.append(item)
+            state = dict(previous)
+            state["sends"] = sends
+            state["updated_at"] = self._utc_now_iso()
+            return state, None
+
+        update_c2_state_atomic(state_key, mark)
 
     def _clear_possible_ai_send(
         self,
@@ -1849,22 +3571,20 @@ class TaskRunner:
         reply_action_id: str,
     ) -> None:
         state_key = f"possible_ai_sends:{conversation_id}"
-        state = load_c2_state(state_key)
-        remaining = [
-            dict(item)
-            for item in (state.get("sends") or [])
-            if isinstance(item, dict)
-            and str(item.get("reply_action_id") or "").strip()
-            != reply_action_id
-        ]
-        save_c2_state(
-            state_key,
-            {
-                "version": 1,
-                "sends": remaining,
-                "updated_at": self._utc_now_iso(),
-            },
-        )
+
+        def clear(previous: dict[str, Any]):
+            state = dict(previous)
+            state["sends"] = [
+                dict(item)
+                for item in (previous.get("sends") or [])
+                if isinstance(item, dict)
+                and str(item.get("reply_action_id") or "").strip()
+                != reply_action_id
+            ]
+            state["updated_at"] = self._utc_now_iso()
+            return state, None
+
+        update_c2_state_atomic(state_key, clear)
 
     def _attach_possible_ai_send_receipts(
         self,
@@ -1872,72 +3592,13 @@ class TaskRunner:
         target: WechatReadTarget,
         observations: list[Any],
     ) -> list[Any]:
-        """Keep an uncertain AI send from being projected as human sales."""
+        """Never rehang an uncertain send using text, position, or snapshots."""
 
-        state = load_c2_state(
-            f"possible_ai_sends:{target.conversation_id}"
-        )
-        pending = [
-            dict(item)
-            for item in (state.get("sends") or [])
-            if isinstance(item, dict)
-            and str(item.get("reply_action_id") or "").strip()
-            and str(item.get("reply_text_hash") or "").strip()
-        ]
-        enriched = [
+        del target
+        return [
             dict(item) if isinstance(item, dict) else item
             for item in observations
         ]
-        for possible in pending:
-            floor = max(
-                1,
-                int(possible.get("identity_sequence_floor") or 1),
-            )
-            candidates: list[dict[str, Any]] = []
-            for observation in enriched:
-                if not isinstance(observation, dict):
-                    continue
-                if observation.get("_worker_ai_reply_receipt"):
-                    continue
-                stable_id = str(
-                    observation.get("_worker_stable_id") or ""
-                ).strip()
-                match = re.fullmatch(r"worker-message-(\d+)", stable_id)
-                if (
-                    not match
-                    or int(match.group(1)) < floor
-                    or str(observation.get("row_kind") or "")
-                    != "text_bubble"
-                    or str(observation.get("sender_role") or "") != "self"
-                ):
-                    continue
-                content_hash = self._reply_text_hash(
-                    self._canonical_reply_text(
-                        str(observation.get("content_clean") or "")
-                    )
-                )
-                if content_hash == str(possible["reply_text_hash"]):
-                    candidates.append(observation)
-            first_candidate = min(
-                candidates,
-                key=lambda item: int(
-                    re.fullmatch(
-                        r"worker-message-(\d+)",
-                        str(item.get("_worker_stable_id") or ""),
-                    ).group(1)
-                ),
-                default=None,
-            )
-            if first_candidate is not None:
-                observation = first_candidate
-                observation["_worker_ai_reply_receipt"] = {
-                    **possible,
-                    "worker_stable_id": str(
-                        observation.get("_worker_stable_id") or ""
-                    ),
-                    "confirmed_at": "",
-                }
-        return enriched
 
     def _record_confirmed_ai_reply_receipt(
         self,
@@ -1948,6 +3609,32 @@ class TaskRunner:
         sidecar_result: dict[str, Any],
         confirmed_at: str,
     ) -> bool:
+        possible_state = load_c2_state(
+            f"possible_ai_sends:{target.conversation_id}"
+        )
+        possible = next(
+            (
+                dict(item)
+                for item in (possible_state.get("sends") or [])
+                if isinstance(item, dict)
+                and str(item.get("reply_action_id") or "").strip()
+                == reply_action_id
+            ),
+            None,
+        )
+        if not possible:
+            return False
+        reserved_id = str(
+            possible.get("reserved_worker_stable_id") or ""
+        ).strip()
+        pre_frame_id = str(possible.get("pre_frame_id") or "").strip()
+        pre_sequence = [
+            dict(item)
+            for item in (possible.get("pre_action_identity_sequence") or [])
+            if isinstance(item, dict)
+        ]
+        if not reserved_id or not pre_frame_id or not pre_sequence:
+            return False
         send_result = (
             sidecar_result.get("send_result")
             if isinstance(sidecar_result.get("send_result"), dict)
@@ -1958,6 +3645,12 @@ class TaskRunner:
             if isinstance(send_result.get("sent_confirmation"), dict)
             else {}
         )
+        if (
+            send_result.get("confirmed") is not True
+            or str(send_result.get("result") or "").strip() != "sent"
+            or confirmation.get("ok") is not True
+        ):
+            return False
         snapshot = (
             confirmation.get("snapshot")
             if isinstance(confirmation.get("snapshot"), dict)
@@ -1976,59 +3669,964 @@ class TaskRunner:
         confirmed_observation_id = str(
             confirmed_observation.get("observation_id") or ""
         ).strip()
-        if not observations or not confirmed_observation_id:
-            return False
-        identity_state_key = f"message_identity:{target.conversation_id}"
-        reconciled, identity_state, errors = reconcile_v16104_identity_transition(
-            target,
-            observations,
-            load_c2_state(identity_state_key),
-        )
-        if errors:
-            return False
-        save_c2_state(identity_state_key, identity_state)
-        matched = next(
-            (
-                item
-                for item in reconciled
-                if isinstance(item, dict)
-                and str(item.get("observation_id") or "").strip()
-                == confirmed_observation_id
-            ),
-            None,
-        )
-        stable_id = (
-            str(matched.get("_worker_stable_id") or "").strip()
-            if isinstance(matched, dict)
-            else ""
-        )
-        if not stable_id:
-            return False
-        state_key = f"ai_reply_receipts:{target.conversation_id}"
-        state = load_c2_state(state_key)
-        receipts = [
-            dict(item)
-            for item in (state.get("receipts") or [])
-            if isinstance(item, dict)
-            and str(item.get("reply_action_id") or "").strip() != reply_action_id
+        confirmed_matches = [
+            item
+            for item in observations
+            if str(item.get("observation_id") or "").strip()
+            == confirmed_observation_id
         ]
-        receipts.append(
-            {
-                "reply_action_id": reply_action_id,
-                "reply_text_hash": reply_text_hash,
-                "worker_stable_id": stable_id,
-                "confirmed_at": confirmed_at,
+        if (
+            not observations
+            or not confirmed_observation_id
+            or len(confirmed_matches) != 1
+            or str(confirmed_matches[0].get("sender_role") or "")
+            .strip()
+            .lower()
+            != "self"
+            or str(confirmed_matches[0].get("message_type") or "text")
+            .strip()
+            .lower()
+            != "text"
+        ):
+            return False
+        mapping = {
+            "canonical_action_id": reply_action_id,
+            "reserved_worker_stable_id": reserved_id,
+            "post_observation_id": confirmed_observation_id,
+            "binding_confirmed": True,
+            "action_appended": True,
+        }
+        post_sequence = build_post_action_observation_sequence(
+            observations,
+            confirmed_action_mapping=mapping,
+        )
+        run_id = str(
+            sidecar_result.get("sidecar_run_id")
+            or sidecar_result.get("run_id")
+            or ""
+        ).strip()
+        try:
+            confirmation_attempt = int(confirmation.get("attempt") or 1)
+        except (TypeError, ValueError):
+            confirmation_attempt = 1
+        post_frame_id = (
+            f"send-post:{run_id or reply_action_id}:"
+            f"{confirmation_attempt}"
+        )
+        try:
+            evidence = align_committed_message_sequence(
+                pre_sequence,
+                post_sequence,
+                mapping,
+                pre_sequence_source="action_frame",
+                pre_frame_id=pre_frame_id,
+                post_frame_id=post_frame_id,
+            )
+        except (TypeError, ValueError) as exc:
+            evidence = {
+                "pre_sequence_source": "action_frame",
+                "pre_frame_id": pre_frame_id,
+                "post_frame_id": post_frame_id,
+                "alignment_status": "unresolved",
+                "candidate_alignment_count": 0,
+                "matched_pairs": [],
+                "old_tail_fully_consumed": False,
+                "new_suffix_observation_ids": [],
+                "error_code": "AI_REPLY_SEQUENCE_ALIGNMENT_INVALID",
+                "error": repr(exc),
             }
+        new_suffix = [
+            str(value or "").strip()
+            for value in (evidence.get("new_suffix_observation_ids") or [])
+            if str(value or "").strip()
+        ]
+        if (
+            evidence.get("alignment_status") != "unique"
+            or evidence.get("old_tail_fully_consumed") is not True
+            or not new_suffix
+            or new_suffix[0] != confirmed_observation_id
+        ):
+            # The immediate Sidecar confirmation proves that this exact send
+            # action produced one unique bottom-most self bubble while the
+            # input became empty.  A newly appended bubble can clip the old
+            # viewport, and media-only history cannot prove full alignment.
+            # Commit only the action's reserved identity here.  Historical
+            # rows are deliberately not inherited from text, coordinates, or
+            # an old frame; the next authorized read must align them normally.
+            post_index = next(
+                index
+                for index, item in enumerate(post_sequence)
+                if str(item.get("post_observation_id") or "").strip()
+                == confirmed_observation_id
+            )
+            visible_prefix_ids = [
+                str(item.get("post_observation_id") or "").strip()
+                for item in post_sequence[:post_index]
+            ]
+            pre_observation_ids = [
+                str(item.get("pre_observation_id") or "").strip()
+                for item in pre_sequence
+            ]
+            prefix_is_unchanged_pre_suffix = bool(
+                all(visible_prefix_ids)
+                and len(visible_prefix_ids) <= len(pre_observation_ids)
+                and visible_prefix_ids
+                == pre_observation_ids[-len(visible_prefix_ids):]
+            )
+            if not prefix_is_unchanged_pre_suffix:
+                self._mark_possible_ai_send_alignment(
+                    conversation_id=target.conversation_id,
+                    reply_action_id=reply_action_id,
+                    reconciliation_state=(
+                        "identity_unconfirmed_possible_sent"
+                    ),
+                    sequence_alignment_evidence=evidence,
+                    physical_send_confirmed=True,
+                )
+                return False
+            history_alignment = dict(evidence)
+            evidence = {
+                "pre_sequence_source": "action_frame",
+                "pre_frame_id": pre_frame_id,
+                "post_frame_id": post_frame_id,
+                "alignment_status": "unique",
+                "candidate_alignment_count": 1,
+                "matched_pairs": [
+                    {
+                        "identity_state": "selected_action",
+                        "worker_stable_id": reserved_id,
+                        "pre_observation_id": reply_action_id,
+                        "post_observation_id": confirmed_observation_id,
+                        "pre_index": len(pre_sequence),
+                        "post_index": post_index,
+                        "match_basis": "confirmed_action",
+                    }
+                ],
+                "old_tail_fully_consumed": False,
+                "new_suffix_observation_ids": [
+                    confirmed_observation_id
+                ],
+                "confirmed_action_mapping": dict(mapping),
+                "action_identity_only": True,
+                "history_alignment_evidence": history_alignment,
+            }
+        journal_path = self.bridge.send_transaction_journal_path(
+            reply_action_id
         )
-        save_c2_state(
-            state_key,
-            {
-                "version": 1,
-                "receipts": receipts,
-                "updated_at": self._utc_now_iso(),
-            },
+        try:
+            record_action_sequence_alignment(journal_path, evidence)
+        except (OSError, ValueError):
+            self._mark_possible_ai_send_alignment(
+                conversation_id=target.conversation_id,
+                reply_action_id=reply_action_id,
+                reconciliation_state="identity_journal_unconfirmed_possible_sent",
+                sequence_alignment_evidence=evidence,
+                physical_send_confirmed=True,
+            )
+            return False
+        confirmed_sequence_item = next(
+            item
+            for item in post_sequence
+            if str(item.get("post_observation_id") or "").strip()
+            == confirmed_observation_id
         )
+        receipt = {
+            "reply_action_id": reply_action_id,
+            "reply_text": str(possible.get("reply_text") or "").strip(),
+            "reply_text_hash": reply_text_hash,
+            "worker_stable_id": reserved_id,
+            "confirmed_at": confirmed_at,
+            "native_source_message_id": str(
+                confirmed_sequence_item.get("native_source_message_id") or ""
+            ).strip(),
+            "frame_visual_id": str(
+                confirmed_sequence_item.get("frame_visual_id") or ""
+            ).strip(),
+            "sequence_alignment_evidence": evidence,
+        }
+        if (
+            not receipt["reply_text"]
+            or self._reply_text_hash(receipt["reply_text"])
+            != str(reply_text_hash or "").strip()
+        ):
+            return False
+        committed_send_observation = {
+            "observation_id": confirmed_observation_id,
+            "row_kind": "text_bubble",
+            "sender_role": "self",
+            "message_type": "text",
+            "_worker_stable_id": reserved_id,
+            "_worker_identity_scope": "committed",
+            "_worker_ai_reply_receipt": dict(receipt),
+            "_worker_committed_message": committed_identity_record(
+                worker_stable_id=reserved_id,
+                commit_basis=MessageCommitBasis.CONFIRMED_SENT_ACK,
+                observation_id=confirmed_observation_id,
+                sender_role="self",
+                message_type="text",
+                proof={"reply_action_id": reply_action_id},
+            ),
+        }
+        try:
+            committed_send = require_committed_message(
+                conversation_id=target.conversation_id,
+                observation=committed_send_observation,
+            )
+        except ValueError:
+            return False
+        state_key = f"message_identity:{target.conversation_id}"
+
+        def commit(previous: dict[str, Any]):
+            state = dict(previous)
+            try:
+                current_version = int(state.get("version") or 0)
+                current_next = int(state.get("next_sequence") or 1)
+                reserved_match = re.fullmatch(
+                    r"worker-message-(\d+)", reserved_id
+                )
+                if reserved_match is None:
+                    return previous, False
+                reserved_number = int(reserved_match.group(1))
+            except (TypeError, ValueError):
+                return previous, False
+            reservations = dict(state.get("sequence_reservations") or {})
+            reservation_key = f"send-action:{reply_action_id}"
+            if str(reservations.get(reservation_key) or "").strip() != reserved_id:
+                return previous, False
+            commits = dict(state.get("sequence_commits") or {})
+            committed = str(commits.get(reply_action_id) or "").strip()
+            if committed and committed != reserved_id:
+                return previous, False
+            receipts = [
+                dict(item)
+                for item in (state.get("ai_reply_receipts") or [])
+                if isinstance(item, dict)
+                and str(item.get("reply_action_id") or "").strip()
+                != reply_action_id
+            ]
+            receipts.append(receipt)
+            commits[reply_action_id] = reserved_id
+            state.update(
+                {
+                    "version": max(4, current_version),
+                    "next_sequence": max(current_next, reserved_number + 1),
+                    "sequence_reservations": reservations,
+                    "sequence_commits": commits,
+                    "ai_reply_receipts": receipts,
+                    "updated_at": self._utc_now_iso(),
+                }
+            )
+            return state, True
+
+        committed = update_c2_state_atomic(state_key, commit)
+        if not committed:
+            self._mark_possible_ai_send_alignment(
+                conversation_id=target.conversation_id,
+                reply_action_id=reply_action_id,
+                reconciliation_state="identity_commit_conflict_possible_sent",
+                sequence_alignment_evidence=evidence,
+                physical_send_confirmed=True,
+            )
+            return False
+        try:
+            commit_action_journal_item_identity(
+                journal_path,
+                journal_item_id=reply_action_id,
+                source_message_key=committed_send.source_message_key,
+            )
+        except (OSError, ValueError) as exc:
+            append_log(
+                "WARN",
+                "ai_reply_identity_journal_commit_deferred",
+                "AI 回复身份已原子提交；动作日志提交延后，不会降级编号或触发重发。",
+                error_code="AI_REPLY_IDENTITY_JOURNAL_COMMIT_DEFERRED",
+                metadata={
+                    "conversation_id": target.conversation_id,
+                    "reply_action_id": reply_action_id,
+                    "error": repr(exc),
+                },
+            )
         return True
+
+    def _reserve_worker_sequence(
+        self,
+        target: WechatReadTarget,
+        *,
+        reservation_key: str,
+    ) -> str:
+        checkpoint = (
+            target.raw.get("identity_checkpoint")
+            if isinstance(target.raw, dict)
+            and isinstance(target.raw.get("identity_checkpoint"), dict)
+            else {}
+        )
+        try:
+            server_floor = max(
+                1, int(checkpoint.get("next_sequence_floor") or 1)
+            )
+        except (TypeError, ValueError):
+            server_floor = 1
+        # Defend against a stale or partially projected checkpoint.  The
+        # declared floor is authoritative only when it is above every
+        # committed Worker sequence included in that same response; otherwise
+        # allocating it would reuse an existing durable identity.
+        recent_floor = 1
+        for item in (checkpoint.get("recent_messages") or []):
+            if not isinstance(item, dict):
+                continue
+            match = re.fullmatch(
+                r"worker-message-(\d+)",
+                str(item.get("stable_id") or "").strip(),
+            )
+            if match is not None:
+                recent_floor = max(recent_floor, int(match.group(1)) + 1)
+        server_floor = max(server_floor, recent_floor)
+
+        def reserve(previous: dict[str, Any]):
+            state = dict(previous)
+            try:
+                state_version = int(state.get("version") or 0)
+            except (TypeError, ValueError):
+                state_version = 0
+            reservations = dict(state.get("sequence_reservations") or {})
+            existing = str(reservations.get(reservation_key) or "").strip()
+            if existing:
+                return state, existing
+            try:
+                next_sequence = max(
+                    server_floor, int(state.get("next_sequence") or 1)
+                )
+            except (TypeError, ValueError):
+                next_sequence = server_floor
+            stable_id = f"worker-message-{next_sequence}"
+            reservations[reservation_key] = stable_id
+            state.update(
+                {
+                    "version": max(4, state_version),
+                    "next_sequence": next_sequence + 1,
+                    "sequence_reservations": reservations,
+                }
+            )
+            return state, stable_id
+
+        return update_c2_state_atomic(
+            f"message_identity:{target.conversation_id}", reserve
+        )
+
+    def _align_initial_identity_frame(
+        self,
+        *,
+        target: WechatReadTarget,
+        sidecar_payload: dict[str, Any],
+        read_run_id: str,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Align the first frame with the authoritative backend checkpoint."""
+
+        prepared = dict(sidecar_payload)
+        observations = collapse_same_frame_voice_aliases(
+            list(prepared.get("observations") or [])
+        )
+        checkpoint = (
+            target.raw.get("identity_checkpoint")
+            if isinstance(target.raw, dict)
+            and isinstance(target.raw.get("identity_checkpoint"), dict)
+            else {}
+        )
+        if int(checkpoint.get("version") or 0) != 2:
+            return prepared, [
+                {
+                    "error_code": "MESSAGE_IDENTITY_CHECKPOINT_MISSING",
+                    "reason": "authoritative_checkpoint_missing",
+                }
+            ]
+        recent = [
+            item
+            for item in (checkpoint.get("recent_messages") or [])
+            if isinstance(item, dict)
+        ]
+        pre_sequence: list[dict[str, Any]] = []
+        for index, item in enumerate(recent):
+            stable_id = str(item.get("stable_id") or "").strip()
+            if not stable_id:
+                continue
+            pre_sequence.append(
+                {
+                    "identity_state": "committed",
+                    "worker_stable_id": stable_id,
+                    "pre_observation_id": str(
+                        item.get("source_message_key") or f"checkpoint-{index}"
+                    ),
+                    "pre_sequence_index": index,
+                    "sender_role": str(item.get("sender_role") or "").strip(),
+                    "message_type": str(item.get("message_type") or "").strip(),
+                    "normalized_content_hash": str(
+                        item.get("normalized_content_hash") or ""
+                    ).strip(),
+                    "native_source_message_id": str(
+                        item.get("native_source_message_id") or ""
+                    ).strip(),
+                    "frame_visual_id": str(
+                        item.get("frame_visual_id") or ""
+                    ).strip(),
+                }
+            )
+        checkpoint_stable_ids = {
+            str(item.get("worker_stable_id") or "").strip()
+            for item in pre_sequence
+            if str(item.get("worker_stable_id") or "").strip()
+        }
+        identity_state = load_c2_state(
+            f"message_identity:{target.conversation_id}"
+        )
+        ai_reply_boundary = (
+            target.raw.get("ai_reply_boundary")
+            if isinstance(target.raw, dict)
+            and isinstance(target.raw.get("ai_reply_boundary"), dict)
+            else {}
+        )
+        boundary_action_id = str(
+            ai_reply_boundary.get("reply_action_id") or ""
+        ).strip()
+        boundary_hash = str(
+            ai_reply_boundary.get("reply_text_hash") or ""
+        ).strip()
+        boundary_stable_id = str(
+            ai_reply_boundary.get("worker_stable_id") or ""
+        ).strip()
+        for receipt in identity_state.get("ai_reply_receipts") or []:
+            if not isinstance(receipt, dict):
+                continue
+            stable_id = str(
+                receipt.get("worker_stable_id") or ""
+            ).strip()
+            stable_match = re.fullmatch(r"worker-message-(\d+)", stable_id)
+            if (
+                stable_match is None
+                or stable_id in checkpoint_stable_ids
+                or not str(
+                    receipt.get("reply_action_id") or ""
+                ).strip()
+                or not str(
+                    receipt.get("reply_text_hash") or ""
+                ).strip()
+            ):
+                continue
+            pre_sequence.append(
+                {
+                    "identity_state": "committed",
+                    "worker_stable_id": stable_id,
+                    "pre_observation_id": (
+                        "confirmed-ai-reply:"
+                        f"{receipt['reply_action_id']}"
+                    ),
+                    "pre_sequence_index": len(pre_sequence),
+                    "sender_role": "self",
+                    "message_type": "text",
+                    "normalized_content_hash": str(
+                        receipt.get("reply_text_hash") or ""
+                    ).strip(),
+                    "native_source_message_id": str(
+                        receipt.get("native_source_message_id") or ""
+                    ).strip(),
+                    "frame_visual_id": str(
+                        receipt.get("frame_visual_id") or ""
+                    ).strip(),
+                    "ai_reply_boundary": bool(
+                        boundary_action_id
+                        and boundary_hash
+                        and str(receipt.get("reply_action_id") or "").strip()
+                        == boundary_action_id
+                        and str(receipt.get("reply_text_hash") or "").strip()
+                        == boundary_hash
+                    ),
+                    "_worker_sequence_number": int(
+                        stable_match.group(1)
+                    ),
+                }
+            )
+            checkpoint_stable_ids.add(stable_id)
+        if (
+            boundary_action_id
+            and boundary_hash
+            and boundary_stable_id
+            and boundary_stable_id not in checkpoint_stable_ids
+        ):
+            stable_match = re.fullmatch(
+                r"worker-message-(\d+)", boundary_stable_id
+            )
+            if stable_match is not None:
+                pre_sequence.append(
+                    {
+                        "identity_state": "committed",
+                        "worker_stable_id": boundary_stable_id,
+                        "pre_observation_id": (
+                            f"sent-ack-boundary:{boundary_action_id}"
+                        ),
+                        "pre_sequence_index": len(pre_sequence),
+                        "sender_role": "self",
+                        "message_type": "text",
+                        "normalized_content_hash": boundary_hash,
+                        "native_source_message_id": "",
+                        "frame_visual_id": "",
+                        "ai_reply_boundary": True,
+                        "_worker_sequence_number": int(
+                            stable_match.group(1)
+                        ),
+                    }
+                )
+                checkpoint_stable_ids.add(boundary_stable_id)
+        possible_state = load_c2_state(
+            f"possible_ai_sends:{target.conversation_id}"
+        )
+        if boundary_action_id and boundary_hash:
+            for possible in possible_state.get("sends") or []:
+                if not isinstance(possible, dict):
+                    continue
+                reserved_id = str(
+                    possible.get("reserved_worker_stable_id") or ""
+                ).strip()
+                stable_match = re.fullmatch(
+                    r"worker-message-(\d+)", reserved_id
+                )
+                if (
+                    stable_match is None
+                    or reserved_id in checkpoint_stable_ids
+                    or str(possible.get("reply_action_id") or "").strip()
+                    != boundary_action_id
+                    or str(possible.get("reply_text_hash") or "").strip()
+                    != boundary_hash
+                ):
+                    continue
+                pre_sequence.append(
+                    {
+                        "identity_state": "committed",
+                        "worker_stable_id": reserved_id,
+                        "pre_observation_id": (
+                            f"sent-ack-possible:{boundary_action_id}"
+                        ),
+                        "pre_sequence_index": len(pre_sequence),
+                        "sender_role": "self",
+                        "message_type": "text",
+                        "normalized_content_hash": boundary_hash,
+                        "native_source_message_id": "",
+                        "frame_visual_id": "",
+                        "ai_reply_boundary": True,
+                        "ai_reconciliation_state": str(
+                            possible.get("reconciliation_state") or ""
+                        ),
+                        "_worker_sequence_number": int(
+                            stable_match.group(1)
+                        ),
+                    }
+                )
+                checkpoint_stable_ids.add(reserved_id)
+        if any("_worker_sequence_number" in item for item in pre_sequence):
+            def sequence_number(item: dict[str, Any]) -> int:
+                explicit = item.get("_worker_sequence_number")
+                if isinstance(explicit, int):
+                    return explicit
+                match = re.fullmatch(
+                    r"worker-message-(\d+)",
+                    str(item.get("worker_stable_id") or "").strip(),
+                )
+                return int(match.group(1)) if match else 2**63 - 1
+
+            pre_sequence.sort(key=sequence_number)
+            for index, item in enumerate(pre_sequence):
+                item.pop("_worker_sequence_number", None)
+                item["pre_sequence_index"] = index
+        post_sequence = build_post_action_observation_sequence(observations)
+        frame_id = str(
+            prepared.get("frame_id")
+            or prepared.get("sidecar_run_id")
+            or prepared.get("run_id")
+            or ""
+        ).strip()
+        if not frame_id:
+            return prepared, [
+                {
+                    "error_code": "MESSAGE_IDENTITY_UNCONFIRMED",
+                    "reason": "initial_frame_id_missing",
+                }
+            ]
+        explicit_empty = not pre_sequence and int(
+            checkpoint.get("next_sequence_floor") or 0
+        ) <= 1
+        if not pre_sequence and not explicit_empty:
+            return prepared, [
+                {
+                    "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+                    "reason": "checkpoint_history_not_visible",
+                }
+            ]
+        evidence = align_committed_message_sequence(
+            pre_sequence,
+            post_sequence,
+            pre_sequence_source=(
+                "empty_checkpoint" if explicit_empty else "checkpoint"
+            ),
+            pre_frame_id=(
+                f"checkpoint:none:{target.conversation_id}"
+                if explicit_empty
+                else f"checkpoint:{target.authorization_revision}"
+            ),
+            post_frame_id=f"frame:{frame_id}",
+        )
+        if evidence.get("alignment_status") not in {"unique", "not_required"}:
+            prepared["sequence_alignment_evidence"] = evidence
+            return prepared, [
+                {
+                    "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+                    "reason": str(evidence.get("alignment_status") or ""),
+                    "sequence_alignment_evidence": evidence,
+                }
+            ]
+        observations = apply_inherited_worker_ids(observations, evidence)
+        observations = self._assign_sequence_new_suffix_identities(
+            target=target,
+            observations=observations,
+            evidence=evidence,
+            read_run_id=read_run_id,
+        )
+        prepared["observations"] = observations
+        prepared["sequence_alignment_evidence"] = evidence
+        return prepared, []
+
+    def _assign_sequence_new_suffix_identities(
+        self,
+        *,
+        target: WechatReadTarget,
+        observations: list[Any],
+        evidence: dict[str, Any],
+        read_run_id: str,
+    ) -> list[Any]:
+        """Number only the safely exposed tail of one authoritative frame."""
+
+        if (
+            evidence.get("alignment_status") not in {"unique", "not_required"}
+            or evidence.get("old_tail_fully_consumed") is not True
+        ):
+            return list(observations)
+        new_suffix = {
+            str(value).strip()
+            for value in (evidence.get("new_suffix_observation_ids") or [])
+            if str(value).strip()
+        }
+        assigned: list[Any] = []
+        for raw in observations:
+            if not isinstance(raw, dict):
+                assigned.append(raw)
+                continue
+            observation = dict(raw)
+            observation_id = str(
+                observation.get("observation_id") or ""
+            ).strip()
+            message_type = str(
+                observation.get("message_type") or ""
+            ).strip().lower()
+            row_kind = str(
+                observation.get("row_kind") or ""
+            ).strip().lower()
+            if (
+                observation_id in new_suffix
+                and observation_role_is_trusted(observation)
+            ):
+                source_message = (
+                    observation.get("source_message")
+                    if isinstance(observation.get("source_message"), dict)
+                    else {}
+                )
+                native_source_message_id = str(
+                    observation.get("native_source_message_id")
+                    or source_message.get("native_source_message_id")
+                    or source_message.get("native_message_id")
+                    or ""
+                ).strip()
+                if native_source_message_id and message_type in {
+                    "text",
+                    "system",
+                    "voice",
+                    "image",
+                }:
+                    stable_id = self._reserve_worker_sequence(
+                        target,
+                        reservation_key=(
+                            f"native:{native_source_message_id}"
+                        ),
+                    )
+                    observation["_worker_stable_id"] = stable_id
+                    observation["_worker_identity_scope"] = "committed"
+                    observation["_worker_committed_message"] = (
+                        committed_identity_record(
+                            worker_stable_id=stable_id,
+                            commit_basis=(
+                                MessageCommitBasis.NATIVE_SOURCE_MESSAGE_ID
+                            ),
+                            observation_id=observation_id,
+                            sender_role=str(
+                                observation.get("sender_role") or ""
+                            ),
+                            message_type=message_type,
+                            proof={
+                                "native_source_message_id": (
+                                    native_source_message_id
+                                ),
+                                "sender_role": str(
+                                    observation.get("sender_role") or ""
+                                ),
+                                "message_type": message_type,
+                            },
+                        )
+                    )
+                elif (
+                    message_type == "text"
+                    and row_kind == "text_bubble"
+                ) or (
+                    message_type == "system"
+                    and row_kind in {"system_row", "system_message"}
+                ):
+                    stable_id = self._reserve_worker_sequence(
+                        target,
+                        reservation_key=(
+                            f"committed:{read_run_id}:{observation_id}"
+                        ),
+                    )
+                    observation["_worker_stable_id"] = stable_id
+                    observation["_worker_identity_scope"] = "committed"
+                    observation["_worker_committed_message"] = (
+                        committed_identity_record(
+                            worker_stable_id=stable_id,
+                            commit_basis=MessageCommitBasis.NEW_SUFFIX,
+                            observation_id=observation_id,
+                            sender_role=str(
+                                observation.get("sender_role") or ""
+                            ),
+                            message_type=message_type,
+                            proof={
+                                "alignment_status": str(
+                                    evidence.get("alignment_status") or ""
+                                ),
+                                "old_tail_fully_consumed": True,
+                                "new_suffix_observation_id": observation_id,
+                            },
+                        )
+                    )
+                elif message_type == "image":
+                    observation["_worker_stable_id"] = (
+                        self._reserve_worker_sequence(
+                            target,
+                            reservation_key=(
+                                f"media-action:{read_run_id}:"
+                                f"{observation_id}"
+                            ),
+                        )
+                    )
+                    observation["_worker_identity_scope"] = (
+                        "current_read_provisional"
+                    )
+                    observation.pop("_worker_committed_message", None)
+                else:
+                    # A voice, including a transcript produced by Sidecar,
+                    # becomes durable only through its confirmed prepare/
+                    # execute mapping.  new_suffix alone is not identity.
+                    observation.pop("_worker_committed_message", None)
+            assigned.append(observation)
+        return assigned
+
+    def _retry_identity_from_backend_checkpoint_once(
+        self,
+        *,
+        target: WechatReadTarget,
+        read_run_id: str,
+        target_label: str,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str]:
+        """Reread the current chat once and let backend identity win."""
+
+        refreshed = self.bridge.get_messages(
+            display_name=target_label,
+            rpa_session_key="",
+            remark_code=target.remark_code or "",
+            target_mode="current",
+            expected_confirmed_self_text=(
+                self._confirmed_ai_reply_text_for_read(target)
+            ),
+            max_duration_seconds=20,
+            cancel_check=cancel_check,
+        )
+        if not refreshed.get("ok"):
+            return (
+                None,
+                [],
+                str(
+                    refreshed.get("error_code")
+                    or refreshed.get("state")
+                    or "TARGET_NOT_CONFIRMED_FOR_MESSAGES"
+                ),
+            )
+        contract_error = sidecar_contract_error(refreshed)
+        if contract_error:
+            return None, [], contract_error
+        refreshed, errors = self._align_initial_identity_frame(
+            target=target,
+            sidecar_payload=refreshed,
+            read_run_id=read_run_id,
+        )
+        refreshed["authoritative_frame_source"] = "final_read"
+        refreshed["identity_automatic_reread_performed"] = True
+        return refreshed, errors, ""
+
+    def _retry_history_gap_from_backend_once(
+        self,
+        *,
+        target: WechatReadTarget,
+        read_run_id: str,
+        target_label: str,
+        sidecar_payload: dict[str, Any],
+        incremental_plan: dict[str, Any],
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Recheck one blocking history gap before projecting a handoff."""
+
+        if (
+            not incremental_plan.get("history_gap")
+            or sidecar_payload.get(
+                "history_gap_automatic_reread_performed"
+            )
+            or sidecar_payload.get(
+                "identity_automatic_reread_performed"
+            )
+        ):
+            return sidecar_payload, incremental_plan
+        original = dict(sidecar_payload)
+        original["history_gap_automatic_reread_performed"] = True
+        refreshed, identity_errors, retry_error_code = (
+            self._retry_identity_from_backend_checkpoint_once(
+                target=target,
+                read_run_id=read_run_id,
+                target_label=target_label,
+                cancel_check=cancel_check,
+            )
+        )
+        if refreshed is None or identity_errors:
+            original["history_gap_automatic_reread_error_code"] = str(
+                retry_error_code
+                or (
+                    identity_errors[0].get("error_code")
+                    if identity_errors
+                    else "C2_MESSAGE_HISTORY_GAP_RECHECK_FAILED"
+                )
+            )
+            return original, incremental_plan
+        for key in (
+            "initial_messages",
+            "voice_transcription",
+            "send_context_guard",
+            "ui_frame_invalidated",
+        ):
+            if key in sidecar_payload and key not in refreshed:
+                refreshed[key] = sidecar_payload[key]
+        refreshed["ui_frame_invalidated"] = bool(
+            sidecar_payload.get("ui_frame_invalidated")
+            or refreshed.get("ui_frame_invalidated")
+        )
+        retry_sidecar_run_id = str(
+            refreshed.get("sidecar_run_id") or ""
+        )
+        refreshed = dict(refreshed)
+        refreshed["history_gap_automatic_reread_performed"] = True
+        refreshed["history_gap_automatic_reread_sidecar_run_id"] = (
+            retry_sidecar_run_id
+        )
+        deferred_voices = _executable_untranscribed_voice_observations(
+            target,
+            refreshed,
+        )
+        if deferred_voices:
+            # A history-gap reread is evidence for confirming the existing
+            # gate; it is not a second media-processing pass.  A voice first
+            # observed here intentionally has no committed Worker identity
+            # yet, so building the settlement plan would either invent a
+            # cross-round identity or fail before the deferred branch.  Keep
+            # the original authoritative frame/gate and let the next
+            # authorized read own prepare/execute and identity commitment.
+            deferred_observation_ids = sorted(
+                {
+                    str(item.get("observation_id") or "").strip()
+                    for item in deferred_voices
+                    if str(item.get("observation_id") or "").strip()
+                }
+            )
+            original["history_gap_automatic_reread_sidecar_run_id"] = (
+                retry_sidecar_run_id
+            )
+            original["history_gap_reread_new_facts_deferred"] = True
+            original["history_gap_reread_deferred_observation_ids"] = (
+                deferred_observation_ids
+            )
+            append_log(
+                "INFO",
+                "c2_history_gap_reread_new_voice_deferred",
+                "历史断层自动重读发现未处理语音；保留原结算画面和门禁，语音交由下一次授权读取。",
+                metadata={
+                    "conversation_id": target.conversation_id,
+                    "remark_code": target.remark_code,
+                    "deferred_observation_ids": deferred_observation_ids,
+                    "sidecar_run_id": retry_sidecar_run_id,
+                },
+            )
+            return original, incremental_plan
+        refreshed = self._merge_waiting_image_facts(
+            target=target,
+            sidecar_payload=refreshed,
+        )
+        refreshed_plan = self._build_final_slot_incremental_plan(
+            target=target,
+            sidecar_payload=refreshed,
+            read_run_id=read_run_id,
+        )
+        original_source_keys = {
+            str(item.get("source_message_key") or "").strip()
+            for item in incremental_plan.get("slot_ledger_states") or []
+            if isinstance(item, dict)
+            and str(item.get("source_message_key") or "").strip()
+        }
+        refreshed_source_keys = {
+            str(item.get("source_message_key") or "").strip()
+            for item in refreshed_plan.get("slot_ledger_states") or []
+            if isinstance(item, dict)
+            and str(item.get("source_message_key") or "").strip()
+        }
+        deferred_source_keys = sorted(
+            refreshed_source_keys - original_source_keys
+        )
+        if original_source_keys and deferred_source_keys:
+            # The voice/media phases for this authorized read have already
+            # finished. A history-gap confirmation frame must not become a
+            # second settlement frame, otherwise newly arrived untranscribed
+            # media could be omitted while the remaining text reaches Brain.
+            # Keep the original gate and let the next authorized read own all
+            # newly observed facts through the normal media pipeline.
+            original["history_gap_automatic_reread_sidecar_run_id"] = (
+                retry_sidecar_run_id
+            )
+            original["history_gap_reread_new_facts_deferred"] = True
+            original["history_gap_reread_deferred_source_keys"] = (
+                deferred_source_keys
+            )
+            append_log(
+                "INFO",
+                "c2_history_gap_reread_new_facts_deferred",
+                "历史断层自动重读发现新增事实；保留原结算画面和门禁，新增事实交由下一次授权读取。",
+                metadata={
+                    "conversation_id": target.conversation_id,
+                    "remark_code": target.remark_code,
+                    "deferred_source_keys": deferred_source_keys,
+                    "sidecar_run_id": retry_sidecar_run_id,
+                },
+            )
+            return original, incremental_plan
+        return refreshed, refreshed_plan
 
     def _attach_confirmed_ai_reply_receipts(
         self,
@@ -2036,10 +4634,11 @@ class TaskRunner:
         target: WechatReadTarget,
         observations: list[Any],
     ) -> list[Any]:
-        state_key = f"ai_reply_receipts:{target.conversation_id}"
-        state = load_c2_state(state_key)
+        identity_state = load_c2_state(
+            f"message_identity:{target.conversation_id}"
+        )
         active_receipts: list[dict[str, Any]] = []
-        for raw in state.get("receipts") or []:
+        for raw in identity_state.get("ai_reply_receipts") or []:
             if not isinstance(raw, dict):
                 continue
             if (
@@ -2063,16 +4662,66 @@ class TaskRunner:
                 receipt
                 and str(observation.get("row_kind") or "") == "text_bubble"
                 and str(observation.get("sender_role") or "") == "self"
-                and self._reply_text_hash(
-                    self._canonical_reply_text(
-                        str(observation.get("content_clean") or "")
-                    )
-                )
-                == str(receipt.get("reply_text_hash") or "")
             ):
                 observation["_worker_ai_reply_receipt"] = receipt
             enriched.append(observation)
         return enriched
+
+    def _confirmed_ai_reply_text_for_read(
+        self,
+        target: WechatReadTarget,
+    ) -> str:
+        """Return only the locally committed text for the backend sent boundary.
+
+        This text is not used to choose a message identity. It lets the
+        Sidecar run current-frame ROI OCR when the already confirmed AI text
+        bubble was structurally mistaken for an image. The subsequent
+        sequence alignment remains the only identity decision.
+        """
+
+        if str(target.read_reason or "").strip() != "recent_ai_sent":
+            return ""
+        boundary = (
+            target.raw.get("ai_reply_boundary")
+            if isinstance(target.raw, dict)
+            and isinstance(target.raw.get("ai_reply_boundary"), dict)
+            else {}
+        )
+        action_id = str(boundary.get("reply_action_id") or "").strip()
+        expected_hash = str(boundary.get("reply_text_hash") or "").strip()
+        if not action_id or not expected_hash:
+            return ""
+
+        candidates: list[dict[str, Any]] = []
+        identity_state = load_c2_state(
+            f"message_identity:{target.conversation_id}"
+        )
+        candidates.extend(
+            dict(item)
+            for item in (identity_state.get("ai_reply_receipts") or [])
+            if isinstance(item, dict)
+        )
+        possible_state = load_c2_state(
+            f"possible_ai_sends:{target.conversation_id}"
+        )
+        candidates.extend(
+            dict(item)
+            for item in (possible_state.get("sends") or [])
+            if isinstance(item, dict)
+        )
+        matching_texts = {
+            self._canonical_reply_text(item.get("reply_text") or "")
+            for item in candidates
+            if str(item.get("reply_action_id") or "").strip() == action_id
+            and str(item.get("reply_text_hash") or "").strip()
+            == expected_hash
+            and self._canonical_reply_text(item.get("reply_text") or "")
+            and self._reply_text_hash(
+                self._canonical_reply_text(item.get("reply_text") or "")
+            )
+            == expected_hash
+        }
+        return next(iter(matching_texts)) if len(matching_texts) == 1 else ""
 
     def _consume_confirmed_ai_reply_receipts(
         self,
@@ -2131,23 +4780,29 @@ class TaskRunner:
                 "updated_at": self._utc_now_iso(),
             },
         )
-        possible_state_key = f"possible_ai_sends:{conversation_id}"
-        possible_state = load_c2_state(possible_state_key)
-        remaining_possible = [
-            dict(item)
-            for item in (possible_state.get("sends") or [])
-            if isinstance(item, dict)
-            and str(item.get("reply_action_id") or "").strip()
-            not in consumed_action_ids
-        ]
-        save_c2_state(
-            possible_state_key,
-            {
-                "version": 1,
-                "sends": remaining_possible,
-                "updated_at": self._utc_now_iso(),
-            },
+        identity_state_key = f"message_identity:{conversation_id}"
+
+        def consume_identity_receipts(previous: dict[str, Any]):
+            state = dict(previous)
+            state["ai_reply_receipts"] = [
+                dict(item)
+                for item in (previous.get("ai_reply_receipts") or [])
+                if isinstance(item, dict)
+                and str(item.get("reply_action_id") or "").strip()
+                not in consumed_action_ids
+            ]
+            state["updated_at"] = self._utc_now_iso()
+            return state, None
+
+        update_c2_state_atomic(
+            identity_state_key,
+            consume_identity_receipts,
         )
+        for action_id in consumed_action_ids:
+            self._clear_possible_ai_send(
+                conversation_id=conversation_id,
+                reply_action_id=action_id,
+            )
         append_log(
             "INFO",
             "ai_reply_receipt_consumed",
@@ -2166,13 +4821,13 @@ class TaskRunner:
             lease.start_auto_renew()
             self.current_ui_lock = lease
             self.current_step = "add_friend_starting"
-            append_log("INFO", "ui_lock_acquired", "已获取微信 UI 锁，开始执行加好友。", task_id=task.id, metadata={"lock_id": lease.lock_id, "fencing_token": lease.fencing_token})
+            append_log("INFO", "ui_lock_acquired", "已获取微信 UI 锁，开始执行加好友。", task_id=task.id, metadata={"lock_id": lease.lock_id, "fencing_token": lease.fencing_token, "operation_type": getattr(lease, "operation_type", "add_friend")})
         except UiLockError as exc:
             append_log("ERROR", "ui_lock_acquire_failed", str(exc), task_id=task.id, error_code=exc.code, metadata=exc.data)
             return RpaResult(ok=False, error_code=exc.code, failure_step="ui_lock_acquire", message=str(exc), evidence_metadata={"ui_lock": exc.data})
         try:
             def add_friend_cancel_reason() -> bool | str:
-                if not self._ui_actions_enabled(binding):
+                if not self._can_continue_inflight_flow():
                     return "WORKER_INTERRUPTED"
                 if (
                     self.current_task_lease is not None
@@ -2182,8 +4837,9 @@ class TaskRunner:
                         self.current_task_lease.error_code
                         or "TASK_LEASE_RENEW_FAILED"
                     )
-                if lease.cancel_requested():
-                    return "UI_LOCK_RENEW_FAILED"
+                ui_lock_reason = _ui_lock_cancel_reason(lease)
+                if ui_lock_reason:
+                    return ui_lock_reason
                 return False
 
             return self.bridge.run_add_friend(
@@ -2204,7 +4860,7 @@ class TaskRunner:
             return
         try:
             lease.release()
-            append_log("INFO", "ui_lock_released", f"已释放微信 UI 锁：{reason}", task_id=task_id, metadata={"lock_id": lease.lock_id})
+            append_log("INFO", "ui_lock_released", f"已释放微信 UI 锁：{reason}", task_id=task_id, metadata={"lock_id": lease.lock_id, "fencing_token": lease.fencing_token, "operation_type": getattr(lease, "operation_type", ""), "release_reason": reason})
         except UiLockError as exc:
             append_log("ERROR", "ui_lock_release_failed", str(exc), task_id=task_id, error_code=exc.code, metadata=exc.data)
 
@@ -2250,6 +4906,26 @@ class TaskRunner:
             if self.current_ui_lock is not None or bool(lock_summary().get("locked")):
                 self.stop_event.wait(0.5)
                 continue
+            runtime_control = load_runtime_control()
+            inflight_flow_id = str(
+                runtime_control.get("inflight_flow_id") or ""
+            ).strip()
+            if inflight_flow_id:
+                if self._can_continue_inflight_flow(inflight_flow_id):
+                    # A persisted flow is recovery-only in this listener.  Its
+                    # live owner (if any) continues the customer chain; after
+                    # restart only durable Journal/Outbox/sent_ack settlement
+                    # is allowed.  Never scan or select another conversation.
+                    self._worker_transaction_barrier_ready(
+                        binding,
+                        reason="c2_inflight_recovery",
+                    )
+                    self._finish_restart_recovery_flow_if_settled(binding)
+                self.stop_event.wait(1.0)
+                continue
+            if not self._can_start_new_flow(binding):
+                self.stop_event.wait(1.0)
+                continue
             # A reply already exists in WeChat once its bubble is confirmed.
             # Its durable sent_ack must reach the backend before C2 is allowed
             # to scan that bubble and classify its source.
@@ -2257,15 +4933,19 @@ class TaskRunner:
                 binding,
                 reason="c2_loop",
             ):
+                # A settled image fact may still be waiting for its backend
+                # acknowledgement after a crash.  This is durable recovery,
+                # not a new scan: only the oldest affected conversation may
+                # proceed, and _recover_pending_image_transaction performs
+                # its own authorization and identity checks before any UI
+                # action.  Do not leave the listener waiting forever on the
+                # very barrier that this recovery is responsible for clearing.
                 if (
                     self._pending_image_recovery_conversation_ids()
-                    and self._ui_actions_enabled(binding)
+                    and self._can_start_new_flow(binding)
                     and self._wechat_ready_for_c2()
                 ):
                     self._recover_pending_image_transaction(binding)
-                self.stop_event.wait(1.0)
-                continue
-            if not self._ui_actions_enabled(binding):
                 self.stop_event.wait(1.0)
                 continue
             if not self._wechat_ready_for_c2():
@@ -2297,10 +4977,155 @@ class TaskRunner:
         if not pending_conversations:
             return True
         conversation_id = pending_conversations[0]
+        recovery_target = WechatReadTarget(
+            conversation_id=conversation_id,
+            rpa_session_key="",
+            display_name="",
+        )
+        identity_errors = self._recover_physical_action_journals(
+            recovery_target,
+            image_identity_commit_only=True,
+        )
+        if identity_errors:
+            first_error = identity_errors[0]
+            prepare_evidence = (
+                first_error.get("prepare_evidence")
+                if isinstance(
+                    first_error.get("prepare_evidence"), dict
+                )
+                else {}
+            )
+            authorization_revision = str(
+                prepare_evidence.get("authorization_revision") or ""
+            ).strip()
+            remark_code = str(
+                prepare_evidence.get("remark_code") or ""
+            ).strip()
+            if not authorization_revision or not remark_code:
+                append_log(
+                    "ERROR",
+                    "c2_image_identity_recovery_authorization_missing",
+                    "图片身份失败恢复缺少原授权摘要；保留 Journal，禁止伪造正式图片事实。",
+                    error_code="C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    metadata={"conversation_id": conversation_id},
+                )
+                return False
+            gate_target = WechatReadTarget(
+                conversation_id=conversation_id,
+                rpa_session_key=str(
+                    prepare_evidence.get("rpa_session_key") or ""
+                ),
+                display_name=str(
+                    prepare_evidence.get("display_name") or remark_code
+                ),
+                remark_code=remark_code,
+                read_reason=str(
+                    prepare_evidence.get("read_reason") or ""
+                ),
+                authorization_revision=authorization_revision,
+            )
+            reported = self._report_identity_failure_gate(
+                binding=binding,
+                target=gate_target,
+                read_run_id=str(
+                    first_error.get("origin_read_run_id") or ""
+                ).strip()
+                or f"recovery-{uuid.uuid4()}",
+                error_code="C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                identity_errors=identity_errors,
+                authoritative_frame_source=(
+                    "action_journal_recovery"
+                ),
+                ui_frame_invalidated=False,
+            )
+            if reported:
+                for item in identity_errors:
+                    journal_path = str(
+                        item.get("action_journal_path") or ""
+                    ).strip()
+                    if journal_path:
+                        remove_action_journal(journal_path)
+            # Even when transport is waiting, the idempotent gate Outbox now
+            # owns delivery.  No uncommitted image fact may keep the global
+            # media recovery barrier closed or force another UI action.
+            return True
+        journal_entries = list_action_journals(
+            conversation_id=conversation_id,
+            action_kinds=("image",),
+        )
+        transaction_id = next(
+            (
+                str(payload.get("transaction_id") or "").strip()
+                for _path, payload in journal_entries
+                if str(payload.get("transaction_id") or "").strip()
+            ),
+            "",
+        )
+        journal_outcomes = self._physical_action_journal_outcomes(
+            journal_entries
+        )
+        missing_ledger_outcomes = [
+            outcome
+            for outcome in journal_outcomes
+            if not load_c2_ledger_entry(
+                conversation_id,
+                str(outcome.get("source_message_key") or "").strip(),
+            )
+        ]
+        if missing_ledger_outcomes:
+            self._persist_c2_flow_outcomes(
+                recovery_target,
+                missing_ledger_outcomes,
+            )
+        entries = list_c2_ledger_entries(
+            conversation_id,
+            message_type="image",
+            ingest_state="waiting",
+        )
+        source_keys = sorted(
+            {
+                str(entry.get("source_message_key") or "").strip()
+                for entry in entries
+                if str(entry.get("source_message_key") or "").strip()
+            }
+        )
+        if not source_keys:
+            return False
+        source_digest = hashlib.sha256(
+            "\n".join(source_keys).encode("utf-8")
+        ).hexdigest()
+        if not transaction_id:
+            transaction_id = f"media-fact-{source_digest[:32]}"
+        original_revision = next(
+            (
+                str(
+                    (
+                        entry.get("result")
+                        if isinstance(entry.get("result"), dict)
+                        else {}
+                    ).get("authorization_revision")
+                    or ""
+                ).strip()
+                for entry in entries
+                if str(
+                    (
+                        entry.get("result")
+                        if isinstance(entry.get("result"), dict)
+                        else {}
+                    ).get("authorization_revision")
+                    or ""
+                ).strip()
+            ),
+            f"recovery-{source_digest[:16]}",
+        )
         try:
             authorization = self.api.get_wechat_read_authorization(
                 binding,
                 conversation_id,
+                recovery_transaction_id=transaction_id,
+                action_kind="image",
+                source_message_key_digest=source_digest,
+                original_authorization_revision=original_revision,
             )
         except Exception as exc:
             append_log(
@@ -2317,46 +5142,20 @@ class TaskRunner:
         recovery_decision = str(
             authorization.get("recovery_decision") or ""
         ).strip()
-        if recovery_decision == "target_terminated":
-            try:
-                terminated_ledger_count = (
-                    terminate_waiting_c2_image_ledger(
-                        conversation_id,
-                        reason="backend_confirmed_target_terminated",
-                    )
-                )
-                journal_count = 0
-                for path, _payload in list_action_journals(
+        if recovery_decision == "settle_without_ui":
+            return bool(
+                self._settle_invalid_image_facts_without_ui(
+                    binding=binding,
                     conversation_id=conversation_id,
-                    action_kinds=("image",),
-                ):
-                    remove_action_journal(path)
-                    journal_count += 1
-            except (OSError, ValueError) as exc:
-                append_log(
-                    "WARN",
-                    "c2_image_fact_recovery_termination_failed",
-                    "后端已确认目标结束，但本地恢复事务尚未安全终结，继续保持门禁。",
-                    error_code="C2_IMAGE_FACT_RECOVERY_TERMINATION_FAILED",
-                    metadata={
-                        "conversation_id": conversation_id,
-                        "error_type": type(exc).__name__,
-                    },
+                    authorization=authorization,
+                    entries=entries,
+                    source_keys=source_keys,
+                    transaction_id=transaction_id,
+                    source_digest=source_digest,
+                    original_revision=original_revision,
                 )
-                return False
-            append_log(
-                "INFO",
-                "c2_image_fact_recovery_target_terminated",
-                "后端确认原会话永久结束，已终结该会话的本地图片恢复事务。",
-                error_code="C2_IMAGE_FACT_RECOVERY_TARGET_TERMINATED",
-                metadata={
-                    "conversation_id": conversation_id,
-                    "terminated_ledger_count": terminated_ledger_count,
-                    "removed_journal_count": journal_count,
-                },
             )
-            return True
-        if recovery_decision != "allowed":
+        if recovery_decision != "resume_current_target":
             append_log(
                 "WARN",
                 "c2_image_fact_recovery_waiting_authorization",
@@ -2458,13 +5257,316 @@ class TaskRunner:
         )
         return recovered
 
+    def _settle_invalid_image_facts_without_ui(
+        self,
+        *,
+        binding: Binding,
+        conversation_id: str,
+        authorization: dict[str, Any],
+        entries: list[dict[str, Any]],
+        source_keys: list[str],
+        transaction_id: str,
+        source_digest: str,
+        original_revision: str,
+    ) -> bool:
+        """Report deterministic invalid-image facts without reopening WeChat.
+
+        Older clients could leave ``C2_IMAGE_SOURCE_INVALID`` in the waiting
+        ledger after a text menu or non-bitmap clipboard result.  Those facts
+        are already terminal: reopening the chat cannot improve them and can
+        starve every other target.  Recovery therefore rebuilds the original
+        failed message observations and waits for per-message backend
+        confirmation without repeating any WeChat or Vision action.
+        """
+
+        recovery_observations: list[dict[str, Any]] = []
+        for entry in entries:
+            result = (
+                dict(entry.get("result") or {})
+                if isinstance(entry.get("result"), dict)
+                else {}
+            )
+            replayable = (
+                result.get("replayable_observation")
+                if isinstance(result.get("replayable_observation"), dict)
+                else {}
+            )
+            transaction = (
+                result.get("transaction")
+                if isinstance(result.get("transaction"), dict)
+                else {}
+            )
+            error_code = str(
+                result.get("error_code")
+                or result.get("reason")
+                or replayable.get("error_code")
+                or ""
+            ).strip()
+            if (
+                str(entry.get("terminal_state") or "")
+                not in {"completed", "failed"}
+                or not replayable
+            ):
+                return False
+            source_key = str(
+                entry.get("source_message_key") or ""
+            ).strip()
+            if source_key:
+                restored = dict(replayable)
+                restored_source = (
+                    dict(restored.get("source_message"))
+                    if isinstance(restored.get("source_message"), dict)
+                    else {}
+                )
+                restored["source_message"] = {
+                    **restored_source,
+                    "source_message_key": source_key,
+                }
+                reason_detail = str(
+                    restored.get("reason_detail")
+                    or result.get("reason_detail")
+                    or transaction.get("status")
+                    or error_code
+                ).strip()
+                if str(entry.get("terminal_state") or "") == "failed":
+                    restored["error_code"] = error_code
+                    restored["reason_detail"] = reason_detail
+                sender_role = str(
+                    restored.get("sender_role")
+                    or restored_source.get("sender_role")
+                    or ""
+                ).strip().lower()
+                if sender_role in {"customer", "self"}:
+                    recovery_observations.append(restored)
+                else:
+                    append_log(
+                        "WARN",
+                        "c2_fact_settlement_sender_identity_untrusted",
+                        "恢复事实的发送方身份无法证明；保留本地事实并等待后端可安全终结。",
+                        error_code="MESSAGE_IDENTITY_UNCONFIRMED",
+                        metadata={
+                            "conversation_id": conversation_id,
+                            "source_message_key": source_key,
+                        },
+                    )
+                    return False
+        settlement_mode = str(
+            authorization.get("settlement_mode") or ""
+        ).strip()
+        target_payload = authorization.get("target")
+        target = (
+            WechatReadTarget.from_api(target_payload)
+            if isinstance(target_payload, dict)
+            else None
+        )
+        if settlement_mode == "fact_only" and target is None:
+            return False
+        if target is None:
+            target = WechatReadTarget(
+                conversation_id=conversation_id,
+                rpa_session_key="",
+                display_name="",
+                remark_code="RECOVERY",
+                read_reason="fact_settlement",
+                authorization_revision=original_revision,
+            )
+        origin_read_run_ids = {
+            str(entry.get("origin_read_run_id") or "").strip()
+            for entry in entries
+            if str(entry.get("origin_read_run_id") or "").strip()
+        }
+        if len(origin_read_run_ids) != 1:
+            append_log(
+                "ERROR",
+                "c2_fact_settlement_origin_read_run_invalid",
+                "恢复事实缺少唯一原读取轮次；保持等待且不重建 Outbox。",
+                error_code="C2_FACT_ORIGIN_READ_RUN_ID_INVALID",
+                metadata={"conversation_id": conversation_id},
+            )
+            return False
+        origin_read_run_id = next(iter(origin_read_run_ids))
+        recovery_pairs: list[dict[str, Any]] = []
+        for index, observation in enumerate(recovery_observations):
+            stable_id = str(
+                observation.get("_worker_stable_id") or ""
+            ).strip()
+            observation_id = str(
+                observation.get("observation_id") or ""
+            ).strip()
+            if not stable_id or not observation_id:
+                append_log(
+                    "ERROR",
+                    "c2_action_journal_recovery_identity_missing",
+                    "ActionJournal 恢复事实缺少已提交的统一序列身份；保持等待且不读取微信。",
+                    error_code="MESSAGE_SEQUENCE_IDENTITY_MISSING",
+                    metadata={
+                        "conversation_id": conversation_id,
+                        "source_message_keys": source_keys,
+                    },
+                )
+                return False
+            recovery_pairs.append(
+                {
+                    "identity_state": "committed",
+                    "worker_stable_id": stable_id,
+                    "pre_observation_id": observation_id,
+                    "post_observation_id": observation_id,
+                    "pre_index": index,
+                    "post_index": index,
+                    "match_basis": (
+                        "action_journal_committed_identity"
+                    ),
+                }
+            )
+        recovery_alignment_evidence = {
+            "pre_sequence_source": "action_frame",
+            "pre_frame_id": f"action-journal-terminal:{source_digest}",
+            "post_frame_id": (
+                f"action-journal-recovery:{transaction_id}"
+            ),
+            "alignment_status": "unique",
+            "candidate_alignment_count": 1,
+            "matched_pairs": recovery_pairs,
+            "old_tail_fully_consumed": True,
+            "new_suffix_observation_ids": [],
+        }
+        payload = build_message_ingest_payload(
+            target,
+            {
+                "observation_schema_version": 3,
+                "authoritative_frame_source": "action_journal_recovery",
+                "ui_frame_invalidated": False,
+                "adapter": "local_failed_image_recovery",
+                "state": "failed_image_fact_recovery",
+                "sidecar_run_id": "",
+                "observations": (
+                    recovery_observations
+                    if settlement_mode == "fact_only"
+                    else []
+                ),
+                "flow_gate_errors": [],
+                "flow_gate_details": [],
+                "sequence_alignment_evidence": (
+                    recovery_alignment_evidence
+                ),
+            },
+            read_run_id=origin_read_run_id,
+        )
+        payload_source_keys = sorted(
+            str(item.get("source_message_key") or "").strip()
+            for item in (payload.get("messages") or [])
+            if isinstance(item, dict)
+            and str(item.get("source_message_key") or "").strip()
+        )
+        if (
+            settlement_mode == "fact_only"
+            and payload_source_keys != source_keys
+        ):
+            append_log(
+                "ERROR",
+                "c2_invalid_image_recovery_identity_mismatch",
+                "失败图片恢复后的消息身份与本地账本不一致；保持等待且不操作微信。",
+                error_code="MESSAGE_SOURCE_IDENTITY_MISMATCH",
+                metadata={
+                    "conversation_id": conversation_id,
+                    "remark_code": target.remark_code,
+                    "ledger_source_keys": source_keys,
+                    "payload_source_keys": payload_source_keys,
+                },
+            )
+            return False
+        payload_evidence = dict(payload.get("evidence") or {})
+        payload_evidence.update(
+            {
+                "recovery_transaction_id": transaction_id,
+                "action_kind": "image",
+                "source_message_key_digest": source_digest,
+                "settlement_mode": settlement_mode,
+                "settlement_source_message_keys": source_keys,
+                "recovery_requires_per_message_confirmation": True,
+                "wechat_reopened": False,
+                "clipboard_repeated": False,
+                "vision_repeated": False,
+            }
+        )
+        payload["evidence"] = payload_evidence
+        payload["authorization_scope"] = "fact_settlement"
+        payload["authorization_revision"] = original_revision
+        delivery = self._submit_c2_outbox_payload(
+            binding=binding,
+            payload=payload,
+            operation="invalid_image_failure_gate",
+        )
+        if not delivery.get("ok"):
+            append_log(
+                "WARN",
+                "c2_invalid_image_failure_gate_waiting",
+                "无效图片失败事实尚未得到后端确认；仅重传本地事实，不重新打开微信。",
+                error_code=str(delivery.get("error_code") or ""),
+                metadata={
+                    "conversation_id": conversation_id,
+                    "remark_code": target.remark_code,
+                    "source_message_keys": source_keys,
+                },
+            )
+            return False
+        remaining_source_keys = {
+            str(entry.get("source_message_key") or "").strip()
+            for entry in list_c2_ledger_entries(
+                target.conversation_id,
+                message_type="image",
+                ingest_state="waiting",
+            )
+        }
+        unconfirmed_source_keys = sorted(
+            source_key
+            for source_key in source_keys
+            if source_key in remaining_source_keys
+        )
+        if unconfirmed_source_keys:
+            append_log(
+                "WARN",
+                "c2_invalid_image_recovery_unconfirmed",
+                "后端未逐条确认全部失败图片事实；未确认记录继续等待且不操作微信。",
+                error_code="C2_IMAGE_FACT_RECOVERY_PENDING",
+                metadata={
+                    "conversation_id": target.conversation_id,
+                    "remark_code": target.remark_code,
+                    "unconfirmed_source_keys": unconfirmed_source_keys,
+                },
+            )
+            return False
+        removed_journal_count = 0
+        for path, _payload in list_action_journals(
+            conversation_id=conversation_id,
+            action_kinds=("image",),
+        ):
+            remove_action_journal(path)
+            removed_journal_count += 1
+        append_log(
+            "WARN",
+            "c2_invalid_image_failure_gate_reported",
+            "无效图片事实已由后端逐条确认；本地等待和全局门禁已释放。",
+            error_code="C2_IMAGE_SOURCE_INVALID",
+            metadata={
+                "conversation_id": conversation_id,
+                "remark_code": target.remark_code,
+                "source_message_keys": source_keys,
+                "removed_journal_count": removed_journal_count,
+                "wechat_reopened": False,
+                "vision_repeated": False,
+            },
+        )
+        return True
+
     def _c2_dependencies_ready(self) -> bool:
         return all(
             hasattr(obj, name)
             for obj, name in (
                 (self.bridge, "list_sessions"),
                 (self.bridge, "get_messages"),
-                (self.bridge, "voice_transcribe"),
+                (self.bridge, "prepare_voice_action"),
+                (self.bridge, "execute_voice_action"),
                 (self.api, "post_wechat_session_scan_result"),
                 (self.api, "get_wechat_read_targets"),
                 (self.api, "post_wechat_messages_ingest"),
@@ -2625,6 +5727,21 @@ class TaskRunner:
                         session[target_key] = raw.get(source_key)
                 if not isinstance(session.get("row_fingerprint"), dict) and raw.get("row_fingerprint"):
                     session["row_fingerprint"] = raw.get("row_fingerprint")
+                for authoritative_key in (
+                    "c2_conversation_type",
+                    "c2_conversation_admission",
+                    "c2_remark_code_candidates",
+                    "visible_frame_reuse_evidence",
+                ):
+                    if raw.get(authoritative_key) not in (None, "", {}):
+                        value = raw.get(authoritative_key)
+                        session[authoritative_key] = (
+                            dict(value)
+                            if isinstance(value, dict)
+                            else list(value)
+                            if isinstance(value, list)
+                            else value
+                        )
                 if session.get("center_y") is None:
                     row_fingerprint = session.get("row_fingerprint")
                     if isinstance(row_fingerprint, dict):
@@ -2673,7 +5790,20 @@ class TaskRunner:
             "row_fingerprint": row_fingerprint,
             "confidence": session.get("confidence") if session.get("confidence") is not None else session.get("ocr_confidence"),
             "preview": session.get("preview") or session.get("content") or session.get("last_message_preview"),
+            "c2_conversation_type": session.get("c2_conversation_type"),
+            "c2_conversation_admission": session.get(
+                "c2_conversation_admission"
+            ),
+            "c2_remark_code_candidates": session.get(
+                "c2_remark_code_candidates"
+            ),
         }
+        if CONFIG.c2_locate_frame_reuse_enabled:
+            reuse_evidence = session.get("visible_frame_reuse_evidence")
+            if isinstance(reuse_evidence, dict) and reuse_evidence:
+                candidate["visible_frame_reuse_evidence"] = dict(
+                    reuse_evidence
+                )
         for key in ("center_y", "left", "right", "top", "bottom"):
             value = session.get(key)
             if value is None:
@@ -2757,7 +5887,7 @@ class TaskRunner:
             return None
 
     def _run_c2_scan_round(self, binding: Binding, *, reason: str) -> None:
-        if not self._ui_actions_enabled(binding):
+        if not self._can_start_new_flow(binding):
             return
         if not self._worker_transaction_barrier_ready(
             binding,
@@ -2766,7 +5896,7 @@ class TaskRunner:
             return
         self.c2_round_processed_conversation_ids = set()
         self._scan_wechat_sessions(binding, reason=reason)
-        if not self._ui_actions_enabled(binding):
+        if not self._can_start_new_flow(binding):
             return
         targets = self._fetch_read_targets(binding)
         allowed_keys = {self._target_dedupe_key(target) for target in targets}
@@ -2775,7 +5905,7 @@ class TaskRunner:
         self._read_state_target_queue(binding, targets=targets)
 
     def _scan_wechat_sessions(self, binding: Binding, *, reason: str = "scheduled") -> None:
-        if not self._ui_actions_enabled(binding):
+        if not self._can_start_new_flow(binding):
             return
         if self._high_priority_active():
             self.c2_stats["last_error"] = "C2_SCAN_SKIPPED_BY_HIGH_PRIORITY_ACTION"
@@ -2783,9 +5913,12 @@ class TaskRunner:
             return
         owner = f"{binding.worker_id}:{binding.client_instance_id}:session_scan:first_screen"
         lease: UiLockLease | None = None
+        sidecar_scan_duration_ms: int | None = None
+        scan_process_started = False
+        scan_terminal_emitted = False
         try:
             with self.task_lock:
-                if not self._ui_actions_enabled(binding):
+                if not self._can_start_new_flow(binding):
                     return
                 if not self._worker_transaction_barrier_ready(
                     binding,
@@ -2814,28 +5947,144 @@ class TaskRunner:
                 lease.start_auto_renew()
                 self.current_ui_lock = lease
             self.current_step = "first_screen_session_scan"
-            if not self._ui_actions_enabled(binding):
+            scan_process_started = True
+            if not self._can_start_new_flow(binding):
                 return
             if self._high_priority_active():
                 self.c2_stats["last_error"] = "C2_SCAN_SKIPPED_BY_HIGH_PRIORITY_ACTION"
                 append_log("INFO", "c2_session_scan_skipped", "C2 第一屏扫描拿锁后发现高优先级动作，已跳过。", error_code="C2_SCAN_SKIPPED_BY_HIGH_PRIORITY_ACTION", metadata={"reason": reason})
                 return
-            sidecar_payload = self.bridge.list_sessions(
-                cancel_check=lambda: not self._ui_actions_enabled(binding)
-            )
-            if not self._ui_actions_enabled(binding):
+            sidecar_scan_started_at = time.perf_counter()
+            try:
+                sidecar_payload = self.bridge.list_sessions(
+                    cancel_check=lambda: not self._can_start_new_flow(binding)
+                )
+            finally:
+                sidecar_scan_duration_ms = int(
+                    round(
+                        (time.perf_counter() - sidecar_scan_started_at) * 1000
+                    )
+                )
+            if not self._can_start_new_flow(binding):
                 return
             payload = build_scan_result_payload(sidecar_payload)
+            admission_evidence = (
+                (payload.get("evidence") or {}).get("c2_conversation_admission")
+                if isinstance(payload.get("evidence"), dict)
+                else {}
+            )
+            contract_rejected_count = int(
+                (admission_evidence or {}).get("contract_rejected_count") or 0
+            )
+            if contract_rejected_count:
+                append_log(
+                    "WARN",
+                    "c2_sidecar_identity_contract_rejected",
+                    "OmniAuto 会话身份结论字段缺失或互相矛盾，Worker 已拒绝该候选且未重新解析标题。",
+                    error_code="C2_SIDECAR_IDENTITY_CONTRACT_INVALID",
+                    metadata={
+                        "rejected_count": contract_rejected_count,
+                        "rejections": (admission_evidence or {}).get(
+                            "contract_rejections"
+                        )
+                        or [],
+                    },
+                )
             review_path = self._write_c2_sessions_review(reason=reason, sidecar_payload=sidecar_payload, scan_payload=payload)
             raw_sessions = sidecar_payload.get("sessions") if isinstance(sidecar_payload.get("sessions"), list) else []
-            self.c2_last_visible_sessions = [
-                item
-                for item in self._visible_sessions_with_click_geometry(payload.get("sessions") or [], raw_sessions)
-                if isinstance(item, dict)
-            ]
+            reuse_evidence = (
+                sidecar_payload.get("visible_frame_reuse_evidence")
+                if CONFIG.c2_locate_frame_reuse_enabled
+                and isinstance(
+                    sidecar_payload.get("visible_frame_reuse_evidence"), dict
+                )
+                else {}
+            )
+            self.c2_last_visible_frame_reuse_evidence = dict(reuse_evidence)
+            self.c2_last_visible_sessions = []
+            for item in self._visible_sessions_with_click_geometry(
+                payload.get("sessions") or [], raw_sessions
+            ):
+                if not isinstance(item, dict):
+                    continue
+                session = dict(item)
+                self.c2_last_visible_sessions.append(session)
             self.c2_last_visible_sessions_monotonic = time.monotonic()
             self._remember_recent_visible_hits(self.c2_last_visible_sessions)
             result = self.api.post_wechat_session_scan_result(binding, payload)
+            scan_process_run_id = str(
+                (result or {}).get("process_run_id")
+                if isinstance(result, dict)
+                else ""
+            ).strip()
+            if scan_process_run_id:
+                enqueue_existing_duration(
+                    process_run_id=scan_process_run_id,
+                    conversation_id=None,
+                    stage_name="c2.scan",
+                    component="worker",
+                    execution_duration_ms=sidecar_scan_duration_ms,
+                    status=(
+                        "failed" if payload.get("scan_failed") else "succeeded"
+                    ),
+                    error_code=(
+                        str(payload.get("error_code") or "C2_SCAN_FAILED")
+                        if payload.get("scan_failed")
+                        else None
+                    ),
+                    trace_id=str(payload.get("scan_id") or "") or None,
+                    stage_run_id=str(
+                        uuid.uuid5(
+                            uuid.NAMESPACE_URL,
+                            f"chejin:c2.scan:{payload.get('scan_id')}",
+                        )
+                    ),
+                )
+                schedule_stage_event_upload(self.api, binding)
+            for binding_result in (
+                result.get("bindings")
+                if isinstance(result, dict)
+                and isinstance(result.get("bindings"), list)
+                else []
+            ):
+                if not isinstance(binding_result, dict):
+                    continue
+                server_allowed = bool(
+                    binding_result.get("can_ingest_messages")
+                )
+                append_log(
+                    "INFO" if server_allowed else "WARN",
+                    (
+                        "c2_scan_binding_server_authorized"
+                        if server_allowed
+                        else "c2_scan_binding_server_rejected"
+                    ),
+                    (
+                        "最新唯一扫描已由后端授权；Worker 未自行恢复暂停绑定。"
+                        if server_allowed
+                        else "最新扫描未获后端授权，Worker 不会点击该会话。"
+                    ),
+                    error_code=(
+                        str(binding_result.get("error_code") or "") or None
+                    ),
+                    metadata={
+                        "conversation_id": binding_result.get(
+                            "conversation_id"
+                        ),
+                        "remark_code": binding_result.get("remark_code"),
+                        "bind_status": binding_result.get("bind_status"),
+                        "listen_status": binding_result.get(
+                            "listen_status"
+                        ),
+                        "allow_listening": binding_result.get(
+                            "allow_listening"
+                        ),
+                        "recovery_state": binding_result.get(
+                            "recovery_state"
+                        ),
+                        "server_authorized": server_allowed,
+                    },
+                )
             self._enqueue_visible_hits(payload, result, sidecar_payload=sidecar_payload)
             self.c2_stats.update(
                 {
@@ -2846,6 +6095,14 @@ class TaskRunner:
                     "last_error": payload.get("error_code"),
                 }
             )
+            self._emit_runtime_process(
+                {
+                    "event": "scan_completed",
+                    "visible_hit_count": len(self.visible_hit_queue),
+                    "session_count": self.c2_stats["last_scan_sessions"],
+                }
+            )
+            scan_terminal_emitted = True
             append_log(
                 "INFO",
                 "c2_session_scan_reported",
@@ -2864,14 +6121,27 @@ class TaskRunner:
             )
         except UiLockError as exc:
             self.c2_stats["last_error"] = exc.code
+            self._emit_runtime_process(
+                {"event": "scan_failed", "error_code": exc.code}
+            )
+            scan_terminal_emitted = True
             append_log("WARN", "c2_session_scan_lock_skipped", str(exc), error_code=exc.code, metadata=exc.data)
         except Exception as exc:
             self.c2_stats["last_error"] = str(exc)
+            self._emit_runtime_process(
+                {
+                    "event": "scan_failed",
+                    "error_code": type(exc).__name__,
+                }
+            )
+            scan_terminal_emitted = True
             append_log("ERROR", "c2_session_scan_failed", str(exc))
             self.on_error(f"C2 会话扫描失败：{exc}")
         finally:
             if lease:
                 self._release_current_ui_lock(reason="session_scan_finished")
+            if scan_process_started and not scan_terminal_emitted:
+                self._emit_runtime_process({"event": "scan_cancelled"})
             self.current_step = None
 
     def _enqueue_visible_hits(self, payload: dict[str, Any], result: dict[str, Any] | None, *, sidecar_payload: dict[str, Any] | None = None) -> None:
@@ -2902,10 +6172,24 @@ class TaskRunner:
                     "read_reason": "visible_hit",
                     "visible_session_candidate": self._sidecar_visible_session_candidate(raw_session_by_key.get(visible_session_key or rpa_session_key) or session),
                     "visible_session_source": "first_screen_session_scan",
+                    "local_unread_hint": session.get("unread_hint") is True,
+                    "next_read_due_at": item.get("next_read_due_at"),
                 }
             )
             dedupe_key = self._target_dedupe_key(target)
             if not dedupe_key or dedupe_key in queued_keys or dedupe_key in self.c2_round_processed_conversation_ids:
+                continue
+            if self._c2_read_cooldown_remaining(dedupe_key) > 0:
+                continue
+            if (
+                self._c2_read_success_cooldown_remaining(dedupe_key) > 0
+                and not (
+                    isinstance(target.raw, dict)
+                    and target.raw.get("local_unread_hint") is True
+                )
+            ):
+                continue
+            if self._validate_read_target(target) == "C2_READ_TARGET_NOT_DUE":
                 continue
             self.visible_hit_queue.append(target)
             queued_keys.add(dedupe_key)
@@ -3004,6 +6288,8 @@ class TaskRunner:
             ),
             read_reason=authorized_target.read_reason,
             authorization_revision=authorized_target.authorization_revision,
+            process_run_id=authorized_target.process_run_id,
+            unread_generation=authorized_target.unread_generation,
             raw={
                 **authorized_target.raw,
                 **visible_target.raw,
@@ -3019,7 +6305,7 @@ class TaskRunner:
         *,
         authorized_targets: list[WechatReadTarget] | None = None,
     ) -> None:
-        if not self._ui_actions_enabled(binding):
+        if not self._can_start_new_flow(binding):
             return
         authorized_by_key = {
             self._target_dedupe_key(target): target
@@ -3033,7 +6319,7 @@ class TaskRunner:
                 append_log("INFO", "c2_visible_hit_queue_cleared", "后端 read-targets 为空，已清空本地第一屏命中读取队列。", metadata={"dropped_count": dropped})
             return
         while self.visible_hit_queue:
-            if not self._ui_actions_enabled(binding):
+            if not self._can_start_new_flow(binding):
                 return
             visible_target = self.visible_hit_queue.pop(0)
             dedupe_key = self._target_dedupe_key(visible_target)
@@ -3064,11 +6350,35 @@ class TaskRunner:
                 self.c2_round_processed_conversation_ids.add(dedupe_key)
                 continue
             target = self._authorized_visible_hit_target(visible_target, authorized_target)
+            if self._c2_identity_quarantine(target):
+                self.c2_round_processed_conversation_ids.add(dedupe_key)
+                continue
             if dedupe_key in self.c2_round_processed_conversation_ids:
                 continue
             cooldown_remaining = self._c2_read_cooldown_remaining(dedupe_key)
             if cooldown_remaining > 0:
-                append_log("INFO", "c2_visible_hit_cooldown", "C2 第一屏命中目标刚失败过，冷却期内跳过本轮重试。", metadata={"conversation_id": target.conversation_id, "remark_code": target.remark_code, "cooldown_remaining_seconds": round(cooldown_remaining, 1)})
+                append_log("INFO", "c2_visible_hit_cooldown", "C2 第一屏命中目标刚失败过，冷却期内跳过本轮重试。", metadata={"conversation_id": target.conversation_id, "remark_code": target.remark_code, "read_reason": target.read_reason, "next_read_due_at": target.raw.get("next_read_due_at") if isinstance(target.raw, dict) else None, "cooldown_remaining_seconds": round(cooldown_remaining, 1)})
+                continue
+            success_cooldown_remaining = self._c2_read_success_cooldown_remaining(
+                dedupe_key
+            )
+            if success_cooldown_remaining > 0 and not (
+                target.read_reason == "visible_unread"
+                and isinstance(target.raw, dict)
+                and target.raw.get("local_unread_hint") is True
+            ):
+                append_log(
+                    "INFO",
+                    "c2_visible_hit_success_cooldown",
+                    "C2 第一屏命中目标刚完成读取，成功冷却内不重复加入读取。",
+                    metadata={
+                        "conversation_id": target.conversation_id,
+                        "remark_code": target.remark_code,
+                        "cooldown_remaining_seconds": round(
+                            success_cooldown_remaining, 1
+                        ),
+                    },
+                )
                 continue
             validation_error = self._validate_read_target(target)
             if validation_error:
@@ -3078,7 +6388,7 @@ class TaskRunner:
                     "c2_visible_hit_skipped",
                     "C2 第一屏命中目标校验未通过，已跳过。",
                     error_code=validation_error,
-                    metadata={"conversation_id": target.conversation_id, "remark_code": target.remark_code, "read_reason": target.read_reason},
+                    metadata={"conversation_id": target.conversation_id, "remark_code": target.remark_code, "read_reason": target.read_reason, "next_read_due_at": target.raw.get("next_read_due_at") if isinstance(target.raw, dict) else None},
                 )
                 continue
             self.c2_round_processed_conversation_ids.add(dedupe_key)
@@ -3098,21 +6408,24 @@ class TaskRunner:
             return []
 
     def _read_state_target_queue(self, binding: Binding, *, targets: list[WechatReadTarget] | None = None) -> None:
-        if not self._ui_actions_enabled(binding):
+        if not self._can_start_new_flow(binding):
             return
         targets = self._fetch_read_targets(binding) if targets is None else list(targets)
         self.c2_read_allowlist_keys = {self._target_dedupe_key(target) for target in targets}
         self.c2_stats["last_state_target_count"] = len(targets)
         for target in targets:
-            if not self._ui_actions_enabled(binding):
+            if not self._can_start_new_flow(binding):
                 break
             dedupe_key = self._target_dedupe_key(target)
+            if self._c2_identity_quarantine(target):
+                self.c2_round_processed_conversation_ids.add(dedupe_key)
+                continue
             if dedupe_key in self.c2_round_processed_conversation_ids:
                 append_log("INFO", "c2_state_target_deduped", "状态机读取目标已在本轮第一屏命中读取中处理，跳过重复读取。", metadata={"conversation_id": target.conversation_id, "rpa_session_key": target.rpa_session_key, "remark_code": target.remark_code, "read_reason": target.read_reason})
                 continue
             cooldown_remaining = self._c2_read_cooldown_remaining(dedupe_key)
             if cooldown_remaining > 0:
-                append_log("INFO", "c2_state_target_cooldown", "C2 定向读取刚失败过，冷却期内跳过本轮重试。", metadata={"conversation_id": target.conversation_id, "remark_code": target.remark_code, "cooldown_remaining_seconds": round(cooldown_remaining, 1)})
+                append_log("INFO", "c2_state_target_cooldown", "C2 定向读取刚失败过，冷却期内跳过本轮重试。", metadata={"conversation_id": target.conversation_id, "remark_code": target.remark_code, "read_reason": target.read_reason, "next_read_due_at": target.raw.get("next_read_due_at") if isinstance(target.raw, dict) else None, "cooldown_remaining_seconds": round(cooldown_remaining, 1)})
                 continue
             success_cooldown_remaining = self._c2_read_success_cooldown_remaining(dedupe_key)
             if success_cooldown_remaining > 0:
@@ -3121,7 +6434,7 @@ class TaskRunner:
             validation_error = self._validate_read_target(target)
             if validation_error:
                 self.c2_stats["last_error"] = validation_error
-                append_log("WARN", "c2_read_target_skipped", "C2 读取目标校验未通过，已跳过。", error_code=validation_error, metadata={"conversation_id": target.conversation_id, "remark_code": target.remark_code, "read_reason": target.read_reason})
+                append_log("WARN", "c2_read_target_skipped", "C2 读取目标校验未通过，已跳过。", error_code=validation_error, metadata={"conversation_id": target.conversation_id, "remark_code": target.remark_code, "read_reason": target.read_reason, "next_read_due_at": target.raw.get("next_read_due_at") if isinstance(target.raw, dict) else None})
                 continue
             if self._high_priority_active():
                 append_log("INFO", "c2_message_read_interrupted", "C2 消息读取被高优先级微信动作中断。", error_code="SCAN_INTERRUPTED_BY_HIGH_PRIORITY_ACTION", metadata={"conversation_id": target.conversation_id})
@@ -3134,6 +6447,31 @@ class TaskRunner:
                 self._mark_c2_read_success_cooldown(dedupe_key)
             else:
                 self._mark_c2_read_failure_cooldown(dedupe_key, read_result.get("error_code"))
+
+    def _c2_identity_quarantine(
+        self,
+        target: WechatReadTarget,
+    ) -> dict[str, Any]:
+        state = load_c2_state(
+            f"identity_quarantine:{target.conversation_id}"
+        )
+        if not state or state.get("active") is not True:
+            return {}
+        append_log(
+            "WARN",
+            "c2_identity_quarantine_skipped",
+            "当前客户存在不可自动恢复的身份碰撞；仅隔离该客户，继续处理其他短码。",
+            error_code=str(
+                state.get("error_code")
+                or "MESSAGE_IDENTITY_COLLISION_NOT_REKEYABLE"
+            ),
+            metadata={
+                "conversation_id": target.conversation_id,
+                "remark_code": target.remark_code,
+                "outbox_id": state.get("outbox_id"),
+            },
+        )
+        return state
 
     def _visible_target_from_recent_scan(
         self,
@@ -3196,6 +6534,7 @@ class TaskRunner:
             ocr_confidence=session.get("ocr_confidence") if session.get("ocr_confidence") is not None else target.ocr_confidence,
             read_reason=target.read_reason,
             authorization_revision=target.authorization_revision,
+            unread_generation=target.unread_generation,
             raw={
                 **target.raw,
                 "visible_session_candidate": self._sidecar_visible_session_candidate(session),
@@ -3274,9 +6613,49 @@ class TaskRunner:
                 },
             )
             return False
-        return self._batch_authorization_allows_target(
+        allowed = self._batch_authorization_allows_target(
             {"authorization": authorization},
             target,
+        )
+        if allowed:
+            self._merge_read_authorization_checkpoint(target, authorization)
+        else:
+            append_log(
+                "INFO",
+                "c2_read_authorization_backed_off",
+                "后端当前未授权读取，未执行微信操作。",
+                metadata={
+                    "conversation_id": target.conversation_id,
+                    "read_reason": target.read_reason,
+                    "recovery_decision": authorization.get(
+                        "recovery_decision"
+                    ),
+                    "next_read_due_at": authorization.get(
+                        "next_read_due_at"
+                    ),
+                },
+            )
+        return allowed
+
+    @staticmethod
+    def _merge_read_authorization_checkpoint(
+        target: WechatReadTarget,
+        authorization: dict[str, Any],
+    ) -> None:
+        """Merge the latest backend-owned identity floor before a UI read."""
+
+        if not isinstance(target.raw, dict):
+            target.raw = {}
+        checkpoint = authorization.get("identity_checkpoint")
+        if isinstance(checkpoint, dict):
+            target.raw["identity_checkpoint"] = json.loads(
+                json.dumps(checkpoint, ensure_ascii=False, default=str)
+            )
+        target.raw["next_read_due_at"] = authorization.get(
+            "next_read_due_at"
+        )
+        target.raw["read_authorization_refreshed_at"] = (
+            datetime.now(timezone.utc).isoformat()
         )
 
     def _target_batch_continuation(
@@ -3287,6 +6666,56 @@ class TaskRunner:
             return {}
         value = target.raw.get("batch_continuation")
         return dict(value) if isinstance(value, dict) else {}
+
+    def _apply_ingest_batch_continuation_to_target(
+        self,
+        message_batch: dict[str, Any],
+        target: WechatReadTarget,
+    ) -> bool:
+        """Promote an active-read result to its batch-scoped continuation.
+
+        The backend consumes the original read authorization when ingest is
+        settled.  Brain waiting must therefore start with the continuation
+        returned by that same ingest response; otherwise the first polling
+        guard would incorrectly test the already-consumed active-read ticket.
+        """
+
+        continuation = (
+            message_batch.get("continuation")
+            if isinstance(message_batch.get("continuation"), dict)
+            else {}
+        )
+        batch_id = str(message_batch.get("batch_id") or "").strip()
+        continuation_batch_id = str(
+            continuation.get("batch_id") or ""
+        ).strip()
+        token = str(continuation.get("token") or "").strip()
+        revision = str(
+            continuation.get("authorization_revision") or ""
+        ).strip()
+        read_reason = str(continuation.get("read_reason") or "").strip()
+        expected_reason = str(target.read_reason or "").strip()
+        if isinstance(target.raw, dict):
+            expected_reason = str(
+                target.raw.get("authorization_read_reason")
+                or expected_reason
+            ).strip()
+        if (
+            not batch_id
+            or continuation_batch_id != batch_id
+            or not token
+            or revision != str(target.authorization_revision or "").strip()
+            or read_reason != expected_reason
+        ):
+            return False
+        if not isinstance(target.raw, dict):
+            target.raw = {}
+        target.raw["batch_continuation"] = {
+            "batch_id": batch_id,
+            "token": token,
+        }
+        target.raw["authorization_read_reason"] = read_reason
+        return True
 
     def _apply_batch_continuation_to_target(
         self,
@@ -3327,8 +6756,14 @@ class TaskRunner:
             target.authorization_revision = frozen_revision
         return True
 
-    def _backend_still_allows_read_target_for_voice(self, binding: Binding, target: WechatReadTarget) -> bool:
-        if not self._ui_actions_enabled(binding):
+    def _backend_still_allows_read_target_for_voice(
+        self,
+        binding: Binding,
+        target: WechatReadTarget,
+        *,
+        read_run_id: str,
+    ) -> bool:
+        if not self._can_continue_inflight_flow(read_run_id):
             return False
         if not self._backend_still_allows_read_target(binding, target):
             return False
@@ -3336,7 +6771,7 @@ class TaskRunner:
         if guard_seconds <= 0:
             return True
         self.stop_event.wait(guard_seconds)
-        if not self._ui_actions_enabled(binding):
+        if not self._can_continue_inflight_flow(read_run_id):
             self.c2_stats["last_error"] = "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS"
             append_log(
                 "INFO",
@@ -3442,10 +6877,26 @@ class TaskRunner:
             return "C2_TARGET_CONVERSATION_ID_MISSING"
         if not target.remark_code:
             return "C2_TARGET_REMARK_CODE_MISSING"
-        if str(target.remark_code).strip().upper() not in extract_remark_codes(target.remark_code):
+        if not is_formal_c2_remark_code(target.remark_code):
             return "C2_TARGET_REMARK_CODE_INVALID"
         if target.ocr_confidence is not None and target.ocr_confidence < CONFIG.c2_message_min_ocr_confidence:
             return "C2_TARGET_OCR_LOW_CONFIDENCE"
+        next_read_due_at = (
+            target.raw.get("next_read_due_at")
+            if isinstance(target.raw, dict)
+            else None
+        )
+        if next_read_due_at:
+            try:
+                due_at = datetime.fromisoformat(
+                    str(next_read_due_at).replace("Z", "+00:00")
+                )
+                if due_at.tzinfo is None:
+                    due_at = due_at.replace(tzinfo=timezone.utc)
+                if due_at > datetime.now(timezone.utc):
+                    return "C2_READ_TARGET_NOT_DUE"
+            except ValueError:
+                return "C2_READ_TARGET_DUE_AT_INVALID"
         return None
 
     def _c2_read_cooldown_remaining(self, dedupe_key: str) -> float:
@@ -3477,27 +6928,37 @@ class TaskRunner:
         append_log("INFO", "c2_read_success_cooldown_started", "C2 读取完成，已进入短冷却，避免服务端状态更新前重复读取同一目标。", metadata={"target_key": dedupe_key, "cooldown_seconds": cooldown})
 
     def _mark_ingest_ledger_confirmed(self, payload: dict[str, Any], result: dict[str, Any]) -> None:
-        accepted = {
-            str(item.get("source_message_key") or "").strip()
-            for item in (result.get("results") or [])
-            if isinstance(item, dict) and item.get("ingest_result") in {"ingested", "duplicated"}
-        }
-        if not result.get("results") and int(result.get("ignored_count") or 0) == 0:
-            accepted = {
-                str(item.get("source_message_key") or "").strip()
-                for item in (payload.get("messages") or [])
-                if isinstance(item, dict)
-            }
         evidence = (
             payload.get("evidence")
             if isinstance(payload.get("evidence"), dict)
             else {}
         )
-        accepted.update(
-            str(value).strip()
-            for value in (evidence.get("failed_voice_source_keys") or [])
-            if str(value).strip()
+        requires_per_message_confirmation = bool(
+            evidence.get("recovery_requires_per_message_confirmation")
         )
+        accepted = {
+            str(item.get("source_message_key") or "").strip()
+            for item in (result.get("results") or [])
+            if isinstance(item, dict)
+            and item.get("ingest_result")
+            in {"ingested", "duplicated", "technical_terminal"}
+        }
+        if (
+            not requires_per_message_confirmation
+            and not result.get("results")
+            and int(result.get("ignored_count") or 0) == 0
+        ):
+            accepted = {
+                str(item.get("source_message_key") or "").strip()
+                for item in (payload.get("messages") or [])
+                if isinstance(item, dict)
+            }
+        if not requires_per_message_confirmation:
+            accepted.update(
+                str(value).strip()
+                for value in (evidence.get("failed_voice_source_keys") or [])
+                if str(value).strip()
+            )
         mark_c2_ledger_ingested(
             str(payload.get("conversation_id") or ""),
             sorted(value for value in accepted if value),
@@ -3507,10 +6968,11 @@ class TaskRunner:
             for item in (result.get("results") or [])
             if isinstance(item, dict) and item.get("ingest_result") == "ignored"
         }
-        mark_c2_ledger_rejected(
-            str(payload.get("conversation_id") or ""),
-            sorted(value for value in rejected if value),
-        )
+        if not requires_per_message_confirmation:
+            mark_c2_ledger_rejected(
+                str(payload.get("conversation_id") or ""),
+                sorted(value for value in rejected if value),
+            )
 
     def _attempt_c2_outbox_delivery(
         self,
@@ -3533,12 +6995,124 @@ class TaskRunner:
             }
         mark_c2_outbox_attempt(outbox_id)
         try:
-            result = self.api.post_wechat_messages_ingest(binding, payload)
+            settlement_token: str | None = None
+            if str(payload.get("authorization_scope") or "") == "fact_settlement":
+                evidence = (
+                    payload.get("evidence")
+                    if isinstance(payload.get("evidence"), dict)
+                    else {}
+                )
+                authorization = self.api.get_wechat_read_authorization(
+                    binding,
+                    str(payload.get("conversation_id") or ""),
+                    recovery_transaction_id=str(
+                        evidence.get("recovery_transaction_id") or ""
+                    ),
+                    action_kind=str(evidence.get("action_kind") or ""),
+                    source_message_key_digest=str(
+                        evidence.get("source_message_key_digest") or ""
+                    ),
+                    original_authorization_revision=str(
+                        payload.get("authorization_revision") or ""
+                    ),
+                )
+                if (
+                    str(authorization.get("recovery_decision") or "")
+                    != "settle_without_ui"
+                    or str(authorization.get("settlement_mode") or "")
+                    != str(evidence.get("settlement_mode") or "")
+                ):
+                    raise ApiError(
+                        "C2_FACT_SETTLEMENT_RETRY_LATER",
+                        "后端尚未授权无界面事实结算",
+                        409,
+                    )
+                settlement_token = str(
+                    authorization.get("settlement_token") or ""
+                ).strip()
+                if not settlement_token:
+                    raise ApiError(
+                        "C2_SETTLEMENT_TOKEN_MISSING",
+                        "后端未返回事实结算凭据",
+                        409,
+                    )
+            process_run_id = load_process_run(
+                str(payload.get("read_run_id") or "")
+            )
+            ingest_kwargs: dict[str, Any] = {}
+            if settlement_token:
+                ingest_kwargs["settlement_token"] = settlement_token
+            if process_run_id:
+                ingest_kwargs["process_run_id"] = process_run_id
+            result = self.api.post_wechat_messages_ingest(
+                binding,
+                payload,
+                **ingest_kwargs,
+            )
         except Exception as exc:
             error_code = str(
                 exc.code if isinstance(exc, ApiError) else type(exc).__name__
             )
             recovery_action = classify_outbox_recovery(exc)
+            if recovery_action == "identity_quarantined":
+                conversation_id = str(
+                    payload.get("conversation_id") or ""
+                )
+                mark_c2_outbox_identity_quarantined(
+                    outbox_id,
+                    error_code,
+                )
+                save_c2_state(
+                    f"identity_quarantine:{conversation_id}",
+                    {
+                        "active": True,
+                        "error_code": error_code,
+                        "outbox_id": outbox_id,
+                        "conversation_id": conversation_id,
+                        "read_run_id": payload.get("read_run_id"),
+                        "source_message_keys": sorted(
+                            {
+                                str(item.get("source_message_key") or "")
+                                for item in (payload.get("messages") or [])
+                                if isinstance(item, dict)
+                                and str(item.get("source_message_key") or "")
+                            }
+                        ),
+                        "quarantined_at": self._utc_now_iso(),
+                    },
+                )
+                append_log(
+                    "ERROR",
+                    "c2_identity_collision_quarantined",
+                    "已提交消息事实被后端判定为不可安全接收；已原样保留 Outbox 并仅隔离当前客户，不改写事实、不再自动重试。",
+                    error_code=error_code,
+                    metadata={
+                        "outbox_id": outbox_id,
+                        "conversation_id": conversation_id,
+                        "backend_error_response": (
+                            redact_diagnostic(
+                                {
+                                    "code": exc.code,
+                                    "message": str(exc),
+                                    "status_code": exc.status_code,
+                                    "trace_id": exc.trace_id,
+                                    "data": exc.data,
+                                }
+                            )
+                            if isinstance(exc, ApiError)
+                            else None
+                        ),
+                    },
+                    force_incident=True,
+                )
+                return {
+                    "ok": False,
+                    "outbox_id": outbox_id,
+                    "error_code": error_code,
+                    "exception": exc,
+                    "recovery_action": "identity_quarantined",
+                    "conversation_quarantined": True,
+                }
             next_state = transition_outbox_state(
                 current_state=str(outbox_entry.get("status") or "waiting"),
                 event=recovery_action,
@@ -3547,60 +7121,6 @@ class TaskRunner:
                     int(outbox_entry.get("refresh_attempt_count") or 0) + 1
                 ),
             )
-            if next_state == "rebuild_pending":
-                transition_c2_outbox(
-                    outbox_id,
-                    status="rebuild_pending",
-                    error=error_code,
-                )
-                try:
-                    rebuilt = rebuild_invalid_media_as_failed(
-                        payload,
-                        error_code=error_code,
-                        source_message_key=str(
-                            exc.data.get("source_message_key") or ""
-                        )
-                        if isinstance(exc, ApiError)
-                        and isinstance(exc.data, dict)
-                        else "",
-                    )
-                    rebuild_c2_outbox_payload(outbox_id, rebuilt)
-                except Exception as rebuild_exc:
-                    transition_c2_outbox(
-                        outbox_id,
-                        status="capability_paused",
-                        error=str(
-                            rebuild_exc
-                            if isinstance(rebuild_exc, ValueError)
-                            else type(rebuild_exc).__name__
-                        ),
-                    )
-                    return {
-                        "ok": False,
-                        "outbox_id": outbox_id,
-                        "error_code": error_code,
-                        "exception": exc,
-                        "capability_paused": True,
-                        "recovery_action": "capability_paused",
-                    }
-                append_log(
-                    "WARN",
-                    "c2_outbox_rebuilt_failed_media_fact",
-                    "后端拒绝了不完整媒体结果；已保留同一消息身份并重建为明确失败事实，等待重新入库。",
-                    error_code=error_code,
-                    metadata={
-                        "outbox_id": outbox_id,
-                        "conversation_id": payload.get("conversation_id"),
-                    },
-                )
-                return {
-                    "ok": False,
-                    "outbox_id": outbox_id,
-                    "error_code": error_code,
-                    "exception": exc,
-                    "recovery_action": "rebuild_failed_facts",
-                    "rebuild_prepared": True,
-                }
             if next_state == "split_pending":
                 transition_c2_outbox(
                     outbox_id,
@@ -3657,57 +7177,28 @@ class TaskRunner:
                 "target_terminated",
                 "conversation_terminated",
             }:
-                terminal_confirmed = bool(
-                    isinstance(exc, ApiError)
-                    and isinstance(exc.data, dict)
-                    and exc.data.get("terminal_confirmed") is True
-                )
-                if not terminal_confirmed:
-                    mark_c2_outbox_capability_paused(
-                        outbox_id,
-                        f"{error_code}:TERMINAL_NOT_CONFIRMED",
-                    )
-                    return {
-                        "ok": False,
-                        "outbox_id": outbox_id,
-                        "error_code": error_code,
-                        "exception": exc,
-                        "capability_paused": True,
-                        "recovery_action": "capability_paused",
-                    }
-                transition_c2_outbox(
+                mark_c2_outbox_capability_paused(
                     outbox_id,
-                    status=next_state,
-                    error=error_code,
-                )
-                source_keys = [
-                    str(item.get("source_message_key") or "").strip()
-                    for item in (payload.get("messages") or [])
-                    if isinstance(item, dict)
-                    and str(item.get("source_message_key") or "").strip()
-                ]
-                mark_c2_ledger_rejected(
-                    str(payload.get("conversation_id") or ""),
-                    source_keys,
+                    f"{error_code}:FACT_SETTLEMENT_REQUIRED",
                 )
                 append_log(
-                    "ERROR",
-                    "c2_outbox_backend_terminal",
-                    "后端已确认该目标或会话不能继续自动处理；旧 Outbox 已终结，不再原样重试。",
+                    "WARN",
+                    "c2_outbox_fact_settlement_required",
+                    "当前读取授权已终止，但已形成事实仍须走无界面结算；本地记录继续保留。",
                     error_code=error_code,
                     metadata={
                         "outbox_id": outbox_id,
                         "conversation_id": payload.get("conversation_id"),
-                        "terminal_state": next_state,
+                        "requested_recovery_action": recovery_action,
                     },
                 )
                 return {
                     "ok": False,
-                    "resolved": True,
                     "outbox_id": outbox_id,
                     "error_code": error_code,
                     "exception": exc,
-                    "recovery_action": recovery_action,
+                    "capability_paused": True,
+                    "recovery_action": "capability_paused",
                 }
             if next_state == "capability_paused":
                 mark_c2_outbox_capability_paused(
@@ -3881,11 +7372,15 @@ class TaskRunner:
             attempt_count=0,
             refresh_attempt_count=0,
         )
-        refresh_c2_outbox_payload(
-            outbox_id,
-            refreshed,
-            next_status=refreshed_state,
-        )
+        try:
+            refresh_c2_outbox_payload(
+                outbox_id,
+                refreshed,
+                next_status=refreshed_state,
+            )
+        except ValueError as exc:
+            set_c2_outbox_error(outbox_id, str(exc))
+            return False
         append_log(
             "INFO",
             "c2_outbox_authorization_refreshed",
@@ -3908,10 +7403,34 @@ class TaskRunner:
         operation: str,
     ) -> dict[str, Any]:
         with self.c2_outbox_lock:
-            outbox_id = enqueue_c2_outbox(payload)
+            durable_payload = copy.deepcopy(payload)
+            message_source_keys = {
+                str(item.get("source_message_key") or "").strip()
+                for item in (durable_payload.get("messages") or [])
+                if isinstance(item, dict)
+                and str(item.get("source_message_key") or "").strip()
+            }
+            durable_evidence = (
+                durable_payload.get("evidence")
+                if isinstance(durable_payload.get("evidence"), dict)
+                else {}
+            )
+            for slot in durable_evidence.get("slot_ledger_states") or []:
+                if (
+                    isinstance(slot, dict)
+                    and str(slot.get("source_message_key") or "").strip()
+                    in message_source_keys
+                    and str(slot.get("delivery_state") or "")
+                    != "backend_confirmed"
+                ):
+                    slot["delivery_state"] = "outbox_waiting"
+                    if slot.get("fact_scope") == "current_read_run":
+                        slot["ledger_state"] = "OUTBOX_WAITING"
+            durable_payload["evidence"] = durable_evidence
+            outbox_id = enqueue_c2_outbox(durable_payload)
             outbox_items = self._prepare_persisted_c2_outbox(
                 outbox_id=outbox_id,
-                payload=payload,
+                payload=durable_payload,
             )
             if outbox_items is None:
                 return {
@@ -3942,9 +7461,11 @@ class TaskRunner:
                     "超大消息批次的全部分片已按原画面顺序确认入库。",
                     metadata={
                         "conversation_id": payload.get("conversation_id"),
-                        "read_run_id": payload.get("read_run_id"),
+                        "read_run_id": durable_payload.get("read_run_id"),
                         "partition_count": len(outbox_items),
-                        "original_bytes": encoded_payload_size(payload),
+                        "original_bytes": encoded_payload_size(
+                            durable_payload
+                        ),
                     },
                 )
             return final_delivery
@@ -4067,7 +7588,6 @@ class TaskRunner:
                     delivery.get("recovery_action")
                 )
                 if recovery_action in {
-                    "rebuild_failed_facts",
                     "split_and_retry",
                 }:
                     return False
@@ -4099,7 +7619,9 @@ class TaskRunner:
                         },
                     )
                     return False
-                if recovery_action == "refresh_and_rebuild":
+                if recovery_action in {
+                    "refresh_and_rebuild",
+                }:
                     append_log(
                         "INFO",
                         "c2_outbox_refresh_waiting",
@@ -4167,12 +7689,34 @@ class TaskRunner:
         filtered = dict(payload)
         messages: list[dict[str, Any]] = []
         removed_observation_ids: set[str] = set()
+        evidence = (
+            dict(payload.get("evidence"))
+            if isinstance(payload.get("evidence"), dict)
+            else {}
+        )
+        slot_states = {
+            str(item.get("source_message_key") or "").strip(): item
+            for item in (evidence.get("slot_ledger_states") or [])
+            if isinstance(item, dict)
+            and str(item.get("source_message_key") or "").strip()
+        }
         for item in payload.get("messages") or []:
             if not isinstance(item, dict):
                 continue
             source_key = str(item.get("source_message_key") or "").strip()
             ledger = load_c2_ledger_entry(str(payload.get("conversation_id") or ""), source_key) if source_key else None
-            if ledger and ledger.get("ingest_state") in {"confirmed", "not_required"}:
+            slot = slot_states.get(source_key)
+            already_settled = bool(
+                isinstance(slot, dict)
+                and (
+                    str(slot.get("fact_scope") or "") == "unknown"
+                    or str(slot.get("delivery_state") or "")
+                    in {"outbox_waiting", "backend_confirmed"}
+                )
+            )
+            if already_settled or (
+                ledger and ledger.get("ingest_state") == "not_required"
+            ):
                 raw_payload = (
                     item.get("raw_payload")
                     if isinstance(item.get("raw_payload"), dict)
@@ -4191,11 +7735,6 @@ class TaskRunner:
                 continue
             messages.append(item)
         filtered["messages"] = messages
-        evidence = (
-            dict(payload.get("evidence"))
-            if isinstance(payload.get("evidence"), dict)
-            else {}
-        )
         observations = evidence.get("observations")
         if removed_observation_ids and isinstance(observations, list):
             evidence["observations"] = [
@@ -4212,22 +7751,81 @@ class TaskRunner:
 
     def _stage_payload_ledger(self, payload: dict[str, Any]) -> None:
         conversation_id = str(payload.get("conversation_id") or "")
+        read_run_id = str(payload.get("read_run_id") or "").strip()
+        if not read_run_id:
+            raise ValueError("C2_READ_RUN_ID_MISSING")
+        evidence = (
+            payload.get("evidence")
+            if isinstance(payload.get("evidence"), dict)
+            else {}
+        )
+        slots_by_source = {
+            str(slot.get("source_message_key") or "").strip(): slot
+            for slot in (evidence.get("slot_ledger_states") or [])
+            if isinstance(slot, dict)
+            and str(slot.get("source_message_key") or "").strip()
+        }
         for item in payload.get("messages") or []:
             if not isinstance(item, dict):
                 continue
             source_key = str(item.get("source_message_key") or "").strip()
             if not source_key:
                 continue
+            slot = slots_by_source.get(source_key)
+            if not isinstance(slot, dict):
+                raise ValueError("C2_SLOT_LEDGER_MESSAGE_MAPPING_MISSING")
+            if str(slot.get("fact_scope") or "") == "unknown":
+                continue
+            slot_origin_read_run_id = str(
+                slot.get("origin_read_run_id") or ""
+            ).strip()
+            if not slot_origin_read_run_id:
+                raise ValueError("C2_SLOT_LEDGER_ORIGIN_READ_RUN_ID_MISSING")
             existing = load_c2_ledger_entry(conversation_id, source_key)
+            item_origin_read_run_id = str(
+                slot_origin_read_run_id
+            ).strip()
             item_state = str(item.get("item_state") or "completed").strip().lower()
             if existing and (
-                item.get("message_type") == "image"
+                item.get("message_type") in {"voice", "image"}
                 or item_state == "failed"
             ):
+                save_c2_ledger_terminal(
+                    conversation_id=conversation_id,
+                    source_message_key=source_key,
+                    origin_read_run_id=item_origin_read_run_id,
+                    dedupe_key=(
+                        str(item.get("dedupe_key") or "")
+                        or str(existing.get("dedupe_key") or "")
+                        or None
+                    ),
+                    message_type=str(
+                        item.get("message_type")
+                        or existing.get("message_type")
+                        or "unknown"
+                    ),
+                    terminal_state=str(
+                        existing.get("terminal_state")
+                        or (
+                            "failed"
+                            if item_state == "failed"
+                            else "completed"
+                        )
+                    ),
+                    ingest_state=str(
+                        existing.get("ingest_state") or "waiting"
+                    ),
+                    result=(
+                        dict(existing.get("result") or {})
+                        if isinstance(existing.get("result"), dict)
+                        else {}
+                    ),
+                )
                 continue
             save_c2_ledger_terminal(
                 conversation_id=conversation_id,
                 source_message_key=source_key,
+                origin_read_run_id=item_origin_read_run_id,
                 dedupe_key=str(item.get("dedupe_key") or "") or None,
                 message_type=str(item.get("message_type") or "unknown"),
                 terminal_state=(
@@ -4242,12 +7840,12 @@ class TaskRunner:
                                 item.get("raw_payload")
                                 if isinstance(item.get("raw_payload"), dict)
                                 else {}
-                            ).get("voice_processing_reason")
+                            ).get("error_code")
                             or (
                                 item.get("raw_payload")
                                 if isinstance(item.get("raw_payload"), dict)
                                 else {}
-                            ).get("image_processing_reason")
+                            ).get("error_code")
                             or "MESSAGE_PROCESSING_FAILED"
                         ),
                     }
@@ -4261,6 +7859,7 @@ class TaskRunner:
         *,
         binding: Binding,
         target: WechatReadTarget,
+        read_run_id: str,
         error_code: str,
         source_keys: list[str],
         voice_payload: dict[str, Any],
@@ -4268,11 +7867,13 @@ class TaskRunner:
         clean_keys = sorted({str(value).strip() for value in source_keys if str(value).strip()})
         self._mark_voice_sources_failed(
             target=target,
+            origin_read_run_id=read_run_id,
             source_keys=clean_keys,
             error_code=error_code,
         )
         payload = build_flow_gate_ingest_payload(
             target,
+            read_run_id=read_run_id,
             error_code="C2_VOICE_TRANSCRIBE_FAILED",
             evidence={
                 "failed_voice_source_keys": clean_keys,
@@ -4322,22 +7923,42 @@ class TaskRunner:
     def _mark_voice_sources_failed(
         *,
         target: WechatReadTarget,
+        origin_read_run_id: str,
         source_keys: list[str],
         error_code: str,
     ) -> None:
         for source_key in sorted(
             {str(value).strip() for value in source_keys if str(value).strip()}
         ):
+            existing = load_c2_ledger_entry(
+                target.conversation_id,
+                source_key,
+            )
+            effective_origin_read_run_id = str(
+                (existing or {}).get("origin_read_run_id")
+                or origin_read_run_id
+            ).strip()
+            existing_result = (
+                dict(existing.get("result") or {})
+                if isinstance((existing or {}).get("result"), dict)
+                else {}
+            )
             save_c2_ledger_terminal(
                 conversation_id=target.conversation_id,
                 source_message_key=source_key,
+                origin_read_run_id=effective_origin_read_run_id,
                 dedupe_key=None,
                 message_type="voice",
                 terminal_state="failed",
                 ingest_state="waiting",
                 result={
+                    **existing_result,
                     "state": "failed",
-                    "error_code": str(error_code or "VOICE_TRANSCRIBE_FAILED"),
+                    "error_code": str(
+                        existing_result.get("error_code")
+                        or error_code
+                        or "VOICE_TRANSCRIBE_FAILED"
+                    ),
                 },
             )
 
@@ -4372,18 +7993,18 @@ class TaskRunner:
                 continue
             role = str(observation.get("sender_role") or "").strip().lower()
             observation["item_state"] = "failed"
-            observation["voice_processing_reason"] = str(
+            observation["error_code"] = str(
                 error_code or "VOICE_TRANSCRIBE_FAILED"
             )
+            observation["reason_detail"] = observation["error_code"]
             source_message = (
                 dict(observation.get("source_message"))
                 if isinstance(observation.get("source_message"), dict)
                 else {}
             )
             source_message["item_state"] = "failed"
-            source_message["voice_processing_reason"] = observation[
-                "voice_processing_reason"
-            ]
+            source_message["error_code"] = observation["error_code"]
+            source_message["reason_detail"] = observation["reason_detail"]
             source_message["voice_anchor_stable_key"] = str(
                 observation.get("voice_anchor_key") or ""
             )
@@ -4396,8 +8017,11 @@ class TaskRunner:
         *,
         binding: Binding,
         target: WechatReadTarget,
+        read_run_id: str,
         error_code: str,
         identity_errors: list[dict[str, Any]],
+        authoritative_frame_source: str = "initial_read",
+        ui_frame_invalidated: bool = False,
     ) -> bool:
         normalized_errors = [
             {
@@ -4443,17 +8067,31 @@ class TaskRunner:
                 if has_visual_order_proof
                 else "position_unavailable"
             ),
+            "gate_scope": "reply_suffix",
+            "boundary_relation": "unknown",
+            "min_screen_order": gate_orders[0] if gate_orders else 0,
+            "max_screen_order": gate_orders[-1] if gate_orders else 0,
         }
-        if has_visual_order_proof:
-            gate_detail["min_screen_order"] = gate_orders[0]
-            gate_detail["max_screen_order"] = gate_orders[-1]
         payload = build_flow_gate_ingest_payload(
             target,
+            read_run_id=read_run_id,
             error_code=error_code,
             evidence={
                 "flow_gate_identity_key": stable_gate_key,
                 "identity_errors": normalized_errors,
                 "flow_gate_details": [gate_detail],
+                "recovery_attempt_kind": (
+                    "stable_reread"
+                    if isinstance(target.raw, dict)
+                    and isinstance(target.raw.get("recovery_hold"), dict)
+                    and target.raw.get("recovery_hold", {}).get("status")
+                    == "active"
+                    else "checkpoint_merge"
+                ),
+                "authoritative_frame_source": (
+                    authoritative_frame_source
+                ),
+                "ui_frame_invalidated": ui_frame_invalidated,
             },
         )
         delivery = self._submit_c2_outbox_payload(
@@ -4493,8 +8131,16 @@ class TaskRunner:
         *,
         target: WechatReadTarget,
         sidecar_payload: dict[str, Any],
+        read_run_id: str,
     ) -> dict[str, Any]:
-        preliminary_payload = build_message_ingest_payload(target, sidecar_payload)
+        clean_read_run_id = str(read_run_id or "").strip()
+        if not clean_read_run_id:
+            raise ValueError("C2_READ_RUN_ID_MISSING")
+        preliminary_payload = build_preliminary_slot_payload(
+            target,
+            sidecar_payload,
+            read_run_id=clean_read_run_id,
+        )
         canonical_by_observation_id: dict[str, dict[str, Any]] = {}
         for message in preliminary_payload.get("messages") or []:
             if not isinstance(message, dict):
@@ -4523,8 +8169,12 @@ class TaskRunner:
         ]
 
         states: list[dict[str, Any]] = []
+        provisional_continuity_states: list[dict[str, Any]] = []
         identity_errors: list[dict[str, Any]] = []
+        new_image_observation_ids: set[str] = set()
         seen_source_keys: set[str] = set()
+        backend_confirmed_origins: dict[str, str] | None = None
+        outbox_origins: dict[str, str] | None = None
         for screen_order, (index, observation) in enumerate(ordered, start=1):
             row_kind = str(observation.get("row_kind") or "").strip().lower()
             voice_state = str(observation.get("voice_state") or "").strip().lower()
@@ -4533,19 +8183,116 @@ class TaskRunner:
             if row_kind not in {"text_bubble", "voice_bubble", "voice_transcript", "image_bubble", "system_message"}:
                 continue
             observation_id = str(observation.get("observation_id") or "").strip()
-            canonical = canonical_by_observation_id.get(observation_id)
-            if canonical:
-                source_key = str(canonical.get("source_message_key") or "").strip()
-            elif row_kind == "image_bubble":
-                source_key = image_observation_source_key(target, observation)
-            elif row_kind in {"voice_bubble", "voice_transcript"}:
-                source_key = voice_observation_source_key(target, observation)
-            else:
-                source_key = ""
             trusted_role = observation_role_is_trusted(observation)
+            if not trusted_role:
+                identity_errors.append(
+                    {
+                        "observation_id": (
+                            observation_id or f"observation-{index}"
+                        ),
+                        "screen_order": screen_order,
+                        "order_source": frame_order_source,
+                        "row_kind": row_kind,
+                        "error_code": "MESSAGE_IDENTITY_UNCONFIRMED",
+                    }
+                )
+                continue
+            identity_scope = str(
+                observation.get("_worker_identity_scope") or ""
+            ).strip()
+            item_state = str(
+                observation.get("item_state") or "discovered"
+            ).strip().lower()
+            if (
+                row_kind == "image_bubble"
+                and identity_scope == "current_read_provisional"
+                and item_state == "discovered"
+            ):
+                if observation_id:
+                    new_image_observation_ids.add(observation_id)
+                    # The row is not yet a durable message and therefore has
+                    # no source key or Ledger state.  Its visual order still
+                    # participates in the current-frame continuity check so
+                    # a historical row below a newly discovered image cannot
+                    # be hidden merely because identity commitment happens
+                    # later in the action transaction.
+                    provisional_continuity_states.append(
+                        {
+                            "observation_id": observation_id,
+                            "screen_order": screen_order,
+                            "order_source": frame_order_source,
+                            "row_kind": row_kind,
+                            "sender_role": str(
+                                observation.get("sender_role") or ""
+                            ).strip().lower(),
+                            "fact_scope": "current_read_run",
+                        }
+                    )
+                else:
+                    identity_errors.append(
+                        {
+                            "observation_id": f"observation-{index}",
+                            "screen_order": screen_order,
+                            "order_source": frame_order_source,
+                            "row_kind": row_kind,
+                            "error_code": "MESSAGE_IDENTITY_UNCONFIRMED",
+                        }
+                    )
+                # A provisional image is an action candidate, not a message
+                # fact.  Do not derive a source key or consult any cross-run
+                # Ledger, Outbox or backend checkpoint until its confirmed
+                # action receipt commits the reserved sequence number.
+                continue
+            if row_kind == "image_bubble":
+                try:
+                    validate_committed_image_identity(
+                        observation,
+                        conversation_id=target.conversation_id,
+                    )
+                except ValueError:
+                    identity_errors.append(
+                        {
+                            "observation_id": (
+                                observation_id or f"observation-{index}"
+                            ),
+                            "screen_order": screen_order,
+                            "order_source": frame_order_source,
+                            "row_kind": row_kind,
+                            "error_code": (
+                                "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                            ),
+                        }
+                    )
+                    # Invalid image identities cannot reach source-key,
+                    # checkpoint, Ledger or Outbox consumers.
+                    continue
+            canonical = canonical_by_observation_id.get(observation_id)
+            try:
+                if canonical:
+                    source_key = str(
+                        canonical.get("source_message_key") or ""
+                    ).strip()
+                elif row_kind == "image_bubble":
+                    source_key = image_observation_source_key(
+                        target,
+                        observation,
+                    )
+                elif row_kind in {"voice_bubble", "voice_transcript"}:
+                    source_key = voice_observation_source_key(
+                        target,
+                        observation,
+                    )
+                else:
+                    source_key = ""
+            except ValueError:
+                source_key = ""
+            sender_role = str(
+                (canonical or {}).get("sender_role_hint")
+                or observation.get("sender_role")
+                or ""
+            ).strip().lower()
             if (
                 not source_key
-                or not trusted_role
                 or source_key in seen_source_keys
             ):
                 error = {
@@ -4558,55 +8305,221 @@ class TaskRunner:
                 identity_errors.append(error)
                 continue
             seen_source_keys.add(source_key)
-            ledger = load_c2_ledger_entry(target.conversation_id, source_key)
-            if (
-                str(observation.get("item_state") or "").strip().lower()
-                == "failed"
-                and ledger
-                and ledger.get("terminal_state") == "failed"
-                and ledger.get("ingest_state") == "waiting"
-            ):
-                # The action ledger is written before this authoritative frame
-                # is assembled. This failed fact is still new for the Outbox.
-                state = "NEW_MESSAGE"
-            elif ledger and ledger.get("ingest_state") == "waiting":
-                state = "OUTBOX_WAITING"
-            elif ledger and ledger.get("terminal_state") == "failed":
-                state = "OLD_FAILED"
-            elif ledger:
-                state = "OLD_COMPLETED"
-            else:
-                state = "NEW_MESSAGE"
-            states.append(
-                {
-                    "observation_id": observation_id or f"observation-{index}",
-                    "screen_order": screen_order,
-                    "order_source": frame_order_source,
-                    "row_kind": row_kind,
-                    "source_message_key": source_key,
-                    "ledger_state": state,
+            if backend_confirmed_origins is None:
+                backend_confirmed_origins = {
+                    str(item.get("source_message_key") or "").strip(): str(
+                        item.get("origin_read_run_id") or ""
+                    ).strip()
+                    for item in (
+                        (
+                            target.raw.get("identity_checkpoint") or {}
+                        ).get("recent_messages")
+                        if isinstance(target.raw, dict)
+                        and isinstance(
+                            target.raw.get("identity_checkpoint"), dict
+                        )
+                        else []
+                    )
+                    if isinstance(item, dict)
+                    and str(item.get("source_message_key") or "").strip()
                 }
+            if outbox_origins is None:
+                outbox_origins = load_c2_outbox_origin_read_run_ids(
+                    target.conversation_id
+                )
+            ledger = load_c2_ledger_entry(target.conversation_id, source_key)
+            ledger_origin = str(
+                (ledger or {}).get("origin_read_run_id") or ""
+            ).strip()
+            outbox_present = source_key in outbox_origins
+            outbox_origin = str(outbox_origins.get(source_key) or "").strip()
+            backend_present = source_key in backend_confirmed_origins
+            backend_origin = str(
+                backend_confirmed_origins.get(source_key) or ""
+            ).strip()
+            known_origins = {
+                value
+                for value in (ledger_origin, outbox_origin, backend_origin)
+                if value
+            }
+            origin_conflict = len(known_origins) > 1
+            has_existing_fact = bool(ledger or outbox_present or backend_present)
+            if origin_conflict or (has_existing_fact and not known_origins):
+                origin_read_run_id = "unknown"
+                fact_scope = "unknown"
+                identity_errors.append(
+                    {
+                        "observation_id": observation_id or f"observation-{index}",
+                        "screen_order": screen_order,
+                        "order_source": frame_order_source,
+                        "row_kind": row_kind,
+                        "error_code": "MESSAGE_IDENTITY_UNCONFIRMED",
+                        "reason": "origin_read_run_id_unconfirmed",
+                    }
+                )
+            else:
+                origin_read_run_id = (
+                    next(iter(known_origins))
+                    if known_origins
+                    else clean_read_run_id
+                )
+                fact_scope = (
+                    "current_read_run"
+                    if origin_read_run_id == clean_read_run_id
+                    else "historical"
+                )
+            if ledger and str(ledger.get("ingest_state") or "") == "confirmed":
+                delivery_state = "backend_confirmed"
+            elif backend_present:
+                delivery_state = "backend_confirmed"
+            elif outbox_present:
+                delivery_state = "outbox_waiting"
+            else:
+                delivery_state = "not_enqueued"
+            item_state = (
+                "failed"
+                if str(
+                    (ledger or {}).get("terminal_state")
+                    or observation.get("item_state")
+                    or ""
+                ).strip().lower()
+                == "failed"
+                else "completed"
             )
+            legacy_ledger_state: str | None = None
+            if fact_scope == "current_read_run":
+                legacy_ledger_state = (
+                    "OUTBOX_WAITING"
+                    if delivery_state == "outbox_waiting"
+                    else "NEW_MESSAGE"
+                )
+            elif fact_scope == "historical":
+                legacy_ledger_state = (
+                    "OLD_FAILED"
+                    if item_state == "failed"
+                    else "OLD_COMPLETED"
+                )
+            state_payload = {
+                "observation_id": observation_id or f"observation-{index}",
+                "screen_order": screen_order,
+                "order_source": frame_order_source,
+                "row_kind": row_kind,
+                "sender_role": sender_role,
+                "source_message_key": source_key,
+                "origin_read_run_id": origin_read_run_id,
+                "fact_scope": fact_scope,
+                "delivery_state": delivery_state,
+                "item_state": item_state,
+                "history_source": (
+                    "local_ledger"
+                    if ledger
+                    else "local_outbox"
+                    if outbox_present
+                    else "backend_identity_checkpoint"
+                    if backend_present
+                    else "current_read_run"
+                ),
+            }
+            if legacy_ledger_state:
+                state_payload["ledger_state"] = legacy_ledger_state
+            states.append(state_payload)
 
-        seen_new = False
-        first_new_screen_order = 0
+        continuity_states = sorted(
+            [*states, *provisional_continuity_states],
+            key=lambda item: int(item.get("screen_order") or 0),
+        )
+        seen_current = False
+        first_current_screen_order = 0
         history_gap_screen_order = 0
-        history_gap = False
-        for item in states:
-            if item["ledger_state"] == "NEW_MESSAGE":
-                seen_new = True
-                if not first_new_screen_order:
-                    first_new_screen_order = int(item["screen_order"])
-            elif seen_new:
-                history_gap = True
+        raw_history_gap = False
+        for item in continuity_states:
+            if item["fact_scope"] == "current_read_run":
+                seen_current = True
+                if not first_current_screen_order:
+                    first_current_screen_order = int(item["screen_order"])
+            elif item["fact_scope"] == "historical" and seen_current:
+                raw_history_gap = True
                 history_gap_screen_order = int(item["screen_order"])
                 break
-        new_image_source_keys = {
-            item["source_message_key"]
-            for item in states
-            if item["row_kind"] == "image_bubble" and item["ledger_state"] == "NEW_MESSAGE"
-        }
+        latest_self_screen_order = max(
+            (
+                int(item["screen_order"])
+                for item in continuity_states
+                if item.get("sender_role") == "self"
+            ),
+            default=0,
+        )
+        pending_customer_orders = [
+            int(item["screen_order"])
+            for item in continuity_states
+            if item.get("sender_role") == "customer"
+            and int(item["screen_order"]) > latest_self_screen_order
+        ]
+        history_gap = bool(
+            raw_history_gap
+            and pending_customer_orders
+            and history_gap_screen_order > latest_self_screen_order
+        )
+        historical_warnings: list[dict[str, Any]] = [
+            dict(item)
+            for item in (
+                sidecar_payload.get("historical_warnings") or []
+            )
+            if isinstance(item, dict)
+        ]
+        if raw_history_gap and not history_gap:
+            historical_warnings.append(
+                {
+                    "warning_code": "C2_MESSAGE_HISTORY_GAP_HISTORICAL",
+                    "min_screen_order": first_current_screen_order,
+                    "max_screen_order": history_gap_screen_order,
+                    "latest_self_screen_order": latest_self_screen_order,
+                }
+            )
         flow_gate_details: list[dict[str, Any]] = []
+        ai_reply_boundary = (
+            target.raw.get("ai_reply_boundary")
+            if isinstance(target.raw, dict)
+            and isinstance(target.raw.get("ai_reply_boundary"), dict)
+            else {}
+        )
+        boundary_stable_id = str(
+            ai_reply_boundary.get("worker_stable_id") or ""
+        ).strip()
+        boundary_screen_order = 0
+        if boundary_stable_id:
+            state_order_by_observation_id = {
+                str(item.get("observation_id") or ""): int(
+                    item.get("screen_order") or 0
+                )
+                for item in states
+                if isinstance(item, dict)
+            }
+            for observation in observations:
+                if not isinstance(observation, dict):
+                    continue
+                if str(
+                    observation.get("_worker_stable_id")
+                    or observation.get("worker_stable_id")
+                    or ""
+                ).strip() == boundary_stable_id:
+                    boundary_screen_order = int(
+                        state_order_by_observation_id.get(
+                            str(observation.get("observation_id") or ""),
+                            0,
+                        )
+                    )
+                    break
+
+        def boundary_relation(min_order: int, max_order: int) -> str:
+            if boundary_screen_order <= 0:
+                return "unknown"
+            if max_order > 0 and max_order <= boundary_screen_order:
+                return "before_or_equal"
+            if min_order > boundary_screen_order:
+                return "after"
+            return "unknown"
+
         if history_gap:
             history_gap_detail: dict[str, Any] = {
                 "error_code": "C2_MESSAGE_HISTORY_GAP",
@@ -4615,10 +8528,18 @@ class TaskRunner:
                     if frame_order_source == "visual_top"
                     else "position_unavailable"
                 ),
+                "gate_scope": "reply_suffix",
+                "boundary_relation": "unknown",
+                "min_screen_order": 0,
+                "max_screen_order": 0,
             }
             if frame_order_source == "visual_top":
-                history_gap_detail["min_screen_order"] = first_new_screen_order
+                history_gap_detail["min_screen_order"] = first_current_screen_order
                 history_gap_detail["max_screen_order"] = history_gap_screen_order
+                history_gap_detail["boundary_relation"] = boundary_relation(
+                    first_current_screen_order,
+                    history_gap_screen_order,
+                )
             flow_gate_details.append(history_gap_detail)
         if identity_errors:
             error_orders = sorted(
@@ -4635,18 +8556,66 @@ class TaskRunner:
                     if error_orders and frame_order_source == "visual_top"
                     else "position_unavailable"
                 ),
+                "gate_scope": "reply_suffix",
+                "boundary_relation": "unknown",
+                "min_screen_order": 0,
+                "max_screen_order": 0,
             }
             if error_orders and frame_order_source == "visual_top":
                 detail["min_screen_order"] = error_orders[0]
                 detail["max_screen_order"] = error_orders[-1]
+                detail["boundary_relation"] = boundary_relation(
+                    error_orders[0], error_orders[-1]
+                )
             flow_gate_details.append(detail)
+        recoverable_reason_codes = sorted(
+            {
+                str(value).strip()
+                for value in (
+                    target.raw.get(
+                        "recoverable_handoff_reason_codes", []
+                    )
+                    if isinstance(target.raw, dict)
+                    else []
+                )
+                if str(value).strip()
+                in {
+                    "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+                    "C2_MESSAGE_HISTORY_GAP",
+                }
+            }
+        )
+        recovery_resolution = None
+        if (
+            recoverable_reason_codes
+            and not history_gap
+            and not identity_errors
+            and bool(observations)
+        ):
+            recovery_resolution = {
+                "version": 1,
+                "status": "latest_unreplied_turn_complete",
+                "reason_codes": recoverable_reason_codes,
+                "identity_confirmed": True,
+                "history_confirmed": True,
+                "automatic_reread_performed": bool(
+                    sidecar_payload.get(
+                        "identity_automatic_reread_performed"
+                    )
+                    or sidecar_payload.get(
+                        "history_gap_automatic_reread_performed"
+                    )
+                ),
+            }
         return {
             "preliminary_payload": preliminary_payload,
             "slot_ledger_states": states,
             "history_gap": history_gap,
             "identity_errors": identity_errors,
-            "new_image_source_keys": new_image_source_keys,
+            "new_image_observation_ids": new_image_observation_ids,
             "flow_gate_details": flow_gate_details,
+            "historical_warnings": historical_warnings,
+            "recoverable_handoff_resolution": recovery_resolution,
         }
 
     def _image_slot_access_decision(
@@ -4655,15 +8624,15 @@ class TaskRunner:
         binding: Binding,
         target: WechatReadTarget,
         observation: dict[str, Any],
-        source_key: str,
-        allowed_new_source_keys: set[str] | None,
+        observation_id: str,
+        allowed_new_observation_ids: set[str] | None,
         enforce_read_targets: bool,
     ) -> str:
         if not observation_role_is_trusted(observation):
             return "role_untrusted"
         if (
-            allowed_new_source_keys is not None
-            and source_key not in allowed_new_source_keys
+            allowed_new_observation_ids is not None
+            and observation_id not in allowed_new_observation_ids
         ):
             return "not_new"
         if (
@@ -4682,18 +8651,96 @@ class TaskRunner:
         target: WechatReadTarget,
         payload: dict[str, Any],
         observation: dict[str, Any],
-        source_key: str,
-        cancel_check: Callable[[], bool] | None,
+        action_local_id: str,
+        cancel_check: Callable[[], bool | str] | None,
         flow_outcomes: FlowOutcomeAccumulator | None,
     ) -> dict[str, Any]:
         image_action_journal: Path | None = None
+        image_action_id = ""
         if flow_outcomes is not None:
+            payload_observations = list(payload.get("observations") or [])
+            image_action_id = str(action_local_id or "").strip() or (
+                f"image:{target.conversation_id}:{uuid.uuid4()}"
+            )
+            selected_observation_id = str(
+                observation.get("observation_id") or ""
+            ).strip()
+            reserved_worker_stable_id = str(
+                observation.get("_worker_stable_id") or ""
+            ).strip()
+            if not selected_observation_id or not reserved_worker_stable_id:
+                return {
+                    "state": "failed",
+                    "reason": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    "action_phase": "not_attempted",
+                    "diagnostics": {"events": [], "image_persisted": False},
+                }
+            committed_ids: dict[str, str] = {}
+            for item in payload_observations:
+                if not isinstance(item, dict):
+                    continue
+                item_observation_id = str(
+                    item.get("observation_id") or ""
+                ).strip()
+                item_worker_stable_id = str(
+                    item.get("_worker_stable_id") or ""
+                ).strip()
+                if (
+                    not item_observation_id
+                    or not item_worker_stable_id
+                    or item_observation_id == selected_observation_id
+                ):
+                    continue
+                if str(item.get("row_kind") or "").strip().lower() == "image_bubble":
+                    try:
+                        validate_committed_image_identity(
+                            item,
+                            conversation_id=target.conversation_id,
+                        )
+                    except ValueError:
+                        continue
+                committed_ids[item_observation_id] = item_worker_stable_id
+            provisional_ids = {
+                str(item.get("observation_id") or "").strip(): str(
+                    item.get("_worker_stable_id") or ""
+                ).strip()
+                for item in payload_observations
+                if isinstance(item, dict)
+                and str(item.get("observation_id") or "").strip()
+                and str(item.get("_worker_stable_id") or "").strip()
+                and str(item.get("observation_id") or "").strip()
+                != selected_observation_id
+                and str(item.get("_worker_identity_scope") or "").strip()
+                == "current_read_provisional"
+            }
+            pre_action_sequence = build_pre_action_identity_sequence(
+                payload_observations,
+                committed_ids=committed_ids,
+                provisional_ids=provisional_ids,
+                selected_observation_id=selected_observation_id,
+                canonical_action_id=image_action_id,
+                reserved_worker_stable_id=reserved_worker_stable_id,
+            )
+            pre_frame_id = str(
+                payload.get("frame_id")
+                or payload.get("sidecar_run_id")
+                or payload.get("run_id")
+                or ""
+            ).strip()
+            if not pre_frame_id:
+                return {
+                    "state": "failed",
+                    "reason": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    "action_phase": "not_attempted",
+                    "diagnostics": {"events": [], "image_persisted": False},
+                }
             image_action_journal = self._start_irreversible_action_journal(
                 action_kind="image",
                 target=target,
                 items=[
                     {
-                        "source_message_key": source_key,
+                        "journal_item_id": image_action_id,
+                        "action_local_id": image_action_id,
                         "physical_anchor_keys": [
                             str(
                                 observation.get("observation_id") or ""
@@ -4702,17 +8749,31 @@ class TaskRunner:
                         "replayable_observation": (
                             replayable_image_observation(
                                 observation,
-                                source_message_key=source_key,
                             )
                         ),
                     }
                 ],
                 flow_outcomes=flow_outcomes,
+                transaction_id=image_action_id,
+                pre_action_identity_sequence=pre_action_sequence,
+                pre_frame_id=pre_frame_id,
+                reserved_worker_stable_id=reserved_worker_stable_id,
+                prepare_evidence={
+                    "authorization_revision": str(
+                        target.authorization_revision or ""
+                    ),
+                    "remark_code": str(target.remark_code or ""),
+                    "rpa_session_key": str(
+                        target.rpa_session_key or ""
+                    ),
+                    "display_name": str(target.display_name or ""),
+                    "read_reason": str(target.read_reason or ""),
+                },
             )
         try:
             from .omniauto_vision import process_image_slot
 
-            return process_image_slot(
+            result = process_image_slot(
                 observation=observation,
                 remark_code=str(target.remark_code or ""),
                 session_key=str(target.rpa_session_key or ""),
@@ -4721,28 +8782,365 @@ class TaskRunner:
                     if isinstance(payload.get("window_context"), dict)
                     else None
                 ),
-                trace_id=source_key,
+                trace_id=action_local_id,
                 cancel_check=cancel_check,
                 action_journal_path=image_action_journal,
-                source_message_key=source_key,
+                action_local_id=image_action_id,
                 artifact_dir=str(payload.get("artifact_dir") or "") or None,
             )
         except Exception as exc:
-            return {
+            result = {
                 "state": "failed",
                 "reason": "vision_adapter_failed",
                 "error_type": type(exc).__name__,
+                "action_phase": "quarantined",
+                "transaction": {
+                    "action_phase": "quarantined",
+                    "status": "vision_adapter_failed",
+                },
                 "diagnostics": {
                     "events": [],
                     "image_persisted": False,
                 },
             }
+        transaction = (
+            result.get("transaction")
+            if isinstance(result.get("transaction"), dict)
+            else {}
+        )
+        returned_action_phase = str(
+            result.get("action_phase")
+            or transaction.get("action_phase")
+            or "not_attempted"
+        ).strip()
+        returned_ui_action = bool(
+            result.get("ui_action_performed") is True
+            or transaction.get("ui_action_performed") is True
+            or transaction.get("right_click_ok") is True
+            or transaction.get("menu_opened") is True
+            or transaction.get("menu_dismissed") is True
+            or transaction.get("copy_click_ok") is True
+        )
+        if (
+            image_action_journal is not None
+            and returned_action_phase
+            in {"not_attempted", "cancelled_before_trigger"}
+            and not returned_ui_action
+        ):
+            # Capture/OCR/authorization failures before the irreversible UI
+            # trigger are not failed image messages. Burn the reservation and
+            # let a fresh authoritative frame arbitrate again.
+            update_action_journal_item(
+                image_action_journal,
+                journal_item_id=image_action_id,
+                action_phase="cancelled_before_trigger",
+                business_state="not_attempted",
+                business_result_confirmed=False,
+                error_code=str(result.get("reason") or "") or None,
+                terminal_payload={
+                    "state": "cancelled_before_trigger",
+                    "media_action_terminal": (
+                        MediaActionTerminal.CANCELLED_BEFORE_TRIGGER.value
+                    ),
+                    "error_code": str(result.get("reason") or "") or None,
+                },
+            )
+            result = {
+                **result,
+                "state": (
+                    "cancelled"
+                    if str(result.get("state") or "").strip()
+                    == "cancelled"
+                    else "cancelled_before_trigger"
+                ),
+                "action_phase": "cancelled_before_trigger",
+                "ui_action_performed": False,
+                "media_action_terminal": (
+                    MediaActionTerminal.CANCELLED_BEFORE_TRIGGER.value
+                ),
+                "_image_action_id": image_action_id,
+                "_image_action_journal_path": str(image_action_journal),
+                "_image_action_journal_item_id": image_action_id,
+            }
+            return result
+        image_anchor = (
+            observation.get("image_physical_anchor")
+            if isinstance(observation.get("image_physical_anchor"), dict)
+            else {}
+        )
+        selected_observation_id = str(
+            observation.get("observation_id") or ""
+        ).strip()
+        reserved_worker_stable_id = str(
+            observation.get("_worker_stable_id") or ""
+        ).strip()
+        image_fingerprint = str(
+            image_anchor.get("bubble_visual_fingerprint") or ""
+        ).strip()
+        selected_rows: list[dict[str, Any]] = []
+        persisted_receipt: dict[str, Any] | None = None
+        if image_action_journal is not None:
+            pre_action_journal = read_action_journal(image_action_journal)
+            selected_rows = [
+                item
+                for item in (
+                    pre_action_journal.get("pre_action_identity_sequence")
+                    or []
+                )
+                if isinstance(item, dict)
+                and item.get("identity_state") == "selected_action"
+                and str(item.get("canonical_action_id") or "").strip()
+                == image_action_id
+                and str(
+                    item.get("reserved_worker_stable_id") or ""
+                ).strip()
+                == reserved_worker_stable_id
+                and str(item.get("pre_observation_id") or "").strip()
+                == selected_observation_id
+                and str(
+                    item.get("image_visual_fingerprint") or ""
+                ).strip()
+                == image_fingerprint
+            ]
+            candidate_receipt, receipt_item_id = (
+                _confirmed_image_receipt_from_journal(
+                    pre_action_journal
+                )
+            )
+            if candidate_receipt is not None and (
+                receipt_item_id == image_action_id
+            ):
+                if confirmed_image_identity_receipt(
+                    observation,
+                    {
+                        "_confirmed_image_action_receipt": (
+                            candidate_receipt
+                        )
+                    },
+                ) is not None:
+                    persisted_receipt = candidate_receipt
+        if persisted_receipt is not None:
+            result["_confirmed_image_action_receipt"] = (
+                persisted_receipt
+            )
+        if (
+            image_action_id
+            and str(
+                result.get("action_phase")
+                or transaction.get("action_phase")
+                or ""
+            )
+            == "confirmed"
+            and transaction.get("slot_identity_confirmed") is True
+            and reserved_worker_stable_id
+            and selected_observation_id
+            and image_fingerprint
+            and len(selected_rows) == 1
+            and persisted_receipt is None
+        ):
+            result["_confirmed_image_action_receipt"] = {
+                "canonical_action_id": image_action_id,
+                "reserved_worker_stable_id": reserved_worker_stable_id,
+                "pre_observation_id": selected_observation_id,
+                "post_observation_id": selected_observation_id,
+                "binding_confirmed": True,
+                "image_visual_fingerprint": image_fingerprint,
+            }
+        if (
+            str(result.get("state") or "").strip() == "completed"
+            and confirmed_image_identity_receipt(observation, result) is None
+        ):
+            # Vision success is not identity success.  Preserve that a UI
+            # action may have happened, but discard all business content and
+            # force the independent identity gate before any durable message
+            # consumer can see this candidate.
+            result = {
+                **result,
+                "state": "failed",
+                "business_state": "failed",
+                "business_result_confirmed": False,
+                "reason": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                "reason_detail": (
+                    "confirmed_image_identity_receipt_missing_or_invalid"
+                ),
+            }
+            result.pop("customer_image_understanding", None)
+            result.pop("visual_bridge_input", None)
+
+        if image_action_journal is not None and str(
+            result.get("state") or ""
+        ).strip() in {"completed", "failed"}:
+            journal_payload = read_action_journal(image_action_journal)
+            journal_item = (
+                (journal_payload.get("items") or {}).get(image_action_id)
+                if isinstance(journal_payload.get("items"), dict)
+                else None
+            )
+            journal_terminal = bool(
+                isinstance(journal_item, dict)
+                and (
+                    str(journal_item.get("business_state") or "")
+                    in {"completed", "failed"}
+                    or str(journal_item.get("error_code") or "").strip()
+                    or (
+                        isinstance(
+                            journal_item.get("terminal_payload"), dict
+                        )
+                        and bool(journal_item.get("terminal_payload"))
+                    )
+                )
+            )
+            if not journal_terminal:
+                completed = str(result.get("state") or "") == "completed"
+                transaction = (
+                    result.get("transaction")
+                    if isinstance(result.get("transaction"), dict)
+                    else {}
+                )
+                error_code = None if completed else str(
+                    result.get("reason") or "IMAGE_RESULT_UNCONFIRMED"
+                )
+                terminal_payload = {
+                    "state": str(result.get("state") or "failed"),
+                    "error_code": error_code,
+                    "reason_detail": str(
+                        transaction.get("status")
+                        or result.get("reason_detail")
+                        or error_code
+                        or ""
+                    ),
+                    "customer_image_understanding": (
+                        dict(
+                            result.get(
+                                "customer_image_understanding"
+                            )
+                            or {}
+                        )
+                        if isinstance(
+                            result.get("customer_image_understanding"),
+                            dict,
+                        )
+                        else None
+                    ),
+                    "visual_bridge_input": (
+                        result.get("visual_bridge_input")
+                        if isinstance(
+                            result.get("visual_bridge_input"),
+                            (dict, list, str),
+                        )
+                        else None
+                    ),
+                }
+                receipt = confirmed_image_identity_receipt(
+                    observation,
+                    result,
+                )
+                terminal_payload["media_action_terminal"] = (
+                    MediaActionTerminal.COMMITTED_COMPLETED.value
+                    if receipt is not None and completed
+                    else MediaActionTerminal.COMMITTED_FAILED.value
+                    if receipt is not None
+                    else MediaActionTerminal.IDENTITY_UNRESOLVED.value
+                )
+                if receipt is not None:
+                    terminal_payload["confirmed_action_mapping"] = {
+                        key: receipt[key]
+                        for key in (
+                            "canonical_action_id",
+                            "reserved_worker_stable_id",
+                            "pre_observation_id",
+                            "post_observation_id",
+                            "binding_confirmed",
+                        )
+                    }
+                    terminal_payload["image_visual_fingerprint"] = (
+                        receipt["image_visual_fingerprint"]
+                    )
+                update_action_journal_item(
+                    image_action_journal,
+                    journal_item_id=image_action_id,
+                    action_phase=str(
+                        result.get("action_phase") or "not_attempted"
+                    ),
+                    business_state=(
+                        "completed" if completed else "failed"
+                    ),
+                    business_result_confirmed=completed,
+                    error_code=error_code,
+                    terminal_payload=terminal_payload,
+                )
+        journal_receipt_confirmed = False
+        receipt = confirmed_image_identity_receipt(observation, result)
+        if image_action_journal is not None and receipt is not None:
+            committed_journal = read_action_journal(image_action_journal)
+            journal_receipt, receipt_item_id = (
+                _confirmed_image_receipt_from_journal(
+                    committed_journal
+                )
+            )
+            journal_receipt_confirmed = bool(
+                journal_receipt == receipt
+                and receipt_item_id == image_action_id
+            )
+        result["_image_identity_receipt_confirmed"] = (
+            journal_receipt_confirmed
+        )
+        if not journal_receipt_confirmed:
+            result.pop("_confirmed_image_action_receipt", None)
+            if image_action_journal is not None:
+                current_phase = str(
+                    result.get("action_phase")
+                    or transaction.get("action_phase")
+                    or action_journal_phase(image_action_journal)
+                    or "not_attempted"
+                ).strip()
+                update_action_journal_item(
+                    image_action_journal,
+                    journal_item_id=image_action_id,
+                    action_phase=current_phase,
+                    business_state="failed",
+                    business_result_confirmed=False,
+                    error_code="C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    terminal_payload={
+                        "state": "failed",
+                        "media_action_terminal": (
+                            MediaActionTerminal.IDENTITY_UNRESOLVED.value
+                        ),
+                        "error_code": (
+                            "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                        ),
+                        "reason_detail": (
+                            "confirmed_image_identity_receipt_not_persisted"
+                        ),
+                    },
+                )
+        if (
+            str(result.get("state") or "").strip() == "completed"
+            and not journal_receipt_confirmed
+        ):
+            result.update(
+                {
+                    "state": "failed",
+                    "business_state": "failed",
+                    "business_result_confirmed": False,
+                    "reason": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    "reason_detail": (
+                        "confirmed_image_identity_receipt_not_persisted"
+                    ),
+                }
+            )
+            result.pop("customer_image_understanding", None)
+            result.pop("visual_bridge_input", None)
+        result["_image_action_id"] = image_action_id
+        result["_image_action_journal_path"] = (
+            str(image_action_journal) if image_action_journal else ""
+        )
+        result["_image_action_journal_item_id"] = image_action_id
+        return result
 
     @staticmethod
     def _normalize_one_image_slot_result(
         result: dict[str, Any],
-        *,
-        source_key: str,
     ) -> dict[str, Any]:
         normalized = dict(result or {})
         transaction = (
@@ -4760,9 +9158,25 @@ class TaskRunner:
             or transaction.get("action_phase")
             or "not_attempted"
         )
+        ui_frame_invalidated = bool(
+            normalized.get("ui_action_performed") is True
+            or transaction.get("ui_action_performed") is True
+            or transaction.get("right_click_ok") is True
+            or transaction.get("menu_opened") is True
+            or transaction.get("menu_dismissed") is True
+            or transaction.get("copy_click_ok") is True
+            or transaction.get("clipboard_content_read") is True
+            or action_phase
+            not in {"not_attempted", "cancelled_before_trigger"}
+        )
         if (
-            action_phase == "not_attempted"
-            and str(normalized.get("state") or "") == "not_visible"
+            action_phase in {
+                "not_attempted",
+                "cancelled_before_trigger",
+            }
+            and not ui_frame_invalidated
+            and str(normalized.get("state") or "").strip()
+            != "cancelled"
         ):
             return {
                 "result": normalized,
@@ -4771,7 +9185,35 @@ class TaskRunner:
                 "action_phase": action_phase,
                 "removed_from_final_screen": True,
                 "action_was_attempted": False,
+                "ui_frame_invalidated": ui_frame_invalidated,
                 "terminal_state": "",
+            }
+        if (
+            action_phase == "cancelled_before_trigger"
+            and str(normalized.get("state") or "").strip()
+            == "cancelled"
+            and not ui_frame_invalidated
+        ):
+            action_outcome = classify_action_result(
+                "image",
+                {
+                    **normalized,
+                    "action_phase": "not_attempted",
+                    "error_code": normalized.get("reason"),
+                    "evidence": transaction,
+                },
+            )
+            return {
+                "result": normalized,
+                "transaction": transaction,
+                "diagnostics": diagnostics,
+                "action_outcome": action_outcome,
+                "action_phase": action_phase,
+                "removed_from_final_screen": False,
+                "action_was_attempted": False,
+                "ui_frame_invalidated": False,
+                "raw_terminal_state": "cancelled",
+                "terminal_state": "cancelled",
             }
         action_outcome = classify_action_result(
             "image",
@@ -4781,7 +9223,6 @@ class TaskRunner:
                 "error_code": normalized.get("reason"),
                 "evidence": transaction,
             },
-            source_message_key=source_key,
         )
         normalized["action_outcome"] = action_outcome
         raw_terminal_state = str(
@@ -4796,11 +9237,16 @@ class TaskRunner:
                 or normalized.get("reason")
                 or ""
             )
+            reason_detail = str(
+                transaction.get("status")
+                or normalized.get("reason_detail")
+                or raw_reason
+            )
             normalized = {
                 **normalized,
                 "state": "failed",
                 "reason": formal_image_failure_code(raw_reason),
-                "reason_detail": raw_reason,
+                "reason_detail": reason_detail,
                 "action_outcome": action_outcome,
             }
         return {
@@ -4811,6 +9257,7 @@ class TaskRunner:
             "action_phase": action_phase,
             "removed_from_final_screen": False,
             "action_was_attempted": action_phase != "not_attempted",
+            "ui_frame_invalidated": ui_frame_invalidated,
             "raw_terminal_state": raw_terminal_state,
             "terminal_state": str(normalized.get("state") or "failed"),
         }
@@ -4820,8 +9267,9 @@ class TaskRunner:
         *,
         target: WechatReadTarget,
         payload: dict[str, Any],
-        observation: dict[str, Any],
+        terminal_observation: dict[str, Any],
         source_key: str,
+        origin_read_run_id: str,
         result: dict[str, Any],
         stats: dict[str, Any],
     ) -> tuple[dict[str, Any], str, str]:
@@ -4833,17 +9281,23 @@ class TaskRunner:
                 "state": "failed",
                 "reason": "vision_terminal_state_invalid",
             }
-        terminal_observation = apply_image_terminal_result(
-            observation,
-            result,
+        validate_committed_image_identity(
+            terminal_observation,
+            conversation_id=target.conversation_id,
+            require_formalization_proof=True,
         )
+        if image_observation_source_key(
+            target,
+            terminal_observation,
+        ) != str(source_key or "").strip():
+            raise ValueError("C2_IMAGE_IDENTITY_CONTRACT_INVALID")
         projected_state = str(
             terminal_observation.get("item_state") or terminal_state
         )
         if projected_state in {"completed", "failed"}:
             terminal_state = projected_state
         terminal_reason = str(
-            terminal_observation.get("image_processing_reason")
+            terminal_observation.get("error_code")
             or result.get("reason")
             or ""
         )
@@ -4864,6 +9318,10 @@ class TaskRunner:
         ledger_result: dict[str, Any] = {
             "state": terminal_state,
             "reason": terminal_reason,
+            "reason_detail": str(result.get("reason_detail") or ""),
+            "transaction": _safe_c2_image_transaction(
+                result.get("transaction")
+            ),
             "replayable_observation": replayable_image_observation(
                 terminal_observation,
                 source_message_key=source_key,
@@ -4882,14 +9340,12 @@ class TaskRunner:
                         terminal_observation.get("visual_bridge_input")
                         or {}
                     ),
-                    "transaction": _safe_c2_image_transaction(
-                        result.get("transaction")
-                    ),
                 }
             )
         save_c2_ledger_terminal(
             conversation_id=target.conversation_id,
             source_message_key=source_key,
+            origin_read_run_id=origin_read_run_id,
             dedupe_key=None,
             message_type="image",
             terminal_state=terminal_state,
@@ -4927,22 +9383,13 @@ class TaskRunner:
                 or observation.get("row_kind") != "image_bubble"
             ):
                 continue
-            source = (
-                observation.get("source_message")
-                if isinstance(observation.get("source_message"), dict)
-                else {}
-            )
-            source_key = str(
-                source.get("source_message_key") or ""
-            ).strip()
-            if not source_key:
-                try:
-                    source_key = image_observation_source_key(
-                        target,
-                        observation,
-                    )
-                except ValueError:
-                    source_key = ""
+            try:
+                source_key = image_observation_source_key(
+                    target,
+                    observation,
+                )
+            except ValueError:
+                source_key = ""
             if source_key:
                 visible_source_keys.add(source_key)
 
@@ -4976,6 +9423,33 @@ class TaskRunner:
                 or str(replayable.get("item_state") or "")
                 not in {"completed", "failed"}
             ):
+                continue
+            try:
+                validate_committed_image_identity(
+                    replayable,
+                    conversation_id=target.conversation_id,
+                    require_formalization_proof=True,
+                )
+                if image_observation_source_key(
+                    target,
+                    replayable,
+                ) != source_key:
+                    raise ValueError(
+                        "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                    )
+            except ValueError:
+                append_log(
+                    "ERROR",
+                    "c2_image_ledger_identity_rejected",
+                    "图片 Ledger 缺少合法 committed 身份和正式化证明；禁止恢复为正式消息。",
+                    error_code="C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    metadata={
+                        "conversation_id": target.conversation_id,
+                        "source_message_key": source_key,
+                        "image_persisted": False,
+                    },
+                    force_incident=True,
+                )
                 continue
             restored_observation = dict(replayable)
             # This fact is durable, but its last visible coordinates are not
@@ -5033,6 +9507,64 @@ class TaskRunner:
         payload["observations"] = observations
         return payload
 
+    def _restore_visible_failed_voice_facts(
+        self,
+        *,
+        target: WechatReadTarget,
+        sidecar_payload: dict[str, Any],
+    ) -> tuple[set[str], dict[str, str]]:
+        """Project waiting failed voice facts without repeating UI actions."""
+
+        grouped: dict[str, set[str]] = {}
+        for observation in sidecar_payload.get("observations") or []:
+            if (
+                not isinstance(observation, dict)
+                or observation.get("row_kind") != "voice_bubble"
+                or observation.get("voice_state") != "untranscribed"
+            ):
+                continue
+            try:
+                source_key = voice_observation_source_key(
+                    target,
+                    observation,
+                )
+            except ValueError:
+                continue
+            ledger = load_c2_ledger_entry(
+                target.conversation_id,
+                source_key,
+            )
+            if (
+                not ledger
+                or ledger.get("terminal_state") != "failed"
+                or ledger.get("ingest_state") == "confirmed"
+            ):
+                continue
+            result = (
+                ledger.get("result")
+                if isinstance(ledger.get("result"), dict)
+                else {}
+            )
+            error_code = str(
+                result.get("error_code")
+                or "VOICE_TRANSCRIBE_FAILED"
+            )
+            grouped.setdefault(error_code, set()).add(source_key)
+
+        roles: dict[str, str] = {}
+        source_keys: set[str] = set()
+        for error_code, grouped_keys in grouped.items():
+            roles.update(
+                self._annotate_failed_voice_observations(
+                    target=target,
+                    sidecar_payload=sidecar_payload,
+                    failed_source_keys=grouped_keys,
+                    error_code=error_code,
+                )
+            )
+            source_keys.update(grouped_keys)
+        return source_keys, roles
+
     def _process_final_image_slots(
         self,
         *,
@@ -5040,8 +9572,8 @@ class TaskRunner:
         target: WechatReadTarget,
         sidecar_payload: dict[str, Any],
         enforce_read_targets: bool,
-        cancel_check: Callable[[], bool] | None = None,
-        allowed_new_source_keys: set[str] | None = None,
+        cancel_check: Callable[[], bool | str] | None = None,
+        allowed_new_observation_ids: set[str] | None = None,
         flow_outcomes: FlowOutcomeAccumulator | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         observations = sidecar_payload.get("observations")
@@ -5065,16 +9597,120 @@ class TaskRunner:
             if isinstance(item, dict) and item.get("row_kind") == "image_bubble"
         ]
         stats["discovered"] = len(indexed)
+        image_action_started = False
         for index, observation in sorted(indexed, key=lambda value: (visual_top(value[1]), value[0])):
-            source_key = image_observation_source_key(target, observation)
             source = observation.get("source_message") if isinstance(observation.get("source_message"), dict) else {}
-            observation["source_message"] = {**source, "source_message_key": source_key}
+            observation_id = str(
+                observation.get("observation_id") or ""
+            ).strip()
+            if not observation_role_is_trusted(observation):
+                append_log(
+                    "WARN",
+                    "c2_image_role_rejected",
+                    "C2 图片初始同行头像角色不可信；本轮不建立图片身份、不落终态、不调用 Vision。",
+                    error_code="MESSAGE_IDENTITY_UNCONFIRMED",
+                    metadata={
+                        "conversation_id": target.conversation_id,
+                        "remark_code": target.remark_code,
+                        "observation_id": observation_id,
+                        "sender_role": str(
+                            observation.get("sender_role") or ""
+                        ),
+                        "sender_role_source": str(
+                            observation.get("sender_role_source") or ""
+                        ),
+                        "image_persisted": False,
+                    },
+                )
+                continue
+            identity_scope = str(
+                observation.get("_worker_identity_scope") or ""
+            ).strip()
+            item_state = str(
+                observation.get("item_state") or "discovered"
+            ).strip().lower()
+            provisional = (
+                identity_scope == "current_read_provisional"
+                and item_state == "discovered"
+            )
+            source_key = ""
+            if not provisional:
+                try:
+                    validate_committed_image_identity(
+                        observation,
+                        conversation_id=target.conversation_id,
+                    )
+                    source_key = image_observation_source_key(
+                        target,
+                        observation,
+                    )
+                except ValueError:
+                    stats["terminal_gate"] = {
+                        "error_code": (
+                            "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                        ),
+                        "identity_errors": [
+                            {
+                                "observation_id": observation_id,
+                                "row_kind": "image_bubble",
+                                "error_code": (
+                                    "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                                ),
+                                "reason": (
+                                    "committed_image_identity_missing_or_invalid"
+                                ),
+                            }
+                        ],
+                        "authoritative_frame_source": str(
+                            payload.get("authoritative_frame_source")
+                            or "initial_read"
+                        ),
+                        "ui_frame_invalidated": False,
+                    }
+                    enriched_observations[index] = None
+                    append_log(
+                        "ERROR",
+                        "c2_image_identity_scope_rejected",
+                        "图片身份不是唯一白名单 committed；已在任何图片动作、Ledger、Outbox 和正式消息前失败关闭。",
+                        error_code=(
+                            "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                        ),
+                        metadata={
+                            "conversation_id": target.conversation_id,
+                            "remark_code": target.remark_code,
+                            "observation_id": observation_id,
+                            "identity_scope": identity_scope,
+                            "item_state": item_state,
+                            "image_persisted": False,
+                        },
+                        force_incident=True,
+                    )
+                    break
+            action_local_key = (
+                "image-action-candidate:"
+                + hashlib.sha256(
+                    json.dumps(
+                        {
+                            "conversation_id": target.conversation_id,
+                            "read_run_id": (
+                                flow_outcomes.origin_read_run_id
+                                if flow_outcomes is not None
+                                else ""
+                            ),
+                            "observation_id": observation_id,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()[:40]
+            )
             common_metadata = {
                 "conversation_id": target.conversation_id,
                 "remark_code": target.remark_code,
                 "authorization_revision": target.authorization_revision,
                 "source_message_key": source_key,
-                "observation_id": str(observation.get("observation_id") or ""),
+                "observation_id": observation_id,
                 "sender_role": str(observation.get("sender_role") or ""),
                 "sender_role_source": str(observation.get("sender_role_source") or ""),
                 "bubble_rect": observation.get("bubble_rect"),
@@ -5087,13 +9723,131 @@ class TaskRunner:
                 "review_path": payload.get("review_path"),
                 "image_persisted": False,
             }
+            if provisional:
+                prior_journal_path = action_journal_path(
+                    "image",
+                    action_local_key,
+                )
+                if prior_journal_path.exists():
+                    prior_journal = read_action_journal(
+                        prior_journal_path
+                    )
+                    prior_items = (
+                        prior_journal.get("items")
+                        if isinstance(prior_journal.get("items"), dict)
+                        else {}
+                    )
+                    prior_item = (
+                        prior_items.get(action_local_key)
+                        if isinstance(
+                            prior_items.get(action_local_key), dict
+                        )
+                        else {}
+                    )
+                    prior_terminal = (
+                        prior_item.get("terminal_payload")
+                        if isinstance(
+                            prior_item.get("terminal_payload"), dict
+                        )
+                        else {}
+                    )
+                    prior_error = str(
+                        prior_item.get("error_code")
+                        or prior_terminal.get("error_code")
+                        or ""
+                    ).strip()
+                    if str(
+                        prior_item.get("action_phase") or ""
+                    ).strip() == "cancelled_before_trigger":
+                        # This reservation is burned for the current read
+                        # run. A retry requires a newly arbitrated frame and
+                        # therefore a new action-local identity.
+                        stats["removed_from_final_screen"] += 1
+                        mark_image_removed_from_final_screen(
+                            stats,
+                            action_local_key,
+                        )
+                        enriched_observations[index] = None
+                        append_log(
+                            "INFO",
+                            "c2_image_cancelled_reservation_reused",
+                            "图片动作已在点击前取消；同一读取轮次不复用预留号、不重复调用 Vision。",
+                            metadata=common_metadata,
+                        )
+                        continue
+                    if (
+                        prior_error
+                        == "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                        and not str(
+                            prior_journal.get(
+                                "committed_worker_stable_id"
+                            )
+                            or ""
+                        ).strip()
+                    ):
+                        stats["terminal_gate"] = {
+                            "error_code": prior_error,
+                            "identity_errors": [
+                                {
+                                    "observation_id": observation_id,
+                                    "row_kind": "image_bubble",
+                                    "error_code": prior_error,
+                                    "reason": str(
+                                        prior_terminal.get(
+                                            "reason_detail"
+                                        )
+                                        or "confirmed_image_identity_receipt_missing_or_invalid"
+                                    ),
+                                }
+                            ],
+                            "authoritative_frame_source": (
+                                "action_journal_recovery"
+                            ),
+                            "ui_frame_invalidated": False,
+                            "action_journal_path": str(
+                                prior_journal_path
+                            ),
+                        }
+                        enriched_observations[index] = None
+                        append_log(
+                            "WARN",
+                            "c2_image_identity_gate_reused",
+                            "图片身份失败已持久化；本轮复用同一门禁，不重复右键、复制或调用 Vision。",
+                            error_code=prior_error,
+                            metadata=common_metadata,
+                        )
+                        break
             append_log(
                 "INFO",
                 "c2_image_slot_discovered",
                 "C2 在最终权威画面发现图片槽位。",
                 metadata=common_metadata,
             )
-            ledger = load_c2_ledger_entry(target.conversation_id, source_key)
+            if provisional and (
+                not observation_id
+                or not str(
+                    observation.get("_worker_stable_id") or ""
+                ).strip()
+            ):
+                append_log(
+                    "WARN",
+                    "c2_image_identity_rejected",
+                    "C2 图片临时身份合同不完整；本轮不调用 Vision。",
+                    error_code="C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    metadata=common_metadata,
+                )
+                continue
+            if source_key:
+                observation["source_message"] = {
+                    **source,
+                    "source_message_key": source_key,
+                }
+            # Only a committed identity may consult cross-run facts.
+            ledger = (
+                load_c2_ledger_entry(target.conversation_id, source_key)
+                if source_key
+                else None
+            )
             if ledger and ledger.get("terminal_state") in {"completed", "failed"}:
                 result = ledger.get("result") if isinstance(ledger.get("result"), dict) else {}
                 result = {**result, "state": ledger.get("terminal_state")}
@@ -5119,8 +9873,8 @@ class TaskRunner:
                 binding=binding,
                 target=target,
                 observation=observation,
-                source_key=source_key,
-                allowed_new_source_keys=allowed_new_source_keys,
+                observation_id=observation_id,
+                allowed_new_observation_ids=allowed_new_observation_ids,
                 enforce_read_targets=enforce_read_targets,
             )
             if access_decision == "role_untrusted":
@@ -5136,7 +9890,7 @@ class TaskRunner:
                 append_log(
                     "INFO",
                     "c2_image_slot_not_new",
-                    "图片不是本轮 NEW_IMAGE；旧终态由 ledger 复用，OUTBOX 只重传原 JSON。",
+                    "图片不满足 current_read_run + not_enqueued；历史终态由 ledger 复用，OUTBOX 只重传原 JSON。",
                     metadata=common_metadata,
                 )
                 continue
@@ -5151,6 +9905,11 @@ class TaskRunner:
                 )
                 break
             else:
+                if image_action_started:
+                    # Every irreversible image operation invalidates the
+                    # frame. Remaining candidates are selected only after a
+                    # fresh read and sequence alignment.
+                    continue
                 append_log(
                     "INFO",
                     "c2_image_role_confirmed",
@@ -5173,13 +9932,12 @@ class TaskRunner:
                     target=target,
                     payload=payload,
                     observation=observation,
-                    source_key=source_key,
+                    action_local_id=action_local_key,
                     cancel_check=cancel_check,
                     flow_outcomes=flow_outcomes,
                 )
             normalized = self._normalize_one_image_slot_result(
                 result,
-                source_key=source_key,
             )
             result = normalized["result"]
             transaction = normalized["transaction"]
@@ -5187,10 +9945,11 @@ class TaskRunner:
             result_reason = str(result.get("reason") or "")
             result_action_phase = normalized["action_phase"]
             if normalized["removed_from_final_screen"]:
+                image_action_started = True
                 stats["removed_from_final_screen"] += 1
                 mark_image_removed_from_final_screen(
                     stats,
-                    source_key,
+                    action_local_key,
                 )
                 enriched_observations[index] = None
                 append_log(
@@ -5207,38 +9966,14 @@ class TaskRunner:
             image_action = normalized["action_outcome"]
             raw_terminal_state = normalized["raw_terminal_state"]
             action_was_attempted = normalized["action_was_attempted"]
-            if action_was_attempted:
-                mark_image_action(stats, source_key)
-            if (
-                flow_outcomes is not None
-                and (
-                    action_was_attempted
-                    or raw_terminal_state in {"completed", "failed"}
+            if normalized["ui_frame_invalidated"]:
+                image_action_started = True
+                mark_image_ui_frame_invalidated(
+                    stats,
+                    action_local_key,
                 )
-            ):
-                image_evidence = dict(image_action.get("evidence") or {})
-                image_evidence["action_kind"] = "image"
-                image_action["evidence"] = image_evidence
-                image_action["terminal_payload"] = {
-                    "state": raw_terminal_state,
-                    "reason": str(result.get("reason") or ""),
-                    "customer_image_understanding": (
-                        dict(result.get("customer_image_understanding") or {})
-                        if isinstance(
-                            result.get("customer_image_understanding"), dict
-                        )
-                        else None
-                    ),
-                    "visual_bridge_input": (
-                        dict(result.get("visual_bridge_input") or {})
-                        if isinstance(result.get("visual_bridge_input"), dict)
-                        else None
-                    ),
-                    "transaction": _safe_c2_image_transaction(
-                        result.get("transaction")
-                    ),
-                }
-                flow_outcomes.record(image_action)
+            if action_was_attempted:
+                mark_image_action(stats, action_local_key)
             for diagnostic_event in diagnostics.get("events") or []:
                 safe_event = _safe_c2_image_diagnostic_event(diagnostic_event)
                 append_log(
@@ -5284,6 +10019,177 @@ class TaskRunner:
                     metadata={**common_metadata, "image_persisted": False},
                 )
                 break
+            terminal_observation = apply_image_terminal_result(
+                observation,
+                result,
+            )
+            try:
+                validate_committed_image_identity(
+                    terminal_observation,
+                    conversation_id=target.conversation_id,
+                    require_formalization_proof=True,
+                )
+            except ValueError:
+                journal_path = str(
+                    result.get("_image_action_journal_path") or ""
+                ).strip()
+                stats["terminal_gate"] = {
+                    "error_code": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    "identity_errors": [
+                        {
+                            "observation_id": observation_id,
+                            "row_kind": "image_bubble",
+                            "error_code": (
+                                "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                            ),
+                            "reason": str(
+                                terminal_observation.get("reason_detail")
+                                or "confirmed_image_identity_receipt_missing_or_invalid"
+                            ),
+                        }
+                    ],
+                    "authoritative_frame_source": (
+                        "action_journal_recovery"
+                    ),
+                    "ui_frame_invalidated": False,
+                    "action_journal_path": journal_path,
+                }
+                enriched_observations[index] = None
+                append_log(
+                    "ERROR",
+                    "c2_image_identity_receipt_rejected",
+                    "图片动作缺少合法身份确认回执；未生成正式消息、Ledger 或 Outbox，已转入独立身份门禁。",
+                    error_code="C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    metadata={
+                        **common_metadata,
+                        "action_phase": result_action_phase,
+                        "action_journal_path": journal_path,
+                        "reason": result_reason,
+                        "reason_detail": str(
+                            result.get("reason_detail") or ""
+                        ),
+                        "diagnostics": {
+                            "events": [
+                                _safe_c2_image_diagnostic_event(item)
+                                for item in (
+                                    diagnostics.get("events") or []
+                                )
+                                if isinstance(item, dict)
+                            ],
+                            "image_persisted": False,
+                        },
+                    },
+                    force_incident=True,
+                )
+                break
+            source_key = image_observation_source_key(
+                target,
+                terminal_observation,
+            )
+            terminal_source = (
+                terminal_observation.get("source_message")
+                if isinstance(
+                    terminal_observation.get("source_message"), dict
+                )
+                else {}
+            )
+            terminal_observation["source_message"] = {
+                **terminal_source,
+                "source_message_key": source_key,
+            }
+            journal_path = str(
+                result.get("_image_action_journal_path") or ""
+            ).strip()
+            journal_item_id = str(
+                result.get("_image_action_journal_item_id")
+                or action_local_key
+            ).strip()
+            if journal_path:
+                try:
+                    commit_action_journal_item_identity(
+                        journal_path,
+                        journal_item_id=journal_item_id,
+                        source_message_key=source_key,
+                    )
+                except (OSError, ValueError) as exc:
+                    stats["terminal_gate"] = {
+                        "error_code": (
+                            "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                        ),
+                        "identity_errors": [
+                            {
+                                "observation_id": observation_id,
+                                "row_kind": "image_bubble",
+                                "error_code": (
+                                    "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                                ),
+                                "reason": "image_identity_journal_commit_failed",
+                                "signature": type(exc).__name__,
+                            }
+                        ],
+                        "authoritative_frame_source": (
+                            "action_journal_recovery"
+                        ),
+                        "ui_frame_invalidated": False,
+                        "action_journal_path": journal_path,
+                    }
+                    enriched_observations[index] = None
+                    append_log(
+                        "ERROR",
+                        "c2_image_identity_journal_commit_failed",
+                        "图片身份回执有效，但 ActionJournal 正式化失败；已禁止 Ledger、Outbox、入库和 Brain。",
+                        error_code=(
+                            "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                        ),
+                        metadata={
+                            **common_metadata,
+                            "error_type": type(exc).__name__,
+                        },
+                        force_incident=True,
+                    )
+                    break
+            image_action["source_message_key"] = source_key
+            image_evidence = dict(image_action.get("evidence") or {})
+            image_evidence["action_kind"] = "image"
+            image_action["evidence"] = image_evidence
+            image_action["terminal_payload"] = {
+                "state": str(result.get("state") or "failed"),
+                "media_action_terminal": (
+                    MediaActionTerminal.COMMITTED_COMPLETED.value
+                    if str(result.get("state") or "") == "completed"
+                    else MediaActionTerminal.COMMITTED_FAILED.value
+                ),
+                "error_code": (
+                    str(result.get("reason") or "")
+                    if str(result.get("state") or "") == "failed"
+                    else None
+                ),
+                "reason_detail": (
+                    str(transaction.get("status") or result_reason)
+                    if str(result.get("state") or "") == "failed"
+                    else None
+                ),
+                "customer_image_understanding": (
+                    dict(result.get("customer_image_understanding") or {})
+                    if isinstance(
+                        result.get("customer_image_understanding"), dict
+                    )
+                    else None
+                ),
+                "visual_bridge_input": (
+                    dict(result.get("visual_bridge_input") or {})
+                    if isinstance(result.get("visual_bridge_input"), dict)
+                    else None
+                ),
+                "transaction": _safe_c2_image_transaction(
+                    result.get("transaction")
+                ),
+            }
+            if flow_outcomes is not None and (
+                action_was_attempted
+                or raw_terminal_state in {"completed", "failed"}
+            ):
+                flow_outcomes.record(image_action)
             append_log(
                 "INFO" if terminal_state == "completed" else "WARN",
                 "c2_image_slot_finished",
@@ -5308,8 +10214,13 @@ class TaskRunner:
             ) = self._persist_one_image_slot_terminal(
                 target=target,
                 payload=payload,
-                observation=observation,
+                terminal_observation=terminal_observation,
                 source_key=source_key,
+                origin_read_run_id=(
+                    flow_outcomes.origin_read_run_id
+                    if flow_outcomes is not None
+                    else ""
+                ),
                 result=result,
                 stats=stats,
             )
@@ -5371,7 +10282,7 @@ class TaskRunner:
         binding: Binding,
         target: WechatReadTarget,
         batch_id: str,
-        cancel_check: Callable[[], bool],
+        cancel_check: Callable[[], bool | str],
         recovered_task: Task | None = None,
     ) -> dict[str, Any]:
         previous_task = self.current_task
@@ -5398,7 +10309,7 @@ class TaskRunner:
         binding: Binding,
         target: WechatReadTarget,
         batch_id: str,
-        cancel_check: Callable[[], bool],
+        cancel_check: Callable[[], bool | str],
         recovered_task: Task | None = None,
     ) -> dict[str, Any]:
         """Wait for Brain and send under the C2 lease already held by the caller."""
@@ -5408,12 +10319,7 @@ class TaskRunner:
         current_batch_id = batch_id
         while True:
             if cancel_check():
-                error_code = (
-                    "UI_LOCK_RENEW_FAILED"
-                    if self.current_ui_lock is not None
-                    and self.current_ui_lock.cancel_requested()
-                    else "WORKER_INTERRUPTED"
-                )
+                error_code = _ui_lock_cancel_reason(self.current_ui_lock) or "WORKER_INTERRUPTED"
                 return {"ok": False, "error_code": error_code, "batch_id": current_batch_id}
             try:
                 status = self.api.get_wechat_message_batch(binding, current_batch_id)
@@ -5473,6 +10379,15 @@ class TaskRunner:
                     self.current_ui_lock.update_step("c3_brain_waiting")
                 time.sleep(max(0.1, CONFIG.c3_brain_poll_interval_seconds))
                 continue
+            task_payload = (
+                status.get("task")
+                if isinstance(status.get("task"), dict)
+                else {}
+            )
+            reply_task_id = str(task_payload.get("id") or "").strip()
+            self._emit_runtime_process(
+                {"event": "reply_ready", **self._runtime_process_context}
+            )
             # Reuse the only complete C2 fact flow under the lease already held.
             # It may transcribe voice and run Vision, but it may only validate the
             # current chat; pre-send refresh must never search or switch sessions.
@@ -5480,6 +10395,7 @@ class TaskRunner:
                 binding,
                 target,
                 current_step="pre_send_refresh",
+                operation_phase=C2_PRE_SEND_REFRESH_PHASE,
                 allow_during_current_task=True,
                 enforce_read_targets=True,
                 held_lease=self.current_ui_lock,
@@ -5487,11 +10403,22 @@ class TaskRunner:
                 wait_for_brain=False,
             )
             if not refresh_read.get("ok"):
+                reply_task_settled = (
+                    self._settle_chat_reply_context_failure_before_unlock(
+                        binding,
+                        task_id=reply_task_id,
+                        source_error_code=str(
+                            refresh_read.get("error_code")
+                            or "PRE_SEND_REFRESH_FAILED"
+                        ),
+                    )
+                )
                 return {
                     "ok": False,
                     "error_code": str(refresh_read.get("error_code") or "PRE_SEND_REFRESH_FAILED"),
                     "batch": status,
                     "pre_send_refresh": refresh_read,
+                    "reply_task_settled": reply_task_settled,
                 }
             if int(refresh_read.get("new_self_message_count") or 0) > 0:
                 return {
@@ -5529,15 +10456,39 @@ class TaskRunner:
                     "batch": status,
                     "pre_send_refresh": refresh_read,
                 }
+            send_identity_frame = (
+                refresh_read.get("send_identity_frame")
+                if isinstance(refresh_read.get("send_identity_frame"), dict)
+                else {}
+            )
+            pre_send_observations = [
+                dict(item)
+                for item in (send_identity_frame.get("observations") or [])
+                if isinstance(item, dict)
+            ]
+            pre_send_frame_id = str(
+                send_identity_frame.get("frame_id") or ""
+            ).strip()
+            if (
+                send_identity_frame.get("contract_revision")
+                != contract_revision()
+                or not pre_send_frame_id
+                or not pre_send_observations
+            ):
+                return {
+                    "ok": False,
+                    "error_code": "C3_SEND_IDENTITY_FRAME_MISSING",
+                    "batch": status,
+                    "pre_send_refresh": refresh_read,
+                }
 
-            task_payload = status.get("task")
-            if not isinstance(task_payload, dict):
+            if not task_payload:
                 return {"ok": False, "error_code": "C3_REPLY_TASK_MISSING", "batch": status}
             pending_task = Task.from_api(task_payload)
             if recovered_task is not None and recovered_task.id == pending_task.id:
                 task = recovered_task
             else:
-                if not self._ui_actions_enabled(binding):
+                if not self._can_continue_inflight_flow():
                     return {
                         "ok": False,
                         "error_code": "WORKER_EMERGENCY_STOPPED",
@@ -5558,7 +10509,7 @@ class TaskRunner:
                         "failure_step": "claim_task",
                         "batch": status,
                     }
-            if not self._ui_actions_enabled(binding):
+            if not self._can_continue_inflight_flow():
                 return {
                     "ok": False,
                     "error_code": "WORKER_EMERGENCY_STOPPED",
@@ -5583,7 +10534,7 @@ class TaskRunner:
                     "batch": status,
                 }
             if (
-                not self._ui_actions_enabled(binding)
+                not self._can_continue_inflight_flow()
                 or not self._backend_still_allows_read_target(binding, target)
             ):
                 return {
@@ -5622,23 +10573,20 @@ class TaskRunner:
                     claim.reply_action_id
                 )
             )
-            if not send_journal_path.exists():
-                initialize_action_journal(
-                    send_journal_path,
-                    action_kind="send",
-                    transaction_id=claim.reply_action_id,
-                    conversation_id=target.conversation_id,
-                    items=[
-                        {
-                            "source_message_key": claim.reply_action_id,
-                            "physical_anchor_keys": [],
-                        }
-                    ],
-                )
             journal_phase = self._send_transaction_journal_phase(
                 claim.reply_action_id
             )
             if claim.duplicated and journal_phase != "not_attempted":
+                self._mark_possible_ai_send_alignment(
+                    conversation_id=target.conversation_id,
+                    reply_action_id=claim.reply_action_id,
+                    reconciliation_state=(
+                        "journal_confirmed_identity_pending"
+                        if journal_phase == "confirmed"
+                        else "triggered_identity_pending"
+                    ),
+                    physical_send_confirmed=(journal_phase == "confirmed"),
+                )
                 pending_ack = load_reply_send_ack_outbox(claim.reply_action_id)
                 if pending_ack and pending_ack.get("status") == "intent":
                     recovered_send_result = (
@@ -5687,6 +10635,93 @@ class TaskRunner:
                     ),
                     "reason": "duplicate_send_claim_suppressed",
                 }
+            reserved_send_stable_id = self._reserve_worker_sequence(
+                target,
+                reservation_key=f"send-action:{claim.reply_action_id}",
+            )
+            committed_pre_ids = {
+                str(item.get("observation_id") or "").strip(): str(
+                    item.get("_worker_stable_id") or ""
+                ).strip()
+                for item in pre_send_observations
+                if str(item.get("observation_id") or "").strip()
+                and str(item.get("_worker_stable_id") or "").strip()
+            }
+            pre_send_identity_sequence = build_pre_action_identity_sequence(
+                pre_send_observations,
+                committed_ids=committed_pre_ids,
+            )
+            if not pre_send_identity_sequence:
+                self._queue_and_submit_reply_send_ack(
+                    binding,
+                    claim,
+                    send_result="failed",
+                    action_phase="not_attempted",
+                    reply_text_hash=claim.reply_text_hash,
+                    error_code="C3_SEND_IDENTITY_SEQUENCE_EMPTY",
+                    remark="发送前消息序列为空，未操作微信输入框。",
+                )
+                return {
+                    "ok": False,
+                    "error_code": "C3_SEND_IDENTITY_SEQUENCE_EMPTY",
+                    "batch": status,
+                }
+            if not send_journal_path.exists():
+                initialize_action_journal(
+                    send_journal_path,
+                    action_kind="send",
+                    transaction_id=claim.reply_action_id,
+                    conversation_id=target.conversation_id,
+                    items=[
+                        {
+                            "journal_item_id": claim.reply_action_id,
+                            "action_local_id": claim.reply_action_id,
+                            "physical_anchor_keys": [],
+                        }
+                    ],
+                    pre_action_identity_sequence=(
+                        pre_send_identity_sequence
+                    ),
+                    pre_frame_id=pre_send_frame_id,
+                    canonical_action_id=claim.reply_action_id,
+                    reserved_worker_stable_id=reserved_send_stable_id,
+                )
+            else:
+                existing_send_journal = read_action_journal(
+                    send_journal_path
+                )
+                if (
+                    str(
+                        existing_send_journal.get("canonical_action_id")
+                        or ""
+                    ).strip()
+                    != claim.reply_action_id
+                    or str(
+                        existing_send_journal.get(
+                            "reserved_worker_stable_id"
+                        )
+                        or ""
+                    ).strip()
+                    != reserved_send_stable_id
+                    or existing_send_journal.get(
+                        "pre_action_identity_sequence"
+                    )
+                    != pre_send_identity_sequence
+                ):
+                    self._queue_and_submit_reply_send_ack(
+                        binding,
+                        claim,
+                        send_result="failed",
+                        action_phase="not_attempted",
+                        reply_text_hash=claim.reply_text_hash,
+                        error_code="C3_SEND_IDENTITY_JOURNAL_CONFLICT",
+                        remark="发送身份日志与当前序列不一致，未操作微信输入框。",
+                    )
+                    return {
+                        "ok": False,
+                        "error_code": "C3_SEND_IDENTITY_JOURNAL_CONFLICT",
+                        "batch": status,
+                    }
             final_send_text = self._canonical_reply_text(claim.reply_text)
             if not final_send_text or final_send_text != claim.reply_text:
                 actual_hash = self._reply_text_hash(final_send_text)
@@ -5720,14 +10755,13 @@ class TaskRunner:
                 }
             last_send_authorization_check = 0.0
 
-            def send_cancel_requested() -> bool:
+            def send_cancel_requested() -> bool | str:
                 nonlocal last_send_authorization_check
+                ui_lock_reason = _ui_lock_cancel_reason(self.current_ui_lock)
+                if ui_lock_reason:
+                    return ui_lock_reason
                 if (
-                    not self._ui_actions_enabled(binding)
-                    or (
-                        self.current_ui_lock is not None
-                        and self.current_ui_lock.cancel_requested()
-                    )
+                    not self._can_continue_inflight_flow()
                     or (
                         self.current_task_lease is not None
                         and self.current_task_lease.cancel_requested()
@@ -5753,21 +10787,73 @@ class TaskRunner:
             self._record_possible_ai_send(
                 target=target,
                 reply_action_id=claim.reply_action_id,
+                reply_text=final_send_text,
                 reply_text_hash=actual_hash,
+                reserved_worker_stable_id=reserved_send_stable_id,
+                pre_frame_id=pre_send_frame_id,
+                pre_action_identity_sequence=pre_send_identity_sequence,
             )
-            sidecar_result = self.bridge.send_reply(
-                target=target.remark_code or target.display_name,
-                rpa_session_key="",
-                text=final_send_text,
-                task_id=task.id,
-                reply_action_id=claim.reply_action_id,
-                current_only=True,
-                expected_context_guard=expected_context_guard,
-                cancel_check=send_cancel_requested,
+            self._emit_runtime_process(
+                {"event": "send_started", **self._runtime_process_context}
             )
+            reply_send_stage = (
+                StageTimer(
+                    process_run_id=(
+                        task.process_run_id
+                        or target.process_run_id
+                        or ""
+                    ),
+                    conversation_id=target.conversation_id,
+                    stage_name=(
+                        "c4.reply_send_confirm"
+                        if str(status.get("trigger_type") or "") == "recall"
+                        else "c3.reply_send_confirm"
+                    ),
+                    component="worker",
+                    trace_id=str(uuid.uuid4()),
+                )
+                if (task.process_run_id or target.process_run_id)
+                else None
+            )
+            try:
+                sidecar_result = self.bridge.send_reply(
+                    target=target.remark_code or target.display_name,
+                    rpa_session_key="",
+                    text=final_send_text,
+                    task_id=task.id,
+                    reply_action_id=claim.reply_action_id,
+                    current_only=True,
+                    expected_context_guard=expected_context_guard,
+                    cancel_check=send_cancel_requested,
+                )
+            except Exception as exc:
+                if reply_send_stage is not None:
+                    reply_send_stage.finish(
+                        status="failed",
+                        error_code=type(exc).__name__,
+                    )
+                    schedule_stage_event_upload(self.api, binding)
+                raise
             evidence = self._send_evidence(sidecar_result, target=target.remark_code or target.display_name)
             run_id = str(sidecar_result.get("sidecar_run_id") or sidecar_result.get("run_id") or "") or None
             action_outcome = classify_action_result("send", sidecar_result)
+            if reply_send_stage is not None:
+                reply_send_stage.finish(
+                    status=(
+                        "succeeded"
+                        if action_outcome["result"] == "sent"
+                        else "failed"
+                    ),
+                    error_code=(
+                        None
+                        if action_outcome["result"] == "sent"
+                        else str(
+                            action_outcome.get("error_code")
+                            or "RPA_SEND_REPLY_FAILED"
+                        )
+                    ),
+                )
+                schedule_stage_event_upload(self.api, binding)
             if action_outcome["result"] == "sent":
                 sent_at = self._utc_now_iso()
                 receipt_recorded = self._record_confirmed_ai_reply_receipt(
@@ -5816,6 +10902,16 @@ class TaskRunner:
                     conversation_id=target.conversation_id,
                     reply_action_id=claim.reply_action_id,
                 )
+            else:
+                # The physical trigger may have run.  Preserve the action as
+                # unreconciled; recovery must not re-send or reattach it by
+                # body text, viewport position, or an old screenshot.
+                self._mark_possible_ai_send_alignment(
+                    conversation_id=target.conversation_id,
+                    reply_action_id=claim.reply_action_id,
+                    reconciliation_state="ai_unreconciled",
+                    physical_send_confirmed=False,
+                )
             self._queue_and_submit_reply_send_ack(
                 binding, claim, send_result=send_result, action_phase=action_phase, reply_text_hash=actual_hash,
                 sidecar_run_id=run_id, evidence=evidence, error_code=error_code,
@@ -5833,393 +10929,1059 @@ class TaskRunner:
         lease: UiLockLease,
         action_cancel_requested: Callable[[], bool],
         enforce_read_targets: bool,
+        read_run_id: str,
         excluded_voice_anchor_keys: set[str],
         flow_outcomes: FlowOutcomeAccumulator | None = None,
     ) -> dict[str, Any]:
-        """Finish voices that appeared while the current chat lock is held.
+        """The only production voice orchestrator: prepare, persist, execute."""
 
-        Progress is measured by the stable pending source-key set. There is no
-        business-wide duration cutoff: each sidecar call has its own watchdog,
-        and an unchanged pending set is closed as an explicit failed fact.
-        """
-
-        current_payload = dict(sidecar_payload)
-        seen_pending_sets: set[tuple[str, ...]] = set()
-        processed_anchor_keys = set(excluded_voice_anchor_keys)
-        item_outcomes: list[dict[str, Any]] = []
-        accumulated_failure_code = ""
-
-        def summarized_outcomes() -> dict[str, Any]:
-            failed = [
-                item
-                for item in item_outcomes
-                if item.get("result") == "failed"
-            ]
+        if flow_outcomes is None:
             return {
+                "ok": False,
+                "error_code": "C2_VOICE_FLOW_OUTCOMES_MISSING",
+                "payload": sidecar_payload,
+            }
+        current_payload = dict(sidecar_payload)
+        current_payload["ui_frame_invalidated"] = bool(
+            current_payload.get("ui_frame_invalidated")
+        )
+        item_outcomes: list[dict[str, Any]] = []
+        failure_code = ""
+        terminal_gate: dict[str, Any] | None = None
+        cancelled_prepares = 0
+        remaining_actions = 32
+        attempted_fingerprints: set[str] = set()
+
+        def result() -> dict[str, Any]:
+            payload = {
+                "ok": True,
+                "payload": current_payload,
+                "failure_code": failure_code,
                 "item_outcomes": list(item_outcomes),
-                "failed_source_keys": sorted(
-                    str(item["source_message_key"])
-                    for item in failed
+                "failed_source_keys": sorted({
+                    str(item.get("source_message_key") or "")
+                    for item in item_outcomes
+                    if item.get("result") == "failed"
+                }),
+            }
+            if terminal_gate is not None:
+                payload["terminal_gate"] = dict(terminal_gate)
+            return payload
+
+        def quarantine_voice_identity(
+            *,
+            action_id: str,
+            action_error_code: str,
+        ) -> None:
+            """Project an unbound physical result as a conversation gate.
+
+            The action id is durable audit evidence for the one physical
+            click. It is deliberately not promoted to a message identity,
+            and the reserved worker sequence remains burned and uncommitted.
+            """
+
+            nonlocal failure_code, terminal_gate
+            failure_code = str(
+                action_error_code or "C2_VOICE_RESULT_AMBIGUOUS"
+            ).strip()
+            terminal_gate = {
+                "error_code": (
+                    "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
                 ),
-                "failed_roles": {
-                    str(item["source_message_key"]): str(
-                        (item.get("evidence") or {}).get("sender_role")
-                    )
-                    for item in failed
-                    if str(
-                        (item.get("evidence") or {}).get("sender_role") or ""
-                    )
-                    in {"customer", "self"}
-                },
+                "identity_errors": [
+                    {
+                        "observation_id": "",
+                        "row_kind": "voice_bubble",
+                        "error_code": (
+                            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                        ),
+                        "signature": action_id,
+                        "reason": (
+                            "action_triggered_without_confirmed_post_alignment"
+                        ),
+                        "screen_order": 0,
+                        "order_source": "",
+                    }
+                ],
+                "authoritative_frame_source": "final_read",
+                "ui_frame_invalidated": True,
+                "action_error_code": failure_code,
             }
 
-        while True:
-            pending: list[tuple[dict[str, Any], str, str, str]] = []
-            for observation in _untranscribed_voice_observations(current_payload):
-                if not observation_role_is_trusted(observation):
-                    continue
-                try:
-                    source_key = voice_observation_source_key(target, observation)
-                except ValueError:
-                    continue
-                ledger = load_c2_ledger_entry(target.conversation_id, source_key)
-                if ledger and ledger.get("terminal_state") in {
-                    "completed",
-                    "failed",
-                    "ignored",
-                }:
-                    continue
-                anchor_key = voice_observation_anchor_key(observation)
-                role = str(observation.get("sender_role") or "").strip().lower()
-                if (
-                    source_key
-                    and anchor_key
-                    and anchor_key not in processed_anchor_keys
-                    and role in {"customer", "self"}
-                ):
-                    pending.append((observation, source_key, anchor_key, role))
-
-            if not pending:
-                return {
-                    "ok": True,
-                    "payload": current_payload,
-                    "failure_code": accumulated_failure_code,
-                    **summarized_outcomes(),
-                }
-
-            pending_source_keys = tuple(sorted({item[1] for item in pending}))
-            if pending_source_keys in seen_pending_sets:
-                no_progress_outcomes = _unconfirmed_voice_action_outcomes(
-                    source_keys=set(pending_source_keys),
-                    roles={
-                        source_key: role
-                        for _, source_key, _, role in pending
-                    },
-                    anchors={
-                        source_key: anchor_key
-                        for _, source_key, anchor_key, _ in pending
-                    },
-                    error_code="VOICE_TRANSCRIBE_NO_PROGRESS",
-                    voice_payload=current_payload,
-                )
-                item_outcomes = merge_item_outcomes(
-                    item_outcomes,
-                    no_progress_outcomes,
-                )
-                if flow_outcomes is not None:
-                    flow_outcomes.extend(no_progress_outcomes)
-                return {
-                    "ok": True,
-                    "payload": current_payload,
-                    "failure_code": (
-                        accumulated_failure_code
-                        or "VOICE_TRANSCRIBE_NO_PROGRESS"
-                    ),
-                    **summarized_outcomes(),
-                }
-            seen_pending_sets.add(pending_source_keys)
-
+        while remaining_actions > 0:
             if action_cancel_requested():
-                return {
-                    "ok": False,
-                    "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
-                    "payload": current_payload,
-                }
-            if (
-                enforce_read_targets
-                and not self._backend_still_allows_read_target_for_voice(
-                    binding,
-                    target,
-                )
+                return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS", "payload": current_payload}
+            if enforce_read_targets and not self._backend_still_allows_read_target_for_voice(
+                binding,
+                target,
+                read_run_id=read_run_id,
             ):
-                return {
-                    "ok": False,
-                    "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
-                    "payload": current_payload,
-                }
-
-            lease.update_step("voice_transcribe_current_chat")
-            self.current_step = "voice_transcribe_current_chat"
-            voice_action_journal: Path | None = None
-            if flow_outcomes is not None:
-                voice_action_journal = (
-                    self._start_irreversible_action_journal(
-                        action_kind="voice",
-                        target=target,
-                        items=[
-                            {
-                                "source_message_key": source_key,
-                                "physical_anchor_keys": (
-                                    voice_action_journal_anchor_keys(
-                                        observation
-                                    )
-                                    or [anchor_key]
-                                ),
-                            }
-                            for observation, source_key, anchor_key, _ in pending
-                        ],
-                        flow_outcomes=flow_outcomes,
-                    )
+                return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS", "payload": current_payload}
+            current_executable_voices = (
+                _executable_untranscribed_voice_observations(
+                    target,
+                    current_payload,
+                    excluded_anchor_keys=excluded_voice_anchor_keys,
                 )
-            voice_payload = self.bridge.voice_transcribe(
+            )
+            if not current_executable_voices:
+                return result()
+
+            lease.update_step("voice_prepare_current_chat")
+            self.current_step = "voice_prepare_current_chat"
+            prepared = self.bridge.prepare_voice_action(
                 display_name=target_label,
                 rpa_session_key="",
                 remark_code=target.remark_code or "",
                 target_mode="current",
-                max_duration_seconds=CONFIG.c2_voice_transcribe_max_duration_seconds,
-                excluded_voice_anchor_keys=sorted(processed_anchor_keys),
-                action_journal=voice_action_journal,
+                expected_confirmed_self_text=(
+                    self._confirmed_ai_reply_text_for_read(target)
+                ),
+                max_duration_seconds=20,
+                excluded_voice_anchor_keys=sorted(excluded_voice_anchor_keys),
                 cancel_check=action_cancel_requested,
             )
-            contract_error = sidecar_contract_error(
-                voice_payload,
-                require_observations=False,
-            )
+            contract_error = sidecar_contract_error(prepared, require_observations=False)
             if contract_error:
-                return {
-                    "ok": False,
-                    "error_code": contract_error,
-                    "payload": current_payload,
-                }
-            voice_state = str(
-                voice_payload.get("state")
-                or voice_payload.get("error_code")
-                or ""
-            ).strip()
-            if voice_state in {
-                "voice_transcribe_cancelled",
-                "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
-            }:
-                return {
-                    "ok": False,
-                    "error_code": str(
-                        voice_payload.get("error_code") or voice_state
-                    ),
-                    "payload": current_payload,
-                }
-            if voice_state in {
-                "target_not_confirmed_for_voice_transcribe",
-                "voice_transcribe_target_not_found",
-                "TARGET_NOT_CONFIRMED_FOR_VOICE_TRANSCRIBE",
-            }:
-                return {
-                    "ok": False,
-                    "error_code": voice_state,
-                    "payload": current_payload,
-                }
-
-            reported_processed_anchors = {
-                str(value).strip()
-                for value in (
-                    voice_payload.get("processed_voice_anchor_keys") or []
-                )
-                if str(value).strip()
-            }
-            reported_failed_anchors = {
-                str(value).strip()
-                for value in (
-                    voice_payload.get("failed_voice_anchor_keys") or []
-                )
-                if str(value).strip()
-            }
-            processed_anchor_keys.update(reported_processed_anchors)
-            processed_anchor_keys.update(reported_failed_anchors)
-            raw_outcomes_by_anchor: dict[str, dict[str, Any]] = {}
-            for raw_outcome in voice_payload.get("item_action_outcomes") or []:
-                if not isinstance(raw_outcome, dict):
-                    continue
-                for value in raw_outcome.get("physical_anchor_keys") or []:
-                    anchor_key = str(value).strip()
-                    if anchor_key:
-                        raw_outcomes_by_anchor[anchor_key] = raw_outcome
-
-            unresolved_anchors = set(reported_failed_anchors)
-            if voice_state == "voice_transcribe_partial":
-                unresolved_anchors.update(
-                    anchor_key
-                    for _, _, anchor_key, _ in pending
-                    if anchor_key not in reported_processed_anchors
-                )
-            elif voice_state not in {
-                "voice_transcribe_completed",
-                "voice_transcribe_no_visible_voice",
-            }:
-                unresolved_anchors.update(
-                    anchor_key for _, _, anchor_key, _ in pending
-                )
-            round_outcomes: list[dict[str, Any]] = []
-            for _, source_key, anchor_key, role in pending:
-                raw_outcome = raw_outcomes_by_anchor.get(anchor_key)
-                if raw_outcome is not None:
-                    outcome = classify_action_result(
-                        "voice",
-                        raw_outcome,
-                        source_message_key=source_key,
-                    )
-                elif anchor_key in reported_processed_anchors:
-                    outcome = classify_action_result(
-                        "voice",
-                        {
-                            "error_code": (
-                                "VOICE_ITEM_ACTION_OUTCOME_MISSING"
-                            ),
-                            "evidence": {
-                                "voice_anchor_key": anchor_key,
-                                "reported_processed_without_item_outcome": True,
-                            },
-                        },
-                        source_message_key=source_key,
-                    )
-                elif anchor_key in unresolved_anchors:
-                    outcome = classify_action_result(
-                        "voice",
-                        {
-                            "error_code": (
-                                str(voice_payload.get("error_code") or "").strip()
-                                or str(voice_state or "VOICE_TRANSCRIBE_FAILED")
-                            ),
-                            "evidence": {"voice_anchor_key": anchor_key},
-                        },
-                        source_message_key=source_key,
-                    )
-                else:
-                    continue
-                outcome_evidence = dict(outcome.get("evidence") or {})
-                outcome_evidence.update(
-                    {
-                        "sender_role": role,
-                        "voice_anchor_key": anchor_key,
+                return {"ok": False, "error_code": contract_error, "payload": current_payload}
+            prepare_state = str(prepared.get("state") or "")
+            if prepare_state == "voice_action_prepare_empty":
+                if not isinstance(prepared.get("observations"), list):
+                    return {
+                        "ok": False,
+                        "error_code": "C2_AUTHORITATIVE_FRAME_SOURCE_INVALID",
+                        "payload": current_payload,
                     }
+                current_observations = list(
+                    current_payload.get("observations") or []
                 )
-                outcome["evidence"] = outcome_evidence
-                outcome["terminal_payload"] = _voice_terminal_payload(
-                    voice_payload,
-                    anchor_keys=[anchor_key],
-                    result=str(outcome.get("result") or "failed"),
-                    error_code=str(outcome.get("error_code") or "") or None,
+                prepared_observations = list(
+                    prepared.get("observations") or []
                 )
-                round_outcomes.append(outcome)
-                processed_anchor_keys.add(anchor_key)
-            item_outcomes = merge_item_outcomes(
-                item_outcomes,
-                round_outcomes,
-            )
-            if flow_outcomes is not None:
-                for outcome in round_outcomes:
-                    evidence = dict(outcome.get("evidence") or {})
-                    evidence["action_kind"] = "voice"
-                    outcome["evidence"] = evidence
-                flow_outcomes.extend(round_outcomes)
-            if unresolved_anchors and not accumulated_failure_code:
-                accumulated_failure_code = (
-                    str(voice_payload.get("error_code") or "").strip()
-                    or (
-                        "VOICE_TRANSCRIBE_PARTIAL"
-                        if voice_state
-                        in {
-                            "voice_transcribe_completed",
-                            "voice_transcribe_partial",
-                            "voice_transcribe_no_visible_voice",
-                        }
-                        else str(voice_state or "VOICE_TRANSCRIBE_FAILED")
+                current_candidate_ids = {
+                    str(item.get("observation_id") or "").strip()
+                    for item in current_executable_voices
+                    if str(item.get("observation_id") or "").strip()
+                }
+                prepared_voice_ids = {
+                    str(item.get("observation_id") or "").strip()
+                    for item in _untranscribed_voice_observations(prepared)
+                    if str(item.get("observation_id") or "").strip()
+                }
+                if current_candidate_ids & prepared_voice_ids:
+                    return {
+                        "ok": False,
+                        "error_code": "C2_AUTHORITATIVE_FRAME_SOURCE_INVALID",
+                        "payload": current_payload,
+                    }
+                aligned, alignment_evidence = (
+                    align_post_action_observations(
+                        current_observations,
+                        prepared_observations,
                     )
                 )
-
-            lease.update_step("target_chat_reconfirming")
-            self.current_step = "target_chat_reconfirming"
-            reusable = bool(
-                voice_payload.get("final_frame_reusable")
-                and isinstance(voice_payload.get("observations"), list)
-                and isinstance(voice_payload.get("target_confirmation"), dict)
-                and voice_payload.get("target_confirmation", {}).get("ok")
+                if alignment_evidence.get("alignment_status") not in {
+                    "unique",
+                    "not_required",
+                }:
+                    return {
+                        "ok": False,
+                        "error_code": (
+                            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                        ),
+                        "payload": current_payload,
+                    }
+                aligned = self._assign_sequence_new_suffix_identities(
+                    target=target,
+                    observations=aligned,
+                    evidence=alignment_evidence,
+                    read_run_id=flow_outcomes.origin_read_run_id,
+                )
+                completed_voice_summary = current_payload.get(
+                    "voice_transcription"
+                )
+                current_payload = {
+                    **prepared,
+                    "ok": True,
+                    "state": "messages_ocr",
+                    "observations": aligned,
+                    "sequence_alignment_evidence": alignment_evidence,
+                    "authoritative_frame_source": "final_read",
+                    "ui_frame_invalidated": bool(
+                        current_payload.get("ui_frame_invalidated")
+                    ),
+                }
+                if completed_voice_summary:
+                    current_payload["voice_transcription"] = (
+                        completed_voice_summary
+                    )
+                continue
+            prepare_fields = {
+                key: str(prepared.get(key) or "").strip()
+                for key in (
+                    "pre_frame_id",
+                    "selected_pre_observation_id",
+                    "selected_action_token",
+                    "selected_target_fingerprint",
+                )
+            }
+            if (
+                not prepared.get("ok")
+                or prepare_state != "voice_action_prepared"
+                or prepared.get("ui_action_performed") is not False
+                or any(not value for value in prepare_fields.values())
+            ):
+                return {
+                    "ok": False,
+                    "error_code": str(prepared.get("error_code") or "C2_VOICE_PREPARE_CONTRACT_INVALID"),
+                    "payload": current_payload,
+                }
+            fingerprint = prepare_fields["selected_target_fingerprint"]
+            if fingerprint in attempted_fingerprints:
+                failure_code = failure_code or "VOICE_TRANSCRIBE_NO_PROGRESS"
+                return result()
+            current_observations = list(
+                current_payload.get("observations") or []
             )
-            if reusable:
-                final_payload = dict(voice_payload)
-                final_payload["ok"] = True
-                final_payload["state"] = "messages_ocr"
-            else:
-                final_payload = self.bridge.get_messages(
+            pre_observations = list(prepared.get("observations") or [])
+            current_has_committed_identity = any(
+                isinstance(item, dict)
+                and str(item.get("_worker_stable_id") or "").strip()
+                for item in current_observations
+            )
+            current_ids = [
+                str(item.get("observation_id") or "").strip()
+                for item in current_observations
+                if isinstance(item, dict)
+            ]
+            prepared_ids = [
+                str(item.get("observation_id") or "").strip()
+                for item in pre_observations
+                if isinstance(item, dict)
+            ]
+            exact_read_only_frame = bool(
+                current_ids
+                and current_ids == prepared_ids
+                and len(set(current_ids)) == len(current_ids)
+                and all(current_ids)
+            )
+            if exact_read_only_frame:
+                committed_by_id = {
+                    str(item.get("observation_id") or "").strip(): str(
+                        item.get("_worker_stable_id") or ""
+                    ).strip()
+                    for item in current_observations
+                    if isinstance(item, dict)
+                    and str(item.get("observation_id") or "").strip()
+                    and str(item.get("_worker_stable_id") or "").strip()
+                }
+                voice_action_summary_by_id = {
+                    str(item.get("observation_id") or "").strip(): dict(
+                        item.get("_worker_voice_action_summary") or {}
+                    )
+                    for item in current_observations
+                    if isinstance(item, dict)
+                    and str(item.get("observation_id") or "").strip()
+                    and isinstance(
+                        item.get("_worker_voice_action_summary"), dict
+                    )
+                    and item.get("_worker_voice_action_summary")
+                }
+                inherited_pre_observations: list[Any] = []
+                for raw_observation in pre_observations:
+                    if not isinstance(raw_observation, dict):
+                        inherited_pre_observations.append(raw_observation)
+                        continue
+                    observation = dict(raw_observation)
+                    observation_id = str(
+                        observation.get("observation_id") or ""
+                    ).strip()
+                    committed_id = committed_by_id.get(observation_id)
+                    if committed_id:
+                        observation["_worker_stable_id"] = committed_id
+                    voice_action_summary = (
+                        voice_action_summary_by_id.get(observation_id)
+                    )
+                    if voice_action_summary:
+                        observation["_worker_voice_action_summary"] = dict(
+                            voice_action_summary
+                        )
+                    inherited_pre_observations.append(observation)
+                pre_observations = inherited_pre_observations
+                prepared = {
+                    **prepared,
+                    "observations": pre_observations,
+                }
+            elif current_has_committed_identity:
+                pre_observations, prepare_alignment_evidence = (
+                    align_post_action_observations(
+                        current_observations,
+                        pre_observations,
+                    )
+                )
+                if prepare_alignment_evidence.get(
+                    "alignment_status"
+                ) not in {"unique", "not_required"}:
+                    return {
+                        "ok": False,
+                        "error_code": (
+                            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                        ),
+                        "payload": current_payload,
+                    }
+                pre_observations = (
+                    self._assign_sequence_new_suffix_identities(
+                        target=target,
+                        observations=pre_observations,
+                        evidence=prepare_alignment_evidence,
+                        read_run_id=(
+                            flow_outcomes.origin_read_run_id
+                        ),
+                    )
+                )
+                prepared = {
+                    **prepared,
+                    "observations": pre_observations,
+                    "sequence_alignment_evidence": (
+                        prepare_alignment_evidence
+                    ),
+                }
+            selected_id = prepare_fields["selected_pre_observation_id"]
+            selected_observations = [
+                item
+                for item in pre_observations
+                if isinstance(item, dict)
+                and str(item.get("observation_id") or "").strip()
+                == selected_id
+            ]
+            selected_plan = (
+                prepared.get("selected_voice_observation")
+                if isinstance(
+                    prepared.get("selected_voice_observation"), dict
+                )
+                else {}
+            )
+            executable_prepared_ids = {
+                str(item.get("observation_id") or "").strip()
+                for item in _executable_untranscribed_voice_observations(
+                    target,
+                    {**prepared, "observations": pre_observations},
+                    excluded_anchor_keys=excluded_voice_anchor_keys,
+                )
+                if str(item.get("observation_id") or "").strip()
+            }
+            selected_observation = (
+                selected_observations[0]
+                if len(selected_observations) == 1
+                else {}
+            )
+            if (
+                len(selected_observations) != 1
+                or selected_id not in executable_prepared_ids
+                or not observation_role_is_trusted(selected_observation)
+                or str(
+                    selected_observation.get("message_type") or ""
+                ).strip().lower()
+                != "voice"
+                or str(
+                    selected_observation.get("voice_state") or ""
+                ).strip().lower()
+                != "untranscribed"
+                or str(
+                    selected_plan.get("observation_id") or ""
+                ).strip()
+                != selected_id
+                or str(
+                    selected_plan.get("sender_role") or ""
+                ).strip().lower()
+                != str(
+                    selected_observation.get("sender_role") or ""
+                ).strip().lower()
+            ):
+                return {"ok": False, "error_code": "C2_VOICE_PREPARE_CONTRACT_INVALID", "payload": current_payload}
+            physical_anchor_keys = sorted({
+                str(value).strip()
+                for value in (prepared.get("selected_physical_anchor_keys") or [])
+                if str(value).strip()
+            })
+            if not physical_anchor_keys:
+                return {"ok": False, "error_code": "C2_VOICE_PREPARE_CONTRACT_INVALID", "payload": current_payload}
+
+            action_id = f"voice:{target.conversation_id}:{uuid.uuid4()}"
+            reserved_id = self._reserve_worker_sequence(
+                target,
+                reservation_key=f"selected-action:{action_id}",
+            )
+            committed_ids = {
+                str(item.get("observation_id") or ""): str(item.get("_worker_stable_id") or "")
+                for item in pre_observations
+                if isinstance(item, dict)
+                and str(item.get("observation_id") or "")
+                and str(item.get("_worker_stable_id") or "")
+            }
+            pre_sequence = build_pre_action_identity_sequence(
+                pre_observations,
+                committed_ids=committed_ids,
+                selected_observation_id=selected_id,
+                canonical_action_id=action_id,
+                reserved_worker_stable_id=reserved_id,
+            )
+            prepare_evidence = {
+                **prepare_fields,
+                "selected_physical_anchor_keys": physical_anchor_keys,
+                "candidate_group_count": int(
+                    prepared.get("candidate_group_count") or 0
+                ),
+            }
+            journal = self._start_irreversible_action_journal(
+                action_kind="voice",
+                target=target,
+                items=[{
+                    "journal_item_id": action_id,
+                    "action_local_id": action_id,
+                    "physical_anchor_keys": physical_anchor_keys,
+                }],
+                flow_outcomes=flow_outcomes,
+                transaction_id=action_id,
+                pre_action_identity_sequence=pre_sequence,
+                pre_frame_id=prepare_fields["pre_frame_id"],
+                reserved_worker_stable_id=reserved_id,
+                prepare_evidence=prepare_evidence,
+            )
+
+            def terminate_created_voice_action(
+                error_code: str,
+                *,
+                definitely_before_trigger: bool = False,
+            ) -> None:
+                """Ensure every created voice action has a finite phase.
+
+                The Sidecar journal is authoritative about whether the
+                irreversible trigger may have run.  A still-not-attempted
+                journal can be cancelled.  Any other unresolved phase is
+                quarantined without attaching the reserved sequence identity
+                to message content or permitting a repeat click.
+                """
+
+                payload = read_action_journal(journal)
+                items = (
+                    payload.get("items")
+                    if isinstance(payload.get("items"), dict)
+                    else {}
+                )
+                item = (
+                    dict(items.get(action_id) or {})
+                    if isinstance(items.get(action_id), dict)
+                    else {}
+                )
+                phase = str(
+                    item.get("action_phase")
+                    or payload.get("action_phase")
+                    or "not_attempted"
+                ).strip()
+                if definitely_before_trigger and phase == "not_attempted":
+                    update_action_journal_item(
+                        journal,
+                        journal_item_id=action_id,
+                        action_phase="cancelled_before_trigger",
+                        business_state="not_attempted",
+                        business_result_confirmed=False,
+                        error_code=error_code,
+                        terminal_payload={
+                            "state": "cancelled_before_trigger",
+                            "media_action_terminal": (
+                                MediaActionTerminal.CANCELLED_BEFORE_TRIGGER.value
+                            ),
+                            "error_code": error_code,
+                        },
+                    )
+                    return
+                if phase in {"cancelled_before_trigger", "quarantined"}:
+                    return
+                update_action_journal_item(
+                    journal,
+                    journal_item_id=action_id,
+                    action_phase="quarantined",
+                    error_code=error_code,
+                    terminal_payload={
+                        "state": "quarantined",
+                        "media_action_terminal": (
+                            MediaActionTerminal.IDENTITY_UNRESOLVED.value
+                        ),
+                        "error_code": error_code,
+                        "previous_action_phase": phase,
+                    },
+                )
+
+            if enforce_read_targets and not self._backend_still_allows_read_target_for_voice(
+                binding,
+                target,
+                read_run_id=read_run_id,
+            ):
+                terminate_created_voice_action(
+                    "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
+                    definitely_before_trigger=True,
+                )
+                return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS", "payload": current_payload}
+
+            lease.update_step("voice_transcribe_current_chat")
+            self.current_step = "voice_transcribe_current_chat"
+            try:
+                executed = self.bridge.execute_voice_action(
                     display_name=target_label,
                     rpa_session_key="",
+                    canonical_voice_action_id=action_id,
+                    reserved_worker_stable_id=reserved_id,
+                    pre_frame_id=prepare_fields["pre_frame_id"],
+                    selected_pre_observation_id=selected_id,
+                    selected_action_token=prepare_fields["selected_action_token"],
+                    selected_target_fingerprint=fingerprint,
                     remark_code=target.remark_code or "",
                     target_mode="current",
-                    max_duration_seconds=20,
+                    expected_confirmed_self_text=(
+                        self._confirmed_ai_reply_text_for_read(target)
+                    ),
+                    max_duration_seconds=CONFIG.c2_voice_transcribe_max_duration_seconds,
+                    action_journal=journal,
                     cancel_check=action_cancel_requested,
                 )
-            if not final_payload.get("ok"):
-                return {
-                    "ok": False,
-                    "error_code": str(
-                        final_payload.get("error_code")
-                        or final_payload.get("state")
-                        or "TARGET_NOT_CONFIRMED_FOR_MESSAGES"
-                    ),
-                    "payload": current_payload,
-                }
-            final_contract_error = sidecar_contract_error(final_payload)
-            if final_contract_error:
-                return {
-                    "ok": False,
-                    "error_code": final_contract_error,
-                    "payload": current_payload,
-                }
-
-            identity_state_key = f"message_identity:{target.conversation_id}"
-            observations, identity_state, identity_errors = (
-                reconcile_v16104_identity_transition(
-                    target,
-                    list(final_payload.get("observations") or []),
-                    load_c2_state(identity_state_key),
+            except Exception:
+                terminate_created_voice_action(
+                    "C2_VOICE_EXECUTE_INTERRUPTED",
                 )
+                raise
+            execute_contract_error = sidecar_contract_error(executed, require_observations=False)
+            if execute_contract_error:
+                terminate_created_voice_action(
+                    execute_contract_error,
+                    definitely_before_trigger=bool(
+                        executed.get("ui_action_performed") is False
+                        and str(executed.get("action_phase") or "").strip()
+                        in {"not_attempted", "cancelled_before_trigger"}
+                    ),
+                )
+                return {"ok": False, "error_code": execute_contract_error, "payload": current_payload}
+            execute_state = str(executed.get("state") or "")
+            action_phase = str(executed.get("action_phase") or "not_attempted")
+            if execute_state == "voice_action_cancelled_before_trigger":
+                if (
+                    action_phase != "cancelled_before_trigger"
+                    or executed.get("ui_action_performed") is not False
+                    or str(executed.get("voice_action_stage") or "")
+                    != "execute"
+                    or any(
+                        str(executed.get(key) or "").strip() != value
+                        for key, value in {
+                            "canonical_voice_action_id": action_id,
+                            "reserved_worker_stable_id": reserved_id,
+                            **prepare_fields,
+                        }.items()
+                    )
+                ):
+                    terminate_created_voice_action(
+                        "C2_VOICE_CANCEL_CONTRACT_INVALID"
+                    )
+                    return {"ok": False, "error_code": "C2_VOICE_CANCEL_CONTRACT_INVALID", "payload": current_payload}
+                terminate_created_voice_action(
+                    str(executed.get("error_code") or "C2_VOICE_ACTION_CANCELLED"),
+                    definitely_before_trigger=True,
+                )
+                if (
+                    str(executed.get("error_code") or "").strip()
+                    == "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS"
+                    or action_cancel_requested()
+                    or (
+                        enforce_read_targets
+                        and not self._backend_still_allows_read_target_for_voice(
+                            binding,
+                            target,
+                            read_run_id=read_run_id,
+                        )
+                    )
+                ):
+                    return {
+                        "ok": False,
+                        "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
+                        "payload": current_payload,
+                    }
+                cancelled_prepares += 1
+                if cancelled_prepares >= 4:
+                    return {"ok": False, "error_code": "C2_VOICE_PREPARE_TARGET_UNSTABLE", "payload": current_payload}
+                continue
+
+            binding_status = str(
+                executed.get("transcript_binding_status") or ""
+            ).strip().lower()
+            binding_method = str(
+                executed.get("transcript_binding_method") or ""
+            ).strip().lower()
+            confirmed_mapping = (
+                executed.get("confirmed_action_mapping")
+                if isinstance(
+                    executed.get("confirmed_action_mapping"), dict
+                )
+                else {}
             )
-            if identity_errors:
+            tracking_edges = executed.get("tracking_edges")
+            tracking_frame_ids = executed.get("tracking_frame_ids")
+            try:
+                binding_candidate_count = int(
+                    executed.get("binding_candidate_count")
+                )
+            except (TypeError, ValueError):
+                binding_candidate_count = -1
+            execute_identity_contract_valid = bool(
+                str(executed.get("voice_action_stage") or "").strip()
+                == "execute"
+                and str(executed.get("pre_frame_id") or "").strip()
+                == prepare_fields["pre_frame_id"]
+                and str(executed.get("post_frame_id") or "").strip()
+                and str(
+                    executed.get("post_frame_id") or ""
+                ).strip()
+                != prepare_fields["pre_frame_id"]
+                and str(
+                    executed.get("selected_pre_observation_id") or ""
+                ).strip()
+                == selected_id
+                and str(
+                    executed.get("selected_action_token") or ""
+                ).strip()
+                == prepare_fields["selected_action_token"]
+                and str(
+                    executed.get("selected_target_fingerprint") or ""
+                ).strip()
+                == fingerprint
+                and
+                str(
+                    executed.get("canonical_voice_action_id") or ""
+                ).strip()
+                == action_id
+                and str(
+                    executed.get("reserved_worker_stable_id") or ""
+                ).strip()
+                == reserved_id
+                and binding_status in {"confirmed", "ambiguous", "failed"}
+                and binding_method
+                and binding_candidate_count >= 0
+                and isinstance(tracking_frame_ids, list)
+                and isinstance(tracking_edges, list)
+                and str(
+                    confirmed_mapping.get("canonical_action_id") or ""
+                ).strip()
+                == action_id
+                and str(
+                    confirmed_mapping.get("reserved_worker_stable_id")
+                    or ""
+                ).strip()
+                == reserved_id
+                and str(
+                    confirmed_mapping.get("selected_action_token") or ""
+                ).strip()
+                == prepare_fields["selected_action_token"]
+                and str(
+                    confirmed_mapping.get("pre_observation_id") or ""
+                ).strip()
+                == selected_id
+                and isinstance(executed.get("ui_action_performed"), bool)
+            )
+            if execute_state == "voice_transcribe_completed":
+                execute_identity_contract_valid = bool(
+                    execute_identity_contract_valid
+                    and binding_status == "confirmed"
+                    and binding_candidate_count == 1
+                    and confirmed_mapping.get("binding_confirmed") is True
+                )
+            elif execute_state == "voice_transcribe_ambiguous":
+                execute_identity_contract_valid = bool(
+                    execute_identity_contract_valid
+                    and binding_status == "ambiguous"
+                    and confirmed_mapping.get("binding_confirmed") is False
+                )
+            else:
+                execute_identity_contract_valid = bool(
+                    execute_identity_contract_valid
+                    and binding_status == "failed"
+                    and binding_candidate_count == 1
+                    and confirmed_mapping.get("binding_confirmed") is True
+                    and str(
+                        confirmed_mapping.get("post_observation_id") or ""
+                    ).strip()
+                    and executed.get("ui_action_performed") is True
+                )
+            if not execute_identity_contract_valid:
+                terminate_created_voice_action(
+                    "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+                    definitely_before_trigger=bool(
+                        executed.get("ui_action_performed") is False
+                        and action_phase
+                        in {"not_attempted", "cancelled_before_trigger"}
+                    ),
+                )
                 return {
                     "ok": False,
-                    "error_code": str(
-                        identity_errors[0].get("error_code")
-                        or "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
-                    ),
+                    "error_code": "C2_VOICE_IDENTITY_CONTRACT_INVALID",
                     "payload": current_payload,
                 }
-            save_c2_state(identity_state_key, identity_state)
-            final_payload["observations"] = observations
-            final_payload["voice_transcription"] = voice_payload
-            final_payload["initial_messages"] = current_payload
-            final_payload["authoritative_frame_source"] = "final_read"
-            current_payload = final_payload
 
-            blocking_failure = voice_state not in {
-                "voice_transcribe_completed",
-                "voice_transcribe_partial",
-                "voice_transcribe_no_visible_voice",
-            }
-            if blocking_failure:
-                return {
+            remaining_actions -= 1
+            attempted_fingerprints.add(fingerprint)
+            sender_role = str((prepared.get("selected_voice_observation") or {}).get("sender_role") or "")
+            if execute_state == "voice_transcribe_ambiguous":
+                # Sidecar has exhausted its bounded evidence-only reads but
+                # cannot bind the result to one physical voice. This is an
+                # independent terminal gate, not a failed message slot: keep
+                # the quarantined Journal, burn the reservation, and never
+                # ask normal slot settlement for a source_message_key.
+                ambiguous_error_code = str(
+                    executed.get("error_code")
+                    or "C2_VOICE_RESULT_AMBIGUOUS"
+                )
+                terminate_created_voice_action(ambiguous_error_code)
+                excluded_voice_anchor_keys.update(physical_anchor_keys)
+                current_payload = {
+                    **executed,
                     "ok": True,
-                    "payload": current_payload,
-                    "failure_code": accumulated_failure_code,
-                    **summarized_outcomes(),
+                    "state": "messages_ocr",
+                    "observations": list(
+                        executed.get("observations") or []
+                    ),
+                    "voice_transcription": executed,
+                    "authoritative_frame_source": "final_read",
+                    "ui_frame_invalidated": True,
                 }
+                quarantine_voice_identity(
+                    action_id=action_id,
+                    action_error_code=ambiguous_error_code,
+                )
+                return result()
+
+            if execute_state != "voice_transcribe_completed":
+                post_observations = list(executed.get("observations") or [])
+                try:
+                    mapping = confirmed_voice_action_mapping(
+                        voice_payload=executed,
+                        pre_observations=pre_observations,
+                        post_observations=post_observations,
+                        canonical_action_id=action_id,
+                        reserved_worker_stable_id=reserved_id,
+                        expected_pre_frame_id=(
+                            prepare_fields["pre_frame_id"]
+                        ),
+                        pre_observation_id=selected_id,
+                        selected_action_token=(
+                            prepare_fields["selected_action_token"]
+                        ),
+                        selected_anchor_keys=set(physical_anchor_keys),
+                    )
+                except ValueError:
+                    terminate_created_voice_action(
+                        "C2_VOICE_IDENTITY_CONTRACT_INVALID"
+                    )
+                    return {
+                        "ok": False,
+                        "error_code": "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+                        "payload": current_payload,
+                    }
+                aligned, alignment_evidence = align_post_action_observations(
+                    pre_observations,
+                    post_observations,
+                    confirmed_action_mapping=mapping,
+                )
+                record_action_sequence_alignment(journal, alignment_evidence)
+                if alignment_evidence.get("alignment_status") != "unique":
+                    terminate_created_voice_action(
+                        "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                    )
+                    current_payload = {
+                        **executed,
+                        "ok": True,
+                        "state": "messages_ocr",
+                        "observations": post_observations,
+                        "sequence_alignment_evidence": alignment_evidence,
+                        "voice_transcription": executed,
+                        "authoritative_frame_source": "final_read",
+                        "ui_frame_invalidated": True,
+                    }
+                    quarantine_voice_identity(
+                        action_id=action_id,
+                        action_error_code=(
+                            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                        ),
+                    )
+                    return result()
+                aligned = self._assign_sequence_new_suffix_identities(
+                    target=target,
+                    observations=aligned,
+                    evidence=alignment_evidence,
+                    read_run_id=flow_outcomes.origin_read_run_id,
+                )
+                confirmed_post_observation_id = str(
+                    mapping.get("post_observation_id") or ""
+                ).strip()
+                confirmed_post_anchor_keys: set[str] = set()
+                committed_voice_observation: dict[str, Any] | None = None
+                for observation in aligned:
+                    if (
+                        isinstance(observation, dict)
+                        and str(
+                            observation.get("observation_id") or ""
+                        ).strip()
+                        == confirmed_post_observation_id
+                    ):
+                        observation["_worker_voice_action_summary"] = {
+                            **dict(executed),
+                            # The normalized mapping is the Worker-verified
+                            # commit proof.  Do not persist a weaker raw
+                            # Sidecar projection that omits the selected pre
+                            # observation.
+                            "confirmed_action_mapping": dict(mapping),
+                        }
+                        committed_voice_observation = observation
+                        # Exclusions are deliberately frame-local.  The
+                        # failed bubble may have moved after a new message
+                        # arrived, so carrying the pre-click seat/anchor into
+                        # the next prepare could suppress the new bubble that
+                        # now occupies that seat.  Continuous tracking has
+                        # already proved which post-action observation owns
+                        # this failure; exclude only that latest observation's
+                        # aliases during the remainder of this UI flow.
+                        confirmed_post_anchor_keys.update(
+                            voice_action_journal_anchor_keys(observation)
+                        )
+                if not confirmed_post_anchor_keys:
+                    terminate_created_voice_action(
+                        "C2_VOICE_IDENTITY_CONTRACT_INVALID"
+                    )
+                    return {
+                        "ok": False,
+                        "error_code": (
+                            "C2_VOICE_IDENTITY_CONTRACT_INVALID"
+                        ),
+                        "payload": current_payload,
+                    }
+                if committed_voice_observation is None:
+                    terminate_created_voice_action(
+                        "C2_VOICE_IDENTITY_CONTRACT_INVALID"
+                    )
+                    return {
+                        "ok": False,
+                        "error_code": "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+                        "payload": current_payload,
+                    }
+                committed_voice = commit_message_identity(
+                    conversation_id=target.conversation_id,
+                    observation=committed_voice_observation,
+                )
+                if isinstance(committed_voice, IdentityCommitRejection):
+                    terminate_created_voice_action(
+                        "C2_VOICE_IDENTITY_CONTRACT_INVALID"
+                    )
+                    return {
+                        "ok": False,
+                        "error_code": "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+                        "identity_rejection_reason": committed_voice.reason,
+                        "payload": current_payload,
+                    }
+                durable_source_key = committed_voice.source_message_key
+                commit_action_journal_item_identity(
+                    journal,
+                    journal_item_id=action_id,
+                    source_message_key=durable_source_key,
+                )
+                outcome = classify_action_result(
+                    "voice",
+                    executed,
+                    source_message_key=durable_source_key,
+                )
+                evidence = dict(outcome.get("evidence") or {})
+                evidence.update(
+                    {"action_kind": "voice", "sender_role": sender_role}
+                )
+                outcome["evidence"] = evidence
+                outcome["terminal_payload"] = _voice_terminal_payload(
+                    executed,
+                    anchor_keys=physical_anchor_keys,
+                    result="failed",
+                    error_code=str(
+                        executed.get("error_code")
+                        or "C2_VOICE_TRANSCRIBE_FAILED"
+                    ),
+                    identity_confirmed=True,
+                )
+                update_action_journal_item(
+                    journal,
+                    journal_item_id=action_id,
+                    action_phase=action_phase,
+                    business_state="failed",
+                    business_result_confirmed=False,
+                    error_code=str(
+                        executed.get("error_code")
+                        or "C2_VOICE_TRANSCRIBE_FAILED"
+                    ),
+                    terminal_payload=outcome["terminal_payload"],
+                )
+                flow_outcomes.record(outcome)
+                item_outcomes = merge_item_outcomes(
+                    item_outcomes,
+                    [outcome],
+                )
+                failure_code = str(
+                    executed.get("error_code")
+                    or "C2_VOICE_TRANSCRIBE_FAILED"
+                )
+                excluded_voice_anchor_keys.update(
+                    confirmed_post_anchor_keys
+                )
+                current_payload = {
+                    **executed,
+                    "ok": True,
+                    "state": "messages_ocr",
+                    "observations": aligned,
+                    "sequence_alignment_evidence": alignment_evidence,
+                    "voice_transcription": executed,
+                    "authoritative_frame_source": "final_read",
+                    "ui_frame_invalidated": True,
+                }
+                continue
+
+            post_observations = list(executed.get("observations") or [])
+            try:
+                mapping = confirmed_voice_action_mapping(
+                    voice_payload=executed,
+                    pre_observations=pre_observations,
+                    post_observations=post_observations,
+                    canonical_action_id=action_id,
+                    reserved_worker_stable_id=reserved_id,
+                    expected_pre_frame_id=(
+                        prepare_fields["pre_frame_id"]
+                    ),
+                    pre_observation_id=selected_id,
+                    selected_action_token=(
+                        prepare_fields["selected_action_token"]
+                    ),
+                    selected_anchor_keys=set(physical_anchor_keys),
+                )
+            except ValueError:
+                terminate_created_voice_action(
+                    "C2_VOICE_IDENTITY_CONTRACT_INVALID"
+                )
+                return {"ok": False, "error_code": "C2_VOICE_IDENTITY_CONTRACT_INVALID", "payload": current_payload}
+            aligned, alignment_evidence = align_post_action_observations(
+                pre_observations,
+                post_observations,
+                confirmed_action_mapping=mapping,
+            )
+            record_action_sequence_alignment(journal, alignment_evidence)
+            if alignment_evidence.get("alignment_status") != "unique":
+                terminate_created_voice_action(
+                    "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                )
+                current_payload = {
+                    **executed,
+                    "ok": True,
+                    "state": "messages_ocr",
+                    "observations": post_observations,
+                    "sequence_alignment_evidence": alignment_evidence,
+                    "voice_transcription": executed,
+                    "authoritative_frame_source": "final_read",
+                    "ui_frame_invalidated": True,
+                }
+                quarantine_voice_identity(
+                    action_id=action_id,
+                    action_error_code=(
+                        "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                    ),
+                )
+                return result()
+            aligned = self._assign_sequence_new_suffix_identities(
+                target=target,
+                observations=aligned,
+                evidence=alignment_evidence,
+                read_run_id=flow_outcomes.origin_read_run_id,
+            )
+            confirmed_post_observation_id = str(
+                mapping.get("post_observation_id") or ""
+            ).strip()
+            committed_voice_observation: dict[str, Any] | None = None
+            for observation in aligned:
+                if (
+                    isinstance(observation, dict)
+                    and str(observation.get("observation_id") or "").strip()
+                    == confirmed_post_observation_id
+                ):
+                    observation["_worker_voice_action_summary"] = {
+                        **dict(executed),
+                        "confirmed_action_mapping": dict(mapping),
+                    }
+                    committed_voice_observation = observation
+            if committed_voice_observation is None:
+                terminate_created_voice_action(
+                    "C2_VOICE_IDENTITY_CONTRACT_INVALID"
+                )
+                return {
+                    "ok": False,
+                    "error_code": "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+                    "payload": current_payload,
+                }
+            committed_voice = commit_message_identity(
+                conversation_id=target.conversation_id,
+                observation=committed_voice_observation,
+            )
+            if isinstance(committed_voice, IdentityCommitRejection):
+                terminate_created_voice_action(
+                    "C2_VOICE_IDENTITY_CONTRACT_INVALID"
+                )
+                return {
+                    "ok": False,
+                    "error_code": "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+                    "identity_rejection_reason": committed_voice.reason,
+                    "payload": current_payload,
+                }
+            durable_source_key = committed_voice.source_message_key
+            commit_action_journal_item_identity(
+                journal,
+                journal_item_id=action_id,
+                source_message_key=durable_source_key,
+            )
+            outcome = classify_action_result("voice", executed, source_message_key=durable_source_key)
+            evidence = dict(outcome.get("evidence") or {})
+            evidence.update({"action_kind": "voice", "sender_role": sender_role})
+            outcome["evidence"] = evidence
+            outcome["terminal_payload"] = _voice_terminal_payload(
+                executed,
+                anchor_keys=physical_anchor_keys,
+                result="completed",
+                error_code=None,
+                identity_confirmed=True,
+            )
+            update_action_journal_item(
+                journal,
+                journal_item_id=action_id,
+                action_phase=action_phase,
+                business_state="completed",
+                business_result_confirmed=True,
+                error_code="",
+                terminal_payload=outcome["terminal_payload"],
+            )
+            flow_outcomes.record(outcome)
+            item_outcomes = merge_item_outcomes(item_outcomes, [outcome])
+            current_payload = {
+                **executed,
+                "ok": True,
+                "state": "messages_ocr",
+                "observations": aligned,
+                "sequence_alignment_evidence": alignment_evidence,
+                "voice_transcription": executed,
+                "authoritative_frame_source": "final_read",
+                "ui_frame_invalidated": True,
+            }
+
+        return {
+            "ok": False,
+            "error_code": "C2_VOICE_ACTION_BUDGET_EXHAUSTED",
+            "payload": current_payload,
+        }
 
     def _converge_current_screen_after_images(
         self,
@@ -6242,6 +12004,9 @@ class TaskRunner:
         """
 
         current_payload = dict(sidecar_payload)
+        current_payload["ui_frame_invalidated"] = bool(
+            current_payload.get("ui_frame_invalidated")
+        )
         aggregate_image_stats = new_image_phase_result()
         failed_voice_source_keys: set[str] = set()
         failed_voice_roles: dict[str, str] = {}
@@ -6265,6 +12030,9 @@ class TaskRunner:
                 rpa_session_key="",
                 remark_code=target.remark_code or "",
                 target_mode="current",
+                expected_confirmed_self_text=(
+                    self._confirmed_ai_reply_text_for_read(target)
+                ),
                 max_duration_seconds=20,
                 cancel_check=action_cancel_requested,
             )
@@ -6288,27 +12056,54 @@ class TaskRunner:
                     "image_stats": aggregate_image_stats,
                 }
 
-            identity_state_key = (
-                f"message_identity:{target.conversation_id}"
-            )
-            observations, identity_state, identity_errors = (
-                reconcile_v16104_identity_transition(
-                    target,
+            observations, sequence_alignment_evidence = (
+                align_post_action_observations(
+                    list(current_payload.get("observations") or []),
                     list(refreshed.get("observations") or []),
-                    load_c2_state(identity_state_key),
                 )
             )
+            refreshed["sequence_alignment_evidence"] = (
+                sequence_alignment_evidence
+            )
+            identity_errors = (
+                []
+                if sequence_alignment_evidence.get("alignment_status")
+                == "unique"
+                else [
+                    {
+                        "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+                        "reason": sequence_alignment_evidence.get(
+                            "alignment_status"
+                        ),
+                    }
+                ]
+            )
+            if not identity_errors:
+                for journal_path, journal_payload in list_action_journals(
+                    conversation_id=target.conversation_id,
+                    action_kinds=("image",),
+                ):
+                    if journal_payload.get("sequence_alignment_evidence") is None:
+                        record_action_sequence_alignment(
+                            journal_path,
+                            sequence_alignment_evidence,
+                        )
             if identity_errors:
                 return {
                     "ok": False,
-                    "error_code": str(
-                        identity_errors[0].get("error_code")
-                        or "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
-                    ),
+                    "error_code": "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
                     "payload": current_payload,
                     "image_stats": aggregate_image_stats,
+                    "sequence_alignment_evidence": (
+                        sequence_alignment_evidence
+                    ),
                 }
-            save_c2_state(identity_state_key, identity_state)
+            observations = self._assign_sequence_new_suffix_identities(
+                target=target,
+                observations=observations,
+                evidence=sequence_alignment_evidence,
+                read_run_id=flow_outcomes.origin_read_run_id,
+            )
             refreshed["observations"] = observations
             refreshed = self._merge_waiting_image_facts(
                 target=target,
@@ -6324,6 +12119,9 @@ class TaskRunner:
                 or sidecar_payload.get("voice_transcription")
             )
             refreshed["authoritative_frame_source"] = "final_read"
+            refreshed["ui_frame_invalidated"] = bool(
+                current_payload.get("ui_frame_invalidated")
+            )
             current_payload = refreshed
 
             failed_ledger_groups: dict[str, set[str]] = {}
@@ -6378,7 +12176,10 @@ class TaskRunner:
                 failed_voice_source_keys.update(source_keys)
                 failed_voice_roles.update(annotated_roles)
 
-            if _untranscribed_voice_observations(current_payload):
+            if _executable_untranscribed_voice_observations(
+                target,
+                current_payload,
+            ):
                 voice_result = (
                     self._finish_new_visible_voices_in_current_chat(
                         binding=binding,
@@ -6388,6 +12189,7 @@ class TaskRunner:
                         lease=lease,
                         action_cancel_requested=action_cancel_requested,
                         enforce_read_targets=enforce_read_targets,
+                        read_run_id=flow_outcomes.origin_read_run_id,
                         excluded_voice_anchor_keys=set(),
                         flow_outcomes=flow_outcomes,
                     )
@@ -6400,6 +12202,22 @@ class TaskRunner:
                 current_payload = dict(
                     voice_result.get("payload") or current_payload
                 )
+                terminal_gate = voice_result.get("terminal_gate")
+                if isinstance(terminal_gate, dict):
+                    return {
+                        "ok": False,
+                        "error_code": str(
+                            terminal_gate.get("error_code")
+                            or "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                        ),
+                        "terminal_gate": dict(terminal_gate),
+                        "payload": current_payload,
+                        "image_stats": aggregate_image_stats,
+                        "failed_voice_source_keys": sorted(
+                            failed_voice_source_keys
+                        ),
+                        "failed_voice_roles": failed_voice_roles,
+                    }
                 new_failed_keys = {
                     str(value)
                     for value in (
@@ -6414,6 +12232,7 @@ class TaskRunner:
                     )
                     self._mark_voice_sources_failed(
                         target=target,
+                        origin_read_run_id=flow_outcomes.origin_read_run_id,
                         source_keys=sorted(new_failed_keys),
                         error_code=failure_code,
                     )
@@ -6440,6 +12259,7 @@ class TaskRunner:
             incremental_plan = self._build_final_slot_incremental_plan(
                 target=target,
                 sidecar_payload=current_payload,
+                read_run_id=flow_outcomes.origin_read_run_id,
             )
             if incremental_plan["identity_errors"]:
                 return {
@@ -6450,10 +12270,17 @@ class TaskRunner:
                     "payload": current_payload,
                     "image_stats": aggregate_image_stats,
                 }
-            pending_image_keys = tuple(
-                sorted(incremental_plan["new_image_source_keys"])
+            pending_image_observation_ids = tuple(
+                sorted(incremental_plan["new_image_observation_ids"])
             )
-            allowed_image_keys = set(pending_image_keys)
+            # One image action per stable frame. The next candidate is chosen
+            # only after the loop obtains and aligns a fresh authoritative
+            # frame.
+            allowed_image_observation_ids = (
+                {pending_image_observation_ids[0]}
+                if pending_image_observation_ids
+                else set()
+            )
             image_observations = [
                 item
                 for item in (current_payload.get("observations") or [])
@@ -6471,7 +12298,7 @@ class TaskRunner:
                     "failed_voice_roles": failed_voice_roles,
                 }
 
-            if pending_image_keys in seen_pending_image_sets:
+            if pending_image_observation_ids in seen_pending_image_sets:
                 append_log(
                     "ERROR",
                     "c2_post_vision_current_screen_no_progress",
@@ -6480,8 +12307,8 @@ class TaskRunner:
                     metadata={
                         "conversation_id": target.conversation_id,
                         "remark_code": target.remark_code,
-                        "pending_image_source_keys": list(
-                            pending_image_keys
+                        "pending_image_observation_ids": list(
+                            pending_image_observation_ids
                         ),
                     },
                 )
@@ -6495,7 +12322,7 @@ class TaskRunner:
                     ),
                     "failed_voice_roles": failed_voice_roles,
                 }
-            seen_pending_image_sets.add(pending_image_keys)
+            seen_pending_image_sets.add(pending_image_observation_ids)
 
             lease.update_step("image_understanding_current_chat")
             self.current_step = "image_understanding_current_chat"
@@ -6506,12 +12333,28 @@ class TaskRunner:
                     sidecar_payload=current_payload,
                     enforce_read_targets=enforce_read_targets,
                     cancel_check=action_cancel_requested,
-                    allowed_new_source_keys=allowed_image_keys,
+                    allowed_new_observation_ids=(
+                        allowed_image_observation_ids
+                    ),
                     flow_outcomes=flow_outcomes,
                 )
             )
+            if isinstance(image_stats.get("terminal_gate"), dict):
+                return {
+                    "ok": False,
+                    "error_code": "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+                    "terminal_gate": dict(image_stats["terminal_gate"]),
+                    "payload": current_payload,
+                    "image_stats": aggregate_image_stats,
+                    "failed_voice_source_keys": sorted(
+                        failed_voice_source_keys
+                    ),
+                    "failed_voice_roles": failed_voice_roles,
+                }
+            if image_stats.get("ui_frame_invalidated"):
+                current_payload["ui_frame_invalidated"] = True
             add_image_stats(image_stats)
-            if not pending_image_keys:
+            if not pending_image_observation_ids:
                 return {
                     "ok": True,
                     "payload": current_payload,
@@ -6530,7 +12373,7 @@ class TaskRunner:
                     "payload": current_payload,
                     "image_stats": aggregate_image_stats,
                 }
-            if pending_image_keys and not any(
+            if pending_image_observation_ids and not any(
                 image_stats.get(key)
                 for key in (
                     "completed",
@@ -6552,15 +12395,30 @@ class TaskRunner:
         target: WechatReadTarget,
         items: list[dict[str, Any]],
         flow_outcomes: FlowOutcomeAccumulator,
+        transaction_id: str | None = None,
+        pre_action_identity_sequence: list[dict[str, Any]] | None = None,
+        pre_frame_id: str | None = None,
+        reserved_worker_stable_id: str | None = None,
+        prepare_evidence: dict[str, Any] | None = None,
     ) -> Path:
-        transaction_id = f"{action_kind}:{target.conversation_id}:{uuid.uuid4()}"
-        path = action_journal_path(action_kind, transaction_id)
+        action_id = str(transaction_id or "").strip() or (
+            f"{action_kind}:{target.conversation_id}:{uuid.uuid4()}"
+        )
+        path = action_journal_path(action_kind, action_id)
         initialize_action_journal(
             path,
             action_kind=action_kind,
-            transaction_id=transaction_id,
+            transaction_id=action_id,
             conversation_id=target.conversation_id,
             items=items,
+            origin_read_run_id=flow_outcomes.origin_read_run_id,
+            canonical_action_id=(
+                action_id if reserved_worker_stable_id else None
+            ),
+            reserved_worker_stable_id=reserved_worker_stable_id,
+            pre_frame_id=pre_frame_id,
+            pre_action_identity_sequence=pre_action_identity_sequence,
+            prepare_evidence=prepare_evidence,
         )
         flow_outcomes.register_action_journal(path)
         return path
@@ -6568,12 +12426,323 @@ class TaskRunner:
     def _recover_physical_action_journals(
         self,
         target: WechatReadTarget,
-    ) -> None:
+        *,
+        image_identity_commit_only: bool = False,
+    ) -> list[dict[str, Any]]:
         journal_entries = list_action_journals(
             conversation_id=target.conversation_id,
         )
+        unresolved: list[dict[str, Any]] = []
+        recovered_entries: list[tuple[Path, dict[str, Any]]] = []
+        for path, raw_payload in journal_entries:
+            payload = dict(raw_payload)
+            action_id = str(payload.get("canonical_action_id") or "").strip()
+            reserved_id = str(
+                payload.get("reserved_worker_stable_id") or ""
+            ).strip()
+            committed_id = str(
+                payload.get("committed_worker_stable_id") or ""
+            ).strip()
+            items = (
+                payload.get("items")
+                if isinstance(payload.get("items"), dict)
+                else {}
+            )
+            action_kind = str(payload.get("action_kind") or "").strip()
+            if image_identity_commit_only and action_kind != "image":
+                continue
+            action_item = (
+                dict(items.get(action_id) or {})
+                if action_id and isinstance(items.get(action_id), dict)
+                else {}
+            )
+            alignment_evidence = (
+                payload.get("sequence_alignment_evidence")
+                if isinstance(
+                    payload.get("sequence_alignment_evidence"), dict
+                )
+                else {}
+            )
+            unresolved_voice_item_ids = [
+                str(item_id or "").strip()
+                for item_id, item in items.items()
+                if action_kind == "voice"
+                and isinstance(item, dict)
+                and str(item.get("action_phase") or "").strip()
+                in {"trigger_attempted", "quarantined"}
+                and not alignment_evidence
+            ]
+            if unresolved_voice_item_ids:
+                # Legacy journals may predate canonical_action_id and the
+                # reserved sequence field.  A physical trigger without a
+                # confirmed post-action mapping is nevertheless the same
+                # identity_unresolved terminal: preserve the journal, never
+                # manufacture a failed message/Ledger entry, and never click
+                # again.
+                for item_id in unresolved_voice_item_ids:
+                    item = (
+                        items.get(item_id)
+                        if isinstance(items.get(item_id), dict)
+                        else {}
+                    )
+                    if str(item.get("action_phase") or "").strip() != "quarantined":
+                        payload = update_action_journal_item(
+                            path,
+                            journal_item_id=item_id,
+                            action_phase="quarantined",
+                            error_code="C2_VOICE_RESULT_AMBIGUOUS",
+                            terminal_payload={
+                                "state": "quarantined",
+                                "media_action_terminal": (
+                                    MediaActionTerminal.IDENTITY_UNRESOLVED.value
+                                ),
+                                "error_code": "C2_VOICE_RESULT_AMBIGUOUS",
+                                "reason": (
+                                    "recovered_trigger_without_post_alignment"
+                                ),
+                            },
+                        )
+                unresolved.append(
+                    {
+                        "error_code": (
+                            "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                        ),
+                        "reason": (
+                            "action_triggered_without_confirmed_post_alignment"
+                        ),
+                        "row_kind": "voice_bubble",
+                        "signature": (
+                            action_id
+                            or str(payload.get("transaction_id") or "").strip()
+                            or unresolved_voice_item_ids[0]
+                        ),
+                        "transaction_id": str(
+                            payload.get("transaction_id") or ""
+                        ),
+                        "origin_read_run_id": str(
+                            payload.get("origin_read_run_id") or ""
+                        ),
+                        "sequence_alignment_evidence": {},
+                    }
+                )
+                continue
+            formed_fact = any(
+                isinstance(item, dict)
+                and action_journal_item_has_formed_fact(item)
+                for item in items.values()
+            )
+            if action_id and reserved_id and not committed_id and formed_fact:
+                evidence = (
+                    payload.get("sequence_alignment_evidence")
+                    if isinstance(
+                        payload.get("sequence_alignment_evidence"), dict
+                    )
+                    else {}
+                )
+                if action_kind == "voice" and not evidence:
+                    unresolved.append(
+                        {
+                            "error_code": (
+                                "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                            ),
+                            "reason": (
+                                "action_triggered_without_confirmed_post_alignment"
+                            ),
+                            "row_kind": "voice_bubble",
+                            "signature": action_id,
+                            "transaction_id": str(
+                                payload.get("transaction_id") or ""
+                            ),
+                            "origin_read_run_id": str(
+                                payload.get("origin_read_run_id") or ""
+                            ),
+                            "sequence_alignment_evidence": {},
+                        }
+                    )
+                    continue
+                selected_pair_confirmed = any(
+                    isinstance(pair, dict)
+                    and str(pair.get("worker_stable_id") or "").strip()
+                    == reserved_id
+                    and (
+                        pair.get("identity_state") == "selected_action"
+                        or (
+                            action_kind == "image"
+                            and pair.get("match_basis")
+                            == "prior_confirmed_action"
+                        )
+                    )
+                    for pair in (evidence.get("matched_pairs") or [])
+                )
+                image_receipt, image_receipt_item_id = (
+                    _confirmed_image_receipt_from_journal(payload)
+                )
+                image_receipt_confirmed = bool(
+                    action_kind == "image"
+                    and image_receipt is not None
+                )
+                if image_identity_commit_only and not image_receipt_confirmed:
+                    action_item_id = next(
+                        (
+                            str(item_id or "").strip()
+                            for item_id, item in items.items()
+                            if isinstance(item, dict)
+                            and action_journal_item_has_formed_fact(item)
+                        ),
+                        action_id,
+                    )
+                    action_item = (
+                        items.get(action_item_id)
+                        if isinstance(items.get(action_item_id), dict)
+                        else {}
+                    )
+                    original_terminal = (
+                        dict(action_item.get("terminal_payload") or {})
+                        if isinstance(
+                            action_item.get("terminal_payload"), dict
+                        )
+                        else {}
+                    )
+                    if action_item_id:
+                        payload = update_action_journal_item(
+                            path,
+                            journal_item_id=action_item_id,
+                            action_phase=str(
+                                action_item.get("action_phase")
+                                or "not_attempted"
+                            ),
+                            error_code=(
+                                "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                            ),
+                            terminal_payload={
+                                **original_terminal,
+                                "identity_gate_error_code": (
+                                    "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                                ),
+                                "identity_gate_reason": (
+                                    "confirmed_image_identity_receipt_missing_or_invalid"
+                                ),
+                            },
+                        )
+                    prepare_evidence = (
+                        dict(payload.get("prepare_evidence") or {})
+                        if isinstance(
+                            payload.get("prepare_evidence"), dict
+                        )
+                        else {}
+                    )
+                    unresolved.append(
+                        {
+                            "error_code": (
+                                "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                            ),
+                            "reason": (
+                                "confirmed_image_identity_receipt_missing_or_invalid"
+                            ),
+                            "row_kind": "image_bubble",
+                            "signature": action_id,
+                            "transaction_id": str(
+                                payload.get("transaction_id") or ""
+                            ),
+                            "origin_read_run_id": str(
+                                payload.get("origin_read_run_id") or ""
+                            ),
+                            "action_journal_path": str(path),
+                            "prepare_evidence": prepare_evidence,
+                        }
+                    )
+                    continue
+                committed_action = _committed_action_identity_from_journal(
+                    target=target,
+                    payload=payload,
+                    action_kind=action_kind,
+                    evidence=evidence,
+                    image_receipt=image_receipt,
+                )
+                if isinstance(committed_action, IdentityCommitRejection):
+                    unresolved.append(
+                        {
+                            "error_code": committed_action.error_code,
+                            "reason": committed_action.reason,
+                            "row_kind": (
+                                "image_bubble"
+                                if action_kind == "image"
+                                else "voice_bubble"
+                            ),
+                            "signature": action_id,
+                            "transaction_id": str(
+                                payload.get("transaction_id") or ""
+                            ),
+                            "origin_read_run_id": str(
+                                payload.get("origin_read_run_id") or ""
+                            ),
+                            "sequence_alignment_evidence": evidence,
+                        }
+                    )
+                    continue
+                durable_source_key = committed_action.source_message_key
+                journal_item_id = (
+                    image_receipt_item_id
+                    if action_kind == "image"
+                    and image_receipt_item_id
+                    else action_id
+                    if action_id in items
+                    else (
+                        durable_source_key
+                        if action_kind == "image"
+                        and durable_source_key in items
+                        else ""
+                    )
+                )
+                if (
+                    (
+                        image_receipt_confirmed
+                        or (
+                            evidence.get("alignment_status") == "unique"
+                            and selected_pair_confirmed
+                        )
+                    )
+                    and journal_item_id
+                ):
+                    payload = commit_action_journal_item_identity(
+                        path,
+                        journal_item_id=journal_item_id,
+                        source_message_key=durable_source_key,
+                    )
+                else:
+                    unresolved.append(
+                        {
+                            "error_code": (
+                                "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                                if action_kind == "image"
+                                else "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                            ),
+                            "reason": (
+                                "confirmed_image_identity_receipt_missing_or_invalid"
+                                if action_kind == "image"
+                                else "action_triggered_without_confirmed_post_alignment"
+                            ),
+                            "row_kind": (
+                                "image_bubble"
+                                if action_kind == "image"
+                                else "voice_bubble"
+                            ),
+                            "signature": action_id,
+                            "transaction_id": str(
+                                payload.get("transaction_id") or ""
+                            ),
+                            "origin_read_run_id": str(
+                                payload.get("origin_read_run_id") or ""
+                            ),
+                            "sequence_alignment_evidence": evidence,
+                        }
+                    )
+                    continue
+            recovered_entries.append((path, payload))
+        if image_identity_commit_only:
+            return unresolved
         recovered_outcomes = self._physical_action_journal_outcomes(
-            journal_entries,
+            recovered_entries,
         )
         if recovered_outcomes:
             self._persist_c2_flow_outcomes(target, recovered_outcomes)
@@ -6587,8 +12756,53 @@ class TaskRunner:
                     "outcome_count": len(recovered_outcomes),
                 },
             )
-        for path, _payload in journal_entries:
-            remove_action_journal(path)
+        for path, payload in journal_entries:
+            if self._action_journal_can_be_removed(payload):
+                remove_action_journal(path)
+        return unresolved
+
+    @staticmethod
+    def _action_journal_can_be_removed(payload: dict[str, Any]) -> bool:
+        """Delete a physical journal only after every formed fact is confirmed.
+
+        ``not_attempted`` describes whether the irreversible UI trigger ran;
+        it does not mean that no business fact exists.  A text/voice menu
+        rejection, for example, is a completed failed observation even though
+        image copy was deliberately not attempted.
+        """
+
+        conversation_id = str(payload.get("conversation_id") or "").strip()
+        items = (
+            payload.get("items")
+            if isinstance(payload.get("items"), dict)
+            else {}
+        )
+        formed_source_keys: set[str] = set()
+        for item in items.values():
+            source_key = (
+                str(item.get("source_message_key") or "").strip()
+                if isinstance(item, dict)
+                else ""
+            )
+            if not source_key or not isinstance(item, dict):
+                continue
+            if action_journal_item_has_formed_fact(item):
+                formed_source_keys.add(source_key)
+        if formed_source_keys:
+            return all(
+                str(
+                    (
+                        load_c2_ledger_entry(conversation_id, source_key)
+                        or {}
+                    ).get("ingest_state")
+                    or ""
+                )
+                == "confirmed"
+                for source_key in formed_source_keys
+            )
+        return TaskRunner._strict_not_attempted_journal_can_be_removed(
+            payload
+        )
 
     @staticmethod
     def _physical_action_journal_outcomes(
@@ -6599,18 +12813,36 @@ class TaskRunner:
             action_kind = str(payload.get("action_kind") or "").strip()
             if action_kind not in {"voice", "image"}:
                 continue
+            if (
+                str(payload.get("canonical_action_id") or "").strip()
+                and str(
+                    payload.get("reserved_worker_stable_id") or ""
+                ).strip()
+                and not str(
+                    payload.get("committed_worker_stable_id") or ""
+                ).strip()
+            ):
+                # The physical result remains durable in the Journal, but it
+                # has no confirmed cross-frame identity yet. Persisting it
+                # under the action-local key would create a second message.
+                continue
+            origin_read_run_id = str(
+                payload.get("origin_read_run_id") or ""
+            ).strip()
             items = (
                 payload.get("items")
                 if isinstance(payload.get("items"), dict)
                 else {}
             )
-            for source_key, item in items.items():
+            for _journal_item_id, item in items.items():
                 if not isinstance(item, dict):
                     continue
-                phase = str(
-                    item.get("action_phase") or "not_attempted"
+                source_key = str(
+                    item.get("source_message_key") or ""
                 ).strip()
-                if phase == "not_attempted":
+                if not source_key:
+                    # Action-local/quarantined entries have no durable
+                    # identity and must never be projected as facts.
                     continue
                 business_confirmed = (
                     item.get("business_result_confirmed") is True
@@ -6623,6 +12855,19 @@ class TaskRunner:
                     if isinstance(item.get("terminal_payload"), dict)
                     else {}
                 )
+                phase = str(
+                    item.get("action_phase") or "not_attempted"
+                ).strip()
+                if phase == "cancelled_before_trigger":
+                    continue
+                formed_fact = bool(terminal_payload) or business_state in {
+                    "completed",
+                    "failed",
+                } or business_confirmed or bool(
+                    str(item.get("error_code") or "").strip()
+                )
+                if phase == "not_attempted" and not formed_fact:
+                    continue
                 if action_kind == "image" and isinstance(
                     item.get("replayable_observation"),
                     dict,
@@ -6631,9 +12876,36 @@ class TaskRunner:
                         "completed" if business_confirmed else "failed"
                     )
                     recovered_reason = str(
-                        terminal_payload.get("reason")
+                        terminal_payload.get("error_code")
                         or item.get("error_code")
-                        or "IMAGE_INTERRUPTED_AFTER_TRIGGER"
+                        or (
+                            "vision_ready"
+                            if business_confirmed
+                            else "IMAGE_INTERRUPTED_AFTER_TRIGGER"
+                        )
+                    )
+                    confirmed_mapping = (
+                        terminal_payload.get("confirmed_action_mapping")
+                        if isinstance(
+                            terminal_payload.get(
+                                "confirmed_action_mapping"
+                            ),
+                            dict,
+                        )
+                        else {}
+                    )
+                    recovered_receipt = (
+                        {
+                            **confirmed_mapping,
+                            "image_visual_fingerprint": str(
+                                terminal_payload.get(
+                                    "image_visual_fingerprint"
+                                )
+                                or ""
+                            ).strip(),
+                        }
+                        if confirmed_mapping
+                        else None
                     )
                     terminal_observation = apply_image_terminal_result(
                         dict(item["replayable_observation"]),
@@ -6648,6 +12920,9 @@ class TaskRunner:
                             ),
                             "visual_bridge_input": terminal_payload.get(
                                 "visual_bridge_input"
+                            ),
+                            "_confirmed_image_action_receipt": (
+                                recovered_receipt
                             ),
                         },
                     )
@@ -6696,6 +12971,7 @@ class TaskRunner:
                 )
                 if terminal_payload:
                     outcome["terminal_payload"] = terminal_payload
+                outcome["origin_read_run_id"] = origin_read_run_id
                 recovered_outcomes = merge_item_outcomes(
                     recovered_outcomes,
                     [outcome],
@@ -6708,23 +12984,143 @@ class TaskRunner:
         target: WechatReadTarget,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        self._recover_physical_action_journals(target)
+        unresolved_action_journals = (
+            self._recover_physical_action_journals(target)
+        )
+        if unresolved_action_journals:
+            read_run_id = str(
+                unresolved_action_journals[0].get("origin_read_run_id") or ""
+            ).strip() or f"recovery-{uuid.uuid4()}"
+            recovery_error_code = str(
+                unresolved_action_journals[0].get("error_code")
+                or "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+            ).strip()
+            self._report_identity_failure_gate(
+                binding=binding,
+                target=target,
+                read_run_id=read_run_id,
+                error_code=recovery_error_code,
+                identity_errors=unresolved_action_journals,
+            )
+            return {
+                "ok": False,
+                "error_code": recovery_error_code,
+                "identity_errors": unresolved_action_journals,
+            }
         self._recover_c2_action_journal(target)
+        existing_runtime_flow_id = str(
+            load_runtime_control().get("inflight_flow_id") or ""
+        ).strip()
+        owns_inflight_flow = not existing_runtime_flow_id
+        # A nested pre-send/current-customer refresh is part of the already
+        # registered customer transaction. Reuse that exact durable id so
+        # media continuation checks cannot accidentally compare a fresh local
+        # UUID with the outer draining flow and abort the current customer.
+        read_run_id = existing_runtime_flow_id or f"read-{uuid.uuid4()}"
+        process_run_id = str(target.process_run_id or "").strip()
+        if process_run_id:
+            remember_process_run(
+                read_run_id,
+                process_run_id,
+                conversation_id=target.conversation_id,
+            )
+        if owns_inflight_flow and not self._start_inflight_flow(
+            binding,
+            flow_id=read_run_id,
+            flow_kind="c2_read",
+        ):
+            return {
+                "ok": False,
+                "error_code": "WORKER_NEW_FLOW_NOT_ALLOWED",
+            }
+        if existing_runtime_flow_id:
+            self.api.inflight_flow_id = existing_runtime_flow_id
         flow_id = f"c2-action:{uuid.uuid4()}"
         flow_outcomes = FlowOutcomeAccumulator(
             checkpoint=lambda outcomes: checkpoint_c2_action_outcomes(
                 flow_id=flow_id,
                 conversation_id=target.conversation_id,
+                origin_read_run_id=read_run_id,
                 outcomes=outcomes,
-            )
+            ),
+            origin_read_run_id=read_run_id,
         )
-        try:
-            return self._read_one_wechat_target_impl(
-                binding,
-                target,
-                flow_outcomes=flow_outcomes,
-                **kwargs,
+        previous_runtime_context = self._runtime_process_context
+        operation_phase = str(
+            kwargs.get("operation_phase") or C2_AUTHORIZED_READ_PHASE
+        )
+        runtime_context = {
+            "conversation_id": target.conversation_id,
+            "remark_code": target.remark_code,
+            "transaction_id": read_run_id,
+            "operation_phase": operation_phase,
+        }
+        self._runtime_process_context = runtime_context
+        inflight_activity = {"message_read_attempted": False}
+        flow_result: dict[str, Any] = {}
+        pre_send_stage_timer = (
+            StageTimer(
+                process_run_id=process_run_id,
+                conversation_id=target.conversation_id,
+                stage_name="c3.pre_send_refresh",
+                component="worker",
+                trace_id=str(uuid.uuid4()),
             )
+            if process_run_id and operation_phase == C2_PRE_SEND_REFRESH_PHASE
+            else None
+        )
+        if operation_phase == C2_AUTHORIZED_READ_PHASE:
+            raw_target = target.raw if isinstance(target.raw, dict) else {}
+            source = (
+                "微信会话第一屏命中"
+                if target.read_reason == "visible_hit"
+                or raw_target.get("visible_hit") is True
+                else "状态机定向读取"
+            )
+            self._emit_runtime_process(
+                {
+                    "event": "customer_started",
+                    "source": source,
+                    **runtime_context,
+                }
+            )
+        try:
+            try:
+                result = self._read_one_wechat_target_impl(
+                    binding,
+                    target,
+                    flow_outcomes=flow_outcomes,
+                    read_run_id=read_run_id,
+                    inflight_activity=inflight_activity,
+                    **kwargs,
+                )
+            except Exception as exc:
+                if pre_send_stage_timer is not None:
+                    pre_send_stage_timer.finish(
+                        status="failed",
+                        error_code=type(exc).__name__,
+                    )
+                    schedule_stage_event_upload(self.api, binding)
+                raise
+            flow_result = dict(result)
+            if pre_send_stage_timer is not None:
+                pre_send_stage_timer.finish(
+                    status="succeeded" if result.get("ok") else "failed",
+                    error_code=str(result.get("error_code") or "") or None,
+                )
+                schedule_stage_event_upload(self.api, binding)
+            if operation_phase == C2_AUTHORIZED_READ_PHASE:
+                self._emit_runtime_process(
+                    {
+                        "event": "customer_completed",
+                        "terminal_state": self._runtime_terminal_for_result(
+                            result
+                        ),
+                        "error_code": result.get("error_code"),
+                        **runtime_context,
+                    }
+                )
+            return result
         finally:
             current_journal_entries = [
                 (path, payload)
@@ -6738,8 +13134,68 @@ class TaskRunner:
             )
             self._finalize_c2_flow_outcomes(target, flow_outcomes)
             clear_c2_action_journal(flow_id)
-            for path, _payload in current_journal_entries:
-                remove_action_journal(path)
+            for path, payload in current_journal_entries:
+                if self._action_journal_can_be_removed(payload):
+                    remove_action_journal(path)
+            self._runtime_process_context = previous_runtime_context
+            if owns_inflight_flow:
+                error_code = str(
+                    flow_result.get("error_code") or "C2_READ_STOPPED"
+                ).strip()
+                durable_read_artifact_exists = bool(
+                    has_c2_outbox_for_read_run_id(read_run_id)
+                    or has_c2_ledger_for_origin_read_run_id(read_run_id)
+                    or has_c2_action_journal_for_origin_read_run_id(read_run_id)
+                    or self._has_physical_action_journal_for_flow(read_run_id)
+                )
+                read_completion = (
+                    (flow_result.get("result") or {}).get("read_completion")
+                    if isinstance(flow_result.get("result"), dict)
+                    else {}
+                )
+                backend_read_confirmed = bool(
+                    isinstance(read_completion, dict)
+                    and str(read_completion.get("result") or "")
+                    in {"new_facts", "no_change"}
+                )
+                if backend_read_confirmed or durable_read_artifact_exists:
+                    terminal_kind = "read_confirmed"
+                elif inflight_activity.get("message_read_attempted") is True:
+                    terminal_kind = "read_failed_no_fact"
+                else:
+                    terminal_kind = "failed_before_message_action"
+                receipt = {
+                    "terminal_kind": terminal_kind,
+                    "conversation_id": target.conversation_id,
+                    "error_code": (
+                        error_code
+                        if terminal_kind
+                        in {
+                            "failed_before_message_action",
+                            "read_failed_no_fact",
+                        }
+                        else None
+                    ),
+                }
+                save_c2_state(
+                    self._inflight_finish_receipt_key(read_run_id), receipt
+                )
+                try:
+                    self._finish_inflight_flow(
+                        binding,
+                        read_run_id,
+                        terminal_kind=terminal_kind,
+                        conversation_id=target.conversation_id,
+                        error_code=receipt["error_code"],
+                    )
+                except Exception as exc:
+                    append_log(
+                        "ERROR",
+                        "inflight_flow_finish_failed",
+                        "C2 结算完成，但在途流程结束登记失败。",
+                        error_code="RUNTIME_INFLIGHT_FINISH_FAILED",
+                        metadata={"flow_id": read_run_id, "error": str(exc)},
+                    )
 
     def _recover_c2_action_journal(
         self,
@@ -6782,18 +13238,28 @@ class TaskRunner:
         TaskRunner._persist_c2_flow_outcomes(
             target,
             flow_outcomes.snapshot(),
+            origin_read_run_id=flow_outcomes.origin_read_run_id,
         )
 
     @staticmethod
     def _persist_c2_flow_outcomes(
         target: WechatReadTarget,
         outcomes: list[dict[str, Any]],
+        *,
+        origin_read_run_id: str | None = None,
     ) -> None:
         for outcome in outcomes:
             source_key = str(outcome.get("source_message_key") or "").strip()
+            outcome_origin_read_run_id = str(
+                outcome.get("origin_read_run_id")
+                or origin_read_run_id
+                or ""
+            ).strip()
             result = str(outcome.get("result") or "").strip().lower()
             if not source_key or result not in {"completed", "failed"}:
                 continue
+            if not outcome_origin_read_run_id:
+                raise ValueError("C2_FLOW_OUTCOME_ORIGIN_READ_RUN_ID_MISSING")
             evidence = (
                 dict(outcome.get("evidence") or {})
                 if isinstance(outcome.get("evidence"), dict)
@@ -6823,6 +13289,7 @@ class TaskRunner:
             save_c2_ledger_terminal(
                 conversation_id=target.conversation_id,
                 source_message_key=source_key,
+                origin_read_run_id=outcome_origin_read_run_id,
                 dedupe_key=(
                     str(existing.get("dedupe_key") or "") or None
                     if existing
@@ -6853,6 +13320,9 @@ class TaskRunner:
         target: WechatReadTarget,
         *,
         flow_outcomes: FlowOutcomeAccumulator,
+        read_run_id: str,
+        inflight_activity: dict[str, bool],
+        operation_phase: C2ReadOperationPhase = C2_AUTHORIZED_READ_PHASE,
         current_step: str = "message_read",
         allow_during_current_task: bool = False,
         enforce_read_targets: bool = False,
@@ -6870,8 +13340,12 @@ class TaskRunner:
             "flow": "c2_message_read",
             "conversation_id": target.conversation_id,
             "remark_code": target.remark_code,
+            "read_run_id": read_run_id,
+            "operation_phase": operation_phase,
             "phases": [],
         }
+        message_read_phase_started_at: float | None = None
+        message_read_phase_metadata: dict[str, Any] = {}
 
         def record_phase(name: str, started_at: float, **metadata: Any) -> None:
             phase = {
@@ -6889,14 +13363,34 @@ class TaskRunner:
             )
             flow_timing["phases"].append(phase)
 
+        def settle_message_read_phase(
+            *,
+            succeeded: bool,
+            error_code: str | None = None,
+        ) -> None:
+            nonlocal message_read_phase_started_at
+            if message_read_phase_started_at is None:
+                return
+            record_phase(
+                "initial_message_read",
+                message_read_phase_started_at,
+                **message_read_phase_metadata,
+                completed=succeeded,
+                failed=not succeeded,
+                error_code=error_code if not succeeded else None,
+            )
+            message_read_phase_started_at = None
+
         last_authorization_check = 0.0
 
-        def action_cancel_requested() -> bool:
+        def action_cancel_requested() -> bool | str:
             nonlocal last_authorization_check
+            ui_lock_reason = _ui_lock_cancel_reason(lease)
+            if ui_lock_reason:
+                return ui_lock_reason
             if (
                 self.stop_event.is_set()
-                or not self._ui_actions_enabled(binding)
-                or (lease is not None and lease.cancel_requested())
+                or not self._can_continue_inflight_flow(read_run_id)
                 or (
                     self.current_task_lease is not None
                     and self.current_task_lease.cancel_requested()
@@ -6914,7 +13408,74 @@ class TaskRunner:
                 target,
             )
 
+        def settle_identity_terminal_gate(
+            terminal_gate: dict[str, Any],
+            *,
+            final_payload: dict[str, Any],
+            target_confirmation: dict[str, Any],
+            initial_observations: list[Any],
+        ) -> dict[str, Any]:
+            """Finish one conversation gate without normal slot settlement."""
+
+            gate_error_code = str(
+                terminal_gate.get("error_code")
+                or "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+            )
+            identity_errors = [
+                dict(item)
+                for item in (terminal_gate.get("identity_errors") or [])
+                if isinstance(item, dict)
+            ]
+            gate_reported = self._report_identity_failure_gate(
+                binding=binding,
+                target=target,
+                read_run_id=read_run_id,
+                error_code=gate_error_code,
+                identity_errors=identity_errors,
+                authoritative_frame_source=str(
+                    terminal_gate.get("authoritative_frame_source")
+                    or "final_read"
+                ),
+                ui_frame_invalidated=(
+                    terminal_gate.get("ui_frame_invalidated") is True
+                ),
+            )
+            action_journal_path_value = str(
+                terminal_gate.get("action_journal_path") or ""
+            ).strip()
+            if gate_reported and action_journal_path_value:
+                # The independent backend gate is now the durable settlement
+                # for this unidentifiable action.  Only after that ack may the
+                # action-local Journal be removed; it must never be projected
+                # into Ledger or Outbox under its provisional key.
+                remove_action_journal(action_journal_path_value)
+            self.c2_stats["last_error"] = gate_error_code
+            return {
+                "ok": False,
+                "error_code": gate_error_code,
+                "identity_gate_reported": gate_reported,
+                "identity_errors": identity_errors,
+                "target_confirmation": target_confirmation,
+                "initial_observations": initial_observations,
+                "final_messages": final_payload,
+            }
+
         try:
+            if operation_phase not in {
+                C2_AUTHORIZED_READ_PHASE,
+                C2_PRE_SEND_REFRESH_PHASE,
+            }:
+                return {
+                    "ok": False,
+                    "error_code": "C2_READ_OPERATION_PHASE_INVALID",
+                }
+            if (current_step == "pre_send_refresh") != (
+                operation_phase == C2_PRE_SEND_REFRESH_PHASE
+            ):
+                return {
+                    "ok": False,
+                    "error_code": "C2_READ_OPERATION_PHASE_CONFLICT",
+                }
             if not str(target.authorization_revision or "").strip():
                 self.c2_stats["last_error"] = "C2_TARGET_AUTHORIZATION_REVISION_MISSING"
                 append_log(
@@ -6968,11 +13529,18 @@ class TaskRunner:
                 return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS"}
             effective_target = target
             target_label = str(effective_target.remark_code or "").strip()
+            expected_confirmed_self_text = (
+                self._confirmed_ai_reply_text_for_read(target)
+            )
             real_time_visible_metadata: dict[str, Any] = {}
             visible_source = ""
             fallback_target_mode = ""
             target_is_visible_hit = target.read_reason == "visible_hit" or bool(
                 isinstance(target.raw, dict) and target.raw.get("visible_hit")
+            )
+            friend_activation_read = bool(
+                target.read_reason == "friend_acceptance_visible_hit"
+                and operation_phase == C2_AUTHORIZED_READ_PHASE
             )
             if target_is_visible_hit:
                 base_target_mode = "visible"
@@ -6992,11 +13560,6 @@ class TaskRunner:
                     if isinstance(effective_target.raw, dict):
                         effective_target.raw["authorization_read_reason"] = target.read_reason
                 else:
-                    if target.read_reason == "friend_acceptance_visible_hit":
-                        return {
-                            "ok": False,
-                            "error_code": "C2_FRIEND_ACCEPTANCE_NOT_VISIBLE",
-                        }
                     visible_source = "atomic_visible_scan"
                 base_target_mode = "visible"
                 fallback_target_mode = "search_by_remark_code" if effective_target.remark_code else ""
@@ -7032,6 +13595,7 @@ class TaskRunner:
             if not current_only and fallback_target_mode and fallback_target_mode not in locate_modes:
                 locate_modes.append(fallback_target_mode)
             locate_payload: dict[str, Any] = {}
+            safe_visible_relocation_used = False
             for locate_mode in locate_modes:
                 visible_target = locate_mode == "visible"
                 phase_started_at = time.perf_counter()
@@ -7041,7 +13605,10 @@ class TaskRunner:
                     remark_code=effective_target.remark_code or "",
                     target_mode=locate_mode,
                     visible_session_candidate=effective_target.raw.get("visible_session_candidate") if visible_target and isinstance(effective_target.raw, dict) else None,
-                    capture_initial_messages=target.read_reason != "friend_acceptance_visible_hit",
+                    capture_initial_messages=not friend_activation_read,
+                    expected_confirmed_self_text=(
+                        expected_confirmed_self_text
+                    ),
                     max_duration_seconds=20 if locate_mode == "current" else 30 if visible_target else 90,
                     cancel_check=action_cancel_requested,
                 )
@@ -7076,7 +13643,74 @@ class TaskRunner:
                 )
                 if locate_payload.get("ok"):
                     break
-                if str(locate_payload.get("error_code") or "") in C2_LOCATE_TERMINAL_ERROR_CODES:
+                locate_error_code = str(
+                    locate_payload.get("error_code") or ""
+                )
+                location_recovery_contract = (
+                    target_location_recovery_contract()
+                )
+                location_recovery_error_code = str(
+                    location_recovery_contract.get("error_code") or ""
+                )
+                if locate_error_code == location_recovery_error_code:
+                    stale_evidence = (
+                        (locate_payload.get("targeting") or {}).get(
+                            "stale_after_click"
+                        )
+                        if isinstance(locate_payload.get("targeting"), dict)
+                        else None
+                    )
+                    required_evidence_values = dict(
+                        location_recovery_contract.get(
+                            "required_evidence_values"
+                        )
+                        or {}
+                    )
+                    safe_relocation_evidence = bool(
+                        isinstance(stale_evidence, dict)
+                        and required_evidence_values
+                        and all(
+                            stale_evidence.get(field) is expected
+                            for field, expected in required_evidence_values.items()
+                        )
+                    )
+                    if (
+                        locate_mode != "visible"
+                        or current_only
+                        or safe_visible_relocation_used
+                        or not safe_relocation_evidence
+                    ):
+                        locate_payload["error_code"] = (
+                            "C2_VISIBLE_TARGET_STALE_EVIDENCE_INVALID"
+                            if not safe_relocation_evidence
+                            else location_recovery_error_code
+                        )
+                        break
+                    if enforce_read_targets and not self._backend_still_allows_read_target(
+                        binding,
+                        target,
+                    ):
+                        return {
+                            "ok": False,
+                            "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
+                            "target_confirmation": locate_payload,
+                        }
+                    safe_visible_relocation_used = True
+                    self.c2_active_target_cache = {}
+                    append_log(
+                        "WARN",
+                        "c2_visible_target_stale_relocating",
+                        "会话列表在点击前发生重排；已确认误点无消息或媒体副作用，将在同一授权内重新定位一次。",
+                        error_code=locate_error_code,
+                        metadata={
+                            "conversation_id": target.conversation_id,
+                            "remark_code": target.remark_code,
+                            "read_run_id": read_run_id,
+                            "next_target_mode": "search_by_remark_code",
+                        },
+                    )
+                    continue
+                if locate_error_code in C2_LOCATE_TERMINAL_ERROR_CODES:
                     break
             locate_payload["visible_scan"] = real_time_visible_metadata
             append_log(
@@ -7094,6 +13728,7 @@ class TaskRunner:
                     "target_mode": locate_payload.get("target_mode"),
                     "visible_source": visible_source,
                     "attempted_target_modes": locate_modes,
+                    "safe_visible_relocation_used": safe_visible_relocation_used,
                     "targeting": locate_payload.get("targeting"),
                     "step_events": locate_payload.get("step_events"),
                     "open_chat_timing": locate_payload.get("open_chat_timing"),
@@ -7151,43 +13786,71 @@ class TaskRunner:
                         },
                     )
                     return {"ok": False, "error_code": code, "target_confirmation": locate_payload}
-                phase_started_at = time.perf_counter()
-                activation = self.api.confirm_wechat_friend_activation(
-                    binding,
-                    target,
-                    conversation_type=conversation_type,
-                    chat_surface_ready=True,
-                    title_evidence=title_evidence,
-                )
-                record_phase(
-                    "friend_activation_confirm",
-                    phase_started_at,
-                    activation_confirmed=activation.get("activation_confirmed"),
-                    friend_state=activation.get("friend_state"),
-                )
-                if activation.get("activation_confirmed") is not True:
-                    code = "C2_FRIEND_ACTIVATION_NOT_CONFIRMED"
-                    self.c2_stats["last_error"] = code
-                    return {"ok": False, "error_code": code, "target_confirmation": locate_payload}
-                refreshed_revision = str(activation.get("authorization_revision") or "").strip()
-                if refreshed_revision:
-                    target.authorization_revision = refreshed_revision
-                if isinstance(target.raw, dict):
-                    target.raw["friend_activation"] = dict(activation)
-                append_log(
-                    "INFO",
-                    "c2_friend_activation_confirmed",
-                    "新好友已由后端确认激活，现在才允许读取文字、语音和图片。",
-                    metadata={
-                        "conversation_id": target.conversation_id,
-                        "remark_code": target.remark_code,
-                        "friend_state": activation.get("friend_state"),
-                        "conversation_status": activation.get("conversation_status"),
-                    },
-                )
+                if friend_activation_read:
+                    phase_started_at = time.perf_counter()
+                    activation = self.api.confirm_wechat_friend_activation(
+                        binding,
+                        target,
+                        conversation_type=conversation_type,
+                        chat_surface_ready=True,
+                        title_evidence=title_evidence,
+                    )
+                    record_phase(
+                        "friend_activation_confirm",
+                        phase_started_at,
+                        activation_confirmed=activation.get(
+                            "activation_confirmed"
+                        ),
+                        friend_state=activation.get("friend_state"),
+                    )
+                    if activation.get("activation_confirmed") is not True:
+                        code = "C2_FRIEND_ACTIVATION_NOT_CONFIRMED"
+                        self.c2_stats["last_error"] = code
+                        return {
+                            "ok": False,
+                            "error_code": code,
+                            "target_confirmation": locate_payload,
+                        }
+                    refreshed_revision = str(
+                        activation.get("authorization_revision") or ""
+                    ).strip()
+                    if refreshed_revision:
+                        target.authorization_revision = refreshed_revision
+                    if isinstance(target.raw, dict):
+                        target.raw["friend_activation"] = dict(activation)
+                    append_log(
+                        "INFO",
+                        "c2_friend_activation_confirmed",
+                        "新好友已由后端确认激活，现在才允许读取文字、语音和图片。",
+                        metadata={
+                            "conversation_id": target.conversation_id,
+                            "remark_code": target.remark_code,
+                            "friend_state": activation.get("friend_state"),
+                            "conversation_status": activation.get(
+                                "conversation_status"
+                            ),
+                        },
+                    )
+                else:
+                    append_log(
+                        "INFO",
+                        "c2_friend_activation_provenance_preserved",
+                        "批次续行保留首次读取原因，但发送前复读不会重复执行好友激活状态转换。",
+                        metadata={
+                            "conversation_id": target.conversation_id,
+                            "remark_code": target.remark_code,
+                            "authorization_read_reason": target.read_reason,
+                            "operation_phase": operation_phase,
+                        },
+                    )
             lease.update_step(current_step)
             self.current_step = current_step
             phase_started_at = time.perf_counter()
+            message_read_phase_started_at = phase_started_at
+            # Starting OCR is not itself a durable message fact. If this
+            # attempt fails before a trusted observation or local artifact is
+            # formed, the flow uses the explicit read_failed_no_fact terminal.
+            inflight_activity["message_read_attempted"] = True
             reusable_initial_snapshot = (
                 locate_payload.get("initial_messages_snapshot")
                 if isinstance(locate_payload.get("initial_messages_snapshot"), dict)
@@ -7204,20 +13867,27 @@ class TaskRunner:
                     rpa_session_key="",
                     remark_code=effective_target.remark_code or "",
                     target_mode="current",
+                    expected_confirmed_self_text=(
+                        expected_confirmed_self_text
+                    ),
                     max_duration_seconds=20,
                     cancel_check=action_cancel_requested,
                 )
-            record_phase(
-                "initial_message_read",
-                phase_started_at,
-                state=sidecar_payload.get("state"),
-                sidecar_run_id=sidecar_payload.get("sidecar_run_id"),
-                reused_open_chat_confirmation_frame=bool(reusable_initial_snapshot),
+            message_read_phase_metadata.update(
+                {
+                    "state": sidecar_payload.get("state"),
+                    "sidecar_run_id": sidecar_payload.get("sidecar_run_id"),
+                    "reused_open_chat_confirmation_frame": bool(
+                        reusable_initial_snapshot
+                    ),
+                }
             )
             sidecar_payload["target_confirmation"] = locate_payload
             sidecar_payload["authoritative_frame_source"] = "initial_read"
+            sidecar_payload["ui_frame_invalidated"] = False
             if not sidecar_payload.get("ok"):
                 code = str(sidecar_payload.get("error_code") or sidecar_payload.get("state") or "MESSAGE_READ_FAILED")
+                settle_message_read_phase(succeeded=False, error_code=code)
                 self.c2_stats["last_error"] = code
                 append_log(
                     "WARN",
@@ -7241,6 +13911,10 @@ class TaskRunner:
                 return {"ok": False, "error_code": code}
             initial_contract_error = sidecar_contract_error(sidecar_payload)
             if initial_contract_error:
+                settle_message_read_phase(
+                    succeeded=False,
+                    error_code=initial_contract_error,
+                )
                 self.c2_stats["last_error"] = initial_contract_error
                 append_log(
                     "WARN",
@@ -7263,7 +13937,52 @@ class TaskRunner:
                     "initial_messages": sidecar_payload,
                 }
             if enforce_read_targets and not self._backend_still_allows_read_target(binding, target):
+                settle_message_read_phase(
+                    succeeded=False,
+                    error_code="C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
+                )
                 return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS", "target_confirmation": locate_payload, "initial_messages": sidecar_payload}
+            sidecar_payload, initial_identity_errors = (
+                self._align_initial_identity_frame(
+                    target=target,
+                    sidecar_payload=sidecar_payload,
+                    read_run_id=read_run_id,
+                )
+            )
+            if initial_identity_errors:
+                code = str(
+                    initial_identity_errors[0].get("error_code")
+                    or "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                )
+                self.c2_stats["last_error"] = code
+                settle_message_read_phase(succeeded=False, error_code=code)
+                append_log(
+                    "WARN",
+                    "c2_initial_sequence_alignment_blocked",
+                    "当前画面无法与后端身份尾部唯一对齐，已禁止媒体动作、入库和 Brain。",
+                    error_code=code,
+                    metadata={
+                        "conversation_id": target.conversation_id,
+                        "identity_errors": initial_identity_errors,
+                        "sequence_alignment_evidence": sidecar_payload.get(
+                            "sequence_alignment_evidence"
+                        ),
+                    },
+                    force_incident=True,
+                )
+                self._report_identity_failure_gate(
+                    binding=binding,
+                    target=target,
+                    read_run_id=read_run_id,
+                    error_code=code,
+                    identity_errors=initial_identity_errors,
+                )
+                return {
+                    "ok": False,
+                    "error_code": code,
+                    "initial_messages": sidecar_payload,
+                }
+            settle_message_read_phase(succeeded=True)
             voice_binding_guard_key = (
                 f"{target_cache_key}:{str(target.authorization_revision).strip()}"
             )
@@ -7287,784 +14006,91 @@ class TaskRunner:
                     "target_confirmation": locate_payload,
                     "initial_messages": sidecar_payload,
                 }
-            voice_candidates = _untranscribed_voice_observations(sidecar_payload)
+            initial_read_observations = list(sidecar_payload.get("observations") or [])
             excluded_voice_anchor_keys: set[str] = set()
-            new_voice_candidates: list[dict[str, Any]] = []
-            voice_candidate_sources: dict[str, str] = {}
-            voice_candidate_roles: dict[str, str] = {}
-            partial_failed_voice_source_keys: list[str] = []
-            partial_failed_voice_roles: dict[str, str] = {}
-            deferred_new_voice_source_keys: list[str] = []
+            voice_item_outcomes: list[dict[str, Any]] = []
             voice_action_failure_code = ""
-            for observation in voice_candidates:
-                source_key = voice_observation_source_key(target, observation)
-                anchor_key = voice_observation_anchor_key(observation)
-                ledger = load_c2_ledger_entry(target.conversation_id, source_key)
-                if ledger and (
-                    ledger.get("terminal_state") in {"completed", "failed", "ignored"}
-                    or ledger.get("ingest_state") in {"waiting", "confirmed", "not_required"}
-                ):
-                    if not anchor_key:
-                        code = "MESSAGE_IDENTITY_UNCONFIRMED"
-                        self.c2_stats["last_error"] = code
-                        append_log(
-                            "WARN",
-                            "c2_voice_preaction_identity_unconfirmed",
-                            "旧语音命中本地清单但缺少可传给 OmniAuto 的稳定 anchor，已在右键前阻断。",
-                            error_code=code,
-                            metadata={"conversation_id": target.conversation_id, "source_message_key": source_key},
-                        )
-                        return {"ok": False, "error_code": code, "initial_messages": sidecar_payload}
-                    excluded_voice_anchor_keys.add(anchor_key)
-                    append_log(
-                        "INFO",
-                        "c2_voice_preaction_ledger_hit",
-                        "语音在物理操作前命中本地终态，不再右键或转写。",
-                        metadata={
-                            "conversation_id": target.conversation_id,
-                            "source_message_key": source_key,
-                            "voice_anchor_key": anchor_key,
-                            "terminal_state": ledger.get("terminal_state"),
-                            "ingest_state": ledger.get("ingest_state"),
-                        },
-                    )
-                    continue
-                if not anchor_key:
-                    code = "MESSAGE_IDENTITY_UNCONFIRMED"
-                    self.c2_stats["last_error"] = code
-                    append_log(
-                        "WARN",
-                        "c2_voice_preaction_identity_unconfirmed",
-                        "新语音缺少稳定 anchor，禁止以坐标代替身份并执行右键。",
-                        error_code=code,
-                        metadata={"conversation_id": target.conversation_id, "source_message_key": source_key},
-                    )
-                    return {"ok": False, "error_code": code, "initial_messages": sidecar_payload}
-                new_voice_candidates.append(observation)
-                voice_candidate_sources[anchor_key] = source_key
-                voice_candidate_roles[anchor_key] = str(
-                    observation.get("sender_role") or ""
-                ).strip().lower()
-            if new_voice_candidates:
-                if enforce_read_targets and not self._backend_still_allows_read_target_for_voice(binding, target):
-                    return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS", "target_confirmation": locate_payload, "initial_messages": sidecar_payload}
-                lease.update_step("voice_transcribe_current_chat")
-                self.current_step = "voice_transcribe_current_chat"
+            (
+                restored_failed_voice_source_keys,
+                restored_failed_voice_roles,
+            ) = self._restore_visible_failed_voice_facts(
+                target=target,
+                sidecar_payload=sidecar_payload,
+            )
+            if _executable_untranscribed_voice_observations(
+                target,
+                sidecar_payload,
+            ):
                 phase_started_at = time.perf_counter()
-                voice_action_journal = (
-                    self._start_irreversible_action_journal(
-                        action_kind="voice",
-                        target=target,
-                        items=[
-                            {
-                                "source_message_key": source_key,
-                                "physical_anchor_keys": (
-                                    voice_action_journal_anchor_keys(
-                                        next(
-                                            (
-                                                observation
-                                                for observation
-                                                in new_voice_candidates
-                                                if voice_observation_anchor_key(
-                                                    observation
-                                                )
-                                                == anchor_key
-                                            ),
-                                            {},
-                                        )
-                                    )
-                                    or [anchor_key]
-                                ),
-                            }
-                            for anchor_key, source_key
-                            in voice_candidate_sources.items()
-                        ],
-                        flow_outcomes=flow_outcomes,
-                    )
-                )
-                voice_payload = self.bridge.voice_transcribe(
-                    display_name=target_label,
-                    rpa_session_key="",
-                    remark_code=effective_target.remark_code or "",
-                    target_mode="current",
-                    max_duration_seconds=CONFIG.c2_voice_transcribe_max_duration_seconds,
-                    excluded_voice_anchor_keys=sorted(excluded_voice_anchor_keys),
-                    action_journal=voice_action_journal,
-                    cancel_check=action_cancel_requested,
+                voice_result = self._finish_new_visible_voices_in_current_chat(
+                    binding=binding, target=target, target_label=target_label,
+                    sidecar_payload=sidecar_payload, lease=lease,
+                    action_cancel_requested=action_cancel_requested,
+                    enforce_read_targets=enforce_read_targets,
+                    read_run_id=read_run_id,
+                    excluded_voice_anchor_keys=excluded_voice_anchor_keys,
+                    flow_outcomes=flow_outcomes,
                 )
                 record_phase(
                     "voice_transcribe",
                     phase_started_at,
-                    state=voice_payload.get("state"),
-                    sidecar_run_id=voice_payload.get("sidecar_run_id"),
-                    timing=voice_payload.get("timing") if isinstance(voice_payload.get("timing"), dict) else None,
+                    completed=bool(voice_result.get("ok")),
+                    failure_code=voice_result.get("failure_code"),
+                    item_count=len(voice_result.get("item_outcomes") or []),
                 )
-                voice_contract_error = sidecar_contract_error(voice_payload, require_observations=False)
-                if voice_contract_error:
-                    self.c2_stats["last_error"] = voice_contract_error
-                    append_log(
-                        "WARN",
-                        "c2_voice_sidecar_contract_invalid",
-                        "OmniAuto 语音动作返回的合同指纹不一致，已阻断后续读取和入库。",
-                        error_code=voice_contract_error,
-                        metadata={
-                            "conversation_id": target.conversation_id,
-                            "remark_code": target.remark_code,
-                            "contract_revision": voice_payload.get("contract_revision"),
-                            "contract_sha256": voice_payload.get("contract_sha256"),
-                        },
-                    )
-                    return {
-                        "ok": False,
-                        "error_code": voice_contract_error,
-                        "target_confirmation": locate_payload,
-                        "initial_messages": sidecar_payload,
-                        "voice_transcription": voice_payload,
-                    }
-                voice_state = str(voice_payload.get("state") or voice_payload.get("error_code") or "").strip()
-                voice_item_outcomes: list[dict[str, Any]] = []
-                for raw_outcome in (
-                    voice_payload.get("item_action_outcomes") or []
-                ):
-                    if not isinstance(raw_outcome, dict):
-                        continue
-                    aliases = [
-                        str(value).strip()
-                        for value in (
-                            raw_outcome.get("physical_anchor_keys") or []
-                        )
-                        if str(value).strip()
-                    ]
-                    source_key = next(
-                        (
-                            voice_candidate_sources[alias]
-                            for alias in aliases
-                            if alias in voice_candidate_sources
-                        ),
-                        "",
-                    )
-                    if not source_key:
-                        continue
-                    classified = classify_action_result(
-                        "voice",
-                        raw_outcome,
-                        source_message_key=source_key,
-                    )
-                    classified["terminal_payload"] = _voice_terminal_payload(
-                        voice_payload,
-                        anchor_keys=aliases,
-                        result=str(classified.get("result") or "failed"),
-                        error_code=(
-                            str(classified.get("error_code") or "") or None
-                        ),
-                    )
-                    classified_evidence = dict(
-                        classified.get("evidence") or {}
-                    )
-                    classified_evidence["action_kind"] = "voice"
-                    classified["evidence"] = classified_evidence
-                    voice_item_outcomes = merge_item_outcomes(
-                        voice_item_outcomes,
-                        [classified],
-                    )
-                    flow_outcomes.record(classified)
-                failed_anchor_keys = {
-                    str(value).strip()
-                    for value in (voice_payload.get("failed_voice_anchor_keys") or [])
-                    if str(value).strip()
-                }
-                if voice_state in {"voice_transcribe_click_failed", "VOICE_TRANSCRIBE_CLICK_FAILED"} and len(new_voice_candidates) == 1:
-                    only_anchor = voice_observation_anchor_key(new_voice_candidates[0])
-                    if only_anchor:
-                        failed_anchor_keys.add(only_anchor)
-                voice_fatal_states = {
-                    "target_not_confirmed_for_voice_transcribe",
-                    "voice_transcribe_target_not_found",
-                    "TARGET_NOT_CONFIRMED_FOR_VOICE_TRANSCRIBE",
-                }
-                voice_blocking_states = voice_fatal_states | {
-                    "voice_transcribe_click_failed",
-                    "VOICE_TRANSCRIBE_CLICK_FAILED",
-                    "RPA_SIDECAR_TIMEOUT",
-                    "RPA_SIDECAR_PROTOCOL_INVALID",
-                    "RPA_SIDECAR_CRASHED",
-                    "voice_transcribe_cancelled",
-                    "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
-                }
-                voice_success_states = {
-                    "voice_transcribe_completed",
-                    "voice_transcribe_partial",
-                    # The initial OCR can conservatively flag voice-like noise.
-                    # A fresh structural scan finding no voice is safe to continue.
-                    "voice_transcribe_no_visible_voice",
-                }
-                append_log(
-                    "INFO" if voice_state in voice_success_states else "WARN",
-                    "c2_voice_transcribe_finished",
-                    "C2 语音转文字调用完成。",
-                    error_code=None if voice_state in voice_success_states else str(voice_payload.get("error_code") or voice_state or "VOICE_TRANSCRIBE_FAILED"),
-                    metadata={
-                        "conversation_id": target.conversation_id,
-                        "remark_code": target.remark_code,
-                        "state": voice_state,
-                        "sidecar_run_id": voice_payload.get("sidecar_run_id"),
-                        "artifact_dir": voice_payload.get("artifact_dir"),
-                        "review_path": voice_payload.get("review_path"),
-                        "target_mode": voice_payload.get("target_mode"),
-                        "transcribed_count": len(voice_payload.get("transcribed_messages") or []) if isinstance(voice_payload.get("transcribed_messages"), list) else 0,
-                        "timing": voice_payload.get("timing") if isinstance(voice_payload.get("timing"), dict) else None,
-                    },
-                )
-                failed_source_keys = [
-                    voice_candidate_sources[key]
-                    for key in sorted(failed_anchor_keys)
-                    if key in voice_candidate_sources
-                ]
-                failed_source_keys = sorted(
-                    {
-                        *failed_source_keys,
-                        *[
-                            str(item.get("source_message_key") or "")
-                            for item in voice_item_outcomes
-                            if item.get("result") == "failed"
-                        ],
-                    }
-                )
-                if any(
-                    item.get("action_phase") == "trigger_attempted"
-                    and item.get("result") == "failed"
-                    for item in voice_item_outcomes
-                ):
-                    voice_action_failure_code = (
-                        "VOICE_TRANSCRIBE_RESULT_UNKNOWN"
-                    )
-                excluded_voice_anchor_keys.update(failed_anchor_keys)
-                if voice_state == "voice_transcribe_partial":
-                    processed_anchor_keys = {
-                        str(value).strip()
-                        for value in (
-                            voice_payload.get("processed_voice_anchor_keys") or []
-                        )
-                        if str(value).strip()
-                    }
-                    unresolved_anchor_keys = {
-                        anchor_key
-                        for anchor_key in voice_candidate_sources
-                        if anchor_key in failed_anchor_keys
-                        or anchor_key not in processed_anchor_keys
-                    }
-                    excluded_voice_anchor_keys.update(unresolved_anchor_keys)
-                    partial_failed_voice_source_keys = sorted(
-                        {
-                            voice_candidate_sources[anchor_key]
-                            for anchor_key in unresolved_anchor_keys
-                        }
-                    )
-                    partial_failed_voice_roles = {
-                        voice_candidate_sources[anchor_key]: (
-                            voice_candidate_roles.get(anchor_key) or ""
-                        )
-                        for anchor_key in unresolved_anchor_keys
-                        if voice_candidate_roles.get(anchor_key)
-                        in {"customer", "self"}
-                    }
-                    append_log(
-                        "WARN",
-                        "c2_voice_transcribe_partial_gated",
-                        "部分语音已成功保留；未完成锚点将在最终画面复核后落账并加入 Brain 门禁。",
-                        error_code="C2_VOICE_TRANSCRIBE_FAILED",
-                        metadata={
-                            "conversation_id": target.conversation_id,
-                            "remark_code": target.remark_code,
-                            "processed_voice_anchor_keys": sorted(
-                                processed_anchor_keys
-                            ),
-                            "failed_voice_anchor_keys": sorted(
-                                failed_anchor_keys
-                            ),
-                            "failed_customer_voice_source_keys": (
-                                sorted(
-                                    source_key
-                                    for source_key, role in (
-                                        partial_failed_voice_roles.items()
-                                    )
-                                    if role == "customer"
-                                )
-                            ),
-                            "unresolved_voice_source_keys": partial_failed_voice_source_keys,
-                        },
-                    )
-                if _voice_payload_has_unbound_transcript(voice_payload):
-                    code = "VOICE_TRANSCRIPT_BINDING_INCONSISTENT"
-                    voice_action_failure_code = code
-                    self.c2_voice_binding_blocked_authorizations.add(voice_binding_guard_key)
-                    if len(self.c2_voice_binding_blocked_authorizations) > 128:
-                        self.c2_voice_binding_blocked_authorizations = {voice_binding_guard_key}
+                if not voice_result.get("ok"):
+                    code = str(voice_result.get("error_code") or "C2_VOICE_ORCHESTRATION_FAILED")
                     self.c2_stats["last_error"] = code
-                    append_log(
-                        "WARN",
-                        "c2_voice_transcript_binding_inconsistent",
-                        "OCR 已识别完整语音正文，但 sidecar 未绑定到稳定语音锚点。",
-                        error_code=code,
-                        metadata={
-                            "conversation_id": target.conversation_id,
-                            "remark_code": target.remark_code,
-                            "authorization_revision": target.authorization_revision,
-                            "state": voice_state,
-                            "sidecar_run_id": voice_payload.get("sidecar_run_id"),
-                            "new_message_count": len(voice_payload.get("new_messages") or []),
-                            "transcribed_count": len(voice_payload.get("transcribed_messages") or []),
-                        },
-                    )
-                    partial_failed_voice_source_keys = sorted(
-                        set(voice_candidate_sources.values())
-                    )
-                    partial_failed_voice_roles = {
-                        source_key: voice_candidate_roles.get(anchor_key) or ""
-                        for anchor_key, source_key in voice_candidate_sources.items()
-                        if voice_candidate_roles.get(anchor_key) in {"customer", "self"}
-                    }
-                if voice_state in {
-                    "voice_transcribe_cancelled",
-                    "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS",
-                }:
-                    code = str(
-                        voice_payload.get("error_code")
-                        or voice_state
-                        or "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS"
-                    )
-                    self.c2_stats["last_error"] = code
-                    append_log(
-                        "INFO",
-                        "c2_voice_transcribe_cancelled_without_terminal_state",
-                        "语音动作因停止或授权撤销而中断；本轮不把语音记成失败，恢复监听后按新画面重新判断。",
-                        error_code=code,
-                        metadata={
-                            "conversation_id": target.conversation_id,
-                            "remark_code": target.remark_code,
-                            "source_message_keys": sorted(
-                                set(voice_candidate_sources.values())
-                            ),
-                        },
-                    )
-                    return {
-                        "ok": False,
-                        "error_code": code,
-                        "target_confirmation": locate_payload,
-                        "initial_messages": sidecar_payload,
-                        "voice_transcription": voice_payload,
-                    }
-                if voice_state in voice_blocking_states or voice_state not in voice_success_states:
-                    code = str(voice_payload.get("error_code") or voice_state or "TARGET_NOT_CONFIRMED_FOR_VOICE_TRANSCRIBE")
-                    voice_action_failure_code = voice_action_failure_code or code
-                    self.c2_stats["last_error"] = code
-                    action_failed_source_keys = sorted(
-                        {
-                            *partial_failed_voice_source_keys,
-                            *(failed_source_keys or list(voice_candidate_sources.values())),
-                        }
-                    )
-                    partial_failed_voice_source_keys = action_failed_source_keys
-                    for anchor_key, source_key in voice_candidate_sources.items():
-                        role = voice_candidate_roles.get(anchor_key) or ""
-                        if source_key in action_failed_source_keys and role in {
-                            "customer",
-                            "self",
-                        }:
-                            partial_failed_voice_roles[source_key] = role
-                    append_log(
-                        "WARN",
-                        "c2_voice_action_failed_continuing_final_read",
-                        "语音动作失败，但当前会话仍可复核；继续读取最终画面并一次性保存同屏事实。",
-                        error_code=code,
-                        metadata={
-                            "conversation_id": target.conversation_id,
-                            "remark_code": target.remark_code,
-                            "source_message_keys": action_failed_source_keys,
-                        },
-                    )
-                if enforce_read_targets and not self._backend_still_allows_read_target(binding, target):
-                    return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS", "target_confirmation": locate_payload, "initial_messages": sidecar_payload, "voice_transcription": voice_payload}
-                lease.update_step("target_chat_reconfirming")
-                self.current_step = "target_chat_reconfirming"
-                phase_started_at = time.perf_counter()
-                can_reuse_voice_frame = bool(
-                    voice_payload.get("final_frame_reusable")
-                    and isinstance(voice_payload.get("observations"), list)
-                    and isinstance(voice_payload.get("target_confirmation"), dict)
-                    and voice_payload.get("target_confirmation", {}).get("ok")
-                )
-                if can_reuse_voice_frame:
-                    transcribed_payload = dict(voice_payload)
-                    transcribed_payload["ok"] = True
-                    transcribed_payload["state"] = "messages_ocr"
-                    transcribed_payload["target_confirmation"] = dict(voice_payload.get("target_confirmation") or {})
-                else:
-                    transcribed_payload = self.bridge.get_messages(
-                        display_name=target_label,
-                        rpa_session_key="",
-                        remark_code=effective_target.remark_code or "",
-                        target_mode="current",
-                        max_duration_seconds=20,
-                        cancel_check=action_cancel_requested,
-                    )
-                record_phase(
-                    "target_chat_reconfirm_and_final_read",
-                    phase_started_at,
-                    state=transcribed_payload.get("state"),
-                    sidecar_run_id=transcribed_payload.get("sidecar_run_id"),
-                    reused_voice_final_frame=can_reuse_voice_frame,
-                )
-                if not transcribed_payload.get("ok"):
-                    code = str(transcribed_payload.get("error_code") or transcribed_payload.get("state") or "TARGET_NOT_CONFIRMED_FOR_MESSAGES")
-                    self.c2_stats["last_error"] = code
-                    append_log(
-                        "WARN",
-                        "c2_message_read_sidecar_failed",
-                        "C2 语音转写后消息读取失败。",
-                        error_code=code,
-                        metadata={
-                            "conversation_id": target.conversation_id,
-                            "remark_code": target.remark_code,
-                            "state": transcribed_payload.get("state"),
-                            "sidecar_run_id": transcribed_payload.get("sidecar_run_id"),
-                            "artifact_dir": transcribed_payload.get("artifact_dir"),
-                            "review_path": transcribed_payload.get("review_path"),
-                            "target_mode": transcribed_payload.get("target_mode"),
-                        },
-                        force_incident=True,
-                    )
-                    if voice_action_failure_code:
-                        self._report_voice_failure_gate(
-                            binding=binding,
-                            target=target,
-                            error_code=voice_action_failure_code,
-                            source_keys=partial_failed_voice_source_keys,
-                            voice_payload=voice_payload,
-                        )
-                    return {
-                        "ok": False,
-                        "error_code": code,
-                        "target_confirmation": locate_payload,
-                        "initial_messages": sidecar_payload,
-                        "voice_transcription": voice_payload,
-                        "target_reconfirmation": transcribed_payload.get("target_confirmation"),
-                    }
-                final_contract_error = sidecar_contract_error(transcribed_payload)
-                if final_contract_error:
-                    self.c2_stats["last_error"] = final_contract_error
-                    append_log(
-                        "WARN",
-                        "c2_final_sidecar_contract_invalid",
-                        "OmniAuto 最终权威画面不符合当前唯一 C2 合同，已阻断入库。",
-                        error_code=final_contract_error,
-                        metadata={
-                            "conversation_id": target.conversation_id,
-                            "remark_code": target.remark_code,
-                            "contract_revision": transcribed_payload.get("contract_revision"),
-                            "contract_sha256": transcribed_payload.get("contract_sha256"),
-                            "observation_validation_errors": transcribed_payload.get("observation_validation_errors"),
-                        },
-                        force_incident=True,
-                    )
-                    if voice_action_failure_code:
-                        self._report_voice_failure_gate(
-                            binding=binding,
-                            target=target,
-                            error_code=voice_action_failure_code,
-                            source_keys=partial_failed_voice_source_keys,
-                            voice_payload=voice_payload,
-                        )
-                    return {
-                        "ok": False,
-                        "error_code": final_contract_error,
-                        "target_confirmation": locate_payload,
-                        "initial_messages": sidecar_payload,
-                        "voice_transcription": voice_payload,
-                        "final_messages": transcribed_payload,
-                    }
-                if enforce_read_targets and not self._backend_still_allows_read_target(binding, target):
-                    return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS", "target_confirmation": locate_payload, "initial_messages": sidecar_payload, "voice_transcription": voice_payload, "target_reconfirmation": transcribed_payload.get("target_confirmation")}
-                target_reconfirmation = transcribed_payload.get("target_confirmation") if isinstance(transcribed_payload.get("target_confirmation"), dict) else {}
-                lease.update_step(current_step)
-                self.current_step = current_step
-                transcribed_payload["target_confirmation"] = locate_payload
-                transcribed_payload["target_reconfirmation"] = target_reconfirmation
-                transcribed_payload["voice_transcription"] = voice_payload
-                transcribed_payload["initial_messages"] = sidecar_payload
-                transcribed_payload["authoritative_frame_source"] = "final_read"
-                sidecar_payload = transcribed_payload
-            if recovery_waiting_image_facts:
-                sidecar_payload = self._merge_waiting_image_facts(
-                    target=target,
-                    sidecar_payload=sidecar_payload,
-                )
-            identity_state_key = f"message_identity:{target.conversation_id}"
-            reconciled_observations, identity_state, cross_round_identity_errors = (
-                reconcile_v16104_identity_transition(
-                    target,
-                    list(sidecar_payload.get("observations") or []),
-                    load_c2_state(identity_state_key),
-                )
-            )
-            sidecar_payload["observations"] = reconciled_observations
-            save_c2_state(identity_state_key, identity_state)
-            if cross_round_identity_errors:
-                code = str(
-                    cross_round_identity_errors[0].get("error_code")
-                    or "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
-                )
-                self.c2_stats["last_error"] = code
-                append_log(
-                    "WARN",
-                    "c2_cross_round_identity_ambiguous",
-                    "当前画面与历史消息无法形成唯一连续对应，已禁止猜测身份、Vision、入库和 Brain。",
-                    error_code=code,
-                    metadata={
-                        "conversation_id": target.conversation_id,
-                        "remark_code": target.remark_code,
-                        "identity_errors": cross_round_identity_errors,
-                    },
-                )
-                self._report_identity_failure_gate(
-                    binding=binding,
-                    target=target,
-                    error_code=code,
-                    identity_errors=cross_round_identity_errors,
-                )
-                return {
-                    "ok": False,
-                    "error_code": code,
-                    "target_confirmation": locate_payload,
-                    "final_messages": sidecar_payload,
-                    "identity_errors": cross_round_identity_errors,
-                }
-            sidecar_payload = self._merge_waiting_image_facts(
-                target=target,
-                sidecar_payload=sidecar_payload,
-            )
-            sidecar_payload["observations"] = (
-                self._attach_possible_ai_send_receipts(
-                    target=target,
-                    observations=self._attach_confirmed_ai_reply_receipts(
-                        target=target,
-                        observations=list(
-                            sidecar_payload.get("observations") or []
-                        ),
-                    ),
-                )
-            )
-            actionable_voice_source_keys = set(voice_candidate_sources.values())
-            if new_voice_candidates or _untranscribed_voice_observations(
-                sidecar_payload
-            ):
-                completed_voice_source_keys: set[str] = set()
-                for observation in sidecar_payload.get("observations") or []:
-                    if not isinstance(observation, dict):
-                        continue
-                    row_kind = str(observation.get("row_kind") or "").strip().lower()
-                    voice_state = str(
-                        observation.get("voice_state") or ""
-                    ).strip().lower()
-                    if row_kind not in {"voice_bubble", "voice_transcript"}:
-                        continue
-                    if row_kind == "voice_bubble" and voice_state == "untranscribed":
-                        continue
-                    try:
-                        completed_voice_source_keys.add(
-                            voice_observation_source_key(target, observation)
-                        )
-                    except ValueError:
-                        continue
-                if completed_voice_source_keys:
-                    partial_failed_voice_source_keys = sorted(
-                        set(partial_failed_voice_source_keys)
-                        - completed_voice_source_keys
-                    )
-                    for source_key in completed_voice_source_keys:
-                        partial_failed_voice_roles.pop(source_key, None)
-                final_unresolved_source_keys: list[str] = []
-                for observation in _untranscribed_voice_observations(sidecar_payload):
-                    if not observation_role_is_trusted(observation):
-                        continue
-                    role = str(
-                        observation.get("sender_role") or ""
-                    ).strip().lower()
-                    try:
-                        source_key = voice_observation_source_key(
-                            target,
-                            observation,
-                        )
-                    except ValueError:
-                        continue
-                    ledger = load_c2_ledger_entry(
-                        target.conversation_id,
-                        source_key,
-                    )
-                    if (
-                        ledger
-                        and ledger.get("terminal_state") == "failed"
-                        and ledger.get("ingest_state") == "waiting"
-                    ):
-                        final_unresolved_source_keys.append(source_key)
-                        partial_failed_voice_roles[source_key] = role
-                        continue
-                    if ledger and ledger.get("terminal_state") in {
-                        "completed",
-                        "failed",
-                        "ignored",
-                    }:
-                        continue
-                    if source_key in actionable_voice_source_keys:
-                        final_unresolved_source_keys.append(source_key)
-                        partial_failed_voice_roles[source_key] = role
-                    else:
-                        deferred_new_voice_source_keys.append(source_key)
-                partial_failed_voice_source_keys = sorted(
-                    {
-                        *partial_failed_voice_source_keys,
-                        *final_unresolved_source_keys,
-                    }
-                )
-                final_voice_failure_code = (
-                    voice_action_failure_code or "VOICE_TRANSCRIBE_PARTIAL"
-                )
-                if partial_failed_voice_source_keys:
-                    self._mark_voice_sources_failed(
-                        target=target,
-                        source_keys=partial_failed_voice_source_keys,
-                        error_code=final_voice_failure_code,
-                    )
-                annotated_roles = self._annotate_failed_voice_observations(
-                    target=target,
-                    sidecar_payload=sidecar_payload,
-                    failed_source_keys=set(partial_failed_voice_source_keys),
-                    error_code=final_voice_failure_code,
-                )
-                partial_failed_voice_roles.update(annotated_roles)
-            if deferred_new_voice_source_keys:
-                continuation = self._finish_new_visible_voices_in_current_chat(
-                    binding=binding,
-                    target=target,
-                    target_label=target_label,
-                    sidecar_payload=sidecar_payload,
-                    lease=lease,
-                    action_cancel_requested=action_cancel_requested,
-                    enforce_read_targets=enforce_read_targets,
-                    excluded_voice_anchor_keys=excluded_voice_anchor_keys,
-                    flow_outcomes=flow_outcomes,
-                )
-                if not continuation.get("ok"):
-                    code = str(
-                        continuation.get("error_code")
-                        or "C2_NEW_VOICE_CONTINUATION_FAILED"
-                    )
-                    self.c2_stats["last_error"] = code
-                    append_log(
-                        "WARN",
-                        "c2_new_voice_continuation_stopped",
-                        "当前会话新增语音处理因停止、授权或会话确认失败而中止。",
-                        error_code=code,
-                        metadata={
-                            "conversation_id": target.conversation_id,
-                            "remark_code": target.remark_code,
-                        },
-                    )
-                    return {
-                        "ok": False,
-                        "error_code": code,
-                        "target_confirmation": locate_payload,
-                        "final_messages": continuation.get("payload")
-                        or sidecar_payload,
-                    }
+                    return {"ok": False, "error_code": code, "target_confirmation": locate_payload, "initial_messages": sidecar_payload, "final_messages": voice_result.get("payload")}
                 sidecar_payload = dict(
-                    continuation.get("payload") or sidecar_payload
+                    voice_result.get("payload") or sidecar_payload
                 )
-                sidecar_payload["observations"] = (
-                    self._attach_possible_ai_send_receipts(
-                        target=target,
-                        observations=self._attach_confirmed_ai_reply_receipts(
-                            target=target,
-                            observations=list(
-                                sidecar_payload.get("observations") or []
-                            ),
-                        ),
+                voice_item_outcomes = list(
+                    voice_result.get("item_outcomes") or []
+                )
+                voice_action_failure_code = str(
+                    voice_result.get("failure_code") or ""
+                )
+                terminal_gate = voice_result.get("terminal_gate")
+                if isinstance(terminal_gate, dict):
+                    return settle_identity_terminal_gate(
+                        terminal_gate,
+                        final_payload=sidecar_payload,
+                        target_confirmation=locate_payload,
+                        initial_observations=initial_read_observations,
                     )
-                )
-                unconfirmed_voice_outcomes = (
-                    _unconfirmed_voice_action_outcomes(
-                        source_keys=set(
-                            partial_failed_voice_source_keys
-                        ),
-                        roles=partial_failed_voice_roles,
-                        error_code=(
-                            voice_action_failure_code
-                            or "C2_VOICE_TRANSCRIBE_FAILED"
-                        ),
-                        voice_payload=voice_payload,
-                    )
-                )
-                voice_item_outcomes = merge_item_outcomes(
-                    voice_item_outcomes,
-                    unconfirmed_voice_outcomes,
-                )
-                flow_outcomes.extend(unconfirmed_voice_outcomes)
-                voice_item_outcomes = merge_item_outcomes(
-                    voice_item_outcomes,
-                    continuation.get("item_outcomes") or [],
-                )
-                continuation_failed_keys = sorted(
-                    str(item["source_message_key"])
-                    for item in (continuation.get("item_outcomes") or [])
+            partial_failed_voice_source_keys = sorted({
+                *restored_failed_voice_source_keys,
+                *{
+                    str(item.get("source_message_key") or "")
+                    for item in voice_item_outcomes
                     if isinstance(item, dict)
                     and item.get("result") == "failed"
-                )
-                if continuation_failed_keys:
-                    failure_code = str(
-                        continuation.get("failure_code")
-                        or "VOICE_TRANSCRIBE_FAILED"
+                    and str(item.get("source_message_key") or "")
+                },
+            })
+            partial_failed_voice_roles = {
+                **restored_failed_voice_roles,
+                **{
+                    str(item.get("source_message_key") or ""): str(
+                        (item.get("evidence") or {}).get("sender_role")
+                        or ""
                     )
-                    partial_failed_voice_source_keys = [
-                        str(item["source_message_key"])
-                        for item in voice_item_outcomes
-                        if item.get("result") == "failed"
-                    ]
-                    partial_failed_voice_roles = {
-                        str(item["source_message_key"]): str(
-                            (item.get("evidence") or {}).get("sender_role")
-                        )
-                        for item in voice_item_outcomes
-                        if item.get("result") == "failed"
-                        if str(
-                            (item.get("evidence") or {}).get("sender_role") or ""
-                        )
-                        in {"customer", "self"}
-                    }
-                    self._mark_voice_sources_failed(
-                        target=target,
-                        source_keys=continuation_failed_keys,
-                        error_code=failure_code,
-                    )
-                    annotated_roles = self._annotate_failed_voice_observations(
-                        target=target,
-                        sidecar_payload=sidecar_payload,
-                        failed_source_keys=set(continuation_failed_keys),
-                        error_code=failure_code,
-                    )
-                    partial_failed_voice_roles.update(annotated_roles)
-                deferred_new_voice_source_keys = []
-                append_log(
-                    "INFO",
-                    "c2_new_voice_finished_in_current_chat",
-                    "语音处理期间新增的可见语音已在当前会话和同一 UI 锁内收口。",
-                    metadata={
-                        "conversation_id": target.conversation_id,
-                        "remark_code": target.remark_code,
-                        "failed_source_message_keys": continuation_failed_keys,
-                    },
-                )
-                if partial_failed_voice_source_keys:
-                    annotated_roles = self._annotate_failed_voice_observations(
+                    for item in voice_item_outcomes
+                    if isinstance(item, dict)
+                    and item.get("result") == "failed"
+                    and str(
+                        (item.get("evidence") or {}).get("sender_role")
+                        or ""
+                    ) in {"customer", "self"}
+                },
+            }
+            sidecar_payload = self._merge_waiting_image_facts(target=target, sidecar_payload=sidecar_payload)
+            sidecar_payload["observations"] = self._attach_possible_ai_send_receipts(target=target, observations=self._attach_confirmed_ai_reply_receipts(target=target, observations=list(sidecar_payload.get("observations") or [])))
+            self._persist_c2_flow_outcomes(target, voice_item_outcomes, origin_read_run_id=read_run_id)
+            if partial_failed_voice_source_keys:
+                partial_failed_voice_roles.update(
+                    self._annotate_failed_voice_observations(
                         target=target,
                         sidecar_payload=sidecar_payload,
                         failed_source_keys=set(
@@ -8072,13 +14098,24 @@ class TaskRunner:
                         ),
                         error_code=(
                             voice_action_failure_code
-                            or "VOICE_TRANSCRIBE_PARTIAL"
+                            or "C2_VOICE_TRANSCRIBE_FAILED"
                         ),
                     )
-                    partial_failed_voice_roles.update(annotated_roles)
+                )
             incremental_plan = self._build_final_slot_incremental_plan(
                 target=target,
                 sidecar_payload=sidecar_payload,
+                read_run_id=read_run_id,
+            )
+            sidecar_payload, incremental_plan = (
+                self._retry_history_gap_from_backend_once(
+                    target=target,
+                    read_run_id=read_run_id,
+                    target_label=target_label,
+                    sidecar_payload=sidecar_payload,
+                    incremental_plan=incremental_plan,
+                    cancel_check=action_cancel_requested,
+                )
             )
             gate_projection = project_final_slot_flow_gates(
                 incremental_plan,
@@ -8104,8 +14141,8 @@ class TaskRunner:
                         "slot_ledger_states": incremental_plan["slot_ledger_states"],
                     },
                 )
-            allowed_new_image_source_keys = set(
-                incremental_plan["new_image_source_keys"]
+            allowed_new_image_observation_ids = set(
+                incremental_plan["new_image_observation_ids"]
             )
             image_observations = [
                 item
@@ -8122,9 +14159,21 @@ class TaskRunner:
                     sidecar_payload=sidecar_payload,
                     enforce_read_targets=enforce_read_targets,
                     cancel_check=action_cancel_requested,
-                    allowed_new_source_keys=allowed_new_image_source_keys,
+                    allowed_new_observation_ids=(
+                        allowed_new_image_observation_ids
+                    ),
                     flow_outcomes=flow_outcomes,
                 )
+                image_terminal_gate = image_stats.get("terminal_gate")
+                if isinstance(image_terminal_gate, dict):
+                    return settle_identity_terminal_gate(
+                        image_terminal_gate,
+                        final_payload=sidecar_payload,
+                        target_confirmation=locate_payload,
+                        initial_observations=initial_read_observations,
+                    )
+                if image_stats.get("ui_frame_invalidated"):
+                    sidecar_payload["ui_frame_invalidated"] = True
                 record_phase("image_understanding", phase_started_at, **image_stats)
                 append_log(
                     "INFO" if not image_stats.get("failed") else "WARN",
@@ -8169,6 +14218,18 @@ class TaskRunner:
                         "failed_voice_roles": {},
                     }
                 )
+                convergence_terminal_gate = convergence.get(
+                    "terminal_gate"
+                )
+                if isinstance(convergence_terminal_gate, dict):
+                    return settle_identity_terminal_gate(
+                        convergence_terminal_gate,
+                        final_payload=dict(
+                            convergence.get("payload") or sidecar_payload
+                        ),
+                        target_confirmation=locate_payload,
+                        initial_observations=initial_read_observations,
+                    )
                 if not convergence.get("ok"):
                     code = str(
                         convergence.get("error_code")
@@ -8238,6 +14299,7 @@ class TaskRunner:
                     self._build_final_slot_incremental_plan(
                         target=target,
                         sidecar_payload=sidecar_payload,
+                        read_run_id=read_run_id,
                     )
                 )
                 gate_projection = project_final_slot_flow_gates(
@@ -8255,7 +14317,11 @@ class TaskRunner:
                 )
             phase_started_at = time.perf_counter()
             try:
-                payload = build_message_ingest_payload(target, sidecar_payload)
+                payload = build_message_ingest_payload(
+                    target,
+                    sidecar_payload,
+                    read_run_id=read_run_id,
+                )
             except ValueError as exc:
                 code = str(exc)
                 self.c2_stats["last_error"] = code
@@ -8336,12 +14402,15 @@ class TaskRunner:
                 }
                 payload["evidence"]["timing"] = json.loads(json.dumps(evidence_timing, ensure_ascii=False, default=str))
             payload = self._filter_confirmed_messages(payload)
-            control_read = target.read_reason in {"friend_acceptance_visible_hit", "recall_precheck"}
             has_flow_gate = bool(
                 isinstance(payload.get("evidence"), dict)
                 and payload["evidence"].get("flow_gate_errors")
             )
-            if not payload.get("messages") and not control_read and not has_flow_gate:
+            if not should_submit_c2_ingest_payload(
+                read_reason=target.read_reason,
+                messages=payload.get("messages"),
+                has_flow_gate=has_flow_gate,
+            ):
                 record_phase("messages_ingest_skipped", time.perf_counter(), reason="all_messages_already_confirmed")
                 return {
                     "ok": True,
@@ -8357,6 +14426,9 @@ class TaskRunner:
                         sidecar_payload.get("send_context_guard")
                         if isinstance(sidecar_payload.get("send_context_guard"), dict)
                         else {}
+                    ),
+                    "send_identity_frame": self._send_identity_frame(
+                        sidecar_payload
                     ),
                 }
             self._stage_payload_ledger(payload)
@@ -8503,18 +14575,70 @@ class TaskRunner:
                     "ignored_results": ignored_results,
                 },
             )
+            read_completion = (
+                result.get("read_completion")
+                if isinstance(result.get("read_completion"), dict)
+                else {}
+            )
+            if read_completion:
+                append_log(
+                    "INFO",
+                    "c2_read_completion_confirmed",
+                    "后端已确认本次完整读取结果和下次允许读取时间。",
+                    metadata={
+                        "conversation_id": target.conversation_id,
+                        "read_reason": target.read_reason,
+                        "read_result": read_completion.get("result"),
+                        "no_change_read_count": read_completion.get(
+                            "no_change_read_count"
+                        ),
+                        "next_read_due_at": read_completion.get(
+                            "next_read_due_at"
+                        ),
+                    },
+                )
             brain_result = None
             message_batch = result.get("message_batch") if isinstance(result, dict) else None
             if wait_for_brain and isinstance(message_batch, dict) and message_batch.get("batch_id"):
-                try:
-                    brain_result = self._wait_and_send_current_c3_batch(
-                        binding=binding,
-                        target=target,
-                        batch_id=str(message_batch["batch_id"]),
-                        cancel_check=action_cancel_requested,
+                if not self._apply_ingest_batch_continuation_to_target(
+                    message_batch,
+                    target,
+                ):
+                    error_code = "C3_BATCH_CONTINUATION_INVALID"
+                    append_log(
+                        "ERROR",
+                        "c3_batch_continuation_invalid",
+                        "消息已入库但批次续行票缺失或与原读取授权冲突；已暂停接单，禁止释放锁后恢复扫描。",
+                        error_code=error_code,
+                        metadata={
+                            "conversation_id": target.conversation_id,
+                            "remark_code": target.remark_code,
+                            "batch_id": message_batch.get("batch_id"),
+                            "authorization_revision": target.authorization_revision,
+                            "authorization_read_reason": (
+                                target.raw.get("authorization_read_reason")
+                                if isinstance(target.raw, dict)
+                                else target.read_reason
+                            ),
+                        },
+                        force_incident=True,
                     )
-                finally:
-                    self._stop_task_lease_guard()
+                    self.set_run_status("paused")
+                    brain_result = {
+                        "ok": False,
+                        "error_code": error_code,
+                        "batch_id": str(message_batch.get("batch_id") or ""),
+                    }
+                else:
+                    try:
+                        brain_result = self._wait_and_send_current_c3_batch(
+                            binding=binding,
+                            target=target,
+                            batch_id=str(message_batch["batch_id"]),
+                            cancel_check=action_cancel_requested,
+                        )
+                    finally:
+                        self._stop_task_lease_guard()
             fact_ingest_ok = not bool(ingest_error_code)
             conversation_flow_ok, conversation_terminal_state, flow_error_code = (
                 self._conversation_flow_outcome(
@@ -8557,6 +14681,9 @@ class TaskRunner:
                     if isinstance(sidecar_payload.get("send_context_guard"), dict)
                     else {}
                 ),
+                "send_identity_frame": self._send_identity_frame(
+                    sidecar_payload
+                ),
             }
         except UiLockError as exc:
             code = "voice_transcribe_lock_timeout" if exc.code in {"UI_LOCK_BUSY", "UI_LOCK_ACQUIRE_TIMEOUT"} else exc.code
@@ -8572,9 +14699,32 @@ class TaskRunner:
             append_log("ERROR", "c2_message_read_failed", str(exc), metadata={"conversation_id": target.conversation_id, "remark_code": target.remark_code})
             return {"ok": False, "error_code": "MESSAGE_READ_FAILED", "message": str(exc)}
         finally:
+            if message_read_phase_started_at is not None:
+                settle_message_read_phase(
+                    succeeded=False,
+                    error_code=str(
+                        self.c2_stats.get("last_error")
+                        or "C2_MESSAGE_READ_INCOMPLETE"
+                    ),
+                )
             if lease and owns_lease:
                 self._release_current_ui_lock(reason="message_ingest_finished")
             flow_timing["total_duration_seconds"] = round(max(0.0, time.perf_counter() - flow_started_at), 4)
+            process_run_id = load_process_run(read_run_id)
+            if process_run_id and operation_phase != C2_PRE_SEND_REFRESH_PHASE:
+                enqueue_c2_flow_timing_stages(
+                    process_run_id=process_run_id,
+                    conversation_id=target.conversation_id,
+                    read_run_id=read_run_id,
+                    flow_timing=flow_timing,
+                    trace_id=str(
+                        sidecar_payload.get("sidecar_run_id")
+                        if isinstance(locals().get("sidecar_payload"), dict)
+                        else ""
+                    )
+                    or None,
+                )
+                schedule_stage_event_upload(self.api, binding)
             try:
                 append_log(
                     "INFO",

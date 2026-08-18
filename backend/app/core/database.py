@@ -26,6 +26,31 @@ if settings.database_url.startswith("sqlite"):
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 
+@event.listens_for(Session, "after_commit")
+def _run_post_commit_effects(session: Session) -> None:
+    # ``after_commit`` also fires when a SAVEPOINT is released.  Side-channel
+    # observability writes use SAVEPOINTs, but their completion is not a
+    # business commit and the newly created handoff is not visible to a
+    # dispatcher session yet.  Consuming the queue here would lose the only
+    # immediate delivery attempt.
+    if session.in_nested_transaction():
+        return
+    from app.services.feishu_service import run_post_commit_effects
+
+    run_post_commit_effects(session)
+
+
+@event.listens_for(Session, "after_rollback")
+def _clear_rolled_back_post_commit_effects(session: Session) -> None:
+    # A telemetry SAVEPOINT rollback must not discard business effects queued
+    # by the still-live outer transaction.
+    if session.in_nested_transaction():
+        return
+    from app.services.feishu_service import clear_post_commit_effects
+
+    clear_post_commit_effects(session)
+
+
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:

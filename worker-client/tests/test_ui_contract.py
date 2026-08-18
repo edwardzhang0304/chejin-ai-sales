@@ -166,12 +166,123 @@ class UiContractTest(unittest.TestCase):
 
         self.assertIn("QWebEngineView", web_ui)
         self.assertIn("QWebChannel", web_ui)
-        self.assertIn("CLIENT_VERSION = \"V16.125 · Worker C2/C3 客户端\"", web_ui)
+        self.assertIn('CLIENT_VERSION = f"V{__version__} · Worker C2/C3 客户端"', web_ui)
+        self.assertIn(
+            "本地已停止接收新工作，当前客户继续安全处理；后端暂停状态正在重试同步。",
+            web_ui,
+        )
+        self.assertNotIn("本地微信操作已停止", web_ui)
         self.assertFalse((ROOT / "web-ui-src").exists())
         self.assertTrue((ROOT / "chejin_worker_client" / "web_assets" / "index.html").exists())
         self.assertTrue((ROOT / "chejin_worker_client" / "web_assets" / "worker-ui.css").exists())
         self.assertTrue((ROOT / "chejin_worker_client" / "web_assets" / "worker-ui.tokens.css").exists())
         self.assertTrue(app_js.exists())
+
+    def test_runtime_ui_does_not_override_real_tasks_with_preview_data(self):
+        component = (
+            ROOT.parent
+            / "packages"
+            / "worker-ui-baseline"
+            / "src"
+            / "WorkerClientBaseline.tsx"
+        ).read_text(encoding="utf-8")
+        runtime = (
+            ROOT.parent
+            / "packages"
+            / "worker-ui-baseline"
+            / "src"
+            / "WorkerClientRuntimeApp.tsx"
+        ).read_text(encoding="utf-8")
+        packaged_app = (
+            ROOT / "chejin_worker_client" / "web_assets" / "worker-web-app.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn("TASK-1842", component)
+        self.assertNotIn("客户咨询续保价格", component)
+        self.assertNotIn('import { workerClientMock }', runtime)
+        self.assertIn("emptyRuntimeModel", runtime)
+        self.assertNotIn("TASK-1842", packaged_app)
+        self.assertNotIn("workerClientMock", packaged_app)
+
+    def test_runtime_timeline_centers_the_real_focus_marker(self):
+        component = (
+            ROOT.parent
+            / "packages"
+            / "worker-ui-baseline"
+            / "src"
+            / "WorkerClientBaseline.tsx"
+        ).read_text(encoding="utf-8")
+        stylesheet = (
+            ROOT.parent
+            / "packages"
+            / "worker-ui-baseline"
+            / "src"
+            / "worker-ui.css"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('"--cw-timeline-center-padding"', component)
+        self.assertIn("(viewport.clientHeight - focusMarker.offsetHeight) / 2", component)
+        self.assertIn("padding: var(--cw-timeline-center-padding, 100px) 0", stylesheet)
+
+    def test_runtime_bridge_exposes_all_worker_process_screens(self):
+        web_ui = (ROOT / "chejin_worker_client" / "web_ui.py").read_text(encoding="utf-8")
+        ui_mapping = (ROOT / "chejin_worker_client" / "ui_state_mapping.py").read_text(encoding="utf-8")
+
+        self.assertIn('return "offline" if has_local_process else "offline-empty"', web_ui)
+        self.assertIn('return "target-read-running"', web_ui)
+        self.assertIn('return "scan-running"', ui_mapping)
+        self.assertIn('return "target-read-running"', ui_mapping)
+        self.assertIn('"scanRunningSteps": self._scan_running_steps()', web_ui)
+        self.assertIn('"targetReadRunningSteps": self._target_read_running_steps()', web_ui)
+        self.assertIn('"replyRunningSteps": self._running_steps()', web_ui)
+        self.assertIn('"customerProcessSteps": (', web_ui)
+        self.assertIn("RuntimeProcessTimeline", web_ui)
+
+    def test_current_process_uses_one_accessible_timeline_and_a_thin_scrollbar(self):
+        component = (
+            ROOT.parent
+            / "packages"
+            / "worker-ui-baseline"
+            / "src"
+            / "WorkerClientBaseline.tsx"
+        ).read_text(encoding="utf-8")
+        stylesheet = (
+            ROOT.parent
+            / "packages"
+            / "worker-ui-baseline"
+            / "src"
+            / "worker-ui.css"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("customerProcessSteps", component)
+        self.assertIn('aria-label="当前客户处理步骤"', component)
+        self.assertIn(".cw-chain-scroll-thumb", stylesheet)
+        self.assertIn("onPointerDown={startThumbDrag}", component)
+        self.assertIn("border-radius: 999px", stylesheet)
+
+    def test_runtime_bridge_serializes_without_retired_feature_residue(self):
+        web_ui = (ROOT / "chejin_worker_client" / "web_ui.py").read_text(encoding="utf-8")
+        classic_ui = (ROOT / "chejin_worker_client" / "ui.py").read_text(encoding="utf-8")
+        retired_names = (
+            "guard" + "_fault",
+            "guard" + "_health",
+            "operator" + "Guard",
+            "守护" + "故障",
+        )
+        for retired_name in retired_names:
+            self.assertNotIn(retired_name, web_ui)
+            self.assertNotIn(retired_name, classic_ui)
+        self.assertIn('"revision": self.state_revision', web_ui)
+        self.assertIn('"notice": self.notice', web_ui)
+        self.assertIn("self.state_revision += 1", web_ui)
+        self.assertIn('self.notice = "绑定成功，已进入 Worker 工作台。"', web_ui)
+
+    def test_runtime_ui_version_comes_from_the_packaged_client_version(self):
+        web_ui = (ROOT / "chejin_worker_client" / "web_ui.py").read_text(encoding="utf-8")
+
+        self.assertIn("from . import __version__", web_ui)
+        self.assertIn('CLIENT_VERSION = f"V{__version__} · Worker C2/C3 客户端"', web_ui)
+        self.assertNotIn('CLIENT_VERSION = "V16.', web_ui)
 
     def test_incident_evidence_controls_and_log_fields_are_visible(self):
         web_ui = (ROOT / "chejin_worker_client" / "web_ui.py").read_text(encoding="utf-8")

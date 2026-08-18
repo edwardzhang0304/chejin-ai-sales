@@ -30,6 +30,16 @@ from .slot_identity import (
 
 CLIPBOARD_WAIT_TIMEOUT_SECONDS = 15.0
 CLIPBOARD_POLL_INTERVAL_SECONDS = 0.08
+_TEXT_MENU_LABELS = frozenset({"放大阅读", "翻译", "搜一搜"})
+_IMAGE_MENU_LABELS = frozenset({"编辑", "用窗口打开", "另存为", "打开方式"})
+_VOICE_MENU_LABELS = frozenset({"语音转文字", "收起文字"})
+_PUBLIC_MENU_LABELS = frozenset({"复制", "转发", "收藏", "多选", "提醒", "引用", "删除"})
+_KNOWN_MENU_LABELS = (
+    _TEXT_MENU_LABELS
+    | _IMAGE_MENU_LABELS
+    | _VOICE_MENU_LABELS
+    | _PUBLIC_MENU_LABELS
+)
 
 
 def _failure(reason: str, **extra: Any) -> dict[str, Any]:
@@ -60,6 +70,153 @@ def _cancelled(data: dict[str, Any]) -> bool:
         return bool(callback())
     except Exception:
         return True
+
+
+def _item_bounds(item: dict[str, Any]) -> tuple[float, float, float, float] | None:
+    bounds = item.get("bounds")
+    try:
+        if isinstance(bounds, (list, tuple)) and len(bounds) >= 4:
+            result = tuple(float(value) for value in bounds[:4])
+        else:
+            result = (
+                float(item.get("left")),
+                float(item.get("top")),
+                float(item.get("right")),
+                float(item.get("bottom")),
+            )
+    except (TypeError, ValueError, IndexError):
+        return None
+    if result[2] <= result[0] or result[3] <= result[1]:
+        return None
+    return result
+
+
+def _menu_panel_bounds(value: Any) -> tuple[float, float, float, float] | None:
+    try:
+        bounds = tuple(float(item) for item in list(value)[:4])
+    except (TypeError, ValueError):
+        return None
+    if len(bounds) != 4 or bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
+        return None
+    return bounds
+
+
+def _inside_menu(
+    item: dict[str, Any],
+    menu_panel_bounds: tuple[float, float, float, float],
+) -> bool:
+    bounds = _item_bounds(item)
+    if bounds is None:
+        return False
+    return (
+        menu_panel_bounds[0] <= bounds[0]
+        and menu_panel_bounds[1] <= bounds[1]
+        and bounds[2] <= menu_panel_bounds[2]
+        and bounds[3] <= menu_panel_bounds[3]
+    )
+
+
+def _exact_menu_label(text: Any) -> str:
+    label = str(text or "").strip()
+    for base in ("转发", "另存为"):
+        if label in {f"{base}...", f"{base}…"}:
+            return base
+    return label
+
+
+def _classify_context_menu(
+    ocr_items: list[dict[str, Any]],
+    copy_item: dict[str, Any] | None,
+    *,
+    menu_panel_bounds: Any,
+) -> dict[str, Any]:
+    """Classify exact labels contained by one confirmed popup window."""
+
+    confirmed_bounds = _menu_panel_bounds(menu_panel_bounds)
+    if confirmed_bounds is None:
+        return {"kind": "unknown", "labels": [], "copy_item": None}
+    candidates: list[tuple[dict[str, Any], str]] = []
+    for item in ocr_items:
+        if not isinstance(item, dict):
+            continue
+        label = _exact_menu_label(item.get("text"))
+        if label in _KNOWN_MENU_LABELS and _inside_menu(item, confirmed_bounds):
+            candidates.append((dict(item), label))
+    if (
+        not isinstance(copy_item, dict)
+        or _exact_menu_label(copy_item.get("text")) != "复制"
+        or not _inside_menu(copy_item, confirmed_bounds)
+    ):
+        copy_item = None
+    labels = {row[1] for row in candidates}
+    is_text = "放大阅读" in labels or {"翻译", "搜一搜"} <= labels
+    is_image = "复制" in labels and bool(labels & _IMAGE_MENU_LABELS)
+    is_voice = bool(labels & _VOICE_MENU_LABELS)
+    kinds = [
+        kind
+        for kind, matched in (
+            ("text", is_text),
+            ("image", is_image),
+            ("voice", is_voice),
+        )
+        if matched
+    ]
+    kind = (
+        kinds[0]
+        if len(kinds) == 1
+        else ("conflict" if kinds else "unknown")
+    )
+    return {
+        "kind": kind,
+        "labels": sorted(labels),
+        "copy_item": copy_item if kind == "image" else None,
+    }
+
+
+def _safe_copy_click_geometry(
+    copy_item: Any,
+    *,
+    menu_panel_bounds: Any,
+) -> dict[str, Any] | None:
+    """Return click geometry only when one Copy item is fully inside the popup."""
+
+    confirmed_bounds = _menu_panel_bounds(menu_panel_bounds)
+    if (
+        not isinstance(copy_item, dict)
+        or confirmed_bounds is None
+        or not _inside_menu(copy_item, confirmed_bounds)
+    ):
+        return None
+    item_bounds = _item_bounds(copy_item)
+    if item_bounds is None:
+        return None
+    try:
+        raw_x = copy_item.get("x", copy_item.get("center_x"))
+        raw_y = copy_item.get("y", copy_item.get("center_y"))
+        click_x = int(
+            raw_x
+            if raw_x is not None
+            else (item_bounds[0] + item_bounds[2]) / 2
+        )
+        click_y = int(
+            raw_y
+            if raw_y is not None
+            else (item_bounds[1] + item_bounds[3]) / 2
+        )
+    except (TypeError, ValueError):
+        return None
+    if not (
+        item_bounds[0] <= click_x <= item_bounds[2]
+        and item_bounds[1] <= click_y <= item_bounds[3]
+        and confirmed_bounds[0] <= click_x <= confirmed_bounds[2]
+        and confirmed_bounds[1] <= click_y <= confirmed_bounds[3]
+    ):
+        return None
+    return {
+        "x": click_x,
+        "y": click_y,
+        "bounds": [int(value) for value in item_bounds],
+    }
 
 
 def acquire_current_image_via_ports(
@@ -306,7 +463,15 @@ def _acquire_current_image_via_ports(
             if not isinstance(menu_frame, dict) or menu_frame.get("ok") is not True:
                 _dismiss_menu_safely(ports.ui_action)
                 menu_opened = False
-                return fail("image_context_menu_unavailable")
+                return fail(
+                    "C2_IMAGE_MENU_OPERATION_FAILED",
+                    transaction={
+                        "status": "menu_panel_unconfirmed",
+                        "right_click_ok": True,
+                        "menu_copy_confirmed": False,
+                        "clipboard_content_read": False,
+                    },
+                )
             menu_surface = menu_frame.get("image")
             menu_size = getattr(menu_surface, "size", None) or tuple(menu_frame.get("image_size") or image_size)
             screen_origin = list(menu_frame.get("screen_origin") or [0, 0])
@@ -317,23 +482,116 @@ def _acquire_current_image_via_ports(
                 anchor_screen_x - origin_x,
                 anchor_screen_y - origin_y,
             )
+            menu_ocr_items = [
+                item
+                for item in (menu_frame.get("ocr_items") or [])
+                if isinstance(item, dict)
+            ]
+            confirmed_menu_bounds = _menu_panel_bounds(
+                menu_frame.get("menu_panel_bounds")
+            )
+            bounded_menu_items = (
+                [
+                    item
+                    for item in menu_ocr_items
+                    if _inside_menu(item, confirmed_menu_bounds)
+                ]
+                if confirmed_menu_bounds is not None
+                else []
+            )
             copy_item = find_copy_menu_item(
-                [item for item in (menu_frame.get("ocr_items") or []) if isinstance(item, dict)],
+                bounded_menu_items,
                 tuple(menu_size),
                 anchor=anchor_in_menu_frame,
             )
-            if not copy_item:
+            classification = _classify_context_menu(
+                menu_ocr_items,
+                copy_item,
+                menu_panel_bounds=confirmed_menu_bounds,
+            )
+            menu_kind = str(classification.get("kind") or "unknown")
+            if menu_kind in {"text", "voice"}:
                 _dismiss_menu_safely(ports.ui_action)
                 menu_opened = False
-                return fail("image_context_menu_copy_item_missing")
+                return fail(
+                    "C2_IMAGE_SOURCE_INVALID",
+                    transaction={
+                        "status": f"{menu_kind}_context_menu_rejected",
+                        "right_click_ok": True,
+                        "menu_copy_confirmed": False,
+                        "clipboard_content_read": False,
+                        "menu_labels": classification.get("labels") or [],
+                        "menu_panel_bounds": list(confirmed_menu_bounds or []),
+                    },
+                )
+            if menu_kind != "image":
+                _dismiss_menu_safely(ports.ui_action)
+                menu_opened = False
+                return fail(
+                    "C2_IMAGE_MENU_OPERATION_FAILED",
+                    transaction={
+                        "status": (
+                            "menu_panel_unconfirmed"
+                            if confirmed_menu_bounds is None
+                            else (
+                                "menu_evidence_conflict"
+                                if menu_kind == "conflict"
+                                else "menu_evidence_incomplete"
+                            )
+                        ),
+                        "right_click_ok": True,
+                        "menu_copy_confirmed": False,
+                        "clipboard_content_read": False,
+                        "menu_labels": classification.get("labels") or [],
+                        "menu_panel_bounds": list(confirmed_menu_bounds or []),
+                    },
+                )
+            copy_item = classification.get("copy_item")
+            if not isinstance(copy_item, dict):
+                _dismiss_menu_safely(ports.ui_action)
+                menu_opened = False
+                return fail(
+                    "C2_IMAGE_MENU_OPERATION_FAILED",
+                    transaction={
+                        "status": "menu_copy_item_unsafe",
+                        "right_click_ok": True,
+                        "menu_copy_confirmed": False,
+                        "clipboard_content_read": False,
+                    },
+                )
             if _cancelled(data):
                 return fail("vision_cancelled")
             screen_click = getattr(ports.ui_action, "click_screen", None)
             if not callable(screen_click):
                 _dismiss_menu_safely(ports.ui_action)
                 menu_opened = False
-                return fail("image_context_menu_screen_click_unavailable")
+                return fail(
+                    "C2_IMAGE_MENU_OPERATION_FAILED",
+                    transaction={
+                        "status": "menu_copy_item_unsafe",
+                        "right_click_ok": True,
+                        "menu_copy_confirmed": False,
+                        "clipboard_content_read": False,
+                    },
+                )
             journal_update = data.get("action_journal_update")
+            copy_geometry = _safe_copy_click_geometry(
+                copy_item,
+                menu_panel_bounds=confirmed_menu_bounds,
+            )
+            if copy_geometry is None:
+                _dismiss_menu_safely(ports.ui_action)
+                menu_opened = False
+                return fail(
+                    "C2_IMAGE_MENU_OPERATION_FAILED",
+                    transaction={
+                        "status": "menu_copy_item_unsafe",
+                        "right_click_ok": True,
+                        "menu_copy_confirmed": False,
+                        "clipboard_content_read": False,
+                    },
+                )
+            local_bounds = list(copy_geometry["bounds"])
             if callable(journal_update):
                 journal_update(
                     action_phase="trigger_attempted",
@@ -341,15 +599,9 @@ def _acquire_current_image_via_ports(
                     business_result_confirmed=False,
                 )
             action_phase = "trigger_attempted"
-            local_bounds = [
-                int(value)
-                for value in list(copy_item.get("bounds") or [])[:4]
-            ]
-            if len(local_bounds) != 4:
-                return fail("image_context_menu_copy_bounds_missing")
             screen_click(
-                origin_x + int(copy_item.get("x") or 0),
-                origin_y + int(copy_item.get("y") or 0),
+                origin_x + int(copy_geometry["x"]),
+                origin_y + int(copy_geometry["y"]),
                 bounds=[
                     origin_x + local_bounds[0],
                     origin_y + local_bounds[1],
@@ -437,6 +689,18 @@ def _acquire_current_image_via_ports(
                         clipboard_reason = "clipboard_sequence_changed_during_read"
                 time.sleep(poll_interval)
             if payload is None or sequence_after is None:
+                if clipboard_reason == "clipboard_current_content_not_bitmap":
+                    return fail(
+                        clipboard_reason,
+                        transaction={
+                            "status": "clipboard_current_content_not_bitmap",
+                            "right_click_ok": True,
+                            "menu_copy_confirmed": True,
+                            "clipboard_sequence_changed": True,
+                            "clipboard_content_read": True,
+                            "clipboard_image_valid": False,
+                        },
+                    )
                 return fail(clipboard_reason)
             if _cancelled(data):
                 payload.release()

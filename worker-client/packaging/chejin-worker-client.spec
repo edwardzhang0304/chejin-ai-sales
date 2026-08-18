@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 import sys
 
+from PyInstaller.utils.hooks import collect_all, collect_submodules
+
 ROOT = Path.cwd()
 sys.path.insert(0, str(ROOT / "scripts"))
 from build_source import resolve_contract_path
@@ -15,8 +17,12 @@ from client_delivery_policy import (
 OMNIAUTO_RPA_SOURCE = Path(os.environ.get("CHEJIN_OMNIAUTO_RPA_SOURCE") or ROOT / "omniauto-rpa")
 OMNIAUTO_SIDECAR = OMNIAUTO_RPA_SOURCE / "apps" / "wechat_ai_customer_service" / "adapters" / "wechat_win32_ocr_sidecar.py"
 CONTRACT_PATH = resolve_contract_path(ROOT)
+ENTRY_PATH = ROOT / "packaging" / "chejin_worker_client_entry.py"
 BUILD_IDENTITY_PATH = Path(
     os.environ.get("CHEJIN_BUILD_IDENTITY_PATH") or ""
+)
+VISION_CREDENTIAL_PATH = Path(
+    os.environ.get("CHEJIN_VISION_CREDENTIAL_PATH") or ""
 )
 
 if not OMNIAUTO_SIDECAR.exists():
@@ -40,6 +46,12 @@ ALLOWED_OMNIAUTO_DATA_PREFIXES = (
     "apps/wechat_ai_customer_service/data/tenants/chejin/rag_index/",
 )
 OMNIAUTO_CLIENT_EXCLUDES = load_client_exclude_paths(OMNIAUTO_RPA_SOURCE)
+PIL_HIDDEN_IMPORTS = collect_submodules("PIL")
+(
+    RAPIDOCR_DATAS,
+    RAPIDOCR_BINARIES,
+    RAPIDOCR_HIDDEN_IMPORTS,
+) = collect_all("rapidocr_onnxruntime")
 
 
 def include_omniauto_file(path):
@@ -70,16 +82,22 @@ OMNIAUTO_DATAS = [
 ]
 
 a = Analysis(
-    ["chejin_worker_client/main.py"],
+    [str(ENTRY_PATH)],
     pathex=[str(ROOT)],
-    binaries=[],
+    binaries=[*RAPIDOCR_BINARIES],
     datas=[
+        *RAPIDOCR_DATAS,
         *OMNIAUTO_DATAS,
         (str(CONTRACT_PATH), "contracts"),
         (str(ROOT / "chejin_worker_client" / "web_assets"), "chejin_worker_client/web_assets"),
         *(
             [(str(BUILD_IDENTITY_PATH), ".")]
             if BUILD_IDENTITY_PATH.is_file()
+            else []
+        ),
+        *(
+            [(str(VISION_CREDENTIAL_PATH), ".")]
+            if VISION_CREDENTIAL_PATH.is_file()
             else []
         ),
     ],
@@ -93,6 +111,12 @@ a = Analysis(
         "rapidocr_onnxruntime",
         "onnxruntime",
         "uiautomation",
+        "pyperclip",
+        "pywinauto",
+        "psutil",
+        "tkinter",
+        *RAPIDOCR_HIDDEN_IMPORTS,
+        *PIL_HIDDEN_IMPORTS,
     ],
     hookspath=[],
     hooksconfig={},
@@ -114,7 +138,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
-    disable_windowed_traceback=False,
+    disable_windowed_traceback=True,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,

@@ -42,6 +42,7 @@ class WorkerApiClient:
         self.session = requests.Session()
         self.timeout = CONFIG.api_timeout_seconds
         self.task_lease_fencing_tokens: dict[str, int] = {}
+        self.inflight_flow_id: str | None = None
 
     def _remember_task_lease(self, task: Task | None) -> Task | None:
         if task and task.lease_fencing_token > 0:
@@ -78,7 +79,6 @@ class WorkerApiClient:
             json={
                 "client_instance_id": binding.client_instance_id,
                 "client_binding_state": "bound",
-                "run_status": binding.run_status,
                 "running_status": running_status,
                 "current_task": current_task,
                 "rpa_component_status": rpa_component_status,
@@ -97,6 +97,43 @@ class WorkerApiClient:
             json={"client_instance_id": binding.client_instance_id, "run_status": run_status},
         )
         return WorkerProfile.from_api(payload)
+
+    def start_inflight_flow(
+        self, binding: Binding, *, flow_id: str, flow_kind: str
+    ) -> dict[str, Any]:
+        payload = self._request(
+            "POST",
+            f"/workers/{binding.worker_id}/inflight-flow/start",
+            binding=binding,
+            json={"flow_id": flow_id, "flow_kind": flow_kind},
+        )
+        self.inflight_flow_id = flow_id
+        return dict(payload or {})
+
+    def finish_inflight_flow(
+        self,
+        binding: Binding,
+        *,
+        flow_id: str,
+        terminal_kind: str,
+        conversation_id: str | None = None,
+        error_code: str | None = None,
+    ) -> dict[str, Any]:
+        payload = self._request(
+            "POST",
+            f"/workers/{binding.worker_id}/inflight-flow/finish",
+            binding=binding,
+            json={
+                "flow_id": flow_id,
+                "terminal_kind": terminal_kind,
+                "conversation_id": conversation_id,
+                "error_code": error_code,
+            },
+            extra_headers={"X-Inflight-Flow-Id": flow_id},
+        )
+        if self.inflight_flow_id == flow_id:
+            self.inflight_flow_id = None
+        return dict(payload or {})
 
     def pull_task(self, binding: Binding) -> tuple[str, Task | None, str | None]:
         payload = self._request("GET", f"/workers/{binding.worker_id}/tasks/pull", binding=binding)
@@ -277,14 +314,30 @@ class WorkerApiClient:
         *,
         continuation_batch_id: str | None = None,
         continuation_token: str | None = None,
+        recovery_transaction_id: str | None = None,
+        action_kind: str | None = None,
+        source_message_key_digest: str | None = None,
+        original_authorization_revision: str | None = None,
     ) -> dict[str, Any]:
-        query = ""
+        query_values: dict[str, str] = {}
         if continuation_batch_id and continuation_token:
-            query = "?" + urlencode(
-                {
-                    "continuation_batch_id": continuation_batch_id,
-                }
-            )
+            query_values["continuation_batch_id"] = continuation_batch_id
+        recovery_values = {
+            "recovery_transaction_id": recovery_transaction_id,
+            "action_kind": action_kind,
+            "source_message_key_digest": source_message_key_digest,
+            "original_authorization_revision": (
+                original_authorization_revision
+            ),
+        }
+        query_values.update(
+            {
+                key: str(value)
+                for key, value in recovery_values.items()
+                if str(value or "").strip()
+            }
+        )
+        query = f"?{urlencode(query_values)}" if query_values else ""
         payload = self._request(
             "GET",
             (
@@ -322,8 +375,26 @@ class WorkerApiClient:
             },
         )
 
-    def post_wechat_messages_ingest(self, binding: Binding, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._request("POST", f"/workers/{binding.worker_id}/wechat/messages/ingest", binding=binding, json=payload)
+    def post_wechat_messages_ingest(
+        self,
+        binding: Binding,
+        payload: dict[str, Any],
+        *,
+        settlement_token: str | None = None,
+        process_run_id: str | None = None,
+    ) -> dict[str, Any]:
+        headers: dict[str, str] = {}
+        if settlement_token:
+            headers["X-C2-Settlement-Token"] = settlement_token
+        if process_run_id:
+            headers["X-Process-Run-Id"] = process_run_id
+        return self._request(
+            "POST",
+            f"/workers/{binding.worker_id}/wechat/messages/ingest",
+            binding=binding,
+            json=payload,
+            extra_headers=headers or None,
+        )
 
     def get_wechat_message_batch(self, binding: Binding, batch_id: str) -> dict[str, Any]:
         return self._request(
@@ -331,6 +402,50 @@ class WorkerApiClient:
             f"/workers/{binding.worker_id}/wechat/message-batches/{batch_id}",
             binding=binding,
         )
+
+    def post_observability_stage_events(
+        self,
+        binding: Binding,
+        events: list[dict[str, Any]],
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Upload side-channel telemetry without changing normal API timeout state."""
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-Worker-Token": binding.worker_token,
+            "X-Client-Instance-Id": binding.client_instance_id,
+        }
+        # A private Session avoids sharing connection-pool state with the
+        # business API client from the telemetry daemon thread.
+        with requests.Session() as isolated_session:
+            response = isolated_session.post(
+                (
+                    f"{self.base_url}/workers/{binding.worker_id}"
+                    "/observability/stage-events"
+                ),
+                headers=headers,
+                json={"events": events},
+                timeout=self.timeout if timeout is None else timeout,
+            )
+        try:
+            envelope = response.json()
+        except ValueError as exc:
+            raise ApiError(
+                "HTTP_ERROR",
+                response.text or "观测接口响应不是 JSON",
+                response.status_code,
+            ) from exc
+        if response.status_code >= 400 or envelope.get("code") != "OK":
+            raise ApiError(
+                str(envelope.get("code") or "API_ERROR"),
+                str(envelope.get("message") or "观测上报失败"),
+                response.status_code,
+                envelope.get("data"),
+                envelope.get("trace_id"),
+            )
+        return dict(envelope.get("data") or {})
 
     def _request(
         self,
@@ -340,13 +455,22 @@ class WorkerApiClient:
         binding: Binding | None = None,
         json: dict[str, Any] | None = None,
         extra_headers: dict[str, str] | None = None,
+        timeout: float | None = None,
     ) -> Any:
         headers = {"Content-Type": "application/json"}
         if binding:
             headers["X-Worker-Token"] = binding.worker_token
             headers["X-Client-Instance-Id"] = binding.client_instance_id
+            if self.inflight_flow_id:
+                headers["X-Inflight-Flow-Id"] = self.inflight_flow_id
         headers.update(extra_headers or {})
-        response = self.session.request(method, f"{self.base_url}{path}", headers=headers, json=json, timeout=self.timeout)
+        response = self.session.request(
+            method,
+            f"{self.base_url}{path}",
+            headers=headers,
+            json=json,
+            timeout=self.timeout if timeout is None else timeout,
+        )
         try:
             envelope = response.json()
         except ValueError as exc:

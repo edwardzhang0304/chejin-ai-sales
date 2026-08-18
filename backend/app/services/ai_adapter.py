@@ -24,6 +24,7 @@ class AIEngineDecision:
     rewrite_required: bool = False
     error_code: str | None = None
     suggested_action: str | None = None
+    hard_opt_out_evidence: dict | None = None
     raw_payload: dict | None = None
 
 
@@ -102,6 +103,82 @@ class MockOmniAutoAIEngineAdapter:
             guard_result="pass",
             raw_payload={"adapter": "mock", "model": "mock-omniauto-ai-engine"},
         )
+
+
+HIGH_INTENT_REASON_CODE = "CUSTOMER_HIGH_INTENT"
+HIGH_INTENT_MARKERS = {
+    "customer_high_intent",
+    "high_intent",
+    "high_purchase_intent",
+    "used_car_high_intent",
+}
+
+NO_VISIBLE_REPLY_RECOVERY_INSTRUCTION = (
+    "上一次 Brain 尝试没有形成可发送的客户可见回复。请基于同一批消息和同一权威证据重新生成完整 BrainPlan；"
+    "如果客户是低风险购车咨询，但当前没有可依据的 product_master 车型资料，不得编造车型、价格或库存，"
+    "应使用 ask_clarifying_question 或 collect_customer_info，自然追问 1到2 个能继续筛选的需求，"
+    "并且必须将完整客户可见文字放入 reply_segments。只有存在真实硬风险时才能转人工。"
+)
+
+
+def _is_structured_high_intent_handoff(
+    result: dict,
+    plan: dict,
+    risk_flags: list[str],
+) -> bool:
+    """Recognize high intent only from explicit Brain contract evidence.
+
+    Broad business keywords such as price, finance, contract or vehicle
+    condition are intentionally not treated as high intent here.
+    """
+
+    risk = plan.get("risk") if isinstance(plan.get("risk"), dict) else {}
+    intent_assist = (
+        result.get("intent_assist")
+        if isinstance(result.get("intent_assist"), dict)
+        else {}
+    )
+    markers = {
+        str(value or "").strip().lower()
+        for value in (
+            result.get("reason"),
+            plan.get("reason"),
+            plan.get("intent"),
+            risk.get("handoff_reason"),
+            intent_assist.get("intent"),
+            intent_assist.get("reason"),
+            *risk.get("risk_tags", []),
+            *risk_flags,
+        )
+        if str(value or "").strip()
+    }
+    return bool(markers & HIGH_INTENT_MARKERS)
+
+
+def _brain_retry_instruction(message_batch: dict) -> str:
+    """Return a focused second-attempt instruction without inventing content.
+
+    Durable C3 retries used to submit the exact same Brain request after an
+    invisible-result failure.  The second attempt now receives only the prior
+    failure class plus a narrow recovery policy; customer-visible text remains
+    authored by Brain and still passes the existing validation and Guard.
+    """
+
+    try:
+        attempt = int(message_batch.get("generation_attempt") or 0)
+    except (TypeError, ValueError):
+        attempt = 0
+    if attempt <= 1:
+        return ""
+    previous = (
+        message_batch.get("previous_ai_response_snapshot")
+        if isinstance(message_batch.get("previous_ai_response_snapshot"), dict)
+        else {}
+    )
+    error_code = str(previous.get("error_code") or "").strip()
+    if error_code != "AI_ENGINE_NO_VISIBLE_REPLY":
+        return ""
+    return NO_VISIBLE_REPLY_RECOVERY_INSTRUCTION
 
 
 class RealOmniAutoAIEngineAdapter:
@@ -300,6 +377,9 @@ class RealOmniAutoAIEngineAdapter:
             "trigger_type": message_batch.get("trigger_type") or "customer_message",
             "recall_cycle_id": message_batch.get("recall_cycle_id"),
         }
+        retry_instruction = _brain_retry_instruction(message_batch)
+        if retry_instruction:
+            target_state["brain_retry_instruction"] = retry_instruction
         invocation = {
             "target_name": target_name,
             "target_state": target_state,
@@ -331,6 +411,54 @@ class RealOmniAutoAIEngineAdapter:
         confidence = plan.get("confidence")
         raw_payload = {"omniauto_brain_result": result}
 
+        hard_opt_out = result.get("hard_opt_out") if isinstance(result.get("hard_opt_out"), dict) else {}
+        if (
+            rule_name == "customer_service_brain_hard_opt_out"
+            or recommended_action == "hard_opt_out"
+        ):
+            if (
+                not result.get("adoptable")
+                or hard_opt_out.get("detected") is not True
+                or not str(hard_opt_out.get("message_event_id") or "").strip()
+                or not str(hard_opt_out.get("customer_text") or "").strip()
+            ):
+                return AIEngineDecision(
+                    decision="retry_later",
+                    guard_result="failed",
+                    error_code="AI_ENGINE_HARD_OPT_OUT_EVIDENCE_INVALID",
+                    suggested_action="retry_later",
+                    raw_payload=raw_payload,
+                )
+            return AIEngineDecision(
+                decision="hard_opt_out",
+                confidence=confidence,
+                risk_flags=risk_flags,
+                evidence_refs=evidence_refs,
+                guard_result="pass",
+                hard_opt_out_evidence=dict(hard_opt_out),
+                raw_payload=raw_payload,
+            )
+
+        high_intent = _is_structured_high_intent_handoff(
+            result,
+            plan,
+            risk_flags,
+        )
+        if high_intent:
+            return AIEngineDecision(
+                decision="handoff",
+                confidence=confidence,
+                handoff_reason_code=HIGH_INTENT_REASON_CODE,
+                risk_flags=list(
+                    dict.fromkeys([*risk_flags, "customer_high_intent"])
+                ),
+                evidence_refs=evidence_refs,
+                guard_result="handoff",
+                error_code=HIGH_INTENT_REASON_CODE,
+                suggested_action="handoff",
+                raw_payload=raw_payload,
+            )
+
         if rule_name == "customer_service_brain_reply" and recommended_action == "send_reply":
             reply_text = str(result.get("reply_text") or "").strip()
             if not result.get("adoptable") or not reply_text or result.get("visible_reply_source") != "brain_plan.reply_segments":
@@ -351,13 +479,32 @@ class RealOmniAutoAIEngineAdapter:
                 raw_payload=raw_payload,
             )
         if rule_name == "customer_service_brain_handoff" or recommended_action in {"handoff", "handoff_for_approval"}:
+            reply_text = str(result.get("reply_text") or "").strip()
+            brain_owned_boundary = bool(
+                result.get("adoptable")
+                and reply_text
+                and result.get("visible_reply_source") == "brain_plan.reply_segments"
+            )
             return AIEngineDecision(
-                decision=recommended_action if recommended_action in {"handoff", "handoff_for_approval"} else "handoff",
+                decision="reply_then_handoff" if brain_owned_boundary else (
+                    recommended_action
+                    if recommended_action in {"handoff", "handoff_for_approval"}
+                    else "handoff"
+                ),
+                reply_text=reply_text if brain_owned_boundary else None,
                 confidence=confidence,
-                handoff_reason_code=str(result.get("reason") or "HANDOFF_REQUIRED")[:64],
+                handoff_reason_code=str(
+                    result.get("reason") or "HANDOFF_REQUIRED"
+                )[:64],
                 risk_flags=risk_flags,
                 evidence_refs=evidence_refs,
                 guard_result="handoff",
+                error_code=None,
+                suggested_action=(
+                    "reply_then_handoff"
+                    if brain_owned_boundary
+                    else "handoff"
+                ),
                 raw_payload=raw_payload,
             )
         if (

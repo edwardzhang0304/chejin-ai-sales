@@ -127,6 +127,32 @@ class IncidentEvidenceTest(unittest.TestCase):
         self.assertEqual(last_log["metadata"]["incident_id"], results[-1]["incident_id"])
         self.assertEqual(last_log["metadata"]["evidence_path"], results[-1]["evidence_path"])
 
+    def test_embedded_vision_key_is_redacted_without_environment_copy(self) -> None:
+        embedded_key = "embedded-vision-unit-key-never-export"
+        with tempfile.TemporaryDirectory() as credential_temp:
+            credential_path = Path(credential_temp) / "vision-runtime.json"
+            credential_path.write_text(
+                json.dumps(
+                    {"schema_version": 1, "vision_api_key": embedded_key}
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "CHEJIN_BUILD_KIND": "official",
+                    "CHEJIN_VISION_CREDENTIAL_PATH": str(credential_path),
+                },
+                clear=False,
+            ):
+                os.environ.pop("CUSTOMER_IMAGE_UNDERSTANDING_API_KEY", None)
+                redacted = self.incidents.redact_diagnostic(
+                    {"traceback": f"provider failed: {embedded_key}"}
+                )
+
+        self.assertNotIn(embedded_key, json.dumps(redacted))
+        self.assertIn("[REDACTED]", redacted["traceback"])
+
     def test_image_menu_failure_zip_contains_full_roi_and_ocr_evidence(self) -> None:
         artifact_dir = Path(self.tmp.name) / "artifacts" / "wechat_c2" / "messages" / "menu-run"
         artifact_dir.mkdir(parents=True)
@@ -271,6 +297,8 @@ class IncidentEvidenceTest(unittest.TestCase):
     def test_zip_capture_is_async_and_does_not_block_log_caller(self) -> None:
         entered = threading.Event()
         release = threading.Event()
+        caller_done = threading.Event()
+        caller_result: dict[str, object] = {}
         original = self.incidents._create_incident_package
 
         def slow_capture(request):
@@ -278,18 +306,36 @@ class IncidentEvidenceTest(unittest.TestCase):
             release.wait(timeout=5.0)
             return original(request)
 
+        def append_error_log() -> None:
+            try:
+                caller_result["result"] = self.storage.append_log(
+                    "ERROR",
+                    "async_capture_failure",
+                    "capture must not block caller",
+                )
+            except BaseException as exc:  # pragma: no cover - asserted below
+                caller_result["error"] = exc
+            finally:
+                caller_done.set()
+
         with patch.object(self.incidents, "_create_incident_package", side_effect=slow_capture):
-            started = time.perf_counter()
-            result = self.storage.append_log(
-                "ERROR",
-                "async_capture_failure",
-                "capture must not block caller",
-            )
-            elapsed = time.perf_counter() - started
+            caller = threading.Thread(target=append_error_log, daemon=True)
+            caller.start()
             self.assertTrue(entered.wait(timeout=2.0))
-            self.assertLess(elapsed, 0.5)
+            try:
+                self.assertTrue(
+                    caller_done.wait(timeout=2.0),
+                    "append_log waited for the blocked incident package capture",
+                )
+            finally:
+                release.set()
+                caller.join(timeout=5.0)
+            self.assertFalse(caller.is_alive())
+            self.assertNotIn("error", caller_result)
+            result = caller_result.get("result")
+            self.assertIsInstance(result, dict)
+            assert isinstance(result, dict)
             self.assertFalse(Path(result["evidence_path"]).exists())
-            release.set()
             self.assertIsNotNone(
                 self.incidents.wait_for_incident(result["incident_id"], timeout=10.0)
             )
