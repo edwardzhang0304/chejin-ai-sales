@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+import hashlib
 import pytest
 import time
 from datetime import timedelta
@@ -219,6 +220,13 @@ def _ingest_with_role(worker: dict, conversation_id: str, dedupe_key: str, conte
         "contract_sha256": contract_sha256(),
         "observation_schema_version": int(c2_contract_v3()["observation_schema_version"]),
         "source_message_key": dedupe_key,
+        "dedupe_basis": {
+            "source": "worker_cross_round_sequence",
+            "worker_stable_id": (
+                "worker-message-"
+                + str(int(hashlib.sha256(dedupe_key.encode("utf-8")).hexdigest()[:12], 16))
+            ),
+        },
         "observation": {
             "schema_version": 3,
             "observation_id": observation_id,

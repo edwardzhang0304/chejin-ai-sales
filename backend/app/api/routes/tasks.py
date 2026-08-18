@@ -151,8 +151,14 @@ def claim_task(
         worker = worker_service.authenticate_worker_client(
             db, payload.worker_id, x_worker_token, x_client_instance_id
         )
-        worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
         inflight = dict(worker.inflight_flow_state or {})
+        # A paused worker with no registered flow must reach the normal claim
+        # readiness gate so callers receive WORKER_OFFLINE/NOT_ACCEPTING_TASKS
+        # instead of an unrelated continuation-token error. Any presented
+        # flow, or any registered flow, still requires exact continuation
+        # validation below.
+        if x_inflight_flow_id or inflight.get("flow_id"):
+            worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
         allow_c2_draining_reply = bool(
             worker.run_status == "paused"
             and inflight.get("status") == "draining"
