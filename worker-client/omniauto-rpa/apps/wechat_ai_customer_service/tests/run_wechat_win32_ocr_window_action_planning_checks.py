@@ -291,7 +291,7 @@ def test_sidecar_normalize_wechat_window_uses_same_planned_move_shape() -> None:
         sidecar.get_window_geometry = fake_get_window_geometry
         sidecar.win32gui.MoveWindow = fake_move_window
         sidecar.ctypes.windll = FakeWindll()
-        planned = plan(dict(geometry_state), fixed_origin=False, screen_width=1920, screen_height=1200)
+        planned = plan(dict(geometry_state), fixed_origin=True, screen_width=1920, screen_height=1200)
         result = sidecar.normalize_wechat_window(1001)
         expected_move = (planned["left"], planned["top"], planned["width"], planned["height"])
         assert_true(calls == [expected_move], f"sidecar should execute planner move: calls={calls}, planned={planned}")
