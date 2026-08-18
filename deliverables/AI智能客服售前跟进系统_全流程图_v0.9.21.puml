@@ -1,5 +1,5 @@
 @startuml
-' 文档版本：v0.9.20；灰度候选版本：0.9.20；最后更新：2026-08-17
+' 文档版本：v0.9.21；灰度候选版本：0.9.21（代码候选已形成，待 Windows UAT 与正式包验证）；最后更新：2026-08-18
 title AI智能客服售前跟进系统 全流程图（C0-C4、媒体、回复、转人工与恢复）
 
 skinparam monochrome true
@@ -68,6 +68,22 @@ note over W,Reply
 10. C2身份只有四类对象：frame_observation、pending_media_action、committed_message、quarantine_record；只有committed_message可生成source key、查Ledger/Outbox、入库或进入Brain。
 11. 新文字/系统消息可由完整new_suffix直接提交；新语音/图片必须先落ActionJournal并经confirmed action提交。属于new_suffix、Vision成功或已有预留号都不等于正式消息。
 12. 媒体动作只能终止为cancelled_before_trigger、committed_completed、committed_failed或identity_unresolved；identity_unresolved只做无UI恢复，仍不明确则幂等handoff，不得长期挂起或重复点击。
+13. 每个新UI Flow先统一复核微信HWND、工作区、窗口/客户区、DPI并规范化；被动status/heartbeat不得移动窗口。
+14. 每个HWND的每张新截图各自产生唯一不可变layout_snapshot；点击、输入、滚动、弹窗、搜索、窗口或新截图都会使旧快照失效。
+15. 布局只确定区域，不代替private+短码、头像/气泡角色、媒体动作回执和S0/S1/S2业务证据。
+16. 所有点击只消费当前executable布局快照并经过OmniAuto唯一截图->屏幕->客户区转换器；模块不得自行叠加窗口偏移或DPI。
+17. 布局缺失、多候选、低置信、区域冲突或截图原点未知时最多零点击重取一帧；仍不明确则技术失败，不使用固定坐标兜底、不创建业务Handoff。
+end note
+
+note over W,WX
+0.9.21通用Windows UI兼容前置门禁（适用于add_friend、authorized_read、pre_send_refresh和send）：
+取得UI锁后、首次业务截图前，OmniAuto使用统一入口规范化并复核微信窗口。
+当前截图建立独立layout_snapshot：capture_mode、截图屏幕原点、window/client rect、DPI、
+侧栏/标题/消息区/输入区边界、锚点、置信度、冲突和executable。
+只有当前快照executable且目标位于已确认bounds内才可经唯一坐标转换器点击。
+独立弹窗/新HWND、新截图或任何UI变化必须建立新快照；PrintWindow/原点未知截图只可诊断。
+固定像素只作最小尺寸、OCR边距、目标内部余量和1920诊断参考，绝不授权实际点击。
+兼容开关关闭时只有命中已通过0.9.20 UAT的完整设备profile才可走旧路径；其他环境阻止UI自动化。
 end note
 
 group C0-C1：线索进入、分配销售与加好友
@@ -75,6 +91,13 @@ group C0-C1：线索进入、分配销售与加好友
   C01 -> C01: 手机号去重、分配唯一sales_id\n创建add_friend任务并绑定可用Worker
   C01 --> W: 下发add_friend任务\n手机号 + 正式短码 + 申请语
   W -> Lock: 获取本地微信UI锁
+  W -> OA: add_friend UI前置门禁\n统一窗口规范化 + 当前帧layout_snapshot
+  OA -> WX: 必要时恢复非最大化窗口\n按工作区与DPI移动到安全位置并调整尺寸
+  OA -> OA: 识别真实侧栏、头部、聊天区和输入区\n唯一“+”视觉目标 + 统一坐标转换
+  note over W,OA
+  布局不可执行时零业务点击失败；允许重取一帧，仍失败则按原任务技术失败返回。
+  搜索框图案、1920参考点或旧布局不得冒充“+”号。
+  end note
   W -> OA: add_friend\n最终确定后短暂等待稳定画面
   OA -> WX: 搜索手机号、填写短码备注、发送好友申请
   OA -> OA: invite_sent或already_friend后等待1—2秒\n仅对精确标题或本次已证明且存活的添加朋友HWND\n点击右上角X一次并验证；未知窗口零点击

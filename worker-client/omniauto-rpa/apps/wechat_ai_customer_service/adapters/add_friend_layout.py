@@ -207,10 +207,15 @@ def vision_plus_icon_candidates(
     image_size: tuple[int, int],
     *,
     split_x_fn: Callable[[int], int] = default_session_split_x,
+    search_bounds: list[int] | None = None,
 ) -> list[dict[str, Any]]:
     if image is None or not hasattr(image, "crop"):
         return []
-    search_bounds = plus_entry_safe_bounds(image_size, split_x_fn=split_x_fn)
+    search_bounds = normalize_bounds(
+        search_bounds
+        if isinstance(search_bounds, list) and len(search_bounds) >= 4
+        else plus_entry_safe_bounds(image_size, split_x_fn=split_x_fn)
+    )
     left, top, right, bottom = search_bounds
     try:
         crop = image.crop((left, top, right, bottom)).convert("RGB")
@@ -281,9 +286,14 @@ def plus_entry_target(
     split_x_fn: Callable[[int], int] = default_session_split_x,
     search_box_point_fn: Callable[[dict[str, Any]], tuple[int, int]] = default_search_box_point,
     region_for_point_fn: Callable[[int, int, tuple[int, int]], str] | None = None,
+    dynamic_sidebar_header_bounds: list[int] | None = None,
 ) -> dict[str, Any]:
     width, height = int(image_size[0]), int(image_size[1])
-    safe_bounds = plus_entry_safe_bounds(image_size, split_x_fn=split_x_fn)
+    safe_bounds = normalize_bounds(
+        dynamic_sidebar_header_bounds
+        if isinstance(dynamic_sidebar_header_bounds, list) and len(dynamic_sidebar_header_bounds) >= 4
+        else plus_entry_safe_bounds(image_size, split_x_fn=split_x_fn)
+    )
     layout = plus_entry_layout_regions(image_size, split_x_fn=split_x_fn)
     candidates: list[dict[str, Any]] = []
     diagnostic_references: list[dict[str, Any]] = []
@@ -335,7 +345,14 @@ def plus_entry_target(
         }
     )
 
-    candidates.extend(vision_plus_icon_candidates(screenshot, image_size, split_x_fn=split_x_fn))
+    candidates.extend(
+        vision_plus_icon_candidates(
+            screenshot,
+            image_size,
+            split_x_fn=split_x_fn,
+            search_bounds=safe_bounds,
+        )
+    )
     selected = max(candidates, key=lambda item: float(item.get("confidence") or 0.0)) if candidates else None
     executable = selected is not None and str(selected.get("source") or "") == "vision_plus_icon"
     if selected is None:
@@ -379,6 +396,7 @@ def plus_entry_target(
             "route_kind": str(route_kind or "windows"),
             "verify_after_action": "plus_entry_popup_menu_detected",
             "layout_model": "add_friend_windows_sidebar_plus_vision_v2",
+            "dynamic_sidebar_header_bounds": list(dynamic_sidebar_header_bounds or []),
             "layout_calibration": layout,
             "diagnostic_references": diagnostic_references,
             "executable": executable,

@@ -2003,8 +2003,8 @@ def test_add_friend_primary_locator_contract() -> None:
     menu_targets = add_friend_menu_candidate_targets(
         [ocr_item("添加朋友", 270, 148, 336, 172)],
         (980, 860),
-        plus_screen_x=334,
-        plus_screen_y=70,
+        plus_image_x=334,
+        plus_image_y=70,
         include_expected=True,
     )
     menu_target = next(target for target in menu_targets if target.get("name") == "add_friend_menu_entry")

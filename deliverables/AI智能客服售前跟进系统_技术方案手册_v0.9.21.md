@@ -1,14 +1,14 @@
 # AI智能客服售前跟进系统 技术方案
 
-版本：v0.9.20
+版本：v0.9.21
 
 日期：2026-07-21
 
-最后更新：2026-08-17
+最后更新：2026-08-18
 
 适用范围：运营后台、车金后端、Windows Worker、OmniAuto Sidecar、C0—C4、车辆 Product Master、人工接管与飞书通知。
 
-当前唯一架构口径：服务端负责授权、状态机、事实持久化、Brain/Guard、任务和通知；OmniAuto 负责微信 UI 观察、物理目标判定和动作证据；Worker 只负责调度、合同校验、事务持久化与执行。C2 使用固定八位短码和 private 单聊门禁；文字、语音、图片按同一最终画面顺序入库，一条物理媒体只形成一个业务对象，所有已触发媒体动作必须有限终态。C2 消息身份只允许沿“帧内观察 -> 待处理媒体动作 -> 正式消息或隔离记录”单向推进；只有正式消息可以生成 source key、查询 Ledger/Outbox、上报后端或进入 Brain。Brain 只在最新待回复尾部完整且证据足够时生成回复；当前客户媒体失败、高意向及必须人工批准的业务硬风险进入人工接管。人工接管以未关闭 `HandoffEvent` 为权威事实并投影 `waiting_sales_reply`，服务端按同一事件通过车金统一飞书应用立即且至多通知一次所属销售。微信列表在截图与点击之间重排时，点击后的短码校验仍是硬门禁，但明确点到其他会话时允许丢弃旧坐标并在同一授权内完整重新定位一次。添加朋友流程无论“邀请已发送”还是“已经是好友”，都只对已经证明的添加朋友 HWND 执行一次右上角关窗并验证结果。当前目标灰度候选和机器合同 revision 统一为 `0.9.20`。
+当前唯一架构口径：服务端负责授权、状态机、事实持久化、Brain/Guard、任务和通知；OmniAuto 负责微信 UI 观察、物理目标判定和动作证据；Worker 只负责调度、合同校验、事务持久化与执行。C2 使用固定八位短码和 private 单聊门禁；文字、语音、图片按同一最终画面顺序入库，一条物理媒体只形成一个业务对象，所有已触发媒体动作必须有限终态。C2 消息身份只允许沿“帧内观察 -> 待处理媒体动作 -> 正式消息或隔离记录”单向推进；只有正式消息可以生成 source key、查询 Ledger/Outbox、上报后端或进入 Brain。Brain 只在最新待回复尾部完整且证据足够时生成回复；当前客户媒体失败、高意向及必须人工批准的业务硬风险进入人工接管。人工接管以未关闭 `HandoffEvent` 为权威事实并投影 `waiting_sales_reply`，服务端按同一事件通过车金统一飞书应用立即且至多通知一次所属销售。微信列表在截图与点击之间重排时，点击后的短码校验仍是硬门禁，但明确点到其他会话时允许丢弃旧坐标并在同一授权内完整重新定位一次。添加朋友流程无论“邀请已发送”还是“已经是好友”，都只对已经证明的添加朋友 HWND 执行一次右上角关窗并验证结果。当前候选机器合同 revision 为 `0.9.21`，规范化 SHA 为 `c552dee933d305ad55c17388e55b9590e72a28d6a4965282f0670f23b2111a36`；16.11 的微信动态布局与统一坐标兼容性代码、合同、Schema 和来源已同步形成候选，真实 Windows 三档验收、正式包与人工批准记录尚待完成，文档不得把这些待验证项表述为已通过。
 
 ## 文档治理规则
 
@@ -32,12 +32,12 @@
    字段和领域对象字段使用 snake_case，两者不得被误认为两个接口。新增、改名或废弃
    接口必须先修改本文的权威目录和接口编号，不允许在代码、聊天记录或派生合同中另起
    同义名称。
-7. 灰度版本使用唯一 `0.9.x` 序列：`0.9.0` 至 `0.9.19` 已冻结，当前目标候选为 `0.9.20`；
+7. 灰度版本使用唯一 `0.9.x` 序列：`0.9.0` 至 `0.9.20` 已冻结，当前目标候选为 `0.9.21`；
    后续任何内容不同且进入测试的候选必须继续升版。PRD（仅有产品变化时）、技术方案、全流程图、版本记录、客户端、
    后端、OmniAuto 合同 `contract_revision`、生成 Schema、manifest 和安装包必须写入同一个
    精确版本，禁止各自升版、复用旧号覆盖新内容或把占位符 `0.9.X` 写入运行产物。
    `contract_version=3`、`observation_schema_version=3` 和文中 V3 仅是协议结构代号，不属于
-   灰度发布版本；对外沟通、兼容校验和发布追溯统一使用 `contract_revision=0.9.20 + 规范化 SHA ca0b0dcb3362255fda103b9f3c32f947dd7f97f6991196f2a70251b5a6d0d44e`。
+   灰度发布版本；现行已实现兼容校验仍使用 `contract_revision=0.9.20 + 规范化 SHA ca0b0dcb3362255fda103b9f3c32f947dd7f97f6991196f2a70251b5a6d0d44e`。`0.9.21` 实现提交必须同步生成新的 revision 和规范化 SHA，未形成代码候选前不得提前伪填。
    版本车道固定为：`0.9.x` 仅用于正式上线前灰度验证，`1.0.x` 用于正式上线及其稳定性修复，
    `1.1.x` 用于下一期优化。三个 `x` 都只表示版本系列，任何提交、合同、Schema、manifest、
    安装包和运行日志必须写入 `0.9.15`、`1.0.0`、`1.1.0` 等精确版本，不得写入字面占位符。
@@ -2731,7 +2731,7 @@ Worker 必须对上述逻辑矛盾失败关闭。例如 `identity_phase=sequence
 | `sidecar_new_message_occurrences` 及内容 multiset 比较 | 只可用于发现“画面可能新增了什么”，结果必须再进入新观察仲裁 | 用来证明正文属于被点击语音，或认定相同内容是旧消息 |
 | `storage.py` 消息序号状态 | 原子落盘 action ID、reserved ID、identity phase、trigger phase 和 terminal；预留号单调且永不复用 | 崩溃后回收预留号；新动作重用旧 action ID；`trigger_attempted` 后再点击 |
 | `storage.py` 动作前画面状态 | 与 ActionJournal 原子保存 `pre_action_identity_sequence`，覆盖 `committed/selected_action/frame_local_unselected`；动作终态后补齐 `sequence_alignment_evidence` | 只保存已编号项；崩溃后用新截图或相同内容伪造动作前序列 |
-| `contracts/c2_contract_v3.json` 及生成 schema | `contract_revision`、客户端、后端、Sidecar、生成 Schema、样例和 manifest 统一为目标候选 `0.9.20`；加入本节对象分类、允许的 commit basis、四种媒体终态、统一消费者白名单和独立帧内语音 action binding；保留 `authoritative_frame_source=initial_read/final_read/action_journal_recovery` 及安全误点语义；共用同一样例/哈希 | 使用独立合同版本号；在已发布版本下静默改语义；产生 `voice_execute_final` 等临时值；保留 `tracking_candidate_counts` 兼容；新增同义字段、双字段兼容或 Worker 本地兜底重判 |
+| `contracts/c2_contract_v3.json` 及生成 schema | 现行已实现的 `contract_revision`、客户端、后端、Sidecar、生成 Schema、样例和 manifest 统一为 `0.9.20`；加入本节对象分类、允许的 commit basis、四种媒体终态、统一消费者白名单和独立帧内语音 action binding；保留 `authoritative_frame_source=initial_read/final_read/action_journal_recovery` 及安全误点语义；`0.9.21` 实现时再将全部组件和同一样例/哈希一次性升版 | 使用独立合同版本号；在已发布版本下静默改语义；产生 `voice_execute_final` 等临时值；保留 `tracking_candidate_counts` 兼容；新增同义字段、双字段兼容或 Worker 本地兜底重判 |
 
 新流程的唯一落库时点为：预留表/ActionJournal 在点击前落盘；正式 identity catalog、
 Ledger、Outbox 和 `source_message_key` 只在 `historical_restored` 或 `business_committed` 后落盘。
@@ -4909,6 +4909,125 @@ revision mismatch，不得静默兼容或覆盖旧包。
 改变 C2 授权、媒体编排、消息身份、Brain 调用次数、Handoff 或 C3 发送流程。`0.9.15` 的 Worker、后端
 合同 revision、OmniAuto 生成 Schema、来源清单、manifest 和 ZIP 文件名必须一致；旧 `0.9.14` 请求必须
 明确 revision mismatch，既有 `gray-v0.9.14` 标签和 ZIP 不得覆盖。
+
+### 16.11 0.9.21 微信动态布局与统一坐标兼容性整改
+
+#### 16.11.1 范围与不变量
+
+本项只解决不同 Windows 分辨率、显示缩放、窗口边框和微信窗口尺寸下的 UI 定位兼容问题，
+不改变 C0—C4 业务状态机，不改变加好友、会话授权、消息身份、媒体编排、Brain、Guard、
+Handoff、发送和 sent_ack 的动作顺序或终态。固定像素只能保留为最小安全尺寸、OCR 框边距、
+已确认目标内部的小范围点击余量和诊断参考；不得再决定侧栏边界、业务区域或实际点击目标。
+
+OmniAuto 是布局识别和物理坐标的唯一权威。Worker 只负责启动统一前置门禁、校验布局合同并
+串行执行，不得计算侧栏宽度、窗口偏移或点击坐标；后端不接收、不推断也不保存 UI 坐标决策。
+
+#### 16.11.2 窗口规范化门禁
+
+1. Worker 从暂停切换为接单时，必须通过同一个车金 Sidecar 入口对已登录微信主窗口执行一次
+   前置检查：确认唯一可见主 HWND、非最小化、非离屏、无阻塞弹窗，并在屏幕工作区能够容纳时
+   恢复为非最大化窗口、移动到安全位置、调整到按工作区和当前 DPI 计算出的标准尺寸。
+2. 每个新的 `add_friend / authorized_read / pre_send_refresh / send` UI Flow 在取得 UI 锁后、
+   第一次业务截图前必须再次复核相同门禁。所有直接启动 Sidecar、Connector 和 Vision worker
+   的车金入口必须注入同一窗口策略，禁止某条入口默认固定原点、另一条入口沿用任意位置。
+3. 标准尺寸是由当前屏幕工作区、DPI 和最小安全尺寸计算出的可容纳结果，不是跨机器写死的
+   物理像素。工作区不足、MoveWindow 无效、归位后几何不符合计划或 DPI 无法确认时，必须在
+   零业务点击下失败；不得压缩到不安全尺寸后继续。
+4. 正在执行的 Flow 不得为了“对齐”而在任意步骤中途移动窗口。若动作前发现 HWND、窗口外框、
+   客户区、DPI 或截图映射发生变化，立即废弃旧截图、旧布局和旧坐标；在尚未发生不可逆动作时
+   可重新执行一次窗口门禁并从新帧恢复，已经触发媒体/发送动作时按原 Journal 终态结算。
+5. `status/heartbeat` 等被动探测不得移动或调整微信窗口，也不得生成可供后续点击复用的坐标。
+
+#### 16.11.3 每帧唯一布局快照
+
+每个 HWND 的每一张新截图必须生成独立、不可变的 `layout_snapshot`。同一 Flow 可以产生多张
+快照，但禁止整条 Flow 共用一张快照；添加朋友菜单、搜索页、邀请表单等独立 HWND 或新页面
+必须使用各自新帧快照。任何点击、输入、菜单开关、搜索、滚动、窗口移动/缩放、截图更新或
+画面摘要变化都会使旧快照失效。
+
+布局快照至少包含：
+
+```text
+layout_snapshot_id, frame_id, hwnd, capture_mode,
+image_width, image_height, capture_screen_origin_x, capture_screen_origin_y,
+window_rect, client_rect, client_screen_origin, dpi_scale,
+left_nav_bounds, sidebar_bounds, sidebar_header_bounds, session_list_bounds,
+chat_header_bounds, message_viewport_bounds, input_bounds,
+anchors[], confidence, conflicts[], executable
+```
+
+边界必须由当前截图中的真实结构、分隔线、搜索栏、标题栏、输入区和互相一致的视觉/OCR 锚点
+联合确定。所有必需区域必须非空、不重叠越界、保持正确包含关系并得到唯一结果；多个边界候选、
+关键锚点缺失、低置信、区域矛盾或截图来源无法映射时，`executable=false`。允许在零点击状态下
+重新截图识别一次；仍不明确则停止当前 UI 操作并返回明确技术失败，不使用 1920 参考点、比例
+公式或旧快照兜底，也不得仅因布局识别失败创建业务 Handoff。
+
+布局只定义“区域在哪里”，不能代替业务证据：客户/self 角色继续以头像、气泡和消息行结构确认；
+当前会话继续要求 `private + 完整精确短码`；加好友“+”号必须是侧栏头部内唯一视觉目标且点击后
+确认真实菜单；发送仍保留 S0/S1/S2 独立新帧、输入期间新消息检查和发送结果确认。
+
+#### 16.11.4 唯一坐标转换器
+
+动作目标只能来自 `executable=true` 的当前布局快照和当前帧内已确认视觉/OCR 控件。所有实际
+点击统一经过 OmniAuto 的唯一坐标转换器，模块不得自行把 `window.left/top`、客户区偏移、DPI
+比例或截图坐标相加。
+
+转换器必须依据 `capture_mode` 明确完成：
+
+```text
+截图点 -> 当前截图的真实屏幕点
+屏幕点 -> 需要 WM/client 点击时的客户区点（ScreenToClient）
+```
+
+只有能够证明屏幕原点的可见窗口截图可以授权真实鼠标点击；PrintWindow、离屏截图或无法证明
+原点的捕获只可用于被动观察和诊断。转换前后必须再次确认 HWND、几何、DPI、截图尺寸和快照
+仍一致，点击点完整落在当前已确认目标 bounds 内；任一不一致即零点击失败。
+
+以下生产路径必须删除固定区域或各自坐标换算，并统一消费上述快照和转换器：加好友入口“+”号、
+弹窗菜单、搜索页和表单；侧栏搜索框、返回按钮、会话行；当前会话标题；聊天消息区；消息角色、
+语音和图片候选区域；输入框、发送按钮以及 S0/S1/S2 截图区域。最小窗口门禁、最小化/离屏判断、
+OCR 置信阈值、已确认目标内部点击余量可以保留；1920 参考点只能输出到诊断字段，禁止执行。
+
+#### 16.11.5 失败、恢复与回滚
+
+兼容性技术错误码固定为以下四个，不得按模块另建同义错误码：
+
+| 错误码 | 唯一含义 |
+|---|---|
+| `WECHAT_UI_WINDOW_NORMALIZATION_FAILED` | 唯一主窗口、工作区、DPI、恢复/移动/缩放或归位后复核未通过。 |
+| `WECHAT_UI_LAYOUT_UNRESOLVED` | 当前截图的必需区域缺失、多候选、低置信或互相矛盾，零点击重取一帧后仍不明确。 |
+| `WECHAT_UI_LAYOUT_STALE` | 动作前复核发现当前 HWND、几何、DPI、截图尺寸或快照摘要已经变化，旧快照不得执行。 |
+| `WECHAT_UI_COORDINATE_MAPPING_INVALID` | 截图原点不可证明、坐标转换失败或转换后的点击点不在当前已确认目标 bounds 内。 |
+
+- 布局或坐标失败发生在任何业务 UI 动作前：返回明确技术错误，任务按原调度策略重试；不得点击、
+  不得入库消息、不调用 Brain、不创建 Handoff。
+- 已打开非目标会话但尚未读取消息区或触发媒体/发送：继续使用既有
+  `C2_VISIBLE_TARGET_STALE_AFTER_CLICK` 一次有限重新定位规则，不能新增第二套恢复。
+- 媒体或发送动作已经触发：不得重新点击；沿用原 ActionJournal、Outbox 和 sent_ack 事实结算。
+- 本项必须有独立开关，但关闭后只能在已经通过 `0.9.20` UAT 的原分辨率、DPI、窗口尺寸和边界
+  profile 上执行旧路径；当前环境与已验证 profile 不完全一致时必须阻止 UI 自动化，禁止关闭开关后
+  用旧固定坐标继续点击。回滚不迁移、不重写业务数据，也不代表旧路径具备跨 DPI 兼容性。
+
+#### 16.11.6 验收矩阵
+
+自动化必须调用真实生产布局构建器和坐标转换器，禁止 Fake 直接返回 `executable=true` 或预制
+点击点。至少覆盖 1920x1080/100%、2560x1440/125%、3840x2160/150%，以及窗口被移动、缩放、
+最大化后恢复、侧栏宽度变化、窗口边框变化和截图/点击之间几何变化。每组必须验证：
+
+1. 加好友“+”号只点击唯一真实图标，搜索框图案不能冒充；点击后必须出现正确菜单。
+2. 首屏会话、定向搜索、标题、消息视口、customer/self、语音、图片、输入框和发送按钮全部位于
+   当前快照定义的正确区域；不得混入侧栏预览或漏掉聊天区左侧消息。
+3. 同一截图的各模块获得同一个 `layout_snapshot_id`；新截图、新 HWND 或任意 UI 动作后必须获得
+   新 ID，旧 ID 不能继续点击。
+4. 对坐标转换器做往返验证；窗口边框、DPI 或客户区原点变化时不得出现系统性偏移。
+5. 边界唯一、缺失、多候选、低置信、区域冲突、窗口中途变化和截图原点未知均覆盖反向测试；
+   失败时必须零点击，测试不得只断言错误码。
+6. 原有业务回归必须证明加好友、C2 读取、媒体身份、Brain 次数、Handoff、S0/S1/S2、发送结果、
+   Journal/Outbox/sent_ack 的顺序和终态没有改变。
+
+`0.9.21` 代码候选形成前只允许更新方案与流程图；实现完成后必须同步 Worker、独立 OmniAuto
+固定提交、`.chejin-source.json`、机器合同 revision、生成 Schema、manifest 和版本记录。真实
+Windows 三档环境未通过前不得打包为可交付候选，也不得声称兼容性整改完成。
 
 ## 17. 剩余上线前确认清单
 
