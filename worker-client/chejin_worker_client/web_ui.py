@@ -11,23 +11,27 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QEvent, QPoint, QObject, Qt, QUrl, Signal, Slot
-from PySide6.QtGui import QBitmap, QColor, QPainter
+from PySide6.QtGui import QBitmap, QColor, QGuiApplication, QPainter
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QFileDialog, QMainWindow
 
+from . import __version__
 from .api import WorkerApiClient
 from .config import CONFIG
 from .incident_evidence import incident_by_id, incident_directory, latest_incident
 from .models import Binding, RpaResult, RpaStep, Task, WorkerProfile, task_type_title
 from .qt_application import GuardedQApplication
 from .rpa_bridge import RpaBridge
+from .runtime_process_timeline import RuntimeProcessTimeline
+from .startup_window_position import position_to_right_of_wechat
 from .storage import (
     append_log,
     clear_binding,
     is_accept_schedule_active,
     load_accept_schedule,
     load_binding,
+    load_runtime_control,
     new_client_instance_id,
     read_logs,
     save_accept_schedule,
@@ -35,10 +39,11 @@ from .storage import (
 )
 from .task_runner import TaskRunner
 from .ui_lock import lock_summary
+from .ui_state_mapping import runtime_process_screen, runtime_step_title
 
 WINDOW_WIDTH = 316
 WINDOW_HEIGHT = 628
-CLIENT_VERSION = "V16.125 · Worker C2/C3 客户端"
+CLIENT_VERSION = f"V{__version__} · Worker C2/C3 客户端"
 TITLEBAR_HEIGHT = 28
 WINDOW_CONTROL_WIDTH = 90
 WINDOW_RADIUS = 10
@@ -235,6 +240,7 @@ class WorkerWebWindow(QMainWindow):
     step_signal = Signal(object)
     result_signal = Signal(object)
     error_signal = Signal(str)
+    runtime_process_signal = Signal(object)
 
     def __init__(self) -> None:
         super().__init__()
@@ -254,8 +260,12 @@ class WorkerWebWindow(QMainWindow):
         self.connection_status = "connecting"
         self.active_page = "workbench"
         self.bind_error = ""
+        self.notice = ""
+        self.state_revision = 0
         self.step_history: list[dict[str, Any]] = []
+        self.runtime_process_timeline = RuntimeProcessTimeline()
         self._drag_origin: QPoint | None = None
+        self._startup_position_attempted = False
 
         self.runner = TaskRunner(
             self.api,
@@ -267,6 +277,9 @@ class WorkerWebWindow(QMainWindow):
             on_result=lambda value: self.result_signal.emit(value),
             on_error=lambda value: self.error_signal.emit(value),
             can_pull_tasks=self.is_accept_schedule_active,
+            on_runtime_process=lambda value: self.runtime_process_signal.emit(
+                value
+            ),
         )
 
         self.bridge = WorkerWebBridge(self)
@@ -337,6 +350,56 @@ class WorkerWebWindow(QMainWindow):
     def end_window_drag(self) -> None:
         self._drag_origin = None
 
+    def _position_next_to_wechat_once(self) -> None:
+        if self._startup_position_attempted:
+            return
+        probe_payload = self.rpa_bridge.last_probe_payload
+        if not probe_payload:
+            return
+        geometry = probe_payload.get("geometry")
+        if not isinstance(geometry, dict):
+            self._startup_position_attempted = True
+            return
+        try:
+            center = QPoint(
+                (int(geometry["left"]) + int(geometry["right"])) // 2,
+                (int(geometry["top"]) + int(geometry["bottom"])) // 2,
+            )
+            screen = (
+                QGuiApplication.screenAt(center)
+                or QGuiApplication.primaryScreen()
+            )
+            available = screen.availableGeometry() if screen is not None else None
+            device_pixel_ratio = (
+                float(screen.devicePixelRatio())
+                if screen is not None
+                else 1.0
+            )
+            screen_bounds = (
+                (
+                    int(available.x()),
+                    int(available.y()),
+                    int(available.x() + available.width()),
+                    int(available.y() + available.height()),
+                )
+                if available is not None
+                else None
+            )
+        except (AttributeError, KeyError, TypeError, ValueError):
+            screen_bounds = None
+        if screen_bounds is None:
+            return
+        self._startup_position_attempted = True
+        position = position_to_right_of_wechat(
+            probe_payload,
+            window_size=(WINDOW_WIDTH, WINDOW_HEIGHT),
+            screen_bounds=screen_bounds,
+            native_device_pixel_ratio=device_pixel_ratio,
+        )
+        if position is None:
+            return
+        self.move(*position)
+
     def _wire_signals(self) -> None:
         self.profile_signal.connect(self.on_profile)
         self.status_signal.connect(self.on_status)
@@ -344,19 +407,89 @@ class WorkerWebWindow(QMainWindow):
         self.step_signal.connect(self.on_step)
         self.result_signal.connect(self.on_result)
         self.error_signal.connect(self.on_error)
+        self.runtime_process_signal.connect(self.on_runtime_process)
 
     def _load_web_assets(self) -> None:
         index_file = Path(__file__).resolve().parent / "web_assets" / "index.html"
         self.view.load(QUrl.fromLocalFile(str(index_file)))
 
     def state_json(self) -> str:
-        return json.dumps(self._state(), ensure_ascii=False)
+        try:
+            payload = json.dumps(self._state(), ensure_ascii=False)
+        except Exception as exc:
+            signature = f"{type(exc).__name__}:{exc}"
+            if signature != getattr(
+                self,
+                "_last_state_projection_error",
+                "",
+            ):
+                self._last_state_projection_error = signature
+                try:
+                    append_log(
+                        "WARN",
+                        "ui_state_projection_failed",
+                        "Worker 界面状态投影失败；业务线程继续运行并保留上一份可用界面状态。",
+                        error_code="UI_STATE_PROJECTION_FAILED",
+                        metadata={
+                            "exception_type": type(exc).__name__,
+                            "current_step": self.runner.current_step or "",
+                        },
+                    )
+                except Exception:
+                    pass
+            cached = str(
+                getattr(self, "_last_successful_state_json", "") or ""
+            )
+            if cached:
+                return cached
+            return json.dumps(
+                {
+                    "screen": "bind" if not self.binding else "offline-empty",
+                    "model": {
+                        "workerId": self.binding.worker_id if self.binding else "",
+                        "version": CLIENT_VERSION,
+                        "schedule": dict(self.accept_schedule),
+                        "status": {
+                            "receiveState": "暂停接单",
+                            "connectionState": "状态刷新暂不可用",
+                            "currentStep": self.runner.current_step or "",
+                        },
+                        "listener": {},
+                        "localLock": {
+                            "locked": True,
+                            "state": "unknown",
+                            "error_code": "UI_STATE_PROJECTION_FAILED",
+                        },
+                        "task": None,
+                        "runningSteps": [],
+                        "completedSteps": [],
+                        "failedSteps": [],
+                        "scanRunningSteps": [],
+                        "scanCompletedSteps": [],
+                        "targetReadRunningSteps": [],
+                        "targetReadCompletedSteps": [],
+                        "replyRunningSteps": [],
+                        "replyCompletedSteps": [],
+                        "replyFailedSteps": [],
+                        "customerProcessSteps": [],
+                        "logs": [],
+                        "latestIncident": {},
+                    },
+                    "bindError": self.bind_error,
+                },
+                ensure_ascii=False,
+            )
+        self._last_successful_state_json = payload
+        self._last_state_projection_error = ""
+        return payload
 
     def _state(self) -> dict[str, Any]:
         return {
+            "revision": self.state_revision,
             "screen": self._screen(),
             "model": self._model(),
             "bindError": self.bind_error,
+            "notice": self.notice,
         }
 
     def _screen(self) -> str:
@@ -365,16 +498,53 @@ class WorkerWebWindow(QMainWindow):
         if self.active_page in {"settings", "schedule-settings", "logs"}:
             return self.active_page
         if self.connection_status == "offline":
-            return "offline"
+            has_local_process = bool(
+                self.current_task
+                or self.runner.current_step
+                or self.step_history
+                or self.last_result
+            )
+            return "offline" if has_local_process else "offline-empty"
         schedule_active = self.is_accept_schedule_active()
         if self.current_task and (self.binding.run_status == "paused" or not schedule_active):
             return "paused-running"
         if self.current_task:
+            if (
+                self.current_task.task_type == "chat_reply"
+                and self.runtime_process_timeline.customer_steps
+            ):
+                return "target-read-running"
             return "running"
+        background_screen = runtime_process_screen(self.runner.current_step)
+        if background_screen:
+            return background_screen
+        if (
+            self.binding.run_status == "paused"
+            and not self._runtime_flow_active_for_display()
+            and self.runtime_process_timeline.last_process_kind == "scan"
+        ):
+            return "paused-empty"
+        if self.runtime_process_timeline.last_process_kind == "customer":
+            if self.runtime_process_timeline.customer_active:
+                return "target-read-running"
+            if self.runtime_process_timeline.customer_terminal_state == "failed":
+                return "ai-reply-failed"
+            return "target-read-completed"
+        if (
+            self.runtime_process_timeline.last_process_kind == "scan"
+            and self.runtime_process_timeline.scan_steps
+        ):
+            return "scan-completed"
         if self.last_result and self.last_result.ok:
-            return "completed"
+            if self.last_task and self.last_task.task_type == "chat_reply":
+                return "ai-reply-completed"
+            return "paused-empty-2" if self.binding.run_status == "paused" else "completed"
         if self.last_result and not self.last_result.ok:
-            return "failed"
+            return "ai-reply-failed" if self.last_task and self.last_task.task_type == "chat_reply" else "failed"
+        if self.profile and self.profile.rpa_component_status != "ready":
+            return "automation-unavailable"
+        if self.profile and self.profile.wechat_status != "logged_in":
+            return "wechat-disconnected"
         if self.binding.run_status == "running" and schedule_active:
             return "accepting-wait"
         if self.binding.run_status == "running":
@@ -408,6 +578,16 @@ class WorkerWebWindow(QMainWindow):
             "runningSteps": self._running_steps(),
             "completedSteps": self._completed_steps(),
             "failedSteps": self._failed_steps(),
+            "scanRunningSteps": self._scan_running_steps(),
+            "scanCompletedSteps": self._scan_completed_steps(),
+            "targetReadRunningSteps": self._target_read_running_steps(),
+            "targetReadCompletedSteps": self._target_read_completed_steps(),
+            "replyRunningSteps": self._running_steps(),
+            "replyCompletedSteps": self._completed_steps(),
+            "replyFailedSteps": self._failed_steps(),
+            "customerProcessSteps": (
+                self.runtime_process_timeline.customer_model()
+            ),
             "logs": _log_rows(),
             "latestIncident": latest_incident() or {},
         }
@@ -431,14 +611,18 @@ class WorkerWebWindow(QMainWindow):
         if self.runner.run_status_sync_error and run_status == "paused":
             model["statusText"] = "暂停接单 · 同步失败"
             model["metaText"] = (
-                "本地微信操作已停止，暂停状态尚未同步到后端，客户端正在自动重试。"
+                "本地已停止接收新工作，当前客户继续安全处理；后端暂停状态正在重试同步。"
             )
             return model
         if task:
             if offline:
                 model["statusText"] = "离线"
             elif run_status == "paused":
-                model["statusText"] = "暂停接单"
+                if self._runtime_flow_active_for_display():
+                    model["statusText"] = "正在暂停"
+                    model["metaText"] = "正在暂停，当前客户处理完后停止"
+                else:
+                    model["statusText"] = "已暂停接单"
             return model
         if offline:
             model["statusText"] = "离线"
@@ -450,9 +634,21 @@ class WorkerWebWindow(QMainWindow):
             model["statusText"] = "非接单时段"
             model["metaText"] = "当前不在自动接单时段内，客户端保持连接但不领取新任务。"
         else:
-            model["statusText"] = "暂停接单"
-            model["metaText"] = "暂停接单后不会领取新的任务。"
+            if self._runtime_flow_active_for_display():
+                model["statusText"] = "正在暂停"
+                model["metaText"] = "正在暂停，当前客户处理完后停止"
+            else:
+                model["statusText"] = "已暂停接单"
+                model["metaText"] = "已停止领取新任务。"
         return model
+
+    @staticmethod
+    def _runtime_flow_active_for_display() -> bool:
+        """Best-effort UI projection; storage failure must not imply offline."""
+        try:
+            return bool(load_runtime_control().get("inflight_flow_id"))
+        except Exception:
+            return False
 
     def is_accept_schedule_active(self) -> bool:
         return is_accept_schedule_active(self.accept_schedule)
@@ -469,7 +665,8 @@ class WorkerWebWindow(QMainWindow):
     def _running_steps(self) -> list[dict[str, Any]]:
         steps = list(self.step_history)
         if self.current_task:
-            title = self.current_task.current_step or "正在执行任务"
+            raw_step = self.runner.current_step or self.current_task.current_step
+            title = runtime_step_title(raw_step, f"正在执行{task_type_title(self.current_task.task_type)}")
             steps.append(
                 {
                     "state": "current",
@@ -482,8 +679,72 @@ class WorkerWebWindow(QMainWindow):
             )
         return steps or [{"state": "current", "title": "等待任务", "description": "接单中，等待服务端分配任务。"}]
 
+    def _scan_running_steps(self) -> list[dict[str, Any]]:
+        projected = self.runtime_process_timeline.scan_model()
+        if projected:
+            return projected
+        if runtime_process_screen(self.runner.current_step) != "scan-running":
+            return []
+        return [
+            {
+                "state": "current",
+                "title": runtime_step_title(self.runner.current_step, "正在扫描微信会话第一屏"),
+                "description": "Worker 正在检查当前可见会话。",
+            }
+        ]
+
+    def _scan_completed_steps(self) -> list[dict[str, Any]]:
+        projected = self.runtime_process_timeline.scan_model()
+        if projected:
+            return projected
+        stats = dict(getattr(self.runner, "c2_stats", {}) or {})
+        if not stats.get("last_scan_at"):
+            return []
+        return [
+            {"state": "done", "title": "扫描微信会话第一屏", "time": _format_time(str(stats.get("last_scan_at") or ""))},
+            {
+                "state": "done",
+                "title": "扫描完成",
+                "description": f"发现 {int(stats.get('last_scan_sessions') or 0)} 个会话。",
+                "finalText": "等待下一轮检查",
+            },
+        ]
+
+    def _target_read_running_steps(self) -> list[dict[str, Any]]:
+        projected = self.runtime_process_timeline.customer_model()
+        if projected:
+            return projected
+        if runtime_process_screen(self.runner.current_step) != "target-read-running":
+            return []
+        return [
+            {
+                "state": "current",
+                "title": runtime_step_title(self.runner.current_step, "正在定位并读取目标会话"),
+                "description": "Worker 正在读取当前目标的最新消息。",
+            }
+        ]
+
+    def _target_read_completed_steps(self) -> list[dict[str, Any]]:
+        projected = self.runtime_process_timeline.customer_model()
+        if projected:
+            return projected
+        stats = dict(getattr(self.runner, "c2_stats", {}) or {})
+        if not stats.get("last_message_read_at"):
+            return []
+        return [
+            {"state": "done", "title": "读取目标会话", "time": _format_time(str(stats.get("last_message_read_at") or ""))},
+            {
+                "state": "done",
+                "title": "读取完成",
+                "description": f"已回传 {int(stats.get('last_ingested_count') or 0)} 条新消息。",
+                "finalText": "消息已回传",
+            },
+        ]
+
     def _completed_steps(self) -> list[dict[str, Any]]:
         steps = list(self.step_history)
+        if not self.last_result:
+            return steps
         steps.append(
             {
                 "state": "done",
@@ -496,6 +757,8 @@ class WorkerWebWindow(QMainWindow):
 
     def _failed_steps(self) -> list[dict[str, Any]]:
         steps = list(self.step_history)
+        if not self.last_result:
+            return steps
         message = self.last_result.message if self.last_result else "任务执行失败。"
         code = self.last_result.error_code if self.last_result else "OTHER"
         metadata = self.last_result.evidence_metadata if self.last_result else {}
@@ -518,6 +781,7 @@ class WorkerWebWindow(QMainWindow):
         return steps
 
     def _publish(self) -> None:
+        self.state_revision += 1
         self.bridge.emit_state()
 
     def change_screen(self, screen: str) -> None:
@@ -536,6 +800,7 @@ class WorkerWebWindow(QMainWindow):
         worker_token = worker_token.strip()
         if not worker_id or not worker_token:
             self.bind_error = "Worker ID 和 Worker Token 必填。"
+            self.notice = ""
             self._publish()
             return
         client_instance_id = self.binding.client_instance_id if self.binding else new_client_instance_id()
@@ -545,11 +810,13 @@ class WorkerWebWindow(QMainWindow):
             save_binding(self.binding)
             append_log("INFO", "worker_bound", "绑定 Worker 成功。")
             self.bind_error = ""
+            self.notice = "绑定成功，已进入 Worker 工作台。"
             self.active_page = "workbench"
             self.on_profile(profile)
             self.runner.start(self.binding)
         except Exception as exc:
             self.bind_error = str(exc)
+            self.notice = ""
             append_log("ERROR", "worker_bind_failed", str(exc))
             self._publish()
 
@@ -643,6 +910,7 @@ class WorkerWebWindow(QMainWindow):
 
     @Slot(object)
     def on_profile(self, profile: WorkerProfile) -> None:
+        self._position_next_to_wechat_once()
         self.profile = profile
         if self.binding:
             self.binding.run_status = profile.run_status
@@ -652,11 +920,13 @@ class WorkerWebWindow(QMainWindow):
     @Slot(str)
     def on_status(self, status: str) -> None:
         self.connection_status = status
+        self._position_next_to_wechat_once()
         if status == "invalid":
             clear_binding()
             self.binding = None
             self.runner.stop()
             self.bind_error = "绑定已失效，请重新绑定。"
+            self.notice = ""
             self.active_page = "workbench"
         self._publish()
 
@@ -711,6 +981,13 @@ class WorkerWebWindow(QMainWindow):
     def on_error(self, message: str) -> None:
         if message:
             append_log("WARN", "client_notice", message)
+        self._publish()
+
+    @Slot(object)
+    def on_runtime_process(self, event: dict[str, Any]) -> None:
+        self.runtime_process_timeline.apply(
+            event if isinstance(event, dict) else {}
+        )
         self._publish()
 
 

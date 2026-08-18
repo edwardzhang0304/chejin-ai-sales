@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import base64
+import binascii
 import hashlib
+import hmac
+import json
+import logging
 import re
+import unicodedata
 import uuid
 from zoneinfo import ZoneInfo
 
@@ -12,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.request_context import ActorContext
 from app.core.request_id import get_request_id
 from app.contracts.c2 import (
     c2_contract_v3,
@@ -23,11 +30,16 @@ from app.contracts.c2 import (
 )
 from app.errors import AppError
 from app.models.base import utcnow
-from app.models.c3 import Conversation, MessageBatch, ReplyAction
+from app.models.c3 import Conversation, HandoffEvent, MessageBatch, ReplyAction
 from app.models.lead import Lead
 from app.models.sales import Sales
 from app.models.task import Task
-from app.models.wechat import MessageEvent, WechatScanRun, WechatSessionBinding
+from app.models.wechat import (
+    MessageEvent,
+    WechatRecoverySettlement,
+    WechatScanRun,
+    WechatSessionBinding,
+)
 from app.models.worker import Worker
 from app.schemas.wechat import (
     WechatFriendActivationConfirmRequest,
@@ -48,7 +60,26 @@ def _latest_datetime(*values: datetime | None) -> datetime:
         return value.astimezone(timezone.utc)
 
     return max(present, key=comparable)
-from app.services.message_contract import canonical_reply_text, reply_text_hash
+
+
+def _datetime_is_after(
+    value: datetime | None,
+    boundary: datetime | None,
+) -> bool:
+    if value is None or boundary is None:
+        return False
+
+    def comparable(item: datetime) -> datetime:
+        if item.tzinfo is None:
+            return item.replace(tzinfo=timezone.utc)
+        return item.astimezone(timezone.utc)
+
+    return comparable(value) > comparable(boundary)
+from app.services.message_contract import (
+    canonical_message_identity_text,
+    canonical_reply_text,
+    reply_text_hash,
+)
 
 
 BIND_STATUS_BOUND = "bound"
@@ -62,6 +93,7 @@ EFFECTIVE_BIND_STATUSES = {BIND_STATUS_BOUND, BIND_STATUS_CANDIDATE, BIND_STATUS
 
 LISTEN_STATUS_NOT_STARTED = "not_started"
 LISTEN_STATUS_LISTENING = "listening"
+LISTEN_STATUS_PAUSED = "paused"
 LISTEN_STATUS_DEGRADED = "degraded"
 LISTEN_STATUS_ERROR = "error"
 LISTEN_STATUS_DISABLED = "disabled"
@@ -69,11 +101,28 @@ LISTEN_STATUS_DISABLED = "disabled"
 NEXT_ACTION_NONE = "none"
 LOW_CONFIDENCE_THRESHOLD = 0.7
 CONVERSATION_CLOSED_STATUSES = {"closed", "rejected"}
-WORKER_SEQUENCE_IDENTITY_SOURCES = {
-    "worker_cross_round_sequence",
-    "worker_image_physical_identity",
+RECOVERABLE_IDENTITY_UNRESOLVED_GATE_CODES = {
+    "MESSAGE_IDENTITY_UNCONFIRMED",
+    "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS",
+    "C2_MESSAGE_HISTORY_GAP",
+    "C2_IMAGE_IDENTITY_CONTRACT_INVALID",
+    "C2_VOICE_IDENTITY_CONTRACT_INVALID",
+    "C2_VOICE_RESULT_AMBIGUOUS",
 }
+IDENTITY_UNRESOLVED_MAX_PASSIVE_REREADS = 2
+IDENTITY_UNRESOLVED_MAX_ELAPSED_SECONDS = 120
+PERMANENT_BINDING_DISABLE_REASONS = {
+    "customer_hard_opt_out",
+    "conversation_closed",
+    "remark_code_removed_confirmed",
+    "admin_disabled",
+    "replaced_binding",
+}
+READ_NO_CHANGE_BACKOFF_SECONDS = (120, 300, 600)
+READ_SUCCESS_COOLDOWN_SECONDS = 120
+IDENTITY_CHECKPOINT_RECENT_LIMIT = 200
 SALES_SIDE_SENDER_ROLES = {"self", "sales", "sales_candidate"}
+SETTLEMENT_TOKEN_TTL_SECONDS = 300
 MESSAGE_TYPES_V3 = contract_values("message_types")
 SENDER_ROLES_V3 = contract_values("sender_roles")
 FLOW_STATES_V3 = contract_values("flow_states")
@@ -126,10 +175,12 @@ READ_TARGET_FAILURE_RESULTS = {"target_not_confirmed", "search_not_found", "sear
 READ_REASON_PRIORITY = {
     "recall_precheck": 0,
     "friend_acceptance_visible_hit": 0,
-    "recent_ai_sent": 1,
-    "waiting_user_reply": 2,
-    "waiting_sales_reply": 3,
+    "visible_unread": 1,
+    "recent_ai_sent": 2,
+    "waiting_user_reply": 3,
+    "waiting_sales_reply": 4,
 }
+logger = logging.getLogger(__name__)
 VOICE_DURATION_RE = re.compile(
     r"^\s*(?:\[?语音\]?\s*)?\d{1,3}(?:\.\d+)?\s*(?:\"|”|″|秒|s|S)\s*$"
 )
@@ -169,13 +220,31 @@ def _binding_to_dict(binding: WechatSessionBinding) -> dict:
         "bind_status": binding.bind_status,
         "listen_status": binding.listen_status,
         "allow_listening": binding.allow_listening,
+        "authorization_revision": int(binding.authorization_revision or 1),
         "error_code": binding.error_code,
+        "disable_reason": binding.disable_reason,
+        "disabled_at": binding.disabled_at,
+        "disabled_by": binding.disabled_by,
+        "replacement_binding_id": binding.replacement_binding_id,
         "unread_hint": binding.unread_hint,
         "last_message_preview": binding.last_message_preview,
+        "last_message_preview_time": binding.last_message_preview_time,
+        "last_message_observation_id": binding.last_message_observation_id,
+        "last_observed_unread_hint": binding.last_observed_unread_hint,
+        "unread_generation": int(binding.unread_generation or 0),
+        "consumed_unread_generation": int(
+            binding.consumed_unread_generation or 0
+        ),
         "ocr_confidence": binding.ocr_confidence,
         "first_seen_at": binding.first_seen_at,
         "last_seen_at": binding.last_seen_at,
         "last_ingested_at": binding.last_ingested_at,
+        "last_read_dispatched_at": binding.last_read_dispatched_at,
+        "last_read_completed_at": binding.last_read_completed_at,
+        "last_read_result": binding.last_read_result,
+        "last_read_run_id": binding.last_read_run_id,
+        "no_change_read_count": binding.no_change_read_count,
+        "next_read_due_at": binding.next_read_due_at,
         "last_scan_snapshot": binding.last_scan_snapshot,
         "created_at": binding.created_at,
         "updated_at": binding.updated_at,
@@ -207,6 +276,387 @@ def _message_to_dict(message: MessageEvent) -> dict:
     }
 
 
+def _normalized_content_hash(value: object) -> str:
+    normalized = canonical_message_identity_text(value)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _nested_dict(value: object, *path: str) -> dict:
+    current = value
+    for key in path:
+        if not isinstance(current, dict):
+            return {}
+        current = current.get(key)
+    return current if isinstance(current, dict) else {}
+
+
+def _first_stable_value(*values: object) -> object:
+    for value in values:
+        if isinstance(value, dict) and value:
+            return value
+        if isinstance(value, (str, int, float)) and str(value).strip():
+            return value
+    return ""
+
+
+def _media_identity_hash(message_type: str, raw_payload: dict | None) -> str:
+    raw = raw_payload if isinstance(raw_payload, dict) else {}
+    observation = _nested_dict(raw, "observation")
+    source = _nested_dict(raw, "observation", "source_message")
+    basis = raw.get("dedupe_basis")
+    basis = basis if isinstance(basis, dict) else {}
+    worker_stable_id = _first_stable_value(
+        basis.get("worker_stable_id"),
+        raw.get("worker_stable_id"),
+    )
+    normalized_type = str(message_type or "").strip().lower()
+    identity: object = ""
+    if normalized_type == "voice":
+        identity = _first_stable_value(
+            raw.get("native_source_message_id"),
+            observation.get("native_source_message_id"),
+            source.get("native_source_message_id"),
+            worker_stable_id,
+        )
+    elif normalized_type == "image":
+        identity = _first_stable_value(
+            raw.get("native_source_message_id"),
+            observation.get("native_source_message_id"),
+            source.get("native_source_message_id"),
+            worker_stable_id,
+        )
+    elif normalized_type == "file":
+        identity = _first_stable_value(
+            raw.get("file_stable_id"),
+            raw.get("media_stable_id"),
+            source.get("file_stable_id"),
+            source.get("media_stable_id"),
+        )
+    if identity == "":
+        return ""
+    encoded = json.dumps(
+        identity,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _message_identity_summary(
+    *,
+    sender_role: str,
+    message_type: str,
+    content: object,
+    raw_payload: dict | None,
+) -> dict[str, str]:
+    normalized_role = str(sender_role or "").strip().lower()
+    normalized_type = str(message_type or "").strip().lower()
+    content_hash = _normalized_content_hash(content)
+    media_hash = _media_identity_hash(normalized_type, raw_payload)
+    alignment_payload = {
+        "sender_role": normalized_role,
+        "message_type": normalized_type,
+        "normalized_content_hash": content_hash,
+        "media_identity_hash": media_hash,
+    }
+    alignment_signature = hashlib.sha256(
+        json.dumps(
+            alignment_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return {**alignment_payload, "alignment_signature": alignment_signature}
+
+
+def _worker_stable_id_from_raw(raw_payload: object) -> str:
+    raw = raw_payload if isinstance(raw_payload, dict) else {}
+    basis = raw.get("dedupe_basis") if isinstance(raw.get("dedupe_basis"), dict) else {}
+    candidates = (
+        basis.get("worker_stable_id"),
+        raw.get("worker_stable_id"),
+        _nested_dict(raw, "ai_reply_receipt").get("worker_stable_id"),
+    )
+    for value in candidates:
+        stable_id = str(value or "").strip()
+        if stable_id:
+            return stable_id
+    return ""
+
+
+def _worker_stable_id(message: MessageEvent) -> str:
+    return _worker_stable_id_from_raw(message.raw_payload)
+
+
+def _validate_cross_round_message_identity(raw_payload: dict) -> str:
+    """Require the sole durable identity produced by Worker alignment.
+
+    Frame-local visual fingerprints may be transported for diagnostics, but
+    they must never substitute for a committed Worker sequence identity.
+    """
+
+    raw = raw_payload if isinstance(raw_payload, dict) else {}
+    observation = _nested_dict(raw, "observation")
+    source = _nested_dict(raw, "observation", "source_message")
+    for payload in (raw, observation, source):
+        if any(
+            str(payload.get(field) or "").strip()
+            for field in ("canonical_visual_id", "canonical_input_id")
+        ):
+            raise AppError(
+                "MESSAGE_FRAME_IDENTITY_FORBIDDEN",
+                "帧内视觉编号不能作为跨轮消息身份",
+                409,
+            )
+    basis = raw.get("dedupe_basis")
+    basis = basis if isinstance(basis, dict) else {}
+    worker_stable_id = str(basis.get("worker_stable_id") or "").strip()
+    if (
+        str(basis.get("source") or "").strip()
+        != "worker_cross_round_sequence"
+        or not worker_stable_id
+    ):
+        raise AppError(
+            "MESSAGE_SEQUENCE_IDENTITY_MISSING",
+            "消息缺少已提交的 Worker 跨轮序列身份",
+            409,
+        )
+    return worker_stable_id
+
+
+def _checkpoint_identity_evidence(message: MessageEvent) -> tuple[str, str]:
+    raw = message.raw_payload if isinstance(message.raw_payload, dict) else {}
+    observation = _nested_dict(raw, "observation")
+    source = _nested_dict(raw, "observation", "source_message")
+    native_source_message_id = str(
+        _first_stable_value(
+            raw.get("native_source_message_id"),
+            observation.get("native_source_message_id"),
+            source.get("native_source_message_id"),
+        )
+        or ""
+    ).strip()
+    frame_visual_id = str(
+        _first_stable_value(
+            raw.get("frame_visual_id"),
+            observation.get("frame_visual_id"),
+            source.get("frame_visual_id"),
+        )
+        or ""
+    ).strip()
+    return native_source_message_id, frame_visual_id
+
+
+def _checkpoint_alignment_signature(message: MessageEvent) -> str:
+    raw = message.raw_payload if isinstance(message.raw_payload, dict) else {}
+    observation = raw.get("observation")
+    if not isinstance(observation, dict):
+        return _message_identity_summary(
+            sender_role=message.sender_role,
+            message_type=message.message_type,
+            content=message.content,
+            raw_payload=raw,
+        )["alignment_signature"]
+    row_kind = str(observation.get("row_kind") or "").strip().lower()
+    sender_role = str(
+        observation.get("sender_role") or message.sender_role or ""
+    ).strip().lower()
+    message_type = str(
+        observation.get("message_type") or message.message_type or ""
+    ).strip().lower()
+    if row_kind == "image_bubble":
+        worker_stable_id = _worker_stable_id_from_raw(raw)
+        basis = {
+            "row_kind": row_kind,
+            "sender_role": sender_role,
+            "message_type": message_type,
+            "worker_stable_id": worker_stable_id,
+        }
+    else:
+        content_hash = hashlib.sha256(
+            re.sub(
+                r"\s+",
+                " ",
+                str(
+                    observation.get("content_clean")
+                    or message.content
+                    or ""
+                ).strip(),
+            ).encode("utf-8")
+        ).hexdigest()[:24]
+        basis = {
+            "row_kind": row_kind,
+            "sender_role": sender_role,
+            "message_type": message_type,
+            "content_hash": content_hash,
+        }
+    encoded = json.dumps(
+        basis,
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha1(encoded).hexdigest()[:40]
+
+
+def _identity_checkpoint(
+    db: Session,
+    *,
+    conversation_id: str,
+) -> dict:
+    events = list(
+        db.scalars(
+            select(MessageEvent)
+            .where(MessageEvent.conversation_id == conversation_id)
+            .order_by(MessageEvent.ingested_at.desc(), MessageEvent.id.desc())
+            .limit(IDENTITY_CHECKPOINT_RECENT_LIMIT)
+        )
+    )
+    max_sequence = 0
+    historical_payloads = db.scalars(
+        select(MessageEvent.raw_payload).where(
+            MessageEvent.conversation_id == conversation_id
+        )
+    )
+    for raw_payload in historical_payloads:
+        match = re.fullmatch(
+            r"worker-message-(\d+)",
+            _worker_stable_id_from_raw(raw_payload),
+        )
+        if match:
+            max_sequence = max(max_sequence, int(match.group(1)))
+    recent_messages: list[dict[str, str]] = []
+    for message in reversed(events):
+        stable_id = _worker_stable_id(message)
+        native_source_message_id, frame_visual_id = (
+            _checkpoint_identity_evidence(message)
+        )
+        summary = _message_identity_summary(
+            sender_role=message.sender_role,
+            message_type=message.message_type,
+            content=message.content,
+            raw_payload=message.raw_payload,
+        )
+        recent_messages.append(
+            {
+                "stable_id": stable_id,
+                "source_message_key": str(message.source_message_key or ""),
+                "origin_read_run_id": str(message.read_run_id or ""),
+                "dedupe_key": message.dedupe_key,
+                "sender_role": summary["sender_role"],
+                "message_type": summary["message_type"],
+                "normalized_content_hash": summary[
+                    "normalized_content_hash"
+                ],
+                "media_identity_hash": summary["media_identity_hash"],
+                "alignment_signature": _checkpoint_alignment_signature(
+                    message
+                ),
+                "native_source_message_id": native_source_message_id,
+                "frame_visual_id": frame_visual_id,
+            }
+        )
+    return {
+        "version": 2,
+        "next_sequence_floor": max_sequence + 1,
+        "recent_messages": recent_messages,
+    }
+
+
+def _ai_reply_boundary(db: Session, *, conversation_id: str) -> dict:
+    action = db.scalar(
+        select(ReplyAction)
+        .where(
+            ReplyAction.conversation_id == conversation_id,
+            ReplyAction.status == "sent",
+            ReplyAction.sent_at.is_not(None),
+            ReplyAction.deleted_at.is_(None),
+        )
+        .order_by(ReplyAction.sent_at.desc(), ReplyAction.id.desc())
+        .limit(1)
+    )
+    if action is None:
+        return {}
+    worker_stable_id = ""
+    candidates = list(
+        db.scalars(
+            select(MessageEvent)
+            .where(MessageEvent.conversation_id == conversation_id)
+            .order_by(MessageEvent.ingested_at.desc(), MessageEvent.id.desc())
+            .limit(IDENTITY_CHECKPOINT_RECENT_LIMIT)
+        )
+    )
+    for event in candidates:
+        raw = event.raw_payload if isinstance(event.raw_payload, dict) else {}
+        if str(raw.get("ai_reply_action_id") or "") == action.id:
+            worker_stable_id = _worker_stable_id(event)
+            break
+    return {
+        "reply_action_id": action.id,
+        "sent_at": action.sent_at,
+        "reply_text_hash": str(action.reply_text_hash or ""),
+        "worker_stable_id": worker_stable_id,
+    }
+
+
+def _raise_message_identity_collision(
+    db: Session,
+    *,
+    existing: MessageEvent,
+    incoming_sender_role: str,
+    incoming_message_type: str,
+    incoming_content: object,
+    incoming_raw_payload: dict,
+    source_message_key: str,
+    dedupe_key: str,
+) -> None:
+    existing_identity = _message_identity_summary(
+        sender_role=existing.sender_role,
+        message_type=existing.message_type,
+        content=existing.content,
+        raw_payload=existing.raw_payload,
+    )
+    incoming_identity = _message_identity_summary(
+        sender_role=incoming_sender_role,
+        message_type=incoming_message_type,
+        content=incoming_content,
+        raw_payload=incoming_raw_payload,
+    )
+    if (
+        str(existing.source_message_key or "").strip()
+        == str(source_message_key or "").strip()
+        and existing_identity == incoming_identity
+    ):
+        return
+    checkpoint = _identity_checkpoint(
+        db,
+        conversation_id=existing.conversation_id,
+    )
+    data = {
+        "source_message_key": source_message_key,
+        "dedupe_key": dedupe_key,
+        "existing_identity": existing_identity,
+        "incoming_identity": incoming_identity,
+        "next_sequence_floor": checkpoint["next_sequence_floor"],
+    }
+    logger.warning(
+        "C2 message identity collision",
+        extra={
+            "conversation_id": existing.conversation_id,
+            "dedupe_key": dedupe_key,
+            "identity_collision": data,
+        },
+    )
+    raise AppError(
+        "MESSAGE_IDENTITY_COLLISION",
+        "消息去重键与已有消息身份不一致",
+        409,
+        data,
+    )
+
+
 def _scan_snapshot(payload: WechatSessionScanResultRequest, item: WechatSessionScanItem) -> dict:
     return {
         "scan_id": payload.scan_id,
@@ -216,6 +666,10 @@ def _scan_snapshot(payload: WechatSessionScanResultRequest, item: WechatSessionS
         "finished_at": payload.finished_at.isoformat(),
         "evidence": payload.evidence or {},
         "remark_code_candidates": item.remark_code_candidates,
+        "unread_hint": bool(item.unread_hint),
+        "last_message_preview": item.last_message_preview,
+        "last_message_preview_time": item.last_message_preview_time,
+        "last_message_observation_id": item.last_message_observation_id,
     }
 
 
@@ -225,11 +679,13 @@ def _clean_locator(value: str | None) -> str:
 
 def _session_binding(db: Session, worker: Worker, rpa_session_key: str) -> WechatSessionBinding | None:
     return db.scalar(
-        select(WechatSessionBinding).where(
+        select(WechatSessionBinding)
+        .where(
             WechatSessionBinding.worker_id == worker.id,
             WechatSessionBinding.rpa_session_key == rpa_session_key,
             WechatSessionBinding.deleted_at.is_(None),
         )
+        .with_for_update()
     )
 
 
@@ -247,10 +703,12 @@ def _binding_has_messages(db: Session, binding: WechatSessionBinding) -> bool:
 def _remark_code_binding(db: Session, worker: Worker, remark_code: str) -> WechatSessionBinding | None:
     rows = list(
         db.scalars(
-            select(WechatSessionBinding).where(
+            select(WechatSessionBinding)
+            .where(
                 WechatSessionBinding.remark_code == remark_code,
                 WechatSessionBinding.deleted_at.is_(None),
             )
+            .with_for_update()
         )
     )
     if not rows:
@@ -299,13 +757,88 @@ def _retire_duplicate_effective_remark_bindings(
         db.flush()
 
 
+def _normalize_unread_evidence_text(value: object) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value or ""))
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _unread_evidence_key(
+    binding: WechatSessionBinding,
+    item: WechatSessionScanItem,
+) -> str:
+    remark_candidates = sorted(
+        {
+            _normalize_unread_evidence_text(value).upper()
+            for value in item.remark_code_candidates
+            if _normalize_unread_evidence_text(value)
+        }
+    )
+    remark_code = (
+        _normalize_unread_evidence_text(binding.remark_code).upper()
+        or (remark_candidates[0] if len(remark_candidates) == 1 else "")
+    )
+    preview = _normalize_unread_evidence_text(item.last_message_preview)
+    preview_time = _normalize_unread_evidence_text(
+        item.last_message_preview_time
+    )
+    observation_id = _normalize_unread_evidence_text(
+        item.last_message_observation_id
+    )
+    if not (preview or preview_time or observation_id):
+        return ""
+    payload = {
+        "remark_code": remark_code,
+        "last_message_preview": preview,
+        "last_message_preview_time": preview_time,
+        "last_message_observation_id": observation_id,
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def _apply_scan_fields(binding: WechatSessionBinding, payload: WechatSessionScanResultRequest, item: WechatSessionScanItem) -> None:
     now = utcnow()
+    incoming_unread = bool(item.unread_hint)
+    previously_observed_unread = bool(binding.last_observed_unread_hint)
+    current_generation = max(0, int(binding.unread_generation or 0))
+    current_evidence_key = str(binding.unread_evidence_key or "").strip()
+    incoming_evidence_key = (
+        _unread_evidence_key(binding, item) if incoming_unread else ""
+    )
+    new_unread_generation = bool(
+        incoming_unread
+        and (
+            current_generation == 0
+            or not previously_observed_unread
+            or (
+                incoming_evidence_key
+                and current_evidence_key
+                and incoming_evidence_key != current_evidence_key
+            )
+        )
+    )
+    if new_unread_generation:
+        binding.unread_generation = current_generation + 1
+        binding.unread_evidence_key = incoming_evidence_key or None
+        _reset_read_backoff(binding)
+    elif incoming_unread and incoming_evidence_key and not current_evidence_key:
+        # Backfilled rows may have a generation but no semantic evidence key.
+        # Attaching the first stable key must not manufacture a new generation.
+        binding.unread_evidence_key = incoming_evidence_key
     binding.display_name = item.display_name
     binding.rpa_session_key = item.rpa_session_key
     binding.row_fingerprint = item.row_fingerprint or ""
-    binding.unread_hint = item.unread_hint
+    binding.unread_hint = incoming_unread
+    binding.last_observed_unread_hint = incoming_unread
     binding.last_message_preview = item.last_message_preview
+    binding.last_message_preview_time = item.last_message_preview_time
+    binding.last_message_observation_id = item.last_message_observation_id
     binding.ocr_confidence = item.ocr_confidence
     binding.last_seen_at = now
     binding.last_scan_snapshot = _scan_snapshot(payload, item)
@@ -324,6 +857,10 @@ def _retire_stale_session_binding(binding: WechatSessionBinding, *, replacement_
         preserve_lead=True,
     )
     binding.deleted_at = now
+    binding.disable_reason = "replaced_binding"
+    binding.disabled_at = now
+    binding.disabled_by = "system:remark_code_rebind"
+    binding.replacement_binding_id = replacement_binding_id
     if original_session_key:
         binding.rpa_session_key = f"{original_session_key}#retired#{binding.id}"
     else:
@@ -412,6 +949,98 @@ def _set_binding_state(
     )
     if current_authorization != previous_authorization:
         binding.authorization_revision = int(binding.authorization_revision or 1) + 1
+        _reset_read_backoff(binding)
+
+
+def _reset_read_backoff(binding: WechatSessionBinding) -> None:
+    binding.no_change_read_count = 0
+    binding.next_read_due_at = None
+
+
+def _conversation_allows_binding_recovery(
+    conversation: Conversation | None,
+) -> bool:
+    return bool(
+        conversation
+        and conversation.deleted_at is None
+        and conversation.ai_enabled
+        and conversation.status not in CONVERSATION_CLOSED_STATUSES
+        and not str(conversation.close_reason or "").strip()
+    )
+
+
+def _conversation_is_permanently_terminated(
+    conversation: Conversation | None,
+) -> bool:
+    return bool(
+        conversation
+        and (
+            conversation.deleted_at is not None
+            or not conversation.ai_enabled
+            or conversation.status in CONVERSATION_CLOSED_STATUSES
+            or str(conversation.close_reason or "").strip()
+        )
+    )
+
+
+def _binding_has_permanent_disable_evidence(
+    binding: WechatSessionBinding,
+) -> bool:
+    return bool(
+        str(binding.disable_reason or "").strip()
+        in PERMANENT_BINDING_DISABLE_REASONS
+        and binding.disabled_at is not None
+        and str(binding.disabled_by or "").strip()
+    )
+
+
+def _disabled_binding_needs_review(
+    db: Session,
+    binding: WechatSessionBinding,
+) -> bool:
+    conversation = db.get(Conversation, binding.conversation_id)
+    return bool(
+        binding.bind_status == BIND_STATUS_DISABLED
+        and binding.deleted_at is None
+        and not binding.replacement_binding_id
+        and not _binding_has_permanent_disable_evidence(binding)
+        and not _conversation_is_permanently_terminated(conversation)
+    )
+
+
+def _legacy_disabled_pause_is_recoverable(
+    db: Session,
+    binding: WechatSessionBinding,
+) -> bool:
+    return bool(
+        binding.bind_status == BIND_STATUS_DISABLED
+        and binding.listen_status == LISTEN_STATUS_PAUSED
+        and not str(binding.disable_reason or "").strip()
+        and binding.disabled_at is None
+        and not str(binding.disabled_by or "").strip()
+        and not binding.replacement_binding_id
+        and binding.deleted_at is None
+        and _conversation_allows_binding_recovery(
+            db.get(Conversation, binding.conversation_id)
+        )
+    )
+
+
+def _normalize_legacy_disabled_pause(
+    binding: WechatSessionBinding,
+) -> None:
+    _set_binding_state(
+        binding,
+        status=BIND_STATUS_BOUND,
+        listen_status=LISTEN_STATUS_PAUSED,
+        allow_listening=False,
+        error_code="SESSION_BINDING_MIGRATED_TO_PAUSED",
+        remark_code=binding.remark_code,
+        preserve_lead=True,
+    )
+    binding.disable_reason = None
+    binding.disabled_at = None
+    binding.disabled_by = None
 
 
 def _ambiguous_scan_remark_codes(sessions: list[WechatSessionScanItem]) -> set[str]:
@@ -452,12 +1081,36 @@ def _bind_one_session(
     if remark_code_anchor:
         _retire_duplicate_effective_remark_bindings(db, canonical=binding, remark_code=remark_code_anchor)
     if binding.bind_status == BIND_STATUS_DISABLED:
-        return {
-            **_binding_to_dict(binding),
-            "bind_status": BIND_STATUS_DISABLED,
-            "can_ingest_messages": False,
-            "error_code": "SESSION_BINDING_DISABLED",
-        }
+        if _legacy_disabled_pause_is_recoverable(db, binding):
+            _normalize_legacy_disabled_pause(binding)
+        elif _disabled_binding_needs_review(db, binding):
+            _set_binding_state(
+                binding,
+                status=BIND_STATUS_NEEDS_REVIEW,
+                listen_status=LISTEN_STATUS_PAUSED,
+                allow_listening=False,
+                error_code="SESSION_BINDING_STATE_INCONSISTENT",
+                remark_code=binding.remark_code,
+                preserve_lead=True,
+            )
+            return {
+                **_binding_to_dict(binding),
+                "can_ingest_messages": False,
+                "recovery_state": "needs_review",
+            }
+        else:
+            return {
+                **_binding_to_dict(binding),
+                "bind_status": BIND_STATUS_DISABLED,
+                "can_ingest_messages": False,
+                "error_code": "SESSION_BINDING_DISABLED",
+                "recovery_state": (
+                    "retired"
+                    if binding.deleted_at is not None
+                    or binding.replacement_binding_id
+                    else "permanently_disabled"
+                ),
+            }
 
     if not candidates:
         _set_binding_state(
@@ -547,6 +1200,10 @@ def _bind_one_session(
         lead=lead,
         remark_code=remark_code,
     )
+    binding.disable_reason = None
+    binding.disabled_at = None
+    binding.disabled_by = None
+    binding.replacement_binding_id = None
     conversation = _upsert_conversation_for_binding(db, binding)
     if not already_bound:
         completed_add_friend = db.scalar(
@@ -555,6 +1212,7 @@ def _bind_one_session(
                 Task.lead_id == lead.id,
                 Task.worker_id == worker.id,
                 Task.task_type == "add_friend",
+                Task.status == "completed",
                 Task.result_code.in_(["invite_sent", "already_friend"]),
                 Task.deleted_at.is_(None),
             )
@@ -566,10 +1224,14 @@ def _bind_one_session(
     result = _binding_to_dict(binding)
     result["bind_status"] = BIND_STATUS_ALREADY_BOUND if already_bound else BIND_STATUS_BOUND
     result["can_ingest_messages"] = True
+    result["recovery_state"] = "none"
     return result
 
 
 def ingest_scan_result(db: Session, worker: Worker, payload: WechatSessionScanResultRequest) -> dict:
+    from app.services.observability_service import process_run_id_for_key
+
+    scan_process_run_id = process_run_id_for_key("c2_scan", payload.scan_id)
     existing = db.scalar(select(WechatScanRun).where(WechatScanRun.scan_id == payload.scan_id))
     if existing:
         if existing.worker_id != worker.id:
@@ -584,6 +1246,7 @@ def ingest_scan_result(db: Session, worker: Worker, payload: WechatSessionScanRe
             "bindings": [],
             "next_action": NEXT_ACTION_NONE,
             "error_code": payload.error_code or "SESSION_SCAN_FAILED",
+            "process_run_id": scan_process_run_id,
         }
         db.add(WechatScanRun(worker_id=worker.id, scan_id=payload.scan_id, status="failed", response_snapshot=jsonable_encoder(response)))
         db.flush()
@@ -607,10 +1270,127 @@ def ingest_scan_result(db: Session, worker: Worker, payload: WechatSessionScanRe
         "needs_review_count": sum(1 for item in bindings if item["bind_status"] == BIND_STATUS_NEEDS_REVIEW),
         "bindings": bindings,
         "next_action": NEXT_ACTION_NONE,
+        "process_run_id": scan_process_run_id,
     }
     db.add(WechatScanRun(worker_id=worker.id, scan_id=payload.scan_id, status="processed", response_snapshot=jsonable_encoder(response)))
     db.flush()
     return response
+
+
+def _sync_read_backoff_with_conversation(
+    binding: WechatSessionBinding,
+    conversation: Conversation,
+) -> None:
+    current_status = str(conversation.status or "")
+    previous_status = str(binding.last_read_conversation_status or "")
+    if previous_status != current_status:
+        if current_status == "waiting_sales_reply":
+            handoff_at = conversation.handoff_at or utcnow()
+            if handoff_at.tzinfo is None:
+                handoff_at = handoff_at.replace(tzinfo=timezone.utc)
+            minimum_due_at = handoff_at.astimezone(
+                timezone.utc
+            ) + timedelta(seconds=READ_SUCCESS_COOLDOWN_SECONDS)
+            current_due_at = binding.next_read_due_at
+            if current_due_at is not None and current_due_at.tzinfo is None:
+                current_due_at = current_due_at.replace(tzinfo=timezone.utc)
+            binding.no_change_read_count = 0
+            if current_due_at is None or current_due_at < minimum_due_at:
+                binding.next_read_due_at = minimum_due_at
+        elif previous_status:
+            _reset_read_backoff(binding)
+    binding.last_read_conversation_status = current_status
+
+
+def _read_is_due(
+    binding: WechatSessionBinding,
+    *,
+    read_reason: str,
+) -> bool:
+    due_at = binding.next_read_due_at
+    if due_at is not None and due_at.tzinfo is None:
+        due_at = due_at.replace(tzinfo=timezone.utc)
+    if (
+        read_reason == "waiting_sales_reply"
+        and due_at is not None
+        and due_at.astimezone(timezone.utc) > utcnow().astimezone(timezone.utc)
+    ):
+        # An open handoff deliberately uses the 2/5/10 minute monitoring
+        # schedule. A badge generation observed before or during handoff must
+        # not turn that restricted monitoring loop back into an immediate
+        # normal-read loop.
+        return False
+    if int(binding.unread_generation or 0) > int(
+        binding.consumed_unread_generation or 0
+    ):
+        return True
+    if read_reason in {
+        "friend_acceptance_visible_hit",
+        "recall_precheck",
+    }:
+        return True
+    if due_at is None:
+        return True
+    return due_at.astimezone(timezone.utc) <= utcnow().astimezone(timezone.utc)
+
+
+def _read_completion_payload(binding: WechatSessionBinding) -> dict:
+    return {
+        "result": binding.last_read_result,
+        "completed_at": binding.last_read_completed_at,
+        "no_change_read_count": int(binding.no_change_read_count or 0),
+        "next_read_due_at": binding.next_read_due_at,
+        "unread_generation": int(binding.unread_generation or 0),
+        "consumed_unread_generation": int(
+            binding.consumed_unread_generation or 0
+        ),
+    }
+
+
+def _settle_completed_read(
+    binding: WechatSessionBinding,
+    conversation: Conversation,
+    *,
+    read_run_id: str,
+    has_new_facts: bool,
+    unread_generation: int,
+) -> dict:
+    if (
+        binding.last_read_run_id == read_run_id
+        and binding.last_read_completed_at is not None
+        and binding.last_read_result in {"new_facts", "no_change"}
+    ):
+        return _read_completion_payload(binding)
+    now = utcnow()
+    binding.last_read_run_id = read_run_id
+    binding.last_read_completed_at = now
+    binding.last_read_conversation_status = str(conversation.status or "")
+    requested_unread_generation = max(0, int(unread_generation or 0))
+    current_unread_generation = max(
+        0,
+        int(binding.unread_generation or 0),
+    )
+    binding.consumed_unread_generation = max(
+        int(binding.consumed_unread_generation or 0),
+        min(requested_unread_generation, current_unread_generation),
+    )
+    if has_new_facts:
+        binding.last_read_result = "new_facts"
+        binding.no_change_read_count = 0
+        binding.next_read_due_at = now + timedelta(
+            seconds=READ_SUCCESS_COOLDOWN_SECONDS
+        )
+    else:
+        binding.last_read_result = "no_change"
+        binding.no_change_read_count = int(binding.no_change_read_count or 0) + 1
+        backoff_index = min(
+            binding.no_change_read_count - 1,
+            len(READ_NO_CHANGE_BACKOFF_SECONDS) - 1,
+        )
+        binding.next_read_due_at = now + timedelta(
+            seconds=READ_NO_CHANGE_BACKOFF_SECONDS[backoff_index]
+        )
+    return _read_completion_payload(binding)
 
 
 def read_targets(db: Session, worker: Worker, limit: int = 20) -> dict:
@@ -638,13 +1418,19 @@ def read_targets(db: Session, worker: Worker, limit: int = 20) -> dict:
         from app.services.c3_service import enforce_open_handoff_gate
 
         enforce_open_handoff_gate(db, conversation)
-        _prepare_due_recall(conversation)
+        _expire_identity_unresolved_recovery_hold(
+            db,
+            binding=item,
+            conversation=conversation,
+        )
+        _prepare_due_recall(conversation, db=db)
+        _sync_read_backoff_with_conversation(item, conversation)
         if conversation.status in CONVERSATION_CLOSED_STATUSES:
             continue
         read_reason = _read_reason(item, conversation)
-        if not read_reason:
+        if not read_reason or not _read_is_due(item, read_reason=read_reason):
             continue
-        target = _read_target_payload(item, read_reason=read_reason)
+        target = _read_target_payload(db, item, read_reason=read_reason)
         target["_dispatch_binding"] = item
         targets.append(target)
     def dispatch_sort_key(target: dict) -> tuple[float, int, float]:
@@ -671,64 +1457,36 @@ def read_targets(db: Session, worker: Worker, limit: int = 20) -> dict:
     targets = targets[:limit]
     dispatched_at = utcnow()
     for target in targets:
-        target.pop("_dispatch_binding").last_read_dispatched_at = dispatched_at
-    legacy_by_conversation: dict[str, list[dict[str, str]]] = {
-        str(target["conversation_id"]): [] for target in targets
-    }
-    conversation_ids = list(legacy_by_conversation)
-    if conversation_ids:
-        ranked_events = (
-            select(
-                MessageEvent.conversation_id.label("conversation_id"),
-                MessageEvent.dedupe_key.label("dedupe_key"),
-                MessageEvent.source_message_key.label("source_message_key"),
-                MessageEvent.message_type.label("message_type"),
-                MessageEvent.sender_role.label("sender_role"),
-                MessageEvent.raw_payload.label("raw_payload"),
-                MessageEvent.ingested_at.label("ingested_at"),
-                MessageEvent.id.label("event_id"),
-                func.row_number()
-                .over(
-                    partition_by=MessageEvent.conversation_id,
-                    order_by=(MessageEvent.ingested_at.desc(), MessageEvent.id.desc()),
-                )
-                .label("event_rank"),
+        dispatch_binding = target.pop("_dispatch_binding")
+        dispatch_binding.last_read_dispatched_at = dispatched_at
+        try:
+            from app.services.observability_service import (
+                next_stage_attempt,
+                record_server_stage_best_effort,
             )
-            .where(
-                MessageEvent.worker_id == worker.id,
-                MessageEvent.conversation_id.in_(conversation_ids),
+
+            due_at = dispatch_binding.next_read_due_at
+            record_server_stage_best_effort(
+                db,
+                process_run_id=str(target["process_run_id"]),
+                conversation_id=str(target["conversation_id"]),
+                worker_id=worker.id,
+                stage_name="c2.read_queued",
+                component="backend",
+                attempt=next_stage_attempt(
+                    db,
+                    process_run_id=str(target["process_run_id"]),
+                    stage_name="c2.read_queued",
+                ),
+                duration_ms=None,
+                queued_at=_latest_datetime(due_at) if due_at is not None else None,
+                started_at=_latest_datetime(dispatched_at),
+                ended_at=_latest_datetime(dispatched_at),
+                trace_id=get_request_id(),
             )
-            .subquery()
-        )
-        legacy_rows = db.execute(
-            select(ranked_events)
-            .where(ranked_events.c.event_rank <= 200)
-            .order_by(
-                ranked_events.c.conversation_id,
-                ranked_events.c.ingested_at,
-                ranked_events.c.event_id,
-            )
-        ).mappings()
-        for row in legacy_rows:
-            raw_payload = row["raw_payload"] if isinstance(row["raw_payload"], dict) else {}
-            basis = raw_payload.get("dedupe_basis") if isinstance(raw_payload.get("dedupe_basis"), dict) else {}
-            source = str(basis.get("source") or "").strip()
-            if source in WORKER_SEQUENCE_IDENTITY_SOURCES:
-                continue
-            legacy_by_conversation[str(row["conversation_id"])].append(
-                {
-                    "dedupe_key": row["dedupe_key"],
-                    "source_message_key": row["source_message_key"],
-                    "message_type": row["message_type"],
-                    "sender_role": row["sender_role"],
-                }
-            )
-    for target in targets:
-        target["identity_transition"] = {
-            "version": 1,
-            "source_version": "v16.104",
-            "legacy_messages": legacy_by_conversation[str(target["conversation_id"])],
-        }
+        except Exception:
+            # Observability is deliberately outside the read authorization path.
+            pass
     return {
         "targets": targets,
         "poll_after_seconds": 10,
@@ -737,10 +1495,46 @@ def read_targets(db: Session, worker: Worker, limit: int = 20) -> dict:
 
 
 def _read_target_payload(
+    db: Session,
     binding: WechatSessionBinding,
     *,
     read_reason: str,
 ) -> dict:
+    from app.services.c3_service import (
+        RECOVERABLE_C2_HANDOFF_REASON_CODES,
+        open_handoff_events_for_conversation,
+    )
+
+    recoverable_handoff_reason_codes = sorted(
+        {
+            str(event.handoff_reason_code or "").strip()
+            for event in open_handoff_events_for_conversation(
+                db,
+                binding.conversation_id,
+            )
+            if str(event.handoff_reason_code or "").strip()
+            in RECOVERABLE_C2_HANDOFF_REASON_CODES
+        }
+    )
+    from app.services.observability_service import process_run_id_for_read_target
+
+    conversation = (
+        db.get(Conversation, binding.conversation_id)
+        if binding.conversation_id
+        else None
+    )
+    authorization_revision = _authorization_revision(binding)
+    process_run_id = process_run_id_for_read_target(
+        conversation_id=str(binding.conversation_id),
+        authorization_revision=authorization_revision,
+        unread_generation=int(binding.unread_generation or 0),
+        read_reason=read_reason,
+        recall_cycle_id=(
+            str(conversation.recall_cycle_id or "").strip()
+            if conversation is not None
+            else None
+        ),
+    )
     target = {
         "conversation_id": binding.conversation_id,
         "lead_id": binding.lead_id,
@@ -750,19 +1544,278 @@ def _read_target_payload(
         "display_name": binding.display_name,
         "last_ingested_at": binding.last_ingested_at,
         "read_reason": read_reason,
-        "authorization_revision": _authorization_revision(binding),
+        "authorization_revision": authorization_revision,
+        "process_run_id": process_run_id,
+        "unread_generation": int(binding.unread_generation or 0),
+        "consumed_unread_generation": int(
+            binding.consumed_unread_generation or 0
+        ),
+        "identity_checkpoint": _identity_checkpoint(
+            db,
+            conversation_id=binding.conversation_id,
+        ),
+        "recoverable_handoff_reason_codes": (
+            recoverable_handoff_reason_codes
+        ),
+        "next_read_due_at": binding.next_read_due_at,
+        "recovery_hold": dict(binding.recovery_hold or {}),
     }
     if _clean_locator(binding.row_fingerprint):
         target["row_fingerprint"] = binding.row_fingerprint
     if binding.ocr_confidence is not None:
         target["ocr_confidence"] = binding.ocr_confidence
+    if read_reason == "recent_ai_sent":
+        target["ai_reply_boundary"] = _ai_reply_boundary(
+            db,
+            conversation_id=binding.conversation_id,
+        )
     return target
+
+
+def _apply_identity_unresolved_recovery_hold(
+    db: Session,
+    *,
+    binding: WechatSessionBinding,
+    conversation: Conversation,
+    read_run_id: str,
+    evidence_payload: dict,
+    gate_codes: list[str],
+    details_by_code: dict[str, list[dict]],
+) -> tuple[list[str], dict | None]:
+    recoverable = [
+        code for code in gate_codes
+        if code in RECOVERABLE_IDENTITY_UNRESOLVED_GATE_CODES
+    ]
+    remaining = [code for code in gate_codes if code not in recoverable]
+    if not recoverable:
+        current = dict(binding.recovery_hold or {})
+        if current.get("status") == "active":
+            current["status"] = "resolved"
+            current["last_seen_at"] = utcnow().isoformat()
+            binding.recovery_hold = current
+        return remaining, None
+
+    boundary = _ai_reply_boundary(
+        db, conversation_id=binding.conversation_id
+    )
+    reply_action_id = str(boundary.get("reply_action_id") or "")
+    now_iso = utcnow().isoformat()
+    ordered_codes = sorted(set(recoverable))
+    existing_hold = dict(binding.recovery_hold or {})
+    has_reply_boundary = bool(
+        reply_action_id
+        and str(boundary.get("sent_at") or "").strip()
+        and str(boundary.get("reply_text_hash") or "").strip()
+        and (
+            str(evidence_payload.get("authorization_read_reason") or "")
+            == "recent_ai_sent"
+            or (
+                existing_hold.get("status") == "active"
+                and existing_hold.get("gate_scope") == "reply_suffix"
+            )
+        )
+    )
+    relation_by_code: dict[str, str] = {}
+    for code in ordered_codes:
+        code_relations = {
+            str(item.get("boundary_relation") or "unknown")
+            for item in (details_by_code.get(code) or [])
+        }
+        relation_by_code[code] = (
+            "after" if has_reply_boundary and "after" in code_relations
+            else "before_or_equal"
+            if has_reply_boundary
+            and code_relations
+            and code_relations == {"before_or_equal"}
+            else "unknown"
+        )
+    relation = (
+        "after" if "after" in relation_by_code.values()
+        else "unknown" if "unknown" in relation_by_code.values()
+        else "before_or_equal"
+    )
+    selected_code = next(
+        code for code in ordered_codes if relation_by_code[code] == relation
+    )
+    selected_details = details_by_code.get(selected_code) or []
+    if has_reply_boundary and relation == "before_or_equal":
+        current = dict(binding.recovery_hold or {})
+        if current.get("status") == "active":
+            current.update({"status": "resolved", "last_seen_at": now_iso})
+            binding.recovery_hold = current
+        return remaining, {
+            "batch_id": None,
+            "batch_status": "historical_warning",
+            "reason_codes": ordered_codes,
+        }
+
+    scope = "reply_suffix" if has_reply_boundary else "conversation_identity"
+    stable_identity_key = str(
+        evidence_payload.get("flow_gate_identity_key") or ""
+    ).strip()
+    gate_key = hashlib.sha256(
+        (
+            binding.conversation_id
+            + "|"
+            + (reply_action_id if has_reply_boundary else stable_identity_key)
+            + "|"
+            + "|".join(ordered_codes)
+            + "|"
+            + scope
+        ).encode("utf-8")
+    ).hexdigest()
+    detail = selected_details[0] if selected_details else {}
+    attempt_kind = str(
+        evidence_payload.get("recovery_attempt_kind") or ""
+    ).strip()
+    current = existing_hold
+    same_gate = current.get("gate_key") == gate_key
+    if same_gate:
+        current["last_seen_at"] = now_iso
+        if (
+            str(current.get("last_counted_read_run_id") or "") != read_run_id
+            and attempt_kind == "stable_reread"
+        ):
+            current["recovery_attempt_count"] = (
+                int(current.get("recovery_attempt_count") or 0) + 1
+            )
+            current["last_recovery_kind"] = "stable_reread"
+            current["last_counted_read_run_id"] = read_run_id
+    else:
+        # The discovery/checkpoint-merge request establishes the hold; it is
+        # not one of the two permitted passive rereads.
+        initial_count = 0
+        current = {
+            "status": "active",
+            "gate_key": gate_key,
+            "reason_code": selected_code,
+            "reason_codes": ordered_codes,
+            "gate_scope": scope,
+            "boundary_relation": relation,
+            "min_screen_order": int(detail.get("min_screen_order") or 0),
+            "max_screen_order": int(detail.get("max_screen_order") or 0),
+            "originating_read_run_id": read_run_id,
+            "first_seen_at": now_iso,
+            "last_seen_at": now_iso,
+            "recovery_attempt_count": initial_count,
+            "last_recovery_kind": attempt_kind or None,
+            "last_counted_read_run_id": (
+                read_run_id if initial_count else None
+            ),
+        }
+    current["boundary_relation"] = relation
+    binding.recovery_hold = current
+    conversation.status = "waiting_user_reply"
+    conversation.next_recall_at = None
+
+    try:
+        first_seen_at = datetime.fromisoformat(
+            str(current.get("first_seen_at") or "")
+        )
+        if first_seen_at.tzinfo is None:
+            first_seen_at = first_seen_at.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        first_seen_at = None
+    elapsed_seconds = (
+        max(0.0, (utcnow() - first_seen_at).total_seconds())
+        if first_seen_at is not None
+        else 0.0
+    )
+    if (
+        int(current.get("recovery_attempt_count") or 0)
+        >= IDENTITY_UNRESOLVED_MAX_PASSIVE_REREADS
+        or elapsed_seconds >= IDENTITY_UNRESOLVED_MAX_ELAPSED_SECONDS
+    ) and (not has_reply_boundary or relation in {"after", "unknown"}):
+        from app.services.c3_service import create_deterministic_handoff_for_ingest
+
+        handoff = create_deterministic_handoff_for_ingest(
+            db,
+            conversation_id=binding.conversation_id,
+            message_event_ids=[],
+            reason_codes=ordered_codes,
+            trigger_key=f"recovery-hold:{gate_key}",
+            trace_id=get_request_id(),
+        )
+        handoff_event = db.scalar(
+            select(HandoffEvent).where(
+                HandoffEvent.batch_id == str(handoff.get("batch_id") or ""),
+                HandoffEvent.deleted_at.is_(None),
+            )
+        )
+        if handoff_event is not None:
+            refs = list(handoff_event.evidence_refs or [])
+            hold_ref = f"recovery_hold:{gate_key}"
+            if hold_ref not in refs:
+                refs.append(hold_ref)
+                handoff_event.evidence_refs = refs
+        current = {**current, "status": "escalated"}
+        binding.recovery_hold = current
+        return remaining, handoff
+    return remaining, {
+        "batch_id": None,
+        "batch_status": "recoverable_hold",
+        "reason_codes": recoverable,
+        "recovery_hold": current,
+    }
+
+
+def _expire_identity_unresolved_recovery_hold(
+    db: Session,
+    *,
+    binding: WechatSessionBinding,
+    conversation: Conversation,
+) -> None:
+    """Escalate an untouched identity hold after its bounded 120s window."""
+
+    current = dict(binding.recovery_hold or {})
+    if current.get("status") != "active":
+        return
+    try:
+        first_seen_at = datetime.fromisoformat(
+            str(current.get("first_seen_at") or "")
+        )
+        if first_seen_at.tzinfo is None:
+            first_seen_at = first_seen_at.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return
+    if (
+        utcnow() - first_seen_at
+    ).total_seconds() < IDENTITY_UNRESOLVED_MAX_ELAPSED_SECONDS:
+        return
+    from app.services.c3_service import create_deterministic_handoff_for_ingest
+
+    gate_key = str(current.get("gate_key") or "").strip()
+    reason_codes = sorted(
+        {
+            str(value or "").strip()
+            for value in (
+                current.get("reason_codes")
+                or [current.get("reason_code")]
+            )
+            if str(value or "").strip()
+        }
+    )
+    if not gate_key or not reason_codes:
+        return
+    create_deterministic_handoff_for_ingest(
+        db,
+        conversation_id=binding.conversation_id,
+        message_event_ids=[],
+        reason_codes=reason_codes,
+        trigger_key=f"recovery-hold:{gate_key}",
+        trace_id=get_request_id(),
+    )
+    current["status"] = "escalated"
+    current["last_seen_at"] = utcnow().isoformat()
+    binding.recovery_hold = current
+    conversation.status = "waiting_sales_reply"
 
 
 def read_authorization_snapshot(
     db: Session,
     *,
     binding: WechatSessionBinding,
+    enforce_read_due: bool = True,
 ) -> dict:
     """Return the current lightweight authorization without legacy identity history."""
 
@@ -770,7 +1823,13 @@ def read_authorization_snapshot(
     from app.services.c3_service import enforce_open_handoff_gate
 
     enforce_open_handoff_gate(db, conversation)
-    _prepare_due_recall(conversation)
+    _expire_identity_unresolved_recovery_hold(
+        db,
+        binding=binding,
+        conversation=conversation,
+    )
+    _prepare_due_recall(conversation, db=db)
+    _sync_read_backoff_with_conversation(binding, conversation)
     read_reason = _read_reason(binding, conversation)
     allowed = bool(
         binding.bind_status == BIND_STATUS_BOUND
@@ -781,20 +1840,118 @@ def read_authorization_snapshot(
         and binding.deleted_at is None
         and conversation.status not in CONVERSATION_CLOSED_STATUSES
         and read_reason
+        and (
+            not enforce_read_due
+            or _read_is_due(binding, read_reason=str(read_reason))
+        )
+    )
+    checkpoint = _identity_checkpoint(
+        db,
+        conversation_id=binding.conversation_id,
     )
     result = {
         "allowed": allowed,
         "recovery_decision": "allowed" if allowed else "retry_later",
         "conversation_id": binding.conversation_id,
         "authorization_revision": _authorization_revision(binding),
+        "unread_generation": int(binding.unread_generation or 0),
+        "consumed_unread_generation": int(
+            binding.consumed_unread_generation or 0
+        ),
         "read_reason": read_reason or "",
+        "identity_checkpoint": checkpoint,
+        "next_read_due_at": binding.next_read_due_at,
     }
     if allowed:
         result["target"] = _read_target_payload(
+            db,
             binding,
             read_reason=str(read_reason),
         )
     return result
+
+
+def _settlement_token_signature(encoded_claims: str) -> str:
+    secret = get_settings().contact_encryption_secret.encode("utf-8")
+    return hmac.new(
+        secret,
+        encoded_claims.encode("ascii"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def issue_c2_settlement_token(
+    *,
+    worker_id: str,
+    conversation_id: str,
+    recovery_transaction_id: str,
+    action_kind: str,
+    source_message_key_digest: str,
+    settlement_mode: str,
+    expires_at: datetime,
+) -> str:
+    claims = {
+        "worker_id": worker_id,
+        "conversation_id": conversation_id,
+        "recovery_transaction_id": recovery_transaction_id,
+        "action_kind": action_kind,
+        "source_message_key_digest": source_message_key_digest,
+        "settlement_mode": settlement_mode,
+        "expires_at": int(expires_at.timestamp()),
+    }
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(
+            claims,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    return f"{encoded}.{_settlement_token_signature(encoded)}"
+
+
+def verify_c2_settlement_token(
+    token: str | None,
+    *,
+    worker_id: str,
+    conversation_id: str,
+    recovery_transaction_id: str,
+    action_kind: str,
+    source_message_key_digest: str,
+    settlement_mode: str,
+) -> None:
+    encoded, separator, presented_signature = str(token or "").partition(".")
+    if not separator or not hmac.compare_digest(
+        presented_signature,
+        _settlement_token_signature(encoded),
+    ):
+        raise AppError("C2_SETTLEMENT_TOKEN_INVALID", "事实结算凭据无效", 409)
+    try:
+        padding = "=" * (-len(encoded) % 4)
+        claims = json.loads(
+            base64.urlsafe_b64decode(encoded + padding).decode("utf-8")
+        )
+    except (
+        ValueError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        binascii.Error,
+    ) as exc:
+        raise AppError("C2_SETTLEMENT_TOKEN_INVALID", "事实结算凭据无效", 409) from exc
+    expected = {
+        "worker_id": worker_id,
+        "conversation_id": conversation_id,
+        "recovery_transaction_id": recovery_transaction_id,
+        "action_kind": action_kind,
+        "source_message_key_digest": source_message_key_digest,
+        "settlement_mode": settlement_mode,
+    }
+    if any(str(claims.get(key) or "") != str(value) for key, value in expected.items()):
+        raise AppError("C2_SETTLEMENT_TOKEN_SCOPE_MISMATCH", "事实结算凭据范围不匹配", 409)
+    if int(claims.get("expires_at") or 0) < int(
+        datetime.now(timezone.utc).timestamp()
+    ):
+        raise AppError("C2_SETTLEMENT_TOKEN_EXPIRED", "事实结算凭据已过期", 409)
 
 
 def read_authorization_for_worker(
@@ -804,6 +1961,10 @@ def read_authorization_for_worker(
     conversation_id: str,
     continuation_batch_id: str | None = None,
     continuation_token: str | None = None,
+    recovery_transaction_id: str | None = None,
+    action_kind: str | None = None,
+    source_message_key_digest: str | None = None,
+    original_authorization_revision: str | None = None,
 ) -> dict:
     """Lightweight long-action authorization check without target discovery data."""
 
@@ -812,6 +1973,109 @@ def read_authorization_for_worker(
             WechatSessionBinding.conversation_id == conversation_id,
         )
     )
+    recovery_fields = (
+        str(recovery_transaction_id or "").strip(),
+        str(action_kind or "").strip(),
+        str(source_message_key_digest or "").strip().lower(),
+        str(original_authorization_revision or "").strip(),
+    )
+    if any(recovery_fields):
+        if not all(recovery_fields):
+            raise AppError(
+                "C2_RECOVERY_IDENTITY_INCOMPLETE",
+                "媒体事务恢复参数不完整",
+                400,
+            )
+        transaction_id, recovery_action_kind, source_digest, original_revision = (
+            recovery_fields
+        )
+        if recovery_action_kind not in {"voice", "image"}:
+            raise AppError("C2_RECOVERY_ACTION_KIND_INVALID", "媒体事务类型不合法", 400)
+        if len(source_digest) != 64 or any(
+            char not in "0123456789abcdef" for char in source_digest
+        ):
+            raise AppError("C2_RECOVERY_SOURCE_DIGEST_INVALID", "消息身份摘要不合法", 400)
+        existing = db.scalar(
+            select(WechatRecoverySettlement).where(
+                WechatRecoverySettlement.worker_id == worker.id,
+                WechatRecoverySettlement.recovery_transaction_id
+                == transaction_id,
+            )
+        )
+        settlement_mode = (
+            existing.settlement_mode
+            if existing
+            else "fact_only"
+            if binding is not None
+            and binding.worker_id == worker.id
+            and binding.conversation_id == conversation_id
+            else "technical_terminal"
+        )
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            seconds=SETTLEMENT_TOKEN_TTL_SECONDS
+        )
+        if existing:
+            if (
+                existing.conversation_id != conversation_id
+                or existing.action_kind != recovery_action_kind
+                or existing.source_message_key_digest != source_digest
+            ):
+                raise AppError(
+                    "C2_SETTLEMENT_IDEMPOTENCY_CONFLICT",
+                    "恢复事务已由不同消息身份占用",
+                    409,
+                )
+            existing.expires_at = expires_at
+        else:
+            db.add(
+                WechatRecoverySettlement(
+                    worker_id=worker.id,
+                    conversation_id=conversation_id,
+                    recovery_transaction_id=transaction_id,
+                    action_kind=recovery_action_kind,
+                    source_message_key_digest=source_digest,
+                    settlement_mode=settlement_mode,
+                    status="authorized",
+                    source_results_json=[],
+                    trace_id=get_request_id(),
+                    settled_at=None,
+                    expires_at=expires_at,
+                )
+            )
+            db.flush()
+        token = issue_c2_settlement_token(
+            worker_id=worker.id,
+            conversation_id=conversation_id,
+            recovery_transaction_id=transaction_id,
+            action_kind=recovery_action_kind,
+            source_message_key_digest=source_digest,
+            settlement_mode=settlement_mode,
+            expires_at=expires_at,
+        )
+        return {
+            "allowed": False,
+            "authorization_scope": "fact_settlement",
+            "recovery_decision": "settle_without_ui",
+            "settlement_mode": settlement_mode,
+            "settlement_token": token,
+            "conversation_id": conversation_id,
+            "authorization_revision": original_revision,
+            "read_reason": "fact_settlement",
+            "target": (
+                {
+                    "conversation_id": binding.conversation_id,
+                    "rpa_session_key": binding.rpa_session_key,
+                    "display_name": binding.display_name,
+                    "remark_code": binding.remark_code,
+                    "lead_id": binding.lead_id,
+                    "sales_id": binding.sales_id,
+                    "read_reason": "fact_settlement",
+                    "authorization_revision": original_revision,
+                }
+                if settlement_mode == "fact_only" and binding is not None
+                else None
+            ),
+        }
     terminal_binding = bool(
         not binding
         or binding.worker_id != worker.id
@@ -855,13 +2119,18 @@ def read_authorization_for_worker(
             }
         from app.services.c3_service import message_batch_continuation_authorization
 
-        return message_batch_continuation_authorization(
+        result = message_batch_continuation_authorization(
             db,
             worker=worker,
             batch=batch,
             binding=binding,
             presented_token=str(continuation_token),
         )
+        result["identity_checkpoint"] = _identity_checkpoint(
+            db,
+            conversation_id=binding.conversation_id,
+        )
+        return result
     conversation = db.get(Conversation, conversation_id)
     if conversation and (
         conversation.deleted_at is not None
@@ -918,14 +2187,56 @@ def confirm_friend_activation(
             409,
         )
     conversation = _upsert_conversation_for_binding(db, binding)
-    if conversation.friend_state == "friend_request_sent":
+    if (
+        conversation.friend_state == "friend_request_sent"
+        and conversation.status == "friend_request_sent"
+    ):
         conversation.friend_state = "friend_active"
+        conversation.status = "friend_activation_reading"
+    elif (
+        conversation.friend_state == "friend_active"
+        and conversation.status == "friend_active"
+    ):
         conversation.status = "friend_activation_reading"
     elif not (
         conversation.friend_state == "friend_active"
-        and conversation.status in {"friend_activation_reading", "ai_active"}
+        and conversation.status == "friend_activation_reading"
     ):
         raise AppError("C2_FRIEND_ACTIVATION_STATE_INVALID", "当前好友状态不允许执行激活确认", 409)
+    if binding.lead_id:
+        add_friend_task = db.scalar(
+            select(Task)
+            .where(
+                Task.lead_id == binding.lead_id,
+                Task.task_type == "add_friend",
+                Task.completed_at.is_not(None),
+                Task.deleted_at.is_(None),
+            )
+            .order_by(Task.completed_at.desc())
+        )
+        if add_friend_task and add_friend_task.completed_at:
+            from app.services.observability_service import (
+                process_run_id_for_key,
+                record_server_stage_best_effort,
+            )
+
+            now = utcnow()
+            record_server_stage_best_effort(
+                db,
+                process_run_id=process_run_id_for_key(
+                    "c0_lead",
+                    binding.lead_id,
+                ),
+                conversation_id=conversation_id,
+                worker_id=worker.id,
+                stage_name="c1.friend_acceptance_wait",
+                component="backend",
+                duration_ms=None,
+                started_at=add_friend_task.completed_at,
+                ended_at=now,
+                trace_id=get_request_id(),
+                stable_key=f"{add_friend_task.id}:{conversation_id}",
+            )
     db.flush()
     return {
         "conversation_id": conversation_id,
@@ -988,16 +2299,39 @@ def _friend_acceptance_recently_visible(binding: WechatSessionBinding) -> bool:
 
 
 def _read_reason(binding: WechatSessionBinding, conversation: Conversation) -> str | None:
-    if conversation.friend_state == "friend_request_sent":
+    recovery_hold = dict(binding.recovery_hold or {})
+    if recovery_hold.get("status") == "active":
+        # Identity recovery is a passive authoritative reread.  It is not a
+        # new unread authorization and must not depend on a red dot surviving
+        # the first attempt.
+        return "waiting_user_reply"
+    if (
+        conversation.friend_state == "friend_request_sent"
+        and conversation.status == "friend_request_sent"
+    ):
         return (
             "friend_acceptance_visible_hit"
             if _friend_acceptance_recently_visible(binding)
             else None
         )
-    if conversation.status == "friend_activation_reading":
+    if (
+        conversation.friend_state == "friend_active"
+        and conversation.status == "friend_active"
+    ):
+        return (
+            "friend_acceptance_visible_hit"
+            if _friend_acceptance_recently_visible(binding)
+            else None
+        )
+    if (
+        conversation.friend_state == "friend_active"
+        and conversation.status == "friend_activation_reading"
+    ):
         return "friend_acceptance_visible_hit"
     if conversation.status == "recall_precheck":
         return "recall_precheck"
+    if conversation.status == "ai_active" and binding.unread_hint:
+        return "visible_unread"
     if conversation.status == "waiting_user_reply" and conversation.last_ai_reply_at:
         return "recent_ai_sent"
     if conversation.status in {"waiting_user_reply", "recalled_waiting_user", "sales_replied_waiting_user"}:
@@ -1007,7 +2341,11 @@ def _read_reason(binding: WechatSessionBinding, conversation: Conversation) -> s
     return None
 
 
-def _prepare_due_recall(conversation: Conversation) -> None:
+def _prepare_due_recall(
+    conversation: Conversation,
+    *,
+    db: Session | None = None,
+) -> None:
     settings = get_settings()
     if conversation.status not in {"waiting_user_reply", "sales_replied_waiting_user", "recalled_waiting_user"}:
         return
@@ -1033,6 +2371,40 @@ def _prepare_due_recall(conversation: Conversation) -> None:
     conversation.recall_origin_status = conversation.status
     conversation.status = "recall_precheck"
     conversation.recall_cycle_id = conversation.recall_cycle_id or f"recall-{uuid.uuid4()}"
+    if db is not None:
+        from app.services.observability_service import (
+            process_run_id_for_key,
+            record_server_stage_best_effort,
+        )
+
+        process_run_id = process_run_id_for_key(
+            "c4",
+            conversation.recall_cycle_id,
+        )
+        record_server_stage_best_effort(
+            db,
+            process_run_id=process_run_id,
+            conversation_id=conversation.conversation_id,
+            worker_id=conversation.worker_id,
+            stage_name="c4.recall_wait",
+            component="backend",
+            duration_ms=None,
+            status="succeeded",
+            trace_id=get_request_id(),
+            stable_key=conversation.recall_cycle_id,
+        )
+        record_server_stage_best_effort(
+            db,
+            process_run_id=process_run_id,
+            conversation_id=conversation.conversation_id,
+            worker_id=conversation.worker_id,
+            stage_name="c4.recall_precheck",
+            component="backend",
+            duration_ms=None,
+            status="running",
+            trace_id=get_request_id(),
+            stable_key=conversation.recall_cycle_id,
+        )
 
 
 def _looks_like_voice_payload_text(value: str) -> bool:
@@ -1300,17 +2672,19 @@ def _verified_ai_reply_action_for_self_message(
     return action
 
 
-def _unreconciled_ai_reply_action_without_local_receipt(
+def _has_unreconciled_ai_send_without_local_receipt(
     db: Session,
     *,
     conversation_id: str,
-    content: object,
-) -> ReplyAction | None:
-    """Protect one unresolved AI send when the Worker's local receipt is lost."""
+) -> bool:
+    """Keep an unresolved send gated without guessing which bubble it is.
 
-    normalized = _normalized_contract_text(content)
-    if not normalized:
-        return None
+    Message body, screen position and old snapshots are not identity.  When
+    the local receipt is unavailable, preserve the possible-send fact and
+    prohibit automatic replay, but never attach a ReplyAction to a concrete
+    self bubble.
+    """
+
     used_action_ids: set[str] = set()
     recent_self_events = db.scalars(
         select(MessageEvent)
@@ -1327,25 +2701,19 @@ def _unreconciled_ai_reply_action_without_local_receipt(
         if action_id:
             used_action_ids.add(action_id)
 
-    candidates = db.scalars(
+    possible_actions = db.scalars(
         select(ReplyAction)
         .where(
             ReplyAction.conversation_id == conversation_id,
-            ReplyAction.status == "unknown_send_result",
-            ReplyAction.reply_text_hash == _reply_text_hash(normalized),
+            ReplyAction.status.in_(
+                {"sending", "sent", "unknown_send_result"}
+            ),
             ReplyAction.deleted_at.is_(None),
         )
-        .order_by(ReplyAction.created_at.desc(), ReplyAction.id.desc())
+        .order_by(ReplyAction.created_at.desc())
+        .limit(200)
     ).all()
-    return next(
-        (
-            action
-            for action in candidates
-            if action.id not in used_action_ids
-            and _normalized_contract_text(action.reply_text) == normalized
-        ),
-        None,
-    )
+    return any(action.id not in used_action_ids for action in possible_actions)
 
 
 def _validate_v3_observation(observation: object, *, require_ingestible: bool | None = None) -> tuple[str, dict]:
@@ -1443,7 +2811,10 @@ def _validate_v3_request_contract(payload: WechatMessageIngestRequest) -> None:
 
         if item.message_position is None:
             raise AppError("MESSAGE_POSITION_MISSING", "V3 消息缺少权威画面位置", 409)
-        if item.message_position.frame_source not in {"initial_read", "final_read"}:
+        allowed_frame_sources = {"initial_read", "final_read"}
+        if payload.authorization_scope == "fact_settlement":
+            allowed_frame_sources.add("action_journal_recovery")
+        if item.message_position.frame_source not in allowed_frame_sources:
             raise AppError("MESSAGE_FRAME_SOURCE_INVALID", "V3 消息权威画面来源不合法", 409)
 
         raw_payload = item.raw_payload
@@ -1459,6 +2830,7 @@ def _validate_v3_request_contract(payload: WechatMessageIngestRequest) -> None:
             raise AppError("MESSAGE_RAW_OBSERVATION_SCHEMA_MISMATCH", "V3 原始证据 schema 版本不一致", 409)
         if str(raw_payload.get("source_message_key") or "").strip() != source_key:
             raise AppError("MESSAGE_RAW_SOURCE_IDENTITY_MISMATCH", "V3 原始证据与最终消息身份不一致", 409)
+        _validate_cross_round_message_identity(raw_payload)
 
         observation = raw_payload.get("observation")
         observation_id, rule = _validate_v3_observation(observation, require_ingestible=True)
@@ -1523,29 +2895,45 @@ def _validate_v3_request_contract(payload: WechatMessageIngestRequest) -> None:
                     )
             else:
                 _validate_text_only_image_value(raw_payload, path="raw_payload")
-                reason = str(raw_payload.get("image_processing_reason") or observation.get("image_processing_reason") or "").strip()
-                if not reason:
+                error_code = str(
+                    raw_payload.get("error_code")
+                    or observation.get("error_code")
+                    or ""
+                ).strip()
+                reason_detail = str(
+                    raw_payload.get("reason_detail")
+                    or observation.get("reason_detail")
+                    or ""
+                ).strip()
+                if not error_code or not reason_detail:
                     raise AppError(
                         "IMAGE_FAILURE_REASON_MISSING",
-                        "失败图片事实缺少明确原因",
+                        "失败图片事实缺少 error_code 或 reason_detail",
                         409,
                         _media_error_data(item.source_message_key),
                     )
         elif failed_voice:
-            reason = str(
-                raw_payload.get("voice_processing_reason")
-                or observation.get("voice_processing_reason")
+            error_code = str(
+                raw_payload.get("error_code")
+                or observation.get("error_code")
                 or ""
             ).strip()
-            if not reason:
+            reason_detail = str(
+                raw_payload.get("reason_detail")
+                or observation.get("reason_detail")
+                or ""
+            ).strip()
+            if not error_code or not reason_detail:
                 raise AppError(
                     "VOICE_FAILURE_REASON_MISSING",
-                    "失败语音事实缺少明确原因",
+                    "失败语音事实缺少 error_code 或 reason_detail",
                     409,
                     _media_error_data(item.source_message_key),
                 )
-            if reason != str(
-                observation.get("voice_processing_reason") or ""
+            if error_code != str(
+                observation.get("error_code") or ""
+            ).strip() or reason_detail != str(
+                observation.get("reason_detail") or ""
             ).strip():
                 raise AppError(
                     "VOICE_FAILURE_REASON_MISMATCH",
@@ -1625,6 +3013,30 @@ def _visible_existing_message_orders(
     }
 
 
+def _slot_origin_read_run_ids(evidence_payload: dict) -> dict[str, str]:
+    """Return the immutable fact owner declared by each final-frame slot."""
+
+    origins: dict[str, str] = {}
+    conflicts: set[str] = set()
+    for raw in evidence_payload.get("slot_ledger_states") or []:
+        if not isinstance(raw, dict):
+            continue
+        source_key = str(raw.get("source_message_key") or "").strip()
+        origin_read_run_id = str(
+            raw.get("origin_read_run_id") or ""
+        ).strip()
+        if not source_key or not origin_read_run_id:
+            continue
+        existing = origins.get(source_key)
+        if existing is not None and existing != origin_read_run_id:
+            conflicts.add(source_key)
+            continue
+        origins[source_key] = origin_read_run_id
+    for source_key in conflicts:
+        origins.pop(source_key, None)
+    return origins
+
+
 def _flow_gate_details_by_code(evidence_payload: dict) -> dict[str, list[dict]]:
     strong_position_sources = FLOW_GATE_STRONG_POSITION_SOURCES_V3
     result: dict[str, list[dict]] = {}
@@ -1647,6 +3059,20 @@ def _flow_gate_details_by_code(evidence_payload: dict) -> dict[str, list[dict]]:
             "error_code": code,
             "position_source": position_source,
         }
+        gate_scope = str(raw.get("gate_scope") or "").strip()
+        boundary_relation = str(
+            raw.get("boundary_relation") or ""
+        ).strip()
+        if gate_scope:
+            detail["gate_scope"] = gate_scope
+        if boundary_relation:
+            if boundary_relation not in {"before_or_equal", "after", "unknown"}:
+                raise AppError(
+                    "MESSAGE_FLOW_GATE_BOUNDARY_RELATION_INVALID",
+                    "AI 回复边界关系不合法",
+                    409,
+                )
+            detail["boundary_relation"] = boundary_relation
         subject_sender_role = str(raw.get("subject_sender_role") or "").strip()
         if subject_sender_role:
             if subject_sender_role not in {"customer", "self"}:
@@ -1668,10 +3094,10 @@ def _flow_gate_details_by_code(evidence_payload: dict) -> dict[str, list[dict]]:
                     "安全门禁 screen_order 不合法",
                     409,
                 ) from exc
-            if parsed < 1:
+            if parsed < 0:
                 raise AppError(
                     "MESSAGE_FLOW_GATE_POSITION_INVALID",
-                    "安全门禁 screen_order 必须大于零",
+                    "安全门禁 screen_order 不能小于零",
                     409,
                 )
             detail[key] = parsed
@@ -1685,9 +3111,9 @@ def _flow_gate_details_by_code(evidence_payload: dict) -> dict[str, list[dict]]:
                 "安全门禁位置范围前后颠倒",
                 409,
             )
-        has_position = (
-            detail.get("min_screen_order") is not None
-            or detail.get("max_screen_order") is not None
+        has_position = any(
+            int(detail.get(key) or 0) > 0
+            for key in ("min_screen_order", "max_screen_order")
         )
         if has_position and position_source not in strong_position_sources:
             raise AppError(
@@ -1697,6 +3123,259 @@ def _flow_gate_details_by_code(evidence_payload: dict) -> dict[str, list[dict]]:
             )
         result.setdefault(code, []).append(detail)
     return result
+
+
+def _settlement_response(
+    settlement: WechatRecoverySettlement,
+    *,
+    state_reason: str,
+) -> dict[str, object]:
+    source_results = list(settlement.source_results_json or [])
+    return {
+        "ingested_count": sum(
+            item.get("ingest_result") == "ingested" for item in source_results
+        ),
+        "duplicated_count": sum(
+            item.get("ingest_result") == "duplicated" for item in source_results
+        ),
+        "ignored_count": 0,
+        "results": source_results,
+        "state_transition_applied": False,
+        "state_transition_reason": state_reason,
+        "message_batch": None,
+        "next_action": NEXT_ACTION_NONE,
+    }
+
+
+def settle_messages_without_ui(
+    db: Session,
+    worker: Worker,
+    payload: WechatMessageIngestRequest,
+    *,
+    settlement_token: str | None,
+) -> dict[str, object]:
+    """Persist recovered media facts without touching conversation state.
+
+    The authorization record is server-owned and locked before the submitted
+    evidence is evaluated.  This path never creates a batch, handoff, reply,
+    recall, or read-completion transition.
+    """
+
+    evidence_payload = payload.evidence.model_dump(mode="json")
+    transaction_id = str(
+        evidence_payload.get("recovery_transaction_id") or ""
+    ).strip()
+    action_kind = str(evidence_payload.get("action_kind") or "").strip()
+    source_digest = str(
+        evidence_payload.get("source_message_key_digest") or ""
+    ).strip().lower()
+    requested_mode = str(evidence_payload.get("settlement_mode") or "").strip()
+    settlement = db.scalar(
+        select(WechatRecoverySettlement)
+        .where(
+            WechatRecoverySettlement.worker_id == worker.id,
+            WechatRecoverySettlement.recovery_transaction_id == transaction_id,
+        )
+        .with_for_update()
+    )
+    if not settlement:
+        raise AppError(
+            "C2_SETTLEMENT_AUTHORIZATION_NOT_FOUND",
+            "事实结算授权不存在",
+            409,
+        )
+    if (
+        settlement.conversation_id != payload.conversation_id
+        or settlement.action_kind != action_kind
+        or settlement.source_message_key_digest != source_digest
+        or settlement.settlement_mode != requested_mode
+    ):
+        raise AppError(
+            "C2_SETTLEMENT_AUTHORIZATION_MISMATCH",
+            "事实结算授权与请求不匹配",
+            409,
+        )
+    verify_c2_settlement_token(
+        settlement_token,
+        worker_id=worker.id,
+        conversation_id=payload.conversation_id,
+        recovery_transaction_id=transaction_id,
+        action_kind=action_kind,
+        source_message_key_digest=source_digest,
+        settlement_mode=requested_mode,
+    )
+    if settlement.status == "settled":
+        return _settlement_response(
+            settlement,
+            state_reason="fact_settlement_idempotent",
+        )
+    now = datetime.now(timezone.utc)
+    expires_at = settlement.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < now:
+        raise AppError("C2_SETTLEMENT_TOKEN_EXPIRED", "事实结算凭据已过期", 409)
+
+    evidence_source_keys = sorted(
+        {
+            str(value).strip()
+            for value in (
+                evidence_payload.get("settlement_source_message_keys") or []
+            )
+            if str(value).strip()
+        }
+    )
+    message_source_keys = sorted(
+        {
+            str(item.source_message_key or "").strip()
+            for item in payload.messages
+            if str(item.source_message_key or "").strip()
+        }
+    )
+    source_keys = message_source_keys or evidence_source_keys
+    actual_digest = hashlib.sha256(
+        "\n".join(source_keys).encode("utf-8")
+    ).hexdigest()
+    if not source_keys or actual_digest != source_digest:
+        raise AppError(
+            "C2_SETTLEMENT_SOURCE_DIGEST_MISMATCH",
+            "事实结算消息身份摘要不匹配",
+            409,
+        )
+
+    binding = db.scalar(
+        select(WechatSessionBinding).where(
+            WechatSessionBinding.conversation_id == payload.conversation_id,
+            WechatSessionBinding.worker_id == worker.id,
+        )
+    )
+    if settlement.settlement_mode == "technical_terminal" or not binding:
+        settlement.settlement_mode = "technical_terminal"
+        settlement.status = "settled"
+        settlement.error_code = "C2_RECOVERY_IDENTITY_UNTRUSTED"
+        settlement.source_results_json = [
+            {
+                "source_message_key": source_key,
+                "ingest_result": "technical_terminal",
+                "error_code": settlement.error_code,
+            }
+            for source_key in source_keys
+        ]
+        settlement.settled_at = utcnow()
+        return _settlement_response(
+            settlement,
+            state_reason="technical_terminal",
+        )
+
+    if message_source_keys != source_keys:
+        raise AppError(
+            "C2_SETTLEMENT_MESSAGES_REQUIRED",
+            "事实补录必须携带原始完整消息",
+            409,
+        )
+    _validate_v3_request_contract(payload)
+    ordered_messages = _ordered_v3_messages(payload)
+    slot_origin_read_run_ids = _slot_origin_read_run_ids(
+        evidence_payload
+    )
+    results: list[dict] = []
+    for item in ordered_messages:
+        message_type = str(item.message_type or "").strip().lower()
+        sender_role = str(item.sender_role_hint or "").strip().lower()
+        item_state = str(item.item_state or "").strip().lower()
+        if message_type not in {"voice", "image"} or sender_role not in {
+            "customer",
+            "self",
+        }:
+            raise AppError(
+                "C2_SETTLEMENT_MESSAGE_SCOPE_INVALID",
+                "事实补录只接受身份明确的语音或图片消息",
+                409,
+            )
+        if item_state not in {"completed", "failed"}:
+            raise AppError(
+                "MESSAGE_ITEM_STATE_INVALID",
+                "事实补录消息缺少正式终态",
+                409,
+            )
+        raw_payload = dict(item.raw_payload or {})
+        error_code = str(raw_payload.get("error_code") or "").strip()
+        reason_detail = str(raw_payload.get("reason_detail") or "").strip()
+        if item_state == "failed" and (not error_code or not reason_detail):
+            raise AppError(
+                "MEDIA_FAILURE_REASON_MISSING",
+                "失败媒体事实缺少 error_code 或 reason_detail",
+                409,
+            )
+        existing = db.scalar(
+            select(MessageEvent).where(
+                MessageEvent.conversation_id == payload.conversation_id,
+                MessageEvent.dedupe_key == item.dedupe_key,
+            )
+        )
+        if existing:
+            _raise_message_identity_collision(
+                db,
+                existing=existing,
+                incoming_sender_role=sender_role,
+                incoming_message_type=message_type,
+                incoming_content=item.content,
+                incoming_raw_payload=raw_payload,
+                source_message_key=item.source_message_key,
+                dedupe_key=item.dedupe_key,
+            )
+            results.append(
+                {
+                    "source_message_key": item.source_message_key,
+                    "dedupe_key": item.dedupe_key,
+                    "ingest_result": "duplicated",
+                    "error_code": "MESSAGE_INGEST_DUPLICATED",
+                }
+            )
+            continue
+        message = MessageEvent(
+            conversation_id=payload.conversation_id,
+            binding_id=binding.id,
+            lead_id=binding.lead_id,
+            sales_id=binding.sales_id,
+            worker_id=worker.id,
+            rpa_session_key=payload.rpa_session_key or binding.rpa_session_key,
+            read_run_id=slot_origin_read_run_ids[item.source_message_key],
+            contract_version=payload.contract_version,
+            source_message_key=item.source_message_key,
+            dedupe_key=item.dedupe_key,
+            sender_role=sender_role,
+            message_type=message_type,
+            content=item.content,
+            raw_payload=raw_payload,
+            evidence=evidence_payload,
+            ocr_confidence=item.ocr_confidence,
+            item_state=item.item_state,
+            flow_state=item.flow_state,
+            occurred_at=item.occurred_at,
+            observed_at=payload.evidence.finished_at,
+            observation_order=int(item.message_position.screen_order),
+            ingested_at=utcnow(),
+            error_code=error_code or None,
+        )
+        db.add(message)
+        db.flush()
+        results.append(
+            {
+                "source_message_key": item.source_message_key,
+                "dedupe_key": item.dedupe_key,
+                "ingest_result": "ingested",
+                "message_id": message.id,
+                "message_event_id": message.id,
+            }
+        )
+    settlement.status = "settled"
+    settlement.source_results_json = results
+    settlement.settled_at = utcnow()
+    return _settlement_response(
+        settlement,
+        state_reason="fact_settlement",
+    )
 
 
 def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestRequest) -> dict:
@@ -1718,9 +3397,20 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
         raise AppError("MESSAGE_TARGET_IDENTITY_MISMATCH", "读取目标与绑定会话不一致，已拒绝入库", 409)
     if str(payload.authorization_revision or "") != _authorization_revision(binding):
         raise AppError("MESSAGE_AUTHORIZATION_REVISION_EXPIRED", "读取授权已过期，已拒绝旧任务入库", 409)
+    if int(payload.unread_generation or 0) > int(
+        binding.unread_generation or 0
+    ):
+        raise AppError(
+            "MESSAGE_UNREAD_GENERATION_INVALID",
+            "读取请求携带了后端尚未签发的未读代次",
+            409,
+        )
     _validate_v3_request_contract(payload)
     ordered_messages = _ordered_v3_messages(payload)
     evidence_payload = payload.evidence.model_dump(mode="json")
+    slot_origin_read_run_ids = _slot_origin_read_run_ids(
+        evidence_payload
+    )
     ingest_partition = (
         evidence_payload.get("ingest_partition")
         if isinstance(evidence_payload.get("ingest_partition"), dict)
@@ -1842,7 +3532,16 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
         else conversation.status
         or ""
     )
-    current_authorization = read_authorization_snapshot(db, binding=binding)
+    origin_recall_cycle_id = str(
+        conversation.recall_cycle_id
+        if conversation.status == "recall_precheck"
+        else ""
+    ).strip()
+    current_authorization = read_authorization_snapshot(
+        db,
+        binding=binding,
+        enforce_read_due=False,
+    )
     continuation_batch_id = str(
         evidence_payload.get("continuation_batch_id") or ""
     ).strip()
@@ -1870,21 +3569,22 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
                     presented_token=continuation_token,
                 )
             )
+    current_authorization_matches = bool(
+        current_authorization.get("allowed") is True
+        and str(current_authorization.get("read_reason") or "")
+        == incoming_read_reason
+    )
+    continuation_authorization_matches = bool(
+        continuation_authorization.get("allowed") is True
+        and str(continuation_authorization.get("read_reason") or "")
+        == incoming_read_reason
+    )
     state_transition_allowed = bool(
-        (
-            current_authorization.get("allowed") is True
-            and str(current_authorization.get("read_reason") or "")
-            == incoming_read_reason
-        )
-        or (
-            continuation_authorization.get("allowed") is True
-            and str(continuation_authorization.get("read_reason") or "")
-            == incoming_read_reason
-        )
+        current_authorization_matches or continuation_authorization_matches
     )
     state_transition_reason = (
         "batch_continuation_matches"
-        if continuation_authorization.get("allowed") is True
+        if continuation_authorization_matches
         else "authorization_state_matches"
         if state_transition_allowed
         else (
@@ -1894,13 +3594,93 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
         )
     )
     conversation_allowed = conversation.status not in CONVERSATION_CLOSED_STATUSES
+
+    recovery_batch_eligible = False
+    recovery_resolution = evidence_payload.get(
+        "recoverable_handoff_resolution"
+    )
+    if isinstance(recovery_resolution, dict):
+        recovery_reason_codes = [
+            str(value).strip()
+            for value in (recovery_resolution.get("reason_codes") or [])
+            if str(value).strip()
+        ]
+        recovery_is_proven = bool(
+            state_transition_allowed
+            and conversation.ai_enabled is True
+            and not flow_gate_error_codes
+            and str(payload.authorization_scope or "") == "active_read"
+            and str(
+                evidence_payload.get("authoritative_frame_source") or ""
+            )
+            in {"initial_read", "final_read"}
+            and bool(evidence_payload.get("observations"))
+            and str(recovery_resolution.get("status") or "")
+            == "latest_unreplied_turn_complete"
+            and recovery_resolution.get("identity_confirmed") is True
+            and recovery_resolution.get("history_confirmed") is True
+        )
+        if recovery_is_proven and recovery_reason_codes:
+            from app.services.c3_service import (
+                close_open_recoverable_c2_handoffs,
+            )
+
+            recovery_result = close_open_recoverable_c2_handoffs(
+                db,
+                conversation_id=payload.conversation_id,
+                reason_codes=recovery_reason_codes,
+                read_run_id=payload.read_run_id,
+            )
+            open_handoff_active = bool(
+                recovery_result["remaining_open_count"]
+            )
+            recovery_ref = f"c2_recovery_read:{payload.read_run_id}"
+            previously_recovered_for_read = any(
+                event.status == "auto_recovered_clean_read"
+                and str(event.handoff_reason_code or "").strip()
+                in set(recovery_reason_codes)
+                and recovery_ref in set(event.evidence_refs or [])
+                for event in db.scalars(
+                    select(HandoffEvent).where(
+                        HandoffEvent.conversation_id
+                        == payload.conversation_id,
+                        HandoffEvent.closed_at.is_not(None),
+                        HandoffEvent.deleted_at.is_(None),
+                    )
+                )
+            )
+            recovery_batch_eligible = bool(
+                not open_handoff_active
+                and (
+                    recovery_result["closed_count"]
+                    or previously_recovered_for_read
+                )
+            )
+            if recovery_result["closed_count"] and not open_handoff_active:
+                conversation.status = (
+                    "ai_active"
+                    if _datetime_is_after(
+                        conversation.last_inbound_at,
+                        conversation.last_ai_reply_at,
+                    )
+                    else "waiting_user_reply"
+                    if conversation.last_ai_reply_at is not None
+                    else "ai_active"
+                )
+                conversation.handoff_reason_code = None
+                conversation.handoff_at = None
+                conversation.recall_origin_status = None
+                conversation.recall_cycle_id = None
+                conversation.next_recall_at = None
     observed_rpa_session_key = payload.rpa_session_key or ""
 
     ingested_count = 0
     duplicated_count = 0
     ignored_count = 0
+    read_has_new_facts = False
     results: list[dict] = []
     new_customer_message_ids: list[str] = []
+    authoritative_customer_tail_ids: list[str] = []
     new_sales_message = False
     human_sales_observed = False
     last_human_sales_screen_order = 0
@@ -1966,19 +3746,16 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             )
         )
         if exists:
-            if state_transition_allowed and exists.sender_role in SALES_SIDE_SENDER_ROLES:
-                existing_raw_payload = (
-                    exists.raw_payload
-                    if isinstance(exists.raw_payload, dict)
-                    else {}
-                )
-                new_sales_message = True
-                if str(existing_raw_payload.get("sender_source") or "") == "human":
-                    human_sales_observed = True
-                    last_human_sales_screen_order = max(
-                        last_human_sales_screen_order,
-                        int(item.message_position.screen_order),
-                    )
+            _raise_message_identity_collision(
+                db,
+                existing=exists,
+                incoming_sender_role=sender_role,
+                incoming_message_type=message_type,
+                incoming_content=content,
+                incoming_raw_payload=raw_payload,
+                source_message_key=item.source_message_key,
+                dedupe_key=dedupe_key,
+            )
             duplicated_count += 1
             results.append(
                 {
@@ -1988,6 +3765,10 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
                     "error_code": "MESSAGE_INGEST_DUPLICATED",
                 }
             )
+            if sender_role == "customer":
+                authoritative_customer_tail_ids.append(exists.id)
+            elif sender_role in SALES_SIDE_SENDER_ROLES:
+                authoritative_customer_tail_ids.clear()
             continue
         source_exists = db.scalar(
             select(MessageEvent).where(
@@ -2015,16 +3796,16 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             )
             server_guarded_unreconciled = False
             if not ai_reply_action and not local_receipt:
-                ai_reply_action = _unreconciled_ai_reply_action_without_local_receipt(
+                server_guarded_unreconciled = bool(
+                    _has_unreconciled_ai_send_without_local_receipt(
                     db,
                     conversation_id=payload.conversation_id,
-                    content=content,
+                    )
                 )
-                server_guarded_unreconciled = ai_reply_action is not None
             raw_payload["sender_source"] = (
                 "ai"
                 if ai_reply_action and ai_reply_action.status == "sent"
-                else "ai_unreconciled_server_guard"
+                else "ai_identity_unconfirmed_guard"
                 if server_guarded_unreconciled
                 else "ai_unreconciled"
                 if (
@@ -2057,7 +3838,7 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             sales_id=binding.sales_id,
             worker_id=worker.id,
             rpa_session_key=observed_rpa_session_key,
-            read_run_id=payload.read_run_id,
+            read_run_id=slot_origin_read_run_ids[item.source_message_key],
             contract_version=payload.contract_version,
             source_message_key=item.source_message_key,
             dedupe_key=dedupe_key,
@@ -2074,11 +3855,11 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             observation_order=int(item.message_position.screen_order),
             ingested_at=utcnow(),
             error_code=(
-                str(raw_payload.get("image_processing_reason") or "IMAGE_UNDERSTANDING_FAILED")[:64]
+                str(raw_payload.get("error_code") or "IMAGE_UNDERSTANDING_FAILED")[:64]
                 if message_type == "image" and str(item.item_state or "").strip().lower() == "failed"
                 else (
                     str(
-                        raw_payload.get("voice_processing_reason")
+                        raw_payload.get("error_code")
                         or "VOICE_TRANSCRIBE_FAILED"
                     )[:64]
                     if message_type == "voice"
@@ -2092,14 +3873,37 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
                 db.add(message)
                 db.flush()
         except IntegrityError:
-            if state_transition_allowed and message.sender_role in SALES_SIDE_SENDER_ROLES:
-                new_sales_message = True
-                if str(raw_payload.get("sender_source") or "") == "human":
-                    human_sales_observed = True
-                    last_human_sales_screen_order = max(
-                        last_human_sales_screen_order,
-                        int(item.message_position.screen_order),
+            concurrent_existing = db.scalar(
+                select(MessageEvent).where(
+                    MessageEvent.conversation_id == payload.conversation_id,
+                    MessageEvent.dedupe_key == dedupe_key,
+                )
+            )
+            if concurrent_existing is None:
+                concurrent_source = db.scalar(
+                    select(MessageEvent).where(
+                        MessageEvent.conversation_id == payload.conversation_id,
+                        MessageEvent.read_run_id == payload.read_run_id,
+                        MessageEvent.source_message_key == item.source_message_key,
                     )
+                )
+                if concurrent_source is not None:
+                    raise AppError(
+                        "MESSAGE_SOURCE_CONFLICT",
+                        "同一读取批次的来源消息已存在",
+                        409,
+                    )
+                raise
+            _raise_message_identity_collision(
+                db,
+                existing=concurrent_existing,
+                incoming_sender_role=sender_role,
+                incoming_message_type=message_type,
+                incoming_content=content,
+                incoming_raw_payload=raw_payload,
+                source_message_key=item.source_message_key,
+                dedupe_key=dedupe_key,
+            )
             duplicated_count += 1
             results.append(
                 {
@@ -2140,7 +3944,7 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
                     "ai",
                     "ai_pending_ack",
                     "ai_unreconciled",
-                    "ai_unreconciled_server_guard",
+                    "ai_identity_unconfirmed_guard",
                 }:
                     # This is the right-side bubble produced by our own sent
                     # ReplyAction. It closes customer facts above it, but it is not
@@ -2211,6 +4015,11 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
                             reason="销售已人工回复，取消开场、召回和未发送 AI 回复",
                         )
         ingested_count += 1
+        read_has_new_facts = True
+        if sender_role == "customer":
+            authoritative_customer_tail_ids.append(message.id)
+        elif sender_role in SALES_SIDE_SENDER_ROLES:
+            authoritative_customer_tail_ids.clear()
         result = {
             "source_message_key": item.source_message_key,
             "dedupe_key": dedupe_key,
@@ -2249,12 +4058,35 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             for event in partition_events
             if str(event.read_run_id or "") == payload.read_run_id
         ]
+        read_has_new_facts = bool(current_run_events)
         sales_orders = [
             int(event.observation_order or 0)
             for event in current_run_events
             if event.sender_role in SALES_SIDE_SENDER_ROLES
         ]
         latest_sales_order = max(sales_orders, default=0)
+        authoritative_partition_events = sorted(
+            partition_events,
+            key=lambda event: (
+                int(event.observation_order or 0),
+                str(event.id),
+            ),
+        )
+        authoritative_latest_sales_order = max(
+            (
+                int(event.observation_order or 0)
+                for event in authoritative_partition_events
+                if event.sender_role in SALES_SIDE_SENDER_ROLES
+            ),
+            default=0,
+        )
+        authoritative_customer_tail_ids = [
+            event.id
+            for event in authoritative_partition_events
+            if event.sender_role == "customer"
+            and int(event.observation_order or 0)
+            > authoritative_latest_sales_order
+        ]
         new_customer_message_ids = [
             event.id
             for event in current_run_events
@@ -2421,10 +4253,41 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             for detail in details
         )
 
+    def gate_is_self_media_warning(code: str) -> bool:
+        """A failed sales-side media fact is evidence, never a customer gate.
+
+        Fail closed when the role detail is missing or mixed: only a gate whose
+        every settled item is explicitly owned by ``self`` may be downgraded to
+        a non-blocking warning. Customer media failures remain L1 handoffs.
+        """
+
+        if code not in {
+            "C2_VOICE_TRANSCRIBE_FAILED",
+            "C2_IMAGE_UNDERSTANDING_FAILED",
+        }:
+            return False
+        failed_items = (
+            failed_voices
+            if code == "C2_VOICE_TRANSCRIBE_FAILED"
+            else failed_images
+        )
+        if not failed_items or any(
+            str(item.sender_role_hint or "").strip().lower() != "self"
+            for item in failed_items
+        ):
+            return False
+        details = flow_gate_details_by_code.get(code) or []
+        return bool(details) and all(
+            str(detail.get("subject_sender_role") or "").strip().lower()
+            == "self"
+            for detail in details
+        )
+
     flow_gate_errors = [
         code
         for code in flow_gate_errors
-        if not gate_is_proven_before_latest_human_sales(code)
+        if not gate_is_self_media_warning(code)
+        and not gate_is_proven_before_latest_human_sales(code)
     ]
     temporary_capability_gates = [
         code
@@ -2436,6 +4299,21 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
         for code in flow_gate_errors
         if code not in TEMPORARY_CAPABILITY_GATE_CODES_V3
     ]
+    identity_recovery_result = None
+    if not open_handoff_active:
+        handoff_flow_gates, identity_recovery_result = (
+            _apply_identity_unresolved_recovery_hold(
+                db,
+                binding=binding,
+                conversation=conversation,
+                read_run_id=payload.read_run_id,
+                evidence_payload=evidence_payload,
+                gate_codes=handoff_flow_gates,
+                details_by_code=flow_gate_details_by_code,
+            )
+        )
+    if identity_recovery_result is not None:
+        message_batch = identity_recovery_result
     if open_handoff_active:
         if handoff_flow_gates:
             from app.services.c3_service import (
@@ -2499,6 +4377,25 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
             "batch_status": "capability_paused",
             "reason_codes": temporary_capability_gates,
         }
+    elif message_batch is not None:
+        # A reply-boundary warning/hold is already fully projected.  It must
+        # not fall through into ordinary batching or Brain generation.
+        pass
+    elif (
+        recovery_batch_eligible
+        and authoritative_customer_tail_ids
+        and (not partitioned or partition_final)
+    ):
+        from app.services.c3_service import (
+            collect_recovered_customer_message_batch,
+        )
+
+        message_batch = collect_recovered_customer_message_batch(
+            db,
+            conversation_id=payload.conversation_id,
+            message_event_ids=authoritative_customer_tail_ids,
+            trace_id=get_request_id(),
+        )
     elif new_customer_message_ids:
         from app.services.c3_service import collect_customer_message_batch
 
@@ -2544,14 +4441,67 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
                 recall_cycle_id=cycle_id,
                 trace_id=get_request_id(),
             )
-            local_today = utcnow().astimezone(ZoneInfo("Asia/Shanghai")).date()
-            if conversation.recall_daily_date != local_today:
-                conversation.recall_daily_date = local_today
-                conversation.recall_daily_count = 0
-            conversation.recall_count += 1
-            conversation.recall_daily_count += 1
             conversation.status = "ai_active"
             conversation.next_recall_at = None
+            from app.services.observability_service import (
+                process_run_id_for_key,
+                record_server_stage_best_effort,
+            )
+
+            record_server_stage_best_effort(
+                db,
+                process_run_id=process_run_id_for_key("c4", cycle_id),
+                conversation_id=payload.conversation_id,
+                worker_id=worker.id,
+                stage_name="c4.recall_precheck",
+                component="backend",
+                duration_ms=None,
+                status="succeeded",
+                trace_id=get_request_id(),
+                stable_key=cycle_id,
+            )
+    if origin_recall_cycle_id:
+        recall_batch_active = False
+        if isinstance(message_batch, dict) and message_batch.get("batch_id"):
+            observed_batch = db.get(
+                MessageBatch,
+                str(message_batch["batch_id"]),
+            )
+            recall_batch_active = bool(
+                observed_batch
+                and observed_batch.trigger_type == "recall"
+                and observed_batch.recall_cycle_id == origin_recall_cycle_id
+            )
+        if not recall_batch_active:
+            from app.services.observability_service import (
+                process_run_id_for_key,
+                record_server_stage_best_effort,
+            )
+
+            record_server_stage_best_effort(
+                db,
+                process_run_id=process_run_id_for_key(
+                    "c4", origin_recall_cycle_id
+                ),
+                conversation_id=payload.conversation_id,
+                worker_id=worker.id,
+                stage_name="c4.recall_precheck",
+                component="backend",
+                duration_ms=None,
+                status="cancelled",
+                error_code="C4_RECALL_PRECHECK_SUPERSEDED",
+                trace_id=get_request_id(),
+                stable_key=origin_recall_cycle_id,
+            )
+    read_completion = None
+    if not partitioned or partition_final:
+        read_completion = _settle_completed_read(
+            binding,
+            conversation,
+            read_run_id=payload.read_run_id,
+            has_new_facts=read_has_new_facts,
+            unread_generation=payload.unread_generation,
+        )
     db.flush()
     response = {
         "ingested_count": ingested_count,
@@ -2562,6 +4512,8 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
         "state_transition_reason": state_transition_reason,
         "next_action": NEXT_ACTION_NONE,
     }
+    if read_completion is not None:
+        response["read_completion"] = read_completion
     if partitioned:
         response["ingest_partition"] = {
             "group_id": payload.read_run_id,
@@ -2596,41 +4548,157 @@ def ingest_messages(db: Session, worker: Worker, payload: WechatMessageIngestReq
     return response
 
 
-def record_ingest_technical_terminal(
+def restore_binding(
     db: Session,
     *,
-    worker: Worker,
-    payload: WechatMessageIngestRequest,
-    error_code: str,
-) -> dict[str, Any]:
-    """Persist the backend-owned terminal for an unrecoverable C2 identity fault."""
-
+    conversation_id: str,
+    reason: str,
+    actor: ActorContext,
+) -> dict:
     binding = db.scalar(
-        select(WechatSessionBinding).where(
-            WechatSessionBinding.conversation_id == payload.conversation_id,
-            WechatSessionBinding.worker_id == worker.id,
+        select(WechatSessionBinding)
+        .where(WechatSessionBinding.conversation_id == conversation_id)
+        .with_for_update()
+    )
+    if not binding:
+        raise AppError("WECHAT_BINDING_NOT_FOUND", "微信会话绑定不存在", 404)
+    if binding.deleted_at is not None or binding.replacement_binding_id:
+        raise AppError(
+            "WECHAT_BINDING_RESTORE_HISTORY_FORBIDDEN",
+            "历史绑定或已被替代绑定不能恢复",
+            409,
+        )
+    conversation = db.get(Conversation, conversation_id)
+    if not _conversation_allows_binding_recovery(conversation):
+        raise AppError(
+            "WECHAT_BINDING_RESTORE_CONVERSATION_TERMINATED",
+            "已拒绝、关闭或停用自动化的会话不能恢复监听",
+            409,
+        )
+    disable_reason = str(binding.disable_reason or "").strip()
+    if _binding_has_permanent_disable_evidence(binding):
+        raise AppError(
+            "WECHAT_BINDING_RESTORE_PERMANENTLY_DISABLED",
+            "永久停用的微信绑定不能恢复",
+            409,
+            {"disable_reason": disable_reason},
+        )
+    if (
+        conversation.worker_id
+        and conversation.worker_id != binding.worker_id
+    ):
+        raise AppError(
+            "WECHAT_BINDING_RESTORE_WORKER_MISMATCH",
+            "会话与微信绑定不属于同一 Worker",
+            409,
+        )
+    sales = db.get(Sales, binding.sales_id) if binding.sales_id else None
+    if sales and sales.worker_id and sales.worker_id != binding.worker_id:
+        raise AppError(
+            "WECHAT_BINDING_RESTORE_WORKER_MISMATCH",
+            "销售当前 Worker 与微信绑定不一致",
+            409,
+        )
+    remark_code = _clean_locator(binding.remark_code)
+    if not remark_code:
+        raise AppError(
+            "WECHAT_BINDING_RESTORE_REMARK_CODE_MISSING",
+            "缺少客户短码的绑定不能恢复",
+            409,
+        )
+    conflicting_binding = db.scalar(
+        select(WechatSessionBinding.id).where(
+            WechatSessionBinding.id != binding.id,
+            WechatSessionBinding.remark_code == remark_code,
+            WechatSessionBinding.deleted_at.is_(None),
+            WechatSessionBinding.replacement_binding_id.is_(None),
+        )
+    )
+    conflicting_lead_binding = db.scalar(
+        select(WechatSessionBinding.id).where(
+            WechatSessionBinding.id != binding.id,
+            WechatSessionBinding.lead_id == binding.lead_id,
+            WechatSessionBinding.bind_status == BIND_STATUS_BOUND,
             WechatSessionBinding.deleted_at.is_(None),
         )
     )
-    if not binding:
-        return {"terminal_confirmed": False}
-    conversation = _upsert_conversation_for_binding(db, binding)
-    from app.services.c3_service import create_deterministic_handoff_for_ingest
-
-    result = create_deterministic_handoff_for_ingest(
+    if conflicting_binding or conflicting_lead_binding:
+        raise AppError(
+            "WECHAT_BINDING_RESTORE_CONFLICT",
+            "短码或线索存在其他当前绑定，不能恢复",
+            409,
+        )
+    recoverable_state = bool(
+        binding.bind_status == BIND_STATUS_BOUND
+        and binding.listen_status == LISTEN_STATUS_PAUSED
+    ) or _legacy_disabled_pause_is_recoverable(
         db,
-        conversation_id=conversation.conversation_id,
-        message_event_ids=[],
-        reason_codes=[str(error_code)],
-        trigger_key=(
-            f"c2-technical-terminal:{payload.read_run_id}:{error_code}"
-        ),
-        trace_id=get_request_id(),
+        binding,
+    ) or _disabled_binding_needs_review(
+        db,
+        binding,
+    ) or bool(
+        binding.bind_status == BIND_STATUS_NEEDS_REVIEW
+        and binding.listen_status == LISTEN_STATUS_PAUSED
+        and binding.error_code == "SESSION_BINDING_STATE_INCONSISTENT"
     )
+    if not recoverable_state:
+        raise AppError(
+            "WECHAT_BINDING_RESTORE_STATE_INVALID",
+            "只有临时暂停或可确认的历史错误停用绑定可以恢复",
+            409,
+        )
+
+    before = {
+        "bind_status": binding.bind_status,
+        "listen_status": binding.listen_status,
+        "allow_listening": binding.allow_listening,
+        "authorization_revision": int(binding.authorization_revision or 1),
+        "disable_reason": binding.disable_reason,
+    }
+    previous_revision = int(binding.authorization_revision or 1)
+    _set_binding_state(
+        binding,
+        status=BIND_STATUS_BOUND,
+        listen_status=LISTEN_STATUS_PAUSED,
+        allow_listening=False,
+        error_code="SESSION_BINDING_RESTORE_PENDING_SCAN",
+        remark_code=remark_code,
+        preserve_lead=True,
+    )
+    if int(binding.authorization_revision or 1) <= previous_revision:
+        binding.authorization_revision = previous_revision + 1
+    binding.disable_reason = None
+    binding.disabled_at = None
+    binding.disabled_by = None
+    binding.replacement_binding_id = None
+    _reset_read_backoff(binding)
+    after = {
+        "bind_status": binding.bind_status,
+        "listen_status": binding.listen_status,
+        "allow_listening": binding.allow_listening,
+        "authorization_revision": int(binding.authorization_revision),
+        "disable_reason": binding.disable_reason,
+    }
+    from app.services.audit_service import write_log
+
+    write_log(
+        db,
+        actor,
+        event_type="wechat_binding_restored",
+        module="wechat",
+        target_type="wechat_session_binding",
+        target_id=binding.id,
+        lead_id=binding.lead_id,
+        before_data=before,
+        after_data=after,
+        metadata={"reason": reason.strip(), "conversation_id": conversation_id},
+    )
+    db.flush()
     return {
-        "terminal_confirmed": True,
-        "conversation_id": conversation.conversation_id,
-        "message_batch": result,
+        **_binding_to_dict(binding),
+        "recovery_state": "paused_waiting_worker",
+        "restore_reason": reason.strip(),
     }
 
 

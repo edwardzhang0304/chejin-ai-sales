@@ -125,7 +125,6 @@ def check_runtime_lifecycle(client: TestClient, headers: dict[str, str]) -> None
     assert_equal(before.status_code, 200, "runtime status before start")
 
     original_startup_check = recorder_runtime_module.RecorderRuntime._wechat_startup_self_check
-    original_operator_guard = recorder_runtime_module.RecorderRuntime._launch_operator_guard_for_loop
 
     def fake_startup_check(self: Any, *, wxauto_update: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -136,20 +135,7 @@ def check_runtime_lifecycle(client: TestClient, headers: dict[str, str]) -> None
             "wxauto_update": wxauto_update,
         }
 
-    def fake_operator_guard(self: Any, *, parent_pid: int, settings: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "ok": True,
-            "enabled": True,
-            "pid": parent_pid,
-            "test_stub": True,
-            "settings": {
-                "floating_indicator_enabled": True,
-                "block_manual_input": True,
-            },
-        }
-
     recorder_runtime_module.RecorderRuntime._wechat_startup_self_check = fake_startup_check  # type: ignore[assignment]
-    recorder_runtime_module.RecorderRuntime._launch_operator_guard_for_loop = fake_operator_guard  # type: ignore[assignment]
     try:
         started = client.post("/api/recorder/runtime/start", headers=headers, json={})
         assert_equal(started.status_code, 200, "runtime start status")
@@ -162,7 +148,6 @@ def check_runtime_lifecycle(client: TestClient, headers: dict[str, str]) -> None
         assert_true(status_payload.get("running") is True, "runtime should be running after start")
     finally:
         recorder_runtime_module.RecorderRuntime._wechat_startup_self_check = original_startup_check  # type: ignore[assignment]
-        recorder_runtime_module.RecorderRuntime._launch_operator_guard_for_loop = original_operator_guard  # type: ignore[assignment]
         stopped = client.post("/api/recorder/runtime/stop", headers=headers, json={})
         assert_equal(stopped.status_code, 200, "runtime stop status")
         assert_true(stopped.json().get("ok") is True, "runtime stop ok")

@@ -3,11 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 import importlib.util
 import json
+import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
+import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +38,19 @@ from tests.contract_artifacts import resolve_contract_artifact
 
 class PackagingScriptsTest(unittest.TestCase):
     @staticmethod
+    def _load_fast_uat_package_module():
+        path = ROOT / "scripts" / "build-fast-uat-package.py"
+        spec = importlib.util.spec_from_file_location(
+            "chejin_build_fast_uat_package_test",
+            path,
+        )
+        if spec is None or spec.loader is None:
+            raise AssertionError("fast UAT package module unavailable")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    @staticmethod
     def _load_source_package_module():
         path = ROOT / "scripts" / "build-source-package.py"
         spec = importlib.util.spec_from_file_location(
@@ -49,15 +66,58 @@ class PackagingScriptsTest(unittest.TestCase):
     def test_powershell_param_block_precedes_executable_statements(self):
         scripts = [
             ROOT / "scripts" / "build-windows.ps1",
+            ROOT / "scripts" / "build-fast-uat-runtime.ps1",
             ROOT / "scripts" / "collect-wechat-diagnostics.ps1",
             ROOT / "scripts" / "run-preflight.ps1",
             ROOT / "scripts" / "validate-package.ps1",
+            ROOT / "packaging" / "start-fast-uat.ps1",
         ]
 
         for script in scripts:
             text = script.read_text(encoding="utf-8-sig").lstrip()
             if "param(" in text:
                 self.assertTrue(text.startswith("param("), f"{script.name} 的 param 块必须在脚本最前面")
+
+    def test_retired_desktop_input_feature_has_no_active_source_residue(self):
+        source_roots = (
+            ROOT / "chejin_worker_client",
+            ROOT / "packaging",
+            ROOT / "scripts",
+            ROOT / "omniauto-rpa" / "apps" / "wechat_ai_customer_service",
+            ROOT.parent / "packages" / "worker-ui-baseline" / "src",
+            ROOT.parent / ".github",
+        )
+        source_suffixes = {".py", ".ps1", ".yml", ".yaml", ".json", ".ts", ".tsx", ".js", ".css"}
+        skipped_parts = {"__pycache__", "node_modules", "dist", "web_assets"}
+        retired_patterns = (
+            "ui_" + "operator_" + "guard",
+            "rpa_" + "operator_" + "guard",
+            "rpa-" + "operator-" + "guard",
+            "operator" + "Guard",
+            "guard" + "_fault",
+            "guard" + "_health",
+            "floating_" + "indicator",
+            "block_" + "manual_input",
+            "OPERATOR_" + "GUARD",
+            "悬浮" + "球",
+            "守护" + "故障",
+        )
+        shortcut_pattern = re.compile(r"(?<![A-Za-z0-9])" + "F" + "8" + r"(?![A-Za-z0-9])", re.IGNORECASE)
+        residue: list[str] = []
+
+        for source_root in source_roots:
+            for path in source_root.rglob("*"):
+                if not path.is_file() or path.suffix.lower() not in source_suffixes:
+                    continue
+                if skipped_parts.intersection(path.parts):
+                    continue
+                text = path.read_text(encoding="utf-8-sig", errors="ignore")
+                lowered = text.lower()
+                matches = [pattern for pattern in retired_patterns if pattern.lower() in lowered]
+                if matches or shortcut_pattern.search(text):
+                    residue.append(f"{path}: {', '.join(matches) or 'retired shortcut'}")
+
+        self.assertEqual([], residue, "\n".join(residue))
 
     def test_build_script_writes_manifest_and_checks_sidecar(self):
         text = (ROOT / "scripts" / "build-windows.ps1").read_text(encoding="utf-8-sig")
@@ -89,7 +149,12 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("pyi-archive_viewer.exe -l -r", text)
         self.assertIn("client_delivery_policy.py", text)
         self.assertIn("client_delivery_boundary_check", text)
-        self.assertIn("最终 exe 未包含 Windows UIA 诊断所需的 uiautomation", text)
+        self.assertIn("最终 exe 未包含运行依赖", text)
+        self.assertIn('"uiautomation"', text)
+        self.assertIn('"pyperclip"', text)
+        self.assertIn('"pywinauto"', text)
+        self.assertIn('"psutil"', text)
+        self.assertIn('"tkinter"', text)
         self.assertIn('"--omniauto-sidecar", "--help"', text)
         self.assertIn("最终 exe 无法启动内置 OmniAuto sidecar", text)
         self.assertIn('"--omniauto-ocr-probe"', text)
@@ -104,6 +169,212 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("OFFICIAL_BUILD_GIT_SOURCE_REQUIRED", (
             ROOT / "scripts" / "build_source.py"
         ).read_text(encoding="utf-8"))
+
+    def test_windows_ci_publishes_a_verified_portable_zip(self):
+        workflow = (
+            ROOT.parent / ".github" / "workflows" / "worker-windows-package.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("4998a5853154dde2c224a21a3eef66c7b6d7db99", workflow)
+        self.assertIn("git merge-base --is-ancestor", workflow)
+        self.assertIn("Compress-Archive -Path $packageDir", workflow)
+        self.assertIn("Expand-Archive -LiteralPath $zipPath", workflow)
+        self.assertIn('Get-ChildItem -Path $verifyDir -Filter "*.exe" -File -Recurse', workflow)
+        self.assertIn("matching the packaged SHA256", workflow)
+        self.assertIn("delivery ZIP does not contain the packaged runtime directory", workflow)
+        self.assertIn("app_name = [string]$manifest.app_name", workflow)
+        self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
+        self.assertIn("chejin-worker-v0.9.20-windows-x64.delivery.json", workflow)
+        self.assertIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
+        self.assertIn("vision_credential_embedded", workflow)
+        self.assertIn("vision_configuration_locked", workflow)
+        self.assertIn("vision_live_probe_check", workflow)
+        self.assertIn("diagnostic or manifest output leaked the Vision credential", workflow)
+        self.assertIn("delivery manifest leaked the Vision credential", workflow)
+        self.assertIn('Join-Path $verifiedPackageRoot "start-uat.ps1"', workflow)
+        self.assertIn("powershell.exe -NoProfile -NonInteractive", workflow)
+        self.assertIn("validate-uat-launcher.ps1", workflow)
+        self.assertIn('uat_launcher_utf8_bom_check = "passed"', workflow)
+        self.assertIn('uat_launcher_powershell_5_1_parse_check = "passed"', workflow)
+        self.assertIn("client_delivery_boundary_check", workflow)
+        self.assertIn("actions/upload-artifact@v4", workflow)
+        self.assertIn("if-no-files-found: error", workflow)
+
+    def test_formal_exe_workflow_is_manual_and_requires_completed_uat(self):
+        workflow = (
+            ROOT.parent / ".github" / "workflows" / "worker-windows-package.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("workflow_dispatch:", workflow)
+        self.assertNotIn("\n  push:", workflow)
+        self.assertIn("release_approved:", workflow)
+        self.assertIn("release_reason:", workflow)
+        self.assertIn("Formal EXE build is blocked until Fast UAT C0-C4 is approved", workflow)
+
+    def test_fast_uat_workflow_reuses_runtime_and_probes_extracted_zip(self):
+        workflow = (
+            ROOT.parent / ".github" / "workflows" / "worker-windows-fast-uat.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("actions/cache@v4", workflow)
+        self.assertIn("build-fast-uat-runtime.ps1", workflow)
+        self.assertIn("python run_checks.py", workflow)
+        self.assertIn("build-fast-uat-package.py", workflow)
+        self.assertIn("debug_uat", workflow)
+        self.assertIn("git_dirty", workflow)
+        self.assertIn("not_for_customer_release", workflow)
+        self.assertIn("Expand-Archive -LiteralPath $zip.FullName", workflow)
+        self.assertIn("start-fast-uat.ps1", workflow)
+        self.assertIn("-PreflightOnly -SkipBackend -SkipWechat", workflow)
+        self.assertIn("actions/upload-artifact@v4", workflow)
+
+    def test_fast_uat_runtime_cache_is_gitignored(self):
+        result = subprocess.run(
+            [
+                "git",
+                "check-ignore",
+                "-q",
+                "--no-index",
+                "worker-client/.fast-uat-runtime/runtime/python.exe",
+            ],
+            cwd=ROOT.parent,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0)
+
+    def test_fast_uat_launcher_uses_locked_runtime_and_shared_worker_data(self):
+        launcher = (ROOT / "packaging" / "start-fast-uat.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+
+        self.assertIn('$env:CHEJIN_BUILD_KIND = "debug_uat_locked"', launcher)
+        self.assertIn("CHEJIN_VISION_CREDENTIAL_PATH", launcher)
+        self.assertIn("CHEJIN_OMNIAUTO_RPA_SOURCE", launcher)
+        self.assertIn('Join-Path $localAppData "CheJinWorker\\diagnostics"', launcher)
+        self.assertNotIn("CHEJIN_WORKER_HOME", launcher)
+        self.assertIn('"-m", "chejin_worker_client.main"', launcher)
+
+    def test_fast_uat_zip_is_portable_traceable_and_explicitly_non_formal(self):
+        module = self._load_fast_uat_package_module()
+        commit = "a" * 40
+        provenance = {
+            "schema_version": 2,
+            "upstream_base_commit": "b" * 40,
+            "chejin_integration_commit": "c" * 40,
+        }
+
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ,
+            {"CHEJIN_VISION_CLIENT_API_KEY": "fast-uat-secret-never-public"},
+            clear=False,
+        ):
+            root = Path(temp)
+            runtime = root / "runtime-base"
+            output = root / "release"
+            runtime.mkdir()
+            (runtime / "python.exe").write_bytes(b"portable-python")
+            (runtime / "pythonw.exe").write_bytes(b"portable-pythonw")
+            (runtime / "fast-uat-runtime-base.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "runtime_kind": "chejin_worker_fast_uat_base",
+                        "python_version": "3.12.10",
+                        "platform": "windows-x64",
+                        "reusable": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            def copy_worker(destination):
+                target = destination / "chejin_worker_client" / "__init__.py"
+                target.parent.mkdir(parents=True)
+                target.write_text('__version__ = "test"\n', encoding="utf-8")
+
+            def copy_omniauto(destination):
+                target = destination / "omniauto-rpa" / "apps" / "sidecar.py"
+                target.parent.mkdir(parents=True)
+                target.write_text("# packaged OmniAuto\n", encoding="utf-8")
+
+            with patch.object(module, "_copy_worker_app", side_effect=copy_worker), patch.object(
+                module, "_copy_omniauto", side_effect=copy_omniauto
+            ), patch.object(
+                module,
+                "verify_build_source",
+                return_value={"git_commit": commit, "git_dirty": False},
+            ), patch.object(
+                module, "load_source_provenance", return_value=provenance
+            ), patch.object(
+                module,
+                "tree_manifest",
+                return_value={"tree_sha256": "d" * 64, "file_count": 1},
+            ):
+                result = module.build(
+                    runtime_root=runtime,
+                    output_dir=output,
+                    git_commit=commit,
+                    git_branch="codex/worker-fast-uat-test",
+                )
+
+            zip_path = Path(str(result["zip_path"]))
+            self.assertTrue(zip_path.is_file())
+            with zipfile.ZipFile(zip_path) as archive:
+                members = set(archive.namelist())
+                manifest = json.loads(
+                    archive.read("CheJinWorkerDebug/fast-uat-manifest.json")
+                )
+                credential = json.loads(
+                    archive.read("CheJinWorkerDebug/app/vision-runtime.json")
+                )
+                public_manifest_bytes = archive.read(
+                    "CheJinWorkerDebug/fast-uat-manifest.json"
+                )
+
+            self.assertIn("CheJinWorkerDebug/runtime/python.exe", members)
+            self.assertIn("CheJinWorkerDebug/runtime/pythonw.exe", members)
+            self.assertIn("CheJinWorkerDebug/start-fast-uat.ps1", members)
+            self.assertTrue(manifest["debug_uat"])
+            self.assertFalse(manifest["formal_release"])
+            self.assertTrue(manifest["not_for_customer_release"])
+            self.assertEqual(manifest["git_commit"], commit)
+            self.assertIs(manifest["git_dirty"], False)
+            self.assertEqual(manifest["omniauto_source"], provenance)
+            self.assertEqual(
+                manifest["runtime_base"]["runtime_kind"],
+                "chejin_worker_fast_uat_base",
+            )
+            self.assertEqual(
+                credential["vision_api_key"], "fast-uat-secret-never-public"
+            )
+            self.assertNotIn(b"fast-uat-secret-never-public", public_manifest_bytes)
+
+    def test_fast_uat_zip_rejects_dirty_git_source(self):
+        module = self._load_fast_uat_package_module()
+        commit = "a" * 40
+
+        with tempfile.TemporaryDirectory() as temp, patch.dict(
+            os.environ,
+            {"CHEJIN_VISION_CLIENT_API_KEY": "fast-uat-secret-never-public"},
+            clear=False,
+        ):
+            root = Path(temp)
+            runtime = root / "runtime-base"
+            runtime.mkdir()
+            (runtime / "python.exe").write_bytes(b"portable-python")
+
+            with patch.object(
+                module,
+                "verify_build_source",
+                return_value={"git_commit": commit, "git_dirty": True},
+            ), self.assertRaisesRegex(SystemExit, "FAST_UAT_GIT_DIRTY"):
+                module.build(
+                    runtime_root=runtime,
+                    output_dir=root / "release",
+                    git_commit=commit,
+                    git_branch="codex/worker-fast-uat-test",
+                )
 
     def test_source_package_script_excludes_local_env_and_runtime_state(self):
         text = (ROOT / "scripts" / "build-source-package.py").read_text(encoding="utf-8")
@@ -228,13 +499,119 @@ class PackagingScriptsTest(unittest.TestCase):
 
         self.assertEqual(
             provenance["upstream_base_commit"],
-            "35b0eee13c6423d56a0f15736f96a422e10d8d1c",
+            "a563e6688c47a8922510794101967823fe1389d7",
         )
-        self.assertEqual(provenance["selective_integrations"], [])
+        self.assertEqual(
+            provenance["selective_integrations"],
+            [
+                {
+                    "source_commit": (
+                        "1591942b872ef6d9db10e1922d441aff30c2c414"
+                    ),
+                    "scope": [
+                        "exact_wechat_context_menu_classification",
+                        "same_popup_menu_panel_evidence_contract",
+                        "clipboard_non_bitmap_failure_settlement",
+                        "formal_image_menu_failure_reason_contract",
+                        "copy_click_precommit_safety_order",
+                        (
+                            "reliable_message_type_before_structural_"
+                            "image_arbitration"
+                        ),
+                        (
+                            "monotonic_reliable_text_voice_type_"
+                            "arbitration"
+                        ),
+                        "voice_prepare_execute_single_target_contract",
+                        "continuous_voice_tracking_edges_contract",
+                        "unified_voice_observation_sequence_arbitration",
+                        (
+                            "voice_action_journal_monotonic_terminal_"
+                            "settlement"
+                        ),
+                        "ambiguous_voice_finite_terminal_settlement",
+                        "frame_visual_id_not_durable_identity",
+                        "source_message_transport_allowlist",
+                        "typed_committed_media_identity_contract",
+                        "media_action_four_terminal_contract",
+                        "c2_contract_0_9_20_generated_schema",
+                        (
+                            "voice_frame_action_binding_observation_"
+                            "projection_contract"
+                        ),
+                        "bounded_send_foreground_focus_recovery_contract",
+                        (
+                            "brain_soft_evidence_clarification_and_"
+                            "reply_then_handoff_contract"
+                        ),
+                        "post_confirm_add_friend_dialog_cleanup_contract",
+                        (
+                            "post_confirm_add_friend_surviving_hwnd_"
+                            "cleanup_verification"
+                        ),
+                        "already_friend_add_friend_dialog_cleanup_contract",
+                        "sidebar_title_preview_physical_line_separation",
+                        (
+                            "safe_visible_target_stale_after_click_"
+                            "relocation_contract"
+                        ),
+                        "tall_image_bubble_same_row_avatar_role_recovery",
+                    ],
+                }
+            ],
+        )
         self.assertIn(
             "strict_current_screen_without_history_scroll",
             provenance["chejin_overlays"],
         )
+        self.assertIn(
+            "c2_omniauto_authoritative_session_admission",
+            provenance["chejin_overlays"],
+        )
+        self.assertIn(
+            "c3_active_chat_send_context_guard",
+            provenance["chejin_overlays"],
+        )
+        self.assertIn(
+            "1591942b872ef6d9db10e1922d441aff30c2c414",
+            provenance["integration_note"],
+        )
+        self.assertIn("0.9.20", provenance["integration_note"])
+        self.assertIn("committed_message", provenance["integration_note"])
+        self.assertIn(
+            "immutable_visible_scan_frame_reuse_contract",
+            provenance["chejin_overlays"],
+        )
+        self.assertIn(
+            "post_brain_pre_send_fresh_frame_local_reuse_contract",
+            provenance["chejin_overlays"],
+        )
+        self.assertIn(
+            "send_s0_s1_s2_distinct_frame_local_reuse_contract",
+            provenance["chejin_overlays"],
+        )
+        self.assertIn("有界恢复合同", provenance["integration_note"])
+        self.assertIn("两次有界恢复合同", provenance["integration_note"])
+        self.assertIn(
+            "此前已经证明的添加朋友 HWND",
+            provenance["integration_note"],
+        )
+        self.assertIn("已经是好友两条完成路径", provenance["integration_note"])
+        self.assertIn(
+            "可靠文字/语音类型一经确认即不可被结构图片覆盖且不依赖动作成功",
+            provenance["integration_note"],
+        )
+        self.assertIn(
+            "OmniAuto 独占标题 OCR",
+            provenance["integration_note"],
+        )
+        self.assertIn("Worker 只校验", provenance["integration_note"])
+        self.assertIn("不读取 `raw_title`", provenance["integration_note"])
+        self.assertIn("侧栏红点或其他会话变化不得阻断发送", provenance["integration_note"])
+        self.assertIn("高图片气泡", provenance["integration_note"])
+        self.assertIn("AI 发送确认回执", provenance["integration_note"])
+        self.assertIn("Brain 软证据澄清", provenance["integration_note"])
+        self.assertIn("reply_then_handoff", provenance["integration_note"])
         self.assertEqual(
             provenance["historical_integrations"][0][
                 "chejin_integration_commit"
@@ -442,7 +819,32 @@ class PackagingScriptsTest(unittest.TestCase):
 
     def test_pyinstaller_spec_packages_contract_and_filters_omniauto_runtime_data(self):
         text = (ROOT / "packaging" / "chejin-worker-client.spec").read_text(encoding="utf-8")
+        entry_text = (ROOT / "packaging" / "chejin_worker_client_entry.py").read_text(
+            encoding="utf-8"
+        )
 
+        self.assertIn('ENTRY_PATH = ROOT / "packaging" / "chejin_worker_client_entry.py"', text)
+        self.assertIn("[str(ENTRY_PATH)]", text)
+        self.assertNotIn('["chejin_worker_client/main.py"]', text)
+        self.assertIn('PIL_HIDDEN_IMPORTS = collect_submodules("PIL")', text)
+        self.assertIn("*PIL_HIDDEN_IMPORTS", text)
+        self.assertIn('collect_all("rapidocr_onnxruntime")', text)
+        self.assertIn("RAPIDOCR_DATAS", text)
+        self.assertIn("RAPIDOCR_BINARIES", text)
+        self.assertIn("RAPIDOCR_HIDDEN_IMPORTS", text)
+        self.assertIn("disable_windowed_traceback=True", text)
+        self.assertIn("from chejin_worker_client.main import main", entry_text)
+        self.assertNotIn("from .", entry_text)
+        self.assertIn("CHEJIN_PACKAGING_DIAGNOSTIC_PATH", entry_text)
+        self.assertIn("_write_startup_diagnostic", entry_text)
+        self.assertIn('"startup-crash.jsonl"', entry_text)
+        self.assertIn("_restore_frozen_worker_stdio", entry_text)
+        self.assertIn('"--omniauto-ocr-worker"', entry_text)
+        self.assertIn('"--vision-provider-worker"', entry_text)
+        retired_mode = '"--rpa-' + 'operator-' + 'guard"'
+        self.assertNotIn(retired_mode, entry_text)
+        self.assertIn('"--omniauto-vision-wechat-worker"', entry_text)
+        self.assertIn("GetStdHandle", entry_text)
         self.assertIn("CONTRACT_PATH = resolve_contract_path(ROOT)", text)
         self.assertIn('(str(CONTRACT_PATH), "contracts")', text)
         self.assertIn("EXCLUDED_OMNIAUTO_PARTS", text)
@@ -451,6 +853,148 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("is_client_forbidden_path", text)
         self.assertIn('"uiautomation"', text)
         self.assertNotIn('(str(OMNIAUTO_RPA_SOURCE), "omniauto-rpa")', text)
+
+    def test_build_script_fails_closed_on_tests_and_required_frozen_modules(self):
+        text = (ROOT / "scripts" / "build-windows.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+
+        self.assertIn('$env:PYTHONUTF8 = "1"', text)
+        self.assertIn('$env:PYTHONIOENCODING = "utf-8"', text)
+        self.assertIn("onnxruntime.__version__ == '1.20.1'", text)
+        self.assertIn("RapidOCR()(image)", text)
+        self.assertIn("源码环境无法初始化固定版本的图片复核 OCR", text)
+        self.assertIn("Worker 完整测试未通过", text)
+        self.assertIn("PyInstaller 构建失败", text)
+        self.assertIn('"PIL.ImageEnhance"', text)
+        self.assertIn('"PIL.ImageGrab"', text)
+        self.assertIn('"rapidocr_onnxruntime"', text)
+        self.assertIn('"pyperclip"', text)
+        self.assertIn('"pywinauto"', text)
+        self.assertIn('"psutil"', text)
+        self.assertIn('"tkinter"', text)
+        self.assertIn("packaging-runtime-diagnostics.jsonl", text)
+        self.assertIn("CHEJIN_PACKAGING_DIAGNOSTIC_PATH", text)
+        self.assertIn('"packaging\\start-uat.ps1"', text)
+        self.assertIn("Copy-Item -LiteralPath $UatLauncherSourcePath", text)
+        self.assertIn("validate-uat-launcher.ps1", text)
+        self.assertIn("powershell.exe -NoProfile -NonInteractive", text)
+        self.assertIn("Windows PowerShell 5.1 BOM/语法门禁", text)
+        self.assertIn("CHEJIN_VISION_CLIENT_API_KEY", text)
+        self.assertIn("GITHUB_ACTIONS", text)
+        self.assertIn("CHEJIN_VISION_CREDENTIAL_PATH", text)
+        self.assertIn("vision-runtime.json", text)
+        self.assertIn("最终 exe 内置 Vision 能力预检未通过", text)
+        self.assertIn("最终 exe 内置 Vision 真实能力探针未通过", text)
+        self.assertIn("vision_live_probe_check", text)
+
+    def test_uat_launcher_requires_api_runs_preflight_and_saves_report(self):
+        raw = (ROOT / "packaging" / "start-uat.ps1").read_bytes()
+        self.assertEqual(raw[:3], bytes.fromhex("EF BB BF"))
+        text = raw.decode("utf-8-sig")
+
+        self.assertIn("[Parameter(Mandatory = $true)]", text)
+        self.assertIn("CHEJIN_API_BASE_URL", text)
+        self.assertIn('CHEJIN_RPA_MODE = "real"', text)
+        self.assertIn('"--preflight"', text)
+        self.assertIn('"--write-report"', text)
+        self.assertIn('"uat-preflight-$timestamp.json"', text)
+        self.assertIn("if ($preflight.ExitCode -ne 0)", text)
+        self.assertIn("Start-Process -FilePath $exePath", text)
+
+    def test_powershell_5_1_validator_checks_bom_and_real_parser(self):
+        text = (ROOT / "scripts" / "validate-uat-launcher.ps1").read_text(
+            encoding="ascii"
+        )
+
+        self.assertIn("PSVersionTable.PSVersion.Major -ne 5", text)
+        self.assertIn("PSVersionTable.PSVersion.Minor -ne 1", text)
+        self.assertIn('PSVersionTable.PSEdition -ne "Desktop"', text)
+        self.assertIn("[System.IO.File]::ReadAllBytes", text)
+        self.assertIn("$bytes[0] -ne 0xEF", text)
+        self.assertIn("$bytes[1] -ne 0xBB", text)
+        self.assertIn("$bytes[2] -ne 0xBF", text)
+        self.assertIn("Language.Parser]::ParseFile", text)
+        self.assertIn("parse_error_count", text)
+        self.assertIn("POWERSHELL_5_1_PARSE_GATE", text)
+
+    def test_windows_package_ci_builds_and_probes_the_frozen_executable(self):
+        workflow = (
+            ROOT.parent / ".github" / "workflows" / "worker-windows-package.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("runs-on: windows-latest", workflow)
+        self.assertIn("shell: powershell", workflow)
+        self.assertIn(".\\scripts\\build-windows.ps1", workflow)
+        self.assertIn("validate-package.ps1", workflow)
+        self.assertIn('$manifestFiles = @(Get-ChildItem', workflow)
+        self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
+        self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
+        self.assertNotIn('dist\\车金Worker客户端', workflow)
+        self.assertIn('version -ne "0.9.20"', workflow)
+        self.assertIn('tests_status -ne "passed"', workflow)
+        self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
+        self.assertIn('@("--omniauto-ocr-probe")', workflow)
+        self.assertIn("chejin-worker-packaged-preflight.json", workflow)
+        self.assertIn("chejin-worker-packaged-diagnostics.jsonl", workflow)
+        self.assertIn('"--preflight-format", "json", "--write-report"', workflow)
+        self.assertIn("packaged Vision live capability probe did not pass", workflow)
+        self.assertIn('Remove-Item Env:CHEJIN_PACKAGING_DIAGNOSTIC_PATH', workflow)
+        self.assertIn('"--startup-crash-probe"', workflow)
+        self.assertIn("startup-crash.jsonl", workflow)
+        self.assertIn("normal packaged startup produced a false crash diagnostic", workflow)
+        self.assertIn("normal packaged startup probe timed out", workflow)
+        self.assertIn("intentional packaged startup crash probe timed out", workflow)
+        self.assertIn("startup crash diagnostic build identity mismatch", workflow)
+        self.assertIn("contents: read", workflow)
+        self.assertNotIn("contents: write", workflow)
+
+    def test_package_includes_one_command_uat_evidence_collector(self):
+        collector = ROOT / "packaging" / "collect-uat-evidence.ps1"
+        helper = ROOT / "packaging" / "collect_uat_evidence.py"
+        raw = collector.read_bytes()
+        text = raw.decode("utf-8-sig")
+        helper_text = helper.read_text(encoding="utf-8")
+        build = (ROOT / "scripts" / "build-windows.ps1").read_text(
+            encoding="utf-8-sig"
+        )
+        workflow = (
+            ROOT.parent / ".github" / "workflows" / "worker-windows-package.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertEqual(raw[:3], b"\xef\xbb\xbf")
+        self.assertIn("[datetimeoffset]$From", text)
+        self.assertIn("[datetimeoffset]$To", text)
+        self.assertIn("collect_uat_evidence.py", text)
+        self.assertIn("mode=ro", helper_text)
+        self.assertIn("PRAGMA query_only=ON", helper_text)
+        self.assertIn('"worker_client.sqlite3"', helper_text)
+        self.assertIn('"chat_screenshots"', helper_text)
+        self.assertIn("collect-uat-evidence.ps1", build)
+        self.assertIn("collect_uat_evidence.py", build)
+        self.assertIn("collect-uat-evidence.ps1", workflow)
+        self.assertIn("collect_uat_evidence.py", workflow)
+
+    def test_packaging_entry_imports_main_with_package_context(self):
+        environment = dict(os.environ)
+        environment["PYTHONIOENCODING"] = "utf-8"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "packaging" / "chejin_worker_client_entry.py"),
+                "--help",
+            ],
+            cwd=ROOT,
+            env=environment,
+            capture_output=True,
+            encoding="utf-8",
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("usage: chejin-worker-client", result.stdout)
+        self.assertNotIn("attempted relative import", result.stderr)
 
     def test_client_delivery_policy_rejects_actual_server_private_paths(self):
         omniauto_root = ROOT / "omniauto-rpa"
@@ -466,6 +1010,13 @@ class PackagingScriptsTest(unittest.TestCase):
             is_client_forbidden_path(
                 "apps/wechat_ai_customer_service/deploy/aliyun1/"
                 "vps_admin_control_plane.enc.json",
+                excludes,
+            )
+        )
+        self.assertTrue(
+            is_client_forbidden_path(
+                "apps/wechat_ai_customer_service/scripts/"
+                "run_customer_service_listener.py",
                 excludes,
             )
         )
@@ -528,17 +1079,23 @@ class PackagingScriptsTest(unittest.TestCase):
             ],
         )
 
-    def test_windows_requirements_pin_uiautomation_for_diagnostics(self):
+    def test_windows_requirements_pin_native_runtime_dependencies(self):
         text = (ROOT / "requirements.txt").read_text(encoding="utf-8")
 
         self.assertIn(
             'uiautomation==2.0.29; platform_system == "Windows"',
             text,
         )
+        self.assertIn(
+            'onnxruntime==1.20.1; platform_system == "Windows"',
+            text,
+        )
 
     def test_run_checks_includes_omniauto_safety_suites(self):
         text = (ROOT / "run_checks.py").read_text(encoding="utf-8")
 
+        self.assertIn('env["PYTHONUTF8"] = "1"', text)
+        self.assertIn('env["PYTHONIOENCODING"] = "utf-8"', text)
         self.assertIn("generate-c2-observation-schema.py", text)
         self.assertIn('"--check"', text)
         required_scripts = (

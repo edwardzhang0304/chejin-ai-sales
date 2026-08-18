@@ -113,14 +113,6 @@ def runtime_operator_control_path(tenant_id: str | None = None) -> Path:
     return runtime_dir(tenant_id) / "operator_control.json"
 
 
-def runtime_operator_guard_pid_path(tenant_id: str | None = None) -> Path:
-    return runtime_dir(tenant_id) / "operator_guard.pid.json"
-
-
-def runtime_operator_guard_state_path(tenant_id: str | None = None) -> Path:
-    return runtime_dir(tenant_id) / "operator_guard.state.json"
-
-
 def worker_pid_path(tenant_id: str | None = None) -> Path:
     return runtime_dir(tenant_id) / "worker.pid.json"
 
@@ -287,12 +279,6 @@ class CustomerServiceRuntime:
         worker_running = self._worker_pid_matches_tenant_queue(worker_pid)
         if worker_pid and not worker_running:
             self._clear_worker_pid_record()
-        guard_pid_record = self._read_operator_guard_pid_record()
-        guard_pid = int(guard_pid_record.get("pid") or 0)
-        guard_running = self._pid_alive(guard_pid)
-        guard_state = self._read_operator_guard_state() if guard_running else {}
-        if not guard_running and guard_pid_record:
-            self._clear_operator_guard_runtime_files()
         queue_summary = {}
         try:
             from apps.wechat_ai_customer_service.admin_backend.services.work_queue import WorkQueueService
@@ -309,9 +295,6 @@ class CustomerServiceRuntime:
                 "cloud_gate": gate,
                 "worker_pid": worker_pid if worker_running else None,
                 "worker_running": worker_running,
-                "operator_guard_pid": guard_pid if guard_running else None,
-                "operator_guard_running": guard_running,
-                "operator_guard_state": guard_state,
                 "queue_summary": queue_summary,
             }
         )
@@ -1071,7 +1054,6 @@ class CustomerServiceRuntime:
             self._terminate_tree(pid)
         self._stop_worker()
         self._stop_ocr_sidecars()
-        self._shutdown_operator_guard()
         write_runtime_status("stopped", "已停止。", tenant_id=self.tenant_id)
         self._clear_pid_record()
         return {"ok": True, "message": "已停止。", "item": self.status()}
@@ -1121,26 +1103,6 @@ class CustomerServiceRuntime:
             return {}
         return payload if isinstance(payload, dict) else {}
 
-    def _read_operator_guard_pid_record(self) -> dict[str, Any]:
-        path = runtime_operator_guard_pid_path(self.tenant_id)
-        if not path.exists():
-            return {}
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
-        return payload if isinstance(payload, dict) else {}
-
-    def _read_operator_guard_state(self) -> dict[str, Any]:
-        path = runtime_operator_guard_state_path(self.tenant_id)
-        if not path.exists():
-            return {}
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
-        return payload if isinstance(payload, dict) else {}
-
     def _write_pid_record(self, payload: dict[str, Any]) -> None:
         path = runtime_pid_path(self.tenant_id)
         atomic_write_json(path, payload)
@@ -1150,23 +1112,6 @@ class CustomerServiceRuntime:
             runtime_pid_path(self.tenant_id).unlink()
         except FileNotFoundError:
             pass
-
-    def _clear_operator_guard_runtime_files(self) -> None:
-        for path in (
-            runtime_operator_guard_pid_path(self.tenant_id),
-            runtime_operator_guard_state_path(self.tenant_id),
-        ):
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
-
-    def _shutdown_operator_guard(self) -> None:
-        pid_record = self._read_operator_guard_pid_record()
-        guard_pid = int(pid_record.get("pid") or 0)
-        if guard_pid and self._pid_alive(guard_pid):
-            self._terminate_tree(guard_pid)
-        self._clear_operator_guard_runtime_files()
 
     _LISTENER_SCRIPT_NAME = "run_customer_service_listener.py"
     _WORKER_SCRIPT_NAME = "background_worker.py"
@@ -1457,16 +1402,12 @@ class CustomerServiceRuntime:
 
 def stop_customer_service_support_processes(
     tenant_id: str | None = None,
-    *,
-    include_operator_guard: bool = True,
 ) -> None:
-    """Best-effort cleanup used by both web stop and F8 emergency stop."""
+    """Best-effort cleanup used by the web and runtime stop paths."""
 
     runtime = CustomerServiceRuntime(tenant_id=tenant_id)
     runtime._stop_worker()
     runtime._stop_ocr_sidecars()
-    if include_operator_guard:
-        runtime._shutdown_operator_guard()
 
 
 def stop_wechat_ocr_sidecars() -> None:

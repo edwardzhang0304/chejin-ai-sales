@@ -1,4 +1,4 @@
-param(
+﻿param(
   [switch]$SkipTests,
   [switch]$SkipPreflight,
   [switch]$DevelopmentBuild,
@@ -6,6 +6,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
 
 $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $Root
@@ -15,6 +17,15 @@ $PackageDir = Join-Path $Root "dist\车金Worker客户端"
 $ExePath = Join-Path $PackageDir "车金Worker客户端.exe"
 $ManifestPath = Join-Path $ReportsDir "车金Worker客户端.manifest.json"
 $PreflightReportPath = Join-Path $ReportsDir "preflight-build-report.json"
+$PackagingDiagnosticPath = Join-Path $ReportsDir "packaging-runtime-diagnostics.jsonl"
+$UatLauncherSourcePath = Join-Path $Root "packaging\start-uat.ps1"
+$UatLauncherPath = Join-Path $PackageDir "start-uat.ps1"
+$UatEvidenceCollectorSourcePath = Join-Path $Root "packaging\collect-uat-evidence.ps1"
+$UatEvidenceCollectorPath = Join-Path $PackageDir "collect-uat-evidence.ps1"
+$UatEvidenceHelperSourcePath = Join-Path $Root "packaging\collect_uat_evidence.py"
+$UatEvidenceHelperPath = Join-Path $PackageDir "collect_uat_evidence.py"
+$UatLauncherValidatorPath = Join-Path $Root "scripts\validate-uat-launcher.ps1"
+$VisionCredentialPath = Join-Path $ReportsDir "vision-runtime.json"
 $OmniAutoSourcePath = Join-Path $Root "omniauto-rpa"
 $OmniAutoProvenancePath = Join-Path $OmniAutoSourcePath ".chejin-source.json"
 $OmniAutoSidecarPath = Join-Path $OmniAutoSourcePath "apps\wechat_ai_customer_service\adapters\wechat_win32_ocr_sidecar.py"
@@ -97,15 +108,57 @@ if (-not (Test-Path ".venv")) {
 }
 
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：pip 升级失败"
+}
 .\.venv\Scripts\pip.exe install -r requirements.txt
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：依赖安装失败"
+}
 .\.venv\Scripts\python.exe -c "import uiautomation; print('uiautomation import passed')"
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：uiautomation 导入失败"
+}
+$RapidOcrSourceProbe = & .\.venv\Scripts\python.exe -c "import json; import onnxruntime; from PIL import Image; from rapidocr_onnxruntime import RapidOCR; assert onnxruntime.__version__ == '1.20.1', onnxruntime.__version__; image = Image.new('RGB', (96, 48), 'white'); items, _ = RapidOCR()(image); image.close(); print(json.dumps({'ok': True, 'onnxruntime_version': onnxruntime.__version__, 'ocr_item_count': len(items or [])}))"
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：源码环境无法初始化固定版本的图片复核 OCR。$RapidOcrSourceProbe"
+}
 
 if (-not $SkipTests) {
   .\.venv\Scripts\python.exe run_checks.py
+  if ($LASTEXITCODE -ne 0) {
+    throw "打包失败：Worker 完整测试未通过"
+  }
   $TestsStatus = "passed"
 }
 
 New-Item -ItemType Directory -Force -Path $ReportsDir | Out-Null
+$env:CHEJIN_BUILD_KIND = if ($DevelopmentBuild) { "development" } else { "official" }
+if ($DevelopmentBuild) {
+  Remove-Item Env:CHEJIN_VISION_CREDENTIAL_PATH -ErrorAction SilentlyContinue
+  if (Test-Path $VisionCredentialPath) {
+    Remove-Item -LiteralPath $VisionCredentialPath -Force
+  }
+} else {
+  if ([string]$env:GITHUB_ACTIONS -ne "true") {
+    throw "正式打包失败：正式 Vision 凭据只能由 GitHub Actions CI Secret 注入。"
+  }
+  $VisionClientApiKey = [string]$env:CHEJIN_VISION_CLIENT_API_KEY
+  if ([string]::IsNullOrWhiteSpace($VisionClientApiKey)) {
+    throw "正式打包失败：CI 未注入客户端专用 Vision 凭据。"
+  }
+  $VisionCredentialJson = [ordered]@{
+    schema_version = 1
+    vision_api_key = $VisionClientApiKey.Trim()
+  } | ConvertTo-Json -Compress
+  [System.IO.File]::WriteAllText(
+    $VisionCredentialPath,
+    $VisionCredentialJson,
+    (New-Object System.Text.UTF8Encoding($false))
+  )
+  $env:CHEJIN_VISION_CREDENTIAL_PATH = $VisionCredentialPath
+  Remove-Item Env:CHEJIN_VISION_CLIENT_API_KEY -ErrorAction SilentlyContinue
+}
 
 if (-not $SkipPreflight) {
   $env:CHEJIN_RPA_MODE = "mock"
@@ -114,6 +167,9 @@ if (-not $SkipPreflight) {
     $env:CHEJIN_API_BASE_URL = $ApiBaseUrl
   }
   .\.venv\Scripts\python.exe -m chejin_worker_client.main --preflight --skip-backend --skip-wechat --preflight-format json --write-report $PreflightReportPath
+  if ($LASTEXITCODE -ne 0) {
+    throw "打包失败：Preflight 未通过"
+  }
   $PreflightStatus = "passed"
 }
 
@@ -124,12 +180,17 @@ if (-not (Test-Path $GeneratedObservationSchemaPath)) {
   throw "打包失败：缺少生成的 C2 observation schema"
 }
 .\.venv\Scripts\python.exe scripts\generate-c2-observation-schema.py --check
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：C2 observation schema 校验失败"
+}
 $env:CHEJIN_OMNIAUTO_RPA_SOURCE = $OmniAutoSourcePath
 $OmniAutoSourceSidecarHash = Get-FileHash -Algorithm SHA256 $OmniAutoSidecarPath
 $GeneratedObservationSchemaHash = Get-FileHash -Algorithm SHA256 $GeneratedObservationSchemaPath
-$OmniAutoSourceTree = (
-  .\.venv\Scripts\python.exe scripts\verify-omniauto-tree.py --source $OmniAutoSourcePath
-) | ConvertFrom-Json
+$OmniAutoSourceTreeJson = & .\.venv\Scripts\python.exe scripts\verify-omniauto-tree.py --source $OmniAutoSourcePath
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：OmniAuto 源码树校验失败"
+}
+$OmniAutoSourceTree = $OmniAutoSourceTreeJson | ConvertFrom-Json
 
 $Version = .\.venv\Scripts\python.exe -c "from chejin_worker_client import __version__; print(__version__)"
 $RuntimeBuildIdentityPath = Join-Path $ReportsDir "runtime-build-identity.json"
@@ -137,27 +198,96 @@ $RuntimeBuildIdentityPath = Join-Path $ReportsDir "runtime-build-identity.json"
   version = $Version.Trim()
   git_commit = $GitCommit.Trim()
   git_branch = $GitBranch.Trim()
+  build_kind = if ($DevelopmentBuild) { "development" } else { "official" }
+  formal_release = -not $DevelopmentBuild
 } | ConvertTo-Json -Depth 4 | Set-Content -Encoding UTF8 $RuntimeBuildIdentityPath
 $env:CHEJIN_BUILD_IDENTITY_PATH = $RuntimeBuildIdentityPath
 
 .\.venv\Scripts\pyinstaller.exe --clean --noconfirm packaging\chejin-worker-client.spec
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：PyInstaller 构建失败"
+}
 
 if (-not (Test-Path $ExePath)) {
   throw "打包失败：未找到 $ExePath"
 }
+if (-not (Test-Path $UatLauncherSourcePath)) {
+  throw "打包失败：未找到 UAT 启动脚本 $UatLauncherSourcePath"
+}
+if (-not (Test-Path $UatLauncherValidatorPath)) {
+  throw "打包失败：未找到 UAT 启动脚本校验器 $UatLauncherValidatorPath"
+}
+if (-not (Test-Path $UatEvidenceCollectorSourcePath)) {
+  throw "打包失败：未找到 UAT 证据收集脚本 $UatEvidenceCollectorSourcePath"
+}
+if (-not (Test-Path $UatEvidenceHelperSourcePath)) {
+  throw "打包失败：未找到 UAT 证据脱敏导出器 $UatEvidenceHelperSourcePath"
+}
+Copy-Item -LiteralPath $UatLauncherSourcePath -Destination $UatLauncherPath -Force
+& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $UatLauncherValidatorPath -ScriptPath $UatLauncherPath
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：UAT 启动脚本未通过 Windows PowerShell 5.1 BOM/语法门禁"
+}
+Copy-Item -LiteralPath $UatEvidenceCollectorSourcePath -Destination $UatEvidenceCollectorPath -Force
+Copy-Item -LiteralPath $UatEvidenceHelperSourcePath -Destination $UatEvidenceHelperPath -Force
+& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $UatLauncherValidatorPath -ScriptPath $UatEvidenceCollectorPath
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：UAT 证据收集脚本未通过 Windows PowerShell 5.1 BOM/语法门禁"
+}
+$env:CHEJIN_PACKAGING_DIAGNOSTIC_PATH = $PackagingDiagnosticPath
+if (Test-Path $PackagingDiagnosticPath) {
+  Remove-Item -Force $PackagingDiagnosticPath
+}
 $BundledSidecarProbe = Start-Process -FilePath $ExePath -ArgumentList @("--omniauto-sidecar", "--help") -Wait -PassThru
 if ($BundledSidecarProbe.ExitCode -ne 0) {
+  if (Test-Path $PackagingDiagnosticPath) {
+    Get-Content -Raw -Encoding UTF8 $PackagingDiagnosticPath | Write-Host
+  }
   throw "打包失败：最终 exe 无法启动内置 OmniAuto sidecar"
 }
 $BundledVisionOcrProbe = Start-Process -FilePath $ExePath -ArgumentList @("--omniauto-ocr-probe") -Wait -PassThru
 if ($BundledVisionOcrProbe.ExitCode -ne 0) {
+  if (Test-Path $PackagingDiagnosticPath) {
+    Get-Content -Raw -Encoding UTF8 $PackagingDiagnosticPath | Write-Host
+  }
   throw "打包失败：最终 exe 无法启动图片复核 OCR 独立进程"
 }
-$PackagedPythonArchive = (
-  .\.venv\Scripts\pyi-archive_viewer.exe -l -r $ExePath
-) -join "`n"
-if ($PackagedPythonArchive -notmatch 'uiautomation') {
-  throw "打包失败：最终 exe 未包含 Windows UIA 诊断所需的 uiautomation"
+$BundledVisionPreflightReport = Join-Path $ReportsDir "packaged-vision-preflight.json"
+$BundledVisionPreflight = Start-Process -FilePath $ExePath -ArgumentList @(
+  "--preflight", "--skip-backend", "--skip-wechat", "--preflight-format", "json",
+  "--write-report", $BundledVisionPreflightReport
+) -Wait -PassThru
+if ($BundledVisionPreflight.ExitCode -ne 0) {
+  throw "打包失败：最终 exe 内置 Vision 能力预检未通过"
+}
+$BundledVisionPreflightPayload = Get-Content -Raw -Encoding UTF8 $BundledVisionPreflightReport | ConvertFrom-Json
+$BundledVisionCheck = @($BundledVisionPreflightPayload.checks | Where-Object { $_.name -eq "vision_credential" })
+if ($BundledVisionCheck.Count -ne 1 -or
+    $BundledVisionCheck[0].ok -ne $true -or
+    $BundledVisionCheck[0].detail.credential_source -ne "embedded" -or
+    $BundledVisionCheck[0].detail.live_probe.ok -ne $true -or
+    $BundledVisionCheck[0].detail.live_probe.status -ne 200) {
+  throw "打包失败：最终 exe 内置 Vision 真实能力探针未通过"
+}
+$PackagedPythonArchiveLines = & .\.venv\Scripts\pyi-archive_viewer.exe -l -r $ExePath
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：无法读取最终 exe 的 Python 归档"
+}
+$PackagedPythonArchive = $PackagedPythonArchiveLines -join "`n"
+$RequiredArchiveModules = @(
+  "uiautomation",
+  "PIL.ImageEnhance",
+  "PIL.ImageGrab",
+  "rapidocr_onnxruntime",
+  "pyperclip",
+  "pywinauto",
+  "psutil",
+  "tkinter"
+)
+foreach ($RequiredArchiveModule in $RequiredArchiveModules) {
+  if ($PackagedPythonArchive -notmatch [regex]::Escape($RequiredArchiveModule)) {
+    throw "打包失败：最终 exe 未包含运行依赖 $RequiredArchiveModule"
+  }
 }
 
 $SidecarCandidates = @(
@@ -200,15 +330,23 @@ $ClientBoundary = $ClientBoundaryJson | ConvertFrom-Json
 if ($ClientBoundary.ok -ne $true) {
   throw "打包失败：客户端交付边界检查未通过。"
 }
-$OmniAutoTreeVerification = (
-  .\.venv\Scripts\python.exe scripts\verify-omniauto-tree.py --source $OmniAutoSourcePath --packaged $PackagedOmniAutoPath
-) | ConvertFrom-Json
+$OmniAutoTreeVerificationJson = & .\.venv\Scripts\python.exe scripts\verify-omniauto-tree.py --source $OmniAutoSourcePath --packaged $PackagedOmniAutoPath
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：最终产物 OmniAuto 树校验失败"
+}
+$OmniAutoTreeVerification = $OmniAutoTreeVerificationJson | ConvertFrom-Json
 
 $Hash = Get-FileHash -Algorithm SHA256 $ExePath
 $Files = Get-ChildItem $PackageDir -Recurse -File
 $TotalBytes = ($Files | Measure-Object -Property Length -Sum).Sum
 $ContractRevision = .\.venv\Scripts\python.exe -c "from chejin_worker_client.c2_contract import contract_revision; print(contract_revision())"
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：无法读取 C2 合同版本"
+}
 $ContractCanonicalSha256 = .\.venv\Scripts\python.exe -c "from chejin_worker_client.c2_contract import contract_sha256; print(contract_sha256())"
+if ($LASTEXITCODE -ne 0) {
+  throw "打包失败：无法读取 C2 合同哈希"
+}
 $PackagedContractCandidates = @(
   (Join-Path $PackageDir "_internal\contracts\c2_contract_v3.json"),
   (Join-Path $PackageDir "contracts\c2_contract_v3.json")
@@ -238,6 +376,13 @@ $Manifest = [ordered]@{
   git_dirty = $GitDirty
   build_kind = if ($DevelopmentBuild) { "development" } else { "official" }
   formal_release = -not $DevelopmentBuild
+  vision_credential_embedded = -not $DevelopmentBuild
+  vision_configuration_locked = -not $DevelopmentBuild
+  vision_provider = "anthropic_compatible"
+  vision_base_url = "https://aiself.vip/v1"
+  vision_model = "doubao-seed-2-0-lite-260428"
+  vision_request_style = "anthropic_messages_vision"
+  vision_live_probe_check = if ($DevelopmentBuild) { "not_required" } else { "passed" }
   tests_status = $TestsStatus
   preflight_status = $PreflightStatus
   c2_contract_revision = $ContractRevision.Trim()

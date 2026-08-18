@@ -7,9 +7,10 @@ from app.models.base import utcnow
 from app.models.lead import Lead
 from app.models.sales import Sales
 from app.models.worker import Worker
-from app.schemas.sales import SalesWorkerBindRequest
-from app.schemas.sales import SalesUpsert
+from app.schemas.sales import SalesCreate, SalesUpdate, SalesWorkerBindRequest
 from app.services.audit_service import write_log
+from app.services.contact_utils import normalize_phone
+from app.services.feishu_service import enqueue_sales_open_id_sync
 from app.services.worker_service import worker_summary
 
 
@@ -20,6 +21,21 @@ def _mask_phone(value: str | None) -> str | None:
     if len(digits) == 11:
         return f"{digits[:3]}****{digits[-4:]}"
     return value
+
+
+def _normalize_sales_phone(value: str) -> str:
+    try:
+        return normalize_phone(value).normalized
+    except AppError as exc:
+        raise AppError(
+            "FEISHU_PHONE_INVALID",
+            "销售手机号必填且格式必须正确",
+            422,
+        ) from exc
+
+
+def _feishu_binding_status(sales: Sales) -> str:
+    return "matched" if str(sales.feishu_user_id or "").startswith("ou_") else "unmatched"
 
 
 def list_sales(db: Session) -> list[dict]:
@@ -36,7 +52,7 @@ def list_sales(db: Session) -> list[dict]:
             "sales_name": sales.sales_name,
             "phone": _mask_phone(sales.phone),
             "wechat": sales.wechat,
-            "feishu_user_id": sales.feishu_user_id,
+            "feishu_binding_status": _feishu_binding_status(sales),
             "worker_id": sales.worker_id,
             "current_worker": worker_summary(db, sales.worker, include_token=False),
             "enabled": sales.enabled,
@@ -48,12 +64,20 @@ def list_sales(db: Session) -> list[dict]:
     ]
 
 
-def create_sales(db: Session, payload: SalesUpsert, actor: ActorContext) -> Sales:
+def create_sales(db: Session, payload: SalesCreate, actor: ActorContext) -> Sales:
     data = payload.model_dump()
     worker_id = data.pop("worker_id", None)
+    normalized_phone = _normalize_sales_phone(data["phone"])
+    data["phone"] = normalized_phone
+    data["feishu_user_id"] = None
     sales = Sales(**data)
     db.add(sales)
     db.flush()
+    enqueue_sales_open_id_sync(
+        db,
+        sales_id=sales.id,
+        normalized_phone=normalized_phone,
+    )
     if worker_id:
         bind_worker(db, sales.id, SalesWorkerBindRequest(worker_id=worker_id), actor)
     write_log(
@@ -108,7 +132,7 @@ def get_sales_detail(db: Session, sales_id: str) -> dict:
         "sales_name": sales.sales_name,
         "phone": _mask_phone(sales.phone),
         "wechat": sales.wechat,
-        "feishu_user_id": sales.feishu_user_id,
+        "feishu_binding_status": _feishu_binding_status(sales),
         "enabled": sales.enabled,
         "sort_order": sales.sort_order,
         "remark": sales.remark,
@@ -174,27 +198,44 @@ def bind_worker(db: Session, sales_id: str, payload: SalesWorkerBindRequest, act
     return get_sales_detail(db, sales.id)
 
 
-def update_sales(db: Session, sales_id: str, payload: SalesUpsert, actor: ActorContext) -> Sales:
+def update_sales(db: Session, sales_id: str, payload: SalesUpdate, actor: ActorContext) -> Sales:
     sales = db.get(Sales, sales_id)
     if not sales or sales.deleted_at:
         raise AppError("SALES_NOT_FOUND", "销售不存在", 404)
 
     before = {
         "sales_name": sales.sales_name,
+        "phone": _mask_phone(sales.phone),
         "enabled": sales.enabled,
         "sort_order": sales.sort_order,
     }
     data = payload.model_dump(exclude_unset=True)
     worker_id_provided = "worker_id" in data
     worker_id = data.pop("worker_id", None)
+    phone_changed = False
+    normalized_phone: str | None = None
+    if "phone" in data:
+        normalized_phone = _normalize_sales_phone(data["phone"])
+        phone_changed = normalized_phone != sales.phone
+        data["phone"] = normalized_phone
+    if phone_changed:
+        sales.feishu_user_id = None
     for key, value in data.items():
         setattr(sales, key, value)
     db.flush()
+    if phone_changed:
+        assert normalized_phone is not None
+        enqueue_sales_open_id_sync(
+            db,
+            sales_id=sales.id,
+            normalized_phone=normalized_phone,
+        )
     if worker_id_provided:
         bind_worker(db, sales.id, SalesWorkerBindRequest(worker_id=worker_id), actor)
 
     after = {
         "sales_name": sales.sales_name,
+        "phone": _mask_phone(sales.phone),
         "enabled": sales.enabled,
         "sort_order": sales.sort_order,
         "worker_id": sales.worker_id,

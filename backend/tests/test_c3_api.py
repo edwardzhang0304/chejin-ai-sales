@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+import hashlib
 import pytest
 import time
 from datetime import timedelta
@@ -76,7 +77,7 @@ def _create_worker() -> dict:
         json={"worker_name": "C3 Worker", "device_name": "Windows PC", "platform": "windows", "enabled": True},
         headers=HEADERS,
     )
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     worker = response.json()["data"]
     bind = client.post(
         f"/api/workers/{worker['id']}/client-bind",
@@ -114,7 +115,7 @@ def _task_lease_headers(worker: dict, claim_response) -> dict:
 def _create_sales(worker_id: str) -> str:
     response = client.post(
         "/api/sales",
-        json={"sales_name": "张伟", "enabled": True, "sort_order": 10, "worker_id": worker_id},
+        json={"sales_name": "张伟", "phone": "13900000001", "enabled": True, "sort_order": 10, "worker_id": worker_id},
         headers=INTERNAL_HEADERS,
     )
     assert response.status_code == 200
@@ -180,6 +181,7 @@ def _ingest_with_role(worker: dict, conversation_id: str, dedupe_key: str, conte
         binding = db.query(WechatSessionBinding).filter(WechatSessionBinding.conversation_id == conversation_id).one()
         remark_code = binding.remark_code
         authorization_revision = _authorization_revision(binding)
+        unread_generation = int(binding.unread_generation or 0)
         conversation = db.get(Conversation, conversation_id)
         authorization_read_reason = _read_reason(binding, conversation) or "waiting_sales_reply"
         continuation_batch = (
@@ -210,15 +212,24 @@ def _ingest_with_role(worker: dict, conversation_id: str, dedupe_key: str, conte
             "continuation_batch_id": continuation_batch_id,
             "continuation_token": authorization["continuation_token"],
         }
+    read_run_id = f"read-{dedupe_key}"
+    observation_id = f"observation:{dedupe_key}"
     raw_payload = {
         "contract_version": 3,
         "contract_revision": contract_revision(),
         "contract_sha256": contract_sha256(),
         "observation_schema_version": int(c2_contract_v3()["observation_schema_version"]),
         "source_message_key": dedupe_key,
+        "dedupe_basis": {
+            "source": "worker_cross_round_sequence",
+            "worker_stable_id": (
+                "worker-message-"
+                + str(int(hashlib.sha256(dedupe_key.encode("utf-8")).hexdigest()[:12], 16))
+            ),
+        },
         "observation": {
             "schema_version": 3,
-            "observation_id": f"observation:{dedupe_key}",
+            "observation_id": observation_id,
             "row_kind": "text_bubble",
             "sender_role": role,
             "sender_role_source": "same_row_avatar",
@@ -235,11 +246,12 @@ def _ingest_with_role(worker: dict, conversation_id: str, dedupe_key: str, conte
             "contract_revision": contract_revision(),
             "contract_sha256": contract_sha256(),
             "observation_schema_version": int(c2_contract_v3()["observation_schema_version"]),
-            "read_run_id": f"read-{dedupe_key}",
+            "read_run_id": read_run_id,
             "conversation_id": conversation_id,
             "remark_code": remark_code,
             "rpa_session_key": "wx-c3-row-001",
-            "authorization_revision": authorization_revision,
+                "authorization_revision": authorization_revision,
+                "unread_generation": unread_generation,
             "messages": [
                 {
                     "dedupe_key": dedupe_key,
@@ -269,11 +281,36 @@ def _ingest_with_role(worker: dict, conversation_id: str, dedupe_key: str, conte
                 "finished_at": utcnow().isoformat(),
                 "flow_gate_errors": [],
                 "flow_gate_details": [],
+                    "slot_ledger_states": [
+                        {
+                        "observation_id": observation_id,
+                        "screen_order": 1,
+                        "order_source": "observation_index_fallback",
+                        "row_kind": "text_bubble",
+                        "source_message_key": dedupe_key,
+                        "origin_read_run_id": read_run_id,
+                        "fact_scope": "current_read_run",
+                        "delivery_state": "not_enqueued",
+                            "item_state": "completed",
+                        }
+                    ],
+                    "sequence_alignment_evidence": {
+                        "pre_sequence_source": "empty_checkpoint",
+                        "pre_frame_id": (
+                            f"checkpoint:none:{conversation_id}"
+                        ),
+                        "post_frame_id": f"frame:{read_run_id}",
+                        "alignment_status": "not_required",
+                        "candidate_alignment_count": 0,
+                        "matched_pairs": [],
+                        "old_tail_fully_consumed": True,
+                        "new_suffix_observation_ids": [observation_id],
+                    },
+                },
             },
-        },
         headers=_worker_headers(worker),
     )
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     result = response.json()["data"]["results"][0]
     assert result["ingest_result"] == "ingested"
     assert "ingest_status" not in result
@@ -409,6 +446,343 @@ def test_real_adapter_uses_guard_approved_brain_text_without_rewriting(monkeypat
     assert decision.decision == "send_reply"
     assert decision.reply_text == "这是 Guard 批准的 Brain 原文。"
     assert decision.raw_payload["omniauto_brain_result"]["brain_plan"] == brain_result["brain_plan"]
+
+
+def test_real_adapter_second_no_visible_attempt_receives_focused_recovery_instruction(
+    monkeypatch,
+):
+    adapter = RealOmniAutoAIEngineAdapter()
+    captured: dict = {}
+    brain_result = {
+        "rule_name": "customer_service_brain_reply",
+        "adoptable": True,
+        "visible_reply_source": "brain_plan.reply_segments",
+        "reply_text": "可以的，您主要是家用还是日常代步？",
+        "guard_verdict": "pass",
+        "brain_plan": {
+            "recommended_action": "send_reply",
+            "confidence": 0.9,
+            "risk_flags": [],
+            "evidence_refs": ["conversation:last_customer_need_text"],
+            "reply_segments": ["可以的，您主要是家用还是日常代步？"],
+        },
+    }
+
+    def fake_run_brain_isolated(**kwargs):
+        captured.update(kwargs["invocation"])
+        return brain_result
+
+    monkeypatch.setattr(
+        adapter,
+        "_load_config",
+        lambda: {
+            "customer_service_brain": {
+                "provider": "test",
+                "model": "test",
+                "api_key": "test-only",
+            }
+        },
+    )
+    monkeypatch.setattr(adapter, "_load_brain", lambda: object())
+    monkeypatch.setattr(adapter, "_run_brain_isolated", fake_run_brain_isolated)
+
+    decision = adapter.generate_reply_decision(
+        conversation_context={"conversation_id": "conv-no-visible-retry"},
+        message_batch={
+            "id": "batch-no-visible-retry",
+            "generation_attempt": 2,
+            "previous_ai_response_snapshot": {
+                "decision": "retry_later",
+                "error_code": "AI_ENGINE_NO_VISIBLE_REPLY",
+            },
+            "messages": [
+                {"content": "你好我想买10万的车有什么推荐吗"},
+            ],
+        },
+    )
+
+    instruction = captured["target_state"]["brain_retry_instruction"]
+    assert "上一次 Brain 尝试没有形成可发送" in instruction
+    assert "没有可依据的 product_master" in instruction
+    assert "ask_clarifying_question" in instruction
+    assert decision.decision == "send_reply"
+    assert decision.reply_text == "可以的，您主要是家用还是日常代步？"
+
+
+def test_real_adapter_first_attempt_does_not_claim_prior_failure(monkeypatch):
+    adapter = RealOmniAutoAIEngineAdapter()
+    captured: dict = {}
+    brain_result = {
+        "rule_name": "customer_service_brain_no_visible_reply",
+        "adoptable": False,
+        "no_visible_reply": {"class": "quality_failed"},
+        "brain_plan": {},
+    }
+
+    def fake_run_brain_isolated(**kwargs):
+        captured.update(kwargs["invocation"])
+        return brain_result
+
+    monkeypatch.setattr(
+        adapter,
+        "_load_config",
+        lambda: {
+            "customer_service_brain": {
+                "provider": "test",
+                "model": "test",
+                "api_key": "test-only",
+            }
+        },
+    )
+    monkeypatch.setattr(adapter, "_load_brain", lambda: object())
+    monkeypatch.setattr(adapter, "_run_brain_isolated", fake_run_brain_isolated)
+
+    decision = adapter.generate_reply_decision(
+        conversation_context={"conversation_id": "conv-first-attempt"},
+        message_batch={
+            "id": "batch-first-attempt",
+            "generation_attempt": 1,
+            "previous_ai_response_snapshot": {},
+            "messages": [{"content": "10万预算有什么推荐"}],
+        },
+    )
+
+    assert "brain_retry_instruction" not in captured["target_state"]
+    assert decision.decision == "retry_later"
+    assert decision.error_code == "AI_ENGINE_NO_VISIBLE_REPLY"
+
+
+def test_real_adapter_emits_structured_hard_opt_out_without_customer_reply(monkeypatch):
+    adapter = RealOmniAutoAIEngineAdapter()
+    brain_result = {
+        "rule_name": "customer_service_brain_hard_opt_out",
+        "adoptable": True,
+        "guard_verdict": "pass",
+        "hard_opt_out": {
+            "detected": True,
+            "message_event_id": "event-opt-out-1",
+            "source_message_key": "source-opt-out-1",
+            "customer_text": "请不要再联系我",
+            "reason": "explicit_stop_contact",
+        },
+        "brain_plan": {
+            "recommended_action": "hard_opt_out",
+            "confidence": 0.99,
+            "risk_flags": [],
+            "evidence_refs": ["message:event-opt-out-1"],
+            "reply_segments": [],
+        },
+    }
+    monkeypatch.setattr(adapter, "_load_config", lambda: {"customer_service_brain": {"provider": "test", "model": "test", "api_key": "test-only"}})
+    monkeypatch.setattr(adapter, "_load_brain", lambda: object())
+    monkeypatch.setattr(adapter, "_run_brain_isolated", lambda **_kwargs: brain_result)
+
+    decision = adapter.generate_reply_decision(
+        conversation_context={"conversation_id": "conv-opt-out"},
+        message_batch={"id": "batch-opt-out", "messages": [{"content": "请不要再联系我"}]},
+    )
+
+    assert decision.decision == "hard_opt_out"
+    assert decision.reply_text is None
+    assert decision.hard_opt_out_evidence == brain_result["hard_opt_out"]
+
+
+def test_real_adapter_maps_structured_high_intent_to_direct_handoff(monkeypatch):
+    adapter = RealOmniAutoAIEngineAdapter()
+    brain_result = {
+        "rule_name": "customer_service_brain_handoff",
+        "adoptable": True,
+        "reason": "used_car_high_intent_or_risk",
+        "brain_plan": {
+            "recommended_action": "handoff_for_approval",
+            "confidence": 0.96,
+            "risk": {
+                "risk_level": "high",
+                "risk_tags": ["customer_high_intent"],
+                "needs_handoff": True,
+                "handoff_reason": "used_car_high_intent_or_risk",
+            },
+            "risk_flags": ["customer_high_intent"],
+            "evidence_refs": ["policy:chejin_handoff_high_intent"],
+            "reply_segments": ["我帮您确认到店安排。"],
+        },
+    }
+    monkeypatch.setattr(
+        adapter,
+        "_load_config",
+        lambda: {
+            "customer_service_brain": {
+                "provider": "test",
+                "model": "test",
+                "api_key": "test-only",
+            }
+        },
+    )
+    monkeypatch.setattr(adapter, "_load_brain", lambda: object())
+    monkeypatch.setattr(
+        adapter,
+        "_run_brain_isolated",
+        lambda **_kwargs: brain_result,
+    )
+
+    decision = adapter.generate_reply_decision(
+        conversation_context={"conversation_id": "conv-high-intent"},
+        message_batch={
+            "id": "batch-high-intent",
+            "messages": [{"content": "我今天就想去看车"}],
+        },
+    )
+
+    assert decision.decision == "handoff"
+    assert decision.reply_text is None
+    assert decision.handoff_reason_code == "CUSTOMER_HIGH_INTENT"
+    assert decision.error_code == "CUSTOMER_HIGH_INTENT"
+    assert "customer_high_intent" in decision.risk_flags
+    assert decision.suggested_action == "handoff"
+
+
+def test_real_adapter_high_intent_overrides_send_reply(monkeypatch):
+    adapter = RealOmniAutoAIEngineAdapter()
+    brain_result = {
+        "rule_name": "customer_service_brain_reply",
+        "adoptable": True,
+        "reply_text": "可以，我帮您安排。",
+        "visible_reply_source": "brain_plan.reply_segments",
+        "brain_plan": {
+            "recommended_action": "send_reply",
+            "confidence": 0.97,
+            "risk_flags": ["customer_high_intent"],
+            "evidence_refs": ["message:event-high-intent-conflict"],
+            "reply_segments": ["可以，我帮您安排。"],
+        },
+    }
+    monkeypatch.setattr(
+        adapter,
+        "_load_config",
+        lambda: {
+            "customer_service_brain": {
+                "provider": "test",
+                "model": "test",
+                "api_key": "test-only",
+            }
+        },
+    )
+    monkeypatch.setattr(adapter, "_load_brain", lambda: object())
+    monkeypatch.setattr(
+        adapter,
+        "_run_brain_isolated",
+        lambda **_kwargs: brain_result,
+    )
+
+    decision = adapter.generate_reply_decision(
+        conversation_context={"conversation_id": "conv-high-intent-conflict"},
+        message_batch={
+            "id": "batch-high-intent-conflict",
+            "messages": [{"content": "我今天就去店里付定金"}],
+        },
+    )
+
+    assert decision.decision == "handoff"
+    assert decision.reply_text is None
+    assert decision.handoff_reason_code == "CUSTOMER_HIGH_INTENT"
+    assert decision.error_code == "CUSTOMER_HIGH_INTENT"
+    assert decision.suggested_action == "handoff"
+
+
+def test_real_adapter_does_not_label_combined_risk_reason_as_high_intent_without_explicit_marker(
+    monkeypatch,
+):
+    adapter = RealOmniAutoAIEngineAdapter()
+    brain_result = {
+        "rule_name": "customer_service_brain_handoff",
+        "adoptable": True,
+        "reason": "used_car_high_intent_or_risk",
+        "brain_plan": {
+            "recommended_action": "handoff",
+            "confidence": 0.9,
+            "risk": {
+                "risk_tags": ["contract_dispute"],
+                "needs_handoff": True,
+                "handoff_reason": "used_car_high_intent_or_risk",
+            },
+            "risk_flags": ["contract_dispute"],
+            "evidence_refs": ["policy:contract-risk"],
+            "reply_segments": [],
+        },
+    }
+    monkeypatch.setattr(
+        adapter,
+        "_load_config",
+        lambda: {
+            "customer_service_brain": {
+                "provider": "test",
+                "model": "test",
+                "api_key": "test-only",
+            }
+        },
+    )
+    monkeypatch.setattr(adapter, "_load_brain", lambda: object())
+    monkeypatch.setattr(
+        adapter,
+        "_run_brain_isolated",
+        lambda **_kwargs: brain_result,
+    )
+
+    decision = adapter.generate_reply_decision(
+        conversation_context={"conversation_id": "conv-contract-risk"},
+        message_batch={
+            "id": "batch-contract-risk",
+            "messages": [{"content": "合同条款存在争议"}],
+        },
+    )
+
+    assert decision.decision == "handoff"
+    assert decision.reply_text is None
+    assert decision.handoff_reason_code == "used_car_high_intent_or_risk"
+    assert decision.handoff_reason_code != "CUSTOMER_HIGH_INTENT"
+    assert decision.error_code is None
+
+
+def test_real_adapter_preserves_brain_owned_boundary_as_reply_then_handoff(monkeypatch):
+    adapter = RealOmniAutoAIEngineAdapter()
+    brain_result = {
+        "rule_name": "customer_service_brain_handoff",
+        "adoptable": True,
+        "reason": "formal_policy_requires_manual_confirmation",
+        "reply_text": "这个需要结合可核实资料确认，我先为您保留需求。",
+        "visible_reply_source": "brain_plan.reply_segments",
+        "brain_plan": {
+            "recommended_action": "handoff",
+            "confidence": 0.92,
+            "risk": {
+                "risk_level": "medium",
+                "risk_tags": ["manual_confirmation"],
+                "needs_handoff": True,
+                "handoff_reason": "formal_policy_requires_manual_confirmation",
+            },
+            "reply_segments": ["这个需要结合可核实资料确认，我先为您保留需求。"],
+        },
+    }
+    monkeypatch.setattr(
+        adapter,
+        "_load_config",
+        lambda: {"customer_service_brain": {"provider": "test", "model": "test", "api_key": "test-only"}},
+    )
+    monkeypatch.setattr(adapter, "_load_brain", lambda: object())
+    monkeypatch.setattr(adapter, "_run_brain_isolated", lambda **_kwargs: brain_result)
+
+    decision = adapter.generate_reply_decision(
+        conversation_context={"conversation_id": "conv-boundary-handoff"},
+        message_batch={
+            "id": "batch-boundary-handoff",
+            "messages": [{"content": "这个情况能保证吗"}],
+        },
+    )
+
+    assert decision.decision == "reply_then_handoff"
+    assert decision.reply_text == brain_result["reply_text"]
+    assert decision.guard_result == "handoff"
+    assert decision.suggested_action == "reply_then_handoff"
 
 
 def test_real_adapter_provider_exception_is_explicit_retry_later(monkeypatch):
@@ -757,6 +1131,85 @@ def test_due_brain_retry_is_reclaimed_and_exhaustion_creates_handoff(monkeypatch
         ).count() == 1
 
 
+def test_brain_retry_and_terminal_handoff_preserve_each_attempt_evidence(
+    monkeypatch,
+):
+    class NoVisibleAdapter:
+        def __init__(self):
+            self.requests: list[dict] = []
+
+        def generate_reply_decision(self, **kwargs):
+            request = dict(kwargs["message_batch"])
+            self.requests.append(request)
+            attempt = int(request.get("generation_attempt") or 0)
+            return c3_service.AIEngineDecision(
+                decision="retry_later",
+                guard_result="failed",
+                error_code="AI_ENGINE_NO_VISIBLE_REPLY",
+                suggested_action="retry_later",
+                raw_payload={
+                    "omniauto_brain_result": {
+                        "attempt_marker": attempt,
+                        "reason": "brain_quality_verification_failed",
+                    }
+                },
+            )
+
+    adapter = NoVisibleAdapter()
+    monkeypatch.setattr(c3_service, "get_ai_engine_adapter", lambda: adapter)
+    worker, binding = _setup_bound_conversation()
+    message_event_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-no-visible-attempt-history",
+        "你好我想买10万的车有什么推荐吗",
+    )
+    batch_id = _collect(binding["conversation_id"], message_event_id)["batch_id"]
+
+    first = _generate(batch_id)
+    assert first["decision"] == "retry_later"
+    with SessionLocal() as db:
+        claim = c3_service.claim_message_batch_generation(
+            db,
+            batch_id=batch_id,
+            force=True,
+        )
+        assert claim["run"] is True
+        assert claim["attempt"] == 2
+        second = c3_service.generate_for_batch(
+            db,
+            batch_id=batch_id,
+            expected_generation_attempt=2,
+        )
+        db.commit()
+    assert second["decision"] == "handoff"
+    assert second["error_code"] == "AI_ENGINE_RETRY_EXHAUSTED"
+    second_request = next(
+        request
+        for request in reversed(adapter.requests)
+        if int(request.get("generation_attempt") or 0) == 2
+    )
+    previous = second_request["previous_ai_response_snapshot"]
+    assert previous["error_code"] == "AI_ENGINE_NO_VISIBLE_REPLY"
+    assert previous["generation_attempt_history"][0]["attempt"] == 1
+
+    with SessionLocal() as db:
+        row = db.get(MessageBatch, batch_id)
+        event = db.query(HandoffEvent).filter(
+            HandoffEvent.batch_id == batch_id,
+        ).one()
+        history = row.ai_response_snapshot["generation_attempt_history"]
+        assert [item["attempt"] for item in history] == [1, 2]
+        assert [
+            item["response"]["raw_payload"]["omniauto_brain_result"][
+                "attempt_marker"
+            ]
+            for item in history
+        ] == [1, 2]
+        assert row.ai_response_snapshot["decision"] == "handoff"
+        assert event.ai_payload["generation_attempt_history"] == history
+
+
 def test_separate_ingest_calls_create_new_batch_after_prior_terminal_batch():
     worker, binding = _setup_bound_conversation()
     m1 = _ingest(worker, binding["conversation_id"], "msg-c3-001", "你好")
@@ -968,7 +1421,7 @@ def test_c2_ingest_to_c3_sent_ack_complete_closure():
         },
         headers=_worker_headers(worker),
     )
-    assert claimed_task.status_code == 200
+    assert claimed_task.status_code == 200, claimed_task.text
     send_claim = client.post(
         f"/api/reply-actions/{action_id}/claim-send",
         json={"task_id": task_id, "worker_id": worker["id"]},
@@ -1006,6 +1459,280 @@ def test_c2_ingest_to_c3_sent_ack_complete_closure():
         assert ack.send_result == "sent"
         assert conversation.status == "waiting_user_reply"
         assert conversation.reply_count == 1
+
+
+def test_pause_after_brain_allows_exact_c2_flow_to_claim_send_and_ack():
+    worker, binding = _setup_bound_conversation()
+    _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-pause-after-brain",
+        "请继续回复我",
+    )
+    with SessionLocal() as db:
+        action = db.query(ReplyAction).filter(
+            ReplyAction.conversation_id == binding["conversation_id"],
+            ReplyAction.current.is_(True),
+        ).one()
+        task = db.query(Task).filter(
+            Task.reply_action_id == action.id
+        ).one()
+        action_id = action.id
+        task_id = task.id
+
+    flow_id = "read-pause-after-brain"
+    worker_headers = _worker_headers(worker)
+    started = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/start",
+        json={"flow_id": flow_id, "flow_kind": "c2_read"},
+        headers=worker_headers,
+    )
+    assert started.status_code == 200, started.text
+    paused = client.post(
+        f"/api/workers/{worker['id']}/run-status",
+        json={"run_status": "paused", "client_instance_id": "client-c3"},
+        headers=worker_headers,
+    )
+    assert paused.status_code == 200, paused.text
+    continuation_headers = {
+        **worker_headers,
+        "X-Inflight-Flow-Id": flow_id,
+    }
+    claimed_task = client.post(
+        f"/api/tasks/{task_id}/claim",
+        json={
+            "worker_id": worker["id"],
+            "current_step": "chat_reply_claimed",
+            "claim_source": "c2_conversation_flow",
+            "conversation_id": binding["conversation_id"],
+        },
+        headers=continuation_headers,
+    )
+    assert claimed_task.status_code == 200, claimed_task.text
+    lease_headers = {
+        **continuation_headers,
+        "X-Task-Lease-Fencing-Token": str(
+            claimed_task.json()["data"]["lease_fencing_token"]
+        ),
+    }
+    send_claim = client.post(
+        f"/api/reply-actions/{action_id}/claim-send",
+        json={"task_id": task_id, "worker_id": worker["id"]},
+        headers=lease_headers,
+    )
+    assert send_claim.status_code == 200, send_claim.text
+    send_data = send_claim.json()["data"]
+    ack = client.post(
+        f"/api/reply-actions/{action_id}/sent-ack",
+        json={
+            "send_token": send_data["send_token"],
+            "task_id": task_id,
+            "worker_id": worker["id"],
+            "client_instance_id": "client-c3",
+            "send_result": "sent",
+            "action_phase": "confirmed",
+            "reply_text_hash": send_data["reply_text_hash"],
+            "sidecar_run_id": "pause-after-brain-sidecar",
+        },
+        headers=lease_headers,
+    )
+    assert ack.status_code == 200, ack.text
+    with SessionLocal() as db:
+        persisted_binding = db.get(
+            WechatSessionBinding, binding["id"]
+        )
+        persisted_binding.last_read_run_id = flow_id
+        persisted_binding.last_read_completed_at = utcnow()
+        persisted_binding.last_read_result = "new_facts"
+        db.commit()
+    finished = client.post(
+        f"/api/workers/{worker['id']}/inflight-flow/finish",
+        json={
+            "flow_id": flow_id,
+            "terminal_kind": "read_confirmed",
+            "conversation_id": binding["conversation_id"],
+            "error_code": None,
+        },
+        headers=continuation_headers,
+    )
+    assert finished.status_code == 200, finished.text
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert conversation.status == "waiting_user_reply"
+        assert db.get(Task, task_id).status == "completed"
+
+
+def test_reply_then_handoff_sends_one_brain_boundary_and_keeps_handoff_open(monkeypatch):
+    class BoundaryHandoffAdapter:
+        def generate_reply_decision(self, **_kwargs):
+            return c3_service.AIEngineDecision(
+                decision="reply_then_handoff",
+                reply_text="这个需要结合可核实资料确认，我先为您保留需求。",
+                confidence=0.92,
+                handoff_reason_code="FORMAL_POLICY_REQUIRES_MANUAL_CONFIRMATION",
+                risk_flags=["manual_confirmation"],
+                guard_result="handoff",
+                suggested_action="reply_then_handoff",
+            )
+
+    monkeypatch.setattr(c3_service, "get_ai_engine_adapter", lambda: BoundaryHandoffAdapter())
+    worker, binding = _setup_bound_conversation()
+    message_event_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-reply-then-handoff",
+        "这个情况能保证吗",
+    )
+    generated = _generate(_collect(binding["conversation_id"], message_event_id)["batch_id"])
+    assert generated["decision"] == "reply_then_handoff"
+    assert generated["handoff_event"]["handoff_reason_code"] == (
+        "FORMAL_POLICY_REQUIRES_MANUAL_CONFIRMATION"
+    )
+
+    action_id = generated["reply_action_id"]
+    task_id = generated["task_id"]
+    batch_status = client.get(
+        f"/api/workers/{worker['id']}/wechat/message-batches/{generated['batch']['id']}",
+        headers=_worker_headers(worker),
+    )
+    assert batch_status.status_code == 200, batch_status.text
+    assert batch_status.json()["data"]["authorization"]["allowed"] is True
+
+    claimed_task = client.post(
+        f"/api/tasks/{task_id}/claim",
+        json={
+            "worker_id": worker["id"],
+            "current_step": "chat_reply_claimed",
+            "claim_source": "c2_conversation_flow",
+            "conversation_id": binding["conversation_id"],
+        },
+        headers=_worker_headers(worker),
+    )
+    assert claimed_task.status_code == 200, claimed_task.text
+    send_claim = client.post(
+        f"/api/reply-actions/{action_id}/claim-send",
+        json={"task_id": task_id, "worker_id": worker["id"]},
+        headers=_task_lease_headers(worker, claimed_task),
+    )
+    assert send_claim.status_code == 200, send_claim.text
+    send_data = send_claim.json()["data"]
+    assert send_data["reply_text"] == "这个需要结合可核实资料确认，我先为您保留需求。"
+
+    sent_ack = client.post(
+        f"/api/reply-actions/{action_id}/sent-ack",
+        json={
+            "send_token": send_data["send_token"],
+            "task_id": task_id,
+            "worker_id": worker["id"],
+            "client_instance_id": "client-c3-boundary",
+            "send_result": "sent",
+            "action_phase": "confirmed",
+            "reply_text_hash": send_data["reply_text_hash"],
+            "sidecar_run_id": "sidecar-boundary-handoff",
+        },
+        headers=_worker_headers(worker),
+    )
+    assert sent_ack.status_code == 200, sent_ack.text
+
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        action = db.get(ReplyAction, action_id)
+        batch = db.get(MessageBatch, generated["batch"]["id"])
+        assert conversation.status == "waiting_sales_reply"
+        assert action.status == "sent"
+        assert action.decision == "reply_then_handoff"
+        assert batch.decision == "reply_then_handoff"
+        assert db.query(HandoffEvent).filter(
+            HandoffEvent.batch_id == batch.id,
+            HandoffEvent.closed_at.is_(None),
+        ).count() == 1
+        assert db.query(ReplyAction).filter(ReplyAction.batch_id == batch.id).count() == 1
+
+
+def test_recall_counts_only_after_confirmed_send_and_ack_is_idempotent():
+    worker, binding = _setup_bound_conversation()
+    message_event_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-recall-confirmed-send",
+        "召回前确认没有新消息",
+    )
+    collected = _collect(binding["conversation_id"], message_event_id)
+    batch_id = collected["batch_id"]
+    with SessionLocal() as db:
+        batch = db.get(MessageBatch, batch_id)
+        conversation = db.get(Conversation, binding["conversation_id"])
+        batch.trigger_type = "recall"
+        batch.recall_cycle_id = "recall-confirmed-cycle"
+        batch.origin_conversation_status = "waiting_user_reply"
+        conversation.status = "recall_precheck"
+        conversation.recall_cycle_id = "recall-confirmed-cycle"
+        conversation.recall_origin_status = "waiting_user_reply"
+        conversation.recall_count = 1
+        conversation.recall_daily_count = 0
+        db.commit()
+    generated = _generate(batch_id)
+    action_id = generated["reply_action_id"]
+    task_id = generated["task_id"]
+
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert conversation.recall_count == 1
+        assert conversation.recall_daily_count == 0
+
+    claimed_task = client.post(
+        f"/api/tasks/{task_id}/claim",
+        json={
+            "worker_id": worker["id"],
+            "current_step": "chat_reply_claimed",
+            "claim_source": "c2_conversation_flow",
+            "conversation_id": binding["conversation_id"],
+        },
+        headers=_worker_headers(worker),
+    )
+    assert claimed_task.status_code == 200, claimed_task.text
+    send_claim = client.post(
+        f"/api/reply-actions/{action_id}/claim-send",
+        json={"task_id": task_id, "worker_id": worker["id"]},
+        headers=_task_lease_headers(worker, claimed_task),
+    )
+    assert send_claim.status_code == 200
+    send_data = send_claim.json()["data"]
+    ack_payload = {
+        "send_token": send_data["send_token"],
+        "task_id": task_id,
+        "worker_id": worker["id"],
+        "client_instance_id": "client-c3",
+        "send_result": "sent",
+        "action_phase": "confirmed",
+        "reply_text_hash": send_data["reply_text_hash"],
+        "sidecar_run_id": "recall-confirmed-sidecar",
+    }
+    sent_ack = client.post(
+        f"/api/reply-actions/{action_id}/sent-ack",
+        json=ack_payload,
+        headers=_worker_headers(worker),
+    )
+    assert sent_ack.status_code == 200
+    repeated_ack = client.post(
+        f"/api/reply-actions/{action_id}/sent-ack",
+        json=ack_payload,
+        headers=_worker_headers(worker),
+    )
+    assert repeated_ack.status_code == 200
+
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert conversation.status == "recalled_waiting_user"
+        assert conversation.recall_count == 2
+        assert conversation.recall_daily_count == 1
+        assert conversation.next_recall_at is not None
+        comparison_now = (
+            utcnow()
+            if conversation.next_recall_at.tzinfo is not None
+            else utcnow().replace(tzinfo=None)
+        )
+        assert conversation.next_recall_at > comparison_now
 
 
 def test_sent_ack_hash_conflict_becomes_triggered_unknown_not_false_failure():
@@ -1662,6 +2389,119 @@ def test_sales_manual_reply_cancels_unsent_reply_action_without_disabling_ai():
         assert conversation.ai_enabled is True
 
 
+def test_verified_hard_opt_out_atomically_rejects_and_cancels_unsent_actions(monkeypatch):
+    worker, binding = _setup_bound_conversation()
+    first_event_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-before-hard-opt-out",
+        "我想看看轿车",
+    )
+    old = _generate(_collect(binding["conversation_id"], first_event_id)["batch_id"])
+    opt_out_event_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-hard-opt-out",
+        "请不要再联系我",
+    )
+    opt_out_batch = _collect(binding["conversation_id"], opt_out_event_id)
+    _reset_batch_to_generation_state(
+        opt_out_batch["batch_id"],
+        status="collecting",
+        generation_attempt_count=0,
+    )
+    with SessionLocal() as db:
+        event = db.get(MessageEvent, opt_out_event_id)
+        conversation = db.get(Conversation, binding["conversation_id"])
+        conversation.next_recall_at = utcnow() + timedelta(days=1)
+        conversation.recall_cycle_id = "recall-cycle-before-opt-out"
+        conversation.recall_origin_status = "waiting_user_reply"
+        source_key = event.source_message_key
+        db.commit()
+
+    class HardOptOutAdapter:
+        def generate_reply_decision(self, **_kwargs):
+            return c3_service.AIEngineDecision(
+                decision="hard_opt_out",
+                confidence=0.99,
+                guard_result="pass",
+                evidence_refs=[f"message:{opt_out_event_id}"],
+                hard_opt_out_evidence={
+                    "detected": True,
+                    "message_event_id": opt_out_event_id,
+                    "source_message_key": source_key,
+                    "customer_text": "请不要再联系我",
+                    "reason": "explicit_stop_contact",
+                },
+            )
+
+    monkeypatch.setattr(c3_service, "get_ai_engine_adapter", lambda: HardOptOutAdapter())
+    with SessionLocal() as db:
+        generated = c3_service.generate_for_batch(db, batch_id=opt_out_batch["batch_id"])
+        db.commit()
+
+    assert generated["decision"] == "hard_opt_out"
+    assert generated["suggested_action"] == "do_not_contact"
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        old_action = db.get(ReplyAction, old["reply_action_id"])
+        old_task = db.get(Task, old["task_id"])
+        batch = db.get(MessageBatch, opt_out_batch["batch_id"])
+        assert conversation.status == "rejected"
+        assert conversation.ai_enabled is False
+        assert conversation.next_recall_at is None
+        assert conversation.recall_cycle_id is None
+        assert conversation.recall_origin_status is None
+        assert conversation.close_reason == f"customer_hard_opt_out:{opt_out_event_id}"
+        assert old_action.status in {"superseded", "cancelled"}
+        assert old_action.current is False
+        assert old_task.status == "cancelled"
+        assert batch.status == "rejected"
+        assert batch.active is False
+        assert db.query(ReplyAction).filter(ReplyAction.batch_id == batch.id).count() == 0
+
+
+def test_hard_opt_out_with_unmatched_evidence_never_rejects_or_sends(monkeypatch):
+    worker, binding = _setup_bound_conversation()
+    event_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-hard-opt-out-invalid",
+        "请不要再联系我",
+    )
+    batch = _collect(binding["conversation_id"], event_id)
+    _reset_batch_to_generation_state(
+        batch["batch_id"],
+        status="collecting",
+        generation_attempt_count=0,
+    )
+
+    class InvalidHardOptOutAdapter:
+        def generate_reply_decision(self, **_kwargs):
+            return c3_service.AIEngineDecision(
+                decision="hard_opt_out",
+                guard_result="pass",
+                hard_opt_out_evidence={
+                    "detected": True,
+                    "message_event_id": "not-the-current-event",
+                    "source_message_key": "not-the-current-source",
+                    "customer_text": "请不要再联系我",
+                },
+            )
+
+    monkeypatch.setattr(c3_service, "get_ai_engine_adapter", lambda: InvalidHardOptOutAdapter())
+    with SessionLocal() as db:
+        generated = c3_service.generate_for_batch(db, batch_id=batch["batch_id"])
+        db.commit()
+
+    assert generated["decision"] in {"retry_later", "handoff"}
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        assert conversation.status != "rejected"
+        assert conversation.ai_enabled is True
+        assert db.query(ReplyAction).filter(ReplyAction.batch_id == batch["batch_id"]).count() == 0
+
+
 def test_claim_send_is_single_owner_and_sent_ack_is_idempotent():
     worker, binding = _setup_bound_conversation()
     m1 = _ingest(worker, binding["conversation_id"], "msg-c3-006", "想了解 15 万 SUV")
@@ -1997,6 +2837,50 @@ def test_handoff_decision_uses_state_gate_without_disabling_ai():
         assert conversation.ai_enabled is True
         assert conversation.status == "waiting_sales_reply"
         assert conversation.handoff_reason_code == "HANDOFF_REQUIRED"
+
+
+def test_high_intent_notifies_sales_by_handoff_without_reply_action(monkeypatch):
+    class HighIntentAdapter:
+        def generate_reply_decision(self, **_kwargs):
+            return c3_service.AIEngineDecision(
+                decision="handoff",
+                confidence=0.97,
+                handoff_reason_code="CUSTOMER_HIGH_INTENT",
+                risk_flags=["customer_high_intent"],
+                evidence_refs=["policy:chejin_handoff_high_intent"],
+                guard_result="handoff",
+                error_code="CUSTOMER_HIGH_INTENT",
+                suggested_action="handoff",
+            )
+
+    monkeypatch.setattr(
+        c3_service,
+        "get_ai_engine_adapter",
+        lambda: HighIntentAdapter(),
+    )
+    worker, binding = _setup_bound_conversation()
+    message_id = _ingest(
+        worker,
+        binding["conversation_id"],
+        "msg-c3-high-intent",
+        "我今天想直接到店看车",
+    )
+    batch = _collect(binding["conversation_id"], message_id)
+    generated = _generate(batch["batch_id"])
+
+    assert generated["decision"] == "handoff"
+    assert generated["error_code"] == "CUSTOMER_HIGH_INTENT"
+    assert generated["handoff_event_id"]
+    assert generated.get("reply_action_id") is None
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        handoff = db.query(HandoffEvent).one()
+        assert conversation.status == "waiting_sales_reply"
+        assert conversation.handoff_reason_code == "CUSTOMER_HIGH_INTENT"
+        assert handoff.status == "created"
+        assert handoff.handoff_reason_code == "CUSTOMER_HIGH_INTENT"
+        assert handoff.risk_flags == ["customer_high_intent"]
+        assert db.query(ReplyAction).count() == 0
 
 
 def test_formal_api_responses_do_not_leak_deprecated_fields():

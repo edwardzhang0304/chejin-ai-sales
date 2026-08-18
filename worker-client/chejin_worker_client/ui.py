@@ -1105,7 +1105,6 @@ class WorkerWindow(QMainWindow):
         active_task = self.current_task
         display_task = active_task or self.last_task
         result = self.last_result
-
         if self.runner.run_status_sync_error and not is_running:
             headline = "已在本机暂停，后端同步失败"
         elif offline:
@@ -1145,7 +1144,10 @@ class WorkerWindow(QMainWindow):
             ),
             kind=run_status_kind,
         )
-        self.rpa_tile.set_value("可用" if profile and profile.rpa_component_status == "ready" else "不可用", kind="ok" if profile and profile.rpa_component_status == "ready" else "danger")
+        self.rpa_tile.set_value(
+            "可用" if profile and profile.rpa_component_status == "ready" else "不可用",
+            kind="ok" if profile and profile.rpa_component_status == "ready" else "danger",
+        )
         self.wechat_tile.set_value("已连接" if profile and profile.wechat_status == "logged_in" else "未检测到", kind="ok" if profile and profile.wechat_status == "logged_in" else "danger")
 
         run_text = "暂停接单" if is_running else "开始接单"

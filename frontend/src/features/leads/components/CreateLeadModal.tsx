@@ -120,8 +120,8 @@ export function CreateLeadModal({ submitting, error, duplicateData, onClose, onO
             <h3>联系方式</h3>
             <div className="contact-grid">
               <label>
-                <span>手机 *</span>
-                <input value={phone} onChange={(event) => setPhone(event.target.value)} inputMode="tel" required />
+                <span>手机号 *</span>
+                <input value={phone} onChange={(event) => setPhone(event.target.value)} inputMode="tel" placeholder="请输入手机号" required />
               </label>
 
               <label>
@@ -131,7 +131,7 @@ export function CreateLeadModal({ submitting, error, duplicateData, onClose, onO
 
               <label>
                 <span>邮箱</span>
-                <input value={email} onChange={(event) => setEmail(event.target.value)} inputMode="email" />
+                <input value={email} onChange={(event) => setEmail(event.target.value)} inputMode="email" placeholder="请输入邮箱" />
               </label>
             </div>
           </section>

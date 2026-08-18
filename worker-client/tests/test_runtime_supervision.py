@@ -163,7 +163,7 @@ class RuntimeSupervisionTest(unittest.TestCase):
         self.assertTrue(emergency_stop_requested())
         self.assertEqual(self.storage.load_binding().run_status, "paused")
         self.assertEqual(runner.binding.run_status, "running")
-        self.assertFalse(runner._ui_actions_enabled(runner.binding))
+        self.assertFalse(runner._can_start_new_flow(runner.binding))
         runner.tick_once()
         runner._pull_and_execute(runner.binding)
         runner._run_c2_scan_round(runner.binding, reason="emergency-test")

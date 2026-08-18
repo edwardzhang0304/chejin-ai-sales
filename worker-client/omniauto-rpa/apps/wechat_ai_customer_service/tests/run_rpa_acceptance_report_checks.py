@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -39,12 +38,6 @@ def good_listener_config() -> dict[str, Any]:
             "adaptive_speed_enabled": True,
             "fast_send_confirmation_enabled": True,
         },
-        "rpa_operator_guard": {
-            "enabled": True,
-            "block_manual_input": True,
-            "floating_indicator_enabled": True,
-            "control_hotkey": "f8",
-        },
         "transport_risk_guard": {
             "enabled": True,
             "passive_logout_probe_enabled": True,
@@ -55,14 +48,11 @@ def good_listener_config() -> dict[str, Any]:
     }
 
 
-def make_runtime_fixture(root: Path, *, config: dict[str, Any] | None = None, running: bool = False, guard: bool = False) -> None:
+def make_runtime_fixture(root: Path, *, config: dict[str, Any] | None = None, running: bool = False) -> None:
     tenant_root = root / "tenants" / "unit"
     write_json(tenant_root / "customer_service" / "listener_config.json", config or good_listener_config())
     write_json(tenant_root / "customer_service" / "runtime_status.json", {"state": "idle" if running else "stopped", "running": running})
     write_json(tenant_root / "recorder" / "runtime_status.json", {"state": "stopped", "running": False})
-    if guard:
-        write_json(tenant_root / "customer_service" / "operator_guard.pid.json", {"pid": os.getpid()})
-        write_json(tenant_root / "customer_service" / "operator_guard.state.json", {"pid": os.getpid(), "phase": "running", "hooks_installed": True})
 
 
 class FakeConnector:
@@ -85,7 +75,7 @@ def check_good_fixture_passes_without_live_probe() -> None:
         assert_true("RPA Acceptance Report" in markdown and "rpa_only_transport" in markdown, "markdown should list checks")
 
 
-def check_recorder_only_fixture_uses_guard_defaults() -> None:
+def check_recorder_only_fixture_passes() -> None:
     with tempfile.TemporaryDirectory(prefix="rpa_acceptance_recorder_only_") as tmp:
         root = Path(tmp)
         tenant_root = root / "tenants" / "unit"
@@ -93,9 +83,7 @@ def check_recorder_only_fixture_uses_guard_defaults() -> None:
         write_json(tenant_root / "recorder" / "runtime_status.json", {"state": "stopped", "running": False})
         write_json(tenant_root / "recorder" / "settings.json", {"enabled": True, "capture_interval_seconds": 5})
         report = collect_rpa_acceptance_report(runtime_root=root, tenant_id="unit", env={}, wechat_probe="none")
-        assert_true(report["status"] == "pass", f"recorder-only fixture should pass with effective guard defaults: {report}")
-        guard = report["snapshots"]["operator_guard_config"]
-        assert_true(guard.get("_source") == "recorder.effective_defaults", f"expected recorder defaults source: {guard}")
+        assert_true(report["status"] == "pass", f"recorder-only fixture should pass: {report}")
 
 
 def check_wxauto4_enabled_fails() -> None:
@@ -132,21 +120,12 @@ def check_fixed_window_origin_required() -> None:
         assert_true(any(item["id"] == "window_normalization_policy" for item in report["summary"]["failures"]), "window normalization gate should fail")
 
 
-def check_running_without_guard_fails() -> None:
-    with tempfile.TemporaryDirectory(prefix="rpa_acceptance_guard_") as tmp:
+def check_running_runtime_passes() -> None:
+    with tempfile.TemporaryDirectory(prefix="rpa_acceptance_running_") as tmp:
         root = Path(tmp)
-        make_runtime_fixture(root, running=True, guard=False)
+        make_runtime_fixture(root, running=True)
         report = collect_rpa_acceptance_report(runtime_root=root, tenant_id="unit", env={}, wechat_probe="none")
-        assert_true(report["status"] == "fail", f"running without guard must fail: {report}")
-        assert_true(any(item["id"] == "customer_service_runtime_guard" for item in report["summary"]["failures"]), "guard gate should fail")
-
-
-def check_running_with_guard_passes() -> None:
-    with tempfile.TemporaryDirectory(prefix="rpa_acceptance_guard_ok_") as tmp:
-        root = Path(tmp)
-        make_runtime_fixture(root, running=True, guard=True)
-        report = collect_rpa_acceptance_report(runtime_root=root, tenant_id="unit", env={}, wechat_probe="none")
-        assert_true(report["status"] == "pass", f"running with guard should pass: {report}")
+        assert_true(report["status"] == "pass", f"running runtime should pass: {report}")
 
 
 def check_probe_detects_blank_or_wxauto() -> None:
@@ -182,12 +161,11 @@ def check_probe_detects_blank_or_wxauto() -> None:
 def run_all() -> dict[str, Any]:
     checks = [
         check_good_fixture_passes_without_live_probe,
-        check_recorder_only_fixture_uses_guard_defaults,
+        check_recorder_only_fixture_passes,
         check_wxauto4_enabled_fails,
         check_clipboard_once_fails_for_normal_acceptance,
         check_fixed_window_origin_required,
-        check_running_without_guard_fails,
-        check_running_with_guard_passes,
+        check_running_runtime_passes,
         check_probe_detects_blank_or_wxauto,
     ]
     results = []

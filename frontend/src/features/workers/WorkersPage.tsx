@@ -4,6 +4,7 @@ import { formatBusinessError } from "../../shared/api/client";
 import { useLockBodyScroll } from "../../shared/hooks/useLockBodyScroll";
 import { CopyButton } from "../../shared/ui/CopyButton";
 import { CloseIcon } from "../../shared/ui/Icons";
+import { displayValue as display, formatRelativeHeartbeat as formatHeartbeat, optionalText } from "../../shared/utils/display";
 import { postMutationMessage, runPostMutationRefresh } from "../../shared/utils/postMutation";
 import { createWorker, getWorker, listWorkers, resetWorkerBinding, updateWorker } from "./api";
 import type { WorkerCreatePayload, WorkerItem, WorkerUpdatePayload } from "./types";
@@ -31,29 +32,6 @@ const initialFilter: WorkerFilter = {
   status: "all",
   binding: "all",
 };
-
-function optionalText(value: string) {
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
-}
-
-function display(value: string | number | null | undefined, fallback = "-") {
-  return value === null || value === undefined || value === "" ? fallback : String(value);
-}
-
-function formatHeartbeat(value?: string | null) {
-  if (!value) return "暂无";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return String(value);
-  const diff = Date.now() - date.getTime();
-  if (diff < 90_000) return "刚刚";
-  if (diff < 3_600_000) return `${Math.max(1, Math.round(diff / 60_000))} 分钟前`;
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  const hours = String(date.getHours()).padStart(2, "0");
-  const minutes = String(date.getMinutes()).padStart(2, "0");
-  return `${month}-${day} ${hours}:${minutes}`;
-}
 
 function statusClass(active: boolean) {
   return active ? "assigned" : "invalid";
@@ -157,7 +135,7 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
   const [items, setItems] = useState<WorkerItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<WorkerItem | null>(null);
-  const [drawerOpen, setDrawerOpen] = useState(true);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [filter, setFilter] = useState<WorkerFilter>(initialFilter);
   const [loading, setLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -181,9 +159,8 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
       setItems(data.items);
       setSelectedId((current) => {
         if (current && data.items.some((item) => item.id === current)) return current;
-        return data.items[0]?.id ?? null;
+        return null;
       });
-      setDrawerOpen(Boolean(data.items[0]));
       return true;
     } catch (err) {
       if (!signal?.aborted) setError(formatBusinessError(err, "Worker 列表加载失败，请稍后重试。"));
@@ -375,7 +352,6 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
           <div className="panel-header">
             <div>
               <h2>Worker 列表</h2>
-              <p>Worker Token 不在列表展示，只在详情抽屉中查看。</p>
             </div>
           </div>
 
@@ -414,19 +390,18 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
                 <tr>
                   <th>Worker 名称</th>
                   <th>Worker ID</th>
-                  <th>状态</th>
-                  <th>客户端</th>
+                  <th>启用状态</th>
+                  <th>客户端绑定</th>
                   <th>当前状态</th>
-                  <th>当前任务</th>
-                  <th>绑定销售</th>
+                  <th>当前销售</th>
                   <th>最近心跳</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={8}>正在加载 Worker 列表...</td></tr>
+                  <tr><td colSpan={7}>正在加载 Worker 列表...</td></tr>
                 ) : filteredItems.length === 0 ? (
-                  <tr><td colSpan={8}>暂无 Worker，调整筛选条件后重试。</td></tr>
+                  <tr><td colSpan={7}>暂无 Worker，调整筛选条件后重试。</td></tr>
                 ) : (
                   filteredItems.map((item) => {
                     const binding = bindingMeta(item);
@@ -446,7 +421,6 @@ export function WorkersPage({ openIntent }: { openIntent?: WorkerOpenIntent | nu
                         <td className="status-cell"><span className={`status ${statusClass(item.enabled)}`}>{item.enabled ? "启用" : "停用"}</span></td>
                         <td className="status-cell"><span className={`status ${binding.className}`}>{binding.label}</span></td>
                         <td className="status-cell"><span className={`status ${current.className}`}>{current.label}</span></td>
-                        <td>{display(item.current_task)}</td>
                         <td>{display(item.bound_sales_name, "未绑定")}</td>
                         <td>{formatHeartbeat(item.last_heartbeat_at)}</td>
                       </tr>

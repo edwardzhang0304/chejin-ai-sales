@@ -8,10 +8,10 @@ from typing import Any
 
 LOGIN_WINDOW_MAX_WIDTH = 560
 LOGIN_WINDOW_MAX_HEIGHT = 680
-C2_REMARK_CODE_RE = re.compile(r"(?<![A-Za-z0-9])CJ[-A-Z0-9]{4,24}(?![A-Za-z0-9])", re.IGNORECASE)
+C2_FORMAL_REMARK_CODE_RE = re.compile(r"CJ[A-Z0-9]{6}", re.IGNORECASE)
 C2_GROUP_MEMBER_SUFFIX_RE = re.compile(r"[\(（]\s*\d{1,4}\s*[\)）]\s*$")
 C2_FUZZY_MEMBER_SUFFIX_RE = re.compile(
-    r"(?:[\(（]\s*[0-9OoIlSs|]{1,4}\s*[\)）]?|[0-9OoIlSs|]{1,4}\s*[\)）])\s*$"
+    r"(?:[\(（]\s*(?:[0-9OoIlSs|]{1,4}|\.{2,3}|…)\s*[\)）]?|[0-9OoIlSs|]{1,4}\s*[\)）])\s*$"
 )
 
 
@@ -37,8 +37,8 @@ def strip_chat_unread_suffix(text: str) -> str:
 def extract_c2_remark_codes(*values: Any) -> list[str]:
     found: list[str] = []
     for value in values:
-        for match in C2_REMARK_CODE_RE.findall(str(value or "")):
-            code = match.upper()
+        for match in C2_FORMAL_REMARK_CODE_RE.finditer(str(value or "")):
+            code = match.group(0).upper()
             if code not in found:
                 found.append(code)
     return found[:10]
@@ -67,8 +67,6 @@ def classify_c2_conversation_title(raw_title: Any, remark_code: Any) -> dict[str
         reason = "title_ocr_empty"
     elif not short_code_confirmed:
         reason = "remark_code_not_confirmed_in_raw_title"
-    elif "..." in title or "…" in title:
-        reason = "title_ocr_incomplete_ellipsis"
     elif C2_FUZZY_MEMBER_SUFFIX_RE.search(title):
         reason = "member_count_suffix_ambiguous"
     else:
@@ -252,6 +250,22 @@ def is_session_name_candidate(text: str) -> bool:
     if "..." in candidate or "…" in candidate:
         return False
     return True
+
+
+def is_c2_session_title_candidate(text: Any) -> bool:
+    """Keep a structurally located C2 title when its formal identity is present.
+
+    A WeChat sidebar may truncate only the display-name suffix.  The C2 remark
+    code remains the authoritative identity, so generic title heuristics such
+    as ellipsis rejection must only run when no valid code is present.
+    """
+
+    clean = normalize_ocr_text(text)
+    if not clean:
+        return False
+    if re.fullmatch(r"\d{1,4}", clean):
+        return False
+    return bool(extract_c2_remark_codes(clean)) or is_session_name_candidate(clean)
 
 
 def is_session_time_text(text: str) -> bool:

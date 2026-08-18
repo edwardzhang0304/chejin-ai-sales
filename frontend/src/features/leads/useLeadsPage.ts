@@ -56,7 +56,9 @@ export function useLeadsPage() {
       setItems(data.items);
       setTotal(data.total);
       setSelectedIds(new Set());
-      setActiveLeadId((current) => current ?? data.items[0]?.id ?? null);
+      setActiveLeadId((current) => (
+        current && data.items.some((item) => item.id === current) ? current : null
+      ));
       return true;
     } catch (err) {
       if (signal?.aborted || isAbortError(err) || requestId !== listRequestIdRef.current) {

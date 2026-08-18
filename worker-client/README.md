@@ -59,6 +59,23 @@ cd worker-client
 
 调试包 manifest 会标记 `formal_release=false`，不得作为正式发布包。
 
+正式 Windows 包的 Vision 凭据只允许由 CI Secret
+`CHEJIN_VISION_CLIENT_API_KEY` 注入，不得写入源码、提交记录、构建日志、
+manifest 或故障证据。正式包固定 Provider、HTTPS 接口地址、模型和请求格式，
+并忽略普通环境变量对这些配置及凭据的覆盖；只有源码开发包可以使用
+`CUSTOMER_IMAGE_UNDERSTANDING_*` 环境变量联调。新 Windows 电脑不需要安装
+Python，也不需要手工配置 Vision 环境变量。
+
+正式包启动预检会使用一张内存中的 32×32 合成白图请求固定 Vision 服务，
+确认凭据、网络、接口与固定模型均真实可用。该探针不读取或上传客户图片；报告
+只记录“能力可用/不可用”、HTTP 状态和固定模型信息，不保存 Provider 响应正文、
+异常原文或 Key。
+
+随客户端分发的凭据无法做到绝对不可提取。因此生产环境必须使用独立、低权限、
+仅允许指定 Vision 模型的客户端 Key，并在 Provider 侧设置额度、限流、监控、
+吊销和轮换。CI Secret 是否已采用这些外部控制属于正式发布门禁，客户端代码本身
+不能替代 Provider 侧权限配置。
+
 产物：
 
 ```text
@@ -71,7 +88,15 @@ worker-client\dist\车金Worker客户端\车金Worker客户端.exe
 .\scripts\validate-package.ps1
 ```
 
-默认服务端地址为 `http://127.0.0.1:8000/api`，可通过环境变量覆盖：
+默认服务端地址 `http://127.0.0.1:8000/api` 只适用于后端也运行在同一台 Windows 机器的本地开发场景。Windows UAT 不得依赖该默认值。
+
+正式 UAT 包完整解压后，必须用包内启动脚本显式指定本次测试的后端 API。启动脚本会先检查后端、微信和运行依赖，把 JSON 报告保存到 `%LOCALAPPDATA%\CheJinWorker\diagnostics\`；预检失败时不会启动客户端：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\start-uat.ps1 -ApiBaseUrl "https://本次-UAT-后端/api"
+```
+
+开发环境仍可通过环境变量覆盖：
 
 ```powershell
 $env:CHEJIN_API_BASE_URL="https://your-host/api"
@@ -119,7 +144,10 @@ cd worker-client
 .\scripts\run-preflight.ps1 -RpaMode mock -SkipWechat
 ```
 
-预检会检查 Windows/RPA 模式、依赖、OmniAuto sidecar 文件、本地数据目录、绑定状态、后端 `/readyz` 和微信桌面客户端探测结果。存在 `error` 级失败时命令返回非 0。
+预检会检查 Windows/RPA 模式、依赖、OmniAuto sidecar 文件、内置 Vision
+真实能力、本地数据目录、绑定状态、后端 `/readyz` 和微信桌面客户端探测结果。
+报告只显示 Vision 安全状态，不输出凭据或 Provider 响应正文。存在 `error` 级失败时
+命令返回非 0。
 
 微信实机诊断：
 

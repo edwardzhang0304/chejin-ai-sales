@@ -69,9 +69,9 @@ export function LeadDetailDrawer({ detail, loading, error, onClose, onRetry, onM
       <div className="drawer-head">
         <div>
           <p className="eyebrow">线索详情</p>
-          <h2>{loading ? "加载中" : detail?.customer_name}</h2>
+          <h2 title={loading ? undefined : detail?.customer_name}>{loading ? "加载中" : detail?.customer_name}</h2>
         </div>
-        <button type="button" className="icon-button" onClick={onClose} aria-label="关闭详情">
+        <button type="button" className="icon-button drawer-close-button" onClick={onClose} aria-label="关闭详情">
           <CloseIcon />
         </button>
       </div>
@@ -85,19 +85,23 @@ export function LeadDetailDrawer({ detail, loading, error, onClose, onRetry, onM
             <dl>
               <div>
                 <dt>主手机号</dt>
-                <dd>{detail.primary_phone_masked || "未填写"}</dd>
+                <dd title={detail.primary_phone_masked || "未填写"}>{detail.primary_phone_masked || "未填写"}</dd>
               </div>
               <div>
                 <dt>当前销售</dt>
-                <dd>{detail.sales_name || "暂无"}</dd>
+                <dd title={detail.sales_name || "暂无"}>{detail.sales_name || "暂无"}</dd>
               </div>
               <div>
                 <dt>分配方式</dt>
-                <dd>{detail.assign_status === "assigned" ? "轮询自动分配" : "待分配"}</dd>
+                <dd title={detail.assign_status === "assigned" ? "轮询自动分配" : "待分配"}>
+                  {detail.assign_status === "assigned" ? "轮询自动分配" : "待分配"}
+                </dd>
               </div>
               <div>
                 <dt>创建时间</dt>
-                <dd>{new Date(detail.created_at).toLocaleString("zh-CN")}</dd>
+                <dd title={new Date(detail.created_at).toLocaleString("zh-CN")}>
+                  {new Date(detail.created_at).toLocaleString("zh-CN")}
+                </dd>
               </div>
             </dl>
           </section>

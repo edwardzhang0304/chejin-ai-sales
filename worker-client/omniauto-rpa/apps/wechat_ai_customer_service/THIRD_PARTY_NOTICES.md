@@ -4,8 +4,8 @@
 
 - Source: https://github.com/n3r4zzurr0/svg-spinners
 - Asset adapted: `svg-css/ring-resize.svg`
-- Usage: RPA floating indicator / customer-service runtime console status spinner.
-- Local changes: the spinner stroke is controlled by `currentColor`, and the desktop Tk indicator renders colorized frames from the same ring-resize motion.
+- Usage: customer-service runtime console status spinner.
+- Local changes: the spinner stroke is controlled by `currentColor`.
 
 MIT License
 

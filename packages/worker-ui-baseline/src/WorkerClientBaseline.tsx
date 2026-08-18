@@ -5,6 +5,7 @@ import type {
   WorkerClientScreen,
   WorkerReceiveState,
 } from "./types";
+import { runtimePageKind } from "./runtimeBridgeState.mjs";
 
 interface WorkerClientBaselineProps {
   screen: WorkerClientScreen;
@@ -18,6 +19,7 @@ interface WorkerClientBaselineProps {
   onOpenIncidentDirectory?: () => void;
   onBind?: (workerId: string, workerToken: string) => void;
   bindError?: string;
+  notice?: string;
   onBack?: () => void;
 }
 
@@ -261,6 +263,34 @@ function TimelineStep({ step }: { step: TimelineStepModel }) {
 
 function TaskTimeline({ steps }: { steps: TimelineStepModel[] }) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const dragCleanupRef = useRef<(() => void) | null>(null);
+  const [scrollThumb, setScrollThumb] = useState({ visible: false, top: 0, height: 44 });
+
+  function updateScrollThumb() {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const maxScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    if (!maxScrollTop) {
+      setScrollThumb((current) => (
+        !current.visible && current.top === 0 && current.height === viewport.clientHeight
+          ? current
+          : { visible: false, top: 0, height: viewport.clientHeight }
+      ));
+      return;
+    }
+    const height = Math.max(44, Math.round((viewport.clientHeight * viewport.clientHeight) / viewport.scrollHeight));
+    const travel = Math.max(0, viewport.clientHeight - height);
+    const next = {
+      visible: true,
+      height,
+      top: Math.round((viewport.scrollTop / maxScrollTop) * travel),
+    };
+    setScrollThumb((current) => (
+      current.visible === next.visible && current.height === next.height && current.top === next.top
+        ? current
+        : next
+    ));
+  }
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -268,21 +298,82 @@ function TaskTimeline({ steps }: { steps: TimelineStepModel[] }) {
     const focusStep = viewport.querySelector(".final-step, .current, .error") as HTMLElement | null;
     const focusMarker = focusStep?.querySelector(":scope > span") as HTMLElement | null;
     if (!focusStep || !focusMarker) return;
+    viewport.style.setProperty(
+      "--cw-timeline-center-padding",
+      `${Math.max(0, (viewport.clientHeight - focusMarker.offsetHeight) / 2)}px`,
+    );
     const viewportRect = viewport.getBoundingClientRect();
     const markerRect = focusMarker.getBoundingClientRect();
     const nextScrollTop = viewport.scrollTop + markerRect.top + markerRect.height / 2 - (viewportRect.top + viewportRect.height / 2);
     const maxScrollTop = viewport.scrollHeight - viewport.clientHeight;
     viewport.scrollTop = Math.max(0, Math.min(maxScrollTop, nextScrollTop));
+    updateScrollThumb();
   }, [steps]);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const observer = new ResizeObserver(updateScrollThumb);
+    observer.observe(viewport);
+    viewport.addEventListener("scroll", updateScrollThumb, { passive: true });
+    updateScrollThumb();
+    return () => {
+      observer.disconnect();
+      viewport.removeEventListener("scroll", updateScrollThumb);
+      dragCleanupRef.current?.();
+    };
+  }, []);
+
+  function startThumbDrag(event: React.PointerEvent<HTMLSpanElement>) {
+    const viewport = viewportRef.current;
+    if (!viewport || !scrollThumb.visible) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const startY = event.clientY;
+    const startScrollTop = viewport.scrollTop;
+    const scrollRange = Math.max(1, viewport.scrollHeight - viewport.clientHeight);
+    const thumbRange = Math.max(1, viewport.clientHeight - scrollThumb.height);
+    const onMove = (moveEvent: PointerEvent) => {
+      viewport.scrollTop = startScrollTop + ((moveEvent.clientY - startY) / thumbRange) * scrollRange;
+    };
+    const onEnd = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onEnd);
+      window.removeEventListener("pointercancel", onEnd);
+      dragCleanupRef.current = null;
+    };
+    dragCleanupRef.current?.();
+    dragCleanupRef.current = onEnd;
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onEnd, { once: true });
+    window.addEventListener("pointercancel", onEnd, { once: true });
+  }
 
   return (
     <article className="cw-timeline-card timeline-card focus-chain">
-      <div className="cw-chain-viewport chain-viewport" ref={viewportRef}>
-        <ol className="cw-step-list step-list">
-          {steps.map((step, index) => (
-            <TimelineStep key={`${step.title}-${index}`} step={step} />
-          ))}
-        </ol>
+      <div className="cw-chain-scroll-shell">
+        <div
+          className="cw-chain-viewport chain-viewport"
+          ref={viewportRef}
+          tabIndex={0}
+          role="region"
+          aria-label="当前客户处理步骤"
+        >
+          <ol className="cw-step-list step-list">
+            {steps.map((step, index) => (
+              <TimelineStep key={`${step.title}-${index}`} step={step} />
+            ))}
+          </ol>
+        </div>
+        {scrollThumb.visible ? (
+          <span className="cw-chain-scroll-track" aria-hidden="true">
+            <span
+              className="cw-chain-scroll-thumb"
+              style={{ height: `${scrollThumb.height}px`, transform: `translateY(${scrollThumb.top}px)` }}
+              onPointerDown={startThumbDrag}
+            />
+          </span>
+        ) : null}
       </div>
     </article>
   );
@@ -512,6 +603,24 @@ function OfflineScreen({ model, hasCurrentOperation = true }: { model: WorkerCli
     ...model,
     status: { ...model.status, connectionState: "连接异常" as const },
   };
+  const hasBusinessTask = Boolean(model.task.id && model.task.id !== "-");
+  const retainedSteps = hasBusinessTask
+    ? model.completedSteps.length
+      ? model.completedSteps
+      : model.runningSteps
+    : model.targetReadRunningSteps.length
+      ? model.targetReadRunningSteps
+      : model.scanRunningSteps.length
+        ? model.scanRunningSteps
+        : [];
+  const offlineSteps: TimelineStepModel[] = [
+    ...retainedSteps,
+    {
+      state: "current",
+      title: model.completedSteps.length ? "执行已完成，等待恢复后回传" : "服务端连接中断，当前操作状态已保留",
+      description: "连接恢复后客户端会自动继续处理。",
+    },
+  ];
   return (
     <section className="cw-screen cw-screen-task screen active" data-screen-view="offline">
       <div className="cw-workspace workspace">
@@ -522,13 +631,10 @@ function OfflineScreen({ model, hasCurrentOperation = true }: { model: WorkerCli
           <section className="cw-task-layout task-layout">
             <StatusSummary model={offlineModel} />
             <CurrentProcess
-              steps={[
-                { state: "done", title: "正在执行微信加好友", description: "本机操作保持原状态。" },
-                { state: "current", title: "执行已完成，等待恢复后回传", description: "连接恢复后自动回传执行结果。" },
-              ]}
+              steps={offlineSteps}
               state="error"
               duration="等待连接"
-              task={model.task}
+              task={hasBusinessTask ? model.task : undefined}
               statusText="处理中"
             />
           </section>
@@ -706,9 +812,22 @@ function LogsScreen({
   );
 }
 
+function customerProcessStepsForScreen(
+  screen: WorkerClientScreen,
+  model: WorkerClientModel,
+): TimelineStepModel[] {
+  if (model.customerProcessSteps?.length) return model.customerProcessSteps;
+  if (screen === "ai-reply-running") return model.replyRunningSteps;
+  if (screen === "ai-reply-completed") return model.replyCompletedSteps;
+  if (screen === "ai-reply-failed") return model.replyFailedSteps;
+  if (screen === "target-read-completed") return model.targetReadCompletedSteps;
+  return model.targetReadRunningSteps;
+}
+
 function renderScreen(props: WorkerClientBaselineProps) {
   const { screen, model, onScreenChange, onStartAccepting, onPauseAccepting, onUpdateAcceptSchedule } = props;
-  if (screen === "bind") return <BindScreen model={model} onBind={props.onBind} bindError={props.bindError} />;
+  const customerProcessSteps = customerProcessStepsForScreen(screen, model);
+  if (runtimePageKind(screen) === "bind") return <BindScreen model={model} onBind={props.onBind} bindError={props.bindError} />;
   if (screen === "paused-empty") {
     return (
       <EmptyWorkbench
@@ -758,19 +877,16 @@ function renderScreen(props: WorkerClientBaselineProps) {
   if (screen === "failed") return <TaskScreen screen={screen} model={model} steps={model.failedSteps} statusText="失败" dockState={model.status.receiveState} onStartAccepting={onStartAccepting} onPauseAccepting={onPauseAccepting} />;
   if (screen === "scan-running") return <BackgroundProcessScreen screen={screen} model={model} steps={model.scanRunningSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
   if (screen === "scan-completed") return <BackgroundProcessScreen screen={screen} model={model} steps={model.scanCompletedSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
-  if (screen === "target-read-running") return <BackgroundProcessScreen screen={screen} model={model} steps={model.targetReadRunningSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
-  if (screen === "target-read-completed") return <BackgroundProcessScreen screen={screen} model={model} steps={model.targetReadCompletedSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
+  if (screen === "target-read-running") return <BackgroundProcessScreen screen={screen} model={model} steps={customerProcessSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
+  if (screen === "target-read-completed") return <BackgroundProcessScreen screen={screen} model={model} steps={customerProcessSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
   if (screen === "ai-reply-running") {
-    const replyModel = { ...model, task: { ...model.task, id: "TASK-1842", title: "AI 回复", type: "chat_reply" as const, statusText: "处理中", metaText: "王先生 · 张伟 · 客户咨询续保价格" } };
-    return <TaskScreen screen={screen} model={replyModel} steps={model.replyRunningSteps} statusText="处理中" dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
+    return <BackgroundProcessScreen screen={screen} model={model} steps={customerProcessSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
   }
   if (screen === "ai-reply-completed") {
-    const replyModel = { ...model, task: { ...model.task, id: "TASK-1842", title: "AI 回复", type: "chat_reply" as const, statusText: "已完成", metaText: "王先生 · 张伟 · AI 回复已发送" } };
-    return <TaskScreen screen={screen} model={replyModel} steps={model.replyCompletedSteps} statusText="已完成" dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
+    return <BackgroundProcessScreen screen={screen} model={model} steps={customerProcessSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
   }
   if (screen === "ai-reply-failed") {
-    const replyModel = { ...model, task: { ...model.task, id: "TASK-1842", title: "AI 回复", type: "chat_reply" as const, statusText: "失败", metaText: "王先生 · 张伟 · 自动发送已终止" } };
-    return <TaskScreen screen={screen} model={replyModel} steps={model.replyFailedSteps} statusText="失败" dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
+    return <BackgroundProcessScreen screen={screen} model={model} steps={customerProcessSteps} dockState={model.status.receiveState} onPauseAccepting={onPauseAccepting} />;
   }
   if (screen === "settings") return <SettingsScreen model={model} onScreenChange={onScreenChange} />;
   if (screen === "schedule-settings") return <ScheduleSettingsScreen model={model} onUpdateAcceptSchedule={onUpdateAcceptSchedule} />;
@@ -788,6 +904,11 @@ export function WorkerClientBaseline(props: WorkerClientBaselineProps) {
   return (
     <section className="cw-window app-window" data-active-screen={props.screen} aria-label="车金 Worker 客户端">
       <Header screen={props.screen} onScreenChange={props.onScreenChange} onBack={props.onBack} />
+      {props.notice ? (
+        <div className="cw-toast cw-toast-success" role="status" aria-live="polite">
+          {props.notice}
+        </div>
+      ) : null}
       <div className="cw-app-body">
         {renderScreen(props)}
       </div>

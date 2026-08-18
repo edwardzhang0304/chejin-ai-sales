@@ -30,7 +30,7 @@ def _create_worker(name: str = "Mac Worker A") -> dict:
 def _create_sales(name: str = "张伟") -> str:
     response = client.post(
         "/api/sales",
-        json={"sales_name": name, "enabled": True, "sort_order": 10},
+        json={"sales_name": name, "phone": "13900000001", "enabled": True, "sort_order": 10},
         headers=HEADERS,
     )
     assert response.status_code == 200

@@ -3786,14 +3786,6 @@ details.helper-card.helper-card-collapsible > .helper-card-content {
   opacity: 0.9;
 }
 
-.float-hotkey-inline {
-  margin-left: auto;
-  color: #0f172a;
-  font-size: 9px;
-  line-height: 1.2;
-  white-space: nowrap;
-}
-
 .float-runtime-list {
   display: flex;
   flex-direction: column;

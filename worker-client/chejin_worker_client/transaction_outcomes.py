@@ -14,27 +14,66 @@ class FlowOutcomeAccumulator:
         self,
         *,
         checkpoint: Callable[[list[dict[str, Any]]], None] | None = None,
+        origin_read_run_id: str | None = None,
     ) -> None:
         self._item_outcomes: list[dict[str, Any]] = []
         self._checkpoint = checkpoint
         self._action_journal_paths: set[Path] = set()
+        self._origin_read_run_id = str(origin_read_run_id or "").strip()
+
+    @property
+    def origin_read_run_id(self) -> str:
+        return self._origin_read_run_id
+
+    def _with_origin(
+        self,
+        outcomes: Iterable[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        for raw in outcomes:
+            item = dict(raw)
+            existing = str(item.get("origin_read_run_id") or "").strip()
+            if existing and self._origin_read_run_id and existing != self._origin_read_run_id:
+                raise ValueError("C2_FLOW_OUTCOME_ORIGIN_READ_RUN_ID_CONFLICT")
+            if self._origin_read_run_id:
+                item["origin_read_run_id"] = self._origin_read_run_id
+            normalized.append(item)
+        return normalized
 
     def record(self, *outcomes: dict[str, Any]) -> None:
         self._item_outcomes = merge_item_outcomes(
             self._item_outcomes,
-            outcomes,
+            self._with_origin(outcomes),
         )
         self._persist_checkpoint()
 
     def extend(self, outcomes: Iterable[dict[str, Any]] | None) -> None:
         self._item_outcomes = merge_item_outcomes(
             self._item_outcomes,
-            outcomes,
+            self._with_origin(outcomes or []),
         )
         self._persist_checkpoint()
 
     def snapshot(self) -> list[dict[str, Any]]:
         return [dict(item) for item in self._item_outcomes]
+
+    def replace_source_key(self, old_source_key: str, new_source_key: str) -> None:
+        """Commit one action-local outcome to its durable message identity."""
+
+        old_key = str(old_source_key or "").strip()
+        new_key = str(new_source_key or "").strip()
+        if not old_key or not new_key:
+            raise ValueError("C2_FLOW_OUTCOME_SOURCE_KEY_MISSING")
+        if old_key == new_key:
+            return
+        remapped: list[dict[str, Any]] = []
+        for raw in self._item_outcomes:
+            item = dict(raw)
+            if str(item.get("source_message_key") or "").strip() == old_key:
+                item["source_message_key"] = new_key
+            remapped.append(item)
+        self._item_outcomes = merge_item_outcomes([], remapped)
+        self._persist_checkpoint()
 
     def register_action_journal(self, path: str | Path) -> None:
         self._action_journal_paths.add(Path(path))
@@ -223,6 +262,21 @@ def classify_outbox_recovery(value: BaseException | str | None) -> str:
     ).strip()
     if action in allowed:
         return action
+    if isinstance(value, ApiError):
+        code = str(value.code or "").strip()
+        for field, mapped_action in (
+            ("identity_quarantined_codes", "identity_quarantined"),
+            ("refresh_and_rebuild_codes", "refresh_and_rebuild"),
+            ("split_and_retry_codes", "split_and_retry"),
+            ("target_terminated_codes", "target_terminated"),
+            ("conversation_terminated_codes", "conversation_terminated"),
+            ("capability_paused_codes", "capability_paused"),
+        ):
+            if code in {
+                str(item)
+                for item in (contract.get(field) or [])
+            }:
+                return mapped_action
     return str(
         contract.get("unknown_api_error_action")
         or "capability_paused"

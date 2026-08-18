@@ -26,8 +26,16 @@ const modules: Array<{ key: ModuleKey; label: string }> = [
 
 type AuthState = "checking" | "authenticated" | "unauthenticated";
 
+function initialAuditModule(): ModuleKey | null {
+  if (!import.meta.env.DEV) return null;
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("ui-audit") !== "1") return null;
+  const candidate = params.get("module") as ModuleKey | null;
+  return modules.some((item) => item.key === candidate) ? candidate : null;
+}
+
 export function App() {
-  const [activeModule, setActiveModule] = useState<ModuleKey | null>(null);
+  const [activeModule, setActiveModule] = useState<ModuleKey | null>(initialAuditModule);
   const [workerOpenIntent, setWorkerOpenIntent] = useState<{ workerId: string; nonce: number } | null>(null);
   const [salesOpenIntent, setSalesOpenIntent] = useState<{ salesId: string; editing: boolean; focusWorker: boolean; nonce: number } | null>(null);
   const [authSession, setAuthSession] = useState<AuthSession | null>(null);

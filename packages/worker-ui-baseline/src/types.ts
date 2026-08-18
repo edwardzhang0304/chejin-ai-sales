@@ -96,6 +96,7 @@ export interface WorkerClientModel {
   replyRunningSteps: TimelineStepModel[];
   replyCompletedSteps: TimelineStepModel[];
   replyFailedSteps: TimelineStepModel[];
+  customerProcessSteps: TimelineStepModel[];
   logs: WorkerLogRow[];
   latestIncident?: {
     incident_id: string;

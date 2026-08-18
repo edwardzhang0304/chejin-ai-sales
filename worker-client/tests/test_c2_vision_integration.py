@@ -64,7 +64,12 @@ from chejin_worker_client.action_journal import (
 )
 from chejin_worker_client.wechat_c2 import (
     apply_image_terminal_result,
-    reconcile_cross_round_observation_identities,
+)
+from chejin_worker_client.sequence_alignment import (
+    align_committed_message_sequence,
+    build_post_action_observation_sequence,
+    build_pre_action_identity_sequence,
+    inherited_worker_ids,
 )
 from apps.wechat_ai_customer_service.optional_plugins.vision.capture import transaction
 from apps.wechat_ai_customer_service.optional_plugins.vision.capture import wechat as wechat_capture
@@ -101,6 +106,20 @@ from apps.wechat_ai_customer_service.workflows import (
     customer_service_brain,
 )
 from tests.contract_artifacts import resolve_contract_artifact
+
+
+def confirmed_image_menu_for_downstream_test(
+    _ocr_items,
+    copy_item,
+    *,
+    menu_panel_bounds,
+):
+    del menu_panel_bounds
+    return {
+        "kind": "image",
+        "labels": ["复制", "编辑"],
+        "copy_item": copy_item,
+    }
 
 
 class C2VisionIntegrationTests(unittest.TestCase):
@@ -605,6 +624,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertLessEqual(max(payload.width, payload.height), 128)
         payload.release()
 
+    @patch.object(
+        transaction,
+        "_classify_context_menu",
+        new=confirmed_image_menu_for_downstream_test,
+    )
     def test_image_candidate_frame_is_reused_for_target_confirmation(self):
         image = Image.new("RGB", (800, 600), "white")
 
@@ -638,6 +662,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         "ok": True,
                         "image": image.copy(),
                         "ocr_items": [{"text": "复制"}],
+                        "menu_panel_bounds": [580, 280, 680, 360],
                         "screen_origin": [0, 0],
                     }
                 frame_image = image.copy()
@@ -705,6 +730,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertIs(target.context["candidate_frame"]["image"], frames.candidate_image)
         result["_ephemeral_clipboard_image"].release()
 
+    @patch.object(
+        transaction,
+        "_classify_context_menu",
+        new=confirmed_image_menu_for_downstream_test,
+    )
     def test_copy_journal_is_persisted_before_physical_click(self):
         image = Image.new("RGB", (800, 600), "white")
         events: list[str] = []
@@ -747,6 +777,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "time_markers": [],
                     "ocr_items": (
                         [{"text": "复制"}]
+                        if context.get("phase") == "image_context_menu"
+                        else []
+                    ),
+                    "menu_panel_bounds": (
+                        [580, 280, 680, 360]
                         if context.get("phase") == "image_context_menu"
                         else []
                     ),
@@ -894,6 +929,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertEqual(events, ["shared_context_menu_wait"])
         screenshot.close()
 
+    @patch.object(
+        transaction,
+        "_classify_context_menu",
+        new=confirmed_image_menu_for_downstream_test,
+    )
     def test_copy_click_exception_always_dismisses_context_menu(self):
         image = Image.new("RGB", (800, 600), "white")
         observed_images = self.observed_image_messages(
@@ -936,6 +976,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     ],
                     "time_markers": [],
                     "ocr_items": [{"text": "复制"}] if context.get("phase") == "image_context_menu" else [],
+                    "menu_panel_bounds": (
+                        [580, 280, 680, 360]
+                        if context.get("phase") == "image_context_menu"
+                        else []
+                    ),
                     "screen_origin": [0, 0],
                 }
             ),
@@ -945,7 +990,12 @@ class C2VisionIntegrationTests(unittest.TestCase):
         with patch.object(
             transaction,
             "find_copy_menu_item",
-            return_value={"x": 620, "y": 320, "bounds": [600, 300, 650, 340]},
+            return_value={
+                "text": "复制",
+                "x": 620,
+                "y": 320,
+                "bounds": [600, 300, 650, 340],
+            },
         ):
             result = transaction.acquire_current_image_via_ports(
                 ports,
@@ -1176,6 +1226,12 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         "local_ocr_item_count": 1,
                         "ocr_roi": [520, 80, 1200, 900],
                         "ocr_execution": "isolated_runner",
+                        "menu_panel_bounds": [560, 250, 680, 350],
+                        "menu_window_evidence": {
+                            "hwnd": 2718,
+                            "class_name": "WeChatMenuWnd",
+                            "reason": "context_menu_popup_window_confirmed",
+                        },
                         "menu_structure_evidence": [
                             {"text": "复制", "bounds": [580, 280, 640, 312]}
                         ],
@@ -1202,6 +1258,9 @@ class C2VisionIntegrationTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["screen_origin"], [0, 0])
+        self.assertEqual(
+            result["menu_panel_bounds"], [560, 250, 680, 350]
+        )
         self.assertEqual(result["messages"], [])
         self.assertEqual(result["screenshot_path"], "evidence-dir/vision_image_context_menu.png")
         self.assertEqual(calls[0]["anchor_screen"], [900, 500])
@@ -1230,7 +1289,19 @@ class C2VisionIntegrationTests(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory(
             prefix="chejin-real-menu-evidence-"
-        ) as artifact_dir, patch.object(
+        ) as artifact_dir, (
+            patch.object(
+                wechat_win32_ocr_sidecar,
+                "resolve_wechat_context_menu_bounds",
+                return_value={
+                    "ok": True,
+                    "reason": "context_menu_popup_window_confirmed",
+                    "menu_panel_bounds": [480, 220, 650, 340],
+                    "menu_hwnd": 2718,
+                    "menu_class_name": "WeChatMenuWnd",
+                },
+            )
+        ), patch.object(
             wechat_win32_ocr_sidecar.ImageGrab,
             "grab",
             return_value=full_screen.copy(),
@@ -1300,6 +1371,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
             ],
         )
 
+    @patch.object(
+        transaction,
+        "_classify_context_menu",
+        new=confirmed_image_menu_for_downstream_test,
+    )
     def test_delayed_clipboard_update_is_polled_after_one_copy_click(self):
         image = Image.new("RGB", (800, 600), "white")
         observed_images = self.observed_image_messages(
@@ -1361,7 +1437,17 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         dict(item) for item in observed_images
                     ],
                     "time_markers": [],
-                    "ocr_items": [],
+                    "ocr_items": [
+                        {
+                            "text": "复制",
+                            "bounds": [600, 300, 650, 340],
+                        },
+                        {
+                            "text": "编辑",
+                            "bounds": [600, 350, 650, 390],
+                        },
+                    ],
+                    "menu_panel_bounds": [580, 280, 720, 510],
                     "screen_origin": [0, 0],
                 }
             ),
@@ -1372,6 +1458,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             transaction,
             "find_copy_menu_item",
             return_value={
+                "text": "复制",
                 "x": 620,
                 "y": 320,
                 "bounds": [600, 300, 650, 340],
@@ -1449,6 +1536,545 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertNotIn("_ephemeral_clipboard_image", failed)
         image.close()
 
+    def test_text_context_menu_stops_before_copy_and_vision(self):
+        image = Image.new("RGB", (800, 600), "white")
+        observed_images = self.observed_image_messages(
+            image,
+            [
+                {
+                    "bounds": [420, 180, 650, 320],
+                    "sender_role": "customer",
+                    "side": "customer",
+                    "anchor": {"x": 500, "y": 240},
+                }
+            ],
+        )
+
+        class Actions:
+            copy_click_count = 0
+            dismiss_count = 0
+
+            @staticmethod
+            def right_click(*_args, **_kwargs):
+                return {"screen_x": 500, "screen_y": 240}
+
+            def click_screen(self, *_args, **_kwargs):
+                self.copy_click_count += 1
+
+            def dismiss_menu_safely(self):
+                self.dismiss_count += 1
+
+        class Clipboard:
+            read_count = 0
+
+            @staticmethod
+            def sequence_number():
+                return 10
+
+            def read_current_bitmap(self):
+                self.read_count += 1
+                raise AssertionError("text menu must not read clipboard")
+
+        actions = Actions()
+        clipboard = Clipboard()
+
+        def capture_frame(context):
+            if context.get("phase") == "image_context_menu":
+                return {
+                    "ok": True,
+                    "image": image.copy(),
+                    "image_size": image.size,
+                    "ocr_items": [
+                        {"text": "复制", "bounds": [600, 300, 680, 340]},
+                        {"text": "放大阅读", "bounds": [600, 350, 680, 390]},
+                        {"text": "翻译", "bounds": [600, 400, 680, 440]},
+                        {"text": "搜一搜", "bounds": [600, 450, 680, 490]},
+                    ],
+                    "menu_panel_bounds": [580, 280, 720, 510],
+                    "screen_origin": [0, 0],
+                }
+            return {
+                "ok": True,
+                "image": image.copy(),
+                "image_size": image.size,
+                "messages": [dict(item) for item in observed_images],
+                "time_markers": [],
+                "ocr_items": [],
+                "screen_origin": [0, 0],
+            }
+
+        with patch.object(
+            transaction,
+            "find_copy_menu_item",
+            return_value={
+                "text": "复制",
+                "x": 640,
+                "y": 320,
+                "bounds": [600, 300, 680, 340],
+            },
+        ):
+            result = transaction.acquire_current_image_via_ports(
+                VisionHostPorts(
+                    rpa_lease=SimpleNamespace(
+                        lease=lambda *_args, **_kwargs: nullcontext()
+                    ),
+                    conversation_target=SimpleNamespace(
+                        confirm_target=lambda _context: {"ok": True}
+                    ),
+                    window_frame=SimpleNamespace(
+                        capture_frame=capture_frame
+                    ),
+                    ui_action=actions,
+                    clipboard=clipboard,
+                ),
+                {
+                    "sender_role": "customer",
+                    "bubble_rect": [420, 180, 650, 320],
+                    "image_physical_anchor": observed_images[0][
+                        "image_physical_anchor"
+                    ],
+                },
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "C2_IMAGE_SOURCE_INVALID")
+        self.assertEqual(result["action_phase"], "not_attempted")
+        self.assertEqual(
+            result["transaction"]["status"],
+            "text_context_menu_rejected",
+        )
+        self.assertEqual(actions.copy_click_count, 0)
+        self.assertEqual(actions.dismiss_count, 1)
+        self.assertEqual(clipboard.read_count, 0)
+        image.close()
+
+    def test_context_menu_classifier_uses_exact_exclusive_combinations(self):
+        def classify(*labels):
+            items = [
+                {
+                    "text": label,
+                    "bounds": [600, 300 + index * 48, 700, 340 + index * 48],
+                }
+                for index, label in enumerate(labels)
+            ]
+            copy_item = next(
+                (item for item in items if item["text"] == "复制"),
+                None,
+            )
+            return transaction._classify_context_menu(
+                items,
+                copy_item,
+                menu_panel_bounds=[580, 280, 720, 560],
+            )["kind"]
+
+        self.assertEqual(classify("复制", "放大阅读"), "text")
+        self.assertEqual(classify("复制", "翻译", "搜一搜"), "text")
+        self.assertEqual(classify("复制", "翻译"), "unknown")
+        self.assertEqual(classify("复制", "搜一搜"), "unknown")
+        self.assertEqual(classify("复制", "编辑"), "image")
+        self.assertEqual(classify("复制", "另存为..."), "image")
+        self.assertEqual(classify("语音转文字", "收藏"), "voice")
+        self.assertEqual(classify("收起文字", "多选"), "voice")
+        self.assertEqual(
+            classify("复制", "转发...", "收藏", "多选", "提醒", "引用", "删除"),
+            "unknown",
+        )
+        self.assertEqual(classify("复制", "翻译此消息", "搜一搜"), "unknown")
+        self.assertEqual(classify("复制", "编辑", "放大阅读"), "conflict")
+
+    def test_context_menu_classifier_ignores_exclusive_labels_outside_popup(self):
+        copy_item = {
+            "text": "复制",
+            "bounds": [620, 320, 680, 352],
+        }
+        result = transaction._classify_context_menu(
+            [
+                copy_item,
+                {"text": "编辑", "bounds": [300, 200, 360, 232]},
+                {"text": "放大阅读", "bounds": [300, 245, 390, 277]},
+                {"text": "搜一搜", "bounds": [300, 290, 370, 322]},
+            ],
+            copy_item,
+            menu_panel_bounds=[600, 300, 700, 400],
+        )
+
+        self.assertEqual(result["kind"], "unknown")
+        self.assertEqual(result["labels"], ["复制"])
+        self.assertIsNone(result["copy_item"])
+
+    def test_copy_geometry_failure_stays_not_attempted_and_never_clicks(self):
+        image = Image.new("RGB", (800, 600), "white")
+        observed = self.observed_image_messages(
+            image,
+            [
+                {
+                    "bounds": [420, 180, 650, 320],
+                    "sender_role": "customer",
+                    "side": "customer",
+                    "anchor": {"x": 500, "y": 240},
+                }
+            ],
+        )[0]
+        copy_item = {
+            "text": "复制",
+            "x": 740,
+            "y": 336,
+            "bounds": [620, 320, 680, 352],
+        }
+        journal_updates = []
+        clicks = []
+
+        def capture_frame(context):
+            if context.get("phase") == "image_context_menu":
+                return {
+                    "ok": True,
+                    "image": image.copy(),
+                    "image_size": image.size,
+                    "ocr_items": [
+                        copy_item,
+                        {"text": "编辑", "bounds": [620, 360, 680, 392]},
+                    ],
+                    "menu_panel_bounds": [600, 300, 700, 420],
+                    "screen_origin": [0, 0],
+                }
+            return {
+                "ok": True,
+                "image": image.copy(),
+                "image_size": image.size,
+                "messages": [dict(observed)],
+                "time_markers": [],
+            }
+
+        with patch.object(
+            transaction,
+            "find_copy_menu_item",
+            return_value=copy_item,
+        ):
+            result = transaction.acquire_current_image_via_ports(
+                VisionHostPorts(
+                    rpa_lease=SimpleNamespace(
+                        lease=lambda *_args, **_kwargs: nullcontext()
+                    ),
+                    conversation_target=SimpleNamespace(
+                        confirm_target=lambda _context: {"ok": True}
+                    ),
+                    window_frame=SimpleNamespace(capture_frame=capture_frame),
+                    ui_action=SimpleNamespace(
+                        right_click=lambda *_args, **_kwargs: {
+                            "screen_x": 500,
+                            "screen_y": 240,
+                        },
+                        click_screen=lambda *_args, **_kwargs: clicks.append(True),
+                        dismiss_menu_safely=lambda: None,
+                    ),
+                    clipboard=SimpleNamespace(sequence_number=lambda: 10),
+                ),
+                {
+                    "sender_role": "customer",
+                    "bubble_rect": [420, 180, 650, 320],
+                    "image_physical_anchor": observed["image_physical_anchor"],
+                    "action_journal_update": lambda **update: journal_updates.append(update),
+                },
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "C2_IMAGE_MENU_OPERATION_FAILED")
+        self.assertEqual(result["action_phase"], "not_attempted")
+        self.assertEqual(result["transaction"]["status"], "menu_copy_item_unsafe")
+        self.assertEqual(journal_updates, [])
+        self.assertEqual(clicks, [])
+        image.close()
+
+    def test_trigger_attempted_is_persisted_immediately_before_copy_click(self):
+        image = Image.new("RGB", (800, 600), "white")
+        observed = self.observed_image_messages(
+            image,
+            [
+                {
+                    "bounds": [420, 180, 650, 320],
+                    "sender_role": "customer",
+                    "side": "customer",
+                    "anchor": {"x": 500, "y": 240},
+                }
+            ],
+        )[0]
+        copy_item = {
+            "text": "复制",
+            "x": 650,
+            "y": 336,
+            "bounds": [620, 320, 680, 352],
+        }
+        events = []
+
+        def capture_frame(context):
+            if context.get("phase") == "image_context_menu":
+                return {
+                    "ok": True,
+                    "image": image.copy(),
+                    "image_size": image.size,
+                    "ocr_items": [
+                        copy_item,
+                        {"text": "编辑", "bounds": [620, 360, 680, 392]},
+                    ],
+                    "menu_panel_bounds": [600, 300, 700, 420],
+                    "screen_origin": [0, 0],
+                }
+            return {
+                "ok": True,
+                "image": image.copy(),
+                "image_size": image.size,
+                "messages": [dict(observed)],
+                "time_markers": [],
+            }
+
+        def copy_click(*_args, **_kwargs):
+            events.append("click")
+            raise RuntimeError("injected_after_click")
+
+        with patch.object(
+            transaction,
+            "find_copy_menu_item",
+            return_value=copy_item,
+        ):
+            result = transaction.acquire_current_image_via_ports(
+                VisionHostPorts(
+                    rpa_lease=SimpleNamespace(
+                        lease=lambda *_args, **_kwargs: nullcontext()
+                    ),
+                    conversation_target=SimpleNamespace(
+                        confirm_target=lambda _context: {"ok": True}
+                    ),
+                    window_frame=SimpleNamespace(capture_frame=capture_frame),
+                    ui_action=SimpleNamespace(
+                        right_click=lambda *_args, **_kwargs: {
+                            "screen_x": 500,
+                            "screen_y": 240,
+                        },
+                        click_screen=copy_click,
+                        dismiss_menu_safely=lambda: None,
+                    ),
+                    clipboard=SimpleNamespace(sequence_number=lambda: 10),
+                ),
+                {
+                    "sender_role": "customer",
+                    "bubble_rect": [420, 180, 650, 320],
+                    "image_physical_anchor": observed["image_physical_anchor"],
+                    "action_journal_update": lambda **_update: events.append("journal"),
+                },
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["action_phase"], "trigger_attempted")
+        self.assertEqual(events, ["journal", "click"])
+        image.close()
+
+    def test_menu_only_copy_with_chat_exclusive_labels_never_clicks(self):
+        image = Image.new("RGB", (800, 600), "white")
+        observed = self.observed_image_messages(
+            image,
+            [
+                {
+                    "bounds": [420, 180, 650, 320],
+                    "sender_role": "customer",
+                    "side": "customer",
+                    "anchor": {"x": 500, "y": 240},
+                }
+            ],
+        )[0]
+        copy_item = {
+            "text": "复制",
+            "x": 650,
+            "y": 336,
+            "bounds": [620, 320, 680, 352],
+        }
+        copy_clicks = []
+        clipboard_reads = []
+
+        def capture_frame(context):
+            if context.get("phase") == "image_context_menu":
+                return {
+                    "ok": True,
+                    "image": image.copy(),
+                    "image_size": image.size,
+                    "ocr_items": [
+                        copy_item,
+                        {"text": "编辑", "bounds": [300, 200, 360, 232]},
+                        {
+                            "text": "放大阅读",
+                            "bounds": [300, 245, 390, 277],
+                        },
+                        {"text": "搜一搜", "bounds": [300, 290, 370, 322]},
+                    ],
+                    "menu_panel_bounds": [600, 300, 700, 400],
+                    "screen_origin": [0, 0],
+                }
+            return {
+                "ok": True,
+                "image": image.copy(),
+                "image_size": image.size,
+                "messages": [dict(observed)],
+                "time_markers": [],
+            }
+
+        with patch.object(
+            transaction,
+            "find_copy_menu_item",
+            return_value=copy_item,
+        ):
+            result = transaction.acquire_current_image_via_ports(
+                VisionHostPorts(
+                    rpa_lease=SimpleNamespace(
+                        lease=lambda *_args, **_kwargs: nullcontext()
+                    ),
+                    conversation_target=SimpleNamespace(
+                        confirm_target=lambda _context: {"ok": True}
+                    ),
+                    window_frame=SimpleNamespace(capture_frame=capture_frame),
+                    ui_action=SimpleNamespace(
+                        right_click=lambda *_args, **_kwargs: {
+                            "screen_x": 500,
+                            "screen_y": 240,
+                        },
+                        click_screen=lambda *_args, **_kwargs: copy_clicks.append(1),
+                        dismiss_menu_safely=lambda: None,
+                    ),
+                    clipboard=SimpleNamespace(
+                        sequence_number=lambda: 10,
+                        read_current_bitmap=lambda: clipboard_reads.append(1),
+                    ),
+                ),
+                {
+                    "sender_role": "customer",
+                    "bubble_rect": [420, 180, 650, 320],
+                    "image_physical_anchor": observed[
+                        "image_physical_anchor"
+                    ],
+                },
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "C2_IMAGE_MENU_OPERATION_FAILED")
+        self.assertEqual(result["transaction"]["status"], "menu_evidence_incomplete")
+        self.assertEqual(copy_clicks, [])
+        self.assertEqual(clipboard_reads, [])
+        image.close()
+
+    def test_non_image_incomplete_and_conflicting_menus_never_click(self):
+        image = Image.new("RGB", (800, 600), "white")
+        observed = self.observed_image_messages(
+            image,
+            [
+                {
+                    "bounds": [420, 180, 650, 320],
+                    "sender_role": "customer",
+                    "side": "customer",
+                    "anchor": {"x": 500, "y": 240},
+                }
+            ],
+        )[0]
+
+        for labels, expected_reason, expected_status in (
+            (
+                ["语音转文字", "收藏"],
+                "C2_IMAGE_SOURCE_INVALID",
+                "voice_context_menu_rejected",
+            ),
+            (
+                ["复制", "收藏", "删除"],
+                "C2_IMAGE_MENU_OPERATION_FAILED",
+                "menu_evidence_incomplete",
+            ),
+            (
+                ["复制", "编辑", "放大阅读"],
+                "C2_IMAGE_MENU_OPERATION_FAILED",
+                "menu_evidence_conflict",
+            ),
+        ):
+            clicks = []
+            clipboard_reads = []
+            menu_items = [
+                {
+                    "text": label,
+                    "bounds": [600, 300 + index * 48, 700, 340 + index * 48],
+                }
+                for index, label in enumerate(labels)
+            ]
+
+            def capture_frame(context):
+                if context.get("phase") == "image_context_menu":
+                    return {
+                        "ok": True,
+                        "image": image.copy(),
+                        "image_size": image.size,
+                        "ocr_items": menu_items,
+                        "menu_panel_bounds": [580, 280, 720, 560],
+                        "screen_origin": [0, 0],
+                    }
+                return {
+                    "ok": True,
+                    "image": image.copy(),
+                    "image_size": image.size,
+                    "messages": [dict(observed)],
+                    "time_markers": [],
+                    "ocr_items": [],
+                    "screen_origin": [0, 0],
+                }
+
+            copy_item = next(
+                (item for item in menu_items if item["text"] == "复制"),
+                None,
+            )
+            if copy_item is not None:
+                copy_item = {
+                    **copy_item,
+                    "x": 650,
+                    "y": 320,
+                }
+            with patch.object(
+                transaction,
+                "find_copy_menu_item",
+                return_value=copy_item,
+            ):
+                result = transaction.acquire_current_image_via_ports(
+                    VisionHostPorts(
+                        rpa_lease=SimpleNamespace(
+                            lease=lambda *_args, **_kwargs: nullcontext()
+                        ),
+                        conversation_target=SimpleNamespace(
+                            confirm_target=lambda _context: {"ok": True}
+                        ),
+                        window_frame=SimpleNamespace(
+                            capture_frame=capture_frame
+                        ),
+                        ui_action=SimpleNamespace(
+                            right_click=lambda *_args, **_kwargs: {
+                                "screen_x": 500,
+                                "screen_y": 240,
+                            },
+                            click_screen=lambda *_args, **_kwargs: clicks.append(True),
+                            dismiss_menu_safely=lambda: None,
+                        ),
+                        clipboard=SimpleNamespace(
+                            sequence_number=lambda: 10,
+                            read_current_bitmap=lambda: clipboard_reads.append(True),
+                        ),
+                    ),
+                    {
+                        "sender_role": "customer",
+                        "bubble_rect": [420, 180, 650, 320],
+                        "image_physical_anchor": observed[
+                            "image_physical_anchor"
+                        ],
+                    },
+                )
+
+            self.assertEqual(result["reason"], expected_reason)
+            self.assertEqual(result["action_phase"], "not_attempted")
+            self.assertEqual(result["transaction"]["status"], expected_status)
+            self.assertEqual(clicks, [])
+            self.assertEqual(clipboard_reads, [])
+        image.close()
+
     def test_invalid_copied_bitmap_is_not_claimed_or_cleared(self):
         image = Image.new("RGB", (800, 600), "white")
         observed_images = self.observed_image_messages(
@@ -1497,7 +2123,17 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         dict(item) for item in observed_images
                     ],
                     "time_markers": [],
-                    "ocr_items": [],
+                    "ocr_items": [
+                        {
+                            "text": "复制",
+                            "bounds": [600, 300, 650, 340],
+                        },
+                        {
+                            "text": "编辑",
+                            "bounds": [600, 350, 650, 390],
+                        },
+                    ],
+                    "menu_panel_bounds": [580, 280, 700, 420],
                     "screen_origin": [0, 0],
                 }
             ),
@@ -1514,6 +2150,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             transaction,
             "find_copy_menu_item",
             return_value={
+                "text": "复制",
                 "x": 620,
                 "y": 320,
                 "bounds": [600, 300, 650, 340],
@@ -1537,6 +2174,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             result["reason"],
             "clipboard_current_content_not_bitmap",
         )
+        self.assertNotIn("failure_settlement", result["transaction"])
         self.assertEqual(clipboard.cleared_sequences, [])
         image.close()
 
@@ -1544,6 +2182,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertFalse(hasattr(ClipboardPort, "claim_copy_ownership"))
         self.assertFalse(hasattr(_Clipboard, "claim_copy_ownership"))
 
+    @patch.object(
+        transaction,
+        "_classify_context_menu",
+        new=confirmed_image_menu_for_downstream_test,
+    )
     def test_unchanged_clipboard_sequence_never_reads_old_bitmap(self):
         image = Image.new("RGB", (800, 600), "white")
         observed = self.observed_image_messages(
@@ -1590,6 +2233,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "messages": [dict(item) for item in observed],
                     "time_markers": [],
                     "ocr_items": [],
+                    "menu_panel_bounds": [580, 280, 680, 360],
                     "screen_origin": [0, 0],
                 }
             ),
@@ -1633,6 +2277,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertEqual(clipboard.clear_count, 0)
         image.close()
 
+    @patch.object(
+        transaction,
+        "_classify_context_menu",
+        new=confirmed_image_menu_for_downstream_test,
+    )
     def test_clipboard_sequence_change_during_read_releases_every_candidate(
         self,
     ):
@@ -1681,6 +2330,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "messages": [dict(item) for item in observed],
                     "time_markers": [],
                     "ocr_items": [],
+                    "menu_panel_bounds": [580, 280, 680, 360],
                     "screen_origin": [0, 0],
                 }
             ),
@@ -1742,6 +2392,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertEqual(clipboard.clear_count, 0)
         image.close()
 
+    @patch.object(
+        transaction,
+        "_classify_context_menu",
+        new=confirmed_image_menu_for_downstream_test,
+    )
     def test_two_visible_images_are_reconfirmed_and_copied_by_requested_slot(self):
         image = Image.new("RGB", (800, 700), "white")
 
@@ -1811,6 +2466,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     ],
                     "time_markers": [],
                     "ocr_items": [],
+                    "menu_panel_bounds": [580, 280, 680, 360],
                     "screen_origin": [0, 0],
                 }
             ),
@@ -1848,6 +2504,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
             result["_ephemeral_clipboard_image"].release()
         image.close()
 
+    @patch.object(
+        transaction,
+        "_classify_context_menu",
+        new=confirmed_image_menu_for_downstream_test,
+    )
     def test_shifted_second_image_is_matched_by_identity_not_old_coordinates(self):
         initial = Image.new("RGB", (800, 700), "white")
         current = Image.new("RGB", (800, 700), "white")
@@ -1978,6 +2639,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "messages": current_messages,
                     "time_markers": [],
                     "ocr_items": [],
+                    "menu_panel_bounds": [580, 280, 680, 360],
                     "screen_origin": [0, 0],
                 }
             ),
@@ -2016,6 +2678,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             ],
             "time_markers": [],
             "ocr_items": [],
+            "menu_panel_bounds": [580, 280, 680, 360],
             "screen_origin": [0, 0],
         }
         with patch.object(
@@ -2155,6 +2818,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
         initial.close()
         current.close()
 
+    @patch.object(
+        transaction,
+        "_classify_context_menu",
+        new=confirmed_image_menu_for_downstream_test,
+    )
     def test_clipboard_fingerprint_retry_reanchors_once_then_succeeds(self):
         frame_image = Image.new("RGB", (800, 600), "white")
         bubble_image = Image.new("RGB", (200, 140), (30, 120, 210))
@@ -2206,6 +2874,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "image": frame_image.copy(),
                     "image_size": frame_image.size,
                     "ocr_items": [{"text": "复制"}],
+                    "menu_panel_bounds": [580, 280, 680, 360],
                     "screen_origin": [0, 0],
                 }
 
@@ -2293,6 +2962,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
         bubble_image.close()
         frame_image.close()
 
+    @patch.object(
+        transaction,
+        "_classify_context_menu",
+        new=confirmed_image_menu_for_downstream_test,
+    )
     def test_clipboard_fingerprint_mismatch_twice_never_reaches_vision(self):
         frame_image = Image.new("RGB", (800, 600), "white")
         bubble_image = Image.new("RGB", (200, 140), (30, 120, 210))
@@ -2334,6 +3008,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "time_markers": [],
                     "ocr_items": (
                         [{"text": "复制"}]
+                        if context.get("phase") == "image_context_menu"
+                        else []
+                    ),
+                    "menu_panel_bounds": (
+                        [580, 280, 680, 360]
                         if context.get("phase") == "image_context_menu"
                         else []
                     ),
@@ -2748,9 +3427,10 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 action_kind="image",
                 transaction_id="image-cancel-after-copy",
                 conversation_id="conversation-image-cancel",
+                origin_read_run_id="read-image-cancel-after-copy",
                 items=[
                     {
-                        "source_message_key": "image-source-1",
+                        "journal_item_id": "image-source-1",
                         "physical_anchor_keys": ["image-anchor-1"],
                     }
                 ],
@@ -2792,7 +3472,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         }
                     },
                     action_journal_path=journal_path,
-                    source_message_key="image-source-1",
+                    action_local_id="image-source-1",
                 )
 
             self.assertEqual(result["state"], "cancelled")
@@ -2804,6 +3484,218 @@ class C2VisionIntegrationTests(unittest.TestCase):
             self.assertEqual(item["business_state"], "failed")
             self.assertFalse(item["business_result_confirmed"])
 
+    def test_confirmed_image_action_persists_exact_identity_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            journal_path = Path(tmp) / "image-confirmed-receipt.json"
+            observation = self.image_observation()
+            action_id = "image-action-confirmed-receipt"
+            reserved_id = "worker-message-1"
+            source_key = "image-source-confirmed-receipt"
+            initialize_action_journal(
+                journal_path,
+                action_kind="image",
+                transaction_id=action_id,
+                conversation_id="conversation-image-confirmed-receipt",
+                origin_read_run_id="read-image-confirmed-receipt",
+                canonical_action_id=action_id,
+                reserved_worker_stable_id=reserved_id,
+                pre_frame_id="frame-image-confirmed-receipt",
+                pre_action_identity_sequence=[
+                    {
+                        "identity_state": "selected_action",
+                        "canonical_action_id": action_id,
+                        "reserved_worker_stable_id": reserved_id,
+                        "pre_observation_id": observation[
+                            "observation_id"
+                        ],
+                        "pre_sequence_index": 0,
+                        "sender_role": "customer",
+                        "message_type": "image",
+                        "image_visual_fingerprint": (
+                            observation["image_physical_anchor"][
+                                "bubble_visual_fingerprint"
+                            ]
+                        ),
+                    }
+                ],
+                items=[
+                    {
+                        "journal_item_id": source_key,
+                        "physical_anchor_keys": [
+                            observation["observation_id"]
+                        ],
+                    }
+                ],
+            )
+            understanding = {
+                "schema_version": 1,
+                "enabled": True,
+                "applied": True,
+                "adoptable": True,
+                "reason": "vision_ready",
+                "provider": DEFAULT_VISION_BASE_URL,
+                "request_style": DEFAULT_VISION_REQUEST_STYLE,
+                "model": DEFAULT_VISION_MODEL,
+                **self.strict_provider_payload("车辆外观图"),
+                "audit": {
+                    "latency_ms": 1,
+                    "used_fallback": False,
+                    "provider_error": "",
+                    "retry_error": "",
+                    "retry_after_non_json": False,
+                    "catalog_identity_candidate_count": 0,
+                },
+            }
+
+            class FakePlugin:
+                def __init__(self, *, ports, config):
+                    pass
+
+                def run(self, context):
+                    context["action_journal_update"](
+                        action_phase="confirmed",
+                        business_state="clipboard_confirmed",
+                        business_result_confirmed=False,
+                    )
+                    return {
+                        "applied": True,
+                        "reason": "vision_ready",
+                        "customer_image_understanding": understanding,
+                        "visual_bridge_input": {
+                            "schema_version": 1,
+                            "present": True,
+                            "vision_summary": "车辆外观图",
+                            "classification": {
+                                "is_vehicle": True,
+                                "vehicle_confidence": 0.9,
+                                "unknown": False,
+                            },
+                            "catalog_assist": {
+                                "normalized_vehicle_query": "",
+                                "candidate_names": [],
+                                "exact_candidate_name": "",
+                            },
+                            "intent_hints": {
+                                "wants_catalog_match": False,
+                                "wants_similar_recommendation": False,
+                                "needs_clarification": False,
+                            },
+                            "vehicle_image_retrieval": {
+                                "matched": False,
+                                "candidate_names": [],
+                            },
+                            "source_message_ids": [],
+                        },
+                        "clipboard_transaction": {
+                            "action_phase": "confirmed",
+                            "slot_identity_confirmed": True,
+                        },
+                    }
+
+            with patch(
+                "apps.wechat_ai_customer_service.optional_plugins."
+                "vision.plugin.BuiltinVisionPlugin",
+                FakePlugin,
+            ):
+                result = process_image_slot(
+                    observation=observation,
+                    remark_code="CJTEST01",
+                    session_key="wx-row-1",
+                    window_context=self.window_context(),
+                    config={
+                        "customer_image_understanding": {"enabled": True}
+                    },
+                    action_journal_path=journal_path,
+                    action_local_id=source_key,
+                )
+
+            self.assertEqual(result["state"], "completed")
+            terminal = read_action_journal(journal_path)["items"][
+                source_key
+            ]["terminal_payload"]
+            self.assertEqual(
+                terminal["confirmed_action_mapping"][
+                    "canonical_action_id"
+                ],
+                action_id,
+            )
+            self.assertEqual(
+                terminal["confirmed_action_mapping"][
+                    "reserved_worker_stable_id"
+                ],
+                reserved_id,
+            )
+            self.assertEqual(
+                terminal["image_visual_fingerprint"],
+                observation["image_physical_anchor"][
+                    "bubble_visual_fingerprint"
+                ],
+            )
+
+    def test_not_attempted_menu_failure_is_terminalized_by_production_result_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            journal_path = Path(tmp) / "image-menu-failure.json"
+            initialize_action_journal(
+                journal_path,
+                action_kind="image",
+                transaction_id="image-menu-failure",
+                conversation_id="conversation-image-menu-failure",
+                origin_read_run_id="read-image-menu-failure",
+                items=[{
+                    "journal_item_id": "image-source-menu-failure",
+                    "physical_anchor_keys": ["image-anchor-menu-failure"],
+                    "replayable_observation": self.image_observation(),
+                }],
+            )
+
+            class FakePlugin:
+                def __init__(self, *, ports, config):
+                    pass
+
+                def run(self, context):
+                    return {
+                        "applied": False,
+                        "reason": "C2_IMAGE_MENU_OPERATION_FAILED",
+                        "clipboard_transaction": {
+                            "action_phase": "not_attempted",
+                            "status": "menu_evidence_conflict",
+                        },
+                    }
+
+            with patch(
+                "apps.wechat_ai_customer_service.optional_plugins."
+                "vision.plugin.BuiltinVisionPlugin",
+                FakePlugin,
+            ):
+                result = process_image_slot(
+                    observation=self.image_observation(),
+                    remark_code="CJTEST01",
+                    session_key="wx-row-1",
+                    window_context=self.window_context(),
+                    config={
+                        "customer_image_understanding": {"enabled": True}
+                    },
+                    action_journal_path=journal_path,
+                    action_local_id="image-source-menu-failure",
+                )
+
+            self.assertEqual(result["state"], "failed")
+            self.assertEqual(result["action_phase"], "not_attempted")
+            item = read_action_journal(journal_path)["items"][
+                "image-source-menu-failure"
+            ]
+            self.assertEqual(item["action_phase"], "not_attempted")
+            self.assertEqual(item["business_state"], "failed")
+            self.assertFalse(item["business_result_confirmed"])
+            self.assertEqual(
+                item["error_code"],
+                "C2_IMAGE_MENU_OPERATION_FAILED",
+            )
+            self.assertEqual(
+                item["terminal_payload"]["reason_detail"],
+                "menu_evidence_conflict",
+            )
+
     def test_empty_vision_result_never_conflicts_with_action_journal(self):
         with tempfile.TemporaryDirectory() as tmp:
             journal_path = Path(tmp) / "image-empty-result.json"
@@ -2812,9 +3704,10 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 action_kind="image",
                 transaction_id="image-empty-result",
                 conversation_id="conversation-image-empty",
+                origin_read_run_id="read-image-empty-result",
                 items=[
                     {
-                        "source_message_key": "image-source-empty",
+                        "journal_item_id": "image-source-empty",
                         "physical_anchor_keys": ["image-anchor-empty"],
                     }
                 ],
@@ -2900,7 +3793,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         }
                     },
                     action_journal_path=journal_path,
-                    source_message_key="image-source-empty",
+                    action_local_id="image-source-empty",
                 )
 
             self.assertEqual(result["state"], "failed")
@@ -3950,10 +4843,25 @@ class C2VisionIntegrationTests(unittest.TestCase):
         self.assertIsNone(payload)
 
     def test_persisted_projection_drops_runtime_image_fields(self):
+        observation = self.image_observation()
+        observation["_worker_stable_id"] = "worker-message-1"
+        observation["_worker_identity_scope"] = (
+            "current_read_provisional"
+        )
         projected = apply_image_terminal_result(
-            self.image_observation(),
+            observation,
             {
                 "state": "completed",
+                "_confirmed_image_action_receipt": {
+                    "canonical_action_id": "image-action-1",
+                    "reserved_worker_stable_id": "worker-message-1",
+                    "pre_observation_id": "canonical_visual_image_1",
+                    "post_observation_id": "canonical_visual_image_1",
+                    "binding_confirmed": True,
+                    "image_visual_fingerprint": (
+                        "dhash64:0000000000000000"
+                    ),
+                },
                 "customer_image_understanding": {
                     "schema_version": 1,
                     "vision_summary": "车辆外观图",
@@ -4238,6 +5146,432 @@ class C2VisionIntegrationTests(unittest.TestCase):
 
         self.assertEqual(merged, [text_message])
         self.assertEqual(errors, [])
+
+    def test_reliable_voice_type_suppresses_overlapping_image_candidate(self):
+        """Regression for the Windows frame captured at 2026-08-08 18:58."""
+        from apps.wechat_ai_customer_service.adapters import (
+            wechat_win32_ocr_sidecar as sidecar,
+        )
+        from apps.wechat_ai_customer_service.optional_plugins.vision.capture import (
+            surface,
+        )
+
+        screenshot = Image.new("RGB", (974, 853), "white")
+        confirmed_voice = {
+            "id": "voice-expanded-customer-3s",
+            "type": "voice",
+            "sender_role": "customer",
+            "content": "我们吃完啦，准备回家。",
+            "bubble_rect": [486, 619, 690, 653],
+            "parent_voice_anchor_key": "voice-stable:real-3s",
+            "voice_anchor": {
+                "anchor_key": "voice-anchor:real-3s",
+                "anchor_stable_key": "voice-stable:real-3s",
+                "anchor_structural_key": "voice-structural:real-3s",
+                "item": {
+                    "sender_role": "customer",
+                    "parser_bubble_rect": [486, 619, 534, 645],
+                },
+            },
+        }
+        voice_attempts = [{
+            "attempt_index": 1,
+            "action_phase": "confirmed",
+            "effective_success": True,
+            "click": {"ok": True},
+            "processed_anchor_keys": ["voice-stable:real-3s"],
+            "context_anchor": {
+                "anchor_stable_key": "voice-stable:real-3s",
+            },
+        }]
+        false_candidate = {
+            "bounds": [476, 559, 690, 653],
+            "side": "customer",
+            "component_fill_ratio": 0.678571,
+            "text_overlap_ratio": 0.0,
+        }
+        diagnostics = []
+        try:
+            with patch.object(
+                surface,
+                "detect_visual_image_bubbles",
+                return_value=[false_candidate],
+            ):
+                merged = sidecar.merge_structural_image_messages(
+                    screenshot,
+                    [],
+                    [confirmed_voice],
+                    target="CJR8S5K3",
+                    voice_action_attempts=voice_attempts,
+                    image_candidate_diagnostics=diagnostics,
+                )
+        finally:
+            screenshot.close()
+
+        self.assertEqual([(item["type"], item["content"]) for item in merged], [
+            ("voice", "我们吃完啦，准备回家。"),
+        ])
+        self.assertFalse(any(item.get("type") == "image" for item in merged))
+        self.assertEqual(
+            diagnostics[0]["event"],
+            "image_candidate_suppressed_by_reliable_message_type",
+        )
+
+    def test_reliable_text_type_cannot_be_overridden_by_continuous_image_surface(self):
+        """A solid chat bubble edge is not evidence that a text row is an image."""
+        from apps.wechat_ai_customer_service.optional_plugins.vision.capture import (
+            surface,
+        )
+
+        for role, candidate_bounds, text_bounds in (
+            ("self", [489, 411, 878, 532], [510, 419, 858, 531]),
+            ("customer", [470, 411, 820, 532], [490, 419, 800, 531]),
+        ):
+            with self.subTest(role=role):
+                candidate = {
+                    "bounds": candidate_bounds,
+                    "side": role,
+                    "role_facing_edge_surface_continuity": 0.98,
+                }
+                reliable_text = {
+                    "id": f"confirmed-{role}-long-text",
+                    "type": "text",
+                    "sender_role": role,
+                    "sender_role_source": "same_row_avatar",
+                    "content": "你好，10万左右可以先按你的用车需求筛选合适车型。",
+                    "bubble_rect": text_bounds,
+                    "avatar_alignment": {"role": role},
+                }
+                diagnostics = []
+
+                kept = surface.image_candidates_without_reliable_typed_message_conflicts(
+                    [candidate],
+                    [reliable_text],
+                    [],
+                    diagnostics=diagnostics,
+                )
+
+                self.assertEqual(kept, [])
+                self.assertEqual(
+                    diagnostics[0]["event"],
+                    "image_candidate_suppressed_by_reliable_message_type",
+                )
+                self.assertEqual(diagnostics[0]["message_type"], "text")
+                self.assertEqual(
+                    surface.messages_outside_image_bubbles(
+                        [reliable_text],
+                        [
+                            {
+                                "type": "image",
+                                "sender_role": role,
+                                "bubble_rect": candidate_bounds,
+                            }
+                        ],
+                    ),
+                    [reliable_text],
+                )
+
+    def test_incident_long_self_text_survives_full_parse_and_image_merge(self):
+        """Regression for CJNCXB8R: parsed OCR text must survive image merge."""
+        from apps.wechat_ai_customer_service.optional_plugins.vision.capture import (
+            surface,
+        )
+
+        screenshot = Image.new("RGB", (981, 860), (245, 245, 245))
+        draw = ImageDraw.Draw(screenshot)
+        draw.rounded_rectangle((489, 411, 878, 532), radius=10, fill=(149, 236, 149))
+        # Same-row avatar evidence used by the production role classifier.
+        for y in range(411, 459, 5):
+            for x in range(904, 952, 5):
+                tone = 48 if ((x + y) // 5) % 2 else 205
+                draw.rectangle((x, y, x + 4, y + 4), fill=(tone, 105, 165))
+        raw_rows = [
+            ("你好，10万左右可以先按你的用车需求筛选合适车型。", 510, 419, 858, 442),
+            ("你主要是日常通勤、家庭出行，还是更看重大空间？", 510, 445, 858, 468),
+            ("另外你更偏轿车、SUV，还是燃油、混动、", 510, 471, 858, 494),
+            ("纯电呢？", 510, 503, 590, 531),
+        ]
+        ocr_items = [
+            {
+                "text": text,
+                "left": left,
+                "top": top,
+                "right": right,
+                "bottom": bottom,
+                "center_x": (left + right) / 2,
+                "center_y": (top + bottom) / 2,
+                "confidence": 0.99,
+            }
+            for text, left, top, right, bottom in raw_rows
+        ]
+        structural_candidate = {
+            "bounds": [489, 411, 878, 532],
+            "side": "self",
+            "role_facing_edge_surface_continuity": 0.98,
+            "visual_fingerprint": "incident-continuous-green-surface",
+        }
+        try:
+            parsed = wechat_win32_ocr_sidecar.parse_messages_from_ocr(
+                ocr_items,
+                screenshot.size,
+                target="CJNCXB8R",
+                screenshot=screenshot,
+            )
+            self.assertTrue(parsed)
+            self.assertTrue(all(item["type"] == "text" for item in parsed))
+            self.assertTrue(all(item["sender_role"] == "self" for item in parsed))
+            with patch.object(
+                surface,
+                "detect_visual_image_bubbles",
+                return_value=[structural_candidate],
+            ):
+                merged = wechat_win32_ocr_sidecar.merge_structural_image_messages(
+                    screenshot,
+                    ocr_items,
+                    parsed,
+                    target="CJNCXB8R",
+                )
+        finally:
+            screenshot.close()
+
+        self.assertTrue(merged)
+        self.assertFalse(any(item.get("type") == "image" for item in merged))
+        self.assertEqual(
+            "".join(str(item.get("content") or "") for item in merged).replace("\n", ""),
+            "".join(row[0] for row in raw_rows),
+        )
+
+    def test_expanded_voice_surface_is_rejected_before_image_candidate_output(self):
+        screenshot = Image.new("RGB", (974, 853), (242, 242, 242))
+        draw = ImageDraw.Draw(screenshot)
+        surface_bounds = (476, 559, 690, 653)
+        draw.rectangle(surface_bounds, fill=(255, 255, 255))
+        for y in range(571, 642, 18):
+            draw.rectangle((492, y, 660, y + 5), fill=(220, 226, 232))
+        for y in range(559, 604, 5):
+            for x in range(408, 453, 5):
+                tone = 55 if ((x + y) // 5) % 2 else 205
+                draw.rectangle(
+                    (x, y, x + 4, y + 4),
+                    fill=(tone, 110, 170),
+                )
+        reliable_voice = {
+            "type": "voice",
+            "sender_role": "customer",
+            "content": "我们吃完啦，准备回家。",
+            "bubble_rect": [486, 619, 690, 653],
+            "parent_voice_anchor_key": "voice-stable:connected-surface",
+        }
+        diagnostics = []
+        try:
+            self.assertEqual(
+                len(
+                    detect_visual_image_bubbles(
+                        screenshot,
+                        messages=[],
+                        side_filter="all",
+                    )
+                ),
+                1,
+            )
+            candidates = detect_visual_image_bubbles(
+                screenshot,
+                messages=[reliable_voice],
+                side_filter="all",
+                diagnostics=diagnostics,
+            )
+        finally:
+            screenshot.close()
+
+        self.assertEqual(candidates, [])
+        self.assertEqual(
+            diagnostics[0]["event"],
+            "structural_image_candidate_rejected_by_reliable_message_type",
+        )
+        self.assertEqual(diagnostics[0]["message_type"], "voice")
+
+    def test_voice_image_arbitration_does_not_depend_on_action_success(self):
+        from apps.wechat_ai_customer_service.optional_plugins.vision.capture import (
+            surface,
+        )
+
+        image = {"bounds": [476, 559, 690, 653], "side": "customer"}
+        voice = {
+            "type": "voice",
+            "sender_role": "customer",
+            "content": "我们吃完啦，准备回家。",
+            "parent_voice_anchor_key": "voice-stable:strict",
+            "voice_anchor": {
+                "anchor_key": "voice-anchor:strict",
+                "anchor_stable_key": "voice-stable:strict",
+                "anchor_structural_key": "voice-structural:strict",
+                "item": {
+                    "sender_role": "customer",
+                    "parser_bubble_rect": [486, 619, 534, 645],
+                },
+            },
+        }
+        attempt = {
+            "attempt_index": 1,
+            "action_phase": "confirmed",
+            "effective_success": True,
+            "click": {"ok": True},
+            "processed_anchor_keys": ["voice-stable:strict"],
+            "context_anchor": {"anchor_stable_key": "voice-stable:strict"},
+        }
+        action_variants = {
+            "confirmed": [attempt],
+            "click_failed": [{**attempt, "click": {"ok": False}}],
+            "action_not_attempted": [{
+                **attempt,
+                "action_phase": "not_attempted",
+                "effective_success": False,
+                "processed_anchor_keys": [],
+            }],
+            "no_action_evidence": [],
+        }
+        for name, attempts in action_variants.items():
+            with self.subTest(name=name):
+                self.assertEqual(
+                    surface.image_candidates_without_reliable_typed_message_conflicts(
+                        [image],
+                        [voice],
+                        attempts,
+                    ),
+                    [],
+                )
+
+        untranscribed_voice = {
+            "type": "voice",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "content": '[语音] 3"',
+            "bubble_rect": [486, 619, 534, 645],
+            "quality_flags": ["untranscribed_voice_placeholder"],
+        }
+        self.assertEqual(
+            surface.image_candidates_without_reliable_typed_message_conflicts(
+                [image],
+                [untranscribed_voice],
+                [],
+            ),
+            [],
+        )
+
+        invalid_cases = {
+            "missing_geometry": {
+                **voice,
+                "voice_anchor": {
+                    **voice["voice_anchor"],
+                    "item": {"sender_role": "customer"},
+                },
+            },
+            "untrusted_type": {
+                "type": "voice",
+                "sender_role": "customer",
+                "content": "疑似语音但没有结构证据",
+            },
+        }
+        for name, candidate_voice in invalid_cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(
+                    surface.image_candidates_without_reliable_typed_message_conflicts(
+                        [image],
+                        [candidate_voice],
+                        [],
+                    ),
+                    [image],
+                )
+        self.assertEqual(
+            surface.image_candidates_without_reliable_typed_message_conflicts(
+                [{**image, "side": "self"}],
+                [voice],
+                [],
+            ),
+            [{**image, "side": "self"}],
+        )
+        far_image = {**image, "bounds": [476, 300, 690, 400]}
+        self.assertEqual(
+            surface.image_candidates_without_reliable_typed_message_conflicts(
+                [far_image],
+                [voice],
+                [],
+            ),
+            [far_image],
+        )
+
+    def test_detector_fine_grid_splits_stacked_voice_surfaces(self):
+        """Lock the detector root cause from the real 2026-08-08 C2 frame."""
+        coarse_cells = []
+        for y, width in enumerate([7, 7, 7, 7, 16, 16, 16], start=34):
+            coarse_cells.extend((x, y) for x in range(7, 7 + width))
+
+        # At block=5 the two separate pale surfaces become one L-shaped
+        # component.  At block=2 their original pixel gap is visible again.
+        small = Image.new("RGB", (220, 246), (250, 250, 250))
+        draw = ImageDraw.Draw(small)
+        draw.rectangle((35, 170, 69, 188), fill=(242, 242, 242))
+        draw.rectangle((35, 191, 114, 204), fill=(242, 242, 242))
+        try:
+            self.assertTrue(
+                wechat_capture._fine_grid_confirms_separate_stacked_surfaces(
+                    small,
+                    coarse_cells=coarse_cells,
+                    coarse_block=5,
+                    background=[250.0, 250.0, 250.0],
+                    side="customer",
+                    minimum_media_height=34.0,
+                )
+            )
+        finally:
+            small.close()
+
+    def test_detector_fine_grid_splits_equal_width_stacked_chat_surfaces(self):
+        coarse_cells = [
+            (x, y)
+            for y in range(34, 41)
+            for x in range(7, 18)
+        ]
+        small = Image.new("RGB", (220, 246), (250, 250, 250))
+        draw = ImageDraw.Draw(small)
+        draw.rectangle((35, 170, 89, 188), fill=(242, 242, 242))
+        draw.rectangle((35, 191, 89, 204), fill=(242, 242, 242))
+        try:
+            self.assertTrue(
+                wechat_capture._fine_grid_confirms_separate_stacked_surfaces(
+                    small,
+                    coarse_cells=coarse_cells,
+                    coarse_block=5,
+                    background=[250.0, 250.0, 250.0],
+                    side="customer",
+                    minimum_media_height=34.0,
+                )
+            )
+        finally:
+            small.close()
+
+        tall_media_cells = [
+            (x, y)
+            for y in range(20, 41)
+            for x in range(7, 23)
+        ]
+        tall_media = Image.new("RGB", (220, 246), (250, 250, 250))
+        tall_draw = ImageDraw.Draw(tall_media)
+        tall_draw.rectangle((35, 100, 114, 139), fill=(242, 242, 242))
+        tall_draw.rectangle((35, 142, 114, 181), fill=(242, 242, 242))
+        try:
+            self.assertFalse(
+                wechat_capture._fine_grid_confirms_separate_stacked_surfaces(
+                    tall_media,
+                    coarse_cells=tall_media_cells,
+                    coarse_block=5,
+                    background=[250.0, 250.0, 250.0],
+                    side="customer",
+                    minimum_media_height=34.0,
+                )
+            )
+        finally:
+            tall_media.close()
 
     def test_structural_detector_returns_nine_visible_images_without_silent_cap(self):
         screenshot = Image.new("RGB", (1200, 2300), (242, 242, 242))
@@ -4857,7 +6191,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
 
                 self.assertEqual(candidates, [])
 
-    def test_image_internal_ocr_drift_cannot_break_cross_round_identity(self):
+    def test_image_frame_fingerprint_never_becomes_cross_round_identity(self):
         screenshot = Image.new("RGB", (980, 860), (250, 250, 250))
         draw = ImageDraw.Draw(screenshot)
         draw.rectangle((556, 300, 890, 487), fill=(28, 28, 28))
@@ -4896,29 +6230,44 @@ class C2VisionIntegrationTests(unittest.TestCase):
             )
 
         try:
-            first, state, first_errors = (
-                reconcile_cross_round_observation_identities(
-                    observations("第一次误识文字"),
-                    None,
-                )
+            first = observations("第一次误识文字")
+            second = observations("第二次另一种误识文字")
+            self.assertEqual([item["row_kind"] for item in first], ["image_bubble"])
+            self.assertEqual([item["row_kind"] for item in second], ["image_bubble"])
+            first_visual_id = str(
+                first[0].get("frame_visual_id")
+                or (first[0].get("source_message") or {}).get("frame_visual_id")
+                or ""
             )
-            second, _, second_errors = (
-                reconcile_cross_round_observation_identities(
-                    observations("第二次另一种误识文字"),
-                    state,
-                )
+            second_visual_id = str(
+                second[0].get("frame_visual_id")
+                or (second[0].get("source_message") or {}).get("frame_visual_id")
+                or ""
+            )
+            self.assertTrue(first_visual_id)
+            self.assertEqual(first_visual_id, second_visual_id)
+            self.assertNotIn("canonical_visual_id", first[0])
+            self.assertNotIn(
+                "canonical_visual_id",
+                first[0].get("source_message") or {},
+            )
+            result = align_committed_message_sequence(
+                build_pre_action_identity_sequence(
+                    first,
+                    committed_ids={
+                        str(first[0]["observation_id"]): "worker-message-1"
+                    },
+                ),
+                build_post_action_observation_sequence(second),
+                pre_sequence_source="checkpoint",
+                pre_frame_id="frame-before-ocr-drift-weak",
+                post_frame_id="frame-after-ocr-drift-weak",
             )
         finally:
             screenshot.close()
 
-        self.assertEqual(first_errors, [])
-        self.assertEqual(second_errors, [])
-        self.assertEqual([item["row_kind"] for item in first], ["image_bubble"])
-        self.assertEqual([item["row_kind"] for item in second], ["image_bubble"])
-        self.assertEqual(
-            first[0]["_worker_stable_id"],
-            second[0]["_worker_stable_id"],
-        )
+        self.assertEqual(result["alignment_status"], "ambiguous")
+        self.assertEqual(inherited_worker_ids(result), {})
 
     def test_initial_read_and_preclick_refresh_share_real_image_observer(self):
         screenshot = Image.new("RGB", (974, 853), (242, 242, 242))

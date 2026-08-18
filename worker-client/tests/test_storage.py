@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import os
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 
@@ -26,6 +27,14 @@ class StorageTest(unittest.TestCase):
             os.environ.pop("CHEJIN_WORKER_HOME", None)
         else:
             os.environ["CHEJIN_WORKER_HOME"] = self.previous_home
+        import chejin_worker_client.config as config
+        import chejin_worker_client.storage as storage
+
+        # Restore the process-wide module constants for tests collected after
+        # this class.  Without this, storage.DB_FILE keeps pointing at the
+        # deleted TemporaryDirectory even though the environment was restored.
+        importlib.reload(config)
+        importlib.reload(storage)
         self.tmp.cleanup()
 
     def test_binding_and_logs_are_persisted_in_sqlite(self):
@@ -66,6 +75,57 @@ class StorageTest(unittest.TestCase):
         self.assertEqual(sanitized["start"], "09:00")
         self.assertEqual(sanitized["end"], "21:00")
 
+    def test_runtime_control_pause_start_and_pause_finish_are_atomic(self):
+        def run_concurrently(*operations):
+            barrier = threading.Barrier(len(operations))
+            errors: list[BaseException] = []
+
+            def run(operation):
+                try:
+                    barrier.wait(timeout=5)
+                    operation()
+                except BaseException as exc:  # captured for the main test thread
+                    errors.append(exc)
+
+            threads = [
+                threading.Thread(target=run, args=(operation,), daemon=True)
+                for operation in operations
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+                self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, [])
+
+        for index in range(10):
+            self.storage.clear_runtime_pause()
+            flow_id = f"read-pause-start-{index}"
+            run_concurrently(
+                self.storage.request_runtime_pause,
+                lambda flow_id=flow_id: self.storage.begin_runtime_flow(
+                    flow_id, "c2_read"
+                ),
+            )
+            state = self.storage.load_runtime_control()
+            self.assertTrue(state["pause_requested"])
+            self.assertEqual(state["inflight_flow_id"], flow_id)
+            self.storage.finish_runtime_flow(flow_id)
+
+        for index in range(10):
+            self.storage.clear_runtime_pause()
+            flow_id = f"read-pause-finish-{index}"
+            self.storage.begin_runtime_flow(flow_id, "c2_read")
+            run_concurrently(
+                self.storage.request_runtime_pause,
+                lambda flow_id=flow_id: self.storage.finish_runtime_flow(
+                    flow_id
+                ),
+            )
+            state = self.storage.load_runtime_control()
+            self.assertTrue(state["pause_requested"])
+            self.assertIsNone(state["inflight_flow_id"])
+
     def test_action_journal_survives_until_common_flow_finalize(self):
         outcome = {
             "source_message_key": "voice-action-1",
@@ -76,18 +136,89 @@ class StorageTest(unittest.TestCase):
         self.storage.checkpoint_c2_action_outcomes(
             flow_id="flow-action-1",
             conversation_id="conv-action-1",
+            origin_read_run_id="read-action-1",
             outcomes=[outcome],
         )
 
         pending = self.storage.list_c2_action_journal("conv-action-1")
         self.assertEqual(len(pending), 1)
-        self.assertEqual(pending[0]["outcome"], outcome)
+        self.assertEqual(
+            pending[0]["outcome"],
+            {**outcome, "origin_read_run_id": "read-action-1"},
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "C2_ACTION_JOURNAL_ORIGIN_READ_RUN_ID_CONFLICT",
+        ):
+            self.storage.checkpoint_c2_action_outcomes(
+                flow_id="flow-action-1",
+                conversation_id="conv-action-1",
+                origin_read_run_id="read-action-2",
+                outcomes=[outcome],
+            )
 
         self.storage.clear_c2_action_journal("flow-action-1")
         self.assertEqual(
             self.storage.list_c2_action_journal("conv-action-1"),
             [],
         )
+
+    def test_ledger_origin_read_run_is_required_and_immutable(self):
+        self.storage.save_c2_ledger_terminal(
+            conversation_id="conv-origin",
+            source_message_key="source-origin",
+            origin_read_run_id="read-origin-1",
+            dedupe_key=None,
+            message_type="image",
+            terminal_state="completed",
+            ingest_state="waiting",
+            result={},
+        )
+        stored = self.storage.load_c2_ledger_entry(
+            "conv-origin",
+            "source-origin",
+        )
+        self.assertEqual(stored["origin_read_run_id"], "read-origin-1")
+        with self.assertRaisesRegex(
+            ValueError,
+            "C2_LEDGER_ORIGIN_READ_RUN_ID_CONFLICT",
+        ):
+            self.storage.save_c2_ledger_terminal(
+                conversation_id="conv-origin",
+                source_message_key="source-origin",
+                origin_read_run_id="read-origin-2",
+                dedupe_key=None,
+                message_type="image",
+                terminal_state="completed",
+                ingest_state="waiting",
+                result={},
+            )
+
+    def test_outbox_source_origin_is_the_original_read_run(self):
+        payload = {
+            "conversation_id": "conv-outbox-origin",
+            "authorization_revision": "revision-outbox-origin",
+            "read_run_id": "read-current-outbox-envelope",
+            "unread_generation": 17,
+            "messages": [{"source_message_key": "source-outbox-origin"}],
+            "evidence": {
+                "slot_ledger_states": [
+                    {
+                        "source_message_key": "source-outbox-origin",
+                        "origin_read_run_id": "read-outbox-origin",
+                    }
+                ]
+            },
+        }
+        self.storage.enqueue_c2_outbox(payload)
+        self.assertEqual(
+            self.storage.load_c2_outbox_origin_read_run_ids(
+                "conv-outbox-origin"
+            ),
+            {"source-outbox-origin": "read-outbox-origin"},
+        )
+        stored = self.storage.list_c2_outbox_waiting(limit=1)[0]
+        self.assertEqual(stored["payload"]["unread_generation"], 17)
 
     def test_outbox_storage_rejects_states_outside_machine_contract(self):
         payload = {

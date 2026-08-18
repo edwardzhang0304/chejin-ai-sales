@@ -418,6 +418,169 @@ def _visual_bounds(value: Any) -> tuple[int, int, int, int] | None:
     return left, top, right, bottom
 
 
+def explained_non_image_regions(
+    messages: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Return regions whose parsed type is reliable enough to veto image.
+
+    Arbitrary OCR text inside a real photograph is deliberately not enough.
+    Text requires trusted row-role evidence. Voice requires a bound transcript
+    or a size-checked visual/duration voice structure; a bare duration-like OCR
+    token inside a real image is not reliable. Physical action success is
+    intentionally absent because it settles a transaction, not a message type.
+    """
+
+    regions: list[dict[str, Any]] = []
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+        message_type = str(
+            message.get("type")
+            or message.get("message_type")
+            or ""
+        ).strip().lower()
+        if message_type not in {"text", "voice"}:
+            continue
+        role = str(
+            message.get("sender_role") or message.get("sender") or ""
+        ).strip().lower()
+        if role == "contact":
+            role = "customer"
+        if role not in {"customer", "self"}:
+            continue
+        anchor = (
+            message.get("voice_anchor")
+            if isinstance(message.get("voice_anchor"), dict)
+            else {}
+        )
+        anchor_item = (
+            anchor.get("item")
+            if isinstance(anchor.get("item"), dict)
+            else {}
+        )
+        bounds = _visual_bounds(
+            message.get("bubble_rect")
+            or message.get("bounds")
+            or anchor_item.get("parser_bubble_rect")
+            or anchor_item
+        )
+        if bounds is None:
+            continue
+
+        avatar = (
+            message.get("avatar_alignment")
+            if isinstance(message.get("avatar_alignment"), dict)
+            else {}
+        )
+        role_source = str(
+            message.get("sender_role_source") or ""
+        ).strip().lower()
+        row_role_trusted = bool(
+            role_source in {"same_row_avatar", "parent_voice"}
+            or str(avatar.get("role") or "").strip().lower() == role
+            or "avatar_row_structure_confirmed"
+            in {
+                str(value).strip()
+                for value in (message.get("sender_role_evidence") or [])
+            }
+        )
+        voice_anchor_key = str(
+            message.get("parent_voice_anchor_key")
+            or message.get("voice_anchor_stable_key")
+            or message.get("voice_anchor_structural_key")
+            or message.get("voice_anchor_key")
+            or anchor.get("anchor_stable_key")
+            or anchor.get("anchor_structural_key")
+            or anchor.get("anchor_key")
+            or ""
+        ).strip()
+        content = str(
+            message.get("content_clean") or message.get("content") or ""
+        ).strip()
+        quality_flags = {
+            str(value).strip()
+            for value in (message.get("quality_flags") or [])
+        }
+        region_width = bounds[2] - bounds[0]
+        region_height = bounds[3] - bounds[1]
+        bound_transcript = bool(
+            message_type == "voice"
+            and str(message.get("parent_voice_anchor_key") or "").strip()
+            and content
+            and not content.startswith("[语音]")
+        )
+        visual_voice = bool(
+            message_type == "voice"
+            and "visual_voice_hint" in quality_flags
+            and row_role_trusted
+        )
+        duration_voice = bool(
+            message_type == "voice"
+            and "untranscribed_voice_placeholder" in quality_flags
+            and row_role_trusted
+            and region_width >= 36
+            and region_height >= 16
+        )
+        if message_type == "text" and not row_role_trusted:
+            continue
+        if message_type == "voice" and not (
+            bound_transcript or visual_voice or duration_voice
+        ):
+            continue
+        regions.append(
+            {
+                "bounds": bounds,
+                "message_type": message_type,
+                "sender_role": role,
+                "voice_anchor_key": voice_anchor_key,
+                "evidence": (
+                    "bound_voice_transcript"
+                    if bound_transcript
+                    else (
+                        "visual_voice_structure"
+                        if visual_voice
+                        else (
+                            "duration_voice_structure"
+                            if duration_voice
+                            else "trusted_row_type"
+                        )
+                    )
+                ),
+            }
+        )
+    return regions
+
+
+def explained_non_image_conflict(
+    bounds: tuple[int, int, int, int],
+    *,
+    side: str,
+    regions: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Return reliable typed evidence contained by a structural candidate."""
+
+    left, top, right, bottom = bounds
+    for region in regions:
+        region_bounds = region.get("bounds")
+        if (
+            not isinstance(region_bounds, tuple)
+            or len(region_bounds) != 4
+            or str(region.get("sender_role") or "") != side
+        ):
+            continue
+        rl, rt, rr, rb = region_bounds
+        overlap_width = max(0, min(right, rr) - max(left, rl))
+        overlap_height = max(0, min(bottom, rb) - max(top, rt))
+        region_area = max(1, (rr - rl) * (rb - rt))
+        contained_ratio = (overlap_width * overlap_height) / region_area
+        if contained_ratio >= 0.80:
+            return {
+                **region,
+                "contained_ratio": round(contained_ratio, 6),
+            }
+    return None
+
+
 def _trim_sparse_vertical_whiskers(
     cells: list[tuple[int, int]],
 ) -> tuple[list[tuple[int, int]], bool]:
@@ -460,6 +623,149 @@ def _trim_sparse_vertical_whiskers(
         (x, y) for x, y in cells if first_dense <= y <= last_dense
     ]
     return trimmed, len(trimmed) != len(cells)
+
+
+def _media_surface_cell_active(
+    stat: ImageStat.Stat,
+    background: list[float],
+) -> bool:
+    mean = stat.mean or [0.0, 0.0, 0.0]
+    spread = sum(
+        float(value) for value in (stat.stddev or [0.0, 0.0, 0.0])
+    ) / 3.0
+    delta = max(mean) - min(mean)
+    brightness = sum(float(value) for value in mean) / 3.0
+    dark_low_texture_surface = brightness <= 58.0 and spread <= 20.0
+    background_distance = sum(
+        abs(float(value) - background[index])
+        for index, value in enumerate(mean[:3])
+    ) / 3.0
+    pale_rectangular_surface = (
+        background_distance >= 6.0 and spread <= 24.0
+    )
+    return (
+        spread >= 16.0
+        or delta >= 24.0
+        or dark_low_texture_surface
+        or pale_rectangular_surface
+    )
+
+
+def _fine_grid_confirms_separate_stacked_surfaces(
+    small: Image.Image,
+    *,
+    coarse_cells: list[tuple[int, int]],
+    coarse_block: int,
+    background: list[float],
+    side: str,
+    minimum_media_height: float,
+) -> bool:
+    """Confirm that one coarse L-component is really two fine components."""
+
+    if not coarse_cells or side not in {"customer", "self"}:
+        return False
+    fine_block = 2
+    min_x = min(x for x, _ in coarse_cells) * coarse_block
+    max_x = (max(x for x, _ in coarse_cells) + 1) * coarse_block
+    min_y = min(y for _, y in coarse_cells) * coarse_block
+    max_y = (max(y for _, y in coarse_cells) + 1) * coarse_block
+    padding = coarse_block
+    start_gx = max(0, (min_x - padding) // fine_block)
+    end_gx = min(
+        small.width // fine_block - 1,
+        (max_x + padding - 1) // fine_block,
+    )
+    start_gy = max(0, (min_y - padding) // fine_block)
+    end_gy = min(
+        small.height // fine_block - 1,
+        (max_y + padding - 1) // fine_block,
+    )
+    active: set[tuple[int, int]] = set()
+    for gy in range(start_gy, end_gy + 1):
+        for gx in range(start_gx, end_gx + 1):
+            box = (
+                gx * fine_block,
+                gy * fine_block,
+                min(small.width, (gx + 1) * fine_block),
+                min(small.height, (gy + 1) * fine_block),
+            )
+            if _media_surface_cell_active(
+                ImageStat.Stat(small.crop(box)),
+                background,
+            ):
+                active.add((gx, gy))
+
+    components: list[dict[str, float]] = []
+    visited: set[tuple[int, int]] = set()
+    candidate_width = max_x - min_x
+    candidate_height = max_y - min_y
+    for seed in sorted(active, key=lambda item: (item[1], item[0])):
+        if seed in visited:
+            continue
+        stack = [seed]
+        visited.add(seed)
+        cells: list[tuple[int, int]] = []
+        while stack:
+            cx, cy = stack.pop()
+            cells.append((cx, cy))
+            for neighbour in (
+                (cx - 1, cy),
+                (cx + 1, cy),
+                (cx, cy - 1),
+                (cx, cy + 1),
+            ):
+                if neighbour in active and neighbour not in visited:
+                    visited.add(neighbour)
+                    stack.append(neighbour)
+        left = min(x for x, _ in cells) * fine_block
+        right = (max(x for x, _ in cells) + 1) * fine_block
+        top = min(y for _, y in cells) * fine_block
+        bottom = (max(y for _, y in cells) + 1) * fine_block
+        width = right - left
+        height = bottom - top
+        cell_area = max(1, (width // fine_block) * (height // fine_block))
+        density = len(cells) / cell_area
+        if (
+            width >= max(8.0, candidate_width * 0.35)
+            and height >= max(6.0, candidate_height * 0.25)
+            and density >= 0.72
+        ):
+            components.append(
+                {
+                    "left": float(left),
+                    "right": float(right),
+                    "top": float(top),
+                    "bottom": float(bottom),
+                    "width": float(width),
+                    "height": float(height),
+                    "density": float(density),
+                }
+            )
+
+    components.sort(key=lambda item: (item["top"], item["left"]))
+    for index, upper in enumerate(components):
+        for lower in components[index + 1 :]:
+            gap = lower["top"] - upper["bottom"]
+            if gap < 0 or gap > max(4.0, candidate_height * 0.18):
+                continue
+            # Two separate short chat-row surfaces are not one media object.
+            # This covers voice-duration + expanded-transcript rows even when
+            # their widths are similar. Two real stacked image thumbnails are
+            # intentionally not suppressed: each is tall enough to remain a
+            # standalone media candidate on the next observation frame.
+            if (
+                upper["height"] >= minimum_media_height
+                or lower["height"] >= minimum_media_height
+            ):
+                continue
+            edge_delta = (
+                abs(upper["left"] - lower["left"])
+                if side == "customer"
+                else abs(upper["right"] - lower["right"])
+            )
+            if edge_delta <= fine_block:
+                return True
+    return False
 
 
 def image_bubble_visual_fingerprint(
@@ -704,6 +1010,7 @@ def detect_visual_image_bubbles(
     max_images: int = DEFAULT_MAX_VISIBLE_IMAGE_CANDIDATES,
     side_filter: str = "customer",
     time_markers: list[dict[str, Any]] | None = None,
+    diagnostics: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     image = screenshot.convert("RGB")
     width, height = image.size
@@ -721,6 +1028,7 @@ def detect_visual_image_bubbles(
     block = 5
     grid_w = max(1, small.width // block)
     grid_h = max(1, small.height // block)
+    protected_regions = explained_non_image_regions(messages)
     active = [[False for _ in range(grid_w)] for _ in range(grid_h)]
     for gy in range(grid_h):
         for gx in range(grid_w):
@@ -730,34 +1038,9 @@ def detect_visual_image_bubbles(
                 min(small.width, (gx + 1) * block),
                 min(small.height, (gy + 1) * block),
             )
-            stat = ImageStat.Stat(small.crop(box))
-            mean = stat.mean or [0.0, 0.0, 0.0]
-            spread = sum(float(value) for value in (stat.stddev or [0.0, 0.0, 0.0])) / 3.0
-            delta = max(mean) - min(mean)
-            brightness = sum(float(value) for value in mean) / 3.0
-            # A screenshot/document image can be almost monochrome (for
-            # example a dark terminal screenshot), so it has neither colour
-            # delta nor enough local texture for the original detector. Keep
-            # sufficiently large dark surfaces as candidates; the later
-            # connected-component size and text-overlap checks still reject
-            # avatars, glyphs and ordinary UI chrome.
-            dark_low_texture_surface = brightness <= 58.0 and spread <= 20.0
-            background_distance = sum(
-                abs(float(value) - background[index])
-                for index, value in enumerate(mean[:3])
-            ) / 3.0
-            # Pale documents and screenshots often have almost no texture or
-            # colour spread. Their rectangular surface still differs from the
-            # surrounding chat canvas. The downstream lane, avatar-row, size
-            # and text-surface checks remain authoritative structural gates.
-            pale_rectangular_surface = (
-                background_distance >= 6.0 and spread <= 24.0
-            )
-            active[gy][gx] = (
-                spread >= 16.0
-                or delta >= 24.0
-                or dark_low_texture_surface
-                or pale_rectangular_surface
+            active[gy][gx] = _media_surface_cell_active(
+                ImageStat.Stat(small.crop(box)),
+                background,
             )
     visited: set[tuple[int, int]] = set()
     candidates: list[dict[str, Any]] = []
@@ -827,6 +1110,44 @@ def detect_visual_image_bubbles(
             side, structural_score, structure_evidence = structural_side
             if clean_side_filter != "all" and side != clean_side_filter:
                 continue
+            if _fine_grid_confirms_separate_stacked_surfaces(
+                small,
+                coarse_cells=cells,
+                coarse_block=block,
+                background=background,
+                side=side,
+                minimum_media_height=90.0 * scale,
+            ):
+                if diagnostics is not None:
+                    diagnostics.append(
+                        {
+                            "event": "image_candidate_rejected_by_fine_grid",
+                            "reason": "separate_stacked_chat_row_surfaces",
+                            "bounds": list(bounds),
+                            "side": side,
+                            "component_fill_ratio": round(
+                                component_fill_ratio,
+                                6,
+                            ),
+                            "text_overlap_ratio": round(
+                                _maximum_text_overlap_ratio(
+                                    bounds,
+                                    messages or [],
+                                ),
+                                6,
+                            ),
+                            "role_facing_edge_surface_continuity": round(
+                                _role_facing_edge_surface_continuity(
+                                    image,
+                                    bounds,
+                                    side=side,
+                                    background=background,
+                                ),
+                                6,
+                            ),
+                        }
+                    )
+                continue
             bounds, avatar_column_excluded = _exclude_avatar_column_from_media_bounds(
                 image,
                 bounds,
@@ -847,6 +1168,50 @@ def detect_visual_image_bubbles(
                 side=side,
                 background=background,
             )
+            typed_conflict = explained_non_image_conflict(
+                bounds,
+                side=side,
+                regions=protected_regions,
+            )
+            # Reliable type evidence is terminal for this frame.  Structural
+            # media geometry is deliberately weaker evidence and must never
+            # turn a trusted text or voice row back into an image.  In
+            # particular, role-facing edge continuity cannot distinguish a
+            # solid WeChat text bubble from an image surface.
+            reliable_type_veto = typed_conflict is not None
+            if reliable_type_veto:
+                if diagnostics is not None:
+                    diagnostics.append(
+                        {
+                            "event": (
+                                "structural_image_candidate_rejected_by_"
+                                "reliable_message_type"
+                            ),
+                            "reason": "reliable_non_image_region_overlap",
+                            "bounds": list(bounds),
+                            "side": side,
+                            "message_type": typed_conflict[
+                                "message_type"
+                            ],
+                            "protected_bounds": list(
+                                typed_conflict["bounds"]
+                            ),
+                            "protected_evidence": typed_conflict[
+                                "evidence"
+                            ],
+                            "voice_anchor_key": typed_conflict[
+                                "voice_anchor_key"
+                            ],
+                            "contained_ratio": typed_conflict[
+                                "contained_ratio"
+                            ],
+                            "role_facing_edge_surface_continuity": round(
+                                role_edge_continuity,
+                                6,
+                            ),
+                        }
+                    )
+                continue
             if (
                 text_overlap_ratio >= TEXT_OVERLAP_REJECTION_RATIO
                 and role_edge_continuity < MEDIA_ROLE_EDGE_CONTINUITY_RATIO
@@ -995,7 +1360,6 @@ def _find_context_menu_item(
             {
                 "text": text,
                 "bounds": click_bounds,
-                "menu_bounds": [item_left, item_top, item_right, item_bottom],
                 "x": center_x,
                 "y": center_y,
                 "confidence": float(item.get("confidence") or 0.0),
@@ -1295,13 +1659,13 @@ def execute_wechat_clipboard_image_copy(
             "online": True,
             "adapter": "win32_ocr",
             "state": "image_clipboard_copy_failed",
-            "reason": "image_context_menu_unavailable",
+            "reason": "C2_IMAGE_MENU_OPERATION_FAILED",
             "target": target_name,
             "session_key": session_key,
             "assets": [],
             "messages": [],
             "transaction": {
-                "status": "failed",
+                "status": "menu_panel_unconfirmed",
                 "captured_at": captured_at,
                 "right_click_ok": bool(right_click.get("ok")),
                 "menu_copy_confirmed": False,
@@ -1347,13 +1711,17 @@ def execute_wechat_clipboard_image_copy(
             "online": True,
             "adapter": "win32_ocr",
             "state": "image_clipboard_copy_failed",
-            "reason": "image_context_menu_copy_item_missing",
+            "reason": "C2_IMAGE_MENU_OPERATION_FAILED",
             "target": target_name,
             "session_key": session_key,
             "assets": [],
             "messages": [],
             "transaction": {
-                "status": "failed",
+                "status": (
+                    "menu_evidence_incomplete"
+                    if bool(right_click.get("ok"))
+                    else "menu_panel_unconfirmed"
+                ),
                 "captured_at": captured_at,
                 "right_click_ok": bool(right_click.get("ok")),
                 "menu_copy_confirmed": False,
@@ -1375,13 +1743,13 @@ def execute_wechat_clipboard_image_copy(
             "online": True,
             "adapter": "win32_ocr",
             "state": "image_clipboard_copy_failed",
-            "reason": "image_context_menu_copy_click_failed",
+            "reason": "C2_IMAGE_MENU_OPERATION_FAILED",
             "target": target_name,
             "session_key": session_key,
             "assets": [],
             "messages": [],
             "transaction": {
-                "status": "failed",
+                "status": "menu_copy_item_unsafe",
                 "captured_at": captured_at,
                 "right_click_ok": True,
                 "menu_copy_confirmed": False,

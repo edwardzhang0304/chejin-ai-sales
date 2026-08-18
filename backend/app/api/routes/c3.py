@@ -62,9 +62,11 @@ def claim_send(
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
     x_task_lease_fencing_token: int | None = Header(default=None, alias="X-Task-Lease-Fencing-Token"),
+    x_inflight_flow_id: str | None = Header(default=None, alias="X-Inflight-Flow-Id"),
 ):
     try:
-        worker_service.authenticate_worker_client(db, payload.worker_id, x_worker_token, x_client_instance_id)
+        worker = worker_service.authenticate_worker_client(db, payload.worker_id, x_worker_token, x_client_instance_id)
+        worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
         data = c3_service.claim_send(
             db,
             reply_action_id=reply_action_id,
@@ -93,9 +95,11 @@ def sent_ack(
     db: Session = Depends(get_db),
     x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
     x_client_instance_id: str | None = Header(default=None, alias="X-Client-Instance-Id"),
+    x_inflight_flow_id: str | None = Header(default=None, alias="X-Inflight-Flow-Id"),
 ):
     try:
-        worker_service.authenticate_worker_client(db, payload.worker_id, x_worker_token, x_client_instance_id or payload.client_instance_id)
+        worker = worker_service.authenticate_worker_client(db, payload.worker_id, x_worker_token, x_client_instance_id or payload.client_instance_id)
+        worker_service.validate_inflight_continuation(worker, x_inflight_flow_id)
         data = c3_service.sent_ack(db, reply_action_id=reply_action_id, payload=payload)
         db.commit()
         return ok(data)

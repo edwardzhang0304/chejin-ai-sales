@@ -21,6 +21,7 @@ from .c2_contract import (
 )
 from .action_journal import (
     action_journal_phase,
+    read_action_journal,
     update_action_journal_item,
 )
 from .emergency_stop import emergency_stop_requested
@@ -34,16 +35,26 @@ from .subprocess_protocol import (
     require_unicode_protocol,
     subprocess_utf8_environment,
 )
+from .vision_credentials import (
+    OFFICIAL_VISION_BASE_URL,
+    OFFICIAL_VISION_MODEL,
+    OFFICIAL_VISION_PROVIDER,
+    OFFICIAL_VISION_REQUEST_STYLE,
+    VISION_API_KEY_ENV,
+    install_resolved_vision_api_key,
+    is_official_vision_runtime,
+    resolve_vision_runtime_settings,
+)
 
 
 OMNIAUTO_ROOT = Path(__file__).resolve().parents[1] / "omniauto-rpa"
 if str(OMNIAUTO_ROOT) not in sys.path:
     sys.path.insert(0, str(OMNIAUTO_ROOT))
 
-DEFAULT_VISION_PROVIDER = "anthropic_compatible"
-DEFAULT_VISION_BASE_URL = "https://aiself.vip/v1"
-DEFAULT_VISION_MODEL = "doubao-seed-2-0-lite-260428"
-DEFAULT_VISION_REQUEST_STYLE = "anthropic_messages_vision"
+DEFAULT_VISION_PROVIDER = OFFICIAL_VISION_PROVIDER
+DEFAULT_VISION_BASE_URL = OFFICIAL_VISION_BASE_URL
+DEFAULT_VISION_MODEL = OFFICIAL_VISION_MODEL
+DEFAULT_VISION_REQUEST_STYLE = OFFICIAL_VISION_REQUEST_STYLE
 DEFAULT_VISION_TIMEOUT_SECONDS = 60.0
 MAX_VISION_TIMEOUT_SECONDS = 300.0
 VISION_WINDOW_STABLE_FAILURE_REASONS = frozenset(
@@ -57,7 +68,7 @@ VISION_WINDOW_STABLE_FAILURE_REASONS = frozenset(
     }
 )
 VISION_API_KEY_ENV_NAMES = (
-    "CUSTOMER_IMAGE_UNDERSTANDING_API_KEY",
+    VISION_API_KEY_ENV,
 )
 
 
@@ -426,6 +437,12 @@ class _WindowFrame:
                 ocr_item_count=int(observation.get("ocr_item_count") or 0),
                 local_ocr_item_count=int(observation.get("local_ocr_item_count") or 0),
                 ocr_roi=list(observation.get("ocr_roi") or []),
+                menu_panel_bounds=list(
+                    observation.get("menu_panel_bounds") or []
+                ),
+                menu_window_evidence=dict(
+                    observation.get("menu_window_evidence") or {}
+                ),
                 ocr_execution=str(observation.get("ocr_execution") or ""),
                 menu_structure_evidence=list(observation.get("menu_structure_evidence") or []),
                 local_ocr_evidence=list(observation.get("local_ocr_evidence") or []),
@@ -440,10 +457,15 @@ class _WindowFrame:
                 "ok": True,
                 "image": observation.get("image"),
                 "image_size": tuple(observation.get("image_size") or (0, 0)),
-                "ocr_items": list(observation.get("local_ocr_items") or []),
+                "ocr_items": list(
+                    observation.get("local_ocr_items") or []
+                ),
                 "messages": [],
                 "time_markers": [],
                 "screen_origin": [0, 0],
+                "menu_panel_bounds": list(
+                    observation.get("menu_panel_bounds") or []
+                ),
                 "screenshot_path": str(observation.get("screenshot_path") or ""),
                 "roi_screenshot_path": str(
                     observation.get("roi_screenshot_path") or ""
@@ -890,37 +912,19 @@ def explicit_vision_config() -> tuple[dict[str, Any] | None, list[str]]:
         provider_contract.get("api_key_env")
         or "CUSTOMER_IMAGE_UNDERSTANDING_API_KEY"
     ).strip()
-    api_key_env = next(
-        (
-            name
-            for name in VISION_API_KEY_ENV_NAMES
-            if name == required_api_key_env
-            and str(os.environ.get(name) or "").strip()
-        ),
-        "",
-    )
+    configured = install_resolved_vision_api_key()
+    api_key_env = required_api_key_env if configured else ""
     if not api_key_env:
         return None, [required_api_key_env]
+    runtime_settings = resolve_vision_runtime_settings()
     return {
         "image_contract": image_contract(),
         "customer_image_understanding": {
             "enabled": True,
-            "provider": str(
-                os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_PROVIDER")
-                or DEFAULT_VISION_PROVIDER
-            ).strip(),
-            "base_url": str(
-                os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_BASE_URL")
-                or DEFAULT_VISION_BASE_URL
-            ).strip(),
-            "model": str(
-                os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_MODEL")
-                or DEFAULT_VISION_MODEL
-            ).strip(),
-            "request_style": str(
-                os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_REQUEST_STYLE")
-                or DEFAULT_VISION_REQUEST_STYLE
-            ).strip(),
+            "provider": runtime_settings["provider"],
+            "base_url": runtime_settings["base_url"],
+            "model": runtime_settings["model"],
+            "request_style": runtime_settings["request_style"],
             "api_key_env": api_key_env,
             "timeout_seconds": _vision_timeout_seconds(),
         }
@@ -983,15 +987,13 @@ def vision_configuration_status() -> dict[str, Any]:
         if isinstance(config, dict) and isinstance(config.get("customer_image_understanding"), dict)
         else {}
     )
-    api_key_env = next(
-        (name for name in VISION_API_KEY_ENV_NAMES if str(os.environ.get(name) or "").strip()),
-        "",
-    )
+    runtime_settings = resolve_vision_runtime_settings()
+    api_key_env = str(settings.get("api_key_env") or "").strip()
     required_values = {
-        "provider": str(settings.get("provider") or os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_PROVIDER") or DEFAULT_VISION_PROVIDER).strip(),
-        "base_url": str(settings.get("base_url") or os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_BASE_URL") or DEFAULT_VISION_BASE_URL).strip(),
-        "model": str(settings.get("model") or os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_MODEL") or DEFAULT_VISION_MODEL).strip(),
-        "request_style": str(settings.get("request_style") or os.environ.get("CUSTOMER_IMAGE_UNDERSTANDING_REQUEST_STYLE") or DEFAULT_VISION_REQUEST_STYLE).strip(),
+        "provider": str(settings.get("provider") or runtime_settings["provider"]).strip(),
+        "base_url": str(settings.get("base_url") or runtime_settings["base_url"]).strip(),
+        "model": str(settings.get("model") or runtime_settings["model"]).strip(),
+        "request_style": str(settings.get("request_style") or runtime_settings["request_style"]).strip(),
         "api_key_env": str(settings.get("api_key_env") or api_key_env).strip(),
         "timeout_seconds": _vision_timeout_seconds(settings.get("timeout_seconds")),
     }
@@ -1030,13 +1032,13 @@ def process_image_slot(
     trace_id: str = "",
     cancel_check: Callable[[], bool] | None = None,
     action_journal_path: str | Path | None = None,
-    source_message_key: str = "",
+    action_local_id: str = "",
     artifact_dir: str | None = None,
 ) -> dict[str, Any]:
     """Run one authorized image slot through OmniAuto Vision in memory."""
 
     resolved_trace_id = str(trace_id or observation.get("observation_id") or "")
-    normalized_source_key = str(source_message_key or "").strip()
+    normalized_action_local_id = str(action_local_id or "").strip()
 
     def journal_update(
         *,
@@ -1044,11 +1046,11 @@ def process_image_slot(
         business_state: str | None,
         business_result_confirmed: bool,
     ) -> None:
-        if action_journal_path is None or not normalized_source_key:
+        if action_journal_path is None or not normalized_action_local_id:
             return
         update_action_journal_item(
             action_journal_path,
-            source_message_key=normalized_source_key,
+            journal_item_id=normalized_action_local_id,
             action_phase=action_phase,
             business_state=business_state,
             business_result_confirmed=business_result_confirmed,
@@ -1061,7 +1063,7 @@ def process_image_slot(
             "completed" if completed else "failed"
         )
         result["business_result_confirmed"] = completed
-        if action_journal_path is None or not normalized_source_key:
+        if action_journal_path is None or not normalized_action_local_id:
             return result
         phase = str(
             result.get("action_phase")
@@ -1069,10 +1071,31 @@ def process_image_slot(
             or "not_attempted"
         ).strip()
         result["action_phase"] = phase
-        if phase != "not_attempted":
+        # ``not_attempted`` means the irreversible Copy click did not run. It
+        # does not erase an explicit business failure already produced by the
+        # menu/clipboard/Vision pipeline. Persist every completed/failed
+        # terminal first so recovery can only move the same fact forward.
+        terminal_formed = state in {"completed", "failed"} or (
+            phase != "not_attempted"
+        )
+        if terminal_formed:
+            terminal_error_code = None if completed else str(
+                result.get("reason") or "IMAGE_RESULT_UNCONFIRMED"
+            )
+            transaction = (
+                result.get("transaction")
+                if isinstance(result.get("transaction"), dict)
+                else {}
+            )
             terminal_payload = {
                 "state": state or "failed",
-                "reason": str(result.get("reason") or ""),
+                "error_code": terminal_error_code,
+                "reason_detail": str(
+                    transaction.get("status")
+                    or result.get("reason_detail")
+                    or terminal_error_code
+                    or ""
+                ),
                 "customer_image_understanding": (
                     dict(result.get("customer_image_understanding") or {})
                     if isinstance(
@@ -1089,17 +1112,71 @@ def process_image_slot(
                     else None
                 ),
             }
+            journal_payload = read_action_journal(action_journal_path)
+            action_id = str(
+                journal_payload.get("canonical_action_id") or ""
+            ).strip()
+            reserved_id = str(
+                journal_payload.get("reserved_worker_stable_id") or ""
+            ).strip()
+            observation_id = str(
+                observation.get("observation_id") or ""
+            ).strip()
+            image_anchor = (
+                observation.get("image_physical_anchor")
+                if isinstance(
+                    observation.get("image_physical_anchor"), dict
+                )
+                else {}
+            )
+            image_fingerprint = str(
+                image_anchor.get("bubble_visual_fingerprint") or ""
+            ).strip()
+            selected_rows = [
+                item
+                for item in (
+                    journal_payload.get("pre_action_identity_sequence")
+                    or []
+                )
+                if isinstance(item, dict)
+                and item.get("identity_state") == "selected_action"
+                and str(item.get("canonical_action_id") or "").strip()
+                == action_id
+                and str(
+                    item.get("reserved_worker_stable_id") or ""
+                ).strip()
+                == reserved_id
+                and str(item.get("pre_observation_id") or "").strip()
+                == observation_id
+            ]
+            if (
+                phase == "confirmed"
+                and transaction.get("slot_identity_confirmed") is True
+                and action_id
+                and reserved_id
+                and observation_id
+                and image_fingerprint
+                and len(selected_rows) == 1
+            ):
+                terminal_payload["confirmed_action_mapping"] = {
+                    "canonical_action_id": action_id,
+                    "reserved_worker_stable_id": reserved_id,
+                    "pre_observation_id": observation_id,
+                    "post_observation_id": observation_id,
+                    "binding_confirmed": True,
+                }
+                terminal_payload[
+                    "image_visual_fingerprint"
+                ] = image_fingerprint
             update_action_journal_item(
                 action_journal_path,
-                source_message_key=normalized_source_key,
+                journal_item_id=normalized_action_local_id,
                 action_phase=phase,
                 business_state=result["business_state"],
                 business_result_confirmed=result[
                     "business_result_confirmed"
                 ],
-                error_code=None if completed else str(
-                    result.get("reason") or "IMAGE_RESULT_UNCONFIRMED"
-                ),
+                error_code=terminal_error_code,
                 terminal_payload=terminal_payload,
             )
         return result
@@ -1113,7 +1190,7 @@ def process_image_slot(
             "reason": reason,
             "image_persisted": False,
         }
-        return {
+        return finish_result({
             "state": state,
             "reason": reason,
             "action_phase": "not_attempted",
@@ -1125,7 +1202,7 @@ def process_image_slot(
                 "events": [event],
                 "image_persisted": False,
             },
-        }
+        })
 
     role = str(observation.get("sender_role") or "").strip().lower()
     role_source = str(
@@ -1169,6 +1246,18 @@ def process_image_slot(
     )
     if not isinstance(vision_settings, dict):
         vision_settings = {}
+    if is_official_vision_runtime():
+        if not install_resolved_vision_api_key():
+            return early_result(
+                "failed",
+                "vision_configuration_incomplete",
+                missing_configuration=[VISION_API_KEY_ENV],
+            )
+        vision_settings = {
+            **vision_settings,
+            **resolve_vision_runtime_settings(),
+            "api_key_env": VISION_API_KEY_ENV,
+        }
     vision_settings = {
         "enabled": True,
         "provider": str(

@@ -125,7 +125,7 @@ def local_safety_stop_exempt(request: Request, path: str) -> bool:
 
     Starting or configuring the runtime still requires normal authentication.
     Only POST stop from the loopback admin console is exempt so the operator can
-    always stop RPA keyboard/mouse hooks and background workers.
+    always stop background workers.
     """
 
     if request.method.upper() != "POST" or path not in LOCAL_SAFETY_STOP_PATHS:

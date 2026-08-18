@@ -26,6 +26,12 @@ class _FakeKernel32:
 
 
 class SingleInstanceTest(unittest.TestCase):
+    def test_cli_output_is_safe_without_console_stream(self):
+        from chejin_worker_client.main import emit_cli_output
+
+        with mock.patch("chejin_worker_client.main.sys.stdout", None):
+            emit_cli_output("不会写入窗口版控制台")
+
     def test_windows_first_instance_holds_mutex_until_release(self):
         kernel32 = _FakeKernel32()
         guard = acquire_single_instance(
@@ -116,6 +122,33 @@ class SingleInstanceTest(unittest.TestCase):
 
         self.assertEqual(result, 0)
         probe.assert_called_once_with()
+        acquire.assert_not_called()
+        bootstrap.assert_not_called()
+
+    def test_vision_wechat_worker_dispatch_runs_before_qt_and_instance_guard(self):
+        worker_args = ["observe-current-surface", "--target", "CJ123456"]
+        with (
+            mock.patch.object(
+                main.sys,
+                "argv",
+                [
+                    "chejin-worker-client",
+                    "--omniauto-vision-wechat-worker",
+                    *worker_args,
+                ],
+            ),
+            mock.patch.object(
+                main,
+                "run_bundled_omniauto_vision_wechat_worker",
+                return_value=0,
+            ) as worker,
+            mock.patch.object(main, "acquire_single_instance") as acquire,
+            mock.patch.object(main, "bootstrap_qt_plugins") as bootstrap,
+        ):
+            result = main.main()
+
+        self.assertEqual(result, 0)
+        worker.assert_called_once_with(worker_args)
         acquire.assert_not_called()
         bootstrap.assert_not_called()
 

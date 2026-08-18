@@ -2,12 +2,13 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 
 import { formatBusinessError } from "../../shared/api/client";
 import { CloseIcon } from "../../shared/ui/Icons";
+import { displayValue as display, formatRelativeHeartbeat as formatHeartbeat, optionalText } from "../../shared/utils/display";
 import { postMutationMessage, runPostMutationRefresh } from "../../shared/utils/postMutation";
 import { listWorkers } from "../workers/api";
 import type { WorkerItem } from "../workers/types";
 import { createSales, getSales, listSales, updateSales } from "./api";
 import { CreateSalesModal } from "./components/CreateSalesModal";
-import type { SalesItem, SalesUpdatePayload, SalesUpsertPayload } from "./types";
+import type { SalesCreatePayload, SalesItem, SalesUpdatePayload } from "./types";
 
 type SalesFilter = {
   keyword: string;
@@ -38,12 +39,10 @@ const initialFilter: SalesFilter = {
   worker: "all",
 };
 
+const PHONE_PATTERN = /^1[3-9]\d{9}$/;
+
 function statusClass(enabled: boolean) {
   return enabled ? "assigned" : "invalid";
-}
-
-function display(value: string | number | null | undefined, fallback = "-") {
-  return value === null || value === undefined || value === "" ? fallback : String(value);
 }
 
 function formatWorkerRunning(worker?: SalesItem["current_worker"] | null) {
@@ -53,29 +52,10 @@ function formatWorkerRunning(worker?: SalesItem["current_worker"] | null) {
   return `在线 / ${running}`;
 }
 
-function formatHeartbeat(value?: string | null) {
-  if (!value) return "暂无";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return String(value);
-  const diff = Date.now() - date.getTime();
-  if (diff < 90_000) return "刚刚";
-  if (diff < 3_600_000) return `${Math.max(1, Math.round(diff / 60_000))} 分钟前`;
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  const hours = String(date.getHours()).padStart(2, "0");
-  const minutes = String(date.getMinutes()).padStart(2, "0");
-  return `${month}-${day} ${hours}:${minutes}`;
-}
-
-function optionalText(value: string) {
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
-}
-
 function toEditForm(item: SalesItem): SalesEditForm {
   return {
     sales_name: item.sales_name,
-    phone: item.phone ?? "",
+    phone: "",
     wechat: item.wechat ?? "",
     enabled: item.enabled,
     sort_order: item.sort_order === null || item.sort_order === undefined ? "" : String(item.sort_order),
@@ -89,7 +69,7 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
   const [workers, setWorkers] = useState<WorkerItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<SalesItem | null>(null);
-  const [drawerOpen, setDrawerOpen] = useState(true);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [filter, setFilter] = useState<SalesFilter>(initialFilter);
   const [loading, setLoading] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -112,9 +92,8 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
       setWorkers(workerData.items);
       setSelectedId((current) => {
         if (current && salesData.items.some((item) => item.id === current)) return current;
-        return salesData.items[0]?.id ?? null;
+        return null;
       });
-      setDrawerOpen(Boolean(salesData.items[0]));
       return true;
     } catch (err) {
       if (!signal?.aborted) setError(formatBusinessError(err, "销售列表加载失败，请稍后重试。"));
@@ -199,7 +178,7 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
     return { enabledCount, boundCount, today, blocked };
   }, [items]);
 
-  async function handleCreateSales(payload: SalesUpsertPayload) {
+  async function handleCreateSales(payload: SalesCreatePayload) {
     setSubmitting(true);
     setCreateError(null);
     setMessage(null);
@@ -238,8 +217,13 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
       remark: optionalText(editForm.remark),
     };
 
-    if (editForm.phone !== (detail.phone ?? "")) {
-      payload.phone = optionalText(editForm.phone);
+    const nextPhone = editForm.phone.trim();
+    if (nextPhone) {
+      if (!PHONE_PATTERN.test(nextPhone)) {
+        setSaveError("请输入 11 位有效手机号；不修改请留空。");
+        return;
+      }
+      payload.phone = nextPhone;
     }
 
     setSubmitting(true);
@@ -308,7 +292,6 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
           <div className="panel-header">
             <div>
               <h2>销售列表</h2>
-              <p>维护销售启停、轮询排序，并在详情抽屉中绑定 Worker。</p>
             </div>
           </div>
 
@@ -350,28 +333,26 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
           </div>
 
           <div className="management-table-card">
-            <table className="management-table">
+            <table className="management-table sales-table">
               <thead>
                 <tr>
                   <th>销售姓名</th>
-                  <th>手机号</th>
-                  <th>微信号</th>
                   <th>状态</th>
                   <th>当前 Worker</th>
                   <th>Worker 状态</th>
-                  <th>排序</th>
-                  <th>今日</th>
-                  <th>阻塞</th>
+                  <th>轮询排序</th>
+                  <th>今日分配</th>
+                  <th>阻塞任务</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={9}>正在加载销售列表...</td>
+                    <td colSpan={7}>正在加载销售列表...</td>
                   </tr>
                 ) : filteredItems.length === 0 ? (
                   <tr>
-                    <td colSpan={9}>暂无销售，调整筛选条件后重试。</td>
+                    <td colSpan={7}>暂无销售，调整筛选条件后重试。</td>
                   </tr>
                 ) : (
                   filteredItems.map((item) => (
@@ -385,8 +366,6 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
                       }}
                     >
                       <td className="lead-cell"><strong>{item.sales_name}</strong></td>
-                      <td>{display(item.phone)}</td>
-                      <td>{display(item.wechat)}</td>
                       <td className="status-cell"><span className={`status ${statusClass(item.enabled)}`}>{item.enabled ? "启用" : "停用"}</span></td>
                       <td>{display(item.current_worker?.worker_name, "未绑定")}</td>
                       <td>{formatWorkerRunning(item.current_worker)}</td>
@@ -416,7 +395,7 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
                 <button className="icon-button drawer-close-button" type="button" onClick={() => setDrawerOpen(false)} aria-label="关闭销售详情"><CloseIcon /></button>
               </div>
 
-              {saveError ? <div className="inline-alert error">{saveError}</div> : null}
+              {saveError ? <div className="inline-alert error" role="alert">{saveError}</div> : null}
 
               <section className="drawer-section">
                 <h3>基础信息</h3>
@@ -427,7 +406,23 @@ export function SalesPage({ openIntent }: { openIntent?: SalesOpenIntent | null 
                   </div>
                   <div>
                     <dt>手机号</dt>
-                    <dd><span className="read-value">{display(detail.phone)}</span><input className="edit-value" value={editForm.phone} onChange={(event) => setEditForm({ ...editForm, phone: event.target.value })} /></dd>
+                    <dd>
+                      <span className="read-value">{display(detail.phone)}</span>
+                      <input
+                        className="edit-value"
+                        value={editForm.phone}
+                        onChange={(event) => setEditForm({ ...editForm, phone: event.target.value })}
+                        inputMode="tel"
+                        autoComplete="tel"
+                        maxLength={11}
+                        pattern="1[3-9][0-9]{9}"
+                        placeholder="不修改请留空；修改请输入完整手机号"
+                      />
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>飞书匹配</dt>
+                    <dd>{detail.feishu_binding_status === "matched" ? "飞书已匹配" : "飞书未匹配"}</dd>
                   </div>
                   <div>
                     <dt>微信号</dt>

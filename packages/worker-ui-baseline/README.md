@@ -78,11 +78,11 @@ worker-client/chejin_worker_client/web_assets/
 - `settings`：设置页
 - `schedule-settings`：接单时段设置页
 - `logs`：本机执行日志明细页
-- `scan-running` / `scan-completed`：主动扫描运行过程
-- `target-read-running` / `target-read-completed`：定向读取运行过程
-- `ai-reply-running` / `ai-reply-completed` / `ai-reply-failed`：AI 回复运行过程
+- `scan-running` / `scan-completed`：未归属到具体客户前的第一屏扫描过程
+- `target-read-running` / `target-read-completed`：同一客户处理事务的统一动态链路
+- `ai-reply-running` / `ai-reply-completed` / `ai-reply-failed`：保留的运行时兼容状态，界面仍渲染同一条客户处理链路，不另起画面
 
-统一工作台中间区域固定使用“当前运行过程”，优先级为：业务任务 > 定向读取 > 第一屏主动扫描 > 等待下一轮检查。运行中只展示 Worker 当前真实知道的粗阶段，详细链路只在执行结果返回后补充。
+统一工作台中间区域固定使用“当前运行过程”。第一屏无命中时只展示扫描结果；一旦发现已授权客户，便从“发现待处理客户”开始，按实际发生的节点累积展示定位、读取、语音、图片、回传、服务端判断和 AI 发送，直到本次客户事务终态。未发生的媒体节点不展示。加好友任务仍保持独立链路。
 
 ## 修改规则
 
