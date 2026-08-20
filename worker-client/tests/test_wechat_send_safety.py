@@ -100,6 +100,8 @@ class WechatSendSafetyTest(unittest.TestCase):
         sidebar_right = min(max(int(round(width * 0.39)), 300), max(301, width - 420))
         header_bottom = min(max(int(round(height * 0.10)), 70), 110)
         input_top = max(header_bottom + 120, int(round(height * 0.79)))
+        input_panel_width = width - sidebar_right
+        input_panel_height = height - input_top
         snapshot = sidecar.win32_ocr_layout.build_layout_snapshot(
             hwnd=1,
             frame_id=f"send-semantic-frame-{key}",
@@ -118,6 +120,12 @@ class WechatSendSafetyTest(unittest.TestCase):
                 "chat_header_bounds": [sidebar_right, 0, width, header_bottom],
                 "message_viewport_bounds": [sidebar_right, header_bottom, width, input_top],
                 "input_bounds": [sidebar_right, input_top, width, height],
+                "input_text_bounds": [
+                    sidebar_right + max(1, int(input_panel_width * 0.01)),
+                    input_top + max(1, int(input_panel_height * 0.04)),
+                    width - max(1, int(input_panel_width * 0.16)),
+                    input_top + int(input_panel_height * 0.56),
+                ],
             },
             anchors=[],
             confidence=1.0,

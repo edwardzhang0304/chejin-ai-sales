@@ -725,6 +725,10 @@ class FakeBridge:
         self.preflight_calls += 1
         return dict(self.preflight_payload)
 
+    def verify_window_readiness(self):
+        self.preflight_calls += 1
+        return dict(self.preflight_payload)
+
     def run_add_friend(self, task: Task, emit_step, cancel_check=None):
         self.tasks.append(task)
         self.add_friend_cancel_check = cancel_check
@@ -3600,7 +3604,7 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertTrue(runner.set_run_status("running"))
         self.assertEqual(binding.run_status, "running")
 
-    def test_start_blocks_before_backend_when_window_normalization_fails(self):
+    def test_start_blocks_before_backend_when_window_readiness_verification_fails(self):
         api = FakeApi(None)
         bridge = FakeBridge(RpaResult(ok=True, result_code="unused", message="unused"))
         bridge.preflight_payload = {

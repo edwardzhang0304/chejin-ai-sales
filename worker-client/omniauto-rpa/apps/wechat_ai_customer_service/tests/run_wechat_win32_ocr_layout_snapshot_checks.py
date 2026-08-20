@@ -14,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import window_layout  # noqa: E402
+from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import add_friend_windows  # noqa: E402
 from apps.wechat_ai_customer_service.adapters import add_friend_layout  # noqa: E402
 
 
@@ -222,7 +223,7 @@ def test_add_friend_entry_uses_search_row_not_selected_session_separator() -> No
         image, search_item = _bright_wechat_add_friend_frame(selected_row=selected_row)
         layout = window_layout.build_add_friend_entry_layout_regions(
             image,
-            ocr_items=[search_item],
+            search_anchor_items=[search_item],
         )
         assert_true(layout.get("ok") is True, f"add-friend operation row unresolved: {layout}")
         search_bounds = list(layout["regions"]["sidebar_header_bounds"])
@@ -238,9 +239,94 @@ def test_add_friend_entry_uses_search_row_not_selected_session_separator() -> No
 
 def test_add_friend_entry_without_search_anchor_fails_closed() -> None:
     image, _search_item = _bright_wechat_add_friend_frame(selected_row=2)
-    layout = window_layout.build_add_friend_entry_layout_regions(image, ocr_items=[])
+    layout = window_layout.build_add_friend_entry_layout_regions(
+        image,
+        search_anchor_items=[],
+    )
     assert_true(layout.get("ok") is False, f"missing search anchor became executable: {layout}")
     assert_true("search_anchor_missing" in (layout.get("conflicts") or []), f"missing conflict evidence: {layout}")
+
+
+def test_layout_consumes_q_search_semantic_candidate_without_reclassification() -> None:
+    image, search_item = _bright_wechat_add_friend_frame(selected_row=1)
+    noisy_search_item = {**search_item, "text": "Q搜索"}
+    layout = window_layout.build_add_friend_entry_layout_regions(
+        image,
+        search_anchor_items=[noisy_search_item],
+    )
+    assert_true(layout.get("ok") is True, f"0.9.20 Q搜索 compatibility was lost: {layout}")
+
+
+def test_sidebar_session_preview_search_does_not_compete_with_operation_row() -> None:
+    image, search_item = _bright_wechat_add_friend_frame(selected_row=2)
+    preview_top = int(search_item["bottom"]) + max(
+        40,
+        int(search_item["bottom"] - search_item["top"]) * 3,
+    )
+    layout = window_layout.build_add_friend_entry_layout_regions(
+        image,
+        search_anchor_items=[
+            {**search_item, "text": "Q搜索"},
+            {
+                "text": "可以搜索库存",
+                "left": search_item["left"],
+                "top": preview_top,
+                "right": search_item["right"] + 90,
+                "bottom": preview_top + int(search_item["bottom"] - search_item["top"]),
+                "confidence": 0.96,
+            },
+        ],
+    )
+    assert_true(layout.get("ok") is True, f"session preview blocked sidebar anchor: {layout}")
+    anchors = [item for item in layout.get("anchors") or [] if item.get("name") == "search_text"]
+    assert_true(len(anchors) == 1 and anchors[0].get("text") == "Q搜索", f"wrong search anchor: {layout}")
+
+
+def test_same_operation_row_search_conflict_fails_closed() -> None:
+    image, search_item = _bright_wechat_add_friend_frame(selected_row=2)
+    duplicate = {
+        **search_item,
+        "text": "搜索联系人",
+        "left": search_item["right"] + 8,
+        "right": search_item["right"] + 88,
+    }
+    layout = window_layout.build_add_friend_entry_layout_regions(
+        image,
+        search_anchor_items=[{**search_item, "text": "Q搜索"}, duplicate],
+    )
+    assert_true(layout.get("ok") is False, f"same-row conflict became executable: {layout}")
+    assert_true("search_anchor_ambiguous" in (layout.get("conflicts") or []), f"missing ambiguity: {layout}")
+
+
+def test_soft_full_width_input_separator_beats_stronger_partial_content_edge() -> None:
+    width, height = 980, 860
+    nav_x, sidebar_x, input_top = 76, 374, 680
+    image = Image.new("RGB", (width, height), (250, 250, 250))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, nav_x - 1, height - 1), fill=(246, 246, 246))
+    draw.rectangle((nav_x, 0, sidebar_x - 1, height - 1), fill=(234, 234, 234))
+    # A strong message-bubble edge is deliberately partial.
+    draw.rectangle((sidebar_x + 120, 540, width - 160, 600), fill=(120, 120, 120))
+    # The real input separator is soft but spans the entire chat panel.
+    draw.rectangle((sidebar_x, input_top, width - 1, height - 1), fill=(245, 245, 245))
+    search_item = {
+        "text": "Q搜索",
+        "left": 102,
+        "top": 62,
+        "right": 154,
+        "bottom": 80,
+        "confidence": 0.93,
+    }
+    layout = window_layout.build_structural_layout_regions(
+        image,
+        search_anchor_items=[search_item],
+    )
+    assert_true(layout.get("ok") is True, f"soft full-width input separator unresolved: {layout}")
+    resolved_input_top = layout["regions"]["input_bounds"][1]
+    assert_true(
+        abs(resolved_input_top - input_top) <= 2,
+        f"partial content edge replaced input separator: {layout}",
+    )
 
 
 def test_chat_panel_vertical_does_not_replace_first_sidebar_separator() -> None:
@@ -323,6 +409,44 @@ def test_popup_snapshot_has_its_own_surface_and_cannot_reuse_main_regions() -> N
         pass
     else:
         raise AssertionError("popup unexpectedly inherited the main WeChat message viewport")
+
+
+def test_add_friend_popup_ocr_stays_local_to_current_plus_entry() -> None:
+    image, search_item = _bright_wechat_add_friend_frame(selected_row=2)
+    layout = window_layout.build_add_friend_entry_layout_regions(
+        image,
+        search_anchor_items=[{**search_item, "text": "Q搜索"}],
+    )
+    current = window_layout.build_layout_snapshot(
+        hwnd=302,
+        frame_id="add-friend-main-frame",
+        capture_mode=window_layout.CAPTURE_MODE_WINDOW_VISIBLE_SCREEN,
+        image_size=image.size,
+        capture_screen_origin=[0, 0],
+        window_rect=[0, 0, image.width, image.height],
+        client_rect=[0, 0, image.width, image.height],
+        client_screen_origin=[0, 0],
+        dpi_scale=1.0,
+        regions=layout["regions"],
+        anchors=layout["anchors"],
+        confidence=layout["confidence"],
+        conflicts=layout["conflicts"],
+        executable=True,
+        required_region_names=window_layout.ADD_FRIEND_ENTRY_LAYOUT_REGION_NAMES,
+    )
+    header = current["sidebar_header_bounds"]
+    plus_x = header[2] - 28
+    plus_y = (header[1] + header[3]) // 2
+    bounds = add_friend_windows.add_friend_popup_menu_bounds(
+        image.size,
+        plus_image_x=plus_x,
+        plus_image_y=plus_y,
+        layout_snapshot=current,
+    )
+    assert_true(bool(bounds), f"old local popup ROI was not produced: {bounds}")
+    assert_true(bounds[0] >= 0 and bounds[1] > plus_y, f"popup ROI is not below plus: {bounds}")
+    assert_true(bounds[2] - bounds[0] <= 220, f"popup OCR expanded to a full window/sidebar: {bounds}")
+    assert_true(bounds[3] - bounds[1] <= 190, f"popup OCR expanded to a full window/sidebar: {bounds}")
 
 
 def test_production_has_no_fixed_geometry_or_unbounded_click_bypass() -> None:
@@ -471,15 +595,21 @@ def test_production_has_no_fixed_geometry_or_unbounded_click_bypass() -> None:
     assert_true(not raw_action_bypasses, f"screen-space action bypassed the layout converter: {raw_action_bypasses}")
 
     worker_vision_file = PROJECT_ROOT.parent / "chejin_worker_client" / "omniauto_vision.py"
-    worker_vision_source = worker_vision_file.read_text(encoding="utf-8")
-    assert_true(
-        "human_screen_click" not in worker_vision_source,
-        "Worker Vision bypassed the layout converter with a raw screen click",
-    )
+    if worker_vision_file.is_file():
+        worker_vision_source = worker_vision_file.read_text(encoding="utf-8")
+        assert_true(
+            "human_screen_click" not in worker_vision_source,
+            "Worker Vision bypassed the layout converter with a raw screen click",
+        )
 
 
 def test_window_policy_is_owned_only_by_sidecar() -> None:
-    worker_root = PROJECT_ROOT.parent
+    embedded_worker_root = PROJECT_ROOT.parent
+    worker_root = (
+        embedded_worker_root
+        if (embedded_worker_root / "chejin_worker_client").is_dir()
+        else PROJECT_ROOT
+    )
     policy_token = "WECHAT_WIN32_OCR_WINDOW_FIXED_ORIGIN"
     allowed = {
         PROJECT_ROOT / "apps" / "wechat_ai_customer_service" / "adapters" / "wechat_win32_ocr_sidecar.py",

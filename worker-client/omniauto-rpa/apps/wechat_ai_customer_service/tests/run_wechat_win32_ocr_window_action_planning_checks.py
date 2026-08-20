@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import tempfile
 import types
+from typing import Any
 
 from PIL import Image, ImageDraw
 
@@ -30,7 +31,8 @@ def real_layout_frame(width: int = 980, height: int = 860) -> Image.Image:
     image = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(image)
     nav_x, sidebar_x = int(width * 0.073), int(width * 0.378)
-    sidebar_header_y, chat_header_y, input_y = int(height * 0.112), int(height * 0.102), int(height * 0.814)
+    sidebar_header_y = chat_header_y = int(height * 0.102)
+    input_y = int(height * 0.814)
     draw.rectangle((0, 0, nav_x - 1, height - 1), fill=(245, 245, 245))
     draw.rectangle((nav_x, 0, sidebar_x - 1, height - 1), fill=(235, 235, 235))
     draw.line((nav_x, 0, nav_x, height - 1), fill=(150, 150, 150), width=2)
@@ -139,15 +141,15 @@ def test_plan_1920x1080_keeps_default_safe_window_when_it_fits() -> None:
     assert_true((result.get("left"), result.get("top"), result.get("width"), result.get("height")) == (0, 0, 980, 860), f"1080p target mismatch: {result}")
 
 
-def test_plan_high_resolution_scales_recommended_window_when_screen_allows() -> None:
+def test_plan_high_resolution_keeps_normal_window_size() -> None:
     before = {"left": 20, "top": 24, "width": 980, "height": 860}
     result = plan(before, dpi_scale=1.5, screen_width=3840, screen_height=2160)
     assert_true(
-        (result.get("left"), result.get("top"), result.get("width"), result.get("height")) == (0, 0, 1470, 1290),
-        f"high resolution target should scale recommended geometry: {result}",
+        (result.get("left"), result.get("top"), result.get("width"), result.get("height")) == (0, 0, 980, 860),
+        f"high resolution must not enlarge the WeChat window: {result}",
     )
-    assert_true(result.get("target") == {"width": 1470, "height": 1290}, f"high resolution target metadata mismatch: {result}")
-    assert_true(result.get("resolution_scale") == 1.5, f"resolution scale metadata mismatch: {result}")
+    assert_true(result.get("target") == {"width": 980, "height": 860}, f"high resolution target metadata mismatch: {result}")
+    assert_true(result.get("resolution_scale") == 1.0, f"resolution scale metadata mismatch: {result}")
 
 
 def test_plan_1920_class_displays_do_not_multiply_window_by_dpi() -> None:
@@ -180,8 +182,8 @@ def test_plan_resolution_dpi_matrix_stays_visible_and_safe() -> None:
         ("1920x1080@100", 1920, 1080, 1.0, (0, 0, 980, 860), {"width": 980, "height": 860}),
         ("1920x1080@125", 1920, 1080, 1.25, (0, 0, 980, 860), {"width": 980, "height": 860}),
         ("1920x1200@125", 1920, 1200, 1.25, (0, 0, 980, 860), {"width": 980, "height": 860}),
-        ("2560x1440@100", 2560, 1440, 1.0, (0, 0, 1225, 1075), {"width": 1225, "height": 1075}),
-        ("3840x2160@150", 3840, 2160, 1.5, (0, 0, 1470, 1290), {"width": 1470, "height": 1290}),
+        ("2560x1440@100", 2560, 1440, 1.0, (0, 0, 980, 860), {"width": 980, "height": 860}),
+        ("3840x2160@150", 3840, 2160, 1.5, (0, 0, 980, 860), {"width": 980, "height": 860}),
     ]
     for label, screen_width, screen_height, dpi_scale, expected_rect, expected_target in cases:
         result = plan(
@@ -446,6 +448,72 @@ def test_verify_policy_refuses_a_required_move_without_touching_the_window() -> 
         assert_true(result.get("error_code") == "WECHAT_UI_LAYOUT_STALE", f"unexpected error code: {result}")
         assert_true(result.get("reason") == "window_geometry_changed_during_active_flow", f"unexpected reason: {result}")
         assert_true(calls == [], f"verify mode must never move a window: {calls}")
+    finally:
+        sidecar.get_window_geometry = original_get_window_geometry
+        sidecar.get_window_client_geometry = original_get_window_client_geometry
+        sidecar.window_dpi_scale = original_window_dpi_scale
+        sidecar.screen_work_area = original_screen_work_area
+        sidecar.invalidate_layout_snapshot = original_invalidate
+        sidecar.win32_ocr_window_actions.plan_normalize_wechat_window = original_planner
+        sidecar.win32gui = original_win32gui
+
+
+def test_sidecar_keeps_current_safe_window_size_when_unconfigured() -> None:
+    original_get_window_geometry = sidecar.get_window_geometry
+    original_get_window_client_geometry = sidecar.get_window_client_geometry
+    original_window_dpi_scale = sidecar.window_dpi_scale
+    original_screen_work_area = sidecar.screen_work_area
+    original_invalidate = sidecar.invalidate_layout_snapshot
+    original_planner = sidecar.win32_ocr_window_actions.plan_normalize_wechat_window
+    original_win32gui = sidecar.win32gui
+    observed: dict[str, Any] = {}
+    geometry = {
+        "left": 0,
+        "top": 0,
+        "right": 900,
+        "bottom": 800,
+        "width": 900,
+        "height": 800,
+    }
+    try:
+        sidecar.get_window_geometry = lambda _hwnd: dict(geometry)
+        sidecar.get_window_client_geometry = lambda _hwnd: {
+            **geometry,
+            "screen_left": 0,
+            "screen_top": 0,
+        }
+        sidecar.window_dpi_scale = lambda _hwnd: 1.5
+        sidecar.screen_work_area = lambda _hwnd: {
+            "left": 0,
+            "top": 0,
+            "right": 3840,
+            "bottom": 2160,
+            "width": 3840,
+            "height": 2160,
+        }
+        sidecar.invalidate_layout_snapshot = lambda *_args, **_kwargs: None
+
+        def fake_plan(*_args: Any, **kwargs: Any) -> dict[str, Any]:
+            observed.update(kwargs)
+            return {
+                "ok": True,
+                "move": False,
+                "left": 0,
+                "top": 0,
+                "width": 900,
+                "height": 800,
+                "target": {"width": 900, "height": 800},
+                "requested_target": {"width": 900, "height": 800},
+                "resolution_scale": 1.0,
+            }
+
+        sidecar.win32_ocr_window_actions.plan_normalize_wechat_window = fake_plan
+        sidecar.win32gui = types.SimpleNamespace(IsZoomed=lambda _hwnd: False)
+        result = sidecar.normalize_wechat_window(2004)
+        assert_true(result.get("ok") is True, f"safe current window should verify: {result}")
+        assert_true(observed.get("default_width") == 900, f"safe width was enlarged: {observed}")
+        assert_true(observed.get("default_height") == 800, f"safe height was enlarged: {observed}")
+        assert_true(observed.get("enforce_recommended") is False, f"recommended floor unexpectedly enabled: {observed}")
     finally:
         sidecar.get_window_geometry = original_get_window_geometry
         sidecar.get_window_client_geometry = original_get_window_client_geometry
@@ -1169,7 +1237,7 @@ def main() -> int:
         test_plan_disabled_matches_sidecar_disabled_shape,
         test_plan_1920x1200_fixed_origin_matches_default_safe_window,
         test_plan_1920x1080_keeps_default_safe_window_when_it_fits,
-        test_plan_high_resolution_scales_recommended_window_when_screen_allows,
+        test_plan_high_resolution_keeps_normal_window_size,
         test_plan_1920_class_displays_do_not_multiply_window_by_dpi,
         test_plan_resolution_dpi_matrix_stays_visible_and_safe,
         test_plan_huge_requested_window_clamps_to_safe_maximum,
@@ -1182,6 +1250,7 @@ def main() -> int:
         test_empty_ocr_region_reports_layout_error_instead_of_value_error,
         test_sidecar_normalize_wechat_window_uses_same_planned_move_shape,
         test_verify_policy_refuses_a_required_move_without_touching_the_window,
+        test_sidecar_keeps_current_safe_window_size_when_unconfigured,
         test_normalization_rejects_dpi_change_after_geometry_check,
         test_sidebar_search_query_must_match_exact_remark_code,
         test_sidebar_search_query_ignores_empty_placeholder_icon_text,

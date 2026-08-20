@@ -50,6 +50,8 @@ class RpaBridge:
         self._active_artifact_dirs: set[Path] = set()
         self._active_artifact_dirs_lock = threading.Lock()
         self.last_probe_payload: dict[str, Any] = {}
+        self._startup_window_normalization_state = "pending"
+        self.last_startup_window_normalization: dict[str, Any] = {}
 
     def probe(self) -> tuple[str, str]:
         if self.mode == "mock":
@@ -58,8 +60,47 @@ class RpaBridge:
         if sys.platform != "win32":
             self.last_probe_payload = {}
             return "unavailable", "unknown"
+        startup_normalization: dict[str, Any] = {}
+        if self._startup_window_normalization_state == "pending":
+            startup_normalization = dict(
+                self._call_omniauto(["normalize-window"], timeout=60)
+            )
+            self.last_startup_window_normalization = startup_normalization
+            if startup_normalization.get("ok"):
+                self._startup_window_normalization_state = "completed"
+            elif (
+                str(startup_normalization.get("error_code") or "")
+                != "WECHAT_WINDOW_NOT_FOUND"
+            ):
+                # A failed post-move verification may mean the window was
+                # already changed. Do not move it again on every heartbeat.
+                self._startup_window_normalization_state = "failed_locked"
         payload = self._call_omniauto(["status"], timeout=30)
+        if startup_normalization:
+            payload = {
+                **dict(payload),
+                "startup_window_normalization": startup_normalization,
+            }
+        elif self._startup_window_normalization_state == "failed_locked":
+            payload = {
+                **dict(payload),
+                "startup_window_normalization": dict(
+                    self.last_startup_window_normalization
+                ),
+            }
+        payload = {
+            **dict(payload),
+            "startup_window_normalization_state": (
+                self._startup_window_normalization_state
+            ),
+        }
         self.last_probe_payload = dict(payload)
+        if startup_normalization and not startup_normalization.get("ok"):
+            if str(startup_normalization.get("error_code") or "") == "WECHAT_WINDOW_NOT_FOUND":
+                return "ready", "not_found"
+            return "unavailable", "unknown"
+        if self._startup_window_normalization_state == "failed_locked":
+            return "unavailable", "unknown"
         if payload.get("ok"):
             return "ready", "logged_in"
         error_code = str(payload.get("error_code") or "")
@@ -72,14 +113,21 @@ class RpaBridge:
             return {"ok": True, "mode": "mock", "message": "mock RPA 模式不探测真实微信。"}
         return self._call_omniauto(["status"], timeout=60)
 
-    def preflight_window_normalization(self) -> dict[str, Any]:
-        """Actively normalize and verify the WeChat UI before accepting work."""
+    def verify_window_readiness(self) -> dict[str, Any]:
+        """Verify the current WeChat geometry without moving it."""
         if self.mode == "mock":
             return {"ok": True, "mode": "mock", "state": "mock_preflight"}
         if sys.platform != "win32":
             return {"ok": True, "skipped": True, "reason": "non_windows_worker"}
-        payload = self._call_omniauto(["normalize-window"], timeout=60)
+        payload = self._call_omniauto(
+            ["normalize-window", "--window-policy", "verify"],
+            timeout=60,
+        )
         return dict(payload)
+
+    def preflight_window_normalization(self) -> dict[str, Any]:
+        """Compatibility alias; accepting work must only verify, never move."""
+        return self.verify_window_readiness()
 
     def list_sessions(
         self,
@@ -237,7 +285,7 @@ class RpaBridge:
         args = [
             "open-chat",
             "--window-policy",
-            "normalize",
+            "verify",
             "--sidecar-run-id",
             sidecar_run_id,
             "--target",
@@ -434,7 +482,7 @@ class RpaBridge:
         args = [
             "send",
             "--window-policy",
-            "normalize",
+            "verify",
             "--target",
             target,
             "--session-key",
@@ -727,7 +775,7 @@ class RpaBridge:
         *,
         action_journal: Path | None = None,
     ) -> list[str]:
-        args = [OMNIAUTO_ADD_FRIEND_ACTION, "--window-policy", "normalize"]
+        args = [OMNIAUTO_ADD_FRIEND_ACTION, "--window-policy", "verify"]
         if task.search_phone:
             args.extend(["--phone", task.search_phone])
         elif task.wechat:

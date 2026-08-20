@@ -2059,6 +2059,20 @@ def test_add_friend_primary_locator_contract() -> None:
                 pixels[x, y + 1] = (230, 230, 230)
         layout = window_layout.build_structural_layout_regions(image)
         assert_true(layout.get("ok"), f"real layout builder rejected plus frame: {layout}")
+        header_bounds = list(layout["regions"]["sidebar_header_bounds"])
+        header_width = header_bounds[2] - header_bounds[0]
+        header_center_y = int((header_bounds[1] + header_bounds[3]) / 2)
+        search_anchor = {
+            "name": "search_text",
+            "text": "Q搜索",
+            "bounds": [
+                header_bounds[0] + max(4, int(header_width * 0.08)),
+                header_center_y - 10,
+                header_bounds[0] + max(28, int(header_width * 0.42)),
+                header_center_y + 10,
+            ],
+            "confidence": 0.95,
+        }
         snapshot = window_layout.build_layout_snapshot(
             hwnd=1001,
             frame_id=f"plus-{width}x{height}@{dpi_scale}",
@@ -2070,7 +2084,7 @@ def test_add_friend_primary_locator_contract() -> None:
             client_screen_origin=[0, 0],
             dpi_scale=dpi_scale,
             regions=layout["regions"],
-            anchors=layout["anchors"],
+            anchors=[*layout["anchors"], search_anchor],
             confidence=layout["confidence"],
             conflicts=layout["conflicts"],
             executable=bool(layout.get("ok")),
@@ -2164,10 +2178,19 @@ def test_add_friend_primary_locator_contract() -> None:
             height,
             dpi_scale=dpi_scale,
         )
+        header_width = safe_bounds[2] - safe_bounds[0]
+        header_center_y = int((safe_bounds[1] + safe_bounds[3]) / 2)
+        matrix_search_item = ocr_item(
+            "Q搜索",
+            safe_bounds[0] + max(4, int(header_width * 0.08)),
+            header_center_y - 10,
+            safe_bounds[0] + max(28, int(header_width * 0.42)),
+            header_center_y + 10,
+        )
         matrix_target = add_friend_plus_entry_target(
             {"width": width, "height": height, "left": 0, "top": 0, "right": width, "bottom": height},
             (width, height),
-            [],
+            [matrix_search_item],
             screenshot=matrix_image,
             route_kind="windows",
             layout_snapshot=matrix_snapshot,
@@ -2315,10 +2338,11 @@ def test_add_friend_live_window_paths_pass_screenshot_to_plus_locator() -> None:
         ("calibration", calibration_section),
     ]:
         assert_true(
-            "add_friend_plus_entry_target(" in section
+            "finalize_add_friend_entry_layout_snapshot(" in section
+            and "add_friend_plus_entry_target(" in section
             and "screenshot=screenshot" in section
-            and "layout_snapshot=_ops().layout_snapshot_for_image(screenshot)" in section,
-            f"{name} path must pass the captured screenshot and its real layout snapshot into the visual plus locator",
+            and "layout_snapshot=layout_snapshot" in section,
+            f"{name} path must explicitly finalize the full-OCR layout before the visual plus locator",
         )
 
 
