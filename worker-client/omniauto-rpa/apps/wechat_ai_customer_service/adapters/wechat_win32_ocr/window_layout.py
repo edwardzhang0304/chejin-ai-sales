@@ -485,6 +485,30 @@ def build_add_friend_entry_layout_regions(
             "conflicts": ["sidebar_boundary_pair_unresolved"],
             "vertical_candidates": [{"x": x, "score": score} for x, score in verticals[:12]],
         }
+    # Repeated, aligned session avatars can produce stronger vertical signals
+    # than the real nav separator. Use the already-proven top search OCR bounds
+    # to reject any candidate pair whose left edge cuts through (or sits almost
+    # against) the search glyph and whose right edge cuts through the same row.
+    # The selected coordinates still come from current-frame pixels only.
+    for search_anchor in sorted(
+        search_anchors,
+        key=lambda anchor: (
+            int((anchor["bounds"][1] + anchor["bounds"][3]) / 2),
+            int(anchor["bounds"][0]),
+        ),
+    ):
+        anchor_bounds = list(search_anchor["bounds"])
+        anchor_height = max(1, anchor_bounds[3] - anchor_bounds[1])
+        separator_clearance = max(6, int(anchor_height * 0.5))
+        compatible_pairs = [
+            item
+            for item in pairs
+            if int(item[1][0]) <= anchor_bounds[0] - separator_clearance
+            and int(item[2][0]) >= anchor_bounds[2] + separator_clearance
+        ]
+        if compatible_pairs:
+            pairs = compatible_pairs
+            break
     ranked_pairs = sorted(pairs, key=lambda item: item[0], reverse=True)
     _score, nav_boundary, main_boundary = ranked_pairs[0]
     position_tolerance = max(18, int(width * 0.018))

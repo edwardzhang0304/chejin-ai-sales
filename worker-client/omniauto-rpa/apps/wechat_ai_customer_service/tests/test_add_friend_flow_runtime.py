@@ -167,6 +167,69 @@ def production_boundary(
 
 
 class AddFriendProductionEntryTest(unittest.TestCase):
+    def test_aligned_avatar_edges_do_not_replace_nav_on_production_entry(self) -> None:
+        """Replay UAT-005 from public planning entry through the mouse boundary."""
+
+        width, height = 980, 860
+        nav_x, sidebar_x = 84, 382
+        image = Image.new("RGB", (width, height), (250, 250, 250))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((0, 0, nav_x - 1, height - 1), fill=(246, 246, 246))
+        draw.rectangle((nav_x, 0, sidebar_x - 1, height - 1), fill=(234, 234, 234))
+        for sample_y in (86, 154, 292, 447, 602, 722):
+            draw.rectangle((99, sample_y - 18, 143, sample_y + 18), fill=(90, 90, 90))
+        plus_x, plus_y, radius = 349, 70, 11
+        draw.ellipse(
+            (plus_x - radius, plus_y - radius, plus_x + radius, plus_y + radius),
+            outline=(70, 70, 70),
+            width=2,
+        )
+        draw.line((plus_x - 6, plus_y, plus_x + 6, plus_y), fill=(60, 60, 60), width=2)
+        draw.line((plus_x, plus_y - 6, plus_x, plus_y + 6), fill=(60, 60, 60), width=2)
+        ocr_items = [
+            {
+                "text": "Q搜索",
+                "left": 106,
+                "top": 58,
+                "right": 168,
+                "bottom": 85,
+                "center_x": 137,
+                "center_y": 71.5,
+                "confidence": 0.9555,
+            },
+            {
+                "text": "文件传输助手",
+                "left": 154,
+                "top": 766,
+                "right": 265,
+                "bottom": 792,
+                "center_x": 209.5,
+                "center_y": 779,
+                "confidence": 0.999,
+            },
+        ]
+        clicks: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory(prefix="add-friend-uat-avatar-edge-") as temp_dir:
+            with production_boundary(image, ocr_items=ocr_items, click_points=clicks):
+                with self.assertRaises(PhysicalClickReached):
+                    sidecar.add_friend_entry_click_plan_payload(
+                        1001,
+                        {"visible_main_windows": [{"hwnd": 1001}]},
+                        phone="17368746889",
+                        verify_message="我是车金二手车张伟",
+                        remark_name="客户-CJ8K2P",
+                        remark_code="CJ8K2P",
+                        artifact_dir=temp_dir,
+                    )
+
+        snapshot = sidecar.current_layout_snapshot(1001) or {}
+        self.assertEqual(snapshot.get("left_nav_bounds", [None, None, None])[2], nav_x, snapshot)
+        self.assertEqual(snapshot.get("sidebar_bounds", [None, None, None])[2], sidebar_x, snapshot)
+        self.assertEqual(len(clicks), 1, clicks)
+        self.assertLessEqual(abs(clicks[0]["point"][0] - plus_x), 2, clicks)
+        self.assertLessEqual(abs(clicks[0]["point"][1] - plus_y), 2, clicks)
+        self.assertGreater(clicks[0]["point"][0], ocr_items[0]["right"], clicks)
+
     def test_no_header_line_search_noise_and_extra_verticals_reach_real_plus_click(self) -> None:
         for search_text in ("Q搜索", "O搜索", "0搜索"):
             with self.subTest(search_text=search_text):
