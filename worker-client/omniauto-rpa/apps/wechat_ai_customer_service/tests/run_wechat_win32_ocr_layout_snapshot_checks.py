@@ -6,12 +6,15 @@ import ast
 import sys
 from pathlib import Path
 
+from PIL import Image, ImageDraw
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import window_layout  # noqa: E402
+from apps.wechat_ai_customer_service.adapters import add_friend_layout  # noqa: E402
 
 
 def assert_true(condition: bool, message: str) -> None:
@@ -179,6 +182,65 @@ def test_structural_regions_follow_each_image_size() -> None:
         for name, bounds in result["regions"].items():
             assert_true(bounds[0] >= 0 and bounds[1] >= 0, f"{name} has negative origin: {bounds}")
             assert_true(bounds[2] <= width and bounds[3] <= height, f"{name} exceeds image: {bounds}")
+
+
+def _bright_wechat_add_friend_frame(*, selected_row: int) -> tuple[Image.Image, dict[str, float | str]]:
+    width, height = 980, 860
+    nav_x = int(width * 0.075)
+    sidebar_x = int(width * 0.385)
+    image = Image.new("RGB", (width, height), (250, 250, 250))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, nav_x - 1, height - 1), fill=(246, 246, 246))
+    draw.rectangle((nav_x, 0, sidebar_x - 1, height - 1), fill=(234, 234, 234))
+    selected_top = int(height * 0.10) + (selected_row * int(height * 0.09))
+    draw.rectangle(
+        (nav_x, selected_top, sidebar_x - 1, selected_top + int(height * 0.09)),
+        fill=(20, 178, 116),
+    )
+    search_top = int(height * 0.058)
+    search_height = max(16, int(height * 0.022))
+    search_item = {
+        "text": "搜索",
+        "left": nav_x + int((sidebar_x - nav_x) * 0.16),
+        "top": search_top,
+        "right": nav_x + int((sidebar_x - nav_x) * 0.28),
+        "bottom": search_top + search_height,
+        "confidence": 0.98,
+    }
+    plus_x = sidebar_x - int((sidebar_x - nav_x) * 0.11)
+    plus_y = int((search_item["top"] + search_item["bottom"]) / 2)
+    radius = max(9, int(search_height * 0.55))
+    draw.ellipse((plus_x - radius, plus_y - radius, plus_x + radius, plus_y + radius), outline=(70, 70, 70), width=2)
+    draw.line((plus_x - 6, plus_y, plus_x + 6, plus_y), fill=(60, 60, 60), width=2)
+    draw.line((plus_x, plus_y - 6, plus_x, plus_y + 6), fill=(60, 60, 60), width=2)
+    return image, search_item
+
+
+def test_add_friend_entry_uses_search_row_not_selected_session_separator() -> None:
+    results = []
+    for selected_row in (0, 3):
+        image, search_item = _bright_wechat_add_friend_frame(selected_row=selected_row)
+        layout = window_layout.build_add_friend_entry_layout_regions(
+            image,
+            ocr_items=[search_item],
+        )
+        assert_true(layout.get("ok") is True, f"add-friend operation row unresolved: {layout}")
+        search_bounds = list(layout["regions"]["sidebar_header_bounds"])
+        candidates = add_friend_layout.vision_plus_icon_candidates(
+            image,
+            image.size,
+            search_bounds=search_bounds,
+        )
+        assert_true(len(candidates) == 1, f"plus must be unique in the OCR-anchored operation row: {candidates}")
+        results.append((layout["regions"], candidates[0]["point"]))
+    assert_true(results[0] == results[1], "selected conversation row must not move add-friend entry layout")
+
+
+def test_add_friend_entry_without_search_anchor_fails_closed() -> None:
+    image, _search_item = _bright_wechat_add_friend_frame(selected_row=2)
+    layout = window_layout.build_add_friend_entry_layout_regions(image, ocr_items=[])
+    assert_true(layout.get("ok") is False, f"missing search anchor became executable: {layout}")
+    assert_true("search_anchor_missing" in (layout.get("conflicts") or []), f"missing conflict evidence: {layout}")
 
 
 def test_chat_panel_vertical_does_not_replace_first_sidebar_separator() -> None:

@@ -7954,6 +7954,16 @@ def run_ocr_on_screen_region(
     purpose: str = "screen_region",
     source: str = "run_ocr_on_screen_region",
 ) -> list[dict[str, Any]]:
+    if not isinstance(bounds, (list, tuple)) or len(bounds) < 4:
+        raise win32_ocr_layout.LayoutSnapshotError(
+            "ocr_region_bounds_missing",
+            code=win32_ocr_layout.ERROR_LAYOUT_UNRESOLVED,
+            details={
+                "bounds": list(bounds or [])
+                if isinstance(bounds, (list, tuple))
+                else []
+            },
+        )
     left, top, right, bottom = [int(value) for value in bounds[:4]]
     width, height = image.size
     left = max(0, min(width - 1, left))
@@ -16868,6 +16878,63 @@ def layout_snapshot_for_image(image: Any) -> dict[str, Any] | None:
     if not snapshot_id:
         return None
     return _LAYOUT_SNAPSHOT_STORE.get(snapshot_id)
+
+
+def finalize_add_friend_entry_layout_snapshot(
+    image: Any,
+    items: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Finalize the current frame with only add-friend entry requirements."""
+
+    snapshot_id = _LAYOUT_SNAPSHOT_ID_BY_IMAGE_ID.get(id(image))
+    existing = _LAYOUT_SNAPSHOT_STORE.get(snapshot_id or "")
+    if existing is None or bool(existing.get("invalidated")):
+        return None
+    layout = win32_ocr_layout.build_add_friend_entry_layout_regions(
+        image,
+        ocr_items=items,
+    )
+    completed = win32_ocr_layout.build_layout_snapshot(
+        hwnd=int(existing.get("hwnd") or 0),
+        frame_id=str(existing.get("frame_id") or ""),
+        capture_mode=str(existing.get("capture_mode") or ""),
+        image_size=(
+            int(existing.get("image_width") or 0),
+            int(existing.get("image_height") or 0),
+        ),
+        capture_screen_origin=existing.get("capture_screen_origin"),
+        window_rect=existing.get("window_rect"),
+        client_rect=existing.get("client_rect"),
+        client_screen_origin=existing.get("client_screen_origin"),
+        dpi_scale=float(existing.get("dpi_scale") or 1.0),
+        regions=layout.get("regions") or {},
+        anchors=layout.get("anchors") or [],
+        confidence=float(layout.get("confidence") or 0.0),
+        conflicts=list(layout.get("conflicts") or []),
+        executable=bool(layout.get("ok")),
+        screenshot_path=str(existing.get("screenshot_path") or ""),
+        surface_kind="wechat_main_add_friend_entry",
+        required_region_names=win32_ocr_layout.ADD_FRIEND_ENTRY_LAYOUT_REGION_NAMES,
+    )
+    completed["layout_builder"] = {
+        "ok": bool(layout.get("ok")),
+        "confidence": float(layout.get("confidence") or 0.0),
+        "conflicts": list(layout.get("conflicts") or []),
+        "vertical_candidates": list(layout.get("vertical_candidates") or []),
+    }
+    completed["compatibility"] = dict(existing.get("compatibility") or {})
+    _LAYOUT_SNAPSHOT_STORE.invalidate(
+        str(existing.get("layout_snapshot_id") or ""),
+        reason="add_friend_action_layout_finalized",
+    )
+    _LAYOUT_SNAPSHOT_STORE.put(completed)
+    _LATEST_LAYOUT_SNAPSHOT_BY_HWND[int(completed.get("hwnd") or 0)] = str(
+        completed.get("layout_snapshot_id") or ""
+    )
+    _LAYOUT_SNAPSHOT_ID_BY_IMAGE_ID[id(image)] = str(
+        completed.get("layout_snapshot_id") or ""
+    )
+    return _LAYOUT_SNAPSHOT_STORE.get(str(completed.get("layout_snapshot_id") or ""))
 
 
 def _finalize_layout_snapshot_ocr_anchors(image: Any, items: list[dict[str, Any]]) -> None:

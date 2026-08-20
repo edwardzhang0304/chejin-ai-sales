@@ -150,12 +150,12 @@ def test_plan_high_resolution_scales_recommended_window_when_screen_allows() -> 
     assert_true(result.get("resolution_scale") == 1.5, f"resolution scale metadata mismatch: {result}")
 
 
-def test_plan_1920_class_displays_preserve_logical_canvas_at_high_dpi() -> None:
+def test_plan_1920_class_displays_do_not_multiply_window_by_dpi() -> None:
     cases = [
         ("1920x1080@100", 1920, 1080, 1.0, (0, 0, 980, 860), {"width": 980, "height": 860}),
-        ("1920x1080@125", 1920, 1080, 1.25, (0, 0, 1225, 1032), {"width": 1225, "height": 1075}),
-        ("1920x1200@125", 1920, 1200, 1.25, (0, 0, 1225, 1075), {"width": 1225, "height": 1075}),
-        ("1920x1080@150", 1920, 1080, 1.5, None, None),
+        ("1920x1080@125", 1920, 1080, 1.25, (0, 0, 980, 860), {"width": 980, "height": 860}),
+        ("1920x1200@125", 1920, 1200, 1.25, (0, 0, 980, 860), {"width": 980, "height": 860}),
+        ("1920x1080@150", 1920, 1080, 1.5, (0, 0, 980, 860), {"width": 980, "height": 860}),
     ]
     for label, screen_width, screen_height, dpi_scale, expected_rect, expected_target in cases:
         result = plan(
@@ -164,19 +164,12 @@ def test_plan_1920_class_displays_preserve_logical_canvas_at_high_dpi() -> None:
             screen_width=screen_width,
             screen_height=screen_height,
         )
-        if expected_rect is None:
-            assert_true(
-                result.get("ok") is False
-                and result.get("reason") == "screen_work_area_too_small_for_minimum_safe_window",
-                f"{label} must block when the work area cannot hold the minimum safe window: {result}",
-            )
-            continue
         assert_true(
             (result.get("left"), result.get("top"), result.get("width"), result.get("height")) == expected_rect,
-            f"{label} should preserve the safe logical canvas and clamp only to the work area: {result}",
+            f"{label} should keep the 1920-class physical window size: {result}",
         )
         assert_true(result.get("target") == expected_target, f"{label} target metadata mismatch: {result}")
-        assert_true(result.get("resolution_scale") == dpi_scale, f"{label} should scale by DPI: {result}")
+        assert_true(result.get("resolution_scale") == 1.0, f"{label} must not scale by DPI: {result}")
         assert_true(result.get("dpi_scale") == dpi_scale, f"{label} should still report DPI for diagnostics: {result}")
 
 
@@ -185,8 +178,8 @@ def test_plan_resolution_dpi_matrix_stays_visible_and_safe() -> None:
         ("1366x768@100", 1366, 768, 1.0, (0, 0, 980, 720), {"width": 980, "height": 860}),
         ("1440x900@100", 1440, 900, 1.0, (0, 0, 980, 852), {"width": 980, "height": 860}),
         ("1920x1080@100", 1920, 1080, 1.0, (0, 0, 980, 860), {"width": 980, "height": 860}),
-        ("1920x1080@125", 1920, 1080, 1.25, (0, 0, 1225, 1032), {"width": 1225, "height": 1075}),
-        ("1920x1200@125", 1920, 1200, 1.25, (0, 0, 1225, 1075), {"width": 1225, "height": 1075}),
+        ("1920x1080@125", 1920, 1080, 1.25, (0, 0, 980, 860), {"width": 980, "height": 860}),
+        ("1920x1200@125", 1920, 1200, 1.25, (0, 0, 980, 860), {"width": 980, "height": 860}),
         ("2560x1440@100", 2560, 1440, 1.0, (0, 0, 1225, 1075), {"width": 1225, "height": 1075}),
         ("3840x2160@150", 3840, 2160, 1.5, (0, 0, 1470, 1290), {"width": 1470, "height": 1290}),
     ]
@@ -282,6 +275,44 @@ def test_plan_without_screen_metrics_uses_target_and_max_bounds() -> None:
     )
     assert_true(result.get("screen") == {"width": 0, "height": 0}, f"missing screen metadata mismatch: {result}")
     assert_true((result.get("left"), result.get("top"), result.get("width"), result.get("height")) == (2560, 0, 980, 860), f"missing screen fallback mismatch: {result}")
+
+
+def test_add_friend_layout_finalization_requires_only_dynamic_search_row() -> None:
+    image = real_layout_frame()
+    original = register_real_layout_frame(image, hwnd=991)
+    completed = sidecar.finalize_add_friend_entry_layout_snapshot(
+        image,
+        [
+            {
+                "text": "搜索",
+                "left": 120,
+                "top": 50,
+                "right": 154,
+                "bottom": 70,
+                "confidence": 0.98,
+            }
+        ],
+    )
+    assert_true(bool(completed and completed.get("executable")), f"add-friend action layout should finalize: {completed}")
+    assert_true(
+        completed.get("required_region_names") == list(window_layout.ADD_FRIEND_ENTRY_LAYOUT_REGION_NAMES),
+        f"add-friend action retained unrelated chat/input requirements: {completed}",
+    )
+    assert_true(
+        completed.get("frame_id") == original.get("frame_id"),
+        "OCR finalization must remain bound to the same captured frame",
+    )
+    stale_original = sidecar._LAYOUT_SNAPSHOT_STORE.get(str(original.get("layout_snapshot_id") or ""))
+    assert_true(bool(stale_original and stale_original.get("invalidated")), "pre-finalization action authority must be invalidated")
+
+
+def test_empty_ocr_region_reports_layout_error_instead_of_value_error() -> None:
+    try:
+        sidecar.run_ocr_on_screen_region(Image.new("RGB", (100, 100), "white"), [])
+    except window_layout.LayoutSnapshotError as exc:
+        assert_true(exc.code == window_layout.ERROR_LAYOUT_UNRESOLVED, f"wrong typed error: {exc.code}")
+    else:
+        raise AssertionError("empty OCR bounds unexpectedly reached the OCR engine")
 
 
 def test_sidecar_normalize_wechat_window_uses_same_planned_move_shape() -> None:
@@ -1139,7 +1170,7 @@ def main() -> int:
         test_plan_1920x1200_fixed_origin_matches_default_safe_window,
         test_plan_1920x1080_keeps_default_safe_window_when_it_fits,
         test_plan_high_resolution_scales_recommended_window_when_screen_allows,
-        test_plan_1920_class_displays_preserve_logical_canvas_at_high_dpi,
+        test_plan_1920_class_displays_do_not_multiply_window_by_dpi,
         test_plan_resolution_dpi_matrix_stays_visible_and_safe,
         test_plan_huge_requested_window_clamps_to_safe_maximum,
         test_plan_tiny_screen_never_exceeds_visible_screen_bounds,
@@ -1147,6 +1178,8 @@ def main() -> int:
         test_plan_non_fixed_origin_clamps_existing_origin,
         test_plan_recommended_floor_and_custom_origin,
         test_plan_without_screen_metrics_uses_target_and_max_bounds,
+        test_add_friend_layout_finalization_requires_only_dynamic_search_row,
+        test_empty_ocr_region_reports_layout_error_instead_of_value_error,
         test_sidecar_normalize_wechat_window_uses_same_planned_move_shape,
         test_verify_policy_refuses_a_required_move_without_touching_the_window,
         test_normalization_rejects_dpi_change_after_geometry_check,

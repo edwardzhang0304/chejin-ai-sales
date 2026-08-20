@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
+from statistics import median
 import time
 import uuid
 from typing import Any, Callable, Mapping
@@ -37,6 +38,11 @@ REQUIRED_LAYOUT_REGION_NAMES = (
     "input_bounds",
 )
 POPUP_LAYOUT_REGION_NAMES = ("surface_bounds",)
+ADD_FRIEND_ENTRY_LAYOUT_REGION_NAMES = (
+    "left_nav_bounds",
+    "sidebar_bounds",
+    "sidebar_header_bounds",
+)
 
 
 class LayoutSnapshotError(RuntimeError):
@@ -211,19 +217,31 @@ def _vertical_edge_candidates(image: Any) -> list[tuple[int, float]]:
             for ratio in (0.04, 0.10, 0.18, 0.34, 0.52, 0.70, 0.84, 0.94)
         }
     )
+    def strip_luma(x_start: int, x_end: int, y: int) -> float:
+        values = [
+            _pixel_luma(image.getpixel((sample_x, y)))
+            for sample_x in range(x_start, x_end)
+        ]
+        return sum(values) / max(1, len(values))
+
     scores: list[tuple[int, float]] = []
     for x in range(48, max(49, width - 48)):
         row_scores = []
         for y in sample_rows:
             try:
-                left = _pixel_luma(image.getpixel((x - 1, y)))
-                right = _pixel_luma(image.getpixel((x + 1, y)))
+                # Native WeChat separators are a soft transition spread over
+                # several pixels, especially after Windows DPI composition.
+                # Compare the surfaces on both sides instead of two individual
+                # pixels so anti-aliasing cannot erase the structural edge.
+                left = strip_luma(x - 4, x - 1, y)
+                right = strip_luma(x + 2, x + 5, y)
                 row_scores.append(abs(left - right))
             except Exception:
                 row_scores.append(0.0)
-        stable_rows = sum(1 for score in row_scores if score >= 14.0)
-        score = (sum(row_scores) / max(1, len(row_scores))) + (stable_rows * 8.0)
-        if stable_rows >= 5 and score >= 28.0:
+        stable_rows = sum(1 for score in row_scores if score >= 5.0)
+        stable_signal = float(median(row_scores)) if row_scores else 0.0
+        score = stable_signal + (stable_rows * 4.0)
+        if stable_rows >= 6 and stable_signal >= 5.0 and score >= 28.0:
             scores.append((x, score))
     clusters: list[list[tuple[int, float]]] = []
     for item in sorted(scores):
@@ -233,7 +251,8 @@ def _vertical_edge_candidates(image: Any) -> list[tuple[int, float]]:
             clusters[-1].append(item)
     result = []
     for cluster in clusters:
-        x, score = max(cluster, key=lambda item: item[1])
+        x = int(round(float(median([item[0] for item in cluster]))))
+        score = max(item[1] for item in cluster)
         result.append((x, round(score, 3)))
     return sorted(result, key=lambda item: item[1], reverse=True)
 
@@ -290,6 +309,155 @@ def _qualified_edge_confidence(score: float, *, threshold: float) -> float:
 
     margin = max(0.0, float(score) - float(threshold))
     return min(0.97, 0.78 + (margin / 180.0))
+
+
+def build_add_friend_entry_layout_regions(
+    image: Any,
+    *,
+    ocr_items: list[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Resolve only the current-frame regions needed to open Add Friend.
+
+    The add-friend entry lives in the sidebar header. Requiring the chat
+    viewport and input area here couples an unrelated action to message-panel
+    content and makes a wide/empty chat fail before plus recognition starts.
+    """
+
+    if image is None or not hasattr(image, "size"):
+        return {
+            "ok": False,
+            "regions": {},
+            "anchors": [],
+            "confidence": 0.0,
+            "conflicts": ["image_missing"],
+            "vertical_candidates": [],
+        }
+    width, height = [int(value or 0) for value in image.size[:2]]
+    verticals = _vertical_edge_candidates(image)
+    search_anchors: list[dict[str, Any]] = []
+    for item in ocr_items or []:
+        text = "".join(str(item.get("text") or "").split()) if isinstance(item, Mapping) else ""
+        if not isinstance(item, Mapping) or text != "搜索":
+            continue
+        bounds = normalize_rect(
+            [item.get("left"), item.get("top"), item.get("right"), item.get("bottom")]
+        )
+        if bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
+            continue
+        search_anchors.append(
+            {
+                "name": "search_text",
+                "text": text,
+                "bounds": bounds,
+                "confidence": float(item.get("confidence") or 0.0),
+            }
+        )
+    if len(search_anchors) != 1:
+        return {
+            "ok": False,
+            "regions": {},
+            "anchors": search_anchors,
+            "confidence": 0.0,
+            "conflicts": ["search_anchor_missing" if not search_anchors else "search_anchor_ambiguous"],
+            "vertical_candidates": [{"x": x, "score": score} for x, score in verticals[:12]],
+        }
+
+    search_anchor = search_anchors[0]
+    search_bounds = list(search_anchor["bounds"])
+    search_center_x = int((search_bounds[0] + search_bounds[2]) / 2)
+    pairs: list[tuple[float, tuple[int, float], tuple[int, float]]] = []
+    for nav in verticals:
+        if not (int(width * 0.025) <= nav[0] <= int(width * 0.20)):
+            continue
+        for main in verticals:
+            sidebar_width = main[0] - nav[0]
+            if not (int(width * 0.16) <= sidebar_width <= int(width * 0.48)):
+                continue
+            if not (int(width * 0.24) <= main[0] <= int(width * 0.62)):
+                continue
+            if not (nav[0] < search_center_x < main[0]):
+                continue
+            pairs.append((float(nav[1]) + float(main[1]), nav, main))
+    if not pairs:
+        return {
+            "ok": False,
+            "regions": {},
+            "anchors": search_anchors,
+            "confidence": 0.0,
+            "conflicts": ["search_anchor_outside_dynamic_sidebar"],
+            "vertical_candidates": [{"x": x, "score": score} for x, score in verticals[:12]],
+        }
+    ranked_pairs = sorted(pairs, key=lambda item: item[0], reverse=True)
+    _score, nav_boundary, main_boundary = ranked_pairs[0]
+    materially_different = [
+        item
+        for item in ranked_pairs[1:]
+        if abs(item[0] - _score) <= max(6.0, abs(_score) * 0.08)
+        and (
+            abs(item[1][0] - nav_boundary[0]) > max(18, int(width * 0.018))
+            or abs(item[2][0] - main_boundary[0]) > max(18, int(width * 0.018))
+        )
+    ]
+    if materially_different:
+        return {
+            "ok": False,
+            "regions": {},
+            "anchors": search_anchors,
+            "confidence": 0.0,
+            "conflicts": ["sidebar_boundary_pair_ambiguous"],
+            "vertical_candidates": [{"x": x, "score": score} for x, score in verticals[:12]],
+        }
+
+    search_height = max(1, search_bounds[3] - search_bounds[1])
+    # There is deliberately no dependency on a horizontal header separator:
+    # when a non-first conversation is selected, native WeChat can render no
+    # clear line above the first session. The OCR search glyph defines the
+    # current-frame operation row; expand it by its own measured height.
+    operation_band_padding = max(8, int(search_height * 1.5))
+    operation_band_top = max(0, search_bounds[1] - operation_band_padding)
+    operation_band_bottom = min(height, search_bounds[3] + operation_band_padding)
+    regions = {
+        "left_nav_bounds": [0, 0, nav_boundary[0], height],
+        "sidebar_bounds": [nav_boundary[0], 0, main_boundary[0], height],
+        "sidebar_header_bounds": [
+            nav_boundary[0],
+            operation_band_top,
+            main_boundary[0],
+            operation_band_bottom,
+        ],
+    }
+    validation = validate_layout_regions(
+        regions,
+        image_size=(width, height),
+        required_region_names=ADD_FRIEND_ENTRY_LAYOUT_REGION_NAMES,
+    )
+    confidence = min(
+        _qualified_edge_confidence(nav_boundary[1], threshold=28.0),
+        _qualified_edge_confidence(main_boundary[1], threshold=28.0),
+        max(0.75, min(0.99, float(search_anchor.get("confidence") or 0.0))),
+    )
+    conflicts = (
+        list(validation.get("missing") or [])
+        + list(validation.get("invalid") or [])
+        + list(validation.get("conflicts") or [])
+    )
+    return {
+        "ok": bool(validation.get("ok") and not conflicts),
+        "regions": regions,
+        "anchors": [
+            search_anchor,
+            {"name": "nav_separator", "x": nav_boundary[0], "score": nav_boundary[1]},
+            {"name": "sidebar_separator", "x": main_boundary[0], "score": main_boundary[1]},
+            {
+                "name": "search_operation_band",
+                "bounds": list(regions["sidebar_header_bounds"]),
+                "source": "search_anchor_measured_height",
+            },
+        ],
+        "confidence": round(confidence, 3),
+        "conflicts": conflicts,
+        "vertical_candidates": [{"x": x, "score": score} for x, score in verticals[:12]],
+    }
 
 
 def build_structural_layout_regions(

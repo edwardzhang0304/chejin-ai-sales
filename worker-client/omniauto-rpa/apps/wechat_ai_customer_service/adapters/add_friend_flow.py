@@ -31,6 +31,7 @@ class AddFriendOpsProtocol(Protocol):
     def get_window_geometry(self, hwnd: int) -> dict[str, Any]: ...
     def capture_wechat_window_visible_screen(self, hwnd: int, *, artifact_dir: str, label: str, popup_window: bool = False) -> tuple[Any, str]: ...
     def layout_snapshot_metadata(self, hwnd: int) -> dict[str, Any]: ...
+    def finalize_add_friend_entry_layout_snapshot(self, image: Any, items: list[dict[str, Any]]) -> dict[str, Any] | None: ...
     def add_friend_plus_entry_target(self, geometry: dict[str, Any], image_size: Any, ocr_items: list[dict[str, Any]] | None = None, **kwargs: Any) -> dict[str, Any]: ...
     def add_friend_popup_menu_bounds(self, image_size: Any, *, plus_image_x: int, plus_image_y: int, layout_snapshot: dict[str, Any] | None = None) -> list[int]: ...
     def run_ocr_on_screen_region(self, image: Any, bounds: list[int]) -> list[dict[str, Any]]: ...
@@ -167,9 +168,6 @@ def run_add_friend_entry_click_plan_flow(
         label="add_friend_entry_before_click_window",
     )
     platform_adapter = "windows"
-    before_layout_metadata = ops.layout_snapshot_metadata(hwnd)
-    before_layout_snapshot = before_layout_metadata.get("snapshot") if before_layout_metadata.get("ok") else None
-    before_snapshot_id = str((before_layout_snapshot or {}).get("layout_snapshot_id") or "")
     before_full_ocr_started_at = time.perf_counter()
     before_full_items = ops.run_ocr_on_screen_region(before_shot, [0, 0, before_shot.size[0], before_shot.size[1]])
     timings.append(
@@ -181,6 +179,12 @@ def run_add_friend_entry_click_plan_flow(
             "ocr_count": len(before_full_items),
         }
     )
+    finalize_entry_layout = getattr(ops, "finalize_add_friend_entry_layout_snapshot", None)
+    if callable(finalize_entry_layout):
+        finalize_entry_layout(before_shot, before_full_items)
+    before_layout_metadata = ops.layout_snapshot_metadata(hwnd)
+    before_layout_snapshot = before_layout_metadata.get("snapshot") if before_layout_metadata.get("ok") else None
+    before_snapshot_id = str((before_layout_snapshot or {}).get("layout_snapshot_id") or "")
     plus_target = ops.add_friend_plus_entry_target(
         geometry,
         before_shot.size,
@@ -193,29 +197,16 @@ def run_add_friend_entry_click_plan_flow(
         plus_target["layout_snapshot_id"] = before_snapshot_id
     plus_x = int(plus_target.get("x") or plus_target.get("point", [0, 0])[0])
     plus_y = int(plus_target.get("y") or plus_target.get("point", [0, 0])[1])
-    popup_bounds = ops.add_friend_popup_menu_bounds(
-        before_shot.size,
-        plus_image_x=plus_x,
-        plus_image_y=plus_y,
-        layout_snapshot=before_layout_snapshot,
-    )
-    before_ocr_started_at = time.perf_counter()
-    before_items = ops.run_ocr_on_screen_region(before_shot, popup_bounds)
-    timings.append(
-        {
-            "name": "before_popup_region_ocr",
-            "seconds": round(time.perf_counter() - before_ocr_started_at, 3),
-            "ocr_scope": "plus_entry_popup_region",
-            "bounds": popup_bounds,
-            "ocr_count": len(before_items),
-        }
-    )
+    # Before the plus is clicked there is no popup ROI to OCR. Reuse the full
+    # current-frame OCR for an already-open popup check; never fabricate a
+    # region from a missing layout or from the plus point.
+    before_items = before_full_items
     before_readiness = ops.add_friend_surface_readiness(before_shot, before_full_items or before_items, geometry, stage="entry_before_click")
     before_readiness = {
         **before_readiness,
         "capture_mode": "screen_visible",
         "ocr_scope": "full_window_preflight",
-        "popup_ocr_count": len(before_items),
+        "popup_ocr_count": 0,
         "ocr_count": int(before_readiness.get("ocr_count") or len(before_full_items or before_items)),
     }
     before_annotated_path = output_dir / "add_friend_entry_before_click_screen_annotated.png"
@@ -561,31 +552,30 @@ def run_add_friend_entry_click_plan_flow(
             artifact_dir=str(output_dir),
             label=f"add_friend_entry_after_click_window_attempt_{attempt}",
         )
-        after_layout_metadata = ops.layout_snapshot_metadata(hwnd)
-        after_layout_snapshot = after_layout_metadata.get("snapshot") if after_layout_metadata.get("ok") else None
-        popup_bounds = ops.add_friend_popup_menu_bounds(
-            after_shot.size,
-            plus_image_x=plus_x,
-            plus_image_y=plus_y,
-            layout_snapshot=after_layout_snapshot,
-        )
         after_ocr_started_at = time.perf_counter()
-        after_items = ops.run_ocr_on_screen_region(after_shot, popup_bounds)
+        after_items = ops.run_ocr_on_screen_region(
+            after_shot,
+            [0, 0, after_shot.size[0], after_shot.size[1]],
+        )
         timings.append(
             {
-                "name": f"after_plus_entry_click_{attempt}_popup_region_ocr",
+                "name": f"after_plus_entry_click_{attempt}_full_surface_ocr",
                 "seconds": round(time.perf_counter() - after_ocr_started_at, 3),
-                "ocr_scope": "plus_entry_popup_region",
-                "bounds": popup_bounds,
+                "ocr_scope": "full_window_popup_verification",
+                "bounds": [0, 0, after_shot.size[0], after_shot.size[1]],
                 "ocr_count": len(after_items),
             }
         )
+        if callable(finalize_entry_layout):
+            finalize_entry_layout(after_shot, after_items)
+        after_layout_metadata = ops.layout_snapshot_metadata(hwnd)
+        after_layout_snapshot = after_layout_metadata.get("snapshot") if after_layout_metadata.get("ok") else None
         after_readiness = ops.add_friend_surface_readiness(after_shot, after_items, after_geometry, stage="entry_after_click")
         after_readiness = {
             **after_readiness,
             "capture_mode": "screen_visible",
             "attempt": attempt,
-            "ocr_scope": "plus_entry_popup_region",
+            "ocr_scope": "full_window_popup_verification",
             "ocr_count": int(after_readiness.get("ocr_count") or len(after_items)),
         }
         actual_menu_targets = ops.add_friend_menu_candidate_targets(
