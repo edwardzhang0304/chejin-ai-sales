@@ -19,6 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from apps.wechat_ai_customer_service.adapters import add_friend_layout  # noqa: E402
 from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar as sidecar  # noqa: E402
+from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import add_friend_windows  # noqa: E402
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import window_layout  # noqa: E402
 from apps.wechat_ai_customer_service.adapters.add_friend_result_mapping import (  # noqa: E402
     ERROR_PLUS_ENTRY_NOT_FOUND,
@@ -63,6 +64,7 @@ def production_boundary(
     ocr_items: list[dict[str, Any]],
     click_points: list[dict[str, Any]],
     initial_snapshots: list[dict[str, Any]] | None = None,
+    capture_labels: list[str] | None = None,
 ) -> Iterator[None]:
     """Mock Windows capture, OCR engine and physical mouse only.
 
@@ -80,6 +82,8 @@ def production_boundary(
         label: str,
         popup_window: bool = False,
     ) -> tuple[Image.Image, str]:
+        if capture_labels is not None:
+            capture_labels.append(label)
         screenshot_path = str(Path(artifact_dir) / f"{label}.png")
         sidecar._register_layout_snapshot(
             hwnd,
@@ -167,6 +171,35 @@ def production_boundary(
 
 
 class AddFriendProductionEntryTest(unittest.TestCase):
+    def test_frame_seed_requires_same_live_hwnd_frame_and_layout_snapshot(self) -> None:
+        image, item = _bright_wechat_add_friend_frame(selected_row=2)
+        ocr_items = [_search_item(item, "Q搜索")]
+        with tempfile.TemporaryDirectory(prefix="add-friend-frame-seed-") as temp_dir:
+            with production_boundary(image, ocr_items=ocr_items, click_points=[]):
+                screenshot, path = sidecar.capture_wechat_window_visible_screen(
+                    1001,
+                    artifact_dir=temp_dir,
+                    label="frame_seed",
+                )
+                sidecar.finalize_add_friend_entry_layout_snapshot(screenshot, ocr_items)
+                seed = add_friend_windows._reusable_frame_seed(
+                    1001,
+                    screenshot,
+                    path,
+                    ocr_items,
+                )
+                self.assertIs(
+                    add_friend_windows._valid_reusable_frame_seed(1001, seed),
+                    seed,
+                )
+                self.assertIsNone(
+                    add_friend_windows._valid_reusable_frame_seed(1002, seed)
+                )
+                sidecar.invalidate_layout_snapshot(1001, reason="test_ui_changed")
+                self.assertIsNone(
+                    add_friend_windows._valid_reusable_frame_seed(1001, seed)
+                )
+
     def test_aligned_avatar_edges_do_not_replace_nav_on_production_entry(self) -> None:
         """Replay UAT-005 from public planning entry through the mouse boundary."""
 
@@ -241,6 +274,7 @@ class AddFriendProductionEntryTest(unittest.TestCase):
                 draw.line((522, 0, 522, image.height - 1), fill=(245, 245, 245), width=1)
                 clicks: list[dict[str, Any]] = []
                 initial_snapshots: list[dict[str, Any]] = []
+                capture_labels: list[str] = []
                 final_snapshot: dict[str, Any] = {}
                 search_ocr = _search_item(item, search_text)
                 preview_top = int(search_ocr["bottom"]) + max(
@@ -261,6 +295,7 @@ class AddFriendProductionEntryTest(unittest.TestCase):
                         ocr_items=[search_ocr, preview_ocr],
                         click_points=clicks,
                         initial_snapshots=initial_snapshots,
+                        capture_labels=capture_labels,
                     ):
                         with self.assertRaises(PhysicalClickReached):
                             sidecar.add_friend_entry_click_plan_payload(
@@ -277,6 +312,11 @@ class AddFriendProductionEntryTest(unittest.TestCase):
                         )
 
                 self.assertEqual(len(clicks), 1, clicks)
+                self.assertEqual(
+                    capture_labels,
+                    ["add_friend_pre_click_main_window"],
+                    capture_labels,
+                )
                 self.assertFalse(initial_snapshots[0].get("executable"))
                 self.assertIn(
                     "shared_header_boundary_missing",

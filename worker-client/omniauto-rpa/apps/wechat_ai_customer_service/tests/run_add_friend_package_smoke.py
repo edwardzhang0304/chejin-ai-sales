@@ -1086,11 +1086,13 @@ def test_add_friend_flow_forwards_action_journal_on_every_query_path() -> None:
     missing = [
         node.lineno
         for node in query_calls
-        if "action_journal_path" not in {keyword.arg for keyword in node.keywords}
+        if not {"action_journal_path", "frame_seed"}.issubset(
+            {keyword.arg for keyword in node.keywords}
+        )
     ]
     assert_true(
         not missing,
-        f"every add_friend query path must forward action_journal_path; missing at lines {missing}",
+        f"every add_friend query path must forward the journal and current dialog frame; missing at lines {missing}",
     )
 
 
@@ -1605,6 +1607,7 @@ def test_invite_form_reuses_stable_snapshot_between_greeting_and_remark() -> Non
         def __init__(self) -> None:
             self.snapshot_number = 1
             self.snapshot_valid = True
+            self.capture_count = 0
             self.review_count = 0
             self.paste_calls: list[tuple[str, str, bool]] = []
             self.confirm_snapshot = ""
@@ -1643,13 +1646,21 @@ def test_invite_form_reuses_stable_snapshot_between_greeting_and_remark() -> Non
             return 0.0
 
         def capture_wechat_window_visible_screen(self, *_args, **_kwargs):
+            self.capture_count += 1
             return image, "before.png"
 
         def run_ocr_on_screen_region(self, *_args, **_kwargs):
             return []
 
         def layout_snapshot_for_image(self, _image):
-            return {"layout_snapshot_id": self.snapshot_id}
+            return {
+                "layout_snapshot_id": self.snapshot_id,
+                "frame_id": f"frame-{self.snapshot_number}",
+                "valid": self.snapshot_valid,
+            }
+
+        def layout_snapshot_metadata(self, _hwnd):
+            return {"ok": True, "snapshot": self.layout_snapshot_for_image(image)}
 
         def paste_invite_form_text(
             self,
@@ -1750,6 +1761,15 @@ def test_invite_form_reuses_stable_snapshot_between_greeting_and_remark() -> Non
                     verify_message="您好",
                     remark_name="CJAZBKWV",
                     remark_code="CJAZBKWV",
+                    frame_seed={
+                        "hwnd": 1001,
+                        "screenshot": image,
+                        "screenshot_path": "invite-candidate.png",
+                        "ocr_items": [{"text": "申请添加朋友"}],
+                        "layout_snapshot": fake_ops.layout_snapshot_for_image(image),
+                        "layout_snapshot_id": "invite-snapshot-1",
+                        "frame_id": "frame-1",
+                    },
                 )
             except ConfirmReached:
                 pass
@@ -1768,8 +1788,95 @@ def test_invite_form_reuses_stable_snapshot_between_greeting_and_remark() -> Non
     )
     assert_true(fake_ops.review_count == 1, f"unexpected invite recapture count: {fake_ops.review_count}")
     assert_true(
+        fake_ops.capture_count == 0,
+        f"the discovered invite-form frame should be reused before filling: {fake_ops.capture_count}",
+    )
+    assert_true(
         fake_ops.confirm_snapshot == "invite-snapshot-2",
         f"confirm did not use final reviewed snapshot: {fake_ops.confirm_snapshot}",
+    )
+
+
+def test_discovered_search_dialog_frame_is_forwarded_without_recapture() -> None:
+    from PIL import Image
+
+    from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import (
+        add_friend_windows,
+    )
+
+    image = Image.new("RGB", (468, 520), (255, 255, 255))
+    dialog_snapshot = {
+        "layout_snapshot_id": "dialog-snapshot-1",
+        "frame_id": "dialog-frame-1",
+        "valid": True,
+    }
+    dialog_seed = {
+        "hwnd": 2002,
+        "screenshot": image,
+        "screenshot_path": "dialog-candidate.png",
+        "ocr_items": [{"text": "搜索手机号/微信号"}],
+        "layout_snapshot": dialog_snapshot,
+        "layout_snapshot_id": "dialog-snapshot-1",
+        "frame_id": "dialog-frame-1",
+    }
+
+    class FakeOps:
+        def add_friend_paced_pause(self, *_args, **_kwargs) -> float:
+            return 0.0
+
+        def human_window_image_hover(self, *_args, **_kwargs):
+            return {"ok": True}
+
+        def human_window_image_click_in_bounds(self, *_args, **_kwargs):
+            return {"ok": True}
+
+        def wait_for_add_friend_dialog_window(self, **_kwargs):
+            return {
+                "ok": True,
+                "hwnd": 2002,
+                "geometry": {"width": 468, "height": 520},
+                "_frame_seed": dialog_seed,
+            }
+
+        def get_window_geometry(self, _hwnd):
+            return {"width": 468, "height": 520}
+
+        def layout_snapshot_metadata(self, _hwnd):
+            return {"ok": True, "snapshot": dialog_snapshot}
+
+        def capture_wechat_window_visible_screen(self, *_args, **_kwargs):
+            raise AssertionError("discovered dialog frame was recaptured")
+
+    fake_ops = FakeOps()
+    original_ops = add_friend_windows._SIDECAR_OPS
+    try:
+        add_friend_windows.bind_sidecar_ops(fake_ops)
+        with patch.object(
+            add_friend_windows,
+            "draw_add_friend_screen_annotation",
+            return_value="dialog-annotated.png",
+        ):
+            result = add_friend_windows.click_add_friend_menu_entry_and_capture(
+                1001,
+                Path(tempfile.mkdtemp(prefix="add-friend-dialog-seed-test-")),
+                menu_targets=[
+                    {
+                        "name": "add_friend_menu_entry",
+                        "source": "ocr_popup_menu_item",
+                        "x": 320,
+                        "y": 150,
+                        "click_bounds": [260, 120, 380, 180],
+                        "layout_snapshot_id": "menu-snapshot-1",
+                    }
+                ],
+            )
+    finally:
+        add_friend_windows.bind_sidecar_ops(original_ops)
+
+    assert_true(result.get("clicked") is True, f"dialog frame reuse failed: {result}")
+    assert_true(
+        result.get("_next_frame_seed") is dialog_seed,
+        "the exact discovered dialog frame must be handed to query input",
     )
 
 
@@ -2895,6 +3002,7 @@ def main() -> int:
         test_invite_form_field_verification_blocks_confirm_click,
         test_invite_form_failed_field_retries_once_before_confirm,
         test_invite_form_reuses_stable_snapshot_between_greeting_and_remark,
+        test_discovered_search_dialog_frame_is_forwarded_without_recapture,
         test_invite_confirm_uses_durable_action_journal_before_click,
         test_post_confirm_residual_dialog_uses_only_exact_top_title,
         test_post_confirm_residual_dialog_is_closed_once_when_title_ocr_misses,

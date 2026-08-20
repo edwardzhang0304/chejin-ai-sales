@@ -1313,10 +1313,20 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
             "WECHAT_WIN32_OCR_QUICK_LOGIN_AUTO_ENTER",
             default=DEFAULT_QUICK_LOGIN_AUTO_ENTER,
         )
-        first_business_frame_has_full_health_gate = action == "open-chat" or (
+        geometry_only_normalization = action == "normalize-window"
+        first_business_frame_has_full_health_gate = action in ADD_FRIEND_ROUTES or action == "open-chat" or (
             action in {"messages", "voice-transcribe"} and bool(getattr(args, "target", ""))
         )
-        if first_business_frame_has_full_health_gate and not quick_login_auto_enter:
+        if geometry_only_normalization:
+            # Startup normalization owns geometry only. The immediately
+            # following status frame is the single source for login/render
+            # health, so do not capture the unchanged window twice here.
+            quick_login = {
+                "attempted": False,
+                "detected": False,
+                "reason": "deferred_to_status_probe",
+            }
+        elif first_business_frame_has_full_health_gate and not quick_login_auto_enter:
             # These actions all begin with a fresh full-frame OCR gate before
             # any click. Reuse that business frame for login/blank/shell checks
             # instead of taking an unchanged quick-login frame first.
