@@ -247,6 +247,42 @@ def test_add_friend_entry_without_search_anchor_fails_closed() -> None:
     assert_true("search_anchor_missing" in (layout.get("conflicts") or []), f"missing conflict evidence: {layout}")
 
 
+def test_search_anchor_rejects_stronger_aligned_avatar_edges() -> None:
+    """Replay the Windows UAT failure where avatar columns outrank the nav edge."""
+
+    width, height = 980, 860
+    nav_x, sidebar_x = 84, 382
+    image = Image.new("RGB", (width, height), (250, 250, 250))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, nav_x - 1, height - 1), fill=(246, 246, 246))
+    draw.rectangle((nav_x, 0, sidebar_x - 1, height - 1), fill=(234, 234, 234))
+    # Aligned avatar tiles cross most vertical sampling rows and deliberately
+    # make x=102/x=143 stronger than the true nav separator at x=84.
+    for sample_y in (86, 154, 292, 447, 602, 722):
+        draw.rectangle((99, sample_y - 18, 143, sample_y + 18), fill=(90, 90, 90))
+    verticals = window_layout._vertical_edge_candidates(image)
+    vertical_scores = {x: score for x, score in verticals}
+    assert_true(
+        vertical_scores.get(144, 0.0) > vertical_scores.get(nav_x, 0.0),
+        f"fixture did not reproduce the stronger avatar edge: {verticals}",
+    )
+    search_item = {
+        "text": "Q搜索",
+        "left": 106,
+        "top": 58,
+        "right": 168,
+        "bottom": 85,
+        "confidence": 0.9555,
+    }
+    layout = window_layout.build_add_friend_entry_layout_regions(
+        image,
+        search_anchor_items=[search_item],
+    )
+    assert_true(layout.get("ok") is True, f"real search anchor was rejected: {layout}")
+    assert_true(layout["regions"]["left_nav_bounds"][2] == nav_x, f"avatar edge replaced nav: {layout}")
+    assert_true(layout["regions"]["sidebar_bounds"][2] == sidebar_x, f"wrong sidebar edge: {layout}")
+
+
 def test_layout_consumes_q_search_semantic_candidate_without_reclassification() -> None:
     image, search_item = _bright_wechat_add_friend_frame(selected_row=1)
     noisy_search_item = {**search_item, "text": "Q搜索"}
