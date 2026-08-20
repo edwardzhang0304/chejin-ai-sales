@@ -10540,6 +10540,7 @@ def paste_text_with_confirmation(
     settings: dict[str, Any] | None = None,
     before_input_region_seed: dict[str, Any] | None = None,
     verified_input_point: tuple[int, int] | None = None,
+    verified_input_bounds: list[int] | tuple[int, int, int, int] | None = None,
 ) -> dict[str, Any]:
     timing: dict[str, Any] = {}
     ocr_trace_token = _ocr_trace_start()
@@ -10674,15 +10675,32 @@ def paste_text_with_confirmation(
         }
         if verified_input_point is not None:
             click_x, click_y = [int(value) for value in verified_input_point]
+            input_bounds = [int(value) for value in (verified_input_bounds or [])]
+            if len(input_bounds) != 4:
+                return finish({
+                    "ok": False,
+                    "reason": "verified_input_bounds_missing_before_type",
+                    "error_code": win32_ocr_layout.ERROR_COORDINATE_MAPPING_INVALID,
+                    "probe_token": probe_token,
+                    "probe_tokens": probe_tokens,
+                    "attempts": attempt,
+                    "copyback_enabled": allow_copyback,
+                    "input_region": before_input_region,
+                    "input_clear": clear_result,
+                    "input_mode": input_method,
+                    "input_result": last_input_result,
+                })
             last_input_click_evidence = {
                 "ok": True,
-                "reason": "uia_edit_control_bounds",
+                "reason": "verified_input_bounds",
                 "point": [click_x, click_y],
+                "click_bounds": input_bounds,
             }
             last_input_click = {
                 "ok": True,
-                "reason": "uia_edit_control_center",
+                "reason": "verified_input_point",
                 "point": [click_x, click_y],
+                "bounds": input_bounds,
             }
         else:
             last_input_click_evidence = input_surface_click_evidence(before_input_region)
@@ -11522,6 +11540,28 @@ def execute_send_transaction(
             "physical_send_triggered": False,
         }
     input_point = tuple(int(value) for value in raw_input_point)
+    input_click = (
+        locator.get("input_click")
+        if isinstance(locator.get("input_click"), dict)
+        else {}
+    )
+    input_click_evidence = (
+        locator.get("input_click_evidence")
+        if isinstance(locator.get("input_click_evidence"), dict)
+        else {}
+    )
+    input_bounds = list(
+        input_click.get("bounds")
+        or input_click_evidence.get("click_bounds")
+        or []
+    )
+    if len(input_bounds) != 4:
+        return {
+            "ok": False,
+            "reason": "verified_input_bounds_missing",
+            "error_code": win32_ocr_layout.ERROR_COORDINATE_MAPPING_INVALID,
+            "physical_send_triggered": False,
+        }
     value_pattern = locator.get("value_pattern")
     settings = settings or adapt_humanized_input_settings(
         humanized_input_settings(),
@@ -11537,6 +11577,7 @@ def execute_send_transaction(
             settings=settings,
             before_input_region_seed=before_input_region_seed,
             verified_input_point=input_point,
+            verified_input_bounds=input_bounds,
         )
     except Exception as exc:
         paste_result = {
