@@ -158,6 +158,65 @@ def _layout_for_image(image: Image.Image | None) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def _reusable_frame_seed(
+    hwnd: int,
+    screenshot: Image.Image,
+    screenshot_path: str,
+    ocr_items: list[dict[str, Any]],
+    *,
+    annotated_path: str = "",
+) -> dict[str, Any]:
+    """Keep one live frame private while adjacent steps consume its evidence."""
+    snapshot = _layout_for_image(screenshot) or {}
+    return {
+        "hwnd": int(hwnd or 0),
+        "screenshot": screenshot,
+        "screenshot_path": str(screenshot_path or ""),
+        "annotated_path": str(annotated_path or ""),
+        "ocr_items": list(ocr_items or []),
+        "layout_snapshot": snapshot,
+        "layout_snapshot_id": str(snapshot.get("layout_snapshot_id") or ""),
+        "frame_id": str(snapshot.get("frame_id") or ""),
+    }
+
+
+def _valid_reusable_frame_seed(
+    hwnd: int,
+    seed: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Accept a seed only while HWND, frame and current layout identity agree."""
+    if not isinstance(seed, dict) or seed.get("screenshot") is None:
+        return None
+    if int(seed.get("hwnd") or 0) != int(hwnd or 0):
+        return None
+    snapshot = seed.get("layout_snapshot")
+    if not isinstance(snapshot, dict):
+        return None
+    snapshot_id = str(snapshot.get("layout_snapshot_id") or "")
+    frame_id = str(snapshot.get("frame_id") or "")
+    if (
+        not snapshot_id
+        or not frame_id
+        or snapshot_id != str(seed.get("layout_snapshot_id") or "")
+        or frame_id != str(seed.get("frame_id") or "")
+        or bool(snapshot.get("invalidated"))
+        or not bool(snapshot.get("valid"))
+    ):
+        return None
+    metadata = _ops().layout_snapshot_metadata(hwnd)
+    current = metadata.get("snapshot") if isinstance(metadata, dict) else None
+    if not isinstance(current, dict):
+        return None
+    if (
+        str(current.get("layout_snapshot_id") or "") != snapshot_id
+        or str(current.get("frame_id") or "") != frame_id
+        or bool(current.get("invalidated"))
+        or not bool(current.get("valid"))
+    ):
+        return None
+    return seed
+
+
 def add_friend_action_surface_bounds(
     image_size: tuple[int, int],
     *,
@@ -1783,10 +1842,23 @@ def click_add_contact_entry_from_search_result(hwnd: int, output_dir: Path, *, r
     pause_seconds = _ops().add_friend_paced_pause('verify', reason='after_add_contact_entry_click_before_capture')
     timings.append({'name': 'after_add_contact_entry_click_before_capture_pause', 'seconds': round(pause_seconds, 3)})
     invite_probe = _ops().wait_for_add_friend_invite_form_window(exclude_hwnds={int(hwnd or 0)}, output_dir=output_dir)
+    invite_frame_seed = invite_probe.pop('_frame_seed', None)
     invite_hwnd = int(invite_probe.get('hwnd') or 0) if invite_probe.get('ok') else 0
     evidence_hwnd = invite_hwnd or hwnd
-    after_shot, after_path = _ops().capture_wechat_window_visible_screen(evidence_hwnd, artifact_dir=str(output_dir), label='add_contact_entry_after_click_window', popup_window=True)
-    after_items = _ops().run_ocr_on_screen_region(after_shot, [0, 0, after_shot.size[0], after_shot.size[1]])
+    reusable_invite_frame = _valid_reusable_frame_seed(evidence_hwnd, invite_frame_seed)
+    if reusable_invite_frame is None:
+        after_shot, after_path = _ops().capture_wechat_window_visible_screen(evidence_hwnd, artifact_dir=str(output_dir), label='add_contact_entry_after_click_window', popup_window=True)
+        after_items = _ops().run_ocr_on_screen_region(after_shot, [0, 0, after_shot.size[0], after_shot.size[1]])
+        invite_frame_seed = _reusable_frame_seed(
+            evidence_hwnd,
+            after_shot,
+            after_path,
+            after_items,
+        )
+    else:
+        after_shot = reusable_invite_frame['screenshot']
+        after_path = str(reusable_invite_frame.get('screenshot_path') or '')
+        after_items = list(reusable_invite_frame.get('ocr_items') or [])
     after_annotated_path = output_dir / 'add_contact_entry_after_click_window_annotated.png'
     after_targets = list(add_friend_invite_form_targets(
         after_shot.size,
@@ -1796,7 +1868,7 @@ def click_add_contact_entry_from_search_result(hwnd: int, output_dir: Path, *, r
     after_annotated = draw_add_friend_screen_annotation(after_shot, ocr_items=after_items, targets=after_targets, output_path=after_annotated_path, window_rect=None)
     if not invite_hwnd:
         return add_friend_invite_form_window_not_found_payload(phone=query, before={'screenshot_path': result_path, 'annotated_path': annotated_before, 'targets': [target], 'ocr_items': add_friend_ocr_snapshots(result_items, result_shot.size)}, click=click_result, after={'screenshot_path': after_path, 'annotated_path': after_annotated, 'ocr_items': add_friend_ocr_snapshots(after_items, after_shot.size)}, invite_form_probe=invite_probe, timings=timings)
-    invite_result = fill_add_friend_invite_form_and_confirm(invite_hwnd, output_dir, verify_message=verify_message, remark_name=remark_name, remark_code=remark_code, action_journal_path=action_journal_path, parent_dialog_hwnd=hwnd)
+    invite_result = fill_add_friend_invite_form_and_confirm(invite_hwnd, output_dir, verify_message=verify_message, remark_name=remark_name, remark_code=remark_code, action_journal_path=action_journal_path, parent_dialog_hwnd=hwnd, frame_seed=invite_frame_seed)
     invite_timings = list(invite_result.get('timings') or []) if isinstance(invite_result, dict) else []
     timings.extend(invite_timings)
     return {'ok': bool(invite_result.get('ok')), 'state': str(invite_result.get('state') or 'add_contact_entry_clicked'), 'query': query, 'task_status': str(invite_result.get('task_status') or 'running'), 'result_code': str(invite_result.get('result_code') or ''), 'error_code': str(invite_result.get('error_code') or ''), 'current_step': str(invite_result.get('current_step') or 'invite_confirm_clicked'), 'server_report_payload': invite_result.get('server_report_payload'), 'before': {'screenshot_path': result_path, 'annotated_path': annotated_before, 'targets': [target], 'ocr_items': add_friend_ocr_snapshots(result_items, result_shot.size)}, 'click': click_result, 'after': {'screenshot_path': after_path, 'annotated_path': after_annotated, 'ocr_items': add_friend_ocr_snapshots(after_items, after_shot.size), 'targets': after_targets}, 'invite_form_probe': invite_probe, 'invite_form': invite_result, 'timings': timings}
@@ -1895,7 +1967,7 @@ def capture_invite_form_field_review(
     }
 
 
-def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, verify_message: str, remark_name: str, remark_code: str, action_journal_path: str='', parent_dialog_hwnd: int=0) -> dict[str, Any]:
+def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, verify_message: str, remark_name: str, remark_code: str, action_journal_path: str='', parent_dialog_hwnd: int=0, frame_seed: dict[str, Any] | None=None) -> dict[str, Any]:
     clean_verify_message = str(verify_message or '').strip()
     clean_remark_name = str(remark_name or '').strip()
     clean_remark_code = str(remark_code or '').strip()
@@ -1903,9 +1975,16 @@ def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, veri
     timings: list[dict[str, Any]] = []
     pause_seconds = _ops().add_friend_paced_pause('verify', reason='before_invite_form_capture')
     timings.append({'name': 'before_invite_form_capture_pause', 'seconds': round(pause_seconds, 3)})
-    before_shot, before_path = _ops().capture_wechat_window_visible_screen(hwnd, artifact_dir=str(output_dir), label='add_friend_invite_form_before_fill_window', popup_window=True)
+    reusable_form_frame = _valid_reusable_frame_seed(hwnd, frame_seed)
+    if reusable_form_frame is None:
+        before_shot, before_path = _ops().capture_wechat_window_visible_screen(hwnd, artifact_dir=str(output_dir), label='add_friend_invite_form_before_fill_window', popup_window=True)
+        seeded_before_items: list[dict[str, Any]] = []
+    else:
+        before_shot = reusable_form_frame['screenshot']
+        before_path = str(reusable_form_frame.get('screenshot_path') or '')
+        seeded_before_items = list(reusable_form_frame.get('ocr_items') or [])
     before_ocr_started_at = time.perf_counter()
-    before_items = _ops().run_ocr_on_screen_region(before_shot, [0, 0, before_shot.size[0], before_shot.size[1]])
+    before_items = seeded_before_items or _ops().run_ocr_on_screen_region(before_shot, [0, 0, before_shot.size[0], before_shot.size[1]])
     timings.append({'name': 'invite_form_before_fill_ocr', 'seconds': round(time.perf_counter() - before_ocr_started_at, 3), 'ocr_count': len(before_items)})
     before_targets_map = add_friend_invite_form_targets(
         before_shot.size,
@@ -2233,7 +2312,25 @@ def wait_for_add_friend_dialog_window(*, exclude_hwnd: int, output_dir: Path, ti
                 attempt = {'hwnd': candidate_hwnd, 'window': item, 'screenshot_path': screenshot_path, 'annotated_path': annotated, 'ocr_region': region, 'ocr_seconds': round(time.perf_counter() - ocr_started_at, 3), 'ocr_count': len(ocr_items), 'detection': detection, 'geometry': _ops().get_window_geometry(candidate_hwnd)}
                 attempts.append(attempt)
                 if detection.get('detected'):
-                    return {'ok': True, 'hwnd': candidate_hwnd, 'window': item, 'geometry': attempt['geometry'], 'screenshot_path': screenshot_path, 'annotated_path': annotated, 'ocr_items': add_friend_ocr_snapshots(ocr_items, screenshot.size), 'detection': detection, 'attempts': attempts, 'seconds': round(time.perf_counter() - started, 3)}
+                    return {
+                        'ok': True,
+                        'hwnd': candidate_hwnd,
+                        'window': item,
+                        'geometry': attempt['geometry'],
+                        'screenshot_path': screenshot_path,
+                        'annotated_path': annotated,
+                        'ocr_items': add_friend_ocr_snapshots(ocr_items, screenshot.size),
+                        'detection': detection,
+                        'attempts': attempts,
+                        'seconds': round(time.perf_counter() - started, 3),
+                        '_frame_seed': _reusable_frame_seed(
+                            candidate_hwnd,
+                            screenshot,
+                            screenshot_path,
+                            ocr_items,
+                            annotated_path=annotated,
+                        ),
+                    }
             except Exception as exc:
                 attempts.append({'hwnd': candidate_hwnd, 'window': item, 'error': repr(exc)})
         _ops().humanized_action_sleep(240, 520)
@@ -2290,7 +2387,25 @@ def wait_for_add_friend_invite_form_window(*, exclude_hwnds: set[int], output_di
                 attempt = {'hwnd': candidate_hwnd, 'window': item, 'screenshot_path': screenshot_path, 'annotated_path': annotated, 'ocr_seconds': round(time.perf_counter() - ocr_started_at, 3), 'ocr_count': len(ocr_items), 'detection': detection, 'geometry': _ops().get_window_geometry(candidate_hwnd)}
                 attempts.append(attempt)
                 if detection.get('detected'):
-                    return {'ok': True, 'hwnd': candidate_hwnd, 'window': item, 'geometry': attempt['geometry'], 'screenshot_path': screenshot_path, 'annotated_path': annotated, 'ocr_items': add_friend_ocr_snapshots(ocr_items, screenshot.size), 'detection': detection, 'attempts': attempts, 'seconds': round(time.perf_counter() - started, 3)}
+                    return {
+                        'ok': True,
+                        'hwnd': candidate_hwnd,
+                        'window': item,
+                        'geometry': attempt['geometry'],
+                        'screenshot_path': screenshot_path,
+                        'annotated_path': annotated,
+                        'ocr_items': add_friend_ocr_snapshots(ocr_items, screenshot.size),
+                        'detection': detection,
+                        'attempts': attempts,
+                        'seconds': round(time.perf_counter() - started, 3),
+                        '_frame_seed': _reusable_frame_seed(
+                            candidate_hwnd,
+                            screenshot,
+                            screenshot_path,
+                            ocr_items,
+                            annotated_path=annotated,
+                        ),
+                    }
             except Exception as exc:
                 attempts.append({'hwnd': candidate_hwnd, 'window': item, 'error': repr(exc)})
         _ops().humanized_action_sleep(240, 520)
@@ -2337,13 +2452,25 @@ def click_add_friend_menu_entry_and_capture(hwnd: int, output_dir: Path, *, menu
     pause_seconds = _ops().add_friend_paced_pause('verify', reason='after_add_friend_menu_click_before_screen_capture')
     timings.append({'name': 'after_add_friend_menu_click_before_screen_capture_pause', 'seconds': round(pause_seconds, 3)})
     dialog_probe = _ops().wait_for_add_friend_dialog_window(exclude_hwnd=hwnd, output_dir=output_dir)
+    dialog_frame_seed = dialog_probe.pop('_frame_seed', None)
     next_hwnd = int(dialog_probe.get('hwnd') or 0) if dialog_probe.get('ok') else 0
     evidence_hwnd = next_hwnd or hwnd
     capture_error = ''
     dialog_handle_invalid = False
     try:
         geometry = _ops().get_window_geometry(evidence_hwnd)
-        screenshot, screenshot_path = _ops().capture_wechat_window_visible_screen(evidence_hwnd, artifact_dir=str(output_dir), label='add_friend_menu_entry_after_click_window', popup_window=True)
+        reusable_dialog_frame = _valid_reusable_frame_seed(evidence_hwnd, dialog_frame_seed)
+        if reusable_dialog_frame is None:
+            screenshot, screenshot_path = _ops().capture_wechat_window_visible_screen(evidence_hwnd, artifact_dir=str(output_dir), label='add_friend_menu_entry_after_click_window', popup_window=True)
+            dialog_frame_seed = _reusable_frame_seed(
+                evidence_hwnd,
+                screenshot,
+                screenshot_path,
+                [],
+            )
+        else:
+            screenshot = reusable_dialog_frame['screenshot']
+            screenshot_path = str(reusable_dialog_frame.get('screenshot_path') or '')
     except Exception as exc:
         capture_error = repr(exc)
         if evidence_hwnd == hwnd:
@@ -2363,15 +2490,22 @@ def click_add_friend_menu_entry_and_capture(hwnd: int, output_dir: Path, *, menu
         local_target['annotation_x'] = 0
         local_target['annotation_y'] = 0
     annotated = draw_add_friend_screen_annotation(screenshot, ocr_items=ocr_items, targets=[] if evidence_hwnd != hwnd else [target], output_path=annotated_path, window_rect=None)
-    return {'clicked': bool(click_result.get('ok')) and bool(dialog_probe.get('ok')) and (not dialog_handle_invalid), 'menu_clicked': bool(click_result.get('ok')), 'next_hwnd': next_hwnd, 'dialog_window': dialog_probe, 'reason': 'add_friend_dialog_window_handle_invalid_after_menu_click' if dialog_handle_invalid else 'add_friend_dialog_window_ready' if dialog_probe.get('ok') else 'add_friend_dialog_window_not_found_after_menu_click', 'target': target, 'hover': hover_result, 'click': click_result, 'timings': timings, 'error': capture_error, 'geometry': geometry, 'screenshot_path': screenshot_path, 'annotated_path': annotated, 'readiness': readiness, 'ocr_items': add_friend_ocr_snapshots(ocr_items, screenshot.size)}
+    return {'clicked': bool(click_result.get('ok')) and bool(dialog_probe.get('ok')) and (not dialog_handle_invalid), 'menu_clicked': bool(click_result.get('ok')), 'next_hwnd': next_hwnd, 'dialog_window': dialog_probe, 'reason': 'add_friend_dialog_window_handle_invalid_after_menu_click' if dialog_handle_invalid else 'add_friend_dialog_window_ready' if dialog_probe.get('ok') else 'add_friend_dialog_window_not_found_after_menu_click', 'target': target, 'hover': hover_result, 'click': click_result, 'timings': timings, 'error': capture_error, 'geometry': geometry, 'screenshot_path': screenshot_path, 'annotated_path': annotated, 'readiness': readiness, 'ocr_items': add_friend_ocr_snapshots(ocr_items, screenshot.size), '_next_frame_seed': dialog_frame_seed}
 
 
-def input_add_friend_query_and_search(hwnd: int, output_dir: Path, *, query: str, verify_message: str='', remark_name: str='', remark_code: str='', action_journal_path: str='') -> dict[str, Any]:
+def input_add_friend_query_and_search(hwnd: int, output_dir: Path, *, query: str, verify_message: str='', remark_name: str='', remark_code: str='', action_journal_path: str='', frame_seed: dict[str, Any] | None=None) -> dict[str, Any]:
     if not query:
         return {'ok': False, 'reason': 'empty_query'}
     timings: list[dict[str, Any]] = []
     geometry = _ops().get_window_geometry(hwnd)
-    page_shot, page_path = _ops().capture_wechat_window_visible_screen(hwnd, artifact_dir=str(output_dir), label='add_friend_page_before_input_window', popup_window=True)
+    reusable_page_frame = _valid_reusable_frame_seed(hwnd, frame_seed)
+    if reusable_page_frame is None:
+        page_shot, page_path = _ops().capture_wechat_window_visible_screen(hwnd, artifact_dir=str(output_dir), label='add_friend_page_before_input_window', popup_window=True)
+        seeded_page_items: list[dict[str, Any]] = []
+    else:
+        page_shot = reusable_page_frame['screenshot']
+        page_path = str(reusable_page_frame.get('screenshot_path') or '')
+        seeded_page_items = list(reusable_page_frame.get('ocr_items') or [])
     page_layout = _layout_for_image(page_shot)
     page_snapshot_id = str(
         (_ops().layout_snapshot_metadata(hwnd).get('snapshot') or {}).get('layout_snapshot_id') or ''
@@ -2380,7 +2514,7 @@ def input_add_friend_query_and_search(hwnd: int, output_dir: Path, *, query: str
     if not search_region:
         return {'ok': False, 'state': 'layout_unresolved', 'error_code': 'WECHAT_UI_LAYOUT_UNRESOLVED', 'timings': timings}
     ocr_started_at = time.perf_counter()
-    page_items = _ops().run_ocr_on_screen_region(page_shot, search_region)
+    page_items = seeded_page_items or _ops().run_ocr_on_screen_region(page_shot, search_region)
     timings.append({'name': 'add_friend_page_search_region_ocr', 'seconds': round(time.perf_counter() - ocr_started_at, 3), 'bounds': search_region, 'ocr_count': len(page_items)})
     search_targets = find_add_friend_page_search_targets(
         page_items,
@@ -2498,18 +2632,11 @@ def input_add_friend_query_and_search(hwnd: int, output_dir: Path, *, query: str
             timings.append({'name': f'after_query_clear_attempt_{attempt}_pause', 'seconds': round(pause_seconds, 3)})
     if not verified:
         return {'ok': False, 'state': 'input_unconfirmed', 'query': query, 'page': {'screenshot_path': page_path, 'annotated_path': page_annotated, 'ocr_items': add_friend_ocr_snapshots(page_items, page_shot.size), 'targets': targets}, 'input_attempts': input_attempts, 'input_empty_before_clear': initial_empty, 'clear_result': clear_result, 'clear_verify': clear_verify_payload, 'latest_verify': {'screenshot_path': latest_verify_path, 'annotated_path': latest_verify_annotated, 'ocr_items': add_friend_ocr_snapshots(latest_verify_items, latest_verify_shot.size), 'verify': latest_verify_result}, 'timings': timings}
-    # Typing changed the UI frame. Re-capture and re-locate the search button
-    # so its click target is bound to the current immutable snapshot.
-    button_shot, _button_path = _ops().capture_wechat_window_visible_screen(
-        hwnd,
-        artifact_dir=str(output_dir),
-        label='add_friend_search_button_before_click_window',
-        popup_window=True,
-    )
-    button_items = _ops().run_ocr_on_screen_region(
-        button_shot,
-        add_friend_page_search_region(button_shot.size, layout_snapshot=_layout_for_image(button_shot)),
-    )
+    # The verified-query frame was captured after typing and no UI action has
+    # happened since. Reuse that exact HWND/frame/layout evidence to locate the
+    # Search button instead of taking another identical screenshot.
+    button_shot = latest_verify_shot
+    button_items = latest_verify_items
     fresh_search_targets = find_add_friend_page_search_targets(
         button_items,
         button_shot.size,
@@ -2734,7 +2861,25 @@ def add_friend_pre_click_main_window_readiness(hwnd: int, geometry: dict[str, An
     annotated_path = output_dir / 'add_friend_pre_click_main_window_annotated.png'
     annotated = draw_add_friend_screen_annotation(screenshot, ocr_items=ocr_items, targets=[plus_target], output_path=annotated_path, window_rect=None)
     decision = _ops().add_friend_pre_click_readiness_decision(focus_guard=focus_guard, surface_readiness=surface_readiness)
-    return {**decision, 'stage': 'formal_pre_click', 'focus_guard': focus_guard, 'screenshot_path': screenshot_path, 'annotated_path': annotated, 'ocr_count': len(ocr_items), 'ocr_seconds': ocr_seconds, 'planned_targets': [plus_target], 'ocr_items': add_friend_ocr_snapshots(ocr_items, screenshot.size), 'surface_readiness': surface_readiness}
+    return {
+        **decision,
+        'stage': 'formal_pre_click',
+        'focus_guard': focus_guard,
+        'screenshot_path': screenshot_path,
+        'annotated_path': annotated,
+        'ocr_count': len(ocr_items),
+        'ocr_seconds': ocr_seconds,
+        'planned_targets': [plus_target],
+        'ocr_items': add_friend_ocr_snapshots(ocr_items, screenshot.size),
+        'surface_readiness': surface_readiness,
+        '_frame_seed': _reusable_frame_seed(
+            hwnd,
+            screenshot,
+            screenshot_path,
+            ocr_items,
+            annotated_path=annotated,
+        ),
+    }
 
 
 def add_friend_calibration_payload(hwnd: int, probe: dict[str, Any], *, geometry: dict[str, Any], route: str, phone: str, wechat: str, verify_message: str, remark_name: str, remark_code: str, output_dir: Path) -> dict[str, Any]:
@@ -3077,6 +3222,7 @@ def add_friend_entry_click_plan_payload(hwnd: int, probe: dict[str, Any], *, rou
     if calibration_only:
         return _ops().add_friend_calibration_payload(hwnd, probe, geometry=geometry, route=route, phone=phone, wechat=wechat, verify_message=verify_message, remark_name=remark_name, remark_code=remark_code, output_dir=output_dir)
     pre_click_readiness = _ops().add_friend_pre_click_main_window_readiness(hwnd, geometry, route=route, output_dir=output_dir)
+    entry_frame_seed = pre_click_readiness.pop('_frame_seed', None)
     probe['add_friend_pre_click_main_window_readiness'] = pre_click_readiness
     if not pre_click_readiness.get('ok'):
         state = str(pre_click_readiness.get('state') or 'wechat_main_surface_not_ready')
@@ -3096,4 +3242,17 @@ def add_friend_entry_click_plan_payload(hwnd: int, probe: dict[str, Any], *, rou
         payload['review_path'] = _ops().write_add_friend_entry_click_review(output_dir, payload)
         Path(str(payload['plan_path'])).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
         return payload
-    return _ops().run_add_friend_entry_click_plan_flow(_ops(), hwnd, probe, phone=phone, wechat=wechat, verify_message=verify_message, remark_name=remark_name, remark_code=remark_code, artifact_dir=str(output_dir), route=route, action_journal_path=action_journal_path)
+    return _ops().run_add_friend_entry_click_plan_flow(
+        _ops(),
+        hwnd,
+        probe,
+        phone=phone,
+        wechat=wechat,
+        verify_message=verify_message,
+        remark_name=remark_name,
+        remark_code=remark_code,
+        artifact_dir=str(output_dir),
+        route=route,
+        action_journal_path=action_journal_path,
+        entry_frame_seed=entry_frame_seed,
+    )

@@ -567,11 +567,14 @@ def test_startup_normalization_defers_full_layout_to_business_action() -> None:
             "after": {"left": 0, "top": 0, "width": 980, "height": 860},
         }
         sidecar.env_flag = lambda *_args, **_kwargs: False
-        sidecar.ensure_quick_login_if_available = lambda *_args, **_kwargs: {
-            "attempted": False,
-            "detected": False,
-            "reason": "wechat_already_logged_in",
-        }
+        sidecar.ensure_quick_login_if_available = lambda *_args, **_kwargs: (
+            forbidden_calls.append("quick_login")
+            or {
+                "attempted": False,
+                "detected": False,
+                "reason": "wechat_already_logged_in",
+            }
+        )
         sidecar.humanized_action_sleep = lambda *_args, **_kwargs: 0.0
         sidecar.capture_wechat = lambda *_args, **_kwargs: forbidden_calls.append("capture")
         sidecar.run_ocr_traced = lambda *_args, **_kwargs: forbidden_calls.append("ocr")

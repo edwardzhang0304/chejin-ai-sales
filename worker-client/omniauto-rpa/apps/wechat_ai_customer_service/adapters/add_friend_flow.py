@@ -104,6 +104,7 @@ def run_add_friend_entry_click_plan_flow(
     artifact_dir: str | None = None,
     route: str = ADD_FRIEND_MAIN_ROUTE,
     action_journal_path: str = "",
+    entry_frame_seed: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run an add_friend entry-click flow using sidecar Windows Win32/OCR ops."""
     selected_route = str(route or ADD_FRIEND_MAIN_ROUTE).strip().lower()
@@ -162,14 +163,59 @@ def run_add_friend_entry_click_plan_flow(
     ]
 
     timings = flow.timings
-    before_shot, before_screenshot_path = ops.capture_wechat_window_visible_screen(
-        hwnd,
-        artifact_dir=str(output_dir),
-        label="add_friend_entry_before_click_window",
+    current_metadata = ops.layout_snapshot_metadata(hwnd)
+    current_snapshot = (
+        current_metadata.get("snapshot")
+        if isinstance(current_metadata, dict)
+        and isinstance(current_metadata.get("snapshot"), dict)
+        else {}
     )
+    seed_snapshot = (
+        entry_frame_seed.get("layout_snapshot")
+        if isinstance(entry_frame_seed, dict)
+        and isinstance(entry_frame_seed.get("layout_snapshot"), dict)
+        else {}
+    )
+    seed_reusable = bool(
+        isinstance(entry_frame_seed, dict)
+        and entry_frame_seed.get("screenshot") is not None
+        and int(entry_frame_seed.get("hwnd") or 0) == int(hwnd or 0)
+        and str(entry_frame_seed.get("layout_snapshot_id") or "")
+        and str(entry_frame_seed.get("frame_id") or "")
+        and str(entry_frame_seed.get("layout_snapshot_id") or "")
+        == str(seed_snapshot.get("layout_snapshot_id") or "")
+        == str(current_snapshot.get("layout_snapshot_id") or "")
+        and str(entry_frame_seed.get("frame_id") or "")
+        == str(seed_snapshot.get("frame_id") or "")
+        == str(current_snapshot.get("frame_id") or "")
+        and not bool(seed_snapshot.get("invalidated"))
+        and not bool(current_snapshot.get("invalidated"))
+        and bool(seed_snapshot.get("valid"))
+        and bool(current_snapshot.get("valid"))
+    )
+    if seed_reusable:
+        before_shot = entry_frame_seed["screenshot"]
+        before_screenshot_path = str(entry_frame_seed.get("screenshot_path") or "")
+        before_full_items = list(entry_frame_seed.get("ocr_items") or [])
+        timings.append(
+            {
+                "name": "entry_frame_reused",
+                "seconds": 0.0,
+                "frame_id": str(entry_frame_seed.get("frame_id") or ""),
+                "layout_snapshot_id": str(entry_frame_seed.get("layout_snapshot_id") or ""),
+            }
+        )
+    else:
+        before_shot, before_screenshot_path = ops.capture_wechat_window_visible_screen(
+            hwnd,
+            artifact_dir=str(output_dir),
+            label="add_friend_entry_before_click_window",
+        )
+        before_full_items = []
     platform_adapter = "windows"
     before_full_ocr_started_at = time.perf_counter()
-    before_full_items = ops.run_ocr_on_screen_region(before_shot, [0, 0, before_shot.size[0], before_shot.size[1]])
+    if not before_full_items:
+        before_full_items = ops.run_ocr_on_screen_region(before_shot, [0, 0, before_shot.size[0], before_shot.size[1]])
     timings.append(
         {
             "name": "before_full_surface_ocr",
@@ -469,6 +515,7 @@ def run_add_friend_entry_click_plan_flow(
             output_dir,
             menu_targets=before_menu_targets,
         )
+        query_frame_seed = menu_click.pop("_next_frame_seed", None)
         query_hwnd = int(menu_click.get("next_hwnd") or 0) if isinstance(menu_click, dict) else 0
         query_search = (
             ops.input_add_friend_query_and_search(
@@ -479,6 +526,7 @@ def run_add_friend_entry_click_plan_flow(
                 remark_name=clean_remark_name,
                 remark_code=clean_remark_code,
                 action_journal_path=action_journal_path,
+                frame_seed=query_frame_seed,
             )
             if menu_click.get("clicked") and query and query_hwnd
             else {
@@ -723,6 +771,7 @@ def run_add_friend_entry_click_plan_flow(
         if popup_detection.get("detected")
         else {"clicked": False, "reason": popup_detection.get("reason") or "plus_entry_popup_menu_not_detected", "target": None}
     )
+    query_frame_seed = menu_click.pop("_next_frame_seed", None)
     query_hwnd = int(menu_click.get("next_hwnd") or 0) if isinstance(menu_click, dict) else 0
     menu_failed_after_popup = bool(popup_detection.get("detected")) and not bool(menu_click.get("clicked"))
     query_search = (
@@ -734,6 +783,7 @@ def run_add_friend_entry_click_plan_flow(
             remark_name=clean_remark_name,
             remark_code=clean_remark_code,
             action_journal_path=action_journal_path,
+            frame_seed=query_frame_seed,
         )
         if menu_click.get("clicked") and query and query_hwnd
         else {
