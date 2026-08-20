@@ -1042,17 +1042,79 @@ class RpaBridge:
         return str(artifact_dir)
 
     def _evidence_metadata(self, payload: dict[str, Any], artifact_dir: Path) -> dict[str, Any]:
-        return {
+        metadata = {
             "artifact_dir": str(artifact_dir),
             "review_path": payload.get("review_path"),
             "plan_path": payload.get("plan_path"),
             "error_code": payload.get("error_code"),
             "result_code": payload.get("result_code"),
             "current_step": payload.get("current_step"),
+            "state": payload.get("state"),
+            "reason": payload.get("reason"),
+            "error": payload.get("error"),
             "sidecar_run_id": payload.get("sidecar_run_id"),
             "stdout_tail": payload.get("stdout_tail") or payload.get("stdout"),
             "stderr_tail": payload.get("stderr_tail") or payload.get("stderr"),
         }
+        diagnostics = self._failure_diagnostics(payload)
+        if diagnostics:
+            metadata["rpa_failure_diagnostics"] = diagnostics
+        return metadata
+
+    @classmethod
+    def _failure_diagnostics(
+        cls,
+        value: Any,
+        *,
+        path: str = "",
+        depth: int = 0,
+        output: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        collected = output if output is not None else []
+        if depth > 7 or len(collected) >= 80:
+            return collected
+        diagnostic_keys = {
+            "state",
+            "reason",
+            "error",
+            "error_code",
+            "failure_step",
+            "current_step",
+            "blocking_reason",
+            "ocr_reason",
+            "ocr_error",
+            "ocr_count",
+            "layout_snapshot_id",
+            "layout_confidence",
+            "layout_conflicts",
+            "conflicts",
+            "no_clicks_performed",
+        }
+        if isinstance(value, dict):
+            for key, item in value.items():
+                child_path = f"{path}.{key}" if path else str(key)
+                if key in diagnostic_keys and item not in (None, "", [], {}):
+                    clean_item = str(item)[-1200:] if isinstance(item, str) else item
+                    collected.append({"path": child_path, "value": clean_item})
+                    if len(collected) >= 80:
+                        break
+                if isinstance(item, (dict, list)):
+                    cls._failure_diagnostics(
+                        item,
+                        path=child_path,
+                        depth=depth + 1,
+                        output=collected,
+                    )
+        elif isinstance(value, list):
+            for index, item in enumerate(value[:20]):
+                if isinstance(item, (dict, list)):
+                    cls._failure_diagnostics(
+                        item,
+                        path=f"{path}[{index}]",
+                        depth=depth + 1,
+                        output=collected,
+                    )
+        return collected
 
     def _tail(self, value: Any, limit: int = 4000) -> str:
         text = str(value or "")

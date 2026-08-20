@@ -924,7 +924,10 @@ def test_connector_add_friend_builds_win32_ocr_request() -> None:
         remark_code="CJ8K2P",
     )
     assert_true(result.get("ok") is True and result.get("result_code") == "invite_sent", f"unexpected add_friend result: {result}")
-    assert_true(connector.calls[0]["args"] == ["normalize-window"], f"add_friend must run the active normalization preflight first: {connector.calls}")
+    assert_true(
+        connector.calls[0]["args"] == ["normalize-window", "--window-policy", "verify"],
+        f"add_friend must only verify startup-normalized geometry: {connector.calls}",
+    )
     args = connector.calls[1]["args"]
     assert_true(
         args[:5] == [

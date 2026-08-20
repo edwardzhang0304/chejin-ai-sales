@@ -212,9 +212,15 @@ def wechat_check() -> PreflightCheck:
         else {}
     )
     normalization = probe_payload.get("startup_window_normalization")
+    normalization_payload = (
+        normalization.get("window_normalization")
+        if isinstance(normalization, dict)
+        and isinstance(normalization.get("window_normalization"), dict)
+        else normalization
+    )
     normalization_detail = (
         {
-            key: normalization.get(key)
+            key: normalization_payload.get(key)
             for key in (
                 "ok",
                 "applied",
@@ -235,11 +241,19 @@ def wechat_check() -> PreflightCheck:
                 "recommended_floor_applied",
                 "fixed_origin",
             )
-            if key in normalization
+            if key in normalization_payload
         }
-        if isinstance(normalization, dict)
+        if isinstance(normalization_payload, dict)
         else {}
     )
+    if isinstance(normalization, dict):
+        normalization_detail["action"] = {
+            key: normalization.get(key)
+            for key in ("ok", "state", "reason", "error_code")
+            if key in normalization
+        }
+        if isinstance(normalization.get("readiness"), dict):
+            normalization_detail["layout_gate"] = dict(normalization["readiness"])
     return PreflightCheck(
         "wechat",
         ok,

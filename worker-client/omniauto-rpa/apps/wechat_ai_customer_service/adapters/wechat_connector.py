@@ -149,9 +149,9 @@ class WeChatConnector:
         return env_flag("WECHAT_ENABLE_WXAUTO4", default=False)
 
     def _ui_flow_preflight(self, flow: str) -> dict[str, Any]:
-        """Run the active normalization gate while the flow lock is held."""
+        """Verify startup-normalized geometry while the flow lock is held."""
         payload = self.call_compat_sidecar(
-            ["normalize-window"],
+            ["normalize-window", "--window-policy", "verify"],
             allow_failure=True,
             env_overrides=interactive_rpa_probe_env(),
         )

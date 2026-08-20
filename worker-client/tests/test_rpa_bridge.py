@@ -300,6 +300,49 @@ class RpaBridgeTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["result_code"], "invite_sent")
 
+    def test_failure_metadata_keeps_nested_ocr_and_layout_reasons(self):
+        bridge = RpaBridge(sidecar_script=Path(__file__))
+        metadata = bridge._evidence_metadata(
+            {
+                "ok": False,
+                "state": "wechat_main_surface_not_ready",
+                "error_code": "PLUS_ENTRY_NOT_FOUND",
+                "current_step": "preflight_main_surface_ready",
+                "evidence": {
+                    "pre_click_readiness": {
+                        "reason": "shared_header_boundary_missing",
+                        "ocr_count": 17,
+                        "surface_readiness": {
+                            "layout_confidence": 0.41,
+                            "layout_conflicts": ["sidebar_header_unresolved"],
+                            "no_clicks_performed": True,
+                        },
+                    }
+                },
+            },
+            Path("artifacts/task-1"),
+        )
+
+        diagnostics = {
+            item["path"]: item["value"]
+            for item in metadata["rpa_failure_diagnostics"]
+        }
+        self.assertEqual(metadata["state"], "wechat_main_surface_not_ready")
+        self.assertEqual(
+            diagnostics["evidence.pre_click_readiness.reason"],
+            "shared_header_boundary_missing",
+        )
+        self.assertEqual(
+            diagnostics["evidence.pre_click_readiness.ocr_count"],
+            17,
+        )
+        self.assertEqual(
+            diagnostics[
+                "evidence.pre_click_readiness.surface_readiness.layout_conflicts"
+            ],
+            ["sidebar_header_unresolved"],
+        )
+
     def test_call_omniauto_terminates_running_sidecar_when_cancelled(self):
         with tempfile.TemporaryDirectory(prefix="chejin-cancel-sidecar-") as tmp:
             script = Path(tmp) / "slow_sidecar.py"

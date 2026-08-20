@@ -69,14 +69,24 @@ class PreflightTest(unittest.TestCase):
                 "startup_window_normalization_state": "completed",
                 "startup_window_normalization": {
                     "ok": True,
-                    "applied": True,
+                    "state": "window_normalized",
                     "reason": "normalized",
-                    "before": {"left": 8, "top": 0, "width": 800, "height": 852},
-                    "target": {"width": 980, "height": 860},
-                    "after": {"left": 0, "top": 0, "width": 980, "height": 860},
-                    "after_client": {"width": 964, "height": 821},
-                    "dpi_scale": 1.25,
-                    "screen": {"width": 1920, "height": 1040},
+                    "window_normalization": {
+                        "ok": True,
+                        "applied": True,
+                        "reason": "normalized",
+                        "before": {"left": 8, "top": 0, "width": 800, "height": 852},
+                        "target": {"width": 980, "height": 860},
+                        "after": {"left": 0, "top": 0, "width": 980, "height": 860},
+                        "after_client": {"width": 964, "height": 821},
+                        "dpi_scale": 1.25,
+                        "screen": {"width": 1920, "height": 1040},
+                    },
+                    "readiness": {
+                        "ok": True,
+                        "skipped": True,
+                        "reason": "deferred_to_business_action_pre_click_gate",
+                    },
                 },
                 "geometry": {"left": 0, "top": 0, "width": 980, "height": 860},
             }
@@ -99,6 +109,7 @@ class PreflightTest(unittest.TestCase):
         self.assertEqual(check.detail["window_normalization"]["target"]["width"], 980)
         self.assertEqual(check.detail["window_normalization"]["after"]["width"], 980)
         self.assertEqual(check.detail["window_normalization"]["dpi_scale"], 1.25)
+        self.assertTrue(check.detail["window_normalization"]["layout_gate"]["skipped"])
         self.assertEqual(check.detail["current_window_geometry"]["height"], 860)
 
     def test_vision_ocr_preflight_uses_production_subprocess_probe(self):
