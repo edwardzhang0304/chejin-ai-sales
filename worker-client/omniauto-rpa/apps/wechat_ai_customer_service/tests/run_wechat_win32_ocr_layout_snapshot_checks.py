@@ -181,6 +181,35 @@ def test_structural_regions_follow_each_image_size() -> None:
             assert_true(bounds[2] <= width and bounds[3] <= height, f"{name} exceeds image: {bounds}")
 
 
+def test_chat_panel_vertical_does_not_replace_first_sidebar_separator() -> None:
+    result = window_layout.build_structural_layout_regions(
+        SyntheticImage(
+            1920,
+            1080,
+            # 230/720 are the real nav/sidebar separators.  A similarly strong
+            # full-height edge at 900 must not silently replace the sidebar.
+            (230, 720, 900),
+            (130, 860, 900),
+        )
+    )
+    assert_true(result.get("ok") is True, f"chat-panel edge blocked the real layout: {result}")
+    assert_true(
+        list((result.get("regions") or {}).get("sidebar_bounds") or [])[2] == 720,
+        f"chat-panel edge replaced the first sidebar separator: {result}",
+    )
+
+
+def test_distinct_navigation_layouts_fail_closed() -> None:
+    result = window_layout.build_structural_layout_regions(
+        SyntheticImage(1920, 1080, (120, 230, 550, 720), (130, 860, 900))
+    )
+    assert_true(result.get("ok") is False, f"ambiguous nav layout became executable: {result}")
+    assert_true(
+        "sidebar_boundary_pair_ambiguous" in (result.get("conflicts") or []),
+        f"wrong ambiguity evidence: {result}",
+    )
+
+
 def test_required_resolution_and_dpi_matrix_uses_current_frame_geometry() -> None:
     cases = (
         ((1920, 1080), 1.00, [0, 0]),
@@ -403,29 +432,24 @@ def test_window_policy_is_owned_only_by_sidecar() -> None:
     unexpected = [str(path.relative_to(worker_root)) for path in owners if path not in allowed]
     assert_true(not unexpected, f"multiple production modules own the WeChat window policy: {unexpected}")
 
-    compatibility_token = "WECHAT_WIN32_OCR_DYNAMIC_LAYOUT_ENABLED"
-    compatibility_allowed = {
-        PROJECT_ROOT / "apps" / "wechat_ai_customer_service" / "adapters" / "wechat_win32_ocr" / "device_profile.py",
-        PROJECT_ROOT / "apps" / "wechat_ai_customer_service" / "admin_backend" / "services" / "rpa_acceptance_report.py",
+    retired_compatibility_tokens = {
+        "WECHAT_WIN32_OCR_DYNAMIC_LAYOUT_ENABLED",
+        "WECHAT_WIN32_OCR_LEGACY_DEVICE_PROFILE",
     }
-    compatibility_owners: list[Path] = []
+    retired_compatibility_owners: list[str] = []
     retired_switch_owners: list[Path] = []
     for path in sorted(worker_root.rglob("*.py")):
         if "tests" in path.parts or "__pycache__" in path.parts:
             continue
         production_source = path.read_text(encoding="utf-8", errors="ignore")
-        if compatibility_token in production_source:
-            compatibility_owners.append(path)
+        for token in retired_compatibility_tokens:
+            if token in production_source:
+                retired_compatibility_owners.append(f"{path.relative_to(worker_root)}:{token}")
         if "WECHAT_WIN32_OCR_WINDOW_NORMALIZE" in production_source:
             retired_switch_owners.append(path)
-    unexpected_compatibility = [
-        str(path.relative_to(worker_root))
-        for path in compatibility_owners
-        if path not in compatibility_allowed
-    ]
     assert_true(
-        not unexpected_compatibility,
-        f"multiple production modules own the dynamic-layout compatibility switch: {unexpected_compatibility}",
+        not retired_compatibility_owners,
+        f"retired dynamic-layout compatibility returned: {retired_compatibility_owners}",
     )
     assert_true(not retired_switch_owners, f"retired normalization bypass switch returned: {retired_switch_owners}")
 

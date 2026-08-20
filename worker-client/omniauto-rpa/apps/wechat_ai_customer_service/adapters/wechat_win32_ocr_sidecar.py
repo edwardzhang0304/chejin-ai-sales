@@ -183,7 +183,6 @@ _LAST_SESSION_ACTIVATION_TIMING: dict[str, Any] = {}
 _LAYOUT_SNAPSHOT_STORE = win32_ocr_layout.LayoutSnapshotStore()
 _LATEST_LAYOUT_SNAPSHOT_BY_HWND: dict[int, str] = {}
 _LAYOUT_SNAPSHOT_ID_BY_IMAGE_ID: dict[int, str] = {}
-_LAST_VERIFIED_MAIN_LAYOUT_COMPATIBILITY: dict[str, Any] = {}
 RENDER_RECOVERY_GUARD_PATH = PROJECT_ROOT / "runtime" / "wechat_win32_ocr_render_recovery_guard.json"
 MIN_SEND_CLIENT_WIDTH = 700
 MIN_SEND_CLIENT_HEIGHT = 720
@@ -8593,8 +8592,17 @@ def add_friend_surface_readiness(
     )
 
 
-def add_friend_main_entry_surface_evidence(ocr_items: list[dict[str, Any]], image_size: tuple[int, int]) -> dict[str, Any]:
-    return win32_ocr_add_friend_windows.add_friend_main_entry_surface_evidence(ocr_items, image_size)
+def add_friend_main_entry_surface_evidence(
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    layout_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return win32_ocr_add_friend_windows.add_friend_main_entry_surface_evidence(
+        ocr_items,
+        image_size,
+        layout_snapshot=layout_snapshot,
+    )
 
 
 def add_friend_human_pause(min_ms: int, max_ms: int | None = None, *, reason: str = "") -> float:
@@ -16766,7 +16774,6 @@ def _register_layout_snapshot(
     capture_screen_origin: list[int] | tuple[int, int] | None,
     generic_popup: bool = False,
 ) -> dict[str, Any]:
-    global _LAST_VERIFIED_MAIN_LAYOUT_COMPATIBILITY
     image_size = getattr(image, "size", (0, 0))
     geometry = get_window_geometry(hwnd)
     client_geometry = get_window_client_geometry(hwnd)
@@ -16811,32 +16818,6 @@ def _register_layout_snapshot(
         wechat_version=str(os.getenv("WECHAT_WIN32_OCR_WECHAT_VERSION") or "").strip(),
         window_structure=window_structure,
     )
-    compatibility_enabled = win32_ocr_device_profile.dynamic_layout_enabled()
-    legacy_profile = win32_ocr_device_profile.configured_legacy_profile()
-    if generic_popup and not compatibility_enabled:
-        # A popup intentionally has neither the main sidebar nor the main
-        # window geometry, so comparing it to the accepted main-device
-        # profile would always fail.  It may inherit only the compatibility
-        # decision already proven by a main WeChat frame in this same Sidecar
-        # action; without that proof the popup remains non-executable.
-        main_compatibility = dict(_LAST_VERIFIED_MAIN_LAYOUT_COMPATIBILITY)
-        legacy_profile_ok = bool(main_compatibility.get("legacy_profile_ok"))
-        legacy_profile_mismatches = (
-            [] if legacy_profile_ok else ["verified_main_legacy_profile_missing"]
-        )
-    else:
-        main_compatibility = {}
-        legacy_profile_ok, legacy_profile_mismatches = win32_ocr_device_profile.legacy_profile_matches(
-            device_profile,
-            legacy_profile,
-        )
-    compatibility_conflicts: list[str] = []
-    if not compatibility_enabled:
-        if not legacy_profile_ok:
-            compatibility_conflicts.append("legacy_device_profile_mismatch")
-            compatibility_conflicts.extend(legacy_profile_mismatches)
-        layout["ok"] = bool(layout.get("ok") and legacy_profile_ok)
-        layout["conflicts"] = list(layout.get("conflicts") or []) + compatibility_conflicts
     snapshot = win32_ocr_layout.build_layout_snapshot(
         hwnd=int(hwnd),
         frame_id=win32_ocr_layout.new_frame_id(int(hwnd)),
@@ -16863,21 +16844,9 @@ def _register_layout_snapshot(
         "vertical_candidates": list(layout.get("vertical_candidates") or []),
     }
     snapshot["compatibility"] = {
-        "dynamic_layout_enabled": compatibility_enabled,
-        "legacy_profile_configured": bool(legacy_profile),
-        "legacy_profile_ok": bool(legacy_profile_ok),
-        "legacy_profile_mismatches": list(legacy_profile_mismatches),
+        "mode": "dynamic_layout_only",
         "device_profile": device_profile,
-        "verified_main_layout_snapshot_id": str(
-            main_compatibility.get("layout_snapshot_id") or ""
-        ),
     }
-    if not generic_popup:
-        _LAST_VERIFIED_MAIN_LAYOUT_COMPATIBILITY = {
-            "layout_snapshot_id": str(snapshot.get("layout_snapshot_id") or ""),
-            "legacy_profile_ok": bool(legacy_profile_ok),
-            "dynamic_layout_enabled": bool(compatibility_enabled),
-        }
     previous_id = _LATEST_LAYOUT_SNAPSHOT_BY_HWND.get(int(hwnd))
     if previous_id:
         _LAYOUT_SNAPSHOT_STORE.invalidate(previous_id, reason="new_frame_captured")
@@ -18600,41 +18569,6 @@ def ensure_left_button_released() -> None:
         pass
 
 
-def _prepare_client_click(
-    hwnd: int,
-    x: int,
-    y: int,
-    *,
-    bounds: list[int] | None = None,
-    expected_snapshot_id: str = "",
-) -> dict[str, Any]:
-    snapshot, failure = _current_click_snapshot(hwnd, expected_snapshot_id=expected_snapshot_id)
-    if failure:
-        raise RuntimeError(f"{failure.get('error_code')}: {failure.get('reason')}")
-    assert snapshot is not None
-    client_width, client_height = win32_ocr_layout.rect_size(snapshot.get("client_rect"))
-    if not (0 <= int(x) <= client_width and 0 <= int(y) <= client_height):
-        raise RuntimeError(f"{win32_ocr_layout.ERROR_COORDINATE_MAPPING_INVALID}:client_point_outside_client_bounds")
-    screen_point = win32_ocr_layout.client_point_to_screen(snapshot, [int(x), int(y)])
-    capture_origin = snapshot.get("capture_screen_origin")
-    if not isinstance(capture_origin, (list, tuple)) or len(capture_origin) < 2:
-        raise RuntimeError(f"{win32_ocr_layout.ERROR_COORDINATE_MAPPING_INVALID}:capture_screen_origin_missing")
-    image_point = [
-        int(screen_point[0]) - int(capture_origin[0]),
-        int(screen_point[1]) - int(capture_origin[1]),
-    ]
-    target_bounds = _layout_region_for_point(snapshot, image_point[0], image_point[1], bounds)
-    if bounds is not None and not win32_ocr_layout.point_in_bounds(image_point, bounds):
-        raise RuntimeError(f"{win32_ocr_layout.ERROR_COORDINATE_MAPPING_INVALID}:client_point_outside_target_bounds")
-    return {
-        "snapshot": snapshot,
-        "client_point": [int(x), int(y)],
-        "image_point": image_point,
-        "image_bounds": target_bounds,
-        "screen_point": screen_point,
-    }
-
-
 def client_click(
     hwnd: int,
     x: int,
@@ -18643,30 +18577,14 @@ def client_click(
     bounds: list[int] | None = None,
     expected_snapshot_id: str = "",
 ) -> None:
-    """Click a WeChat client coordinate without relying on global DPI math."""
-    prepared = _prepare_client_click(
+    """Stable API alias; coordinates are current screenshot coordinates only."""
+    human_window_image_click(
         hwnd,
         int(x),
         int(y),
-        bounds=bounds,
+        bounds=list(bounds or []),
         expected_snapshot_id=expected_snapshot_id,
     )
-    click_x, click_y = int(x), int(y)
-    jitter_meta = {"enabled": False, "reason": "layout_bound_client_point"}
-    require_active_ui_action_budget(
-        "client_click",
-        metadata={"hwnd": int(hwnd or 0), "x": click_x, "y": click_y, "jitter": jitter_meta},
-    )
-    invalidate_layout_snapshot(hwnd, reason="client_click_started")
-    activate_window(hwnd)
-    ensure_left_button_released()
-    lparam = ((int(click_y) & 0xFFFF) << 16) | (int(click_x) & 0xFFFF)
-    win32gui.SendMessage(hwnd, win32con.WM_MOUSEMOVE, 0, lparam)
-    humanized_action_sleep(20, 55)
-    win32gui.SendMessage(hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lparam)
-    humanized_action_sleep(45, 100)
-    win32gui.SendMessage(hwnd, win32con.WM_LBUTTONUP, 0, lparam)
-    humanized_action_sleep(80, 170)
 
 
 def human_client_click(
@@ -18677,11 +18595,10 @@ def human_client_click(
     bounds: list[int] | None = None,
     expected_snapshot_id: str = "",
 ) -> None:
-    """Compatibility name for a screenshot-space, layout-bound real click.
+    """Click a screenshot-space point through the single layout-bound path.
 
-    All production callers obtain their point from OCR/UIA projected into the
-    current screenshot.  Keeping a second "client coordinate" interpretation
-    here was precisely the DPI/border ambiguity that 0.9.21 removes.
+    The public name remains for the stable Sidecar API; it no longer accepts
+    or converts an independent client-coordinate system.
     """
     human_window_image_click(
         hwnd,
@@ -18963,39 +18880,6 @@ def human_screen_hover(x: int, y: int, *, action_name: str = "human_screen_hover
         return {"ok": True, "screen_x": target_x, "screen_y": target_y, "steps": steps, "jitter": jitter_meta}
     except Exception as exc:
         return {"ok": False, "screen_x": target_x, "screen_y": target_y, "error": repr(exc), "jitter": jitter_meta}
-
-
-def human_screen_click(x: int, y: int, *, action_name: str = "human_screen_click") -> dict[str, Any]:
-    """Click a screen-space point after a short human-like cursor movement."""
-    target_x, target_y, jitter_meta = jitter_screen_click_surface_point(int(x), int(y))
-    require_active_ui_action_budget(action_name, metadata={"x": target_x, "y": target_y, "jitter": jitter_meta})
-    ensure_left_button_released()
-    left_down_sent = False
-    try:
-        start_x, start_y = win32api.GetCursorPos()
-        steps = random.randint(4, 8)
-        for step in range(1, steps + 1):
-            ratio = step / steps
-            ease = ratio * ratio * (3 - 2 * ratio)
-            drift_x = random.randint(-2, 2) if step < steps else 0
-            drift_y = random.randint(-2, 2) if step < steps else 0
-            next_x = int(start_x + (target_x - start_x) * ease) + drift_x
-            next_y = int(start_y + (target_y - start_y) * ease) + drift_y
-            win32api.SetCursorPos((next_x, next_y))
-            time.sleep(random.uniform(0.016, 0.05))
-        time.sleep(random.uniform(0.08, 0.22))
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-        left_down_sent = True
-        time.sleep(random.uniform(0.055, 0.14))
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-        left_down_sent = False
-        time.sleep(random.uniform(0.16, 0.34))
-        return {"ok": True, "screen_x": target_x, "screen_y": target_y, "steps": steps, "jitter": jitter_meta}
-    except Exception as exc:
-        return {"ok": False, "screen_x": target_x, "screen_y": target_y, "error": repr(exc), "jitter": jitter_meta}
-    finally:
-        if left_down_sent:
-            ensure_left_button_released()
 
 
 def human_screen_click_in_bounds(
