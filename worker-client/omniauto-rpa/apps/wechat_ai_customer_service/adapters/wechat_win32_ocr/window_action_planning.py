@@ -15,14 +15,9 @@ WINDOW_SELECTION_EMPTY_SCORE = (-1, -1, -1, -1, -1)
 
 
 def recommended_window_scale_for_screen(screen_width: int, screen_height: int, *, screen_metrics_available: bool) -> float:
-    if not screen_metrics_available:
-        return 1.0
-    width = max(0, int(screen_width or 0))
-    height = max(0, int(screen_height or 0))
-    if width >= 3200 and height >= 1800:
-        return 1.5
-    if width >= 2400 and height >= 1350:
-        return 1.25
+    # Dynamic layout makes the WeChat surface resolution-independent.  A 2K or
+    # 4K monitor must not make the application window itself 25%/50% larger.
+    del screen_width, screen_height, screen_metrics_available
     return 1.0
 
 

@@ -95,17 +95,130 @@ class RpaBridgeTest(unittest.TestCase):
             },
         }
 
+        calls: list[list[str]] = []
+
+        def fake_call(args, **_kwargs):
+            calls.append(list(args))
+            return {"ok": True} if args[0] == "normalize-window" else payload
+
         with patch.object(sys, "platform", "win32"), patch.object(
-            bridge,
-            "_call_omniauto",
-            return_value=payload,
+            bridge, "_call_omniauto", side_effect=fake_call
         ):
             status = bridge.probe()
 
         self.assertEqual(status, ("ready", "logged_in"))
-        self.assertEqual(bridge.last_probe_payload, payload)
+        self.assertEqual(bridge.last_probe_payload["geometry"], payload["geometry"])
+        self.assertTrue(bridge.last_probe_payload["startup_window_normalization"]["ok"])
+        self.assertEqual(calls, [["normalize-window"], ["status"]])
 
-    def test_ui_flow_boundary_normalizes_and_nested_actions_only_verify_window(self):
+    def test_probe_normalizes_only_once_then_uses_passive_status(self):
+        bridge = RpaBridge(sidecar_script=Path("sidecar.py"))
+        bridge.mode = "real"
+        calls: list[list[str]] = []
+
+        def fake_call(args, **_kwargs):
+            calls.append(list(args))
+            return {"ok": True}
+
+        with patch.object(sys, "platform", "win32"), patch.object(
+            bridge, "_call_omniauto", side_effect=fake_call
+        ):
+            self.assertEqual(bridge.probe(), ("ready", "logged_in"))
+            self.assertEqual(bridge.probe(), ("ready", "logged_in"))
+
+        self.assertEqual(calls, [["normalize-window"], ["status"], ["status"]])
+
+    def test_probe_retries_startup_normalization_until_wechat_appears(self):
+        bridge = RpaBridge(sidecar_script=Path("sidecar.py"))
+        bridge.mode = "real"
+        calls: list[list[str]] = []
+        normalize_attempts = 0
+
+        def fake_call(args, **_kwargs):
+            nonlocal normalize_attempts
+            calls.append(list(args))
+            if args[0] == "normalize-window":
+                normalize_attempts += 1
+                if normalize_attempts == 1:
+                    return {"ok": False, "error_code": "WECHAT_WINDOW_NOT_FOUND"}
+                return {"ok": True}
+            if normalize_attempts == 1:
+                return {"ok": False, "error_code": "WECHAT_WINDOW_NOT_FOUND"}
+            return {"ok": True}
+
+        with patch.object(sys, "platform", "win32"), patch.object(
+            bridge, "_call_omniauto", side_effect=fake_call
+        ):
+            self.assertEqual(bridge.probe(), ("ready", "not_found"))
+            self.assertEqual(bridge.probe(), ("ready", "logged_in"))
+            self.assertEqual(bridge.probe(), ("ready", "logged_in"))
+
+        self.assertEqual(
+            calls,
+            [
+                ["normalize-window"],
+                ["status"],
+                ["normalize-window"],
+                ["status"],
+                ["status"],
+            ],
+        )
+
+    def test_probe_latches_non_not_found_normalization_failure_without_moving_again(self):
+        bridge = RpaBridge(sidecar_script=Path("sidecar.py"))
+        bridge.mode = "real"
+        calls: list[list[str]] = []
+
+        def fake_call(args, **_kwargs):
+            calls.append(list(args))
+            if args[0] == "normalize-window":
+                return {
+                    "ok": False,
+                    "error_code": "WECHAT_UI_LAYOUT_STALE",
+                    "state": "post_move_verification_failed",
+                }
+            return {"ok": True, "state": "wechat_ready"}
+
+        with patch.object(sys, "platform", "win32"), patch.object(
+            bridge, "_call_omniauto", side_effect=fake_call
+        ):
+            self.assertEqual(bridge.probe(), ("unavailable", "unknown"))
+            self.assertEqual(bridge.probe(), ("unavailable", "unknown"))
+
+        self.assertEqual(
+            calls,
+            [["normalize-window"], ["status"], ["status"]],
+        )
+        self.assertEqual(
+            bridge.last_probe_payload["startup_window_normalization_state"],
+            "failed_locked",
+        )
+        self.assertEqual(
+            bridge.last_probe_payload["startup_window_normalization"]["error_code"],
+            "WECHAT_UI_LAYOUT_STALE",
+        )
+
+    def test_accepting_work_verifies_window_without_moving_it(self):
+        bridge = RpaBridge(sidecar_script=Path("sidecar.py"))
+        bridge.mode = "real"
+        calls: list[list[str]] = []
+
+        def fake_call(args, **_kwargs):
+            calls.append(list(args))
+            return {"ok": True}
+
+        with patch.object(sys, "platform", "win32"), patch.object(
+            bridge, "_call_omniauto", side_effect=fake_call
+        ):
+            result = bridge.verify_window_readiness()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            calls,
+            [["normalize-window", "--window-policy", "verify"]],
+        )
+
+    def test_all_ui_flows_only_verify_window_after_startup(self):
         bridge = RpaBridge(sidecar_script=Path("sidecar.py"))
         bridge.mode = "real"
         calls: list[list[str]] = []
@@ -144,10 +257,10 @@ class RpaBridgeTest(unittest.TestCase):
             args[0]: args[args.index("--window-policy") + 1]
             for args in calls
         }
-        self.assertEqual(policies["open-chat"], "normalize")
+        self.assertEqual(policies["open-chat"], "verify")
         self.assertEqual(policies["messages"], "verify")
         self.assertEqual(policies["voice-transcribe"], "verify")
-        self.assertEqual(policies["send"], "normalize")
+        self.assertEqual(policies["send"], "verify")
 
     def test_call_omniauto_protects_artifact_directory_until_process_finishes(self):
         with tempfile.TemporaryDirectory(prefix="chejin-active-artifact-") as tmp:
@@ -357,6 +470,10 @@ class RpaBridgeTest(unittest.TestCase):
             ["rpa_sidecar_starting", "wechat_preflight_starting"],
         )
         self.assertEqual(captured["args"][0], OMNIAUTO_ADD_FRIEND_ACTION)
+        self.assertEqual(
+            captured["args"][captured["args"].index("--window-policy") + 1],
+            "verify",
+        )
         self.assertIn("--phone", captured["args"])
         self.assertIn("13800000000", captured["args"])
         self.assertIn("--verify-message", captured["args"])

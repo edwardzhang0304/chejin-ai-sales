@@ -7980,7 +7980,6 @@ def run_ocr_on_screen_region(
         box = item.get("box")
         if isinstance(box, list):
             item["box"] = [[float(point[0]) + left, float(point[1]) + top] for point in box if isinstance(point, (list, tuple)) and len(point) >= 2]
-    _finalize_layout_snapshot_ocr_anchors(image, items)
     return items
 
 
@@ -9715,7 +9714,7 @@ def input_text_region_state(
     del geometry
     snapshot = layout_snapshot_for_image(screenshot)
     try:
-        input_panel_bounds = tuple(win32_ocr_layout.required_region(snapshot, "input_bounds"))
+        bounds = tuple(win32_ocr_layout.required_region(snapshot, "input_text_bounds"))
     except win32_ocr_layout.LayoutSnapshotError as exc:
         return {
             "has_visible_text": False,
@@ -9724,37 +9723,6 @@ def input_text_region_state(
             "error": exc.reason,
             "bounds": [],
         }
-    # ``input_bounds`` describes the complete input panel.  Its lower control
-    # row (toolbar/send button) is not draft text.  Derive the editable text
-    # surface from semantic controls observed in this same frame; never crop a
-    # fixed number of pixels from the bottom.
-    control_tops: list[int] = []
-    input_control_tokens = {"发送", "工具"}
-    for item in ocr_items:
-        text = normalize_ocr_text(item.get("text")).replace(" ", "")
-        if text not in input_control_tokens:
-            continue
-        center_x = float(item.get("center_x") or 0) or (
-            float(item.get("left") or 0) + float(item.get("right") or 0)
-        ) / 2.0
-        center_y = float(item.get("center_y") or 0) or (
-            float(item.get("top") or 0) + float(item.get("bottom") or 0)
-        ) / 2.0
-        if (
-            input_panel_bounds[0] <= center_x <= input_panel_bounds[2]
-            and input_panel_bounds[1] <= center_y <= input_panel_bounds[3]
-        ):
-            control_tops.append(int(float(item.get("top") or center_y)))
-    bounds = input_panel_bounds
-    if control_tops:
-        editable_bottom = min(control_tops) - 2
-        if editable_bottom - input_panel_bounds[1] >= 18:
-            bounds = (
-                input_panel_bounds[0],
-                input_panel_bounds[1],
-                input_panel_bounds[2],
-                editable_bottom,
-            )
     ocr_evidence: list[dict[str, Any]] = []
     ignored_ocr_evidence: list[dict[str, Any]] = []
     for item in ocr_items:
@@ -9809,40 +9777,6 @@ def input_text_region_state(
         bright_ratio = float(sum(histogram[200:])) / float(total)
         mean = float(sum(index * count for index, count in enumerate(histogram))) / float(total)
         dark_mask = crop.point(lambda value: 255 if value < 180 else 0)
-        # Input panels contain separators and control underlines. A detached,
-        # very wide stroke only a few pixels high is chrome, not draft text.
-        # Remove those rows before measuring the text/caret component; using
-        # the union bbox would otherwise join a valid caret with a toolbar line
-        # and falsely report that the input already contains a draft.
-        mask_width, mask_height = dark_mask.size
-        mask_pixels = dark_mask.load()
-        dense_row_threshold = max(24, int(mask_width * 0.08))
-        dense_rows = [
-            row
-            for row in range(mask_height)
-            if sum(1 for column in range(mask_width) if mask_pixels[column, row])
-            >= dense_row_threshold
-        ]
-        decoration_rows: set[int] = set()
-        run: list[int] = []
-        for row in dense_rows + [mask_height + 1]:
-            if run and row != run[-1] + 1:
-                if len(run) <= 4:
-                    decoration_rows.update(run)
-                run = []
-            if row <= mask_height:
-                run.append(row)
-        for row in decoration_rows:
-            for column in range(mask_width):
-                mask_pixels[column, row] = 0
-        content_dark_count = int(
-            sum(
-                1
-                for row in range(mask_height)
-                for column in range(mask_width)
-                if mask_pixels[column, row]
-            )
-        )
         dark_bbox = dark_mask.getbbox()
     except Exception as exc:
         return {
@@ -9868,10 +9802,10 @@ def input_text_region_state(
         dark_height = 0
         absolute_dark_bbox = []
     caret_like_dark_pixels = bool(
-        content_dark_count > 0
+        dark_count > 0
         and dark_width <= 3
         and 8 <= dark_height <= 64
-        and content_dark_count <= max(1, dark_width * dark_height)
+        and dark_count <= max(1, dark_width * dark_height)
     )
     # In dark-mode WeChat the whole input region can be dark even when blank.
     # Treat a uniformly dark crop without OCR or bright text strokes as blank;
@@ -9882,7 +9816,7 @@ def input_text_region_state(
         and bright_ratio <= 0.002
     )
     text_shape_visible = bool(
-        content_dark_count >= 12
+        dark_count >= 12
         and dark_width >= 4
         and dark_height >= 5
         and not caret_like_dark_pixels
@@ -9911,8 +9845,6 @@ def input_text_region_state(
         "ocr_evidence": ocr_evidence[:12],
         "ignored_ocr_evidence": ignored_ocr_evidence[:12],
         "dark_count": dark_count,
-        "content_dark_count": content_dark_count,
-        "ignored_decoration_rows": sorted(decoration_rows),
         "dark_ratio": round(dark_ratio, 6),
         "dark_bbox": absolute_dark_bbox,
         "dark_width": dark_width,
@@ -16892,7 +16824,7 @@ def finalize_add_friend_entry_layout_snapshot(
         return None
     layout = win32_ocr_layout.build_add_friend_entry_layout_regions(
         image,
-        ocr_items=items,
+        search_anchor_items=_sidebar_search_semantic_candidates(items),
     )
     completed = win32_ocr_layout.build_layout_snapshot(
         hwnd=int(existing.get("hwnd") or 0),
@@ -16937,11 +16869,53 @@ def finalize_add_friend_entry_layout_snapshot(
     return _LAYOUT_SNAPSHOT_STORE.get(str(completed.get("layout_snapshot_id") or ""))
 
 
+def _sidebar_search_semantic_candidates(
+    items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Collect search candidates with the proven 0.9.20 OCR semantics.
+
+    In particular, OCR outputs such as ``Q搜索`` remain valid. Pixel-derived
+    layout boundaries select the topmost sidebar operation row afterward.
+    """
+
+    anchors: list[dict[str, Any]] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        compact = win32_ocr_add_friend_windows.add_friend_ocr_compact(
+            item.get("text")
+        )
+        if "搜索" not in compact:
+            continue
+        try:
+            left = int(float(item.get("left") or 0))
+            top = int(float(item.get("top") or 0))
+            right = int(float(item.get("right") or left))
+            bottom = int(float(item.get("bottom") or top))
+        except (TypeError, ValueError):
+            continue
+        if right <= left or bottom <= top:
+            continue
+        anchors.append(dict(item))
+    return anchors
+
+
 def _finalize_layout_snapshot_ocr_anchors(image: Any, items: list[dict[str, Any]]) -> None:
     snapshot_id = _LAYOUT_SNAPSHOT_ID_BY_IMAGE_ID.get(id(image))
     if not snapshot_id:
         return
-    anchors: list[dict[str, Any]] = []
+    existing = _LAYOUT_SNAPSHOT_STORE.get(snapshot_id)
+    if existing is None or bool(existing.get("invalidated")):
+        return
+    if str(existing.get("surface_kind") or "") != "wechat_main":
+        return
+    search_anchor_items = _sidebar_search_semantic_candidates(items)
+    layout = win32_ocr_layout.build_structural_layout_regions(
+        image,
+        ocr_items=items,
+        search_anchor_items=search_anchor_items,
+    )
+    anchors: list[dict[str, Any]] = list(layout.get("anchors") or [])
     for item in items or []:
         if not isinstance(item, dict):
             continue
@@ -16961,7 +16935,44 @@ def _finalize_layout_snapshot_ocr_anchors(image: Any, items: list[dict[str, Any]
                 "confidence": float(item.get("confidence") or 0.0),
             }
         )
-    _LAYOUT_SNAPSHOT_STORE.finalize_ocr_anchors(snapshot_id, anchors=anchors)
+    completed = win32_ocr_layout.build_layout_snapshot(
+        hwnd=int(existing.get("hwnd") or 0),
+        frame_id=str(existing.get("frame_id") or ""),
+        capture_mode=str(existing.get("capture_mode") or ""),
+        image_size=(
+            int(existing.get("image_width") or 0),
+            int(existing.get("image_height") or 0),
+        ),
+        capture_screen_origin=existing.get("capture_screen_origin"),
+        window_rect=existing.get("window_rect"),
+        client_rect=existing.get("client_rect"),
+        client_screen_origin=existing.get("client_screen_origin"),
+        dpi_scale=float(existing.get("dpi_scale") or 1.0),
+        regions=layout.get("regions") or {},
+        anchors=anchors,
+        confidence=float(layout.get("confidence") or 0.0),
+        conflicts=list(layout.get("conflicts") or []),
+        executable=bool(layout.get("ok")),
+        screenshot_path=str(existing.get("screenshot_path") or ""),
+        surface_kind="wechat_main",
+        required_region_names=win32_ocr_layout.REQUIRED_LAYOUT_REGION_NAMES,
+    )
+    completed["layout_builder"] = {
+        "ok": bool(layout.get("ok")),
+        "confidence": float(layout.get("confidence") or 0.0),
+        "conflicts": list(layout.get("conflicts") or []),
+        "vertical_candidates": list(layout.get("vertical_candidates") or []),
+        "source": "current_frame_pixels_plus_0_9_20_search_anchor",
+    }
+    completed["compatibility"] = dict(existing.get("compatibility") or {})
+    _LAYOUT_SNAPSHOT_STORE.invalidate(
+        str(existing.get("layout_snapshot_id") or ""),
+        reason="current_frame_ocr_layout_finalized",
+    )
+    _LAYOUT_SNAPSHOT_STORE.put(completed)
+    completed_id = str(completed.get("layout_snapshot_id") or "")
+    _LATEST_LAYOUT_SNAPSHOT_BY_HWND[int(completed.get("hwnd") or 0)] = completed_id
+    _LAYOUT_SNAPSHOT_ID_BY_IMAGE_ID[id(image)] = completed_id
 
 
 def layout_snapshot_metadata(hwnd: int) -> dict[str, Any]:
@@ -19215,7 +19226,7 @@ def normalize_wechat_window(hwnd: int, *, allow_move: bool = True) -> dict[str, 
     before_client = get_window_client_geometry(hwnd)
     dpi_scale = window_dpi_scale(hwnd)
 
-    enforce_recommended = env_flag("WECHAT_WIN32_OCR_ENFORCE_RECOMMENDED_WINDOW", default=True)
+    enforce_recommended = env_flag("WECHAT_WIN32_OCR_ENFORCE_RECOMMENDED_WINDOW", default=False)
     fixed_origin = env_flag("WECHAT_WIN32_OCR_WINDOW_FIXED_ORIGIN", default=True)
     if not fixed_origin:
         return {
@@ -19293,8 +19304,14 @@ def normalize_wechat_window(hwnd: int, *, allow_move: bool = True) -> dict[str, 
         screen_width=screen_width,
         screen_height=screen_height,
         screen_metrics_available=screen_metrics_available,
-        default_width=DEFAULT_SAFE_WINDOW_WIDTH,
-        default_height=DEFAULT_SAFE_WINDOW_HEIGHT,
+        default_width=max(
+            MIN_SAFE_WINDOW_WIDTH,
+            min(DEFAULT_SAFE_WINDOW_WIDTH, int(before.get("width") or DEFAULT_SAFE_WINDOW_WIDTH)),
+        ),
+        default_height=max(
+            MIN_SAFE_WINDOW_HEIGHT,
+            min(DEFAULT_SAFE_WINDOW_HEIGHT, int(before.get("height") or DEFAULT_SAFE_WINDOW_HEIGHT)),
+        ),
         min_width=MIN_SAFE_WINDOW_WIDTH,
         min_height=MIN_SAFE_WINDOW_HEIGHT,
         max_width=MAX_SAFE_WINDOW_WIDTH,

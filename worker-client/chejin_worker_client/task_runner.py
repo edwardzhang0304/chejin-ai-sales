@@ -2174,15 +2174,15 @@ class TaskRunner:
             self._apply_local_run_status("paused")
         try:
             if run_status == "running":
-                preflight = self.bridge.preflight_window_normalization()
+                preflight = self.bridge.verify_window_readiness()
                 if not preflight.get("ok"):
-                    error_code = str(preflight.get("error_code") or "WECHAT_UI_WINDOW_NORMALIZATION_FAILED")
-                    message = "微信窗口规范化失败，已阻止开始接单。请确认微信窗口可见且屏幕工作区足够。"
+                    error_code = str(preflight.get("error_code") or "WECHAT_UI_LAYOUT_STALE")
+                    message = "微信窗口状态复核失败，已阻止开始接单。请保持微信窗口可见，然后重试。"
                     self._apply_local_run_status("paused")
                     self.on_error(message)
                     append_log(
                         "WARN",
-                        "wechat_window_normalization_blocked_accepting",
+                        "wechat_window_readiness_blocked_accepting",
                         message,
                         error_code=error_code,
                         metadata={"preflight": preflight},

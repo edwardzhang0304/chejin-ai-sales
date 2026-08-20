@@ -59,6 +59,7 @@ from apps.wechat_ai_customer_service.adapters.add_friend_result_mapping import (
     ERROR_ACCOUNT_RESTRICTED,
     ERROR_INVITE_FIELD_VERIFICATION_FAILED,
     ERROR_PHONE_NOT_FOUND,
+    ERROR_PLUS_ENTRY_NOT_FOUND,
     ERROR_WECHAT_WINDOW_NOT_READY,
     RESULT_ALREADY_FRIEND,
     RESULT_INVITE_SENT,
@@ -368,13 +369,26 @@ def add_friend_plus_entry_target(
         candidate_bounds = layout_snapshot.get("sidebar_header_bounds")
         if snapshot_executable and isinstance(candidate_bounds, list) and len(candidate_bounds) >= 4:
             dynamic_bounds = [int(value) for value in candidate_bounds[:4]]
+    selected_search_anchors = [
+        anchor
+        for anchor in ((layout_snapshot or {}).get("anchors") or [])
+        if isinstance(anchor, dict)
+        and str(anchor.get("name") or "") == "search_text"
+        and isinstance(anchor.get("bounds"), list)
+        and len(anchor.get("bounds") or []) >= 4
+    ]
+    search_anchor_bounds = (
+        [int(value) for value in selected_search_anchors[0]["bounds"][:4]]
+        if len(selected_search_anchors) == 1
+        else None
+    )
     target = layout_plus_entry_target(
         geometry,
         image_size,
-        ocr_items or [],
         screenshot=screenshot,
         route_kind=route_kind,
         dynamic_sidebar_header_bounds=dynamic_bounds,
+        search_anchor_bounds=search_anchor_bounds,
     )
     layout_bounds = {
         name: list(layout_snapshot.get(name) or [])
@@ -714,14 +728,32 @@ def add_friend_popup_menu_bounds(
     plus_image_y: int,
     layout_snapshot: dict[str, Any] | None = None,
 ) -> list[int]:
-    # The menu is part of the main WeChat surface.  OCR the dynamically
-    # discovered sidebar instead of guessing a physical-pixel rectangle from
-    # the plus point.  The point is retained only for diagnostic metadata and
-    # must not authorize a region when the current layout is unavailable.
-    sidebar = _layout_bounds(layout_snapshot, "sidebar_bounds")
-    if not sidebar or not bool((layout_snapshot or {}).get("executable")):
+    # Preserve the 0.9.20 local popup recognizer. The only new input is the
+    # plus point found inside the current dynamic sidebar header.
+    snapshot = layout_snapshot or {}
+    if not bool(snapshot.get("executable")):
         return []
-    return sidebar
+    surface_kind = str(snapshot.get("surface_kind") or "")
+    if surface_kind == "popup":
+        action_surface = _layout_bounds(snapshot, "surface_bounds")
+    else:
+        action_surface = _layout_bounds(snapshot, "sidebar_header_bounds")
+        if not action_surface or not point_in_bounds(
+            int(plus_image_x),
+            int(plus_image_y),
+            action_surface,
+        ):
+            return []
+    if not action_surface:
+        return []
+    width, height = [int(value or 0) for value in image_size[:2]]
+    left = max(0, int(plus_image_x) - 86)
+    top = max(0, int(plus_image_y) + 24)
+    right = min(width, int(plus_image_x) + 132)
+    bottom = min(height, int(plus_image_y) + 206)
+    if right <= left or bottom <= top:
+        return []
+    return [left, top, right, bottom]
 
 def add_friend_menu_text_matches(text: str, tokens: tuple[str, ...]) -> bool:
     compact = add_friend_ocr_compact(text)
@@ -2649,15 +2681,35 @@ def add_friend_pre_click_main_window_readiness(hwnd: int, geometry: dict[str, An
     ocr_started_at = time.perf_counter()
     ocr_items = _ops().run_ocr_on_screen_region(screenshot, [0, 0, screenshot.size[0], screenshot.size[1]])
     ocr_seconds = round(time.perf_counter() - ocr_started_at, 3)
+    layout_snapshot = _ops().finalize_add_friend_entry_layout_snapshot(
+        screenshot,
+        ocr_items,
+    )
     plus_target = add_friend_plus_entry_target(
         geometry,
         screenshot.size,
         ocr_items,
         screenshot=screenshot,
         route_kind='windows',
-        layout_snapshot=_ops().layout_snapshot_for_image(screenshot),
+        layout_snapshot=layout_snapshot,
     )
-    surface_readiness = _ops().add_friend_surface_readiness(screenshot, ocr_items, geometry, stage='formal_pre_click', require_main_surface=True)
+    surface_readiness = _ops().add_friend_surface_readiness(
+        screenshot,
+        ocr_items,
+        geometry,
+        stage='formal_pre_click',
+        require_main_surface=True,
+        layout_snapshot=layout_snapshot,
+    )
+    if surface_readiness.get('ok') and not plus_target.get('executable'):
+        surface_readiness = {
+            **surface_readiness,
+            'ok': False,
+            'state': 'plus_entry_not_found',
+            'error_code': ERROR_PLUS_ENTRY_NOT_FOUND,
+            'reason': str(plus_target.get('selected_reason') or 'plus_entry_not_found'),
+            'plus_target': plus_target,
+        }
     annotated_path = output_dir / 'add_friend_pre_click_main_window_annotated.png'
     annotated = draw_add_friend_screen_annotation(screenshot, ocr_items=ocr_items, targets=[plus_target], output_path=annotated_path, window_rect=None)
     decision = _ops().add_friend_pre_click_readiness_decision(focus_guard=focus_guard, surface_readiness=surface_readiness)
@@ -2668,15 +2720,34 @@ def add_friend_calibration_payload(hwnd: int, probe: dict[str, Any], *, geometry
     screenshot, screenshot_path = _ops().capture_wechat_window_visible_screen(hwnd, artifact_dir=str(output_dir), label='add_friend_calibration_main_window')
     ocr_started_at = time.perf_counter()
     ocr_items = _ops().run_ocr_on_screen_region(screenshot, [0, 0, screenshot.size[0], screenshot.size[1]])
+    layout_snapshot = _ops().finalize_add_friend_entry_layout_snapshot(
+        screenshot,
+        ocr_items,
+    )
     plus_target = add_friend_plus_entry_target(
         geometry,
         screenshot.size,
         ocr_items,
         screenshot=screenshot,
         route_kind='windows',
-        layout_snapshot=_ops().layout_snapshot_for_image(screenshot),
+        layout_snapshot=layout_snapshot,
     )
-    readiness = _ops().add_friend_surface_readiness(screenshot, ocr_items, geometry, stage='calibration')
+    readiness = _ops().add_friend_surface_readiness(
+        screenshot,
+        ocr_items,
+        geometry,
+        stage='calibration',
+        layout_snapshot=layout_snapshot,
+    )
+    if readiness.get('ok') and not plus_target.get('executable'):
+        readiness = {
+            **readiness,
+            'ok': False,
+            'state': 'plus_entry_not_found',
+            'error_code': ERROR_PLUS_ENTRY_NOT_FOUND,
+            'reason': str(plus_target.get('selected_reason') or 'plus_entry_not_found'),
+            'plus_target': plus_target,
+        }
     annotated_path = output_dir / 'add_friend_calibration_main_window_annotated.png'
     annotated = draw_add_friend_screen_annotation(screenshot, ocr_items=ocr_items, targets=[plus_target], output_path=annotated_path, window_rect=None)
     device_profile = _ops().add_friend_device_profile(hwnd, geometry=geometry, screenshot_size=screenshot.size, route=route)
