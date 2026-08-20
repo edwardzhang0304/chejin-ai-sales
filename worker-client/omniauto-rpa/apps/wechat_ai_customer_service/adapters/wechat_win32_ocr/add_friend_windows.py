@@ -1802,24 +1802,31 @@ def click_add_contact_entry_from_search_result(hwnd: int, output_dir: Path, *, r
     return {'ok': bool(invite_result.get('ok')), 'state': str(invite_result.get('state') or 'add_contact_entry_clicked'), 'query': query, 'task_status': str(invite_result.get('task_status') or 'running'), 'result_code': str(invite_result.get('result_code') or ''), 'error_code': str(invite_result.get('error_code') or ''), 'current_step': str(invite_result.get('current_step') or 'invite_confirm_clicked'), 'server_report_payload': invite_result.get('server_report_payload'), 'before': {'screenshot_path': result_path, 'annotated_path': annotated_before, 'targets': [target], 'ocr_items': add_friend_ocr_snapshots(result_items, result_shot.size)}, 'click': click_result, 'after': {'screenshot_path': after_path, 'annotated_path': after_annotated, 'ocr_items': add_friend_ocr_snapshots(after_items, after_shot.size), 'targets': after_targets}, 'invite_form_probe': invite_probe, 'invite_form': invite_result, 'timings': timings}
 
 
-def paste_invite_form_text(hwnd: int, target: dict[str, Any], text: str, *, action_name: str) -> dict[str, Any]:
+def paste_invite_form_text(
+    hwnd: int,
+    target: dict[str, Any],
+    text: str,
+    *,
+    action_name: str,
+    preserve_layout_snapshot: bool = False,
+) -> dict[str, Any]:
     clean = str(text or '')
     if not clean:
         return {'ok': True, 'skipped': True, 'reason': 'empty_text', 'action': make_action_result(action_id=action_name, action_type=ACTION_COMPOSITE_INPUT, status='skipped', method='click_ctrl_a_backspace_clipboard_paste', target=target, text=clean, metadata={'reason': 'empty_text'})}
     bounds = list(target.get('click_bounds') or [])
     if len(bounds) < 4:
         return {'ok': False, 'reason': 'target_missing_click_bounds', 'target': target, 'action': make_action_result(action_id=action_name, action_type=ACTION_COMPOSITE_INPUT, status='failed', method='click_ctrl_a_backspace_clipboard_paste', target=target, text=clean, error='target_missing_click_bounds')}
-    click_result = _ops().human_window_image_click_in_bounds(hwnd, int(target.get('x') or 0), int(target.get('y') or 0), bounds=bounds, action_name=f'{action_name}_click', expected_snapshot_id=str(target.get('layout_snapshot_id') or (_ops().layout_snapshot_metadata(hwnd).get('snapshot') or {}).get('layout_snapshot_id') or ''))
+    click_result = _ops().human_window_image_click_in_bounds(hwnd, int(target.get('x') or 0), int(target.get('y') or 0), bounds=bounds, action_name=f'{action_name}_click', expected_snapshot_id=str(target.get('layout_snapshot_id') or (_ops().layout_snapshot_metadata(hwnd).get('snapshot') or {}).get('layout_snapshot_id') or ''), preserve_layout_snapshot=preserve_layout_snapshot)
     if not click_result.get('ok'):
         return {'ok': False, 'reason': 'field_click_failed', 'method': 'click_ctrl_a_backspace_clipboard_paste', 'text_length': len(clean), 'click': click_result, 'target': target, 'action': make_action_result(action_id=action_name, action_type=ACTION_COMPOSITE_INPUT, status='failed', method='click_ctrl_a_backspace_clipboard_paste', target=target, text=clean, error=str(click_result.get('reason') or click_result.get('error') or 'field_click_failed'), result={'click': click_result, 'aborted_before_keyboard_input': True})}
     _ops().add_friend_paced_pause('input', reason=f'after_{action_name}_click_before_select_all')
-    _ops().hotkey(win32con.VK_CONTROL, ord('A'))
+    _ops().hotkey(win32con.VK_CONTROL, ord('A'), invalidate_layout=not preserve_layout_snapshot)
     _ops().add_friend_paced_pause('input', reason=f'after_{action_name}_select_all_before_backspace')
-    _ops().key_press(win32con.VK_BACK)
+    _ops().key_press(win32con.VK_BACK, invalidate_layout=not preserve_layout_snapshot)
     _ops().add_friend_paced_pause('input', reason=f'after_{action_name}_clear_before_clipboard')
     _ops().clipboard_copy(clean)
     _ops().add_friend_paced_pause('input', reason=f'after_{action_name}_clipboard_copy_before_paste')
-    _ops().hotkey(win32con.VK_CONTROL, ord('V'))
+    _ops().hotkey(win32con.VK_CONTROL, ord('V'), invalidate_layout=not preserve_layout_snapshot)
     _ops().add_friend_paced_pause('input', reason=f'after_{action_name}_paste')
     return {'ok': bool(click_result.get('ok')), 'method': 'click_ctrl_a_backspace_clipboard_paste', 'text_length': len(clean), 'click': click_result, 'action': make_action_result(action_id=action_name, action_type=ACTION_COMPOSITE_INPUT, status='completed' if bool(click_result.get('ok')) else 'failed', method='click_ctrl_a_backspace_clipboard_paste', target=target, text=clean, result={'click': click_result})}
 
@@ -1919,7 +1926,7 @@ def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, veri
             'timings': timings,
         }
     greeting_started_at = time.perf_counter()
-    greeting_result = _ops().paste_invite_form_text(hwnd, before_targets_map['invite_greeting_textarea'], clean_verify_message, action_name='invite_greeting')
+    greeting_result = _ops().paste_invite_form_text(hwnd, before_targets_map['invite_greeting_textarea'], clean_verify_message, action_name='invite_greeting', preserve_layout_snapshot=True)
     timings.append({'name': 'fill_invite_greeting_text', 'seconds': round(time.perf_counter() - greeting_started_at, 3), 'result': greeting_result})
     remark_started_at = time.perf_counter()
     remark_result = _ops().paste_invite_form_text(hwnd, before_targets_map['invite_remark_input'], clean_remark_name, action_name='invite_remark')
@@ -1949,11 +1956,14 @@ def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, veri
                 field_review['targets_map']['invite_greeting_textarea'],
                 clean_verify_message,
                 action_name='invite_greeting_retry',
+                preserve_layout_snapshot=True,
             )
             fill_retry_attempts.append({
                 'field': 'verify_message',
                 'result': retry_result,
             })
+            if retry_result.get('ok'):
+                greeting_result = retry_result
             timings.append({
                 'name': 'retry_invite_greeting_text',
                 'seconds': round(time.perf_counter() - retry_started_at, 3),
@@ -1962,6 +1972,15 @@ def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, veri
         remark_check = initial_field_verification.get('remark_name') or {}
         code_check = initial_field_verification.get('remark_code') or {}
         if not remark_check.get('ok') or not code_check.get('ok'):
+            if 'invite_remark_input' not in field_review['targets_map']:
+                return {
+                    'ok': False,
+                    'state': 'layout_unresolved',
+                    'task_status': 'failed',
+                    'error_code': 'WECHAT_UI_LAYOUT_UNRESOLVED',
+                    'current_step': 'invite_form_before_remark_retry',
+                    'timings': timings,
+                }
             retry_started_at = time.perf_counter()
             retry_result = _ops().paste_invite_form_text(
                 hwnd,
@@ -1973,6 +1992,8 @@ def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, veri
                 'field': 'remark_name',
                 'result': retry_result,
             })
+            if retry_result.get('ok'):
+                remark_result = retry_result
             timings.append({
                 'name': 'retry_invite_remark_text',
                 'seconds': round(time.perf_counter() - retry_started_at, 3),
@@ -2029,7 +2050,7 @@ def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, veri
             'current_step': 'invite_form_before_confirm',
             'timings': timings,
         }
-    if not field_verification.get('ok'):
+    if not field_verification.get('ok') or not greeting_result.get('ok') or not remark_result.get('ok'):
         final_status = mapped_add_friend_failed_result(state='invite_field_verification_failed', error_code=ERROR_INVITE_FIELD_VERIFICATION_FAILED, current_step='invite_fields_review', field_verification=field_verification)
         timings.append({'name': 'invite_field_verification_gate', 'seconds': 0.0, 'result': field_verification})
         return {'ok': False, 'state': str(final_status.get('state') or 'invite_field_verification_failed'), 'task_status': str(final_status.get('task_status') or 'failed'), 'result_code': str(final_status.get('result_code') or ''), 'error_code': str(final_status.get('error_code') or ERROR_INVITE_FIELD_VERIFICATION_FAILED), 'current_step': str(final_status.get('current_step') or 'invite_fields_review'), 'verify_message': clean_verify_message, 'remark_name': clean_remark_name, 'remark_code': clean_remark_code, 'remark_code_valid': remark_code_valid, 'legacy_remark_fallback': False, 'validation_errors': [], 'before': {'screenshot_path': before_path, 'annotated_path': before_annotated, 'targets': before_targets, 'ocr_items': add_friend_ocr_snapshots(before_items, before_shot.size)}, 'filled': {'screenshot_path': filled_path, 'annotated_path': filled_annotated, 'targets': filled_targets, 'ocr_items': add_friend_ocr_snapshots(filled_items, filled_shot.size), 'initial_field_verification': initial_field_verification, 'field_verification': field_verification, 'retry_attempts': fill_retry_attempts}, 'after': {'screenshot_path': '', 'annotated_path': '', 'ocr_items': [], 'final_status': final_status, 'skipped': True, 'reason': 'field_verification_failed_before_confirm'}, 'greeting': greeting_result, 'remark_fill': remark_result, 'field_verification': field_verification, 'fill_retry_attempts': fill_retry_attempts, 'confirm': {'ok': False, 'skipped': True, 'reason': 'field_verification_failed_before_confirm'}, 'server_report_payload': final_status.get('server_report_payload') or {'task.status': 'failed', 'task.error_code': ERROR_INVITE_FIELD_VERIFICATION_FAILED, 'task.current_step': 'invite_fields_review'}, 'timings': timings}

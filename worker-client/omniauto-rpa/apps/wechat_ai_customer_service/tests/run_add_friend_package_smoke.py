@@ -1409,6 +1409,45 @@ def test_invite_form_locator_contract() -> None:
         multiline_check.get("ok") is True,
         f"multiline greeting OCR fragments should be joined inside the field: {multiline_check}",
     )
+    live_confusion_check = invite_form_field_verification(
+        verify_message="您好，我是车金二手车的张文涛飞书UAT，您刚咨询过二手车",
+        remark_name="CJAZBKWV",
+        remark_code="CJAZBKWV",
+        ocr_items=[
+            ocr_item("您好，我是车金二手车的张文涛飞书UAT，", 40, 122, 350, 150),
+            ocr_item("您刚咨询过二手车", 40, 154, 220, 182),
+            ocr_item("CJAZBKWW", 40, 320, 150, 348, confidence=0.9567923471331596),
+        ],
+        field_bounds={
+            "verify_message": [30, 110, 430, 210],
+            "remark_name": [30, 290, 430, 360],
+            "remark_code": [30, 290, 430, 360],
+        },
+    )
+    assert_true(
+        live_confusion_check.get("ok") is True,
+        f"unique high-confidence eight-char pasted code should tolerate V/W OCR confusion: {live_confusion_check}",
+    )
+    assert_true(
+        (live_confusion_check.get("remark_code") or {}).get("matched_by")
+        == "high_confidence_eight_char_code",
+        f"short-code verification mode missing: {live_confusion_check}",
+    )
+    low_confidence_code = invite_form_field_verification(
+        verify_message="您好",
+        remark_name="CJAZBKWV",
+        remark_code="CJAZBKWV",
+        ocr_items=[
+            ocr_item("您好", 40, 122, 120, 150),
+            ocr_item("CJAZBKWW", 40, 320, 150, 348, confidence=0.89),
+        ],
+        field_bounds={
+            "verify_message": [30, 110, 430, 210],
+            "remark_name": [30, 290, 430, 360],
+            "remark_code": [30, 290, 430, 360],
+        },
+    )
+    assert_true(low_confidence_code.get("ok") is False, f"low-confidence code must still fail: {low_confidence_code}")
 
 
 def test_invite_form_input_click_failure_blocks_keyboard_actions() -> None:
@@ -1445,6 +1484,62 @@ def test_invite_form_input_click_failure_blocks_keyboard_actions() -> None:
     assert_true(result.get("ok") is False, f"focus click failure should fail: {result}")
     assert_true(result.get("reason") == "field_click_failed", f"failure should be explicit: {result}")
     assert_true(calls == [], f"keyboard/clipboard actions must not run after failed field click: {calls}")
+
+
+def test_invite_form_stable_first_field_preserves_snapshot_for_second_field() -> None:
+    import apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar as sidecar
+
+    calls: list[tuple[str, object]] = []
+    original_click = sidecar.human_window_image_click_in_bounds
+    original_pause = sidecar.add_friend_paced_pause
+    original_hotkey = sidecar.hotkey
+    original_key_press = sidecar.key_press
+    original_clipboard_copy = sidecar.clipboard_copy
+    try:
+        sidecar.human_window_image_click_in_bounds = lambda *_args, **kwargs: (
+            calls.append(("click", kwargs))
+            or {"ok": True, "layout_snapshot_id": "invite-snapshot-1"}
+        )
+        sidecar.add_friend_paced_pause = lambda *_args, **_kwargs: 0.0
+        sidecar.hotkey = lambda *args, **kwargs: calls.append(
+            ("hotkey", {"args": args, "kwargs": kwargs})
+        )
+        sidecar.key_press = lambda *args, **kwargs: calls.append(
+            ("key_press", {"args": args, "kwargs": kwargs})
+        )
+        sidecar.clipboard_copy = lambda text: calls.append(("clipboard_copy", text))
+        result = sidecar.paste_invite_form_text(
+            1001,
+            {
+                "name": "invite_greeting_textarea",
+                "x": 230,
+                "y": 145,
+                "click_bounds": [36, 109, 430, 185],
+                "layout_snapshot_id": "invite-snapshot-1",
+            },
+            "您好",
+            action_name="invite_greeting",
+            preserve_layout_snapshot=True,
+        )
+    finally:
+        sidecar.human_window_image_click_in_bounds = original_click
+        sidecar.add_friend_paced_pause = original_pause
+        sidecar.hotkey = original_hotkey
+        sidecar.key_press = original_key_press
+        sidecar.clipboard_copy = original_clipboard_copy
+
+    assert_true(result.get("ok") is True, f"stable first field input failed: {result}")
+    click_kwargs = dict(calls[0][1])
+    assert_true(
+        click_kwargs.get("preserve_layout_snapshot") is True,
+        f"first field click invalidated the stable form snapshot: {calls}",
+    )
+    keyboard_calls = [payload for name, payload in calls if name in {"hotkey", "key_press"}]
+    assert_true(
+        keyboard_calls
+        and all((payload.get("kwargs") or {}).get("invalidate_layout") is False for payload in keyboard_calls),
+        f"first field keyboard input invalidated the stable form snapshot: {calls}",
+    )
 
 
 def test_invite_form_field_verification_blocks_confirm_click() -> None:
@@ -1488,6 +1583,193 @@ def test_invite_form_failed_field_retries_once_before_confirm() -> None:
     assert_true(
         "fill_retry_attempts" in section,
         "retry evidence must be retained for diagnostics",
+    )
+
+
+def test_invite_form_reuses_stable_snapshot_between_greeting_and_remark() -> None:
+    from PIL import Image
+
+    from apps.wechat_ai_customer_service.adapters.add_friend_layout import (
+        invite_form_field_verification,
+    )
+    from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import (
+        add_friend_windows,
+    )
+
+    image = Image.new("RGB", (468, 809), (255, 255, 255))
+
+    class ConfirmReached(RuntimeError):
+        pass
+
+    class FakeOps:
+        def __init__(self) -> None:
+            self.snapshot_number = 1
+            self.snapshot_valid = True
+            self.review_count = 0
+            self.paste_calls: list[tuple[str, str, bool]] = []
+            self.confirm_snapshot = ""
+
+        @property
+        def snapshot_id(self) -> str:
+            return f"invite-snapshot-{self.snapshot_number}"
+
+        def targets(self) -> dict[str, dict[str, object]]:
+            snapshot_id = self.snapshot_id
+            return {
+                "invite_greeting_textarea": {
+                    "name": "invite_greeting_textarea",
+                    "x": 230,
+                    "y": 145,
+                    "click_bounds": [36, 109, 430, 185],
+                    "layout_snapshot_id": snapshot_id,
+                },
+                "invite_remark_input": {
+                    "name": "invite_remark_input",
+                    "x": 130,
+                    "y": 319,
+                    "click_bounds": [34, 291, 430, 347],
+                    "layout_snapshot_id": snapshot_id,
+                },
+                "invite_confirm_button": {
+                    "name": "invite_confirm_button",
+                    "x": 149,
+                    "y": 751,
+                    "click_bounds": [105, 725, 193, 780],
+                    "layout_snapshot_id": snapshot_id,
+                },
+            }
+
+        def add_friend_paced_pause(self, *_args, **_kwargs) -> float:
+            return 0.0
+
+        def capture_wechat_window_visible_screen(self, *_args, **_kwargs):
+            return image, "before.png"
+
+        def run_ocr_on_screen_region(self, *_args, **_kwargs):
+            return []
+
+        def layout_snapshot_for_image(self, _image):
+            return {"layout_snapshot_id": self.snapshot_id}
+
+        def paste_invite_form_text(
+            self,
+            _hwnd,
+            target,
+            _text,
+            *,
+            action_name,
+            preserve_layout_snapshot=False,
+        ):
+            target_snapshot = str(target.get("layout_snapshot_id") or "")
+            self.paste_calls.append(
+                (str(action_name), target_snapshot, bool(preserve_layout_snapshot))
+            )
+            if not self.snapshot_valid or target_snapshot != self.snapshot_id:
+                return {
+                    "ok": False,
+                    "error_code": "WECHAT_UI_LAYOUT_STALE",
+                    "reason": "keyboard_input_started",
+                }
+            if not preserve_layout_snapshot:
+                self.snapshot_valid = False
+            return {"ok": True, "action_name": action_name}
+
+        def capture_invite_form_field_review(self, *_args, **_kwargs):
+            self.review_count += 1
+            self.snapshot_number += 1
+            self.snapshot_valid = True
+            items = [
+                {
+                    "text": "您好",
+                    "left": 40,
+                    "top": 122,
+                    "right": 120,
+                    "bottom": 150,
+                    "confidence": 0.99,
+                }
+            ]
+            items.append(
+                {
+                    "text": "CJAZBKWW",
+                    "left": 40,
+                    "top": 310,
+                    "right": 150,
+                    "bottom": 340,
+                    "confidence": 0.9567923471331596,
+                }
+            )
+            verification = invite_form_field_verification(
+                verify_message="您好",
+                remark_name="CJAZBKWV",
+                remark_code="CJAZBKWV",
+                ocr_items=items,
+                field_bounds={
+                    "verify_message": [30, 110, 430, 210],
+                    "remark_name": [30, 290, 430, 360],
+                    "remark_code": [30, 290, 430, 360],
+                },
+            )
+            targets = self.targets()
+            return {
+                "shot": image,
+                "screenshot_path": f"review-{self.review_count}.png",
+                "annotated_path": f"review-{self.review_count}-annotated.png",
+                "ocr_items": items,
+                "ocr_seconds": 0.0,
+                "targets_map": targets,
+                "targets": list(targets.values()),
+                "field_verification": verification,
+            }
+
+        def human_window_image_click_in_bounds(self, _hwnd, *_args, **kwargs):
+            self.confirm_snapshot = str(kwargs.get("expected_snapshot_id") or "")
+            if not self.snapshot_valid or self.confirm_snapshot != self.snapshot_id:
+                raise AssertionError("confirm reused a stale invite snapshot")
+            raise ConfirmReached("confirm reached with a fresh snapshot")
+
+    fake_ops = FakeOps()
+    original_ops = add_friend_windows._SIDECAR_OPS
+    try:
+        add_friend_windows.bind_sidecar_ops(fake_ops)
+        with (
+            patch.object(
+                add_friend_windows,
+                "add_friend_invite_form_targets",
+                side_effect=lambda *_args, **_kwargs: fake_ops.targets(),
+            ),
+            patch.object(
+                add_friend_windows,
+                "draw_add_friend_screen_annotation",
+                return_value="annotated.png",
+            ),
+        ):
+            try:
+                add_friend_windows.fill_add_friend_invite_form_and_confirm(
+                    1001,
+                    Path(tempfile.mkdtemp(prefix="add-friend-fresh-field-test-")),
+                    verify_message="您好",
+                    remark_name="CJAZBKWV",
+                    remark_code="CJAZBKWV",
+                )
+            except ConfirmReached:
+                pass
+            else:
+                raise AssertionError("fresh invite form flow did not reach confirm")
+    finally:
+        add_friend_windows.bind_sidecar_ops(original_ops)
+
+    assert_true(
+        fake_ops.paste_calls
+        == [
+            ("invite_greeting", "invite-snapshot-1", True),
+            ("invite_remark", "invite-snapshot-1", False),
+        ],
+        f"stable invite fields did not reuse the same snapshot: {fake_ops.paste_calls}",
+    )
+    assert_true(fake_ops.review_count == 1, f"unexpected invite recapture count: {fake_ops.review_count}")
+    assert_true(
+        fake_ops.confirm_snapshot == "invite-snapshot-2",
+        f"confirm did not use final reviewed snapshot: {fake_ops.confirm_snapshot}",
     )
 
 
@@ -2609,8 +2891,10 @@ def main() -> int:
         test_add_friend_actions_contract,
         test_invite_form_locator_contract,
         test_invite_form_input_click_failure_blocks_keyboard_actions,
+        test_invite_form_stable_first_field_preserves_snapshot_for_second_field,
         test_invite_form_field_verification_blocks_confirm_click,
         test_invite_form_failed_field_retries_once_before_confirm,
+        test_invite_form_reuses_stable_snapshot_between_greeting_and_remark,
         test_invite_confirm_uses_durable_action_journal_before_click,
         test_post_confirm_residual_dialog_uses_only_exact_top_title,
         test_post_confirm_residual_dialog_is_closed_once_when_title_ocr_misses,

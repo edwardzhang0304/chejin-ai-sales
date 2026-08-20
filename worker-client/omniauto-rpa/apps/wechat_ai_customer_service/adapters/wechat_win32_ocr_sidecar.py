@@ -8427,9 +8427,9 @@ def capture_invite_form_field_review(
     )
 
 
-def paste_invite_form_text(hwnd: int, target: dict[str, Any], text: str, *, action_name: str) -> dict[str, Any]:
+def paste_invite_form_text(hwnd: int, target: dict[str, Any], text: str, *, action_name: str, preserve_layout_snapshot: bool = False) -> dict[str, Any]:
     win32_ocr_add_friend_windows.bind_sidecar_ops(sys.modules[__name__])
-    return win32_ocr_add_friend_windows.paste_invite_form_text(hwnd, target, text, action_name=action_name)
+    return win32_ocr_add_friend_windows.paste_invite_form_text(hwnd, target, text, action_name=action_name, preserve_layout_snapshot=preserve_layout_snapshot)
 
 
 def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, verify_message: str, remark_name: str, remark_code: str, action_journal_path: str = '') -> dict[str, Any]:
@@ -18765,6 +18765,7 @@ def human_window_image_click_in_bounds(
     bounds: list[int],
     action_name: str = "human_window_image_click_in_bounds",
     expected_snapshot_id: str = "",
+    preserve_layout_snapshot: bool = False,
 ) -> dict[str, Any]:
     """Click a screenshot-space point, clamped to a known safe window rectangle."""
     mapped, failure = _map_window_image_target(
@@ -18791,7 +18792,8 @@ def human_window_image_click_in_bounds(
             "layout_snapshot_id": mapped.get("layout_snapshot_id"),
         },
     )
-    invalidate_layout_snapshot(hwnd, reason="physical_click_started")
+    if not preserve_layout_snapshot:
+        invalidate_layout_snapshot(hwnd, reason="physical_click_started")
     activate_window(hwnd)
     ensure_left_button_released()
     try:
@@ -18991,8 +18993,9 @@ def human_screen_click_in_bounds(
             ensure_left_button_released()
 
 
-def hotkey(modifier: int, key: int) -> None:
-    invalidate_all_layout_snapshots(reason="keyboard_input_started")
+def hotkey(modifier: int, key: int, *, invalidate_layout: bool = True) -> None:
+    if invalidate_layout:
+        invalidate_all_layout_snapshots(reason="keyboard_input_started")
     coordinate_rpa_action("hotkey", metadata={"modifier": int(modifier), "key": int(key)})
     win32api.keybd_event(modifier, 0, 0, 0)
     humanized_action_sleep(16, 42)
@@ -19003,8 +19006,9 @@ def hotkey(modifier: int, key: int) -> None:
     humanized_action_sleep(8, 28)
 
 
-def key_press(key: int) -> None:
-    invalidate_all_layout_snapshots(reason="keyboard_input_started")
+def key_press(key: int, *, invalidate_layout: bool = True) -> None:
+    if invalidate_layout:
+        invalidate_all_layout_snapshots(reason="keyboard_input_started")
     coordinate_rpa_action("key_press", metadata={"key": int(key)})
     win32api.keybd_event(key, 0, 0, 0)
     humanized_action_sleep(24, 70)
