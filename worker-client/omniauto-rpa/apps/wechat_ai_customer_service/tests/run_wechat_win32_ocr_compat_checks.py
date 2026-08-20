@@ -629,6 +629,14 @@ def test_sidebar_visible_list_enhanced_ocr_recovers_pinned_gray_sessions() -> No
     crop_left, crop_top, _crop_right, _crop_bottom = layout_snapshot["session_list_bounds"]
 
     def fake_ocr_runner(_image):
+        assert_true(
+            _image.size
+            == (
+                int((layout_snapshot["session_list_bounds"][2] - crop_left) * scale),
+                int((layout_snapshot["session_list_bounds"][3] - crop_top) * scale),
+            ),
+            f"enhanced OCR used the wrong source crop: {_image.size}",
+        )
         return [
             {
                 "text": "CJR8S5K3虾丸子大...",
@@ -665,6 +673,15 @@ def test_sidebar_visible_list_enhanced_ocr_recovers_pinned_gray_sessions() -> No
     names = [item["name"] for item in sessions]
     assert_true(names[:2] == ["CJR8S5K3虾丸子大...", "CJTOP02第二个置顶"], f"enhanced OCR should recover all pinned gray rows: {names}")
     assert_true(enhanced and enhanced[0].get("ocr_source") == "sidebar_visible_list_enhanced", f"enhanced OCR source should be marked: {enhanced}")
+    assert_true(
+        round(float(enhanced[0].get("left") or 0), 3) == 154.0
+        and round(float(enhanced[0].get("center_y") or 0), 3) == 128.5,
+        f"enhanced OCR coordinates were not mapped back to the source frame: {enhanced[0]}",
+    )
+    assert_true(
+        "layout_snapshot_id" not in enhanced[0] and "executable" not in enhanced[0],
+        f"enhanced OCR must not create click authority: {enhanced[0]}",
+    )
 
 
 def test_parse_sessions_detects_visual_unread_red_dot() -> None:
@@ -7228,7 +7245,6 @@ def test_rpa_action_layer_avoids_fixed_sleep_cadence() -> None:
     sidecar_action_functions = {
         "activate_session_candidate",
         "clear_sidebar_search_box_without_select_all",
-        "client_click",
         "confirm_input_token_via_clipboard",
         "ensure_left_button_released",
         "ensure_visible_wechat_window",

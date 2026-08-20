@@ -353,7 +353,56 @@ def build_structural_layout_regions(
             "confidence": 0.0,
             "conflicts": conflicts,
         }
-    _pair_score, nav_boundary, main_boundary = max(pairs, key=lambda item: item[0])
+    ranked_pairs = sorted(pairs, key=lambda item: item[0], reverse=True)
+    _pair_score, nav_boundary, main_boundary = ranked_pairs[0]
+    # A layout snapshot is an action authority, not a best-effort guess.  When
+    # two materially different separator pairs have nearly the same pixel
+    # evidence, selecting the right-most/strongest one can turn a chat-panel
+    # edge into the sidebar boundary.  Keep the frame readable for diagnostics
+    # but refuse to make it executable until a fresh frame is unambiguous.
+    pair_score_tolerance = max(6.0, abs(float(_pair_score)) * 0.08)
+    pair_position_tolerance = max(18, int(width * 0.018))
+    competing_pairs = [
+        item
+        for item in ranked_pairs[1:]
+        if abs(float(item[0]) - float(_pair_score)) <= pair_score_tolerance
+        and (
+            abs(int(item[1][0]) - int(nav_boundary[0])) > pair_position_tolerance
+            or abs(int(item[2][0]) - int(main_boundary[0])) > pair_position_tolerance
+        )
+    ]
+    # A chat panel can contain another full-height vertical edge to the right
+    # of the real sidebar separator.  If the left navigation edge is the same,
+    # the first qualified separator after it is the sidebar boundary; this is
+    # structural disambiguation, not a reference coordinate.  Distinct nav
+    # candidates remain genuinely ambiguous and must fail closed.
+    same_nav_pairs = [
+        item
+        for item in pairs
+        if abs(int(item[1][0]) - int(nav_boundary[0])) <= pair_position_tolerance
+    ]
+    if same_nav_pairs:
+        _pair_score, nav_boundary, main_boundary = min(
+            same_nav_pairs,
+            key=lambda item: int(item[2][0]),
+        )
+    unresolved_pairs = [
+        item
+        for item in competing_pairs
+        if abs(int(item[1][0]) - int(nav_boundary[0])) > pair_position_tolerance
+    ]
+    if unresolved_pairs:
+        conflicts.append("sidebar_boundary_pair_ambiguous")
+        return {
+            "ok": False,
+            "regions": {},
+            "anchors": [],
+            "confidence": 0.0,
+            "conflicts": conflicts,
+            "vertical_candidates": [
+                {"x": x, "score": score} for x, score in verticals[:12]
+            ],
+        }
     sidebar_header_bottom_candidates = _horizontal_edge_candidates(
         image,
         left=nav_boundary[0],

@@ -66,41 +66,6 @@ def make_locator_result(
     return result
 
 
-def fixed_geometry_locator(
-    *,
-    name: str,
-    label: str,
-    region: str,
-    bounds: list[int],
-    point: list[int] | tuple[int, int],
-    selected_reason: str,
-    risk: str,
-    metadata: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    candidate = {
-        "source": "fixed_geometry",
-        "bounds": normalize_bounds(bounds),
-        "point": normalize_point(point),
-        "confidence": 0.62,
-    }
-    return make_locator_result(
-        name=name,
-        label=label,
-        strategy="window_region_geometry_fallback",
-        region=region,
-        bounds=normalize_bounds(bounds),
-        point=normalize_point(point),
-        candidates=[candidate],
-        selected_reason=selected_reason,
-        confidence=0.62,
-        fallback_used=True,
-        fallback_reason="ocr_locator_not_enabled_for_this_target_yet",
-        source="fixed_invite_form_geometry",
-        risk=risk,
-        metadata=metadata,
-    )
-
-
 def ocr_item_locator(
     *,
     name: str,
