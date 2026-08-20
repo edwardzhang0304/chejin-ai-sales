@@ -1,5 +1,5 @@
 @startuml
-' 文档版本：v0.9.21；灰度候选版本：0.9.21（代码候选已形成，待 Windows UAT 与正式包验证）；最后更新：2026-08-18
+' 文档版本：v0.9.22；灰度候选版本：0.9.22（代码候选已形成，待 Windows UAT 与正式包验证）；最后更新：2026-08-18
 title AI智能客服售前跟进系统 全流程图（C0-C4、媒体、回复、转人工与恢复）
 
 skinparam monochrome true
@@ -76,7 +76,7 @@ note over W,Reply
 end note
 
 note over W,WX
-0.9.21通用Windows UI兼容前置门禁（适用于add_friend、authorized_read、pre_send_refresh和send）：
+0.9.22通用Windows UI兼容前置门禁（适用于add_friend、authorized_read、pre_send_refresh和send）：
 取得UI锁后、首次业务截图前，OmniAuto使用统一入口规范化并复核微信窗口。
 当前截图建立独立layout_snapshot：capture_mode、截图屏幕原点、window/client rect、DPI、
 侧栏/标题/消息区/输入区边界、锚点、置信度、冲突和executable。

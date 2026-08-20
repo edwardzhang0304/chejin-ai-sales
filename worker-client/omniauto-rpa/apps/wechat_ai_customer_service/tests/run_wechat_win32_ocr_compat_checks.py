@@ -4542,6 +4542,7 @@ def test_normalize_wechat_window_uses_shared_safe_origin_when_size_is_already_sa
     if not hasattr(sidecar_mod.ctypes, "windll"):
         return
     original_get_window_geometry = sidecar_mod.get_window_geometry
+    original_get_window_client_geometry = sidecar_mod.get_window_client_geometry
     original_win32gui = sidecar_mod.win32gui
     if sidecar_mod.win32gui is None:
         sidecar_mod.win32gui = types.SimpleNamespace(MoveWindow=lambda *_args, **_kwargs: None)
@@ -4562,6 +4563,16 @@ def test_normalize_wechat_window_uses_shared_safe_origin_when_size_is_already_sa
     def fake_get_window_geometry(_hwnd: int) -> dict[str, int]:
         return dict(geometry_state)
 
+    def fake_get_window_client_geometry(_hwnd: int) -> dict[str, int]:
+        return {
+            "left": int(geometry_state["left"]),
+            "top": int(geometry_state["top"]),
+            "right": int(geometry_state["right"]),
+            "bottom": int(geometry_state["bottom"]),
+            "width": int(geometry_state["width"]),
+            "height": int(geometry_state["height"]),
+        }
+
     def fake_move_window(_hwnd: int, left: int, top: int, width: int, height: int, _repaint: bool) -> None:
         calls.append((left, top, width, height))
         geometry_state.update(
@@ -4578,6 +4589,7 @@ def test_normalize_wechat_window_uses_shared_safe_origin_when_size_is_already_sa
     try:
         os.environ.pop("WECHAT_WIN32_OCR_WINDOW_FIXED_ORIGIN", None)
         sidecar_mod.get_window_geometry = fake_get_window_geometry
+        sidecar_mod.get_window_client_geometry = fake_get_window_client_geometry
         sidecar_mod.win32gui.MoveWindow = fake_move_window
         sidecar_mod.ctypes.windll = FakeWindll()
         result = normalize_wechat_window(1001)
@@ -4592,6 +4604,7 @@ def test_normalize_wechat_window_uses_shared_safe_origin_when_size_is_already_sa
         else:
             os.environ["WECHAT_WIN32_OCR_WINDOW_FIXED_ORIGIN"] = previous_fixed_origin
         sidecar_mod.get_window_geometry = original_get_window_geometry
+        sidecar_mod.get_window_client_geometry = original_get_window_client_geometry
         sidecar_mod.win32gui.MoveWindow = original_move_window
         sidecar_mod.win32gui = original_win32gui
         sidecar_mod.ctypes.windll = original_windll
