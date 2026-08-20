@@ -1352,32 +1352,7 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
         return status_payload(hwnd, probe, artifact_dir=args.artifact_dir)
     if action == "normalize-window":
         normalization = probe.get("window_normalization") if isinstance(probe.get("window_normalization"), dict) else {}
-        readiness: dict[str, Any] = {}
-        if normalization.get("ok"):
-            try:
-                readiness_image, readiness_path = capture_wechat(
-                    hwnd,
-                    artifact_dir=args.artifact_dir,
-                    label="window_normalization_readiness",
-                )
-                readiness_items = run_ocr_traced(
-                    readiness_image,
-                    "window_normalization_readiness",
-                    source="normalize_window",
-                )
-                readiness_block = blocking_screen_reason(readiness_items)
-                readiness_layout = layout_snapshot_for_image(readiness_image)
-                readiness = {
-                    "ok": bool(readiness_layout.get("valid") and not readiness_block),
-                    "screenshot_path": readiness_path,
-                    "blocking_reason": readiness_block,
-                    "layout_snapshot_id": str(readiness_layout.get("layout_snapshot_id") or ""),
-                    "layout_confidence": readiness_layout.get("confidence"),
-                    "layout_conflicts": list(readiness_layout.get("conflicts") or []),
-                }
-            except Exception as exc:
-                readiness = {"ok": False, "reason": "normalization_readiness_probe_failed", "error": repr(exc)}
-        ready = bool(normalization.get("ok") and readiness.get("ok"))
+        ready = bool(normalization.get("ok"))
         return {
             "ok": ready,
             "online": ready,
@@ -1387,9 +1362,13 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
                 normalization.get("error_code")
                 or ("" if ready else win32_ocr_layout.ERROR_WINDOW_NORMALIZATION_FAILED)
             ),
-            "reason": str(normalization.get("reason") or readiness.get("reason") or readiness.get("blocking_reason") or ""),
+            "reason": str(normalization.get("reason") or ("" if ready else "window_normalization_failed")),
             "window_normalization": normalization,
-            "readiness": readiness,
+            "readiness": {
+                "ok": True,
+                "skipped": True,
+                "reason": "deferred_to_business_action_pre_click_gate",
+            } if ready else {},
             "window_probe": probe,
         }
     if action == "capabilities":

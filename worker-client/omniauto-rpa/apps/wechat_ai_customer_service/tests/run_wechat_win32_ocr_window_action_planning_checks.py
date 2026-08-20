@@ -538,6 +538,71 @@ def test_sidecar_promotes_current_window_to_standard_size_when_unconfigured() ->
         sidecar.win32gui = original_win32gui
 
 
+def test_startup_normalization_defers_full_layout_to_business_action() -> None:
+    original_import_error = sidecar._WIN32_IMPORT_ERROR
+    original_probe = sidecar.ensure_visible_wechat_window
+    original_dismiss = sidecar.dismiss_blank_foreground_window_before_activation
+    original_activate = sidecar.activate_window
+    original_normalize = sidecar.normalize_wechat_window
+    original_env_flag = sidecar.env_flag
+    original_quick_login = sidecar.ensure_quick_login_if_available
+    original_sleep = sidecar.humanized_action_sleep
+    original_capture = sidecar.capture_wechat
+    original_ocr = sidecar.run_ocr_traced
+    original_layout = sidecar.layout_snapshot_for_image
+    forbidden_calls: list[str] = []
+    try:
+        sidecar._WIN32_IMPORT_ERROR = ""
+        sidecar.ensure_visible_wechat_window = lambda interactive=True: {
+            "visible_main_windows": [{"hwnd": 2100, "title": "微信"}],
+            "visible_windows": [{"hwnd": 2100, "title": "微信"}],
+        }
+        sidecar.dismiss_blank_foreground_window_before_activation = lambda *_args, **_kwargs: {"attempted": False}
+        sidecar.activate_window = lambda _hwnd: None
+        sidecar.normalize_wechat_window = lambda _hwnd, allow_move=True: {
+            "ok": True,
+            "enabled": True,
+            "applied": True,
+            "reason": "normalized",
+            "after": {"left": 0, "top": 0, "width": 980, "height": 860},
+        }
+        sidecar.env_flag = lambda *_args, **_kwargs: False
+        sidecar.ensure_quick_login_if_available = lambda *_args, **_kwargs: {
+            "attempted": False,
+            "detected": False,
+            "reason": "wechat_already_logged_in",
+        }
+        sidecar.humanized_action_sleep = lambda *_args, **_kwargs: 0.0
+        sidecar.capture_wechat = lambda *_args, **_kwargs: forbidden_calls.append("capture")
+        sidecar.run_ocr_traced = lambda *_args, **_kwargs: forbidden_calls.append("ocr")
+        sidecar.layout_snapshot_for_image = lambda *_args, **_kwargs: forbidden_calls.append("layout")
+
+        result = sidecar.run_action(
+            types.SimpleNamespace(
+                action="normalize-window",
+                artifact_dir=None,
+                window_policy="normalize",
+            )
+        )
+
+        assert_true(result.get("ok") is True, f"geometry-only startup normalization failed: {result}")
+        assert_true(result.get("state") == "window_normalized", f"unexpected startup state: {result}")
+        assert_true(result.get("readiness", {}).get("skipped") is True, f"layout deferral marker missing: {result}")
+        assert_true(forbidden_calls == [], f"startup unexpectedly ran full layout/OCR: {forbidden_calls}")
+    finally:
+        sidecar._WIN32_IMPORT_ERROR = original_import_error
+        sidecar.ensure_visible_wechat_window = original_probe
+        sidecar.dismiss_blank_foreground_window_before_activation = original_dismiss
+        sidecar.activate_window = original_activate
+        sidecar.normalize_wechat_window = original_normalize
+        sidecar.env_flag = original_env_flag
+        sidecar.ensure_quick_login_if_available = original_quick_login
+        sidecar.humanized_action_sleep = original_sleep
+        sidecar.capture_wechat = original_capture
+        sidecar.run_ocr_traced = original_ocr
+        sidecar.layout_snapshot_for_image = original_layout
+
+
 def test_normalization_rejects_dpi_change_after_geometry_check() -> None:
     original_get_window_geometry = sidecar.get_window_geometry
     original_get_window_client_geometry = sidecar.get_window_client_geometry
@@ -1265,6 +1330,7 @@ def main() -> int:
         test_sidecar_normalize_wechat_window_uses_same_planned_move_shape,
         test_verify_policy_refuses_a_required_move_without_touching_the_window,
         test_sidecar_promotes_current_window_to_standard_size_when_unconfigured,
+        test_startup_normalization_defers_full_layout_to_business_action,
         test_normalization_rejects_dpi_change_after_geometry_check,
         test_sidebar_search_query_must_match_exact_remark_code,
         test_sidebar_search_query_ignores_empty_placeholder_icon_text,

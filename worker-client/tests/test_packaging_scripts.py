@@ -506,7 +506,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "f0949fc3eea8abd32a7521ffec1cdba7368c8382"
+                        "411ff5be9c3872cac645689ac251ad053923837d"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -570,6 +570,9 @@ class PackagingScriptsTest(unittest.TestCase):
                         "add_friend_unique_plus_visual_target_contract",
                         "dpi_independent_1920_window_normalization_contract",
                         "typed_empty_ocr_region_failure_contract",
+                        "startup_window_normalization_geometry_only_contract",
+                        "business_action_preclick_layout_gate_contract",
+                        "verify_only_after_startup_window_contract",
                     ],
                 }
             ],
@@ -591,7 +594,7 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["chejin_overlays"],
         )
         self.assertIn(
-            "f0949fc3eea8abd32a7521ffec1cdba7368c8382",
+            "411ff5be9c3872cac645689ac251ad053923837d",
             provenance["integration_note"],
         )
         self.assertIn("0.9.22", provenance["integration_note"])
