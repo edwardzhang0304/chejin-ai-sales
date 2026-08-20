@@ -3,8 +3,8 @@
 This adapter is designed as the primary transport because it relies only on
 the top-level Win32 window, screenshots, OCR, clipboard paste, and guarded
 click/input flows. Every physical action uses a per-frame dynamic layout
-snapshot and the shared coordinate converter. Reference resolutions are
-diagnostics and tests only; they never authorize a physical click.
+snapshot and the shared coordinate converter. No reference-resolution
+coordinate model is retained or allowed to authorize a physical click.
 """
 
 from __future__ import annotations
@@ -95,15 +95,10 @@ from apps.wechat_ai_customer_service.adapters.add_friend_flow import (
 )
 from apps.wechat_ai_customer_service.adapters.add_friend_layout import (
     invite_form_field_verification,
-    plus_entry_target as layout_plus_entry_target,
     semantic_invite_form_targets,
-    windows_1080p_reference_plus_point,
-    windows_plus_point,
 )
 from apps.wechat_ai_customer_service.adapters.add_friend_locator import (
     LOCATOR_RESULT_FIELDS,
-    fixed_geometry_locator,
-    geometry_fallback_locator,
     make_locator_result,
     ocr_item_locator,
 )
@@ -3932,7 +3927,10 @@ def voice_transcribe_click_target_from_bounds(
     min_points: int = 10,
 ) -> dict[str, Any]:
     left, top, right, bottom = [int(value) for value in bounds[:4]]
-    candidates = _spread_points_in_rect(left, top, right, bottom, min_points=min_points)
+    candidates = voice_transcribe_click_candidate_points(
+        {"click_bounds": [left, top, right, bottom]},
+        min_points=min_points,
+    )
     return {
         "source": source,
         "label": label,
@@ -7031,13 +7029,39 @@ def voice_transcribe_click_candidate_points(target: dict[str, Any], *, min_point
     bounds = target.get("click_bounds") if isinstance(target, dict) else None
     if not isinstance(bounds, list) or len(bounds) < 4:
         return []
-    return _spread_points_in_rect(
-        int(bounds[0]),
-        int(bounds[1]),
-        int(bounds[2]),
-        int(bounds[3]),
-        min_points=min_points,
+    left, top, right, bottom = [int(value) for value in bounds[:4]]
+    if right <= left or bottom <= top:
+        return []
+    requested = max(1, min(16, int(min_points or 1)))
+    relative_points = (
+        (0.50, 0.50),
+        (0.30, 0.30),
+        (0.70, 0.30),
+        (0.30, 0.70),
+        (0.70, 0.70),
+        (0.50, 0.25),
+        (0.50, 0.75),
+        (0.25, 0.50),
+        (0.75, 0.50),
+        (0.40, 0.40),
+        (0.60, 0.40),
+        (0.40, 0.60),
+        (0.60, 0.60),
+        (0.20, 0.20),
+        (0.80, 0.20),
+        (0.80, 0.80),
     )
+    points: list[tuple[int, int]] = []
+    for x_ratio, y_ratio in relative_points:
+        point = (
+            max(left, min(right, int(round(left + (right - left) * x_ratio)))),
+            max(top, min(bottom, int(round(top + (bottom - top) * y_ratio)))),
+        )
+        if point not in points:
+            points.append(point)
+        if len(points) >= requested:
+            break
+    return points
 
 
 def jitter_voice_transcribe_click_point(target: dict[str, Any], geometry: dict[str, Any]) -> tuple[int, int, dict[str, Any]]:
@@ -7785,26 +7809,6 @@ def add_friend_region_for_point(x: int, y: int, image_size: tuple[int, int]) -> 
 
 def add_friend_region_for_item(item: dict[str, Any], image_size: tuple[int, int]) -> str:
     return win32_ocr_add_friend_windows.add_friend_region_for_item(item, image_size)
-
-
-def add_friend_windows_1080p_reference_plus_button_point_for_geometry(geometry: dict[str, Any]) -> tuple[int, int]:
-    return win32_ocr_add_friend_windows.add_friend_windows_1080p_reference_plus_button_point_for_geometry(geometry)
-
-
-def add_friend_windows_plus_button_point_for_geometry(geometry: dict[str, Any]) -> tuple[int, int]:
-    return win32_ocr_add_friend_windows.add_friend_windows_plus_button_point_for_geometry(geometry)
-
-
-def add_friend_plus_button_point_for_geometry(geometry: dict[str, Any]) -> tuple[int, int]:
-    return win32_ocr_add_friend_windows.add_friend_plus_button_point_for_geometry(geometry)
-
-
-def add_friend_plus_entry_safe_bounds(image_size: tuple[int, int]) -> list[int]:
-    return win32_ocr_add_friend_windows.add_friend_plus_entry_safe_bounds(image_size)
-
-
-def find_sidebar_search_anchor_item(ocr_items: list[dict[str, Any]], image_size: tuple[int, int]) -> dict[str, Any] | None:
-    return win32_ocr_add_friend_windows.find_sidebar_search_anchor_item(ocr_items, image_size)
 
 
 def add_friend_plus_entry_target(
@@ -9673,10 +9677,6 @@ def input_area_contains_any_token(
         if input_area_contains_token(ocr_items, input_bounds=input_bounds, token=token):
             return True
     return False
-
-
-def input_text_region_bounds(geometry: dict[str, Any]) -> tuple[int, int, int, int]:
-    return win32_ocr_geometry.input_text_region_bounds(geometry)
 
 
 def rect_overlaps_region(rect: dict[str, int], bounds: tuple[int, int, int, int]) -> bool:
@@ -11959,14 +11959,6 @@ def uia_rect_to_dict(rect: Any) -> dict[str, int]:
 
 def relative_rect(rect: dict[str, int], geometry: dict[str, Any]) -> dict[str, int]:
     return win32_ocr_geometry.relative_rect(rect, geometry)
-
-
-def rect_in_input_area(rect: dict[str, int], geometry: dict[str, Any]) -> bool:
-    return win32_ocr_geometry.rect_in_input_area(rect, geometry)
-
-
-def rect_in_input_toolbar(rect: dict[str, int], geometry: dict[str, Any]) -> bool:
-    return win32_ocr_geometry.rect_in_input_toolbar(rect, geometry)
 
 
 def session_name_matches(name: str, target: str, *, exact: bool) -> bool:
@@ -16125,29 +16117,6 @@ def validate_send_geometry(geometry: dict[str, Any]) -> dict[str, Any]:
     return win32_ocr_geometry.validate_send_geometry(geometry)
 
 
-def calculate_send_points(geometry: dict[str, Any]) -> dict[str, Any]:
-    return win32_ocr_geometry.calculate_send_points(geometry)
-
-
-def _spread_points_in_rect(
-    left: int,
-    top: int,
-    right: int,
-    bottom: int,
-    *,
-    min_points: int = 10,
-) -> list[tuple[int, int]]:
-    return win32_ocr_geometry._spread_points_in_rect(left, top, right, bottom, min_points=min_points)
-
-
-def input_click_candidate_points(geometry: dict[str, Any], *, min_points: int = 10) -> list[tuple[int, int]]:
-    return win32_ocr_geometry.input_click_candidate_points(geometry, min_points=min_points)
-
-
-def send_click_candidate_points(geometry: dict[str, Any], *, min_points: int = 10) -> list[tuple[int, int]]:
-    return win32_ocr_geometry.send_click_candidate_points(geometry, min_points=min_points)
-
-
 def rpa_click_surface_jitter_enabled() -> bool:
     return env_flag("WECHAT_WIN32_OCR_CLICK_SURFACE_JITTER_ENABLED", default=True)
 
@@ -19225,34 +19194,6 @@ def ensure_quick_login_if_available(
         "screenshot_path": path,
         "reason": "quick_login_enter_clicked",
     }
-def chat_header_cutoff_y(height: int) -> int:
-    return win32_ocr_geometry.chat_header_cutoff_y(height)
-
-
-def active_chat_title_cutoff_y(height: int) -> int:
-    return win32_ocr_geometry.active_chat_title_cutoff_y(height)
-
-
-def active_chat_title_top_cutoff_y(height: int) -> int:
-    return win32_ocr_geometry.active_chat_title_top_cutoff_y(height)
-
-
-def active_chat_title_left_x(width: int) -> int:
-    return win32_ocr_geometry.active_chat_title_left_x(width)
-
-
-def active_chat_title_right_x(width: int) -> int:
-    return win32_ocr_geometry.active_chat_title_right_x(width)
-
-
-def active_chat_title_top_y(height: int) -> int:
-    return win32_ocr_geometry.active_chat_title_top_y(height)
-
-
-def active_chat_title_bottom_y(height: int) -> int:
-    return win32_ocr_geometry.active_chat_title_bottom_y(height)
-
-
 def screen_work_area(hwnd: int = 0) -> dict[str, int]:
     """Return the usable desktop work area, excluding taskbar and reserved edges."""
     try:

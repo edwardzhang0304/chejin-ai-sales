@@ -32,8 +32,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar import (  # noqa: E402
     parse_messages_from_ocr,
     run_ocr,
-    session_split_x,
 )
+from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import window_layout  # noqa: E402
 
 
 LIGHT_SCREENSHOT_ENV = "WECHAT_WIN32_OCR_SENDER_ROLE_LIGHT_SCREENSHOT"
@@ -58,13 +58,37 @@ def replay_screenshot(name: str, path: Path, *, target: str, require_legacy_left
         if "rapidocr_onnxruntime_unavailable" in str(exc) and not env_flag("WECHAT_WIN32_OCR_SENDER_ROLE_REPLAY_REQUIRE_OCR"):
             return {"name": name, "status": "skipped", "reason": "rapidocr_unavailable"}
         raise
-    messages = parse_messages_from_ocr(ocr_items, image.size, target=target, screenshot=image)
+    structural = window_layout.build_structural_layout_regions(image)
+    assert_true(structural.get("ok"), f"{name}: production layout builder could not resolve screenshot: {structural}")
+    layout_snapshot = window_layout.build_layout_snapshot(
+        hwnd=1,
+        frame_id=f"sender-role-replay:{name}",
+        capture_mode=window_layout.CAPTURE_MODE_WINDOW_VISIBLE_SCREEN,
+        image_size=image.size,
+        capture_screen_origin=[0, 0],
+        window_rect=[0, 0, image.size[0], image.size[1]],
+        client_rect=[0, 0, image.size[0], image.size[1]],
+        client_screen_origin=[0, 0],
+        dpi_scale=1.0,
+        regions=structural["regions"],
+        anchors=structural["anchors"],
+        confidence=structural["confidence"],
+        conflicts=structural["conflicts"],
+        executable=True,
+    )
+    messages = parse_messages_from_ocr(
+        ocr_items,
+        image.size,
+        target=target,
+        screenshot=image,
+        layout_snapshot=layout_snapshot,
+    )
     assert_true(ocr_items, f"{name}: OCR should produce items")
     assert_true(messages, f"{name}: OCR replay should produce messages")
 
-    split_x = session_split_x(width)
-    legacy_left_hint_min = max(float(split_x + 75), float(width) * 0.43)
-    right_self_lane_min = max(float(split_x + 260), float(width) * 0.72)
+    viewport = window_layout.required_region(layout_snapshot, "message_viewport_bounds")
+    viewport_center_x = float(viewport[0] + viewport[2]) / 2.0
+    peer_inner_quarter_x = float(viewport[0]) + float(viewport[2] - viewport[0]) * 0.25
 
     self_count = 0
     non_self_count = 0
@@ -75,19 +99,20 @@ def replay_screenshot(name: str, path: Path, *, target: str, require_legacy_left
         rect = message.get("bubble_rect") if isinstance(message.get("bubble_rect"), dict) else {}
         left = float(rect.get("left") or 0)
         right = float(rect.get("right") or 0)
+        center_x = float(left + right) / 2.0
         sender = str(message.get("sender") or "")
         if sender == "self":
             self_count += 1
             assert_true(
-                left >= legacy_left_hint_min and right >= right_self_lane_min,
-                f"{name}: self message must have right-side start and lane geometry, rect={rect}",
+                center_x >= viewport_center_x and viewport[0] <= left <= right <= viewport[2],
+                f"{name}: self message must stay in the right half of the dynamic viewport, rect={rect}",
             )
             right_self_count += 1
         else:
             non_self_count += 1
-            if right < right_self_lane_min:
+            if center_x < viewport_center_x:
                 left_non_self_count += 1
-            if left >= legacy_left_hint_min and right < right_self_lane_min:
+            if left >= peer_inner_quarter_x and center_x < viewport_center_x:
                 downgraded_legacy_left += 1
 
     assert_true(self_count >= 1, f"{name}: expected at least one right-side self message")

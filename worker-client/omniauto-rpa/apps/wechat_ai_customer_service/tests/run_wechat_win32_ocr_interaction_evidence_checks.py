@@ -6,17 +6,57 @@ import random
 import sys
 from pathlib import Path
 
+from PIL import Image
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar as sidecar
-from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import interaction_evidence
+from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import interaction_evidence, window_layout
 
 
 def assert_true(value: bool, message: str) -> None:
     if not value:
         raise AssertionError(message)
+
+
+def production_layout_snapshot(image_size: tuple[int, int] = (980, 860)) -> dict[str, object]:
+    """Resolve a test frame through the same structural layout builder used in production."""
+
+    width, height = image_size
+    image = Image.new("RGB", image_size, (120, 120, 120))
+    pixels = image.load()
+    nav_x = int(width * 0.12)
+    sidebar_x = int(width * 0.40)
+    header_y = int(height * 0.12)
+    input_y = int(height * 0.80)
+    for x in (nav_x, sidebar_x):
+        for y in range(height):
+            pixels[x - 1, y] = (20, 20, 20)
+            pixels[x + 1, y] = (230, 230, 230)
+    for y in (header_y, input_y):
+        for x in range(width):
+            pixels[x, y - 1] = (20, 20, 20)
+            pixels[x, y + 1] = (230, 230, 230)
+    structural = window_layout.build_structural_layout_regions(image)
+    assert_true(bool(structural.get("ok")), f"production layout builder rejected test frame: {structural}")
+    return window_layout.build_layout_snapshot(
+        hwnd=1001,
+        frame_id=f"interaction-evidence-{width}x{height}",
+        capture_mode=window_layout.CAPTURE_MODE_WINDOW_VISIBLE_SCREEN,
+        image_size=image_size,
+        capture_screen_origin=[0, 0],
+        window_rect=[0, 0, width, height],
+        client_rect=[0, 0, width, height],
+        client_screen_origin=[0, 0],
+        dpi_scale=1.0,
+        regions=structural["regions"],
+        anchors=structural["anchors"],
+        confidence=structural["confidence"],
+        conflicts=structural["conflicts"],
+        executable=True,
+    )
 
 
 def test_missing_or_failed_probe_never_authorizes_click() -> None:
@@ -121,10 +161,24 @@ def test_missing_search_label_causes_zero_rpa_actions() -> None:
 
 def test_observed_search_placeholder_variants_are_accepted_in_sidebar_only() -> None:
     geometry = {"left": 0, "top": 0, "right": 980, "bottom": 860, "width": 980, "height": 860}
-    placeholder = {"text": "Q搜索", "left": 101, "top": 61, "right": 143, "bottom": 83}
-    evidence = sidecar.sidebar_search_box_evidence([placeholder], geometry=geometry)
+    layout_snapshot = production_layout_snapshot()
+    header_bounds = window_layout.required_region(layout_snapshot, "sidebar_header_bounds")
+    placeholder = {
+        "text": "Q搜索",
+        "left": header_bounds[0] + 34,
+        "top": header_bounds[1] + 38,
+        "right": header_bounds[0] + 76,
+        "bottom": header_bounds[1] + 60,
+    }
+    evidence = sidecar.sidebar_search_box_evidence(
+        [placeholder], geometry=geometry, layout_snapshot=layout_snapshot
+    )
     assert_true(evidence.get("ok") is True, f"known placeholder OCR variant must be accepted: {evidence}")
-    outside = sidecar.sidebar_search_box_evidence([dict(placeholder, left=522, right=563)], geometry=geometry)
+    outside = sidecar.sidebar_search_box_evidence(
+        [dict(placeholder, left=522, right=563)],
+        geometry=geometry,
+        layout_snapshot=layout_snapshot,
+    )
     assert_true(outside.get("ok") is False, f"search-like text outside sidebar must remain blocked: {outside}")
 
 

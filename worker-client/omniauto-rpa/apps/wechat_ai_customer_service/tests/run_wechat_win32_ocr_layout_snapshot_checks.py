@@ -238,12 +238,14 @@ def test_production_has_no_fixed_geometry_or_unbounded_click_bypass() -> None:
     """Prevent diagnostic 1920/fixed helpers from returning to live actions."""
 
     production_root = PROJECT_ROOT / "apps" / "wechat_ai_customer_service"
-    geometry_file = production_root / "adapters" / "wechat_win32_ocr" / "geometry.py"
     sidecar_file = production_root / "adapters" / "wechat_win32_ocr_sidecar.py"
-    add_friend_file = production_root / "adapters" / "wechat_win32_ocr" / "add_friend_windows.py"
-    forbidden_fixed_calls = {
+    forbidden_fixed_symbols = {
+        "SEARCH_BOX_REL",
+        "SESSION_CLICK_X",
+        "CHAT_HEADER_MAX_Y",
         "session_split_x",
         "default_session_split_x",
+        "default_search_box_point",
         "chat_header_cutoff_y",
         "active_chat_title_cutoff_y",
         "active_chat_title_top_cutoff_y",
@@ -253,44 +255,28 @@ def test_production_has_no_fixed_geometry_or_unbounded_click_bypass() -> None:
         "active_chat_title_bottom_y",
         "search_box_point_for_geometry",
         "session_click_x_for_geometry",
-        "sidebar_search_input_focus_point_for_geometry",
         "input_text_region_bounds",
         "rect_in_input_area",
         "rect_in_input_toolbar",
+        "_spread_points_in_rect",
         "input_click_candidate_points",
         "send_click_candidate_points",
         "calculate_send_points",
+        "plus_entry_safe_bounds",
+        "plus_entry_layout_regions",
+        "find_sidebar_search_anchor_item",
+        "windows_1080p_reference_plus_point",
+        "windows_plus_point",
+        "invite_form_geometry_targets",
         "add_friend_plus_entry_safe_bounds",
         "add_friend_plus_button_point_for_geometry",
         "add_friend_windows_plus_button_point_for_geometry",
         "add_friend_windows_1080p_reference_plus_button_point_for_geometry",
+        "diagnostic_windows_1080p_reference_geometry",
+        "diagnostic_windows_current_geometry",
+        "diagnostic_sidebar_search_ocr_anchor_offset",
     }
-    diagnostic_sidecar_facades = {
-        "chat_header_cutoff_y",
-        "active_chat_title_cutoff_y",
-        "active_chat_title_top_cutoff_y",
-        "active_chat_title_left_x",
-        "active_chat_title_right_x",
-        "active_chat_title_top_y",
-        "active_chat_title_bottom_y",
-        "input_text_region_bounds",
-        "rect_in_input_area",
-        "rect_in_input_toolbar",
-        "input_click_candidate_points",
-        "send_click_candidate_points",
-        "calculate_send_points",
-        "add_friend_plus_entry_safe_bounds",
-        "add_friend_plus_button_point_for_geometry",
-        "add_friend_windows_plus_button_point_for_geometry",
-        "add_friend_windows_1080p_reference_plus_button_point_for_geometry",
-    }
-    diagnostic_add_friend_functions = {
-        "add_friend_plus_entry_safe_bounds",
-        "add_friend_plus_button_point_for_geometry",
-        "add_friend_windows_plus_button_point_for_geometry",
-        "add_friend_windows_1080p_reference_plus_button_point_for_geometry",
-    }
-    fixed_call_bypasses: list[str] = []
+    fixed_symbol_residue: list[str] = []
     unbounded_clicks: list[str] = []
     raw_action_bypasses: list[str] = []
     snapshot_unbound_actions: list[str] = []
@@ -318,10 +304,39 @@ def test_production_has_no_fixed_geometry_or_unbounded_click_bypass() -> None:
         class Visitor(ast.NodeVisitor):
             def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
                 function_stack.append(node.name)
+                if node.name in forbidden_fixed_symbols:
+                    fixed_symbol_residue.append(
+                        f"{path.relative_to(PROJECT_ROOT)}:{node.lineno}:definition:{node.name}"
+                    )
                 self.generic_visit(node)
                 function_stack.pop()
 
             visit_AsyncFunctionDef = visit_FunctionDef
+
+            def visit_Import(self, node: ast.Import) -> None:
+                for alias in node.names:
+                    imported_name = alias.asname or alias.name.rsplit(".", 1)[-1]
+                    if imported_name in forbidden_fixed_symbols:
+                        fixed_symbol_residue.append(
+                            f"{path.relative_to(PROJECT_ROOT)}:{node.lineno}:import:{imported_name}"
+                        )
+                self.generic_visit(node)
+
+            def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+                for alias in node.names:
+                    imported_name = alias.asname or alias.name
+                    if alias.name in forbidden_fixed_symbols or imported_name in forbidden_fixed_symbols:
+                        fixed_symbol_residue.append(
+                            f"{path.relative_to(PROJECT_ROOT)}:{node.lineno}:import:{alias.name}"
+                        )
+                self.generic_visit(node)
+
+            def visit_Name(self, node: ast.Name) -> None:
+                if isinstance(node.ctx, ast.Store) and node.id in forbidden_fixed_symbols:
+                    fixed_symbol_residue.append(
+                        f"{path.relative_to(PROJECT_ROOT)}:{node.lineno}:assignment:{node.id}"
+                    )
+                self.generic_visit(node)
 
             def visit_Call(self, node: ast.Call) -> None:
                 call_name = ""
@@ -330,17 +345,10 @@ def test_production_has_no_fixed_geometry_or_unbounded_click_bypass() -> None:
                 elif isinstance(node.func, ast.Attribute):
                     call_name = node.func.attr
                 current_function = function_stack[-1] if function_stack else "<module>"
-                if call_name in forbidden_fixed_calls:
-                    allowed = path == geometry_file or (
-                        path == sidecar_file
-                        and current_function in diagnostic_sidecar_facades
-                        and current_function == call_name
-                    ) or (
-                        path == add_friend_file
-                        and current_function in diagnostic_add_friend_functions
+                if call_name in forbidden_fixed_symbols:
+                    fixed_symbol_residue.append(
+                        f"{path.relative_to(PROJECT_ROOT)}:{node.lineno}:call:{call_name}"
                     )
-                    if not allowed:
-                        fixed_call_bypasses.append(f"{path.relative_to(PROJECT_ROOT)}:{node.lineno}:{call_name}")
                 if path == sidecar_file and call_name == "human_client_click":
                     keyword_names = {item.arg for item in node.keywords if item.arg}
                     if not {"bounds", "expected_snapshot_id"}.issubset(keyword_names):
@@ -366,7 +374,7 @@ def test_production_has_no_fixed_geometry_or_unbounded_click_bypass() -> None:
 
         Visitor().visit(tree)
 
-    assert_true(not fixed_call_bypasses, f"fixed geometry entered a production consumer: {fixed_call_bypasses}")
+    assert_true(not fixed_symbol_residue, f"fixed coordinate symbol remains in production: {fixed_symbol_residue}")
     assert_true(not unbounded_clicks, f"client click lacks snapshot/bounds proof: {unbounded_clicks}")
     assert_true(not snapshot_unbound_actions, f"UI action lacks exact frame snapshot proof: {snapshot_unbound_actions}")
     assert_true(not raw_action_bypasses, f"screen-space action bypassed the layout converter: {raw_action_bypasses}")

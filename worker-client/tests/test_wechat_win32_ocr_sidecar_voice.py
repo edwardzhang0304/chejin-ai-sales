@@ -97,9 +97,22 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             self._latest_semantic_layout = cached
             return cached
         width, height = [int(value or 0) for value in image.size]
-        sidebar_right = min(max(int(round(width * 0.39)) + 1, 300), max(301, width - 420))
-        header_bottom = min(max(int(round(height * 0.10)), 70), 110)
-        input_top = max(header_bottom + 100, height - 120)
+        structural_frame = Image.new("RGB", image.size, (120, 120, 120))
+        pixels = structural_frame.load()
+        nav_x = int(width * 0.078)
+        sidebar_x = int(round(width * 0.39)) + 1
+        header_y = int(height * 0.10)
+        input_y = int(height * 0.86)
+        for x in (nav_x, sidebar_x):
+            for y in range(height):
+                pixels[x - 1, y] = (20, 20, 20)
+                pixels[x + 1, y] = (230, 230, 230)
+        for y in (header_y, input_y):
+            for x in range(width):
+                pixels[x, y - 1] = (20, 20, 20)
+                pixels[x, y + 1] = (230, 230, 230)
+        structural = sidecar.win32_ocr_layout.build_structural_layout_regions(structural_frame)
+        self.assertTrue(structural.get("ok"), f"production layout builder rejected semantic frame: {structural}")
         snapshot = sidecar.win32_ocr_layout.build_layout_snapshot(
             hwnd=1,
             frame_id=f"semantic-frame-{key}",
@@ -110,18 +123,10 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             client_rect=[0, 0, width, height],
             client_screen_origin=[0, 0],
             dpi_scale=1.0,
-            regions={
-                "left_nav_bounds": [0, 0, 75, height],
-                "sidebar_bounds": [75, 0, sidebar_right, height],
-                "sidebar_header_bounds": [75, 0, sidebar_right, header_bottom],
-                "session_list_bounds": [75, header_bottom, sidebar_right, height],
-                "chat_header_bounds": [sidebar_right, 0, width, header_bottom],
-                "message_viewport_bounds": [sidebar_right, header_bottom, width, input_top],
-                "input_bounds": [sidebar_right, input_top, width, height],
-            },
-            anchors=[],
-            confidence=1.0,
-            conflicts=[],
+            regions=structural["regions"],
+            anchors=structural["anchors"],
+            confidence=structural["confidence"],
+            conflicts=structural["conflicts"],
             executable=True,
         )
         self._semantic_layouts[key] = snapshot
@@ -2811,7 +2816,13 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
 
             self.assertTrue(result["ok"])
             self.assertEqual(result["method"], "fresh_header_blank_click")
-            self.assertLess(clicks[0]["y"], sidecar.chat_header_cutoff_y(852))
+            header_bounds = sidecar.win32_ocr_layout.required_region(
+                self._latest_semantic_layout, "chat_header_bounds"
+            )
+            self.assertTrue(
+                header_bounds[0] <= clicks[0]["x"] < header_bounds[2]
+                and header_bounds[1] <= clicks[0]["y"] < header_bounds[3]
+            )
             self.assertNotIn("escape", calls)
         finally:
             sidecar.activate_window = original_activate
