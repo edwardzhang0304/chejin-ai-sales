@@ -8525,9 +8525,9 @@ def click_add_friend_menu_entry_and_capture(hwnd: int, output_dir: Path, *, menu
     return win32_ocr_add_friend_windows.click_add_friend_menu_entry_and_capture(hwnd, output_dir, menu_targets=menu_targets)
 
 
-def input_add_friend_query_and_search(hwnd: int, output_dir: Path, *, query: str, verify_message: str = '', remark_name: str = '', remark_code: str = '', action_journal_path: str = '') -> dict[str, Any]:
+def input_add_friend_query_and_search(hwnd: int, output_dir: Path, *, query: str, verify_message: str = '', remark_name: str = '', remark_code: str = '', action_journal_path: str = '', frame_seed: dict[str, Any] | None = None) -> dict[str, Any]:
     win32_ocr_add_friend_windows.bind_sidecar_ops(sys.modules[__name__])
-    return win32_ocr_add_friend_windows.input_add_friend_query_and_search(hwnd, output_dir, query=query, verify_message=verify_message, remark_name=remark_name, remark_code=remark_code, action_journal_path=action_journal_path)
+    return win32_ocr_add_friend_windows.input_add_friend_query_and_search(hwnd, output_dir, query=query, verify_message=verify_message, remark_name=remark_name, remark_code=remark_code, action_journal_path=action_journal_path, frame_seed=frame_seed)
 
 
 def write_add_friend_entry_click_review(output_dir: Path, payload: dict[str, Any]) -> str:

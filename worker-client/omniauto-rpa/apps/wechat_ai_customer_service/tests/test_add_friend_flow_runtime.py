@@ -200,6 +200,47 @@ class AddFriendProductionEntryTest(unittest.TestCase):
                     add_friend_windows._valid_reusable_frame_seed(1001, seed)
                 )
 
+    def test_real_sidecar_query_wrapper_accepts_and_forwards_frame_seed(self) -> None:
+        """Cross caller facade and implementation; mock only Windows boundaries."""
+
+        image = Image.new("RGB", (468, 520), (245, 246, 248))
+        capture_labels: list[str] = []
+        with tempfile.TemporaryDirectory(prefix="add-friend-query-wrapper-") as temp_dir:
+            with production_boundary(
+                image,
+                ocr_items=[],
+                click_points=[],
+                capture_labels=capture_labels,
+            ):
+                screenshot, path = sidecar.capture_wechat_window_visible_screen(
+                    74001,
+                    artifact_dir=temp_dir,
+                    label="query_seed",
+                    popup_window=True,
+                )
+                seed = add_friend_windows._reusable_frame_seed(
+                    74001,
+                    screenshot,
+                    path,
+                    [],
+                )
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "WECHAT_UI_LAYOUT_UNRESOLVED:add_friend_search_input",
+                ):
+                    sidecar.input_add_friend_query_and_search(
+                        74001,
+                        Path(temp_dir),
+                        query="17368746889",
+                        frame_seed=seed,
+                    )
+
+        self.assertEqual(
+            capture_labels,
+            ["query_seed"],
+            "the real sidecar wrapper must forward the live frame instead of recapturing",
+        )
+
     def test_aligned_avatar_edges_do_not_replace_nav_on_production_entry(self) -> None:
         """Replay UAT-005 from public planning entry through the mouse boundary."""
 
