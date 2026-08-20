@@ -19,6 +19,7 @@ from chejin_worker_client.preflight import (
     omniauto_vision_ocr_check,
     run_preflight,
     vision_credential_check,
+    wechat_check,
     write_report,
 )
 
@@ -61,6 +62,44 @@ class PreflightTest(unittest.TestCase):
         self.assertIn("sidecar", names)
         self.assertNotIn("backend", names)
         self.assertNotIn("wechat", names)
+
+    def test_wechat_preflight_records_window_normalization_geometry(self):
+        class FakeBridge:
+            last_probe_payload = {
+                "startup_window_normalization_state": "completed",
+                "startup_window_normalization": {
+                    "ok": True,
+                    "applied": True,
+                    "reason": "normalized",
+                    "before": {"left": 8, "top": 0, "width": 800, "height": 852},
+                    "target": {"width": 980, "height": 860},
+                    "after": {"left": 0, "top": 0, "width": 980, "height": 860},
+                    "after_client": {"width": 964, "height": 821},
+                    "dpi_scale": 1.25,
+                    "screen": {"width": 1920, "height": 1040},
+                },
+                "geometry": {"left": 0, "top": 0, "width": 980, "height": 860},
+            }
+
+            def probe(self):
+                return "ready", "logged_in"
+
+        with patch(
+            "chejin_worker_client.preflight.CONFIG",
+            new=type("ConfigStub", (), {"rpa_mode": "real"})(),
+        ), patch(
+            "chejin_worker_client.preflight.RpaBridge",
+            return_value=FakeBridge(),
+        ):
+            check = wechat_check()
+
+        self.assertTrue(check.ok)
+        self.assertEqual(check.detail["startup_window_normalization_state"], "completed")
+        self.assertEqual(check.detail["window_normalization"]["before"]["width"], 800)
+        self.assertEqual(check.detail["window_normalization"]["target"]["width"], 980)
+        self.assertEqual(check.detail["window_normalization"]["after"]["width"], 980)
+        self.assertEqual(check.detail["window_normalization"]["dpi_scale"], 1.25)
+        self.assertEqual(check.detail["current_window_geometry"]["height"], 860)
 
     def test_vision_ocr_preflight_uses_production_subprocess_probe(self):
         with patch(
