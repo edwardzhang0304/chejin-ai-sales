@@ -2173,6 +2173,21 @@ class TaskRunner:
             # separate fail-safe for not-yet-started physical actions.
             self._apply_local_run_status("paused")
         try:
+            if run_status == "running":
+                preflight = self.bridge.preflight_window_normalization()
+                if not preflight.get("ok"):
+                    error_code = str(preflight.get("error_code") or "WECHAT_UI_WINDOW_NORMALIZATION_FAILED")
+                    message = "微信窗口规范化失败，已阻止开始接单。请确认微信窗口可见且屏幕工作区足够。"
+                    self._apply_local_run_status("paused")
+                    self.on_error(message)
+                    append_log(
+                        "WARN",
+                        "wechat_window_normalization_blocked_accepting",
+                        message,
+                        error_code=error_code,
+                        metadata={"preflight": preflight},
+                    )
+                    return False
             profile = self.api.set_run_status(self.binding, run_status)
             if profile.run_status != run_status:
                 raise RuntimeError(

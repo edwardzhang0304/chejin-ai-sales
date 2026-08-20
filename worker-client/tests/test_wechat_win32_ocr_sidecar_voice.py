@@ -64,6 +64,85 @@ def unified_voice_observation(anchor: dict | None, visible_button: dict | None =
 
 
 class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self._semantic_layouts: dict[int, dict] = {}
+        self._latest_semantic_layout: dict | None = None
+        self._layout_for_image_patch = patch.object(
+            sidecar,
+            "layout_snapshot_for_image",
+            side_effect=self._semantic_layout_for_image,
+        )
+        self._current_layout_patch = patch.object(
+            sidecar,
+            "current_layout_snapshot",
+            side_effect=lambda _hwnd: self._latest_semantic_layout,
+        )
+        self._layout_for_image_patch.start()
+        self._current_layout_patch.start()
+        self.addCleanup(self._layout_for_image_patch.stop)
+        self.addCleanup(self._current_layout_patch.stop)
+
+    def _semantic_layout_for_image(self, image: Image.Image) -> dict:
+        """Resolved production snapshot shape for non-layout semantic tests.
+
+        The 0.9.21 geometry tests exercise the real structural detector and
+        coordinate converter. These older voice tests deliberately provide
+        already-resolved semantic regions so they test voice behavior without
+        reintroducing a fixed production fallback.
+        """
+        key = id(image)
+        cached = self._semantic_layouts.get(key)
+        if cached is not None:
+            self._latest_semantic_layout = cached
+            return cached
+        width, height = [int(value or 0) for value in image.size]
+        sidebar_right = min(max(int(round(width * 0.39)) + 1, 300), max(301, width - 420))
+        header_bottom = min(max(int(round(height * 0.10)), 70), 110)
+        input_top = max(header_bottom + 100, height - 120)
+        snapshot = sidecar.win32_ocr_layout.build_layout_snapshot(
+            hwnd=1,
+            frame_id=f"semantic-frame-{key}",
+            capture_mode=sidecar.win32_ocr_layout.CAPTURE_MODE_WINDOW_VISIBLE_SCREEN,
+            image_size=image.size,
+            capture_screen_origin=[0, 0],
+            window_rect=[0, 0, width, height],
+            client_rect=[0, 0, width, height],
+            client_screen_origin=[0, 0],
+            dpi_scale=1.0,
+            regions={
+                "left_nav_bounds": [0, 0, 75, height],
+                "sidebar_bounds": [75, 0, sidebar_right, height],
+                "sidebar_header_bounds": [75, 0, sidebar_right, header_bottom],
+                "session_list_bounds": [75, header_bottom, sidebar_right, height],
+                "chat_header_bounds": [sidebar_right, 0, width, header_bottom],
+                "message_viewport_bounds": [sidebar_right, header_bottom, width, input_top],
+                "input_bounds": [sidebar_right, input_top, width, height],
+            },
+            anchors=[],
+            confidence=1.0,
+            conflicts=[],
+            executable=True,
+        )
+        self._semantic_layouts[key] = snapshot
+        self._latest_semantic_layout = snapshot
+        return snapshot
+
+    def test_context_menu_rejects_voice_target_from_stale_layout_snapshot(self) -> None:
+        action_frame = Image.new("RGB", (965, 852), (247, 247, 247))
+        current_layout = self._semantic_layout_for_image(action_frame)
+        anchor = {
+            "source": "visual_customer_voice_bubble_context_menu_anchor",
+            "click_bounds": [429, 449, 601, 483],
+            "item": {"center_y": 466, "sender_role": "customer"},
+            "layout_snapshot_id": "stale-layout-snapshot",
+        }
+        with patch.object(sidecar, "human_window_image_right_click_in_bounds") as right_click:
+            result = sidecar.open_voice_transcribe_context_menu(1, anchor, image_size=(965, 852))
+        self.assertEqual(current_layout["layout_snapshot_id"], self._latest_semantic_layout["layout_snapshot_id"])
+        self.assertEqual(result["error_code"], sidecar.win32_ocr_layout.ERROR_LAYOUT_STALE)
+        right_click.assert_not_called()
+
     def _execute_prepared_voice(
         self,
         *,
@@ -429,7 +508,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             ocr_item("诉你，可以批量生成的，很简单。", 484, 534, 740, 556),
         ]
 
-        def avatar_role(_image, bounds, _image_size):
+        def avatar_role(_image, bounds, _image_size, **_kwargs):
             top = int(bounds[1])
             if top in {172, 458}:
                 return {"role": "customer", "side": "left", "confidence": 0.99}
@@ -2058,7 +2137,14 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             ocr_item("你中午回家吃饭不？", 681, 545, 868, 589),
         ]
 
-        self.assertTrue(sidecar.voice_duration_has_transcribed_text_below(items[0], items, image.size))
+        self.assertTrue(
+            sidecar.voice_duration_has_transcribed_text_below(
+                items[0],
+                items,
+                image.size,
+                layout_snapshot=self._semantic_layout_for_image(image),
+            )
+        )
         anchor = sidecar.find_voice_context_menu_anchor_target(image, items, image.size)
 
         self.assertEqual(anchor["source"], "visual_customer_voice_bubble_context_menu_anchor")
@@ -2401,10 +2487,11 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         self.assertIsNotNone(anchor)
         self.assertEqual(anchor["source"], "visual_self_voice_bubble_context_menu_anchor")
         self.assertEqual(anchor["item"]["right"], 919.0)
-        self.assertLessEqual(anchor["click_bounds"][2], 861)
+        self.assertLessEqual(anchor["click_bounds"][2], 878)
+        self.assertLess(anchor["click_bounds"][2], 900)
         self.assertGreaterEqual(anchor["click_bounds"][1], 570)
         self.assertLessEqual(anchor["click_bounds"][3], 604)
-        self.assertTrue(all(point[0] <= 861 for point in anchor["candidate_points"]))
+        self.assertTrue(all(point[0] <= 878 for point in anchor["candidate_points"]))
         self.assertTrue(all(570 <= point[1] <= 604 for point in anchor["candidate_points"]))
 
     def test_voice_transcribe_menu_texts_detects_open_menu(self) -> None:
@@ -2434,7 +2521,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         sleep.assert_called_once_with(950, 1650)
 
     def test_shared_context_menu_observer_captures_once_and_filters_near_anchor(self) -> None:
-        image = Image.new("RGB", (1920, 1080), "white")
+        image = Image.new("RGB", (110, 120), "white")
         near = ocr_item("复制", 20, 20, 90, 52)
         companion = ocr_item("转发", 20, 64, 90, 96)
         far = ocr_item("聊天正文", 600, 50, 720, 82)
@@ -2450,7 +2537,16 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
                     "menu_class_name": "WeChatMenuWnd",
                 },
             ),
-            patch.object(sidecar, "capture_visible_screen", return_value=(image, "menu.png")) as capture,
+            patch.object(
+                sidecar,
+                "capture_wechat_window_visible_screen",
+                return_value=(image, "menu.png"),
+            ) as capture,
+            patch.object(
+                sidecar,
+                "get_window_geometry",
+                return_value={"left": 410, "top": 380, "right": 520, "bottom": 500},
+            ),
             patch.object(
                 sidecar,
                 "save_screenshot_artifact",
@@ -2471,16 +2567,22 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             ["复制", "转发"],
         )
         self.assertEqual(result["screenshot_path"], "menu.png")
-        self.assertEqual(result["ocr_roi"], [410, 380, 520, 500])
+        self.assertEqual(result["ocr_roi"], [0, 0, 110, 120])
         self.assertEqual(
             [item["text"] for item in result["menu_structure_evidence"]],
             ["复制", "转发"],
         )
-        capture.assert_called_once_with(artifact_dir="evidence", label="shared_menu")
+        capture.assert_called_once_with(
+            2,
+            artifact_dir="evidence",
+            label="shared_menu",
+            popup_window=True,
+        )
         self.assertEqual(result["roi_screenshot_path"], "menu_roi.png")
         self.assertEqual(
-            result["menu_panel_bounds"], [410, 380, 520, 500]
+            result["menu_panel_bounds"], [0, 0, 110, 120]
         )
+        self.assertEqual(result["menu_panel_screen_bounds"], [410, 380, 520, 500])
         save_roi.assert_called_once()
         self.assertEqual(ocr.call_args.args[0].size, (110, 120))
         image.close()
@@ -2576,11 +2678,14 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         sleep.assert_any_call(1550, 2250)
 
     def test_context_menu_prefers_nearby_collapse_over_far_inline_transcribe(self) -> None:
-        image = Image.new("RGB", (1920, 1080), (247, 247, 247))
+        image = Image.new("RGB", (150, 100), (247, 247, 247))
+        action_frame = Image.new("RGB", (965, 852), (247, 247, 247))
+        action_layout = self._semantic_layout_for_image(action_frame)
         anchor = {
             "source": "visual_customer_voice_bubble_context_menu_anchor",
             "click_bounds": [429, 449, 601, 483],
             "item": {"center_y": 466, "sender_role": "customer"},
+            "layout_snapshot_id": action_layout["layout_snapshot_id"],
         }
         # OCR now receives only the confirmed popup crop, so the far inline
         # chat label is structurally unavailable to menu classification.
@@ -2598,10 +2703,22 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
                 },
             ),
             patch.object(sidecar, "human_window_image_right_click_in_bounds", return_value={"ok": True, "screen_y": 449}),
-            patch.object(sidecar, "capture_visible_screen", return_value=(image, "menu.png")),
+            patch.object(
+                sidecar,
+                "capture_wechat_window_visible_screen",
+                return_value=(image, "menu.png"),
+            ),
             patch.object(sidecar, "run_ocr", return_value=items),
             patch.object(sidecar, "humanized_action_sleep", return_value=None),
-            patch.object(sidecar, "get_window_geometry", return_value={"width": 965, "height": 852}),
+            patch.object(
+                sidecar,
+                "get_window_geometry",
+                side_effect=lambda target_hwnd: (
+                    {"left": 530, "top": 430, "right": 680, "bottom": 530, "width": 150, "height": 100}
+                    if target_hwnd == 2
+                    else {"left": 0, "top": 0, "right": 965, "bottom": 852, "width": 965, "height": 852}
+                ),
+            ),
         ):
             result = sidecar.open_voice_transcribe_context_menu(1, anchor, image_size=(965, 852))
 
@@ -2624,14 +2741,15 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
     def test_context_menu_click_uses_exact_ocr_text_center(self) -> None:
         item = ocr_item("语音转文字", 523, 508, 647, 535)
         target = sidecar.find_voice_transcribe_menu_item_target([item], (1920, 1080), anchor_screen_y=495)
+        target.update({"popup_hwnd": 2, "layout_snapshot_id": "popup-layout"})
         clicks: list[tuple[int, int]] = []
 
-        def click(x: int, y: int, **_kwargs):
+        def click(_hwnd: int, x: int, y: int, **_kwargs):
             clicks.append((x, y))
             return {"ok": True, "screen_x": x, "screen_y": y}
 
         with (
-            patch.object(sidecar, "human_screen_click_in_bounds", side_effect=click),
+            patch.object(sidecar, "human_window_image_click_in_bounds", side_effect=click),
             patch.object(sidecar, "verify_voice_transcribe_context_menu_closed", return_value={"ok": True, "reason": "menu_closed"}),
             patch.object(sidecar, "humanized_action_sleep", return_value=None),
         ):
@@ -2664,6 +2782,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         original_probe = sidecar.probe_wechat_windows
         original_probe_visible = sidecar.probe_has_usable_visible_main_window
         original_capture = sidecar.capture_wechat
+        original_popup_capture = sidecar.capture_wechat_window_visible_screen
         original_run_ocr = sidecar.run_ocr
         original_sleep = sidecar.humanized_action_sleep
         original_key_press = sidecar.key_press
@@ -2678,6 +2797,12 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             sidecar.probe_wechat_windows = lambda: {"visible_main_windows": [{"hwnd": 1}], "windows": []}
             sidecar.probe_has_usable_visible_main_window = lambda _probe: True
             sidecar.capture_wechat = lambda _hwnd, **_kwargs: (Image.new("RGB", (965, 852), (255, 255, 255)), "")
+            sidecar.capture_wechat_window_visible_screen = (
+                lambda _hwnd, **_kwargs: (
+                    Image.new("RGB", (965, 852), (255, 255, 255)),
+                    "",
+                )
+            )
             sidecar.run_ocr = lambda _image: []
             sidecar.humanized_action_sleep = lambda *_args, **_kwargs: None
             sidecar.key_press = lambda *_args, **_kwargs: calls.append("escape")
@@ -2695,6 +2820,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             sidecar.probe_wechat_windows = original_probe
             sidecar.probe_has_usable_visible_main_window = original_probe_visible
             sidecar.capture_wechat = original_capture
+            sidecar.capture_wechat_window_visible_screen = original_popup_capture
             sidecar.run_ocr = original_run_ocr
             sidecar.humanized_action_sleep = original_sleep
             sidecar.key_press = original_key_press
@@ -2708,7 +2834,11 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             patch.object(sidecar, "probe_wechat_windows", return_value={"visible_main_windows": [{"hwnd": 1}]}),
             patch.object(sidecar, "probe_has_usable_visible_main_window", return_value=True),
             patch.object(sidecar, "capture_wechat", return_value=(Image.new("RGB", (981, 860), (255, 255, 255)), "before.png")),
-            patch.object(sidecar, "capture_visible_screen", return_value=(image, "dismissed.png")),
+            patch.object(
+                sidecar,
+                "capture_wechat_window_visible_screen",
+                return_value=(image, "dismissed.png"),
+            ),
             patch.object(sidecar, "run_ocr", return_value=[ocr_item("转文字", 670, 155, 719, 173)]),
             patch.object(sidecar, "humanized_action_sleep", return_value=None),
         ):
@@ -2722,10 +2852,10 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         self.assertEqual(result["visible_menu_texts"], [])
 
     def test_context_menu_close_verification_rejects_chat_info_panel(self) -> None:
-        original_capture = sidecar.capture_visible_screen
+        original_capture = sidecar.capture_wechat_window_visible_screen
         original_run_ocr = sidecar.run_ocr
         try:
-            sidecar.capture_visible_screen = lambda **_kwargs: (Image.new("RGB", (965, 852), (255, 255, 255)), "")
+            sidecar.capture_wechat_window_visible_screen = lambda *_args, **_kwargs: (Image.new("RGB", (965, 852), (255, 255, 255)), "")
             sidecar.run_ocr = lambda _image: [ocr_item("查找聊天内容", 668, 231, 765, 254)]
 
             result = sidecar.verify_voice_transcribe_context_menu_closed()
@@ -2734,14 +2864,14 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             self.assertEqual(result["reason"], "menu_or_panel_still_visible")
             self.assertEqual(result["visible_panel_texts"], ["查找聊天内容"])
         finally:
-            sidecar.capture_visible_screen = original_capture
+            sidecar.capture_wechat_window_visible_screen = original_capture
             sidecar.run_ocr = original_run_ocr
 
     def test_context_menu_close_verification_ignores_inline_transcribe_button_outside_menu(self) -> None:
-        original_capture = sidecar.capture_visible_screen
+        original_capture = sidecar.capture_wechat_window_visible_screen
         original_run_ocr = sidecar.run_ocr
         try:
-            sidecar.capture_visible_screen = lambda **_kwargs: (Image.new("RGB", (1920, 1080), (255, 255, 255)), "")
+            sidecar.capture_wechat_window_visible_screen = lambda *_args, **_kwargs: (Image.new("RGB", (1920, 1080), (255, 255, 255)), "")
             sidecar.run_ocr = lambda _image: [ocr_item("转文字", 640, 454, 704, 480)]
 
             result = sidecar.verify_voice_transcribe_context_menu_closed(menu_bounds=[509, 630, 752, 681])
@@ -2749,14 +2879,14 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(result["visible_menu_texts"], [])
         finally:
-            sidecar.capture_visible_screen = original_capture
+            sidecar.capture_wechat_window_visible_screen = original_capture
             sidecar.run_ocr = original_run_ocr
 
     def test_context_menu_close_verification_detects_menu_item_inside_original_bounds(self) -> None:
-        original_capture = sidecar.capture_visible_screen
+        original_capture = sidecar.capture_wechat_window_visible_screen
         original_run_ocr = sidecar.run_ocr
         try:
-            sidecar.capture_visible_screen = lambda **_kwargs: (Image.new("RGB", (1920, 1080), (255, 255, 255)), "")
+            sidecar.capture_wechat_window_visible_screen = lambda *_args, **_kwargs: (Image.new("RGB", (1920, 1080), (255, 255, 255)), "")
             sidecar.run_ocr = lambda _image: [ocr_item("语音转文字", 533, 642, 656, 669)]
 
             result = sidecar.verify_voice_transcribe_context_menu_closed(menu_bounds=[509, 630, 752, 681])
@@ -2764,7 +2894,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             self.assertFalse(result["ok"])
             self.assertEqual(result["visible_menu_texts"], ["语音转文字"])
         finally:
-            sidecar.capture_visible_screen = original_capture
+            sidecar.capture_wechat_window_visible_screen = original_capture
             sidecar.run_ocr = original_run_ocr
 
     def test_avatar_role_is_stable_after_whole_row_vertical_translation(self) -> None:
@@ -3441,10 +3571,12 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         self.assertNotEqual(first, second)
 
     def test_safe_header_target_avoids_ocr_title_bounds(self) -> None:
+        image = Image.new("RGB", (965, 852), (247, 247, 247))
         target = sidecar.safe_window_header_blank_click_target(
             [ocr_item("CJR8S5K3 虾丸子大人", 440, 10, 590, 34)],
-            (965, 852),
+            image.size,
             geometry={"width": 965, "height": 852},
+            layout_snapshot=self._semantic_layout_for_image(image),
         )
 
         self.assertIsNotNone(target)
@@ -3470,7 +3602,10 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
 
         self.assertEqual(result["state"], "voice_transcribe_partial")
         self.assertEqual(result["quality_flags"], ["untranscribed_voice_remaining"])
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            [call[0] for call in calls],
+            ["normalize-window", "voice-transcribe"],
+        )
 
 
 if __name__ == "__main__":

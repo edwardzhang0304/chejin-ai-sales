@@ -331,6 +331,7 @@ def visual_image_messages_from_current_surface(
     max_images: int,
     voice_action_attempts: list[dict[str, Any]] | None = None,
     diagnostics: list[dict[str, Any]] | None = None,
+    message_viewport_bounds: list[int] | tuple[int, int, int, int],
 ) -> list[dict[str, Any]]:
     if screenshot is None:
         return []
@@ -343,8 +344,10 @@ def visual_image_messages_from_current_surface(
             time_markers=extract_chat_time_markers(
                 list(ocr_items or []),
                 tuple(getattr(screenshot, "size", (0, 0))),
+                message_viewport_bounds=message_viewport_bounds,
             ),
             diagnostics=diagnostics,
+            message_viewport_bounds=message_viewport_bounds,
         )
     except Exception as exc:
         raise ImageSurfaceObservationError(
@@ -378,6 +381,7 @@ def observe_structural_image_messages(
     max_images: int = 64,
     voice_action_attempts: list[dict[str, Any]] | None = None,
     diagnostics: list[dict[str, Any]] | None = None,
+    message_viewport_bounds: list[int] | tuple[int, int, int, int],
 ) -> list[dict[str, Any]]:
     """Run the one formal C2 image observation pipeline for the current frame."""
 
@@ -396,6 +400,7 @@ def observe_structural_image_messages(
             max_images=max_images,
             voice_action_attempts=voice_action_attempts,
             diagnostics=diagnostics,
+            message_viewport_bounds=message_viewport_bounds,
         )
     except ImageSurfaceObservationError:
         raise
@@ -501,6 +506,7 @@ def self_visual_image_messages_from_current_surface(
     existing_messages: list[dict[str, Any]] | None,
     *,
     target: str,
+    message_viewport_bounds: list[int] | tuple[int, int, int, int],
 ) -> list[dict[str, Any]]:
     return visual_image_messages_from_current_surface(
         screenshot,
@@ -509,4 +515,5 @@ def self_visual_image_messages_from_current_surface(
         target=target,
         side_filter="self",
         max_images=1,
+        message_viewport_bounds=message_viewport_bounds,
     )

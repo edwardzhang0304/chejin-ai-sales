@@ -1282,7 +1282,6 @@ def run_passive_logout_probe(
     probe_env["PYTHONUTF8"] = "1"
     probe_env["PYTHONIOENCODING"] = "utf-8"
     probe_env["WECHAT_WIN32_OCR_PASSIVE_PROBE"] = "1"
-    probe_env["WECHAT_WIN32_OCR_WINDOW_NORMALIZE"] = "0"
     probe_env["WECHAT_WIN32_OCR_QUICK_LOGIN_AUTO_ENTER"] = "0"
     command = [str(python_bin), str(WIN32_OCR_SIDECAR_SCRIPT), "status"]
     process = subprocess.Popen(
@@ -1382,12 +1381,11 @@ def run_interactive_rpa_calibration(
     probe_env["PYTHONUTF8"] = "1"
     probe_env["PYTHONIOENCODING"] = "utf-8"
     probe_env["WECHAT_WIN32_OCR_PASSIVE_PROBE"] = "0"
-    probe_env["WECHAT_WIN32_OCR_WINDOW_NORMALIZE"] = "1"
     probe_env["WECHAT_WIN32_OCR_QUICK_LOGIN_AUTO_ENTER"] = "0"
     probe_env["WECHAT_WIN32_OCR_AGGRESSIVE_FOCUS"] = "1"
     probe_env["WECHAT_WIN32_OCR_ATTACH_THREAD_INPUT"] = "1"
     probe_env["WECHAT_WIN32_OCR_ACTIVATE_DEBOUNCE_SECONDS"] = "0"
-    command = [str(python_bin), str(WIN32_OCR_SIDECAR_SCRIPT), "status"]
+    command = [str(python_bin), str(WIN32_OCR_SIDECAR_SCRIPT), "normalize-window"]
     process = subprocess.Popen(
         command,
         cwd=str(PROJECT_ROOT),

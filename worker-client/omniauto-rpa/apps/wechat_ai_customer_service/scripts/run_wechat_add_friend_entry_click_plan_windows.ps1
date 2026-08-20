@@ -6,8 +6,7 @@ param(
     [string]$VerifyMessage = "",
     [string]$RemarkName = "",
     [string]$RemarkCode = "",
-    [switch]$AllowRenderRecovery,
-    [switch]$NormalizeWindow
+    [switch]$AllowRenderRecovery
 )
 
 $ErrorActionPreference = "Stop"
@@ -62,7 +61,6 @@ $env:WECHAT_WIN32_OCR_PASSIVE_PROBE = "0"
 $env:WECHAT_WIN32_OCR_AGGRESSIVE_FOCUS = "1"
 $env:WECHAT_WIN32_OCR_ATTACH_THREAD_INPUT = "1"
 $env:WECHAT_WIN32_OCR_ACTIVATE_DEBOUNCE_SECONDS = "0"
-$env:WECHAT_WIN32_OCR_WINDOW_NORMALIZE = $(if ($NormalizeWindow) { "1" } else { "0" })
 $env:WECHAT_WIN32_OCR_RENDER_RECOVERY_AUTO = $(if ($AllowRenderRecovery) { "1" } else { "0" })
 
 $Sidecar = "apps\wechat_ai_customer_service\adapters\wechat_win32_ocr_sidecar.py"

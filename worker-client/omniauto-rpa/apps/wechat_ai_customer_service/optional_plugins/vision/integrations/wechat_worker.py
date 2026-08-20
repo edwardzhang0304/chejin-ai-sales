@@ -174,10 +174,24 @@ def _observe_current_surface(
         )
         ocr_items = host_ops.run_ocr(screenshot)
         image_size = tuple(getattr(screenshot, "size", (0, 0)))
+        layout_snapshot = host_ops.layout_snapshot_for_image(screenshot)
+        viewport = (
+            list((layout_snapshot or {}).get("message_viewport_bounds") or [])
+            if isinstance(layout_snapshot, dict)
+            else []
+        )
+        if not bool((layout_snapshot or {}).get("executable")) or len(viewport) != 4:
+            return _failure(
+                "vision_current_surface_layout_unresolved",
+                "WECHAT_UI_LAYOUT_UNRESOLVED",
+                target=target,
+                session_key=str(prepared.get("session_key") or ""),
+            )
         text_messages = host_ops.parse_messages_from_ocr(
             ocr_items,
             image_size,
             target=target,
+            screenshot=screenshot,
         )
         blocking_reason = host_ops.blocking_screen_reason(ocr_items)
         if blocking_reason:
@@ -195,6 +209,7 @@ def _observe_current_surface(
             target=target,
             side_filter=str(getattr(args, "side_filter", "all") or "all"),
             max_images=max(1, min(int(getattr(args, "max_images", 8) or 8), 8)),
+            message_viewport_bounds=viewport,
         )
     except Exception as exc:  # noqa: BLE001 - worker returns a closed failure envelope.
         return _failure(

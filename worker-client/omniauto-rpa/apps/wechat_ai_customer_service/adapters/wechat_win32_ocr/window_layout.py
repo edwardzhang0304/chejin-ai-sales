@@ -36,12 +36,13 @@ REQUIRED_LAYOUT_REGION_NAMES = (
     "message_viewport_bounds",
     "input_bounds",
 )
+POPUP_LAYOUT_REGION_NAMES = ("surface_bounds",)
 
 
 class LayoutSnapshotError(RuntimeError):
     """Raised when a frame cannot safely be used for a physical action."""
 
-    def __init__(self, reason: str, *, code: str = "LAYOUT_SNAPSHOT_INVALID", details: Mapping[str, Any] | None = None):
+    def __init__(self, reason: str, *, code: str = ERROR_LAYOUT_UNRESOLVED, details: Mapping[str, Any] | None = None):
         super().__init__(reason)
         self.code = code
         self.reason = reason
@@ -79,13 +80,25 @@ def point_in_bounds(point: Any, bounds: Any) -> bool:
     return left <= int(values[0]) <= right and top <= int(values[1]) <= bottom
 
 
+def required_region(snapshot: Mapping[str, Any] | None, name: str) -> list[int]:
+    value = snapshot if isinstance(snapshot, Mapping) else {}
+    bounds = normalize_rect(value.get(str(name or "")))
+    if not bool(value.get("valid")) or bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
+        raise LayoutSnapshotError(
+            f"layout_region_missing:{name}",
+            code=ERROR_LAYOUT_UNRESOLVED,
+            details={"region": str(name or "")},
+        )
+    return bounds
+
+
 def clamp_point(point: Any, bounds: Any) -> list[int]:
     values = list(point or []) if isinstance(point, (list, tuple)) else []
     if len(values) < 2:
-        raise LayoutSnapshotError("target_point_missing", code="LAYOUT_TARGET_POINT_MISSING")
+        raise LayoutSnapshotError("target_point_missing", code=ERROR_COORDINATE_MAPPING_INVALID)
     left, top, right, bottom = normalize_rect(bounds)
     if right <= left or bottom <= top:
-        raise LayoutSnapshotError("target_bounds_invalid", code="LAYOUT_TARGET_BOUNDS_INVALID")
+        raise LayoutSnapshotError("target_bounds_invalid", code=ERROR_COORDINATE_MAPPING_INVALID)
     return [
         max(left, min(right, int(values[0]))),
         max(top, min(bottom, int(values[1]))),
@@ -109,11 +122,13 @@ def validate_layout_regions(
     regions: Mapping[str, Any] | None,
     *,
     image_size: tuple[int, int] | list[int],
+    required_region_names: tuple[str, ...] = REQUIRED_LAYOUT_REGION_NAMES,
 ) -> dict[str, Any]:
     width = int(image_size[0] or 0) if len(image_size) >= 1 else 0
     height = int(image_size[1] or 0) if len(image_size) >= 2 else 0
     normalized = _normalize_regions(regions)
-    missing = [name for name in REQUIRED_LAYOUT_REGION_NAMES if name not in normalized]
+    required_names = tuple(str(name) for name in required_region_names)
+    missing = [name for name in required_names if name not in normalized]
     invalid: list[str] = []
     for name, bounds in normalized.items():
         left, top, right, bottom = bounds
@@ -122,12 +137,44 @@ def validate_layout_regions(
             continue
         if left < 0 or top < 0 or right > width or bottom > height:
             invalid.append(name)
+    conflicts: list[str] = []
+
+    def contains(parent: str, child: str) -> bool:
+        parent_rect = normalized.get(parent)
+        child_rect = normalized.get(child)
+        if not parent_rect or not child_rect:
+            return False
+        return (
+            parent_rect[0] <= child_rect[0]
+            and parent_rect[1] <= child_rect[1]
+            and parent_rect[2] >= child_rect[2]
+            and parent_rect[3] >= child_rect[3]
+        )
+
+    if set(REQUIRED_LAYOUT_REGION_NAMES).issubset(required_names):
+        for parent, child in (
+            ("sidebar_bounds", "sidebar_header_bounds"),
+            ("sidebar_bounds", "session_list_bounds"),
+        ):
+            if parent in normalized and child in normalized and not contains(parent, child):
+                conflicts.append(f"{child}_outside_{parent}")
+        if "sidebar_header_bounds" in normalized and "session_list_bounds" in normalized:
+            if normalized["sidebar_header_bounds"][3] > normalized["session_list_bounds"][1]:
+                conflicts.append("sidebar_header_session_list_overlap")
+        if "chat_header_bounds" in normalized and "message_viewport_bounds" in normalized:
+            if normalized["chat_header_bounds"][3] > normalized["message_viewport_bounds"][1]:
+                conflicts.append("chat_header_message_viewport_overlap")
+        if "message_viewport_bounds" in normalized and "input_bounds" in normalized:
+            if normalized["message_viewport_bounds"][3] > normalized["input_bounds"][1]:
+                conflicts.append("message_viewport_input_overlap")
     return {
-        "ok": bool(width > 0 and height > 0 and not missing and not invalid),
+        "ok": bool(width > 0 and height > 0 and not missing and not invalid and not conflicts),
         "regions": normalized,
         "missing": missing,
         "invalid": invalid,
+        "conflicts": conflicts,
         "image_size": [width, height],
+        "required_region_names": list(required_names),
     }
 
 
@@ -153,10 +200,15 @@ def _vertical_edge_candidates(image: Any) -> list[tuple[int, float]]:
     width, height = [int(value or 0) for value in image.size[:2]]
     if width < 320 or height < 240:
         return []
+    # A real WeChat column separator spans the header, message list and input
+    # areas.  Repeated chat bubbles can share one x-coordinate across several
+    # message rows, so sampling only the middle of the viewport can mistake a
+    # stack of aligned bubbles for the sidebar boundary.  Include the stable
+    # top/bottom chrome and require broad vertical coverage.
     sample_rows = sorted(
         {
             max(1, min(height - 2, int(height * ratio)))
-            for ratio in (0.18, 0.34, 0.52, 0.70, 0.84)
+            for ratio in (0.04, 0.10, 0.18, 0.34, 0.52, 0.70, 0.84, 0.94)
         }
     )
     scores: list[tuple[int, float]] = []
@@ -171,7 +223,7 @@ def _vertical_edge_candidates(image: Any) -> list[tuple[int, float]]:
                 row_scores.append(0.0)
         stable_rows = sum(1 for score in row_scores if score >= 14.0)
         score = (sum(row_scores) / max(1, len(row_scores))) + (stable_rows * 8.0)
-        if stable_rows >= 3 and score >= 28.0:
+        if stable_rows >= 5 and score >= 28.0:
             scores.append((x, score))
     clusters: list[list[tuple[int, float]]] = []
     for item in sorted(scores):
@@ -228,6 +280,18 @@ def _horizontal_edge_candidates(image: Any, *, left: int, right: int) -> list[tu
     return sorted(result, key=lambda item: item[1], reverse=True)
 
 
+def _qualified_edge_confidence(score: float, *, threshold: float) -> float:
+    """Normalize an already-qualified structural edge without requiring black borders.
+
+    WeChat separators are intentionally low contrast.  Once an edge has passed
+    the multi-row/multi-column stability test, confidence is based on how far it
+    clears that test rather than on an impossible 0-255 black/white contrast.
+    """
+
+    margin = max(0.0, float(score) - float(threshold))
+    return min(0.97, 0.78 + (margin / 180.0))
+
+
 def build_structural_layout_regions(
     image: Any,
     *,
@@ -246,7 +310,11 @@ def build_structural_layout_regions(
     width, height = [int(value or 0) for value in image.size[:2]]
     verticals = _vertical_edge_candidates(image)
     selected_verticals = sorted(
-        [item for item in verticals if 92 <= item[0] <= width - 160],
+        [
+            item
+            for item in verticals
+            if max(20, int(width * 0.02)) <= item[0] <= width - max(80, int(width * 0.08))
+        ],
         key=lambda item: item[0],
     )
     conflicts: list[str] = []
@@ -259,9 +327,33 @@ def build_structural_layout_regions(
             "confidence": 0.0,
             "conflicts": conflicts,
         }
-    main_boundary = max(selected_verticals, key=lambda item: item[1])
-    nav_candidates = [item for item in selected_verticals if item[0] < main_boundary[0] - 80]
-    nav_boundary = max(nav_candidates, key=lambda item: item[1]) if nav_candidates else (max(64, int(width * 0.07)), 0.0)
+    # Select a structurally valid nav/sidebar pair.  The ratios below only
+    # reject impossible edges; the actual boundaries always come from pixels.
+    pairs: list[tuple[float, tuple[int, float], tuple[int, float]]] = []
+    for nav in selected_verticals:
+        if not (int(width * 0.025) <= nav[0] <= int(width * 0.20)):
+            continue
+        for main in selected_verticals:
+            sidebar_width = main[0] - nav[0]
+            if sidebar_width <= 0:
+                continue
+            if not (int(width * 0.16) <= sidebar_width <= int(width * 0.48)):
+                continue
+            if not (int(width * 0.24) <= main[0] <= int(width * 0.62)):
+                continue
+            pair_score = float(nav[1]) + float(main[1]) + (main[0] / max(1, width))
+            pairs.append((pair_score, nav, main))
+    if not pairs:
+        conflicts.append("left_nav_boundary_missing")
+        conflicts.append("sidebar_boundary_pair_unresolved")
+        return {
+            "ok": False,
+            "regions": {},
+            "anchors": [],
+            "confidence": 0.0,
+            "conflicts": conflicts,
+        }
+    _pair_score, nav_boundary, main_boundary = max(pairs, key=lambda item: item[0])
     sidebar_header_bottom_candidates = _horizontal_edge_candidates(
         image,
         left=nav_boundary[0],
@@ -272,30 +364,44 @@ def build_structural_layout_regions(
         left=main_boundary[0],
         right=width,
     )
-    sidebar_header_bottom = (
-        max(
-            [item for item in sidebar_header_bottom_candidates if 72 <= item[0] <= min(height - 100, 240)],
-            key=lambda item: item[1],
-            default=(max(96, int(height * 0.14)), 0.0),
-        )[0]
-    )
-    chat_header_bottom = (
-        max(
-            [item for item in chat_header_bottom_candidates if 72 <= item[0] <= min(height - 120, 260)],
-            key=lambda item: item[1],
-            default=(max(96, int(height * 0.12)), 0.0),
-        )[0]
-    )
+    upper_limit = max(80, int(height * 0.30))
+    sidebar_header_candidates = [
+        item for item in sidebar_header_bottom_candidates
+        if int(height * 0.055) <= item[0] <= min(height - max(80, int(height * 0.10)), upper_limit)
+    ]
+    chat_header_candidates = [
+        item for item in chat_header_bottom_candidates
+        if int(height * 0.055) <= item[0] <= min(height - max(96, int(height * 0.12)), upper_limit)
+    ]
+    if not sidebar_header_candidates:
+        conflicts.append("sidebar_header_boundary_missing")
+    if not chat_header_candidates:
+        conflicts.append("chat_header_boundary_missing")
+    if conflicts:
+        return {
+            "ok": False,
+            "regions": {},
+            "anchors": [],
+            "confidence": 0.0,
+            "conflicts": conflicts,
+        }
+    sidebar_header_bottom = max(sidebar_header_candidates, key=lambda item: item[1])[0]
+    chat_header_bottom = max(chat_header_candidates, key=lambda item: item[1])[0]
     input_top_candidates = [
         item
         for item in _horizontal_edge_candidates(image, left=main_boundary[0], right=width)
-        if int(height * 0.58) <= item[0] <= height - 44
+        if int(height * 0.50) <= item[0] <= height - max(28, int(height * 0.035))
     ]
-    input_top = max(
-        input_top_candidates,
-        key=lambda item: item[1],
-        default=(max(chat_header_bottom + 80, int(height * 0.78)), 0.0),
-    )[0]
+    if not input_top_candidates:
+        conflicts.append("input_boundary_missing")
+        return {
+            "ok": False,
+            "regions": {},
+            "anchors": [],
+            "confidence": 0.0,
+            "conflicts": conflicts,
+        }
+    input_top = max(input_top_candidates, key=lambda item: item[1])[0]
     if input_top <= chat_header_bottom or input_top >= height:
         conflicts.append("chat_regions_conflict")
     regions = {
@@ -309,11 +415,11 @@ def build_structural_layout_regions(
     }
     validation = validate_layout_regions(regions, image_size=(width, height))
     confidence_parts = [
-        min(1.0, float(main_boundary[1]) / 100.0),
-        min(1.0, float(nav_boundary[1]) / 100.0) if nav_boundary[1] else 0.72,
-        0.85 if sidebar_header_bottom_candidates else 0.72,
-        0.85 if chat_header_bottom_candidates else 0.72,
-        0.85 if input_top_candidates else 0.72,
+        _qualified_edge_confidence(main_boundary[1], threshold=28.0),
+        _qualified_edge_confidence(nav_boundary[1], threshold=28.0),
+        _qualified_edge_confidence(max(sidebar_header_candidates, key=lambda item: item[1])[1], threshold=24.0),
+        _qualified_edge_confidence(max(chat_header_candidates, key=lambda item: item[1])[1], threshold=24.0),
+        _qualified_edge_confidence(max(input_top_candidates, key=lambda item: item[1])[1], threshold=24.0),
     ]
     anchors = [
         {"name": "nav_separator", "x": nav_boundary[0], "score": nav_boundary[1]},
@@ -340,7 +446,12 @@ def build_structural_layout_regions(
         "regions": regions,
         "anchors": anchors,
         "confidence": round(min(confidence_parts), 3),
-        "conflicts": conflicts + list(validation.get("missing") or []) + list(validation.get("invalid") or []),
+        "conflicts": (
+            conflicts
+            + list(validation.get("missing") or [])
+            + list(validation.get("invalid") or [])
+            + list(validation.get("conflicts") or [])
+        ),
         "vertical_candidates": [{"x": x, "score": score} for x, score in verticals[:12]],
     }
 
@@ -363,6 +474,9 @@ def geometry_signature(
     client_rect: Any,
     dpi_scale: float,
     image_size: Any,
+    capture_mode: str = "",
+    capture_screen_origin: Any = None,
+    client_screen_origin: Any = None,
 ) -> str:
     return _stable_id(
         "geometry",
@@ -371,6 +485,9 @@ def geometry_signature(
         normalize_rect(client_rect),
         round(float(dpi_scale or 1.0), 4),
         list(image_size or []),
+        str(capture_mode or ""),
+        _normalize_origin(capture_screen_origin),
+        _normalize_origin(client_screen_origin),
     )
 
 
@@ -391,6 +508,8 @@ def build_layout_snapshot(
     conflicts: list[str] | None = None,
     executable: bool = False,
     screenshot_path: str = "",
+    surface_kind: str = "wechat_main",
+    required_region_names: tuple[str, ...] = REQUIRED_LAYOUT_REGION_NAMES,
 ) -> dict[str, Any]:
     width = int(image_size[0] or 0)
     height = int(image_size[1] or 0)
@@ -399,7 +518,12 @@ def build_layout_snapshot(
     normalized_client_origin = _normalize_origin(client_screen_origin)
     normalized_window_rect = normalize_rect(window_rect)
     normalized_client_rect = normalize_rect(client_rect)
-    region_validation = validate_layout_regions(regions, image_size=(width, height))
+    required_names = tuple(str(name) for name in required_region_names)
+    region_validation = validate_layout_regions(
+        regions,
+        image_size=(width, height),
+        required_region_names=required_names,
+    )
     normalized_conflicts = [str(item) for item in (conflicts or []) if str(item).strip()]
     can_click = normalized_mode in PHYSICAL_CLICK_CAPTURE_MODES and normalized_capture_origin is not None
     snapshot_id = _stable_id(
@@ -424,7 +548,8 @@ def build_layout_snapshot(
         and not normalized_conflicts
         and float(confidence or 0.0) >= 0.70
     )
-    return {
+    normalized_regions = dict(region_validation["regions"])
+    result = {
         "layout_snapshot_id": snapshot_id,
         "frame_id": str(frame_id or _stable_id("frame", hwnd, time.monotonic_ns())),
         "hwnd": int(hwnd or 0),
@@ -438,7 +563,11 @@ def build_layout_snapshot(
         "client_rect": normalized_client_rect,
         "client_screen_origin": normalized_client_origin,
         "dpi_scale": max(0.01, float(dpi_scale or 1.0)),
-        **region_validation["regions"],
+        "surface_kind": str(surface_kind or "wechat_main"),
+        "required_region_names": list(required_names),
+        "action_region_names": list(required_names),
+        **{name: normalized_regions.get(name, [0, 0, 0, 0]) for name in REQUIRED_LAYOUT_REGION_NAMES},
+        **normalized_regions,
         "anchors": [dict(item) for item in (anchors or []) if isinstance(item, Mapping)],
         "confidence": max(0.0, min(1.0, float(confidence or 0.0))),
         "conflicts": normalized_conflicts,
@@ -452,9 +581,13 @@ def build_layout_snapshot(
             client_rect=normalized_client_rect,
             dpi_scale=dpi_scale,
             image_size=(width, height),
+            capture_mode=normalized_mode,
+            capture_screen_origin=normalized_capture_origin,
+            client_screen_origin=normalized_client_origin,
         ),
         "invalidated": False,
     }
+    return result
 
 
 def snapshot_matches_current(
@@ -465,6 +598,9 @@ def snapshot_matches_current(
     client_rect: Any,
     dpi_scale: float,
     image_size: Any,
+    capture_mode: str | None = None,
+    capture_screen_origin: Any = None,
+    client_screen_origin: Any = None,
 ) -> bool:
     if not isinstance(snapshot, Mapping) or snapshot.get("invalidated"):
         return False
@@ -475,6 +611,17 @@ def snapshot_matches_current(
         client_rect=client_rect,
         dpi_scale=dpi_scale,
         image_size=image_size,
+        capture_mode=str(capture_mode or snapshot.get("capture_mode") or ""),
+        capture_screen_origin=(
+            snapshot.get("capture_screen_origin")
+            if capture_screen_origin is None
+            else capture_screen_origin
+        ),
+        client_screen_origin=(
+            snapshot.get("client_screen_origin")
+            if client_screen_origin is None
+            else client_screen_origin
+        ),
     )
     if int(snapshot.get("hwnd") or 0) != int(hwnd or 0):
         return False
@@ -490,25 +637,35 @@ def image_point_to_screen(snapshot: Mapping[str, Any], point: Any) -> list[int]:
     if not bool(snapshot.get("clickable")) or str(snapshot.get("capture_mode") or "") not in PHYSICAL_CLICK_CAPTURE_MODES:
         raise LayoutSnapshotError(
             "capture_origin_not_proven_for_physical_click",
-            code="LAYOUT_CAPTURE_ORIGIN_UNKNOWN",
+            code=ERROR_COORDINATE_MAPPING_INVALID,
         )
     origin = _normalize_origin(snapshot.get("capture_screen_origin"))
     if origin is None:
-        raise LayoutSnapshotError("capture_screen_origin_missing", code="LAYOUT_CAPTURE_ORIGIN_UNKNOWN")
+        raise LayoutSnapshotError("capture_screen_origin_missing", code=ERROR_COORDINATE_MAPPING_INVALID)
     values = list(point or []) if isinstance(point, (list, tuple)) else []
     if len(values) < 2:
-        raise LayoutSnapshotError("image_point_missing", code="LAYOUT_TARGET_POINT_MISSING")
+        raise LayoutSnapshotError("image_point_missing", code=ERROR_COORDINATE_MAPPING_INVALID)
     return [origin[0] + int(values[0]), origin[1] + int(values[1])]
 
 
 def screen_point_to_client(snapshot: Mapping[str, Any], point: Any) -> list[int]:
     origin = _normalize_origin(snapshot.get("client_screen_origin"))
     if origin is None:
-        raise LayoutSnapshotError("client_screen_origin_missing", code="LAYOUT_CLIENT_ORIGIN_UNKNOWN")
+        raise LayoutSnapshotError("client_screen_origin_missing", code=ERROR_COORDINATE_MAPPING_INVALID)
     values = list(point or []) if isinstance(point, (list, tuple)) else []
     if len(values) < 2:
-        raise LayoutSnapshotError("screen_point_missing", code="LAYOUT_TARGET_POINT_MISSING")
+        raise LayoutSnapshotError("screen_point_missing", code=ERROR_COORDINATE_MAPPING_INVALID)
     return [int(values[0]) - origin[0], int(values[1]) - origin[1]]
+
+
+def client_point_to_screen(snapshot: Mapping[str, Any], point: Any) -> list[int]:
+    origin = _normalize_origin(snapshot.get("client_screen_origin"))
+    if origin is None:
+        raise LayoutSnapshotError("client_screen_origin_missing", code=ERROR_COORDINATE_MAPPING_INVALID)
+    values = list(point or []) if isinstance(point, (list, tuple)) else []
+    if len(values) < 2:
+        raise LayoutSnapshotError("client_point_missing", code=ERROR_COORDINATE_MAPPING_INVALID)
+    return [origin[0] + int(values[0]), origin[1] + int(values[1])]
 
 
 def transform_target_to_screen(
@@ -517,6 +674,11 @@ def transform_target_to_screen(
     point: Any,
     bounds: Any,
 ) -> dict[str, Any]:
+    if not point_in_bounds(point, bounds):
+        raise LayoutSnapshotError(
+            "target_point_outside_target_bounds",
+            code=ERROR_COORDINATE_MAPPING_INVALID,
+        )
     image_point = clamp_point(point, bounds)
     screen_point = image_point_to_screen(snapshot, image_point)
     bounds_rect = normalize_rect(bounds)
@@ -560,6 +722,27 @@ class LayoutSnapshotStore:
     def get(self, snapshot_id: str) -> dict[str, Any] | None:
         item = self._items.get(str(snapshot_id or ""))
         return deepcopy(item) if item else None
+
+    def finalize_ocr_anchors(
+        self,
+        snapshot_id: str,
+        *,
+        anchors: list[Mapping[str, Any]],
+    ) -> dict[str, Any] | None:
+        """Complete construction once; an executable snapshot is immutable after this."""
+        key = str(snapshot_id or "")
+        item = self._items.get(key)
+        if item is None or item.get("invalidated"):
+            return None
+        if bool(item.get("ocr_anchors_finalized")):
+            return deepcopy(item)
+        completed = deepcopy(item)
+        existing = [dict(value) for value in completed.get("anchors") or [] if isinstance(value, Mapping)]
+        existing.extend(dict(value) for value in anchors if isinstance(value, Mapping))
+        completed["anchors"] = existing
+        completed["ocr_anchors_finalized"] = True
+        self._items[key] = completed
+        return deepcopy(completed)
 
     def invalidate(self, snapshot_id: str, *, reason: str) -> None:
         item = self._items.get(str(snapshot_id or ""))

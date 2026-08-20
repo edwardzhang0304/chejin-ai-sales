@@ -2,9 +2,9 @@
 
 This adapter is designed as the primary transport because it relies only on
 the top-level Win32 window, screenshots, OCR, clipboard paste, and guarded
-click/input flows. It is the Windows adaptation of WeChat control. Windows 1920x1080
-WeChat has different UI geometry and should use a separate platform adapter
-rather than reusing these coordinates blindly.
+click/input flows. Every physical action uses a per-frame dynamic layout
+snapshot and the shared coordinate converter. Reference resolutions are
+diagnostics and tests only; they never authorize a physical click.
 """
 
 from __future__ import annotations
@@ -176,7 +176,7 @@ except Exception as exc:  # pragma: no cover - OCR is only needed for live sidec
 
 DEFAULT_MESSAGE_BOTTOM_EXCLUDE_PX = 95
 OCR_MIN_CONFIDENCE = 0.45
-SIDECAR_BASE_ACTIONS = ("status", "capabilities", "sessions", "open-chat", "messages", "send", "recover-render", "voice-transcribe")
+SIDECAR_BASE_ACTIONS = ("status", "capabilities", "normalize-window", "sessions", "open-chat", "messages", "send", "recover-render", "voice-transcribe")
 SIDECAR_ACTION_CHOICES = (*SIDECAR_BASE_ACTIONS, *ADD_FRIEND_ROUTES)
 SEND_GUARD_PATH = PROJECT_ROOT / "runtime" / "wechat_win32_ocr_send_guard.json"
 UI_ACTION_GUARD_PATH = PROJECT_ROOT / "runtime" / "wechat_win32_ocr_ui_action_guard.json"
@@ -187,6 +187,8 @@ _LAST_OPEN_CHAT_TIMING: dict[str, Any] = {}
 _LAST_SESSION_ACTIVATION_TIMING: dict[str, Any] = {}
 _LAYOUT_SNAPSHOT_STORE = win32_ocr_layout.LayoutSnapshotStore()
 _LATEST_LAYOUT_SNAPSHOT_BY_HWND: dict[int, str] = {}
+_LAYOUT_SNAPSHOT_ID_BY_IMAGE_ID: dict[int, str] = {}
+_LAST_VERIFIED_MAIN_LAYOUT_COMPATIBILITY: dict[str, Any] = {}
 RENDER_RECOVERY_GUARD_PATH = PROJECT_ROOT / "runtime" / "wechat_win32_ocr_render_recovery_guard.json"
 MIN_SEND_CLIENT_WIDTH = 700
 MIN_SEND_CLIENT_HEIGHT = 720
@@ -505,6 +507,12 @@ def main() -> int:
     parser.add_argument("action", choices=SIDECAR_ACTION_CHOICES, nargs="?")
     parser.add_argument("--sidecar-run-id", default="", help="Correlation id for one Worker-to-sidecar run.")
     parser.add_argument("--scan-id", default="", help="Correlation id for one sessions scan.")
+    parser.add_argument(
+        "--window-policy",
+        choices=("normalize", "verify"),
+        default="normalize",
+        help="Normalize only at a UI Flow boundary; nested actions must use verify.",
+    )
     parser.add_argument("--canonical-voice-action-id", default="")
     parser.add_argument("--reserved-worker-stable-id", default="")
     parser.add_argument("--voice-action-stage", choices=("prepare", "execute"), default="prepare")
@@ -718,6 +726,7 @@ def try_activate_visible_candidate_from_equivalent_frame(
         hwnd=hwnd,
         geometry=geometry,
         screenshot_path=screenshot_path,
+        layout_snapshot=layout_snapshot_for_image(screenshot),
     )
     sidebar_digest_equal = bool(
         str(current.get("sidebar_sha256") or "")
@@ -747,7 +756,7 @@ def try_activate_visible_candidate_from_equivalent_frame(
             target=clean_remark,
             exact=False,
             geometry=geometry,
-            default_click_x=session_click_x_for_geometry(geometry),
+            default_click_x=0,
             artifact_dir=artifact_dir,
         )
     except Exception as exc:
@@ -1158,6 +1167,13 @@ def parse_visible_session_candidate_arg(raw: Any) -> dict[str, Any] | None:
 
 def run_action(args: argparse.Namespace) -> dict[str, Any]:
     action = str(args.action or "").strip().lower()
+    if action not in set(SIDECAR_ACTION_CHOICES):
+        return {
+            "ok": False,
+            "online": False,
+            "adapter": "win32_ocr",
+            "state": "unsupported_action",
+        }
     if action in ADD_FRIEND_ROUTES:
         validation = validate_add_friend_entry_click_contract(
             phone=str(args.phone or ""),
@@ -1209,6 +1225,17 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
             "window_probe": probe,
             "error": "No visible WeChat main window was found.",
         }
+    if not passive_probe and len(probe.get("visible_main_windows") or []) != 1:
+        return {
+            "ok": False,
+            "online": False,
+            "adapter": "win32_ocr",
+            "state": "window_normalization_failed",
+            "error_code": win32_ocr_layout.ERROR_WINDOW_NORMALIZATION_FAILED,
+            "reason": "visible_main_window_not_unique",
+            "visible_main_count": len(probe.get("visible_main_windows") or []),
+            "window_probe": probe,
+        }
     window = select_primary_visible_main_window(probe)
     if not window:
         return {
@@ -1232,13 +1259,60 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
         }
 
     probe["passive_probe"] = passive_probe
-    if not passive_probe:
+    active_window_required = action not in {"status", "capabilities"}
+    if not passive_probe and active_window_required:
+        blocking_windows: list[dict[str, Any]] = []
+        for candidate in probe.get("visible_windows") or []:
+            candidate_hwnd = int(candidate.get("hwnd") or 0)
+            if not candidate_hwnd or candidate_hwnd == hwnd:
+                continue
+            try:
+                candidate_geometry = get_window_geometry(candidate_hwnd)
+            except Exception:
+                candidate_geometry = {}
+            if int(candidate_geometry.get("width") or 0) < 160 or int(candidate_geometry.get("height") or 0) < 80:
+                continue
+            blocking_windows.append(
+                {
+                    "hwnd": candidate_hwnd,
+                    "title": str(candidate.get("title") or ""),
+                    "class_name": str(candidate.get("class_name") or ""),
+                    "geometry": candidate_geometry,
+                }
+            )
+        if blocking_windows:
+            return {
+                "ok": False,
+                "online": True,
+                "adapter": "win32_ocr",
+                "state": "window_normalization_failed",
+                "error_code": win32_ocr_layout.ERROR_WINDOW_NORMALIZATION_FAILED,
+                "reason": "blocking_wechat_popup_visible",
+                "blocking_windows": blocking_windows,
+                "window_probe": probe,
+            }
         foreground_blank_dismissal = dismiss_blank_foreground_window_before_activation(hwnd, artifact_dir=args.artifact_dir)
         if foreground_blank_dismissal.get("attempted"):
             probe["foreground_blank_dismissal"] = foreground_blank_dismissal
         activate_window(hwnd)
-        normalized_window = normalize_wechat_window(hwnd)
+        normalized_window = normalize_wechat_window(
+            hwnd,
+            allow_move=str(getattr(args, "window_policy", "normalize") or "normalize") == "normalize",
+        )
         probe["window_normalization"] = normalized_window
+        if not normalized_window.get("ok") or not normalized_window.get("enabled", True):
+            return {
+                "ok": False,
+                "online": False,
+                "adapter": "win32_ocr",
+                "state": "window_normalization_failed",
+                "error_code": str(
+                    normalized_window.get("error_code")
+                    or win32_ocr_layout.ERROR_WINDOW_NORMALIZATION_FAILED
+                ),
+                "reason": str(normalized_window.get("reason") or "window_normalization_failed"),
+                "window_probe": probe,
+            }
         if normalized_window.get("applied"):
             humanized_action_sleep(210, 330)
         quick_login_auto_enter = env_flag(
@@ -1282,6 +1356,48 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
         humanized_action_sleep(35, 80)
     if action == "status":
         return status_payload(hwnd, probe, artifact_dir=args.artifact_dir)
+    if action == "normalize-window":
+        normalization = probe.get("window_normalization") if isinstance(probe.get("window_normalization"), dict) else {}
+        readiness: dict[str, Any] = {}
+        if normalization.get("ok"):
+            try:
+                readiness_image, readiness_path = capture_wechat(
+                    hwnd,
+                    artifact_dir=args.artifact_dir,
+                    label="window_normalization_readiness",
+                )
+                readiness_items = run_ocr_traced(
+                    readiness_image,
+                    "window_normalization_readiness",
+                    source="normalize_window",
+                )
+                readiness_block = blocking_screen_reason(readiness_items)
+                readiness_layout = layout_snapshot_for_image(readiness_image)
+                readiness = {
+                    "ok": bool(readiness_layout.get("valid") and not readiness_block),
+                    "screenshot_path": readiness_path,
+                    "blocking_reason": readiness_block,
+                    "layout_snapshot_id": str(readiness_layout.get("layout_snapshot_id") or ""),
+                    "layout_confidence": readiness_layout.get("confidence"),
+                    "layout_conflicts": list(readiness_layout.get("conflicts") or []),
+                }
+            except Exception as exc:
+                readiness = {"ok": False, "reason": "normalization_readiness_probe_failed", "error": repr(exc)}
+        ready = bool(normalization.get("ok") and readiness.get("ok"))
+        return {
+            "ok": ready,
+            "online": ready,
+            "adapter": "win32_ocr",
+            "state": "window_normalized" if ready else "window_normalization_failed",
+            "error_code": str(
+                normalization.get("error_code")
+                or ("" if ready else win32_ocr_layout.ERROR_WINDOW_NORMALIZATION_FAILED)
+            ),
+            "reason": str(normalization.get("reason") or readiness.get("reason") or readiness.get("blocking_reason") or ""),
+            "window_normalization": normalization,
+            "readiness": readiness,
+            "window_probe": probe,
+        }
     if action == "capabilities":
         return capabilities_payload(hwnd, probe, artifact_dir=args.artifact_dir)
     if action == "recover-render":
@@ -1793,14 +1909,18 @@ def active_service_container_wrong_target(
     image_size: tuple[int, int],
     *,
     target: str,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if target_is_service_container(target):
         return {"detected": False}
     width, height = image_size
     if width <= 0 or height <= 0:
         return {"detected": False}
-    split_x = session_split_x(width)
-    header_bottom = chat_header_cutoff_y(height) + max(58, int(height * 0.08))
+    try:
+        sidebar_header = win32_ocr_layout.required_region(layout_snapshot, "sidebar_header_bounds")
+        chat_header = win32_ocr_layout.required_region(layout_snapshot, "chat_header_bounds")
+    except win32_ocr_layout.LayoutSnapshotError:
+        return {"detected": False, "layout_unresolved": True}
     matches: list[dict[str, Any]] = []
     for item in ocr_items:
         text = normalize_ocr_text(item.get("text"))
@@ -1811,11 +1931,14 @@ def active_service_container_wrong_target(
         right = float(item.get("right") or 0)
         compact = text.replace(" ", "")
         has_back_arrow = compact.startswith(("<", "〈", "‹", "＜"))
-        in_service_back_header = has_back_arrow and center_y <= header_bottom and right <= split_x + 72
+        in_service_back_header = (
+            has_back_arrow
+            and sidebar_header[0] <= float(item.get("center_x") or 0) <= sidebar_header[2]
+            and sidebar_header[1] <= center_y <= sidebar_header[3]
+        )
         in_active_title = (
-            center_y <= active_chat_title_bottom_y(height) + 24
-            and right > split_x + 8
-            and float(item.get("center_x") or 0) >= active_chat_title_left_x(width) - 24
+            chat_header[0] <= float(item.get("center_x") or 0) <= chat_header[2]
+            and chat_header[1] <= center_y <= chat_header[3]
         )
         if not (in_service_back_header or in_active_title):
             continue
@@ -2344,11 +2467,19 @@ def immutable_frame_pixel_evidence(
     geometry: dict[str, Any],
     screenshot_path: str = "",
     captured_monotonic: float | None = None,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     image = screenshot.convert("RGB")
     width, height = image.size
-    sidebar_right = max(0, min(width, session_split_x(width)))
-    sidebar = image.crop((0, 0, sidebar_right, height))
+    # Pixel evidence belongs to this physical capture. Never borrow the
+    # latest HWND snapshot: another capture can already have replaced it and
+    # its semantic bounds may describe a different frame.
+    snapshot = layout_snapshot or layout_snapshot_for_image(screenshot) or {}
+    sidebar_bounds = win32_ocr_layout.normalize_rect(snapshot.get("sidebar_bounds"))
+    if sidebar_bounds[2] > sidebar_bounds[0] and sidebar_bounds[3] > sidebar_bounds[1]:
+        sidebar = image.crop(tuple(sidebar_bounds))
+    else:
+        sidebar = image
     full_digest = hashlib.sha256(bytes(image.tobytes())).hexdigest()
     sidebar_digest = hashlib.sha256(bytes(sidebar.tobytes())).hexdigest()
     captured_at_monotonic = (
@@ -2369,7 +2500,7 @@ def immutable_frame_pixel_evidence(
             for key in ("left", "top", "right", "bottom", "width", "height")
         },
         "dpi_scale": float(window_dpi_scale(hwnd)),
-        "sidebar_bounds": [0, 0, sidebar_right, height],
+        "sidebar_bounds": sidebar_bounds if sidebar_bounds[2] > sidebar_bounds[0] else [0, 0, width, height],
         "sidebar_sha256": sidebar_digest,
         "captured_monotonic": captured_at_monotonic,
         "screenshot_path": str(screenshot_path or ""),
@@ -2426,6 +2557,12 @@ def sessions_payload(
             "error": f"WeChat session list is blocked by: {blocking_reason}",
         }
     sessions = parse_sessions_from_ocr(items, screenshot.size, screenshot=screenshot)
+    session_snapshot_id = str(
+        (layout_snapshot_metadata(hwnd).get("snapshot") or {}).get("layout_snapshot_id") or ""
+    )
+    for session in sessions:
+        if isinstance(session, dict):
+            session["layout_snapshot_id"] = session_snapshot_id
     visible_frame_reuse_evidence: dict[str, Any] = {}
     if env_flag("CHEJIN_C2_LOCATE_FRAME_REUSE_ENABLED", default=True):
         compact_ocr_items = compact_ocr_items_for_report(items)
@@ -3259,6 +3396,7 @@ def execute_voice_action_payload(
             (bounds[1] + bounds[3]) // 2,
             bounds=bounds,
             action_name="voice_transcribe_visible_button_click",
+            expected_snapshot_id=str(visible_target.get("layout_snapshot_id") or ""),
         )
     else:
         # Opening the context menu is already a WeChat UI action, so the
@@ -3719,16 +3857,19 @@ def voice_duration_item_like(item: dict[str, Any]) -> bool:
     return 8.0 <= width <= 86.0 and 8.0 <= height <= 36.0
 
 
-def voice_transcribe_item_is_in_chat_surface(item: dict[str, Any], image_size: tuple[int, int]) -> bool:
-    width, height = image_size
-    split_x = session_split_x(width)
+def voice_transcribe_item_is_in_chat_surface(
+    item: dict[str, Any],
+    image_size: tuple[int, int],
+    *,
+    layout_snapshot: dict[str, Any] | None = None,
+) -> bool:
+    try:
+        viewport = win32_ocr_layout.required_region(layout_snapshot, "message_viewport_bounds")
+    except win32_ocr_layout.LayoutSnapshotError:
+        return False
     center_y = float(item.get("center_y") or 0)
-    if float(item.get("left") or 0) < split_x + 20:
-        return False
-    if center_y < chat_header_cutoff_y(height):
-        return False
-    bottom_exclude_px = max(DEFAULT_MESSAGE_BOTTOM_EXCLUDE_PX, int(height * 0.10))
-    if center_y > height - bottom_exclude_px:
+    center_x = float(item.get("center_x") or 0)
+    if not win32_ocr_layout.point_in_bounds([center_x, center_y], viewport):
         return False
     rect = {
         "left": int(float(item.get("left") or 0)),
@@ -3736,13 +3877,15 @@ def voice_transcribe_item_is_in_chat_surface(item: dict[str, Any], image_size: t
         "right": int(float(item.get("right") or 0)),
         "bottom": int(float(item.get("bottom") or 0)),
     }
-    return not rect_in_input_area(rect, {"width": width, "height": height})
+    return True
 
 
 def voice_duration_has_transcribed_text_below(
     duration_item: dict[str, Any],
     ocr_items: list[dict[str, Any]],
     image_size: tuple[int, int],
+    *,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> bool:
     duration_bottom = float(duration_item.get("bottom") or 0)
     duration_left = float(duration_item.get("left") or 0)
@@ -3757,7 +3900,7 @@ def voice_duration_has_transcribed_text_below(
             continue
         if is_message_noise(text):
             continue
-        if not voice_transcribe_item_is_in_chat_surface(item, image_size):
+        if not voice_transcribe_item_is_in_chat_surface(item, image_size, layout_snapshot=layout_snapshot):
             continue
         gap = float(item.get("top") or 0) - duration_bottom
         if gap < 8 or gap > 88:
@@ -3911,29 +4054,39 @@ def voice_target_center_y(target: dict[str, Any] | None) -> float:
     return 0.0
 
 
-def voice_duration_context_click_bounds(item: dict[str, Any], image_size: tuple[int, int]) -> list[int]:
+def voice_duration_context_click_bounds(
+    item: dict[str, Any],
+    image_size: tuple[int, int],
+    *,
+    layout_snapshot: dict[str, Any] | None = None,
+) -> list[int]:
     width, height = image_size
-    split_x = session_split_x(width)
+    viewport = win32_ocr_layout.required_region(layout_snapshot, "message_viewport_bounds")
     item_left = int(float(item.get("left") or 0))
     item_right = int(float(item.get("right") or 0))
     item_center_x = float(item.get("center_x") or 0)
     is_self_side_voice = item_center_x > width * 0.62
-    left = max(split_x + 16, item_left - (42 if is_self_side_voice else 18))
-    top = max(chat_header_cutoff_y(height), int(float(item.get("top") or 0)) - 16)
+    left = max(viewport[0], item_left - (42 if is_self_side_voice else 18))
+    top = max(viewport[1], int(float(item.get("top") or 0)) - 16)
     # Right-side/self voice bubbles sit immediately beside the avatar. Keep the
     # context-menu click inside the green bubble so jitter cannot land on avatar.
     right_padding = 18 if is_self_side_voice else 78
-    right_limit = width - 104 if is_self_side_voice else width - 18
+    right_limit = viewport[2]
     right = min(right_limit, item_right + right_padding)
-    bottom = min(height - DEFAULT_MESSAGE_BOTTOM_EXCLUDE_PX, int(float(item.get("bottom") or 0)) + 16)
+    bottom = min(viewport[3], int(float(item.get("bottom") or 0)) + 16)
     if right <= left:
         right = min(right_limit, left + 64)
     if bottom <= top:
-        bottom = min(height - DEFAULT_MESSAGE_BOTTOM_EXCLUDE_PX, top + 28)
+        bottom = min(viewport[3], top + 28)
     return [left, top, right, bottom]
 
 
-def voice_duration_context_click_target(duration_target: dict[str, Any], image_size: tuple[int, int]) -> dict[str, Any] | None:
+def voice_duration_context_click_target(
+    duration_target: dict[str, Any],
+    image_size: tuple[int, int],
+    *,
+    layout_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     source = str(duration_target.get("source") or "")
     if source in {
         "visual_self_voice_bubble_context_menu_anchor",
@@ -3951,7 +4104,10 @@ def voice_duration_context_click_target(duration_target: dict[str, Any], image_s
     item = duration_target.get("item") if isinstance(duration_target, dict) else None
     if not isinstance(item, dict) or not item:
         return None
-    bounds = voice_duration_context_click_bounds(item, image_size)
+    try:
+        bounds = voice_duration_context_click_bounds(item, image_size, layout_snapshot=layout_snapshot)
+    except win32_ocr_layout.LayoutSnapshotError:
+        return None
     return voice_transcribe_click_target_from_bounds(
         source="voice_duration_context_menu_anchor",
         label="Right-click anchor for WeChat voice bubble context menu",
@@ -4504,13 +4660,16 @@ def message_voice_context_anchor_targets(
     image_size: tuple[int, int],
     *,
     excluded_anchor_keys: set[str] | None = None,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if not parsed_messages:
         return []
-    width, height = image_size
-    split_x = session_split_x(width)
-    top_limit = chat_header_cutoff_y(height)
-    bottom_limit = height - max(DEFAULT_MESSAGE_BOTTOM_EXCLUDE_PX, int(height * 0.10))
+    width, _height = image_size
+    try:
+        viewport = win32_ocr_layout.required_region(layout_snapshot, "message_viewport_bounds")
+    except win32_ocr_layout.LayoutSnapshotError:
+        return []
+    top_limit, bottom_limit = viewport[1], viewport[3]
     excluded = excluded_anchor_keys or set()
     targets: list[dict[str, Any]] = []
     for message in parsed_messages:
@@ -4526,7 +4685,7 @@ def message_voice_context_anchor_targets(
         center_y = (top + bottom) / 2.0
         if center_y < top_limit or center_y > bottom_limit:
             continue
-        if right < split_x + 20:
+        if right < viewport[0]:
             continue
         ocr_items = message.get("ocr_items")
         duration_item = None
@@ -4547,15 +4706,15 @@ def message_voice_context_anchor_targets(
             }
         is_self_side = str(message.get("sender_role") or "").lower() in {"self", "sales"} or center_x > width * 0.62
         if is_self_side:
-            safe_left = max(split_x + 16, int(left) + 8)
-            safe_right = min(width - 104, int(left) + min(112, max(44, int((right - left) * 0.72))))
+            safe_left = max(viewport[0], int(left) + 8)
+            safe_right = min(viewport[2], int(left) + min(112, max(44, int((right - left) * 0.72))))
         else:
-            safe_left = max(split_x + 16, int(left) + 8)
-            safe_right = min(width - 18, int(right) - 8)
+            safe_left = max(viewport[0], int(left) + 8)
+            safe_right = min(viewport[2], int(right) - 8)
         safe_top = max(top_limit, int(top) + 5)
         safe_bottom = min(bottom_limit, int(bottom) - 5)
         if safe_right <= safe_left:
-            safe_right = min(width - (104 if is_self_side else 18), safe_left + 44)
+            safe_right = min(viewport[2], safe_left + 44)
         if safe_bottom <= safe_top:
             safe_bottom = min(bottom_limit, safe_top + 20)
         target = voice_transcribe_click_target_from_bounds(
@@ -4583,15 +4742,16 @@ def voice_duration_context_anchor_targets(
     image_size: tuple[int, int],
     *,
     excluded_anchor_keys: set[str] | None = None,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     anchors: list[dict[str, Any]] = []
     excluded = excluded_anchor_keys or set()
     for item in ocr_items:
         if not voice_duration_item_like(item):
             continue
-        if not voice_transcribe_item_is_in_chat_surface(item, image_size):
+        if not voice_transcribe_item_is_in_chat_surface(item, image_size, layout_snapshot=layout_snapshot):
             continue
-        anchor = voice_duration_context_click_target({"item": item}, image_size)
+        anchor = voice_duration_context_click_target({"item": item}, image_size, layout_snapshot=layout_snapshot)
         if anchor:
             mark_voice_context_anchor_keys(anchor, image_size)
             if voice_context_anchor_is_excluded(anchor, image_size, excluded):
@@ -4605,6 +4765,7 @@ def find_voice_duration_context_anchor_target(
     image_size: tuple[int, int],
     *,
     excluded_anchor_keys: set[str] | None = None,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     anchors = [
         anchor
@@ -4612,11 +4773,13 @@ def find_voice_duration_context_anchor_target(
             ocr_items,
             image_size,
             excluded_anchor_keys=excluded_anchor_keys,
+            layout_snapshot=layout_snapshot,
         )
         if not voice_duration_has_transcribed_text_below(
             anchor.get("item") if isinstance(anchor.get("item"), dict) else {},
             ocr_items,
             image_size,
+            layout_snapshot=layout_snapshot,
         )
     ]
     if not anchors:
@@ -4654,11 +4817,14 @@ def find_visual_customer_voice_context_anchor_targets(
     except Exception:
         return []
     width, height = image_size
-    split_x = session_split_x(width)
-    top_limit = chat_header_cutoff_y(height)
-    bottom_limit = height - max(DEFAULT_MESSAGE_BOTTOM_EXCLUDE_PX, int(height * 0.10))
-    left_limit = max(split_x + 48, int(width * 0.40))
-    right_limit = min(width - 18, max(split_x + 360, int(width * 0.74)))
+    snapshot = layout_snapshot_for_image(image)
+    try:
+        viewport = win32_ocr_layout.required_region(snapshot, "message_viewport_bounds")
+    except win32_ocr_layout.LayoutSnapshotError:
+        return []
+    top_limit, bottom_limit = viewport[1], viewport[3]
+    left_limit = viewport[0]
+    right_limit = viewport[2]
     row_runs: list[tuple[int, int, int, int]] = []
     for y in range(max(0, top_limit), min(height, bottom_limit)):
         xs: list[int] = []
@@ -4702,9 +4868,10 @@ def find_visual_customer_voice_context_anchor_targets(
             continue
         if bubble_height < 28 or bubble_height > 72:
             continue
-        if left < split_x + 42 or left > split_x + 170:
+        chat_width = max(1, viewport[2] - viewport[0])
+        if left < viewport[0] or left > viewport[0] + int(chat_width * 0.42):
             continue
-        if center_x > split_x + 320 or center_x > width * 0.70:
+        if center_x > viewport[0] + int(chat_width * 0.62):
             continue
         if gray_count < 850:
             continue
@@ -4712,16 +4879,20 @@ def find_visual_customer_voice_context_anchor_targets(
             continue
         if visual_component_overlaps_transcribed_parser_voice(component, parsed_messages, image_size):
             continue
-        if visual_customer_voice_component_overlaps_text(component, ocr_items or [], image_size):
+        if visual_customer_voice_component_overlaps_text(
+            component, ocr_items or [], image_size, layout_snapshot=snapshot
+        ):
             continue
-        if visual_customer_voice_component_has_transcribed_text_below(component, ocr_items or [], image_size):
+        if visual_voice_component_has_transcribed_layout_below(
+            component, ocr_items or [], image_size, role="customer", layout_snapshot=snapshot
+        ):
             continue
-        safe_left = max(split_x + 16, left + 8)
-        safe_right = min(width - 18, right - 8)
+        safe_left = max(viewport[0], left + 8)
+        safe_right = min(viewport[2], right - 8)
         safe_top = max(top_limit, top + 5)
         safe_bottom = min(bottom_limit, bottom - 5)
         if safe_right <= safe_left:
-            safe_right = min(width - 18, safe_left + 44)
+            safe_right = min(viewport[2], safe_left + 44)
         if safe_bottom <= safe_top:
             safe_bottom = min(bottom_limit, safe_top + 20)
         bounds = [safe_left, safe_top, safe_right, safe_bottom]
@@ -4780,6 +4951,7 @@ def visual_voice_component_has_transcribed_layout_below(
     image_size: tuple[int, int],
     *,
     role: str,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> bool:
     voice_rect = component_bounds(component)
     if not voice_rect:
@@ -4796,7 +4968,7 @@ def visual_voice_component_has_transcribed_layout_below(
             continue
         if is_message_noise(text):
             continue
-        if not voice_transcribe_item_is_in_chat_surface(item, image_size):
+        if not voice_transcribe_item_is_in_chat_surface(item, image_size, layout_snapshot=layout_snapshot):
             continue
         message = {
             "type": "text",
@@ -4817,6 +4989,8 @@ def visual_customer_voice_component_overlaps_text(
     component: dict[str, Any],
     ocr_items: list[dict[str, Any]],
     image_size: tuple[int, int],
+    *,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> bool:
     left = float(component.get("left") or 0)
     top = float(component.get("top") or 0)
@@ -4832,7 +5006,7 @@ def visual_customer_voice_component_overlaps_text(
         text = str(item.get("text") or "").strip()
         if not text or voice_duration_item_like(item) or voice_transcribe_button_text_like(text) or is_message_noise(text):
             continue
-        if not voice_transcribe_item_is_in_chat_surface(item, image_size):
+        if not voice_transcribe_item_is_in_chat_surface(item, image_size, layout_snapshot=layout_snapshot):
             continue
         center_x = float(item.get("center_x") or 0)
         center_y = float(item.get("center_y") or 0)
@@ -4855,11 +5029,15 @@ def find_visual_self_voice_context_anchor_targets(
     except Exception:
         return []
     width, height = image_size
-    split_x = session_split_x(width)
-    top_limit = chat_header_cutoff_y(height)
-    bottom_limit = height - max(DEFAULT_MESSAGE_BOTTOM_EXCLUDE_PX, int(height * 0.10))
-    left_limit = max(split_x + 120, int(width * 0.58))
-    right_limit = max(left_limit + 1, width - 18)
+    snapshot = layout_snapshot_for_image(image)
+    try:
+        viewport = win32_ocr_layout.required_region(snapshot, "message_viewport_bounds")
+    except win32_ocr_layout.LayoutSnapshotError:
+        return []
+    top_limit, bottom_limit = viewport[1], viewport[3]
+    chat_width = max(1, viewport[2] - viewport[0])
+    left_limit = viewport[0] + int(chat_width * 0.48)
+    right_limit = viewport[2]
     row_runs: list[tuple[int, int, int, int]] = []
     for y in range(max(0, top_limit), min(height, bottom_limit)):
         xs: list[int] = []
@@ -4904,7 +5082,7 @@ def find_visual_self_voice_context_anchor_targets(
             continue
         if bubble_height < 22 or bubble_height > 76:
             continue
-        if center_x < width * 0.62 or right < width * 0.70:
+        if center_x < viewport[0] + int(chat_width * 0.52) or right < viewport[0] + int(chat_width * 0.60):
             continue
         if green_count < 220:
             continue
@@ -4912,16 +5090,20 @@ def find_visual_self_voice_context_anchor_targets(
             continue
         if visual_component_overlaps_transcribed_parser_voice(component, parsed_messages, image_size):
             continue
-        if visual_self_voice_component_overlaps_text(component, ocr_items or [], image_size):
+        if visual_self_voice_component_overlaps_text(
+            component, ocr_items or [], image_size, layout_snapshot=snapshot
+        ):
             continue
-        if visual_voice_component_has_transcribed_layout_below(component, ocr_items or [], image_size, role="self"):
+        if visual_voice_component_has_transcribed_layout_below(
+            component, ocr_items or [], image_size, role="self", layout_snapshot=snapshot
+        ):
             continue
-        safe_left = max(split_x + 16, left + 8)
-        safe_right = min(width - 104, left + min(110, max(44, int(bubble_width * 0.72))))
+        safe_left = max(viewport[0], left + 8)
+        safe_right = min(viewport[2], left + min(110, max(44, int(bubble_width * 0.72))))
         safe_top = max(top_limit, top + 5)
         safe_bottom = min(bottom_limit, bottom - 5)
         if safe_right <= safe_left:
-            safe_right = min(width - 104, safe_left + 44)
+            safe_right = min(viewport[2], safe_left + 44)
         if safe_bottom <= safe_top:
             safe_bottom = min(bottom_limit, safe_top + 20)
         bounds = [safe_left, safe_top, safe_right, safe_bottom]
@@ -4970,6 +5152,8 @@ def visual_self_voice_component_overlaps_text(
     component: dict[str, Any],
     ocr_items: list[dict[str, Any]],
     image_size: tuple[int, int],
+    *,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> bool:
     left = float(component.get("left") or 0)
     top = float(component.get("top") or 0)
@@ -4985,7 +5169,7 @@ def visual_self_voice_component_overlaps_text(
         text = str(item.get("text") or "").strip()
         if not text or voice_duration_item_like(item) or voice_transcribe_button_text_like(text) or is_message_noise(text):
             continue
-        if not voice_transcribe_item_is_in_chat_surface(item, image_size):
+        if not voice_transcribe_item_is_in_chat_surface(item, image_size, layout_snapshot=layout_snapshot):
             continue
         center_x = float(item.get("center_x") or 0)
         center_y = float(item.get("center_y") or 0)
@@ -5161,6 +5345,10 @@ def build_unified_voice_observations_v3(
 ) -> list[dict[str, Any]]:
     """Fuse parser, OCR, pixels, avatar and button evidence into one voice truth."""
     messages = [message for message in parsed_messages or [] if isinstance(message, dict)]
+    layout_snapshot = layout_snapshot_for_image(image)
+    if not isinstance(layout_snapshot, dict) or not layout_snapshot.get("valid"):
+        return []
+    layout_snapshot_id = str(layout_snapshot.get("layout_snapshot_id") or "")
     voice_ocr_items = [
         item
         for item in ocr_items
@@ -5169,8 +5357,12 @@ def build_unified_voice_observations_v3(
     excluded = excluded_anchor_keys or set()
     parser_targets = {
         str((target.get("item") or {}).get("message_id") or ""): normalize_voice_evidence_target(image, target, image_size)
-        for target in message_voice_context_anchor_targets(messages, image_size)
+        for target in message_voice_context_anchor_targets(
+            messages, image_size, layout_snapshot=layout_snapshot
+        )
     }
+    for target in parser_targets.values():
+        target["layout_snapshot_id"] = layout_snapshot_id
     observations: list[dict[str, Any]] = []
     for message in messages:
         if not message_is_voice_record(message):
@@ -5236,6 +5428,7 @@ def build_unified_voice_observations_v3(
         if not isinstance(target, dict):
             return
         normalized = normalize_voice_evidence_target(image, target, image_size)
+        normalized["layout_snapshot_id"] = layout_snapshot_id
         expected_role = "self" if "self_voice" in source else ("customer" if "customer_voice" in source else "")
         actual_role = voice_anchor_sender_role(normalized, image_size)
         avatar_role = str((normalized.get("avatar_alignment") or {}).get("role") or "")
@@ -5276,9 +5469,13 @@ def build_unified_voice_observations_v3(
             }
         )
 
-    for raw_target in voice_duration_context_anchor_targets(voice_ocr_items, image_size):
+    for raw_target in voice_duration_context_anchor_targets(
+        voice_ocr_items, image_size, layout_snapshot=layout_snapshot
+    ):
         raw_item = raw_target.get("item") if isinstance(raw_target.get("item"), dict) else {}
-        raw_state = "transcribed" if voice_duration_has_transcribed_text_below(raw_item, voice_ocr_items, image_size) else "untranscribed"
+        raw_state = "transcribed" if voice_duration_has_transcribed_text_below(
+            raw_item, voice_ocr_items, image_size, layout_snapshot=layout_snapshot
+        ) else "untranscribed"
         merge_evidence(raw_target, "ocr_duration", inferred_state=raw_state)
 
     for visual_target in find_visual_customer_voice_context_anchor_targets(
@@ -5327,13 +5524,19 @@ def build_unified_voice_observations_v3(
         and not observation.get("contract_errors")
         and isinstance(observation.get("action_target"), dict)
     ]
-    for button in find_voice_transcribe_targets(voice_ocr_items, image_size, allow_inferred=False):
+    for button in find_voice_transcribe_targets(
+        voice_ocr_items,
+        image_size,
+        allow_inferred=False,
+        layout_snapshot=layout_snapshot,
+    ):
         if not pending:
             break
         button_y = voice_target_center_y(button)
         nearest = min(pending, key=lambda observation: abs(button_y - voice_target_center_y(observation.get("action_target"))))
         if abs(button_y - voice_target_center_y(nearest.get("action_target"))) <= 96.0:
             nearest["visible_button_target"] = button
+            nearest["visible_button_target"]["layout_snapshot_id"] = layout_snapshot_id
             if "visible_transcribe_button" not in nearest["evidence_sources"]:
                 nearest["evidence_sources"].append("visible_transcribe_button")
 
@@ -5708,6 +5911,7 @@ def merge_structural_image_messages(
     messages: list[dict[str, Any]],
     *,
     target: str,
+    layout_snapshot: dict[str, Any] | None = None,
     observation_validation_errors: list[dict[str, Any]] | None = None,
     voice_action_attempts: list[dict[str, Any]] | None = None,
     image_candidate_diagnostics: list[dict[str, Any]] | None = None,
@@ -5740,12 +5944,33 @@ def merge_structural_image_messages(
             observe_structural_image_messages,
         )
 
+        layout_snapshot = layout_snapshot or layout_snapshot_for_image(screenshot)
+        viewport = (
+            list((layout_snapshot or {}).get("message_viewport_bounds") or [])
+            if isinstance(layout_snapshot, dict)
+            else []
+        )
+        if not bool((layout_snapshot or {}).get("valid")) or len(viewport) != 4:
+            raise RuntimeError("WECHAT_UI_LAYOUT_UNRESOLVED")
+
+        def resolve_role_from_same_layout(
+            image: Any,
+            bounds: list[float],
+            image_size: tuple[int, int],
+        ) -> dict[str, Any]:
+            return message_row_avatar_role_details(
+                image,
+                bounds,
+                image_size,
+                layout_snapshot=layout_snapshot,
+            )
+
         image_messages = observe_structural_image_messages(
             screenshot,
             ocr_items,
             merged,
             target=target,
-            role_resolver=message_row_avatar_role_details,
+            role_resolver=resolve_role_from_same_layout,
             max_images=int(
                 (
                     _C2_GENERATED_SCHEMA.get("image_contract") or {}
@@ -5756,6 +5981,7 @@ def merge_structural_image_messages(
             ),
             voice_action_attempts=voice_action_attempts,
             diagnostics=image_candidate_diagnostics,
+            message_viewport_bounds=viewport,
         )
     except Exception as exc:
         return image_observation_failed(
@@ -5877,28 +6103,32 @@ def find_visual_voice_transcribe_hover_target(
     ocr_items: list[dict[str, Any]],
     image_size: tuple[int, int],
 ) -> dict[str, Any] | None:
+    snapshot = layout_snapshot_for_image(image)
+    try:
+        viewport = win32_ocr_layout.required_region(snapshot, "message_viewport_bounds")
+    except win32_ocr_layout.LayoutSnapshotError:
+        return None
     targets: list[dict[str, Any]] = []
     for item in ocr_items:
         if not voice_duration_item_like(item):
             continue
-        if not voice_transcribe_item_is_in_chat_surface(item, image_size):
+        if not voice_transcribe_item_is_in_chat_surface(item, image_size, layout_snapshot=snapshot):
             continue
-        if voice_duration_has_transcribed_text_below(item, ocr_items, image_size):
+        if voice_duration_has_transcribed_text_below(item, ocr_items, image_size, layout_snapshot=snapshot):
             continue
         center_y = int(float(item.get("center_y") or 0))
         voice_left = int(float(item.get("left") or 0))
         voice_right = int(float(item.get("right") or 0))
         width, height = image_size
-        split_x = session_split_x(width)
         is_self_side_voice = float(item.get("center_x") or 0) > width * 0.62
         if is_self_side_voice:
-            left = max(split_x + 24, voice_left - 154)
-            right = max(split_x + 34, voice_left - 70)
+            left = max(viewport[0], voice_left - 154)
+            right = max(viewport[0], voice_left - 70)
         else:
-            left = max(split_x + 86, voice_right + 70)
-            right = min(width - 24, voice_right + 154)
-        top = max(chat_header_cutoff_y(height), center_y - 18)
-        bottom = min(height - DEFAULT_MESSAGE_BOTTOM_EXCLUDE_PX, center_y + 18)
+            left = max(viewport[0], voice_right + 70)
+            right = min(viewport[2], voice_right + 154)
+        top = max(viewport[1], center_y - 18)
+        bottom = min(viewport[3], center_y + 18)
         if right <= left or bottom <= top:
             continue
         visual = voice_transcribe_visual_button_score(image, [left, top, right, bottom])
@@ -6069,16 +6299,30 @@ def observe_wechat_context_menu(
     ocr_image = None
     roi_screenshot_path = ""
     try:
-        screenshot, screenshot_path = capture_visible_screen(
+        menu_hwnd = int(popup.get("menu_hwnd") or 0)
+        screenshot, screenshot_path = capture_wechat_window_visible_screen(
+            menu_hwnd,
             artifact_dir=artifact_dir,
             label=label,
+            popup_window=True,
         )
+        menu_window_rect = get_window_geometry(menu_hwnd)
+        menu_origin = [
+            int(menu_window_rect.get("left") or 0),
+            int(menu_window_rect.get("top") or 0),
+        ]
+        local_menu_bounds = [
+            menu_bounds[0] - menu_origin[0],
+            menu_bounds[1] - menu_origin[1],
+            menu_bounds[2] - menu_origin[0],
+            menu_bounds[3] - menu_origin[1],
+        ]
         width, height = getattr(screenshot, "size", (0, 0))
         roi = [
-            max(0, menu_bounds[0]),
-            max(0, menu_bounds[1]),
-            min(int(width), menu_bounds[2]),
-            min(int(height), menu_bounds[3]),
+            max(0, local_menu_bounds[0]),
+            max(0, local_menu_bounds[1]),
+            min(int(width), local_menu_bounds[2]),
+            min(int(height), local_menu_bounds[3]),
         ]
         if roi[2] <= roi[0] or roi[3] <= roi[1]:
             raise RuntimeError("context_menu_ocr_roi_invalid")
@@ -6130,8 +6374,8 @@ def observe_wechat_context_menu(
         except (TypeError, ValueError):
             continue
         if (
-            menu_bounds[0] <= item_left < item_right <= menu_bounds[2]
-            and menu_bounds[1] <= item_top < item_bottom <= menu_bounds[3]
+            local_menu_bounds[0] <= item_left < item_right <= local_menu_bounds[2]
+            and local_menu_bounds[1] <= item_top < item_bottom <= local_menu_bounds[3]
         ):
             local_items.append(item)
     return {
@@ -6139,10 +6383,11 @@ def observe_wechat_context_menu(
         "reason": "context_menu_observed",
         "image": screenshot,
         "image_size": (int(width), int(height)),
-        "screen_origin": [0, 0],
-        "menu_panel_bounds": menu_bounds,
+        "screen_origin": menu_origin,
+        "menu_panel_bounds": local_menu_bounds,
+        "menu_panel_screen_bounds": menu_bounds,
         "menu_window_evidence": {
-            "hwnd": int(popup.get("menu_hwnd") or 0),
+            "hwnd": menu_hwnd,
             "class_name": str(popup.get("menu_class_name") or ""),
             "reason": str(popup.get("reason") or ""),
         },
@@ -6186,7 +6431,11 @@ def observe_wechat_context_menu(
         ][:64],
         "screenshot_path": screenshot_path,
         "roi_screenshot_path": roi_screenshot_path,
-        "capture_mode": "visible_screen",
+        "capture_mode": "wechat_window_visible_screen",
+        "menu_hwnd": menu_hwnd,
+        "layout_snapshot_id": str(
+            (layout_snapshot_metadata(menu_hwnd).get("snapshot") or {}).get("layout_snapshot_id") or ""
+        ),
         "anchor_screen": [anchor_x, anchor_y],
     }
 
@@ -6198,7 +6447,19 @@ def open_voice_transcribe_context_menu(
     image_size: tuple[int, int],
     artifact_dir: str | None = None,
 ) -> dict[str, Any]:
-    anchor = voice_duration_context_click_target(duration_target, image_size)
+    expected_snapshot_id = str(duration_target.get("layout_snapshot_id") or "")
+    current_snapshot = current_layout_snapshot(hwnd) or {}
+    if not expected_snapshot_id or str(current_snapshot.get("layout_snapshot_id") or "") != expected_snapshot_id:
+        return {
+            "ok": False,
+            "reason": "voice_target_layout_snapshot_stale",
+            "error_code": win32_ocr_layout.ERROR_LAYOUT_STALE,
+        }
+    anchor = voice_duration_context_click_target(
+        duration_target,
+        image_size,
+        layout_snapshot=current_snapshot,
+    )
     if not anchor:
         return {"ok": False, "reason": "voice_duration_anchor_missing"}
     geometry = get_window_geometry(hwnd)
@@ -6209,6 +6470,7 @@ def open_voice_transcribe_context_menu(
         anchor_y,
         bounds=[int(value) for value in anchor.get("click_bounds") or []],
         action_name="voice_transcribe_context_right_click",
+        expected_snapshot_id=expected_snapshot_id,
     )
     menu_wait_ms = wait_for_wechat_context_menu_stable()
     # The WeChat context menu is a desktop popup. On right-side/self voice
@@ -6228,8 +6490,15 @@ def open_voice_transcribe_context_menu(
         if isinstance(item, dict)
     ]
     menu_size = tuple(observation.get("image_size") or image_size)
-    menu_target = find_voice_transcribe_menu_item_target(menu_items, menu_size, anchor=anchor, anchor_screen_y=anchor_screen_y)
-    collapse_target = find_voice_transcribe_menu_collapse_item_target(menu_items, menu_size, anchor=anchor, anchor_screen_y=anchor_screen_y)
+    menu_origin_y = int((observation.get("screen_origin") or [0, 0])[1] or 0)
+    local_anchor_y = anchor_screen_y - menu_origin_y
+    menu_target = find_voice_transcribe_menu_item_target(menu_items, menu_size, anchor=anchor, anchor_screen_y=local_anchor_y)
+    collapse_target = find_voice_transcribe_menu_collapse_item_target(menu_items, menu_size, anchor=anchor, anchor_screen_y=local_anchor_y)
+    snapshot_id = str(observation.get("layout_snapshot_id") or "")
+    for target in (menu_target, collapse_target):
+        if isinstance(target, dict):
+            target["layout_snapshot_id"] = snapshot_id
+            target["popup_hwnd"] = int(observation.get("menu_hwnd") or 0)
     local_radius = max(96.0, min(180.0, float(menu_size[1] if menu_size else 0) * 0.18))
     if menu_target and float(menu_target.get("menu_distance_to_anchor") or 0.0) > local_radius:
         menu_target = None
@@ -6331,7 +6600,7 @@ def find_voice_transcribe_menu_item_target(
             bounds=[left, top, right, bottom],
             item=item,
         )
-        target["coordinate_space"] = "screen"
+        target["coordinate_space"] = "window_image"
         target["menu_distance_to_anchor"] = abs(float(item.get("center_y") or 0) - anchor_y) if anchor_y else 0.0
         targets.append(target)
     if not targets:
@@ -6368,7 +6637,7 @@ def find_voice_transcribe_menu_collapse_item_target(
             bounds=[left, top, right, bottom],
             item=item,
         )
-        target["coordinate_space"] = "screen"
+        target["coordinate_space"] = "window_image"
         target["menu_distance_to_anchor"] = abs(float(item.get("center_y") or 0) - anchor_y) if anchor_y else 0.0
         targets.append(target)
     if not targets:
@@ -6390,7 +6659,12 @@ def dismiss_voice_transcribe_context_menu(
         geometry = get_window_geometry(hwnd)
         before_shot, before_path = capture_wechat(hwnd, artifact_dir=artifact_dir, label=f"{label}_before")
         before_items = run_ocr(before_shot)
-        safe_target = safe_window_header_blank_click_target(before_items, before_shot.size, geometry=geometry)
+        safe_target = safe_window_header_blank_click_target(
+            before_items,
+            before_shot.size,
+            geometry=geometry,
+            layout_snapshot=layout_snapshot_for_image(before_shot),
+        )
         if not safe_target:
             return {
                 "ok": False,
@@ -6405,6 +6679,9 @@ def dismiss_voice_transcribe_context_menu(
             click_y,
             bounds=safe_target["bounds"],
             action_name="voice_transcribe_context_menu_title_bar_dismiss_click",
+            expected_snapshot_id=str(
+                (layout_snapshot_metadata(hwnd).get("snapshot") or {}).get("layout_snapshot_id") or ""
+            ),
         )
         humanized_action_sleep(120, 260)
         window_probe = probe_wechat_windows()
@@ -6422,7 +6699,11 @@ def dismiss_voice_transcribe_context_menu(
             result["reason"] = "window_not_visible_after_dismiss"
             return result
         try:
-            screenshot, screenshot_path = capture_visible_screen(artifact_dir=artifact_dir, label=label)
+            screenshot, screenshot_path = capture_wechat_window_visible_screen(
+                hwnd,
+                artifact_dir=artifact_dir,
+                label=label,
+            )
             items = run_ocr(screenshot)
             visible_menu_texts = voice_transcribe_menu_texts_from_items(items, menu_bounds=menu_bounds)
             visible_panel_texts = chat_info_panel_texts_from_items(items)
@@ -6448,17 +6729,23 @@ def safe_window_header_blank_click_target(
     image_size: tuple[int, int],
     *,
     geometry: dict[str, Any] | None = None,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Find a fresh blank title-bar segment away from chat content and controls."""
     width, height = image_size
     if width < 700 or height < 260:
         return None
-    active_geometry = geometry if isinstance(geometry, dict) else {"width": width, "height": height}
-    split_x = session_split_x(int(active_geometry.get("width") or width))
-    zone_left = max(split_x + 28, int(width * 0.42))
-    zone_right = min(width - 230, int(width * 0.76))
-    zone_top = 8
-    zone_bottom = min(42, max(26, chat_header_cutoff_y(height) - 46))
+    try:
+        chat_header = win32_ocr_layout.required_region(layout_snapshot, "chat_header_bounds")
+    except win32_ocr_layout.LayoutSnapshotError:
+        return None
+    # Reserve the outer portions for title text and WeChat controls; the
+    # actual zone still derives from the current header, never a reference x.
+    header_width = max(1, chat_header[2] - chat_header[0])
+    zone_left = chat_header[0] + int(header_width * 0.30)
+    zone_right = chat_header[0] + int(header_width * 0.68)
+    zone_top = chat_header[1] + max(2, int((chat_header[3] - chat_header[1]) * 0.08))
+    zone_bottom = chat_header[1] + max(16, int((chat_header[3] - chat_header[1]) * 0.45))
     if zone_right - zone_left < 56 or zone_bottom - zone_top < 14:
         return None
     blocked: list[tuple[int, int]] = []
@@ -6539,12 +6826,17 @@ def voice_transcribe_menu_texts_from_items(
 
 def verify_voice_transcribe_context_menu_closed(
     *,
+    hwnd: int = 0,
     artifact_dir: str | None = None,
     label: str = "voice_transcribe_context_menu_after_click",
     menu_bounds: list[int] | None = None,
 ) -> dict[str, Any]:
     try:
-        screenshot, screenshot_path = capture_visible_screen(artifact_dir=artifact_dir, label=label)
+        screenshot, screenshot_path = capture_wechat_window_visible_screen(
+            hwnd,
+            artifact_dir=artifact_dir,
+            label=label,
+        )
         items = run_ocr(screenshot)
         visible_menu_texts = voice_transcribe_menu_texts_from_items(items, menu_bounds=menu_bounds)
         visible_panel_texts = chat_info_panel_texts_from_items(items)
@@ -6575,23 +6867,24 @@ def click_voice_transcribe_context_menu_target(
     click_attempts: list[dict[str, Any]] = []
 
     def click_once(click_x: int, click_y: int, *, retry_index: int, jitter_meta: dict[str, Any]) -> dict[str, Any]:
-        if str(menu_target.get("coordinate_space") or "") == "screen":
-            click = human_screen_click_in_bounds(
-                click_x,
-                click_y,
-                bounds=menu_bounds,
-                action_name="voice_transcribe_context_menu_click",
-            )
+        if str(menu_target.get("coordinate_space") or "") != "window_image":
+            click = {
+                "ok": False,
+                "error_code": win32_ocr_layout.ERROR_COORDINATE_MAPPING_INVALID,
+                "reason": "context_menu_target_origin_not_bound_to_popup_snapshot",
+            }
         else:
             click = human_window_image_click_in_bounds(
-                hwnd,
+                int(menu_target.get("popup_hwnd") or hwnd),
                 click_x,
                 click_y,
                 bounds=menu_bounds,
                 action_name="voice_transcribe_context_menu_click",
+                expected_snapshot_id=str(menu_target.get("layout_snapshot_id") or ""),
             )
         humanized_action_sleep(260, 620)
         verification = verify_voice_transcribe_context_menu_closed(
+            hwnd=int(menu_target.get("popup_hwnd") or hwnd),
             artifact_dir=artifact_dir,
             label=f"voice_transcribe_context_menu_after_click_{attempt_index}_{retry_index}",
             menu_bounds=menu_bounds,
@@ -6626,22 +6919,6 @@ def click_voice_transcribe_context_menu_target(
             "click_attempts": click_attempts,
         }
 
-    center_x = int((menu_bounds[0] + menu_bounds[2]) / 2)
-    center_y = int((menu_bounds[1] + menu_bounds[3]) / 2)
-    center_jitter = {"enabled": False, "source": str(menu_target.get("source") or ""), "bounds": menu_bounds, "reason": "retry_center_point"}
-    second_attempt = click_once(center_x, center_y, retry_index=2, jitter_meta=center_jitter)
-    click_attempts.append(second_attempt)
-    if second_attempt.get("click", {}).get("ok") and second_attempt.get("menu_close_verification", {}).get("ok"):
-        return {
-            **second_attempt["click"],
-            "ok": True,
-            "reason": "context_menu_retry_closed_menu",
-            "planned_click_point": second_attempt["planned_click_point"],
-            "click_jitter": second_attempt["click_jitter"],
-            "menu_close_verification": second_attempt["menu_close_verification"],
-            "click_attempts": click_attempts,
-        }
-
     dismissal = dismiss_voice_transcribe_context_menu(
         hwnd,
         artifact_dir=artifact_dir,
@@ -6666,19 +6943,24 @@ def find_voice_transcribe_targets(
     image_size: tuple[int, int],
     *,
     allow_inferred: bool = True,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     width, height = image_size
+    try:
+        viewport = win32_ocr_layout.required_region(layout_snapshot, "message_viewport_bounds")
+    except win32_ocr_layout.LayoutSnapshotError:
+        return []
     direct_targets: list[dict[str, Any]] = []
     for item in ocr_items:
         text = str(item.get("text") or "")
         if not voice_transcribe_button_text_like(text):
             continue
-        if not voice_transcribe_item_is_in_chat_surface(item, image_size):
+        if not voice_transcribe_item_is_in_chat_surface(item, image_size, layout_snapshot=layout_snapshot):
             continue
-        left = max(session_split_x(width) + 16, int(float(item.get("left") or 0)) - 18)
-        top = max(chat_header_cutoff_y(height), int(float(item.get("top") or 0)) - 12)
-        right = min(width - 18, int(float(item.get("right") or 0)) + 18)
-        bottom = min(height - DEFAULT_MESSAGE_BOTTOM_EXCLUDE_PX, int(float(item.get("bottom") or 0)) + 12)
+        left = max(viewport[0], int(float(item.get("left") or 0)) - 18)
+        top = max(viewport[1], int(float(item.get("top") or 0)) - 12)
+        right = min(viewport[2], int(float(item.get("right") or 0)) + 18)
+        bottom = min(viewport[3], int(float(item.get("bottom") or 0)) + 12)
         if right <= left or bottom <= top:
             continue
         direct_targets.append(
@@ -6700,23 +6982,22 @@ def find_voice_transcribe_targets(
         text = str(item.get("text") or "")
         if not voice_duration_item_like(item):
             continue
-        if not voice_transcribe_item_is_in_chat_surface(item, image_size):
+        if not voice_transcribe_item_is_in_chat_surface(item, image_size, layout_snapshot=layout_snapshot):
             continue
-        if voice_duration_has_transcribed_text_below(item, ocr_items, image_size):
+        if voice_duration_has_transcribed_text_below(item, ocr_items, image_size, layout_snapshot=layout_snapshot):
             continue
         center_y = int(float(item.get("center_y") or 0))
         voice_left = int(float(item.get("left") or 0))
         voice_right = int(float(item.get("right") or 0))
-        split_x = session_split_x(width)
         is_self_side_voice = float(item.get("center_x") or 0) > width * 0.62
         if is_self_side_voice:
-            left = max(split_x + 24, voice_left - 154)
-            right = max(split_x + 34, voice_left - 70)
+            left = max(viewport[0], voice_left - 154)
+            right = max(viewport[0], voice_left - 70)
         else:
-            left = max(split_x + 86, voice_right + 70)
-            right = min(width - 24, voice_right + 154)
-        top = max(chat_header_cutoff_y(height), center_y - 18)
-        bottom = min(height - DEFAULT_MESSAGE_BOTTOM_EXCLUDE_PX, center_y + 18)
+            left = max(viewport[0], voice_right + 70)
+            right = min(viewport[2], voice_right + 154)
+        top = max(viewport[1], center_y - 18)
+        bottom = min(viewport[3], center_y + 18)
         if right <= left or bottom <= top:
             continue
         inferred_targets.append(
@@ -6735,8 +7016,14 @@ def find_voice_transcribe_target(
     image_size: tuple[int, int],
     *,
     allow_inferred: bool = True,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    targets = find_voice_transcribe_targets(ocr_items, image_size, allow_inferred=allow_inferred)
+    targets = find_voice_transcribe_targets(
+        ocr_items,
+        image_size,
+        allow_inferred=allow_inferred,
+        layout_snapshot=layout_snapshot,
+    )
     return targets[-1] if targets else None
 
 
@@ -6911,6 +7198,7 @@ def avatar_lane_visual_score(
     bounds: list[float],
     role: str,
     image_size: tuple[int, int],
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if screenshot is None or len(bounds) < 4:
         return {"present": False, "score": 0.0, "reason": "screenshot_unavailable"}
@@ -6921,14 +7209,18 @@ def avatar_lane_visual_score(
     width, height = image_size
     if width <= 0 or height <= 0:
         return {"present": False, "score": 0.0, "reason": "image_size_invalid"}
-    split_x = session_split_x(width)
+    snapshot = layout_snapshot or layout_snapshot_for_image(screenshot)
+    try:
+        viewport = win32_ocr_layout.required_region(snapshot, "message_viewport_bounds")
+    except win32_ocr_layout.LayoutSnapshotError:
+        return {"present": False, "score": 0.0, "reason": "layout_unresolved"}
     bubble_left, bubble_top, bubble_right, bubble_bottom = [float(value) for value in bounds[:4]]
     if role == "customer":
-        lane_left = max(split_x + 4, int(round(bubble_left - 140.0)))
-        lane_right = min(int(round(bubble_left - 4.0)), split_x + 150)
+        lane_left = max(viewport[0], int(round(bubble_left - 140.0)))
+        lane_right = min(int(round(bubble_left - 4.0)), viewport[0] + 150)
     else:
-        lane_left = max(int(round(bubble_right + 4.0)), width - 150, split_x + 1)
-        lane_right = width - 6
+        lane_left = max(int(round(bubble_right + 4.0)), viewport[2] - 150)
+        lane_right = viewport[2]
     lane_left = max(0, int(lane_left))
     lane_right = min(width, int(lane_right))
     if lane_right - lane_left < 20:
@@ -6946,11 +7238,11 @@ def avatar_lane_visual_score(
     candidates: list[dict[str, Any]] = []
     for crop_center in crop_centers:
         crop_top = max(
-            chat_header_cutoff_y(height),
+            viewport[1],
             int(round(crop_center - 24.0)),
         )
         crop_bottom = min(
-            height - DEFAULT_MESSAGE_BOTTOM_EXCLUDE_PX,
+            viewport[3],
             crop_top + 48,
         )
         if crop_bottom - crop_top < 20:
@@ -7069,9 +7361,23 @@ def message_row_avatar_role_details(
     screenshot: Any | None,
     bounds: list[float],
     image_size: tuple[int, int],
+    *,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    customer = avatar_lane_visual_score(screenshot, bounds=bounds, role="customer", image_size=image_size)
-    self_side = avatar_lane_visual_score(screenshot, bounds=bounds, role="self", image_size=image_size)
+    customer = avatar_lane_visual_score(
+        screenshot,
+        bounds=bounds,
+        role="customer",
+        image_size=image_size,
+        layout_snapshot=layout_snapshot,
+    )
+    self_side = avatar_lane_visual_score(
+        screenshot,
+        bounds=bounds,
+        role="self",
+        image_size=image_size,
+        layout_snapshot=layout_snapshot,
+    )
     customer_present = bool(customer.get("present"))
     self_present = bool(self_side.get("present"))
     role = "customer" if customer_present and not self_present else ("self" if self_present and not customer_present else "")
@@ -7438,8 +7744,19 @@ def add_friend_blocking_prompt_region(item: dict[str, Any], *, geometry: dict[st
     return win32_ocr_add_friend_windows.add_friend_blocking_prompt_region(item, geometry=geometry, image_size=image_size)
 
 
-def add_friend_login_or_security_block(ocr_items: list[dict[str, Any]], *, geometry: dict[str, Any] | None = None, image_size: tuple[int, int] | None = None) -> dict[str, Any]:
-    return win32_ocr_add_friend_windows.add_friend_login_or_security_block(ocr_items, geometry=geometry, image_size=image_size)
+def add_friend_login_or_security_block(
+    ocr_items: list[dict[str, Any]],
+    *,
+    geometry: dict[str, Any] | None = None,
+    image_size: tuple[int, int] | None = None,
+    layout_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return win32_ocr_add_friend_windows.add_friend_login_or_security_block(
+        ocr_items,
+        geometry=geometry,
+        image_size=image_size,
+        layout_snapshot=layout_snapshot,
+    )
 
 
 def add_friend_item_center(item: dict[str, Any]) -> tuple[int, int]:
@@ -7612,8 +7929,19 @@ def draw_add_friend_layout_calibration_annotation(screenshot: Image.Image, *, la
     return win32_ocr_add_friend_windows.draw_add_friend_layout_calibration_annotation(screenshot, layout_calibration=layout_calibration, output_path=output_path)
 
 
-def add_friend_popup_menu_bounds(image_size: tuple[int, int], *, plus_image_x: int, plus_image_y: int) -> list[int]:
-    return win32_ocr_add_friend_windows.add_friend_popup_menu_bounds(image_size, plus_image_x=plus_image_x, plus_image_y=plus_image_y)
+def add_friend_popup_menu_bounds(
+    image_size: tuple[int, int],
+    *,
+    plus_image_x: int,
+    plus_image_y: int,
+    layout_snapshot: dict[str, Any] | None = None,
+) -> list[int]:
+    return win32_ocr_add_friend_windows.add_friend_popup_menu_bounds(
+        image_size,
+        plus_image_x=plus_image_x,
+        plus_image_y=plus_image_y,
+        layout_snapshot=layout_snapshot,
+    )
 
 
 def run_ocr_on_screen_region(
@@ -7639,6 +7967,7 @@ def run_ocr_on_screen_region(
         box = item.get("box")
         if isinstance(box, list):
             item["box"] = [[float(point[0]) + left, float(point[1]) + top] for point in box if isinstance(point, (list, tuple)) and len(point) >= 2]
+    _finalize_layout_snapshot_ocr_anchors(image, items)
     return items
 
 
@@ -7771,7 +8100,12 @@ def run_ocr_for_input_region_probe(
         timing[f"{prefix}_source"] = "full"
         return items, "full"
 
-    bounds = list(input_text_region_bounds(geometry))
+    del geometry
+    snapshot = layout_snapshot_for_image(screenshot)
+    try:
+        bounds = win32_ocr_layout.required_region(snapshot, "input_bounds")
+    except win32_ocr_layout.LayoutSnapshotError as exc:
+        raise RuntimeError(f"{win32_ocr_layout.ERROR_LAYOUT_UNRESOLVED}:{exc.reason}") from exc
     timing[f"{prefix}_roi_enabled"] = True
     timing[f"{prefix}_roi_bounds"] = list(bounds)
     roi_started = _sidecar_timing_start(timing, f"{prefix}_roi_ocr")
@@ -7868,15 +8202,20 @@ def consume_input_region_precheck_ocr_seed(
     return seed
 
 
-def active_send_target_roi_bounds(image_size: tuple[int, int]) -> list[int]:
+def active_send_target_roi_bounds(
+    image_size: tuple[int, int],
+    *,
+    layout_snapshot: dict[str, Any] | None,
+) -> list[int]:
     width, height = [int(value or 0) for value in image_size[:2]]
     if width <= 0 or height <= 0:
-        return [0, 0, 1, 1]
-    left = max(0, min(width - 1, active_chat_title_left_x(width) - 32))
-    top = 0
-    right = width
-    bottom = height
-    return [left, top, right, bottom]
+        return []
+    try:
+        header = win32_ocr_layout.required_region(layout_snapshot, "chat_header_bounds")
+        input_bounds = win32_ocr_layout.required_region(layout_snapshot, "input_bounds")
+    except win32_ocr_layout.LayoutSnapshotError:
+        return []
+    return [header[0], header[1], input_bounds[2], input_bounds[3]]
 
 
 def active_send_target_roi_chat_surface_visible(ocr_items: list[dict[str, Any]]) -> bool:
@@ -7911,7 +8250,12 @@ def run_ocr_for_active_send_target(
         return items, "full", None
 
     timing["validate_active_send_target_roi_enabled"] = True
-    roi_bounds = active_send_target_roi_bounds(getattr(screenshot, "size", (0, 0)))
+    roi_bounds = active_send_target_roi_bounds(
+        getattr(screenshot, "size", (0, 0)),
+        layout_snapshot=layout_snapshot_for_image(screenshot),
+    )
+    if not roi_bounds:
+        raise RuntimeError(f"{win32_ocr_layout.ERROR_LAYOUT_UNRESOLVED}:active_send_target_roi")
     timing["validate_active_send_target_roi_bounds"] = list(roi_bounds)
     roi_started = _sidecar_timing_start(timing, "validate_active_send_target_roi_ocr")
     roi_items = run_ocr_on_screen_region(
@@ -7936,7 +8280,13 @@ def run_ocr_for_active_send_target(
     quick_login_detected = quick_login_like(roi_items, geometry=geometry)
     auxiliary_shell = auxiliary_wechat_shell_like(roi_items, geometry=geometry)
     blocking_reason = blocking_screen_reason(roi_items)
-    active_match = active_chat_matches(roi_items, getattr(screenshot, "size", (0, 0)), target=target, exact=exact)
+    active_match = active_chat_matches(
+        roi_items,
+        getattr(screenshot, "size", (0, 0)),
+        target=target,
+        exact=exact,
+        layout_snapshot=layout_snapshot_for_image(screenshot),
+    )
     chat_surface_visible = active_send_target_roi_chat_surface_visible(roi_items)
     soft_blocking_text = active_send_target_roi_has_soft_blocking_text(roi_items)
     timing["validate_active_send_target_roi_quick_login_detected"] = bool(quick_login_detected)
@@ -7978,8 +8328,23 @@ def add_friend_expected_menu_click_bounds(*, image_size: tuple[int, int], plus_i
     return win32_ocr_add_friend_windows.add_friend_expected_menu_click_bounds(image_size=image_size, plus_image_x=plus_image_x, plus_image_y=plus_image_y, y_offset=y_offset)
 
 
-def add_friend_menu_candidate_targets(ocr_items: list[dict[str, Any]], image_size: tuple[int, int], *, plus_image_x: int | None = None, plus_image_y: int | None = None, include_expected: bool = True) -> list[dict[str, Any]]:
-    return win32_ocr_add_friend_windows.add_friend_menu_candidate_targets(ocr_items, image_size, plus_image_x=plus_image_x, plus_image_y=plus_image_y, include_expected=include_expected)
+def add_friend_menu_candidate_targets(
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    plus_image_x: int | None = None,
+    plus_image_y: int | None = None,
+    include_expected: bool = True,
+    layout_snapshot: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    return win32_ocr_add_friend_windows.add_friend_menu_candidate_targets(
+        ocr_items,
+        image_size,
+        plus_image_x=plus_image_x,
+        plus_image_y=plus_image_y,
+        include_expected=include_expected,
+        layout_snapshot=layout_snapshot,
+    )
 
 
 def plus_entry_popup_menu_detected(ocr_items: list[dict[str, Any]], targets: list[dict[str, Any]]) -> dict[str, Any]:
@@ -7994,20 +8359,43 @@ def add_friend_target_by_name(targets: list[dict[str, Any]], name: str) -> dict[
     return win32_ocr_add_friend_windows.add_friend_target_by_name(targets, name)
 
 
-def add_friend_page_search_region(image_size: tuple[int, int]) -> list[int]:
-    return win32_ocr_add_friend_windows.add_friend_page_search_region(image_size)
+def add_friend_page_search_region(
+    image_size: tuple[int, int],
+    *,
+    layout_snapshot: dict[str, Any] | None = None,
+) -> list[int]:
+    return win32_ocr_add_friend_windows.add_friend_page_search_region(
+        image_size,
+        layout_snapshot=layout_snapshot,
+    )
 
 
-def add_friend_search_result_region(image_size: tuple[int, int]) -> list[int]:
-    return win32_ocr_add_friend_windows.add_friend_search_result_region(image_size)
+def add_friend_search_result_region(
+    image_size: tuple[int, int],
+    *,
+    layout_snapshot: dict[str, Any] | None = None,
+) -> list[int]:
+    return win32_ocr_add_friend_windows.add_friend_search_result_region(
+        image_size,
+        layout_snapshot=layout_snapshot,
+    )
 
 
 def add_friend_phone_not_found_detected(ocr_items: list[dict[str, Any]]) -> dict[str, Any]:
     return win32_ocr_add_friend_windows.add_friend_phone_not_found_detected(ocr_items)
 
 
-def add_friend_search_result_add_contact_target(ocr_items: list[dict[str, Any]], image_size: tuple[int, int]) -> dict[str, Any] | None:
-    return win32_ocr_add_friend_windows.add_friend_search_result_add_contact_target(ocr_items, image_size)
+def add_friend_search_result_add_contact_target(
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    layout_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    return win32_ocr_add_friend_windows.add_friend_search_result_add_contact_target(
+        ocr_items,
+        image_size,
+        layout_snapshot=layout_snapshot,
+    )
 
 
 def click_add_contact_entry_from_search_result(hwnd: int, output_dir: Path, *, result_shot: Image.Image, result_path: str, result_items: list[dict[str, Any]], query: str, verify_message: str = '', remark_name: str = '', remark_code: str = '', action_journal_path: str = '') -> dict[str, Any]:
@@ -8015,8 +8403,17 @@ def click_add_contact_entry_from_search_result(hwnd: int, output_dir: Path, *, r
     return win32_ocr_add_friend_windows.click_add_contact_entry_from_search_result(hwnd, output_dir, result_shot=result_shot, result_path=result_path, result_items=result_items, query=query, verify_message=verify_message, remark_name=remark_name, remark_code=remark_code, action_journal_path=action_journal_path)
 
 
-def add_friend_invite_form_targets(image_size: tuple[int, int], ocr_items: list[dict[str, Any]] | None = None) -> dict[str, dict[str, Any]]:
-    return win32_ocr_add_friend_windows.add_friend_invite_form_targets(image_size, ocr_items)
+def add_friend_invite_form_targets(
+    image_size: tuple[int, int],
+    ocr_items: list[dict[str, Any]] | None = None,
+    *,
+    layout_snapshot: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    return win32_ocr_add_friend_windows.add_friend_invite_form_targets(
+        image_size,
+        ocr_items,
+        layout_snapshot=layout_snapshot,
+    )
 
 
 def capture_invite_form_field_review(
@@ -8049,8 +8446,19 @@ def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, veri
     return win32_ocr_add_friend_windows.fill_add_friend_invite_form_and_confirm(hwnd, output_dir, verify_message=verify_message, remark_name=remark_name, remark_code=remark_code, action_journal_path=action_journal_path)
 
 
-def find_add_friend_page_search_targets(ocr_items: list[dict[str, Any]], image_size: tuple[int, int], screenshot: Image.Image | None = None) -> dict[str, Any]:
-    return win32_ocr_add_friend_windows.find_add_friend_page_search_targets(ocr_items, image_size, screenshot)
+def find_add_friend_page_search_targets(
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    screenshot: Image.Image | None = None,
+    *,
+    layout_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return win32_ocr_add_friend_windows.find_add_friend_page_search_targets(
+        ocr_items,
+        image_size,
+        screenshot,
+        layout_snapshot=layout_snapshot,
+    )
 
 
 def find_add_friend_search_placeholder_item(ocr_items: list[dict[str, Any]], image_size: tuple[int, int], *, search_region: list[int]) -> dict[str, Any] | None:
@@ -8161,9 +8569,24 @@ def add_friend_failure_payload(*, error_code: str, message: str, steps: list[str
     return win32_ocr_add_friend_windows.add_friend_failure_payload(error_code=error_code, message=message, steps=steps, query=query, phone=phone, wechat=wechat, probe=probe, evidence=evidence, state=state)
 
 
-def add_friend_surface_readiness(screenshot: Image.Image, ocr_items: list[dict[str, Any]], geometry: dict[str, Any], *, stage: str, require_main_surface: bool | None = None) -> dict[str, Any]:
+def add_friend_surface_readiness(
+    screenshot: Image.Image,
+    ocr_items: list[dict[str, Any]],
+    geometry: dict[str, Any],
+    *,
+    stage: str,
+    require_main_surface: bool | None = None,
+    layout_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     win32_ocr_add_friend_windows.bind_sidecar_ops(sys.modules[__name__])
-    return win32_ocr_add_friend_windows.add_friend_surface_readiness(screenshot, ocr_items, geometry, stage=stage, require_main_surface=require_main_surface)
+    return win32_ocr_add_friend_windows.add_friend_surface_readiness(
+        screenshot,
+        ocr_items,
+        geometry,
+        stage=stage,
+        require_main_surface=require_main_surface,
+        layout_snapshot=layout_snapshot,
+    )
 
 
 def add_friend_main_entry_surface_evidence(ocr_items: list[dict[str, Any]], image_size: tuple[int, int]) -> dict[str, Any]:
@@ -8227,7 +8650,7 @@ def add_friend_wait_before_ocr(reason: str) -> None:
     return win32_ocr_add_friend_windows.add_friend_wait_before_ocr(reason)
 
 
-def clear_add_friend_sidebar_search_box(hwnd: int, search_x: int, search_y: int, *, target_hint: str = '') -> None:
+def clear_add_friend_sidebar_search_box(hwnd: int, search_x: int, search_y: int, *, target_hint: str = '') -> dict[str, Any]:
     win32_ocr_add_friend_windows.bind_sidecar_ops(sys.modules[__name__])
     return win32_ocr_add_friend_windows.clear_add_friend_sidebar_search_box(hwnd, search_x, search_y, target_hint=target_hint)
 
@@ -9216,7 +9639,7 @@ def message_probe_tokens(text: str) -> list[str]:
 def input_area_contains_token(
     ocr_items: list[dict[str, Any]],
     *,
-    geometry: dict[str, Any],
+    input_bounds: list[int],
     token: str,
 ) -> bool:
     if not token:
@@ -9232,7 +9655,7 @@ def input_area_contains_token(
             "right": int(float(item.get("right") or 0)),
             "bottom": int(float(item.get("bottom") or 0)),
         }
-        if not rect_in_input_area(rect, geometry):
+        if not rect_overlaps_region(rect, tuple(input_bounds)):
             continue
         compact = re.sub(r"\s+", "", text)
         if normalized_token in compact or compact in normalized_token:
@@ -9243,11 +9666,11 @@ def input_area_contains_token(
 def input_area_contains_any_token(
     ocr_items: list[dict[str, Any]],
     *,
-    geometry: dict[str, Any],
+    input_bounds: list[int],
     tokens: list[str],
 ) -> bool:
     for token in tokens:
-        if input_area_contains_token(ocr_items, geometry=geometry, token=token):
+        if input_area_contains_token(ocr_items, input_bounds=input_bounds, token=token):
             return True
     return False
 
@@ -9271,7 +9694,49 @@ def input_text_region_state(
     This is deliberately conservative: if text-like pixels are present but OCR
     missed the probe token, we stop instead of retrying and risking a duplicate.
     """
-    bounds = input_text_region_bounds(geometry)
+    del geometry
+    snapshot = layout_snapshot_for_image(screenshot)
+    try:
+        input_panel_bounds = tuple(win32_ocr_layout.required_region(snapshot, "input_bounds"))
+    except win32_ocr_layout.LayoutSnapshotError as exc:
+        return {
+            "has_visible_text": False,
+            "reason": "input_layout_unresolved",
+            "error_code": win32_ocr_layout.ERROR_LAYOUT_UNRESOLVED,
+            "error": exc.reason,
+            "bounds": [],
+        }
+    # ``input_bounds`` describes the complete input panel.  Its lower control
+    # row (toolbar/send button) is not draft text.  Derive the editable text
+    # surface from semantic controls observed in this same frame; never crop a
+    # fixed number of pixels from the bottom.
+    control_tops: list[int] = []
+    input_control_tokens = {"发送", "工具"}
+    for item in ocr_items:
+        text = normalize_ocr_text(item.get("text")).replace(" ", "")
+        if text not in input_control_tokens:
+            continue
+        center_x = float(item.get("center_x") or 0) or (
+            float(item.get("left") or 0) + float(item.get("right") or 0)
+        ) / 2.0
+        center_y = float(item.get("center_y") or 0) or (
+            float(item.get("top") or 0) + float(item.get("bottom") or 0)
+        ) / 2.0
+        if (
+            input_panel_bounds[0] <= center_x <= input_panel_bounds[2]
+            and input_panel_bounds[1] <= center_y <= input_panel_bounds[3]
+        ):
+            control_tops.append(int(float(item.get("top") or center_y)))
+    bounds = input_panel_bounds
+    if control_tops:
+        editable_bottom = min(control_tops) - 2
+        if editable_bottom - input_panel_bounds[1] >= 18:
+            bounds = (
+                input_panel_bounds[0],
+                input_panel_bounds[1],
+                input_panel_bounds[2],
+                editable_bottom,
+            )
     ocr_evidence: list[dict[str, Any]] = []
     ignored_ocr_evidence: list[dict[str, Any]] = []
     for item in ocr_items:
@@ -9326,6 +9791,40 @@ def input_text_region_state(
         bright_ratio = float(sum(histogram[200:])) / float(total)
         mean = float(sum(index * count for index, count in enumerate(histogram))) / float(total)
         dark_mask = crop.point(lambda value: 255 if value < 180 else 0)
+        # Input panels contain separators and control underlines. A detached,
+        # very wide stroke only a few pixels high is chrome, not draft text.
+        # Remove those rows before measuring the text/caret component; using
+        # the union bbox would otherwise join a valid caret with a toolbar line
+        # and falsely report that the input already contains a draft.
+        mask_width, mask_height = dark_mask.size
+        mask_pixels = dark_mask.load()
+        dense_row_threshold = max(24, int(mask_width * 0.08))
+        dense_rows = [
+            row
+            for row in range(mask_height)
+            if sum(1 for column in range(mask_width) if mask_pixels[column, row])
+            >= dense_row_threshold
+        ]
+        decoration_rows: set[int] = set()
+        run: list[int] = []
+        for row in dense_rows + [mask_height + 1]:
+            if run and row != run[-1] + 1:
+                if len(run) <= 4:
+                    decoration_rows.update(run)
+                run = []
+            if row <= mask_height:
+                run.append(row)
+        for row in decoration_rows:
+            for column in range(mask_width):
+                mask_pixels[column, row] = 0
+        content_dark_count = int(
+            sum(
+                1
+                for row in range(mask_height)
+                for column in range(mask_width)
+                if mask_pixels[column, row]
+            )
+        )
         dark_bbox = dark_mask.getbbox()
     except Exception as exc:
         return {
@@ -9351,10 +9850,10 @@ def input_text_region_state(
         dark_height = 0
         absolute_dark_bbox = []
     caret_like_dark_pixels = bool(
-        dark_count > 0
+        content_dark_count > 0
         and dark_width <= 3
         and 8 <= dark_height <= 64
-        and dark_count <= max(1, dark_width * dark_height)
+        and content_dark_count <= max(1, dark_width * dark_height)
     )
     # In dark-mode WeChat the whole input region can be dark even when blank.
     # Treat a uniformly dark crop without OCR or bright text strokes as blank;
@@ -9365,7 +9864,7 @@ def input_text_region_state(
         and bright_ratio <= 0.002
     )
     text_shape_visible = bool(
-        dark_count >= 12
+        content_dark_count >= 12
         and dark_width >= 4
         and dark_height >= 5
         and not caret_like_dark_pixels
@@ -9394,6 +9893,8 @@ def input_text_region_state(
         "ocr_evidence": ocr_evidence[:12],
         "ignored_ocr_evidence": ignored_ocr_evidence[:12],
         "dark_count": dark_count,
+        "content_dark_count": content_dark_count,
+        "ignored_decoration_rows": sorted(decoration_rows),
         "dark_ratio": round(dark_ratio, 6),
         "dark_bbox": absolute_dark_bbox,
         "dark_width": dark_width,
@@ -9479,13 +9980,18 @@ def send_button_ready_evidence(
     if width <= 0 or height <= 0:
         return {"ok": False, "reason": "send_ready_geometry_invalid"}
 
-    # This is an observation region, never a click target. It is anchored to the
-    # current client bounds and deliberately excludes the voice/toolbar icons.
-    region_width = max(92, min(150, int(width * 0.15)))
-    left = max(session_split_x(width) + 180, width - region_width)
-    top = max(int(height * 0.84), height - 112)
-    right = max(left + 1, width - 10)
-    bottom = max(top + 1, height - 12)
+    snapshot = layout_snapshot_for_image(screenshot)
+    try:
+        input_bounds = win32_ocr_layout.required_region(snapshot, "input_bounds")
+    except win32_ocr_layout.LayoutSnapshotError:
+        return {"ok": False, "reason": "send_ready_layout_unresolved"}
+    input_width = max(1, input_bounds[2] - input_bounds[0])
+    input_height = max(1, input_bounds[3] - input_bounds[1])
+    region_width = max(72, int(input_width * 0.18))
+    left = max(input_bounds[0], input_bounds[2] - region_width)
+    top = input_bounds[1] + int(input_height * 0.45)
+    right = input_bounds[2]
+    bottom = input_bounds[3]
     green_points: list[tuple[int, int]] = []
     try:
         for y in range(top, bottom):
@@ -10270,7 +10776,15 @@ def paste_text_with_confirmation(
                 })
             click_x, click_y = [int(value) for value in last_input_click["point"]]
         input_click_started = _sidecar_timing_start(timing, "input_click")
-        human_client_click(hwnd, click_x, click_y)
+        human_client_click(
+            hwnd,
+            click_x,
+            click_y,
+            bounds=list(last_input_click.get("bounds") or last_input_click_evidence.get("click_bounds") or []),
+            expected_snapshot_id=str(
+                (layout_snapshot_metadata(hwnd).get("snapshot") or {}).get("layout_snapshot_id") or ""
+            ),
+        )
         time.sleep(random.uniform(0.12, 0.28))
         _sidecar_timing_finish(timing, "input_click", input_click_started)
         focus_guard_started = _sidecar_timing_start(timing, "focus_guard_after_input_click")
@@ -10449,7 +10963,16 @@ def paste_text_with_confirmation(
         post_input_ocr_items = ocr_items
         post_input_ocr_source = after_ocr_source
         _sidecar_timing_finish(timing, "after_ocr", after_ocr_started)
-        if input_area_contains_any_token(ocr_items, geometry=geometry, tokens=probe_tokens):
+        current_input_bounds = list(
+            (layout_snapshot_for_image(screenshot) or {}).get("input_bounds") or []
+        )
+        if len(current_input_bounds) != 4:
+            return {
+                "ok": False,
+                "reason": "WECHAT_UI_LAYOUT_UNRESOLVED",
+                "error_code": win32_ocr_layout.ERROR_LAYOUT_UNRESOLVED,
+            }
+        if input_area_contains_any_token(ocr_items, input_bounds=current_input_bounds, tokens=probe_tokens):
             return finish({
                 "ok": True,
                 "attempt": attempt,
@@ -10499,7 +11022,16 @@ def paste_text_with_confirmation(
             )
             _sidecar_timing_finish(timing, "after_ocr_full_fallback", fallback_started)
             timing["after_ocr_source"] = "roi_full_fallback"
-            if input_area_contains_any_token(full_ocr_items, geometry=geometry, tokens=probe_tokens):
+            full_input_bounds = list(
+                (layout_snapshot_for_image(screenshot) or {}).get("input_bounds") or []
+            )
+            if len(full_input_bounds) != 4:
+                return {
+                    "ok": False,
+                    "reason": "WECHAT_UI_LAYOUT_UNRESOLVED",
+                    "error_code": win32_ocr_layout.ERROR_LAYOUT_UNRESOLVED,
+                }
+            if input_area_contains_any_token(full_ocr_items, input_bounds=full_input_bounds, tokens=probe_tokens):
                 return finish({
                     "ok": True,
                     "attempt": attempt,
@@ -10778,7 +11310,15 @@ def confirm_exact_program_draft_focus(
     except Exception:
         previous_clipboard = None
     try:
-        human_client_click(hwnd, int(input_point[0]), int(input_point[1]))
+        human_client_click(
+            hwnd,
+            int(input_point[0]),
+            int(input_point[1]),
+            bounds=list((current_layout_snapshot(hwnd) or {}).get("input_bounds") or []),
+            expected_snapshot_id=str(
+                (layout_snapshot_metadata(hwnd).get("snapshot") or {}).get("layout_snapshot_id") or ""
+            ),
+        )
         humanized_action_sleep(40, 80)
         window_guard = recover_send_window_guard(hwnd, max_attempts=1)
         if not window_guard.get("ok"):
@@ -10880,9 +11420,25 @@ def clear_confirmed_program_draft(
             "focus_check": exact_focus,
         }
     try:
-        human_client_click(hwnd, int(input_point[0]), int(input_point[1]))
-        hotkey(win32con.VK_CONTROL, ord("A"))
-        humanized_action_sleep(40, 80)
+        if value_readable:
+            # UIA proved the value but not the current focus.  Bind the one
+            # necessary click to the exact current frame before selecting it.
+            snapshot = current_layout_snapshot(hwnd) or {}
+            human_client_click(
+                hwnd,
+                int(input_point[0]),
+                int(input_point[1]),
+                bounds=list(snapshot.get("input_bounds") or []),
+                expected_snapshot_id=str(snapshot.get("layout_snapshot_id") or ""),
+            )
+            hotkey(win32con.VK_CONTROL, ord("A"))
+            humanized_action_sleep(40, 80)
+        else:
+            # The clipboard fallback above already clicked the input surface,
+            # selected all text and proved the exact program draft.  A second
+            # click would both discard that proof and reuse an invalidated
+            # layout snapshot, so clear the proven selection directly.
+            humanized_action_sleep(20, 45)
         key_press(win32con.VK_BACK)
         humanized_action_sleep(60, 120)
     except Exception as exc:
@@ -11285,8 +11841,19 @@ def inspect_uia_send_capability(hwnd: int, geometry: dict[str, Any]) -> dict[str
     try:
         root = auto.ControlFromHandle(hwnd)
         controls = collect_uia_controls(root, max_depth=8, max_count=900)
-        edit = select_uia_edit_control(controls, geometry)
-        send_button = select_uia_send_button(controls, geometry)
+        snapshot = current_layout_snapshot(hwnd)
+        if snapshot is None or bool(snapshot.get("invalidated")) or not bool(snapshot.get("valid")):
+            return {
+                "ok": False,
+                "reason": "WECHAT_UI_LAYOUT_UNRESOLVED",
+                "error_code": win32_ocr_layout.ERROR_LAYOUT_UNRESOLVED,
+            }
+        image_input_bounds = win32_ocr_layout.required_region(snapshot, "input_bounds")
+        top_left = win32_ocr_layout.image_point_to_screen(snapshot, image_input_bounds[:2])
+        bottom_right = win32_ocr_layout.image_point_to_screen(snapshot, image_input_bounds[2:])
+        screen_input_bounds = [*top_left, *bottom_right]
+        edit = select_uia_edit_control(controls, screen_input_bounds)
+        send_button = select_uia_send_button(controls, screen_input_bounds)
         missing: list[str] = []
         if edit is None:
             missing.append("edit")
@@ -11322,22 +11889,31 @@ def collect_uia_controls(root: Any, *, max_depth: int, max_count: int) -> list[A
     return controls
 
 
-def select_uia_edit_control(controls: list[Any], geometry: dict[str, Any]) -> Any | None:
+def _screen_rect_inside_bounds(rect: dict[str, int], bounds: list[int]) -> bool:
+    return bool(
+        len(bounds) == 4
+        and int(rect.get("left") or 0) >= bounds[0]
+        and int(rect.get("top") or 0) >= bounds[1]
+        and int(rect.get("right") or 0) <= bounds[2]
+        and int(rect.get("bottom") or 0) <= bounds[3]
+    )
+
+
+def select_uia_edit_control(controls: list[Any], screen_input_bounds: list[int]) -> Any | None:
     candidates: list[tuple[float, Any]] = []
     for control in controls:
         if "edit" not in str(safe_uia_attr(control, "ControlTypeName")).lower():
             continue
         rect = uia_rect_to_dict(safe_uia_attr(control, "BoundingRectangle"))
-        if not rect_in_input_area(rect, geometry):
+        if not _screen_rect_inside_bounds(rect, screen_input_bounds):
             continue
-        rel = relative_rect(rect, geometry)
-        area = max(1, rel["width"]) * max(1, rel["height"])
-        score = area + rel["bottom"] * 2
+        area = max(1, rect["right"] - rect["left"]) * max(1, rect["bottom"] - rect["top"])
+        score = area + rect["bottom"] * 2
         candidates.append((score, control))
     return max(candidates, key=lambda item: item[0])[1] if candidates else None
 
 
-def select_uia_send_button(controls: list[Any], geometry: dict[str, Any]) -> Any | None:
+def select_uia_send_button(controls: list[Any], screen_input_bounds: list[int]) -> Any | None:
     candidates: list[tuple[float, Any]] = []
     for control in controls:
         control_type = str(safe_uia_attr(control, "ControlTypeName")).lower()
@@ -11347,10 +11923,9 @@ def select_uia_send_button(controls: list[Any], geometry: dict[str, Any]) -> Any
         if "发送" not in name and name.lower() not in {"send"}:
             continue
         rect = uia_rect_to_dict(safe_uia_attr(control, "BoundingRectangle"))
-        if not rect_in_input_toolbar(rect, geometry):
+        if not _screen_rect_inside_bounds(rect, screen_input_bounds):
             continue
-        rel = relative_rect(rect, geometry)
-        score = rel["right"] + rel["bottom"] * 2
+        score = rect["right"] + rect["bottom"] * 2
         candidates.append((score, control))
     return max(candidates, key=lambda item: item[0])[1] if candidates else None
 
@@ -11472,7 +12047,7 @@ def activate_session_candidate(
         timing["reason"] = "missing_center_y"
         return finish(False)
     choose_started = _sidecar_timing_start(timing, "activation_choose_click")
-    click_x, click_y, _click_meta = choose_session_row_click_point(
+    click_x, click_y, click_meta = choose_session_row_click_point(
         session,
         geometry,
         default_x=default_click_x,
@@ -11480,10 +12055,16 @@ def activate_session_candidate(
     _sidecar_timing_finish(timing, "activation_choose_click", choose_started)
     timing["activation_candidate_name"] = str(session.get("name") or "")
     timing["activation_click_point"] = [int(click_x), int(click_y)]
+    timing["activation_click_candidates"] = click_meta
     timing["activation_click_method"] = "human_window_image_click"
     if session_candidate_is_service_container_wrong_target(session, target):
         timing["reason"] = "service_container_candidate_wrong_target"
         timing["hard_stop"] = True
+        return finish(False)
+    session_bounds = list(session.get("click_bounds") or [])
+    snapshot_id = str(session.get("layout_snapshot_id") or "")
+    if len(session_bounds) < 4 or not snapshot_id or int(click_meta.get("candidate_count") or 0) <= 0:
+        timing["reason"] = "session_dynamic_click_target_unresolved"
         return finish(False)
     # Use exactly one human-like click per candidate. If the active-title
     # guard cannot confirm the switch, stop this RPA attempt and let the
@@ -11495,7 +12076,13 @@ def activate_session_candidate(
     # Session rows are parsed from screenshot/OCR coordinates. Use the same
     # window-image click path as search-result activation to avoid client
     # coordinate drift on Windows DPI / scaled WeChat windows.
-    human_window_image_click(hwnd, click_x, click_y)
+    human_window_image_click(
+        hwnd,
+        click_x,
+        click_y,
+        bounds=session_bounds,
+        expected_snapshot_id=snapshot_id,
+    )
     timing["ui_click_performed"] = True
     _sidecar_timing_finish(timing, "activation_click", click_started)
     for attempt in range(target_switch_passive_confirm_attempts()):
@@ -11652,10 +12239,17 @@ def visible_session_name_is_unambiguous(
 def detect_session_subview_back_target(
     ocr_items: list[dict[str, Any]],
     image_size: tuple[int, int],
-) -> dict[str, int] | None:
+    *,
+    layout_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
     width, height = image_size
-    split_x = session_split_x(width)
-    header_limit = chat_header_cutoff_y(height) + max(42, int(height * 0.06))
+    snapshot = layout_snapshot if isinstance(layout_snapshot, dict) else {}
+    try:
+        header_bounds = win32_ocr_layout.required_region(snapshot, "sidebar_header_bounds")
+    except win32_ocr_layout.LayoutSnapshotError:
+        return None
+    split_x = header_bounds[2]
+    header_limit = header_bounds[3]
     for item in ocr_items:
         text = normalize_ocr_text(item.get("text"))
         if not text:
@@ -11670,9 +12264,23 @@ def detect_session_subview_back_target(
             continue
         if not any(keyword in compact for keyword in ("服务号", "订阅号", "公众号")):
             continue
+        item_bounds = win32_ocr_layout.normalize_rect(
+            [item.get("left"), item.get("top"), item.get("right"), item.get("bottom")]
+        )
         return {
-            "x": bounded_int(int(float(item.get("left") or 0)) + 10, default=108, minimum=70, maximum=170),
-            "y": bounded_int(int(float(item.get("center_y") or 0)), default=124, minimum=86, maximum=220),
+            "x": bounded_int(
+                int(float(item.get("left") or 0)) + 10,
+                default=header_bounds[0] + 24 if header_bounds[2] > header_bounds[0] else 108,
+                minimum=header_bounds[0] if header_bounds[2] > header_bounds[0] else 70,
+                maximum=header_bounds[2] if header_bounds[2] > header_bounds[0] else 170,
+            ),
+            "y": bounded_int(
+                int(float(item.get("center_y") or 0)),
+                default=header_bounds[1] + 24 if header_bounds[3] > header_bounds[1] else 124,
+                minimum=header_bounds[1] if header_bounds[3] > header_bounds[1] else 86,
+                maximum=header_bounds[3] if header_bounds[3] > header_bounds[1] else 220,
+            ),
+            "bounds": item_bounds,
         }
     return None
 
@@ -11690,10 +12298,22 @@ def ensure_main_session_list(
     )
     hops = max(0, int(max_hops))
     for _ in range(hops):
-        back_target = detect_session_subview_back_target(ocr_items, screenshot.size)
+        back_target = detect_session_subview_back_target(
+            ocr_items,
+            screenshot.size,
+            layout_snapshot=(layout_snapshot_metadata(hwnd).get("snapshot") or {}),
+        )
         if not back_target:
             break
-        client_click(hwnd, int(back_target["x"]), int(back_target["y"]))
+        human_window_image_click(
+            hwnd,
+            int(back_target["x"]),
+            int(back_target["y"]),
+            bounds=list(back_target.get("bounds") or []),
+            expected_snapshot_id=str(
+                (layout_snapshot_metadata(hwnd).get("snapshot") or {}).get("layout_snapshot_id") or ""
+            ),
+        )
         humanized_action_sleep(280, 480)
         screenshot, _path = capture_wechat(hwnd, artifact_dir=artifact_dir, label="open_chat_main_list")
         ocr_items, _enhanced_count = session_list_ocr_items(
@@ -11780,6 +12400,7 @@ def target_switch_surface_state(
             ocr_items,
             getattr(screenshot, "size", (0, 0)),
             target=target,
+            layout_snapshot=layout_snapshot_for_image(screenshot),
         )
         if service_probe.get("detected"):
             return {
@@ -11987,22 +12608,28 @@ def target_search_retry_after_search_enabled() -> bool:
     return env_flag("WECHAT_WIN32_OCR_TARGET_SEARCH_RETRY_AFTER_SEARCH", default=False)
 
 
-def sidebar_search_focus_indicator_detected(screenshot: Any, geometry: dict[str, Any] | None = None) -> bool:
+def sidebar_search_focus_indicator_detected(
+    screenshot: Any,
+    geometry: dict[str, Any] | None = None,
+) -> bool:
     if screenshot is None:
         return False
     try:
         image = screenshot.convert("RGB")
     except Exception:
         return False
-    data = geometry if isinstance(geometry, dict) else {}
-    width = int(data.get("width") or getattr(image, "width", 0) or 0)
-    if width <= 0:
+    try:
+        header = win32_ocr_layout.required_region(
+            layout_snapshot_for_image(screenshot), "sidebar_header_bounds"
+        )
+    except win32_ocr_layout.LayoutSnapshotError:
         return False
-    split_x = session_split_x(width)
-    left = 88
-    top = 48
-    right = min(max(160, split_x - 62), getattr(image, "width", width))
-    bottom = min(88, getattr(image, "height", 0) or 88)
+    header_width = max(1, header[2] - header[0])
+    header_height = max(1, header[3] - header[1])
+    left = header[0] + int(header_width * 0.10)
+    top = header[1] + int(header_height * 0.18)
+    right = header[0] + int(header_width * 0.82)
+    bottom = header[1] + int(header_height * 0.82)
     if right <= left or bottom <= top:
         return False
     active_pixels = 0
@@ -12036,14 +12663,18 @@ def sidebar_search_query_text(
     image_size: tuple[int, int],
     *,
     geometry: dict[str, Any] | None = None,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> str:
-    width, _height = image_size
-    data = geometry if isinstance(geometry, dict) else {}
-    split_x = session_split_x(int(data.get("width") or width or 0))
-    left = 96
-    right = min(max(170, split_x - 72), int(width or split_x))
-    top = 48
-    bottom = 92
+    try:
+        header = win32_ocr_layout.required_region(layout_snapshot, "sidebar_header_bounds")
+    except win32_ocr_layout.LayoutSnapshotError:
+        return ""
+    header_width = max(1, header[2] - header[0])
+    header_height = max(1, header[3] - header[1])
+    left = header[0] + int(header_width * 0.10)
+    right = header[0] + int(header_width * 0.82)
+    top = header[1] + int(header_height * 0.18)
+    bottom = header[1] + int(header_height * 0.82)
     parts: list[str] = []
     for item in sorted(ocr_items or [], key=lambda row: (float(row.get("center_y") or 0), float(row.get("left") or 0))):
         center_x = float(item.get("center_x") or 0)
@@ -12114,19 +12745,28 @@ def sidebar_search_input_target_from_ocr(
     image_size: tuple[int, int],
     *,
     geometry: dict[str, Any] | None = None,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     width, height = image_size
     if width <= 0 or height <= 0:
         return None
     active_geometry = geometry if isinstance(geometry, dict) else {"width": width, "height": height}
-    split_x = session_split_x(int(active_geometry.get("width") or width))
-    expected_x, expected_y = sidebar_search_input_focus_point_for_geometry(active_geometry)
+    try:
+        header_bounds = win32_ocr_layout.required_region(layout_snapshot, "sidebar_header_bounds")
+    except win32_ocr_layout.LayoutSnapshotError:
+        return None
+    split_x = header_bounds[2]
+    header_left = header_bounds[0]
+    header_top = header_bounds[1]
+    header_bottom = header_bounds[3]
+    expected_x = header_left + int((split_x - header_left) * 0.40)
+    expected_y = header_top + int((header_bottom - header_top) * 0.50)
     candidates = []
     for item in ocr_items or []:
         center_x = float(item.get("center_x") or 0)
         center_y = float(item.get("center_y") or 0)
         text = voice_transcribe_compact_text(item.get("text"))
-        if not (48 <= center_x <= split_x - 44 and 38 <= center_y <= min(138, height * 0.18)):
+        if not (header_left <= center_x <= split_x - 12 and header_top <= center_y <= header_bottom):
             continue
         if text in {"+", "＋"}:
             continue
@@ -12136,10 +12776,10 @@ def sidebar_search_input_target_from_ocr(
     _, item = min(candidates, key=lambda entry: entry[0])
     center_y = int(float(item.get("center_y") or expected_y))
     bounds = [
-        max(44, int(float(item.get("left") or expected_x)) - 34),
-        max(38, int(float(item.get("top") or center_y)) - 12),
-        min(split_x - 48, max(int(float(item.get("right") or expected_x)) + 58, expected_x + 46)),
-        min(138, int(float(item.get("bottom") or center_y)) + 12),
+        max(header_left, int(float(item.get("left") or expected_x)) - 34),
+        max(header_top, int(float(item.get("top") or center_y)) - 12),
+        min(split_x - 12, max(int(float(item.get("right") or expected_x)) + 58, expected_x + 46)),
+        min(header_bottom, int(float(item.get("bottom") or center_y)) + 12),
     ]
     if bounds[2] - bounds[0] < 54 or bounds[3] - bounds[1] < 18:
         return None
@@ -12170,21 +12810,31 @@ def dismiss_sidebar_search_state(
         result["attempts"] = attempt
         before_shot, before_path = capture_wechat(hwnd, artifact_dir=artifact_dir, label="open_chat_search_dismiss_before")
         before_items = run_ocr_traced(before_shot, "open_chat_search_dismiss_before", source="open_chat")
-        search_target = sidebar_search_input_target_from_ocr(before_items, before_shot.size, geometry=active_geometry)
+        current_snapshot = layout_snapshot_for_image(before_shot) or {}
+        search_target = sidebar_search_input_target_from_ocr(
+            before_items,
+            before_shot.size,
+            geometry=active_geometry,
+            layout_snapshot=current_snapshot,
+        )
         if not search_target:
-            fallback_x, fallback_y = sidebar_search_input_focus_point_for_geometry(active_geometry)
-            search_target = {
-                "point": [fallback_x, fallback_y],
-                "bounds": [max(44, fallback_x - 54), max(38, fallback_y - 22), min(session_split_x(before_shot.size[0]) - 48, fallback_x + 88), min(138, fallback_y + 24)],
-                "source": "geometry_fallback_with_post_verification",
-            }
-        human_window_image_click_in_bounds(
+            return {**result, "ok": False, "reason": "sidebar_search_target_unresolved"}
+        search_click = human_window_image_click_in_bounds(
             hwnd,
             int(search_target["point"][0]),
             int(search_target["point"][1]),
             bounds=search_target["bounds"],
             action_name="sidebar_search_dismiss_focus_fresh_target",
+            expected_snapshot_id=str(current_snapshot.get("layout_snapshot_id") or ""),
         )
+        if not search_click.get("ok"):
+            return {
+                **result,
+                "ok": False,
+                "reason": "sidebar_search_dismiss_focus_click_failed",
+                "click": search_click,
+                "search_target": search_target,
+            }
         humanized_action_sleep(180, 420)
         hotkey(win32con.VK_CONTROL, ord("A"))
         humanized_action_sleep(100, 260)
@@ -12192,7 +12842,12 @@ def dismiss_sidebar_search_state(
         humanized_action_sleep(260, 620)
         cleared_shot, _ = capture_wechat(hwnd, artifact_dir=artifact_dir, label="open_chat_search_dismiss_cleared")
         cleared_items = run_ocr_traced(cleared_shot, "open_chat_search_dismiss_cleared", source="open_chat")
-        blank_target = safe_window_header_blank_click_target(cleared_items, cleared_shot.size, geometry=active_geometry)
+        blank_target = safe_window_header_blank_click_target(
+            cleared_items,
+            cleared_shot.size,
+            geometry=active_geometry,
+            layout_snapshot=layout_snapshot_for_image(cleared_shot),
+        )
         if not blank_target:
             return {**result, "ok": False, "reason": "safe_header_blank_target_not_found", "search_target": search_target}
         human_window_image_click_in_bounds(
@@ -12201,6 +12856,9 @@ def dismiss_sidebar_search_state(
             int(blank_target["point"][1]),
             bounds=blank_target["bounds"],
             action_name="sidebar_search_dismiss_header_blank_click",
+            expected_snapshot_id=str(
+                (layout_snapshot_for_image(cleared_shot) or {}).get("layout_snapshot_id") or ""
+            ),
         )
         result["search_target"] = search_target
         result["blank_target"] = blank_target
@@ -12244,12 +12902,20 @@ def sidebar_search_box_evidence(
     ocr_items: list[dict[str, Any]],
     *,
     geometry: dict[str, Any],
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Require a currently visible sidebar search label before clicking."""
 
     width = int(geometry.get("width") or 0)
     height = int(geometry.get("height") or 0)
-    split_x = session_split_x(width)
+    try:
+        header_bounds = win32_ocr_layout.required_region(layout_snapshot, "sidebar_header_bounds")
+    except win32_ocr_layout.LayoutSnapshotError:
+        return {"ok": False, "reason": "search_box_layout_unresolved"}
+    split_x = header_bounds[2]
+    header_left = header_bounds[0]
+    header_top = header_bounds[1]
+    header_bottom = header_bounds[3]
     if width <= 0 or height <= 0 or split_x <= 0:
         return {"ok": False, "reason": "search_box_evidence_geometry_invalid"}
     for item in ocr_items:
@@ -12265,13 +12931,13 @@ def sidebar_search_box_evidence(
             bottom = int(float(item.get("bottom") or 0))
         except (TypeError, ValueError):
             continue
-        if left < 32 or right > split_x - 12 or top < 28 or bottom > min(142, int(height * 0.20)):
+        if left < header_left or right > split_x - 12 or top < header_top or bottom > header_bottom:
             continue
         bounds = [
-            max(42, left - 58),
-            max(42, top - 24),
-            min(max(120, split_x - 34), right + 82),
-            min(132, bottom + 24),
+            max(header_left, left - 58),
+            max(header_top, top - 24),
+            min(split_x - 12, right + 82),
+            min(header_bottom, bottom + 24),
         ]
         if bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
             continue
@@ -12327,7 +12993,11 @@ def clear_sidebar_search_box_without_select_all(
         screenshot_path=evidence_path,
         target=target_hint,
     )
-    search_box_evidence = sidebar_search_box_evidence(evidence_items, geometry=active_geometry)
+    search_box_evidence = sidebar_search_box_evidence(
+        evidence_items,
+        geometry=active_geometry,
+        layout_snapshot=(layout_snapshot_metadata(hwnd).get("snapshot") or {}),
+    )
     if not evidence_surface.get("ok") or not search_box_evidence.get("ok"):
         return {
             "ok": False,
@@ -12345,6 +13015,9 @@ def clear_sidebar_search_box_without_select_all(
         search_y,
         bounds=bounds,
         action_name="sidebar_search_box_click",
+        expected_snapshot_id=str(
+            (layout_snapshot_metadata(hwnd).get("snapshot") or {}).get("layout_snapshot_id") or ""
+        ),
     )
     if not click_result.get("ok"):
         return {
@@ -12414,20 +13087,44 @@ def clear_sidebar_search_box_without_select_all(
         target="",
     )
     clear_state = sidebar_search_state_detected(clear_shot, clear_items, geometry=active_geometry)
-    clear_query_text = sidebar_search_query_text(clear_items, clear_shot.size, geometry=active_geometry)
+    clear_query_text = sidebar_search_query_text(
+        clear_items,
+        clear_shot.size,
+        geometry=active_geometry,
+        layout_snapshot=layout_snapshot_for_image(clear_shot),
+    )
     refocus_result: dict[str, Any] = {}
     if clear_surface.get("ok") and not clear_state.get("detected") and not clear_query_text:
-        if bounds[2] > bounds[0] and bounds[3] > bounds[1]:
-            refocus_click = human_window_image_click_in_bounds(
-                hwnd,
-                int(search_x),
-                int(search_y),
-                bounds=bounds,
-                action_name="sidebar_search_box_refocus_after_clear",
-            )
-        else:
-            human_window_image_click(hwnd, search_x, search_y)
-            refocus_click = {"ok": True, "x": search_x, "y": search_y}
+        clear_snapshot = layout_snapshot_for_image(clear_shot) or {}
+        fresh_refocus_target = sidebar_search_input_target_from_ocr(
+            clear_items,
+            clear_shot.size,
+            geometry=active_geometry,
+            layout_snapshot=clear_snapshot,
+        )
+        if not fresh_refocus_target:
+            return {
+                "ok": False,
+                "reason": "sidebar_search_refocus_target_unresolved",
+                "surface": clear_surface,
+                "search_state": clear_state,
+                "screenshot_path": clear_path,
+            }
+        refocus_click = human_window_image_click_in_bounds(
+            hwnd,
+            int(fresh_refocus_target["point"][0]),
+            int(fresh_refocus_target["point"][1]),
+            bounds=list(fresh_refocus_target["bounds"]),
+            action_name="sidebar_search_box_refocus_after_clear",
+            expected_snapshot_id=str(clear_snapshot.get("layout_snapshot_id") or ""),
+        )
+        if not refocus_click.get("ok"):
+            return {
+                "ok": False,
+                "reason": "sidebar_search_refocus_click_failed",
+                "click": refocus_click,
+                "search_target": fresh_refocus_target,
+            }
         humanized_action_sleep(520, 1300)
         refocus_shot, refocus_path = capture_wechat(hwnd, artifact_dir=artifact_dir, label="open_chat_search_box_after_clear_refocus")
         refocus_items = run_ocr_traced(refocus_shot, "open_chat_search_box_after_clear_refocus", source="open_chat")
@@ -12447,7 +13144,12 @@ def clear_sidebar_search_box_without_select_all(
             target="",
         )
         refocus_state = sidebar_search_state_detected(refocus_shot, refocus_items, geometry=active_geometry)
-        refocus_query_text = sidebar_search_query_text(refocus_items, refocus_shot.size, geometry=active_geometry)
+        refocus_query_text = sidebar_search_query_text(
+            refocus_items,
+            refocus_shot.size,
+            geometry=active_geometry,
+            layout_snapshot=layout_snapshot_for_image(refocus_shot),
+        )
         refocus_result = {
             "click": refocus_click,
             "surface": refocus_surface,
@@ -12541,7 +13243,12 @@ def type_sidebar_search_query(
             target="",
         )
         search_state = sidebar_search_state_detected(verify_shot, verify_items, geometry=active_geometry)
-        query_text = sidebar_search_query_text(verify_items, verify_shot.size, geometry=active_geometry)
+        query_text = sidebar_search_query_text(
+            verify_items,
+            verify_shot.size,
+            geometry=active_geometry,
+            layout_snapshot=layout_snapshot_for_image(verify_shot),
+        )
         if not surface.get("ok") or not search_state.get("detected"):
             return {
                 "ok": False,
@@ -12629,7 +13336,12 @@ def nudge_sidebar_search_query_for_results(
         target="",
     )
     search_state = sidebar_search_state_detected(shot, items, geometry=active_geometry)
-    query_text = sidebar_search_query_text(items, shot.size, geometry=active_geometry)
+    query_text = sidebar_search_query_text(
+        items,
+        shot.size,
+        geometry=active_geometry,
+        layout_snapshot=layout_snapshot_for_image(shot),
+    )
     if not surface.get("ok") or not search_state.get("detected"):
         return {
             "ok": False,
@@ -12905,13 +13617,21 @@ def search_result_contact_candidates_matching_remark_code(
     ocr_items: list[dict[str, Any]],
     image_size: tuple[int, int],
     remark_code: str,
+    *,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     width, height = image_size
-    split_x = session_split_x(width)
-    left_panel_right = min(max(split_x + 170, 470), width - 40)
+    try:
+        panel = win32_ocr_layout.required_region(layout_snapshot, "session_list_bounds")
+    except win32_ocr_layout.LayoutSnapshotError:
+        return []
+    left_panel_right = panel[2]
 
     def in_search_panel(item: dict[str, Any]) -> bool:
-        return float(item.get("left") or 0) < left_panel_right and float(item.get("center_y") or 0) >= 80
+        return (
+            panel[0] <= float(item.get("center_x") or 0) <= panel[2]
+            and panel[1] <= float(item.get("center_y") or 0) <= panel[3]
+        )
 
     headings: list[tuple[str, float]] = []
     for item in ocr_items or []:
@@ -12968,10 +13688,10 @@ def search_result_contact_candidates_matching_remark_code(
         bottom = max(float(other.get("bottom") or item.get("bottom") or 0) for other in row_items)
         text_center_x = int((float(item.get("left") or left) + float(item.get("right") or right)) / 2)
         bounds = [
-            max(88, int(left) - 74),
-            max(88, int(top) - 18),
+            max(panel[0], int(left) - 74),
+            max(panel[1], int(top) - 18),
             min(left_panel_right, max(int(right) + 150, int(left) + 210)),
-            min(height - 12, max(int(bottom) + 22, int(top) + 62)),
+            min(panel[3], max(int(bottom) + 22, int(top) + 62)),
         ]
         click_points = [
             [bounded_int(text_center_x, default=190, minimum=bounds[0] + 12, maximum=bounds[2] - 12), int(center_y)],
@@ -13003,6 +13723,7 @@ def search_result_contact_candidates_matching_remark_code(
                 "search_result_click_points": click_points,
                 "section": "contacts",
                 "c2_conversation_admission": admission,
+                "layout_snapshot_id": str((layout_snapshot or {}).get("layout_snapshot_id") or ""),
             }
         )
         consumed_rows.append(center_y)
@@ -13013,13 +13734,21 @@ def fallback_first_search_contact_candidate(
     ocr_items: list[dict[str, Any]],
     image_size: tuple[int, int],
     remark_code: str,
+    *,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     width, height = image_size
-    split_x = session_split_x(width)
-    left_panel_right = min(max(split_x + 170, 470), width - 40)
+    try:
+        panel = win32_ocr_layout.required_region(layout_snapshot, "session_list_bounds")
+    except win32_ocr_layout.LayoutSnapshotError:
+        return None
+    left_panel_right = panel[2]
 
     def in_search_panel(item: dict[str, Any]) -> bool:
-        return float(item.get("left") or 0) < left_panel_right and float(item.get("center_y") or 0) >= 80
+        return (
+            panel[0] <= float(item.get("center_x") or 0) <= panel[2]
+            and panel[1] <= float(item.get("center_y") or 0) <= panel[3]
+        )
 
     headings: list[tuple[str, float]] = []
     for item in ocr_items or []:
@@ -13068,10 +13797,10 @@ def fallback_first_search_contact_candidate(
     top = min(float(item.get("top") or 0) for item in row_items)
     bottom = max(float(item.get("bottom") or 0) for item in row_items)
     bounds = [
-        max(88, int(left) - 74),
-        max(88, int(top) - 20),
+        max(panel[0], int(left) - 74),
+        max(panel[1], int(top) - 20),
         min(left_panel_right, max(int(right) + 150, int(left) + 240)),
-        min(height - 12, max(int(bottom) + 24, int(top) + 68)),
+        min(panel[3], max(int(bottom) + 24, int(top) + 68)),
     ]
     center_y = int((bounds[1] + bounds[3]) / 2)
     text_center_x = int((left + right) / 2)
@@ -13105,6 +13834,7 @@ def fallback_first_search_contact_candidate(
         "search_result_click_points": click_points,
         "section": "contacts",
         "c2_conversation_admission": admission,
+        "layout_snapshot_id": str((layout_snapshot or {}).get("layout_snapshot_id") or ""),
     }
 
 
@@ -13114,24 +13844,24 @@ def active_selected_session_matches(
     *,
     target: str,
     exact: bool,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> bool:
     if not target:
         return False
     normalized_target = normalize_session_name(target)
     if not normalized_target:
         return False
-    width, height = image_size
-    split_x = session_split_x(width)
-    top_limit = 88
-    bottom_limit = min(height, 238)
+    try:
+        session_list = win32_ocr_layout.required_region(layout_snapshot, "session_list_bounds")
+    except win32_ocr_layout.LayoutSnapshotError:
+        return False
     for item in ocr_items or []:
         text = normalize_ocr_text(item.get("text"))
         if not text:
             continue
-        if float(item.get("center_x") or 0) >= split_x + 16:
-            continue
+        center_x = float(item.get("center_x") or 0)
         center_y = float(item.get("center_y") or 0)
-        if center_y < top_limit or center_y > bottom_limit:
+        if not win32_ocr_layout.point_in_bounds([center_x, center_y], session_list):
             continue
         candidates = {
             text,
@@ -13154,7 +13884,13 @@ def validate_active_selected_session_target(
 ) -> dict[str, Any]:
     screenshot, path = capture_wechat(hwnd, artifact_dir=artifact_dir, label="selected_session_guard")
     items = run_ocr_traced(screenshot, "selected_session_guard", source="validate_selected_session")
-    matched = active_selected_session_matches(items, screenshot.size, target=target, exact=exact)
+    matched = active_selected_session_matches(
+        items,
+        screenshot.size,
+        target=target,
+        exact=exact,
+        layout_snapshot=layout_snapshot_for_image(screenshot),
+    )
     return {
         "ok": bool(matched),
         "online": True,
@@ -13226,7 +13962,22 @@ def activate_search_result_candidate(
     click_started = _sidecar_timing_start(timing, "search_result_click")
     # One fresh OCR row produces exactly one physical click. Slow UI updates
     # are handled by passive verification, never by probing more row points.
-    human_window_image_click(hwnd, x, y)
+    candidate_bounds = list(candidate.get("search_result_bounds") or candidate.get("click_bounds") or [])
+    if len(candidate_bounds) < 4:
+        candidate_bounds = [
+            int(float(candidate.get("left") or 0)),
+            int(float(candidate.get("top") or 0)),
+            int(float(candidate.get("right") or 0)),
+            int(float(candidate.get("bottom") or 0)),
+        ]
+    human_window_image_click_in_bounds(
+        hwnd,
+        x,
+        y,
+        bounds=candidate_bounds,
+        action_name="search_result_candidate_click",
+        expected_snapshot_id=str(candidate.get("layout_snapshot_id") or ""),
+    )
     _sidecar_timing_finish(timing, "search_result_click", click_started)
     last_validation: dict[str, Any] = {}
     for verification_index in range(2):
@@ -13374,11 +14125,16 @@ def open_chat_by_remark_code_search(
             str(baseline_surface.get("reason") or "search_baseline_surface_not_ok"),
             surface=baseline_surface,
         )
-    search_x, search_y = sidebar_search_input_focus_point_for_geometry(geometry)
-    search_target = sidebar_search_input_target_from_ocr(baseline_items, baseline_shot.size, geometry=geometry)
-    if search_target:
-        search_x, search_y = [int(value) for value in search_target["point"]]
-    session_click_x = session_click_x_for_geometry(geometry)
+    search_target = sidebar_search_input_target_from_ocr(
+        baseline_items,
+        baseline_shot.size,
+        geometry=geometry,
+        layout_snapshot=(layout_snapshot_metadata(hwnd).get("snapshot") or {}),
+    )
+    if not search_target:
+        return finish(False, "sidebar_search_target_unresolved")
+    search_x, search_y = [int(value) for value in search_target["point"]]
+    session_click_x = 0
     baseline_event: dict[str, Any] = {"ocr_count": len(baseline_items)}
     if artifact_dir:
         try:
@@ -13464,8 +14220,22 @@ def open_chat_by_remark_code_search(
         return finish(False, str(surface.get("reason") or "search_surface_not_ok"), screenshot_path=search_path, surface=surface)
     event("search_surface_check", "completed", surface=surface)
 
-    contact_matches = search_result_contact_candidates_matching_remark_code(search_items, search_shot.size, clean_remark)
+    contact_matches = search_result_contact_candidates_matching_remark_code(
+        search_items,
+        search_shot.size,
+        clean_remark,
+        layout_snapshot=layout_snapshot_for_image(search_shot),
+    )
     sessions = parse_sessions_from_ocr(search_items, search_shot.size, screenshot=search_shot)
+    search_snapshot_id = str(
+        (layout_snapshot_metadata(hwnd).get("snapshot") or {}).get("layout_snapshot_id") or ""
+    )
+    for candidate in sessions:
+        if isinstance(candidate, dict):
+            candidate["layout_snapshot_id"] = search_snapshot_id
+    for candidate in contact_matches:
+        if isinstance(candidate, dict):
+            candidate["layout_snapshot_id"] = search_snapshot_id
     session_matches = search_result_sessions_matching_remark_code(sessions, clean_remark)
     matches = contact_matches or session_matches
     fallback_candidate: dict[str, Any] | None = None
@@ -13514,12 +14284,22 @@ def open_chat_by_remark_code_search(
                 event("search_surface_check_after_nudge", "failed", surface=surface)
                 return finish(False, str(surface.get("reason") or "search_surface_not_ok_after_nudge"), screenshot_path=search_path, surface=surface, nudge=nudge_result)
             event("search_surface_check_after_nudge", "completed", surface=surface)
-            contact_matches = search_result_contact_candidates_matching_remark_code(search_items, search_shot.size, clean_remark)
+            contact_matches = search_result_contact_candidates_matching_remark_code(
+                search_items,
+                search_shot.size,
+                clean_remark,
+                layout_snapshot=layout_snapshot_for_image(search_shot),
+            )
             sessions = parse_sessions_from_ocr(search_items, search_shot.size, screenshot=search_shot)
             session_matches = search_result_sessions_matching_remark_code(sessions, clean_remark)
             matches = contact_matches or session_matches
     if not matches:
-        fallback_candidate = fallback_first_search_contact_candidate(search_items, search_shot.size, clean_remark)
+        fallback_candidate = fallback_first_search_contact_candidate(
+            search_items,
+            search_shot.size,
+            clean_remark,
+            layout_snapshot=layout_snapshot_for_image(search_shot),
+        )
         if fallback_candidate:
             matches = [fallback_candidate]
     match_targets = [
@@ -13676,11 +14456,14 @@ def open_chat(
     _sidecar_timing_finish(timing, "open_chat_main_list", main_list_started)
     geometry_started = _sidecar_timing_start(timing, "open_chat_geometry")
     geometry = geometry_for_seed if isinstance(geometry_for_seed, dict) else get_window_geometry(hwnd)
-    session_click_x = session_click_x_for_geometry(geometry)
-    search_x, search_y = sidebar_search_input_focus_point_for_geometry(geometry)
-    search_target = sidebar_search_input_target_from_ocr(ocr_items, screenshot.size, geometry=geometry)
-    if search_target:
-        search_x, search_y = [int(value) for value in search_target["point"]]
+    session_click_x = 0
+    search_target = sidebar_search_input_target_from_ocr(
+        ocr_items,
+        screenshot.size,
+        geometry=geometry,
+        layout_snapshot=(layout_snapshot_metadata(hwnd).get("snapshot") or {}),
+    )
+    search_x, search_y = ([int(value) for value in search_target["point"]] if search_target else [0, 0])
     _sidecar_timing_finish(timing, "open_chat_geometry", geometry_started)
     surface_started = _sidecar_timing_start(timing, "open_chat_surface")
     surface = target_switch_surface_state(screenshot, ocr_items, geometry=geometry, target=target)
@@ -13700,6 +14483,7 @@ def open_chat(
         screenshot.size,
         target=active_identity_target,
         exact=False if clean_semantic_target else exact,
+        layout_snapshot=layout_snapshot_for_image(screenshot),
     )
     active_matches = bool(active_evidence.get("matched"))
     _sidecar_timing_finish(timing, "open_chat_active_match", active_match_started)
@@ -13857,6 +14641,8 @@ def open_chat(
 
     # Search is the highest-risk cross-chat path. Do it at most once per open,
     # then click a visible OCR result instead of blindly pressing Enter/Down.
+    if search_target is None:
+        return finish(False, "sidebar_search_target_unresolved")
     search_clear_started = _sidecar_timing_start(timing, "open_chat_search_clear")
     clear_result = clear_sidebar_search_box_without_select_all(
         hwnd,
@@ -13906,7 +14692,13 @@ def open_chat(
     if not search_items:
         return finish(False, "search_no_ocr_items")
     search_active_started = _sidecar_timing_start(timing, "open_chat_search_active_match")
-    search_active_matches = active_chat_matches(search_items, search_shot.size, target=target, exact=exact)
+    search_active_matches = active_chat_matches(
+        search_items,
+        search_shot.size,
+        target=target,
+        exact=exact,
+        layout_snapshot=layout_snapshot_for_image(search_shot),
+    )
     _sidecar_timing_finish(timing, "open_chat_search_active_match", search_active_started)
     if search_active_matches:
         dismiss_started = _sidecar_timing_start(timing, "open_chat_search_active_match_dismiss")
@@ -14176,6 +14968,7 @@ def validate_active_send_target(
         ocr_items,
         getattr(screenshot, "size", (0, 0)),
         target=target,
+        layout_snapshot=layout_snapshot_for_image(screenshot),
     )
     _sidecar_timing_finish(timing, "validate_active_send_target_service_container", service_container_started)
     timing["validate_active_send_target_service_container_detected"] = bool(service_container.get("detected"))
@@ -14204,14 +14997,31 @@ def validate_active_send_target(
             screenshot_path=path,
         )
     active_match_started = _sidecar_timing_start(timing, "validate_active_send_target_active_match")
-    title_evidence = active_chat_title_evidence(ocr_items, screenshot.size, target=target, exact=exact)
+    title_evidence = active_chat_title_evidence(
+        ocr_items,
+        screenshot.size,
+        target=target,
+        exact=exact,
+        layout_snapshot=layout_snapshot_for_image(screenshot),
+    )
     active_match = bool(title_evidence.get("matched"))
     _sidecar_timing_finish(timing, "validate_active_send_target_active_match", active_match_started)
     if supplied_frame and not active_match:
         # Reuse the business screenshot, not its potentially incomplete
         # full-frame OCR result. A small right-panel ROI preserves the strict
         # title guard without paying for another window capture.
-        title_roi_bounds = active_send_target_roi_bounds(getattr(screenshot, "size", (0, 0)))
+        title_roi_bounds = active_send_target_roi_bounds(
+            getattr(screenshot, "size", (0, 0)),
+            layout_snapshot=layout_snapshot_for_image(screenshot),
+        )
+        if not title_roi_bounds:
+            return finish({
+                "ok": False,
+                "online": True,
+                "state": "send_layout_unresolved",
+                "reason": "WECHAT_UI_LAYOUT_UNRESOLVED",
+                "error_code": win32_ocr_layout.ERROR_LAYOUT_UNRESOLVED,
+            })
         timing["validate_active_send_target_supplied_frame_title_roi_bounds"] = list(title_roi_bounds)
         title_roi_started = _sidecar_timing_start(
             timing,
@@ -14234,6 +15044,7 @@ def validate_active_send_target(
             screenshot.size,
             target=target,
             exact=exact,
+            layout_snapshot=layout_snapshot_for_image(screenshot),
         )
         active_match = bool(title_evidence.get("matched"))
         timing["validate_active_send_target_supplied_frame_title_roi_match"] = bool(active_match)
@@ -14264,6 +15075,7 @@ def validate_active_send_target(
             image_size=screenshot.size,
             geometry=geometry,
             screenshot_path=path,
+            screenshot=screenshot,
         )
         _sidecar_timing_finish(timing, "validate_active_send_target_blind_guard", blind_guard_started)
         timing["validate_active_send_target_blind_guard_ok"] = bool(blind_guard.get("ok"))
@@ -14591,11 +15403,13 @@ def send_context_message_region_fingerprint(screenshot: Any) -> dict[str, Any]:
         return {}
     if width <= 0 or height <= 0:
         return {}
-    input_top = input_text_region_bounds({"width": width, "height": height})[1]
-    left = min(width - 1, session_split_x(width) + 12)
-    top = min(height - 1, chat_header_cutoff_y(height) + 2)
-    right = max(left + 1, width - 18)
-    bottom = max(top + 1, min(height, input_top - 6))
+    try:
+        viewport = win32_ocr_layout.required_region(
+            layout_snapshot_for_image(screenshot), "message_viewport_bounds"
+        )
+    except win32_ocr_layout.LayoutSnapshotError:
+        return {}
+    left, top, right, bottom = viewport
     if right <= left or bottom <= top:
         return {}
     crop = image.crop((left, top, right, bottom))
@@ -15294,16 +16108,6 @@ def get_window_geometry(hwnd: int) -> dict[str, int]:
     return win32_ocr_window_metrics.get_window_geometry(hwnd, win32gui_module=win32gui)
 
 
-def screen_point_to_client(hwnd: int, screen_x: int, screen_y: int) -> tuple[int, int]:
-    if win32gui is None or not hasattr(win32gui, "ScreenToClient"):
-        raise RuntimeError("win32_screen_to_client_unavailable")
-    client_x, client_y = win32gui.ScreenToClient(
-        int(hwnd),
-        (int(screen_x), int(screen_y)),
-    )
-    return int(client_x), int(client_y)
-
-
 def get_window_client_geometry(hwnd: int) -> dict[str, int]:
     return win32_ocr_window_metrics.get_window_client_geometry(hwnd, win32gui_module=win32gui)
 
@@ -15349,94 +16153,15 @@ def rpa_click_surface_jitter_enabled() -> bool:
 
 
 def jitter_client_click_surface_point(hwnd: int, x: int, y: int) -> tuple[int, int, dict[str, Any]]:
-    """Apply a final low-risk spread so fixed caller coordinates do not leak through."""
+    """Apply tiny generic jitter; target bounds are enforced by the caller."""
     original_x = int(x)
     original_y = int(y)
     if not rpa_click_surface_jitter_enabled():
         return original_x, original_y, {"enabled": False, "original": [original_x, original_y], "final": [original_x, original_y]}
-    role = "generic"
-    jitter_x = 3
-    jitter_y = 2
-    min_x = 0
-    min_y = 0
-    max_x = max(0, original_x + jitter_x)
-    max_y = max(0, original_y + jitter_y)
-    try:
-        geometry = get_window_geometry(hwnd)
-        width = int(geometry.get("width") or 0)
-        height = int(geometry.get("height") or 0)
-        if width > 0 and height > 0:
-            split_x = session_split_x(width)
-            max_x = max(0, width - 1)
-            max_y = max(0, height - 1)
-            if original_x > split_x + 40 and original_y > int(height * 0.70):
-                role = "input_area"
-                jitter_x = bounded_int(
-                    os.getenv("WECHAT_WIN32_OCR_CLICK_SURFACE_INPUT_JITTER_X"),
-                    default=12,
-                    minimum=0,
-                    maximum=36,
-                )
-                jitter_y = bounded_int(
-                    os.getenv("WECHAT_WIN32_OCR_CLICK_SURFACE_INPUT_JITTER_Y"),
-                    default=7,
-                    minimum=0,
-                    maximum=20,
-                )
-                min_x = max(split_x + 35, int(width * 0.48))
-                max_x = min(width - 78, max(min_x, original_x + max(jitter_x, 1)))
-                min_y = max(int(height * 0.73), height - 228)
-                max_y = min(height - 82, max(min_y, original_y + max(jitter_y, 1)))
-            elif original_x < split_x and original_y > 86:
-                role = "session_or_sidebar"
-                jitter_x = bounded_int(
-                    os.getenv("WECHAT_WIN32_OCR_CLICK_SURFACE_SESSION_JITTER_X"),
-                    default=9,
-                    minimum=0,
-                    maximum=24,
-                )
-                jitter_y = bounded_int(
-                    os.getenv("WECHAT_WIN32_OCR_CLICK_SURFACE_SESSION_JITTER_Y"),
-                    default=6,
-                    minimum=0,
-                    maximum=16,
-                )
-                min_x = 65
-                max_x = max(min_x, min(split_x - 38, original_x + max(jitter_x, 1)))
-                min_y = 84
-                max_y = max(min_y, min(height - 20, original_y + max(jitter_y, 1)))
-            elif original_x < split_x and original_y <= 86:
-                role = "search_or_header"
-                jitter_x = bounded_int(
-                    os.getenv("WECHAT_WIN32_OCR_CLICK_SURFACE_HEADER_JITTER_X"),
-                    default=3,
-                    minimum=0,
-                    maximum=8,
-                )
-                jitter_y = bounded_int(
-                    os.getenv("WECHAT_WIN32_OCR_CLICK_SURFACE_HEADER_JITTER_Y"),
-                    default=2,
-                    minimum=0,
-                    maximum=5,
-                )
-                min_x = 70
-                max_x = max(min_x, min(split_x - 28, original_x + max(jitter_x, 1)))
-                min_y = 38
-                max_y = max(min_y, min(88, original_y + max(jitter_y, 1)))
-    except Exception:
-        pass
-    final_x = bounded_int(
-        original_x + random.randint(-jitter_x, jitter_x),
-        default=original_x,
-        minimum=max(0, min_x),
-        maximum=max(max_x, min_x),
-    )
-    final_y = bounded_int(
-        original_y + random.randint(-jitter_y, jitter_y),
-        default=original_y,
-        minimum=max(0, min_y),
-        maximum=max(max_y, min_y),
-    )
+    role = "bounded_target"
+    jitter_x, jitter_y = 3, 2
+    final_x = original_x + random.randint(-jitter_x, jitter_x)
+    final_y = original_y + random.randint(-jitter_y, jitter_y)
     return final_x, final_y, {
         "enabled": True,
         "role": role,
@@ -15469,70 +16194,10 @@ def jitter_window_image_click_surface_point(hwnd: int, x: int, y: int) -> tuple[
     original_y = int(y)
     if not rpa_click_surface_jitter_enabled():
         return original_x, original_y, {"enabled": False, "original": [original_x, original_y], "final": [original_x, original_y]}
-    role = "window_image"
-    jitter_x = bounded_int(os.getenv("WECHAT_WIN32_OCR_WINDOW_IMAGE_CLICK_JITTER_X"), default=5, minimum=0, maximum=16)
-    jitter_y = bounded_int(os.getenv("WECHAT_WIN32_OCR_WINDOW_IMAGE_CLICK_JITTER_Y"), default=4, minimum=0, maximum=12)
-    min_x = 0
-    min_y = 0
-    max_x = max(0, original_x + jitter_x)
-    max_y = max(0, original_y + jitter_y)
-    try:
-        geometry = get_window_geometry(hwnd)
-        width = int(geometry.get("width") or 0)
-        height = int(geometry.get("height") or 0)
-        if width > 0 and height > 0:
-            split_x = session_split_x(width)
-            max_x = max(0, width - 1)
-            max_y = max(0, height - 1)
-            if original_x < split_x and original_y <= 92:
-                role = "search_or_header_window"
-                jitter_x = bounded_int(os.getenv("WECHAT_WIN32_OCR_WINDOW_IMAGE_HEADER_JITTER_X"), default=7, minimum=0, maximum=18)
-                jitter_y = bounded_int(os.getenv("WECHAT_WIN32_OCR_WINDOW_IMAGE_HEADER_JITTER_Y"), default=5, minimum=0, maximum=14)
-                min_x = 55
-                max_x = max(min_x, min(split_x - 22, original_x + max(jitter_x, 1)))
-                min_y = 34
-                max_y = max(min_y, min(98, original_y + max(jitter_y, 1)))
-                search_x, _search_y = search_box_point_for_geometry(geometry)
-                windows_plus_x, windows_plus_y = add_friend_windows_plus_button_point_for_geometry(geometry)
-                is_windows_plus_entry = (
-                    abs(original_x - windows_plus_x) <= 20
-                    and abs(original_y - windows_plus_y) <= 18
-                    and original_x >= search_x + 130
-                )
-                if original_x >= split_x - 34 or is_windows_plus_entry:
-                    role = "plus_entry_button"
-                    jitter_x = bounded_int(os.getenv("WECHAT_WIN32_OCR_PLUS_ENTRY_JITTER_X"), default=3, minimum=0, maximum=8)
-                    jitter_y = bounded_int(os.getenv("WECHAT_WIN32_OCR_PLUS_ENTRY_JITTER_Y"), default=3, minimum=0, maximum=8)
-                    if is_windows_plus_entry:
-                        min_x = max(55, original_x - 10)
-                        max_x = min(split_x - 22, original_x + 10)
-                    else:
-                        min_x = max(55, split_x - 34)
-                        max_x = max(min_x, min(split_x - 8, original_x + max(jitter_x, 1)))
-                    min_y = max(34, original_y - 8)
-                    max_y = max(min_y, min(108, original_y + max(jitter_y, 1)))
-            elif original_x < split_x:
-                role = "session_or_sidebar_window"
-                jitter_x = bounded_int(os.getenv("WECHAT_WIN32_OCR_WINDOW_IMAGE_SESSION_JITTER_X"), default=8, minimum=0, maximum=20)
-                jitter_y = bounded_int(os.getenv("WECHAT_WIN32_OCR_WINDOW_IMAGE_SESSION_JITTER_Y"), default=5, minimum=0, maximum=14)
-                min_x = 65
-                max_x = max(min_x, min(split_x - 30, original_x + max(jitter_x, 1)))
-                min_y = 82
-                max_y = max(min_y, min(height - 22, original_y + max(jitter_y, 1)))
-    except Exception:
-        pass
-    final_x = bounded_int(
-        original_x + random.randint(-jitter_x, jitter_x),
-        default=original_x,
-        minimum=max(0, min_x),
-        maximum=max(max_x, min_x),
-    )
-    final_y = bounded_int(
-        original_y + random.randint(-jitter_y, jitter_y),
-        default=original_y,
-        minimum=max(0, min_y),
-        maximum=max(max_y, min_y),
-    )
+    role = "bounded_target"
+    jitter_x, jitter_y = 3, 2
+    final_x = original_x + random.randint(-jitter_x, jitter_x)
+    final_y = original_y + random.randint(-jitter_y, jitter_y)
     return final_x, final_y, {
         "enabled": True,
         "role": role,
@@ -15865,6 +16530,7 @@ def active_chat_title_evidence(
     *,
     target: str,
     exact: bool,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_target = normalize_session_name(target)
     if not normalized_target:
@@ -15878,11 +16544,24 @@ def active_chat_title_evidence(
             "admission_allowed": False,
         }
     width, height = image_size
-    split_x = session_split_x(width)
-    title_left = active_chat_title_left_x(width)
-    title_right = active_chat_title_right_x(width)
-    title_top = active_chat_title_top_y(height)
-    title_bottom = active_chat_title_bottom_y(height)
+    snapshot = layout_snapshot if isinstance(layout_snapshot, dict) else {}
+    title_bounds = win32_ocr_layout.normalize_rect(snapshot.get("chat_header_bounds"))
+    if not bool(snapshot.get("valid")) or title_bounds[2] <= title_bounds[0]:
+        return {
+            "matched": False,
+            "conversation_type": "unknown",
+            "reason": "layout_snapshot_missing_for_title",
+            "raw_title": "",
+            "title_candidates": [],
+            "short_code_confirmed": False,
+            "admission_allowed": False,
+            "error_code": win32_ocr_layout.ERROR_LAYOUT_UNRESOLVED,
+        }
+    split_x = title_bounds[0]
+    title_left = title_bounds[0]
+    title_right = title_bounds[2]
+    title_top = title_bounds[1]
+    title_bottom = title_bounds[3]
     x_tolerance = 24
     y_tolerance = 8
     title_items: list[dict[str, Any]] = []
@@ -15988,8 +16667,21 @@ def active_chat_title_evidence(
     return result
 
 
-def active_chat_matches(ocr_items: list[dict[str, Any]], image_size: tuple[int, int], *, target: str, exact: bool) -> bool:
-    evidence = active_chat_title_evidence(ocr_items, image_size, target=target, exact=exact)
+def active_chat_matches(
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    target: str,
+    exact: bool,
+    layout_snapshot: dict[str, Any] | None = None,
+) -> bool:
+    evidence = active_chat_title_evidence(
+        ocr_items,
+        image_size,
+        target=target,
+        exact=exact,
+        layout_snapshot=layout_snapshot,
+    )
     return bool(evidence.get("matched"))
 
 
@@ -16002,22 +16694,52 @@ def target_switch_passive_confirm_attempts() -> int:
     )
 
 
+def _current_message_viewport_scroll_point(hwnd: int) -> tuple[int, int, int, int, list[int], str]:
+    current = current_layout_snapshot(hwnd) or {}
+    snapshot, failure = _current_click_snapshot(
+        hwnd,
+        expected_snapshot_id=str(current.get("layout_snapshot_id") or ""),
+    )
+    if failure or snapshot is None:
+        raise RuntimeError(
+            f"{(failure or {}).get('error_code') or win32_ocr_layout.ERROR_LAYOUT_UNRESOLVED}:"
+            f"{(failure or {}).get('reason') or 'layout_snapshot_missing'}"
+        )
+    bounds = win32_ocr_layout.required_region(snapshot, "message_viewport_bounds")
+    x = int((bounds[0] + bounds[2]) / 2)
+    y = int((bounds[1] + bounds[3]) / 2)
+    mapped = win32_ocr_layout.transform_target_to_screen(
+        snapshot,
+        point=[x, y],
+        bounds=bounds,
+    )
+    return (
+        x,
+        y,
+        int(mapped["screen_point"][0]),
+        int(mapped["screen_point"][1]),
+        bounds,
+        str(snapshot.get("layout_snapshot_id") or ""),
+    )
+
+
 def scroll_chat_history(hwnd: int, load_times: int, *, wheel_units: int = 8, delay_seconds: float = 0.18) -> None:
-    rect = win32gui.GetWindowRect(hwnd)
-    x = max(380, int((rect[2] - rect[0]) * 0.6)) + random.randint(-12, 12)
-    y = max(180, int((rect[3] - rect[1]) * 0.45)) + random.randint(-10, 10)
+    x, y, screen_x, screen_y, bounds, snapshot_id = _current_message_viewport_scroll_point(hwnd)
     require_active_ui_action_budget(
         "scroll_chat_history",
         metadata={
             "load_times": int(load_times or 0),
             "cursor": [int(x), int(y)],
+            "screen_cursor": [screen_x, screen_y],
+            "bounds": bounds,
+            "layout_snapshot_id": snapshot_id,
             "wheel_units": int(wheel_units or 0),
         },
     )
     activate_window(hwnd)
     ensure_left_button_released()
-    screen_x, screen_y = win32gui.ClientToScreen(hwnd, (x, y))
     win32api.SetCursorPos((screen_x, screen_y))
+    invalidate_layout_snapshot(hwnd, reason="scroll_started")
     humanized_action_sleep(45, 110)
     wheel_message = getattr(win32con, "WM_MOUSEWHEEL", 0x020A)
     lparam = ((int(screen_y) & 0xFFFF) << 16) | (int(screen_x) & 0xFFFF)
@@ -16037,17 +16759,22 @@ def scroll_chat_to_latest(hwnd: int, *, attempts: int = 16) -> None:
     requested_attempts = max(0, int(attempts or 0))
     spread = 2 if requested_attempts >= 10 else 1
     actual_attempts = max(1, requested_attempts + random.randint(-spread, spread))
-    rect = win32gui.GetWindowRect(hwnd)
-    x = max(380, int((rect[2] - rect[0]) * 0.6)) + random.randint(-12, 12)
-    y = max(180, int((rect[3] - rect[1]) * 0.55)) + random.randint(-10, 10)
+    x, y, screen_x, screen_y, bounds, snapshot_id = _current_message_viewport_scroll_point(hwnd)
     require_active_ui_action_budget(
         "scroll_chat_to_latest",
-        metadata={"attempts": requested_attempts, "actual_attempts": actual_attempts, "cursor": [int(x), int(y)]},
+        metadata={
+            "attempts": requested_attempts,
+            "actual_attempts": actual_attempts,
+            "cursor": [int(x), int(y)],
+            "screen_cursor": [screen_x, screen_y],
+            "bounds": bounds,
+            "layout_snapshot_id": snapshot_id,
+        },
     )
     activate_window(hwnd)
     ensure_left_button_released()
-    screen_x, screen_y = win32gui.ClientToScreen(hwnd, (x, y))
     win32api.SetCursorPos((screen_x, screen_y))
+    invalidate_layout_snapshot(hwnd, reason="scroll_started")
     humanized_action_sleep(45, 110)
     wheel_message = getattr(win32con, "WM_MOUSEWHEEL", 0x020A)
     lparam = ((int(screen_y) & 0xFFFF) << 16) | (int(screen_x) & 0xFFFF)
@@ -16068,7 +16795,9 @@ def _register_layout_snapshot(
     capture_mode: str,
     screenshot_path: str,
     capture_screen_origin: list[int] | tuple[int, int] | None,
+    generic_popup: bool = False,
 ) -> dict[str, Any]:
+    global _LAST_VERIFIED_MAIN_LAYOUT_COMPATIBILITY
     image_size = getattr(image, "size", (0, 0))
     geometry = get_window_geometry(hwnd)
     client_geometry = get_window_client_geometry(hwnd)
@@ -16079,7 +16808,66 @@ def _register_layout_snapshot(
                 int(client_geometry.get("screen_left") or 0),
                 int(client_geometry.get("screen_top") or 0),
             ]
-    layout = win32_ocr_layout.build_structural_layout_regions(image)
+    if generic_popup:
+        width, height = [int(value or 0) for value in image_size[:2]]
+        layout = {
+            "ok": bool(width > 0 and height > 0),
+            "regions": {"surface_bounds": [0, 0, width, height]},
+            "anchors": [{"name": "popup_window_bounds", "confidence": 1.0}],
+            "confidence": 1.0 if width > 0 and height > 0 else 0.0,
+            "conflicts": [] if width > 0 and height > 0 else ["popup_surface_empty"],
+            "vertical_candidates": [],
+        }
+        required_region_names = win32_ocr_layout.POPUP_LAYOUT_REGION_NAMES
+        surface_kind = "popup"
+    else:
+        layout = win32_ocr_layout.build_structural_layout_regions(image)
+        required_region_names = win32_ocr_layout.REQUIRED_LAYOUT_REGION_NAMES
+        surface_kind = "wechat_main"
+    screen_profile = screen_work_area(hwnd)
+    window_structure = str(os.getenv("WECHAT_WIN32_OCR_WINDOW_STRUCTURE") or "").strip()
+    if not window_structure and win32gui is not None:
+        try:
+            window_structure = str(win32gui.GetClassName(int(hwnd)) or "").strip()
+        except Exception:
+            window_structure = ""
+    device_profile = win32_ocr_device_profile.build_device_profile(
+        route="layout_snapshot",
+        geometry=geometry,
+        screenshot_size=(int(image_size[0] or 0), int(image_size[1] or 0)),
+        client_rect=client_geometry,
+        dpi_scale=window_dpi_scale(hwnd),
+        screen=screen_profile,
+        sidebar_bounds=list((layout.get("regions") or {}).get("sidebar_bounds") or []),
+        wechat_version=str(os.getenv("WECHAT_WIN32_OCR_WECHAT_VERSION") or "").strip(),
+        window_structure=window_structure,
+    )
+    compatibility_enabled = win32_ocr_device_profile.dynamic_layout_enabled()
+    legacy_profile = win32_ocr_device_profile.configured_legacy_profile()
+    if generic_popup and not compatibility_enabled:
+        # A popup intentionally has neither the main sidebar nor the main
+        # window geometry, so comparing it to the accepted main-device
+        # profile would always fail.  It may inherit only the compatibility
+        # decision already proven by a main WeChat frame in this same Sidecar
+        # action; without that proof the popup remains non-executable.
+        main_compatibility = dict(_LAST_VERIFIED_MAIN_LAYOUT_COMPATIBILITY)
+        legacy_profile_ok = bool(main_compatibility.get("legacy_profile_ok"))
+        legacy_profile_mismatches = (
+            [] if legacy_profile_ok else ["verified_main_legacy_profile_missing"]
+        )
+    else:
+        main_compatibility = {}
+        legacy_profile_ok, legacy_profile_mismatches = win32_ocr_device_profile.legacy_profile_matches(
+            device_profile,
+            legacy_profile,
+        )
+    compatibility_conflicts: list[str] = []
+    if not compatibility_enabled:
+        if not legacy_profile_ok:
+            compatibility_conflicts.append("legacy_device_profile_mismatch")
+            compatibility_conflicts.extend(legacy_profile_mismatches)
+        layout["ok"] = bool(layout.get("ok") and legacy_profile_ok)
+        layout["conflicts"] = list(layout.get("conflicts") or []) + compatibility_conflicts
     snapshot = win32_ocr_layout.build_layout_snapshot(
         hwnd=int(hwnd),
         frame_id=win32_ocr_layout.new_frame_id(int(hwnd)),
@@ -16096,6 +16884,8 @@ def _register_layout_snapshot(
         conflicts=list(layout.get("conflicts") or []),
         executable=bool(layout.get("ok")),
         screenshot_path=screenshot_path,
+        surface_kind=surface_kind,
+        required_region_names=required_region_names,
     )
     snapshot["layout_builder"] = {
         "ok": bool(layout.get("ok")),
@@ -16103,11 +16893,28 @@ def _register_layout_snapshot(
         "conflicts": list(layout.get("conflicts") or []),
         "vertical_candidates": list(layout.get("vertical_candidates") or []),
     }
+    snapshot["compatibility"] = {
+        "dynamic_layout_enabled": compatibility_enabled,
+        "legacy_profile_configured": bool(legacy_profile),
+        "legacy_profile_ok": bool(legacy_profile_ok),
+        "legacy_profile_mismatches": list(legacy_profile_mismatches),
+        "device_profile": device_profile,
+        "verified_main_layout_snapshot_id": str(
+            main_compatibility.get("layout_snapshot_id") or ""
+        ),
+    }
+    if not generic_popup:
+        _LAST_VERIFIED_MAIN_LAYOUT_COMPATIBILITY = {
+            "layout_snapshot_id": str(snapshot.get("layout_snapshot_id") or ""),
+            "legacy_profile_ok": bool(legacy_profile_ok),
+            "dynamic_layout_enabled": bool(compatibility_enabled),
+        }
     previous_id = _LATEST_LAYOUT_SNAPSHOT_BY_HWND.get(int(hwnd))
     if previous_id:
         _LAYOUT_SNAPSHOT_STORE.invalidate(previous_id, reason="new_frame_captured")
     _LAYOUT_SNAPSHOT_STORE.put(snapshot)
     _LATEST_LAYOUT_SNAPSHOT_BY_HWND[int(hwnd)] = str(snapshot["layout_snapshot_id"])
+    _LAYOUT_SNAPSHOT_ID_BY_IMAGE_ID[id(image)] = str(snapshot["layout_snapshot_id"])
     return snapshot
 
 
@@ -16116,6 +16923,40 @@ def current_layout_snapshot(hwnd: int) -> dict[str, Any] | None:
     if not snapshot_id:
         return None
     return _LAYOUT_SNAPSHOT_STORE.get(snapshot_id)
+
+
+def layout_snapshot_for_image(image: Any) -> dict[str, Any] | None:
+    snapshot_id = _LAYOUT_SNAPSHOT_ID_BY_IMAGE_ID.get(id(image))
+    if not snapshot_id:
+        return None
+    return _LAYOUT_SNAPSHOT_STORE.get(snapshot_id)
+
+
+def _finalize_layout_snapshot_ocr_anchors(image: Any, items: list[dict[str, Any]]) -> None:
+    snapshot_id = _LAYOUT_SNAPSHOT_ID_BY_IMAGE_ID.get(id(image))
+    if not snapshot_id:
+        return
+    anchors: list[dict[str, Any]] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text or not any(token in text for token in ("搜索", "发送", "确定", "备注", "添加朋友")):
+            continue
+        anchors.append(
+            {
+                "name": "ocr_anchor",
+                "text": text,
+                "bounds": [
+                    int(float(item.get("left") or 0)),
+                    int(float(item.get("top") or 0)),
+                    int(float(item.get("right") or 0)),
+                    int(float(item.get("bottom") or 0)),
+                ],
+                "confidence": float(item.get("confidence") or 0.0),
+            }
+        )
+    _LAYOUT_SNAPSHOT_STORE.finalize_ocr_anchors(snapshot_id, anchors=anchors)
 
 
 def layout_snapshot_metadata(hwnd: int) -> dict[str, Any]:
@@ -16135,13 +16976,30 @@ def invalidate_layout_snapshot(hwnd: int, *, reason: str) -> None:
         _LAYOUT_SNAPSHOT_STORE.invalidate(snapshot_id, reason=reason)
 
 
+def invalidate_all_layout_snapshots(*, reason: str) -> None:
+    _LAYOUT_SNAPSHOT_STORE.invalidate_all(reason=reason)
+
+
 def _current_click_snapshot(hwnd: int, *, expected_snapshot_id: str = "") -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if not str(expected_snapshot_id or "").strip():
+        return None, {
+            "ok": False,
+            "error_code": win32_ocr_layout.ERROR_COORDINATE_MAPPING_INVALID,
+            "reason": "expected_layout_snapshot_id_missing",
+        }
     snapshot = current_layout_snapshot(hwnd)
     if snapshot is None:
         return None, {
             "ok": False,
             "error_code": win32_ocr_layout.ERROR_LAYOUT_UNRESOLVED,
             "reason": "layout_snapshot_missing",
+        }
+    if bool(snapshot.get("invalidated")):
+        return None, {
+            "ok": False,
+            "error_code": win32_ocr_layout.ERROR_LAYOUT_STALE,
+            "reason": str(snapshot.get("invalidated_reason") or "layout_snapshot_invalidated"),
+            "layout_snapshot_id": str(snapshot.get("layout_snapshot_id") or ""),
         }
     if expected_snapshot_id and str(snapshot.get("layout_snapshot_id") or "") != str(expected_snapshot_id):
         return None, {
@@ -16172,16 +17030,83 @@ def _current_click_snapshot(hwnd: int, *, expected_snapshot_id: str = "") -> tup
             "reason": "window_geometry_changed_before_click",
             "layout_snapshot_id": str(snapshot.get("layout_snapshot_id") or ""),
         }
+    current_window = get_window_geometry(hwnd)
+    current_client = get_window_client_geometry(hwnd)
+    capture_mode = str(snapshot.get("capture_mode") or "")
+    current_capture_origin = None
+    if capture_mode == win32_ocr_layout.CAPTURE_MODE_WINDOW_VISIBLE_SCREEN:
+        expected_size = (
+            int(current_window.get("right") or 0) - int(current_window.get("left") or 0),
+            int(current_window.get("bottom") or 0) - int(current_window.get("top") or 0),
+        )
+        image_size = (
+            int(snapshot.get("image_width") or 0),
+            int(snapshot.get("image_height") or 0),
+        )
+        if image_size != expected_size:
+            current_capture_origin = None
+        else:
+            current_capture_origin = [
+                int(current_window.get("left") or 0),
+                int(current_window.get("top") or 0),
+            ]
+    elif capture_mode == win32_ocr_layout.CAPTURE_MODE_CLIENT_AREA:
+        if current_client.get("screen_left") is not None and current_client.get("screen_top") is not None:
+            current_capture_origin = [
+                int(current_client.get("screen_left") or 0),
+                int(current_client.get("screen_top") or 0),
+            ]
+    else:
+        current_capture_origin = snapshot.get("capture_screen_origin")
+    current_client_origin = None
+    if current_client.get("screen_left") is not None and current_client.get("screen_top") is not None:
+        current_client_origin = [
+            int(current_client.get("screen_left") or 0),
+            int(current_client.get("screen_top") or 0),
+        ]
+    if not win32_ocr_layout.snapshot_matches_current(
+        snapshot,
+        hwnd=hwnd,
+        window_rect=current_window,
+        client_rect=current_client,
+        dpi_scale=window_dpi_scale(hwnd),
+        image_size=(snapshot.get("image_width"), snapshot.get("image_height")),
+        capture_mode=capture_mode,
+        capture_screen_origin=current_capture_origin,
+        client_screen_origin=current_client_origin,
+    ):
+        invalidate_layout_snapshot(hwnd, reason="capture_mapping_changed_before_click")
+        return None, {
+            "ok": False,
+            "error_code": win32_ocr_layout.ERROR_LAYOUT_STALE,
+            "reason": "capture_mapping_changed_before_click",
+            "layout_snapshot_id": str(snapshot.get("layout_snapshot_id") or ""),
+        }
     return snapshot, None
 
 
 def _layout_region_for_point(snapshot: dict[str, Any], x: int, y: int, bounds: list[int] | None) -> list[int]:
     if isinstance(bounds, list) and len(bounds) >= 4:
         normalized = win32_ocr_layout.normalize_rect(bounds)
-        if win32_ocr_layout.point_in_bounds([x, y], normalized):
-            return normalized
-        return win32_ocr_layout.clamp_point([x, y], normalized) and normalized
-    for region_name in win32_ocr_layout.REQUIRED_LAYOUT_REGION_NAMES:
+        if not win32_ocr_layout.point_in_bounds([x, y], normalized):
+            raise win32_ocr_layout.LayoutSnapshotError(
+                "target_point_outside_target_bounds",
+                code=win32_ocr_layout.ERROR_COORDINATE_MAPPING_INVALID,
+            )
+        for region_name in tuple(snapshot.get("action_region_names") or []):
+            region = win32_ocr_layout.normalize_rect(snapshot.get(region_name))
+            if (
+                region[0] <= normalized[0]
+                and region[1] <= normalized[1]
+                and region[2] >= normalized[2]
+                and region[3] >= normalized[3]
+            ):
+                return normalized
+        raise win32_ocr_layout.LayoutSnapshotError(
+            "target_bounds_outside_dynamic_layout_regions",
+            code=win32_ocr_layout.ERROR_COORDINATE_MAPPING_INVALID,
+        )
+    for region_name in tuple(snapshot.get("action_region_names") or []):
         region = snapshot.get(region_name)
         if win32_ocr_layout.point_in_bounds([x, y], region):
             return win32_ocr_layout.normalize_rect(region)
@@ -16263,16 +17188,35 @@ def capture_wechat(hwnd: int, *, artifact_dir: str | None = None, label: str = "
     return image, saved
 
 
-def capture_visible_screen(*, artifact_dir: str | None = None, label: str = "screen_visible") -> tuple[Any, str]:
+def capture_visible_screen(
+    *,
+    artifact_dir: str | None = None,
+    label: str = "screen_visible",
+    hwnd: int = 0,
+) -> tuple[Any, str]:
     try:
         image = ImageGrab.grab()
     except Exception as exc:
         raise RuntimeError(f"capture_visible_screen_failed: {exc!r}") from exc
     saved = save_screenshot_artifact(image, artifact_dir=artifact_dir, label=label)
+    # A desktop-sized capture is evidence only: its origin is not proof for a
+    # WeChat HWND click.  It therefore creates no actionable snapshot and also
+    # invalidates the prior one, forcing a fresh window capture before any
+    # later physical action.
+    if int(hwnd or 0):
+        invalidate_layout_snapshot(int(hwnd), reason="desktop_evidence_frame_captured")
+    else:
+        invalidate_all_layout_snapshots(reason="desktop_evidence_frame_captured")
     return image, saved
 
 
-def capture_wechat_window_visible_screen(hwnd: int, *, artifact_dir: str | None = None, label: str = "wechat_window_visible") -> tuple[Any, str]:
+def capture_wechat_window_visible_screen(
+    hwnd: int,
+    *,
+    artifact_dir: str | None = None,
+    label: str = "wechat_window_visible",
+    popup_window: bool = False,
+) -> tuple[Any, str]:
     rect = win32gui.GetWindowRect(hwnd)
     image = try_image_grab((int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])))
     if image is None:
@@ -16289,6 +17233,7 @@ def capture_wechat_window_visible_screen(hwnd: int, *, artifact_dir: str | None 
             if tuple(getattr(image, "size", (0, 0))[:2]) == expected_size
             else None
         ),
+        generic_popup=popup_window,
     )
     return image, saved
 
@@ -16333,6 +17278,7 @@ def run_ocr(image: Any) -> list[dict[str, Any]]:
         import_error=_OCR_IMPORT_ERROR,
         min_confidence=OCR_MIN_CONFIDENCE,
     )
+    _finalize_layout_snapshot_ocr_anchors(image, items)
     return items
 
 
@@ -16359,18 +17305,21 @@ def sidebar_visible_list_enhanced_ocr_items(
     image_size: tuple[int, int],
     *,
     ocr_runner: Callable[[Any], list[dict[str, Any]]] | None = None,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if screenshot is None or not hasattr(screenshot, "crop"):
         return []
     width, height = image_size
     if width <= 0 or height <= 0:
         return []
-    split_x = session_split_x(width)
-    min_header_y = chat_header_cutoff_y(height)
-    crop_left = 0
-    crop_top = max(0, min_header_y - 14)
-    crop_right = min(width, split_x + max(4, int(width * 0.02)))
-    crop_bottom = max(crop_top + 1, height - 20)
+    snapshot = layout_snapshot or layout_snapshot_for_image(screenshot) or {}
+    session_bounds = win32_ocr_layout.normalize_rect(snapshot.get("session_list_bounds"))
+    if not bool(snapshot.get("valid")) or session_bounds[2] <= session_bounds[0]:
+        return []
+    crop_left = session_bounds[0]
+    crop_top = session_bounds[1]
+    crop_right = session_bounds[2]
+    crop_bottom = session_bounds[3]
     if crop_right <= crop_left or crop_bottom <= crop_top:
         return []
     try:
@@ -16422,7 +17371,11 @@ def session_list_ocr_items(
     if existing_enhanced:
         return items, len(existing_enhanced)
     image_size = getattr(screenshot, "size", (0, 0))
-    enhanced_items = sidebar_visible_list_enhanced_ocr_items(screenshot, image_size)
+    enhanced_items = sidebar_visible_list_enhanced_ocr_items(
+        screenshot,
+        image_size,
+        layout_snapshot=layout_snapshot_for_image(screenshot),
+    )
     if enhanced_items:
         items.extend(enhanced_items)
     return items, len(enhanced_items)
@@ -16446,11 +17399,12 @@ def blind_target_confirmation_guard(
     image_size: tuple[int, int],
     geometry: dict[str, Any],
     screenshot_path: str,
+    screenshot: Any | None = None,
 ) -> dict[str, Any]:
     if not allow_blind_target_confirmation(target):
         return {"ok": False}
     sidebar_match_count = 0
-    sidebar_sessions = parse_sessions_from_ocr(ocr_items, image_size)
+    sidebar_sessions = parse_sessions_from_ocr(ocr_items, image_size, screenshot=screenshot)
     for session in sidebar_sessions:
         if session_name_matches(str(session.get("name") or ""), target, exact=exact):
             sidebar_match_count += 1
@@ -16475,13 +17429,19 @@ def parse_sessions_from_ocr(
     image_size: tuple[int, int],
     *,
     screenshot: Any | None = None,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     width, height = image_size
-    split_x = session_split_x(width)
-    min_header_y = chat_header_cutoff_y(height)
-    left_min = max(42, int(width * 0.09))
-    left_max = split_x - max(36, int(width * 0.07))
-    right_limit = split_x + max(12, int(width * 0.03))
+    snapshot = layout_snapshot or layout_snapshot_for_image(screenshot) or {}
+    session_bounds = win32_ocr_layout.normalize_rect(snapshot.get("session_list_bounds"))
+    if not bool(snapshot.get("valid")) or session_bounds[2] <= session_bounds[0]:
+        return []
+    split_x = session_bounds[2]
+    snapshot_id = str(snapshot.get("layout_snapshot_id") or "")
+    min_header_y = session_bounds[1]
+    left_min = session_bounds[0]
+    left_max = session_bounds[2]
+    right_limit = session_bounds[2]
     min_session_row_gap = max(34, int(height * 0.048))
     geometric_items: list[dict[str, Any]] = []
     for item in ocr_items:
@@ -16572,6 +17532,7 @@ def parse_sessions_from_ocr(
                 "top": float(item.get("top") or 0),
                 "bottom": float(item.get("bottom") or 0),
                 "source_adapter": "win32_ocr",
+                "layout_snapshot_id": snapshot_id,
             }
         )
     enrich_sessions_with_sidebar_signals(
@@ -16581,6 +17542,7 @@ def parse_sessions_from_ocr(
         screenshot=screenshot,
         min_header_y=min_header_y,
         split_x=split_x,
+        session_list_bounds=session_bounds,
     )
     return sessions
 
@@ -16711,6 +17673,7 @@ def enrich_sessions_with_sidebar_signals(
     screenshot: Any | None,
     min_header_y: int,
     split_x: int,
+    session_list_bounds: list[int],
 ) -> None:
     if not sessions:
         return
@@ -16722,6 +17685,14 @@ def enrich_sessions_with_sidebar_signals(
         next_y = centers[index + 1] if index + 1 < len(centers) else min(float(height - 18), center_y + 52)
         row_top = max(float(min_header_y), (previous_y + center_y) / 2.0 if index > 0 else center_y - 38)
         row_bottom = min(float(height - 18), (center_y + next_y) / 2.0 if index + 1 < len(centers) else center_y + 44)
+        row_bounds = [
+            int(session_list_bounds[0]),
+            int(row_top),
+            int(session_list_bounds[2]),
+            int(row_bottom),
+        ]
+        session["row_bounds"] = row_bounds
+        session["click_bounds"] = row_bounds
         preview, time_text = session_preview_and_time(
             ocr_items,
             session,
@@ -16853,10 +17824,20 @@ def parse_messages_from_ocr(
     *,
     target: str,
     screenshot: Any | None = None,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     width, height = image_size
-    split_x = session_split_x(width)
-    header_cutoff = chat_header_cutoff_y(height)
+    snapshot = layout_snapshot or layout_snapshot_for_image(screenshot) or {}
+    dynamic_regions = {
+        name: snapshot.get(name)
+        for name in win32_ocr_layout.REQUIRED_LAYOUT_REGION_NAMES
+    }
+    message_bounds = win32_ocr_layout.normalize_rect(snapshot.get("message_viewport_bounds"))
+    input_bounds = win32_ocr_layout.normalize_rect(snapshot.get("input_bounds"))
+    if not bool(snapshot.get("valid")) or message_bounds[2] <= message_bounds[0]:
+        return []
+    split_x = message_bounds[0]
+    header_cutoff = message_bounds[1]
     geometry = {"left": 0, "top": 0, "right": width, "bottom": height, "width": width, "height": height}
     bottom_exclude_px = bounded_int(
         os.getenv("WECHAT_WIN32_OCR_MESSAGE_BOTTOM_EXCLUDE_PX"),
@@ -16872,13 +17853,13 @@ def parse_messages_from_ocr(
             continue
         if item["center_y"] < header_cutoff:
             continue
-        if item["center_y"] > height - bottom_exclude_px:
+        if item["center_y"] > message_bounds[3]:
             continue
         if item["left"] < split_x - 5:
             continue
         if is_message_noise(text):
             continue
-        side_details = classify_message_side_details(item, width=width)
+        side_details = classify_message_side_details(item, width=width, boundary_x=split_x)
         rect = {
             "left": int(float(item.get("left") or 0)),
             "top": int(float(item.get("top") or 0)),
@@ -16889,6 +17870,7 @@ def parse_messages_from_ocr(
             screenshot,
             [rect["left"], rect["top"], rect["right"], rect["bottom"]],
             image_size,
+            layout_snapshot=snapshot,
         )
         avatar_role = str(avatar_alignment.get("role") or "")
         top_edge_guard = header_cutoff + max(4, int(height * 0.008))
@@ -16910,7 +17892,11 @@ def parse_messages_from_ocr(
         # The composer draft box lives above the send button, not only in the
         # final bottom strip.  Exclude left/unknown-side OCR there so failed or
         # partial drafts cannot be fed back to the LLM as customer messages.
-        if side != "self" and rect_in_input_area(rect, geometry):
+        in_dynamic_input = bool(
+            int(input_bounds[0]) <= rect["left"] < int(input_bounds[2])
+            and int(input_bounds[1]) <= (rect["top"] + rect["bottom"]) / 2 <= int(input_bounds[3])
+        )
+        if side != "self" and in_dynamic_input:
             continue
         rows.append(
             {
@@ -17145,8 +18131,19 @@ def message_line_continues_voice_transcript_group(
     return abs(current_left - previous_left) <= 36.0
 
 
-def classify_message_side_details(item: dict[str, Any], *, width: int) -> dict[str, Any]:
-    split_x = session_split_x(width)
+def classify_message_side_details(
+    item: dict[str, Any],
+    *,
+    width: int,
+    boundary_x: int | None = None,
+) -> dict[str, Any]:
+    if boundary_x is None:
+        return {
+            "side": "unknown",
+            "confidence": 0.0,
+            "evidence": ["dynamic_chat_boundary_missing"],
+        }
+    split_x = int(boundary_x)
     left = float(item.get("left") or 0)
     right = float(item.get("right") or 0)
     center_x = float(item.get("center_x") or 0)
@@ -17438,6 +18435,7 @@ def capture_c2_window_context(
         "hwnd": hwnd,
         "capture_mode": capture_mode,
         "screen_origin": screen_origin,
+        "layout_snapshot": layout_snapshot_for_image(image),
         "validation": validation,
         "image_persisted": False,
     }
@@ -17580,6 +18578,9 @@ def activate_window(hwnd: int) -> None:
         attach_thread_input=env_flag("WECHAT_WIN32_OCR_ATTACH_THREAD_INPUT", default=False),
         debounce_seconds=env_float("WECHAT_WIN32_OCR_ACTIVATE_DEBOUNCE_SECONDS", 2.5),
     )
+    def reject_unmapped_focus_click(_x: int, _y: int) -> None:
+        raise RuntimeError(win32_ocr_layout.ERROR_COORDINATE_MAPPING_INVALID)
+
     deps = win32_ocr_window_activation.ActivateWindowDependencies(
         user32=ctypes.windll.user32,
         win32gui=win32gui,
@@ -17590,8 +18591,10 @@ def activate_window(hwnd: int) -> None:
         require_active_ui_action_budget=require_active_ui_action_budget,
         humanized_action_sleep=humanized_action_sleep,
         coordinate_rpa_action=coordinate_rpa_action,
-        focus_click_fallback_enabled=focus_click_fallback_enabled,
-        click=click,
+        # A focus fallback click has no screenshot-bound target. Refuse it so
+        # every physical click remains behind the layout converter.
+        focus_click_fallback_enabled=lambda: False,
+        click=reject_unmapped_focus_click,
         monotonic=time.monotonic,
     )
     win32_ocr_window_activation.activate_window_with_dependencies(
@@ -17628,13 +18631,64 @@ def ensure_left_button_released() -> None:
         pass
 
 
-def client_click(hwnd: int, x: int, y: int) -> None:
+def _prepare_client_click(
+    hwnd: int,
+    x: int,
+    y: int,
+    *,
+    bounds: list[int] | None = None,
+    expected_snapshot_id: str = "",
+) -> dict[str, Any]:
+    snapshot, failure = _current_click_snapshot(hwnd, expected_snapshot_id=expected_snapshot_id)
+    if failure:
+        raise RuntimeError(f"{failure.get('error_code')}: {failure.get('reason')}")
+    assert snapshot is not None
+    client_width, client_height = win32_ocr_layout.rect_size(snapshot.get("client_rect"))
+    if not (0 <= int(x) <= client_width and 0 <= int(y) <= client_height):
+        raise RuntimeError(f"{win32_ocr_layout.ERROR_COORDINATE_MAPPING_INVALID}:client_point_outside_client_bounds")
+    screen_point = win32_ocr_layout.client_point_to_screen(snapshot, [int(x), int(y)])
+    capture_origin = snapshot.get("capture_screen_origin")
+    if not isinstance(capture_origin, (list, tuple)) or len(capture_origin) < 2:
+        raise RuntimeError(f"{win32_ocr_layout.ERROR_COORDINATE_MAPPING_INVALID}:capture_screen_origin_missing")
+    image_point = [
+        int(screen_point[0]) - int(capture_origin[0]),
+        int(screen_point[1]) - int(capture_origin[1]),
+    ]
+    target_bounds = _layout_region_for_point(snapshot, image_point[0], image_point[1], bounds)
+    if bounds is not None and not win32_ocr_layout.point_in_bounds(image_point, bounds):
+        raise RuntimeError(f"{win32_ocr_layout.ERROR_COORDINATE_MAPPING_INVALID}:client_point_outside_target_bounds")
+    return {
+        "snapshot": snapshot,
+        "client_point": [int(x), int(y)],
+        "image_point": image_point,
+        "image_bounds": target_bounds,
+        "screen_point": screen_point,
+    }
+
+
+def client_click(
+    hwnd: int,
+    x: int,
+    y: int,
+    *,
+    bounds: list[int] | None = None,
+    expected_snapshot_id: str = "",
+) -> None:
     """Click a WeChat client coordinate without relying on global DPI math."""
-    click_x, click_y, jitter_meta = jitter_client_click_surface_point(hwnd, int(x), int(y))
+    prepared = _prepare_client_click(
+        hwnd,
+        int(x),
+        int(y),
+        bounds=bounds,
+        expected_snapshot_id=expected_snapshot_id,
+    )
+    click_x, click_y = int(x), int(y)
+    jitter_meta = {"enabled": False, "reason": "layout_bound_client_point"}
     require_active_ui_action_budget(
         "client_click",
         metadata={"hwnd": int(hwnd or 0), "x": click_x, "y": click_y, "jitter": jitter_meta},
     )
+    invalidate_layout_snapshot(hwnd, reason="client_click_started")
     activate_window(hwnd)
     ensure_left_button_released()
     lparam = ((int(click_y) & 0xFFFF) << 16) | (int(click_x) & 0xFFFF)
@@ -17646,42 +18700,27 @@ def client_click(hwnd: int, x: int, y: int) -> None:
     humanized_action_sleep(80, 170)
 
 
-def human_client_click(hwnd: int, x: int, y: int) -> None:
-    """Move the real cursor with small jitter before clicking a client point."""
-    click_x, click_y, jitter_meta = jitter_client_click_surface_point(hwnd, int(x), int(y))
-    require_active_ui_action_budget(
-        "human_client_click",
-        metadata={"hwnd": int(hwnd or 0), "x": click_x, "y": click_y, "jitter": jitter_meta},
+def human_client_click(
+    hwnd: int,
+    x: int,
+    y: int,
+    *,
+    bounds: list[int] | None = None,
+    expected_snapshot_id: str = "",
+) -> None:
+    """Compatibility name for a screenshot-space, layout-bound real click.
+
+    All production callers obtain their point from OCR/UIA projected into the
+    current screenshot.  Keeping a second "client coordinate" interpretation
+    here was precisely the DPI/border ambiguity that 0.9.21 removes.
+    """
+    human_window_image_click(
+        hwnd,
+        int(x),
+        int(y),
+        bounds=list(bounds or []),
+        expected_snapshot_id=expected_snapshot_id,
     )
-    activate_window(hwnd)
-    ensure_left_button_released()
-    left_down_sent = False
-    try:
-        screen_x, screen_y = client_to_screen(hwnd, int(click_x), int(click_y))
-        start_x, start_y = win32api.GetCursorPos()
-        steps = random.randint(5, 9)
-        for step in range(1, steps + 1):
-            ratio = step / steps
-            ease = ratio * ratio * (3 - 2 * ratio)
-            jitter_x = random.randint(-2, 2) if step < steps else 0
-            jitter_y = random.randint(-2, 2) if step < steps else 0
-            next_x = int(start_x + (screen_x - start_x) * ease) + jitter_x
-            next_y = int(start_y + (screen_y - start_y) * ease) + jitter_y
-            win32api.SetCursorPos((next_x, next_y))
-            time.sleep(random.uniform(0.015, 0.045))
-        time.sleep(random.uniform(0.04, 0.12))
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-        left_down_sent = True
-        time.sleep(random.uniform(0.05, 0.12))
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-        left_down_sent = False
-        time.sleep(random.uniform(0.12, 0.28))
-    except Exception:
-        # Some desktop policies deny SetCursorPos; fall back to PostMessage clicks.
-        client_click(hwnd, click_x, click_y)
-    finally:
-        if left_down_sent:
-            ensure_left_button_released()
 
 
 def human_window_image_hover(hwnd: int, x: int, y: int, *, expected_snapshot_id: str = "") -> dict[str, Any]:
@@ -17728,9 +18767,24 @@ def human_window_image_hover(hwnd: int, x: int, y: int, *, expected_snapshot_id:
         }
 
 
-def human_window_image_click(hwnd: int, x: int, y: int, *, expected_snapshot_id: str = "") -> None:
+def human_window_image_click(
+    hwnd: int,
+    x: int,
+    y: int,
+    *,
+    bounds: list[int] | None = None,
+    expected_snapshot_id: str = "",
+) -> None:
     """Click a point measured in the same coordinate space as screenshots."""
-    mapped, failure = _map_window_image_target(hwnd, int(x), int(y), expected_snapshot_id=expected_snapshot_id)
+    if not isinstance(bounds, list) or len(bounds) < 4:
+        raise RuntimeError(f"{win32_ocr_layout.ERROR_COORDINATE_MAPPING_INVALID}:target_bounds_missing")
+    mapped, failure = _map_window_image_target(
+        hwnd,
+        int(x),
+        int(y),
+        bounds=list(bounds),
+        expected_snapshot_id=expected_snapshot_id,
+    )
     if failure:
         raise RuntimeError(f"{failure.get('error_code')}: {failure.get('reason')}")
     assert mapped is not None
@@ -17750,7 +18804,14 @@ def human_window_image_click(hwnd: int, x: int, y: int, *, expected_snapshot_id:
     invalidate_layout_snapshot(hwnd, reason="physical_click_started")
     activate_window(hwnd)
     ensure_left_button_released()
-    human_screen_click(screen_x, screen_y, action_name="human_window_image_click")
+    result = human_screen_click_in_bounds(
+        screen_x,
+        screen_y,
+        bounds=list(mapped["screen_bounds"]),
+        action_name="human_window_image_click",
+    )
+    if not result.get("ok"):
+        raise RuntimeError(str(result.get("error") or "bounded_screen_click_failed"))
 
 
 def human_window_image_click_in_bounds(
@@ -18020,25 +19081,8 @@ def human_screen_click_in_bounds(
             ensure_left_button_released()
 
 
-def client_to_screen(hwnd: int, x: int, y: int) -> tuple[int, int]:
-    point = wintypes.POINT(int(x), int(y))
-    ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(point))
-    return int(point.x), int(point.y)
-
-
-def click(x: int, y: int) -> None:
-    click_x, click_y, jitter_meta = jitter_screen_click_surface_point(int(x), int(y))
-    require_active_ui_action_budget("screen_click", metadata={"x": click_x, "y": click_y, "jitter": jitter_meta})
-    ensure_left_button_released()
-    win32api.SetCursorPos((int(click_x), int(click_y)))
-    humanized_action_sleep(20, 55)
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-    humanized_action_sleep(35, 85)
-    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-    ensure_left_button_released()
-
-
 def hotkey(modifier: int, key: int) -> None:
+    invalidate_all_layout_snapshots(reason="keyboard_input_started")
     coordinate_rpa_action("hotkey", metadata={"modifier": int(modifier), "key": int(key)})
     win32api.keybd_event(modifier, 0, 0, 0)
     humanized_action_sleep(16, 42)
@@ -18050,6 +19094,7 @@ def hotkey(modifier: int, key: int) -> None:
 
 
 def key_press(key: int) -> None:
+    invalidate_all_layout_snapshots(reason="keyboard_input_started")
     coordinate_rpa_action("key_press", metadata={"key": int(key)})
     win32api.keybd_event(key, 0, 0, 0)
     humanized_action_sleep(24, 70)
@@ -18143,13 +19188,33 @@ def ensure_quick_login_if_available(
             "reason": "quick_login_detected_no_auto_enter",
         }
     enter_item = next((item for item in ocr_items if "进入微信" in str(item.get("text") or "")), None)
-    if enter_item:
-        click_x = int(float(enter_item.get("center_x") or (geometry["width"] * 0.5)))
-        click_y = int(float(enter_item.get("center_y") or (geometry["height"] * 0.74)))
-    else:
-        click_x = int(geometry["width"] * 0.5)
-        click_y = int(geometry["height"] * 0.74)
-    human_client_click(hwnd, click_x, click_y)
+    if not enter_item:
+        return {
+            "attempted": False,
+            "detected": True,
+            "auto_enter_enabled": True,
+            "geometry": geometry,
+            "screenshot_path": path,
+            "reason": "WECHAT_UI_LAYOUT_UNRESOLVED",
+            "error_code": win32_ocr_layout.ERROR_LAYOUT_UNRESOLVED,
+        }
+    click_x = int(float(enter_item.get("center_x") or 0))
+    click_y = int(float(enter_item.get("center_y") or 0))
+    enter_bounds = [
+        int(float(enter_item.get("left") or click_x)),
+        int(float(enter_item.get("top") or click_y)),
+        int(float(enter_item.get("right") or click_x)),
+        int(float(enter_item.get("bottom") or click_y)),
+    ]
+    human_client_click(
+        hwnd,
+        click_x,
+        click_y,
+        bounds=enter_bounds,
+        expected_snapshot_id=str(
+            (layout_snapshot_metadata(hwnd).get("snapshot") or {}).get("layout_snapshot_id") or ""
+        ),
+    )
     humanized_action_sleep(500, 850)
     return {
         "attempted": True,
@@ -18160,10 +19225,6 @@ def ensure_quick_login_if_available(
         "screenshot_path": path,
         "reason": "quick_login_enter_clicked",
     }
-def session_split_x(width: int) -> int:
-    return win32_ocr_geometry.session_split_x(width)
-
-
 def chat_header_cutoff_y(height: int) -> int:
     return win32_ocr_geometry.chat_header_cutoff_y(height)
 
@@ -18192,39 +19253,34 @@ def active_chat_title_bottom_y(height: int) -> int:
     return win32_ocr_geometry.active_chat_title_bottom_y(height)
 
 
-def search_box_point_for_geometry(geometry: dict[str, Any]) -> tuple[int, int]:
-    return win32_ocr_geometry.search_box_point_for_geometry(geometry)
-
-
-def sidebar_search_input_focus_point_for_geometry(geometry: dict[str, Any]) -> tuple[int, int]:
-    """Return a point inside the sidebar search text-input area.
-
-    The historical search-box point is also used as a geometry reference for
-    the nearby plus-entry locator. Keep that contract stable, and use this
-    separate point when the intent is to focus the search input itself.
-    """
-    anchor_x, anchor_y = search_box_point_for_geometry(geometry)
-    width = int(geometry.get("width") or 0)
-    split_x = session_split_x(width)
-    minimum = max(96, int(anchor_x) + 42)
-    maximum = max(minimum, min(split_x - 96, int(anchor_x) + 110))
-    focus_x = bounded_int(
-        int(split_x * 0.52),
-        default=int(anchor_x) + 68,
-        minimum=minimum,
-        maximum=maximum,
-    )
-    return focus_x, int(anchor_y)
-
-
-def session_click_x_for_geometry(geometry: dict[str, Any]) -> int:
-    return win32_ocr_geometry.session_click_x_for_geometry(geometry)
-
-
-def screen_work_area() -> dict[str, int]:
+def screen_work_area(hwnd: int = 0) -> dict[str, int]:
     """Return the usable desktop work area, excluding taskbar and reserved edges."""
     try:
         user32 = ctypes.windll.user32
+        if int(hwnd or 0) > 0 and hasattr(user32, "MonitorFromWindow") and hasattr(user32, "GetMonitorInfoW"):
+            monitor_default_to_nearest = 2
+            monitor = user32.MonitorFromWindow(int(hwnd), monitor_default_to_nearest)
+            if monitor:
+                class MONITORINFO(ctypes.Structure):
+                    _fields_ = [
+                        ("cbSize", wintypes.DWORD),
+                        ("rcMonitor", wintypes.RECT),
+                        ("rcWork", wintypes.RECT),
+                        ("dwFlags", wintypes.DWORD),
+                    ]
+
+                info = MONITORINFO()
+                info.cbSize = ctypes.sizeof(MONITORINFO)
+                if user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+                    return {
+                        "left": int(info.rcWork.left),
+                        "top": int(info.rcWork.top),
+                        "right": int(info.rcWork.right),
+                        "bottom": int(info.rcWork.bottom),
+                        "width": max(0, int(info.rcWork.right - info.rcWork.left)),
+                        "height": max(0, int(info.rcWork.bottom - info.rcWork.top)),
+                        "source": "MonitorFromWindow_GetMonitorInfoW",
+                    }
         work_area = wintypes.RECT()
         spi_get_work_area = 0x0030
         if hasattr(user32, "SystemParametersInfoW") and user32.SystemParametersInfoW(
@@ -18262,19 +19318,75 @@ def screen_work_area() -> dict[str, int]:
     }
 
 
-def normalize_wechat_window(hwnd: int) -> dict[str, Any]:
-    enabled = env_flag("WECHAT_WIN32_OCR_WINDOW_NORMALIZE", default=True)
+def normalize_wechat_window(hwnd: int, *, allow_move: bool = True) -> dict[str, Any]:
     before = get_window_geometry(hwnd)
+    before_client = get_window_client_geometry(hwnd)
     dpi_scale = window_dpi_scale(hwnd)
-    if not enabled:
-        return {"ok": True, "enabled": False, "applied": False, "before": before}
 
     enforce_recommended = env_flag("WECHAT_WIN32_OCR_ENFORCE_RECOMMENDED_WINDOW", default=True)
-    fixed_origin = True
-    work_area = screen_work_area()
+    fixed_origin = env_flag("WECHAT_WIN32_OCR_WINDOW_FIXED_ORIGIN", default=True)
+    if not fixed_origin:
+        return {
+            "ok": False,
+            "enabled": True,
+            "applied": False,
+            "before": before,
+            "before_client": before_client,
+            "error_code": win32_ocr_layout.ERROR_WINDOW_NORMALIZATION_FAILED,
+            "reason": "fixed_origin_policy_disabled",
+        }
+    # Normalization can move or resize the window. Any frame captured before
+    # this gate is therefore unusable even when the planner later decides no
+    # physical MoveWindow call is necessary.
+    invalidate_layout_snapshot(hwnd, reason="window_normalization_started")
+    try:
+        is_maximized = bool(win32gui.IsZoomed(hwnd))
+    except Exception:
+        is_maximized = False
+    if is_maximized:
+        if not allow_move:
+            return {
+                "ok": False,
+                "enabled": True,
+                "applied": False,
+                "before": before,
+                "dpi_scale": dpi_scale,
+                "fixed_origin": fixed_origin,
+                "error_code": win32_ocr_layout.ERROR_LAYOUT_STALE,
+                "reason": "window_maximized_during_active_flow",
+            }
+        try:
+            win32gui.ShowWindow(hwnd, getattr(win32con, "SW_RESTORE", 9))
+            humanized_action_sleep(90, 180)
+            before = get_window_geometry(hwnd)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "enabled": True,
+                "applied": False,
+                "before": before,
+                "dpi_scale": dpi_scale,
+                "fixed_origin": fixed_origin,
+                "error": repr(exc),
+                "error_code": win32_ocr_layout.ERROR_WINDOW_NORMALIZATION_FAILED,
+                "reason": "restore_from_maximized_failed",
+            }
+    work_area = screen_work_area(hwnd)
     screen_width = int(work_area.get("width") or 0)
     screen_height = int(work_area.get("height") or 0)
     screen_metrics_available = screen_width > 0 and screen_height > 0
+    if not screen_metrics_available:
+        return {
+            "ok": False,
+            "enabled": True,
+            "applied": False,
+            "before": before,
+            "dpi_scale": dpi_scale,
+            "fixed_origin": fixed_origin,
+            "work_area": work_area,
+            "error_code": win32_ocr_layout.ERROR_WINDOW_NORMALIZATION_FAILED,
+            "reason": "screen_work_area_unavailable",
+        }
 
     plan = win32_ocr_window_actions.plan_normalize_wechat_window(
         before,
@@ -18306,6 +19418,28 @@ def normalize_wechat_window(hwnd: int) -> dict[str, Any]:
     requested_target = dict(plan.get("requested_target") or {})
     recommended_floor_applied = bool(plan.get("recommended_floor_applied"))
     resolution_scale = float(plan.get("resolution_scale") or 1.0)
+
+    def verify_normalized_geometry(
+        after_geometry: dict[str, Any],
+        after_client_geometry: dict[str, Any],
+        after_dpi_scale: float,
+    ) -> tuple[bool, str]:
+        geometry_matches = (
+            abs(int(after_geometry.get("left") or 0) - left) <= 6
+            and abs(int(after_geometry.get("top") or 0) - top) <= 6
+            and abs(int(after_geometry.get("width") or 0) - safe_width) <= 6
+            and abs(int(after_geometry.get("height") or 0) - safe_height) <= 6
+        )
+        if not geometry_matches:
+            return False, "window_geometry_did_not_match_normalization_target"
+        if abs(float(after_dpi_scale or 0.0) - float(dpi_scale or 0.0)) > 0.01:
+            return False, "window_dpi_changed_during_normalization"
+        client_width = int(after_client_geometry.get("width") or 0)
+        client_height = int(after_client_geometry.get("height") or 0)
+        if client_width <= 0 or client_height <= 0:
+            return False, "window_client_geometry_unavailable_after_normalization"
+        return True, "normalized_geometry_verified"
+
     if not bool(plan.get("ok")):
         return {
             "ok": False,
@@ -18324,13 +19458,61 @@ def normalize_wechat_window(hwnd: int) -> dict[str, Any]:
             "error_code": win32_ocr_layout.ERROR_WINDOW_NORMALIZATION_FAILED,
             "reason": str(plan.get("reason") or "window_normalization_plan_failed"),
         }
+    if bool(plan.get("move")) and not allow_move:
+        return {
+            "ok": False,
+            "enabled": True,
+            "applied": False,
+            "before": before,
+            "before_client": before_client,
+            "target": effective_target,
+            "requested_target": requested_target,
+            "dpi_scale": dpi_scale,
+            "resolution_scale": resolution_scale,
+            "fixed_origin": fixed_origin,
+            "screen": {"width": screen_width, "height": screen_height},
+            "work_area": work_area,
+            "error_code": win32_ocr_layout.ERROR_LAYOUT_STALE,
+            "reason": "window_geometry_changed_during_active_flow",
+        }
     if not bool(plan.get("move")):
+        after = get_window_geometry(hwnd)
+        after_client = get_window_client_geometry(hwnd)
+        after_dpi_scale = window_dpi_scale(hwnd)
+        matches_plan, verification_reason = verify_normalized_geometry(
+            after,
+            after_client,
+            after_dpi_scale,
+        )
+        if not matches_plan:
+            return {
+                "ok": False,
+                "enabled": True,
+                "applied": False,
+                "before": before,
+                "before_client": before_client,
+                "after": after,
+                "after_client": after_client,
+                "after_dpi_scale": after_dpi_scale,
+                "target": effective_target,
+                "requested_target": requested_target,
+                "dpi_scale": dpi_scale,
+                "resolution_scale": resolution_scale,
+                "fixed_origin": fixed_origin,
+                "screen": {"width": screen_width, "height": screen_height},
+                "work_area": work_area,
+                "error_code": win32_ocr_layout.ERROR_WINDOW_NORMALIZATION_FAILED,
+                "reason": verification_reason,
+            }
         return {
             "ok": True,
             "enabled": True,
             "applied": False,
             "before": before,
-            "after": before,
+            "before_client": before_client,
+            "after": after,
+            "after_client": after_client,
+            "after_dpi_scale": after_dpi_scale,
             "target": effective_target,
             "requested_target": requested_target,
             "dpi_scale": dpi_scale,
@@ -18347,17 +19529,18 @@ def normalize_wechat_window(hwnd: int) -> dict[str, Any]:
         win32gui.MoveWindow(hwnd, left, top, safe_width, safe_height, True)
         humanized_action_sleep(90, 180)
         after = get_window_geometry(hwnd)
+        after_client = get_window_client_geometry(hwnd)
+        after_dpi_scale = window_dpi_scale(hwnd)
         applied = (
             abs(int(after.get("width") or 0) - int(before.get("width") or 0)) > 4
             or abs(int(after.get("height") or 0) - int(before.get("height") or 0)) > 4
             or abs(int(after.get("left") or 0) - int(before.get("left") or 0)) > 4
             or abs(int(after.get("top") or 0) - int(before.get("top") or 0)) > 4
         )
-        matches_plan = (
-            abs(int(after.get("left") or 0) - left) <= 6
-            and abs(int(after.get("top") or 0) - top) <= 6
-            and abs(int(after.get("width") or 0) - safe_width) <= 6
-            and abs(int(after.get("height") or 0) - safe_height) <= 6
+        matches_plan, verification_reason = verify_normalized_geometry(
+            after,
+            after_client,
+            after_dpi_scale,
         )
         if not matches_plan:
             return {
@@ -18365,7 +19548,10 @@ def normalize_wechat_window(hwnd: int) -> dict[str, Any]:
                 "enabled": True,
                 "applied": applied,
                 "before": before,
+                "before_client": before_client,
                 "after": after,
+                "after_client": after_client,
+                "after_dpi_scale": after_dpi_scale,
                 "target": effective_target,
                 "requested_target": requested_target,
                 "dpi_scale": dpi_scale,
@@ -18376,14 +19562,17 @@ def normalize_wechat_window(hwnd: int) -> dict[str, Any]:
                 "screen": {"width": screen_width, "height": screen_height},
                 "work_area": work_area,
                 "error_code": win32_ocr_layout.ERROR_WINDOW_NORMALIZATION_FAILED,
-                "reason": "window_geometry_did_not_match_normalization_plan",
+                "reason": verification_reason,
             }
         return {
             "ok": True,
             "enabled": True,
             "applied": applied,
             "before": before,
+            "before_client": before_client,
             "after": after,
+            "after_client": after_client,
+            "after_dpi_scale": after_dpi_scale,
             "target": effective_target,
             "requested_target": requested_target,
             "dpi_scale": dpi_scale,
@@ -18618,6 +19807,12 @@ def run_sidecar_cli(argv: list[str] | None = None) -> dict[str, Any]:
     parser.add_argument("action", choices=SIDECAR_ACTION_CHOICES, nargs="?")
     parser.add_argument("--sidecar-run-id", default="", help="Correlation id for one Worker-to-sidecar run.")
     parser.add_argument("--scan-id", default="", help="Correlation id for one sessions scan.")
+    parser.add_argument(
+        "--window-policy",
+        choices=("normalize", "verify"),
+        default="normalize",
+        help="Normalize only at a UI Flow boundary; nested actions must use verify.",
+    )
     parser.add_argument("--canonical-voice-action-id", default="")
     parser.add_argument("--reserved-worker-stable-id", default="")
     parser.add_argument("--voice-action-stage", choices=("prepare", "execute"), default="prepare")

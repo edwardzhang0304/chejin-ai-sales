@@ -66,15 +66,26 @@ def plan_normalize_wechat_window(
         normalized_dpi_scale = max(1.0, float(dpi_scale or 1.0))
     except (TypeError, ValueError):
         normalized_dpi_scale = 1.0
-    resolution_scale = recommended_window_scale_for_screen(
+    screen_scale = recommended_window_scale_for_screen(
         screen_width,
         screen_height,
         screen_metrics_available=screen_metrics_available,
     )
+    # Win32 geometry is expressed in the process' physical coordinate space.
+    # Preserve the minimum logical WeChat canvas on high-DPI displays even
+    # when their physical resolution is only 1920-class (for example
+    # 1920x1200 at 125%).  Resolution buckets alone cannot provide that.
+    resolution_scale = max(screen_scale, normalized_dpi_scale)
     scaled_default_width = min(safe_max_width, max(1, int(round(default_width * resolution_scale))))
     scaled_default_height = min(safe_max_height, max(1, int(round(default_height * resolution_scale))))
-    base_min_width = min(safe_max_width, max(1, int(min_width or 1)))
-    base_min_height = min(safe_max_height, max(1, int(min_height or 1)))
+    base_min_width = min(
+        safe_max_width,
+        max(1, int(round(int(min_width or 1) * normalized_dpi_scale))),
+    )
+    base_min_height = min(
+        safe_max_height,
+        max(1, int(round(int(min_height or 1) * normalized_dpi_scale))),
+    )
     target_width = bounded_int(requested_width, default=scaled_default_width, minimum=base_min_width, maximum=safe_max_width)
     target_height = bounded_int(requested_height, default=scaled_default_height, minimum=base_min_height, maximum=safe_max_height)
     requested_target = {"width": target_width, "height": target_height}

@@ -285,6 +285,9 @@ class _VisionHostState:
         )
         self.hwnd = int(self.window_context.get("hwnd") or 0)
         self.window_context_validated = False
+        self.current_frame_hwnd = 0
+        self.current_layout_snapshot_id = ""
+        self.current_frame_screen_origin = [0, 0]
         self.trace_id = str(trace_id or "")
         self.started_at = time.perf_counter()
         self.events: list[dict[str, Any]] = []
@@ -453,6 +456,11 @@ class _WindowFrame:
                     or observation.get("roi_screenshot_path")
                 ),
             )
+            self.state.current_frame_hwnd = int(observation.get("menu_hwnd") or 0)
+            self.state.current_layout_snapshot_id = str(observation.get("layout_snapshot_id") or "")
+            self.state.current_frame_screen_origin = [
+                int(value) for value in list(observation.get("screen_origin") or [0, 0])[:2]
+            ]
             return {
                 "ok": True,
                 "image": observation.get("image"),
@@ -462,7 +470,9 @@ class _WindowFrame:
                 ),
                 "messages": [],
                 "time_markers": [],
-                "screen_origin": [0, 0],
+                "screen_origin": list(self.state.current_frame_screen_origin),
+                "frame_hwnd": self.state.current_frame_hwnd,
+                "layout_snapshot_id": self.state.current_layout_snapshot_id,
                 "menu_panel_bounds": list(
                     observation.get("menu_panel_bounds") or []
                 ),
@@ -600,11 +610,27 @@ class _WindowFrame:
         messages: list[dict[str, Any]] = []
         time_markers: list[dict[str, Any]] = []
         try:
+            layout_snapshot = (
+                capture_result.get("layout_snapshot")
+                if isinstance(capture_result.get("layout_snapshot"), dict)
+                else self.state.host.layout_snapshot_for_image(image)
+            )
+            message_viewport_bounds = (
+                list((layout_snapshot or {}).get("message_viewport_bounds") or [])
+                if isinstance(layout_snapshot, dict)
+                else []
+            )
+            if not bool((layout_snapshot or {}).get("executable")) or len(message_viewport_bounds) != 4:
+                raise RuntimeError("WECHAT_UI_LAYOUT_UNRESOLVED")
+            self.state.current_frame_hwnd = hwnd
+            self.state.current_layout_snapshot_id = str((layout_snapshot or {}).get("layout_snapshot_id") or "")
+            self.state.current_frame_screen_origin = list(screen_origin)
             messages = self.state.host.parse_messages_from_ocr(
                 ocr_items,
                 image.size,
                 target=str(context.get("remark_code") or context.get("target_name") or ""),
                 screenshot=image,
+                layout_snapshot=layout_snapshot,
             )
             from apps.wechat_ai_customer_service.optional_plugins.vision.capture.surface import (
                 observe_structural_image_messages,
@@ -622,7 +648,14 @@ class _WindowFrame:
                     or ""
                 ),
                 role_resolver=(
-                    self.state.host.message_row_avatar_role_details
+                    lambda current_image, bounds, image_size: (
+                        self.state.host.message_row_avatar_role_details(
+                            current_image,
+                            bounds,
+                            image_size,
+                            layout_snapshot=layout_snapshot,
+                        )
+                    )
                 ),
                 max_images=max(
                     1,
@@ -635,6 +668,7 @@ class _WindowFrame:
                         or 64
                     ),
                 ),
+                message_viewport_bounds=message_viewport_bounds,
             )
             messages.extend(image_messages)
 
@@ -655,7 +689,11 @@ class _WindowFrame:
                     str(item.get("id") or ""),
                 )
             )
-            time_markers = extract_chat_time_markers(ocr_items, image.size)
+            time_markers = extract_chat_time_markers(
+                ocr_items,
+                image.size,
+                message_viewport_bounds=message_viewport_bounds,
+            )
         except Exception as exc:
             reason = "vision_window_message_parse_failed"
             reason_detail = _safe_exception_reason(exc, reason)
@@ -700,6 +738,8 @@ class _WindowFrame:
                 "messages": messages,
                 "time_markers": time_markers,
                 "screen_origin": screen_origin,
+                "frame_hwnd": self.state.current_frame_hwnd,
+                "layout_snapshot_id": self.state.current_layout_snapshot_id,
             }
         except Exception as exc:
             reason = "vision_window_frame_finalize_failed"
@@ -751,6 +791,7 @@ class _UiAction:
             int(y),
             bounds=current_bounds,
             action_name="c2_vision_image_slot_context_right_click",
+            expected_snapshot_id=str(self.state.current_layout_snapshot_id or ""),
         )
         if not result.get("ok"):
             self.state.record(
@@ -785,12 +826,17 @@ class _UiAction:
 
     def click_screen(self, x: int, y: int, *, bounds: list[int]) -> None:
         started_at = time.perf_counter()
-        self.state.ensure_window()
-        result = self.state.host.human_screen_click_in_bounds(
+        frame_hwnd = int(self.state.current_frame_hwnd or 0)
+        snapshot_id = str(self.state.current_layout_snapshot_id or "")
+        if not frame_hwnd or not snapshot_id:
+            raise RuntimeError("WECHAT_UI_LAYOUT_UNRESOLVED")
+        result = self.state.host.human_window_image_click_in_bounds(
+            frame_hwnd,
             int(x),
             int(y),
             bounds=[int(value) for value in bounds[:4]],
             action_name="c2_vision_image_copy_menu_click",
+            expected_snapshot_id=snapshot_id,
         )
         if not result.get("ok"):
             self.state.record(
@@ -809,6 +855,10 @@ class _UiAction:
             bounds=bounds,
         )
         self.state.host.humanized_action_sleep(100, 220)
+
+    def click_frame(self, x: int, y: int, *, bounds: list[int]) -> None:
+        """Click a point in the currently captured popup frame."""
+        self.click_screen(x, y, bounds=bounds)
 
     def dismiss_menu_safely(self) -> None:
         started_at = time.perf_counter()

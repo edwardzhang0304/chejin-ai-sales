@@ -76,12 +76,12 @@ from apps.wechat_ai_customer_service.adapters.add_friend_routes import (
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.env_config import env_flag
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.geometry import (
     bounded_int,
-    chat_header_cutoff_y,
     clamp_point_to_bounds,
-    input_text_region_bounds,
     point_in_bounds,
-    search_box_point_for_geometry,
-    session_split_x,
+)
+from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.geometry import (
+    search_box_point_for_geometry as _diagnostic_search_box_point_for_geometry,
+    session_split_x as _diagnostic_session_split_x,
 )
 from apps.wechat_ai_customer_service.adapters.add_friend_layout import invite_form_field_verification
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import device_profile as win32_ocr_device_profile
@@ -143,6 +143,58 @@ WECHAT_LOGIN_OR_SECURITY_BLOCK_TOKENS = (
 )
 
 
+def _layout_bounds(layout_snapshot: dict[str, Any] | None, name: str) -> list[int]:
+    if not isinstance(layout_snapshot, dict):
+        return []
+    value = layout_snapshot.get(name)
+    if not (isinstance(value, list) and len(value) == 4):
+        return []
+    bounds = [int(value[0]), int(value[1]), int(value[2]), int(value[3])]
+    if bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
+        return []
+    return bounds
+
+
+def _layout_for_image(image: Image.Image | None) -> dict[str, Any] | None:
+    if image is None:
+        return None
+    getter = getattr(_ops(), "layout_snapshot_for_image", None)
+    if not callable(getter):
+        return None
+    value = getter(image)
+    return value if isinstance(value, dict) else None
+
+
+def add_friend_action_surface_bounds(
+    image_size: tuple[int, int],
+    *,
+    layout_snapshot: dict[str, Any] | None,
+) -> list[int]:
+    """Return the current window's proven action surface, never a ratio fallback."""
+    width, height = image_size
+    if width <= 0 or height <= 0 or not isinstance(layout_snapshot, dict):
+        return []
+    if not bool(layout_snapshot.get("executable")):
+        return []
+    surface = _layout_bounds(layout_snapshot, "surface_bounds")
+    if surface:
+        return surface
+    regions = [
+        _layout_bounds(layout_snapshot, "chat_header_bounds"),
+        _layout_bounds(layout_snapshot, "message_viewport_bounds"),
+        _layout_bounds(layout_snapshot, "input_bounds"),
+    ]
+    regions = [bounds for bounds in regions if bounds]
+    if not regions:
+        return []
+    return [
+        max(0, min(bounds[0] for bounds in regions)),
+        max(0, min(bounds[1] for bounds in regions)),
+        min(width, max(bounds[2] for bounds in regions)),
+        min(height, max(bounds[3] for bounds in regions)),
+    ]
+
+
 def add_friend_ocr_compact(text: Any) -> str:
     return mapped_compact_ocr_text(text)
 
@@ -157,18 +209,22 @@ def add_friend_blocking_prompt_region(
     *,
     geometry: dict[str, Any] | None = None,
     image_size: tuple[int, int] | None = None,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     width = int((image_size or (0, 0))[0] or (geometry or {}).get("width") or 0)
     height = int((image_size or (0, 0))[1] or (geometry or {}).get("height") or 0)
     if width <= 0 or height <= 0:
         return {"region": "unknown", "sidebar_noise": False, "width": width, "height": height}
     center_x, center_y = add_friend_item_center(item)
-    split_x = session_split_x(width)
-    nav_right = max(64, min(92, int(width * 0.075)))
-    search_bottom = max(112, min(148, int(height * 0.16)))
-    sidebar_noise = nav_right < center_x < split_x and center_y > search_bottom
+    session_list = _layout_bounds(layout_snapshot, "session_list_bounds")
+    sidebar_noise = bool(session_list and point_in_bounds(center_x, center_y, session_list))
     return {
-        "region": "sidebar_session_list" if sidebar_noise else add_friend_region_for_point(center_x, center_y, (width, height)),
+        "region": "sidebar_session_list" if sidebar_noise else add_friend_region_for_point(
+            center_x,
+            center_y,
+            (width, height),
+            layout_snapshot=layout_snapshot,
+        ),
         "sidebar_noise": sidebar_noise,
         "width": width,
         "height": height,
@@ -179,6 +235,7 @@ def add_friend_login_or_security_block(
     *,
     geometry: dict[str, Any] | None = None,
     image_size: tuple[int, int] | None = None,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     text = add_friend_surface_text(ocr_items)
     matched_items: list[dict[str, Any]] = []
@@ -189,7 +246,12 @@ def add_friend_login_or_security_block(
         item_tokens = [token for token in WECHAT_LOGIN_OR_SECURITY_BLOCK_TOKENS if add_friend_text_has_any(item_text, (token,))]
         if not item_tokens:
             continue
-        region = add_friend_blocking_prompt_region(item, geometry=geometry, image_size=image_size)
+        region = add_friend_blocking_prompt_region(
+            item,
+            geometry=geometry,
+            image_size=image_size,
+            layout_snapshot=layout_snapshot,
+        )
         matched_items.append({"text": item_text, "tokens": item_tokens, "region": region})
     matched = sorted({token for item in matched_items for token in item.get("tokens", [])})
     if not matched:
@@ -244,66 +306,76 @@ def add_friend_login_or_security_block(
 def add_friend_item_center(item: dict[str, Any]) -> tuple[int, int]:
     return int(float(item.get("center_x") or 0)), int(float(item.get("center_y") or 0))
 
-def add_friend_zone_bounds(image_size: tuple[int, int]) -> list[dict[str, Any]]:
-    width, height = image_size
-    split_x = session_split_x(width)
-    nav_right = max(64, min(92, int(width * 0.075)))
-    search_bottom = max(112, min(148, int(height * 0.16)))
-    header_bottom = chat_header_cutoff_y(height) + max(32, int(height * 0.045))
-    input_left, input_top, input_right, input_bottom = input_text_region_bounds({"width": width, "height": height})
-    main_bottom = max(header_bottom + 40, min(height, input_top))
+def add_friend_zone_bounds(
+    image_size: tuple[int, int],
+    *,
+    layout_snapshot: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    del image_size
+    names = (
+        ("left_nav_bounds", "left_nav", "#2563eb"),
+        ("sidebar_header_bounds", "sidebar_header", "#059669"),
+        ("session_list_bounds", "session_list", "#ca8a04"),
+        ("chat_header_bounds", "chat_header", "#7c3aed"),
+        ("message_viewport_bounds", "message_viewport", "#dc2626"),
+        ("input_bounds", "input_area", "#0891b2"),
+        ("surface_bounds", "action_surface", "#7c3aed"),
+    )
     return [
-        {"name": "left_nav", "label": "left_nav", "bounds": [0, 0, nav_right, height], "color": "#2563eb"},
-        {"name": "sidebar_search", "label": "sidebar_search", "bounds": [nav_right, 0, split_x, search_bottom], "color": "#059669"},
-        {"name": "session_list", "label": "session_list", "bounds": [nav_right, search_bottom, split_x, height], "color": "#ca8a04"},
-        {"name": "main_header", "label": "main_header", "bounds": [split_x, 0, width, header_bottom], "color": "#7c3aed"},
-        {"name": "main_content", "label": "main_content", "bounds": [split_x, header_bottom, width, main_bottom], "color": "#dc2626"},
-        {"name": "input_area", "label": "input_area", "bounds": [input_left, input_top, input_right, input_bottom], "color": "#0891b2"},
+        {"name": label, "label": label, "bounds": bounds, "color": color}
+        for key, label, color in names
+        if (bounds := _layout_bounds(layout_snapshot, key))
     ]
 
-def add_friend_region_for_point(x: int, y: int, image_size: tuple[int, int]) -> str:
-    width, height = image_size
-    split_x = session_split_x(width)
-    nav_right = max(64, min(92, int(width * 0.075)))
-    search_bottom = max(112, min(148, int(height * 0.16)))
-    header_bottom = chat_header_cutoff_y(height) + max(32, int(height * 0.045))
-    input_left, input_top, input_right, input_bottom = input_text_region_bounds({"width": width, "height": height})
-    if point_in_bounds(x, y, [input_left, input_top, input_right, input_bottom]):
-        return "input_area"
-    if x <= nav_right:
-        return "left_nav"
-    if x < split_x:
-        if y <= search_bottom:
-            return "sidebar_search"
-        return "session_list"
-    if y <= header_bottom:
-        return "main_header"
-    if y >= input_top:
-        return "right_bottom"
-    return "main_content"
+def add_friend_region_for_point(
+    x: int,
+    y: int,
+    image_size: tuple[int, int],
+    *,
+    layout_snapshot: dict[str, Any] | None = None,
+) -> str:
+    del image_size
+    for key, label in (
+        ("input_bounds", "input_area"),
+        ("left_nav_bounds", "left_nav"),
+        ("sidebar_header_bounds", "sidebar_header"),
+        ("session_list_bounds", "session_list"),
+        ("chat_header_bounds", "chat_header"),
+        ("message_viewport_bounds", "message_viewport"),
+        ("surface_bounds", "action_surface"),
+    ):
+        bounds = _layout_bounds(layout_snapshot, key)
+        if bounds and point_in_bounds(x, y, bounds):
+            return label
+    return "unresolved"
 
-def add_friend_region_for_item(item: dict[str, Any], image_size: tuple[int, int]) -> str:
+def add_friend_region_for_item(
+    item: dict[str, Any],
+    image_size: tuple[int, int],
+    *,
+    layout_snapshot: dict[str, Any] | None = None,
+) -> str:
     center_x, center_y = add_friend_item_center(item)
-    return add_friend_region_for_point(center_x, center_y, image_size)
+    return add_friend_region_for_point(center_x, center_y, image_size, layout_snapshot=layout_snapshot)
 
 def add_friend_windows_1080p_reference_plus_button_point_for_geometry(geometry: dict[str, Any]) -> tuple[int, int]:
-    """Windows 1920x1080-oriented plus-entry reference kept from the incoming PR.
+    """Legacy 1920x1080 reference point retained for diagnostics only.
 
     On Windows WeChat this can land in the right conversation pane because the
     sidebar split and search-row layout differ. Keep it for comparison only.
     """
     return windows_1080p_reference_plus_point(
         geometry,
-        split_x_fn=session_split_x,
-        search_box_point_fn=search_box_point_for_geometry,
+        split_x_fn=_diagnostic_session_split_x,
+        search_box_point_fn=_diagnostic_search_box_point_for_geometry,
     )
 
 def add_friend_windows_plus_button_point_for_geometry(geometry: dict[str, Any]) -> tuple[int, int]:
     """Windows WeChat plus-entry point beside the sidebar search box."""
     return windows_plus_point(
         geometry,
-        split_x_fn=session_split_x,
-        search_box_point_fn=search_box_point_for_geometry,
+        split_x_fn=_diagnostic_session_split_x,
+        search_box_point_fn=_diagnostic_search_box_point_for_geometry,
     )
 
 def add_friend_plus_button_point_for_geometry(geometry: dict[str, Any]) -> tuple[int, int]:
@@ -312,12 +384,12 @@ def add_friend_plus_button_point_for_geometry(geometry: dict[str, Any]) -> tuple
 def add_friend_plus_entry_safe_bounds(image_size: tuple[int, int]) -> list[int]:
     from apps.wechat_ai_customer_service.adapters.add_friend_layout import plus_entry_safe_bounds
 
-    return plus_entry_safe_bounds(image_size, split_x_fn=session_split_x)
+    return plus_entry_safe_bounds(image_size, split_x_fn=_diagnostic_session_split_x)
 
 def find_sidebar_search_anchor_item(ocr_items: list[dict[str, Any]], image_size: tuple[int, int]) -> dict[str, Any] | None:
     from apps.wechat_ai_customer_service.adapters.add_friend_layout import find_sidebar_search_anchor_item as layout_find_anchor
 
-    return layout_find_anchor(ocr_items, image_size, split_x_fn=session_split_x)
+    return layout_find_anchor(ocr_items, image_size, split_x_fn=_diagnostic_session_split_x)
 
 def add_friend_plus_entry_target(
     geometry: dict[str, Any],
@@ -339,9 +411,14 @@ def add_friend_plus_entry_target(
         ocr_items or [],
         screenshot=screenshot,
         route_kind=route_kind,
-        split_x_fn=session_split_x,
-        search_box_point_fn=search_box_point_for_geometry,
-        region_for_point_fn=add_friend_region_for_point,
+        split_x_fn=_diagnostic_session_split_x,
+        search_box_point_fn=_diagnostic_search_box_point_for_geometry,
+        region_for_point_fn=lambda x, y, size: add_friend_region_for_point(
+            x,
+            y,
+            size,
+            layout_snapshot=layout_snapshot,
+        ),
         dynamic_sidebar_header_bounds=dynamic_bounds,
     )
 
@@ -638,13 +715,16 @@ def add_friend_popup_menu_bounds(
     *,
     plus_image_x: int,
     plus_image_y: int,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> list[int]:
-    width, height = image_size
-    left = max(0, int(plus_image_x) - 86)
-    top = max(0, int(plus_image_y) + 24)
-    right = min(width, int(plus_image_x) + 132)
-    bottom = min(height, int(plus_image_y) + 206)
-    return [left, top, right, bottom]
+    # The menu is part of the main WeChat surface.  OCR the dynamically
+    # discovered sidebar instead of guessing a physical-pixel rectangle from
+    # the plus point.  The point is retained only for diagnostic metadata and
+    # must not authorize a region when the current layout is unavailable.
+    sidebar = _layout_bounds(layout_snapshot, "sidebar_bounds")
+    if not sidebar or not bool((layout_snapshot or {}).get("executable")):
+        return []
+    return sidebar
 
 def add_friend_menu_text_matches(text: str, tokens: tuple[str, ...]) -> bool:
     compact = add_friend_ocr_compact(text)
@@ -743,7 +823,16 @@ def add_friend_expected_menu_click_bounds(
     plus_image_y: int,
     y_offset: int,
 ) -> list[int]:
-    popup_bounds = add_friend_popup_menu_bounds(image_size, plus_image_x=plus_image_x, plus_image_y=plus_image_y)
+    # Diagnostic-only approximation used for annotations.  It is returned by
+    # geometry_fallback_locator (executable=False) and must never authorize a
+    # live click.
+    width, height = image_size
+    popup_bounds = [
+        max(0, int(plus_image_x) - 86),
+        max(0, int(plus_image_y) + 24),
+        min(width, int(plus_image_x) + 132),
+        min(height, int(plus_image_y) + 206),
+    ]
     left, top, right, bottom = [int(value) for value in popup_bounds[:4]]
     center_y = bounded_int(plus_image_y + y_offset, default=plus_image_y + y_offset, minimum=top + 8, maximum=bottom - 8)
     return [left + 10, max(top + 4, center_y - 22), right - 10, min(bottom - 4, center_y + 22)]
@@ -755,6 +844,7 @@ def add_friend_menu_candidate_targets(
     plus_image_x: int | None = None,
     plus_image_y: int | None = None,
     include_expected: bool = True,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     candidates = [
         ("add_friend_menu_entry", "Menu candidate: 添加朋友", ("添加朋友", "添加好友")),
@@ -762,11 +852,15 @@ def add_friend_menu_candidate_targets(
         ("scan_menu_entry", "Menu candidate: 扫一扫", ("扫一扫",)),
         ("new_note_menu_entry", "Menu candidate: 新建笔记", ("新建笔记",)),
     ]
-    popup_bounds = (
-        add_friend_popup_menu_bounds(image_size, plus_image_x=int(plus_image_x), plus_image_y=int(plus_image_y))
-        if plus_image_x is not None and plus_image_y is not None
-        else [0, 0, image_size[0], image_size[1]]
+    popup_bounds = add_friend_popup_menu_bounds(
+        image_size,
+        plus_image_x=int(plus_image_x or 0),
+        plus_image_y=int(plus_image_y or 0),
+        layout_snapshot=layout_snapshot,
     )
+    snapshot_id = str((layout_snapshot or {}).get("layout_snapshot_id") or "")
+    if not popup_bounds or not snapshot_id:
+        return []
     targets: list[dict[str, Any]] = []
     for name, label, tokens in candidates:
         item = find_add_friend_menu_item(ocr_items, tokens, image_size, popup_bounds=popup_bounds)
@@ -790,6 +884,7 @@ def add_friend_menu_candidate_targets(
         target["raw_x"] = center_x
         target["raw_y"] = center_y
         target["item"] = add_friend_item_snapshot(item, image_size)
+        target["layout_snapshot_id"] = snapshot_id
         targets.append(target)
     if include_expected and plus_image_x is not None and plus_image_y is not None:
         existing = {str(target.get("name") or "") for target in targets}
@@ -809,6 +904,7 @@ def add_friend_menu_candidate_targets(
                 y_offset=y_offset,
                 image_size=image_size,
             )
+            expected["layout_snapshot_id"] = snapshot_id
             targets.append(expected)
     return targets
 
@@ -861,27 +957,19 @@ def add_friend_target_by_name(targets: list[dict[str, Any]], name: str) -> dict[
             return target
     return None
 
-def add_friend_page_search_region(image_size: tuple[int, int]) -> list[int]:
-    width, height = image_size
-    if width <= 560:
-        return [20, 54, max(21, width - 16), min(height - 16, 162)]
-    split_x = session_split_x(width)
-    left = max(split_x + 24, int(width * 0.38))
-    top = max(88, int(height * 0.10))
-    right = min(width - 24, max(left + 320, int(width * 0.86)))
-    bottom = min(height - 40, max(top + 190, int(height * 0.38)))
-    return [left, top, right, bottom]
+def add_friend_page_search_region(
+    image_size: tuple[int, int],
+    *,
+    layout_snapshot: dict[str, Any] | None,
+) -> list[int]:
+    return add_friend_action_surface_bounds(image_size, layout_snapshot=layout_snapshot)
 
-def add_friend_search_result_region(image_size: tuple[int, int]) -> list[int]:
-    width, height = image_size
-    if width <= 560:
-        return [20, 118, max(21, width - 16), max(160, height - 24)]
-    split_x = session_split_x(width)
-    left = max(split_x + 24, int(width * 0.36))
-    top = max(150, int(height * 0.18))
-    right = min(width - 24, max(left + 360, int(width * 0.90)))
-    bottom = min(height - 36, max(top + 320, int(height * 0.72)))
-    return [left, top, right, bottom]
+def add_friend_search_result_region(
+    image_size: tuple[int, int],
+    *,
+    layout_snapshot: dict[str, Any] | None,
+) -> list[int]:
+    return add_friend_action_surface_bounds(image_size, layout_snapshot=layout_snapshot)
 
 def add_friend_phone_not_found_detected(ocr_items: list[dict[str, Any]]) -> dict[str, Any]:
     text = add_friend_surface_text(ocr_items)
@@ -906,7 +994,13 @@ def add_friend_phone_not_found_detected(ocr_items: list[dict[str, Any]]) -> dict
 def add_friend_search_result_add_contact_target(
     ocr_items: list[dict[str, Any]],
     image_size: tuple[int, int],
+    *,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
+    surface_bounds = _layout_bounds(layout_snapshot, "surface_bounds")
+    snapshot_id = str((layout_snapshot or {}).get("layout_snapshot_id") or "")
+    if not surface_bounds or not snapshot_id or not bool((layout_snapshot or {}).get("executable")):
+        return None
     item = find_add_friend_action_item(
         ocr_items,
         ("添加到通讯录", "添加至通讯录", "添加通讯录", "添加朋友"),
@@ -944,37 +1038,53 @@ def add_friend_search_result_add_contact_target(
     target["raw_x"] = center_x
     target["raw_y"] = center_y
     target["item"] = add_friend_item_snapshot(item, image_size)
+    target["layout_snapshot_id"] = snapshot_id
     return target
 
 def add_friend_invite_form_targets(
     image_size: tuple[int, int],
     ocr_items: list[dict[str, Any]] | None = None,
+    *,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    return semantic_invite_form_targets(
+    surface_bounds = _layout_bounds(layout_snapshot, "surface_bounds")
+    if not surface_bounds or not bool((layout_snapshot or {}).get("executable")):
+        return {}
+    targets = semantic_invite_form_targets(
         image_size,
         ocr_items or [],
-        region_for_point_fn=add_friend_region_for_point,
+        region_for_point_fn=lambda x, y, size: add_friend_region_for_point(
+            x,
+            y,
+            size,
+            layout_snapshot=layout_snapshot,
+        ),
     )
+    snapshot_id = str((layout_snapshot or {}).get("layout_snapshot_id") or "")
+    if not snapshot_id:
+        return {}
+    for target in targets.values():
+        target["layout_snapshot_id"] = snapshot_id
+    return targets
 
 def find_add_friend_page_search_targets(
     ocr_items: list[dict[str, Any]],
     image_size: tuple[int, int],
     screenshot: Image.Image | None = None,
+    *,
+    layout_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    search_region = add_friend_page_search_region(image_size)
+    layout_snapshot = layout_snapshot or _layout_for_image(screenshot)
+    search_region = add_friend_page_search_region(image_size, layout_snapshot=layout_snapshot)
+    if not search_region:
+        raise RuntimeError("WECHAT_UI_LAYOUT_UNRESOLVED:add_friend_search_surface")
     input_item = find_add_friend_search_placeholder_item(ocr_items, image_size, search_region=search_region)
     search_button = find_add_friend_search_button_item(ocr_items, image_size, search_region=search_region)
     visual_button = find_add_friend_search_button_by_visual(screenshot, image_size, search_region=search_region)
-    split_x = session_split_x(image_size[0])
-    small_add_friend_window = image_size[0] <= 560
-    fallback_input_x = int(image_size[0] * 0.38) if small_add_friend_window else max(split_x + 150, int(image_size[0] * 0.53))
-    fallback_input_y = 96 if small_add_friend_window else max(118, int(image_size[1] * 0.16))
     visual_button_bounds = visual_button.get("bounds") if isinstance(visual_button, dict) else None
     visual_button_left = int(visual_button_bounds[0]) if isinstance(visual_button_bounds, list) and len(visual_button_bounds) >= 4 else None
     if input_item is not None:
         input_x, input_y = add_friend_item_center(input_item)
-        if not small_add_friend_window:
-            input_x = max(split_x + 80, input_x)
         input_left = int(float(input_item.get("left") or input_x))
         input_top = int(float(input_item.get("top") or input_y))
         input_right = int(float(input_item.get("right") or input_x))
@@ -994,7 +1104,7 @@ def find_add_friend_page_search_targets(
         input_target = ocr_item_locator(
             name="add_friend_search_input",
             label="Add friend page search input",
-            region=add_friend_region_for_point(input_x, input_y, image_size),
+            region=add_friend_region_for_point(input_x, input_y, image_size, layout_snapshot=layout_snapshot),
             bounds=input_bounds,
             point=[input_x, input_y],
             item=input_item,
@@ -1021,7 +1131,7 @@ def find_add_friend_page_search_targets(
         input_target = geometry_fallback_locator(
             name="add_friend_search_input",
             label="Add friend page search input from visual search button anchor",
-            region=add_friend_region_for_point(input_x, input_y, image_size),
+            region=add_friend_region_for_point(input_x, input_y, image_size, layout_snapshot=layout_snapshot),
             bounds=input_bounds,
             point=[input_x, input_y],
             selected_reason="visual search button detected; input is the adjacent left field",
@@ -1038,34 +1148,7 @@ def find_add_friend_page_search_targets(
         input_target["locator"] = {field: input_target.get(field) for field in LOCATOR_RESULT_FIELDS}
         input_target["item"] = None
     else:
-        input_x, input_y = fallback_input_x, fallback_input_y
-        if small_add_friend_window:
-            input_bounds = [32, 72, max(120, min(image_size[0] - 126, 292)), 122]
-            input_x, input_y = clamp_point_to_bounds(
-                bounded_int(input_x, default=158, minimum=input_bounds[0] + 20, maximum=input_bounds[2] - 20),
-                bounded_int(input_y, default=96, minimum=input_bounds[1] + 8, maximum=input_bounds[3] - 8),
-                input_bounds,
-            )
-        else:
-            input_bounds = [
-                max(split_x + 48, input_x - 140),
-                max(search_region[1], input_y - 24),
-                min(image_size[0] - 80, input_x + 170),
-                min(search_region[3], input_y + 24),
-            ]
-        input_target = geometry_fallback_locator(
-            name="add_friend_search_input",
-            label="Add friend page search input",
-            region=add_friend_region_for_point(input_x, input_y, image_size),
-            bounds=input_bounds,
-            point=[input_x, input_y],
-            selected_reason="last-resort fixed search input point from window geometry",
-            fallback_reason="search_input_ocr_not_detected",
-            risk="HIGH_RISK_FIXED_FALLBACK: type query only after exact OCR verification",
-            source="fallback_search_input_geometry",
-            metadata={"image_size": [image_size[0], image_size[1]], "search_region": search_region},
-        )
-        input_target["item"] = None
+        raise RuntimeError("WECHAT_UI_LAYOUT_UNRESOLVED:add_friend_search_input")
     if search_button is not None:
         button_x, button_y = add_friend_item_center(search_button)
         if abs(button_x - input_x) < 80:
@@ -1083,7 +1166,7 @@ def find_add_friend_page_search_targets(
         button_target = ocr_item_locator(
             name="add_friend_search_button",
             label="Add friend page search button",
-            region=add_friend_region_for_point(button_x, button_y, image_size),
+            region=add_friend_region_for_point(button_x, button_y, image_size, layout_snapshot=layout_snapshot),
             bounds=button_bounds,
             point=[button_x, button_y],
             item=search_button,
@@ -1103,7 +1186,7 @@ def find_add_friend_page_search_targets(
         button_target = geometry_fallback_locator(
             name="add_friend_search_button",
             label="Add friend page search button visual target",
-            region=add_friend_region_for_point(button_x, button_y, image_size),
+            region=add_friend_region_for_point(button_x, button_y, image_size, layout_snapshot=layout_snapshot),
             bounds=button_bounds,
             point=[button_x, button_y],
             selected_reason="visual green search button detected",
@@ -1120,34 +1203,7 @@ def find_add_friend_page_search_targets(
         button_target["locator"] = {field: button_target.get(field) for field in LOCATOR_RESULT_FIELDS}
         button_target["item"] = None
     else:
-        if small_add_friend_window:
-            button_bounds = [max(input_target["click_bounds"][2] + 4, image_size[0] - 118), 72, max(input_target["click_bounds"][2] + 44, image_size[0] - 30), 122]
-            button_x, button_y = clamp_point_to_bounds(
-                int((button_bounds[0] + button_bounds[2]) / 2),
-                input_y,
-                button_bounds,
-            )
-        else:
-            button_x, button_y = min(image_size[0] - 38, input_x + 230), input_y
-            button_bounds = [
-                max(search_region[0], button_x - 42),
-                max(search_region[1], button_y - 24),
-                min(image_size[0] - 12, button_x + 42),
-                min(search_region[3], button_y + 24),
-            ]
-        button_target = geometry_fallback_locator(
-            name="add_friend_search_button",
-            label="Add friend page search button",
-            region=add_friend_region_for_point(button_x, button_y, image_size),
-            bounds=button_bounds,
-            point=[button_x, button_y],
-            selected_reason="last-resort fixed search button point to the right of search input",
-            fallback_reason="search_button_ocr_not_detected",
-            risk="HIGH_RISK_FIXED_FALLBACK: click only after exact query verification",
-            source="fallback_search_button_geometry",
-            metadata={"image_size": [image_size[0], image_size[1]], "search_region": search_region},
-        )
-        button_target["item"] = None
+        raise RuntimeError("WECHAT_UI_LAYOUT_UNRESOLVED:add_friend_search_button")
     return {
         "search_region": search_region,
         "input": input_target,
@@ -1259,8 +1315,13 @@ def add_friend_query_visible_in_items(query: str, ocr_items: list[dict[str, Any]
         "reason": reason,
     }
 
-def add_friend_search_input_empty_in_items(ocr_items: list[dict[str, Any]], image_size: tuple[int, int]) -> dict[str, Any]:
-    search_region = add_friend_page_search_region(image_size)
+def add_friend_search_input_empty_in_items(
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    layout_snapshot: dict[str, Any] | None,
+) -> dict[str, Any]:
+    search_region = add_friend_page_search_region(image_size, layout_snapshot=layout_snapshot)
     placeholder = find_add_friend_search_placeholder_item(ocr_items, image_size, search_region=search_region)
     surface = add_friend_surface_text(ocr_items)
     digit_sequences = re.findall(r"\d{5,20}", surface)
@@ -1290,6 +1351,8 @@ def add_friend_dialog_surface_detected(ocr_items: list[dict[str, Any]]) -> dict[
 def add_friend_residual_dialog_close_target(
     ocr_items: list[dict[str, Any]],
     image_size: tuple[int, int],
+    *,
+    layout_snapshot: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
     """Return the safe close target for a proven residual add-friend dialog.
 
@@ -1298,9 +1361,19 @@ def add_friend_residual_dialog_close_target(
     deliberately ignored to avoid closing the main WeChat window.
     """
     width, height = image_size
-    if width < 240 or height < 180:
+    surface_bounds = _layout_bounds(layout_snapshot, "surface_bounds")
+    if (
+        width < 240
+        or height < 180
+        or not surface_bounds
+        or not bool((layout_snapshot or {}).get("executable"))
+        or str((layout_snapshot or {}).get("surface_kind") or "") != "popup"
+    ):
         return None
-    title_bottom = max(54, min(90, int(round(height * 0.12))))
+    surface_left, surface_top, surface_right, surface_bottom = surface_bounds
+    surface_width = surface_right - surface_left
+    surface_height = surface_bottom - surface_top
+    title_bottom = surface_top + max(54, min(90, int(round(surface_height * 0.12))))
     title_matches: list[dict[str, Any]] = []
     for item in ocr_items:
         compact = add_friend_ocr_compact(add_friend_item_text(item))
@@ -1311,21 +1384,22 @@ def add_friend_residual_dialog_close_target(
         confidence = 1.0 if confidence_value is None else float(confidence_value or 0.0)
         if confidence < 0.45:
             continue
-        if not (width * 0.20 <= center_x <= width * 0.80):
+        if not (surface_left + surface_width * 0.20 <= center_x <= surface_left + surface_width * 0.80):
             continue
-        if not (0 <= center_y <= title_bottom):
+        if not (surface_top <= center_y <= title_bottom):
             continue
         title_matches.append(item)
     if len(title_matches) != 1:
         return None
-    close_bounds = [max(0, width - 56), 6, max(1, width - 6), min(height - 1, 58)]
-    close_x = max(close_bounds[0], min(close_bounds[2], width - 27))
-    close_y = max(close_bounds[1], min(close_bounds[3], 29))
+    close_bounds = [max(surface_left, surface_right - 56), surface_top + 6, surface_right - 6, min(surface_bottom - 1, surface_top + 58)]
+    close_x = max(close_bounds[0], min(close_bounds[2], surface_right - 27))
+    close_y = max(close_bounds[1], min(close_bounds[3], surface_top + 29))
     return {
         "name": "post_confirm_add_friend_dialog_close",
         "x": close_x,
         "y": close_y,
         "click_bounds": close_bounds,
+        "layout_snapshot_id": str((layout_snapshot or {}).get("layout_snapshot_id") or ""),
         "title": add_friend_item_snapshot(title_matches[0], image_size),
         "reason": "exact_add_friend_title_in_top_title_bar",
     }
@@ -1333,6 +1407,8 @@ def add_friend_residual_dialog_close_target(
 
 def _known_add_friend_dialog_close_target(
     image_size: tuple[int, int],
+    *,
+    layout_snapshot: dict[str, Any] | None,
 ) -> dict[str, Any] | None:
     """Return the title-bar close target for an already proven dialog HWND.
 
@@ -1345,19 +1421,28 @@ def _known_add_friend_dialog_close_target(
     """
 
     width, height = image_size
-    if width < 240 or height < 180:
+    surface_bounds = _layout_bounds(layout_snapshot, "surface_bounds")
+    if (
+        width < 240
+        or height < 180
+        or not surface_bounds
+        or not bool((layout_snapshot or {}).get("executable"))
+        or str((layout_snapshot or {}).get("surface_kind") or "") != "popup"
+    ):
         return None
+    surface_left, surface_top, surface_right, surface_bottom = surface_bounds
     close_bounds = [
-        max(0, width - 56),
-        6,
-        max(1, width - 6),
-        min(height - 1, 58),
+        max(surface_left, surface_right - 56),
+        surface_top + 6,
+        surface_right - 6,
+        min(surface_bottom - 1, surface_top + 58),
     ]
     return {
         "name": "post_confirm_add_friend_dialog_close",
-        "x": max(close_bounds[0], min(close_bounds[2], width - 27)),
-        "y": max(close_bounds[1], min(close_bounds[3], 29)),
+        "x": max(close_bounds[0], min(close_bounds[2], surface_right - 27)),
+        "y": max(close_bounds[1], min(close_bounds[3], surface_top + 29)),
         "click_bounds": close_bounds,
+        "layout_snapshot_id": str((layout_snapshot or {}).get("layout_snapshot_id") or ""),
         "reason": "previously_proven_add_friend_dialog_hwnd_still_visible",
     }
 
@@ -1378,12 +1463,15 @@ def close_proven_add_friend_dialog(
     """
 
     timings: list[dict[str, Any]] = []
+    layout_snapshot = _ops().layout_snapshot_for_image(current_shot)
     ocr_cleanup_target = add_friend_residual_dialog_close_target(
         current_items,
         current_shot.size,
+        layout_snapshot=layout_snapshot,
     )
     cleanup_target = ocr_cleanup_target or _known_add_friend_dialog_close_target(
-        current_shot.size
+        current_shot.size,
+        layout_snapshot=layout_snapshot,
     )
     cleanup: dict[str, Any] = {
         "detected": cleanup_target is not None,
@@ -1416,6 +1504,11 @@ def close_proven_add_friend_dialog(
         int(cleanup_target["y"]),
         bounds=list(cleanup_target["click_bounds"]),
         action_name=action_name,
+        expected_snapshot_id=str(
+            cleanup_target.get("layout_snapshot_id")
+            or (_ops().layout_snapshot_metadata(int(hwnd)).get('snapshot') or {}).get('layout_snapshot_id')
+            or ''
+        ),
     )
     timings.append(
         {
@@ -1472,6 +1565,7 @@ def close_proven_add_friend_dialog(
             int(hwnd),
             artifact_dir=str(output_dir),
             label=verify_label,
+            popup_window=True,
         )
         cleanup_items = _ops().run_ocr_on_screen_region(
             cleanup_shot,
@@ -1480,6 +1574,7 @@ def close_proven_add_friend_dialog(
         residual_target = add_friend_residual_dialog_close_target(
             cleanup_items,
             cleanup_shot.size,
+            layout_snapshot=_ops().layout_snapshot_for_image(cleanup_shot),
         )
         cleanup.update(
             {
@@ -1593,7 +1688,11 @@ def click_add_contact_entry_from_search_result(hwnd: int, output_dir: Path, *, r
         annotated = draw_add_friend_screen_annotation(result_shot, ocr_items=result_items, targets=[], output_path=annotated_path, window_rect=None)
         payload = add_friend_phone_not_found_payload(query=query, not_found=not_found, screenshot_path=result_path, annotated_path=annotated, ocr_items=add_friend_ocr_snapshots(result_items, result_shot.size))
         return payload
-    target = add_friend_search_result_add_contact_target(result_items, result_shot.size)
+    target = add_friend_search_result_add_contact_target(
+        result_items,
+        result_shot.size,
+        layout_snapshot=_layout_for_image(result_shot),
+    )
     annotated_before_path = output_dir / 'add_friend_search_result_add_contact_before_click_annotated.png'
     annotated_before = draw_add_friend_screen_annotation(result_shot, ocr_items=result_items, targets=[target] if target else [], output_path=annotated_before_path, window_rect=None)
     if target is None:
@@ -1635,17 +1734,21 @@ def click_add_contact_entry_from_search_result(hwnd: int, output_dir: Path, *, r
     pause_seconds = _ops().add_friend_paced_pause('critical_click', reason='before_add_contact_entry_click')
     timings.append({'name': 'before_add_contact_entry_click_pause', 'seconds': round(pause_seconds, 3)})
     click_started_at = time.perf_counter()
-    click_result = _ops().human_window_image_click_in_bounds(hwnd, int(target.get('x') or 0), int(target.get('y') or 0), bounds=list(target.get('click_bounds') or []), action_name='add_contact_entry_click')
+    click_result = _ops().human_window_image_click_in_bounds(hwnd, int(target.get('x') or 0), int(target.get('y') or 0), bounds=list(target.get('click_bounds') or []), action_name='add_contact_entry_click', expected_snapshot_id=str(target.get('layout_snapshot_id') or (_ops().layout_snapshot_metadata(hwnd).get('snapshot') or {}).get('layout_snapshot_id') or ''))
     timings.append({'name': 'add_contact_entry_click', 'seconds': round(time.perf_counter() - click_started_at, 3), 'result': click_result})
     pause_seconds = _ops().add_friend_paced_pause('verify', reason='after_add_contact_entry_click_before_capture')
     timings.append({'name': 'after_add_contact_entry_click_before_capture_pause', 'seconds': round(pause_seconds, 3)})
     invite_probe = _ops().wait_for_add_friend_invite_form_window(exclude_hwnds={int(hwnd or 0)}, output_dir=output_dir)
     invite_hwnd = int(invite_probe.get('hwnd') or 0) if invite_probe.get('ok') else 0
     evidence_hwnd = invite_hwnd or hwnd
-    after_shot, after_path = _ops().capture_wechat_window_visible_screen(evidence_hwnd, artifact_dir=str(output_dir), label='add_contact_entry_after_click_window')
+    after_shot, after_path = _ops().capture_wechat_window_visible_screen(evidence_hwnd, artifact_dir=str(output_dir), label='add_contact_entry_after_click_window', popup_window=True)
     after_items = _ops().run_ocr_on_screen_region(after_shot, [0, 0, after_shot.size[0], after_shot.size[1]])
     after_annotated_path = output_dir / 'add_contact_entry_after_click_window_annotated.png'
-    after_targets = list(add_friend_invite_form_targets(after_shot.size, after_items).values()) if invite_hwnd else []
+    after_targets = list(add_friend_invite_form_targets(
+        after_shot.size,
+        after_items,
+        layout_snapshot=_layout_for_image(after_shot),
+    ).values()) if invite_hwnd else []
     after_annotated = draw_add_friend_screen_annotation(after_shot, ocr_items=after_items, targets=after_targets, output_path=after_annotated_path, window_rect=None)
     if not invite_hwnd:
         return add_friend_invite_form_window_not_found_payload(phone=query, before={'screenshot_path': result_path, 'annotated_path': annotated_before, 'targets': [target], 'ocr_items': add_friend_ocr_snapshots(result_items, result_shot.size)}, click=click_result, after={'screenshot_path': after_path, 'annotated_path': after_annotated, 'ocr_items': add_friend_ocr_snapshots(after_items, after_shot.size)}, invite_form_probe=invite_probe, timings=timings)
@@ -1662,7 +1765,7 @@ def paste_invite_form_text(hwnd: int, target: dict[str, Any], text: str, *, acti
     bounds = list(target.get('click_bounds') or [])
     if len(bounds) < 4:
         return {'ok': False, 'reason': 'target_missing_click_bounds', 'target': target, 'action': make_action_result(action_id=action_name, action_type=ACTION_COMPOSITE_INPUT, status='failed', method='click_ctrl_a_backspace_clipboard_paste', target=target, text=clean, error='target_missing_click_bounds')}
-    click_result = _ops().human_window_image_click_in_bounds(hwnd, int(target.get('x') or 0), int(target.get('y') or 0), bounds=bounds, action_name=f'{action_name}_click')
+    click_result = _ops().human_window_image_click_in_bounds(hwnd, int(target.get('x') or 0), int(target.get('y') or 0), bounds=bounds, action_name=f'{action_name}_click', expected_snapshot_id=str(target.get('layout_snapshot_id') or (_ops().layout_snapshot_metadata(hwnd).get('snapshot') or {}).get('layout_snapshot_id') or ''))
     if not click_result.get('ok'):
         return {'ok': False, 'reason': 'field_click_failed', 'method': 'click_ctrl_a_backspace_clipboard_paste', 'text_length': len(clean), 'click': click_result, 'target': target, 'action': make_action_result(action_id=action_name, action_type=ACTION_COMPOSITE_INPUT, status='failed', method='click_ctrl_a_backspace_clipboard_paste', target=target, text=clean, error=str(click_result.get('reason') or click_result.get('error') or 'field_click_failed'), result={'click': click_result, 'aborted_before_keyboard_input': True})}
     _ops().add_friend_paced_pause('input', reason=f'after_{action_name}_click_before_select_all')
@@ -1690,6 +1793,7 @@ def capture_invite_form_field_review(
         hwnd,
         artifact_dir=str(output_dir),
         label=label,
+        popup_window=True,
     )
     ocr_started_at = time.perf_counter()
     ocr_items = _ops().run_ocr_on_screen_region(
@@ -1697,7 +1801,11 @@ def capture_invite_form_field_review(
         [0, 0, shot.size[0], shot.size[1]],
     )
     ocr_seconds = round(time.perf_counter() - ocr_started_at, 3)
-    targets_map = add_friend_invite_form_targets(shot.size, ocr_items)
+    targets_map = add_friend_invite_form_targets(
+        shot.size,
+        ocr_items,
+        layout_snapshot=_layout_for_image(shot),
+    )
     targets = list(targets_map.values())
     greeting_bounds = list(
         (targets_map.get('invite_greeting_textarea') or {}).get('bounds') or []
@@ -1744,14 +1852,28 @@ def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, veri
     timings: list[dict[str, Any]] = []
     pause_seconds = _ops().add_friend_paced_pause('verify', reason='before_invite_form_capture')
     timings.append({'name': 'before_invite_form_capture_pause', 'seconds': round(pause_seconds, 3)})
-    before_shot, before_path = _ops().capture_wechat_window_visible_screen(hwnd, artifact_dir=str(output_dir), label='add_friend_invite_form_before_fill_window')
+    before_shot, before_path = _ops().capture_wechat_window_visible_screen(hwnd, artifact_dir=str(output_dir), label='add_friend_invite_form_before_fill_window', popup_window=True)
     before_ocr_started_at = time.perf_counter()
     before_items = _ops().run_ocr_on_screen_region(before_shot, [0, 0, before_shot.size[0], before_shot.size[1]])
     timings.append({'name': 'invite_form_before_fill_ocr', 'seconds': round(time.perf_counter() - before_ocr_started_at, 3), 'ocr_count': len(before_items)})
-    before_targets_map = add_friend_invite_form_targets(before_shot.size, before_items)
+    before_targets_map = add_friend_invite_form_targets(
+        before_shot.size,
+        before_items,
+        layout_snapshot=_layout_for_image(before_shot),
+    )
     before_targets = list(before_targets_map.values())
     before_annotated_path = output_dir / 'add_friend_invite_form_before_fill_window_annotated.png'
     before_annotated = draw_add_friend_screen_annotation(before_shot, ocr_items=before_items, targets=before_targets, output_path=before_annotated_path, window_rect=None)
+    required_before_targets = {'invite_greeting_textarea', 'invite_remark_input'}
+    if not required_before_targets.issubset(before_targets_map):
+        return {
+            'ok': False,
+            'state': 'layout_unresolved',
+            'task_status': 'failed',
+            'error_code': 'WECHAT_UI_LAYOUT_UNRESOLVED',
+            'current_step': 'invite_form_before_fill',
+            'timings': timings,
+        }
     greeting_started_at = time.perf_counter()
     greeting_result = _ops().paste_invite_form_text(hwnd, before_targets_map['invite_greeting_textarea'], clean_verify_message, action_name='invite_greeting')
     timings.append({'name': 'fill_invite_greeting_text', 'seconds': round(time.perf_counter() - greeting_started_at, 3), 'result': greeting_result})
@@ -1854,6 +1976,15 @@ def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, veri
         )
         and bool((field_verification.get('remark_code') or {}).get('ok')),
     }
+    if not {'invite_greeting_textarea', 'invite_remark_input', 'invite_confirm_button'}.issubset(filled_targets_map):
+        return {
+            'ok': False,
+            'state': 'layout_unresolved',
+            'task_status': 'failed',
+            'error_code': 'WECHAT_UI_LAYOUT_UNRESOLVED',
+            'current_step': 'invite_form_before_confirm',
+            'timings': timings,
+        }
     if not field_verification.get('ok'):
         final_status = mapped_add_friend_failed_result(state='invite_field_verification_failed', error_code=ERROR_INVITE_FIELD_VERIFICATION_FAILED, current_step='invite_fields_review', field_verification=field_verification)
         timings.append({'name': 'invite_field_verification_gate', 'seconds': 0.0, 'result': field_verification})
@@ -1868,7 +1999,7 @@ def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, veri
         )
     confirm_started_at = time.perf_counter()
     confirm_target = filled_targets_map['invite_confirm_button']
-    confirm_result = _ops().human_window_image_click_in_bounds(hwnd, int(confirm_target.get('x') or 0), int(confirm_target.get('y') or 0), bounds=list(confirm_target.get('click_bounds') or []), action_name='invite_confirm_button_click')
+    confirm_result = _ops().human_window_image_click_in_bounds(hwnd, int(confirm_target.get('x') or 0), int(confirm_target.get('y') or 0), bounds=list(confirm_target.get('click_bounds') or []), action_name='invite_confirm_button_click', expected_snapshot_id=str(confirm_target.get('layout_snapshot_id') or (_ops().layout_snapshot_metadata(hwnd).get('snapshot') or {}).get('layout_snapshot_id') or ''))
     timings.append({'name': 'invite_confirm_button_click', 'seconds': round(time.perf_counter() - confirm_started_at, 3), 'result': confirm_result})
     if action_journal_path and confirm_result.get('ok'):
         _ops().write_action_phase_journal(
@@ -1894,7 +2025,7 @@ def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, veri
     is_window_fn = getattr(getattr(_ops(), 'win32gui', None), 'IsWindow', None)
     parent_window_exists = bool(is_window_fn(parent_dialog_hwnd)) if callable(is_window_fn) and parent_dialog_hwnd else bool(parent_dialog_hwnd)
     post_confirm_hwnd = int(parent_dialog_hwnd) if confirm_result.get('ok') and parent_window_exists else int(hwnd)
-    after_shot, after_path = _ops().capture_wechat_window_visible_screen(post_confirm_hwnd, artifact_dir=str(output_dir), label='add_friend_invite_form_after_confirm_window')
+    after_shot, after_path = _ops().capture_wechat_window_visible_screen(post_confirm_hwnd, artifact_dir=str(output_dir), label='add_friend_invite_form_after_confirm_window', popup_window=True)
     after_items = _ops().run_ocr_on_screen_region(after_shot, [0, 0, after_shot.size[0], after_shot.size[1]])
     final_status = classify_add_friend_after_confirm_surface(after_items, after_shot.size, confirm_ok=bool(confirm_result.get('ok')))
     result_ok = bool(final_status.get('ok'))
@@ -2019,8 +2150,16 @@ def wait_for_add_friend_dialog_window(*, exclude_hwnd: int, output_dir: Path, ti
             if not candidate_hwnd:
                 continue
             try:
-                screenshot, screenshot_path = _ops().capture_wechat_window_visible_screen(candidate_hwnd, artifact_dir=str(output_dir), label='add_friend_dialog_window_candidate')
-                region = add_friend_page_search_region(screenshot.size)
+                screenshot, screenshot_path = _ops().capture_wechat_window_visible_screen(candidate_hwnd, artifact_dir=str(output_dir), label='add_friend_dialog_window_candidate', popup_window=True)
+                snapshot = _layout_for_image(screenshot)
+                region = add_friend_page_search_region(screenshot.size, layout_snapshot=snapshot)
+                if not region:
+                    attempts.append({
+                        'hwnd': candidate_hwnd,
+                        'window': item,
+                        'reason': 'WECHAT_UI_LAYOUT_UNRESOLVED',
+                    })
+                    continue
                 ocr_started_at = time.perf_counter()
                 ocr_items = _ops().run_ocr_on_screen_region(screenshot, region)
                 detection = add_friend_dialog_surface_detected(ocr_items)
@@ -2067,12 +2206,22 @@ def wait_for_add_friend_invite_form_window(*, exclude_hwnds: set[int], output_di
             if not candidate_hwnd:
                 continue
             try:
-                screenshot, screenshot_path = _ops().capture_wechat_window_visible_screen(candidate_hwnd, artifact_dir=str(output_dir), label='add_friend_invite_form_window_candidate')
+                screenshot, screenshot_path = _ops().capture_wechat_window_visible_screen(candidate_hwnd, artifact_dir=str(output_dir), label='add_friend_invite_form_window_candidate', popup_window=True)
                 ocr_started_at = time.perf_counter()
                 ocr_items = _ops().run_ocr_on_screen_region(screenshot, [0, 0, screenshot.size[0], screenshot.size[1]])
                 detection = add_friend_invite_form_surface_detected(ocr_items)
                 annotated_path = output_dir / f'add_friend_invite_form_window_candidate_{candidate_hwnd}_annotated.png'
-                annotated = draw_add_friend_screen_annotation(screenshot, ocr_items=ocr_items, targets=list(add_friend_invite_form_targets(screenshot.size, ocr_items).values()), output_path=annotated_path, window_rect=None)
+                annotated = draw_add_friend_screen_annotation(
+                    screenshot,
+                    ocr_items=ocr_items,
+                    targets=list(add_friend_invite_form_targets(
+                        screenshot.size,
+                        ocr_items,
+                        layout_snapshot=_layout_for_image(screenshot),
+                    ).values()),
+                    output_path=annotated_path,
+                    window_rect=None,
+                )
                 attempt = {'hwnd': candidate_hwnd, 'window': item, 'screenshot_path': screenshot_path, 'annotated_path': annotated, 'ocr_seconds': round(time.perf_counter() - ocr_started_at, 3), 'ocr_count': len(ocr_items), 'detection': detection, 'geometry': _ops().get_window_geometry(candidate_hwnd)}
                 attempts.append(attempt)
                 if detection.get('detected'):
@@ -2129,7 +2278,7 @@ def click_add_friend_menu_entry_and_capture(hwnd: int, output_dir: Path, *, menu
     dialog_handle_invalid = False
     try:
         geometry = _ops().get_window_geometry(evidence_hwnd)
-        screenshot, screenshot_path = _ops().capture_wechat_window_visible_screen(evidence_hwnd, artifact_dir=str(output_dir), label='add_friend_menu_entry_after_click_window')
+        screenshot, screenshot_path = _ops().capture_wechat_window_visible_screen(evidence_hwnd, artifact_dir=str(output_dir), label='add_friend_menu_entry_after_click_window', popup_window=True)
     except Exception as exc:
         capture_error = repr(exc)
         if evidence_hwnd == hwnd:
@@ -2157,30 +2306,61 @@ def input_add_friend_query_and_search(hwnd: int, output_dir: Path, *, query: str
         return {'ok': False, 'reason': 'empty_query'}
     timings: list[dict[str, Any]] = []
     geometry = _ops().get_window_geometry(hwnd)
-    page_shot, page_path = _ops().capture_wechat_window_visible_screen(hwnd, artifact_dir=str(output_dir), label='add_friend_page_before_input_window')
-    search_region = add_friend_page_search_region(page_shot.size)
+    page_shot, page_path = _ops().capture_wechat_window_visible_screen(hwnd, artifact_dir=str(output_dir), label='add_friend_page_before_input_window', popup_window=True)
+    page_layout = _layout_for_image(page_shot)
+    page_snapshot_id = str(
+        (_ops().layout_snapshot_metadata(hwnd).get('snapshot') or {}).get('layout_snapshot_id') or ''
+    )
+    search_region = add_friend_page_search_region(page_shot.size, layout_snapshot=page_layout)
+    if not search_region:
+        return {'ok': False, 'state': 'layout_unresolved', 'error_code': 'WECHAT_UI_LAYOUT_UNRESOLVED', 'timings': timings}
     ocr_started_at = time.perf_counter()
     page_items = _ops().run_ocr_on_screen_region(page_shot, search_region)
     timings.append({'name': 'add_friend_page_search_region_ocr', 'seconds': round(time.perf_counter() - ocr_started_at, 3), 'bounds': search_region, 'ocr_count': len(page_items)})
-    search_targets = find_add_friend_page_search_targets(page_items, page_shot.size, screenshot=page_shot)
+    search_targets = find_add_friend_page_search_targets(
+        page_items,
+        page_shot.size,
+        screenshot=page_shot,
+        layout_snapshot=page_layout,
+    )
     targets = [search_targets['input'], search_targets['button']]
     page_annotated_path = output_dir / 'add_friend_page_before_input_window_annotated.png'
     page_annotated = draw_add_friend_screen_annotation(page_shot, ocr_items=page_items, targets=targets, output_path=page_annotated_path, window_rect=None)
     input_target = search_targets['input']
+    input_target['layout_snapshot_id'] = page_snapshot_id
+    search_targets['button']['layout_snapshot_id'] = page_snapshot_id
     input_click_started_at = time.perf_counter()
     input_bounds = input_target.get('click_bounds')
     if isinstance(input_bounds, list) and len(input_bounds) >= 4:
-        input_click_result = _ops().human_window_image_click_in_bounds(hwnd, int(input_target.get('x') or 0), int(input_target.get('y') or 0), bounds=input_bounds, action_name='add_friend_search_input_click')
+        input_click_result = _ops().human_window_image_click_in_bounds(hwnd, int(input_target.get('x') or 0), int(input_target.get('y') or 0), bounds=input_bounds, action_name='add_friend_search_input_click', expected_snapshot_id=page_snapshot_id)
     else:
-        _ops().human_window_image_click(hwnd, int(input_target.get('x') or 0), int(input_target.get('y') or 0))
-        input_click_result = {'ok': True, 'x': int(input_target.get('x') or 0), 'y': int(input_target.get('y') or 0), 'bounds': None}
+        return {
+            'ok': False,
+            'state': 'layout_unresolved',
+            'error_code': 'WECHAT_UI_LAYOUT_UNRESOLVED',
+            'reason': 'add_friend_search_input_bounds_missing',
+            'timings': timings,
+        }
     timings.append({'name': 'add_friend_search_input_click', 'seconds': round(time.perf_counter() - input_click_started_at, 3), 'result': input_click_result})
+    if not bool(input_click_result.get('ok')):
+        return {
+            'ok': False,
+            'state': 'coordinate_mapping_invalid',
+            'error_code': str(input_click_result.get('error_code') or 'WECHAT_UI_COORDINATE_MAPPING_INVALID'),
+            'reason': 'add_friend_search_input_click_failed',
+            'click': input_click_result,
+            'timings': timings,
+        }
     pause_seconds = _ops().add_friend_human_pause(140, 360, reason='input:after_add_friend_search_input_click_before_typing')
     timings.append({'name': 'after_add_friend_search_input_click_before_typing_pause', 'seconds': round(pause_seconds, 3)})
     clear_started_at = time.perf_counter()
     search_x = int(input_target.get('x') or 0)
     search_y = int(input_target.get('y') or 0)
-    initial_empty = add_friend_search_input_empty_in_items(page_items, page_shot.size)
+    initial_empty = add_friend_search_input_empty_in_items(
+        page_items,
+        page_shot.size,
+        layout_snapshot=page_layout,
+    )
     clear_verify_payload: dict[str, Any] | None = None
     if initial_empty.get('ok'):
         clear_result = {'ok': True, 'method': 'skip_clear_placeholder_visible', 'empty_check': initial_empty}
@@ -2188,13 +2368,21 @@ def input_add_friend_query_and_search(hwnd: int, output_dir: Path, *, query: str
         clear_result = _ops().clear_add_friend_sidebar_search_box(hwnd, search_x, search_y, target_hint=query)
     timings.append({'name': 'clear_add_friend_search_box', 'seconds': round(time.perf_counter() - clear_started_at, 3), 'result': clear_result})
     if not clear_result.get('ok'):
-        return {'ok': False, 'state': 'search_input_clear_failed', 'query': query, 'error_code': 'ADD_FRIEND_SEARCH_INPUT_CLEAR_FAILED', 'page': {'screenshot_path': page_path, 'annotated_path': page_annotated, 'ocr_items': add_friend_ocr_snapshots(page_items, page_shot.size), 'targets': targets, 'input_empty_before_clear': initial_empty}, 'clear_result': clear_result, 'timings': timings}
+        clear_error_code = str(clear_result.get('error_code') or '')
+        return {'ok': False, 'state': 'search_input_clear_failed', 'query': query, 'error_code': clear_error_code if clear_error_code.startswith('WECHAT_UI_') else 'ADD_FRIEND_SEARCH_INPUT_CLEAR_FAILED', 'page': {'screenshot_path': page_path, 'annotated_path': page_annotated, 'ocr_items': add_friend_ocr_snapshots(page_items, page_shot.size), 'targets': targets, 'input_empty_before_clear': initial_empty}, 'clear_result': clear_result, 'timings': timings}
     if not initial_empty.get('ok'):
         clear_verify_started_at = time.perf_counter()
-        clear_verify_shot, clear_verify_path = _ops().capture_wechat_window_visible_screen(hwnd, artifact_dir=str(output_dir), label='add_friend_search_input_after_clear_window')
-        clear_verify_region = add_friend_page_search_region(clear_verify_shot.size)
+        clear_verify_shot, clear_verify_path = _ops().capture_wechat_window_visible_screen(hwnd, artifact_dir=str(output_dir), label='add_friend_search_input_after_clear_window', popup_window=True)
+        clear_verify_layout = _layout_for_image(clear_verify_shot)
+        clear_verify_region = add_friend_page_search_region(clear_verify_shot.size, layout_snapshot=clear_verify_layout)
+        if not clear_verify_region:
+            return {'ok': False, 'state': 'layout_unresolved', 'error_code': 'WECHAT_UI_LAYOUT_UNRESOLVED', 'timings': timings}
         clear_verify_items = _ops().run_ocr_on_screen_region(clear_verify_shot, clear_verify_region)
-        clear_verify = add_friend_search_input_empty_in_items(clear_verify_items, clear_verify_shot.size)
+        clear_verify = add_friend_search_input_empty_in_items(
+            clear_verify_items,
+            clear_verify_shot.size,
+            layout_snapshot=clear_verify_layout,
+        )
         clear_verify_annotated_path = output_dir / 'add_friend_search_input_after_clear_window_annotated.png'
         clear_verify_annotated = draw_add_friend_screen_annotation(clear_verify_shot, ocr_items=clear_verify_items, targets=targets, output_path=clear_verify_annotated_path, window_rect=None)
         clear_verify_payload = {'screenshot_path': clear_verify_path, 'annotated_path': clear_verify_annotated, 'ocr_items': add_friend_ocr_snapshots(clear_verify_items, clear_verify_shot.size), 'verify': clear_verify}
@@ -2216,12 +2404,15 @@ def input_add_friend_query_and_search(hwnd: int, output_dir: Path, *, query: str
         _ops().add_friend_wait_before_ocr('after_search_input_before_ocr')
         timings.append({'name': f'after_query_type_attempt_{attempt}_before_verify_pause', 'seconds': round(time.perf_counter() - wait_started_at, 3)})
         try:
-            latest_verify_shot, latest_verify_path = _ops().capture_wechat_window_visible_screen(hwnd, artifact_dir=str(output_dir), label=f'add_friend_query_verify_attempt_{attempt}_window')
+            latest_verify_shot, latest_verify_path = _ops().capture_wechat_window_visible_screen(hwnd, artifact_dir=str(output_dir), label=f'add_friend_query_verify_attempt_{attempt}_window', popup_window=True)
         except Exception as exc:
             latest_verify_result = {'ok': False, 'reason': 'dialog_handle_invalid_during_query_verify', 'error': repr(exc), 'attempt': attempt, 'hwnd': int(hwnd or 0)}
             input_attempts.append({'attempt': attempt, 'type_result': type_result, 'verify': latest_verify_result, 'screenshot_path': latest_verify_path, 'annotated_path': latest_verify_annotated})
             return {'ok': False, 'state': 'dialog_handle_invalid', 'task_status': 'failed', 'error_code': ERROR_WECHAT_WINDOW_NOT_READY, 'current_step': 'query_input_verify', 'server_report_payload': add_friend_server_report_payload(task_status='failed', error_code=ERROR_WECHAT_WINDOW_NOT_READY, current_step='query_input_verify'), 'query': query, 'geometry': geometry, 'page': {'screenshot_path': page_path, 'annotated_path': page_annotated, 'ocr_items': add_friend_ocr_snapshots(page_items, page_shot.size), 'targets': targets}, 'input_attempts': input_attempts, 'latest_verify': {'screenshot_path': latest_verify_path, 'annotated_path': latest_verify_annotated, 'ocr_items': add_friend_ocr_snapshots(latest_verify_items, latest_verify_shot.size), 'verify': latest_verify_result}, 'timings': timings}
-        verify_region = add_friend_page_search_region(latest_verify_shot.size)
+        latest_verify_layout = _layout_for_image(latest_verify_shot)
+        verify_region = add_friend_page_search_region(latest_verify_shot.size, layout_snapshot=latest_verify_layout)
+        if not verify_region:
+            return {'ok': False, 'state': 'layout_unresolved', 'error_code': 'WECHAT_UI_LAYOUT_UNRESOLVED', 'timings': timings}
         verify_ocr_started_at = time.perf_counter()
         latest_verify_items = _ops().run_ocr_on_screen_region(latest_verify_shot, verify_region)
         timings.append({'name': f'query_verify_region_ocr_attempt_{attempt}', 'seconds': round(time.perf_counter() - verify_ocr_started_at, 3), 'bounds': verify_region, 'ocr_count': len(latest_verify_items)})
@@ -2242,23 +2433,60 @@ def input_add_friend_query_and_search(hwnd: int, output_dir: Path, *, query: str
             timings.append({'name': f'after_query_clear_attempt_{attempt}_pause', 'seconds': round(pause_seconds, 3)})
     if not verified:
         return {'ok': False, 'state': 'input_unconfirmed', 'query': query, 'page': {'screenshot_path': page_path, 'annotated_path': page_annotated, 'ocr_items': add_friend_ocr_snapshots(page_items, page_shot.size), 'targets': targets}, 'input_attempts': input_attempts, 'input_empty_before_clear': initial_empty, 'clear_result': clear_result, 'clear_verify': clear_verify_payload, 'latest_verify': {'screenshot_path': latest_verify_path, 'annotated_path': latest_verify_annotated, 'ocr_items': add_friend_ocr_snapshots(latest_verify_items, latest_verify_shot.size), 'verify': latest_verify_result}, 'timings': timings}
-    button_target = search_targets['button']
+    # Typing changed the UI frame. Re-capture and re-locate the search button
+    # so its click target is bound to the current immutable snapshot.
+    button_shot, _button_path = _ops().capture_wechat_window_visible_screen(
+        hwnd,
+        artifact_dir=str(output_dir),
+        label='add_friend_search_button_before_click_window',
+        popup_window=True,
+    )
+    button_items = _ops().run_ocr_on_screen_region(
+        button_shot,
+        add_friend_page_search_region(button_shot.size, layout_snapshot=_layout_for_image(button_shot)),
+    )
+    fresh_search_targets = find_add_friend_page_search_targets(
+        button_items,
+        button_shot.size,
+        screenshot=button_shot,
+        layout_snapshot=_layout_for_image(button_shot),
+    )
+    button_target = fresh_search_targets['button']
+    button_target['layout_snapshot_id'] = str(
+        (_ops().layout_snapshot_metadata(hwnd).get('snapshot') or {}).get('layout_snapshot_id') or ''
+    )
     pause_seconds = _ops().add_friend_paced_pause('critical_click', reason='before_add_friend_search_button_click')
     timings.append({'name': 'before_add_friend_search_button_click_pause', 'seconds': round(pause_seconds, 3)})
     button_click_started_at = time.perf_counter()
     button_bounds = button_target.get('click_bounds')
     if isinstance(button_bounds, list) and len(button_bounds) >= 4:
-        button_click_result = _ops().human_window_image_click_in_bounds(hwnd, int(button_target.get('x') or 0), int(button_target.get('y') or 0), bounds=button_bounds, action_name='add_friend_search_button_click')
+        button_click_result = _ops().human_window_image_click_in_bounds(hwnd, int(button_target.get('x') or 0), int(button_target.get('y') or 0), bounds=button_bounds, action_name='add_friend_search_button_click', expected_snapshot_id=str(button_target.get('layout_snapshot_id') or page_snapshot_id))
     else:
-        _ops().human_window_image_click(hwnd, int(button_target.get('x') or 0), int(button_target.get('y') or 0))
-        button_click_result = {'ok': True, 'x': int(button_target.get('x') or 0), 'y': int(button_target.get('y') or 0), 'bounds': None}
+        return {
+            'ok': False,
+            'state': 'layout_unresolved',
+            'error_code': 'WECHAT_UI_LAYOUT_UNRESOLVED',
+            'reason': 'add_friend_search_button_bounds_missing',
+            'timings': timings,
+        }
     timings.append({'name': 'add_friend_search_button_click', 'seconds': round(time.perf_counter() - button_click_started_at, 3), 'result': button_click_result})
+    if not bool(button_click_result.get('ok')):
+        return {
+            'ok': False,
+            'state': 'coordinate_mapping_invalid',
+            'error_code': str(button_click_result.get('error_code') or 'WECHAT_UI_COORDINATE_MAPPING_INVALID'),
+            'reason': 'add_friend_search_button_click_failed',
+            'click': button_click_result,
+            'timings': timings,
+        }
     pause_seconds = _ops().add_friend_paced_pause('verify', reason='after_add_friend_search_button_click_before_result_capture')
     timings.append({'name': 'after_add_friend_search_button_click_before_result_capture_pause', 'seconds': round(pause_seconds, 3)})
     settle_seconds = add_friend_wait_for_search_result_settle()
     timings.append({'name': 'after_add_friend_search_button_click_result_settle_wait', 'seconds': round(settle_seconds, 3)})
-    result_shot, result_path = _ops().capture_wechat_window_visible_screen(hwnd, artifact_dir=str(output_dir), label='add_friend_search_result_window')
-    result_region = add_friend_search_result_region(result_shot.size)
+    result_shot, result_path = _ops().capture_wechat_window_visible_screen(hwnd, artifact_dir=str(output_dir), label='add_friend_search_result_window', popup_window=True)
+    result_region = add_friend_search_result_region(result_shot.size, layout_snapshot=_layout_for_image(result_shot))
+    if not result_region:
+        return {'ok': False, 'state': 'layout_unresolved', 'error_code': 'WECHAT_UI_LAYOUT_UNRESOLVED', 'timings': timings}
     result_ocr_started_at = time.perf_counter()
     result_items = _ops().run_ocr_on_screen_region(result_shot, result_region)
     timings.append({'name': 'search_result_region_ocr', 'seconds': round(time.perf_counter() - result_ocr_started_at, 3), 'bounds': result_region, 'ocr_count': len(result_items)})
@@ -2345,11 +2573,25 @@ def write_add_friend_entry_click_review(output_dir: Path, payload: dict[str, Any
     return write_step_event_report(output_dir=output_dir, json_name='add_friend_entry_click_review.json', html_name='add_friend_entry_click_review.html', title='add_friend 入口点击复核报告', description='本报告验证点击 +、点击“添加朋友”、输入手机号/微信号、点击搜索、点击“添加到通讯录”、填写申请表单并点击“确定”。', summary=summary, events=events)
 
 
-def add_friend_surface_readiness(screenshot: Image.Image, ocr_items: list[dict[str, Any]], geometry: dict[str, Any], *, stage: str, require_main_surface: bool | None=None) -> dict[str, Any]:
+def add_friend_surface_readiness(
+    screenshot: Image.Image,
+    ocr_items: list[dict[str, Any]],
+    geometry: dict[str, Any],
+    *,
+    stage: str,
+    require_main_surface: bool | None = None,
+    layout_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     blank_render = _ops().detect_blank_render(screenshot, ocr_items, geometry=geometry)
     shell_probe = _ops().auxiliary_wechat_shell_like(ocr_items, geometry=geometry)
     screenshot_size = getattr(screenshot, 'size', (int(geometry.get('width') or 0), int(geometry.get('height') or 0)))
-    blocking_prompt = add_friend_login_or_security_block(ocr_items, geometry=geometry, image_size=screenshot_size)
+    current_layout = layout_snapshot or _layout_for_image(screenshot)
+    blocking_prompt = add_friend_login_or_security_block(
+        ocr_items,
+        geometry=geometry,
+        image_size=screenshot_size,
+        layout_snapshot=current_layout,
+    )
     if blocking_prompt.get('detected'):
         return {'ok': False, 'error_code': blocking_prompt.get('error_code') or ERROR_WECHAT_WINDOW_NOT_READY, 'state': blocking_prompt.get('state') or 'wechat_window_not_ready', 'stage': stage, 'reason': blocking_prompt.get('reason') or 'wechat_login_or_security_prompt', 'blocking_prompt': blocking_prompt, 'render_probe': blank_render, 'shell_probe': shell_probe, 'ocr_count': len(ocr_items), 'ocr_texts': [item.get('text') for item in ocr_items[:20]]}
     if blank_render.get('detected'):
@@ -2391,7 +2633,14 @@ def add_friend_pre_click_main_window_readiness(hwnd: int, geometry: dict[str, An
     ocr_started_at = time.perf_counter()
     ocr_items = _ops().run_ocr_on_screen_region(screenshot, [0, 0, screenshot.size[0], screenshot.size[1]])
     ocr_seconds = round(time.perf_counter() - ocr_started_at, 3)
-    plus_target = add_friend_plus_entry_target(geometry, screenshot.size, ocr_items, screenshot=screenshot, route_kind='windows')
+    plus_target = add_friend_plus_entry_target(
+        geometry,
+        screenshot.size,
+        ocr_items,
+        screenshot=screenshot,
+        route_kind='windows',
+        layout_snapshot=_ops().layout_snapshot_for_image(screenshot),
+    )
     surface_readiness = _ops().add_friend_surface_readiness(screenshot, ocr_items, geometry, stage='formal_pre_click', require_main_surface=True)
     annotated_path = output_dir / 'add_friend_pre_click_main_window_annotated.png'
     annotated = draw_add_friend_screen_annotation(screenshot, ocr_items=ocr_items, targets=[plus_target], output_path=annotated_path, window_rect=None)
@@ -2403,7 +2652,14 @@ def add_friend_calibration_payload(hwnd: int, probe: dict[str, Any], *, geometry
     screenshot, screenshot_path = _ops().capture_wechat_window_visible_screen(hwnd, artifact_dir=str(output_dir), label='add_friend_calibration_main_window')
     ocr_started_at = time.perf_counter()
     ocr_items = _ops().run_ocr_on_screen_region(screenshot, [0, 0, screenshot.size[0], screenshot.size[1]])
-    plus_target = add_friend_plus_entry_target(geometry, screenshot.size, ocr_items, screenshot=screenshot, route_kind='windows')
+    plus_target = add_friend_plus_entry_target(
+        geometry,
+        screenshot.size,
+        ocr_items,
+        screenshot=screenshot,
+        route_kind='windows',
+        layout_snapshot=_ops().layout_snapshot_for_image(screenshot),
+    )
     readiness = _ops().add_friend_surface_readiness(screenshot, ocr_items, geometry, stage='calibration')
     annotated_path = output_dir / 'add_friend_calibration_main_window_annotated.png'
     annotated = draw_add_friend_screen_annotation(screenshot, ocr_items=ocr_items, targets=[plus_target], output_path=annotated_path, window_rect=None)
@@ -2419,7 +2675,26 @@ def add_friend_calibration_payload(hwnd: int, probe: dict[str, Any], *, geometry
 def click_add_friend_ocr_item(hwnd: int, item: dict[str, Any]) -> None:
     x, y = add_friend_item_center(item)
     _ops().add_friend_human_pause(650, 1450, reason='before_mouse_click')
-    _ops().human_window_image_click(hwnd, x, y)
+    current_snapshot_id = str(
+        (_ops().layout_snapshot_metadata(hwnd).get('snapshot') or {}).get('layout_snapshot_id') or ''
+    )
+    item_snapshot_id = str(item.get('layout_snapshot_id') or '')
+    if not item_snapshot_id or item_snapshot_id != current_snapshot_id:
+        raise RuntimeError('WECHAT_UI_LAYOUT_STALE:add_friend_ocr_item')
+    item_bounds = [
+        int(float(item.get('left') or 0)),
+        int(float(item.get('top') or 0)),
+        int(float(item.get('right') or 0)),
+        int(float(item.get('bottom') or 0)),
+    ]
+    _ops().human_window_image_click_in_bounds(
+        hwnd,
+        x,
+        y,
+        bounds=item_bounds,
+        action_name='add_friend_ocr_item_click',
+        expected_snapshot_id=item_snapshot_id,
+    )
     _ops().add_friend_human_pause(900, 1900, reason='after_mouse_click')
 
 
@@ -2440,12 +2715,73 @@ def add_friend_wait_for_search_result_settle() -> float:
     return delay_ms / 1000.0
 
 
-def clear_add_friend_sidebar_search_box(hwnd: int, search_x: int, search_y: int, *, target_hint: str='') -> None:
-    """Clear the WeChat sidebar search box with slow serialized key actions."""
+def clear_add_friend_sidebar_search_box(hwnd: int, search_x: int, search_y: int, *, target_hint: str='') -> dict[str, Any]:
+    """Re-acquire and clear the add-friend search input on the current frame."""
+    del search_x, search_y, target_hint
     _ops().add_friend_human_pause(700, 1600, reason='before_search_clear_escape')
     _ops().key_press(win32con.VK_ESCAPE)
     _ops().add_friend_human_pause(900, 1800, reason='after_escape_before_search_click')
-    _ops().human_window_image_click(hwnd, search_x, search_y)
+    fresh_shot, _fresh_path = _ops().capture_wechat_window_visible_screen(
+        hwnd,
+        artifact_dir=None,
+        label='add_friend_search_clear_before_click',
+        popup_window=True,
+    )
+    fresh_layout = _layout_for_image(fresh_shot)
+    fresh_region = add_friend_page_search_region(
+        fresh_shot.size,
+        layout_snapshot=fresh_layout,
+    )
+    if not fresh_region:
+        return {
+            'ok': False,
+            'reason': 'add_friend_search_clear_layout_unresolved',
+            'error_code': 'WECHAT_UI_LAYOUT_UNRESOLVED',
+        }
+    fresh_items = _ops().run_ocr_on_screen_region(fresh_shot, fresh_region)
+    try:
+        fresh_targets = find_add_friend_page_search_targets(
+            fresh_items,
+            fresh_shot.size,
+            screenshot=fresh_shot,
+            layout_snapshot=fresh_layout,
+        )
+    except RuntimeError as exc:
+        return {
+            'ok': False,
+            'reason': 'add_friend_search_clear_target_unresolved',
+            'error_code': 'WECHAT_UI_LAYOUT_UNRESOLVED',
+            'error': repr(exc),
+        }
+    fresh_input = fresh_targets.get('input') if isinstance(fresh_targets, dict) else None
+    fresh_bounds = fresh_input.get('click_bounds') if isinstance(fresh_input, dict) else None
+    fresh_snapshot_id = str((fresh_layout or {}).get('layout_snapshot_id') or '')
+    if not (
+        isinstance(fresh_input, dict)
+        and isinstance(fresh_bounds, list)
+        and len(fresh_bounds) >= 4
+        and fresh_snapshot_id
+    ):
+        return {
+            'ok': False,
+            'reason': 'add_friend_search_clear_input_bounds_missing',
+            'error_code': 'WECHAT_UI_LAYOUT_UNRESOLVED',
+        }
+    click_result = _ops().human_window_image_click_in_bounds(
+        hwnd,
+        int(fresh_input.get('x') or 0),
+        int(fresh_input.get('y') or 0),
+        bounds=fresh_bounds,
+        action_name='add_friend_search_clear_input_click',
+        expected_snapshot_id=fresh_snapshot_id,
+    )
+    if not bool(click_result.get('ok')):
+        return {
+            'ok': False,
+            'reason': 'add_friend_search_clear_input_click_failed',
+            'error_code': str(click_result.get('error_code') or 'WECHAT_UI_COORDINATE_MAPPING_INVALID'),
+            'click': click_result,
+        }
     _ops().add_friend_human_pause(900, 1900, reason='after_search_click_before_clear_keys')
     default_backspaces = random.randint(1, 3)
     backspaces = bounded_int(os.getenv('WECHAT_WIN32_OCR_ADD_FRIEND_CLEAR_BACKSPACES'), default=default_backspaces, minimum=0, maximum=12)
@@ -2457,6 +2793,14 @@ def clear_add_friend_sidebar_search_box(hwnd: int, search_x: int, search_y: int,
         _ops().key_press(win32con.VK_DELETE)
         _ops().add_friend_human_pause(150, 460, reason=f'clear_delete_{idx + 1}')
     _ops().add_friend_human_pause(700, 1500, reason='after_search_clear_keys')
+    return {
+        'ok': True,
+        'method': 'reacquired_current_frame_search_input',
+        'layout_snapshot_id': fresh_snapshot_id,
+        'click': click_result,
+        'backspaces': backspaces,
+        'deletes': deletes,
+    }
 
 
 def type_add_friend_phone_query_like_human(hwnd: int, query: str, *, key_press_func: Any | None=None, window_guard_func: Any | None=None) -> dict[str, Any]:
@@ -2512,7 +2856,37 @@ def paste_add_friend_text_at_item(hwnd: int, item: dict[str, Any], text: str, im
     click_x = bounded_int(base_x + x_offset, default=base_x + x_offset, minimum=base_x + 20, maximum=max(base_x + 20, width - 42))
     click_y = base_y
     _ops().add_friend_human_pause(700, 1600, reason='before_field_click')
-    _ops().human_window_image_click(hwnd, click_x, click_y)
+    current_snapshot_id = str(
+        (_ops().layout_snapshot_metadata(hwnd).get('snapshot') or {}).get('layout_snapshot_id') or ''
+    )
+    item_snapshot_id = str(item.get('layout_snapshot_id') or '')
+    if not item_snapshot_id or item_snapshot_id != current_snapshot_id:
+        return {
+            'ok': False,
+            'reason': 'add_friend_optional_field_layout_stale',
+            'error_code': 'WECHAT_UI_LAYOUT_STALE',
+        }
+    item_bounds = [
+        int(float(item.get('left') or 0)),
+        int(float(item.get('top') or 0)),
+        int(float(item.get('right') or 0)),
+        int(float(item.get('bottom') or 0)),
+    ]
+    click_result = _ops().human_window_image_click_in_bounds(
+        hwnd,
+        click_x,
+        click_y,
+        bounds=item_bounds,
+        action_name='add_friend_optional_field_click',
+        expected_snapshot_id=item_snapshot_id,
+    )
+    if not bool(click_result.get('ok')):
+        return {
+            'ok': False,
+            'reason': 'add_friend_optional_field_click_failed',
+            'error_code': str(click_result.get('error_code') or 'WECHAT_UI_COORDINATE_MAPPING_INVALID'),
+            'click': click_result,
+        }
     _ops().add_friend_human_pause(850, 1800, reason='after_field_click_before_keyboard')
     _ops().hotkey(win32con.VK_CONTROL, ord('A'))
     _ops().add_friend_human_pause(420, 1050, reason='after_select_all')

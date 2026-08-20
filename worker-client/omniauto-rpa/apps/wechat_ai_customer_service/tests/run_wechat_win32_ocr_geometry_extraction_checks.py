@@ -72,8 +72,12 @@ def test_scalar_geometry_helpers_match_sidecar() -> None:
 
 
 def test_window_geometry_helpers_match_sidecar() -> None:
+    assert_true(
+        not hasattr(sidecar, "session_split_x"),
+        "fixed sidebar boundary must not remain a Sidecar production entry",
+    )
     for width in (320, 641, 981, 1280, 1366, 1440, 1536, 1920, 2560, 3840):
-        assert_true(geometry.session_split_x(width) == sidecar.session_split_x(width), f"split mismatch: {width}")
+        assert_true(isinstance(geometry.session_split_x(width), int), f"diagnostic split must remain available: {width}")
         assert_true(geometry.active_chat_title_left_x(width) == sidecar.active_chat_title_left_x(width), f"title left mismatch: {width}")
         assert_true(geometry.active_chat_title_right_x(width) == sidecar.active_chat_title_right_x(width), f"title right mismatch: {width}")
     for height in (260, 720, 768, 860, 864, 900, 1080, 1200, 1440, 2160):
@@ -83,8 +87,14 @@ def test_window_geometry_helpers_match_sidecar() -> None:
         assert_true(geometry.active_chat_title_top_y(height) == sidecar.active_chat_title_top_y(height), f"title top y mismatch: {height}")
         assert_true(geometry.active_chat_title_bottom_y(height) == sidecar.active_chat_title_bottom_y(height), f"title bottom y mismatch: {height}")
     for item in GEOMETRIES:
-        assert_true(geometry.search_box_point_for_geometry(item) == sidecar.search_box_point_for_geometry(item), f"search point mismatch: {item}")
-        assert_true(geometry.session_click_x_for_geometry(item) == sidecar.session_click_x_for_geometry(item), f"session click mismatch: {item}")
+        assert_true(
+            not hasattr(sidecar, "search_box_point_for_geometry"),
+            "fixed search point must not remain a Sidecar production entry",
+        )
+        assert_true(
+            not hasattr(sidecar, "session_click_x_for_geometry"),
+            "fixed session-row click must not remain a Sidecar production entry",
+        )
         assert_true(geometry.input_text_region_bounds(item) == sidecar.input_text_region_bounds(item), f"input bounds mismatch: {item}")
 
 

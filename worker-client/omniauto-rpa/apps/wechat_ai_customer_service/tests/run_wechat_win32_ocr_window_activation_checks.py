@@ -135,7 +135,8 @@ class PatchActivation:
         os.environ["WECHAT_WIN32_OCR_AGGRESSIVE_FOCUS"] = "1" if self.aggressive else "0"
         os.environ["WECHAT_WIN32_OCR_ATTACH_THREAD_INPUT"] = "1" if self.attach else "0"
         self.originals = {
-            "windll": sidecar.ctypes.windll,
+            "windll_present": hasattr(sidecar.ctypes, "windll"),
+            "windll": getattr(sidecar.ctypes, "windll", None),
             "win32gui": sidecar.win32gui,
             "win32process": sidecar.win32process,
             "win32api": sidecar.win32api,
@@ -145,7 +146,6 @@ class PatchActivation:
             "humanized_action_sleep": sidecar.humanized_action_sleep,
             "coordinate_rpa_action": sidecar.coordinate_rpa_action,
             "focus_click_fallback_enabled": sidecar.focus_click_fallback_enabled,
-            "click": sidecar.click,
             "last_activate": dict(sidecar._LAST_ACTIVATE_MONOTONIC_BY_HWND),
         }
         sidecar.ctypes.windll = types.SimpleNamespace(user32=self.fixture.user32)
@@ -165,12 +165,14 @@ class PatchActivation:
         sidecar.humanized_action_sleep = lambda min_ms, max_ms=None: self.fixture.events.append(f"sidecar.sleep:{min_ms}:{max_ms}") or 0.0
         sidecar.coordinate_rpa_action = lambda action, metadata=None, recent_events=None: self.fixture.events.append(f"sidecar.coordinate:{action}:{metadata}") or {"ok": True}
         sidecar.focus_click_fallback_enabled = lambda: True
-        sidecar.click = lambda x, y: self.fixture.events.append(f"sidecar.click:{x}:{y}")
         sidecar._LAST_ACTIVATE_MONOTONIC_BY_HWND.clear()
         return self
 
     def __exit__(self, _exc_type, _exc, _tb) -> None:
-        sidecar.ctypes.windll = self.originals["windll"]
+        if self.originals["windll_present"]:
+            sidecar.ctypes.windll = self.originals["windll"]
+        else:
+            delattr(sidecar.ctypes, "windll")
         sidecar.win32gui = self.originals["win32gui"]
         sidecar.win32process = self.originals["win32process"]
         sidecar.win32api = self.originals["win32api"]
@@ -180,7 +182,6 @@ class PatchActivation:
         sidecar.humanized_action_sleep = self.originals["humanized_action_sleep"]
         sidecar.coordinate_rpa_action = self.originals["coordinate_rpa_action"]
         sidecar.focus_click_fallback_enabled = self.originals["focus_click_fallback_enabled"]
-        sidecar.click = self.originals["click"]
         sidecar._LAST_ACTIVATE_MONOTONIC_BY_HWND.clear()
         sidecar._LAST_ACTIVATE_MONOTONIC_BY_HWND.update(self.originals["last_activate"])
         for name, value in self.previous_env.items():
@@ -239,7 +240,6 @@ def test_activate_window_aggressive_focus_attaches_detaches_and_uses_alt_fallbac
     ]
     for expected in expected_events:
         assert_true(expected in fixture.events, f"missing aggressive focus event {expected}: {fixture.events}")
-    assert_true(not any(item.startswith("sidecar.click:") for item in fixture.events), f"ready after ALT should not click fallback: {fixture.events}")
 
 
 def main() -> int:

@@ -289,16 +289,33 @@ def plus_entry_target(
     dynamic_sidebar_header_bounds: list[int] | None = None,
 ) -> dict[str, Any]:
     width, height = int(image_size[0]), int(image_size[1])
+    has_dynamic_header = bool(
+        isinstance(dynamic_sidebar_header_bounds, list)
+        and len(dynamic_sidebar_header_bounds) >= 4
+    )
     safe_bounds = normalize_bounds(
         dynamic_sidebar_header_bounds
-        if isinstance(dynamic_sidebar_header_bounds, list) and len(dynamic_sidebar_header_bounds) >= 4
+        if has_dynamic_header
         else plus_entry_safe_bounds(image_size, split_x_fn=split_x_fn)
     )
-    layout = plus_entry_layout_regions(image_size, split_x_fn=split_x_fn)
+    layout = (
+        {
+            "image_size": [width, height],
+            "split_x": safe_bounds[2],
+            "regions": {"plus_search_region": list(safe_bounds)},
+            "source": "layout_snapshot_sidebar_header",
+        }
+        if has_dynamic_header
+        else plus_entry_layout_regions(image_size, split_x_fn=split_x_fn)
+    )
     candidates: list[dict[str, Any]] = []
     diagnostic_references: list[dict[str, Any]] = []
 
-    anchor_item = find_sidebar_search_anchor_item(ocr_items or [], image_size, split_x_fn=split_x_fn)
+    anchor_item = (
+        None
+        if has_dynamic_header
+        else find_sidebar_search_anchor_item(ocr_items or [], image_size, split_x_fn=split_x_fn)
+    )
     if anchor_item is not None:
         anchor_bounds = item_bounds(anchor_item)
         anchor_center_x, anchor_center_y = item_center(anchor_item)
@@ -353,8 +370,12 @@ def plus_entry_target(
             search_bounds=safe_bounds,
         )
     )
-    selected = max(candidates, key=lambda item: float(item.get("confidence") or 0.0)) if candidates else None
-    executable = selected is not None and str(selected.get("source") or "") == "vision_plus_icon"
+    selected = candidates[0] if len(candidates) == 1 else None
+    executable = bool(
+        has_dynamic_header
+        and selected is not None
+        and str(selected.get("source") or "") == "vision_plus_icon"
+    )
     if selected is None:
         selected = {
             "source": "plus_icon_not_found",
@@ -372,9 +393,13 @@ def plus_entry_target(
     )
 
     region = (
-        region_for_point_fn(selected_point[0], selected_point[1], image_size)
-        if region_for_point_fn
-        else region_for_point(selected_point[0], selected_point[1], image_size, split_x_fn=split_x_fn)
+        "sidebar_header"
+        if has_dynamic_header
+        else (
+            region_for_point_fn(selected_point[0], selected_point[1], image_size)
+            if region_for_point_fn
+            else region_for_point(selected_point[0], selected_point[1], image_size, split_x_fn=split_x_fn)
+        )
     )
     target = make_locator_result(
         name="plus_entry",
@@ -504,7 +529,9 @@ def semantic_invite_form_targets(
     region_for_point_fn: Callable[[int, int, tuple[int, int]], str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     width, height = int(image_size[0]), int(image_size[1])
-    targets = invite_form_geometry_targets(image_size, region_for_point_fn=region_for_point_fn)
+    # Production targets are admitted only from current-frame semantic anchors.
+    # The legacy geometry model is retained above for offline diagnostics only.
+    targets: dict[str, dict[str, Any]] = {}
     items = [item for item in (ocr_items or []) if isinstance(item, dict)]
 
     def region(x: int, y: int, fallback: str) -> str:

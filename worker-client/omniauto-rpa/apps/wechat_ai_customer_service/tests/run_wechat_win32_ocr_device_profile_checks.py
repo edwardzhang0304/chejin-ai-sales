@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import sys
 
 
@@ -20,7 +21,13 @@ def assert_true(condition: bool, message: str) -> None:
 
 
 def test_device_profile_module_exports_expected_helpers() -> None:
-    for name in ("build_device_profile", "profile_summary", "profile_changed"):
+    for name in (
+        "build_device_profile",
+        "profile_summary",
+        "profile_changed",
+        "dynamic_layout_enabled",
+        "legacy_profile_matches",
+    ):
         assert_true(callable(getattr(device_profile, name, None)), f"device profile helper missing: {name}")
 
 
@@ -107,6 +114,43 @@ def test_device_profile_records_multi_monitor_negative_virtual_screen() -> None:
     assert_true(summary.get("monitor_count") == 2 and summary.get("dpi_scale") == 1.5, f"profile summary mismatch: {summary}")
 
 
+def test_legacy_profile_requires_all_machine_identity_fields() -> None:
+    profile = device_profile.build_device_profile(
+        geometry={"left": 40, "top": 20, "width": 981, "height": 860},
+        screenshot_size=(981, 860),
+        client_rect={"width": 963, "height": 820},
+        dpi_scale=1.25,
+        screen={"width": 1920, "height": 1080},
+        sidebar_bounds=[0, 0, 368, 820],
+        wechat_version="3.9.10.19",
+        window_structure="WeChatMainWndForPC",
+    )
+    matched, mismatches = device_profile.legacy_profile_matches(profile, profile)
+    assert_true(matched and not mismatches, f"identical profile should match: {mismatches}")
+    changed = dict(profile)
+    changed["window_rect"] = {**profile["window_rect"], "left": 80}
+    matched, mismatches = device_profile.legacy_profile_matches(changed, profile)
+    assert_true(not matched and "window_position_mismatch" in mismatches, f"window movement must reject legacy profile: {mismatches}")
+    incomplete = dict(profile)
+    incomplete.pop("wechat_version", None)
+    matched, mismatches = device_profile.legacy_profile_matches(incomplete, profile)
+    assert_true(not matched and "wechat_version_mismatch" in mismatches, f"missing current version must reject: {mismatches}")
+
+
+def test_dynamic_layout_switch_is_safe_by_default_and_explicitly_disableable() -> None:
+    previous = os.environ.get("WECHAT_WIN32_OCR_DYNAMIC_LAYOUT_ENABLED")
+    try:
+        os.environ.pop("WECHAT_WIN32_OCR_DYNAMIC_LAYOUT_ENABLED", None)
+        assert_true(device_profile.dynamic_layout_enabled(), "dynamic layout must be enabled by default")
+        os.environ["WECHAT_WIN32_OCR_DYNAMIC_LAYOUT_ENABLED"] = "0"
+        assert_true(not device_profile.dynamic_layout_enabled(), "switch should disable dynamic mode explicitly")
+    finally:
+        if previous is None:
+            os.environ.pop("WECHAT_WIN32_OCR_DYNAMIC_LAYOUT_ENABLED", None)
+        else:
+            os.environ["WECHAT_WIN32_OCR_DYNAMIC_LAYOUT_ENABLED"] = previous
+
+
 def main() -> int:
     tests = [
         test_device_profile_module_exports_expected_helpers,
@@ -114,6 +158,8 @@ def main() -> int:
         test_build_device_profile_shape,
         test_profile_summary_and_change_detection,
         test_device_profile_records_multi_monitor_negative_virtual_screen,
+        test_legacy_profile_requires_all_machine_identity_fields,
+        test_dynamic_layout_switch_is_safe_by_default_and_explicitly_disableable,
     ]
     passed = 0
     for test in tests:

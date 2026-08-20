@@ -46,13 +46,8 @@ def _run_vision_worker(connector: Any, args: list[str]) -> dict[str, Any]:
     timeout = max(5.0, float(getattr(connector, "timeout_seconds", 90.0) or 90.0))
     creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
     worker_env = os.environ.copy()
-    # PR #28 deliberately remains byte-immutable.  Its generic Win32 host
-    # defaults fixed-origin normalization off, while OmniAuto's existing
-    # physical-coordinate contract requires it on.  The normal Connector path
-    # receives this host policy from ``wechat_pr28_runtime_adapter``; Vision
-    # starts its own worker and therefore must carry the same additive default
-    # at this external binding.  An explicit operator setting still wins.
-    worker_env.setdefault("WECHAT_WIN32_OCR_WINDOW_FIXED_ORIGIN", "1")
+    # Vision inherits the Sidecar-owned policy unchanged; it must never
+    # invent window/layout defaults of its own.
     try:
         completed = subprocess.run(
             command,

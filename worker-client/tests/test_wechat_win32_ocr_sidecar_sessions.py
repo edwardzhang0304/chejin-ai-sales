@@ -18,6 +18,7 @@ if str(OMNIAUTO_ROOT) not in sys.path:
     sys.path.insert(0, str(OMNIAUTO_ROOT))
 
 from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar as sidecar
+from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import window_layout
 from chejin_worker_client.wechat_c2 import build_scan_result_payload
 
 
@@ -35,6 +36,37 @@ def ocr_item(text: str, center_y: float, *, enhanced: bool = False) -> dict:
     if enhanced:
         item["ocr_source"] = "sidebar_visible_list_enhanced"
     return item
+
+
+def session_layout_snapshot(image_size: tuple[int, int]) -> dict:
+    """A resolved layout input for session-semantic unit tests."""
+    width, height = image_size
+    sidebar_right = min(380, max(300, int(width * 0.38)))
+    header_bottom = min(110, max(64, int(height * 0.10)))
+    return window_layout.build_layout_snapshot(
+        hwnd=101,
+        frame_id=window_layout.new_frame_id(101),
+        capture_mode=window_layout.CAPTURE_MODE_WINDOW_VISIBLE_SCREEN,
+        image_size=image_size,
+        capture_screen_origin=[0, 0],
+        window_rect=[0, 0, width, height],
+        client_rect=[0, 0, width, height],
+        client_screen_origin=[0, 0],
+        dpi_scale=1.0,
+        regions={
+            "left_nav_bounds": [0, 0, 75, height],
+            "sidebar_bounds": [75, 0, sidebar_right, height],
+            "sidebar_header_bounds": [75, 0, sidebar_right, header_bottom],
+            "session_list_bounds": [75, header_bottom, sidebar_right, height],
+            "chat_header_bounds": [sidebar_right, 0, width, header_bottom],
+            "message_viewport_bounds": [sidebar_right, header_bottom, width, height - 100],
+            "input_bounds": [sidebar_right, height - 100, width, height],
+        },
+        anchors=[],
+        confidence=1.0,
+        conflicts=[],
+        executable=True,
+    )
 
 
 class WechatWin32OcrSessionRowTest(unittest.TestCase):
@@ -83,6 +115,7 @@ class WechatWin32OcrSessionRowTest(unittest.TestCase):
                 hwnd=101,
                 geometry=geometry,
                 screenshot_path="scan.png",
+                layout_snapshot=session_layout_snapshot(frame.size),
             )
         evidence.update(
             {
@@ -102,6 +135,11 @@ class WechatWin32OcrSessionRowTest(unittest.TestCase):
                 sidecar,
                 "capture_wechat",
                 return_value=(frame.copy(), "fresh.png"),
+            ),
+            patch.object(
+                sidecar,
+                "layout_snapshot_for_image",
+                return_value=session_layout_snapshot(frame.size),
             ),
             patch.object(
                 sidecar, "activate_session_candidate", return_value=True
@@ -141,6 +179,7 @@ class WechatWin32OcrSessionRowTest(unittest.TestCase):
                 old_frame,
                 hwnd=101,
                 geometry=geometry,
+                layout_snapshot=session_layout_snapshot(old_frame.size),
             )
         evidence.update(
             {
@@ -155,6 +194,11 @@ class WechatWin32OcrSessionRowTest(unittest.TestCase):
                 sidecar,
                 "capture_wechat",
                 return_value=(changed_frame, "fresh.png"),
+            ),
+            patch.object(
+                sidecar,
+                "layout_snapshot_for_image",
+                return_value=session_layout_snapshot(changed_frame.size),
             ),
             patch.object(sidecar, "activate_session_candidate") as activate,
         ):
@@ -184,7 +228,10 @@ class WechatWin32OcrSessionRowTest(unittest.TestCase):
         }
         with patch.object(sidecar, "window_dpi_scale", return_value=1.25):
             evidence = sidecar.immutable_frame_pixel_evidence(
-                old_frame, hwnd=101, geometry=geometry
+                old_frame,
+                hwnd=101,
+                geometry=geometry,
+                layout_snapshot=session_layout_snapshot(old_frame.size),
             )
         evidence.update({"scan_id": "scan-1", "sidecar_run_id": "sessions-1"})
         validation = {
@@ -199,6 +246,11 @@ class WechatWin32OcrSessionRowTest(unittest.TestCase):
                 sidecar,
                 "capture_wechat",
                 return_value=(changed_frame, "fresh.png"),
+            ),
+            patch.object(
+                sidecar,
+                "layout_snapshot_for_image",
+                return_value=session_layout_snapshot(changed_frame.size),
             ),
             patch.object(
                 sidecar, "activate_session_candidate", return_value=True
@@ -224,6 +276,7 @@ class WechatWin32OcrSessionRowTest(unittest.TestCase):
     def test_equal_pixels_at_different_timepoints_get_distinct_frame_ids(self):
         frame = Image.new("RGB", (980, 860), "white")
         geometry = {"width": 980, "height": 860}
+        layout_snapshot = session_layout_snapshot(frame.size)
         with (
             patch.object(sidecar, "window_dpi_scale", return_value=1.0),
             patch.object(sidecar.time, "monotonic_ns", return_value=510703000000),
@@ -234,10 +287,16 @@ class WechatWin32OcrSessionRowTest(unittest.TestCase):
             ),
         ):
             first = sidecar.immutable_frame_pixel_evidence(
-                frame, hwnd=101, geometry=geometry
+                frame,
+                hwnd=101,
+                geometry=geometry,
+                layout_snapshot=layout_snapshot,
             )
             second = sidecar.immutable_frame_pixel_evidence(
-                frame, hwnd=101, geometry=geometry
+                frame,
+                hwnd=101,
+                geometry=geometry,
+                layout_snapshot=layout_snapshot,
             )
 
         self.assertEqual(
@@ -257,7 +316,10 @@ class WechatWin32OcrSessionRowTest(unittest.TestCase):
         }
         with patch.object(sidecar, "window_dpi_scale", return_value=1.25):
             base = sidecar.immutable_frame_pixel_evidence(
-                frame, hwnd=101, geometry=geometry
+                frame,
+                hwnd=101,
+                geometry=geometry,
+                layout_snapshot=session_layout_snapshot(frame.size),
             )
         base.update({"scan_id": "scan-1", "sidecar_run_id": "sessions-1"})
 
@@ -388,6 +450,7 @@ class WechatWin32OcrSessionRowTest(unittest.TestCase):
                 ocr_item("额度不够下 claude，我来上...", 577.0, enhanced=True),
             ],
             (966, 854),
+            layout_snapshot=session_layout_snapshot((966, 854)),
         )
 
         self.assertEqual(len(sessions), 2)
@@ -418,7 +481,11 @@ class WechatWin32OcrSessionRowTest(unittest.TestCase):
                 if reverse:
                     items.reverse()
 
-                sessions = sidecar.parse_sessions_from_ocr(items, (980, 860))
+                sessions = sidecar.parse_sessions_from_ocr(
+                    items,
+                    (980, 860),
+                    layout_snapshot=session_layout_snapshot((980, 860)),
+                )
 
                 self.assertEqual(len(sessions), 1)
                 self.assertEqual(sessions[0]["name"], "普通客户名字被截断...")
@@ -432,6 +499,7 @@ class WechatWin32OcrSessionRowTest(unittest.TestCase):
                 ocr_item("请联系CJFAKE23处理...", 154.0, enhanced=True),
             ],
             (980, 860),
+            layout_snapshot=session_layout_snapshot((980, 860)),
         )
 
         self.assertEqual(len(sessions), 1)
@@ -451,6 +519,7 @@ class WechatWin32OcrSessionRowTest(unittest.TestCase):
                 sessions = sidecar.parse_sessions_from_ocr(
                     [ocr_item(raw_title, 128.0)],
                     (980, 860),
+                    layout_snapshot=session_layout_snapshot((980, 860)),
                 )
 
                 self.assertEqual(len(sessions), 1)
@@ -472,6 +541,7 @@ class WechatWin32OcrSessionRowTest(unittest.TestCase):
                 ocr_item("嗯，是的", 236.0, enhanced=True),
             ],
             (980, 860),
+            layout_snapshot=session_layout_snapshot((980, 860)),
         )
 
         self.assertEqual(
@@ -483,6 +553,7 @@ class WechatWin32OcrSessionRowTest(unittest.TestCase):
         sessions = sidecar.parse_sessions_from_ocr(
             [ocr_item("CJR8S5K3虾丸子大...11:05", 128.0)],
             (980, 860),
+            layout_snapshot=session_layout_snapshot((980, 860)),
         )
 
         self.assertEqual(len(sessions), 1)
@@ -516,7 +587,11 @@ class WechatWin32OcrSessionRowTest(unittest.TestCase):
                     if reverse:
                         items.reverse()
 
-                    sessions = sidecar.parse_sessions_from_ocr(items, (980, 860))
+                    sessions = sidecar.parse_sessions_from_ocr(
+                        items,
+                        (980, 860),
+                        layout_snapshot=session_layout_snapshot((980, 860)),
+                    )
 
                     self.assertEqual(len(sessions), 1)
                     self.assertEqual(sessions[0]["name"], "张三-CJWIN012")
@@ -530,6 +605,7 @@ class WechatWin32OcrSessionRowTest(unittest.TestCase):
                 ocr_item("张三-CJWIN012", 126.0, enhanced=True),
             ],
             (980, 860),
+            layout_snapshot=session_layout_snapshot((980, 860)),
         )
 
         self.assertEqual(len(sessions), 1)
@@ -542,6 +618,7 @@ class WechatWin32OcrSessionRowTest(unittest.TestCase):
                 ocr_item("李四-CJWIN023", 126.0, enhanced=True),
             ],
             (980, 860),
+            layout_snapshot=session_layout_snapshot((980, 860)),
         )
 
         self.assertEqual(len(sessions), 1)
@@ -559,6 +636,7 @@ class WechatWin32OcrSessionRowTest(unittest.TestCase):
                 ocr_item("销售讨论-CJWIN012（6）", 126.0, enhanced=True),
             ],
             (980, 860),
+            layout_snapshot=session_layout_snapshot((980, 860)),
         )
 
         self.assertEqual(len(sessions), 1)
