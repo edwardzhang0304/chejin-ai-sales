@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Callable
 
 from apps.wechat_ai_customer_service.adapters.add_friend_locator import make_locator_result, normalize_bounds, normalize_point
@@ -453,6 +454,39 @@ def field_text_visible(
     }
 
 
+def high_confidence_eight_char_code_visible(
+    ocr_items: list[dict[str, Any]] | None,
+    *,
+    bounds: list[int] | None = None,
+    minimum_confidence: float = 0.90,
+) -> dict[str, Any]:
+    items = [item for item in (ocr_items or []) if isinstance(item, dict)]
+    if bounds:
+        items = [
+            item
+            for item in items
+            if point_in_bounds(*item_center(item), bounds)
+        ]
+    candidates: list[dict[str, Any]] = []
+    for item in items:
+        text = compact_ocr_text(item.get("text"))
+        confidence = float(item.get("confidence") or 0.0)
+        if re.fullmatch(r"[a-z0-9]{8}", text) and confidence >= minimum_confidence:
+            candidates.append({"text": text, "confidence": confidence})
+    selected = candidates[0] if len(candidates) == 1 else None
+    return {
+        "ok": selected is not None,
+        "expected_length": 8,
+        "matched_by": "high_confidence_eight_char_code" if selected else "",
+        "scoped_to_field": bool(bounds),
+        "ocr_fragment_count": len(items),
+        "short_code_candidate_count": len(candidates),
+        "observed_text": str((selected or {}).get("text") or ""),
+        "observed_confidence": float((selected or {}).get("confidence") or 0.0),
+        "minimum_confidence": float(minimum_confidence),
+    }
+
+
 def invite_form_field_verification(
     *,
     verify_message: str,
@@ -467,20 +501,34 @@ def invite_form_field_verification(
         ocr_items,
         bounds=scoped_bounds.get("verify_message"),
     )
-    remark_result = field_text_visible(
-        remark_name,
-        ocr_items,
-        bounds=scoped_bounds.get("remark_name"),
+    clean_remark_name = compact_ocr_text(remark_name)
+    clean_remark_code = compact_ocr_text(remark_code)
+    copied_eight_char_code = bool(
+        clean_remark_name == clean_remark_code
+        and re.fullmatch(r"[a-z0-9]{8}", clean_remark_code)
     )
-    code_result = field_text_visible(
-        remark_code,
-        ocr_items,
-        bounds=scoped_bounds.get("remark_code"),
-    )
+    if copied_eight_char_code:
+        code_result = high_confidence_eight_char_code_visible(
+            ocr_items,
+            bounds=scoped_bounds.get("remark_code"),
+        )
+        remark_result = dict(code_result)
+    else:
+        remark_result = field_text_visible(
+            remark_name,
+            ocr_items,
+            bounds=scoped_bounds.get("remark_name"),
+        )
+        code_result = field_text_visible(
+            remark_code,
+            ocr_items,
+            bounds=scoped_bounds.get("remark_code"),
+        )
     return {
         "ok": bool(verify_result.get("ok")) and bool(remark_result.get("ok")) and bool(code_result.get("ok")),
         "verify_message": verify_result,
         "remark_name": remark_result,
         "remark_code": code_result,
         "method": "ocr_surface_text_visibility",
+        "copied_eight_char_code_mode": copied_eight_char_code,
     }

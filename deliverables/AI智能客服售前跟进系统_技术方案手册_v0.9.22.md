@@ -1067,6 +1067,7 @@ classify_outbox_recovery(http_result)
 - Worker 调用 OmniAuto V15 当前正式主链路只允许使用 `add-friend-entry-click-plan-windows`，旧 `add-friend`、`add-friend-plan`、`add-friend-entry-plan`、`add-friend-entry-click-plan` 不作为正式入口。
 - 正式 payload 必填字段为 `phone_or_wechat`、`verify_message`、`remark_name`、`remark_code`；缺任一字段必须返回 `TASK_PAYLOAD_INVALID`，且 `wechat_ui_action_attempted=false`，不得触达微信 UI。
 - `remark_name` 必须包含 `remark_code`；`remark_code` 由服务端生成，OmniAuto 只消费不生成。
+- 邀请表单的问候语与备注是同一稳定页面内的原子填写步骤：复用填写前的动态布局快照，不在两项之间重复截图；两项完成后统一截图、OCR 复核，再以该新快照点击确认。程序复制粘贴的八位字母数字短码只要求在备注字段内出现唯一高置信八位候选，允许 OCR 将 `V/W` 等单字符混淆；低置信或多候选仍零点击失败关闭。
 - 主链路不使用 `sales_name` 自动拼申请语，不使用 `remark` 兜底备注名，避免字段来源混乱。
 - 加好友业务成功点仍是申请添加朋友页最终“确定”按钮的物理点击函数明确返回成功；微信没有可依赖的后续成功状态，不等待成功页面或成功文案。点击成功且没有可靠识别到明确风控/失败提示时，上报 `task.status=completed` 且 `result_code=invite_sent`。
 - `invite_sent` 的确定按钮点击成功后，或搜索结果资料页已经确认 `already_friend` 后，等待约 1—2 秒再执行统一 UI 收尾。只有顶部标题 OCR 精确确认“添加朋友”，或当前 HWND 已由本次添加朋友流程证明且仍存活可截图时，才点击该窗口右上角 X 一次并验证窗口销毁或隐藏。不得根据联系人资料正文、文字数量或“已通过好友”等正文猜测页面；未知窗口零点击。收尾失败不得覆盖已经确认的 `invite_sent/already_friend` 完成事实，不得重新点击确定按钮或重复关窗。
