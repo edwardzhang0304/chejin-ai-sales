@@ -203,14 +203,57 @@ def backend_check(api_base_url: str) -> PreflightCheck:
 def wechat_check() -> PreflightCheck:
     if CONFIG.rpa_mode == "mock":
         return PreflightCheck("wechat", True, "warning", "当前是 mock RPA 模式，不探测真实微信。")
-    status, wechat_status = RpaBridge().probe()
+    bridge = RpaBridge()
+    status, wechat_status = bridge.probe()
     ok = status == "ready" and wechat_status == "logged_in"
+    probe_payload = (
+        dict(bridge.last_probe_payload)
+        if isinstance(bridge.last_probe_payload, dict)
+        else {}
+    )
+    normalization = probe_payload.get("startup_window_normalization")
+    normalization_detail = (
+        {
+            key: normalization.get(key)
+            for key in (
+                "ok",
+                "applied",
+                "reason",
+                "error_code",
+                "before",
+                "before_client",
+                "target",
+                "requested_target",
+                "after",
+                "after_client",
+                "dpi_scale",
+                "after_dpi_scale",
+                "resolution_scale",
+                "screen",
+                "work_area",
+                "enforce_recommended",
+                "recommended_floor_applied",
+                "fixed_origin",
+            )
+            if key in normalization
+        }
+        if isinstance(normalization, dict)
+        else {}
+    )
     return PreflightCheck(
         "wechat",
         ok,
         "error",
         "已检测到可用微信桌面客户端。" if ok else f"微信探测未通过：rpa={status}, wechat={wechat_status}",
-        {"rpa_component_status": status, "wechat_status": wechat_status},
+        {
+            "rpa_component_status": status,
+            "wechat_status": wechat_status,
+            "startup_window_normalization_state": probe_payload.get(
+                "startup_window_normalization_state"
+            ),
+            "window_normalization": normalization_detail,
+            "current_window_geometry": probe_payload.get("geometry"),
+        },
     )
 
 

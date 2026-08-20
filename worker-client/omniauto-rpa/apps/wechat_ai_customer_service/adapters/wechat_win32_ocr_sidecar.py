@@ -19226,7 +19226,7 @@ def normalize_wechat_window(hwnd: int, *, allow_move: bool = True) -> dict[str, 
     before_client = get_window_client_geometry(hwnd)
     dpi_scale = window_dpi_scale(hwnd)
 
-    enforce_recommended = env_flag("WECHAT_WIN32_OCR_ENFORCE_RECOMMENDED_WINDOW", default=False)
+    enforce_recommended = env_flag("WECHAT_WIN32_OCR_ENFORCE_RECOMMENDED_WINDOW", default=True)
     fixed_origin = env_flag("WECHAT_WIN32_OCR_WINDOW_FIXED_ORIGIN", default=True)
     if not fixed_origin:
         return {
@@ -19304,14 +19304,8 @@ def normalize_wechat_window(hwnd: int, *, allow_move: bool = True) -> dict[str, 
         screen_width=screen_width,
         screen_height=screen_height,
         screen_metrics_available=screen_metrics_available,
-        default_width=max(
-            MIN_SAFE_WINDOW_WIDTH,
-            min(DEFAULT_SAFE_WINDOW_WIDTH, int(before.get("width") or DEFAULT_SAFE_WINDOW_WIDTH)),
-        ),
-        default_height=max(
-            MIN_SAFE_WINDOW_HEIGHT,
-            min(DEFAULT_SAFE_WINDOW_HEIGHT, int(before.get("height") or DEFAULT_SAFE_WINDOW_HEIGHT)),
-        ),
+        default_width=DEFAULT_SAFE_WINDOW_WIDTH,
+        default_height=DEFAULT_SAFE_WINDOW_HEIGHT,
         min_width=MIN_SAFE_WINDOW_WIDTH,
         min_height=MIN_SAFE_WINDOW_HEIGHT,
         max_width=MAX_SAFE_WINDOW_WIDTH,

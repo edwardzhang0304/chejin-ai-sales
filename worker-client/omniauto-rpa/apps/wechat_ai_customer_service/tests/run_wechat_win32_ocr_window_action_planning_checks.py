@@ -135,8 +135,8 @@ def test_plan_1920x1200_fixed_origin_matches_default_safe_window() -> None:
     assert_true(result.get("screen") == {"width": 1920, "height": 1200}, f"screen metadata mismatch: {result}")
 
 
-def test_plan_1920x1080_keeps_default_safe_window_when_it_fits() -> None:
-    before = {"left": 10, "top": 12, "width": 900, "height": 800}
+def test_plan_1920x1080_promotes_observed_narrow_window_to_standard_size() -> None:
+    before = {"left": 8, "top": 0, "width": 800, "height": 852}
     result = plan(before, screen_width=1920, screen_height=1080)
     assert_true((result.get("left"), result.get("top"), result.get("width"), result.get("height")) == (0, 0, 980, 860), f"1080p target mismatch: {result}")
 
@@ -458,7 +458,7 @@ def test_verify_policy_refuses_a_required_move_without_touching_the_window() -> 
         sidecar.win32gui = original_win32gui
 
 
-def test_sidecar_keeps_current_safe_window_size_when_unconfigured() -> None:
+def test_sidecar_promotes_current_window_to_standard_size_when_unconfigured() -> None:
     original_get_window_geometry = sidecar.get_window_geometry
     original_get_window_client_geometry = sidecar.get_window_client_geometry
     original_window_dpi_scale = sidecar.window_dpi_scale
@@ -497,23 +497,37 @@ def test_sidecar_keeps_current_safe_window_size_when_unconfigured() -> None:
             observed.update(kwargs)
             return {
                 "ok": True,
-                "move": False,
+                "move": True,
                 "left": 0,
                 "top": 0,
-                "width": 900,
-                "height": 800,
-                "target": {"width": 900, "height": 800},
-                "requested_target": {"width": 900, "height": 800},
+                "width": 980,
+                "height": 860,
+                "target": {"width": 980, "height": 860},
+                "requested_target": {"width": 980, "height": 860},
                 "resolution_scale": 1.0,
             }
 
         sidecar.win32_ocr_window_actions.plan_normalize_wechat_window = fake_plan
-        sidecar.win32gui = types.SimpleNamespace(IsZoomed=lambda _hwnd: False)
+        sidecar.win32gui = types.SimpleNamespace(
+            IsZoomed=lambda _hwnd: False,
+            MoveWindow=lambda _hwnd, left, top, width, height, _repaint: geometry.update(
+                {
+                    "left": left,
+                    "top": top,
+                    "right": left + width,
+                    "bottom": top + height,
+                    "width": width,
+                    "height": height,
+                }
+            ),
+        )
         result = sidecar.normalize_wechat_window(2004)
-        assert_true(result.get("ok") is True, f"safe current window should verify: {result}")
-        assert_true(observed.get("default_width") == 900, f"safe width was enlarged: {observed}")
-        assert_true(observed.get("default_height") == 800, f"safe height was enlarged: {observed}")
-        assert_true(observed.get("enforce_recommended") is False, f"recommended floor unexpectedly enabled: {observed}")
+        assert_true(result.get("ok") is True, f"standard window should verify: {result}")
+        assert_true(observed.get("default_width") == 980, f"standard width was not requested: {observed}")
+        assert_true(observed.get("default_height") == 860, f"standard height was not requested: {observed}")
+        assert_true(observed.get("enforce_recommended") is True, f"recommended floor was not enabled: {observed}")
+        assert_true(result.get("after", {}).get("width") == 980, f"window was not widened to standard size: {result}")
+        assert_true(result.get("after", {}).get("height") == 860, f"window was not raised to standard size: {result}")
     finally:
         sidecar.get_window_geometry = original_get_window_geometry
         sidecar.get_window_client_geometry = original_get_window_client_geometry
@@ -1236,7 +1250,7 @@ def main() -> int:
         test_window_action_planning_module_exports_expected_helpers,
         test_plan_disabled_matches_sidecar_disabled_shape,
         test_plan_1920x1200_fixed_origin_matches_default_safe_window,
-        test_plan_1920x1080_keeps_default_safe_window_when_it_fits,
+        test_plan_1920x1080_promotes_observed_narrow_window_to_standard_size,
         test_plan_high_resolution_keeps_normal_window_size,
         test_plan_1920_class_displays_do_not_multiply_window_by_dpi,
         test_plan_resolution_dpi_matrix_stays_visible_and_safe,
@@ -1250,7 +1264,7 @@ def main() -> int:
         test_empty_ocr_region_reports_layout_error_instead_of_value_error,
         test_sidecar_normalize_wechat_window_uses_same_planned_move_shape,
         test_verify_policy_refuses_a_required_move_without_touching_the_window,
-        test_sidecar_keeps_current_safe_window_size_when_unconfigured,
+        test_sidecar_promotes_current_window_to_standard_size_when_unconfigured,
         test_normalization_rejects_dpi_change_after_geometry_check,
         test_sidebar_search_query_must_match_exact_remark_code,
         test_sidebar_search_query_ignores_empty_placeholder_icon_text,
