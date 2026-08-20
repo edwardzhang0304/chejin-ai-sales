@@ -2037,7 +2037,12 @@ def test_add_friend_primary_locator_contract() -> None:
         image, _point, _bounds, _snapshot = plus_icon_image_for_size(981, 860)
         return image
 
-    def plus_icon_image_for_size(width: int, height: int) -> tuple[Image.Image, tuple[int, int], list[int], dict[str, object]]:
+    def plus_icon_image_for_size(
+        width: int,
+        height: int,
+        *,
+        dpi_scale: float = 1.0,
+    ) -> tuple[Image.Image, tuple[int, int], list[int], dict[str, object]]:
         image = Image.new("RGB", (width, height), (120, 120, 120))
         pixels = image.load()
         nav_x = int(width * 0.12)
@@ -2056,14 +2061,14 @@ def test_add_friend_primary_locator_contract() -> None:
         assert_true(layout.get("ok"), f"real layout builder rejected plus frame: {layout}")
         snapshot = window_layout.build_layout_snapshot(
             hwnd=1001,
-            frame_id=f"plus-{width}x{height}",
+            frame_id=f"plus-{width}x{height}@{dpi_scale}",
             capture_mode=window_layout.CAPTURE_MODE_WINDOW_VISIBLE_SCREEN,
             image_size=(width, height),
             capture_screen_origin=[0, 0],
             window_rect=[0, 0, width, height],
             client_rect=[0, 0, width, height],
             client_screen_origin=[0, 0],
-            dpi_scale=1.0,
+            dpi_scale=dpi_scale,
             regions=layout["regions"],
             anchors=layout["anchors"],
             confidence=layout["confidence"],
@@ -2118,16 +2123,47 @@ def test_add_friend_primary_locator_contract() -> None:
     assert_true(plus_target.get("executable") is True, f"visual plus locator should be executable: {plus_target}")
     assert_true(plus_target.get("fallback_used") is False, f"plus locator must not execute fallback clicks: {plus_target}")
     assert_true(len(plus_target.get("candidates") or []) >= 1, f"plus locator should expose visual candidates: {plus_target}")
-    assert_true(320 <= int(plus_target.get("x") or 0) <= 370, f"plus locator x outside sidebar toolbar: {plus_target}")
-    assert_true(48 <= int(plus_target.get("y") or 0) <= 118, f"plus locator y outside sidebar toolbar: {plus_target}")
     sources = {str(item.get("source") or "") for item in plus_target.get("candidates") or [] if isinstance(item, dict)}
     assert_true("vision_plus_icon" in sources, f"plus locator must expose visual candidate: {plus_target}")
-    diagnostic_sources = {str(item.get("source") or "") for item in plus_target.get("diagnostic_references") or [] if isinstance(item, dict)}
-    assert_true("diagnostic_windows_current_geometry" in diagnostic_sources, f"plus locator must keep current geometry only as diagnostics: {plus_target}")
-    assert_true("diagnostic_windows_1080p_reference_geometry" in diagnostic_sources, f"plus locator must keep reference geometry only as diagnostics: {plus_target}")
+    primary_point = [int(plus_target.get("x") or 0), int(plus_target.get("y") or 0)]
+    primary_click_bounds = [int(value) for value in plus_target.get("click_bounds") or []]
+    assert_true(
+        primary_click_bounds[0] <= primary_point[0] <= primary_click_bounds[2]
+        and primary_click_bounds[1] <= primary_point[1] <= primary_click_bounds[3],
+        f"plus locator point must stay inside the detected icon: {plus_target}",
+    )
+    primary_metadata = plus_target.get("metadata") or {}
+    assert_true(primary_metadata.get("actual_resolution") == [981, 860], f"actual resolution missing: {plus_target}")
+    assert_true(primary_metadata.get("dynamic_sidebar_header_bounds") == primary_snapshot["sidebar_header_bounds"], f"dynamic header missing: {plus_target}")
+    assert_true(primary_metadata.get("dpi_scale") == 1.0, f"DPI diagnostic missing: {plus_target}")
+    assert_true(primary_metadata.get("window_rect") == [0, 0, 981, 860], f"window rect diagnostic missing: {plus_target}")
+    assert_true(primary_metadata.get("client_rect") == [0, 0, 981, 860], f"client rect diagnostic missing: {plus_target}")
+    assert_true(primary_metadata.get("client_screen_origin") == [0, 0], f"client origin diagnostic missing: {plus_target}")
+    assert_true(primary_metadata.get("capture_screen_origin") == [0, 0], f"capture origin diagnostic missing: {plus_target}")
+    assert_true(primary_metadata.get("layout_snapshot_id") == primary_snapshot["layout_snapshot_id"], f"snapshot diagnostic missing: {plus_target}")
+    assert_true(primary_metadata.get("layout_confidence") == primary_snapshot["confidence"], f"layout confidence diagnostic missing: {plus_target}")
+    assert_true(primary_metadata.get("layout_conflicts") == primary_snapshot["conflicts"], f"layout conflicts diagnostic missing: {plus_target}")
+    assert_true((primary_metadata.get("dynamic_layout_bounds") or {}).get("sidebar_header_bounds") == primary_snapshot["sidebar_header_bounds"], f"dynamic bounds diagnostic missing: {plus_target}")
+    assert_true(primary_metadata.get("final_click_point") == primary_point, f"final click diagnostic mismatch: {plus_target}")
+    assert_true(primary_metadata.get("conflicts") == [], f"unique visual plus must have no conflicts: {plus_target}")
+    assert_true("diagnostic_references" not in plus_target, f"legacy coordinate diagnostics must be absent: {plus_target}")
 
-    for width, height in [(980, 720), (980, 860), (1225, 816), (1225, 1032), (1470, 1032), (1470, 1290), (2560, 1440)]:
-        matrix_image, expected_point, safe_bounds, matrix_snapshot = plus_icon_image_for_size(width, height)
+    for width, height, dpi_scale in [
+        (980, 720, 1.0),
+        (980, 860, 1.0),
+        (1225, 816, 1.25),
+        (1225, 1032, 1.25),
+        (1470, 1032, 1.5),
+        (1470, 1290, 1.5),
+        (1920, 1200, 1.25),
+        (2560, 1440, 1.25),
+        (3840, 2160, 1.5),
+    ]:
+        matrix_image, expected_point, safe_bounds, matrix_snapshot = plus_icon_image_for_size(
+            width,
+            height,
+            dpi_scale=dpi_scale,
+        )
         matrix_target = add_friend_plus_entry_target(
             {"width": width, "height": height, "left": 0, "top": 0, "right": width, "bottom": height},
             (width, height),
@@ -2149,13 +2185,12 @@ def test_add_friend_primary_locator_contract() -> None:
             abs(actual_point[0] - expected_point[0]) <= 8 and abs(actual_point[1] - expected_point[1]) <= 8,
             f"matrix plus locator should match visual anchor: {(width, height, actual_point, expected_point, matrix_target)}",
         )
-        matrix_diagnostic_sources = {
-            str(item.get("source") or "")
-            for item in matrix_target.get("diagnostic_references") or []
-            if isinstance(item, dict)
-        }
-        assert_true("diagnostic_windows_current_geometry" in matrix_diagnostic_sources, f"matrix current geometry diagnostics missing: {matrix_target}")
-        assert_true("diagnostic_windows_1080p_reference_geometry" in matrix_diagnostic_sources, f"matrix reference diagnostics missing: {matrix_target}")
+        matrix_metadata = matrix_target.get("metadata") or {}
+        assert_true(matrix_metadata.get("actual_resolution") == [width, height], f"matrix actual resolution missing: {matrix_target}")
+        assert_true(matrix_metadata.get("dpi_scale") == dpi_scale, f"matrix DPI diagnostic missing: {matrix_target}")
+        assert_true(matrix_metadata.get("dynamic_sidebar_header_bounds") == safe_bounds, f"matrix dynamic header missing: {matrix_target}")
+        assert_true(matrix_metadata.get("final_click_point") == actual_point, f"matrix final click diagnostic mismatch: {matrix_target}")
+        assert_true("diagnostic_references" not in matrix_target, f"matrix retained legacy coordinate diagnostics: {matrix_target}")
 
     fallback_plus_target = add_friend_plus_entry_target(
         {"width": 981, "height": 860, "left": 0, "top": 0, "right": 981, "bottom": 860},
@@ -2164,9 +2199,10 @@ def test_add_friend_primary_locator_contract() -> None:
         route_kind="windows",
     )
     assert_locator(fallback_plus_target, "plus_entry_fallback")
-    assert_true(fallback_plus_target.get("source") == "plus_icon_not_found", f"main route must not execute geometry fallback: {fallback_plus_target}")
+    assert_true(fallback_plus_target.get("source") == "dynamic_sidebar_header_bounds_missing", f"missing dynamic layout must fail closed: {fallback_plus_target}")
     assert_true(fallback_plus_target.get("executable") is False, f"missing visual plus must be non-executable: {fallback_plus_target}")
     assert_true(fallback_plus_target.get("fallback_used") is False, f"geometry fallback must not be executable: {fallback_plus_target}")
+    assert_true(fallback_plus_target.get("point") == [0, 0], f"unresolved dynamic layout must not emit a click point: {fallback_plus_target}")
 
     for width, height in [(980, 720), (1225, 816), (1470, 1032), (2560, 1440)]:
         blank_image, blank_point, _blank_bounds, blank_snapshot = plus_icon_image_for_size(width, height)
@@ -2412,14 +2448,11 @@ def test_sidecar_add_friend_helpers_import() -> None:
         normalize_add_friend_query as contract_normalize_add_friend_query,
     )
     from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar import (
-        add_friend_windows_1080p_reference_plus_button_point_for_geometry,
         add_friend_optional_field_fill_enabled,
-        add_friend_plus_button_point_for_geometry,
         args_for_daemon_request,
         classify_add_friend_after_confirm_surface,
         add_friend_surface_readiness,
         classify_add_friend_ocr_surface,
-        add_friend_windows_plus_button_point_for_geometry,
         normalize_add_friend_query,
         type_add_friend_phone_query_like_human,
         type_add_friend_search_query,
@@ -2434,12 +2467,6 @@ def test_sidecar_add_friend_helpers_import() -> None:
         == contract_normalize_add_friend_query(phone="", wechat=" wxid_demo "),
         "sidecar query normalization must reuse contract behavior",
     )
-    geometry = {"width": 981, "height": 860, "left": -22, "top": 0, "right": 959, "bottom": 860}
-    windows_point = add_friend_windows_plus_button_point_for_geometry(geometry)
-    windows_1080p_point = add_friend_windows_1080p_reference_plus_button_point_for_geometry(geometry)
-    assert_true(add_friend_plus_button_point_for_geometry(geometry) == windows_point, "default add_friend plus locator should be Windows-adapted")
-    assert_true(292 <= windows_point[0] <= 314, f"Windows plus point mismatch: {windows_point}")
-    assert_true(windows_1080p_point[0] > windows_point[0] + 35, f"Windows 1920x1080 reference point should remain separate: ref={windows_1080p_point}, adaptive={windows_point}")
     surface = classify_add_friend_ocr_surface([{"text": "添加朋友"}], (980, 860))
     assert_true(surface.get("state") == "add_contact_entry", f"unexpected surface: {surface}")
     invite_sent = classify_add_friend_after_confirm_surface([{"text": "等待验证"}], (468, 834), confirm_ok=True)
@@ -2468,11 +2495,43 @@ def test_sidecar_add_friend_helpers_import() -> None:
     )
     assert_true(non_wechat_ready.get("ok") is False, f"non-WeChat content should not calibrate as ready: {non_wechat_ready}")
     assert_true(non_wechat_ready.get("state") == "wechat_main_surface_not_ready", f"unexpected non-WeChat state: {non_wechat_ready}")
+    from PIL import Image
+    from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import window_layout
+
+    readiness_image = Image.new("RGB", (981, 860), (120, 120, 120))
+    readiness_pixels = readiness_image.load()
+    for x in (118, 392):
+        for y in range(860):
+            readiness_pixels[x - 1, y] = (20, 20, 20)
+            readiness_pixels[x + 1, y] = (230, 230, 230)
+    for y in (103, 688, 722):
+        for x in range(981):
+            readiness_pixels[x, y - 1] = (20, 20, 20)
+            readiness_pixels[x, y + 1] = (230, 230, 230)
+    readiness_layout = window_layout.build_structural_layout_regions(readiness_image)
+    assert_true(readiness_layout.get("ok"), f"production layout builder rejected readiness frame: {readiness_layout}")
+    readiness_snapshot = window_layout.build_layout_snapshot(
+        hwnd=1001,
+        frame_id="add-friend-readiness",
+        capture_mode=window_layout.CAPTURE_MODE_WINDOW_VISIBLE_SCREEN,
+        image_size=readiness_image.size,
+        capture_screen_origin=[0, 0],
+        window_rect=[0, 0, 981, 860],
+        client_rect=[0, 0, 981, 860],
+        client_screen_origin=[0, 0],
+        dpi_scale=1.0,
+        regions=readiness_layout["regions"],
+        anchors=readiness_layout["anchors"],
+        confidence=readiness_layout["confidence"],
+        conflicts=readiness_layout["conflicts"],
+        executable=True,
+    )
     wechat_ready = add_friend_surface_readiness(
-        {"detected": False},
+        readiness_image,
         [{"text": "搜索", "left": 108, "top": 58, "right": 156, "bottom": 82, "center_x": 132, "center_y": 70, "confidence": 0.92}],
         {"width": 981, "height": 860},
         stage="calibration",
+        layout_snapshot=readiness_snapshot,
     )
     assert_true(wechat_ready.get("ok") is True, f"search anchor should calibrate as ready: {wechat_ready}")
     pressed: list[int] = []

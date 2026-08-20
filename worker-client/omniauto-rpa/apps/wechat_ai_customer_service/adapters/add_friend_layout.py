@@ -8,25 +8,9 @@ from apps.wechat_ai_customer_service.adapters.add_friend_locator import make_loc
 from apps.wechat_ai_customer_service.adapters.add_friend_ocr import compact_ocr_text
 
 
-def bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        parsed = default
-    return max(minimum, min(maximum, parsed))
-
-
 def point_in_bounds(x: int, y: int, bounds: list[int]) -> bool:
     left, top, right, bottom = [int(value) for value in normalize_bounds(bounds)]
     return left <= int(x) <= right and top <= int(y) <= bottom
-
-
-def clamp_point_to_bounds(x: int, y: int, bounds: list[int]) -> tuple[int, int]:
-    left, top, right, bottom = [int(value) for value in normalize_bounds(bounds)]
-    return (
-        bounded_int(x, default=x, minimum=left, maximum=right),
-        bounded_int(y, default=y, minimum=top, maximum=bottom),
-    )
 
 
 def item_center(item: dict[str, Any]) -> tuple[int, int]:
@@ -69,129 +53,6 @@ def item_snapshot(item: dict[str, Any] | None, image_size: tuple[int, int]) -> d
     }
 
 
-def default_session_split_x(width: int) -> int:
-    if width <= 560:
-        return width
-    return max(318, min(390, int(width * 0.36)))
-
-
-def default_search_box_point(geometry: dict[str, Any]) -> tuple[int, int]:
-    width = int(geometry.get("width") or 0)
-    return max(98, min(128, int(width * 0.112))), 70
-
-
-def region_for_point(
-    x: int,
-    y: int,
-    image_size: tuple[int, int],
-    *,
-    split_x_fn: Callable[[int], int] = default_session_split_x,
-) -> str:
-    width, height = int(image_size[0]), int(image_size[1])
-    split_x = split_x_fn(width)
-    nav_right = max(64, min(92, int(width * 0.075)))
-    search_bottom = max(112, min(148, int(height * 0.16)))
-    if int(x) <= nav_right:
-        return "left_nav"
-    if int(x) < split_x:
-        if int(y) <= search_bottom:
-            return "sidebar_search"
-        return "session_list"
-    if int(y) <= max(96, int(height * 0.12)):
-        return "main_header"
-    return "main_content"
-
-
-def plus_entry_safe_bounds(
-    image_size: tuple[int, int],
-    *,
-    split_x_fn: Callable[[int], int] = default_session_split_x,
-) -> list[int]:
-    width, height = int(image_size[0]), int(image_size[1])
-    split_x = split_x_fn(width)
-    top = max(36, min(56, int(height * 0.06)))
-    bottom = max(top + 36, min(118, int(height * 0.15)))
-    left = max(96, split_x - 92)
-    right = min(width - 4, max(left + 44, split_x - 2))
-    return normalize_bounds([left, top, right, bottom])
-
-
-def plus_entry_layout_regions(
-    image_size: tuple[int, int],
-    *,
-    split_x_fn: Callable[[int], int] = default_session_split_x,
-) -> dict[str, Any]:
-    width, height = int(image_size[0]), int(image_size[1])
-    split_x = split_x_fn(width)
-    nav_right = max(64, min(92, int(width * 0.075)))
-    search_bottom = max(112, min(148, int(height * 0.16)))
-    plus_bounds = plus_entry_safe_bounds(image_size, split_x_fn=split_x_fn)
-    return {
-        "image_size": [width, height],
-        "split_x": split_x,
-        "regions": {
-            "left_nav": [0, 0, nav_right, height],
-            "sidebar_search": [nav_right, 0, split_x, search_bottom],
-            "session_list": [nav_right, search_bottom, split_x, height],
-            "main_header": [split_x, 0, width, max(96, int(height * 0.12))],
-            "main_content": [split_x, max(96, int(height * 0.12)), width, height],
-            "plus_search_region": plus_bounds,
-        },
-    }
-
-
-def find_sidebar_search_anchor_item(
-    ocr_items: list[dict[str, Any]],
-    image_size: tuple[int, int],
-    *,
-    split_x_fn: Callable[[int], int] = default_session_split_x,
-) -> dict[str, Any] | None:
-    width, height = int(image_size[0]), int(image_size[1])
-    split_x = split_x_fn(width)
-    search_region = [max(72, int(width * 0.07)), 38, max(180, split_x - 48), max(98, int(height * 0.13))]
-    candidates: list[dict[str, Any]] = []
-    for item in ocr_items or []:
-        text = compact_ocr_text(item.get("text"))
-        if not text or "搜索" not in text:
-            continue
-        center_x, center_y = item_center(item)
-        if not point_in_bounds(center_x, center_y, search_region):
-            continue
-        candidates.append(item)
-    if not candidates:
-        return None
-    return max(candidates, key=lambda item: (float(item.get("confidence") or 0.0), -abs(item_center(item)[1] - 70)))
-
-
-def windows_1080p_reference_plus_point(
-    geometry: dict[str, Any],
-    *,
-    split_x_fn: Callable[[int], int] = default_session_split_x,
-    search_box_point_fn: Callable[[dict[str, Any]], tuple[int, int]] = default_search_box_point,
-) -> tuple[int, int]:
-    width = int(geometry.get("width") or 0)
-    split_x = split_x_fn(width)
-    _search_x, search_y = search_box_point_fn(geometry)
-    plus_x = bounded_int(split_x - 16, default=354, minimum=max(230, split_x - 48), maximum=max(260, split_x - 8))
-    plus_y = bounded_int(search_y, default=70, minimum=48, maximum=130)
-    return plus_x, plus_y
-
-
-def windows_plus_point(
-    geometry: dict[str, Any],
-    *,
-    split_x_fn: Callable[[int], int] = default_session_split_x,
-    search_box_point_fn: Callable[[dict[str, Any]], tuple[int, int]] = default_search_box_point,
-) -> tuple[int, int]:
-    width = int(geometry.get("width") or 0)
-    split_x = split_x_fn(width)
-    search_x, search_y = search_box_point_fn(geometry)
-    plus_x_hint = search_x + max(170, min(198, int(width * 0.18)))
-    plus_x = bounded_int(plus_x_hint, default=302, minimum=max(250, search_x + 145), maximum=min(split_x - 36, search_x + 210))
-    plus_y = bounded_int(search_y, default=70, minimum=48, maximum=130)
-    return plus_x, plus_y
-
-
 def _pixel_is_plus_dark(pixel: Any) -> bool:
     if isinstance(pixel, int):
         return pixel < 120
@@ -206,16 +67,13 @@ def vision_plus_icon_candidates(
     image: Any,
     image_size: tuple[int, int],
     *,
-    split_x_fn: Callable[[int], int] = default_session_split_x,
-    search_bounds: list[int] | None = None,
+    search_bounds: list[int],
 ) -> list[dict[str, Any]]:
     if image is None or not hasattr(image, "crop"):
         return []
-    search_bounds = normalize_bounds(
-        search_bounds
-        if isinstance(search_bounds, list) and len(search_bounds) >= 4
-        else plus_entry_safe_bounds(image_size, split_x_fn=split_x_fn)
-    )
+    if not isinstance(search_bounds, list) or len(search_bounds) < 4:
+        return []
+    search_bounds = normalize_bounds(search_bounds)
     left, top, right, bottom = search_bounds
     try:
         crop = image.crop((left, top, right, bottom)).convert("RGB")
@@ -283,9 +141,6 @@ def plus_entry_target(
     *,
     screenshot: Any | None = None,
     route_kind: str = "windows",
-    split_x_fn: Callable[[int], int] = default_session_split_x,
-    search_box_point_fn: Callable[[dict[str, Any]], tuple[int, int]] = default_search_box_point,
-    region_for_point_fn: Callable[[int, int, tuple[int, int]], str] | None = None,
     dynamic_sidebar_header_bounds: list[int] | None = None,
 ) -> dict[str, Any]:
     width, height = int(image_size[0]), int(image_size[1])
@@ -293,93 +148,18 @@ def plus_entry_target(
         isinstance(dynamic_sidebar_header_bounds, list)
         and len(dynamic_sidebar_header_bounds) >= 4
     )
-    safe_bounds = normalize_bounds(
-        dynamic_sidebar_header_bounds
+    safe_bounds = normalize_bounds(dynamic_sidebar_header_bounds) if has_dynamic_header else [0, 0, 0, 0]
+    candidates = (
+        vision_plus_icon_candidates(screenshot, image_size, search_bounds=safe_bounds)
         if has_dynamic_header
-        else plus_entry_safe_bounds(image_size, split_x_fn=split_x_fn)
-    )
-    layout = (
-        {
-            "image_size": [width, height],
-            "split_x": safe_bounds[2],
-            "regions": {"plus_search_region": list(safe_bounds)},
-            "source": "layout_snapshot_sidebar_header",
-        }
-        if has_dynamic_header
-        else plus_entry_layout_regions(image_size, split_x_fn=split_x_fn)
-    )
-    candidates: list[dict[str, Any]] = []
-    diagnostic_references: list[dict[str, Any]] = []
-
-    anchor_item = (
-        None
-        if has_dynamic_header
-        else find_sidebar_search_anchor_item(ocr_items or [], image_size, split_x_fn=split_x_fn)
-    )
-    if anchor_item is not None:
-        anchor_bounds = item_bounds(anchor_item)
-        anchor_center_x, anchor_center_y = item_center(anchor_item)
-        raw_x = max(anchor_bounds[2] + 118, anchor_center_x + 148)
-        raw_y = anchor_center_y
-        point = clamp_point_to_bounds(int(raw_x), int(raw_y), safe_bounds)
-        diagnostic_references.append(
-            {
-                "source": "diagnostic_sidebar_search_ocr_anchor_offset",
-                "text": str(anchor_item.get("text") or ""),
-                "anchor_bounds": anchor_bounds,
-                "point": list(point),
-                "bounds": list(safe_bounds),
-                "confidence": min(0.92, max(0.72, float(anchor_item.get("confidence") or 0.0) * 0.88)),
-                "executable": False,
-            }
-        )
-
-    current_x, current_y = windows_plus_point(geometry, split_x_fn=split_x_fn, search_box_point_fn=search_box_point_fn)
-    current_point = clamp_point_to_bounds(current_x, current_y, safe_bounds)
-    diagnostic_references.append(
-        {
-            "source": "diagnostic_windows_current_geometry",
-            "point": list(current_point),
-            "bounds": list(safe_bounds),
-            "confidence": 0.74,
-            "executable": False,
-        }
-    )
-    reference_x, reference_y = windows_1080p_reference_plus_point(
-        geometry,
-        split_x_fn=split_x_fn,
-        search_box_point_fn=search_box_point_fn,
-    )
-    reference_point = clamp_point_to_bounds(reference_x, reference_y, safe_bounds)
-    diagnostic_references.append(
-        {
-            "source": "diagnostic_windows_1080p_reference_geometry",
-            "point": list(reference_point),
-            "bounds": list(safe_bounds),
-            "confidence": 0.42,
-            "reference_only": True,
-            "executable": False,
-        }
-    )
-
-    candidates.extend(
-        vision_plus_icon_candidates(
-            screenshot,
-            image_size,
-            split_x_fn=split_x_fn,
-            search_bounds=safe_bounds,
-        )
+        else []
     )
     selected = candidates[0] if len(candidates) == 1 else None
-    executable = bool(
-        has_dynamic_header
-        and selected is not None
-        and str(selected.get("source") or "") == "vision_plus_icon"
-    )
+    executable = bool(selected is not None and str(selected.get("source") or "") == "vision_plus_icon")
     if selected is None:
         selected = {
-            "source": "plus_icon_not_found",
-            "point": list(center_of_bounds(safe_bounds)),
+            "source": "plus_icon_not_found" if has_dynamic_header else "dynamic_sidebar_header_bounds_missing",
+            "point": list(center_of_bounds(safe_bounds)) if has_dynamic_header else [0, 0],
             "bounds": list(safe_bounds),
             "confidence": 0.0,
             "executable": False,
@@ -392,20 +172,11 @@ def plus_entry_target(
         else "no executable plus icon candidate found inside calibrated sidebar header"
     )
 
-    region = (
-        "sidebar_header"
-        if has_dynamic_header
-        else (
-            region_for_point_fn(selected_point[0], selected_point[1], image_size)
-            if region_for_point_fn
-            else region_for_point(selected_point[0], selected_point[1], image_size, split_x_fn=split_x_fn)
-        )
-    )
     target = make_locator_result(
         name="plus_entry",
         label=f"Step1 click target: visually detected plus entry ({route_kind or 'windows'})",
         strategy="sidebar_header_plus_icon_vision_locator",
-        region=region,
+        region="sidebar_header",
         bounds=list(selected.get("bounds") or safe_bounds),
         point=selected_point,
         candidates=candidates,
@@ -420,106 +191,19 @@ def plus_entry_target(
             "geometry": dict(geometry or {}),
             "route_kind": str(route_kind or "windows"),
             "verify_after_action": "plus_entry_popup_menu_detected",
-            "layout_model": "add_friend_windows_sidebar_plus_vision_v2",
+            "layout_model": "dynamic_layout_snapshot_sidebar_plus_v1",
             "dynamic_sidebar_header_bounds": list(dynamic_sidebar_header_bounds or []),
-            "layout_calibration": layout,
-            "diagnostic_references": diagnostic_references,
+            "actual_resolution": [width, height],
+            "actual_geometry": dict(geometry or {}),
+            "final_click_point": list(selected_point) if executable else [],
+            "conflicts": [] if len(candidates) <= 1 else ["multiple_plus_icon_candidates"],
             "executable": executable,
         },
     )
     target["platform_adapter"] = str(route_kind or "windows")
-    target["item"] = item_snapshot(anchor_item, image_size) if anchor_item is not None else None
+    target["item"] = None
     target["executable"] = executable
-    target["diagnostic_references"] = diagnostic_references
     return target
-
-
-def invite_form_geometry_targets(
-    image_size: tuple[int, int],
-    *,
-    region_for_point_fn: Callable[[int, int, tuple[int, int]], str] | None = None,
-) -> dict[str, dict[str, Any]]:
-    width, height = int(image_size[0]), int(image_size[1])
-    input_left = int(max(24, width * 0.07))
-    input_right = int(min(width - 24, width * 0.93))
-    greeting_bounds = [
-        input_left,
-        int(max(78, height * 0.10)),
-        input_right,
-        int(min(height - 280, max(170, height * 0.24))),
-    ]
-    remark_bounds = [
-        input_left,
-        int(max(255, height * 0.31)),
-        input_right,
-        int(min(height - 190, max(335, height * 0.40))),
-    ]
-    confirm_bounds = [
-        int(max(70, width * 0.23)),
-        int(max(height - 86, height * 0.89)),
-        int(min(width - 190, width * 0.50)),
-        int(min(height - 18, height * 0.985)),
-    ]
-    greeting_x, greeting_y = center_of_bounds(greeting_bounds)
-    remark_y = center_of_bounds(remark_bounds)[1]
-    remark_x = int(min(max(remark_bounds[0] + 96, remark_bounds[0] + 16), remark_bounds[2] - 40))
-    confirm_x, confirm_y = center_of_bounds(confirm_bounds)
-
-    def region(x: int, y: int, fallback: str) -> str:
-        if region_for_point_fn:
-            return region_for_point_fn(x, y, image_size)
-        return fallback
-
-    return {
-        "invite_greeting_textarea": make_locator_result(
-            name="invite_greeting_textarea",
-            label="发送添加朋友申请 textarea",
-            strategy="window_region_geometry_fallback",
-            region=region(greeting_x, greeting_y, "invite_form.verify_message"),
-            bounds=greeting_bounds,
-            point=[greeting_x, greeting_y],
-            candidates=[{"source": "geometry_fallback", "bounds": normalize_bounds(greeting_bounds), "point": [greeting_x, greeting_y], "confidence": 0.62}],
-            selected_reason="fixed invite form verify-message textarea region",
-            confidence=0.62,
-            fallback_used=True,
-            fallback_reason="semantic_invite_form_anchor_not_available",
-            source="fixed_invite_form_geometry",
-            risk="clear_default_then_paste_verify_message",
-            metadata={"image_size": [width, height], "layout_model": "add_friend_invite_form_v1"},
-        ),
-        "invite_remark_input": make_locator_result(
-            name="invite_remark_input",
-            label="备注 input",
-            strategy="window_region_geometry_fallback",
-            region=region(remark_x, remark_y, "invite_form.remark_name"),
-            bounds=remark_bounds,
-            point=[remark_x, remark_y],
-            candidates=[{"source": "geometry_fallback", "bounds": normalize_bounds(remark_bounds), "point": [remark_x, remark_y], "confidence": 0.62}],
-            selected_reason="left-biased fixed remark input point avoids border focus loss",
-            confidence=0.62,
-            fallback_used=True,
-            fallback_reason="semantic_invite_form_anchor_not_available",
-            source="fixed_invite_form_geometry",
-            risk="clear_default_then_paste_remark_name",
-            metadata={"image_size": [width, height], "layout_model": "add_friend_invite_form_v1"},
-        ),
-        "invite_confirm_button": make_locator_result(
-            name="invite_confirm_button",
-            label="确定 button",
-            strategy="window_region_geometry_fallback",
-            region=region(confirm_x, confirm_y, "invite_form.confirm_button"),
-            bounds=confirm_bounds,
-            point=[confirm_x, confirm_y],
-            candidates=[{"source": "geometry_fallback", "bounds": normalize_bounds(confirm_bounds), "point": [confirm_x, confirm_y], "confidence": 0.62}],
-            selected_reason="fixed lower-left green confirm button region",
-            confidence=0.62,
-            fallback_used=True,
-            fallback_reason="semantic_invite_form_anchor_not_available",
-            source="fixed_invite_form_geometry",
-            risk="click_confirm_after_text_review",
-            metadata={"image_size": [width, height], "layout_model": "add_friend_invite_form_v1"},
-        ),
-    }
 
 
 def semantic_invite_form_targets(
@@ -530,7 +214,6 @@ def semantic_invite_form_targets(
 ) -> dict[str, dict[str, Any]]:
     width, height = int(image_size[0]), int(image_size[1])
     # Production targets are admitted only from current-frame semantic anchors.
-    # The legacy geometry model is retained above for offline diagnostics only.
     targets: dict[str, dict[str, Any]] = {}
     items = [item for item in (ocr_items or []) if isinstance(item, dict)]
 

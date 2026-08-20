@@ -34,12 +34,8 @@ from apps.wechat_ai_customer_service.adapters.add_friend_diagnostics import (
 )
 from apps.wechat_ai_customer_service.adapters.add_friend_flow_events import add_friend_entry_click_events_from_payload
 from apps.wechat_ai_customer_service.adapters.add_friend_layout import (
-    find_sidebar_search_anchor_item as layout_find_anchor,
-    plus_entry_safe_bounds,
     plus_entry_target as layout_plus_entry_target,
     semantic_invite_form_targets,
-    windows_1080p_reference_plus_point,
-    windows_plus_point,
 )
 from apps.wechat_ai_customer_service.adapters.add_friend_locator import (
     LOCATOR_RESULT_FIELDS,
@@ -78,10 +74,6 @@ from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.geometry import (
     bounded_int,
     clamp_point_to_bounds,
     point_in_bounds,
-)
-from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.geometry import (
-    search_box_point_for_geometry as _diagnostic_search_box_point_for_geometry,
-    session_split_x as _diagnostic_session_split_x,
 )
 from apps.wechat_ai_customer_service.adapters.add_friend_layout import invite_form_field_verification
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import device_profile as win32_ocr_device_profile
@@ -358,39 +350,6 @@ def add_friend_region_for_item(
     center_x, center_y = add_friend_item_center(item)
     return add_friend_region_for_point(center_x, center_y, image_size, layout_snapshot=layout_snapshot)
 
-def add_friend_windows_1080p_reference_plus_button_point_for_geometry(geometry: dict[str, Any]) -> tuple[int, int]:
-    """Legacy 1920x1080 reference point retained for diagnostics only.
-
-    On Windows WeChat this can land in the right conversation pane because the
-    sidebar split and search-row layout differ. Keep it for comparison only.
-    """
-    return windows_1080p_reference_plus_point(
-        geometry,
-        split_x_fn=_diagnostic_session_split_x,
-        search_box_point_fn=_diagnostic_search_box_point_for_geometry,
-    )
-
-def add_friend_windows_plus_button_point_for_geometry(geometry: dict[str, Any]) -> tuple[int, int]:
-    """Windows WeChat plus-entry point beside the sidebar search box."""
-    return windows_plus_point(
-        geometry,
-        split_x_fn=_diagnostic_session_split_x,
-        search_box_point_fn=_diagnostic_search_box_point_for_geometry,
-    )
-
-def add_friend_plus_button_point_for_geometry(geometry: dict[str, Any]) -> tuple[int, int]:
-    return add_friend_windows_plus_button_point_for_geometry(geometry)
-
-def add_friend_plus_entry_safe_bounds(image_size: tuple[int, int]) -> list[int]:
-    from apps.wechat_ai_customer_service.adapters.add_friend_layout import plus_entry_safe_bounds
-
-    return plus_entry_safe_bounds(image_size, split_x_fn=_diagnostic_session_split_x)
-
-def find_sidebar_search_anchor_item(ocr_items: list[dict[str, Any]], image_size: tuple[int, int]) -> dict[str, Any] | None:
-    from apps.wechat_ai_customer_service.adapters.add_friend_layout import find_sidebar_search_anchor_item as layout_find_anchor
-
-    return layout_find_anchor(ocr_items, image_size, split_x_fn=_diagnostic_session_split_x)
-
 def add_friend_plus_entry_target(
     geometry: dict[str, Any],
     image_size: tuple[int, int],
@@ -401,26 +360,64 @@ def add_friend_plus_entry_target(
     layout_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     dynamic_bounds = None
+    snapshot_id = ""
+    snapshot_executable = False
     if isinstance(layout_snapshot, dict):
+        snapshot_id = str(layout_snapshot.get("layout_snapshot_id") or "")
+        snapshot_executable = bool(layout_snapshot.get("executable") and snapshot_id)
         candidate_bounds = layout_snapshot.get("sidebar_header_bounds")
-        if isinstance(candidate_bounds, list) and len(candidate_bounds) >= 4:
+        if snapshot_executable and isinstance(candidate_bounds, list) and len(candidate_bounds) >= 4:
             dynamic_bounds = [int(value) for value in candidate_bounds[:4]]
-    return layout_plus_entry_target(
+    target = layout_plus_entry_target(
         geometry,
         image_size,
         ocr_items or [],
         screenshot=screenshot,
         route_kind=route_kind,
-        split_x_fn=_diagnostic_session_split_x,
-        search_box_point_fn=_diagnostic_search_box_point_for_geometry,
-        region_for_point_fn=lambda x, y, size: add_friend_region_for_point(
-            x,
-            y,
-            size,
-            layout_snapshot=layout_snapshot,
-        ),
         dynamic_sidebar_header_bounds=dynamic_bounds,
     )
+    layout_bounds = {
+        name: list(layout_snapshot.get(name) or [])
+        for name in (
+            "left_nav_bounds",
+            "sidebar_bounds",
+            "sidebar_header_bounds",
+            "session_list_bounds",
+            "chat_header_bounds",
+            "message_viewport_bounds",
+            "input_bounds",
+            "surface_bounds",
+        )
+        if isinstance(layout_snapshot, dict) and isinstance(layout_snapshot.get(name), list)
+    }
+    target_metadata = dict(target.get("metadata") or {})
+    target_metadata.update(
+        {
+            "layout_snapshot_id": snapshot_id,
+            "frame_id": str((layout_snapshot or {}).get("frame_id") or ""),
+            "hwnd": int((layout_snapshot or {}).get("hwnd") or 0),
+            "capture_mode": str((layout_snapshot or {}).get("capture_mode") or ""),
+            "actual_resolution": [
+                int((layout_snapshot or {}).get("image_width") or image_size[0]),
+                int((layout_snapshot or {}).get("image_height") or image_size[1]),
+            ],
+            "dpi_scale": float((layout_snapshot or {}).get("dpi_scale") or 0.0),
+            "window_rect": list((layout_snapshot or {}).get("window_rect") or []),
+            "client_rect": list((layout_snapshot or {}).get("client_rect") or []),
+            "client_screen_origin": list((layout_snapshot or {}).get("client_screen_origin") or []),
+            "capture_screen_origin": list((layout_snapshot or {}).get("capture_screen_origin") or []),
+            "dynamic_layout_bounds": layout_bounds,
+            "layout_confidence": float((layout_snapshot or {}).get("confidence") or 0.0),
+            "layout_conflicts": list((layout_snapshot or {}).get("conflicts") or []),
+            "final_click_point": list(target.get("point") or []) if bool(target.get("executable")) else [],
+        }
+    )
+    target["metadata"] = target_metadata
+    target["layout_snapshot_id"] = snapshot_id
+    target["executable"] = bool(target.get("executable") and snapshot_executable)
+    if not target["executable"]:
+        target_metadata["final_click_point"] = []
+    return target
 
 def normalize_point_for_add_friend_target(point: Any) -> list[int]:
     if isinstance(point, (list, tuple)) and len(point) >= 2:
@@ -1647,8 +1644,23 @@ def add_friend_failure_payload(
         "evidence": evidence or {},
     }
 
-def add_friend_main_entry_surface_evidence(ocr_items: list[dict[str, Any]], image_size: tuple[int, int]) -> dict[str, Any]:
-    search_anchor = find_sidebar_search_anchor_item(ocr_items, image_size)
+def add_friend_main_entry_surface_evidence(
+    ocr_items: list[dict[str, Any]],
+    image_size: tuple[int, int],
+    *,
+    layout_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    header_bounds = _layout_bounds(layout_snapshot or {}, "sidebar_header_bounds")
+    search_anchor = next(
+        (
+            item
+            for item in (ocr_items or [])
+            if "搜索" in add_friend_ocr_compact(item.get("text"))
+            and header_bounds
+            and point_in_bounds(*add_friend_item_center(item), header_bounds)
+        ),
+        None,
+    )
     if search_anchor is not None:
         return {
             "ok": True,
@@ -2600,7 +2612,11 @@ def add_friend_surface_readiness(
         return {'ok': False, 'error_code': 'WECHAT_RENDER_NOT_READY', 'state': 'wechat_render_not_ready', 'stage': stage, 'reason': str(shell_probe.get('reason') or 'auxiliary_shell_window'), 'render_probe': blank_render, 'shell_probe': shell_probe, 'ocr_count': len(ocr_items), 'ocr_texts': [item.get('text') for item in ocr_items[:20]]}
     if len(ocr_items) <= 0:
         return {'ok': False, 'error_code': 'WECHAT_RENDER_NOT_READY', 'state': 'wechat_render_not_ready', 'stage': stage, 'reason': 'empty_ocr_surface', 'render_probe': blank_render, 'shell_probe': shell_probe, 'ocr_count': len(ocr_items), 'ocr_texts': []}
-    main_surface = add_friend_main_entry_surface_evidence(ocr_items, screenshot_size)
+    main_surface = add_friend_main_entry_surface_evidence(
+        ocr_items,
+        screenshot_size,
+        layout_snapshot=current_layout,
+    )
     main_surface_required = stage == 'calibration' if require_main_surface is None else bool(require_main_surface)
     if main_surface_required and (not main_surface.get('ok')):
         return {'ok': False, 'error_code': ERROR_WECHAT_WINDOW_NOT_READY, 'state': 'wechat_main_surface_not_ready', 'stage': stage, 'reason': str(main_surface.get('reason') or 'add_friend_entry_surface_not_confirmed'), 'main_surface': main_surface, 'render_probe': blank_render, 'shell_probe': shell_probe, 'ocr_count': len(ocr_items), 'ocr_texts': [item.get('text') for item in ocr_items[:20]]}

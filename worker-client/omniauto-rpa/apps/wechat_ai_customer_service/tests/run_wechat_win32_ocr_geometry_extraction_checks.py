@@ -1,8 +1,7 @@
-"""Contract checks for pure Win32/OCR geometry extraction."""
+"""Contract checks for generic Win32/OCR geometry helpers."""
 
 from __future__ import annotations
 
-import random
 from pathlib import Path
 import sys
 
@@ -20,36 +19,20 @@ def assert_true(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
-GEOMETRIES = [
-    {"left": 0, "top": 0, "width": 981, "height": 860},
-    {"left": 12, "top": 34, "width": 980, "height": 860},
-    {"left": 0, "top": 0, "width": 1280, "height": 900},
-    {"left": 0, "top": 0, "width": 1920, "height": 1200},
-    {"left": -32000, "top": -32000, "width": 199, "height": 34},
-]
-
-
-def test_geometry_module_exports_expected_helpers() -> None:
-    for name in (
+def test_geometry_module_exports_only_generic_helpers() -> None:
+    expected = {
         "bounded_int",
         "bounded_float",
         "center_of_bounds",
         "point_in_bounds",
         "clamp_point_to_bounds",
-        "session_split_x",
-        "chat_header_cutoff_y",
-        "active_chat_title_cutoff_y",
-        "active_chat_title_left_x",
-        "search_box_point_for_geometry",
-        "session_click_x_for_geometry",
-        "input_text_region_bounds",
-        "rect_in_input_area",
-        "rect_in_input_toolbar",
-        "calculate_send_points",
-        "input_click_candidate_points",
-        "send_click_candidate_points",
-    ):
-        assert_true(callable(getattr(geometry, name, None)), f"geometry helper missing: {name}")
+        "rect_overlaps_region",
+        "relative_rect",
+        "validate_send_geometry",
+        "validate_capture_geometry",
+    }
+    missing = sorted(name for name in expected if not callable(getattr(geometry, name, None)))
+    assert_true(not missing, f"generic geometry helpers missing: {missing}")
 
 
 def test_scalar_geometry_helpers_match_sidecar() -> None:
@@ -66,115 +49,72 @@ def test_scalar_geometry_helpers_match_sidecar() -> None:
         )
     for bounds in ([1, 2, 11, 22], [11, 22], [-10, -20, 10, 20]):
         assert_true(geometry.center_of_bounds(bounds) == sidecar.center_of_bounds(bounds), f"center mismatch: {bounds}")
-    for x, y, bounds in ((5, 5, [0, 0, 10, 10]), (-5, 3, [0, 0, 10, 10]), (12, 50, [20, 10, 0, 30])):
-        assert_true(geometry.point_in_bounds(x, y, bounds) == sidecar.point_in_bounds(x, y, bounds), f"point bounds mismatch: {(x, y, bounds)}")
-        assert_true(geometry.clamp_point_to_bounds(x, y, bounds) == sidecar.clamp_point_to_bounds(x, y, bounds), f"clamp mismatch: {(x, y, bounds)}")
+    for x, y, bounds in (
+        (5, 5, [0, 0, 10, 10]),
+        (-5, 3, [0, 0, 10, 10]),
+        (12, 50, [20, 10, 0, 30]),
+    ):
+        assert_true(
+            geometry.point_in_bounds(x, y, bounds) == sidecar.point_in_bounds(x, y, bounds),
+            f"point bounds mismatch: {(x, y, bounds)}",
+        )
+        assert_true(
+            geometry.clamp_point_to_bounds(x, y, bounds) == sidecar.clamp_point_to_bounds(x, y, bounds),
+            f"clamp mismatch: {(x, y, bounds)}",
+        )
 
 
-def test_window_geometry_helpers_match_sidecar() -> None:
-    assert_true(
-        not hasattr(sidecar, "session_split_x"),
-        "fixed sidebar boundary must not remain a Sidecar production entry",
+def test_rect_helpers_are_coordinate_system_agnostic() -> None:
+    geometries = (
+        {"left": 0, "top": 0, "width": 981, "height": 860},
+        {"left": 120, "top": 80, "width": 1920, "height": 1200},
+        {"left": -480, "top": 40, "width": 2560, "height": 1440},
     )
-    for width in (320, 641, 981, 1280, 1366, 1440, 1536, 1920, 2560, 3840):
-        assert_true(isinstance(geometry.session_split_x(width), int), f"diagnostic split must remain available: {width}")
-        assert_true(geometry.active_chat_title_left_x(width) == sidecar.active_chat_title_left_x(width), f"title left mismatch: {width}")
-        assert_true(geometry.active_chat_title_right_x(width) == sidecar.active_chat_title_right_x(width), f"title right mismatch: {width}")
-    for height in (260, 720, 768, 860, 864, 900, 1080, 1200, 1440, 2160):
-        assert_true(geometry.chat_header_cutoff_y(height) == sidecar.chat_header_cutoff_y(height), f"header mismatch: {height}")
-        assert_true(geometry.active_chat_title_cutoff_y(height) == sidecar.active_chat_title_cutoff_y(height), f"title cutoff mismatch: {height}")
-        assert_true(geometry.active_chat_title_top_cutoff_y(height) == sidecar.active_chat_title_top_cutoff_y(height), f"title top cutoff mismatch: {height}")
-        assert_true(geometry.active_chat_title_top_y(height) == sidecar.active_chat_title_top_y(height), f"title top y mismatch: {height}")
-        assert_true(geometry.active_chat_title_bottom_y(height) == sidecar.active_chat_title_bottom_y(height), f"title bottom y mismatch: {height}")
-    for item in GEOMETRIES:
-        assert_true(
-            not hasattr(sidecar, "search_box_point_for_geometry"),
-            "fixed search point must not remain a Sidecar production entry",
-        )
-        assert_true(
-            not hasattr(sidecar, "session_click_x_for_geometry"),
-            "fixed session-row click must not remain a Sidecar production entry",
-        )
-        assert_true(geometry.input_text_region_bounds(item) == sidecar.input_text_region_bounds(item), f"input bounds mismatch: {item}")
-
-
-def test_rect_helpers_match_sidecar() -> None:
-    rects = [
-        {"left": 345, "top": 690, "right": 770, "bottom": 804},
-        {"left": 345, "top": 970, "right": 770, "bottom": 1085},
-        {"left": 690, "top": 1082, "right": 766, "bottom": 1125},
-        {"left": 10, "top": 10, "right": 60, "bottom": 40},
-    ]
+    screen_rect = {"left": 345, "top": 690, "right": 770, "bottom": 804}
     bounds = (320, 600, 900, 850)
-    for item in GEOMETRIES:
-        for rect in rects:
-            assert_true(geometry.relative_rect(rect, item) == sidecar.relative_rect(rect, item), f"relative rect mismatch: {(rect, item)}")
-            assert_true(geometry.rect_in_input_area(rect, item) == sidecar.rect_in_input_area(rect, item), f"input area mismatch: {(rect, item)}")
-            assert_true(geometry.rect_in_input_toolbar(rect, item) == sidecar.rect_in_input_toolbar(rect, item), f"toolbar mismatch: {(rect, item)}")
-            assert_true(geometry.rect_overlaps_region(rect, bounds) == sidecar.rect_overlaps_region(rect, bounds), f"overlap mismatch: {(rect, bounds)}")
+    for current in geometries:
+        assert_true(
+            geometry.relative_rect(screen_rect, current) == sidecar.relative_rect(screen_rect, current),
+            f"relative rect mismatch: {(screen_rect, current)}",
+        )
+        assert_true(
+            geometry.rect_overlaps_region(screen_rect, bounds) == sidecar.rect_overlaps_region(screen_rect, bounds),
+            f"overlap mismatch: {(screen_rect, bounds)}",
+        )
 
 
-def test_candidate_points_and_send_points_match_sidecar_with_seed() -> None:
-    for item in GEOMETRIES:
-        for min_points in (1, 10, 14):
-            random.seed(20260619)
-            extracted_input = geometry.input_click_candidate_points(item, min_points=min_points)
-            random.seed(20260619)
-            sidecar_input = sidecar.input_click_candidate_points(item, min_points=min_points)
-            assert_true(extracted_input == sidecar_input, f"input candidates mismatch: {(item, min_points)}")
+def test_window_safety_validation_has_no_click_planning() -> None:
+    valid_cases = (
+        {"left": 0, "top": 0, "width": 981, "height": 860},
+        {"left": 120, "top": 80, "width": 1920, "height": 1200},
+        {"left": -480, "top": 40, "width": 3840, "height": 2160},
+    )
+    for current in valid_cases:
+        assert_true(geometry.validate_capture_geometry(current).get("ok") is True, f"capture rejected: {current}")
+        assert_true(geometry.validate_send_geometry(current).get("ok") is True, f"send rejected: {current}")
 
-            random.seed(20260619)
-            extracted_send = geometry.send_click_candidate_points(item, min_points=min_points)
-            random.seed(20260619)
-            sidecar_send = sidecar.send_click_candidate_points(item, min_points=min_points)
-            assert_true(extracted_send == sidecar_send, f"send candidates mismatch: {(item, min_points)}")
-
-        random.seed(20260619)
-        extracted_points = geometry.calculate_send_points(item)
-        random.seed(20260619)
-        sidecar_points = sidecar.calculate_send_points(item)
-        assert_true(extracted_points == sidecar_points, f"send points mismatch: {item}")
-
-
-def test_candidate_points_stay_inside_safe_regions_for_resolution_matrix() -> None:
-    matrix = [
-        {"left": 0, "top": 0, "width": 980, "height": 720},
-        {"left": 0, "top": 0, "width": 980, "height": 860},
-        {"left": 0, "top": 0, "width": 1225, "height": 816},
-        {"left": 0, "top": 0, "width": 1225, "height": 1032},
-        {"left": 0, "top": 0, "width": 1470, "height": 1032},
-        {"left": 0, "top": 0, "width": 1470, "height": 1290},
-        {"left": 0, "top": 0, "width": 2560, "height": 1440},
-    ]
-    for item in matrix:
-        split_x = geometry.session_split_x(int(item["width"]))
-        for point in geometry.input_click_candidate_points(item, min_points=14):
-            assert_true(0 <= point[0] <= item["width"] and 0 <= point[1] <= item["height"], f"input candidate outside window: {(item, point)}")
-            assert_true(point[0] > split_x, f"input candidate overlaps session list: {(item, point, split_x)}")
-            assert_true(point[1] >= int(item["height"] * 0.80), f"input candidate too high for input area: {(item, point)}")
-        for point in geometry.send_click_candidate_points(item, min_points=14):
-            assert_true(0 <= point[0] <= item["width"] and 0 <= point[1] <= item["height"], f"send candidate outside window: {(item, point)}")
-            assert_true(point[0] > split_x, f"send candidate overlaps session list: {(item, point, split_x)}")
-            assert_true(point[1] >= int(item["height"] * 0.80), f"send candidate too high for send area: {(item, point)}")
-        send_points = geometry.calculate_send_points(item)
-        assert_true(send_points.get("ok") is True, f"resolution matrix send point planning should be safe: {(item, send_points)}")
+    too_small = {"left": 0, "top": 0, "width": 640, "height": 600}
+    offscreen = {"left": -32000, "top": -32000, "width": 981, "height": 860}
+    assert_true(geometry.validate_send_geometry(too_small).get("reason") == "window_too_small_for_safe_send", "small send geometry must fail closed")
+    assert_true(geometry.validate_capture_geometry(offscreen).get("reason") == "window_offscreen_or_minimized", "offscreen capture must fail closed")
+    for result in (
+        geometry.validate_capture_geometry(valid_cases[0]),
+        geometry.validate_send_geometry(valid_cases[0]),
+    ):
+        assert_true("input_point" not in result and "send_point" not in result, f"geometry validation planned a click: {result}")
 
 
 def main() -> int:
     tests = [
-        test_geometry_module_exports_expected_helpers,
+        test_geometry_module_exports_only_generic_helpers,
         test_scalar_geometry_helpers_match_sidecar,
-        test_window_geometry_helpers_match_sidecar,
-        test_rect_helpers_match_sidecar,
-        test_candidate_points_and_send_points_match_sidecar_with_seed,
-        test_candidate_points_stay_inside_safe_regions_for_resolution_matrix,
+        test_rect_helpers_are_coordinate_system_agnostic,
+        test_window_safety_validation_has_no_click_planning,
     ]
-    passed = 0
     for test in tests:
         test()
         print(f"PASS {test.__name__}")
-        passed += 1
-    print(f"All {passed} WeChat Win32/OCR geometry extraction checks passed.")
+    print(f"All {len(tests)} WeChat Win32/OCR generic geometry checks passed.")
     return 0
 
 

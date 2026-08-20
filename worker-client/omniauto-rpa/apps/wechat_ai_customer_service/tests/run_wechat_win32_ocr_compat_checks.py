@@ -48,15 +48,12 @@ from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar import ( 
     add_friend_surface_readiness,
     add_friend_optional_field_fill_enabled,
     add_friend_virtual_key_for_digit,
-    active_chat_title_cutoff_y,
     adapt_humanized_input_settings,
     auxiliary_wechat_shell_like,
     blind_target_confirmation_guard,
     blocking_screen_reason,
     build_message_observations_v3,
     capabilities_payload,
-    chat_header_cutoff_y,
-    calculate_send_points,
     classify_message_side,
     clear_add_friend_sidebar_search_box,
     classify_add_friend_ocr_surface,
@@ -65,16 +62,12 @@ from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar import ( 
     allow_blind_target_confirmation,
     find_add_friend_action_item,
     find_add_friend_search_result_item,
-    add_friend_windows_1080p_reference_plus_button_point_for_geometry,
-    add_friend_windows_plus_button_point_for_geometry,
     likely_foreign_overlay_capture,
     normalize_add_friend_query,
     normalize_chat_title_for_match,
     parse_messages_from_ocr,
     parse_sessions_from_ocr,
     quick_login_like,
-    rect_in_input_area,
-    rect_in_input_toolbar,
     send_rate_decision,
     session_name_matches,
     session_row_click_candidate_points,
@@ -89,7 +82,6 @@ from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar import ( 
     input_text_region_state,
     input_region_visual_delta_confirms,
     input_region_soft_blank_noise,
-    input_click_candidate_points,
     is_message_noise,
     find_visual_self_voice_context_anchor_target,
     find_voice_context_menu_anchor_target,
@@ -125,7 +117,6 @@ from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar import ( 
     sidebar_visible_list_enhanced_ocr_items,
     active_ui_action_budget_decision,
     send_input_confirm_attempt_count,
-    send_click_candidate_points,
     safe_send_trigger,
 )
 import apps.wechat_ai_customer_service.admin_backend.services.wechat_startup_check as startup_check  # noqa: E402
@@ -542,7 +533,6 @@ def test_sidecar_facade_exports_contract_surface() -> None:
         "args_for_daemon_request",
         "parse_sessions_from_ocr",
         "parse_messages_from_ocr",
-        "calculate_send_points",
         "validate_capture_geometry",
         "validate_send_geometry",
         "validate_active_send_target",
@@ -764,30 +754,6 @@ def test_add_friend_query_normalization_prefers_phone_digits() -> None:
     assert_true(normalize_add_friend_query(phone="173 6874-6889", wechat="wxid_demo") == "17368746889", "phone digits should be the primary add_friend query")
     assert_true(normalize_add_friend_query(phone="", wechat=" wxid_demo ") == "wxid_demo", "wechat id should be used when phone is empty")
     assert_true(add_friend_ocr_compact(" 网络查找手机 / QQ号 ") == "网络查找手机/qq号", "OCR text should compact consistently")
-
-
-def test_add_friend_windows_plus_reference_is_diagnostic_only() -> None:
-    geometry = {"left": -22, "top": 0, "right": 959, "bottom": 860, "width": 981, "height": 860}
-    windows_point = add_friend_windows_plus_button_point_for_geometry(geometry)
-    windows_1080p_reference_point = add_friend_windows_1080p_reference_plus_button_point_for_geometry(geometry)
-    assert_true(292 <= windows_point[0] <= 314, f"Windows add_friend + should land beside the Windows search box: {windows_point}")
-    assert_true(58 <= windows_point[1] <= 78, f"Windows add_friend + y should stay on the search row: {windows_point}")
-    assert_true(
-        windows_1080p_reference_point[0] > windows_point[0] + 35,
-        f"Windows 1920x1080 reference point should remain distinct from adaptive Windows point: ref={windows_1080p_reference_point}, adaptive={windows_point}",
-    )
-    import apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar as sidecar_mod
-
-    original_get_window_geometry = sidecar_mod.get_window_geometry
-    try:
-        sidecar_mod.get_window_geometry = lambda _hwnd: dict(geometry)
-        _x, _y, meta = sidecar_mod.jitter_window_image_click_surface_point(1001, windows_point[0], windows_point[1])
-        assert_true(
-            meta.get("role") == "bounded_target",
-            f"legacy reference coordinates must not receive a privileged production click role: {meta}",
-        )
-    finally:
-        sidecar_mod.get_window_geometry = original_get_window_geometry
 
 
 def test_add_friend_search_result_detection_from_ocr() -> None:
@@ -1785,27 +1751,23 @@ def test_send_geometry_guard() -> None:
     unsafe = {"width": 650, "height": 1100}
     safe = {"width": 801, "height": 1149}
     assert_true(validate_send_geometry(unsafe)["ok"] is False, "small WeChat window should be blocked")
-    points = calculate_send_points(safe)
-    assert_true(points["ok"] is True, f"safe geometry should produce points: {points}")
-    assert_true(points["input_point"][1] > 900, f"input point should stay in text area: {points}")
-    assert_true(points["send_point"][1] > 1000, f"send point should stay near send button: {points}")
+    validation = validate_send_geometry(safe)
+    assert_true(validation["ok"] is True, f"safe geometry should pass validation: {validation}")
+    assert_true("input_point" not in validation and "send_point" not in validation, f"geometry guard must not plan fixed clicks: {validation}")
 
 
-def test_send_and_input_points_use_candidate_pools() -> None:
-    geometry = {"width": 980, "height": 860}
-    points = calculate_send_points(geometry)
-    input_candidates = points.get("input_candidate_points") or []
-    send_candidates = points.get("send_candidate_points") or []
-    assert_true(len(input_candidates) >= 10, f"input click should expose a candidate pool: {input_candidates}")
-    assert_true(len(send_candidates) >= 10, f"send click should expose a candidate pool: {send_candidates}")
-    assert_true(
-        len(set(tuple(point) for point in input_click_candidate_points(geometry))) >= 10,
-        "input candidate points should be distinct",
-    )
-    assert_true(
-        len(set(tuple(point) for point in send_click_candidate_points(geometry))) >= 10,
-        "send candidate points should be distinct",
-    )
+def test_send_and_input_regions_come_from_current_layout_snapshot() -> None:
+    import apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar as sidecar_mod
+
+    first = _compat_layout_snapshot((980, 860))
+    second = _compat_layout_snapshot((1470, 1032))
+    first_input = sidecar_mod.win32_ocr_layout.required_region(first, "input_bounds")
+    second_input = sidecar_mod.win32_ocr_layout.required_region(second, "input_bounds")
+    assert_true(first_input != second_input, f"input region must follow current frame geometry: {(first_input, second_input)}")
+    for current, bounds in ((first, first_input), (second, second_input)):
+        sidebar = sidecar_mod.win32_ocr_layout.required_region(current, "sidebar_bounds")
+        assert_true(bounds[0] >= sidebar[2], f"dynamic input region overlaps sidebar: {(bounds, sidebar)}")
+        assert_true(bounds[2] <= current["image_width"] and bounds[3] <= current["image_height"], f"dynamic input region exceeds frame: {bounds}")
 
 
 def test_client_click_surface_jitter_has_enough_entropy() -> None:
@@ -2647,15 +2609,13 @@ def test_input_region_soft_blank_noise_allows_post_clear_progress() -> None:
     )
 
 
-def test_input_area_token_confirmation_excludes_recent_chat_bubble() -> None:
-    geometry = {"left": 0, "top": 0, "right": 980, "bottom": 860, "width": 980, "height": 860}
-    recent_chat_bubble = {"left": 425, "top": 615, "right": 610, "bottom": 655}
-    draft_text = {"left": 405, "top": 705, "right": 610, "bottom": 735}
-    assert_true(
-        rect_in_input_area(recent_chat_bubble, geometry) is False,
-        "recent lower chat bubble must not confirm input text",
-    )
-    assert_true(rect_in_input_area(draft_text, geometry) is True, "draft text inside input area should confirm")
+def test_dynamic_input_region_excludes_message_viewport() -> None:
+    import apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar as sidecar_mod
+
+    current = _compat_layout_snapshot((980, 860))
+    viewport = sidecar_mod.win32_ocr_layout.required_region(current, "message_viewport_bounds")
+    input_bounds = sidecar_mod.win32_ocr_layout.required_region(current, "input_bounds")
+    assert_true(viewport[3] <= input_bounds[1], f"message viewport overlaps dynamic input region: {(viewport, input_bounds)}")
 
 
 
@@ -2729,15 +2689,14 @@ def test_wechat_rpa_lock_recovers_stale_lock_and_times_out_on_live_lock() -> Non
 
 
 def test_uia_control_selection_prefers_chatbox() -> None:
-    geometry = {"left": 0, "top": 0, "width": 801, "height": 1149}
-    edit = FakeControl(name="", control_type="EditControl", rect=FakeRect(345, 970, 770, 1085))
-    search = FakeControl(name="搜索", control_type="EditControl", rect=FakeRect(95, 55, 275, 90))
-    send = FakeControl(name="发送", control_type="ButtonControl", rect=FakeRect(690, 1082, 766, 1125))
-    attach = FakeControl(name="文件", control_type="ButtonControl", rect=FakeRect(440, 1082, 475, 1125))
-    assert_true(rect_in_input_area({"left": 345, "top": 970, "right": 770, "bottom": 1085}, geometry), "chat edit should be inside input area")
-    assert_true(rect_in_input_toolbar({"left": 690, "top": 1082, "right": 766, "bottom": 1125}, geometry), "send button should be inside toolbar")
     snapshot = _compat_layout_snapshot((801, 1149))
     screen_input_bounds = list(snapshot["input_bounds"])
+    sidebar_header = list(snapshot["sidebar_header_bounds"])
+    input_left, input_top, input_right, input_bottom = screen_input_bounds
+    edit = FakeControl(name="", control_type="EditControl", rect=FakeRect(input_left + 20, input_top + 12, input_right - 20, input_bottom - 28))
+    search = FakeControl(name="搜索", control_type="EditControl", rect=FakeRect(sidebar_header[0] + 8, sidebar_header[1] + 8, sidebar_header[2] - 8, sidebar_header[3] - 8))
+    send = FakeControl(name="发送", control_type="ButtonControl", rect=FakeRect(input_right - 96, input_bottom - 34, input_right - 18, input_bottom - 8))
+    attach = FakeControl(name="文件", control_type="ButtonControl", rect=FakeRect(input_left + 12, input_bottom - 34, input_left + 48, input_bottom - 8))
     assert_true(select_uia_edit_control([search, edit], screen_input_bounds) is edit, "chat edit should beat search box")
     assert_true(select_uia_send_button([attach, send], screen_input_bounds) is send, "send button should be selected by name")
 
@@ -4096,12 +4055,13 @@ def test_blind_target_confirmation_uses_sidebar_match_when_title_missing() -> No
             os.environ["WECHAT_WIN32_OCR_ALLOW_BLIND_FILE_TRANSFER_SEND"] = old
 
 
-def test_active_chat_cutoff_extends_above_sidebar_cutoff() -> None:
-    height = 860
-    assert_true(
-        active_chat_title_cutoff_y(height) > chat_header_cutoff_y(height),
-        "active chat title cutoff should be looser than sidebar/message cutoff",
-    )
+def test_chat_regions_follow_structural_layout_boundaries() -> None:
+    current = _compat_layout_snapshot((980, 860))
+    chat_header = current["chat_header_bounds"]
+    viewport = current["message_viewport_bounds"]
+    sidebar_header = current["sidebar_header_bounds"]
+    assert_true(chat_header[3] <= viewport[1], f"chat header must end above message viewport: {(chat_header, viewport)}")
+    assert_true(chat_header[0] >= sidebar_header[2], f"chat header must start after dynamic sidebar: {(chat_header, sidebar_header)}")
 
 
 def test_file_transfer_simulated_inbound_fallback() -> None:
@@ -4633,7 +4593,6 @@ def test_capabilities_success_exposes_top_level_geometry() -> None:
         "detect_blank_render": sidecar_mod.detect_blank_render,
         "blocking_screen_reason": sidecar_mod.blocking_screen_reason,
         "validate_send_geometry": sidecar_mod.validate_send_geometry,
-        "calculate_send_points": sidecar_mod.calculate_send_points,
         "inspect_uia_send_capability": sidecar_mod.inspect_uia_send_capability,
     }
     try:
@@ -4645,12 +4604,6 @@ def test_capabilities_success_exposes_top_level_geometry() -> None:
         sidecar_mod.detect_blank_render = lambda image, items, geometry=None: {"detected": False}
         sidecar_mod.blocking_screen_reason = lambda items: ""
         sidecar_mod.validate_send_geometry = lambda current: {"ok": True, "reason": "geometry_ok", "geometry": current}
-        sidecar_mod.calculate_send_points = lambda current: {
-            "ok": True,
-            "input_point": [637, 715],
-            "send_point": [918, 816],
-            "geometry": current,
-        }
         sidecar_mod.inspect_uia_send_capability = lambda hwnd, current: {"ok": False, "reason": "uia_unavailable"}
         payload = capabilities_payload(1001, {"passive_probe": True}, artifact_dir=None)
         assert_true(payload.get("ok") is True, f"capabilities should pass: {payload}")
@@ -6321,7 +6274,6 @@ def test_send_payload_blocks_stale_single_frame_baseline_when_active_target_chan
         "get_window_geometry": sidecar_mod.get_window_geometry,
         "validate_send_geometry": sidecar_mod.validate_send_geometry,
         "capture_send_fact_snapshot": sidecar_mod.capture_send_fact_snapshot,
-        "calculate_send_points": sidecar_mod.calculate_send_points,
         "reserve_send_rate": sidecar_mod.reserve_send_rate,
         "send_with_visual_input": sidecar_mod.send_with_visual_input,
         "humanized_action_sleep": sidecar_mod.humanized_action_sleep,
@@ -6345,7 +6297,6 @@ def test_send_payload_blocks_stale_single_frame_baseline_when_active_target_chan
         sidecar_mod.recover_send_window_guard = lambda _hwnd, max_attempts=1: {"ok": True, "reason": "window_valid"}
         sidecar_mod.get_window_geometry = lambda _hwnd: dict(geometry)
         sidecar_mod.validate_send_geometry = lambda _g: {"ok": True}
-        sidecar_mod.calculate_send_points = lambda _g: {"ok": True, "input_point": [640, 715], "send_point": [915, 816]}
         sidecar_mod.reserve_send_rate = lambda **_kwargs: {"ok": True, "reason": "rate_ok"}
         sidecar_mod.send_with_visual_input = lambda *_args, **_kwargs: calls.__setitem__("send", calls["send"] + 1) or {"ok": True}
         sidecar_mod.humanized_action_sleep = lambda *_args, **_kwargs: 0.0
@@ -7391,7 +7342,6 @@ def main() -> int:
         test_parse_sessions_keeps_truncated_remark_code_title_with_time_suffix,
         test_parse_sessions_preserves_duplicate_display_names_with_session_keys,
         test_add_friend_query_normalization_prefers_phone_digits,
-        test_add_friend_windows_plus_reference_is_diagnostic_only,
         test_add_friend_search_result_detection_from_ocr,
         test_add_friend_surface_classification,
         test_add_friend_surface_readiness_blocks_blank_or_empty_ocr,
@@ -7427,7 +7377,7 @@ def main() -> int:
         test_message_noise_filters_relative_timestamps,
         test_connector_helpers,
         test_send_geometry_guard,
-        test_send_and_input_points_use_candidate_pools,
+        test_send_and_input_regions_come_from_current_layout_snapshot,
         test_client_click_surface_jitter_has_enough_entropy,
         test_voice_transcribe_target_prefers_visible_convert_button,
         test_voice_transcribe_target_processes_unconverted_voice_bottom_up,
@@ -7471,7 +7421,7 @@ def main() -> int:
         test_active_chat_matches_rejects_other_chat_body_sender_as_title,
         test_active_chat_matches_unread_badge_and_roi_edge,
         test_active_chat_matches_real_981_title_left_edge,
-        test_active_chat_cutoff_extends_above_sidebar_cutoff,
+        test_chat_regions_follow_structural_layout_boundaries,
         test_file_transfer_simulated_inbound_fallback,
         test_fast_confirmation_still_enqueues_file_transfer_loopback,
         test_passive_probe_mode_toggle,
@@ -7525,7 +7475,7 @@ def main() -> int:
         test_input_after_roi_confirmation_uses_input_region_ocr_without_full_ocr,
         test_input_after_roi_confirmation_falls_back_to_full_ocr_when_token_missing,
         test_input_region_soft_blank_noise_allows_post_clear_progress,
-        test_input_area_token_confirmation_excludes_recent_chat_bubble,
+        test_dynamic_input_region_excludes_message_viewport,
         test_send_rpa_env_enables_strict_focus_single_confirm_and_blank_retry,
         test_activate_window_debounces_aggressive_refocus,
         test_non_retryable_input_failure_detects_focus_loss,
