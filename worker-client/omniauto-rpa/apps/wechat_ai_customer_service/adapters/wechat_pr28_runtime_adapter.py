@@ -41,8 +41,9 @@ def _install_sidecar_environment_containment(connector: Any) -> None:
         env_overrides: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         overrides = dict(env_overrides or {})
-        if "WECHAT_WIN32_OCR_WINDOW_FIXED_ORIGIN" not in os.environ:
-            overrides.setdefault("WECHAT_WIN32_OCR_WINDOW_FIXED_ORIGIN", "1")
+        # Window/layout defaults are intentionally not set here.  The Sidecar
+        # owns the single production policy and this adapter only passes
+        # explicit operator overrides through.
         return original(
             args,
             allow_failure=allow_failure,

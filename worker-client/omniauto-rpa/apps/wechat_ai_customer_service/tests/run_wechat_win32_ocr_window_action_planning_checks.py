@@ -9,6 +9,8 @@ import sys
 import tempfile
 import types
 
+from PIL import Image, ImageDraw
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
@@ -16,11 +18,57 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar as sidecar  # noqa: E402
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import window_action_planning  # noqa: E402
+from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import window_layout  # noqa: E402
 
 
 def assert_true(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+def real_layout_frame(width: int = 980, height: int = 860) -> Image.Image:
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+    nav_x, sidebar_x = int(width * 0.073), int(width * 0.378)
+    sidebar_header_y, chat_header_y, input_y = int(height * 0.112), int(height * 0.102), int(height * 0.814)
+    draw.rectangle((0, 0, nav_x - 1, height - 1), fill=(245, 245, 245))
+    draw.rectangle((nav_x, 0, sidebar_x - 1, height - 1), fill=(235, 235, 235))
+    draw.line((nav_x, 0, nav_x, height - 1), fill=(150, 150, 150), width=2)
+    draw.line((sidebar_x, 0, sidebar_x, height - 1), fill=(130, 130, 130), width=2)
+    draw.line((nav_x, sidebar_header_y, sidebar_x, sidebar_header_y), fill=(120, 120, 120), width=2)
+    draw.line((sidebar_x, chat_header_y, width - 1, chat_header_y), fill=(120, 120, 120), width=2)
+    draw.line((sidebar_x, input_y, width - 1, input_y), fill=(120, 120, 120), width=2)
+    return image
+
+
+def real_layout_snapshot(width: int = 980, height: int = 860, *, image: Image.Image | None = None, hwnd: int = 1) -> dict:
+    image = image or real_layout_frame(width, height)
+    layout = window_layout.build_structural_layout_regions(image)
+    assert_true(layout.get("ok"), f"real layout builder rejected frame: {layout}")
+    return window_layout.build_layout_snapshot(
+        hwnd=hwnd,
+        frame_id=window_layout.new_frame_id(hwnd),
+        capture_mode=window_layout.CAPTURE_MODE_WINDOW_VISIBLE_SCREEN,
+        image_size=image.size,
+        capture_screen_origin=[0, 0],
+        window_rect=[0, 0, width, height],
+        client_rect=[0, 0, width, height],
+        client_screen_origin=[0, 0],
+        dpi_scale=1.0,
+        regions=layout["regions"],
+        anchors=layout["anchors"],
+        confidence=layout["confidence"],
+        conflicts=layout["conflicts"],
+        executable=True,
+    )
+
+
+def register_real_layout_frame(image: Image.Image, *, hwnd: int) -> dict:
+    snapshot = real_layout_snapshot(image.width, image.height, image=image, hwnd=hwnd)
+    sidecar._LAYOUT_SNAPSHOT_STORE.put(snapshot)
+    sidecar._LATEST_LAYOUT_SNAPSHOT_BY_HWND[int(hwnd)] = str(snapshot["layout_snapshot_id"])
+    sidecar._LAYOUT_SNAPSHOT_ID_BY_IMAGE_ID[id(image)] = str(snapshot["layout_snapshot_id"])
+    return snapshot
 
 
 def plan(
@@ -102,14 +150,14 @@ def test_plan_high_resolution_scales_recommended_window_when_screen_allows() -> 
     assert_true(result.get("resolution_scale") == 1.5, f"resolution scale metadata mismatch: {result}")
 
 
-def test_plan_1920_class_displays_ignore_dpi_scale_for_default_window() -> None:
+def test_plan_1920_class_displays_preserve_logical_canvas_at_high_dpi() -> None:
     cases = [
-        ("1920x1080@100", 1920, 1080, 1.0, (0, 0, 980, 860)),
-        ("1920x1080@125-logical", 1536, 864, 1.25, (0, 0, 980, 816)),
-        ("local-1920x1200@125-logical", 1536, 960, 1.25, (0, 0, 980, 860)),
-        ("1920x1080@150-logical", 1280, 720, 1.5, None),
+        ("1920x1080@100", 1920, 1080, 1.0, (0, 0, 980, 860), {"width": 980, "height": 860}),
+        ("1920x1080@125", 1920, 1080, 1.25, (0, 0, 1225, 1032), {"width": 1225, "height": 1075}),
+        ("1920x1200@125", 1920, 1200, 1.25, (0, 0, 1225, 1075), {"width": 1225, "height": 1075}),
+        ("1920x1080@150", 1920, 1080, 1.5, None, None),
     ]
-    for label, screen_width, screen_height, dpi_scale, expected_rect in cases:
+    for label, screen_width, screen_height, dpi_scale, expected_rect, expected_target in cases:
         result = plan(
             {"left": 20, "top": 24, "width": 900, "height": 800},
             dpi_scale=dpi_scale,
@@ -125,10 +173,10 @@ def test_plan_1920_class_displays_ignore_dpi_scale_for_default_window() -> None:
             continue
         assert_true(
             (result.get("left"), result.get("top"), result.get("width"), result.get("height")) == expected_rect,
-            f"{label} should keep the 980x860 default class and only clamp to visible bounds: {result}",
+            f"{label} should preserve the safe logical canvas and clamp only to the work area: {result}",
         )
-        assert_true(result.get("target") == {"width": 980, "height": 860}, f"{label} target metadata mismatch: {result}")
-        assert_true(result.get("resolution_scale") == 1.0, f"{label} should not scale by DPI: {result}")
+        assert_true(result.get("target") == expected_target, f"{label} target metadata mismatch: {result}")
+        assert_true(result.get("resolution_scale") == dpi_scale, f"{label} should scale by DPI: {result}")
         assert_true(result.get("dpi_scale") == dpi_scale, f"{label} should still report DPI for diagnostics: {result}")
 
 
@@ -136,10 +184,9 @@ def test_plan_resolution_dpi_matrix_stays_visible_and_safe() -> None:
     cases = [
         ("1366x768@100", 1366, 768, 1.0, (0, 0, 980, 720), {"width": 980, "height": 860}),
         ("1440x900@100", 1440, 900, 1.0, (0, 0, 980, 852), {"width": 980, "height": 860}),
-        ("1536x864@125", 1536, 864, 1.25, (0, 0, 980, 816), {"width": 980, "height": 860}),
         ("1920x1080@100", 1920, 1080, 1.0, (0, 0, 980, 860), {"width": 980, "height": 860}),
-        ("1920x1080@125", 1920, 1080, 1.25, (0, 0, 980, 860), {"width": 980, "height": 860}),
-        ("1920x1080@150", 1920, 1080, 1.5, (0, 0, 980, 860), {"width": 980, "height": 860}),
+        ("1920x1080@125", 1920, 1080, 1.25, (0, 0, 1225, 1032), {"width": 1225, "height": 1075}),
+        ("1920x1200@125", 1920, 1200, 1.25, (0, 0, 1225, 1075), {"width": 1225, "height": 1075}),
         ("2560x1440@100", 2560, 1440, 1.0, (0, 0, 1225, 1075), {"width": 1225, "height": 1075}),
         ("3840x2160@150", 3840, 2160, 1.5, (0, 0, 1470, 1290), {"width": 1470, "height": 1290}),
     ]
@@ -249,7 +296,6 @@ def test_sidecar_normalize_wechat_window_uses_same_planned_move_shape() -> None:
     previous_env = {
         name: os.environ.get(name)
         for name in (
-            "WECHAT_WIN32_OCR_WINDOW_NORMALIZE",
             "WECHAT_WIN32_OCR_WINDOW_FIXED_ORIGIN",
             "WECHAT_WIN32_OCR_WINDOW_WIDTH",
             "WECHAT_WIN32_OCR_WINDOW_HEIGHT",
@@ -310,6 +356,147 @@ def test_sidecar_normalize_wechat_window_uses_same_planned_move_shape() -> None:
         sidecar.ctypes.windll = original_windll
 
 
+def test_verify_policy_refuses_a_required_move_without_touching_the_window() -> None:
+    original_get_window_geometry = sidecar.get_window_geometry
+    original_get_window_client_geometry = sidecar.get_window_client_geometry
+    original_window_dpi_scale = sidecar.window_dpi_scale
+    original_screen_work_area = sidecar.screen_work_area
+    original_invalidate = sidecar.invalidate_layout_snapshot
+    original_planner = sidecar.win32_ocr_window_actions.plan_normalize_wechat_window
+    original_win32gui = sidecar.win32gui
+    calls: list[tuple[Any, ...]] = []
+    fake_gui = types.SimpleNamespace(
+        IsZoomed=lambda _hwnd: False,
+        MoveWindow=lambda *args: calls.append(tuple(args)),
+    )
+    try:
+        sidecar.get_window_geometry = lambda _hwnd: {
+            "left": 220,
+            "top": 80,
+            "right": 1220,
+            "bottom": 940,
+            "width": 1000,
+            "height": 860,
+        }
+        sidecar.get_window_client_geometry = lambda _hwnd: {
+            "left": 0,
+            "top": 0,
+            "right": 980,
+            "bottom": 820,
+            "width": 980,
+            "height": 820,
+            "screen_left": 230,
+            "screen_top": 110,
+        }
+        sidecar.window_dpi_scale = lambda _hwnd: 1.25
+        sidecar.screen_work_area = lambda _hwnd: {
+            "left": 0,
+            "top": 0,
+            "right": 1920,
+            "bottom": 1080,
+            "width": 1920,
+            "height": 1080,
+        }
+        sidecar.invalidate_layout_snapshot = lambda *_args, **_kwargs: None
+        sidecar.win32_ocr_window_actions.plan_normalize_wechat_window = lambda *_args, **_kwargs: {
+            "ok": True,
+            "move": True,
+            "left": 0,
+            "top": 0,
+            "width": 980,
+            "height": 860,
+            "target": {"left": 0, "top": 0, "width": 980, "height": 860},
+            "requested_target": {},
+            "resolution_scale": 1.0,
+        }
+        sidecar.win32gui = fake_gui
+        result = sidecar.normalize_wechat_window(2002, allow_move=False)
+        assert_true(result.get("ok") is False, f"verify mode must fail closed when geometry moved: {result}")
+        assert_true(result.get("error_code") == "WECHAT_UI_LAYOUT_STALE", f"unexpected error code: {result}")
+        assert_true(result.get("reason") == "window_geometry_changed_during_active_flow", f"unexpected reason: {result}")
+        assert_true(calls == [], f"verify mode must never move a window: {calls}")
+    finally:
+        sidecar.get_window_geometry = original_get_window_geometry
+        sidecar.get_window_client_geometry = original_get_window_client_geometry
+        sidecar.window_dpi_scale = original_window_dpi_scale
+        sidecar.screen_work_area = original_screen_work_area
+        sidecar.invalidate_layout_snapshot = original_invalidate
+        sidecar.win32_ocr_window_actions.plan_normalize_wechat_window = original_planner
+        sidecar.win32gui = original_win32gui
+
+
+def test_normalization_rejects_dpi_change_after_geometry_check() -> None:
+    original_get_window_geometry = sidecar.get_window_geometry
+    original_get_window_client_geometry = sidecar.get_window_client_geometry
+    original_window_dpi_scale = sidecar.window_dpi_scale
+    original_screen_work_area = sidecar.screen_work_area
+    original_invalidate = sidecar.invalidate_layout_snapshot
+    original_planner = sidecar.win32_ocr_window_actions.plan_normalize_wechat_window
+    original_win32gui = sidecar.win32gui
+    dpi_values = iter((1.0, 1.25))
+    geometry = {
+        "left": 0,
+        "top": 0,
+        "right": 980,
+        "bottom": 860,
+        "width": 980,
+        "height": 860,
+    }
+    client = {
+        "left": 0,
+        "top": 0,
+        "right": 960,
+        "bottom": 820,
+        "width": 960,
+        "height": 820,
+        "screen_left": 10,
+        "screen_top": 30,
+    }
+    try:
+        sidecar.get_window_geometry = lambda _hwnd: dict(geometry)
+        sidecar.get_window_client_geometry = lambda _hwnd: dict(client)
+        sidecar.window_dpi_scale = lambda _hwnd: next(dpi_values)
+        sidecar.screen_work_area = lambda _hwnd: {
+            "left": 0,
+            "top": 0,
+            "right": 1920,
+            "bottom": 1200,
+            "width": 1920,
+            "height": 1200,
+        }
+        sidecar.invalidate_layout_snapshot = lambda *_args, **_kwargs: None
+        sidecar.win32_ocr_window_actions.plan_normalize_wechat_window = lambda *_args, **_kwargs: {
+            "ok": True,
+            "move": False,
+            "left": 0,
+            "top": 0,
+            "width": 980,
+            "height": 860,
+            "target": {"width": 980, "height": 860},
+            "requested_target": {},
+            "resolution_scale": 1.0,
+        }
+        sidecar.win32gui = types.SimpleNamespace(IsZoomed=lambda _hwnd: False)
+        result = sidecar.normalize_wechat_window(2003, allow_move=False)
+        assert_true(result.get("ok") is False, f"DPI drift must fail normalization: {result}")
+        assert_true(
+            result.get("error_code") == "WECHAT_UI_WINDOW_NORMALIZATION_FAILED",
+            f"unexpected DPI drift error code: {result}",
+        )
+        assert_true(
+            result.get("reason") == "window_dpi_changed_during_normalization",
+            f"DPI drift reason missing: {result}",
+        )
+    finally:
+        sidecar.get_window_geometry = original_get_window_geometry
+        sidecar.get_window_client_geometry = original_get_window_client_geometry
+        sidecar.window_dpi_scale = original_window_dpi_scale
+        sidecar.screen_work_area = original_screen_work_area
+        sidecar.invalidate_layout_snapshot = original_invalidate
+        sidecar.win32_ocr_window_actions.plan_normalize_wechat_window = original_planner
+        sidecar.win32gui = original_win32gui
+
+
 def test_sidebar_search_query_must_match_exact_remark_code() -> None:
     assert_true(
         sidecar.sidebar_search_query_matches("CJWIN01", "CJWIN01"),
@@ -362,14 +549,15 @@ def test_sidebar_search_query_ignores_empty_placeholder_icon_text() -> None:
 
 
 def test_search_result_candidate_uses_window_image_click_coordinates() -> None:
-    original_human_window_image_click = sidecar.human_window_image_click
+    original_human_window_image_click_in_bounds = sidecar.human_window_image_click_in_bounds
     original_human_client_click = sidecar.human_client_click
     original_humanized_action_sleep = sidecar.humanized_action_sleep
     original_validate_active_send_target = sidecar.validate_active_send_target
     calls: list[tuple[str, int, int]] = []
 
-    def fake_window_image_click(_hwnd: int, x: int, y: int) -> None:
+    def fake_window_image_click(_hwnd: int, x: int, y: int, *, bounds: list[int], action_name: str, expected_snapshot_id: str = "") -> dict:
         calls.append(("window_image", int(x), int(y)))
+        return {"ok": True, "bounds": bounds, "action_name": action_name, "layout_snapshot_id": expected_snapshot_id}
 
     def fake_client_click(_hwnd: int, x: int, y: int) -> None:
         calls.append(("client", int(x), int(y)))
@@ -385,7 +573,7 @@ def test_search_result_candidate_uses_window_image_click_coordinates() -> None:
         }
 
     try:
-        sidecar.human_window_image_click = fake_window_image_click
+        sidecar.human_window_image_click_in_bounds = fake_window_image_click
         sidecar.human_client_click = fake_client_click
         sidecar.humanized_action_sleep = lambda *_args, **_kwargs: 0.0
         sidecar.validate_active_send_target = fake_validate
@@ -400,7 +588,7 @@ def test_search_result_candidate_uses_window_image_click_coordinates() -> None:
             remark_code="CJWIN01",
         )
     finally:
-        sidecar.human_window_image_click = original_human_window_image_click
+        sidecar.human_window_image_click_in_bounds = original_human_window_image_click_in_bounds
         sidecar.human_client_click = original_human_client_click
         sidecar.humanized_action_sleep = original_humanized_action_sleep
         sidecar.validate_active_send_target = original_validate_active_send_target
@@ -434,7 +622,9 @@ def test_search_contact_candidates_stop_before_favorites_section() -> None:
         item("更多", 106, 720, 154, 744),
     ]
 
-    matches = sidecar.search_result_contact_candidates_matching_remark_code(ocr_items, (980, 860), "CJVOICE01")
+    matches = sidecar.search_result_contact_candidates_matching_remark_code(
+        ocr_items, (980, 860), "CJVOICE01", layout_snapshot=real_layout_snapshot()
+    )
 
     assert_true(len(matches) == 1, f"favorites section should not create extra contact candidates: {matches}")
     assert_true(matches[0].get("section") == "contacts", f"candidate should stay in contacts section: {matches}")
@@ -459,7 +649,9 @@ def test_search_result_does_not_fallback_without_remark_code_evidence() -> None:
         item("虾丸子大人", 168, 158, 296, 184),
         item("群聊", 106, 232, 154, 256),
     ]
-    candidate = sidecar.fallback_first_search_contact_candidate(ocr_items, (980, 860), "CJVOICE01")
+    candidate = sidecar.fallback_first_search_contact_candidate(
+        ocr_items, (980, 860), "CJVOICE01", layout_snapshot=real_layout_snapshot()
+    )
     assert_true(candidate is None, f"contact row without the target remark code must not be clicked: {candidate}")
 
 
@@ -469,7 +661,13 @@ def test_active_selected_session_can_confirm_clicked_chat_for_c2() -> None:
         {"text": "腾讯新闻", "left": 404, "right": 480, "top": 62, "bottom": 90, "center_x": 442, "center_y": 76},
     ]
     assert_true(
-        sidecar.active_selected_session_matches(ocr_items, (980, 860), target="CJVOICE01", exact=False),
+        sidecar.active_selected_session_matches(
+            ocr_items,
+            (980, 860),
+            target="CJVOICE01",
+            exact=False,
+            layout_snapshot=real_layout_snapshot(),
+        ),
         "left selected session row should be usable as C2 read confirmation",
     )
 
@@ -549,7 +747,8 @@ def test_search_by_remark_code_precheck_does_not_bypass_failed_foreground_recove
         }
 
     def fake_capture(_hwnd: int, *, artifact_dir: str | None = None, label: str = "wechat") -> tuple:
-        image = sidecar.Image.new("RGB", (980, 860), "white")
+        image = real_layout_frame()
+        register_real_layout_frame(image, hwnd=int(_hwnd))
         path = Path(artifact_dir or ".") / f"{label}.png"
         image.save(path)
         return image, str(path)
@@ -582,7 +781,7 @@ def test_search_by_remark_code_precheck_does_not_bypass_failed_foreground_recove
         sidecar.draw_add_friend_screen_annotation = fake_draw
         sidecar.target_switch_surface_state = fake_surface
         sidecar.get_window_geometry = fake_geometry
-        sidecar.ensure_main_session_list = lambda *_args, **_kwargs: (sidecar.Image.new("RGB", (980, 860), "white"), fake_ocr(None, "baseline"))
+        sidecar.ensure_main_session_list = lambda *_args, **_kwargs: (real_layout_frame(), fake_ocr(None, "baseline"))
         sidecar.clear_sidebar_search_box_without_select_all = fake_clear
         with tempfile.TemporaryDirectory() as tmp:
             result = sidecar.open_chat_by_remark_code_search(
@@ -638,7 +837,8 @@ def test_search_clear_recovers_foreground_before_select_all() -> None:
         return guards.pop(0) if guards else {"ok": True, "reason": "window_valid"}
 
     def fake_capture(_hwnd: int, *, artifact_dir: str | None = None, label: str = "wechat") -> tuple:
-        image = sidecar.Image.new("RGB", (980, 860), "white")
+        image = real_layout_frame()
+        register_real_layout_frame(image, hwnd=int(_hwnd))
         path = Path(artifact_dir or ".") / f"{label}.png"
         image.save(path)
         return image, str(path)
@@ -706,16 +906,26 @@ def test_search_clear_refocuses_empty_search_box_after_focus_drops_to_chat_input
         {"detected": False, "reason": "chat_input_focused_after_clear"},
         {"detected": True, "reason": "sidebar_search_focus_indicator"},
     ]
-    clicks: list[str] = []
+    clicks: list[tuple[str, int, str]] = []
 
     def fake_capture(_hwnd: int, *, artifact_dir: str | None = None, label: str = "wechat") -> tuple:
-        image = sidecar.Image.new("RGB", (980, 860), "white")
+        image = real_layout_frame()
+        register_real_layout_frame(image, hwnd=int(_hwnd))
         path = Path(artifact_dir or ".") / f"{label}.png"
         image.save(path)
         return image, str(path)
 
     def fake_ocr(_image: object, _label: str, *, source: str = "") -> list[dict]:
-        return [{"text": "搜索", "left": 128, "top": 59, "right": 166, "bottom": 80, "center_x": 147, "center_y": 70}]
+        left = 208 if "cleared" in _label else 128
+        return [{
+            "text": "搜索",
+            "left": left,
+            "top": 59,
+            "right": left + 38,
+            "bottom": 80,
+            "center_x": left + 19,
+            "center_y": 70,
+        }]
 
     def fake_surface(*_args: object, **_kwargs: object) -> dict:
         return {"ok": True, "online": True, "reason": "surface_ready", "ocr_count": 1}
@@ -724,7 +934,11 @@ def test_search_clear_refocuses_empty_search_box_after_focus_drops_to_chat_input
         return search_states.pop(0) if search_states else {"detected": True, "reason": "sidebar_search_focus_indicator"}
 
     def fake_click(*_args: object, **kwargs: object) -> dict:
-        clicks.append(str(kwargs.get("action_name") or "click"))
+        clicks.append((
+            str(kwargs.get("action_name") or "click"),
+            int(_args[1]),
+            str(kwargs.get("expected_snapshot_id") or ""),
+        ))
         return {"ok": True}
 
     try:
@@ -761,9 +975,11 @@ def test_search_clear_refocuses_empty_search_box_after_focus_drops_to_chat_input
     assert_true(result.get("ok") is True, f"empty search box should be refocused instead of failing: {result}")
     assert_true(result.get("refocused_after_clear") is True, f"clear result should report refocus: {result}")
     assert_true(
-        clicks == ["sidebar_search_box_click", "sidebar_search_box_refocus_after_clear"],
+        [item[0] for item in clicks] == ["sidebar_search_box_click", "sidebar_search_box_refocus_after_clear"],
         f"search box should be clicked once to focus and once to refocus: {clicks}, result={result}",
     )
+    assert_true(clicks[0][1] != clicks[1][1], f"refocus must reacquire the moved search box from the new frame: {clicks}")
+    assert_true(clicks[0][2] != clicks[1][2], f"refocus must use the new frame snapshot id: {clicks}")
 
 
 def test_search_by_remark_code_failed_precheck_writes_window_evidence() -> None:
@@ -837,7 +1053,8 @@ def test_search_by_remark_code_writes_partial_report_before_mid_step_crash() -> 
         return {"left": 0, "top": 0, "right": 980, "bottom": 860, "width": 980, "height": 860}
 
     def fake_ensure_main_session_list(*_args: object, **_kwargs: object) -> tuple:
-        image = sidecar.Image.new("RGB", (980, 860), "white")
+        image = real_layout_frame()
+        register_real_layout_frame(image, hwnd=1001)
         items = [{"text": "搜索", "left": 128, "top": 59, "right": 166, "bottom": 80, "center_x": 147, "center_y": 70}]
         return image, items
 
@@ -922,7 +1139,7 @@ def main() -> int:
         test_plan_1920x1200_fixed_origin_matches_default_safe_window,
         test_plan_1920x1080_keeps_default_safe_window_when_it_fits,
         test_plan_high_resolution_scales_recommended_window_when_screen_allows,
-        test_plan_1920_class_displays_ignore_dpi_scale_for_default_window,
+        test_plan_1920_class_displays_preserve_logical_canvas_at_high_dpi,
         test_plan_resolution_dpi_matrix_stays_visible_and_safe,
         test_plan_huge_requested_window_clamps_to_safe_maximum,
         test_plan_tiny_screen_never_exceeds_visible_screen_bounds,
@@ -931,6 +1148,8 @@ def main() -> int:
         test_plan_recommended_floor_and_custom_origin,
         test_plan_without_screen_metrics_uses_target_and_max_bounds,
         test_sidecar_normalize_wechat_window_uses_same_planned_move_shape,
+        test_verify_policy_refuses_a_required_move_without_touching_the_window,
+        test_normalization_rejects_dpi_change_after_geometry_check,
         test_sidebar_search_query_must_match_exact_remark_code,
         test_sidebar_search_query_ignores_empty_placeholder_icon_text,
         test_search_result_candidate_uses_window_image_click_coordinates,

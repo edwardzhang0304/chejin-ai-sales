@@ -39,18 +39,6 @@ CHAT_TIME_RE = re.compile(
 )
 
 
-def session_split_x(width: int) -> int:
-    """Return the WeChat session/chat split without importing the host sidecar."""
-
-    return max(300, min(370, int(width * 0.52)))
-
-
-def chat_header_cutoff_y(height: int) -> int:
-    """Return the chat header cutoff without importing the host sidecar."""
-
-    return max(90, min(150, int(height * 0.12)))
-
-
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
@@ -82,11 +70,14 @@ def parse_preview_speaker(source_preview: Any, explicit_speaker: Any = "") -> st
 def extract_chat_time_markers(
     ocr_items: list[dict[str, Any]] | None,
     image_size: tuple[int, int],
+    *,
+    message_viewport_bounds: list[int] | tuple[int, int, int, int],
 ) -> list[dict[str, Any]]:
     """Extract centered WeChat time separators without treating them as messages."""
     width, height = image_size
-    split_x = session_split_x(width)
-    header_cutoff = chat_header_cutoff_y(height)
+    if len(message_viewport_bounds) != 4:
+        return []
+    chat_left, chat_top, chat_right, chat_bottom = [int(value) for value in message_viewport_bounds]
     markers: list[dict[str, Any]] = []
     for item in ocr_items or []:
         text = re.sub(r"\s+", "", str(item.get("text") or "").strip())
@@ -94,11 +85,11 @@ def extract_chat_time_markers(
             continue
         center_x = float(item.get("center_x") or 0.0)
         center_y = float(item.get("center_y") or 0.0)
-        if center_y < header_cutoff or center_y > height - DEFAULT_BOTTOM_EXCLUDE_PX:
+        if center_y < chat_top or center_y > chat_bottom:
             continue
         # Session-list times live left of the chat split. Chat separators are
         # centered in the conversation pane and have compact OCR boxes.
-        if center_x < split_x or center_x > width - 80:
+        if center_x < chat_left or center_x > chat_right:
             continue
         markers.append(
             {
@@ -130,13 +121,20 @@ def nearest_chat_time_marker(
     return str(candidates[-1].get("text") or "").strip()
 
 
-def _chat_bounds(width: int, height: int) -> tuple[int, int, int, int]:
-    split = session_split_x(width)
-    left = min(width - 1, split + 12)
-    top = chat_header_cutoff_y(height)
-    right = width - 8
-    bottom = height - max(DEFAULT_BOTTOM_EXCLUDE_PX, int(height * 0.10))
-    return left, top, right, bottom
+def _chat_bounds(
+    width: int,
+    height: int,
+    message_viewport_bounds: list[int] | tuple[int, int, int, int],
+) -> tuple[int, int, int, int]:
+    if len(message_viewport_bounds) != 4:
+        return (0, 0, 0, 0)
+    left, top, right, bottom = [int(value) for value in message_viewport_bounds]
+    return (
+        max(0, min(width, left)),
+        max(0, min(height, top)),
+        max(0, min(width, right)),
+        max(0, min(height, bottom)),
+    )
 
 
 def _bounds_continue_through_chat_crop_boundary(
@@ -271,32 +269,41 @@ def _role_facing_edge_surface_continuity(
     return active / len(pixels)
 
 
-def _structural_media_lanes(width: int, height: int) -> dict[str, dict[str, int]]:
+def _structural_media_lanes(
+    width: int,
+    height: int,
+    message_viewport_bounds: list[int] | tuple[int, int, int, int],
+) -> dict[str, dict[str, int]]:
     """Return relative WeChat media/avatar lanes for each message side.
 
     These are deliberately expressed from the current chat pane instead of
     fixed screenshot coordinates.  A media candidate is owned by the message
     row whose avatar column it adjoins; image pixels never decide ownership.
     """
-    chat_left, top, chat_right, bottom = _chat_bounds(width, height)
+    chat_left, top, chat_right, bottom = _chat_bounds(width, height, message_viewport_bounds)
     chat_width = max(1, chat_right - chat_left)
     avatar_width = max(42, min(64, int(chat_width * 0.10)))
+    edge_inset = max(12, min(28, int(chat_width * 0.03)))
     media_gap = max(14, min(30, int(chat_width * 0.04)))
-    customer_media_left = chat_left + avatar_width + media_gap
-    self_media_right = chat_right - avatar_width - media_gap
+    customer_avatar_left = chat_left + edge_inset
+    customer_avatar_right = min(chat_right, customer_avatar_left + avatar_width)
+    self_avatar_right = chat_right - edge_inset
+    self_avatar_left = max(chat_left, self_avatar_right - avatar_width)
+    customer_media_left = customer_avatar_right + media_gap
+    self_media_right = self_avatar_left - media_gap
     media_column_width = max(150, int(chat_width * 0.62))
     return {
         "customer": {
-            "avatar_left": max(chat_left - avatar_width - 6, session_split_x(width) + 2),
-            "avatar_right": chat_left + 12,
+            "avatar_left": customer_avatar_left,
+            "avatar_right": customer_avatar_right,
             "media_left": customer_media_left,
             "media_right": min(chat_right, customer_media_left + media_column_width),
             "top": top,
             "bottom": bottom,
         },
         "self": {
-            "avatar_left": chat_right - 12,
-            "avatar_right": min(width - 2, chat_right + avatar_width + 6),
+            "avatar_left": self_avatar_left,
+            "avatar_right": self_avatar_right,
             "media_left": max(chat_left, self_media_right - media_column_width),
             "media_right": self_media_right,
             "top": top,
@@ -329,6 +336,8 @@ def _avatar_row_presence(
 def _structural_media_side(
     screenshot: Image.Image,
     bounds: tuple[int, int, int, int],
+    *,
+    message_viewport_bounds: list[int] | tuple[int, int, int, int],
 ) -> tuple[str, float, list[str]] | None:
     """Resolve sender side from message-lane adjacency before image features.
 
@@ -339,7 +348,7 @@ def _structural_media_side(
     left, top, right, bottom = bounds
     if left >= right or top >= bottom:
         return None
-    lanes = _structural_media_lanes(width, height)
+    lanes = _structural_media_lanes(width, height, message_viewport_bounds)
     candidates: list[tuple[str, float, list[str]]] = []
     for side, lane in lanes.items():
         if top < lane["top"] or bottom > lane["bottom"]:
@@ -377,6 +386,7 @@ def _exclude_avatar_column_from_media_bounds(
     bounds: tuple[int, int, int, int],
     *,
     side: str,
+    message_viewport_bounds: list[int] | tuple[int, int, int, int],
 ) -> tuple[tuple[int, int, int, int], bool]:
     """Keep the media rectangle outside the same-row avatar column.
 
@@ -386,7 +396,10 @@ def _exclude_avatar_column_from_media_bounds(
     authoritative sender-role decision through its shared avatar rule.
     """
     left, top, right, bottom = bounds
-    lane = _structural_media_lanes(*screenshot.size).get(str(side or "").strip().lower())
+    lane = _structural_media_lanes(
+        *screenshot.size,
+        message_viewport_bounds,
+    ).get(str(side or "").strip().lower())
     if not lane:
         return bounds, False
     if side == "customer":
@@ -1011,10 +1024,11 @@ def detect_visual_image_bubbles(
     side_filter: str = "customer",
     time_markers: list[dict[str, Any]] | None = None,
     diagnostics: list[dict[str, Any]] | None = None,
+    message_viewport_bounds: list[int] | tuple[int, int, int, int],
 ) -> list[dict[str, Any]]:
     image = screenshot.convert("RGB")
     width, height = image.size
-    left, top, right, bottom = _chat_bounds(width, height)
+    left, top, right, bottom = _chat_bounds(width, height, message_viewport_bounds)
     if right <= left or bottom <= top:
         return []
     crop = image.crop((left, top, right, bottom))
@@ -1104,7 +1118,11 @@ def detect_visual_image_bubbles(
             # false observation that blocks the whole authoritative frame.
             if component_fill_ratio < MIN_MEDIA_COMPONENT_FILL_RATIO:
                 continue
-            structural_side = _structural_media_side(image, bounds)
+            structural_side = _structural_media_side(
+                image,
+                bounds,
+                message_viewport_bounds=message_viewport_bounds,
+            )
             if structural_side is None:
                 continue
             side, structural_score, structure_evidence = structural_side
@@ -1152,6 +1170,7 @@ def detect_visual_image_bubbles(
                 image,
                 bounds,
                 side=side,
+                message_viewport_bounds=message_viewport_bounds,
             )
             bw = bounds[2] - bounds[0]
             bh = bounds[3] - bounds[1]
@@ -1273,12 +1292,14 @@ def detect_customer_image_bubbles(
     *,
     messages: list[dict[str, Any]] | None = None,
     max_images: int = 1,
+    message_viewport_bounds: list[int] | tuple[int, int, int, int],
 ) -> list[dict[str, Any]]:
     return detect_visual_image_bubbles(
         screenshot,
         messages=messages,
         max_images=max_images,
         side_filter="customer",
+        message_viewport_bounds=message_viewport_bounds,
     )
 
 
@@ -1472,24 +1493,20 @@ def click_context_menu_item(
     menu_target: dict[str, Any],
     action_name: str,
 ) -> dict[str, Any]:
-    screen_click = getattr(sidecar_ops, "human_screen_click", None)
-    win32gui = getattr(sidecar_ops, "win32gui", None)
-    if callable(screen_click) and win32gui is not None:
-        try:
-            left, top, _right, _bottom = win32gui.GetWindowRect(hwnd)
-            return screen_click(
-                int(left) + int(menu_target.get("x") or 0),
-                int(top) + int(menu_target.get("y") or 0),
-                action_name=action_name,
-            )
-        except Exception:
-            pass
+    popup_hwnd = int(menu_target.get("popup_hwnd") or 0)
+    snapshot_id = str(menu_target.get("layout_snapshot_id") or "")
+    if not popup_hwnd or not snapshot_id:
+        return {
+            "ok": False,
+            "reason": "WECHAT_UI_LAYOUT_UNRESOLVED",
+        }
     return sidecar_ops.human_window_image_click_in_bounds(
-        hwnd,
+        popup_hwnd,
         int(menu_target.get("x") or 0),
         int(menu_target.get("y") or 0),
         bounds=[int(value) for value in (menu_target.get("bounds") or [])[:4]],
         action_name=action_name,
+        expected_snapshot_id=snapshot_id,
     )
 
 
@@ -1585,7 +1602,26 @@ def execute_wechat_clipboard_image_copy(
         }
     geometry = sidecar_ops.get_window_geometry(hwnd)
     image_size = getattr(screenshot, "size", (int(geometry.get("width") or 0), int(geometry.get("height") or 0)))
-    messages = sidecar_ops.parse_messages_from_ocr(ocr_items, image_size, target=target_name)
+    layout_snapshot = sidecar_ops.layout_snapshot_for_image(screenshot)
+    viewport = (
+        list((layout_snapshot or {}).get("message_viewport_bounds") or [])
+        if isinstance(layout_snapshot, dict)
+        else []
+    )
+    if not bool((layout_snapshot or {}).get("executable")) or len(viewport) != 4:
+        return {
+            "ok": False,
+            "online": True,
+            "adapter": "win32_ocr",
+            "state": "image_clipboard_copy_failed",
+            "reason": "WECHAT_UI_LAYOUT_UNRESOLVED",
+            "target": target_name,
+            "session_key": session_key,
+            "assets": [],
+            "messages": [],
+            "transaction": {"status": "failed", "captured_at": captured_at},
+        }
+    messages = sidecar_ops.parse_messages_from_ocr(ocr_items, image_size, target=target_name, screenshot=screenshot)
     blocking_reason = sidecar_ops.blocking_screen_reason(ocr_items)
     if blocking_reason:
         return {
@@ -1605,7 +1641,12 @@ def execute_wechat_clipboard_image_copy(
         messages=messages,
         max_images=DEFAULT_MAX_VISIBLE_IMAGE_CANDIDATES,
         side_filter=visual_side,
-        time_markers=extract_chat_time_markers(ocr_items, image_size),
+        time_markers=extract_chat_time_markers(
+            ocr_items,
+            image_size,
+            message_viewport_bounds=viewport,
+        ),
+        message_viewport_bounds=viewport,
     )
     if not bubbles:
         return {
@@ -1643,6 +1684,7 @@ def execute_wechat_clipboard_image_copy(
         int(anchor.get("y") or 0),
         bounds=bounds,
         action_name="image_clipboard_copy_context_right_click",
+        expected_snapshot_id=str((layout_snapshot or {}).get("layout_snapshot_id") or ""),
     )
     wait_for_menu = getattr(
         sidecar_ops,
@@ -1693,13 +1735,17 @@ def execute_wechat_clipboard_image_copy(
         if isinstance(item, dict)
     ]
     menu_size = tuple(menu_observation.get("image_size") or image_size)
+    menu_origin = list(menu_observation.get("screen_origin") or [0, 0])
+    if len(menu_origin) < 2:
+        menu_origin = [0, 0]
+    local_anchor = (
+        int((right_click or {}).get("screen_x") or 0) - int(menu_origin[0]),
+        int((right_click or {}).get("screen_y") or 0) - int(menu_origin[1]),
+    )
     copy_target = find_copy_menu_item(
         menu_items,
         menu_size,
-        anchor=(
-            int((right_click or {}).get("screen_x") or 0),
-            int((right_click or {}).get("screen_y") or 0),
-        ),
+        anchor=local_anchor,
     )
     if not right_click.get("ok") or not copy_target:
         try:
@@ -1727,6 +1773,11 @@ def execute_wechat_clipboard_image_copy(
                 "menu_copy_confirmed": False,
             },
         }
+    copy_target = {
+        **copy_target,
+        "popup_hwnd": int(menu_observation.get("menu_hwnd") or 0),
+        "layout_snapshot_id": str(menu_observation.get("layout_snapshot_id") or ""),
+    }
     menu_click = click_context_menu_item(
         sidecar_ops=sidecar_ops,
         hwnd=hwnd,

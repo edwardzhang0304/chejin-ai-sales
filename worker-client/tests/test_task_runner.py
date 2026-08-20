@@ -683,6 +683,8 @@ class FakeBridge:
         self.c2_operation_order: list[str] = []
         self.add_friend_cancel_check = None
         self.probe_calls = 0
+        self.preflight_calls = 0
+        self.preflight_payload = {"ok": True, "state": "mock_preflight"}
         self.send_journal_dir = Path(
             tempfile.mkdtemp(prefix="chejin-send-journal-test-")
         )
@@ -718,6 +720,10 @@ class FakeBridge:
     def probe(self):
         self.probe_calls += 1
         return "ready", "logged_in"
+
+    def preflight_window_normalization(self):
+        self.preflight_calls += 1
+        return dict(self.preflight_payload)
 
     def run_add_friend(self, task: Task, emit_step, cancel_check=None):
         self.tasks.append(task)
@@ -3572,6 +3578,28 @@ class TaskRunnerTest(unittest.TestCase):
         api.run_status_error = None
         self.assertTrue(runner.set_run_status("running"))
         self.assertEqual(binding.run_status, "running")
+
+    def test_start_blocks_before_backend_when_window_normalization_fails(self):
+        api = FakeApi(None)
+        bridge = FakeBridge(RpaResult(ok=True, result_code="unused", message="unused"))
+        bridge.preflight_payload = {
+            "ok": False,
+            "error_code": "WECHAT_UI_WINDOW_NORMALIZATION_FAILED",
+            "reason": "screen_work_area_too_small",
+        }
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="paused",
+        )
+        runner.binding = binding
+
+        self.assertFalse(runner.set_run_status("running"))
+        self.assertEqual(bridge.preflight_calls, 1)
+        self.assertEqual(api.run_status_updates, [])
+        self.assertEqual(binding.run_status, "paused")
 
     def test_task_safe_wake_coalesces_repeated_events_into_one_followup_tick(self):
         api = FakeApi(None)

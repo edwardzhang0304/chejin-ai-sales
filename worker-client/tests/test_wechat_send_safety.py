@@ -70,6 +70,64 @@ def incident_post_send_enhanced_ocr_items() -> list[dict[str, object]]:
 
 
 class WechatSendSafetyTest(unittest.TestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self._semantic_layouts: dict[int, dict] = {}
+        self._latest_semantic_layout: dict | None = None
+        self._layout_for_image_patch = patch.object(
+            sidecar,
+            "layout_snapshot_for_image",
+            side_effect=self._semantic_layout_for_image,
+        )
+        self._current_layout_patch = patch.object(
+            sidecar,
+            "current_layout_snapshot",
+            side_effect=lambda _hwnd: self._latest_semantic_layout,
+        )
+        self._layout_for_image_patch.start()
+        self._current_layout_patch.start()
+        self.addCleanup(self._layout_for_image_patch.stop)
+        self.addCleanup(self._current_layout_patch.stop)
+
+    def _semantic_layout_for_image(self, image: Image.Image) -> dict:
+        """Production snapshot shape for send semantics outside layout tests."""
+        key = id(image)
+        cached = self._semantic_layouts.get(key)
+        if cached is not None:
+            self._latest_semantic_layout = cached
+            return cached
+        width, height = [int(value or 0) for value in image.size]
+        sidebar_right = min(max(int(round(width * 0.39)), 300), max(301, width - 420))
+        header_bottom = min(max(int(round(height * 0.10)), 70), 110)
+        input_top = max(header_bottom + 120, int(round(height * 0.79)))
+        snapshot = sidecar.win32_ocr_layout.build_layout_snapshot(
+            hwnd=1,
+            frame_id=f"send-semantic-frame-{key}",
+            capture_mode=sidecar.win32_ocr_layout.CAPTURE_MODE_WINDOW_VISIBLE_SCREEN,
+            image_size=image.size,
+            capture_screen_origin=[0, 0],
+            window_rect=[0, 0, width, height],
+            client_rect=[0, 0, width, height],
+            client_screen_origin=[0, 0],
+            dpi_scale=1.0,
+            regions={
+                "left_nav_bounds": [0, 0, 75, height],
+                "sidebar_bounds": [75, 0, sidebar_right, height],
+                "sidebar_header_bounds": [75, 0, sidebar_right, header_bottom],
+                "session_list_bounds": [75, header_bottom, sidebar_right, height],
+                "chat_header_bounds": [sidebar_right, 0, width, header_bottom],
+                "message_viewport_bounds": [sidebar_right, header_bottom, width, input_top],
+                "input_bounds": [sidebar_right, input_top, width, height],
+            },
+            anchors=[],
+            confidence=1.0,
+            conflicts=[],
+            executable=True,
+        )
+        self._semantic_layouts[key] = snapshot
+        self._latest_semantic_layout = snapshot
+        return snapshot
+
     def test_generic_journal_updates_matching_voice_item_before_click(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "voice-action.json"
@@ -1412,6 +1470,50 @@ class WechatSendSafetyTest(unittest.TestCase):
         self.assertEqual(result["reason"], "confirmed_program_draft_cleared")
         self.assertEqual(value_pattern.value, "")
 
+    def test_clipboard_confirmed_program_draft_reuses_existing_focus_without_second_click(self):
+        class InitiallyUnreadableValuePattern:
+            def __init__(self):
+                self.reads = 0
+
+            @property
+            def Value(self):
+                self.reads += 1
+                if self.reads == 1:
+                    raise RuntimeError("UIA value temporarily unavailable")
+                return ""
+
+        value_pattern = InitiallyUnreadableValuePattern()
+        with (
+            patch.object(
+                sidecar,
+                "confirm_exact_program_draft_focus",
+                return_value={"ok": True, "reason": "verified_input_focused_with_exact_program_draft"},
+            ),
+            patch.object(sidecar, "human_client_click") as click,
+            patch.object(sidecar, "hotkey") as hotkey,
+            patch.object(sidecar, "key_press") as key_press,
+            patch.object(sidecar, "humanized_action_sleep"),
+        ):
+            result = sidecar.clear_confirmed_program_draft(
+                1,
+                value_pattern=value_pattern,
+                input_point=(650, 720),
+                expected_text="AI回复",
+                paste_result={
+                    "input_result": {
+                        "ok": True,
+                        "typed_chars": 4,
+                        "method": "clipboard_chunks",
+                    }
+                },
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["cleared"])
+        click.assert_not_called()
+        hotkey.assert_not_called()
+        key_press.assert_called_once_with(sidecar.win32con.VK_BACK)
+
     def test_unproven_or_changed_draft_is_never_cleared(self):
         value_pattern = SimpleNamespace(Value="销售人工草稿")
         with (
@@ -2608,17 +2710,30 @@ class WechatSendSafetyTest(unittest.TestCase):
         self.assertTrue(result["send_result"]["physical_send_triggered"])
 
     def test_uia_screen_coordinates_use_screen_to_client(self):
-        fake_win32gui = SimpleNamespace(
-            ScreenToClient=lambda hwnd, point: (
-                point[0] - 108,
-                point[1] - 132,
-            )
+        snapshot = sidecar.win32_ocr_layout.build_layout_snapshot(
+            hwnd=1001,
+            frame_id="screen-to-client-frame",
+            capture_mode=sidecar.win32_ocr_layout.CAPTURE_MODE_WINDOW_VISIBLE_SCREEN,
+            image_size=(980, 860),
+            capture_screen_origin=[108, 132],
+            window_rect=[100, 100, 1080, 960],
+            client_rect=[0, 0, 972, 828],
+            client_screen_origin=[108, 132],
+            dpi_scale=1.0,
+            regions={},
+            anchors=[],
+            confidence=1.0,
+            conflicts=[],
+            executable=False,
+            required_region_names=(),
         )
-        with patch.object(sidecar, "win32gui", fake_win32gui):
-            self.assertEqual(
-                sidecar.screen_point_to_client(1001, 910, 742),
-                (802, 610),
-            )
+        self.assertEqual(
+            sidecar.win32_ocr_layout.screen_point_to_client(
+                snapshot,
+                [910, 742],
+            ),
+            [802, 610],
+        )
 
     def test_formal_send_uses_visual_input_then_enter_without_uia(self):
         geometry = {

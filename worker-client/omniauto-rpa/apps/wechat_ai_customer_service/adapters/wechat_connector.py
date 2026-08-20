@@ -148,6 +148,27 @@ class WeChatConnector:
     def wxauto4_reserve_enabled(self) -> bool:
         return env_flag("WECHAT_ENABLE_WXAUTO4", default=False)
 
+    def _ui_flow_preflight(self, flow: str) -> dict[str, Any]:
+        """Run the active normalization gate while the flow lock is held."""
+        payload = self.call_compat_sidecar(
+            ["normalize-window"],
+            allow_failure=True,
+            env_overrides=interactive_rpa_probe_env(),
+        )
+        if not payload.get("ok"):
+            payload.setdefault("error_code", "WECHAT_UI_WINDOW_NORMALIZATION_FAILED")
+            payload.setdefault("state", "window_normalization_failed")
+            payload["ui_flow"] = str(flow or "")
+            if flow in {"pre_send_refresh", "send"}:
+                payload["risk_stop_recommended"] = True
+                error_text = str(payload.get("error") or payload.get("reason") or "").lower()
+                payload["risk_stop_reason"] = (
+                    "win32_invalid_window_handle"
+                    if "invalid" in error_text or "1400" in error_text
+                    else "window_normalization_failed_before_physical_send"
+                )
+        return payload
+
     def status(self, *, interactive: bool = False) -> dict[str, Any]:
         lock_timeout = rpa_lock_timeout_seconds("status", default=12.0)
         try:
@@ -393,7 +414,7 @@ class WeChatConnector:
         session_key: str = "",
         conversation_type: str = "",
     ) -> dict[str, Any]:
-        args = ["messages", "--target", target]
+        args = ["messages", "--window-policy", "verify", "--target", target]
         clean_session_key = str(session_key or "").strip()
         if clean_session_key:
             args.extend(["--session-key", clean_session_key])
@@ -444,6 +465,10 @@ class WeChatConnector:
         env_overrides = visible_only_message_env() if visible_only_target else None
 
         def _call_messages_with_lock(lock_meta: dict[str, Any]) -> dict[str, Any]:
+            preflight = self._ui_flow_preflight("authorized_read")
+            if not preflight.get("ok"):
+                attach_rpa_lock_meta(preflight, lock_meta)
+                return preflight
             primary = self.call_compat_sidecar(args, allow_failure=True, env_overrides=env_overrides)
             if primary.get("ok"):
                 primary.setdefault("adapter", "win32_ocr")
@@ -522,7 +547,7 @@ class WeChatConnector:
             attempts_limit = max(1, min(int(max_attempts or 1), 8))
         except (TypeError, ValueError):
             attempts_limit = 4
-        args = ["voice-transcribe", "--target", target]
+        args = ["voice-transcribe", "--window-policy", "verify", "--target", target]
         clean_session_key = str(session_key or "").strip()
         if clean_session_key:
             args.extend(["--session-key", clean_session_key])
@@ -545,6 +570,13 @@ class WeChatConnector:
         }
         try:
             with wechat_rpa_lock("voice_transcribe", timeout_seconds=lock_timeout) as lock_meta:
+                preflight = self._ui_flow_preflight("authorized_read")
+                if not preflight.get("ok"):
+                    attach_rpa_lock_meta(preflight, lock_meta)
+                    preflight.setdefault("attempts", [])
+                    preflight.setdefault("transcribed_messages", [])
+                    preflight.setdefault("new_messages", [])
+                    return preflight
                 for attempt_index in range(attempts_limit):
                     primary = self.call_compat_sidecar(args, allow_failure=True)
                     primary.setdefault("adapter", "win32_ocr")
@@ -714,7 +746,7 @@ class WeChatConnector:
                 }
             return payload
 
-        args = ["send", "--target", target, "--text", text]
+        args = ["send", "--window-policy", "verify", "--target", target, "--text", text]
         clean_session_key = str(session_key or "").strip()
         if clean_session_key:
             args.extend(["--session-key", clean_session_key])
@@ -732,6 +764,20 @@ class WeChatConnector:
 
         def _call_send_with_lock(lock_meta: dict[str, Any]) -> dict[str, Any]:
             env_overrides = send_rpa_env()
+            preflight = self._ui_flow_preflight("pre_send_refresh")
+            if not preflight.get("ok"):
+                if str(preflight.get("risk_stop_reason") or "") == "win32_invalid_window_handle":
+                    preflight.setdefault(
+                        "wxauto4_reserve_status",
+                        {
+                            "ok": False,
+                            "online": False,
+                            "adapter": "wxauto4",
+                            "state": "wxauto4_reserve_skipped_due_to_rpa_hard_stop",
+                        },
+                    )
+                attach_rpa_lock_meta(preflight, lock_meta)
+                return _finish_send(preflight, adapter_stage="window_normalization_preflight")
             primary = self.call_compat_sidecar(compat_args_list, allow_failure=True, env_overrides=env_overrides)
             if primary.get("ok"):
                 primary.setdefault("adapter", "win32_ocr")
@@ -907,7 +953,7 @@ class WeChatConnector:
             raise WeChatConnectorError("remark_code is required")
         if str(remark_code).strip() not in str(remark_name).strip():
             raise WeChatConnectorError("remark_name must include remark_code")
-        args = ["add-friend-entry-click-plan-windows"]
+        args = ["add-friend-entry-click-plan-windows", "--window-policy", "verify"]
         if phone:
             args.extend(["--phone", str(phone)])
         if wechat:
@@ -920,6 +966,10 @@ class WeChatConnector:
         lock_timeout = rpa_lock_timeout_seconds("add_friend", default=45.0)
         try:
             with wechat_rpa_lock("add_friend", timeout_seconds=lock_timeout) as lock_meta:
+                preflight = self._ui_flow_preflight("add_friend")
+                if not preflight.get("ok"):
+                    attach_rpa_lock_meta(preflight, lock_meta)
+                    return preflight
                 primary = self.call_compat_sidecar(args, allow_failure=True, env_overrides=add_friend_rpa_env())
                 primary.setdefault("adapter", "win32_ocr")
                 primary.setdefault("transport_priority", "rpa_first")
@@ -1655,7 +1705,6 @@ def add_friend_rpa_env() -> dict[str, str]:
     """
     env = interactive_rpa_probe_env()
     env["WECHAT_WIN32_OCR_QUICK_LOGIN_AUTO_ENTER"] = "0"
-    env["WECHAT_WIN32_OCR_WINDOW_NORMALIZE"] = os.getenv("WECHAT_WIN32_OCR_WINDOW_NORMALIZE", "0") or "0"
     env["WECHAT_WIN32_OCR_RENDER_RECOVERY_AUTO"] = os.getenv("WECHAT_WIN32_OCR_RENDER_RECOVERY_AUTO", "0") or "0"
     return env
 

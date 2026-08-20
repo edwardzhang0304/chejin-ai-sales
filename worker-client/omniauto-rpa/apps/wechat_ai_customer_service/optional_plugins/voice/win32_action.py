@@ -32,6 +32,7 @@ def execute_voice_transcribe(
         image_size,
         target=target,
         conversation_type=conversation_type,
+        screenshot=before_screenshot,
     )
     duration_target = sidecar_ops.find_latest_untranscribed_voice_duration_target(
         before_items,
@@ -104,11 +105,12 @@ def execute_voice_transcribe(
     )
     click_bounds = [int(value) for value in click_target.get("click_bounds") or []]
     click_result = sidecar_ops.human_window_image_click_in_bounds(
-        hwnd,
+        int(click_target.get("popup_hwnd") or hwnd),
         click_x,
         click_y,
         bounds=click_bounds,
         action_name="voice_transcribe_context_menu_click",
+        expected_snapshot_id=str(click_target.get("layout_snapshot_id") or ""),
     )
     wait_ms = sidecar_ops.bounded_int(
         os.getenv("WECHAT_WIN32_OCR_VOICE_TRANSCRIBE_WAIT_MS"),
@@ -160,6 +162,7 @@ def execute_voice_transcribe(
         after_size,
         target=target,
         conversation_type=conversation_type,
+        screenshot=after_screenshot,
     )
     before_keys = {
         sidecar_ops.sidecar_message_content_key(message) for message in before_messages

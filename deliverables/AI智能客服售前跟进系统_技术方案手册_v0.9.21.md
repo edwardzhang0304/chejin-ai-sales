@@ -37,7 +37,7 @@
    后端、OmniAuto 合同 `contract_revision`、生成 Schema、manifest 和安装包必须写入同一个
    精确版本，禁止各自升版、复用旧号覆盖新内容或把占位符 `0.9.X` 写入运行产物。
    `contract_version=3`、`observation_schema_version=3` 和文中 V3 仅是协议结构代号，不属于
-   灰度发布版本；现行已实现兼容校验仍使用 `contract_revision=0.9.20 + 规范化 SHA ca0b0dcb3362255fda103b9f3c32f947dd7f97f6991196f2a70251b5a6d0d44e`。`0.9.21` 实现提交必须同步生成新的 revision 和规范化 SHA，未形成代码候选前不得提前伪填。
+   灰度发布版本；当前候选已将兼容校验同步为 `contract_revision=0.9.21 + 规范化 SHA c552dee933d305ad55c17388e55b9590e72a28d6a4965282f0670f23b2111a36`。真实 Windows 验收、发布来源固定和正式包仍是后续门禁，不得用当前本地代码候选伪报已通过。
    版本车道固定为：`0.9.x` 仅用于正式上线前灰度验证，`1.0.x` 用于正式上线及其稳定性修复，
    `1.1.x` 用于下一期优化。三个 `x` 都只表示版本系列，任何提交、合同、Schema、manifest、
    安装包和运行日志必须写入 `0.9.15`、`1.0.0`、`1.1.0` 等精确版本，不得写入字面占位符。
@@ -1921,7 +1921,7 @@ Worker 必须保留 Outbox 并执行身份刷新重传。在冲突解决前不�
 `fact_scope=current_read_run + delivery_state=not_enqueued`；历史图片和已进入 Outbox
 的图片不得重复处理。
 
-机器合同 revision `0.9.20` 必须完整包含媒体和读取轮次字段，同时表达读取轮次与传输状态、语音动作身份与业务身份分离、
+机器合同 revision `0.9.21` 必须完整包含媒体和读取轮次字段，同时表达读取轮次与传输状态、语音动作身份与业务身份分离、
 选中目标两阶段握手和逐相邻帧同对象证明。`identity_checkpoint.recent_messages[]` 回传
 `origin_read_run_id`；`ledger_state` 只允许作为诊断投影，业务门禁不得读取。
 
@@ -2628,7 +2628,7 @@ Worker C2 读取某个会话时，执行顺序固定为：
 上述顺序是唯一合法流程。禁止在右键前提交正式 Worker 身份，禁止用 voice anchor 直接生成
 source key，禁止在动作后用相同正文、相同 anchor 或坐标找回编号。
 
-机器合同 revision `0.9.20` 在 Sidecar 请求/返回、ActionJournal、Worker 本地身份预留和最终 V3 evidence 中使用以下唯一媒体字段，禁止新增同义字段；规范化 SHA 实算为 `ca0b0dcb3362255fda103b9f3c32f947dd7f97f6991196f2a70251b5a6d0d44e`：
+机器合同 revision `0.9.21` 在 Sidecar 请求/返回、ActionJournal、Worker 本地身份预留和最终 V3 evidence 中使用以下唯一媒体字段，禁止新增同义字段；规范化 SHA 实算为 `c552dee933d305ad55c17388e55b9590e72a28d6a4965282f0670f23b2111a36`：
 
 | 字段 | 所有者 | 必填规则 |
 |---|---|---|
@@ -2731,7 +2731,7 @@ Worker 必须对上述逻辑矛盾失败关闭。例如 `identity_phase=sequence
 | `sidecar_new_message_occurrences` 及内容 multiset 比较 | 只可用于发现“画面可能新增了什么”，结果必须再进入新观察仲裁 | 用来证明正文属于被点击语音，或认定相同内容是旧消息 |
 | `storage.py` 消息序号状态 | 原子落盘 action ID、reserved ID、identity phase、trigger phase 和 terminal；预留号单调且永不复用 | 崩溃后回收预留号；新动作重用旧 action ID；`trigger_attempted` 后再点击 |
 | `storage.py` 动作前画面状态 | 与 ActionJournal 原子保存 `pre_action_identity_sequence`，覆盖 `committed/selected_action/frame_local_unselected`；动作终态后补齐 `sequence_alignment_evidence` | 只保存已编号项；崩溃后用新截图或相同内容伪造动作前序列 |
-| `contracts/c2_contract_v3.json` 及生成 schema | 现行已实现的 `contract_revision`、客户端、后端、Sidecar、生成 Schema、样例和 manifest 统一为 `0.9.20`；加入本节对象分类、允许的 commit basis、四种媒体终态、统一消费者白名单和独立帧内语音 action binding；保留 `authoritative_frame_source=initial_read/final_read/action_journal_recovery` 及安全误点语义；`0.9.21` 实现时再将全部组件和同一样例/哈希一次性升版 | 使用独立合同版本号；在已发布版本下静默改语义；产生 `voice_execute_final` 等临时值；保留 `tracking_candidate_counts` 兼容；新增同义字段、双字段兼容或 Worker 本地兜底重判 |
+| `contracts/c2_contract_v3.json` 及生成 schema | 当前候选的 `contract_revision`、客户端、后端、Sidecar、生成 Schema、样例和 manifest 已统一为 `0.9.21`；包含本节对象分类、允许的 commit basis、四种媒体终态、统一消费者白名单、独立帧内语音 action binding 及动态布局快照；保留 `authoritative_frame_source=initial_read/final_read/action_journal_recovery` 及安全误点语义 | 使用独立合同版本号；在已发布版本下静默改语义；产生 `voice_execute_final` 等临时值；保留 `tracking_candidate_counts` 兼容；新增同义字段、双字段兼容或 Worker 本地兜底重判 |
 
 新流程的唯一落库时点为：预留表/ActionJournal 在点击前落盘；正式 identity catalog、
 Ledger、Outbox 和 `source_message_key` 只在 `historical_restored` 或 `business_committed` 后落盘。
@@ -3069,7 +3069,7 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `contract_version` | integer | 是 | 协议结构代号固定为 `3`，不是发布版本；灰度版本由 `contract_revision=0.9.20` 表达，并同时校验最终重新生成的 `contract_sha256 / observation_schema_version`。 |
+| `contract_version` | integer | 是 | 协议结构代号固定为 `3`，不是发布版本；当前灰度候选由 `contract_revision=0.9.21` 表达，并同时校验规范化 `contract_sha256=c552dee933d305ad55c17388e55b9590e72a28d6a4965282f0670f23b2111a36` 和 `observation_schema_version`。 |
 | `read_run_id` | string | 是 | 本次读取运行 ID。 |
 | `conversation_id` | string | 是 | 服务端已绑定会话 ID。 |
 | `remark_code` | string | 是 | 本轮已确认的客户短码。 |

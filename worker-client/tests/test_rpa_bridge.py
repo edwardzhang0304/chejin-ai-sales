@@ -105,6 +105,50 @@ class RpaBridgeTest(unittest.TestCase):
         self.assertEqual(status, ("ready", "logged_in"))
         self.assertEqual(bridge.last_probe_payload, payload)
 
+    def test_ui_flow_boundary_normalizes_and_nested_actions_only_verify_window(self):
+        bridge = RpaBridge(sidecar_script=Path("sidecar.py"))
+        bridge.mode = "real"
+        calls: list[list[str]] = []
+
+        def fake_call(args, **_kwargs):
+            calls.append(list(args))
+            return {"ok": True}
+
+        with patch.object(bridge, "_call_omniauto", side_effect=fake_call):
+            bridge.locate_chat(
+                display_name="CJT9V5X1",
+                rpa_session_key="",
+                remark_code="CJT9V5X1",
+                target_mode="current",
+            )
+            bridge.get_messages(
+                display_name="CJT9V5X1",
+                rpa_session_key="",
+                remark_code="CJT9V5X1",
+                target_mode="current",
+            )
+            bridge.prepare_voice_action(
+                display_name="CJT9V5X1",
+                rpa_session_key="",
+                remark_code="CJT9V5X1",
+                target_mode="current",
+            )
+            bridge.send_reply(
+                target="CJT9V5X1",
+                rpa_session_key="session-1",
+                text="测试回复",
+                task_id="task-1",
+            )
+
+        policies = {
+            args[0]: args[args.index("--window-policy") + 1]
+            for args in calls
+        }
+        self.assertEqual(policies["open-chat"], "normalize")
+        self.assertEqual(policies["messages"], "verify")
+        self.assertEqual(policies["voice-transcribe"], "verify")
+        self.assertEqual(policies["send"], "normalize")
+
     def test_call_omniauto_protects_artifact_directory_until_process_finishes(self):
         with tempfile.TemporaryDirectory(prefix="chejin-active-artifact-") as tmp:
             artifact_dir = Path(tmp) / "artifacts" / "wechat_c2" / "messages" / "flow-1"
@@ -623,6 +667,7 @@ from pathlib import Path
 
 parser = argparse.ArgumentParser()
 parser.add_argument("action")
+parser.add_argument("--window-policy")
 parser.add_argument("--phone")
 parser.add_argument("--wechat")
 parser.add_argument("--verify-message")

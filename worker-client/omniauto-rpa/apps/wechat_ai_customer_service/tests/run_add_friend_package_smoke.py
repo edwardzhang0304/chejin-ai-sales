@@ -67,9 +67,9 @@ def test_entry_click_script_defaults_are_low_disturbance() -> None:
         encoding="utf-8"
     )
     assert_true(
-        "[switch]$NormalizeWindow" in script
-        and 'WECHAT_WIN32_OCR_WINDOW_NORMALIZE = $(if ($NormalizeWindow) { "1" } else { "0" })' in script,
-        "window normalization must default to off",
+        "[switch]$NormalizeWindow" not in script
+        and "WECHAT_WIN32_OCR_WINDOW_NORMALIZE" not in script,
+        "the operator script must not create a second switch that can bypass mandatory normalization",
     )
     assert_true(
         "[switch]$AllowRenderRecovery" in script
@@ -858,12 +858,36 @@ def test_add_friend_already_friend_terminal_event_contract() -> None:
     assert_true(terminal.get("result", {}).get("result_code") == "already_friend", f"already_friend result mismatch: {terminal}")
 
 
+def _production_popup_layout_snapshot(image_size: tuple[int, int], *, hwnd: int = 3003) -> dict[str, object]:
+    from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import window_layout
+
+    width, height = image_size
+    return window_layout.build_layout_snapshot(
+        hwnd=hwnd,
+        frame_id=f"add-friend-popup-{hwnd}-{width}x{height}",
+        capture_mode=window_layout.CAPTURE_MODE_WINDOW_VISIBLE_SCREEN,
+        image_size=image_size,
+        capture_screen_origin=[100, 80],
+        window_rect=[100, 80, 100 + width, 80 + height],
+        client_rect=[0, 0, width, height],
+        client_screen_origin=[100, 80],
+        dpi_scale=1.25,
+        regions={"surface_bounds": [0, 0, width, height]},
+        anchors=[{"name": "popup_window_bounds", "confidence": 1.0}],
+        confidence=1.0,
+        executable=True,
+        surface_kind="popup",
+        required_region_names=window_layout.POPUP_LAYOUT_REGION_NAMES,
+    )
+
+
 def _run_already_friend_cleanup_case(*, close_click_ok: bool) -> tuple[dict[str, object], object]:
     from PIL import Image
 
     from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import add_friend_windows
 
     image = Image.new("RGB", (468, 834), (255, 255, 255))
+    popup_snapshot = _production_popup_layout_snapshot(image.size)
     already_friend_items = [
         {
             "text": "发消息",
@@ -908,6 +932,9 @@ def _run_already_friend_cleanup_case(*, close_click_ok: bool) -> tuple[dict[str,
 
         def capture_wechat_window_visible_screen(self, *_args, **_kwargs):
             raise AssertionError("a destroyed or failed-close dialog must not be recaptured")
+
+        def layout_snapshot_for_image(self, _image):
+            return popup_snapshot
 
         def run_ocr_on_screen_region(self, *_args, **_kwargs):
             raise AssertionError("a destroyed or failed-close dialog must not be re-OCRed")
@@ -1298,30 +1325,12 @@ def test_invite_form_locator_contract() -> None:
     from apps.wechat_ai_customer_service.adapters.add_friend_layout import invite_form_field_verification
     from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar import add_friend_invite_form_targets
 
-    targets = add_friend_invite_form_targets((468, 834))
-    for name in ["invite_greeting_textarea", "invite_remark_input", "invite_confirm_button"]:
-        target = targets.get(name)
-        assert_true(isinstance(target, dict), f"missing invite form locator: {name}")
-        for field in [
-            "strategy",
-            "region",
-            "candidates",
-            "selected_reason",
-            "bounds",
-            "point",
-            "confidence",
-            "fallback_used",
-            "fallback_reason",
-            "locator",
-        ]:
-            assert_true(field in target, f"{name} locator missing field {field}: {target}")
-        assert_true(target.get("strategy") == "window_region_geometry_fallback", f"{name} should use explicit fallback strategy: {target}")
-        assert_true(target.get("fallback_used") is True, f"{name} should expose fallback usage: {target}")
-        assert_true(isinstance(target.get("candidates"), list) and target.get("candidates"), f"{name} should expose candidates: {target}")
-        assert_true(isinstance(target.get("bounds"), list) and len(target["bounds"]) == 4, f"{name} bounds invalid: {target}")
-        assert_true(isinstance(target.get("point"), list) and len(target["point"]) == 2, f"{name} point invalid: {target}")
-        assert_true(target.get("x") == target["point"][0] and target.get("y") == target["point"][1], f"{name} legacy x/y mismatch: {target}")
-        assert_true(target.get("click_bounds") == target.get("bounds"), f"{name} legacy click_bounds mismatch: {target}")
+    image_size = (468, 834)
+    popup_snapshot = _production_popup_layout_snapshot(image_size)
+    assert_true(
+        add_friend_invite_form_targets(image_size, layout_snapshot=popup_snapshot) == {},
+        "invite form without current-frame semantic anchors must fail closed",
+    )
 
     def ocr_item(text: str, left: int, top: int, right: int, bottom: int, confidence: float = 0.91) -> dict[str, object]:
         return {
@@ -1336,14 +1345,23 @@ def test_invite_form_locator_contract() -> None:
         }
 
     semantic_targets = add_friend_invite_form_targets(
-        (468, 834),
+        image_size,
         [
             ocr_item("申请添加朋友", 182, 21, 288, 43, confidence=0.999),
             ocr_item("发送添加朋友申请", 38, 82, 182, 108),
             ocr_item("备注", 38, 276, 82, 304),
             ocr_item("确定", 112, 770, 166, 802),
         ],
+        layout_snapshot=popup_snapshot,
     )
+    for name in ["invite_greeting_textarea", "invite_remark_input", "invite_confirm_button"]:
+        target = semantic_targets.get(name)
+        assert_true(isinstance(target, dict), f"missing semantic invite form locator: {name}")
+        assert_true(target.get("strategy") == "semantic_ocr_anchor_locator", f"fixed fallback returned: {target}")
+        assert_true(target.get("fallback_used") is False, f"semantic target must not report fallback: {target}")
+        assert_true(target.get("layout_snapshot_id") == popup_snapshot["layout_snapshot_id"], f"target lost frame identity: {target}")
+        assert_true(isinstance(target.get("bounds"), list) and len(target["bounds"]) == 4, f"{name} bounds invalid: {target}")
+        assert_true(target.get("click_bounds") == target.get("bounds"), f"{name} click bounds mismatch: {target}")
     assert_true(
         semantic_targets["invite_greeting_textarea"].get("strategy") == "semantic_ocr_anchor_locator",
         f"greeting should use semantic locator: {semantic_targets}",
@@ -1481,24 +1499,28 @@ def test_invite_confirm_uses_durable_action_journal_before_click() -> None:
     )
 
     image = Image.new("RGB", (468, 834), (255, 255, 255))
+    popup_snapshot = _production_popup_layout_snapshot(image.size, hwnd=1001)
     targets_map = {
         "invite_greeting_textarea": {
             "name": "invite_greeting_textarea",
             "x": 120,
             "y": 220,
             "click_bounds": [40, 160, 428, 280],
+            "layout_snapshot_id": popup_snapshot["layout_snapshot_id"],
         },
         "invite_remark_input": {
             "name": "invite_remark_input",
             "x": 120,
             "y": 340,
             "click_bounds": [40, 300, 428, 380],
+            "layout_snapshot_id": popup_snapshot["layout_snapshot_id"],
         },
         "invite_confirm_button": {
             "name": "invite_confirm_button",
             "x": 360,
             "y": 790,
             "click_bounds": [300, 750, 430, 820],
+            "layout_snapshot_id": popup_snapshot["layout_snapshot_id"],
         },
     }
     field_verification = {
@@ -1618,6 +1640,7 @@ def test_post_confirm_residual_dialog_uses_only_exact_top_title() -> None:
     )
 
     image_size = (468, 834)
+    popup_snapshot = _production_popup_layout_snapshot(image_size)
     sparse_title = [{
         "text": "添加朋友",
         "left": 188,
@@ -1628,7 +1651,11 @@ def test_post_confirm_residual_dialog_uses_only_exact_top_title() -> None:
         "center_y": 27,
         "confidence": 0.99,
     }]
-    target = add_friend_residual_dialog_close_target(sparse_title, image_size)
+    target = add_friend_residual_dialog_close_target(
+        sparse_title,
+        image_size,
+        layout_snapshot=popup_snapshot,
+    )
     assert_true(target is not None, "sparse real add-friend page should be closable from its title")
     assert_true(
         target.get("click_bounds") == [412, 6, 462, 58],
@@ -1636,12 +1663,12 @@ def test_post_confirm_residual_dialog_uses_only_exact_top_title() -> None:
     )
     body_only = [{**sparse_title[0], "top": 260, "bottom": 292, "center_y": 276}]
     assert_true(
-        add_friend_residual_dialog_close_target(body_only, image_size) is None,
+        add_friend_residual_dialog_close_target(body_only, image_size, layout_snapshot=popup_snapshot) is None,
         "body copy must not authorize a close click",
     )
     invite_form_title = [{**sparse_title[0], "text": "申请添加朋友"}]
     assert_true(
-        add_friend_residual_dialog_close_target(invite_form_title, image_size) is None,
+        add_friend_residual_dialog_close_target(invite_form_title, image_size, layout_snapshot=popup_snapshot) is None,
         "the invite form title must not be mistaken for the residual profile dialog",
     )
 
@@ -1657,10 +1684,11 @@ def _run_post_confirm_cleanup_case(
     from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import add_friend_windows
 
     image = Image.new("RGB", (468, 834), (255, 255, 255))
+    popup_snapshot = _production_popup_layout_snapshot(image.size, hwnd=1001)
     targets_map = {
-        "invite_greeting_textarea": {"x": 120, "y": 220, "click_bounds": [40, 160, 428, 280]},
-        "invite_remark_input": {"x": 120, "y": 340, "click_bounds": [40, 300, 428, 380]},
-        "invite_confirm_button": {"x": 360, "y": 790, "click_bounds": [300, 750, 430, 820]},
+        "invite_greeting_textarea": {"x": 120, "y": 220, "click_bounds": [40, 160, 428, 280], "layout_snapshot_id": popup_snapshot["layout_snapshot_id"]},
+        "invite_remark_input": {"x": 120, "y": 340, "click_bounds": [40, 300, 428, 380], "layout_snapshot_id": popup_snapshot["layout_snapshot_id"]},
+        "invite_confirm_button": {"x": 360, "y": 790, "click_bounds": [300, 750, 430, 820], "layout_snapshot_id": popup_snapshot["layout_snapshot_id"]},
     }
 
     class WindowApi:
@@ -1697,6 +1725,9 @@ def _run_post_confirm_cleanup_case(
             # Reproduce the live failure: the sparse post-confirm profile is
             # still open, but OCR never returns its title.
             return []
+
+        def layout_snapshot_for_image(self, _image):
+            return popup_snapshot
 
         def paste_invite_form_text(self, *_args, **_kwargs):
             return {"ok": True}
@@ -1858,17 +1889,137 @@ def test_query_verify_invalid_dialog_handle_returns_structured_failure() -> None
     assert_true("add_friend_server_report_payload(" in section, "invalid dialog hwnd should keep server report payload")
 
 
+def test_search_clear_reacquires_current_frame_target_and_fails_closed() -> None:
+    from PIL import Image
+
+    from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import add_friend_windows
+
+    image = Image.new("RGB", (468, 520), (245, 246, 248))
+    snapshot = _production_popup_layout_snapshot(image.size, hwnd=4242)
+    current_items = [
+        {
+            "text": "微信号/手机号",
+            "left": 42,
+            "top": 76,
+            "right": 260,
+            "bottom": 118,
+            "center_x": 151,
+            "center_y": 97,
+            "confidence": 0.99,
+        },
+        {
+            "text": "搜索",
+            "left": 330,
+            "top": 76,
+            "right": 405,
+            "bottom": 118,
+            "center_x": 367,
+            "center_y": 97,
+            "confidence": 0.99,
+        },
+    ]
+
+    class Constants:
+        VK_ESCAPE = 27
+        VK_BACK = 8
+        VK_DELETE = 46
+
+    class FakeOps:
+        win32con = Constants()
+
+        def __init__(self, *, resolved: bool) -> None:
+            self.resolved = resolved
+            self.clicks: list[dict[str, object]] = []
+            self.keys: list[int] = []
+
+        def add_friend_human_pause(self, *_args, **_kwargs) -> float:
+            return 0.0
+
+        def key_press(self, key: int) -> None:
+            self.keys.append(int(key))
+
+        def capture_wechat_window_visible_screen(self, *_args, **_kwargs):
+            return image, "fresh.png"
+
+        def layout_snapshot_for_image(self, _image):
+            return snapshot if self.resolved else None
+
+        def run_ocr_on_screen_region(self, *_args, **_kwargs):
+            return current_items
+
+        def human_window_image_click_in_bounds(self, hwnd, x, y, **kwargs):
+            self.clicks.append({"hwnd": hwnd, "x": x, "y": y, **kwargs})
+            return {"ok": True, "x": x, "y": y}
+
+    original_ops = add_friend_windows._SIDECAR_OPS
+    try:
+        resolved_ops = FakeOps(resolved=True)
+        add_friend_windows.bind_sidecar_ops(resolved_ops)
+        result = add_friend_windows.clear_add_friend_sidebar_search_box(
+            4242,
+            9999,
+            9999,
+            target_hint="17368746889",
+        )
+        assert_true(result.get("ok") is True, f"fresh search target should be usable: {result}")
+        assert_true(len(resolved_ops.clicks) == 1, f"expected one fresh-frame click: {resolved_ops.clicks}")
+        click = resolved_ops.clicks[0]
+        assert_true(
+            (click.get("x"), click.get("y")) == (151, 97),
+            f"stale 9999,9999 coordinates must be ignored: {click}",
+        )
+        assert_true(
+            click.get("expected_snapshot_id") == snapshot.get("layout_snapshot_id"),
+            f"click must be tied to the fresh popup snapshot: {click}",
+        )
+
+        unresolved_ops = FakeOps(resolved=False)
+        add_friend_windows.bind_sidecar_ops(unresolved_ops)
+        unresolved = add_friend_windows.clear_add_friend_sidebar_search_box(
+            4242,
+            123,
+            97,
+            target_hint="17368746889",
+        )
+        assert_true(
+            unresolved.get("error_code") == "WECHAT_UI_LAYOUT_UNRESOLVED",
+            f"unresolved fresh frame must fail closed: {unresolved}",
+        )
+        assert_true(not unresolved_ops.clicks, f"unresolved layout must perform zero clicks: {unresolved_ops.clicks}")
+    finally:
+        add_friend_windows.bind_sidecar_ops(original_ops)
+
+
+def test_add_friend_search_targets_never_fall_back_to_unbounded_clicks() -> None:
+    source = (
+        PROJECT_ROOT
+        / "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/add_friend_windows.py"
+    ).read_text(encoding="utf-8")
+    section = source.split("def input_add_friend_query_and_search", 1)[1].split(
+        "def write_add_friend_entry_click_review", 1
+    )[0]
+    assert_true(
+        "add_friend_search_input_bounds_missing" in section
+        and "add_friend_search_button_bounds_missing" in section,
+        "missing dynamic bounds must have explicit fail-closed states",
+    )
+    assert_true(
+        "_ops().human_window_image_click(hwnd" not in section,
+        "add-friend search must not retain an unbounded/fallback click path",
+    )
+
+
 def test_add_friend_primary_locator_contract() -> None:
     from PIL import Image, ImageDraw
 
     from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar import (
         add_friend_menu_candidate_targets,
         add_friend_plus_entry_target,
-        add_friend_plus_entry_safe_bounds,
         add_friend_query_visible_in_items,
         add_friend_search_result_add_contact_target,
         find_add_friend_page_search_targets,
     )
+    from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import window_layout
 
     def ocr_item(text: str, left: int, top: int, right: int, bottom: int) -> dict[str, object]:
         return {
@@ -1883,23 +2034,50 @@ def test_add_friend_primary_locator_contract() -> None:
         }
 
     def plus_icon_image() -> Image.Image:
-        image = Image.new("RGB", (981, 860), (246, 248, 250))
-        draw = ImageDraw.Draw(image)
-        center_x, center_y = 350, 70
-        draw.line((center_x - 9, center_y, center_x + 9, center_y), fill=(45, 52, 64), width=3)
-        draw.line((center_x, center_y - 9, center_x, center_y + 9), fill=(45, 52, 64), width=3)
+        image, _point, _bounds, _snapshot = plus_icon_image_for_size(981, 860)
         return image
 
-    def plus_icon_image_for_size(width: int, height: int) -> tuple[Image.Image, tuple[int, int], list[int]]:
-        image = Image.new("RGB", (width, height), (246, 248, 250))
-        bounds = add_friend_plus_entry_safe_bounds((width, height))
+    def plus_icon_image_for_size(width: int, height: int) -> tuple[Image.Image, tuple[int, int], list[int], dict[str, object]]:
+        image = Image.new("RGB", (width, height), (120, 120, 120))
+        pixels = image.load()
+        nav_x = int(width * 0.12)
+        sidebar_x = int(width * 0.40)
+        header_y = int(height * 0.12)
+        input_y = int(height * 0.80)
+        for x in (nav_x, sidebar_x):
+            for y in range(height):
+                pixels[x - 1, y] = (20, 20, 20)
+                pixels[x + 1, y] = (230, 230, 230)
+        for y in (header_y, input_y):
+            for x in range(width):
+                pixels[x, y - 1] = (20, 20, 20)
+                pixels[x, y + 1] = (230, 230, 230)
+        layout = window_layout.build_structural_layout_regions(image)
+        assert_true(layout.get("ok"), f"real layout builder rejected plus frame: {layout}")
+        snapshot = window_layout.build_layout_snapshot(
+            hwnd=1001,
+            frame_id=f"plus-{width}x{height}",
+            capture_mode=window_layout.CAPTURE_MODE_WINDOW_VISIBLE_SCREEN,
+            image_size=(width, height),
+            capture_screen_origin=[0, 0],
+            window_rect=[0, 0, width, height],
+            client_rect=[0, 0, width, height],
+            client_screen_origin=[0, 0],
+            dpi_scale=1.0,
+            regions=layout["regions"],
+            anchors=layout["anchors"],
+            confidence=layout["confidence"],
+            conflicts=layout["conflicts"],
+            executable=bool(layout.get("ok")),
+        )
+        bounds = list(snapshot["sidebar_header_bounds"])
         left, top, right, bottom = bounds
         center_x = min(right - 10, max(left + 18, right - 22))
         center_y = int((top + bottom) / 2)
         draw = ImageDraw.Draw(image)
         draw.line((center_x - 9, center_y, center_x + 9, center_y), fill=(45, 52, 64), width=3)
         draw.line((center_x, center_y - 9, center_x, center_y + 9), fill=(45, 52, 64), width=3)
-        return image, (center_x, center_y), bounds
+        return image, (center_x, center_y), bounds, snapshot
 
     def small_add_friend_image() -> Image.Image:
         image = Image.new("RGB", (468, 520), (245, 246, 248))
@@ -1925,12 +2103,14 @@ def test_add_friend_primary_locator_contract() -> None:
         assert_true(target.get("x") == target["point"][0] and target.get("y") == target["point"][1], f"{name} legacy x/y mismatch: {target}")
         assert_true(target.get("click_bounds") == target.get("bounds"), f"{name} click bounds mismatch: {target}")
 
+    primary_image, _primary_point, _primary_bounds, primary_snapshot = plus_icon_image_for_size(981, 860)
     plus_target = add_friend_plus_entry_target(
         {"width": 981, "height": 860, "left": 0, "top": 0, "right": 981, "bottom": 860},
         (981, 860),
         [ocr_item("搜索", 112, 60, 154, 82)],
-        screenshot=plus_icon_image(),
+        screenshot=primary_image,
         route_kind="windows",
+        layout_snapshot=primary_snapshot,
     )
     assert_locator(plus_target, "plus_entry")
     assert_true(plus_target.get("strategy") == "sidebar_header_plus_icon_vision_locator", f"plus locator strategy mismatch: {plus_target}")
@@ -1947,13 +2127,14 @@ def test_add_friend_primary_locator_contract() -> None:
     assert_true("diagnostic_windows_1080p_reference_geometry" in diagnostic_sources, f"plus locator must keep reference geometry only as diagnostics: {plus_target}")
 
     for width, height in [(980, 720), (980, 860), (1225, 816), (1225, 1032), (1470, 1032), (1470, 1290), (2560, 1440)]:
-        matrix_image, expected_point, safe_bounds = plus_icon_image_for_size(width, height)
+        matrix_image, expected_point, safe_bounds, matrix_snapshot = plus_icon_image_for_size(width, height)
         matrix_target = add_friend_plus_entry_target(
             {"width": width, "height": height, "left": 0, "top": 0, "right": width, "bottom": height},
             (width, height),
             [],
             screenshot=matrix_image,
             route_kind="windows",
+            layout_snapshot=matrix_snapshot,
         )
         assert_locator(matrix_target, f"plus_entry_{width}x{height}")
         assert_true(matrix_target.get("source") == "vision_plus_icon", f"matrix plus locator must use vision: {matrix_target}")
@@ -1988,12 +2169,19 @@ def test_add_friend_primary_locator_contract() -> None:
     assert_true(fallback_plus_target.get("fallback_used") is False, f"geometry fallback must not be executable: {fallback_plus_target}")
 
     for width, height in [(980, 720), (1225, 816), (1470, 1032), (2560, 1440)]:
+        blank_image, blank_point, _blank_bounds, blank_snapshot = plus_icon_image_for_size(width, height)
+        blank_draw = ImageDraw.Draw(blank_image)
+        blank_draw.rectangle(
+            (blank_point[0] - 12, blank_point[1] - 12, blank_point[0] + 12, blank_point[1] + 12),
+            fill=(120, 120, 120),
+        )
         blank_target = add_friend_plus_entry_target(
             {"width": width, "height": height, "left": 0, "top": 0, "right": width, "bottom": height},
             (width, height),
             [],
-            screenshot=Image.new("RGB", (width, height), (246, 248, 250)),
+            screenshot=blank_image,
             route_kind="windows",
+            layout_snapshot=blank_snapshot,
         )
         assert_locator(blank_target, f"plus_entry_blank_{width}x{height}")
         assert_true(blank_target.get("source") == "plus_icon_not_found", f"blank matrix must not use geometry fallback: {blank_target}")
@@ -2006,6 +2194,7 @@ def test_add_friend_primary_locator_contract() -> None:
         plus_image_x=334,
         plus_image_y=70,
         include_expected=True,
+        layout_snapshot=primary_snapshot,
     )
     menu_target = next(target for target in menu_targets if target.get("name") == "add_friend_menu_entry")
     assert_locator(menu_target, "add_friend_menu_entry")
@@ -2018,6 +2207,7 @@ def test_add_friend_primary_locator_contract() -> None:
             ocr_item("搜索", 700, 86, 744, 108),
         ],
         (980, 860),
+        layout_snapshot=_production_popup_layout_snapshot((980, 860), hwnd=4101),
     )
     assert_locator(search_targets["input"], "add_friend_search_input")
     assert_locator(search_targets["button"], "add_friend_search_button")
@@ -2031,6 +2221,7 @@ def test_add_friend_primary_locator_contract() -> None:
         ],
         (468, 520),
         screenshot=small_add_friend_image(),
+        layout_snapshot=_production_popup_layout_snapshot((468, 520), hwnd=4102),
     )
     assert_locator(small_ocr_search_targets["input"], "small_add_friend_ocr_search_input")
     assert_locator(small_ocr_search_targets["button"], "small_add_friend_ocr_search_button")
@@ -2038,19 +2229,31 @@ def test_add_friend_primary_locator_contract() -> None:
     assert_true(small_ocr_search_targets["input"].get("fallback_used") is False, f"small dialog OCR input must not be fallback: {small_ocr_search_targets}")
     assert_true(small_ocr_search_targets["button"].get("strategy") == "window_region_ocr_target", f"small dialog button should prefer OCR button: {small_ocr_search_targets}")
 
-    small_visual_search_targets = find_add_friend_page_search_targets([], (468, 520), screenshot=small_add_friend_image())
+    small_visual_search_targets = find_add_friend_page_search_targets(
+        [],
+        (468, 520),
+        screenshot=small_add_friend_image(),
+        layout_snapshot=_production_popup_layout_snapshot((468, 520), hwnd=4103),
+    )
     assert_locator(small_visual_search_targets["input"], "small_add_friend_visual_search_input")
     assert_locator(small_visual_search_targets["button"], "small_add_friend_visual_search_button")
     assert_true(small_visual_search_targets["input"].get("strategy") == "visual_button_anchor_locator", f"small dialog should use visual button before fixed fallback: {small_visual_search_targets}")
     assert_true(small_visual_search_targets["button"].get("strategy") == "visual_button_locator", f"small dialog button should use visual locator: {small_visual_search_targets}")
     assert_true(small_visual_search_targets["input"].get("fallback_used") is False, f"visual input anchor must not be fixed fallback: {small_visual_search_targets}")
 
-    small_search_targets = find_add_friend_page_search_targets([], (468, 520))
-    assert_locator(small_search_targets["input"], "small_add_friend_search_input")
-    assert_locator(small_search_targets["button"], "small_add_friend_search_button")
-    assert_true(small_search_targets["input"].get("fallback_used") is True, f"small dialog input fixed fallback should be last resort: {small_search_targets}")
-    assert_true("HIGH_RISK_FIXED_FALLBACK" in str(small_search_targets["input"].get("risk") or ""), f"fixed fallback should be visibly high risk: {small_search_targets}")
-    assert_true(small_search_targets["button"].get("fallback_used") is True, f"small dialog button fixed fallback should be last resort: {small_search_targets}")
+    try:
+        find_add_friend_page_search_targets(
+            [],
+            (468, 520),
+            layout_snapshot=_production_popup_layout_snapshot((468, 520), hwnd=4104),
+        )
+    except RuntimeError as exc:
+        assert_true(
+            "WECHAT_UI_LAYOUT_UNRESOLVED" in str(exc),
+            f"missing semantic/visual search evidence must fail closed: {exc}",
+        )
+    else:
+        raise AssertionError("missing semantic/visual search evidence must not use fixed fallback")
 
     exact_query = add_friend_query_visible_in_items("17368746889", [ocr_item("17368746889", 84, 85, 188, 106), ocr_item("搜索", 327, 86, 364, 107)])
     assert_true(exact_query.get("ok") is True, f"exact phone should verify: {exact_query}")
@@ -2060,6 +2263,7 @@ def test_add_friend_primary_locator_contract() -> None:
     add_contact = add_friend_search_result_add_contact_target(
         [ocr_item("添加到通讯录", 600, 310, 720, 340)],
         (980, 860),
+        layout_snapshot=_production_popup_layout_snapshot((980, 860), hwnd=4105),
     )
     assert_true(isinstance(add_contact, dict), f"add-contact target missing: {add_contact}")
     assert_locator(add_contact, "add_contact_entry_button")
@@ -2075,8 +2279,10 @@ def test_add_friend_live_window_paths_pass_screenshot_to_plus_locator() -> None:
         ("calibration", calibration_section),
     ]:
         assert_true(
-            "add_friend_plus_entry_target(geometry, screenshot.size, ocr_items, screenshot=screenshot" in section,
-            f"{name} path must pass the captured screenshot into the visual plus locator",
+            "add_friend_plus_entry_target(" in section
+            and "screenshot=screenshot" in section
+            and "layout_snapshot=_ops().layout_snapshot_for_image(screenshot)" in section,
+            f"{name} path must pass the captured screenshot and its real layout snapshot into the visual plus locator",
         )
 
 
@@ -2328,6 +2534,8 @@ def main() -> int:
         test_post_confirm_close_click_failure_is_not_reported_as_closed,
         test_post_confirm_visible_window_is_not_reported_closed_when_verify_ocr_misses,
         test_query_verify_invalid_dialog_handle_returns_structured_failure,
+        test_search_clear_reacquires_current_frame_target_and_fails_closed,
+        test_add_friend_search_targets_never_fall_back_to_unbounded_clicks,
         test_add_friend_primary_locator_contract,
         test_add_friend_live_window_paths_pass_screenshot_to_plus_locator,
         test_add_friend_ocr_contract,

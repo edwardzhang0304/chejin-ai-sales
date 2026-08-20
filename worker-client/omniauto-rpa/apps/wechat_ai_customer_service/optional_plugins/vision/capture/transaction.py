@@ -600,14 +600,9 @@ def _acquire_current_image_via_ports(
                 )
             action_phase = "trigger_attempted"
             screen_click(
-                origin_x + int(copy_geometry["x"]),
-                origin_y + int(copy_geometry["y"]),
-                bounds=[
-                    origin_x + local_bounds[0],
-                    origin_y + local_bounds[1],
-                    origin_x + local_bounds[2],
-                    origin_y + local_bounds[3],
-                ],
+                int(copy_geometry["x"]),
+                int(copy_geometry["y"]),
+                bounds=local_bounds,
             )
             menu_opened = False
             if sequence_before is None:

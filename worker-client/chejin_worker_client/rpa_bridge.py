@@ -72,6 +72,15 @@ class RpaBridge:
             return {"ok": True, "mode": "mock", "message": "mock RPA 模式不探测真实微信。"}
         return self._call_omniauto(["status"], timeout=60)
 
+    def preflight_window_normalization(self) -> dict[str, Any]:
+        """Actively normalize and verify the WeChat UI before accepting work."""
+        if self.mode == "mock":
+            return {"ok": True, "mode": "mock", "state": "mock_preflight"}
+        if sys.platform != "win32":
+            return {"ok": True, "skipped": True, "reason": "non_windows_worker"}
+        payload = self._call_omniauto(["normalize-window"], timeout=60)
+        return dict(payload)
+
     def list_sessions(
         self,
         *,
@@ -153,6 +162,8 @@ class RpaBridge:
             effective_max_duration_seconds = max(effective_max_duration_seconds, 75)
         args = [
             "messages",
+            "--window-policy",
+            "verify",
             "--sidecar-run-id",
             sidecar_run_id,
             "--history-load-times",
@@ -225,6 +236,8 @@ class RpaBridge:
         normalized_target_mode = str(target_mode or "").strip()
         args = [
             "open-chat",
+            "--window-policy",
+            "normalize",
             "--sidecar-run-id",
             sidecar_run_id,
             "--target",
@@ -318,6 +331,8 @@ class RpaBridge:
         normalized_target_mode = str(target_mode or "").strip()
         args = [
             "voice-transcribe",
+            "--window-policy",
+            "verify",
             "--sidecar-run-id",
             sidecar_run_id,
             "--voice-action-stage",
@@ -418,6 +433,8 @@ class RpaBridge:
         artifact_dir.mkdir(parents=True, exist_ok=True)
         args = [
             "send",
+            "--window-policy",
+            "normalize",
             "--target",
             target,
             "--session-key",
@@ -710,7 +727,7 @@ class RpaBridge:
         *,
         action_journal: Path | None = None,
     ) -> list[str]:
-        args = [OMNIAUTO_ADD_FRIEND_ACTION]
+        args = [OMNIAUTO_ADD_FRIEND_ACTION, "--window-policy", "normalize"]
         if task.search_phone:
             args.extend(["--phone", task.search_phone])
         elif task.wechat:
@@ -810,6 +827,10 @@ class RpaBridge:
         if not self.sidecar_script.exists():
             return {"ok": False, "error_code": "RPA_COMPONENT_NOT_READY", "message": f"sidecar 不存在：{self.sidecar_script}"}
         command = self._sidecar_command(args)
+        sidecar_env = os.environ.copy()
+        # Window normalization/layout policy is owned by the Sidecar.  The
+        # Worker deliberately does not invent a second set of defaults; user
+        # supplied compatibility overrides are inherited unchanged.
         try:
             if cancel_check is None:
                 completed = subprocess.run(
@@ -820,6 +841,7 @@ class RpaBridge:
                     timeout=timeout,
                     encoding="utf-8",
                     errors="replace",
+                    env=sidecar_env,
                 )
             else:
                 process = subprocess.Popen(
@@ -830,6 +852,7 @@ class RpaBridge:
                     stderr=subprocess.PIPE,
                     encoding="utf-8",
                     errors="replace",
+                    env=sidecar_env,
                 )
                 deadline = time.monotonic() + max(1, int(timeout))
                 while True:

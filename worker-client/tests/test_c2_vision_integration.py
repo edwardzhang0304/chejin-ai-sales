@@ -15,6 +15,50 @@ from unittest.mock import patch
 
 from PIL import Image, ImageDraw
 
+
+def _test_message_viewport(image: Image.Image) -> list[int]:
+    """Bounds supplied to the pure media detector after layout was resolved."""
+    width, height = image.size
+    header_bottom = max(64, min(120, int(height * 0.10)))
+    input_top = height - max(64, min(140, int(height * 0.10)))
+    return [min(380, int(width * 0.38)), header_bottom, width, input_top]
+
+
+def _test_layout_snapshot(image: Image.Image) -> dict[str, object]:
+    """Build a production snapshot around an already-resolved unit-test layout."""
+    width, height = image.size
+    nav_right = max(48, int(width * 0.08))
+    sidebar_right = max(nav_right + 160, min(380, int(width * 0.38)))
+    header_bottom = max(64, min(120, int(height * 0.10)))
+    input_top = height - max(64, min(140, int(height * 0.10)))
+    regions = {
+        "left_nav_bounds": [0, 0, nav_right, height],
+        "sidebar_bounds": [nav_right, 0, sidebar_right, height],
+        "sidebar_header_bounds": [nav_right, 0, sidebar_right, header_bottom],
+        "session_list_bounds": [nav_right, header_bottom, sidebar_right, height],
+        "chat_header_bounds": [sidebar_right, 0, width, header_bottom],
+        "message_viewport_bounds": [sidebar_right, header_bottom, width, input_top],
+        "input_bounds": [sidebar_right, input_top, width, height],
+    }
+    from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import window_layout
+
+    return window_layout.build_layout_snapshot(
+        hwnd=1,
+        frame_id=window_layout.new_frame_id(1),
+        capture_mode=window_layout.CAPTURE_MODE_WINDOW_VISIBLE_SCREEN,
+        image_size=(width, height),
+        capture_screen_origin=[0, 0],
+        window_rect=[0, 0, width, height],
+        client_rect=[0, 0, width, height],
+        client_screen_origin=[0, 0],
+        dpi_scale=1.0,
+        regions=regions,
+        anchors=[],
+        confidence=1.0,
+        conflicts=[],
+        executable=True,
+    )
+
 os.environ.setdefault("CHEJIN_WORKER_HOME", tempfile.mkdtemp(prefix="chejin-worker-vision-test-"))
 os.environ.setdefault("CHEJIN_RPA_MODE", "mock")
 _WORKFLOWS_PATH = (
@@ -830,6 +874,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
 
         state = SimpleNamespace(
             ensure_window=lambda: 123,
+            current_layout_snapshot_id="layout-main-1",
             host=SimpleNamespace(
                 human_window_image_right_click_in_bounds=lambda *args, **kwargs: {
                     "ok": True,
@@ -868,6 +913,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
         sequences = iter([10, 11])
         sidecar_ops = SimpleNamespace(
             capture_wechat=lambda *_args, **_kwargs: (screenshot, "before.png"),
+            layout_snapshot_for_image=lambda image: _test_layout_snapshot(image),
             run_ocr=lambda _image: [],
             get_window_geometry=lambda _hwnd: {"width": 800, "height": 600},
             parse_messages_from_ocr=lambda *_args, **_kwargs: [],
@@ -1302,9 +1348,40 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 },
             )
         ), patch.object(
-            wechat_win32_ocr_sidecar.ImageGrab,
-            "grab",
+            wechat_win32_ocr_sidecar,
+            "win32gui",
+            SimpleNamespace(
+                GetWindowRect=lambda _hwnd: (400, 200, 1600, 1100),
+                GetClassName=lambda _hwnd: "WeChatMenuWnd",
+            ),
+        ), patch.object(
+            wechat_win32_ocr_sidecar,
+            "try_image_grab",
             return_value=full_screen.copy(),
+        ), patch.object(
+            wechat_win32_ocr_sidecar,
+            "get_window_geometry",
+            return_value={
+                "left": 400,
+                "top": 200,
+                "right": 1600,
+                "bottom": 1100,
+                "width": 1200,
+                "height": 900,
+            },
+        ), patch.object(
+            wechat_win32_ocr_sidecar,
+            "get_window_client_geometry",
+            return_value={
+                "left": 0,
+                "top": 0,
+                "right": 1200,
+                "bottom": 900,
+                "width": 1200,
+                "height": 900,
+                "screen_left": 400,
+                "screen_top": 200,
+            },
         ):
             result = wechat_win32_ocr_sidecar.observe_wechat_context_menu(
                 31415,
@@ -1325,25 +1402,23 @@ class C2VisionIntegrationTests(unittest.TestCase):
             result["image"].close()
         full_screen.close()
 
-    def test_menu_click_uses_screen_port_without_window_reactivation(self):
+    def test_menu_click_uses_popup_layout_converter(self):
         calls = []
 
         class State:
             class Host:
                 @staticmethod
-                def human_screen_click_in_bounds(x, y, *, bounds, action_name):
-                    calls.append((x, y, list(bounds), action_name))
+                def human_window_image_click_in_bounds(hwnd, x, y, *, bounds, action_name, expected_snapshot_id):
+                    calls.append((hwnd, x, y, list(bounds), action_name, expected_snapshot_id))
                     return {"ok": True}
-
-                @staticmethod
-                def human_window_image_click_in_bounds(*_args, **_kwargs):
-                    raise AssertionError("menu click must not reactivate the window")
 
                 @staticmethod
                 def humanized_action_sleep(*_args):
                     return None
 
             host = Host()
+            current_frame_hwnd = 27182
+            current_layout_snapshot_id = "popup-layout-1"
 
             @staticmethod
             def ensure_window():
@@ -1363,10 +1438,12 @@ class C2VisionIntegrationTests(unittest.TestCase):
             calls,
             [
                 (
+                    27182,
                     710,
                     420,
                     [680, 400, 740, 440],
                     "c2_vision_image_copy_menu_click",
+                    "popup-layout-1",
                 )
             ],
         )
@@ -2586,7 +2663,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
         right_click_calls: list[dict] = []
         click_screen_calls: list[dict] = []
 
-        def right_click_host(hwnd, x, y, *, bounds, action_name):
+        def right_click_host(hwnd, x, y, *, bounds, action_name, expected_snapshot_id):
             right_click_calls.append(
                 {
                     "hwnd": hwnd,
@@ -2594,17 +2671,20 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "y": y,
                     "bounds": list(bounds),
                     "action_name": action_name,
+                    "layout_snapshot_id": expected_snapshot_id,
                 }
             )
             return {"ok": True, "screen_x": x, "screen_y": y}
 
-        def click_screen_host(x, y, *, bounds, action_name):
+        def click_frame_host(hwnd, x, y, *, bounds, action_name, expected_snapshot_id):
             click_screen_calls.append(
                 {
+                    "hwnd": hwnd,
                     "x": x,
                     "y": y,
                     "bounds": list(bounds),
                     "action_name": action_name,
+                    "layout_snapshot_id": expected_snapshot_id,
                 }
             )
             clipboard.sequence += 1
@@ -2612,9 +2692,11 @@ class C2VisionIntegrationTests(unittest.TestCase):
 
         action_state = SimpleNamespace(
             ensure_window=lambda: 31415,
+            current_frame_hwnd=31415,
+            current_layout_snapshot_id="main-layout-1",
             host=SimpleNamespace(
                 human_window_image_right_click_in_bounds=right_click_host,
-                human_screen_click_in_bounds=click_screen_host,
+                human_window_image_click_in_bounds=click_frame_host,
                 wait_for_wechat_context_menu_stable=lambda: 1200,
                 humanized_action_sleep=lambda *_args: None,
                 dismiss_voice_transcribe_context_menu=lambda *_args, **_kwargs: {
@@ -2665,22 +2747,28 @@ class C2VisionIntegrationTests(unittest.TestCase):
             current_bubbles,
             messages=current_messages,
         )
-        ports.window_frame.capture_frame = lambda _context: {
-            "ok": True,
-            "image": current.copy(),
-            "image_size": current.size,
-            "messages": [
-                *current_messages,
-                *(
-                    dict(item)
-                    for item in current_observed_images
-                ),
-            ],
-            "time_markers": [],
-            "ocr_items": [],
-            "menu_panel_bounds": [580, 280, 680, 360],
-            "screen_origin": [0, 0],
-        }
+        def capture_current_frame(context):
+            if str((context or {}).get("phase") or "") == "image_context_menu":
+                action_state.current_frame_hwnd = 27182
+                action_state.current_layout_snapshot_id = "popup-layout-1"
+            else:
+                action_state.current_frame_hwnd = 31415
+                action_state.current_layout_snapshot_id = "main-layout-1"
+            return {
+                "ok": True,
+                "image": current.copy(),
+                "image_size": current.size,
+                "messages": [
+                    *current_messages,
+                    *(dict(item) for item in current_observed_images),
+                ],
+                "time_markers": [],
+                "ocr_items": [],
+                "menu_panel_bounds": [580, 280, 680, 360],
+                "screen_origin": [0, 0],
+            }
+
+        ports.window_frame.capture_frame = capture_current_frame
         with patch.object(
             transaction,
             "find_copy_menu_item",
@@ -2709,10 +2797,14 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "y": 295,
                     "bounds": shifted_bounds,
                     "action_name": "c2_vision_image_slot_context_right_click",
+                    "layout_snapshot_id": "main-layout-1",
                 }
             ],
         )
         self.assertEqual(len(click_screen_calls), 1)
+        self.assertEqual(click_screen_calls[0]["hwnd"], 27182)
+        self.assertEqual(click_screen_calls[0]["layout_snapshot_id"], "popup-layout-1")
+        self.assertEqual(click_screen_calls[0]["bounds"], [600, 300, 650, 340])
         self.assertTrue(result["transaction"]["slot_identity_confirmed"])
         self.assertEqual(
             result["transaction"]["current_bubble_rect"],
@@ -3960,6 +4052,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             "image": image,
             "hwnd": 31415,
             "capture_mode": "wechat_window_exact_hwnd",
+            "layout_snapshot": _test_layout_snapshot(image),
             "validation": {
                 "ok": True,
                 "reason": "window_context_confirmed",
@@ -4028,6 +4121,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "hwnd": 31415,
                 "capture_mode": "test",
                 "screen_origin": [0, 0],
+                "layout_snapshot": _test_layout_snapshot(image),
             },
         ), patch.object(
             state.host,
@@ -4179,6 +4273,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         "hwnd": 31415,
                         "capture_mode": "test",
                         "screen_origin": [0, 0],
+                        "layout_snapshot": _test_layout_snapshot(image),
                     }
 
                 @staticmethod
@@ -4221,6 +4316,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         "hwnd": 31415,
                         "capture_mode": "test",
                         "screen_origin": [0, 0],
+                        "layout_snapshot": _test_layout_snapshot(image),
                     }
                 )
                 run_ocr = staticmethod(lambda _image: [])
@@ -4268,6 +4364,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         "hwnd": 31415,
                         "capture_mode": "test",
                         "screen_origin": [0, 0],
+                        "layout_snapshot": _test_layout_snapshot(image),
                     }
                 )
                 run_ocr = staticmethod(lambda _image: [])
@@ -4924,13 +5021,19 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 "message_row_avatar_role_details",
                 return_value={"role": "customer", "source": "same_row_avatar"},
             ):
-                first = sidecar.merge_structural_image_messages(screenshot, [], [], target="CJTEST01")[0]
+                first = sidecar.merge_structural_image_messages(
+                    screenshot, [], [], target="CJTEST01",
+                    layout_snapshot=_test_layout_snapshot(screenshot),
+                )[0]
             with patch.object(surface, "visual_image_messages_from_current_surface", return_value=envelope([410, 230, 650, 370])), patch.object(
                 sidecar,
                 "message_row_avatar_role_details",
                 return_value={"role": "customer", "source": "same_row_avatar"},
             ):
-                second = sidecar.merge_structural_image_messages(screenshot, [], [], target="CJTEST01")[0]
+                second = sidecar.merge_structural_image_messages(
+                    screenshot, [], [], target="CJTEST01",
+                    layout_snapshot=_test_layout_snapshot(screenshot),
+                )[0]
         finally:
             screenshot.close()
 
@@ -5019,12 +5122,14 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     [],
                     [text_message],
                     target="CJR8S5K3",
+                    layout_snapshot=_test_layout_snapshot(screenshot),
                 )
                 reused = sidecar.merge_structural_image_messages(
                     screenshot,
                     [],
                     first,
                     target="CJR8S5K3",
+                    layout_snapshot=_test_layout_snapshot(screenshot),
                 )
                 payload = sidecar.messages_payload(
                     101,
@@ -5095,6 +5200,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     [],
                     [text_message],
                     target="CJTEST01",
+                    layout_snapshot=_test_layout_snapshot(screenshot),
                     observation_validation_errors=errors,
                 )
         finally:
@@ -5139,6 +5245,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     [],
                     [text_message],
                     target="CJTEST01",
+                    layout_snapshot=_test_layout_snapshot(screenshot),
                     observation_validation_errors=errors,
                 )
         finally:
@@ -5202,6 +5309,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     [],
                     [confirmed_voice],
                     target="CJR8S5K3",
+                    layout_snapshot=_test_layout_snapshot(screenshot),
                     voice_action_attempts=voice_attempts,
                     image_candidate_diagnostics=diagnostics,
                 )
@@ -5316,6 +5424,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 screenshot.size,
                 target="CJNCXB8R",
                 screenshot=screenshot,
+                layout_snapshot=_test_layout_snapshot(screenshot),
             )
             self.assertTrue(parsed)
             self.assertTrue(all(item["type"] == "text" for item in parsed))
@@ -5330,6 +5439,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     ocr_items,
                     parsed,
                     target="CJNCXB8R",
+                    layout_snapshot=_test_layout_snapshot(screenshot),
                 )
         finally:
             screenshot.close()
@@ -5370,6 +5480,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         screenshot,
                         messages=[],
                         side_filter="all",
+                        message_viewport_bounds=_test_message_viewport(screenshot),
                     )
                 ),
                 1,
@@ -5379,6 +5490,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 messages=[reliable_voice],
                 side_filter="all",
                 diagnostics=diagnostics,
+                message_viewport_bounds=_test_message_viewport(screenshot),
             )
         finally:
             screenshot.close()
@@ -5595,6 +5707,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 screenshot,
                 messages=[],
                 side_filter="all",
+                message_viewport_bounds=_test_message_viewport(screenshot),
             )
             self.assertEqual(len(candidates), 9)
             with self.assertRaisesRegex(
@@ -5606,6 +5719,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     messages=[],
                     side_filter="all",
                     max_images=8,
+                    message_viewport_bounds=_test_message_viewport(screenshot),
                 )
         finally:
             screenshot.close()
@@ -5615,7 +5729,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
             with self.subTest(size=(width, height)):
                 screenshot = Image.new("RGB", (width, height), (242, 242, 242))
                 draw = ImageDraw.Draw(screenshot)
-                chat_top = wechat_capture.chat_header_cutoff_y(height)
+                chat_top = _test_message_viewport(screenshot)[1]
 
                 # This older image starts exactly at the current chat crop.
                 # Its avatar/upper row evidence may be outside the screen.
@@ -5645,12 +5759,14 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         screenshot,
                         messages=[],
                         side_filter="all",
+                        message_viewport_bounds=_test_message_viewport(screenshot),
                     )
                     messages = wechat_win32_ocr_sidecar.merge_structural_image_messages(
                         screenshot,
                         [],
                         [],
                         target="CJTEST01",
+                        layout_snapshot=_test_layout_snapshot(screenshot),
                     )
                     observations = (
                         wechat_win32_ocr_sidecar.build_message_observations_v3(
@@ -5693,6 +5809,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 messages=[],
                 max_images=8,
                 side_filter="all",
+                message_viewport_bounds=_test_message_viewport(screenshot),
             )
             self.assertTrue(candidates)
             candidate = candidates[0]
@@ -5708,6 +5825,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 [],
                 [],
                 target="CJTEST01",
+                layout_snapshot=_test_layout_snapshot(screenshot),
             )
         finally:
             screenshot.close()
@@ -5772,6 +5890,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         screenshot,
                         messages=[],
                         side_filter="all",
+                        message_viewport_bounds=_test_message_viewport(screenshot),
                     )
                     self.assertEqual(
                         len(candidates),
@@ -5789,6 +5908,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     blank,
                     messages=[],
                     side_filter="all",
+                    message_viewport_bounds=_test_message_viewport(blank),
                 ),
                 [],
             )
@@ -5851,6 +5971,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                             [],
                             [],
                             target="CJTEST01",
+                            layout_snapshot=_test_layout_snapshot(screenshot),
                         )
                     )
                 finally:
@@ -5897,6 +6018,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     [],
                     [],
                     target="CJTEST01",
+                    layout_snapshot=_test_layout_snapshot(screenshot),
                 )
             )
         finally:
@@ -5963,6 +6085,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 screenshot,
                 messages=messages,
                 side_filter="all",
+                message_viewport_bounds=_test_message_viewport(screenshot),
             )
         finally:
             screenshot.close()
@@ -6019,6 +6142,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 [],
                 messages,
                 target="CJTEST01",
+                layout_snapshot=_test_layout_snapshot(screenshot),
             )
         finally:
             screenshot.close()
@@ -6097,6 +6221,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         screenshot,
                         messages=messages,
                         side_filter="all",
+                        message_viewport_bounds=_test_message_viewport(screenshot),
                     )
                     merged = (
                         wechat_win32_ocr_sidecar.merge_structural_image_messages(
@@ -6104,6 +6229,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                             [],
                             messages,
                             target="CJTEST01",
+                            layout_snapshot=_test_layout_snapshot(screenshot),
                         )
                     )
                 finally:
@@ -6180,18 +6306,21 @@ class C2VisionIntegrationTests(unittest.TestCase):
                                 "id": f"{role}-long-text",
                                 "type": "text",
                                 "sender_role": role,
+                                "sender_role_source": "same_row_avatar",
+                                "avatar_alignment": {"role": role},
                                 "content": "真实长文字气泡",
                                 "bubble_rect": text_rect,
                             }
                         ],
                         side_filter="all",
+                        message_viewport_bounds=_test_message_viewport(screenshot),
                     )
                 finally:
                     screenshot.close()
 
                 self.assertEqual(candidates, [])
 
-    def test_image_frame_fingerprint_never_becomes_cross_round_identity(self):
+    def test_confirmed_text_never_becomes_image_or_cross_round_visual_identity(self):
         screenshot = Image.new("RGB", (980, 860), (250, 250, 250))
         draw = ImageDraw.Draw(screenshot)
         draw.rectangle((556, 300, 890, 487), fill=(28, 28, 28))
@@ -6214,6 +6343,8 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         "id": "unstable-image-ocr",
                         "type": "text",
                         "sender_role": "self",
+                        "sender_role_source": "same_row_avatar",
+                        "avatar_alignment": {"role": "self"},
                         "content": content,
                         "bubble_rect": {
                             "left": 571,
@@ -6224,6 +6355,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     }
                 ],
                 target="CJTEST01",
+                layout_snapshot=_test_layout_snapshot(screenshot),
             )
             return wechat_win32_ocr_sidecar.build_message_observations_v3(
                 messages
@@ -6232,20 +6364,10 @@ class C2VisionIntegrationTests(unittest.TestCase):
         try:
             first = observations("第一次误识文字")
             second = observations("第二次另一种误识文字")
-            self.assertEqual([item["row_kind"] for item in first], ["image_bubble"])
-            self.assertEqual([item["row_kind"] for item in second], ["image_bubble"])
-            first_visual_id = str(
-                first[0].get("frame_visual_id")
-                or (first[0].get("source_message") or {}).get("frame_visual_id")
-                or ""
-            )
-            second_visual_id = str(
-                second[0].get("frame_visual_id")
-                or (second[0].get("source_message") or {}).get("frame_visual_id")
-                or ""
-            )
-            self.assertTrue(first_visual_id)
-            self.assertEqual(first_visual_id, second_visual_id)
+            self.assertEqual([item["row_kind"] for item in first], ["text_bubble"])
+            self.assertEqual([item["row_kind"] for item in second], ["text_bubble"])
+            self.assertFalse(first[0].get("frame_visual_id"))
+            self.assertFalse(second[0].get("frame_visual_id"))
             self.assertNotIn("canonical_visual_id", first[0])
             self.assertNotIn(
                 "canonical_visual_id",
@@ -6266,7 +6388,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
         finally:
             screenshot.close()
 
-        self.assertEqual(result["alignment_status"], "ambiguous")
+        self.assertEqual(result["alignment_status"], "unresolved")
         self.assertEqual(inherited_worker_ids(result), {})
 
     def test_initial_read_and_preclick_refresh_share_real_image_observer(self):
@@ -6297,6 +6419,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 [],
                 [],
                 target="CJTEST01",
+                layout_snapshot=_test_layout_snapshot(screenshot),
             )
         )
 
@@ -6327,6 +6450,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                         "hwnd": 31415,
                         "capture_mode": "test_frame_input",
                         "screen_origin": [0, 0],
+                        "layout_snapshot": _test_layout_snapshot(screenshot),
                         "validation": {
                             "reason": "window_context_confirmed"
                         },
@@ -6392,6 +6516,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 messages=[],
                 max_images=8,
                 side_filter="all",
+                message_viewport_bounds=_test_message_viewport(screenshot),
             )
             self.assertTrue(candidates)
             candidate = candidates[0]
@@ -6407,6 +6532,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 [],
                 [],
                 target="CJTEST01",
+                layout_snapshot=_test_layout_snapshot(screenshot),
             )
         finally:
             screenshot.close()

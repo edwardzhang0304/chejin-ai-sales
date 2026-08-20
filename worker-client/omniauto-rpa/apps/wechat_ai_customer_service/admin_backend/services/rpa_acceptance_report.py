@@ -244,10 +244,19 @@ def add_humanized_send_checks(
 
 
 def add_window_normalization_policy_checks(checks: list[dict[str, Any]], env: Mapping[str, str]) -> None:
-    normalize_enabled = env_flag(env.get("WECHAT_WIN32_OCR_WINDOW_NORMALIZE"), default=True)
+    dynamic_layout_enabled = env_flag(env.get("WECHAT_WIN32_OCR_DYNAMIC_LAYOUT_ENABLED"), default=True)
     fixed_origin = env_flag(env.get("WECHAT_WIN32_OCR_WINDOW_FIXED_ORIGIN"), default=True)
-    if not normalize_enabled:
-        add_check(checks, "window_normalization_policy", "fail", "WeChat window normalization is disabled.", {"WECHAT_WIN32_OCR_WINDOW_NORMALIZE": env.get("WECHAT_WIN32_OCR_WINDOW_NORMALIZE", "")})
+    if not dynamic_layout_enabled and not str(env.get("WECHAT_WIN32_OCR_LEGACY_DEVICE_PROFILE") or "").strip():
+        add_check(
+            checks,
+            "window_normalization_policy",
+            "fail",
+            "Dynamic layout is disabled without an explicit accepted legacy device profile.",
+            {
+                "WECHAT_WIN32_OCR_DYNAMIC_LAYOUT_ENABLED": env.get("WECHAT_WIN32_OCR_DYNAMIC_LAYOUT_ENABLED", ""),
+                "WECHAT_WIN32_OCR_LEGACY_DEVICE_PROFILE": "configured" if env.get("WECHAT_WIN32_OCR_LEGACY_DEVICE_PROFILE") else "",
+            },
+        )
         return
     if not fixed_origin:
         add_check(checks, "window_normalization_policy", "fail", "WeChat window fixed-origin normalization is disabled.", {"WECHAT_WIN32_OCR_WINDOW_FIXED_ORIGIN": env.get("WECHAT_WIN32_OCR_WINDOW_FIXED_ORIGIN", "")})
@@ -258,6 +267,7 @@ def add_window_normalization_policy_checks(checks: list[dict[str, Any]], env: Ma
         "pass",
         "WeChat window normalization uses a fixed safe origin before RPA operations.",
         {
+            "WECHAT_WIN32_OCR_DYNAMIC_LAYOUT_ENABLED": env.get("WECHAT_WIN32_OCR_DYNAMIC_LAYOUT_ENABLED", ""),
             "WECHAT_WIN32_OCR_WINDOW_WIDTH": env.get("WECHAT_WIN32_OCR_WINDOW_WIDTH", ""),
             "WECHAT_WIN32_OCR_WINDOW_HEIGHT": env.get("WECHAT_WIN32_OCR_WINDOW_HEIGHT", ""),
             "WECHAT_WIN32_OCR_WINDOW_LEFT": env.get("WECHAT_WIN32_OCR_WINDOW_LEFT", ""),
