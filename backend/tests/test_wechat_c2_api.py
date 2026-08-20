@@ -3754,7 +3754,7 @@ def test_message_batch_status_rejects_other_worker_and_returns_terminal_state():
 
 
 def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revision():
-    assert contract_revision() == "0.9.21"
+    assert contract_revision() == "0.9.22"
     location_recovery = c2_contract_v3()[
         "target_location_recovery_contract"
     ]

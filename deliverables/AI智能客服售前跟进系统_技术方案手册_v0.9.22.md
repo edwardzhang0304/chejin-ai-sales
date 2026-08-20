@@ -1,6 +1,6 @@
 # AI智能客服售前跟进系统 技术方案
 
-版本：v0.9.21
+版本：v0.9.22
 
 日期：2026-07-21
 
@@ -8,7 +8,7 @@
 
 适用范围：运营后台、车金后端、Windows Worker、OmniAuto Sidecar、C0—C4、车辆 Product Master、人工接管与飞书通知。
 
-当前唯一架构口径：服务端负责授权、状态机、事实持久化、Brain/Guard、任务和通知；OmniAuto 负责微信 UI 观察、物理目标判定和动作证据；Worker 只负责调度、合同校验、事务持久化与执行。C2 使用固定八位短码和 private 单聊门禁；文字、语音、图片按同一最终画面顺序入库，一条物理媒体只形成一个业务对象，所有已触发媒体动作必须有限终态。C2 消息身份只允许沿“帧内观察 -> 待处理媒体动作 -> 正式消息或隔离记录”单向推进；只有正式消息可以生成 source key、查询 Ledger/Outbox、上报后端或进入 Brain。Brain 只在最新待回复尾部完整且证据足够时生成回复；当前客户媒体失败、高意向及必须人工批准的业务硬风险进入人工接管。人工接管以未关闭 `HandoffEvent` 为权威事实并投影 `waiting_sales_reply`，服务端按同一事件通过车金统一飞书应用立即且至多通知一次所属销售。微信列表在截图与点击之间重排时，点击后的短码校验仍是硬门禁，但明确点到其他会话时允许丢弃旧坐标并在同一授权内完整重新定位一次。添加朋友流程无论“邀请已发送”还是“已经是好友”，都只对已经证明的添加朋友 HWND 执行一次右上角关窗并验证结果。当前候选机器合同 revision 为 `0.9.21`，规范化 SHA 为 `c552dee933d305ad55c17388e55b9590e72a28d6a4965282f0670f23b2111a36`；16.11 的微信动态布局与统一坐标兼容性代码、合同、Schema 和来源已同步形成候选，真实 Windows 三档验收、正式包与人工批准记录尚待完成，文档不得把这些待验证项表述为已通过。
+当前唯一架构口径：服务端负责授权、状态机、事实持久化、Brain/Guard、任务和通知；OmniAuto 负责微信 UI 观察、物理目标判定和动作证据；Worker 只负责调度、合同校验、事务持久化与执行。C2 使用固定八位短码和 private 单聊门禁；文字、语音、图片按同一最终画面顺序入库，一条物理媒体只形成一个业务对象，所有已触发媒体动作必须有限终态。C2 消息身份只允许沿“帧内观察 -> 待处理媒体动作 -> 正式消息或隔离记录”单向推进；只有正式消息可以生成 source key、查询 Ledger/Outbox、上报后端或进入 Brain。Brain 只在最新待回复尾部完整且证据足够时生成回复；当前客户媒体失败、高意向及必须人工批准的业务硬风险进入人工接管。人工接管以未关闭 `HandoffEvent` 为权威事实并投影 `waiting_sales_reply`，服务端按同一事件通过车金统一飞书应用立即且至多通知一次所属销售。微信列表在截图与点击之间重排时，点击后的短码校验仍是硬门禁，但明确点到其他会话时允许丢弃旧坐标并在同一授权内完整重新定位一次。添加朋友流程无论“邀请已发送”还是“已经是好友”，都只对已经证明的添加朋友 HWND 执行一次右上角关窗并验证结果。当前候选机器合同 revision 为 `0.9.22`，规范化 SHA 为 `1a07dde94d270676cde4e6f1e0af3dcc071f4efedbb66c866c06cd64b36a5d39`；16.11 的微信动态布局与统一坐标兼容性代码、合同、Schema 和来源已同步形成候选，真实 Windows 三档验收、正式包与人工批准记录尚待完成，文档不得把这些待验证项表述为已通过。
 
 ## 文档治理规则
 
@@ -32,12 +32,12 @@
    字段和领域对象字段使用 snake_case，两者不得被误认为两个接口。新增、改名或废弃
    接口必须先修改本文的权威目录和接口编号，不允许在代码、聊天记录或派生合同中另起
    同义名称。
-7. 灰度版本使用唯一 `0.9.x` 序列：`0.9.0` 至 `0.9.20` 已冻结，当前目标候选为 `0.9.21`；
+7. 灰度版本使用唯一 `0.9.x` 序列：`0.9.0` 至 `0.9.20` 已冻结，当前目标候选为 `0.9.22`；
    后续任何内容不同且进入测试的候选必须继续升版。PRD（仅有产品变化时）、技术方案、全流程图、版本记录、客户端、
    后端、OmniAuto 合同 `contract_revision`、生成 Schema、manifest 和安装包必须写入同一个
    精确版本，禁止各自升版、复用旧号覆盖新内容或把占位符 `0.9.X` 写入运行产物。
    `contract_version=3`、`observation_schema_version=3` 和文中 V3 仅是协议结构代号，不属于
-   灰度发布版本；当前候选已将兼容校验同步为 `contract_revision=0.9.21 + 规范化 SHA c552dee933d305ad55c17388e55b9590e72a28d6a4965282f0670f23b2111a36`。真实 Windows 验收、发布来源固定和正式包仍是后续门禁，不得用当前本地代码候选伪报已通过。
+   灰度发布版本；当前候选已将兼容校验同步为 `contract_revision=0.9.22 + 规范化 SHA 1a07dde94d270676cde4e6f1e0af3dcc071f4efedbb66c866c06cd64b36a5d39`。真实 Windows 验收、发布来源固定和正式包仍是后续门禁，不得用当前本地代码候选伪报已通过。
    版本车道固定为：`0.9.x` 仅用于正式上线前灰度验证，`1.0.x` 用于正式上线及其稳定性修复，
    `1.1.x` 用于下一期优化。三个 `x` 都只表示版本系列，任何提交、合同、Schema、manifest、
    安装包和运行日志必须写入 `0.9.15`、`1.0.0`、`1.1.0` 等精确版本，不得写入字面占位符。
@@ -1921,7 +1921,7 @@ Worker 必须保留 Outbox 并执行身份刷新重传。在冲突解决前不�
 `fact_scope=current_read_run + delivery_state=not_enqueued`；历史图片和已进入 Outbox
 的图片不得重复处理。
 
-机器合同 revision `0.9.21` 必须完整包含媒体和读取轮次字段，同时表达读取轮次与传输状态、语音动作身份与业务身份分离、
+机器合同 revision `0.9.22` 必须完整包含媒体和读取轮次字段，同时表达读取轮次与传输状态、语音动作身份与业务身份分离、
 选中目标两阶段握手和逐相邻帧同对象证明。`identity_checkpoint.recent_messages[]` 回传
 `origin_read_run_id`；`ledger_state` 只允许作为诊断投影，业务门禁不得读取。
 
@@ -2628,7 +2628,7 @@ Worker C2 读取某个会话时，执行顺序固定为：
 上述顺序是唯一合法流程。禁止在右键前提交正式 Worker 身份，禁止用 voice anchor 直接生成
 source key，禁止在动作后用相同正文、相同 anchor 或坐标找回编号。
 
-机器合同 revision `0.9.21` 在 Sidecar 请求/返回、ActionJournal、Worker 本地身份预留和最终 V3 evidence 中使用以下唯一媒体字段，禁止新增同义字段；规范化 SHA 实算为 `c552dee933d305ad55c17388e55b9590e72a28d6a4965282f0670f23b2111a36`：
+机器合同 revision `0.9.22` 在 Sidecar 请求/返回、ActionJournal、Worker 本地身份预留和最终 V3 evidence 中使用以下唯一媒体字段，禁止新增同义字段；规范化 SHA 实算为 `1a07dde94d270676cde4e6f1e0af3dcc071f4efedbb66c866c06cd64b36a5d39`：
 
 | 字段 | 所有者 | 必填规则 |
 |---|---|---|
@@ -2731,7 +2731,7 @@ Worker 必须对上述逻辑矛盾失败关闭。例如 `identity_phase=sequence
 | `sidecar_new_message_occurrences` 及内容 multiset 比较 | 只可用于发现“画面可能新增了什么”，结果必须再进入新观察仲裁 | 用来证明正文属于被点击语音，或认定相同内容是旧消息 |
 | `storage.py` 消息序号状态 | 原子落盘 action ID、reserved ID、identity phase、trigger phase 和 terminal；预留号单调且永不复用 | 崩溃后回收预留号；新动作重用旧 action ID；`trigger_attempted` 后再点击 |
 | `storage.py` 动作前画面状态 | 与 ActionJournal 原子保存 `pre_action_identity_sequence`，覆盖 `committed/selected_action/frame_local_unselected`；动作终态后补齐 `sequence_alignment_evidence` | 只保存已编号项；崩溃后用新截图或相同内容伪造动作前序列 |
-| `contracts/c2_contract_v3.json` 及生成 schema | 当前候选的 `contract_revision`、客户端、后端、Sidecar、生成 Schema、样例和 manifest 已统一为 `0.9.21`；包含本节对象分类、允许的 commit basis、四种媒体终态、统一消费者白名单、独立帧内语音 action binding 及动态布局快照；保留 `authoritative_frame_source=initial_read/final_read/action_journal_recovery` 及安全误点语义 | 使用独立合同版本号；在已发布版本下静默改语义；产生 `voice_execute_final` 等临时值；保留 `tracking_candidate_counts` 兼容；新增同义字段、双字段兼容或 Worker 本地兜底重判 |
+| `contracts/c2_contract_v3.json` 及生成 schema | 当前候选的 `contract_revision`、客户端、后端、Sidecar、生成 Schema、样例和 manifest 已统一为 `0.9.22`；包含本节对象分类、允许的 commit basis、四种媒体终态、统一消费者白名单、独立帧内语音 action binding 及动态布局快照；保留 `authoritative_frame_source=initial_read/final_read/action_journal_recovery` 及安全误点语义 | 使用独立合同版本号；在已发布版本下静默改语义；产生 `voice_execute_final` 等临时值；保留 `tracking_candidate_counts` 兼容；新增同义字段、双字段兼容或 Worker 本地兜底重判 |
 
 新流程的唯一落库时点为：预留表/ActionJournal 在点击前落盘；正式 identity catalog、
 Ledger、Outbox 和 `source_message_key` 只在 `historical_restored` 或 `business_committed` 后落盘。
@@ -3069,7 +3069,7 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `contract_version` | integer | 是 | 协议结构代号固定为 `3`，不是发布版本；当前灰度候选由 `contract_revision=0.9.21` 表达，并同时校验规范化 `contract_sha256=c552dee933d305ad55c17388e55b9590e72a28d6a4965282f0670f23b2111a36` 和 `observation_schema_version`。 |
+| `contract_version` | integer | 是 | 协议结构代号固定为 `3`，不是发布版本；当前灰度候选由 `contract_revision=0.9.22` 表达，并同时校验规范化 `contract_sha256=1a07dde94d270676cde4e6f1e0af3dcc071f4efedbb66c866c06cd64b36a5d39` 和 `observation_schema_version`。 |
 | `read_run_id` | string | 是 | 本次读取运行 ID。 |
 | `conversation_id` | string | 是 | 服务端已绑定会话 ID。 |
 | `remark_code` | string | 是 | 本轮已确认的客户短码。 |
@@ -4910,7 +4910,7 @@ revision mismatch，不得静默兼容或覆盖旧包。
 合同 revision、OmniAuto 生成 Schema、来源清单、manifest 和 ZIP 文件名必须一致；旧 `0.9.14` 请求必须
 明确 revision mismatch，既有 `gray-v0.9.14` 标签和 ZIP 不得覆盖。
 
-### 16.11 0.9.21 微信动态布局与统一坐标兼容性整改
+### 16.11 0.9.22 微信动态布局与统一坐标兼容性整改
 
 #### 16.11.1 范围与不变量
 
@@ -5017,7 +5017,7 @@ OCR 置信阈值、已确认目标内部点击余量可以保留；1920 参考�
 - 已打开非目标会话但尚未读取消息区或触发媒体/发送：继续使用既有
   `C2_VISIBLE_TARGET_STALE_AFTER_CLICK` 一次有限重新定位规则，不能新增第二套恢复。
 - 媒体或发送动作已经触发：不得重新点击；沿用原 ActionJournal、Outbox 和 sent_ack 事实结算。
-- `0.9.21` 尚未正式上线，不保留运行时关闭动态布局并回到旧坐标的兼容开关，也不保留旧设备
+- `0.9.22` 尚未正式上线，不保留运行时关闭动态布局并回到旧坐标的兼容开关，也不保留旧设备
   profile 准入路径。回滚只能整体回退到上一份不可变代码与安装包并暂停该机器接单，不能在同一
   包内切换为旧固定坐标。回滚不迁移、不重写业务数据。
 
@@ -5040,7 +5040,7 @@ OCR 置信阈值、已确认目标内部点击余量可以保留；1920 参考�
 6. 原有业务回归必须证明加好友、C2 读取、媒体身份、Brain 次数、Handoff、S0/S1/S2、发送结果、
    Journal/Outbox/sent_ack 的顺序和终态没有改变。
 
-`0.9.21` 代码候选形成前只允许更新方案与流程图；实现完成后必须同步 Worker、独立 OmniAuto
+`0.9.22` 代码候选形成前只允许更新方案与流程图；实现完成后必须同步 Worker、独立 OmniAuto
 固定提交、`.chejin-source.json`、机器合同 revision、生成 Schema、manifest 和版本记录。真实
 Windows 三档环境未通过前不得打包为可交付候选，也不得声称兼容性整改完成。
 
