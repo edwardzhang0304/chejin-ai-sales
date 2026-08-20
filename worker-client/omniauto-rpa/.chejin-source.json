@@ -4,7 +4,7 @@
   "upstream_base_commit": "a563e6688c47a8922510794101967823fe1389d7",
   "selective_integrations": [
     {
-      "source_commit": "74a790e0f023376ebfacb2db0b9748c6a2a12c30",
+      "source_commit": "0510999859e2e174cfa3cc4a8cc39e9170f92ec9",
       "scope": [
         "exact_wechat_context_menu_classification",
         "same_popup_menu_panel_evidence_contract",
@@ -38,7 +38,11 @@
         "popup_snapshot_bound_media_action_contract",
         "wechat_legacy_fixed_coordinate_model_removed",
         "strict_typed_vision_port_only_contract",
-        "pr28_protected_baseline_complete_reporting"
+        "pr28_protected_baseline_complete_reporting",
+        "add_friend_search_row_dynamic_layout_contract",
+        "add_friend_unique_plus_visual_target_contract",
+        "dpi_independent_1920_window_normalization_contract",
+        "typed_empty_ocr_region_failure_contract"
       ]
     }
   ],
@@ -56,7 +60,8 @@
     "post_brain_pre_send_fresh_frame_local_reuse_contract",
     "send_s0_s1_s2_distinct_frame_local_reuse_contract",
     "chejin_formal_knowledge_category_contract",
-    "wechat_dynamic_layout_snapshot_coordinate_mapping_compatibility_0_9_22"
+    "wechat_dynamic_layout_snapshot_coordinate_mapping_compatibility_0_9_22",
+    "add_friend_preclick_layout_failure_non_pausing_contract"
   ],
   "historical_integrations": [
     {
@@ -71,5 +76,5 @@
       ]
     }
   ],
-  "integration_note": "当前内嵌副本基于 OmniAuto a563e6688c47a8922510794101967823fe1389d7，并选择性同步固定提交 74a790e0f023376ebfacb2db0b9748c6a2a12c30。该提交完整继承微信菜单精确分类、真实弹窗证据、非图片剪贴板失败结算、正式菜单失败原因、复制点击前安全落盘、可靠文字/语音类型一经确认即不可被结构图片覆盖且不依赖动作成功的单调仲裁，以及语音 prepare/execute 单目标协议、逐边连续跟踪、统一语音 observation 与序列仲裁、ActionJournal 单调终态、歧义语音有限终态、侧栏标题/预览严格分层、可见会话行误点后的有界恢复合同、高图片气泡同排头像角色恢复，并将生成 schema 与 Sidecar 合同 revision 统一为灰度版本 0.9.22。0.9.22 继承已复审的动态布局快照、窗口原点记录和统一坐标转换，并补齐 Windows 归一化用例的客户区几何测试夹具，并彻底删除旧 1920 参考点、固定侧栏边界以及旧输入/发送点击模型；生产动作仅接受当前可执行布局快照，诊断只记录当前分辨率、DPI、窗口/客户区、动态边界、置信度、冲突和最终点击点。架构复审进一步删除未上线的 Vision 无类型 direct-port 旧主机入口，缺少正式角色、气泡边界或稳定物理锚点时在 UI 前失败关闭，并将 PR28 保护门禁改为一次报告全部哈希差异。当前候选代码与合同为 0.9.22，架构复审已完成，仍待真实 Windows UAT。0.9.20 将添加朋友窗口收尾统一覆盖邀请发送成功和已经是好友两条完成路径：仅在 HWND 已由添加朋友流程证明后点击右上角一次并验证销毁或隐藏；关窗失败保留完成事实并记录 unclosed，禁止重复点击或猜测其他窗口。0.9.19 保持 0.9.18 的生产语义并补齐 Windows 发布测试、合同样例和门禁迁移；0.9.18 新增仅限单次 execute 内存生命周期的 frame_action_binding，使 action ID、预留号、token 与前后 observation 映射穿过真实 observation 构建层；生成 confirmed mapping 后立即删除，不进入正式 source_message、Ledger、Outbox 或后端消息身份。0.9.17 进一步明确 frame_visual_id 只用于当前帧定位，Worker 长期身份不得由 OmniAuto 视觉编号生成；正式 C2 传输采用字段白名单，媒体动作统一为四种有限终态，只有通过类型化提交门的 committed_message 才能进入 Ledger、Outbox、后端和 Brain。添加朋友页面收尾在确认动作完成后优先使用精确标题证据；若稀疏页面标题 OCR 漏识别，但此前已经证明的添加朋友 HWND 仍存活且可截图，则仍只点击该已证明窗口右上角一次并验证窗口已销毁或隐藏，点击或验证失败必须记录为 unclosed，不使用正文猜测页面，也不重复点击。本次发送前台守卫的两次有界恢复合同仅在前台窗口暂时不匹配时按 300ms、700ms 重试，仍不匹配则在输入前失败关闭，不增加发送点击。Brain 软证据澄清与 reply_then_handoff 合同继续生效，缺少 Product Master 时只阻止未经授权的车型、价格、库存、车况和承诺，不阻止无事实的低风险需求澄清，硬边界仍保持人工接管。头像恢复仍严格限制在同一行左侧头像通道，不扩大角色判定范围。车金 overlay 继续固定 C2 会话身份的单一决策边界：OmniAuto 独占标题 OCR、单聊/群聊/unknown 分类、固定八位正式短码提取与准入决策；Worker 只校验 `c2_remark_code_candidates` 与 `c2_conversation_admission` 合同并匹配后端授权，不读取 `raw_title`、不提取短码、不重新分类会话；缺字段或矛盾结果必须拒绝并告警。C3 发送前上下文守卫是车金专属 overlay：只比较已确认当前 private 会话的消息视口和序列，侧栏红点或其他会话变化不得阻断发送；当前会话视口变化时仍严格拒绝点击。发送后全屏 OCR 漏掉右侧长文字气泡时，只有最底部右侧结构候选的同排头像确认 self，且局部增强 OCR 存在可读文字时先恢复为文字类型；是否属于本次 AI 回复再按统一格式规范化后的双向高重合度、连续片段、新增尾部和输入框清空共同确认。重合不足仍保持文字类型但不得确认本次发送，证据不足继续使用 SEND_RESULT_UNKNOWN 且禁止重发。AI 发送确认回执通过统一序列身份单调持久化，文字气泡在视口滚动后允许通过唯一单调序列恢复，不得把帧内 OCR 视觉 ID 当作跨帧硬身份证；语音与图片仍保持强身份门禁。C2 后续 `recent_ai_sent` 权威读取只使用本地已确认 `reply_action_id + reply_text_hash` 唯一匹配的回复原文辅助当前帧 ROI OCR，并贯穿 open-chat、messages、身份重试、语音 prepare/execute 和图片后刷新；正文不参与正式身份重挂，证据不足保持原类型并失败关闭。车金继续保留悬浮球/F8/键鼠守护删除、hard_opt_out 以及专属适配。最终车金提交和完整目录 tree SHA 由打包 manifest 动态记录。 0.9.11 性能 P0 仅增加旁路快路径：TaskRunner 合并安全唤醒；首屏会话定位仅在 HWND、窗口几何、DPI 和侧栏像素摘要严格等价时复用候选，否则点击前回退 0.9.10 完整路径；Brain 后发送前只复用同一新鲜物理帧内的 OCR 观察；发送 S0、S1、S2 仍是三个独立物理帧，仅允许各自帧内复用。四项开关关闭后保持 0.9.10 业务与动作路径。 0.9.14 在保留既有运营后台 UI 与物理截图随机熵修复的基础上，收口可靠文字/语音类型不可被结构图片覆盖的单调仲裁；OmniAuto 固定提交同步该仲裁测试与生成 Schema，截图快路径仍属于车金 overlay。车金正式知识分类合同属于车金业务 overlay：静态目录只包含 registry、schema 和 resolver，正式知识条目仅由后端显式幂等命令写入 PostgreSQL，不进入 Worker 或 Windows 客户端包。 0.9.15 新增经审查的车金正式知识种子导入器：八条条目仅由后端显式幂等导入并激活，静态分类合同仍属于车金 overlay；本次不修改 C2 媒体、授权或发送语义。"
+  "integration_note": "当前内嵌副本基于 OmniAuto a563e6688c47a8922510794101967823fe1389d7，并选择性同步固定提交 0510999859e2e174cfa3cc4a8cc39e9170f92ec9。该提交完整继承微信菜单精确分类、真实弹窗证据、非图片剪贴板失败结算、正式菜单失败原因、复制点击前安全落盘、可靠文字/语音类型一经确认即不可被结构图片覆盖且不依赖动作成功的单调仲裁，以及语音 prepare/execute 单目标协议、逐边连续跟踪、统一语音 observation 与序列仲裁、ActionJournal 单调终态、歧义语音有限终态、侧栏标题/预览严格分层、可见会话行误点后的有界恢复合同、高图片气泡同排头像角色恢复，并将生成 schema 与 Sidecar 合同 revision 统一为灰度版本 0.9.22。0.9.22 继承已复审的动态布局快照、窗口原点记录和统一坐标转换，并补齐 Windows 归一化用例的客户区几何测试夹具，并彻底删除旧 1920 参考点、固定侧栏边界以及旧输入/发送点击模型；生产动作仅接受当前可执行布局快照，诊断只记录当前分辨率、DPI、窗口/客户区、动态边界、置信度、冲突和最终点击点。架构复审进一步删除未上线的 Vision 无类型 direct-port 旧主机入口，缺少正式角色、气泡边界或稳定物理锚点时在 UI 前失败关闭，并将 PR28 保护门禁改为一次报告全部哈希差异。本次复审新增基于当前截图侧栏竖边与“搜索”OCR高度的加好友操作带，只在该动态区域内接受唯一视觉“+”；不依赖选中会话上方横线，1920 级显示器不再按 DPI 放大窗口，空 OCR 区域以类型化布局错误失败并保持零点击。当前候选代码与合同为 0.9.22，架构复审已完成，仍待真实 Windows UAT。0.9.20 将添加朋友窗口收尾统一覆盖邀请发送成功和已经是好友两条完成路径：仅在 HWND 已由添加朋友流程证明后点击右上角一次并验证销毁或隐藏；关窗失败保留完成事实并记录 unclosed，禁止重复点击或猜测其他窗口。0.9.19 保持 0.9.18 的生产语义并补齐 Windows 发布测试、合同样例和门禁迁移；0.9.18 新增仅限单次 execute 内存生命周期的 frame_action_binding，使 action ID、预留号、token 与前后 observation 映射穿过真实 observation 构建层；生成 confirmed mapping 后立即删除，不进入正式 source_message、Ledger、Outbox 或后端消息身份。0.9.17 进一步明确 frame_visual_id 只用于当前帧定位，Worker 长期身份不得由 OmniAuto 视觉编号生成；正式 C2 传输采用字段白名单，媒体动作统一为四种有限终态，只有通过类型化提交门的 committed_message 才能进入 Ledger、Outbox、后端和 Brain。添加朋友页面收尾在确认动作完成后优先使用精确标题证据；若稀疏页面标题 OCR 漏识别，但此前已经证明的添加朋友 HWND 仍存活且可截图，则仍只点击该已证明窗口右上角一次并验证窗口已销毁或隐藏，点击或验证失败必须记录为 unclosed，不使用正文猜测页面，也不重复点击。本次发送前台守卫的两次有界恢复合同仅在前台窗口暂时不匹配时按 300ms、700ms 重试，仍不匹配则在输入前失败关闭，不增加发送点击。Brain 软证据澄清与 reply_then_handoff 合同继续生效，缺少 Product Master 时只阻止未经授权的车型、价格、库存、车况和承诺，不阻止无事实的低风险需求澄清，硬边界仍保持人工接管。头像恢复仍严格限制在同一行左侧头像通道，不扩大角色判定范围。车金 overlay 继续固定 C2 会话身份的单一决策边界：OmniAuto 独占标题 OCR、单聊/群聊/unknown 分类、固定八位正式短码提取与准入决策；Worker 只校验 `c2_remark_code_candidates` 与 `c2_conversation_admission` 合同并匹配后端授权，不读取 `raw_title`、不提取短码、不重新分类会话；缺字段或矛盾结果必须拒绝并告警。C3 发送前上下文守卫是车金专属 overlay：只比较已确认当前 private 会话的消息视口和序列，侧栏红点或其他会话变化不得阻断发送；当前会话视口变化时仍严格拒绝点击。发送后全屏 OCR 漏掉右侧长文字气泡时，只有最底部右侧结构候选的同排头像确认 self，且局部增强 OCR 存在可读文字时先恢复为文字类型；是否属于本次 AI 回复再按统一格式规范化后的双向高重合度、连续片段、新增尾部和输入框清空共同确认。重合不足仍保持文字类型但不得确认本次发送，证据不足继续使用 SEND_RESULT_UNKNOWN 且禁止重发。AI 发送确认回执通过统一序列身份单调持久化，文字气泡在视口滚动后允许通过唯一单调序列恢复，不得把帧内 OCR 视觉 ID 当作跨帧硬身份证；语音与图片仍保持强身份门禁。C2 后续 `recent_ai_sent` 权威读取只使用本地已确认 `reply_action_id + reply_text_hash` 唯一匹配的回复原文辅助当前帧 ROI OCR，并贯穿 open-chat、messages、身份重试、语音 prepare/execute 和图片后刷新；正文不参与正式身份重挂，证据不足保持原类型并失败关闭。车金继续保留悬浮球/F8/键鼠守护删除、hard_opt_out 以及专属适配。最终车金提交和完整目录 tree SHA 由打包 manifest 动态记录。 0.9.11 性能 P0 仅增加旁路快路径：TaskRunner 合并安全唤醒；首屏会话定位仅在 HWND、窗口几何、DPI 和侧栏像素摘要严格等价时复用候选，否则点击前回退 0.9.10 完整路径；Brain 后发送前只复用同一新鲜物理帧内的 OCR 观察；发送 S0、S1、S2 仍是三个独立物理帧，仅允许各自帧内复用。四项开关关闭后保持 0.9.10 业务与动作路径。 0.9.14 在保留既有运营后台 UI 与物理截图随机熵修复的基础上，收口可靠文字/语音类型不可被结构图片覆盖的单调仲裁；OmniAuto 固定提交同步该仲裁测试与生成 Schema，截图快路径仍属于车金 overlay。车金正式知识分类合同属于车金业务 overlay：静态目录只包含 registry、schema 和 resolver，正式知识条目仅由后端显式幂等命令写入 PostgreSQL，不进入 Worker 或 Windows 客户端包。 0.9.15 新增经审查的车金正式知识种子导入器：八条条目仅由后端显式幂等导入并激活，静态分类合同仍属于车金 overlay；本次不修改 C2 媒体、授权或发送语义。"
 }

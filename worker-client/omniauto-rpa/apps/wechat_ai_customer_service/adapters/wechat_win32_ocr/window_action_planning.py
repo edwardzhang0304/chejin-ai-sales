@@ -71,20 +71,19 @@ def plan_normalize_wechat_window(
         screen_height,
         screen_metrics_available=screen_metrics_available,
     )
-    # Win32 geometry is expressed in the process' physical coordinate space.
-    # Preserve the minimum logical WeChat canvas on high-DPI displays even
-    # when their physical resolution is only 1920-class (for example
-    # 1920x1200 at 125%).  Resolution buckets alone cannot provide that.
-    resolution_scale = max(screen_scale, normalized_dpi_scale)
+    # Window size follows the physical work-area bucket. DPI remains part of
+    # capture/click coordinate diagnostics, but must not enlarge a 1920-class
+    # WeChat window to 1225/1470 pixels and reduce the usable desktop area.
+    resolution_scale = screen_scale
     scaled_default_width = min(safe_max_width, max(1, int(round(default_width * resolution_scale))))
     scaled_default_height = min(safe_max_height, max(1, int(round(default_height * resolution_scale))))
     base_min_width = min(
         safe_max_width,
-        max(1, int(round(int(min_width or 1) * normalized_dpi_scale))),
+        max(1, int(min_width or 1)),
     )
     base_min_height = min(
         safe_max_height,
-        max(1, int(round(int(min_height or 1) * normalized_dpi_scale))),
+        max(1, int(min_height or 1)),
     )
     target_width = bounded_int(requested_width, default=scaled_default_width, minimum=base_min_width, maximum=safe_max_width)
     target_height = bounded_int(requested_height, default=scaled_default_height, minimum=base_min_height, maximum=safe_max_height)

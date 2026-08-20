@@ -2988,6 +2988,27 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertNotIn("paused", api.run_status_updates)
         self.assertEqual(binding.run_status, "running")
 
+    def test_preclick_layout_failure_does_not_pause_worker_after_failed_report(self):
+        task = Task(id="task-layout", task_type="add_friend", status="pending", phone="13800000000")
+        api = FakeApi(task)
+        bridge = FakeBridge(
+            RpaResult(
+                ok=False,
+                error_code="WECHAT_UI_LAYOUT_UNRESOLVED",
+                failure_step="window_layout_calibration",
+                message="当前帧动态布局未解析",
+            )
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(worker_id="worker-1", worker_token="token", client_instance_id="client-1", run_status="running")
+        runner.binding = binding
+
+        runner.tick_once()
+
+        self.assertIn("fail:WECHAT_UI_LAYOUT_UNRESOLVED:window_layout_calibration", api.events)
+        self.assertNotIn("paused", api.run_status_updates)
+        self.assertEqual(binding.run_status, "running")
+
     def test_paused_worker_only_sends_heartbeat(self):
         task = Task(id="task-3", task_type="add_friend", status="pending", phone="13800000000")
         api = FakeApi(task)

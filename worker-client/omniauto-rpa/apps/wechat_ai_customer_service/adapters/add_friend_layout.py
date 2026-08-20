@@ -126,7 +126,10 @@ def vision_plus_icon_candidates(
     deduped: list[dict[str, Any]] = []
     for candidate in sorted(candidates, key=lambda item: float(item.get("confidence") or 0.0), reverse=True):
         point = normalize_point(candidate.get("point"))
-        if any(abs(point[0] - normalize_point(existing.get("point"))[0]) <= 5 and abs(point[1] - normalize_point(existing.get("point"))[1]) <= 5 for existing in deduped):
+        # One native plus/circle produces several nearby crossing centers.
+        # Collapse the whole icon footprint; distinct controls remain much
+        # farther apart than this current-frame, pixel-local radius.
+        if any(abs(point[0] - normalize_point(existing.get("point"))[0]) <= 16 and abs(point[1] - normalize_point(existing.get("point"))[1]) <= 16 for existing in deduped):
             continue
         deduped.append(candidate)
         if len(deduped) >= 5:
