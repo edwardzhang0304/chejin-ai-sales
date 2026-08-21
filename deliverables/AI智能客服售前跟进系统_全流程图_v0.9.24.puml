@@ -1,5 +1,5 @@
 @startuml
-' 文档版本：v0.9.23；灰度目标版本：0.9.23（方案已收口，代码/合同/Windows UAT 待实现验证）；最后更新：2026-08-21
+' 文档版本：v0.9.24；灰度目标版本：0.9.24（方案、代码、合同及架构复审已收口，Windows UAT 待验证）；最后更新：2026-08-21
 title AI智能客服售前跟进系统 全流程图（C0-C4、媒体、回复、转人工与恢复）
 
 skinparam monochrome true
@@ -72,20 +72,23 @@ note over W,Reply
 14. 窗口归位后只对精确微信客户区截图一次，用原图几何+同尺寸增强OCR建立startup_layout_calibration，C0—C4共用该全局区域地图。
 15. 会话行重排、红点、新消息和聊天滚动不重建全局标定；具体会话行/消息/弹窗/表单仍由0.9.20原流程的当前必要业务帧定位。
 16. 标定只确定导航栏、侧栏、标题、消息视口和输入区；不代替private+短码、角色、媒体回执和S0/S1/S2业务证据。
-17. 只有HWND/进程/客户区/DPI/微信主外壳真实变化才使全局标定失效；不为此增加点击前截图、OCR或改变0.9.20业务流程。
+17. 不在运行中增加窗口变换恢复流程；已有证据确认HWND/窗口变化时停止新UI动作并提示人工重启客户端。
 end note
 
 note over W,WX
-0.9.23启动标定兼容门禁（适用于add_friend、authorized_read、pre_send_refresh和send）：
+0.9.24启动标定兼容口径（适用于add_friend、authorized_read、pre_send_refresh和send）：
 启动按DPI/工作区选择唯一默认外框档位，归位后用一张精确HWND客户区截图建立startup_layout_calibration。
 原图几何确定导航/侧栏/标题/消息/输入边界；同尺寸增强OCR只补文字锚点，不直接产生点击坐标。
 0.9.20参考点按所属区域分段映射到当前标定；禁止整窗口单比例缩放或各模块自行加偏移。
 会话行、消息、弹窗和表单继续使用0.9.20原有必要业务帧，不在启动时伪造不存在的页面定位。
-会话重排和消息变化不使全局标定失效；HWND/进程/客户区/DPI/主外壳真实变化才重新标定。
+会话重排和消息变化不使全局标定失效；只有已标定微信主HWND消失/被替换或客户区/DPI变化才使地图失效。
+微信自有菜单/弹窗HWND成为前台不等于主HWND变化，不使地图失效；真正失效时不自动重标定，提示人工重启。
 不新增业务截图/OCR，不改变0.9.20点击顺序、重试、失败处理和状态机。
 status/capabilities/calibration-status/sessions保持被动探测，不抢前台。
-add_friend/open-chat/messages/voice-transcribe/recover-render/send在首个物理动作前只激活已标定的唯一微信主HWND并复核前台根HWND。
-该激活不得MoveWindow、缩放、重新规范化、重新标定或新增截图/OCR；有限激活失败则零操作返回技术失败。
+add_friend/open-chat/messages/voice-transcribe/recover-render/send直接复用0.9.20可见窗口选择和activate_window(hwnd)，不新建统一前台门禁。
+0.9.24只在消费启动坐标地图前确认selected_visible_hwnd==calibration.hwnd；不一致表示地图失效，停止新UI动作并提示人工重启客户端。
+事务内部不存在新的主HWND前台等值检查；微信自身菜单/弹窗按0.9.20原流程继续。
+共享点击底层只校验快照ID、目标边界和坐标映射；禁止新增主HWND等值门禁，也禁止为添加朋友增加特例白名单。
 end note
 
 group C0-C1：线索进入、分配销售与加好友
@@ -93,15 +96,22 @@ group C0-C1：线索进入、分配销售与加好友
   C01 -> C01: 手机号去重、分配唯一sales_id\n创建add_friend任务并绑定可用Worker
   C01 --> W: 下发add_friend任务\n手机号 + 正式短码 + 申请语
   W -> Lock: 获取本地微信UI锁
-  W -> WX: 仅将已标定的唯一微信主HWND切到前台并复核\n不移动、不缩放、不重新标定
+  W -> WX: 按0.9.20选择可见微信主HWND并调用activate_window(hwnd)\n使用坐标地图前只校验地图归属HWND一致
   W -> OA: add_friend事务\n复用startup_layout_calibration和0.9.20原流程
   OA -> OA: 在标定的侧栏头部内\n映射0.9.20“+”参考点到当前操作行
+  OA -> WX: 点击“+”\n微信自身菜单HWND可成为前台
+  OA -> WX: 按0.9.20菜单证据点击“添加朋友”\n不重复要求前台等于主HWND
   note over W,OA
   启动标定只定位微信外壳区域，不要求OCR直接识别“+”字符。
   点击后必须按0.9.20原有截图确认正确菜单；搜索图标不得冒充“+”。
   end note
   W -> OA: add_friend\n最终确定后短暂等待稳定画面
-  OA -> WX: 搜索手机号、填写短码备注、发送好友申请
+  OA -> WX: 搜索手机号、填写申请语与短码备注、发送好友申请
+  note over OA,WX
+  同一邀请表单的申请语和备注可共用填写前已确认的表单几何；
+  两字段填写后必须用新截图/OCR验证内容与确认按钮后才提交。
+  填写前OCR内容不得当成填写后证据。
+  end note
   OA -> OA: invite_sent或already_friend后等待1—2秒\n仅对精确标题或本次已证明且存活的添加朋友HWND\n点击右上角X一次并验证；未知窗口零点击
   OA --> W: invite_sent / already_friend / failed + 动作证据\n收尾失败不得覆盖已确认完成事实
   W -> C01: 幂等回传任务结果
