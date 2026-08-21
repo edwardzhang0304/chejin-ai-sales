@@ -506,7 +506,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "85205428914b4a1587d6cb21458fb001c8f1c6e3"
+                        "15db96575a23f57beb9bab54be6a21e5de0ac748"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -534,7 +534,7 @@ class PackagingScriptsTest(unittest.TestCase):
                         "source_message_transport_allowlist",
                         "typed_committed_media_identity_contract",
                         "media_action_four_terminal_contract",
-                        "c2_contract_0_9_24_generated_schema",
+                        "c2_contract_0_9_25_generated_schema",
                         (
                             "voice_frame_action_binding_observation_"
                             "projection_contract"
@@ -570,7 +570,7 @@ class PackagingScriptsTest(unittest.TestCase):
                         "add_friend_frame_seed_facade_forwarding_contract",
                         "verified_send_input_bounds_forwarding_contract",
                         "invalid_session_layout_explicit_failure_contract",
-                        "v0_9_24_startup_layout_calibration_contract",
+                        "v0_9_25_startup_layout_calibration_contract",
                         "gray_v0_9_20_region_local_coordinate_map_contract",
                         "current_monitor_dpi_window_profile_contract",
                         "startup_window_position_and_size_once_contract",
@@ -595,6 +595,10 @@ class PackagingScriptsTest(unittest.TestCase):
                         "frozen_compat_sidecar_single_command_contract",
                         "four_edge_dpi_window_margin_contract",
                         "visible_calibrated_window_ignores_hidden_weixin_shell_contract",
+                        (
+                            "send_input_click_surface_and_text_detection_"
+                            "roi_separation_contract"
+                        ),
                     ],
                 }
             ],
@@ -616,10 +620,12 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["chejin_overlays"],
         )
         self.assertIn(
-            "85205428914b4a1587d6cb21458fb001c8f1c6e3",
+            "15db96575a23f57beb9bab54be6a21e5de0ac748",
             provenance["integration_note"],
         )
-        self.assertIn("0.9.24", provenance["integration_note"])
+        self.assertIn("0.9.25", provenance["integration_note"])
+        self.assertIn("完整 input_bounds", provenance["integration_note"])
+        self.assertIn("排除底部工具栏", provenance["integration_note"])
         self.assertIn(
             "immutable_visible_scan_frame_reuse_contract",
             provenance["chejin_overlays"],
