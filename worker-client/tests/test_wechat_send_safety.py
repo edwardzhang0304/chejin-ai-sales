@@ -405,7 +405,7 @@ class WechatSendSafetyTest(unittest.TestCase):
 
     def test_visual_input_uses_green_as_evidence_and_enter_as_trigger(self):
         observed_trigger: dict[str, object] = {}
-        # v0.9.24 requires a real current calibration-backed frame before C3
+        # v0.9.25 requires a real current calibration-backed frame before C3
         # can translate the input reference point.
         self._semantic_layout_for_image(Image.new("RGB", (980, 860), "white"))
         with (
@@ -1455,6 +1455,76 @@ class WechatSendSafetyTest(unittest.TestCase):
         self.assertEqual(result["error_code"], "WECHAT_INPUT_DRAFT_PRESENT")
         key_press.assert_not_called()
         click.assert_not_called()
+
+    def test_toolbar_pixels_are_excluded_from_draft_detection_but_click_surface_is_preserved(self):
+        image = Image.new("RGB", (920, 991), "white")
+        snapshot = self._semantic_layout_for_image(image)
+        snapshot.update(
+            {
+                "message_viewport_bounds": [374, 112, 920, 835],
+                "input_bounds": [379, 841, 833, 940],
+                "toolbar_bounds": [374, 940, 920, 991],
+            }
+        )
+        draw = ImageDraw.Draw(image)
+        # Reproduce the incident shape: bottom-toolbar glyphs touch the old
+        # draft ROI while the editable text surface itself is empty.
+        for left in (399, 445, 490, 545, 600, 760):
+            draw.rectangle((left, 936, left + 10, 940), fill="black")
+
+        state = sidecar.input_text_region_state(
+            image,
+            [],
+            geometry={"width": 938, "height": 1000},
+        )
+
+        self.assertFalse(state["has_visible_text"])
+        self.assertEqual(state["click_bounds"], [379, 841, 833, 940])
+        self.assertLess(state["bounds"][3], 936)
+        locator = sidecar.locate_visual_send_input(
+            before_input_region_seed={"input_region": state}
+        )
+        self.assertTrue(locator["ok"])
+        self.assertEqual(
+            locator["input_click_evidence"]["bounds"],
+            [379, 841, 833, 940],
+        )
+
+    def test_short_real_draft_inside_text_region_still_blocks_send(self):
+        image = Image.new("RGB", (920, 991), "white")
+        snapshot = self._semantic_layout_for_image(image)
+        snapshot.update(
+            {
+                "message_viewport_bounds": [374, 112, 920, 835],
+                "input_bounds": [379, 841, 833, 940],
+                "toolbar_bounds": [374, 940, 920, 991],
+            }
+        )
+        text_bounds = sidecar.win32_ocr_layout.input_text_detection_bounds(snapshot)
+        draw = ImageDraw.Draw(image)
+        draw.rectangle(
+            (
+                text_bounds[0] + 18,
+                text_bounds[1] + 14,
+                text_bounds[0] + 27,
+                text_bounds[1] + 27,
+            ),
+            fill="black",
+        )
+
+        state = sidecar.input_text_region_state(
+            image,
+            [],
+            geometry={"width": 938, "height": 1000},
+        )
+        locator = sidecar.locate_visual_send_input(
+            before_input_region_seed={"input_region": state}
+        )
+
+        self.assertTrue(state["has_visible_text"])
+        self.assertEqual(state["ocr_hits"], 0)
+        self.assertFalse(locator["ok"])
+        self.assertEqual(locator["error_code"], "WECHAT_INPUT_DRAFT_PRESENT")
 
     def test_confirmed_program_draft_is_cleared_after_input_confirmation_failure(self):
         class FakeValuePattern:

@@ -473,7 +473,7 @@ def main() -> int:
     checks += check_c1_c2_c3_reuse_v0920_activation_before_dispatch()
     checks += check_no_new_global_activation_success_gate()
     checks += check_business_map_binding_uses_visible_hwnd_only()
-    print(f"v0.9.24 business entry activation checks passed: {checks}")
+    print(f"v0.9.25 business entry activation checks passed: {checks}")
     return 0
 
 

@@ -40,7 +40,9 @@ def input_surface_click_evidence(input_region: dict[str, Any] | None) -> dict[st
             "reason": "input_click_evidence_unrecognized_region",
             "input_region_reason": reason,
         }
-    bounds = _normalized_bounds(state.get("bounds"))
+    # Draft detection intentionally uses a narrower text-only region.  Input
+    # focus still belongs to the full calibrated click surface when supplied.
+    bounds = _normalized_bounds(state.get("click_bounds") or state.get("bounds"))
     if bounds is None:
         return {
             "ok": False,
@@ -60,6 +62,7 @@ def input_surface_click_evidence(input_region: dict[str, Any] | None) -> dict[st
         "reason": "fresh_input_region_observed",
         "source_reason": reason,
         "bounds": bounds,
+        "text_bounds": _normalized_bounds(state.get("bounds")),
         "click_bounds": click_bounds,
     }
 
