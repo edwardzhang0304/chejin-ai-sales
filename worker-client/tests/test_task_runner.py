@@ -684,6 +684,8 @@ class FakeBridge:
         self.add_friend_cancel_check = None
         self.probe_calls = 0
         self.preflight_calls = 0
+        self.calibration_prepare_calls = 0
+        self.calibration_verify_calls = 0
         self.preflight_payload = {"ok": True, "state": "mock_preflight"}
         self.send_journal_dir = Path(
             tempfile.mkdtemp(prefix="chejin-send-journal-test-")
@@ -727,6 +729,14 @@ class FakeBridge:
 
     def verify_window_readiness(self):
         self.preflight_calls += 1
+        return dict(self.preflight_payload)
+
+    def prepare_startup_layout_for_new_transaction(self):
+        self.calibration_prepare_calls += 1
+        return dict(self.preflight_payload)
+
+    def verify_startup_layout_for_inflight_transaction(self):
+        self.calibration_verify_calls += 1
         return dict(self.preflight_payload)
 
     def run_add_friend(self, task: Task, emit_step, cancel_check=None):
@@ -2734,6 +2744,11 @@ class TaskRunnerTest(unittest.TestCase):
             result = runner._run_add_friend_with_ui_lock(binding, task)
 
         self.assertTrue(result.ok)
+        self.assertEqual(
+            bridge.calibration_prepare_calls,
+            1,
+            "C1 must pass one startup calibration transaction gate",
+        )
         self.assertTrue(callable(bridge.add_friend_cancel_check))
         self.assertFalse(bridge.add_friend_cancel_check())
         binding.run_status = "paused"
@@ -3429,12 +3444,18 @@ class TaskRunnerTest(unittest.TestCase):
             display_name="CJNOFACT",
             remark_code="CJNOFACT",
             authorization_revision="revision-read-no-fact",
+            read_reason="recall_precheck",
             raw={"identity_checkpoint": identity_checkpoint()},
         )
 
         result = runner._read_one_wechat_target(binding, target)
 
         self.assertFalse(result["ok"])
+        self.assertEqual(
+            bridge.calibration_prepare_calls,
+            1,
+            "C4 recall read must reuse one startup calibration transaction gate",
+        )
         self.assertEqual(result["error_code"], "C2_MESSAGE_OCR_FAILED")
         self.assertEqual(len(api.inflight_flow_events), 2)
         self.assertTrue(
@@ -3604,7 +3625,7 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertTrue(runner.set_run_status("running"))
         self.assertEqual(binding.run_status, "running")
 
-    def test_start_blocks_before_backend_when_window_readiness_verification_fails(self):
+    def test_start_accepting_does_not_run_a_second_window_verification(self):
         api = FakeApi(None)
         bridge = FakeBridge(RpaResult(ok=True, result_code="unused", message="unused"))
         bridge.preflight_payload = {
@@ -3621,10 +3642,10 @@ class TaskRunnerTest(unittest.TestCase):
         )
         runner.binding = binding
 
-        self.assertFalse(runner.set_run_status("running"))
-        self.assertEqual(bridge.preflight_calls, 1)
-        self.assertEqual(api.run_status_updates, [])
-        self.assertEqual(binding.run_status, "paused")
+        self.assertTrue(runner.set_run_status("running"))
+        self.assertEqual(bridge.preflight_calls, 0)
+        self.assertEqual(api.run_status_updates, ["running"])
+        self.assertEqual(binding.run_status, "running")
 
     def test_task_safe_wake_coalesces_repeated_events_into_one_followup_tick(self):
         api = FakeApi(None)
@@ -3934,6 +3955,11 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(bridge.sent_replies[0]["text"], "您好，可以继续沟通这台车。")
         self.assertEqual(bridge.sent_replies[0]["rpa_session_key"], "")
         self.assertIn("sent_ack:sent:None", api.events)
+        self.assertEqual(
+            bridge.calibration_prepare_calls,
+            1,
+            "C3 pre-send refresh must reuse one startup calibration transaction gate",
+        )
         self.assertTrue(bridge.sent_replies[0]["current_only"])
         self.assertTrue(callable(bridge.sent_replies[0]["cancel_check"]))
         self.assertEqual(
@@ -10614,6 +10640,11 @@ class TaskRunnerTest(unittest.TestCase):
 
         runner._run_c2_scan_round(binding, reason="unit")
 
+        self.assertEqual(
+            bridge.calibration_prepare_calls,
+            2,
+            "C2 scan and subsequent read are two UI transactions and must each reuse the startup calibration gate",
+        )
         self.assertEqual(len(bridge.message_reads), 1)
         self.assertEqual(bridge.locate_chats[0]["target_mode"], "visible")
         self.assertEqual(bridge.locate_chats[0]["rpa_session_key"], "wx:rpa:v1:a")
@@ -12211,13 +12242,40 @@ class TaskRunnerTest(unittest.TestCase):
                     run_status="running",
                 )
 
-                runner._read_state_target_queue(binding, targets=[target])
+                emitted_timings: list[dict] = []
+                with (
+                    patch(
+                        "chejin_worker_client.task_runner.load_process_run",
+                        return_value="process-run-c2-locate-failure",
+                    ),
+                    patch(
+                        "chejin_worker_client.task_runner.enqueue_c2_flow_timing_stages",
+                        side_effect=lambda **kwargs: emitted_timings.append(
+                            kwargs["flow_timing"]
+                        )
+                        or [],
+                    ),
+                    patch(
+                        "chejin_worker_client.task_runner.schedule_stage_event_upload"
+                    ),
+                ):
+                    runner._read_state_target_queue(binding, targets=[target])
 
                 self.assertEqual(
                     [item["target_mode"] for item in bridge.locate_chats],
                     ["visible", "search_by_remark_code"],
                 )
                 self.assertEqual(bridge.message_reads, [])
+                locate_phases = [
+                    phase
+                    for timing in emitted_timings
+                    for phase in timing.get("phases", [])
+                    if phase.get("name") == "target_chat_locate"
+                ]
+                self.assertEqual(len(locate_phases), 2)
+                self.assertTrue(all(phase.get("failed") is True for phase in locate_phases))
+                self.assertTrue(all(phase.get("completed") is False for phase in locate_phases))
+                self.assertEqual(locate_phases[-1].get("error_code"), error_code)
                 self.assertEqual(api.message_payloads, [])
 
     def test_c2_backend_ignored_message_is_not_reported_as_success(self):

@@ -56,7 +56,7 @@ def main() -> int:
         "run_wechat_win32_ocr_env_config_checks.py",
         "run_wechat_win32_ocr_interaction_evidence_checks.py",
         "run_wechat_win32_ocr_humanized_input_checks.py",
-        "run_wechat_win32_ocr_window_action_planning_checks.py",
+        "run_wechat_startup_calibration_v0923_checks.py",
     )
     for script_name in omniauto_check_scripts:
         check = subprocess.run(

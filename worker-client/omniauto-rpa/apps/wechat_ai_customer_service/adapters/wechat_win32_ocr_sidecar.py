@@ -171,8 +171,12 @@ except Exception as exc:  # pragma: no cover - OCR is only needed for live sidec
 
 DEFAULT_MESSAGE_BOTTOM_EXCLUDE_PX = 95
 OCR_MIN_CONFIDENCE = 0.45
-SIDECAR_BASE_ACTIONS = ("status", "capabilities", "normalize-window", "sessions", "open-chat", "messages", "send", "recover-render", "voice-transcribe")
+SIDECAR_BASE_ACTIONS = ("status", "capabilities", "normalize-window", "calibration-status", "sessions", "open-chat", "messages", "send", "recover-render", "voice-transcribe")
 SIDECAR_ACTION_CHOICES = (*SIDECAR_BASE_ACTIONS, *ADD_FRIEND_ROUTES)
+PASSIVE_PROBE_ACTIONS = frozenset({"status", "capabilities", "calibration-status", "sessions"})
+ACTIVE_BUSINESS_ACTIONS = frozenset(
+    {"open-chat", "messages", "voice-transcribe", "recover-render", "send", *ADD_FRIEND_ROUTES}
+)
 SEND_GUARD_PATH = PROJECT_ROOT / "runtime" / "wechat_win32_ocr_send_guard.json"
 UI_ACTION_GUARD_PATH = PROJECT_ROOT / "runtime" / "wechat_win32_ocr_ui_action_guard.json"
 UI_ACTION_AUDIT_PATH = PROJECT_ROOT / "runtime" / "wechat_win32_ocr_ui_actions.jsonl"
@@ -183,13 +187,15 @@ _LAST_SESSION_ACTIVATION_TIMING: dict[str, Any] = {}
 _LAYOUT_SNAPSHOT_STORE = win32_ocr_layout.LayoutSnapshotStore()
 _LATEST_LAYOUT_SNAPSHOT_BY_HWND: dict[int, str] = {}
 _LAYOUT_SNAPSHOT_ID_BY_IMAGE_ID: dict[int, str] = {}
+STARTUP_CALIBRATION_PATH = Path(
+    os.getenv("CHEJIN_WECHAT_STARTUP_CALIBRATION_PATH")
+    or (PROJECT_ROOT / "runtime" / "wechat_startup_layout_calibration_v0.9.23.json")
+)
 RENDER_RECOVERY_GUARD_PATH = PROJECT_ROOT / "runtime" / "wechat_win32_ocr_render_recovery_guard.json"
 MIN_SEND_CLIENT_WIDTH = 700
 MIN_SEND_CLIENT_HEIGHT = 720
 LOGIN_WINDOW_MAX_WIDTH = 560
 LOGIN_WINDOW_MAX_HEIGHT = 680
-DEFAULT_SAFE_WINDOW_WIDTH = 980
-DEFAULT_SAFE_WINDOW_HEIGHT = 860
 MIN_SAFE_WINDOW_WIDTH = MIN_SEND_CLIENT_WIDTH
 MIN_SAFE_WINDOW_HEIGHT = MIN_SEND_CLIENT_HEIGHT
 MAX_SAFE_WINDOW_WIDTH = 2560
@@ -305,7 +311,6 @@ DEFAULT_SEND_TRIGGER_MODE = win32_ocr_env.DEFAULT_SEND_TRIGGER_MODE
 DEFAULT_STRICT_SEND_FOCUS_GUARD = True
 DEFAULT_FOCUS_CLICK_FALLBACK = True
 DEFAULT_ALLOW_UNKNOWN_FOREGROUND_GUARD = True
-SEND_WINDOW_FOCUS_RECOVERY_DELAYS_SECONDS = (0.30, 0.70)
 INPUT_TEXT_DARK_RATIO_MIN = 0.0025
 INPUT_TEXT_SOFT_BLANK_DARK_RATIO_MAX = 0.035
 INPUT_TEXT_SOFT_BLANK_MEAN_MIN = 242.0
@@ -501,12 +506,6 @@ def main() -> int:
     parser.add_argument("action", choices=SIDECAR_ACTION_CHOICES, nargs="?")
     parser.add_argument("--sidecar-run-id", default="", help="Correlation id for one Worker-to-sidecar run.")
     parser.add_argument("--scan-id", default="", help="Correlation id for one sessions scan.")
-    parser.add_argument(
-        "--window-policy",
-        choices=("normalize", "verify"),
-        default="normalize",
-        help="Normalize only at a UI Flow boundary; nested actions must use verify.",
-    )
     parser.add_argument("--canonical-voice-action-id", default="")
     parser.add_argument("--reserved-worker-stable-id", default="")
     parser.add_argument("--voice-action-stage", choices=("prepare", "execute"), default="prepare")
@@ -1195,8 +1194,30 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
             "error": _WIN32_IMPORT_ERROR,
         }
     passive_probe = use_passive_probe_mode(action)
-    probe = ensure_visible_wechat_window(interactive=not passive_probe)
-    if not probe.get("visible_main_windows"):
+    active_business_action = action in ACTIVE_BUSINESS_ACTIONS
+    # Business actions select and activate only the HWND persisted by startup
+    # calibration. Their initial enumeration must remain read-only so another
+    # WeChat window cannot be focused before calibration identity is checked.
+    probe = ensure_visible_wechat_window(interactive=action == "normalize-window")
+    calibration_binding: dict[str, Any] = {}
+    if active_business_action:
+        calibration_binding = calibrated_business_window_binding(probe)
+        if not calibration_binding.get("ok"):
+            if calibration_binding.get("startup_calibration_missing"):
+                return startup_calibration_failure_payload(
+                    probe,
+                    calibration_binding.get("calibration") or {},
+                    reason=str(calibration_binding.get("reason") or "startup_calibration_missing"),
+                )
+            return business_foreground_failure_payload(
+                probe,
+                reason=str(calibration_binding.get("reason") or "calibrated_wechat_window_invalid"),
+                activation=calibration_binding,
+            )
+        window = dict(calibration_binding.get("window") or {})
+    else:
+        window = {}
+    if not active_business_action and not probe.get("visible_main_windows"):
         if wechat_main_window_is_tray_hidden(probe):
             return {
                 "ok": False,
@@ -1219,7 +1240,7 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
             "window_probe": probe,
             "error": "No visible WeChat main window was found.",
         }
-    if not passive_probe and len(probe.get("visible_main_windows") or []) != 1:
+    if action == "normalize-window" and len(probe.get("visible_main_windows") or []) != 1:
         return {
             "ok": False,
             "online": False,
@@ -1230,7 +1251,8 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
             "visible_main_count": len(probe.get("visible_main_windows") or []),
             "window_probe": probe,
         }
-    window = select_primary_visible_main_window(probe)
+    if not window:
+        window = select_primary_visible_main_window(probe) or {}
     if not window:
         return {
             "ok": False,
@@ -1253,8 +1275,26 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
         }
 
     probe["passive_probe"] = passive_probe
-    active_window_required = action not in {"status", "capabilities"}
-    if not passive_probe and active_window_required:
+    if action not in {"status", "capabilities", "normalize-window", "calibration-status"}:
+        calibration_state = validate_startup_calibration_state(hwnd)
+        if not calibration_state.get("ok"):
+            return startup_calibration_failure_payload(
+                probe,
+                calibration_state.get("calibration") or {},
+                reason=str(calibration_state.get("reason") or "startup_calibration_missing_or_stale"),
+            )
+    if active_business_action:
+        foreground_activation = activate_calibrated_business_window(hwnd)
+        probe["foreground_activation"] = foreground_activation
+        if not foreground_activation.get("ok"):
+            return business_foreground_failure_payload(
+                probe,
+                reason=str(foreground_activation.get("reason") or "foreground_activation_failed"),
+                activation=foreground_activation,
+            )
+    # v0.9.23 has exactly one geometry owner: the startup normalize action.
+    # C1-C4 must never move, resize, restore, or re-normalize the window.
+    if action == "normalize-window":
         blocking_windows: list[dict[str, Any]] = []
         for candidate in probe.get("visible_windows") or []:
             candidate_hwnd = int(candidate.get("hwnd") or 0)
@@ -1291,7 +1331,7 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
         activate_window(hwnd)
         normalized_window = normalize_wechat_window(
             hwnd,
-            allow_move=str(getattr(args, "window_policy", "normalize") or "normalize") == "normalize",
+            allow_move=True,
         )
         probe["window_normalization"] = normalized_window
         if not normalized_window.get("ok") or not normalized_window.get("enabled", True):
@@ -1360,25 +1400,60 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
         humanized_action_sleep(35, 80)
     if action == "status":
         return status_payload(hwnd, probe, artifact_dir=args.artifact_dir)
+    if action == "calibration-status":
+        calibration_state = validate_startup_calibration_state(hwnd)
+        return {
+            "ok": bool(calibration_state.get("ok")),
+            "online": True,
+            "adapter": "win32_ocr",
+            "state": (
+                "startup_layout_calibration_current"
+                if calibration_state.get("ok")
+                else "startup_layout_calibration_stale"
+            ),
+            "error_code": (
+                ""
+                if calibration_state.get("ok")
+                else win32_ocr_layout.ERROR_STARTUP_CALIBRATION_FAILED
+            ),
+            "reason": str(calibration_state.get("reason") or ""),
+            "startup_layout_calibration": calibration_state.get("calibration") or {},
+            "current": calibration_state.get("current") or {},
+            "screenshot_call_count": 0,
+            "ocr_call_count": 0,
+            "no_clicks_performed": True,
+        }
     if action == "normalize-window":
         normalization = probe.get("window_normalization") if isinstance(probe.get("window_normalization"), dict) else {}
-        ready = bool(normalization.get("ok"))
+        calibration_result = (
+            build_and_store_startup_calibration(hwnd, artifact_dir=args.artifact_dir)
+            if normalization.get("ok")
+            else {}
+        )
+        ready = bool(normalization.get("ok") and calibration_result.get("ok"))
         return {
             "ok": ready,
             "online": ready,
             "adapter": "win32_ocr",
-            "state": "window_normalized" if ready else "window_normalization_failed",
+            "state": "startup_layout_calibrated" if ready else "startup_layout_calibration_failed",
             "error_code": str(
-                normalization.get("error_code")
-                or ("" if ready else win32_ocr_layout.ERROR_WINDOW_NORMALIZATION_FAILED)
+                calibration_result.get("error_code")
+                or normalization.get("error_code")
+                or ("" if ready else win32_ocr_layout.ERROR_STARTUP_CALIBRATION_FAILED)
             ),
-            "reason": str(normalization.get("reason") or ("" if ready else "window_normalization_failed")),
+            "reason": str(
+                calibration_result.get("reason")
+                or normalization.get("reason")
+                or ("" if ready else "startup_layout_calibration_failed")
+            ),
             "window_normalization": normalization,
-            "readiness": {
-                "ok": True,
-                "skipped": True,
-                "reason": "deferred_to_business_action_pre_click_gate",
-            } if ready else {},
+            "startup_layout_calibration": dict(
+                calibration_result.get("startup_layout_calibration") or {}
+            ),
+            "readiness": {"ok": ready, "login_state": "logged_in" if ready else "unknown"},
+            "screenshot_call_count": int(calibration_result.get("screenshot_call_count") or 0),
+            "ocr_call_count": int(calibration_result.get("ocr_call_count") or 0),
+            "no_clicks_performed": True,
             "window_probe": probe,
         }
     if action == "capabilities":
@@ -1814,11 +1889,189 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def use_passive_probe_mode(action: str) -> bool:
-    if action in {"status", "capabilities", "sessions"}:
-        return env_flag("WECHAT_WIN32_OCR_PASSIVE_PROBE", default=True)
-    if not add_friend_route_uses_passive_probe(action):
-        return False
-    return env_flag("WECHAT_WIN32_OCR_PASSIVE_PROBE", default=True)
+    return str(action or "").strip().lower() in PASSIVE_PROBE_ACTIONS
+
+
+def startup_calibration_failure_payload(
+    probe: dict[str, Any],
+    calibration: dict[str, Any],
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "online": True,
+        "adapter": "win32_ocr",
+        "state": "startup_layout_calibration_failed",
+        "error_code": win32_ocr_layout.ERROR_STARTUP_CALIBRATION_FAILED,
+        "reason": str(reason or "startup_calibration_missing_or_stale"),
+        "startup_layout_calibration": dict(calibration or {}),
+        "no_clicks_performed": True,
+        "mouse_call_count": 0,
+        "keyboard_call_count": 0,
+        "clipboard_call_count": 0,
+        "message_fact_created": False,
+        "brain_called": False,
+        "business_handoff_created": False,
+        "window_probe": probe,
+    }
+
+
+def business_foreground_failure_payload(
+    probe: dict[str, Any],
+    *,
+    reason: str,
+    activation: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "online": True,
+        "adapter": "win32_ocr",
+        "state": "wechat_window_not_foreground",
+        "error_code": "WECHAT_WINDOW_NOT_READY",
+        "reason": str(reason or "foreground_activation_failed"),
+        "foreground_activation": dict(activation or {}),
+        "no_clicks_performed": True,
+        "mouse_call_count": 0,
+        "keyboard_call_count": 0,
+        "clipboard_call_count": 0,
+        "message_fact_created": False,
+        "brain_called": False,
+        "business_handoff_created": False,
+        "window_probe": probe,
+    }
+
+
+def calibrated_business_window_binding(probe: dict[str, Any]) -> dict[str, Any]:
+    """Resolve exactly the WeChat HWND persisted by startup calibration.
+
+    This is metadata-only: no screenshot, OCR, focus, restore, move, resize,
+    normalization, or calibration is permitted here.
+    """
+
+    calibration = (
+        win32_ocr_layout.read_startup_layout_calibration(STARTUP_CALIBRATION_PATH)
+        or {}
+    )
+    if not calibration.get("executable"):
+        return {
+            "ok": False,
+            "reason": "startup_calibration_missing",
+            "startup_calibration_missing": True,
+            "calibration": calibration,
+        }
+    target_hwnd = int(calibration.get("hwnd") or 0)
+    target_process_id = int(calibration.get("process_id") or 0)
+    legal_main_windows = [
+        dict(item)
+        for item in (probe.get("main_windows") or [])
+        if isinstance(item, dict) and int(item.get("hwnd") or 0) > 0
+    ]
+    if len(legal_main_windows) != 1:
+        return {
+            "ok": False,
+            "reason": "legal_wechat_main_window_not_unique",
+            "target_hwnd": target_hwnd,
+            "legal_main_count": len(legal_main_windows),
+            "calibration": calibration,
+        }
+    window = legal_main_windows[0]
+    if int(window.get("hwnd") or 0) != target_hwnd:
+        return {
+            "ok": False,
+            "reason": "startup_calibration_hwnd_changed",
+            "target_hwnd": target_hwnd,
+            "actual_hwnd": int(window.get("hwnd") or 0),
+            "calibration": calibration,
+        }
+    if target_process_id and int(window.get("pid") or 0) != target_process_id:
+        return {
+            "ok": False,
+            "reason": "startup_calibration_process_changed",
+            "target_hwnd": target_hwnd,
+            "expected_process_id": target_process_id,
+            "actual_process_id": int(window.get("pid") or 0),
+            "calibration": calibration,
+        }
+    try:
+        if not bool(win32gui.IsWindow(target_hwnd)):
+            return {
+                "ok": False,
+                "reason": "startup_calibration_hwnd_invalid",
+                "target_hwnd": target_hwnd,
+                "calibration": calibration,
+            }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "reason": "startup_calibration_hwnd_probe_failed",
+            "target_hwnd": target_hwnd,
+            "error": repr(exc),
+            "calibration": calibration,
+        }
+    return {
+        "ok": True,
+        "reason": "startup_calibration_window_confirmed",
+        "window": window,
+        "calibration": calibration,
+        "target_hwnd": target_hwnd,
+        "target_process_id": target_process_id,
+    }
+
+
+def activate_calibrated_business_window(hwnd: int) -> dict[str, Any]:
+    """Bring the calibrated HWND forward without UI or geometry actions."""
+
+    before = foreground_window_matches_target(hwnd)
+    events = ["foreground_checked"]
+    if win32_ocr_window_state.foreground_guard_ready(before):
+        return {
+            "ok": True,
+            "reason": "foreground_already_target",
+            "hwnd": int(hwnd),
+            "events": events,
+            "foreground_before": before,
+            "foreground_after": before,
+            "activation_attempted": False,
+        }
+    try:
+        user32 = ctypes.windll.user32
+        minimized = bool(user32.IsIconic(int(hwnd)))
+        visible = bool(user32.IsWindowVisible(int(hwnd)))
+    except Exception as exc:
+        return {
+            "ok": False,
+            "reason": "calibrated_window_state_probe_failed",
+            "hwnd": int(hwnd),
+            "events": events,
+            "foreground_before": before,
+            "error": repr(exc),
+        }
+    if not visible and not minimized:
+        return {
+            "ok": False,
+            "reason": "calibrated_window_not_visible",
+            "hwnd": int(hwnd),
+            "events": events,
+            "foreground_before": before,
+        }
+    activate_window(hwnd, foreground_only=True)
+    events.append("set_foreground_window")
+    after = foreground_window_matches_target(hwnd)
+    events.append("foreground_rechecked")
+    return {
+        "ok": win32_ocr_window_state.foreground_guard_ready(after),
+        "reason": (
+            "foreground_activation_confirmed"
+            if win32_ocr_window_state.foreground_guard_ready(after)
+            else "foreground_activation_not_confirmed"
+        ),
+        "hwnd": int(hwnd),
+        "events": events,
+        "foreground_before": before,
+        "foreground_after": after,
+        "activation_attempted": True,
+    }
 
 
 def scroll_to_latest_before_read_enabled() -> bool:
@@ -2658,6 +2911,10 @@ def sessions_payload(
                 "c2_conversation_type": item.get("c2_conversation_type") or "unknown",
                 "c2_conversation_admission": item.get("c2_conversation_admission") or {},
                 "c2_remark_code_candidates": item.get("c2_remark_code_candidates") or [],
+                "reference_click_point": item.get("reference_click_point") or [],
+                "click_bounds": item.get("click_bounds") or [],
+                "layout_snapshot_id": item.get("layout_snapshot_id") or "",
+                "calibration_id": item.get("calibration_id") or "",
                 "visible_frame_reuse_evidence": item.get(
                     "visible_frame_reuse_evidence"
                 )
@@ -6677,7 +6934,6 @@ def dismiss_voice_transcribe_context_menu(
     menu_bounds: list[int] | None = None,
 ) -> dict[str, Any]:
     try:
-        activate_window(hwnd)
         geometry = get_window_geometry(hwnd)
         before_shot, before_path = capture_wechat(hwnd, artifact_dir=artifact_dir, label=f"{label}_before")
         before_items = run_ocr(before_shot)
@@ -9739,7 +9995,7 @@ def input_text_region_state(
     del geometry
     snapshot = layout_snapshot_for_image(screenshot)
     try:
-        bounds = tuple(win32_ocr_layout.required_region(snapshot, "input_text_bounds"))
+        bounds = tuple(win32_ocr_layout.required_region(snapshot, "input_bounds"))
     except win32_ocr_layout.LayoutSnapshotError as exc:
         return {
             "has_visible_text": False,
@@ -9957,16 +10213,16 @@ def send_button_ready_evidence(
 
     snapshot = layout_snapshot_for_image(screenshot)
     try:
-        input_bounds = win32_ocr_layout.required_region(snapshot, "input_bounds")
+        toolbar_bounds = win32_ocr_layout.required_region(snapshot, "toolbar_bounds")
     except win32_ocr_layout.LayoutSnapshotError:
         return {"ok": False, "reason": "send_ready_layout_unresolved"}
-    input_width = max(1, input_bounds[2] - input_bounds[0])
-    input_height = max(1, input_bounds[3] - input_bounds[1])
-    region_width = max(72, int(input_width * 0.18))
-    left = max(input_bounds[0], input_bounds[2] - region_width)
-    top = input_bounds[1] + int(input_height * 0.45)
-    right = input_bounds[2]
-    bottom = input_bounds[3]
+    toolbar_width = max(1, toolbar_bounds[2] - toolbar_bounds[0])
+    toolbar_height = max(1, toolbar_bounds[3] - toolbar_bounds[1])
+    region_width = max(72, int(toolbar_width * 0.22))
+    left = max(toolbar_bounds[0], toolbar_bounds[2] - region_width)
+    top = toolbar_bounds[1] + int(toolbar_height * 0.05)
+    right = toolbar_bounds[2]
+    bottom = toolbar_bounds[3]
     green_points: list[tuple[int, int]] = []
     try:
         for y in range(top, bottom):
@@ -10298,47 +10554,13 @@ def process_executable_path(pid: int) -> str:
 
 
 def foreground_window_matches_target(hwnd: int) -> dict[str, Any]:
-    def _window_brief(candidate_hwnd: int) -> dict[str, Any]:
-        brief: dict[str, Any] = {"hwnd": int(candidate_hwnd or 0)}
-        if not candidate_hwnd:
-            return brief
-        try:
-            brief["title"] = str(win32gui.GetWindowText(candidate_hwnd) or "")
-        except Exception:
-            brief["title"] = ""
-        try:
-            brief["class_name"] = str(win32gui.GetClassName(candidate_hwnd) or "")
-        except Exception:
-            brief["class_name"] = ""
-        try:
-            pid = int(win32process.GetWindowThreadProcessId(candidate_hwnd)[1] or 0)
-        except Exception:
-            pid = 0
-        brief["pid"] = pid
-        if pid > 0:
-            try:
-                path = process_executable_path(pid)
-            except Exception:
-                path = ""
-            if path:
-                brief["path"] = path
-        return brief
-
     if not hwnd or win32gui is None:
-        return {"ok": True, "reason": "foreground_guard_unavailable"}
+        return {"ok": False, "reason": "foreground_guard_unavailable", "hwnd": int(hwnd or 0)}
     try:
         foreground = int(win32gui.GetForegroundWindow() or 0)
     except Exception as exc:
         return {"ok": False, "reason": "foreground_probe_failed", "error": repr(exc), "hwnd": int(hwnd or 0)}
     if foreground == 0:
-        if allow_unknown_foreground_guard():
-            return {
-                "ok": True,
-                "reason": "foreground_unknown_guard_degraded",
-                "hwnd": int(hwnd),
-                "foreground_hwnd": 0,
-                "foreground_root_hwnd": 0,
-            }
         return {
             "ok": False,
             "reason": "foreground_not_wechat_target",
@@ -10367,8 +10589,6 @@ def foreground_window_matches_target(hwnd: int) -> dict[str, Any]:
         "hwnd": int(hwnd),
         "foreground_hwnd": foreground,
         "foreground_root_hwnd": root,
-        "foreground_window": _window_brief(foreground),
-        "foreground_root_window": _window_brief(root),
     }
 
 
@@ -10457,72 +10677,14 @@ def non_retryable_input_failure(result: dict[str, Any] | None) -> bool:
 
 
 def basic_send_window_guard(hwnd: int) -> dict[str, Any]:
-    try:
-        if not bool(win32gui.IsWindow(hwnd)):
-            return {"ok": False, "reason": "window_handle_invalid"}
-        if not bool(win32gui.IsWindowVisible(hwnd)):
-            return {"ok": False, "reason": "window_not_visible"}
-        geometry = get_window_geometry(hwnd)
-        send_geometry = validate_send_geometry(geometry)
-        if not send_geometry.get("ok"):
-            return {"ok": False, "reason": str(send_geometry.get("reason") or "send_geometry_invalid"), "geometry": geometry}
-        if strict_send_focus_guard_enabled():
-            focus_guard = foreground_window_matches_target(hwnd)
-            if not focus_guard.get("ok"):
-                return {"ok": False, **focus_guard, "geometry": geometry}
-    except Exception as exc:
-        return {"ok": False, "reason": "window_guard_failed", "error": repr(exc)}
-    return {"ok": True, "reason": "window_valid"}
-
-
-def send_window_guard_can_recover_by_activation(guard: dict[str, Any] | None) -> bool:
-    if not isinstance(guard, dict):
-        return False
-    reason = str(guard.get("reason") or "")
-    if reason in {"foreground_not_wechat_target", "foreground_probe_failed"}:
-        return True
-    geometry = guard.get("geometry") if isinstance(guard.get("geometry"), dict) else {}
-    left = int(geometry.get("left") or 0)
-    top = int(geometry.get("top") or 0)
-    width = int(geometry.get("width") or 0)
-    height = int(geometry.get("height") or 0)
-    offscreen_or_minimized = left <= -30000 or top <= -30000 or width <= 200 or height <= 80
-    return reason in {"window_too_small_for_safe_send", "send_geometry_invalid"} and offscreen_or_minimized
+    return foreground_window_matches_target(hwnd)
 
 
 def recover_send_window_guard(hwnd: int, *, max_attempts: int = 1) -> dict[str, Any]:
-    guard = basic_send_window_guard(hwnd)
-    if guard.get("ok"):
-        return guard
-    reason = str(guard.get("reason") or "")
-    if not send_window_guard_can_recover_by_activation(guard):
-        return guard
-    attempts = max(0, int(max_attempts))
-    if attempts <= 0:
-        return guard
-    last_guard = guard
-    for attempt in range(1, attempts + 1):
-        activate_window(hwnd)
-        delay_index = min(
-            attempt - 1,
-            len(SEND_WINDOW_FOCUS_RECOVERY_DELAYS_SECONDS) - 1,
-        )
-        time.sleep(SEND_WINDOW_FOCUS_RECOVERY_DELAYS_SECONDS[delay_index])
-        retry_guard = basic_send_window_guard(hwnd)
-        if retry_guard.get("ok"):
-            return {
-                **retry_guard,
-                "focus_recovered": True,
-                "focus_recovery_attempts": attempt,
-                "focus_recovery_from": reason,
-            }
-        last_guard = retry_guard
-    return {
-        **last_guard,
-        "focus_recovered": False,
-        "focus_recovery_attempts": attempts,
-        "focus_recovery_from": reason,
-    }
+    # Business actions must never steal focus or move/restore WeChat.  Keep
+    # the compatibility name so callers share one foreground-only boundary.
+    _ = max_attempts
+    return basic_send_window_guard(hwnd)
 
 
 def paste_text_in_chunks_with_humanized_pacing(text: str, settings: dict[str, Any]) -> dict[str, Any]:
@@ -10628,10 +10790,6 @@ def paste_text_with_confirmation(
             input_method = "clipboard_chunks"
     for attempt, mode in enumerate(attempts, start=1):
         timing["attempts_observed"] = attempt
-        activate_started = _sidecar_timing_start(timing, "activate_input_window")
-        activate_window(hwnd)
-        time.sleep(random.uniform(0.08, 0.18))
-        _sidecar_timing_finish(timing, "activate_input_window", activate_started)
         focus_guard_started = _sidecar_timing_start(timing, "focus_guard_before_input")
         focus_guard = recover_send_window_guard(hwnd, max_attempts=1)
         _sidecar_timing_finish(timing, "focus_guard_before_input", focus_guard_started)
@@ -11833,12 +11991,42 @@ def send_with_visual_input(
     before_send_trigger_check: Any | None = None,
     action_journal_path: str = "",
 ) -> dict[str, Any]:
+    locator = locate_visual_send_input(
+        before_input_region_seed=before_input_region_seed,
+    )
+    if locator.get("ok"):
+        snapshot = current_layout_snapshot(hwnd) or {}
+        try:
+            mapped_input = win32_ocr_layout.map_reference_region_point(
+                snapshot, "input_focus"
+            )
+            input_bounds = win32_ocr_layout.required_region(snapshot, "input_bounds")
+            point = [int(value) for value in mapped_input["image_point"]]
+            locator["input_point"] = tuple(point)
+            locator["input_click_evidence"] = {
+                "ok": True,
+                "reason": "startup_calibration_input_bounds",
+                "point": point,
+                "click_bounds": input_bounds,
+                "calibration_id": str(mapped_input.get("calibration_id") or ""),
+            }
+            locator["input_click"] = {
+                "ok": True,
+                "reason": "startup_calibration_input_reference",
+                "point": point,
+                "bounds": input_bounds,
+            }
+        except win32_ocr_layout.LayoutSnapshotError as exc:
+            locator = {
+                "ok": False,
+                "reason": exc.reason,
+                "error_code": win32_ocr_layout.ERROR_COORDINATE_MAPPING_INVALID,
+                "physical_send_triggered": False,
+            }
     return execute_send_transaction(
         hwnd,
         text,
-        locator=locate_visual_send_input(
-            before_input_region_seed=before_input_region_seed,
-        ),
+        locator=locator,
         geometry=geometry,
         settings=settings,
         artifact_dir=artifact_dir,
@@ -12084,15 +12272,19 @@ def activate_session_candidate(
     # Session rows are parsed from screenshot/OCR coordinates. Use the same
     # window-image click path as search-result activation to avoid client
     # coordinate drift on Windows DPI / scaled WeChat windows.
-    human_window_image_click(
+    click_result = human_window_image_click(
         hwnd,
         click_x,
         click_y,
         bounds=session_bounds,
         expected_snapshot_id=snapshot_id,
     )
-    timing["ui_click_performed"] = True
+    timing["ui_click_performed"] = bool(click_result.get("ok"))
+    timing["activation_click_result"] = click_result
     _sidecar_timing_finish(timing, "activation_click", click_started)
+    if not click_result.get("ok"):
+        timing["reason"] = "session_click_failed"
+        return finish(False)
     for attempt in range(target_switch_passive_confirm_attempts()):
         timing["activation_confirm_attempts_observed"] = attempt + 1
         if attempt == 0:
@@ -12758,44 +12950,29 @@ def sidebar_search_input_target_from_ocr(
     width, height = image_size
     if width <= 0 or height <= 0:
         return None
-    active_geometry = geometry if isinstance(geometry, dict) else {"width": width, "height": height}
+    del ocr_items, geometry
     try:
         header_bounds = win32_ocr_layout.required_region(layout_snapshot, "sidebar_header_bounds")
+        mapped = win32_ocr_layout.map_reference_region_point(
+            layout_snapshot or {}, "sidebar_search"
+        )
     except win32_ocr_layout.LayoutSnapshotError:
         return None
-    split_x = header_bounds[2]
-    header_left = header_bounds[0]
-    header_top = header_bounds[1]
-    header_bottom = header_bounds[3]
-    expected_x = header_left + int((split_x - header_left) * 0.40)
-    expected_y = header_top + int((header_bottom - header_top) * 0.50)
-    candidates = []
-    for item in ocr_items or []:
-        center_x = float(item.get("center_x") or 0)
-        center_y = float(item.get("center_y") or 0)
-        text = voice_transcribe_compact_text(item.get("text"))
-        if not (header_left <= center_x <= split_x - 12 and header_top <= center_y <= header_bottom):
-            continue
-        if text in {"+", "＋"}:
-            continue
-        candidates.append((abs(center_x - expected_x) + abs(center_y - expected_y) * 2.0, item))
-    if not candidates:
-        return None
-    _, item = min(candidates, key=lambda entry: entry[0])
-    center_y = int(float(item.get("center_y") or expected_y))
+    point = [int(value) for value in mapped["image_point"]]
+    header_left, header_top, header_right, header_bottom = header_bounds
     bounds = [
-        max(header_left, int(float(item.get("left") or expected_x)) - 34),
-        max(header_top, int(float(item.get("top") or center_y)) - 12),
-        min(split_x - 12, max(int(float(item.get("right") or expected_x)) + 58, expected_x + 46)),
-        min(header_bottom, int(float(item.get("bottom") or center_y)) + 12),
+        header_left,
+        header_top,
+        max(header_left + 1, header_right - max(44, int((header_right - header_left) * 0.14))),
+        header_bottom,
     ]
-    if bounds[2] - bounds[0] < 54 or bounds[3] - bounds[1] < 18:
+    if not win32_ocr_layout.point_in_bounds(point, bounds):
         return None
     return {
-        "point": [min(max(expected_x, bounds[0] + 8), bounds[2] - 8), (bounds[1] + bounds[3]) // 2],
+        "point": point,
         "bounds": bounds,
-        "source": "fresh_ocr_sidebar_search_input",
-        "ocr_text": str(item.get("text") or ""),
+        "source": "startup_calibration_sidebar_search_reference",
+        "calibration_id": str(mapped.get("calibration_id") or ""),
     }
 
 
@@ -12858,7 +13035,7 @@ def dismiss_sidebar_search_state(
         )
         if not blank_target:
             return {**result, "ok": False, "reason": "safe_header_blank_target_not_found", "search_target": search_target}
-        human_window_image_click_in_bounds(
+        blank_click = human_window_image_click_in_bounds(
             hwnd,
             int(blank_target["point"][0]),
             int(blank_target["point"][1]),
@@ -12868,6 +13045,15 @@ def dismiss_sidebar_search_state(
                 (layout_snapshot_for_image(cleared_shot) or {}).get("layout_snapshot_id") or ""
             ),
         )
+        if not blank_click.get("ok"):
+            return {
+                **result,
+                "ok": False,
+                "reason": "sidebar_search_dismiss_header_blank_click_failed",
+                "click": blank_click,
+                "search_target": search_target,
+                "blank_target": blank_target,
+            }
         result["search_target"] = search_target
         result["blank_target"] = blank_target
         humanized_action_sleep(620, 1400)
@@ -13701,11 +13887,13 @@ def search_result_contact_candidates_matching_remark_code(
             min(left_panel_right, max(int(right) + 150, int(left) + 210)),
             min(panel[3], max(int(bottom) + 22, int(top) + 62)),
         ]
-        click_points = [
-            [bounded_int(text_center_x, default=190, minimum=bounds[0] + 12, maximum=bounds[2] - 12), int(center_y)],
-            [bounded_int(int(right) + 24, default=text_center_x, minimum=bounds[0] + 12, maximum=bounds[2] - 12), int(center_y)],
-            [bounded_int(int(left) + 56, default=text_center_x, minimum=bounds[0] + 12, maximum=bounds[2] - 12), int(center_y)],
-        ]
+        try:
+            mapped_row = win32_ocr_layout.map_reference_region_point(
+                layout_snapshot or {}, "session_row_x", dynamic_axis_value=int(center_y)
+            )
+            click_points = [list(mapped_row["image_point"])]
+        except win32_ocr_layout.LayoutSnapshotError:
+            click_points = []
         matches.append(
             {
                 "name": name,
@@ -13812,11 +14000,13 @@ def fallback_first_search_contact_candidate(
     ]
     center_y = int((bounds[1] + bounds[3]) / 2)
     text_center_x = int((left + right) / 2)
-    click_points = [
-        [bounded_int(text_center_x, default=190, minimum=bounds[0] + 12, maximum=bounds[2] - 12), center_y],
-        [bounded_int(int(left) + 58, default=text_center_x, minimum=bounds[0] + 12, maximum=bounds[2] - 12), center_y],
-        [bounded_int(int(right) + 24, default=text_center_x, minimum=bounds[0] + 12, maximum=bounds[2] - 12), center_y],
-    ]
+    try:
+        mapped_row = win32_ocr_layout.map_reference_region_point(
+            layout_snapshot or {}, "session_row_x", dynamic_axis_value=center_y
+        )
+        click_points = [list(mapped_row["image_point"])]
+    except win32_ocr_layout.LayoutSnapshotError:
+        return None
     return {
         "name": name,
         "raw_title": raw_title,
@@ -13978,7 +14168,7 @@ def activate_search_result_candidate(
             int(float(candidate.get("right") or 0)),
             int(float(candidate.get("bottom") or 0)),
         ]
-    human_window_image_click_in_bounds(
+    click_result = human_window_image_click_in_bounds(
         hwnd,
         x,
         y,
@@ -13987,6 +14177,15 @@ def activate_search_result_candidate(
         expected_snapshot_id=str(candidate.get("layout_snapshot_id") or ""),
     )
     _sidecar_timing_finish(timing, "search_result_click", click_started)
+    attempts.append({"point": [x, y], "click_method": "human_window_image_click", "click": click_result})
+    if not click_result.get("ok"):
+        return finish(
+            False,
+            "search_result_candidate_click_failed",
+            error_code=str(click_result.get("error_code") or "WECHAT_UI_CLICK_FAILED"),
+            click=click_result,
+            validation_skipped=True,
+        )
     last_validation: dict[str, Any] = {}
     for verification_index in range(2):
         humanized_action_sleep(520, 1050)
@@ -13998,7 +14197,7 @@ def activate_search_result_candidate(
         last_validation = validation
         attempts.append({
             "point": [x, y],
-            "click_method": "human_window_image_click" if verification_index == 0 else "passive_recheck",
+            "click_method": "post_click_validation" if verification_index == 0 else "passive_recheck",
             "validation": validation,
         })
         if c2_target_activation_confirmed(validation):
@@ -16721,7 +16920,6 @@ def scroll_chat_history(hwnd: int, load_times: int, *, wheel_units: int = 8, del
             "wheel_units": int(wheel_units or 0),
         },
     )
-    activate_window(hwnd)
     ensure_left_button_released()
     win32api.SetCursorPos((screen_x, screen_y))
     invalidate_layout_snapshot(hwnd, reason="scroll_started")
@@ -16756,7 +16954,6 @@ def scroll_chat_to_latest(hwnd: int, *, attempts: int = 16) -> None:
             "layout_snapshot_id": snapshot_id,
         },
     )
-    activate_window(hwnd)
     ensure_left_button_released()
     win32api.SetCursorPos((screen_x, screen_y))
     invalidate_layout_snapshot(hwnd, reason="scroll_started")
@@ -16804,10 +17001,39 @@ def _register_layout_snapshot(
         }
         required_region_names = win32_ocr_layout.POPUP_LAYOUT_REGION_NAMES
         surface_kind = "popup"
+        calibration: dict[str, Any] = {}
     else:
-        layout = win32_ocr_layout.build_structural_layout_regions(image)
+        calibration = (
+            win32_ocr_layout.read_startup_layout_calibration(STARTUP_CALIBRATION_PATH)
+            or {}
+        )
+        current_process_id = 0
+        try:
+            current_process_id = int(win32process.GetWindowThreadProcessId(int(hwnd))[1] or 0)
+        except Exception:
+            current_process_id = 0
+        current_dpi = window_dpi_scale(hwnd)
+        calibration_matches = bool(
+            calibration.get("executable")
+            and int(calibration.get("hwnd") or 0) == int(hwnd)
+            and int(calibration.get("process_id") or 0) == current_process_id
+            and int(calibration.get("image_width") or 0) == int(image_size[0] or 0)
+            and int(calibration.get("image_height") or 0) == int(image_size[1] or 0)
+            and abs(float(calibration.get("dpi_scale") or 0.0) - current_dpi) <= 0.01
+        )
+        layout = {
+            "ok": calibration_matches,
+            "regions": {
+                name: list(calibration.get(name) or [])
+                for name in win32_ocr_layout.REQUIRED_LAYOUT_REGION_NAMES
+            },
+            "anchors": list(calibration.get("anchors") or []),
+            "confidence": float(calibration.get("confidence") or 0.0),
+            "conflicts": [] if calibration_matches else ["startup_calibration_missing_or_stale"],
+            "vertical_candidates": [],
+        }
         required_region_names = win32_ocr_layout.REQUIRED_LAYOUT_REGION_NAMES
-        surface_kind = "wechat_main"
+        surface_kind = "wechat_main_business_frame"
     screen_profile = screen_work_area(hwnd)
     window_structure = str(os.getenv("WECHAT_WIN32_OCR_WINDOW_STRUCTURE") or "").strip()
     if not window_structure and win32gui is not None:
@@ -16851,8 +17077,11 @@ def _register_layout_snapshot(
         "conflicts": list(layout.get("conflicts") or []),
         "vertical_candidates": list(layout.get("vertical_candidates") or []),
     }
-    snapshot["compatibility"] = {
-        "mode": "dynamic_layout_only",
+    snapshot["calibration_id"] = str(calibration.get("calibration_id") or "")
+    snapshot["coordinate_map"] = {
+        "owner": "omniauto",
+        "calibration_schema_version": str(calibration.get("schema_version") or ""),
+        "reference_map_revision": str(calibration.get("reference_map_revision") or ""),
         "device_profile": device_profile,
     }
     previous_id = _LATEST_LAYOUT_SNAPSHOT_BY_HWND.get(int(hwnd))
@@ -16882,57 +17111,10 @@ def finalize_add_friend_entry_layout_snapshot(
     image: Any,
     items: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
-    """Finalize the current frame with only add-friend entry requirements."""
+    """Return the existing business frame; startup owns global regions."""
 
-    snapshot_id = _LAYOUT_SNAPSHOT_ID_BY_IMAGE_ID.get(id(image))
-    existing = _LAYOUT_SNAPSHOT_STORE.get(snapshot_id or "")
-    if existing is None or bool(existing.get("invalidated")):
-        return None
-    layout = win32_ocr_layout.build_add_friend_entry_layout_regions(
-        image,
-        search_anchor_items=_sidebar_search_semantic_candidates(items),
-    )
-    completed = win32_ocr_layout.build_layout_snapshot(
-        hwnd=int(existing.get("hwnd") or 0),
-        frame_id=str(existing.get("frame_id") or ""),
-        capture_mode=str(existing.get("capture_mode") or ""),
-        image_size=(
-            int(existing.get("image_width") or 0),
-            int(existing.get("image_height") or 0),
-        ),
-        capture_screen_origin=existing.get("capture_screen_origin"),
-        window_rect=existing.get("window_rect"),
-        client_rect=existing.get("client_rect"),
-        client_screen_origin=existing.get("client_screen_origin"),
-        dpi_scale=float(existing.get("dpi_scale") or 1.0),
-        regions=layout.get("regions") or {},
-        anchors=layout.get("anchors") or [],
-        confidence=float(layout.get("confidence") or 0.0),
-        conflicts=list(layout.get("conflicts") or []),
-        executable=bool(layout.get("ok")),
-        screenshot_path=str(existing.get("screenshot_path") or ""),
-        surface_kind="wechat_main_add_friend_entry",
-        required_region_names=win32_ocr_layout.ADD_FRIEND_ENTRY_LAYOUT_REGION_NAMES,
-    )
-    completed["layout_builder"] = {
-        "ok": bool(layout.get("ok")),
-        "confidence": float(layout.get("confidence") or 0.0),
-        "conflicts": list(layout.get("conflicts") or []),
-        "vertical_candidates": list(layout.get("vertical_candidates") or []),
-    }
-    completed["compatibility"] = dict(existing.get("compatibility") or {})
-    _LAYOUT_SNAPSHOT_STORE.invalidate(
-        str(existing.get("layout_snapshot_id") or ""),
-        reason="add_friend_action_layout_finalized",
-    )
-    _LAYOUT_SNAPSHOT_STORE.put(completed)
-    _LATEST_LAYOUT_SNAPSHOT_BY_HWND[int(completed.get("hwnd") or 0)] = str(
-        completed.get("layout_snapshot_id") or ""
-    )
-    _LAYOUT_SNAPSHOT_ID_BY_IMAGE_ID[id(image)] = str(
-        completed.get("layout_snapshot_id") or ""
-    )
-    return _LAYOUT_SNAPSHOT_STORE.get(str(completed.get("layout_snapshot_id") or ""))
+    del items
+    return layout_snapshot_for_image(image)
 
 
 def _sidebar_search_semantic_candidates(
@@ -16967,78 +17149,9 @@ def _sidebar_search_semantic_candidates(
 
 
 def _finalize_layout_snapshot_ocr_anchors(image: Any, items: list[dict[str, Any]]) -> None:
-    snapshot_id = _LAYOUT_SNAPSHOT_ID_BY_IMAGE_ID.get(id(image))
-    if not snapshot_id:
-        return
-    existing = _LAYOUT_SNAPSHOT_STORE.get(snapshot_id)
-    if existing is None or bool(existing.get("invalidated")):
-        return
-    if str(existing.get("surface_kind") or "") != "wechat_main":
-        return
-    search_anchor_items = _sidebar_search_semantic_candidates(items)
-    layout = win32_ocr_layout.build_structural_layout_regions(
-        image,
-        ocr_items=items,
-        search_anchor_items=search_anchor_items,
-    )
-    anchors: list[dict[str, Any]] = list(layout.get("anchors") or [])
-    for item in items or []:
-        if not isinstance(item, dict):
-            continue
-        text = str(item.get("text") or "").strip()
-        if not text or not any(token in text for token in ("搜索", "发送", "确定", "备注", "添加朋友")):
-            continue
-        anchors.append(
-            {
-                "name": "ocr_anchor",
-                "text": text,
-                "bounds": [
-                    int(float(item.get("left") or 0)),
-                    int(float(item.get("top") or 0)),
-                    int(float(item.get("right") or 0)),
-                    int(float(item.get("bottom") or 0)),
-                ],
-                "confidence": float(item.get("confidence") or 0.0),
-            }
-        )
-    completed = win32_ocr_layout.build_layout_snapshot(
-        hwnd=int(existing.get("hwnd") or 0),
-        frame_id=str(existing.get("frame_id") or ""),
-        capture_mode=str(existing.get("capture_mode") or ""),
-        image_size=(
-            int(existing.get("image_width") or 0),
-            int(existing.get("image_height") or 0),
-        ),
-        capture_screen_origin=existing.get("capture_screen_origin"),
-        window_rect=existing.get("window_rect"),
-        client_rect=existing.get("client_rect"),
-        client_screen_origin=existing.get("client_screen_origin"),
-        dpi_scale=float(existing.get("dpi_scale") or 1.0),
-        regions=layout.get("regions") or {},
-        anchors=anchors,
-        confidence=float(layout.get("confidence") or 0.0),
-        conflicts=list(layout.get("conflicts") or []),
-        executable=bool(layout.get("ok")),
-        screenshot_path=str(existing.get("screenshot_path") or ""),
-        surface_kind="wechat_main",
-        required_region_names=win32_ocr_layout.REQUIRED_LAYOUT_REGION_NAMES,
-    )
-    completed["layout_builder"] = {
-        "ok": bool(layout.get("ok")),
-        "confidence": float(layout.get("confidence") or 0.0),
-        "conflicts": list(layout.get("conflicts") or []),
-        "vertical_candidates": list(layout.get("vertical_candidates") or []),
-        "source": "current_frame_pixels_plus_0_9_20_search_anchor",
-    }
-    completed["compatibility"] = dict(existing.get("compatibility") or {})
-    _LAYOUT_SNAPSHOT_STORE.invalidate(
-        str(existing.get("layout_snapshot_id") or ""),
-        reason="current_frame_ocr_layout_finalized",
-    )
-    _LAYOUT_SNAPSHOT_STORE.put(completed)
-    completed_id = str(completed.get("layout_snapshot_id") or "")
-    _LATEST_LAYOUT_SNAPSHOT_BY_HWND[int(completed.get("hwnd") or 0)] = completed_id
-    _LAYOUT_SNAPSHOT_ID_BY_IMAGE_ID[id(image)] = completed_id
+    # OCR on a business frame locates dynamic content only. It must never
+    # rebuild the startup shell regions or replace calibration_id.
+    del image, items
 
 
 def layout_snapshot_metadata(hwnd: int) -> dict[str, Any]:
@@ -17099,70 +17212,14 @@ def _current_click_snapshot(hwnd: int, *, expected_snapshot_id: str = "") -> tup
             "layout_snapshot_id": str(snapshot.get("layout_snapshot_id") or ""),
             "conflicts": list(snapshot.get("conflicts") or []),
         }
-    if not win32_ocr_layout.current_geometry_matches(
-        snapshot,
-        geometry_provider=get_window_geometry,
-        client_geometry_provider=get_window_client_geometry,
-        dpi_provider=window_dpi_scale,
-    ):
-        invalidate_layout_snapshot(hwnd, reason="window_geometry_changed_before_click")
+    foreground = foreground_window_matches_target(hwnd)
+    if not foreground.get("ok"):
         return None, {
             "ok": False,
-            "error_code": win32_ocr_layout.ERROR_LAYOUT_STALE,
-            "reason": "window_geometry_changed_before_click",
+            "error_code": "WECHAT_FOREGROUND_TARGET_MISMATCH",
+            "reason": str(foreground.get("reason") or "foreground_not_wechat_target"),
             "layout_snapshot_id": str(snapshot.get("layout_snapshot_id") or ""),
-        }
-    current_window = get_window_geometry(hwnd)
-    current_client = get_window_client_geometry(hwnd)
-    capture_mode = str(snapshot.get("capture_mode") or "")
-    current_capture_origin = None
-    if capture_mode == win32_ocr_layout.CAPTURE_MODE_WINDOW_VISIBLE_SCREEN:
-        expected_size = (
-            int(current_window.get("right") or 0) - int(current_window.get("left") or 0),
-            int(current_window.get("bottom") or 0) - int(current_window.get("top") or 0),
-        )
-        image_size = (
-            int(snapshot.get("image_width") or 0),
-            int(snapshot.get("image_height") or 0),
-        )
-        if image_size != expected_size:
-            current_capture_origin = None
-        else:
-            current_capture_origin = [
-                int(current_window.get("left") or 0),
-                int(current_window.get("top") or 0),
-            ]
-    elif capture_mode == win32_ocr_layout.CAPTURE_MODE_CLIENT_AREA:
-        if current_client.get("screen_left") is not None and current_client.get("screen_top") is not None:
-            current_capture_origin = [
-                int(current_client.get("screen_left") or 0),
-                int(current_client.get("screen_top") or 0),
-            ]
-    else:
-        current_capture_origin = snapshot.get("capture_screen_origin")
-    current_client_origin = None
-    if current_client.get("screen_left") is not None and current_client.get("screen_top") is not None:
-        current_client_origin = [
-            int(current_client.get("screen_left") or 0),
-            int(current_client.get("screen_top") or 0),
-        ]
-    if not win32_ocr_layout.snapshot_matches_current(
-        snapshot,
-        hwnd=hwnd,
-        window_rect=current_window,
-        client_rect=current_client,
-        dpi_scale=window_dpi_scale(hwnd),
-        image_size=(snapshot.get("image_width"), snapshot.get("image_height")),
-        capture_mode=capture_mode,
-        capture_screen_origin=current_capture_origin,
-        client_screen_origin=current_client_origin,
-    ):
-        invalidate_layout_snapshot(hwnd, reason="capture_mapping_changed_before_click")
-        return None, {
-            "ok": False,
-            "error_code": win32_ocr_layout.ERROR_LAYOUT_STALE,
-            "reason": "capture_mapping_changed_before_click",
-            "layout_snapshot_id": str(snapshot.get("layout_snapshot_id") or ""),
+            "foreground": foreground,
         }
     return snapshot, None
 
@@ -17230,35 +17287,23 @@ def _map_window_image_target(
 
 
 def capture_wechat(hwnd: int, *, artifact_dir: str | None = None, label: str = "wechat") -> tuple[Any, str]:
-    geometry = get_window_geometry(hwnd)
+    client_geometry = get_window_client_geometry(hwnd)
     rect = (
-        int(geometry.get("left") or 0),
-        int(geometry.get("top") or 0),
-        int(geometry.get("right") or 0),
-        int(geometry.get("bottom") or 0),
+        int(client_geometry.get("screen_left") or 0),
+        int(client_geometry.get("screen_top") or 0),
+        int(client_geometry.get("screen_left") or 0) + int(client_geometry.get("width") or 0),
+        int(client_geometry.get("screen_top") or 0) + int(client_geometry.get("height") or 0),
     )
     image = try_image_grab(rect)
-    capture_mode = win32_ocr_layout.CAPTURE_MODE_WINDOW_VISIBLE_SCREEN
+    capture_mode = win32_ocr_layout.CAPTURE_MODE_CLIENT_AREA
     expected_size = (max(0, rect[2] - rect[0]), max(0, rect[3] - rect[1]))
     capture_origin: list[int] | None = (
         [rect[0], rect[1]]
         if image is not None and tuple(getattr(image, "size", (0, 0))[:2]) == expected_size
         else None
     )
-    if image is None:
-        image = capture_window_image(hwnd)
-        capture_mode = win32_ocr_layout.CAPTURE_MODE_PRINT_WINDOW
-    if image is None:
-        candidates = capture_window_by_rect(hwnd)
-        if not candidates:
-            raise RuntimeError("capture_wechat_failed: no screenshot candidate is available")
-        image = win32_ocr_capture.select_best_capture_candidate(candidates, score=image_information_score)
-        capture_mode = win32_ocr_layout.CAPTURE_MODE_WINDOW_VISIBLE_SCREEN
-        capture_origin = (
-            [rect[0], rect[1]]
-            if tuple(getattr(image, "size", (0, 0))[:2]) == expected_size
-            else None
-        )
+    if image is None or tuple(getattr(image, "size", (0, 0))[:2]) != expected_size:
+        raise RuntimeError("capture_wechat_failed: exact visible client-area capture unavailable")
     saved = save_screenshot_artifact(image, artifact_dir=artifact_dir, label=label)
     _register_layout_snapshot(
         hwnd,
@@ -17268,6 +17313,116 @@ def capture_wechat(hwnd: int, *, artifact_dir: str | None = None, label: str = "
         capture_screen_origin=capture_origin,
     )
     return image, saved
+
+
+def build_and_store_startup_calibration(
+    hwnd: int,
+    *,
+    artifact_dir: str | None = None,
+) -> dict[str, Any]:
+    """Capture one exact client frame and build the sole v0.9.23 shell map."""
+
+    client_geometry = get_window_client_geometry(hwnd)
+    origin = [
+        int(client_geometry.get("screen_left") or 0),
+        int(client_geometry.get("screen_top") or 0),
+    ]
+    width = int(client_geometry.get("width") or 0)
+    height = int(client_geometry.get("height") or 0)
+    rect = (origin[0], origin[1], origin[0] + width, origin[1] + height)
+    image = try_image_grab(rect)
+    if image is None or tuple(getattr(image, "size", (0, 0))[:2]) != (width, height):
+        return {
+            "ok": False,
+            "error_code": win32_ocr_layout.ERROR_STARTUP_CALIBRATION_FAILED,
+            "reason": "exact_visible_client_capture_unavailable",
+            "no_clicks_performed": True,
+        }
+    screenshot_path = save_screenshot_artifact(
+        image,
+        artifact_dir=artifact_dir,
+        label="startup_layout_calibration",
+    )
+    enhanced = ImageEnhance.Contrast(image.convert("RGB")).enhance(1.35)
+    global _OCR_ENGINE
+    ocr_items, _OCR_ENGINE = win32_ocr_engine.run_ocr_with_cache(
+        enhanced,
+        engine_factory=RapidOCR,
+        engine=_OCR_ENGINE,
+        import_error=_OCR_IMPORT_ERROR,
+        min_confidence=OCR_MIN_CONFIDENCE,
+    )
+    try:
+        process_id = int(win32process.GetWindowThreadProcessId(int(hwnd))[1] or 0)
+    except Exception:
+        process_id = 0
+    calibration = win32_ocr_layout.build_startup_layout_calibration(
+        hwnd=int(hwnd),
+        process_id=process_id,
+        image=image,
+        ocr_items=ocr_items,
+        window_rect=get_window_geometry(hwnd),
+        client_rect=client_geometry,
+        client_screen_origin=origin,
+        dpi_scale=window_dpi_scale(hwnd),
+        capture_mode=win32_ocr_layout.CAPTURE_MODE_CLIENT_AREA,
+        screenshot_path=screenshot_path,
+    )
+    win32_ocr_layout.write_startup_layout_calibration(
+        STARTUP_CALIBRATION_PATH,
+        calibration,
+    )
+    return {
+        "ok": bool(calibration.get("executable")),
+        "error_code": str(calibration.get("error_code") or ""),
+        "reason": "startup_layout_calibrated" if calibration.get("executable") else "startup_layout_unresolved",
+        "startup_layout_calibration": calibration,
+        "ocr_call_count": 1,
+        "screenshot_call_count": 1,
+        "no_clicks_performed": True,
+    }
+
+
+def validate_startup_calibration_state(hwnd: int) -> dict[str, Any]:
+    calibration = (
+        win32_ocr_layout.read_startup_layout_calibration(STARTUP_CALIBRATION_PATH)
+        or {}
+    )
+    if not calibration.get("executable"):
+        return {"ok": False, "reason": "startup_calibration_missing", "calibration": calibration}
+    try:
+        process_id = int(win32process.GetWindowThreadProcessId(int(hwnd))[1] or 0)
+    except Exception:
+        process_id = 0
+    client = get_window_client_geometry(hwnd)
+    window = get_window_geometry(hwnd)
+    current = {
+        "hwnd": int(hwnd),
+        "process_id": process_id,
+        "client_width": int(client.get("width") or 0),
+        "client_height": int(client.get("height") or 0),
+        "dpi_scale": window_dpi_scale(hwnd),
+        "window_rect": win32_ocr_layout.normalize_rect(window),
+    }
+    expected_client = calibration.get("client_rect") or []
+    expected_width, expected_height = win32_ocr_layout.rect_size(expected_client)
+    # get_window_client_geometry is represented as width/height in production;
+    # calibration stores a normalized rect for contract transport.
+    matches = bool(
+        int(calibration.get("hwnd") or 0) == current["hwnd"]
+        and int(calibration.get("process_id") or 0) == process_id
+        and int(calibration.get("image_width") or 0) == current["client_width"]
+        and int(calibration.get("image_height") or 0) == current["client_height"]
+        and abs(float(calibration.get("dpi_scale") or 0.0) - float(current["dpi_scale"])) <= 0.01
+        and list(calibration.get("window_rect") or []) == current["window_rect"]
+    )
+    del expected_width, expected_height
+    return {
+        "ok": matches,
+        "reason": "startup_calibration_current" if matches else "startup_calibration_state_changed",
+        "calibration": calibration,
+        "current": current,
+    }
 
 
 def capture_visible_screen(
@@ -17299,6 +17454,11 @@ def capture_wechat_window_visible_screen(
     label: str = "wechat_window_visible",
     popup_window: bool = False,
 ) -> tuple[Any, str]:
+    if not popup_window:
+        # Main-window business frames share the startup calibration's exact
+        # visible client-area coordinate system. Including the title bar here
+        # would make every valid calibration appear 30-50 px stale.
+        return capture_wechat(hwnd, artifact_dir=artifact_dir, label=label)
     rect = win32gui.GetWindowRect(hwnd)
     image = try_image_grab((int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])))
     if image is None:
@@ -17626,6 +17786,19 @@ def parse_sessions_from_ocr(
         split_x=split_x,
         session_list_bounds=session_bounds,
     )
+    try:
+        mapped_row = win32_ocr_layout.map_reference_region_point(
+            snapshot, "session_row_x"
+        )
+        reference_x = int(mapped_row["image_point"][0])
+    except win32_ocr_layout.LayoutSnapshotError:
+        return []
+    for session in sessions:
+        session["reference_click_point"] = [
+            reference_x,
+            int(float(session.get("center_y") or 0)),
+        ]
+        session["calibration_id"] = str(snapshot.get("calibration_id") or "")
     return sessions
 
 
@@ -18652,12 +18825,20 @@ def focus_wechat_window(probe: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def activate_window(hwnd: int) -> None:
+def activate_window(hwnd: int, *, foreground_only: bool = False) -> None:
     if not hwnd:
         return
     activation_settings = win32_ocr_window_state.activate_window_settings(
-        aggressive_focus=env_flag("WECHAT_WIN32_OCR_AGGRESSIVE_FOCUS", default=False),
-        attach_thread_input=env_flag("WECHAT_WIN32_OCR_ATTACH_THREAD_INPUT", default=False),
+        aggressive_focus=(
+            False
+            if foreground_only
+            else env_flag("WECHAT_WIN32_OCR_AGGRESSIVE_FOCUS", default=False)
+        ),
+        attach_thread_input=(
+            False
+            if foreground_only
+            else env_flag("WECHAT_WIN32_OCR_ATTACH_THREAD_INPUT", default=False)
+        ),
         debounce_seconds=env_float("WECHAT_WIN32_OCR_ACTIVATE_DEBOUNCE_SECONDS", 2.5),
     )
     def reject_unmapped_focus_click(_x: int, _y: int) -> None:
@@ -18772,7 +18953,6 @@ def human_window_image_hover(hwnd: int, x: int, y: int, *, expected_snapshot_id:
             "layout_snapshot_id": mapped.get("layout_snapshot_id"),
         },
     )
-    activate_window(hwnd)
     ensure_left_button_released()
     try:
         result = human_screen_hover(screen_x, screen_y, action_name="human_window_image_hover")
@@ -18804,7 +18984,7 @@ def human_window_image_click(
     *,
     bounds: list[int] | None = None,
     expected_snapshot_id: str = "",
-) -> None:
+) -> dict[str, Any]:
     """Click a point measured in the same coordinate space as screenshots."""
     if not isinstance(bounds, list) or len(bounds) < 4:
         raise RuntimeError(f"{win32_ocr_layout.ERROR_COORDINATE_MAPPING_INVALID}:target_bounds_missing")
@@ -18832,7 +19012,6 @@ def human_window_image_click(
         },
     )
     invalidate_layout_snapshot(hwnd, reason="physical_click_started")
-    activate_window(hwnd)
     ensure_left_button_released()
     result = human_screen_click_in_bounds(
         screen_x,
@@ -18842,6 +19021,14 @@ def human_window_image_click(
     )
     if not result.get("ok"):
         raise RuntimeError(str(result.get("error") or "bounded_screen_click_failed"))
+    return {
+        "ok": True,
+        "image_point": [int(click_x), int(click_y)],
+        "screen_point": [int(screen_x), int(screen_y)],
+        "screen_bounds": list(mapped["screen_bounds"]),
+        "layout_snapshot_id": str(mapped.get("layout_snapshot_id") or ""),
+        "frame_id": str(mapped.get("frame_id") or ""),
+    }
 
 
 def human_window_image_click_in_bounds(
@@ -18881,7 +19068,6 @@ def human_window_image_click_in_bounds(
     )
     if not preserve_layout_snapshot:
         invalidate_layout_snapshot(hwnd, reason="physical_click_started")
-    activate_window(hwnd)
     ensure_left_button_released()
     try:
         result = human_screen_click_in_bounds(
@@ -18953,7 +19139,6 @@ def human_window_image_right_click_in_bounds(
         },
     )
     invalidate_layout_snapshot(hwnd, reason="physical_right_click_started")
-    activate_window(hwnd)
     ensure_left_button_released()
     right_down_sent = False
     try:
@@ -19227,7 +19412,7 @@ def ensure_quick_login_if_available(
         "reason": "quick_login_enter_clicked",
     }
 def screen_work_area(hwnd: int = 0) -> dict[str, int]:
-    """Return the usable desktop work area, excluding taskbar and reserved edges."""
+    """Return the HWND monitor work area; never substitute the primary screen."""
     try:
         user32 = ctypes.windll.user32
         if int(hwnd or 0) > 0 and hasattr(user32, "MonitorFromWindow") and hasattr(user32, "GetMonitorInfoW"):
@@ -19254,40 +19439,16 @@ def screen_work_area(hwnd: int = 0) -> dict[str, int]:
                         "height": max(0, int(info.rcWork.bottom - info.rcWork.top)),
                         "source": "MonitorFromWindow_GetMonitorInfoW",
                     }
-        work_area = wintypes.RECT()
-        spi_get_work_area = 0x0030
-        if hasattr(user32, "SystemParametersInfoW") and user32.SystemParametersInfoW(
-            spi_get_work_area,
-            0,
-            ctypes.byref(work_area),
-            0,
-        ):
-            return {
-                "left": int(work_area.left),
-                "top": int(work_area.top),
-                "right": int(work_area.right),
-                "bottom": int(work_area.bottom),
-                "width": max(0, int(work_area.right - work_area.left)),
-                "height": max(0, int(work_area.bottom - work_area.top)),
-                "source": "SystemParametersInfoW_SPI_GETWORKAREA",
-            }
     except Exception:
         pass
-    try:
-        user32 = ctypes.windll.user32
-        width = int(user32.GetSystemMetrics(0) or 0)
-        height = int(user32.GetSystemMetrics(1) or 0)
-    except Exception:
-        width = 0
-        height = 0
     return {
         "left": 0,
         "top": 0,
-        "right": max(0, width),
-        "bottom": max(0, height),
-        "width": max(0, width),
-        "height": max(0, height),
-        "source": "GetSystemMetrics_fallback",
+        "right": 0,
+        "bottom": 0,
+        "width": 0,
+        "height": 0,
+        "source": "current_monitor_work_area_unavailable",
     }
 
 
@@ -19296,18 +19457,8 @@ def normalize_wechat_window(hwnd: int, *, allow_move: bool = True) -> dict[str, 
     before_client = get_window_client_geometry(hwnd)
     dpi_scale = window_dpi_scale(hwnd)
 
-    enforce_recommended = env_flag("WECHAT_WIN32_OCR_ENFORCE_RECOMMENDED_WINDOW", default=True)
-    fixed_origin = env_flag("WECHAT_WIN32_OCR_WINDOW_FIXED_ORIGIN", default=True)
-    if not fixed_origin:
-        return {
-            "ok": False,
-            "enabled": True,
-            "applied": False,
-            "before": before,
-            "before_client": before_client,
-            "error_code": win32_ocr_layout.ERROR_WINDOW_NORMALIZATION_FAILED,
-            "reason": "fixed_origin_policy_disabled",
-        }
+    enforce_recommended = True
+    fixed_origin = True
     # Normalization can move or resize the window. Any frame captured before
     # this gate is therefore unusable even when the planner later decides no
     # physical MoveWindow call is necessary.
@@ -19363,25 +19514,10 @@ def normalize_wechat_window(hwnd: int, *, allow_move: bool = True) -> dict[str, 
 
     plan = win32_ocr_window_actions.plan_normalize_wechat_window(
         before,
-        enabled=True,
         dpi_scale=dpi_scale,
-        requested_width=os.getenv("WECHAT_WIN32_OCR_WINDOW_WIDTH"),
-        requested_height=os.getenv("WECHAT_WIN32_OCR_WINDOW_HEIGHT"),
-        requested_left=os.getenv("WECHAT_WIN32_OCR_WINDOW_LEFT"),
-        requested_top=os.getenv("WECHAT_WIN32_OCR_WINDOW_TOP"),
-        enforce_recommended=enforce_recommended,
-        fixed_origin=fixed_origin,
-        screen_width=screen_width,
-        screen_height=screen_height,
-        screen_metrics_available=screen_metrics_available,
-        default_width=DEFAULT_SAFE_WINDOW_WIDTH,
-        default_height=DEFAULT_SAFE_WINDOW_HEIGHT,
-        min_width=MIN_SAFE_WINDOW_WIDTH,
-        min_height=MIN_SAFE_WINDOW_HEIGHT,
-        max_width=MAX_SAFE_WINDOW_WIDTH,
-        max_height=MAX_SAFE_WINDOW_HEIGHT,
-        screen_left=int(work_area.get("left") or 0),
-        screen_top=int(work_area.get("top") or 0),
+        work_area=work_area,
+        minimum_client_width=MIN_SAFE_WINDOW_WIDTH,
+        minimum_client_height=MIN_SAFE_WINDOW_HEIGHT,
     )
     left = int(plan.get("left") or 0)
     top = int(plan.get("top") or 0)
@@ -19390,7 +19526,7 @@ def normalize_wechat_window(hwnd: int, *, allow_move: bool = True) -> dict[str, 
     effective_target = dict(plan.get("target") or {})
     requested_target = dict(plan.get("requested_target") or {})
     recommended_floor_applied = bool(plan.get("recommended_floor_applied"))
-    resolution_scale = float(plan.get("resolution_scale") or 1.0)
+    resolution_scale = float(plan.get("fit_scale") or 1.0)
 
     def verify_normalized_geometry(
         after_geometry: dict[str, Any],
@@ -19409,8 +19545,8 @@ def normalize_wechat_window(hwnd: int, *, allow_move: bool = True) -> dict[str, 
             return False, "window_dpi_changed_during_normalization"
         client_width = int(after_client_geometry.get("width") or 0)
         client_height = int(after_client_geometry.get("height") or 0)
-        if client_width <= 0 or client_height <= 0:
-            return False, "window_client_geometry_unavailable_after_normalization"
+        if client_width < MIN_SAFE_WINDOW_WIDTH or client_height < MIN_SAFE_WINDOW_HEIGHT:
+            return False, "window_client_geometry_below_700x720_after_normalization"
         return True, "normalized_geometry_verified"
 
     if not bool(plan.get("ok")):
@@ -19780,12 +19916,6 @@ def run_sidecar_cli(argv: list[str] | None = None) -> dict[str, Any]:
     parser.add_argument("action", choices=SIDECAR_ACTION_CHOICES, nargs="?")
     parser.add_argument("--sidecar-run-id", default="", help="Correlation id for one Worker-to-sidecar run.")
     parser.add_argument("--scan-id", default="", help="Correlation id for one sessions scan.")
-    parser.add_argument(
-        "--window-policy",
-        choices=("normalize", "verify"),
-        default="normalize",
-        help="Normalize only at a UI Flow boundary; nested actions must use verify.",
-    )
     parser.add_argument("--canonical-voice-action-id", default="")
     parser.add_argument("--reserved-worker-stable-id", default="")
     parser.add_argument("--voice-action-stage", choices=("prepare", "execute"), default="prepare")

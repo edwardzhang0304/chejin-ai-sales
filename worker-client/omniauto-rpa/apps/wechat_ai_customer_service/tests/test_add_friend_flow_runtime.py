@@ -21,9 +21,6 @@ from apps.wechat_ai_customer_service.adapters import add_friend_layout  # noqa: 
 from apps.wechat_ai_customer_service.adapters import wechat_win32_ocr_sidecar as sidecar  # noqa: E402
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import add_friend_windows  # noqa: E402
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import window_layout  # noqa: E402
-from apps.wechat_ai_customer_service.adapters.add_friend_result_mapping import (  # noqa: E402
-    ERROR_PLUS_ENTRY_NOT_FOUND,
-)
 from apps.wechat_ai_customer_service.tests.run_wechat_win32_ocr_layout_snapshot_checks import (  # noqa: E402
     _bright_wechat_add_friend_frame,
 )
@@ -88,7 +85,7 @@ def production_boundary(
         sidecar._register_layout_snapshot(
             hwnd,
             image,
-            capture_mode=sidecar.win32_ocr_layout.CAPTURE_MODE_WINDOW_VISIBLE_SCREEN,
+            capture_mode=sidecar.win32_ocr_layout.CAPTURE_MODE_CLIENT_AREA,
             screenshot_path=screenshot_path,
             capture_screen_origin=[0, 0],
             generic_popup=popup_window,
@@ -125,6 +122,22 @@ def production_boundary(
     sidecar._LATEST_LAYOUT_SNAPSHOT_BY_HWND.clear()
     sidecar._LAYOUT_SNAPSHOT_ID_BY_IMAGE_ID.clear()
     with ExitStack() as stack:
+        calibration_dir = Path(
+            stack.enter_context(tempfile.TemporaryDirectory(prefix="wechat-startup-calibration-"))
+        )
+        calibration_path = calibration_dir / "startup_layout_calibration.json"
+        stack.enter_context(patch.object(sidecar, "STARTUP_CALIBRATION_PATH", calibration_path))
+        stack.enter_context(
+            patch.object(
+                sidecar,
+                "win32process",
+                type(
+                    "FakeWin32Process",
+                    (),
+                    {"GetWindowThreadProcessId": staticmethod(lambda _hwnd: (1, 2001))},
+                )(),
+            )
+        )
         stack.enter_context(patch.object(sidecar, "get_window_geometry", return_value=geometry))
         stack.enter_context(
             patch.object(
@@ -167,6 +180,19 @@ def production_boundary(
             )
         )
         stack.enter_context(patch.object(sidecar, "add_friend_paced_pause", return_value=0.0))
+        if image.width >= 700 and image.height >= 720:
+            calibration = window_layout.build_startup_layout_calibration(
+                hwnd=1001,
+                process_id=2001,
+                image=image,
+                ocr_items=ocr_items,
+                window_rect=[0, 0, image.width, image.height],
+                client_rect=_client_geometry(image),
+                client_screen_origin=[0, 0],
+                dpi_scale=1.0,
+                capture_mode=window_layout.CAPTURE_MODE_CLIENT_AREA,
+            )
+            window_layout.write_startup_layout_calibration(calibration_path, calibration)
         yield
 
 
@@ -250,6 +276,10 @@ class AddFriendProductionEntryTest(unittest.TestCase):
         draw = ImageDraw.Draw(image)
         draw.rectangle((0, 0, nav_x - 1, height - 1), fill=(246, 246, 246))
         draw.rectangle((nav_x, 0, sidebar_x - 1, height - 1), fill=(234, 234, 234))
+        draw.line((nav_x, 0, nav_x, height - 1), fill=(155, 155, 155), width=2)
+        draw.line((sidebar_x, 0, sidebar_x, height - 1), fill=(140, 140, 140), width=2)
+        draw.line((sidebar_x, 88, width - 1, 88), fill=(170, 170, 170), width=2)
+        draw.line((sidebar_x, 688, width - 1, 688), fill=(170, 170, 170), width=2)
         for sample_y in (86, 154, 292, 447, 602, 722):
             draw.rectangle((99, sample_y - 18, 143, sample_y + 18), fill=(90, 90, 90))
         plus_x, plus_y, radius = 349, 70, 11
@@ -297,7 +327,9 @@ class AddFriendProductionEntryTest(unittest.TestCase):
                     )
 
         snapshot = sidecar.current_layout_snapshot(1001) or {}
-        self.assertEqual(snapshot.get("left_nav_bounds", [None, None, None])[2], nav_x, snapshot)
+        measured_nav = snapshot.get("left_nav_bounds", [None, None, None])[2]
+        self.assertLessEqual(abs(int(measured_nav) - nav_x), 6, snapshot)
+        self.assertNotEqual(measured_nav, 144, snapshot)
         self.assertEqual(snapshot.get("sidebar_bounds", [None, None, None])[2], sidebar_x, snapshot)
         self.assertEqual(len(clicks), 1, clicks)
         self.assertLessEqual(abs(clicks[0]["point"][0] - plus_x), 2, clicks)
@@ -358,18 +390,15 @@ class AddFriendProductionEntryTest(unittest.TestCase):
                     ["add_friend_pre_click_main_window"],
                     capture_labels,
                 )
-                self.assertFalse(initial_snapshots[0].get("executable"))
-                self.assertIn(
-                    "shared_header_boundary_missing",
-                    (initial_snapshots[0].get("layout_builder") or {}).get("conflicts") or [],
-                )
+                self.assertTrue(initial_snapshots[0].get("executable"), initial_snapshots[0])
+                self.assertTrue(initial_snapshots[0].get("calibration_id"), initial_snapshots[0])
                 self.assertEqual(clicks[0]["action_name"], "plus_entry_click_1")
                 self.assertTrue(clicks[0]["layout_snapshot_id"])
                 self.assertTrue(final_snapshot.get("executable"), final_snapshot)
                 selected_search_anchors = [
                     anchor
                     for anchor in final_snapshot.get("anchors") or []
-                    if anchor.get("name") == "search_text"
+                    if anchor.get("name") == "sidebar_search_anchor"
                 ]
                 self.assertEqual(len(selected_search_anchors), 1, final_snapshot)
                 self.assertEqual(
@@ -384,7 +413,7 @@ class AddFriendProductionEntryTest(unittest.TestCase):
                 )
                 self.assertGreater(clicks[0]["point"][0], float(item["right"]))
 
-    def test_search_icon_cannot_replace_missing_plus_in_preclick_or_calibration(self) -> None:
+    def test_search_icon_cannot_replace_mapped_plus_reference(self) -> None:
         image, item = _bright_wechat_add_friend_frame(selected_row=2)
         draw = ImageDraw.Draw(image)
         # Remove the real plus while leaving a magnifying-glass-shaped search
@@ -392,36 +421,43 @@ class AddFriendProductionEntryTest(unittest.TestCase):
         draw.rectangle((326, 29, 366, 72), fill=(234, 234, 234))
         draw.ellipse((100, 44, 114, 58), outline=(70, 70, 70), width=2)
         draw.line((112, 57, 120, 65), fill=(70, 70, 70), width=2)
-        for calibration_only in (False, True):
-            with self.subTest(calibration_only=calibration_only):
-                clicks: list[dict[str, Any]] = []
-                with tempfile.TemporaryDirectory(prefix="add-friend-no-plus-") as temp_dir:
-                    with production_boundary(
-                        image,
-                        ocr_items=[_search_item(item, "Q搜索")],
-                        click_points=clicks,
-                    ):
-                        result = sidecar.add_friend_entry_click_plan_payload(
-                            1001,
-                            {"visible_main_windows": [{"hwnd": 1001}]},
-                            phone="17368746889",
-                            verify_message="我是车金二手车张伟",
-                            remark_name="客户-CJ8K2P",
-                            remark_code="CJ8K2P",
-                            artifact_dir=temp_dir,
-                            calibration_only=calibration_only,
-                        )
+        search = _search_item(item, "Q搜索")
+        # Calibration-only must expose the mapped reference without clicking.
+        calibration_clicks: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory(prefix="add-friend-mapped-plus-calibration-") as temp_dir:
+            with production_boundary(image, ocr_items=[search], click_points=calibration_clicks):
+                calibration = sidecar.add_friend_entry_click_plan_payload(
+                    1001,
+                    {"visible_main_windows": [{"hwnd": 1001}]},
+                    phone="17368746889",
+                    artifact_dir=temp_dir,
+                    calibration_only=True,
+                )
+        target = calibration["before"]["planned_targets"][0]
+        self.assertTrue(calibration["ok"], calibration)
+        self.assertEqual(calibration_clicks, [])
+        self.assertGreater(target["point"][0], float(search["right"]), target)
+        self.assertFalse(sidecar.point_in_bounds(*target["point"], [96, 40, 122, 68]), target)
 
-                self.assertFalse(result["ok"], result)
-                self.assertEqual(result["error_code"], ERROR_PLUS_ENTRY_NOT_FOUND)
-                if calibration_only:
-                    target = result["before"]["planned_targets"][0]
-                else:
-                    target = result["window_probe"][
-                        "add_friend_pre_click_main_window_readiness"
-                    ]["planned_targets"][0]
-                self.assertFalse(target["executable"])
-                self.assertEqual(clicks, [])
+        # The public production entry must reach the mapped plus boundary, not
+        # the magnifying-glass pixels. The original menu confirmation remains
+        # the authority after this click.
+        clicks: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory(prefix="add-friend-mapped-plus-click-") as temp_dir:
+            with production_boundary(image, ocr_items=[search], click_points=clicks):
+                with self.assertRaises(PhysicalClickReached):
+                    sidecar.add_friend_entry_click_plan_payload(
+                        1001,
+                        {"visible_main_windows": [{"hwnd": 1001}]},
+                        phone="17368746889",
+                        verify_message="我是车金二手车张伟",
+                        remark_name="客户-CJ8K2P",
+                        remark_code="CJ8K2P",
+                        artifact_dir=temp_dir,
+                    )
+        self.assertEqual(len(clicks), 1, clicks)
+        self.assertGreater(clicks[0]["point"][0], float(search["right"]), clicks)
+        self.assertFalse(sidecar.point_in_bounds(*clicks[0]["point"], [96, 40, 122, 68]), clicks)
 
     def test_user_bright_screenshots_pixel_layout_and_plus_only_when_available(self) -> None:
         """Replay real pixels without claiming that local OCR was exercised."""

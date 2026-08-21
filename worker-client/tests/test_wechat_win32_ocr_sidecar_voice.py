@@ -86,7 +86,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
     def _semantic_layout_for_image(self, image: Image.Image) -> dict:
         """Resolved production snapshot shape for non-layout semantic tests.
 
-        The 0.9.22 geometry tests exercise the real structural detector and
+        The 0.9.23 geometry tests exercise the real structural detector and
         coordinate converter. These older voice tests deliberately provide
         already-resolved semantic regions so they test voice behavior without
         reintroducing a fixed production fallback.
@@ -3615,8 +3615,9 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         self.assertEqual(result["quality_flags"], ["untranscribed_voice_remaining"])
         self.assertEqual(
             [call[0] for call in calls],
-            ["normalize-window", "voice-transcribe"],
+            ["voice-transcribe"],
         )
+        self.assertNotIn("--window-policy", calls[0])
 
 
 if __name__ == "__main__":

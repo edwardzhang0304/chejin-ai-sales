@@ -18,12 +18,12 @@ from typing import Any
 # reviewer approves and advances the protected baseline.
 PR28_HEAD = "3afed619afc8c1e0e71231459acafa3c2aabe608"
 PR28_BLOBS = {
-    "apps/wechat_ai_customer_service/adapters/wechat_connector.py": "6c88255439cb2f92220b1ed2fe46ac96da38d7a3",
+    "apps/wechat_ai_customer_service/adapters/wechat_connector.py": "18473e424ca5f41d93e3dfee63df50d5bec31ed2",
     "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr/text_normalization.py": "1582b42286d0c3529907e551adbd0271bc00a8a0",
-    "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py": "0f6ee771333b36808096c0b38d0b401cb361574a",
-    "apps/wechat_ai_customer_service/tests/run_wechat_win32_ocr_compat_checks.py": "8f7545b3f402bca65887e81413fadf73c84e73ef",
+    "apps/wechat_ai_customer_service/adapters/wechat_win32_ocr_sidecar.py": "1bfa1b42c85c1f60d622bcf45d28aa23380611f6",
+    "apps/wechat_ai_customer_service/tests/run_wechat_win32_ocr_compat_checks.py": "1d5af9c0a35cf71a75d4e2ba4cb523802359eedc",
     "apps/wechat_ai_customer_service/tests/run_wechat_win32_ocr_sender_role_screenshot_replay.py": "a79ec7717cccc7c6df27aa75733e5d773cce4f0a",
-    "apps/wechat_ai_customer_service/tests/run_wechat_win32_ocr_window_action_planning_checks.py": "b144c57c73d03a2752f44ebda88500412b80063f",
+    "apps/wechat_ai_customer_service/tests/run_wechat_win32_ocr_window_action_planning_checks.py": "bef28c37cfba0991ddc2a09e4b2108291eb3cc3f",
     "apps/wechat_ai_customer_service/wechat_message_envelope.py": "b2af6878294693490b7e56b5f04dbb5f87dc0ace",
 }
 UPSTREAM_OMNIAUTO_COMMIT = "855c21881641cdb2f9fe69d3f2e1caa05e37d04d"

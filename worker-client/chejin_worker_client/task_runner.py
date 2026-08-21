@@ -2173,21 +2173,6 @@ class TaskRunner:
             # separate fail-safe for not-yet-started physical actions.
             self._apply_local_run_status("paused")
         try:
-            if run_status == "running":
-                preflight = self.bridge.verify_window_readiness()
-                if not preflight.get("ok"):
-                    error_code = str(preflight.get("error_code") or "WECHAT_UI_LAYOUT_STALE")
-                    message = "微信窗口状态复核失败，已阻止开始接单。请保持微信窗口可见，然后重试。"
-                    self._apply_local_run_status("paused")
-                    self.on_error(message)
-                    append_log(
-                        "WARN",
-                        "wechat_window_readiness_blocked_accepting",
-                        message,
-                        error_code=error_code,
-                        metadata={"preflight": preflight},
-                    )
-                    return False
             profile = self.api.set_run_status(self.binding, run_status)
             if profile.run_status != run_status:
                 raise RuntimeError(
@@ -2851,6 +2836,34 @@ class TaskRunner:
                 binding,
                 target,
             )
+
+        calibration = (
+            self.bridge.verify_startup_layout_for_inflight_transaction()
+            if mode == "running"
+            else self.bridge.prepare_startup_layout_for_new_transaction()
+        )
+        if not calibration.get("ok"):
+            self._settle_chat_reply_context_failure_before_unlock(
+                binding,
+                task_id=task.id,
+                source_error_code=str(
+                    calibration.get("error_code")
+                    or "WECHAT_UI_STARTUP_CALIBRATION_FAILED"
+                ),
+            )
+            self.on_result(
+                RpaResult(
+                    ok=False,
+                    error_code=str(
+                        calibration.get("error_code")
+                        or "WECHAT_UI_STARTUP_CALIBRATION_FAILED"
+                    ),
+                    failure_step="startup_layout_calibration",
+                    message="回复事务开始前微信启动布局标定不可用，未打开会话或发送。",
+                    evidence_metadata={"startup_layout_calibration": calibration},
+                )
+            )
+            return
 
         owner = f"{binding.worker_id}:{binding.client_instance_id}:c2_reply:{task.id}"
         try:
@@ -4841,6 +4854,15 @@ class TaskRunner:
             append_log("ERROR", "ui_lock_acquire_failed", str(exc), task_id=task.id, error_code=exc.code, metadata=exc.data)
             return RpaResult(ok=False, error_code=exc.code, failure_step="ui_lock_acquire", message=str(exc), evidence_metadata={"ui_lock": exc.data})
         try:
+            calibration = self.bridge.prepare_startup_layout_for_new_transaction()
+            if not calibration.get("ok"):
+                return RpaResult(
+                    ok=False,
+                    error_code=str(calibration.get("error_code") or "WECHAT_UI_STARTUP_CALIBRATION_FAILED"),
+                    failure_step="startup_layout_calibration",
+                    message="微信启动布局标定失败，未执行加好友点击。",
+                    evidence_metadata={"startup_layout_calibration": calibration},
+                )
             def add_friend_cancel_reason() -> bool | str:
                 if not self._can_continue_inflight_flow():
                     return "WORKER_INTERRUPTED"
@@ -5969,17 +5991,21 @@ class TaskRunner:
                 self.c2_stats["last_error"] = "C2_SCAN_SKIPPED_BY_HIGH_PRIORITY_ACTION"
                 append_log("INFO", "c2_session_scan_skipped", "C2 第一屏扫描拿锁后发现高优先级动作，已跳过。", error_code="C2_SCAN_SKIPPED_BY_HIGH_PRIORITY_ACTION", metadata={"reason": reason})
                 return
-            sidecar_scan_started_at = time.perf_counter()
-            try:
-                sidecar_payload = self.bridge.list_sessions(
-                    cancel_check=lambda: not self._can_start_new_flow(binding)
-                )
-            finally:
-                sidecar_scan_duration_ms = int(
-                    round(
-                        (time.perf_counter() - sidecar_scan_started_at) * 1000
+            calibration = self.bridge.prepare_startup_layout_for_new_transaction()
+            if not calibration.get("ok"):
+                sidecar_payload = dict(calibration)
+            else:
+                sidecar_scan_started_at = time.perf_counter()
+                try:
+                    sidecar_payload = self.bridge.list_sessions(
+                        cancel_check=lambda: not self._can_start_new_flow(binding)
                     )
-                )
+                finally:
+                    sidecar_scan_duration_ms = int(
+                        round(
+                            (time.perf_counter() - sidecar_scan_started_at) * 1000
+                        )
+                    )
             if not self._can_start_new_flow(binding):
                 return
             payload = build_scan_result_payload(sidecar_payload)
@@ -13539,6 +13565,17 @@ class TaskRunner:
                     self.current_ui_lock = lease
             if lease is None:
                 return {"ok": False, "error_code": "UI_LOCK_NOT_HELD"}
+            if owns_lease:
+                calibration = self.bridge.prepare_startup_layout_for_new_transaction()
+                if not calibration.get("ok"):
+                    return {
+                        "ok": False,
+                        "error_code": str(
+                            calibration.get("error_code")
+                            or "WECHAT_UI_STARTUP_CALIBRATION_FAILED"
+                        ),
+                        "startup_layout_calibration": calibration,
+                    }
             self.current_step = current_step
             if enforce_read_targets and not self._backend_still_allows_read_target(binding, target):
                 return {"ok": False, "error_code": "C2_TARGET_NOT_ALLOWED_BY_READ_TARGETS"}
@@ -13627,14 +13664,25 @@ class TaskRunner:
                     max_duration_seconds=20 if locate_mode == "current" else 30 if visible_target else 90,
                     cancel_check=action_cancel_requested,
                 )
+                attempt_ok = bool(locate_payload.get("ok"))
                 record_phase(
                     "target_chat_locate",
                     phase_started_at,
                     target_mode=locate_mode,
                     state=locate_payload.get("state"),
                     sidecar_run_id=locate_payload.get("sidecar_run_id"),
+                    completed=attempt_ok,
+                    failed=not attempt_ok,
+                    error_code=(
+                        None
+                        if attempt_ok
+                        else str(
+                            locate_payload.get("error_code")
+                            or locate_payload.get("state")
+                            or "TARGET_NOT_CONFIRMED"
+                        )
+                    ),
                 )
-                attempt_ok = bool(locate_payload.get("ok"))
                 append_log(
                     "INFO" if attempt_ok else "WARN",
                     "c2_target_chat_locate_attempt",

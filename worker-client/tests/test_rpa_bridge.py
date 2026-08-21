@@ -80,7 +80,7 @@ class RpaBridgeTest(unittest.TestCase):
 
         self.assertEqual(command, [sys.executable, "sidecar.py", "status"])
 
-    def test_probe_keeps_existing_status_payload_for_startup_window_position(self):
+    def test_probe_reuses_successful_startup_calibration_observation(self):
         bridge = RpaBridge(sidecar_script=Path("sidecar.py"))
         bridge.mode = "real"
         payload = {
@@ -99,7 +99,7 @@ class RpaBridgeTest(unittest.TestCase):
 
         def fake_call(args, **_kwargs):
             calls.append(list(args))
-            return {"ok": True} if args[0] == "normalize-window" else payload
+            return payload if args[0] == "normalize-window" else {"ok": True}
 
         with patch.object(sys, "platform", "win32"), patch.object(
             bridge, "_call_omniauto", side_effect=fake_call
@@ -109,7 +109,7 @@ class RpaBridgeTest(unittest.TestCase):
         self.assertEqual(status, ("ready", "logged_in"))
         self.assertEqual(bridge.last_probe_payload["geometry"], payload["geometry"])
         self.assertTrue(bridge.last_probe_payload["startup_window_normalization"]["ok"])
-        self.assertEqual(calls, [["normalize-window"], ["status"]])
+        self.assertEqual(calls, [["normalize-window"]])
 
     def test_probe_normalizes_only_once_then_uses_passive_status(self):
         bridge = RpaBridge(sidecar_script=Path("sidecar.py"))
@@ -126,7 +126,7 @@ class RpaBridgeTest(unittest.TestCase):
             self.assertEqual(bridge.probe(), ("ready", "logged_in"))
             self.assertEqual(bridge.probe(), ("ready", "logged_in"))
 
-        self.assertEqual(calls, [["normalize-window"], ["status"], ["status"]])
+        self.assertEqual(calls, [["normalize-window"], ["status"]])
 
     def test_probe_retries_startup_normalization_until_wechat_appears(self):
         bridge = RpaBridge(sidecar_script=Path("sidecar.py"))
@@ -159,7 +159,6 @@ class RpaBridgeTest(unittest.TestCase):
                 ["normalize-window"],
                 ["status"],
                 ["normalize-window"],
-                ["status"],
                 ["status"],
             ],
         )
@@ -198,27 +197,78 @@ class RpaBridgeTest(unittest.TestCase):
             "WECHAT_UI_LAYOUT_STALE",
         )
 
-    def test_accepting_work_verifies_window_without_moving_it(self):
+    def test_new_transaction_reuses_current_calibration_without_capture_or_normalize(self):
         bridge = RpaBridge(sidecar_script=Path("sidecar.py"))
         bridge.mode = "real"
         calls: list[list[str]] = []
 
         def fake_call(args, **_kwargs):
             calls.append(list(args))
-            return {"ok": True}
+            return {
+                "ok": True,
+                "state": "startup_layout_calibration_current",
+                "screenshot_call_count": 0,
+                "ocr_call_count": 0,
+            }
 
         with patch.object(sys, "platform", "win32"), patch.object(
             bridge, "_call_omniauto", side_effect=fake_call
         ):
-            result = bridge.verify_window_readiness()
+            result = bridge.prepare_startup_layout_for_new_transaction()
 
         self.assertTrue(result["ok"])
-        self.assertEqual(
-            calls,
-            [["normalize-window", "--window-policy", "verify"]],
-        )
+        self.assertEqual(calls, [["calibration-status"]])
 
-    def test_all_ui_flows_only_verify_window_after_startup(self):
+    def test_idle_changed_window_is_restored_once_before_new_transaction(self):
+        bridge = RpaBridge(sidecar_script=Path("sidecar.py"))
+        bridge.mode = "real"
+        calls: list[list[str]] = []
+
+        def fake_call(args, **_kwargs):
+            calls.append(list(args))
+            if args[0] == "calibration-status":
+                return {
+                    "ok": False,
+                    "error_code": "WECHAT_UI_STARTUP_CALIBRATION_FAILED",
+                    "state": "startup_layout_calibration_stale",
+                }
+            return {"ok": True, "state": "startup_layout_calibrated"}
+
+        with patch.object(sys, "platform", "win32"), patch.object(
+            bridge, "_call_omniauto", side_effect=fake_call
+        ):
+            result = bridge.prepare_startup_layout_for_new_transaction()
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["restored_before_new_transaction"])
+        self.assertEqual(calls, [["calibration-status"], ["normalize-window"]])
+
+    def test_inflight_calibration_check_never_moves_or_recaptures_window(self):
+        bridge = RpaBridge(sidecar_script=Path("sidecar.py"))
+        bridge.mode = "real"
+        calls: list[list[str]] = []
+
+        def fake_call(args, **_kwargs):
+            calls.append(list(args))
+            return {
+                "ok": False,
+                "error_code": "WECHAT_UI_STARTUP_CALIBRATION_FAILED",
+                "state": "startup_layout_calibration_stale",
+                "screenshot_call_count": 0,
+                "ocr_call_count": 0,
+            }
+
+        with patch.object(sys, "platform", "win32"), patch.object(
+            bridge, "_call_omniauto", side_effect=fake_call
+        ):
+            result = bridge.verify_startup_layout_for_inflight_transaction()
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(calls, [["calibration-status"]])
+        self.assertEqual(result["screenshot_call_count"], 0)
+        self.assertEqual(result["ocr_call_count"], 0)
+
+    def test_all_ui_flows_do_not_request_window_policy_after_startup(self):
         bridge = RpaBridge(sidecar_script=Path("sidecar.py"))
         bridge.mode = "real"
         calls: list[list[str]] = []
@@ -253,14 +303,12 @@ class RpaBridgeTest(unittest.TestCase):
                 task_id="task-1",
             )
 
-        policies = {
-            args[0]: args[args.index("--window-policy") + 1]
-            for args in calls
-        }
-        self.assertEqual(policies["open-chat"], "verify")
-        self.assertEqual(policies["messages"], "verify")
-        self.assertEqual(policies["voice-transcribe"], "verify")
-        self.assertEqual(policies["send"], "verify")
+        self.assertEqual(
+            [args[0] for args in calls],
+            ["open-chat", "messages", "voice-transcribe", "send"],
+        )
+        self.assertTrue(all("--window-policy" not in args for args in calls))
+        self.assertTrue(all("normalize-window" not in args for args in calls))
 
     def test_call_omniauto_protects_artifact_directory_until_process_finishes(self):
         with tempfile.TemporaryDirectory(prefix="chejin-active-artifact-") as tmp:
@@ -513,10 +561,8 @@ class RpaBridgeTest(unittest.TestCase):
             ["rpa_sidecar_starting", "wechat_preflight_starting"],
         )
         self.assertEqual(captured["args"][0], OMNIAUTO_ADD_FRIEND_ACTION)
-        self.assertEqual(
-            captured["args"][captured["args"].index("--window-policy") + 1],
-            "verify",
-        )
+        self.assertNotIn("--window-policy", captured["args"])
+        self.assertNotIn("normalize-window", captured["args"])
         self.assertIn("--phone", captured["args"])
         self.assertIn("13800000000", captured["args"])
         self.assertIn("--verify-message", captured["args"])

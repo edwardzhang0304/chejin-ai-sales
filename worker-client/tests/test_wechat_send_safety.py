@@ -119,8 +119,13 @@ class WechatSendSafetyTest(unittest.TestCase):
                 "session_list_bounds": [75, header_bottom, sidebar_right, height],
                 "chat_header_bounds": [sidebar_right, 0, width, header_bottom],
                 "message_viewport_bounds": [sidebar_right, header_bottom, width, input_top],
-                "input_bounds": [sidebar_right, input_top, width, height],
-                "input_text_bounds": [
+                "toolbar_bounds": [
+                    sidebar_right,
+                    input_top + int(input_panel_height * 0.56),
+                    width,
+                    height,
+                ],
+                "input_bounds": [
                     sidebar_right + max(1, int(input_panel_width * 0.01)),
                     input_top + max(1, int(input_panel_height * 0.04)),
                     width - max(1, int(input_panel_width * 0.16)),
@@ -400,6 +405,9 @@ class WechatSendSafetyTest(unittest.TestCase):
 
     def test_visual_input_uses_green_as_evidence_and_enter_as_trigger(self):
         observed_trigger: dict[str, object] = {}
+        # v0.9.23 requires a real current calibration-backed frame before C3
+        # can translate the input reference point.
+        self._semantic_layout_for_image(Image.new("RGB", (980, 860), "white"))
         with (
             patch.object(
                 sidecar,

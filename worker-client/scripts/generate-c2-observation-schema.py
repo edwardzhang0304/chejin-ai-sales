@@ -57,6 +57,9 @@ def generated_payload(contract: dict) -> dict:
         "target_location_recovery_contract": dict(
             contract["target_location_recovery_contract"]
         ),
+        "startup_layout_calibration_contract": dict(
+            contract["startup_layout_calibration_contract"]
+        ),
     }
 
 

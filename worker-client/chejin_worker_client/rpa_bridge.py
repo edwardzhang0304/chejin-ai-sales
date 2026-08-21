@@ -75,7 +75,14 @@ class RpaBridge:
                 # A failed post-move verification may mean the window was
                 # already changed. Do not move it again on every heartbeat.
                 self._startup_window_normalization_state = "failed_locked"
-        payload = self._call_omniauto(["status"], timeout=30)
+        # The successful startup calibration frame already proves the main
+        # shell and login state. Reuse that observation instead of capturing
+        # the unchanged window again through status.
+        payload = (
+            dict(startup_normalization)
+            if startup_normalization.get("ok")
+            else self._call_omniauto(["status"], timeout=30)
+        )
         if startup_normalization:
             payload = {
                 **dict(payload),
@@ -113,21 +120,32 @@ class RpaBridge:
             return {"ok": True, "mode": "mock", "message": "mock RPA 模式不探测真实微信。"}
         return self._call_omniauto(["status"], timeout=60)
 
-    def verify_window_readiness(self) -> dict[str, Any]:
-        """Verify the current WeChat geometry without moving it."""
+    def prepare_startup_layout_for_new_transaction(self) -> dict[str, Any]:
+        """Restore/recalibrate only at an idle-to-business transaction edge."""
         if self.mode == "mock":
-            return {"ok": True, "mode": "mock", "state": "mock_preflight"}
+            return {"ok": True, "mode": "mock", "state": "mock_calibration_current"}
         if sys.platform != "win32":
             return {"ok": True, "skipped": True, "reason": "non_windows_worker"}
-        payload = self._call_omniauto(
-            ["normalize-window", "--window-policy", "verify"],
-            timeout=60,
-        )
-        return dict(payload)
+        current = dict(self._call_omniauto(["calibration-status"], timeout=30))
+        if current.get("ok"):
+            return current
+        restored = dict(self._call_omniauto(["normalize-window"], timeout=60))
+        if restored.get("ok"):
+            self._startup_window_normalization_state = "completed"
+            self.last_startup_window_normalization = restored
+        return {
+            **restored,
+            "idle_calibration_probe": current,
+            "restored_before_new_transaction": bool(restored.get("ok")),
+        }
 
-    def preflight_window_normalization(self) -> dict[str, Any]:
-        """Compatibility alias; accepting work must only verify, never move."""
-        return self.verify_window_readiness()
+    def verify_startup_layout_for_inflight_transaction(self) -> dict[str, Any]:
+        """Passively verify a recovered in-flight transaction; never move WeChat."""
+        if self.mode == "mock":
+            return {"ok": True, "mode": "mock", "state": "mock_calibration_current"}
+        if sys.platform != "win32":
+            return {"ok": True, "skipped": True, "reason": "non_windows_worker"}
+        return dict(self._call_omniauto(["calibration-status"], timeout=30))
 
     def list_sessions(
         self,
@@ -210,8 +228,6 @@ class RpaBridge:
             effective_max_duration_seconds = max(effective_max_duration_seconds, 75)
         args = [
             "messages",
-            "--window-policy",
-            "verify",
             "--sidecar-run-id",
             sidecar_run_id,
             "--history-load-times",
@@ -226,15 +242,15 @@ class RpaBridge:
             str(artifact_dir),
         ]
         if str(display_name or "").strip():
-            args[3:3] = ["--target", display_name]
+            args[1:1] = ["--target", display_name]
         if str(rpa_session_key or "").strip():
-            args[3:3] = ["--session-key", rpa_session_key]
+            args[1:1] = ["--session-key", rpa_session_key]
         if str(remark_code or "").strip():
-            args[3:3] = ["--remark-code", remark_code]
+            args[1:1] = ["--remark-code", remark_code]
         if normalized_target_mode:
-            args[3:3] = ["--target-mode", normalized_target_mode]
+            args[1:1] = ["--target-mode", normalized_target_mode]
         if str(expected_confirmed_self_text or "").strip():
-            args[3:3] = [
+            args[1:1] = [
                 "--expected-confirmed-self-text",
                 str(expected_confirmed_self_text),
             ]
@@ -284,8 +300,6 @@ class RpaBridge:
         normalized_target_mode = str(target_mode or "").strip()
         args = [
             "open-chat",
-            "--window-policy",
-            "verify",
             "--sidecar-run-id",
             sidecar_run_id,
             "--target",
@@ -294,13 +308,13 @@ class RpaBridge:
             str(artifact_dir),
         ]
         if str(rpa_session_key or "").strip():
-            args[3:3] = ["--session-key", rpa_session_key]
+            args[1:1] = ["--session-key", rpa_session_key]
         if str(remark_code or "").strip():
-            args[3:3] = ["--remark-code", remark_code]
+            args[1:1] = ["--remark-code", remark_code]
         if normalized_target_mode:
-            args[3:3] = ["--target-mode", normalized_target_mode]
+            args[1:1] = ["--target-mode", normalized_target_mode]
         if str(expected_confirmed_self_text or "").strip():
-            args[3:3] = [
+            args[1:1] = [
                 "--expected-confirmed-self-text",
                 str(expected_confirmed_self_text),
             ]
@@ -379,8 +393,6 @@ class RpaBridge:
         normalized_target_mode = str(target_mode or "").strip()
         args = [
             "voice-transcribe",
-            "--window-policy",
-            "verify",
             "--sidecar-run-id",
             sidecar_run_id,
             "--voice-action-stage",
@@ -391,7 +403,7 @@ class RpaBridge:
             str(artifact_dir),
         ]
         if normalized_stage == "execute":
-            args[3:3] = [
+            args[1:1] = [
                 "--canonical-voice-action-id",
                 str(canonical_voice_action_id).strip(),
                 "--reserved-worker-stable-id",
@@ -406,15 +418,15 @@ class RpaBridge:
                 str(selected_target_fingerprint).strip(),
             ]
         if str(display_name or "").strip():
-            args[3:3] = ["--target", display_name]
+            args[1:1] = ["--target", display_name]
         if str(rpa_session_key or "").strip():
-            args[3:3] = ["--session-key", rpa_session_key]
+            args[1:1] = ["--session-key", rpa_session_key]
         if str(remark_code or "").strip():
-            args[3:3] = ["--remark-code", remark_code]
+            args[1:1] = ["--remark-code", remark_code]
         if normalized_target_mode:
-            args[3:3] = ["--target-mode", normalized_target_mode]
+            args[1:1] = ["--target-mode", normalized_target_mode]
         if str(expected_confirmed_self_text or "").strip():
-            args[3:3] = [
+            args[1:1] = [
                 "--expected-confirmed-self-text",
                 str(expected_confirmed_self_text),
             ]
@@ -422,9 +434,9 @@ class RpaBridge:
             {str(value).strip() for value in (excluded_voice_anchor_keys or []) if str(value).strip()}
         )
         if clean_excluded_anchor_keys:
-            args[3:3] = ["--excluded-voice-anchor-keys", json.dumps(clean_excluded_anchor_keys, ensure_ascii=True)]
+            args[1:1] = ["--excluded-voice-anchor-keys", json.dumps(clean_excluded_anchor_keys, ensure_ascii=True)]
         if action_journal is not None:
-            args[3:3] = ["--action-journal", str(action_journal)]
+            args[1:1] = ["--action-journal", str(action_journal)]
         payload = self._call_omniauto(
             args,
             timeout=max(900, min(1800, int(max_duration_seconds) * 4 + 120)),
@@ -481,8 +493,6 @@ class RpaBridge:
         artifact_dir.mkdir(parents=True, exist_ok=True)
         args = [
             "send",
-            "--window-policy",
-            "verify",
             "--target",
             target,
             "--session-key",
@@ -775,7 +785,7 @@ class RpaBridge:
         *,
         action_journal: Path | None = None,
     ) -> list[str]:
-        args = [OMNIAUTO_ADD_FRIEND_ACTION, "--window-policy", "verify"]
+        args = [OMNIAUTO_ADD_FRIEND_ACTION]
         if task.search_phone:
             args.extend(["--phone", task.search_phone])
         elif task.wechat:
@@ -876,9 +886,11 @@ class RpaBridge:
             return {"ok": False, "error_code": "RPA_COMPONENT_NOT_READY", "message": f"sidecar 不存在：{self.sidecar_script}"}
         command = self._sidecar_command(args)
         sidecar_env = os.environ.copy()
-        # Window normalization/layout policy is owned by the Sidecar.  The
-        # Worker deliberately does not invent a second set of defaults; user
-        # supplied compatibility overrides are inherited unchanged.
+        # OmniAuto owns the map. Worker supplies only a durable location so
+        # independent Sidecar processes use the same calibration_id.
+        sidecar_env["CHEJIN_WECHAT_STARTUP_CALIBRATION_PATH"] = str(
+            CONFIG.app_dir / "wechat_startup_layout_calibration_v0.9.23.json"
+        )
         try:
             if cancel_check is None:
                 completed = subprocess.run(

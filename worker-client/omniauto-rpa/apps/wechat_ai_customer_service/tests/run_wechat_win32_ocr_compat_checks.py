@@ -645,6 +645,7 @@ def test_sessions_payload_reports_unresolved_layout_instead_of_empty_success() -
         },
     }
     originals = {
+        "win32gui": sidecar_mod.win32gui,
         "capture_wechat": sidecar_mod.capture_wechat,
         "run_ocr": sidecar_mod.run_ocr,
         "session_list_ocr_items": sidecar_mod.session_list_ocr_items,
@@ -979,21 +980,17 @@ def test_connector_add_friend_builds_win32_ocr_request() -> None:
         remark_code="CJ8K2P",
     )
     assert_true(result.get("ok") is True and result.get("result_code") == "invite_sent", f"unexpected add_friend result: {result}")
+    assert_true(len(connector.calls) == 1, f"C1 must not add a normalize/verify sidecar call: {connector.calls}")
+    args = connector.calls[0]["args"]
     assert_true(
-        connector.calls[0]["args"] == ["normalize-window", "--window-policy", "verify"],
-        f"add_friend must only verify startup-normalized geometry: {connector.calls}",
-    )
-    args = connector.calls[1]["args"]
-    assert_true(
-        args[:5] == [
+        args[:3] == [
             "add-friend-entry-click-plan-windows",
-            "--window-policy",
-            "verify",
             "--phone",
             "17368746889",
         ],
-        f"add_friend should reuse the normalized flow and verify geometry before its nested action: {args}",
+        f"add_friend must enter the production C1 action without a second window policy: {args}",
     )
+    assert_true("normalize-window" not in args and "--window-policy" not in args, f"C1 reintroduced a window gate: {args}")
     assert_true("--verify-message" in args and "我是车金二手车张伟" in args, f"verify_message should pass through: {args}")
     assert_true("--remark-name" in args and "客户-CJ8K2P-6889" in args, f"remark_name should pass through: {args}")
     assert_true("--remark-code" in args and "CJ8K2P" in args, f"remark_code should pass through: {args}")
@@ -1053,7 +1050,8 @@ def test_add_friend_menu_click_handles_stale_dialog_hwnd() -> None:
         "session_list_bounds": [120, 150, 390, 860],
         "chat_header_bounds": [390, 0, 980, 120],
         "message_viewport_bounds": [390, 120, 980, 700],
-        "input_bounds": [390, 700, 980, 860],
+        "toolbar_bounds": [390, 790, 980, 860],
+        "input_bounds": [390, 700, 980, 790],
     }
     originals = {
         "add_friend_paced_pause": sidecar_mod.add_friend_paced_pause,
@@ -1071,6 +1069,14 @@ def test_add_friend_menu_click_handles_stale_dialog_hwnd() -> None:
         "latest_layout": dict(sidecar_mod._LATEST_LAYOUT_SNAPSHOT_BY_HWND),
     }
     try:
+        sidecar_mod.win32gui = type(
+            "ForegroundWin32Gui",
+            (),
+            {
+                "GetForegroundWindow": staticmethod(lambda: 1001),
+                "GetAncestor": staticmethod(lambda candidate, _flag: candidate),
+            },
+        )()
         snapshot = sidecar_mod.win32_ocr_layout.build_layout_snapshot(
             hwnd=1001,
             frame_id="compat-menu-frame",
@@ -4217,17 +4223,29 @@ def test_fast_confirmation_still_enqueues_file_transfer_loopback() -> None:
             os.environ["WECHAT_WIN32_OCR_FAST_SEND_CONFIRMATION"] = previous
 
 
-def test_passive_probe_mode_toggle() -> None:
+def test_probe_modes_separate_passive_reads_from_active_business_actions() -> None:
     previous = os.environ.get("WECHAT_WIN32_OCR_PASSIVE_PROBE")
     try:
         os.environ["WECHAT_WIN32_OCR_PASSIVE_PROBE"] = "1"
         assert_true(use_passive_probe_mode("status"), "status should support passive probe mode")
         assert_true(use_passive_probe_mode("capabilities"), "capabilities should support passive probe mode")
+        assert_true(use_passive_probe_mode("calibration-status"), "calibration status must remain passive")
         assert_true(use_passive_probe_mode("sessions"), "sessions should support passive probe mode")
-        assert_true(use_passive_probe_mode("send") is False, "send action should never use passive probe mode")
-        assert_true(use_passive_probe_mode("add-friend-entry-click-plan-windows") is False, "Windows add_friend route should focus WeChat before clicks")
+        for action in (
+            "open-chat",
+            "messages",
+            "voice-transcribe",
+            "recover-render",
+            "send",
+            "add-friend-entry-click-plan-windows",
+        ):
+            assert_true(
+                not use_passive_probe_mode(action),
+                f"{action} must activate the calibrated WeChat HWND before its first UI action",
+            )
+        assert_true(not use_passive_probe_mode("normalize-window"), "startup normalization remains the only interactive window action")
         os.environ["WECHAT_WIN32_OCR_PASSIVE_PROBE"] = "0"
-        assert_true(use_passive_probe_mode("status") is False, "env override should disable passive probe mode")
+        assert_true(use_passive_probe_mode("status"), "status must remain passive even when a stale env override is present")
     finally:
         if previous is None:
             os.environ.pop("WECHAT_WIN32_OCR_PASSIVE_PROBE", None)
@@ -5192,7 +5210,7 @@ def test_non_retryable_input_failure_detects_focus_loss() -> None:
     assert_true(non_retryable_input_failure(result), f"focus loss must not be retried: {result}")
 
 
-def test_foreground_guard_zero_hwnd_can_degrade_when_enabled() -> None:
+def test_foreground_guard_zero_hwnd_cannot_be_bypassed_by_legacy_env() -> None:
     sidecar_mod = sys.modules["apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar"]
     previous = os.environ.get("WECHAT_WIN32_OCR_ALLOW_UNKNOWN_FOREGROUND")
     win32gui_mod = sidecar_mod.win32gui
@@ -5207,8 +5225,8 @@ def test_foreground_guard_zero_hwnd_can_degrade_when_enabled() -> None:
         setattr(win32gui_mod, "GetForegroundWindow", lambda: 0)
         setattr(win32gui_mod, "GetAncestor", lambda _hwnd, _flag: 0)
         result = sidecar_mod.foreground_window_matches_target(1001)
-        assert_true(result.get("ok") is True, f"foreground=0 should degrade to guarded-pass when enabled: {result}")
-        assert_true(str(result.get("reason") or "") == "foreground_unknown_guard_degraded", f"unexpected reason: {result}")
+        assert_true(result.get("ok") is False, f"foreground=0 must never authorize a click: {result}")
+        assert_true(str(result.get("reason") or "") == "foreground_not_wechat_target", f"unexpected reason: {result}")
     finally:
         setattr(win32gui_mod, "GetForegroundWindow", originals["GetForegroundWindow"])
         setattr(win32gui_mod, "GetAncestor", originals["GetAncestor"])
@@ -5244,7 +5262,7 @@ def test_foreground_guard_zero_hwnd_blocks_when_disabled() -> None:
             os.environ["WECHAT_WIN32_OCR_ALLOW_UNKNOWN_FOREGROUND"] = previous
 
 
-def test_recover_send_window_guard_recovers_foreground_mismatch() -> None:
+def test_recover_send_window_guard_does_not_activate_foreground_mismatch() -> None:
     sidecar_mod = sys.modules["apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar"]
     originals = {
         "basic_send_window_guard": sidecar_mod.basic_send_window_guard,
@@ -5266,11 +5284,10 @@ def test_recover_send_window_guard_recovers_foreground_mismatch() -> None:
         sidecar_mod.activate_window = fake_activate
         sidecar_mod.time.sleep = lambda seconds: calls["sleeps"].append(seconds)
         result = sidecar_mod.recover_send_window_guard(1001, max_attempts=2)
-        assert_true(result.get("ok") is True, f"expected focus recovery success: {result}")
-        assert_true(result.get("focus_recovered") is True, f"expected focus_recovered flag: {result}")
-        assert_true(int(result.get("focus_recovery_attempts") or 0) == 2, f"expected two recovery attempts: {result}")
-        assert_true(calls["activate"] == 2, f"expected two activate calls: {calls}")
-        assert_true(calls["sleeps"] == [0.30, 0.70], f"unexpected bounded recovery delays: {calls}")
+        assert_true(result.get("ok") is False, f"foreground mismatch must fail without recovery: {result}")
+        assert_true(calls["guard"] == 1, f"foreground guard must run exactly once: {calls}")
+        assert_true(calls["activate"] == 0, f"business action must not activate WeChat: {calls}")
+        assert_true(calls["sleeps"] == [], f"business action must not run recovery delays: {calls}")
     finally:
         sidecar_mod.basic_send_window_guard = originals["basic_send_window_guard"]
         sidecar_mod.activate_window = originals["activate_window"]
@@ -5299,13 +5316,11 @@ def test_recover_send_window_guard_stops_after_two_failed_attempts() -> None:
         sidecar_mod.time.sleep = lambda seconds: calls["sleeps"].append(seconds)
         result = sidecar_mod.recover_send_window_guard(1001, max_attempts=2)
         assert_true(result.get("ok") is False, f"focus recovery must fail closed: {result}")
-        assert_true(result.get("focus_recovered") is False, f"failed recovery must be explicit: {result}")
-        assert_true(int(result.get("focus_recovery_attempts") or 0) == 2, f"recovery must be bounded: {result}")
-        assert_true(calls["guard"] == 3, f"expected initial guard plus two retries: {calls}")
-        assert_true(calls["activate"] == 2, f"expected exactly two activation attempts: {calls}")
-        assert_true(calls["sleeps"] == [0.30, 0.70], f"unexpected bounded recovery delays: {calls}")
+        assert_true(calls["guard"] == 1, f"legacy max_attempts must not trigger retries: {calls}")
+        assert_true(calls["activate"] == 0, f"business action must not activate WeChat: {calls}")
+        assert_true(calls["sleeps"] == [], f"business action must not wait for activation recovery: {calls}")
         foreground = result.get("foreground_window") if isinstance(result.get("foreground_window"), dict) else {}
-        assert_true(foreground.get("title") == "other-3", f"final foreground evidence must be preserved: {result}")
+        assert_true(foreground.get("title") == "other-1", f"single foreground evidence must be preserved: {result}")
     finally:
         sidecar_mod.basic_send_window_guard = originals["basic_send_window_guard"]
         sidecar_mod.activate_window = originals["activate_window"]
@@ -5499,7 +5514,10 @@ def test_validate_active_send_target_accepts_right_panel_roi_without_full_ocr() 
     geometry = {"left": 0, "top": 0, "right": 981, "bottom": 860, "width": 981, "height": 860}
     image = Image.new("RGB", (981, 860), "white")
     layout_snapshot = _register_compat_image_layout(sidecar_mod, image, hwnd=1001)
-    expected_roi_size = (981 - int(layout_snapshot["sidebar_bounds"][2]), 860)
+    expected_roi_size = (
+        int(layout_snapshot["input_bounds"][2]) - int(layout_snapshot["chat_header_bounds"][0]),
+        int(layout_snapshot["input_bounds"][3]) - int(layout_snapshot["chat_header_bounds"][1]),
+    )
     calls = {"ocr": []}
     roi_items = [
         {"text": "新数据测试", "left": 172, "top": 58, "right": 260, "bottom": 78, "center_x": 216, "center_y": 68, "confidence": 0.99},
@@ -5547,7 +5565,10 @@ def test_validate_active_send_target_roi_falls_back_when_surface_is_weak() -> No
     geometry = {"left": 0, "top": 0, "right": 981, "bottom": 860, "width": 981, "height": 860}
     image = Image.new("RGB", (981, 860), "white")
     layout_snapshot = _register_compat_image_layout(sidecar_mod, image, hwnd=1001)
-    expected_roi_size = (981 - int(layout_snapshot["sidebar_bounds"][2]), 860)
+    expected_roi_size = (
+        int(layout_snapshot["input_bounds"][2]) - int(layout_snapshot["chat_header_bounds"][0]),
+        int(layout_snapshot["input_bounds"][3]) - int(layout_snapshot["chat_header_bounds"][1]),
+    )
     calls = {"ocr": []}
     roi_items = [
         {"text": "新数据测试", "left": 172, "top": 58, "right": 260, "bottom": 78, "center_x": 216, "center_y": 68, "confidence": 0.99},
@@ -5596,7 +5617,10 @@ def test_validate_active_send_target_roi_rejects_visible_wrong_chat_without_full
     geometry = {"left": 0, "top": 0, "right": 981, "bottom": 860, "width": 981, "height": 860}
     image = Image.new("RGB", (981, 860), "white")
     layout_snapshot = _register_compat_image_layout(sidecar_mod, image, hwnd=1001)
-    expected_roi_size = (981 - int(layout_snapshot["sidebar_bounds"][2]), 860)
+    expected_roi_size = (
+        int(layout_snapshot["input_bounds"][2]) - int(layout_snapshot["chat_header_bounds"][0]),
+        int(layout_snapshot["input_bounds"][3]) - int(layout_snapshot["chat_header_bounds"][1]),
+    )
     calls = {"ocr": []}
     roi_items = [
         {"text": "许聪", "left": 172, "top": 58, "right": 220, "bottom": 78, "center_x": 196, "center_y": 68, "confidence": 0.99},
@@ -5648,7 +5672,10 @@ def test_validate_active_send_target_roi_falls_back_on_soft_blocking_text() -> N
     geometry = {"left": 0, "top": 0, "right": 981, "bottom": 860, "width": 981, "height": 860}
     image = Image.new("RGB", (981, 860), "white")
     layout_snapshot = _register_compat_image_layout(sidecar_mod, image, hwnd=1001)
-    expected_roi_size = (981 - int(layout_snapshot["sidebar_bounds"][2]), 860)
+    expected_roi_size = (
+        int(layout_snapshot["input_bounds"][2]) - int(layout_snapshot["chat_header_bounds"][0]),
+        int(layout_snapshot["input_bounds"][3]) - int(layout_snapshot["chat_header_bounds"][1]),
+    )
     calls = {"ocr": []}
     roi_items = [
         {"text": "新数据测试", "left": 172, "top": 58, "right": 260, "bottom": 78, "center_x": 216, "center_y": 68, "confidence": 0.99},
@@ -6427,7 +6454,7 @@ def test_activate_session_candidate_single_click_on_unconfirmed_target() -> None
     try:
         sidecar_mod.choose_session_row_click_point = lambda *args, **kwargs: (180, 188, {"candidate_count": 10})
         sidecar_mod.humanized_action_sleep = lambda *_args, **_kwargs: 0.0
-        sidecar_mod.human_window_image_click = lambda *_args, **_kwargs: calls.__setitem__("click", calls["click"] + 1)
+        sidecar_mod.human_window_image_click = lambda *_args, **_kwargs: (calls.__setitem__("click", calls["click"] + 1) or {"ok": True})
 
         def fake_validate(*_args, **_kwargs):
             calls["validate"] += 1
@@ -6488,7 +6515,7 @@ def test_activate_session_candidate_passive_confirm_without_second_click() -> No
         os.environ["WECHAT_WIN32_OCR_TARGET_SWITCH_PASSIVE_CONFIRM_ATTEMPTS"] = "2"
         sidecar_mod.choose_session_row_click_point = lambda *args, **kwargs: (180, 188, {"candidate_count": 10})
         sidecar_mod.humanized_action_sleep = lambda *_args, **_kwargs: 0.0
-        sidecar_mod.human_window_image_click = lambda *_args, **_kwargs: calls.__setitem__("click", calls["click"] + 1)
+        sidecar_mod.human_window_image_click = lambda *_args, **_kwargs: (calls.__setitem__("click", calls["click"] + 1) or {"ok": True})
 
         def fake_validate(*_args, **_kwargs):
             calls["validate"] += 1
@@ -6682,7 +6709,7 @@ def test_activate_session_candidate_accepts_selected_session_confirmation() -> N
     clicks: list[tuple[str, int, int]] = []
     try:
         sidecar_mod.humanized_action_sleep = lambda *_args, **_kwargs: None
-        sidecar_mod.human_window_image_click = lambda _hwnd, x, y, **_kwargs: clicks.append(("window_image", x, y))
+        sidecar_mod.human_window_image_click = lambda _hwnd, x, y, **_kwargs: (clicks.append(("window_image", x, y)) or {"ok": True})
         sidecar_mod.human_client_click = lambda _hwnd, x, y, **_kwargs: clicks.append(("client", x, y))
         sidecar_mod.validate_active_send_target = lambda *_args, **_kwargs: {
             "ok": False,
@@ -7163,7 +7190,7 @@ def test_sidebar_search_clear_checks_window_guard_before_keyboard() -> None:
     calls = {"click": 0, "keys": 0}
     try:
         sidecar_mod.basic_send_window_guard = lambda hwnd: {"ok": False, "reason": "foreground_not_wechat_target"}
-        sidecar_mod.human_window_image_click = lambda hwnd, x, y: calls.__setitem__("click", calls["click"] + 1)
+        sidecar_mod.human_window_image_click = lambda hwnd, x, y: (calls.__setitem__("click", calls["click"] + 1) or {"ok": True})
         sidecar_mod.key_press = lambda key: calls.__setitem__("keys", calls["keys"] + 1)
         sidecar_mod.time.sleep = lambda seconds: None
         result = sidecar_mod.clear_sidebar_search_box_without_select_all(1001, 122, 64, target_hint="新数据测试")
@@ -7512,7 +7539,7 @@ def main() -> int:
         test_chat_regions_follow_structural_layout_boundaries,
         test_file_transfer_simulated_inbound_fallback,
         test_fast_confirmation_still_enqueues_file_transfer_loopback,
-        test_passive_probe_mode_toggle,
+        test_probe_modes_separate_passive_reads_from_active_business_actions,
         test_low_disturbance_read_and_action_budget_defaults,
         test_rpa_action_pacing_covers_keyboard_mouse_and_window_image_clicks,
         test_passive_probe_window_discovery_is_non_interactive,
@@ -7567,9 +7594,9 @@ def main() -> int:
         test_send_rpa_env_enables_strict_focus_single_confirm_and_blank_retry,
         test_activate_window_debounces_aggressive_refocus,
         test_non_retryable_input_failure_detects_focus_loss,
-        test_foreground_guard_zero_hwnd_can_degrade_when_enabled,
+        test_foreground_guard_zero_hwnd_cannot_be_bypassed_by_legacy_env,
         test_foreground_guard_zero_hwnd_blocks_when_disabled,
-        test_recover_send_window_guard_recovers_foreground_mismatch,
+        test_recover_send_window_guard_does_not_activate_foreground_mismatch,
         test_recover_send_window_guard_stops_after_two_failed_attempts,
         test_recover_send_window_guard_does_not_retry_non_focus_failures,
         test_send_payload_stops_before_input_after_two_focus_recovery_failures,
