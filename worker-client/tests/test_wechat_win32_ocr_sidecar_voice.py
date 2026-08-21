@@ -86,7 +86,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
     def _semantic_layout_for_image(self, image: Image.Image) -> dict:
         """Resolved production snapshot shape for non-layout semantic tests.
 
-        The 0.9.23 geometry tests exercise the real structural detector and
+        The 0.9.24 geometry tests exercise the real structural detector and
         coordinate converter. These older voice tests deliberately provide
         already-resolved semantic regions so they test voice behavior without
         reintroducing a fixed production fallback.
@@ -2767,6 +2767,66 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(clicks, [(int(item["center_x"]), int(item["center_y"]))])
         self.assertEqual(result["click_jitter"]["reason"], "click_exact_ocr_menu_text_center")
+
+    def test_voice_and_image_popup_clicks_do_not_require_main_hwnd_foreground(self) -> None:
+        """Exercise the shared production converter used by both C2 menus."""
+
+        image = Image.new("RGB", (150, 100), (247, 247, 247))
+        physical_clicks: list[tuple[str, int, int]] = []
+
+        def screen_click(x: int, y: int, *, bounds, action_name: str):
+            physical_clicks.append((str(action_name), int(x), int(y)))
+            return {"ok": True}
+
+        with (
+            patch.object(
+                sidecar,
+                "get_window_geometry",
+                return_value={"left": 530, "top": 430, "right": 680, "bottom": 530, "width": 150, "height": 100},
+            ),
+            patch.object(
+                sidecar,
+                "get_window_client_geometry",
+                return_value={"width": 150, "height": 100, "screen_left": 530, "screen_top": 430},
+            ),
+            patch.object(sidecar, "window_dpi_scale", return_value=1.0),
+            patch.object(sidecar, "screen_work_area", return_value={}),
+            patch.object(sidecar, "human_screen_click_in_bounds", side_effect=screen_click),
+            patch.object(sidecar, "ensure_left_button_released", return_value=None),
+            patch.object(sidecar, "require_active_ui_action_budget", return_value={"ok": True}),
+            patch.object(
+                sidecar,
+                "foreground_window_matches_target",
+                side_effect=AssertionError("popup click must not compare foreground to main HWND"),
+            ),
+        ):
+            for action_name in (
+                "voice_transcribe_context_menu_click",
+                "c2_vision_image_copy_menu_click",
+            ):
+                snapshot = sidecar._register_layout_snapshot(
+                    2,
+                    image.copy(),
+                    capture_mode=sidecar.win32_ocr_layout.CAPTURE_MODE_WINDOW_VISIBLE_SCREEN,
+                    screenshot_path="popup.png",
+                    capture_screen_origin=[530, 430],
+                    generic_popup=True,
+                )
+                self._latest_semantic_layout = snapshot
+                result = sidecar.human_window_image_click_in_bounds(
+                    2,
+                    75,
+                    50,
+                    bounds=[20, 20, 130, 80],
+                    action_name=action_name,
+                    expected_snapshot_id=str(snapshot["layout_snapshot_id"]),
+                )
+                self.assertTrue(result["ok"], result)
+
+        self.assertEqual(
+            [name for name, _x, _y in physical_clicks],
+            ["voice_transcribe_context_menu_click", "c2_vision_image_copy_menu_click"],
+        )
 
     def test_text_message_context_menu_text_is_detected(self) -> None:
         self.assertTrue(sidecar.text_message_context_menu_text_like("复制"))

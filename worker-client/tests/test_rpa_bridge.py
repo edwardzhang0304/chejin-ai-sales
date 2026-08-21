@@ -257,7 +257,7 @@ class RpaBridgeTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(calls, [["calibration-status"]])
 
-    def test_idle_changed_window_is_restored_once_before_new_transaction(self):
+    def test_changed_window_requires_restart_without_automatic_recalibration(self):
         bridge = RpaBridge(sidecar_script=Path("sidecar.py"))
         bridge.mode = "real"
         calls: list[list[str]] = []
@@ -270,16 +270,18 @@ class RpaBridgeTest(unittest.TestCase):
                     "error_code": "WECHAT_UI_STARTUP_CALIBRATION_FAILED",
                     "state": "startup_layout_calibration_stale",
                 }
-            return {"ok": True, "state": "startup_layout_calibrated"}
+            raise AssertionError("new transaction must not normalize or recalibrate")
 
         with patch.object(sys, "platform", "win32"), patch.object(
             bridge, "_call_omniauto", side_effect=fake_call
         ):
             result = bridge.prepare_startup_layout_for_new_transaction()
 
-        self.assertTrue(result["ok"])
-        self.assertTrue(result["restored_before_new_transaction"])
-        self.assertEqual(calls, [["calibration-status"], ["normalize-window"]])
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["manual_action_required"], "restart_chejin_worker_client")
+        self.assertFalse(result["automatic_window_move_attempted"])
+        self.assertFalse(result["automatic_recalibration_attempted"])
+        self.assertEqual(calls, [["calibration-status"]])
 
     def test_inflight_calibration_check_never_moves_or_recaptures_window(self):
         bridge = RpaBridge(sidecar_script=Path("sidecar.py"))

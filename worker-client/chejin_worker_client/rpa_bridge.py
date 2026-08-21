@@ -32,7 +32,7 @@ def startup_probe_geometry(payload: dict[str, Any] | None) -> tuple[dict[str, An
     """Expose the authoritative post-normalization WeChat rectangle to the UI.
 
     ``status`` historically returned ``geometry`` at the top level.  The
-    v0.9.23 startup path intentionally reuses the successful
+    v0.9.24 startup path intentionally reuses the successful
     ``normalize-window`` observation, whose final rectangle is nested under
     ``window_normalization.after``.  Keep one stable Worker-facing contract
     without taking another screenshot or running OCR.
@@ -164,7 +164,13 @@ class RpaBridge:
         return self._call_omniauto(["status"], timeout=60)
 
     def prepare_startup_layout_for_new_transaction(self) -> dict[str, Any]:
-        """Restore/recalibrate only at an idle-to-business transaction edge."""
+        """Passively verify the startup map before a new UI transaction.
+
+        Window normalization and calibration are startup-only.  If the map is
+        missing or stale while the client is running, the transaction must
+        stop and ask the operator to restart the client; it must never move
+        WeChat or recalibrate automatically here.
+        """
         if self.mode == "mock":
             return {"ok": True, "mode": "mock", "state": "mock_calibration_current"}
         if sys.platform != "win32":
@@ -172,14 +178,11 @@ class RpaBridge:
         current = dict(self._call_omniauto(["calibration-status"], timeout=30))
         if current.get("ok"):
             return current
-        restored = dict(self._call_omniauto(["normalize-window"], timeout=60))
-        if restored.get("ok"):
-            self._startup_window_normalization_state = "completed"
-            self.last_startup_window_normalization = restored
         return {
-            **restored,
-            "idle_calibration_probe": current,
-            "restored_before_new_transaction": bool(restored.get("ok")),
+            **current,
+            "manual_action_required": "restart_chejin_worker_client",
+            "automatic_window_move_attempted": False,
+            "automatic_recalibration_attempted": False,
         }
 
     def verify_startup_layout_for_inflight_transaction(self) -> dict[str, Any]:
@@ -932,7 +935,7 @@ class RpaBridge:
         # OmniAuto owns the map. Worker supplies only a durable location so
         # independent Sidecar processes use the same calibration_id.
         sidecar_env["CHEJIN_WECHAT_STARTUP_CALIBRATION_PATH"] = str(
-            CONFIG.app_dir / "wechat_startup_layout_calibration_v0.9.23.json"
+            CONFIG.app_dir / "wechat_startup_layout_calibration_v0.9.24.json"
         )
         try:
             if cancel_check is None:

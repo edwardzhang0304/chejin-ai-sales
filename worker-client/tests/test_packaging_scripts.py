@@ -184,7 +184,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("delivery ZIP does not contain the packaged runtime directory", workflow)
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v0.9.23-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v0.9.24-windows-x64.delivery.json", workflow)
         self.assertIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn("vision_credential_embedded", workflow)
         self.assertIn("vision_configuration_locked", workflow)
@@ -534,7 +534,7 @@ class PackagingScriptsTest(unittest.TestCase):
                         "source_message_transport_allowlist",
                         "typed_committed_media_identity_contract",
                         "media_action_four_terminal_contract",
-                        "c2_contract_0_9_23_generated_schema",
+                        "c2_contract_0_9_24_generated_schema",
                         (
                             "voice_frame_action_binding_observation_"
                             "projection_contract"
@@ -570,12 +570,12 @@ class PackagingScriptsTest(unittest.TestCase):
                         "add_friend_frame_seed_facade_forwarding_contract",
                         "verified_send_input_bounds_forwarding_contract",
                         "invalid_session_layout_explicit_failure_contract",
-                        "v0_9_23_startup_layout_calibration_contract",
+                        "v0_9_24_startup_layout_calibration_contract",
                         "gray_v0_9_20_region_local_coordinate_map_contract",
                         "current_monitor_dpi_window_profile_contract",
                         "startup_window_position_and_size_once_contract",
                         "exact_visible_client_capture_calibration_contract",
-                        "startup_raw_pixel_plus_operation_row_anchor_contract",
+                        "startup_region_mapped_plus_reference_contract",
                         (
                             "business_frame_and_calibration_identity_"
                             "separation_contract"
@@ -583,14 +583,15 @@ class PackagingScriptsTest(unittest.TestCase):
                         "c1_c2_c3_c4_region_map_coordinate_owner_contract",
                         "business_actions_never_normalize_window_contract",
                         (
-                            "idle_transaction_restore_inflight_fail_closed_"
+                            "runtime_window_change_manual_restart_"
                             "contract"
                         ),
                         "c1_eight_business_change_frames_contract",
                         (
-                            "calibrated_main_hwnd_active_business_"
-                            "foreground_contract"
+                            "gray_v0_9_20_entry_activation_without_global_"
+                            "success_gate_contract"
                         ),
+                        "popup_menu_foreground_not_main_hwnd_equality_gated_contract",
                         "frozen_compat_sidecar_single_command_contract",
                         "four_edge_dpi_window_margin_contract",
                         "visible_calibrated_window_ignores_hidden_weixin_shell_contract",
@@ -618,7 +619,7 @@ class PackagingScriptsTest(unittest.TestCase):
             "befefc6fa17be11a763fa77ee09453bb28e02432",
             provenance["integration_note"],
         )
-        self.assertIn("0.9.23", provenance["integration_note"])
+        self.assertIn("0.9.24", provenance["integration_note"])
         self.assertIn(
             "immutable_visible_scan_frame_reuse_contract",
             provenance["chejin_overlays"],
@@ -634,10 +635,10 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("startup_layout_calibration", provenance["integration_note"])
         self.assertIn("C1-C4 业务帧", provenance["integration_note"])
         self.assertIn("OmniAuto 独占区域映射和坐标决策", provenance["integration_note"])
-        self.assertIn("已删除 0.9.22 每帧重建整套外壳", provenance["integration_note"])
+        self.assertIn("删除统一激活成功布尔门禁", provenance["integration_note"])
         self.assertIn("C1 保留八类真实变化画面", provenance["integration_note"])
         self.assertIn("sent_ack 语义不变", provenance["integration_note"])
-        self.assertIn("独立 OmniAuto 固定提交", provenance["integration_note"])
+        self.assertIn("上游选择性集成继续固定于", provenance["integration_note"])
         self.assertEqual(
             provenance["historical_integrations"][0][
                 "chejin_integration_commit"
@@ -957,7 +958,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "0.9.23"', workflow)
+        self.assertIn('version -ne "0.9.24"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)
