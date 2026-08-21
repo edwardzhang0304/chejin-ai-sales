@@ -4,7 +4,7 @@
   "upstream_base_commit": "a563e6688c47a8922510794101967823fe1389d7",
   "selective_integrations": [
     {
-      "source_commit": "98861fa81cfcc81e81943eb8c33ec2aa5f7c83ed",
+      "source_commit": "befefc6fa17be11a763fa77ee09453bb28e02432",
       "scope": [
         "exact_wechat_context_menu_classification",
         "same_popup_menu_panel_evidence_contract",
@@ -56,7 +56,8 @@
         "c1_eight_business_change_frames_contract",
         "calibrated_main_hwnd_active_business_foreground_contract",
         "frozen_compat_sidecar_single_command_contract",
-        "four_edge_dpi_window_margin_contract"
+        "four_edge_dpi_window_margin_contract",
+        "visible_calibrated_window_ignores_hidden_weixin_shell_contract"
       ]
     }
   ],
@@ -90,5 +91,5 @@
       ]
     }
   ],
-  "integration_note": "0.9.23 候选以 gray-v0.9.20 业务流程为基线：启动时按微信 HWND 所在显示器和 GetDpiForWindow 固定位置与尺寸，仅用一张可见客户区截图建立 startup_layout_calibration；C1-C4 业务帧只携带 frame_id 并引用 calibration_id，OmniAuto 独占区域映射和坐标决策。已删除 0.9.22 每帧重建整套外壳、统一 980x860、Worker/业务模块二次解释坐标及双路径开关；加号、搜索、会话、消息、输入和发送分别使用 gray-v0.9.20 区域内参考规则或当前动态内容帧。C1 保留八类真实变化画面，C2 媒体、C3 S0/S1/S2、Journal、Outbox、Handoff 和 sent_ack 语义不变。架构复审通过后已先形成独立 OmniAuto 固定提交 98861fa81cfcc81e81943eb8c33ec2aa5f7c83ed；本来源清单只绑定该真实完整 SHA。"
+  "integration_note": "0.9.23 候选以 gray-v0.9.20 业务流程为基线：启动时按微信 HWND 所在显示器和 GetDpiForWindow 固定位置与尺寸，仅用一张可见客户区截图建立 startup_layout_calibration；C1-C4 业务帧只携带 frame_id 并引用 calibration_id，OmniAuto 独占区域映射和坐标决策。已删除 0.9.22 每帧重建整套外壳、统一 980x860、Worker/业务模块二次解释坐标及双路径开关；加号、搜索、会话、消息、输入和发送分别使用 gray-v0.9.20 区域内参考规则或当前动态内容帧。C1 保留八类真实变化画面，C2 媒体、C3 S0/S1/S2、Journal、Outbox、Handoff 和 sent_ack 语义不变。业务动作复用 gray-v0.9.20 的 visible_main_windows 选择器，隐藏 Weixin 只作诊断，选中的可见 HWND 必须与启动标定 HWND 一致。独立 OmniAuto 固定提交为 befefc6fa17be11a763fa77ee09453bb28e02432；本来源清单只绑定该真实完整 SHA。"
 }

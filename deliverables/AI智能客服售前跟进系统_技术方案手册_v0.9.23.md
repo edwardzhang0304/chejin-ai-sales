@@ -5014,6 +5014,10 @@ HWND 检查，不增加截图、OCR 或整套布局重算。
    若既有有限激活仍失败，统一返回既有 `state=wechat_window_not_foreground`、
    `error_code=WECHAT_WINDOW_NOT_READY`，并必须在零鼠标、零键盘、零剪贴板和零消息事实下结束本次动作；
    不得继续点击，也不得因此创建业务 Handoff、调用 Brain 或伪造业务终态。
+   业务动作选择微信窗口时必须复用 `0.9.20` 的可见窗口选择函数：只从
+   `visible_main_windows` 选择当前可操作窗口，再确认选中 HWND 等于启动标定 HWND。
+   `main_windows` 中不可见的后台 `Weixin` 窗口只保留为诊断信息，不得参与数量门禁；
+   找不到可见窗口，或选中的可见 HWND 与标定 HWND 不一致时，才按上述规则安全停止。
 
 #### 16.11.4 标定复用、失效和恢复
 

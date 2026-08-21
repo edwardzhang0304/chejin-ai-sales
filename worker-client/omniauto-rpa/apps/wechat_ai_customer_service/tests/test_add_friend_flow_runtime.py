@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 from typing import Any, Iterator
 from unittest.mock import patch
 
@@ -197,6 +198,141 @@ def production_boundary(
 
 
 class AddFriendProductionEntryTest(unittest.TestCase):
+    def test_public_run_action_ignores_hidden_weixin_and_reaches_real_c1_click(self) -> None:
+        """UAT-006: public entry keeps the real 0.9.20 visible-window selector."""
+
+        image, item = _bright_wechat_add_friend_frame(selected_row=2)
+        ocr_items = [_search_item(item, "Q搜索")]
+        clicks: list[dict[str, Any]] = []
+        activation_calls: list[tuple[int, bool]] = []
+        foreground = {"hwnd": 909}
+        visible_target = {
+            "hwnd": 1001,
+            "pid": 2001,
+            "title": "微信",
+            "class_name": "Qt51514QWindowIcon",
+            "visible": True,
+        }
+        hidden_weixin = {
+            "hwnd": 1002,
+            "pid": 2001,
+            "title": "Weixin",
+            "class_name": "Qt51514QWindowIcon",
+            "visible": False,
+        }
+        probe = {
+            "windows": [visible_target, hidden_weixin],
+            "visible_windows": [visible_target],
+            "main_windows": [visible_target, hidden_weixin],
+            "visible_main_windows": [visible_target],
+            "main_count": 2,
+            "visible_main_count": 1,
+        }
+
+        def foreground_match(hwnd: int) -> dict[str, Any]:
+            matched = int(foreground["hwnd"]) == int(hwnd)
+            return {
+                "ok": matched,
+                "reason": "foreground_matches_target" if matched else "foreground_not_target",
+                "target_hwnd": int(hwnd),
+                "foreground_hwnd": int(foreground["hwnd"]),
+            }
+
+        def activate(hwnd: int, *, foreground_only: bool = False) -> None:
+            activation_calls.append((int(hwnd), bool(foreground_only)))
+            foreground["hwnd"] = int(hwnd)
+
+        args = SimpleNamespace(
+            action="add-friend-entry-click-plan-windows",
+            artifact_dir="",
+            phone="17368746889",
+            wechat="",
+            verify_message="我是车金二手车张伟",
+            remark_name="客户-CJ8K2P",
+            remark_code="CJ8K2P",
+            calibration_only=False,
+        )
+        user32 = SimpleNamespace(
+            IsIconic=lambda _hwnd: 0,
+            IsWindowVisible=lambda hwnd: int(hwnd) == 1001,
+        )
+        win32gui = SimpleNamespace(IsWindow=lambda hwnd: int(hwnd) in {1001, 1002})
+
+        with tempfile.TemporaryDirectory(prefix="add-friend-hidden-weixin-") as temp_dir:
+            args.artifact_dir = temp_dir
+            with production_boundary(image, ocr_items=ocr_items, click_points=clicks):
+                with ExitStack() as stack:
+                    stack.enter_context(patch.object(sidecar, "_WIN32_IMPORT_ERROR", ""))
+                    stack.enter_context(patch.object(sidecar, "probe_wechat_windows", return_value=probe))
+                    stack.enter_context(patch.object(sidecar, "foreground_window_matches_target", side_effect=foreground_match))
+                    stack.enter_context(patch.object(sidecar, "activate_window", side_effect=activate))
+                    stack.enter_context(patch.object(sidecar, "win32gui", win32gui))
+                    stack.enter_context(patch.object(sidecar.ctypes, "windll", SimpleNamespace(user32=user32), create=True))
+                    stack.enter_context(patch.object(sidecar, "humanized_action_sleep", return_value=0.0))
+                    with self.assertRaises(PhysicalClickReached):
+                        sidecar.run_action(args)
+
+        self.assertEqual(activation_calls, [(1001, True)])
+        self.assertEqual(foreground["hwnd"], 1001)
+        self.assertEqual(len(clicks), 1, clicks)
+        self.assertEqual(clicks[0]["action_name"], "plus_entry_click_1")
+
+    def test_public_run_action_rejects_visible_hwnd_different_from_calibration(self) -> None:
+        """The hidden target cannot authorize a different visible WeChat HWND."""
+
+        image, item = _bright_wechat_add_friend_frame(selected_row=2)
+        clicks: list[dict[str, Any]] = []
+        visible_other = {
+            "hwnd": 1002,
+            "pid": 2001,
+            "title": "微信",
+            "class_name": "Qt51514QWindowIcon",
+            "visible": True,
+        }
+        hidden_calibrated = {
+            "hwnd": 1001,
+            "pid": 2001,
+            "title": "Weixin",
+            "class_name": "Qt51514QWindowIcon",
+            "visible": False,
+        }
+        probe = {
+            "windows": [visible_other, hidden_calibrated],
+            "visible_windows": [visible_other],
+            "main_windows": [visible_other, hidden_calibrated],
+            "visible_main_windows": [visible_other],
+            "main_count": 2,
+            "visible_main_count": 1,
+        }
+        args = SimpleNamespace(
+            action="add-friend-entry-click-plan-windows",
+            artifact_dir="",
+            phone="17368746889",
+            wechat="",
+            verify_message="我是车金二手车张伟",
+            remark_name="客户-CJ8K2P",
+            remark_code="CJ8K2P",
+            calibration_only=False,
+        )
+
+        with tempfile.TemporaryDirectory(prefix="add-friend-wrong-visible-hwnd-") as temp_dir:
+            args.artifact_dir = temp_dir
+            with production_boundary(
+                image,
+                ocr_items=[_search_item(item, "Q搜索")],
+                click_points=clicks,
+            ):
+                with ExitStack() as stack:
+                    stack.enter_context(patch.object(sidecar, "_WIN32_IMPORT_ERROR", ""))
+                    stack.enter_context(patch.object(sidecar, "probe_wechat_windows", return_value=probe))
+                    result = sidecar.run_action(args)
+
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["error_code"], "WECHAT_WINDOW_NOT_READY", result)
+        self.assertEqual(result["reason"], "startup_calibration_hwnd_changed", result)
+        self.assertTrue(result["no_clicks_performed"], result)
+        self.assertEqual(clicks, [])
+
     def test_frame_seed_requires_same_live_hwnd_frame_and_layout_snapshot(self) -> None:
         image, item = _bright_wechat_add_friend_frame(selected_row=2)
         ocr_items = [_search_item(item, "Q搜索")]
