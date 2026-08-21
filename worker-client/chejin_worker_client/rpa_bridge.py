@@ -28,6 +28,42 @@ OMNIAUTO_ADD_FRIEND_ACTION = "add-friend-entry-click-plan-windows"
 CancellationCheck = Callable[[], bool | str]
 
 
+def startup_probe_geometry(payload: dict[str, Any] | None) -> tuple[dict[str, Any], str]:
+    """Expose the authoritative post-normalization WeChat rectangle to the UI.
+
+    ``status`` historically returned ``geometry`` at the top level.  The
+    v0.9.23 startup path intentionally reuses the successful
+    ``normalize-window`` observation, whose final rectangle is nested under
+    ``window_normalization.after``.  Keep one stable Worker-facing contract
+    without taking another screenshot or running OCR.
+    """
+
+    source = payload if isinstance(payload, dict) else {}
+    candidates = (
+        (source.get("geometry"), "status.geometry"),
+        (
+            (
+                source.get("window_normalization", {}).get("after")
+                if isinstance(source.get("window_normalization"), dict)
+                else None
+            ),
+            "window_normalization.after",
+        ),
+    )
+    required = ("left", "top", "right", "bottom", "width", "height")
+    for candidate, origin in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        try:
+            geometry = {key: int(candidate[key]) for key in required}
+        except (KeyError, TypeError, ValueError):
+            continue
+        if geometry["width"] <= 0 or geometry["height"] <= 0:
+            continue
+        return geometry, origin
+    return {}, ""
+
+
 def default_sidecar_script() -> Path:
     configured = os.environ.get("CHEJIN_OMNIAUTO_SIDECAR")
     if configured:
@@ -101,6 +137,13 @@ class RpaBridge:
                 self._startup_window_normalization_state
             ),
         }
+        geometry, geometry_source = startup_probe_geometry(payload)
+        if geometry:
+            payload = {
+                **payload,
+                "geometry": geometry,
+                "geometry_source": geometry_source,
+            }
         self.last_probe_payload = dict(payload)
         if startup_normalization and not startup_normalization.get("ok"):
             if str(startup_normalization.get("error_code") or "") == "WECHAT_WINDOW_NOT_FOUND":

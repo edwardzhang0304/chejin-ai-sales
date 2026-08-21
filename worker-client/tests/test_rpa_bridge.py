@@ -20,7 +20,12 @@ from chejin_worker_client.action_journal import (
 )
 from chejin_worker_client.config import CONFIG
 from chejin_worker_client.models import Task
-from chejin_worker_client.rpa_bridge import OMNIAUTO_ADD_FRIEND_ACTION, RpaBridge, default_sidecar_script
+from chejin_worker_client.rpa_bridge import (
+    OMNIAUTO_ADD_FRIEND_ACTION,
+    RpaBridge,
+    default_sidecar_script,
+    startup_probe_geometry,
+)
 
 
 class RpaBridgeTest(unittest.TestCase):
@@ -85,14 +90,21 @@ class RpaBridgeTest(unittest.TestCase):
         bridge.mode = "real"
         payload = {
             "ok": True,
-            "geometry": {
-                "left": 100,
-                "top": 80,
-                "right": 900,
-                "bottom": 700,
-                "width": 800,
-                "height": 620,
+            "state": "startup_layout_calibrated",
+            "window_normalization": {
+                "ok": True,
+                "after": {
+                    "left": 100,
+                    "top": 80,
+                    "right": 900,
+                    "bottom": 932,
+                    "width": 800,
+                    "height": 852,
+                },
             },
+            "startup_layout_calibration": {"executable": True},
+            "screenshot_call_count": 1,
+            "ocr_call_count": 1,
         }
 
         calls: list[list[str]] = []
@@ -107,9 +119,35 @@ class RpaBridgeTest(unittest.TestCase):
             status = bridge.probe()
 
         self.assertEqual(status, ("ready", "logged_in"))
-        self.assertEqual(bridge.last_probe_payload["geometry"], payload["geometry"])
+        self.assertEqual(
+            bridge.last_probe_payload["geometry"],
+            payload["window_normalization"]["after"],
+        )
+        self.assertEqual(
+            bridge.last_probe_payload["geometry_source"],
+            "window_normalization.after",
+        )
         self.assertTrue(bridge.last_probe_payload["startup_window_normalization"]["ok"])
         self.assertEqual(calls, [["normalize-window"]])
+
+    def test_startup_probe_geometry_rejects_incomplete_or_non_positive_rectangles(self):
+        self.assertEqual(startup_probe_geometry({"ok": True}), ({}, ""))
+        self.assertEqual(
+            startup_probe_geometry({
+                "ok": True,
+                "window_normalization": {
+                    "after": {
+                        "left": 0,
+                        "top": 0,
+                        "right": 0,
+                        "bottom": 852,
+                        "width": 0,
+                        "height": 852,
+                    }
+                },
+            }),
+            ({}, ""),
+        )
 
     def test_probe_normalizes_only_once_then_uses_passive_status(self):
         bridge = RpaBridge(sidecar_script=Path("sidecar.py"))

@@ -358,7 +358,6 @@ class WorkerWebWindow(QMainWindow):
             return
         geometry = probe_payload.get("geometry")
         if not isinstance(geometry, dict):
-            self._startup_position_attempted = True
             return
         try:
             center = QPoint(
@@ -389,7 +388,6 @@ class WorkerWebWindow(QMainWindow):
             screen_bounds = None
         if screen_bounds is None:
             return
-        self._startup_position_attempted = True
         position = position_to_right_of_wechat(
             probe_payload,
             window_size=(WINDOW_WIDTH, WINDOW_HEIGHT),
@@ -399,6 +397,7 @@ class WorkerWebWindow(QMainWindow):
         if position is None:
             return
         self.move(*position)
+        self._startup_position_attempted = True
 
     def _wire_signals(self) -> None:
         self.profile_signal.connect(self.on_profile)
