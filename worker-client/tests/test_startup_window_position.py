@@ -69,6 +69,26 @@ class StartupWindowPositionTest(unittest.TestCase):
 
         self.assertIsNone(result)
 
+    def test_normalizes_150_percent_4k_coordinates_without_using_screen_pixels(self):
+        result = position_to_right_of_wechat(
+            {
+                "ok": True,
+                "geometry": {
+                    "left": 18,
+                    "top": 18,
+                    "right": 1218,
+                    "bottom": 1296,
+                    "width": 1200,
+                    "height": 1278,
+                },
+            },
+            window_size=(316, 628),
+            screen_bounds=(0, 0, 2560, 1440),
+            native_device_pixel_ratio=1.5,
+        )
+
+        self.assertEqual(result, (824, 12))
+
     def test_invalid_or_missing_probe_keeps_operating_system_default(self):
         self.assertIsNone(position_to_right_of_wechat(
             None,

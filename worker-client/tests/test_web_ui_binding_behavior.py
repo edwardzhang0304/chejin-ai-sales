@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import importlib
 import json
+from pathlib import Path
 import sys
+import tempfile
 import types
 import unittest
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from unittest.mock import Mock, patch
 
 from chejin_worker_client.models import Binding, WorkerProfile
@@ -224,6 +226,177 @@ class WebUiBindingBehaviorTest(unittest.TestCase):
 
         window.move.assert_not_called()
         self.assertFalse(window._startup_position_attempted)
+
+    def test_real_bridge_normalize_payload_flows_through_status_callback_to_qt_move(self):
+        """Production chain: Sidecar public entry -> Bridge -> UI -> Qt boundary."""
+
+        with _headless_web_ui_module() as module:
+            omniauto_root = Path(__file__).resolve().parents[1] / "omniauto-rpa"
+            if str(omniauto_root) not in sys.path:
+                sys.path.insert(0, str(omniauto_root))
+            from apps.wechat_ai_customer_service.adapters import (  # noqa: PLC0415
+                wechat_win32_ocr_sidecar as sidecar,
+            )
+            from apps.wechat_ai_customer_service.tests.run_wechat_startup_calibration_v0923_checks import (  # noqa: E501, PLC0415
+                search_ocr,
+                shell_image,
+            )
+
+            image = shell_image()
+            normalized_geometry = {
+                "left": 100,
+                "top": 80,
+                "right": 900,
+                "bottom": 932,
+                "width": 800,
+                "height": 852,
+            }
+            physical_calls = {"normalize": 0, "capture": 0, "ocr": 0}
+
+            def normalize_window_boundary(_hwnd, **_kwargs):
+                physical_calls["normalize"] += 1
+                return {
+                    "ok": True,
+                    "enabled": True,
+                    "applied": True,
+                    "after": dict(normalized_geometry),
+                    "after_client": {
+                        "width": image.width,
+                        "height": image.height,
+                    },
+                    "after_dpi_scale": 1.0,
+                    "reason": "normalized",
+                }
+
+            def capture_boundary(_rect):
+                physical_calls["capture"] += 1
+                return image.copy()
+
+            def ocr_boundary(*_args, **kwargs):
+                physical_calls["ocr"] += 1
+                return search_ocr(), kwargs.get("engine")
+
+            with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+                stack.enter_context(patch.object(sidecar, "_WIN32_IMPORT_ERROR", ""))
+                stack.enter_context(patch.object(
+                    sidecar,
+                    "ensure_visible_wechat_window",
+                    return_value={
+                        "main_windows": [{"hwnd": 101, "pid": 202}],
+                        "visible_main_windows": [{"hwnd": 101, "pid": 202}],
+                        "visible_windows": [{"hwnd": 101, "pid": 202}],
+                    },
+                ))
+                stack.enter_context(patch.object(
+                    sidecar,
+                    "select_primary_visible_main_window",
+                    return_value={"hwnd": 101, "pid": 202},
+                ))
+                stack.enter_context(patch.object(sidecar, "activate_window", return_value=None))
+                stack.enter_context(patch.object(
+                    sidecar,
+                    "normalize_wechat_window",
+                    side_effect=normalize_window_boundary,
+                ))
+                stack.enter_context(patch.object(
+                    sidecar,
+                    "get_window_client_geometry",
+                    return_value={
+                        "width": image.width,
+                        "height": image.height,
+                        "screen_left": 100,
+                        "screen_top": 80,
+                    },
+                ))
+                stack.enter_context(patch.object(
+                    sidecar,
+                    "get_window_geometry",
+                    return_value=dict(normalized_geometry),
+                ))
+                stack.enter_context(patch.object(sidecar, "window_dpi_scale", return_value=1.0))
+                stack.enter_context(patch.object(sidecar, "try_image_grab", side_effect=capture_boundary))
+                stack.enter_context(patch.object(sidecar, "save_screenshot_artifact", return_value="startup.png"))
+                stack.enter_context(patch.object(
+                    sidecar,
+                    "win32gui",
+                    types.SimpleNamespace(
+                        IsWindow=lambda hwnd: int(hwnd) == 101,
+                        GetForegroundWindow=lambda: 101,
+                        GetAncestor=lambda hwnd, _flag: int(hwnd),
+                    ),
+                ))
+                stack.enter_context(patch.object(
+                    sidecar,
+                    "win32process",
+                    types.SimpleNamespace(
+                        GetWindowThreadProcessId=lambda _hwnd: (1, 202),
+                    ),
+                ))
+                stack.enter_context(patch.object(
+                    sidecar.ctypes,
+                    "windll",
+                    types.SimpleNamespace(
+                        user32=types.SimpleNamespace(
+                            IsIconic=lambda _hwnd: 0,
+                            IsWindowVisible=lambda _hwnd: True,
+                        ),
+                    ),
+                    create=True,
+                ))
+                stack.enter_context(patch.object(
+                    sidecar.win32_ocr_engine,
+                    "run_ocr_with_cache",
+                    side_effect=ocr_boundary,
+                ))
+                stack.enter_context(patch.object(
+                    sidecar,
+                    "STARTUP_CALIBRATION_PATH",
+                    Path(directory) / "startup-layout.json",
+                ))
+                normalize_payload = sidecar.run_action(types.SimpleNamespace(
+                    action="normalize-window",
+                    artifact_dir=directory,
+                    phone="",
+                    wechat="",
+                    verify_message="",
+                    remark_name="",
+                    remark_code="",
+                    window_policy="normalize",
+                ))
+
+            self.assertTrue(normalize_payload["ok"])
+            self.assertNotIn("geometry", normalize_payload)
+            self.assertEqual(
+                normalize_payload["window_normalization"]["after"],
+                normalized_geometry,
+            )
+            self.assertEqual(physical_calls, {"normalize": 1, "capture": 1, "ocr": 1})
+
+            window = self._window(module, None)
+            bridge = module.RpaBridge()
+            bridge.mode = "real"
+            sidecar_calls: list[list[str]] = []
+
+            def sidecar_process_boundary(args, **_kwargs):
+                sidecar_calls.append(list(args))
+                return json.loads(json.dumps(normalize_payload))
+
+            bridge._call_omniauto = Mock(side_effect=sidecar_process_boundary)
+            window.rpa_bridge = bridge
+            window.move = Mock()
+            window._publish = Mock()
+
+            with patch.object(sys, "platform", "win32"):
+                self.assertEqual(bridge.probe(), ("ready", "logged_in"))
+            window.on_status("online")
+
+        self.assertEqual(sidecar_calls, [["normalize-window"]])
+        self.assertEqual(
+            bridge.last_probe_payload["geometry_source"],
+            "window_normalization.after",
+        )
+        window.move.assert_called_once_with(912, 80)
+        self.assertTrue(window._startup_position_attempted)
 
     def test_backend_profile_before_first_probe_does_not_consume_position_attempt(self):
         with _headless_web_ui_module() as module:
