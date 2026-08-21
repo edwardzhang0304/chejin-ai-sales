@@ -1962,20 +1962,20 @@ def calibrated_business_window_binding(probe: dict[str, Any]) -> dict[str, Any]:
         }
     target_hwnd = int(calibration.get("hwnd") or 0)
     target_process_id = int(calibration.get("process_id") or 0)
-    legal_main_windows = [
-        dict(item)
-        for item in (probe.get("main_windows") or [])
-        if isinstance(item, dict) and int(item.get("hwnd") or 0) > 0
-    ]
-    if len(legal_main_windows) != 1:
+    # Keep gray-v0.9.20 window selection semantics: hidden Weixin shells are
+    # diagnostic only and must not make a single visible chat window
+    # non-executable.  The startup calibration still owns identity; the
+    # selected visible HWND must match it exactly.
+    window = select_primary_visible_main_window(probe)
+    if not isinstance(window, dict) or int(window.get("hwnd") or 0) <= 0:
         return {
             "ok": False,
-            "reason": "legal_wechat_main_window_not_unique",
+            "reason": "visible_wechat_main_window_not_found",
             "target_hwnd": target_hwnd,
-            "legal_main_count": len(legal_main_windows),
+            "visible_main_count": len(probe.get("visible_main_windows") or []),
             "calibration": calibration,
         }
-    window = legal_main_windows[0]
+    window = dict(window)
     if int(window.get("hwnd") or 0) != target_hwnd:
         return {
             "ok": False,
