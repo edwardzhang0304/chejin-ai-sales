@@ -4614,7 +4614,7 @@ def test_auxiliary_wechat_shell_is_blocked() -> None:
     assert_true(chat.get("detected") is False, f"real chat surface should pass: {chat}")
 
 
-def test_normalize_wechat_window_uses_shared_safe_origin_when_size_is_already_safe() -> None:
+def test_normalize_wechat_window_uses_current_monitor_work_area_and_dpi_bucket() -> None:
     sidecar_mod = sys.modules["apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar"]
     if not hasattr(sidecar_mod.ctypes, "windll"):
         return
@@ -4631,8 +4631,17 @@ def test_normalize_wechat_window_uses_shared_safe_origin_when_size_is_already_sa
 
     class FakeUser32:
         @staticmethod
-        def GetSystemMetrics(index: int) -> int:
-            return 1920 if index == 0 else 1200
+        def MonitorFromWindow(_hwnd: int, _flags: int) -> int:
+            return 77
+
+        @staticmethod
+        def GetMonitorInfoW(_monitor: int, info_pointer: Any) -> int:
+            info = info_pointer._obj
+            info.rcWork.left = 0
+            info.rcWork.top = 0
+            info.rcWork.right = 1920
+            info.rcWork.bottom = 1200
+            return 1
 
     class FakeWindll:
         user32 = FakeUser32()
@@ -4672,9 +4681,10 @@ def test_normalize_wechat_window_uses_shared_safe_origin_when_size_is_already_sa
         result = normalize_wechat_window(1001)
         assert_true(result.get("ok") is True, f"normalization should pass: {result}")
         assert_true(result.get("applied") is True, f"offscreen same-size window must be moved: {result}")
-        assert_true(calls == [(0, 0, 980, 860)], f"unexpected move call: {calls}")
-        assert_true((result.get("after") or {}).get("left") == 0, f"window should be clamped on-screen: {result}")
-        assert_true((result.get("after") or {}).get("top") == 0, f"window should use the shared safe origin: {result}")
+        assert_true(calls == [(12, 12, 800, 852)], f"unexpected move call: {calls}")
+        assert_true((result.get("after") or {}).get("left") == 12, f"window should use monitor-safe left margin: {result}")
+        assert_true((result.get("after") or {}).get("top") == 12, f"window should use monitor-safe top margin: {result}")
+        assert_true((result.get("work_area") or {}).get("source") == "MonitorFromWindow_GetMonitorInfoW", f"window must use its current monitor work area: {result}")
     finally:
         if previous_fixed_origin is None:
             os.environ.pop("WECHAT_WIN32_OCR_WINDOW_FIXED_ORIGIN", None)
@@ -7551,7 +7561,7 @@ def main() -> int:
         test_window_selection_prefers_readable_window_over_larger_blank_window,
         test_dismiss_blank_foreground_minimizes_only_blank_wechat_window,
         test_auxiliary_wechat_shell_is_blocked,
-        test_normalize_wechat_window_uses_shared_safe_origin_when_size_is_already_safe,
+        test_normalize_wechat_window_uses_current_monitor_work_area_and_dpi_bucket,
         test_capabilities_success_exposes_top_level_geometry,
         test_blank_render_detection_for_empty_white_capture,
         test_blank_render_detection_for_bordered_white_capture,
