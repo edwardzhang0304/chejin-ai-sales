@@ -339,10 +339,14 @@ class WebUiBindingBehaviorTest(unittest.TestCase):
                         user32=types.SimpleNamespace(
                             IsIconic=lambda _hwnd: 0,
                             IsWindowVisible=lambda _hwnd: True,
+                            SetProcessDpiAwarenessContext=lambda _context: True,
+                            GetThreadDpiAwarenessContext=lambda: -4,
+                            GetAwarenessFromDpiAwarenessContext=lambda _context: 2,
                         ),
                     ),
                     create=True,
                 ))
+                stack.enter_context(patch.object(sidecar, "_DPI_AWARENESS_STATUS", {}))
                 stack.enter_context(patch.object(
                     sidecar.win32_ocr_engine,
                     "run_ocr_with_cache",
@@ -365,6 +369,8 @@ class WebUiBindingBehaviorTest(unittest.TestCase):
                 ))
 
             self.assertTrue(normalize_payload["ok"])
+            self.assertTrue(normalize_payload["dpi_awareness"]["per_monitor_aware"])
+            self.assertEqual(normalize_payload["dpi_awareness"]["awareness"], 2)
             self.assertNotIn("geometry", normalize_payload)
             self.assertEqual(
                 normalize_payload["window_normalization"]["after"],
