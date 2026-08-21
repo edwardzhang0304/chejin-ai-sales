@@ -227,6 +227,13 @@ loop Worker运行中；每次循环最多完成一个会话事务
       W -> OA: sessions：扫描当前第一屏
       OA -> WX: 截图 + 普通/增强OCR\n按视觉行聚合侧栏标题
       WX --> OA: 当前第一屏画面
+      OA -> OA: 用顶部唯一搜索锚点排除头像伪竖边\n从当前像素建立完整动态布局
+      note right of OA
+        OCR有结果但布局无效时返回
+        sessions_layout_unresolved + WECHAT_UI_LAYOUT_UNRESOLVED，
+        携带置信度和冲突并零点击停止；
+        禁止伪装成成功的0 sessions继续上报。
+      end note
       OA --> W: session_scan_result\n短码候选/行证据/conversation_type候选
       W -> Auth: 上报scan-result
       Auth -> Auth: 只更新会话发现/绑定事实\nscan-result本身不授予读取权限

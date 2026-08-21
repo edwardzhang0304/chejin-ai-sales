@@ -43,7 +43,19 @@ def real_layout_snapshot(width: int = 980, height: int = 860) -> dict:
     draw.line((nav_x, sidebar_header_y, sidebar_x, sidebar_header_y), fill=(120, 120, 120), width=2)
     draw.line((sidebar_x, chat_header_y, width - 1, chat_header_y), fill=(120, 120, 120), width=2)
     draw.line((sidebar_x, input_y, width - 1, input_y), fill=(120, 120, 120), width=2)
-    regions = window_layout.build_structural_layout_regions(image)
+    search_item = {
+        "text": "Q搜索",
+        "left": nav_x + 24,
+        "top": 56,
+        "right": nav_x + 88,
+        "bottom": 82,
+        "confidence": 0.98,
+    }
+    regions = window_layout.build_structural_layout_regions(
+        image,
+        ocr_items=[search_item],
+        search_anchor_items=[search_item],
+    )
     assert_true(regions.get("ok"), f"real layout builder rejected synthetic WeChat frame: {regions}")
     return window_layout.build_layout_snapshot(
         hwnd=1,

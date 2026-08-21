@@ -622,6 +622,61 @@ def test_parse_sessions_from_ocr() -> None:
     )
 
 
+def test_sessions_payload_reports_unresolved_layout_instead_of_empty_success() -> None:
+    sidecar_mod = sys.modules["apps.wechat_ai_customer_service.adapters.wechat_win32_ocr_sidecar"]
+    image = Image.new("RGB", (980, 860), "white")
+    search_item = {
+        "text": "Q搜索",
+        "left": 105.0,
+        "right": 169.0,
+        "top": 58.0,
+        "bottom": 85.0,
+        "center_x": 137.0,
+        "center_y": 71.5,
+        "confidence": 0.907,
+    }
+    unresolved = {
+        "valid": False,
+        "layout_snapshot_id": "layout-unresolved",
+        "layout_builder": {
+            "ok": False,
+            "confidence": 0.0,
+            "conflicts": ["shared_header_boundary_missing"],
+        },
+    }
+    originals = {
+        "capture_wechat": sidecar_mod.capture_wechat,
+        "run_ocr": sidecar_mod.run_ocr,
+        "session_list_ocr_items": sidecar_mod.session_list_ocr_items,
+        "get_window_geometry": sidecar_mod.get_window_geometry,
+        "quick_login_like": sidecar_mod.quick_login_like,
+        "blocking_screen_reason": sidecar_mod.blocking_screen_reason,
+        "layout_snapshot_for_image": sidecar_mod.layout_snapshot_for_image,
+    }
+    try:
+        sidecar_mod.capture_wechat = lambda *_args, **_kwargs: (image, "sessions.png")
+        sidecar_mod.run_ocr = lambda _image: [search_item]
+        sidecar_mod.session_list_ocr_items = lambda *_args, **_kwargs: ([search_item], 0)
+        sidecar_mod.get_window_geometry = lambda _hwnd: {
+            "left": 0,
+            "top": 0,
+            "right": 980,
+            "bottom": 860,
+            "width": 980,
+            "height": 860,
+        }
+        sidecar_mod.quick_login_like = lambda *_args, **_kwargs: False
+        sidecar_mod.blocking_screen_reason = lambda *_args, **_kwargs: ""
+        sidecar_mod.layout_snapshot_for_image = lambda _image: unresolved
+        payload = sidecar_mod.sessions_payload(1001, {"ok": True})
+        assert_true(payload.get("ok") is False, f"invalid layout became an empty success: {payload}")
+        assert_true(payload.get("state") == "sessions_layout_unresolved", f"wrong state: {payload}")
+        assert_true(payload.get("error_code") == "WECHAT_UI_LAYOUT_UNRESOLVED", f"wrong error: {payload}")
+    finally:
+        for name, value in originals.items():
+            setattr(sidecar_mod, name, value)
+
+
 def test_sidebar_visible_list_enhanced_ocr_recovers_pinned_gray_sessions() -> None:
     image = Image.new("RGB", (980, 860), "white")
     scale = 2.0
@@ -7366,6 +7421,7 @@ def main() -> int:
         test_run_sidecar_cli_accepts_visible_session_candidate,
         test_voice_daemon_request_preserves_formal_action_identity,
         test_parse_sessions_from_ocr,
+        test_sessions_payload_reports_unresolved_layout_instead_of_empty_success,
         test_sidebar_visible_list_enhanced_ocr_recovers_pinned_gray_sessions,
         test_parse_sessions_detects_visual_unread_red_dot,
         test_parse_sessions_normalizes_truncated_file_transfer,
