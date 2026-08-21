@@ -235,19 +235,14 @@ class RpaBridgeTest(unittest.TestCase):
             "WECHAT_UI_LAYOUT_STALE",
         )
 
-    def test_new_transaction_reuses_current_calibration_without_capture_or_normalize(self):
+    def test_new_transaction_defers_map_binding_without_worker_sidecar_gate(self):
         bridge = RpaBridge(sidecar_script=Path("sidecar.py"))
         bridge.mode = "real"
         calls: list[list[str]] = []
 
         def fake_call(args, **_kwargs):
             calls.append(list(args))
-            return {
-                "ok": True,
-                "state": "startup_layout_calibration_current",
-                "screenshot_call_count": 0,
-                "ocr_call_count": 0,
-            }
+            raise AssertionError("Worker must not call calibration-status per transaction")
 
         with patch.object(sys, "platform", "win32"), patch.object(
             bridge, "_call_omniauto", side_effect=fake_call
@@ -255,58 +250,49 @@ class RpaBridgeTest(unittest.TestCase):
             result = bridge.prepare_startup_layout_for_new_transaction()
 
         self.assertTrue(result["ok"])
-        self.assertEqual(calls, [["calibration-status"]])
+        self.assertEqual(result["state"], "startup_layout_binding_deferred_to_business_entry")
+        self.assertFalse(result["calibration_status_checked"])
+        self.assertFalse(result["geometry_gate_added"])
+        self.assertEqual(calls, [])
 
-    def test_changed_window_requires_restart_without_automatic_recalibration(self):
+    def test_new_transaction_never_preflights_geometry_or_dpi(self):
         bridge = RpaBridge(sidecar_script=Path("sidecar.py"))
         bridge.mode = "real"
         calls: list[list[str]] = []
 
         def fake_call(args, **_kwargs):
             calls.append(list(args))
-            if args[0] == "calibration-status":
-                return {
-                    "ok": False,
-                    "error_code": "WECHAT_UI_STARTUP_CALIBRATION_FAILED",
-                    "state": "startup_layout_calibration_stale",
-                }
-            raise AssertionError("new transaction must not normalize or recalibrate")
+            raise AssertionError("new transaction must not preflight Sidecar state")
 
         with patch.object(sys, "platform", "win32"), patch.object(
             bridge, "_call_omniauto", side_effect=fake_call
         ):
             result = bridge.prepare_startup_layout_for_new_transaction()
 
-        self.assertFalse(result["ok"])
-        self.assertEqual(result["manual_action_required"], "restart_chejin_worker_client")
+        self.assertTrue(result["ok"])
         self.assertFalse(result["automatic_window_move_attempted"])
         self.assertFalse(result["automatic_recalibration_attempted"])
-        self.assertEqual(calls, [["calibration-status"]])
+        self.assertFalse(result["geometry_gate_added"])
+        self.assertEqual(calls, [])
 
-    def test_inflight_calibration_check_never_moves_or_recaptures_window(self):
+    def test_inflight_transaction_defers_map_binding_without_worker_gate(self):
         bridge = RpaBridge(sidecar_script=Path("sidecar.py"))
         bridge.mode = "real"
         calls: list[list[str]] = []
 
         def fake_call(args, **_kwargs):
             calls.append(list(args))
-            return {
-                "ok": False,
-                "error_code": "WECHAT_UI_STARTUP_CALIBRATION_FAILED",
-                "state": "startup_layout_calibration_stale",
-                "screenshot_call_count": 0,
-                "ocr_call_count": 0,
-            }
+            raise AssertionError("inflight flow must not call calibration-status")
 
         with patch.object(sys, "platform", "win32"), patch.object(
             bridge, "_call_omniauto", side_effect=fake_call
         ):
             result = bridge.verify_startup_layout_for_inflight_transaction()
 
-        self.assertFalse(result["ok"])
-        self.assertEqual(calls, [["calibration-status"]])
-        self.assertEqual(result["screenshot_call_count"], 0)
-        self.assertEqual(result["ocr_call_count"], 0)
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["calibration_status_checked"])
+        self.assertFalse(result["geometry_gate_added"])
+        self.assertEqual(calls, [])
 
     def test_all_ui_flows_do_not_request_window_policy_after_startup(self):
         bridge = RpaBridge(sidecar_script=Path("sidecar.py"))

@@ -4,7 +4,7 @@
   "upstream_base_commit": "a563e6688c47a8922510794101967823fe1389d7",
   "selective_integrations": [
     {
-      "source_commit": "befefc6fa17be11a763fa77ee09453bb28e02432",
+      "source_commit": "85205428914b4a1587d6cb21458fb001c8f1c6e3",
       "scope": [
         "exact_wechat_context_menu_classification",
         "same_popup_menu_panel_evidence_contract",
@@ -92,5 +92,5 @@
       ]
     }
   ],
-  "integration_note": "0.9.24 候选以 gray-v0.9.20 业务流程为基线，上游选择性集成继续固定于 befefc6fa17be11a763fa77ee09453bb28e02432：启动时按微信 HWND 所在显示器和 GetDpiForWindow 固定一次位置与尺寸，仅用一张可见客户区截图建立 startup_layout_calibration；C1-C4 业务帧只携带 frame_id 并引用 calibration_id，OmniAuto 独占区域映射和坐标决策。业务入口复用 gray-v0.9.20 的 visible_main_windows 选择与 activate_window 顺序，只在消费坐标图前检查选中 HWND 归属；删除统一激活成功布尔门禁、逐点主 HWND 前台等值门禁和运行中自动移窗/重新标定。加号、搜索、会话、消息、输入和发送分别使用 gray-v0.9.20 区域内参考规则或当前动态内容帧。C1 保留八类真实变化画面，C2 媒体、C3 S0/S1/S2、Journal、Outbox、Handoff 和 sent_ack 语义不变。隐藏 Weixin 只作诊断，微信菜单/弹窗成为新顶层 HWND 时不会被主 HWND 等值条件拦截。"
+  "integration_note": "0.9.24 OmniAuto 独立候选固定于 85205428914b4a1587d6cb21458fb001c8f1c6e3，并以 gray-v0.9.20 业务流程为基线：启动时先查询实际 DPI awareness，只有确认 per-monitor aware 才按微信 HWND 所在显示器和 GetDpiForWindow 固定一次位置与尺寸，并仅用一张可见客户区截图建立 startup_layout_calibration；C1-C4 业务帧只携带 frame_id 并引用 calibration_id，OmniAuto 独占区域映射和坐标决策。业务入口复用 gray-v0.9.20 的 visible_main_windows 选择与 activate_window 顺序，只在消费坐标图前检查选中 HWND 归属；删除统一激活成功布尔门禁、逐点主 HWND 前台等值门禁、逐事务窗口位置/尺寸/DPI门禁和运行中自动移窗/重新标定。加号、搜索、会话、消息、输入和发送分别使用 gray-v0.9.20 区域内参考规则或当前动态内容帧。C1 保留八类真实变化画面，C2 媒体、C3 S0/S1/S2、Journal、Outbox、Handoff 和 sent_ack 语义不变。隐藏 Weixin 只作诊断，微信菜单/弹窗成为新顶层 HWND 时不会被主 HWND 等值条件拦截。"
 }

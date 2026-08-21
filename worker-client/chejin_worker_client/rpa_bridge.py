@@ -164,34 +164,36 @@ class RpaBridge:
         return self._call_omniauto(["status"], timeout=60)
 
     def prepare_startup_layout_for_new_transaction(self) -> dict[str, Any]:
-        """Passively verify the startup map before a new UI transaction.
+        """Leave startup-map ownership checks to the real Sidecar entry.
 
-        Window normalization and calibration are startup-only.  If the map is
-        missing or stale while the client is running, the transaction must
-        stop and ask the operator to restart the client; it must never move
-        WeChat or recalibrate automatically here.
+        The active Sidecar action selects the current visible WeChat HWND and
+        compares only that identity with the persisted map immediately before
+        consuming coordinates.  Worker must not add a second geometry/DPI
+        state machine in front of every C0-C4 transaction.
         """
         if self.mode == "mock":
             return {"ok": True, "mode": "mock", "state": "mock_calibration_current"}
-        if sys.platform != "win32":
-            return {"ok": True, "skipped": True, "reason": "non_windows_worker"}
-        current = dict(self._call_omniauto(["calibration-status"], timeout=30))
-        if current.get("ok"):
-            return current
         return {
-            **current,
-            "manual_action_required": "restart_chejin_worker_client",
+            "ok": True,
+            "state": "startup_layout_binding_deferred_to_business_entry",
+            "calibration_status_checked": False,
+            "geometry_gate_added": False,
             "automatic_window_move_attempted": False,
             "automatic_recalibration_attempted": False,
         }
 
     def verify_startup_layout_for_inflight_transaction(self) -> dict[str, Any]:
-        """Passively verify a recovered in-flight transaction; never move WeChat."""
+        """Do not add a geometry/DPI gate to a recovered in-flight flow."""
         if self.mode == "mock":
             return {"ok": True, "mode": "mock", "state": "mock_calibration_current"}
-        if sys.platform != "win32":
-            return {"ok": True, "skipped": True, "reason": "non_windows_worker"}
-        return dict(self._call_omniauto(["calibration-status"], timeout=30))
+        return {
+            "ok": True,
+            "state": "startup_layout_binding_deferred_to_business_entry",
+            "calibration_status_checked": False,
+            "geometry_gate_added": False,
+            "automatic_window_move_attempted": False,
+            "automatic_recalibration_attempted": False,
+        }
 
     def list_sessions(
         self,

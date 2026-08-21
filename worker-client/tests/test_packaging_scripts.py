@@ -506,7 +506,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "befefc6fa17be11a763fa77ee09453bb28e02432"
+                        "85205428914b4a1587d6cb21458fb001c8f1c6e3"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -616,7 +616,7 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["chejin_overlays"],
         )
         self.assertIn(
-            "befefc6fa17be11a763fa77ee09453bb28e02432",
+            "85205428914b4a1587d6cb21458fb001c8f1c6e3",
             provenance["integration_note"],
         )
         self.assertIn("0.9.24", provenance["integration_note"])
@@ -638,7 +638,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("删除统一激活成功布尔门禁", provenance["integration_note"])
         self.assertIn("C1 保留八类真实变化画面", provenance["integration_note"])
         self.assertIn("sent_ack 语义不变", provenance["integration_note"])
-        self.assertIn("上游选择性集成继续固定于", provenance["integration_note"])
+        self.assertIn("OmniAuto 独立候选固定于", provenance["integration_note"])
         self.assertEqual(
             provenance["historical_integrations"][0][
                 "chejin_integration_commit"
