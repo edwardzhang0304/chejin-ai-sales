@@ -405,7 +405,7 @@ class WechatSendSafetyTest(unittest.TestCase):
 
     def test_visual_input_uses_green_as_evidence_and_enter_as_trigger(self):
         observed_trigger: dict[str, object] = {}
-        # v0.9.23 requires a real current calibration-backed frame before C3
+        # v0.9.24 requires a real current calibration-backed frame before C3
         # can translate the input reference point.
         self._semantic_layout_for_image(Image.new("RGB", (980, 860), "white"))
         with (

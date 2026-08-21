@@ -1,10 +1,10 @@
 {
   "contract_version": 3,
-  "contract_revision": "0.9.23",
+  "contract_revision": "0.9.24",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "performance_fast_path_contract": {
-    "release": "0.9.23",
+    "release": "0.9.24",
     "business_semantics_unchanged": true,
     "flags": [
       "CHEJIN_TASK_SAFE_WAKE_ENABLED",
@@ -26,7 +26,7 @@
     "fallback_rule": "missing, conflicting, or unequal evidence executes the 0.9.10 full path without changing business state"
   },
   "startup_layout_calibration_contract": {
-    "schema_version": "0.9.23",
+    "schema_version": "0.9.24",
     "owner": "omniauto",
     "worker_role": "persist_path_transport_contract_validation_and_execution_only",
     "single_runtime_path": true,
@@ -72,9 +72,12 @@
     "passive_state_action": "calibration-status",
     "passive_state_action_rule": "zero_screenshot_zero_ocr_zero_click_zero_window_mutation",
     "startup_normalization_rule": "normalize_once_after_wechat_appears_then_status_and_heartbeat_are_passive",
-    "idle_change_rule": "restore_default_profile_and_recalibrate_only_before_the_next_new_ui_transaction",
-    "inflight_change_rule": "fail_closed_and_settle_via_existing_journal_outbox_sent_ack_before_any_restore",
+    "runtime_change_rule": "fail_closed_prompt_restart_and_never_move_or_recalibrate_automatically",
+    "inflight_change_rule": "fail_closed_and_settle_via_existing_journal_outbox_sent_ack_without_new_ui_actions",
     "business_window_rule": "c1_c2_c3_c4_never_move_resize_restore_or_normalize_wechat",
+    "business_entry_rule": "select_primary_visible_main_window_then_activate_window_then_original_gray_v0_9_20_dispatch",
+    "calibration_owner_rule": "selected_visible_hwnd_must_equal_calibration_hwnd_before_map_consumption",
+    "popup_foreground_rule": "wechat_menu_dialog_and_form_hwnds_must_not_be_rejected_by_main_hwnd_foreground_equality",
     "failure_error_code": "WECHAT_UI_STARTUP_CALIBRATION_FAILED",
     "failure_rule": "zero_wechat_clicks_no_message_fact_no_brain_no_business_handoff"
   },
