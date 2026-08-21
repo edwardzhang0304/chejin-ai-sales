@@ -2354,8 +2354,16 @@ def test_input_fast_visual_confirm_keeps_before_ocr_and_skips_after_ocr() -> Non
     }
     calls = {"capture": [], "ocr": 0, "region": [], "click": 0}
     geometry = {"left": 0, "top": 0, "right": 980, "bottom": 860, "width": 980, "height": 860}
-    roi_bounds = tuple(_compat_layout_snapshot((980, 860))["input_bounds"])
+    layout_snapshot = _compat_layout_snapshot((980, 860))
+    click_bounds = tuple(layout_snapshot["input_bounds"])
+    roi_bounds = tuple(
+        sidecar_mod.win32_ocr_layout.input_text_detection_bounds(layout_snapshot)
+    )
     roi_size = (roi_bounds[2] - roi_bounds[0], roi_bounds[3] - roi_bounds[1])
+    assert_true(
+        roi_bounds[3] < click_bounds[3],
+        f"draft OCR must stop above the bottom toolbar: {(roi_bounds, click_bounds)}",
+    )
     try:
         os.environ["WECHAT_WIN32_OCR_INPUT_FAST_VISUAL_CONFIRM"] = "1"
         os.environ["WECHAT_WIN32_OCR_INPUT_CONFIRM_ROI_OCR"] = "1"
@@ -2383,6 +2391,7 @@ def test_input_fast_visual_confirm_keeps_before_ocr_and_skips_after_ocr() -> Non
                     "dark_ratio": 0.001,
                     "reason": "input_region_blank",
                     "bounds": list(roi_bounds),
+                    "click_bounds": list(click_bounds),
                 }
             return {
                 "has_visible_text": True,
@@ -2390,6 +2399,7 @@ def test_input_fast_visual_confirm_keeps_before_ocr_and_skips_after_ocr() -> Non
                 "dark_ratio": 0.025,
                 "reason": "ocr_or_dark_pixels",
                 "bounds": list(roi_bounds),
+                "click_bounds": list(click_bounds),
             }
 
         def fake_clear(_hwnd, *, points, geometry, before_state, artifact_dir=None, attempt=1):
@@ -2477,7 +2487,11 @@ def test_input_after_roi_confirmation_uses_input_region_ocr_without_full_ocr() -
         "time_sleep": sidecar_mod.time.sleep,
     }
     geometry = {"left": 0, "top": 0, "right": 980, "bottom": 860, "width": 980, "height": 860}
-    roi_bounds = tuple(_compat_layout_snapshot((980, 860))["input_bounds"])
+    roi_bounds = tuple(
+        sidecar_mod.win32_ocr_layout.input_text_detection_bounds(
+            _compat_layout_snapshot((980, 860))
+        )
+    )
     roi_size = (roi_bounds[2] - roi_bounds[0], roi_bounds[3] - roi_bounds[1])
     calls: dict[str, object] = {"ocr_sizes": [], "click": 0}
     try:
@@ -2576,7 +2590,11 @@ def test_input_after_roi_confirmation_falls_back_to_full_ocr_when_token_missing(
         "time_sleep": sidecar_mod.time.sleep,
     }
     geometry = {"left": 0, "top": 0, "right": 980, "bottom": 860, "width": 980, "height": 860}
-    roi_bounds = tuple(_compat_layout_snapshot((980, 860))["input_bounds"])
+    roi_bounds = tuple(
+        sidecar_mod.win32_ocr_layout.input_text_detection_bounds(
+            _compat_layout_snapshot((980, 860))
+        )
+    )
     roi_size = (roi_bounds[2] - roi_bounds[0], roi_bounds[3] - roi_bounds[1])
     calls: dict[str, object] = {"ocr_sizes": [], "full_calls": 0, "click": 0}
     try:

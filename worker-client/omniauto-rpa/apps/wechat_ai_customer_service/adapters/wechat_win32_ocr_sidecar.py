@@ -190,7 +190,7 @@ _LAYOUT_SNAPSHOT_ID_BY_IMAGE_ID: dict[int, str] = {}
 _DPI_AWARENESS_STATUS: dict[str, Any] = {}
 STARTUP_CALIBRATION_PATH = Path(
     os.getenv("CHEJIN_WECHAT_STARTUP_CALIBRATION_PATH")
-    or (PROJECT_ROOT / "runtime" / "wechat_startup_layout_calibration_v0.9.24.json")
+    or (PROJECT_ROOT / "runtime" / "wechat_startup_layout_calibration_v0.9.25.json")
 )
 RENDER_RECOVERY_GUARD_PATH = PROJECT_ROOT / "runtime" / "wechat_win32_ocr_render_recovery_guard.json"
 MIN_SEND_CLIENT_WIDTH = 700
@@ -1290,7 +1290,7 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
                     or "startup_calibration_missing_or_stale"
                 ),
             )
-    # v0.9.24 has exactly one geometry owner: the startup normalize action.
+    # v0.9.25 has exactly one geometry owner: the startup normalize action.
     # C1-C4 must never move, resize, restore, or re-normalize the window.
     if action == "normalize-window":
         blocking_windows: list[dict[str, Any]] = []
@@ -8296,7 +8296,7 @@ def run_ocr_for_input_region_probe(
     del geometry
     snapshot = layout_snapshot_for_image(screenshot)
     try:
-        bounds = win32_ocr_layout.required_region(snapshot, "input_bounds")
+        bounds = win32_ocr_layout.input_text_detection_bounds(snapshot)
     except win32_ocr_layout.LayoutSnapshotError as exc:
         raise RuntimeError(f"{win32_ocr_layout.ERROR_LAYOUT_UNRESOLVED}:{exc.reason}") from exc
     timing[f"{prefix}_roi_enabled"] = True
@@ -9895,7 +9895,8 @@ def input_text_region_state(
     del geometry
     snapshot = layout_snapshot_for_image(screenshot)
     try:
-        bounds = tuple(win32_ocr_layout.required_region(snapshot, "input_bounds"))
+        click_bounds = win32_ocr_layout.required_region(snapshot, "input_bounds")
+        bounds = tuple(win32_ocr_layout.input_text_detection_bounds(snapshot))
     except win32_ocr_layout.LayoutSnapshotError as exc:
         return {
             "has_visible_text": False,
@@ -10022,6 +10023,7 @@ def input_text_region_state(
         "has_visible_text": has_visible_text,
         "reason": "ocr_or_text_shape" if has_visible_text else "input_region_blank",
         "bounds": list(bounds),
+        "click_bounds": list(click_bounds),
         "ocr_hits": ocr_hits,
         "ocr_evidence": ocr_evidence[:12],
         "ignored_ocr_evidence": ignored_ocr_evidence[:12],
@@ -11014,10 +11016,11 @@ def paste_text_with_confirmation(
         post_input_ocr_items = ocr_items
         post_input_ocr_source = after_ocr_source
         _sidecar_timing_finish(timing, "after_ocr", after_ocr_started)
-        current_input_bounds = list(
-            (layout_snapshot_for_image(screenshot) or {}).get("input_bounds") or []
-        )
-        if len(current_input_bounds) != 4:
+        try:
+            current_input_bounds = win32_ocr_layout.input_text_detection_bounds(
+                layout_snapshot_for_image(screenshot)
+            )
+        except win32_ocr_layout.LayoutSnapshotError:
             return {
                 "ok": False,
                 "reason": "WECHAT_UI_LAYOUT_UNRESOLVED",
@@ -11073,10 +11076,11 @@ def paste_text_with_confirmation(
             )
             _sidecar_timing_finish(timing, "after_ocr_full_fallback", fallback_started)
             timing["after_ocr_source"] = "roi_full_fallback"
-            full_input_bounds = list(
-                (layout_snapshot_for_image(screenshot) or {}).get("input_bounds") or []
-            )
-            if len(full_input_bounds) != 4:
+            try:
+                full_input_bounds = win32_ocr_layout.input_text_detection_bounds(
+                    layout_snapshot_for_image(screenshot)
+                )
+            except win32_ocr_layout.LayoutSnapshotError:
                 return {
                     "ok": False,
                     "reason": "WECHAT_UI_LAYOUT_UNRESOLVED",
@@ -17211,7 +17215,7 @@ def build_and_store_startup_calibration(
     *,
     artifact_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Capture one exact client frame and build the sole v0.9.24 shell map."""
+    """Capture one exact client frame and build the sole v0.9.25 shell map."""
 
     dpi_awareness = ensure_dpi_awareness_status()
     if not dpi_awareness.get("per_monitor_aware"):

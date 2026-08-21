@@ -1,10 +1,10 @@
 {
   "contract_version": 3,
-  "contract_revision": "0.9.24",
+  "contract_revision": "0.9.25",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "performance_fast_path_contract": {
-    "release": "0.9.24",
+    "release": "0.9.25",
     "business_semantics_unchanged": true,
     "flags": [
       "CHEJIN_TASK_SAFE_WAKE_ENABLED",
@@ -26,7 +26,7 @@
     "fallback_rule": "missing, conflicting, or unequal evidence executes the 0.9.10 full path without changing business state"
   },
   "startup_layout_calibration_contract": {
-    "schema_version": "0.9.24",
+    "schema_version": "0.9.25",
     "owner": "omniauto",
     "worker_role": "persist_path_transport_contract_validation_and_execution_only",
     "single_runtime_path": true,
@@ -81,6 +81,8 @@
     "calibration_owner_rule": "selected_visible_hwnd_must_equal_calibration_hwnd_before_map_consumption",
     "business_geometry_gate_rule": "forbidden_to_compare_window_rect_client_size_or_dpi_again_at_worker_transaction_entry_or_sidecar_business_dispatch",
     "popup_foreground_rule": "wechat_menu_dialog_and_form_hwnds_must_not_be_rejected_by_main_hwnd_foreground_equality",
+    "input_click_surface_rule": "physical_input_focus_and_clicks_use_the_full_calibrated_input_bounds",
+    "input_text_detection_rule": "draft_ocr_and_visual_text_detection_use_a_calibrated_proportional_inner_roi_that_excludes_the_bottom_toolbar; toolbar_pixels_never_establish_a_draft_but_text_shaped_pixels_inside_the_text_roi_do",
     "failure_error_code": "WECHAT_UI_STARTUP_CALIBRATION_FAILED",
     "failure_rule": "zero_wechat_clicks_no_message_fact_no_brain_no_business_handoff"
   },

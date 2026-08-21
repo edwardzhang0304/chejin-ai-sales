@@ -1,4 +1,4 @@
-"""v0.9.24 startup calibration, business-frame facts and coordinate mapping."""
+"""v0.9.25 startup calibration, business-frame facts and coordinate mapping."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ ERROR_LAYOUT_UNRESOLVED = "WECHAT_UI_LAYOUT_UNRESOLVED"
 ERROR_LAYOUT_STALE = "WECHAT_UI_LAYOUT_STALE"
 ERROR_COORDINATE_MAPPING_INVALID = "WECHAT_UI_COORDINATE_MAPPING_INVALID"
 ERROR_STARTUP_CALIBRATION_FAILED = "WECHAT_UI_STARTUP_CALIBRATION_FAILED"
-STARTUP_CALIBRATION_SCHEMA_VERSION = "0.9.24"
+STARTUP_CALIBRATION_SCHEMA_VERSION = "0.9.25"
 
 REQUIRED_LAYOUT_REGION_NAMES = (
     "left_nav_bounds",
@@ -101,6 +101,49 @@ def required_region(snapshot: Mapping[str, Any] | None, name: str) -> list[int]:
             details={"region": str(name or "")},
         )
     return bounds
+
+
+def input_text_detection_bounds(snapshot: Mapping[str, Any] | None) -> list[int]:
+    """Return the text-only draft probe inside the broader input surface.
+
+    ``input_bounds`` remains the calibrated click surface.  Current WeChat
+    places its emoji/file/voice toolbar along the bottom of that surface, so a
+    draft detector must not inspect pixels all the way to the toolbar edge.
+    Insets scale from the calibrated panel instead of using screen/DPI pixels.
+    """
+
+    input_bounds = required_region(snapshot, "input_bounds")
+    message_bounds = required_region(snapshot, "message_viewport_bounds")
+    toolbar_bounds = required_region(snapshot, "toolbar_bounds")
+    left, top, right, bottom = input_bounds
+    input_width = max(1, right - left)
+    input_height = max(1, bottom - top)
+    panel_height = max(
+        input_height,
+        int(toolbar_bounds[3]) - int(message_bounds[3]),
+    )
+    horizontal_guard = max(4, min(18, int(round(input_width * 0.025))))
+    top_guard = max(2, min(8, int(round(panel_height * 0.015))))
+    toolbar_guard = max(8, min(24, int(round(panel_height * 0.08))))
+    text_bounds = [
+        left + horizontal_guard,
+        top + top_guard,
+        right - horizontal_guard,
+        bottom - toolbar_guard,
+    ]
+    if (
+        text_bounds[2] - text_bounds[0] < 120
+        or text_bounds[3] - text_bounds[1] < 32
+    ):
+        raise LayoutSnapshotError(
+            "input_text_detection_region_too_small",
+            code=ERROR_LAYOUT_UNRESOLVED,
+            details={
+                "input_bounds": input_bounds,
+                "text_bounds": text_bounds,
+            },
+        )
+    return text_bounds
 
 
 def clamp_point(point: Any, bounds: Any) -> list[int]:
