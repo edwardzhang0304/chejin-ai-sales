@@ -423,6 +423,53 @@ class WechatWin32OcrSessionRowTest(unittest.TestCase):
             evidence["candidate_bounds"], [120.0, 112.0, 330.0, 144.0]
         )
 
+    def test_sessions_payload_reports_unresolved_layout_instead_of_empty_success(self):
+        frame = Image.new("RGB", (980, 860), "white")
+        geometry = {
+            "left": 10,
+            "top": 20,
+            "right": 990,
+            "bottom": 880,
+            "width": 980,
+            "height": 860,
+        }
+        search_item = {
+            "text": "Q搜索",
+            "left": 105.0,
+            "right": 169.0,
+            "top": 58.0,
+            "bottom": 85.0,
+            "center_x": 137.0,
+            "center_y": 71.5,
+            "confidence": 0.907,
+        }
+        unresolved = {
+            "valid": False,
+            "layout_snapshot_id": "layout-unresolved",
+            "layout_builder": {
+                "ok": False,
+                "confidence": 0.0,
+                "conflicts": ["shared_header_boundary_missing"],
+            },
+        }
+        with (
+            patch.object(sidecar, "capture_wechat", return_value=(frame, "sessions.png")),
+            patch.object(sidecar, "run_ocr", return_value=[search_item]),
+            patch.object(sidecar, "session_list_ocr_items", return_value=([search_item], 0)),
+            patch.object(sidecar, "get_window_geometry", return_value=geometry),
+            patch.object(sidecar, "quick_login_like", return_value=False),
+            patch.object(sidecar, "blocking_screen_reason", return_value=""),
+            patch.object(sidecar, "layout_snapshot_for_image", return_value=unresolved),
+        ):
+            payload = sidecar.sessions_payload(101, {"ok": True})
+
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["state"], "sessions_layout_unresolved")
+        self.assertEqual(payload["error_code"], "WECHAT_UI_LAYOUT_UNRESOLVED")
+        self.assertEqual(
+            payload["layout_conflicts"], ["shared_header_boundary_missing"]
+        )
+
     def test_daemon_sessions_request_preserves_scan_identity(self):
         argv = sidecar.args_for_daemon_request(
             {

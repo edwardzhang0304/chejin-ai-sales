@@ -421,6 +421,33 @@ def _topmost_sidebar_operation_row_anchors(
     return operation_row
 
 
+def _prefer_boundary_pairs_containing_search_anchors(
+    pairs: list[tuple[float, tuple[int, float], tuple[int, float]]],
+    search_anchors: list[dict[str, Any]],
+) -> list[tuple[float, tuple[int, float], tuple[int, float]]]:
+    """Reject avatar/text edges that would place the search box outside the sidebar."""
+
+    for search_anchor in sorted(
+        search_anchors,
+        key=lambda anchor: (
+            int((anchor["bounds"][1] + anchor["bounds"][3]) / 2),
+            int(anchor["bounds"][0]),
+        ),
+    ):
+        anchor_bounds = list(search_anchor["bounds"])
+        anchor_height = max(1, anchor_bounds[3] - anchor_bounds[1])
+        separator_clearance = max(6, int(anchor_height * 0.5))
+        compatible_pairs = [
+            item
+            for item in pairs
+            if int(item[1][0]) <= anchor_bounds[0] - separator_clearance
+            and int(item[2][0]) >= anchor_bounds[2] + separator_clearance
+        ]
+        if compatible_pairs:
+            return compatible_pairs
+    return pairs
+
+
 def build_add_friend_entry_layout_regions(
     image: Any,
     *,
@@ -490,25 +517,10 @@ def build_add_friend_entry_layout_regions(
     # to reject any candidate pair whose left edge cuts through (or sits almost
     # against) the search glyph and whose right edge cuts through the same row.
     # The selected coordinates still come from current-frame pixels only.
-    for search_anchor in sorted(
+    pairs = _prefer_boundary_pairs_containing_search_anchors(
+        pairs,
         search_anchors,
-        key=lambda anchor: (
-            int((anchor["bounds"][1] + anchor["bounds"][3]) / 2),
-            int(anchor["bounds"][0]),
-        ),
-    ):
-        anchor_bounds = list(search_anchor["bounds"])
-        anchor_height = max(1, anchor_bounds[3] - anchor_bounds[1])
-        separator_clearance = max(6, int(anchor_height * 0.5))
-        compatible_pairs = [
-            item
-            for item in pairs
-            if int(item[1][0]) <= anchor_bounds[0] - separator_clearance
-            and int(item[2][0]) >= anchor_bounds[2] + separator_clearance
-        ]
-        if compatible_pairs:
-            pairs = compatible_pairs
-            break
+    )
     ranked_pairs = sorted(pairs, key=lambda item: item[0], reverse=True)
     _score, nav_boundary, main_boundary = ranked_pairs[0]
     position_tolerance = max(18, int(width * 0.018))
@@ -632,6 +644,23 @@ def build_structural_layout_regions(
         }
     width, height = [int(value or 0) for value in image.size[:2]]
     verticals = _vertical_edge_candidates(image)
+    explicit_search_items = search_anchor_items if search_anchor_items is not None else []
+    search_anchor_candidates: list[dict[str, Any]] = []
+    for item in explicit_search_items:
+        if not isinstance(item, Mapping):
+            continue
+        bounds = normalize_rect(
+            [item.get("left"), item.get("top"), item.get("right"), item.get("bottom")]
+        )
+        if bounds[2] > bounds[0] and bounds[3] > bounds[1]:
+            search_anchor_candidates.append(
+                {
+                    "name": "sidebar_search_anchor",
+                    "text": str(item.get("text") or ""),
+                    "bounds": bounds,
+                    "confidence": float(item.get("confidence") or 0.0),
+                }
+            )
     selected_verticals = sorted(
         [
             item
@@ -676,6 +705,10 @@ def build_structural_layout_regions(
             "confidence": 0.0,
             "conflicts": conflicts,
         }
+    pairs = _prefer_boundary_pairs_containing_search_anchors(
+        pairs,
+        search_anchor_candidates,
+    )
     ranked_pairs = sorted(pairs, key=lambda item: item[0], reverse=True)
     _pair_score, nav_boundary, main_boundary = ranked_pairs[0]
     # A layout snapshot is an action authority, not a best-effort guess.  When
@@ -745,23 +778,6 @@ def build_structural_layout_regions(
         item for item in chat_header_bottom_candidates
         if int(height * 0.055) <= item[0] <= min(height - max(96, int(height * 0.12)), upper_limit)
     ]
-    explicit_search_items = search_anchor_items if search_anchor_items is not None else []
-    search_anchor_candidates: list[dict[str, Any]] = []
-    for item in explicit_search_items:
-        if not isinstance(item, Mapping):
-            continue
-        bounds = normalize_rect(
-            [item.get("left"), item.get("top"), item.get("right"), item.get("bottom")]
-        )
-        if bounds[2] > bounds[0] and bounds[3] > bounds[1]:
-            search_anchor_candidates.append(
-                {
-                    "name": "sidebar_search_anchor",
-                    "text": str(item.get("text") or ""),
-                    "bounds": bounds,
-                    "confidence": float(item.get("confidence") or 0.0),
-                }
-            )
     search_anchors = _topmost_sidebar_operation_row_anchors(
         search_anchor_candidates,
         nav_boundary_x=int(nav_boundary[0]),

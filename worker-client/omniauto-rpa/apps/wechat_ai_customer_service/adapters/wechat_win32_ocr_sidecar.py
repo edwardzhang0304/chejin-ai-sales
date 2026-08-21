@@ -2540,6 +2540,42 @@ def sessions_payload(
             "error": f"WeChat session list is blocked by: {blocking_reason}",
         }
     sessions = parse_sessions_from_ocr(items, screenshot.size, screenshot=screenshot)
+    session_layout_snapshot = layout_snapshot_for_image(screenshot) or {}
+    if not sessions and not bool(session_layout_snapshot.get("valid")):
+        layout_builder = (
+            session_layout_snapshot.get("layout_builder")
+            if isinstance(session_layout_snapshot.get("layout_builder"), dict)
+            else {}
+        )
+        layout_conflicts = list(
+            layout_builder.get("conflicts")
+            or session_layout_snapshot.get("conflicts")
+            or ["layout_snapshot_invalid"]
+        )
+        return {
+            "ok": False,
+            "online": True,
+            "adapter": "win32_ocr",
+            "state": "sessions_layout_unresolved",
+            "error_code": win32_ocr_layout.ERROR_LAYOUT_UNRESOLVED,
+            "window_probe": probe,
+            "screenshot_path": path,
+            "page_fingerprint": page_fingerprint,
+            "passive_probe": bool(probe.get("passive_probe")),
+            "ocr_items_count": len(items),
+            "ocr_items_enhanced_count": enhanced_count,
+            "ocr_items": compact_ocr_items_for_report(items),
+            "layout_snapshot_id": str(
+                session_layout_snapshot.get("layout_snapshot_id") or ""
+            ),
+            "layout_confidence": float(layout_builder.get("confidence") or 0.0),
+            "layout_conflicts": layout_conflicts,
+            "reason": "session_layout_unresolved_after_ocr",
+            "error": (
+                "WeChat session OCR succeeded, but the current-frame dynamic "
+                "layout could not be resolved. No empty scan was reported."
+            ),
+        }
     session_snapshot_id = str(
         (layout_snapshot_metadata(hwnd).get("snapshot") or {}).get("layout_snapshot_id") or ""
     )

@@ -283,6 +283,36 @@ def test_search_anchor_rejects_stronger_aligned_avatar_edges() -> None:
     assert_true(layout["regions"]["sidebar_bounds"][2] == sidebar_x, f"wrong sidebar edge: {layout}")
 
 
+def test_full_layout_search_anchor_rejects_stronger_aligned_avatar_edges() -> None:
+    """C2 must inherit the same avatar-edge disambiguation as C1."""
+
+    width, height = 980, 860
+    nav_x, sidebar_x, input_top = 84, 382, 696
+    image = Image.new("RGB", (width, height), (250, 250, 250))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, nav_x - 1, height - 1), fill=(246, 246, 246))
+    draw.rectangle((nav_x, 0, sidebar_x - 1, height - 1), fill=(234, 234, 234))
+    draw.rectangle((sidebar_x, input_top, width - 1, height - 1), fill=(244, 244, 244))
+    for sample_y in (86, 154, 292, 447, 602, 722):
+        draw.rectangle((99, sample_y - 18, 143, sample_y + 18), fill=(90, 90, 90))
+    search_item = {
+        "text": "Q搜索",
+        "left": 105,
+        "top": 58,
+        "right": 169,
+        "bottom": 85,
+        "confidence": 0.907,
+    }
+    layout = window_layout.build_structural_layout_regions(
+        image,
+        ocr_items=[search_item],
+        search_anchor_items=[search_item],
+    )
+    assert_true(layout.get("ok") is True, f"C2 full layout rejected the real search anchor: {layout}")
+    assert_true(layout["regions"]["left_nav_bounds"][2] == nav_x, f"avatar edge replaced C2 nav: {layout}")
+    assert_true(layout["regions"]["sidebar_bounds"][2] == sidebar_x, f"wrong C2 sidebar edge: {layout}")
+
+
 def test_layout_consumes_q_search_semantic_candidate_without_reclassification() -> None:
     image, search_item = _bright_wechat_add_friend_frame(selected_row=1)
     noisy_search_item = {**search_item, "text": "Q搜索"}
