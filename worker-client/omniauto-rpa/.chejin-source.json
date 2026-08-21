@@ -22,7 +22,7 @@
         "source_message_transport_allowlist",
         "typed_committed_media_identity_contract",
         "media_action_four_terminal_contract",
-        "c2_contract_0_9_23_generated_schema",
+        "c2_contract_0_9_24_generated_schema",
         "voice_frame_action_binding_observation_projection_contract",
         "bounded_send_foreground_focus_recovery_contract",
         "brain_soft_evidence_clarification_and_reply_then_handoff_contract",
@@ -43,18 +43,19 @@
         "add_friend_frame_seed_facade_forwarding_contract",
         "verified_send_input_bounds_forwarding_contract",
         "invalid_session_layout_explicit_failure_contract",
-        "v0_9_23_startup_layout_calibration_contract",
+        "v0_9_24_startup_layout_calibration_contract",
         "gray_v0_9_20_region_local_coordinate_map_contract",
         "current_monitor_dpi_window_profile_contract",
         "startup_window_position_and_size_once_contract",
         "exact_visible_client_capture_calibration_contract",
-        "startup_raw_pixel_plus_operation_row_anchor_contract",
+        "startup_region_mapped_plus_reference_contract",
         "business_frame_and_calibration_identity_separation_contract",
         "c1_c2_c3_c4_region_map_coordinate_owner_contract",
         "business_actions_never_normalize_window_contract",
-        "idle_transaction_restore_inflight_fail_closed_contract",
+        "runtime_window_change_manual_restart_contract",
         "c1_eight_business_change_frames_contract",
-        "calibrated_main_hwnd_active_business_foreground_contract",
+        "gray_v0_9_20_entry_activation_without_global_success_gate_contract",
+        "popup_menu_foreground_not_main_hwnd_equality_gated_contract",
         "frozen_compat_sidecar_single_command_contract",
         "four_edge_dpi_window_margin_contract",
         "visible_calibrated_window_ignores_hidden_weixin_shell_contract"
@@ -75,7 +76,7 @@
     "post_brain_pre_send_fresh_frame_local_reuse_contract",
     "send_s0_s1_s2_distinct_frame_local_reuse_contract",
     "chejin_formal_knowledge_category_contract",
-    "wechat_startup_calibration_coordinate_map_0_9_23",
+    "wechat_startup_calibration_coordinate_map_0_9_24",
     "add_friend_preclick_layout_failure_non_pausing_contract"
   ],
   "historical_integrations": [
@@ -91,5 +92,5 @@
       ]
     }
   ],
-  "integration_note": "0.9.23 候选以 gray-v0.9.20 业务流程为基线：启动时按微信 HWND 所在显示器和 GetDpiForWindow 固定位置与尺寸，仅用一张可见客户区截图建立 startup_layout_calibration；C1-C4 业务帧只携带 frame_id 并引用 calibration_id，OmniAuto 独占区域映射和坐标决策。已删除 0.9.22 每帧重建整套外壳、统一 980x860、Worker/业务模块二次解释坐标及双路径开关；加号、搜索、会话、消息、输入和发送分别使用 gray-v0.9.20 区域内参考规则或当前动态内容帧。C1 保留八类真实变化画面，C2 媒体、C3 S0/S1/S2、Journal、Outbox、Handoff 和 sent_ack 语义不变。业务动作复用 gray-v0.9.20 的 visible_main_windows 选择器，隐藏 Weixin 只作诊断，选中的可见 HWND 必须与启动标定 HWND 一致。独立 OmniAuto 固定提交为 befefc6fa17be11a763fa77ee09453bb28e02432；本来源清单只绑定该真实完整 SHA。"
+  "integration_note": "0.9.24 候选以 gray-v0.9.20 业务流程为基线，上游选择性集成继续固定于 befefc6fa17be11a763fa77ee09453bb28e02432：启动时按微信 HWND 所在显示器和 GetDpiForWindow 固定一次位置与尺寸，仅用一张可见客户区截图建立 startup_layout_calibration；C1-C4 业务帧只携带 frame_id 并引用 calibration_id，OmniAuto 独占区域映射和坐标决策。业务入口复用 gray-v0.9.20 的 visible_main_windows 选择与 activate_window 顺序，只在消费坐标图前检查选中 HWND 归属；删除统一激活成功布尔门禁、逐点主 HWND 前台等值门禁和运行中自动移窗/重新标定。加号、搜索、会话、消息、输入和发送分别使用 gray-v0.9.20 区域内参考规则或当前动态内容帧。C1 保留八类真实变化画面，C2 媒体、C3 S0/S1/S2、Journal、Outbox、Handoff 和 sent_ack 语义不变。隐藏 Weixin 只作诊断，微信菜单/弹窗成为新顶层 HWND 时不会被主 HWND 等值条件拦截。"
 }
