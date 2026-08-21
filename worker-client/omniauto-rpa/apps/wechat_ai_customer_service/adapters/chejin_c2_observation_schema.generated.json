@@ -1,8 +1,8 @@
 {
   "generated_file": true,
   "source": "contracts/c2_contract_v3.json",
-  "contract_revision": "0.9.23",
-  "contract_sha256": "13bad103155a207b1205696b6eebf9836a7c366288b3532c80f6d122595cd970",
+  "contract_revision": "0.9.24",
+  "contract_sha256": "74da58355a8921c7a448284a9d39d4bddb1d9fb6c08ffa8d8e1cfccce53348e8",
   "observation_schema_version": 3,
   "action_phases": [
     "not_attempted",
@@ -1009,7 +1009,7 @@
     }
   },
   "startup_layout_calibration_contract": {
-    "schema_version": "0.9.23",
+    "schema_version": "0.9.24",
     "owner": "omniauto",
     "worker_role": "persist_path_transport_contract_validation_and_execution_only",
     "single_runtime_path": true,
@@ -1071,9 +1071,12 @@
     "passive_state_action": "calibration-status",
     "passive_state_action_rule": "zero_screenshot_zero_ocr_zero_click_zero_window_mutation",
     "startup_normalization_rule": "normalize_once_after_wechat_appears_then_status_and_heartbeat_are_passive",
-    "idle_change_rule": "restore_default_profile_and_recalibrate_only_before_the_next_new_ui_transaction",
-    "inflight_change_rule": "fail_closed_and_settle_via_existing_journal_outbox_sent_ack_before_any_restore",
+    "runtime_change_rule": "fail_closed_prompt_restart_and_never_move_or_recalibrate_automatically",
+    "inflight_change_rule": "fail_closed_and_settle_via_existing_journal_outbox_sent_ack_without_new_ui_actions",
     "business_window_rule": "c1_c2_c3_c4_never_move_resize_restore_or_normalize_wechat",
+    "business_entry_rule": "select_primary_visible_main_window_then_activate_window_then_original_gray_v0_9_20_dispatch",
+    "calibration_owner_rule": "selected_visible_hwnd_must_equal_calibration_hwnd_before_map_consumption",
+    "popup_foreground_rule": "wechat_menu_dialog_and_form_hwnds_must_not_be_rejected_by_main_hwnd_foreground_equality",
     "failure_error_code": "WECHAT_UI_STARTUP_CALIBRATION_FAILED",
     "failure_rule": "zero_wechat_clicks_no_message_fact_no_brain_no_business_handoff"
   }

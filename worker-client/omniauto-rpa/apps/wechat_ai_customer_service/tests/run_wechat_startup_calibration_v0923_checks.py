@@ -116,8 +116,34 @@ def check_calibration_and_mapping() -> int:
     assert_true(required.issubset(calibration), "calibration fields incomplete")
     plus = window_layout.map_reference_region_point(calibration, "plus_entry")
     assert_true(window_layout.point_in_bounds(plus["image_point"], calibration["sidebar_header_bounds"]), "plus outside sidebar header")
+    header_left, header_top, header_right, header_bottom = calibration["sidebar_header_bounds"]
+    expected_plus = [
+        header_left + round((265 / 298) * (header_right - header_left)),
+        header_top + round((29 / 60) * (header_bottom - header_top)),
+    ]
+    assert_true(
+        plus["image_point"] == expected_plus,
+        f"plus mapping did not match the independently calculated v0.9.20 regional reference: {plus} vs {expected_plus}",
+    )
+    calibration_with_irrelevant_anchor = {
+        **calibration,
+        "anchors": [
+            *list(calibration.get("anchors") or []),
+            {"name": "startup_plus_pixel_anchor", "point": [1, 1]},
+        ],
+    }
+    assert_true(
+        window_layout.map_reference_region_point(
+            calibration_with_irrelevant_anchor,
+            "plus_entry",
+        )["image_point"] == expected_plus,
+        "startup pixels changed the frozen region-reference mapping",
+    )
     session = window_layout.map_reference_region_point(calibration, "session_row_x", dynamic_axis_value=240)
     assert_true(session["image_point"][1] == 240, "dynamic session row y was not retained")
+    session_left, _session_top, session_right, _session_bottom = calibration["session_list_bounds"]
+    expected_session_x = session_left + round((182 / 298) * (session_right - session_left))
+    assert_true(session["image_point"][0] == expected_session_x, "session X did not use the frozen regional reference")
     bad_capture = window_layout.build_startup_layout_calibration(
         hwnd=101, process_id=202, image=image, ocr_items=search_ocr(),
         window_rect={}, client_rect={"width": image.width, "height": image.height},
@@ -130,7 +156,7 @@ def check_calibration_and_mapping() -> int:
         window_layout.write_startup_layout_calibration(path, calibration)
         restored = window_layout.read_startup_layout_calibration(path)
         assert_true(restored == calibration, "persisted calibration changed")
-    return 6
+    return 10
 
 
 def check_public_normalize_entry() -> int:
@@ -157,7 +183,7 @@ def check_public_normalize_entry() -> int:
             "visible_main_windows": [{"hwnd": 101, "pid": 202}],
             "visible_windows": [{"hwnd": 101, "pid": 202}],
         }
-        sidecar.select_primary_visible_main_window = lambda _probe: {"hwnd": 101}
+        sidecar.select_primary_visible_main_window = lambda _probe: {"hwnd": 101, "pid": 202}
         sidecar.activate_window = lambda hwnd, **_kwargs: foreground.__setitem__("hwnd", int(hwnd))
         sidecar.win32gui = SimpleNamespace(
             IsWindow=lambda hwnd: int(hwnd) == 101,
@@ -292,35 +318,20 @@ def check_public_normalize_entry() -> int:
             except PhysicalClickReached:
                 pass
             assert_true(c3_clicks == [list(expected_input)], f"C3 input click did not use calibrated input map: {c3_clicks} vs {expected_input}; result={c3_result}; state={input_state}")
-            physical_clicks: list[dict[str, object]] = []
-
-            def physical_click(_hwnd, x, y, *, bounds, action_name="", expected_snapshot_id=""):
-                physical_clicks.append({
-                    "point": [int(x), int(y)],
-                    "bounds": list(bounds),
-                    "action_name": str(action_name),
-                    "layout_snapshot_id": str(expected_snapshot_id),
-                })
-                raise PhysicalClickReached(action_name)
-
-            sidecar.human_window_image_click_in_bounds = physical_click
-            try:
-                sidecar.run_action(SimpleNamespace(
-                    action="add-friend-entry-click-plan-windows",
-                    artifact_dir=directory,
-                    phone="17368746889",
-                    wechat="",
-                    verify_message="您好，我是车金张伟",
-                    remark_name="客户-CJ8K2P",
-                    remark_code="CJ8K2P",
-                    calibration_only=False,
-                    action_journal="",
-                ))
-            except PhysicalClickReached:
-                pass
-            assert_true(len(physical_clicks) == 1, f"C1 public entry did not reach exactly one physical click: {physical_clicks}")
-            assert_true(physical_clicks[0]["action_name"] == "plus_entry_click_1", str(physical_clicks))
-            assert_true(bool(physical_clicks[0]["layout_snapshot_id"]), "C1 click omitted business frame identity")
+            c1_calibration = sidecar.run_action(SimpleNamespace(
+                action="add-friend-entry-click-plan-windows",
+                artifact_dir=directory,
+                phone="17368746889",
+                wechat="",
+                verify_message="您好，我是车金张伟",
+                remark_name="客户-CJ8K2P",
+                remark_code="CJ8K2P",
+                calibration_only=True,
+                action_journal="",
+            ))
+            assert_true(c1_calibration.get("ok") is True, str(c1_calibration))
+            c1_target = c1_calibration["before"]["planned_targets"][0]
+            assert_true(c1_target.get("source") == "startup_calibration_region_map", str(c1_target))
     finally:
         for name, value in originals.items():
             setattr(sidecar, name, value)
@@ -352,7 +363,7 @@ def main() -> int:
     checks += check_calibration_and_mapping()
     checks += check_public_normalize_entry()
     checks += check_no_v0922_runtime_bypass()
-    print(f"v0.9.23 startup calibration checks passed: {checks}")
+    print(f"v0.9.24 startup calibration checks passed: {checks}")
     return 0
 
 

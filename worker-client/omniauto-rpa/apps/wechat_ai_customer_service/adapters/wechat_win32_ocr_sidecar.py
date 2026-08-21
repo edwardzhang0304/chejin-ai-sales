@@ -189,7 +189,7 @@ _LATEST_LAYOUT_SNAPSHOT_BY_HWND: dict[int, str] = {}
 _LAYOUT_SNAPSHOT_ID_BY_IMAGE_ID: dict[int, str] = {}
 STARTUP_CALIBRATION_PATH = Path(
     os.getenv("CHEJIN_WECHAT_STARTUP_CALIBRATION_PATH")
-    or (PROJECT_ROOT / "runtime" / "wechat_startup_layout_calibration_v0.9.23.json")
+    or (PROJECT_ROOT / "runtime" / "wechat_startup_layout_calibration_v0.9.24.json")
 )
 RENDER_RECOVERY_GUARD_PATH = PROJECT_ROOT / "runtime" / "wechat_win32_ocr_render_recovery_guard.json"
 MIN_SEND_CLIENT_WIDTH = 700
@@ -1195,29 +1195,8 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
         }
     passive_probe = use_passive_probe_mode(action)
     active_business_action = action in ACTIVE_BUSINESS_ACTIONS
-    # Business actions select and activate only the HWND persisted by startup
-    # calibration. Their initial enumeration must remain read-only so another
-    # WeChat window cannot be focused before calibration identity is checked.
     probe = ensure_visible_wechat_window(interactive=action == "normalize-window")
-    calibration_binding: dict[str, Any] = {}
-    if active_business_action:
-        calibration_binding = calibrated_business_window_binding(probe)
-        if not calibration_binding.get("ok"):
-            if calibration_binding.get("startup_calibration_missing"):
-                return startup_calibration_failure_payload(
-                    probe,
-                    calibration_binding.get("calibration") or {},
-                    reason=str(calibration_binding.get("reason") or "startup_calibration_missing"),
-                )
-            return business_foreground_failure_payload(
-                probe,
-                reason=str(calibration_binding.get("reason") or "calibrated_wechat_window_invalid"),
-                activation=calibration_binding,
-            )
-        window = dict(calibration_binding.get("window") or {})
-    else:
-        window = {}
-    if not active_business_action and not probe.get("visible_main_windows"):
+    if not probe.get("visible_main_windows"):
         if wechat_main_window_is_tray_hidden(probe):
             return {
                 "ok": False,
@@ -1251,8 +1230,7 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
             "visible_main_count": len(probe.get("visible_main_windows") or []),
             "window_probe": probe,
         }
-    if not window:
-        window = select_primary_visible_main_window(probe) or {}
+    window = select_primary_visible_main_window(probe) or {}
     if not window:
         return {
             "ok": False,
@@ -1275,6 +1253,29 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
         }
 
     probe["passive_probe"] = passive_probe
+    if active_business_action:
+        # Preserve the gray-v0.9.20 production entry order.  Activation is an
+        # entry action only; popup/menu HWNDs may legitimately become the
+        # foreground target later in the unchanged business transaction.
+        activate_window(hwnd)
+        probe["business_window_activation"] = {
+            "attempted": True,
+            "hwnd": hwnd,
+            "success_gate_added": False,
+        }
+        calibration_binding = calibrated_business_window_binding(
+            probe,
+            selected_window=window,
+        )
+        if not calibration_binding.get("ok"):
+            return startup_calibration_failure_payload(
+                probe,
+                calibration_binding.get("calibration") or {},
+                reason=str(
+                    calibration_binding.get("reason")
+                    or "startup_calibration_missing_or_stale"
+                ),
+            )
     if action not in {"status", "capabilities", "normalize-window", "calibration-status"}:
         calibration_state = validate_startup_calibration_state(hwnd)
         if not calibration_state.get("ok"):
@@ -1283,16 +1284,7 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
                 calibration_state.get("calibration") or {},
                 reason=str(calibration_state.get("reason") or "startup_calibration_missing_or_stale"),
             )
-    if active_business_action:
-        foreground_activation = activate_calibrated_business_window(hwnd)
-        probe["foreground_activation"] = foreground_activation
-        if not foreground_activation.get("ok"):
-            return business_foreground_failure_payload(
-                probe,
-                reason=str(foreground_activation.get("reason") or "foreground_activation_failed"),
-                activation=foreground_activation,
-            )
-    # v0.9.23 has exactly one geometry owner: the startup normalize action.
+    # v0.9.24 has exactly one geometry owner: the startup normalize action.
     # C1-C4 must never move, resize, restore, or re-normalize the window.
     if action == "normalize-window":
         blocking_windows: list[dict[str, Any]] = []
@@ -1913,36 +1905,18 @@ def startup_calibration_failure_payload(
         "message_fact_created": False,
         "brain_called": False,
         "business_handoff_created": False,
+        "manual_action_required": "restart_chejin_worker_client",
+        "automatic_window_move_attempted": False,
+        "automatic_recalibration_attempted": False,
         "window_probe": probe,
     }
 
 
-def business_foreground_failure_payload(
+def calibrated_business_window_binding(
     probe: dict[str, Any],
     *,
-    reason: str,
-    activation: dict[str, Any],
+    selected_window: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
-        "ok": False,
-        "online": True,
-        "adapter": "win32_ocr",
-        "state": "wechat_window_not_foreground",
-        "error_code": "WECHAT_WINDOW_NOT_READY",
-        "reason": str(reason or "foreground_activation_failed"),
-        "foreground_activation": dict(activation or {}),
-        "no_clicks_performed": True,
-        "mouse_call_count": 0,
-        "keyboard_call_count": 0,
-        "clipboard_call_count": 0,
-        "message_fact_created": False,
-        "brain_called": False,
-        "business_handoff_created": False,
-        "window_probe": probe,
-    }
-
-
-def calibrated_business_window_binding(probe: dict[str, Any]) -> dict[str, Any]:
     """Resolve exactly the WeChat HWND persisted by startup calibration.
 
     This is metadata-only: no screenshot, OCR, focus, restore, move, resize,
@@ -1966,7 +1940,7 @@ def calibrated_business_window_binding(probe: dict[str, Any]) -> dict[str, Any]:
     # diagnostic only and must not make a single visible chat window
     # non-executable.  The startup calibration still owns identity; the
     # selected visible HWND must match it exactly.
-    window = select_primary_visible_main_window(probe)
+    window = selected_window
     if not isinstance(window, dict) or int(window.get("hwnd") or 0) <= 0:
         return {
             "ok": False,
@@ -2016,61 +1990,6 @@ def calibrated_business_window_binding(probe: dict[str, Any]) -> dict[str, Any]:
         "calibration": calibration,
         "target_hwnd": target_hwnd,
         "target_process_id": target_process_id,
-    }
-
-
-def activate_calibrated_business_window(hwnd: int) -> dict[str, Any]:
-    """Bring the calibrated HWND forward without UI or geometry actions."""
-
-    before = foreground_window_matches_target(hwnd)
-    events = ["foreground_checked"]
-    if win32_ocr_window_state.foreground_guard_ready(before):
-        return {
-            "ok": True,
-            "reason": "foreground_already_target",
-            "hwnd": int(hwnd),
-            "events": events,
-            "foreground_before": before,
-            "foreground_after": before,
-            "activation_attempted": False,
-        }
-    try:
-        user32 = ctypes.windll.user32
-        minimized = bool(user32.IsIconic(int(hwnd)))
-        visible = bool(user32.IsWindowVisible(int(hwnd)))
-    except Exception as exc:
-        return {
-            "ok": False,
-            "reason": "calibrated_window_state_probe_failed",
-            "hwnd": int(hwnd),
-            "events": events,
-            "foreground_before": before,
-            "error": repr(exc),
-        }
-    if not visible and not minimized:
-        return {
-            "ok": False,
-            "reason": "calibrated_window_not_visible",
-            "hwnd": int(hwnd),
-            "events": events,
-            "foreground_before": before,
-        }
-    activate_window(hwnd, foreground_only=True)
-    events.append("set_foreground_window")
-    after = foreground_window_matches_target(hwnd)
-    events.append("foreground_rechecked")
-    return {
-        "ok": win32_ocr_window_state.foreground_guard_ready(after),
-        "reason": (
-            "foreground_activation_confirmed"
-            if win32_ocr_window_state.foreground_guard_ready(after)
-            else "foreground_activation_not_confirmed"
-        ),
-        "hwnd": int(hwnd),
-        "events": events,
-        "foreground_before": before,
-        "foreground_after": after,
-        "activation_attempted": True,
     }
 
 
@@ -17212,15 +17131,6 @@ def _current_click_snapshot(hwnd: int, *, expected_snapshot_id: str = "") -> tup
             "layout_snapshot_id": str(snapshot.get("layout_snapshot_id") or ""),
             "conflicts": list(snapshot.get("conflicts") or []),
         }
-    foreground = foreground_window_matches_target(hwnd)
-    if not foreground.get("ok"):
-        return None, {
-            "ok": False,
-            "error_code": "WECHAT_FOREGROUND_TARGET_MISMATCH",
-            "reason": str(foreground.get("reason") or "foreground_not_wechat_target"),
-            "layout_snapshot_id": str(snapshot.get("layout_snapshot_id") or ""),
-            "foreground": foreground,
-        }
     return snapshot, None
 
 
@@ -17320,7 +17230,7 @@ def build_and_store_startup_calibration(
     *,
     artifact_dir: str | None = None,
 ) -> dict[str, Any]:
-    """Capture one exact client frame and build the sole v0.9.23 shell map."""
+    """Capture one exact client frame and build the sole v0.9.24 shell map."""
 
     client_geometry = get_window_client_geometry(hwnd)
     origin = [

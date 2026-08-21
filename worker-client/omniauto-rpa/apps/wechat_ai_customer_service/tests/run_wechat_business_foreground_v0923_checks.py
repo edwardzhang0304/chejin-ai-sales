@@ -338,7 +338,7 @@ def check_passive_actions_do_not_steal_foreground() -> int:
     return 4
 
 
-def check_c1_c2_c3_activate_before_dispatch() -> int:
+def check_c1_c2_c3_reuse_v0920_activation_before_dispatch() -> int:
     actions = (
         ("add-friend-entry-click-plan-windows", "C1.add-friend"),
         ("open-chat", "C2.open-chat"),
@@ -370,9 +370,13 @@ def check_c1_c2_c3_activate_before_dispatch() -> int:
                     f"SetForegroundWindow:{TARGET_HWND}" in foreground_trace,
                     f"{action} did not activate calibrated WeChat: {foreground_trace}",
                 )
+                set_index = foreground_trace.index(f"SetForegroundWindow:{TARGET_HWND}")
                 assert_true(
-                    foreground_trace[-1] == f"GetForegroundWindow:{TARGET_HWND}",
-                    f"{action} did not re-confirm target foreground: {foreground_trace}",
+                    any(
+                        event == f"GetForegroundWindow:{TARGET_HWND}"
+                        for event in foreground_trace[set_index + 1:]
+                    ),
+                    f"{action} did not execute the v0.9.20 activation sequence: {foreground_trace}",
                 )
                 print(
                     f"TRACE {expected_dispatch}: "
@@ -391,7 +395,7 @@ def check_c1_c2_c3_activate_before_dispatch() -> int:
     return 15
 
 
-def check_activation_failure_stops_before_all_business_effects() -> int:
+def check_no_new_global_activation_success_gate() -> int:
     actions = (
         "add-friend-entry-click-plan-windows",
         "open-chat",
@@ -403,14 +407,15 @@ def check_activation_failure_stops_before_all_business_effects() -> int:
                 patch.boundary.foreground = OTHER_HWND
                 dispatch_start = len(patch.dispatches)
                 result = sidecar.run_action(action_args(action))
-                assert_true(result.get("ok") is False, f"failed activation passed for {action}: {result}")
-                assert_true(result.get("state") == "wechat_window_not_foreground", str(result))
-                assert_true(result.get("error_code") == "WECHAT_WINDOW_NOT_READY", str(result))
-                assert_true(result.get("no_clicks_performed") is True, str(result))
-                assert_true(result.get("mouse_call_count") == 0, str(result))
-                assert_true(result.get("keyboard_call_count") == 0, str(result))
-                assert_true(result.get("clipboard_call_count") == 0, str(result))
-                assert_true(len(patch.dispatches) == dispatch_start, f"{action} reached business dispatch")
+                assert_true(result.get("ok") is True, f"v0.9.20 dispatch was gated for {action}: {result}")
+                assert_true(
+                    len(patch.dispatches) == dispatch_start + 1,
+                    f"{action} did not reach its unchanged business dispatch",
+                )
+                assert_true(
+                    "foreground_activation" not in (result.get("window_probe") or {}),
+                    f"{action} retained the removed global activation gate",
+                )
             assert_true(
                 all(value == 0 for value in patch.forbidden_counts.values()),
                 f"failed activation performed a forbidden operation: {patch.forbidden_counts}",
@@ -420,7 +425,7 @@ def check_activation_failure_stops_before_all_business_effects() -> int:
                 f"failure path moved/restored the window: {patch.boundary.events}",
             )
             print(
-                "TRACE activation_failure: business_dispatches=0, "
+                "TRACE no_global_activation_gate: business_dispatches=3, "
                 f"forbidden_counts={patch.forbidden_counts}"
             )
     return 25
@@ -429,9 +434,9 @@ def check_activation_failure_stops_before_all_business_effects() -> int:
 def main() -> int:
     checks = 0
     checks += check_passive_actions_do_not_steal_foreground()
-    checks += check_c1_c2_c3_activate_before_dispatch()
-    checks += check_activation_failure_stops_before_all_business_effects()
-    print(f"v0.9.23 business foreground checks passed: {checks}")
+    checks += check_c1_c2_c3_reuse_v0920_activation_before_dispatch()
+    checks += check_no_new_global_activation_success_gate()
+    print(f"v0.9.24 business entry activation checks passed: {checks}")
     return 0
 
 

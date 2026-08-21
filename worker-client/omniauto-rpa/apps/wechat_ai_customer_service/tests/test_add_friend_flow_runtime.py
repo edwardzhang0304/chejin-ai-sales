@@ -1,4 +1,4 @@
-"""Production-entry regressions for dynamic add-friend layout and plus targeting."""
+"""Production-entry regressions for v0.9.24 startup-map add-friend targeting."""
 
 from __future__ import annotations
 
@@ -272,7 +272,7 @@ class AddFriendProductionEntryTest(unittest.TestCase):
                     with self.assertRaises(PhysicalClickReached):
                         sidecar.run_action(args)
 
-        self.assertEqual(activation_calls, [(1001, True)])
+        self.assertEqual(activation_calls, [(1001, False)])
         self.assertEqual(foreground["hwnd"], 1001)
         self.assertEqual(len(clicks), 1, clicks)
         self.assertEqual(clicks[0]["action_name"], "plus_entry_click_1")
@@ -325,13 +325,127 @@ class AddFriendProductionEntryTest(unittest.TestCase):
                 with ExitStack() as stack:
                     stack.enter_context(patch.object(sidecar, "_WIN32_IMPORT_ERROR", ""))
                     stack.enter_context(patch.object(sidecar, "probe_wechat_windows", return_value=probe))
+                    stack.enter_context(patch.object(sidecar, "activate_window", return_value=None))
                     result = sidecar.run_action(args)
 
         self.assertFalse(result["ok"], result)
-        self.assertEqual(result["error_code"], "WECHAT_WINDOW_NOT_READY", result)
+        self.assertEqual(
+            result["error_code"],
+            "WECHAT_UI_STARTUP_CALIBRATION_FAILED",
+            result,
+        )
         self.assertEqual(result["reason"], "startup_calibration_hwnd_changed", result)
         self.assertTrue(result["no_clicks_performed"], result)
         self.assertEqual(clicks, [])
+
+    def test_public_c1_clicks_plus_then_ocr_confirmed_menu_with_popup_foreground(self) -> None:
+        """Exercise public entry through both production click mapping layers.
+
+        Only Windows capture/OCR/mouse boundaries are replaced.  The public
+        ``run_action`` dispatcher, startup-owner check, add-friend flow,
+        region mapping, popup OCR target selection and bounded click mapping
+        all execute as production code.
+        """
+
+        image, search_item = _bright_wechat_add_friend_frame(selected_row=2)
+        search = _search_item(search_item, "Q搜索")
+        physical_clicks: list[dict[str, Any]] = []
+        foreground = {"hwnd": 1001}
+        menu_hwnd = 77001
+        visible_target = {
+            "hwnd": 1001,
+            "pid": 2001,
+            "title": "微信",
+            "class_name": "Qt51514QWindowIcon",
+            "visible": True,
+        }
+        probe = {
+            "windows": [visible_target],
+            "visible_windows": [visible_target],
+            "main_windows": [visible_target],
+            "visible_main_windows": [visible_target],
+            "main_count": 1,
+            "visible_main_count": 1,
+        }
+
+        def staged_ocr(_image: Image.Image, _bounds: list[int]) -> list[dict[str, Any]]:
+            if not physical_clicks:
+                return [dict(search)] if _bounds == [0, 0, image.width, image.height] else []
+            return [{
+                "text": "添加朋友",
+                "left": 338,
+                "top": 160,
+                "right": 414,
+                "bottom": 190,
+                "center_x": 376,
+                "center_y": 175,
+                "confidence": 0.98,
+            }]
+
+        def physical_mouse(
+            screen_x: int,
+            screen_y: int,
+            *,
+            bounds: list[int],
+            action_name: str,
+        ) -> dict[str, Any]:
+            physical_clicks.append({
+                "point": [int(screen_x), int(screen_y)],
+                "bounds": list(bounds),
+                "action_name": str(action_name),
+                "foreground_before": int(foreground["hwnd"]),
+            })
+            if len(physical_clicks) == 1:
+                foreground["hwnd"] = menu_hwnd
+            return {"ok": True, "action_name": action_name}
+
+        args = SimpleNamespace(
+            action="add-friend-entry-click-plan-windows",
+            artifact_dir="",
+            phone="17368746889",
+            wechat="",
+            verify_message="我是车金二手车张伟",
+            remark_name="客户-CJ8K2P",
+            remark_code="CJ8K2P",
+            calibration_only=False,
+            action_journal="",
+        )
+        real_bounded_click = sidecar.human_window_image_click_in_bounds
+
+        with tempfile.TemporaryDirectory(prefix="add-friend-v0924-menu-chain-") as temp_dir:
+            args.artifact_dir = temp_dir
+            with production_boundary(image, ocr_items=[search], click_points=[]):
+                with ExitStack() as stack:
+                    stack.enter_context(patch.object(sidecar, "_WIN32_IMPORT_ERROR", ""))
+                    stack.enter_context(patch.object(sidecar, "probe_wechat_windows", return_value=probe))
+                    stack.enter_context(patch.object(sidecar, "activate_window", side_effect=lambda hwnd, **_kwargs: foreground.__setitem__("hwnd", int(hwnd))))
+                    stack.enter_context(patch.object(sidecar, "run_ocr_on_screen_region", side_effect=staged_ocr))
+                    stack.enter_context(patch.object(sidecar, "human_window_image_click_in_bounds", side_effect=real_bounded_click))
+                    stack.enter_context(patch.object(sidecar, "human_screen_click_in_bounds", side_effect=physical_mouse))
+                    stack.enter_context(patch.object(sidecar, "ensure_left_button_released", return_value=None))
+                    stack.enter_context(patch.object(sidecar, "require_active_ui_action_budget", return_value={"ok": True}))
+                    stack.enter_context(patch.object(sidecar, "wait_for_add_friend_dialog_window", return_value={"ok": False, "reason": "stop_after_verified_menu_click"}))
+                    stack.enter_context(patch.object(sidecar, "write_add_friend_entry_click_review", return_value="review.html"))
+                    stack.enter_context(patch.object(sidecar, "win32gui", SimpleNamespace(IsWindow=lambda hwnd: int(hwnd) == 1001, GetWindowRect=lambda _hwnd: (0, 0, image.width, image.height))))
+                    result = sidecar.run_action(args)
+
+        self.assertEqual(
+            [item["action_name"] for item in physical_clicks],
+            ["plus_entry_click_1", "add_friend_menu_entry_click"],
+            (physical_clicks, result),
+        )
+        self.assertEqual(physical_clicks[0]["foreground_before"], 1001)
+        self.assertEqual(
+            physical_clicks[1]["foreground_before"],
+            menu_hwnd,
+            "the popup/menu HWND must not be rejected by a main-HWND equality gate",
+        )
+        self.assertTrue(result["menu_click"]["menu_clicked"], result)
+        self.assertEqual(
+            result["menu_click"]["reason"],
+            "add_friend_dialog_window_not_found_after_menu_click",
+            result,
+        )
 
     def test_frame_seed_requires_same_live_hwnd_frame_and_layout_snapshot(self) -> None:
         image, item = _bright_wechat_add_friend_frame(selected_row=2)
@@ -468,8 +582,11 @@ class AddFriendProductionEntryTest(unittest.TestCase):
         self.assertNotEqual(measured_nav, 144, snapshot)
         self.assertEqual(snapshot.get("sidebar_bounds", [None, None, None])[2], sidebar_x, snapshot)
         self.assertEqual(len(clicks), 1, clicks)
-        self.assertLessEqual(abs(clicks[0]["point"][0] - plus_x), 2, clicks)
-        self.assertLessEqual(abs(clicks[0]["point"][1] - plus_y), 2, clicks)
+        header_left, header_top, header_right, header_bottom = snapshot["sidebar_header_bounds"]
+        expected_x = header_left + round((265 / 298) * (header_right - header_left))
+        expected_y = header_top + round((29 / 60) * (header_bottom - header_top))
+        self.assertEqual(clicks[0]["point"], [expected_x, expected_y], clicks)
+        self.assertNotEqual(clicks[0]["point"][1], plus_y, clicks)
         self.assertGreater(clicks[0]["point"][0], ocr_items[0]["right"], clicks)
 
     def test_no_header_line_search_noise_and_extra_verticals_reach_real_plus_click(self) -> None:

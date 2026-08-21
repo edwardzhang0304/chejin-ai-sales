@@ -1,4 +1,4 @@
-"""v0.9.23 startup calibration, business-frame facts and coordinate mapping."""
+"""v0.9.24 startup calibration, business-frame facts and coordinate mapping."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ ERROR_LAYOUT_UNRESOLVED = "WECHAT_UI_LAYOUT_UNRESOLVED"
 ERROR_LAYOUT_STALE = "WECHAT_UI_LAYOUT_STALE"
 ERROR_COORDINATE_MAPPING_INVALID = "WECHAT_UI_COORDINATE_MAPPING_INVALID"
 ERROR_STARTUP_CALIBRATION_FAILED = "WECHAT_UI_STARTUP_CALIBRATION_FAILED"
-STARTUP_CALIBRATION_SCHEMA_VERSION = "0.9.23"
+STARTUP_CALIBRATION_SCHEMA_VERSION = "0.9.24"
 
 REQUIRED_LAYOUT_REGION_NAMES = (
     "left_nav_bounds",
@@ -1094,26 +1094,6 @@ def map_reference_region_point(
     ref_x, ref_y = [int(value) for value in reference["point"]]
     mapped_x = bounds[0] + int(round((ref_x / ref_width) * region_width))
     mapped_y = bounds[1] + int(round((ref_y / ref_height) * region_height))
-    if reference_name == "plus_entry":
-        plus_anchors = [
-            item for item in (calibration.get("anchors") or [])
-            if isinstance(item, Mapping)
-            and str(item.get("name") or "") == "startup_plus_pixel_anchor"
-            and isinstance(item.get("point"), (list, tuple))
-            and len(item.get("point") or []) >= 2
-        ]
-        search_anchors = [
-            item for item in (calibration.get("anchors") or [])
-            if isinstance(item, Mapping)
-            and str(item.get("name") or "") == "sidebar_search_anchor"
-            and isinstance(item.get("bounds"), (list, tuple))
-            and len(item.get("bounds") or []) >= 4
-        ]
-        if plus_anchors:
-            mapped_y = int((plus_anchors[0].get("point") or [0, mapped_y])[1])
-        elif len(search_anchors) == 1:
-            search_bounds = normalize_rect(search_anchors[0].get("bounds"))
-            mapped_y = int(round((search_bounds[1] + search_bounds[3]) / 2))
     if dynamic_axis_value is not None and reference_name == "session_row_x":
         mapped_y = int(dynamic_axis_value)
     point = clamp_point([mapped_x, mapped_y], bounds)
