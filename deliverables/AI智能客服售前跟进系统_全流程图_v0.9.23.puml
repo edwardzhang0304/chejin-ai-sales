@@ -1,5 +1,5 @@
 @startuml
-' 文档版本：v0.9.22；灰度候选版本：0.9.22（代码候选已形成，待 Windows UAT 与正式包验证）；最后更新：2026-08-18
+' 文档版本：v0.9.23；灰度目标版本：0.9.23（方案已收口，代码/合同/Windows UAT 待实现验证）；最后更新：2026-08-21
 title AI智能客服售前跟进系统 全流程图（C0-C4、媒体、回复、转人工与恢复）
 
 skinparam monochrome true
@@ -68,25 +68,24 @@ note over W,Reply
 10. C2身份只有四类对象：frame_observation、pending_media_action、committed_message、quarantine_record；只有committed_message可生成source key、查Ledger/Outbox、入库或进入Brain。
 11. 新文字/系统消息可由完整new_suffix直接提交；新语音/图片必须先落ActionJournal并经confirmed action提交。属于new_suffix、Vision成功或已有预留号都不等于正式消息。
 12. 媒体动作只能终止为cancelled_before_trigger、committed_completed、committed_failed或identity_unresolved；identity_unresolved只做无UI恢复，仍不明确则幂等handoff，不得长期挂起或重复点击。
-13. 每个新UI Flow先统一复核微信HWND、工作区、窗口/客户区、DPI并规范化；被动status/heartbeat不得移动窗口。
-14. 每个HWND的每张新截图各自产生唯一不可变layout_snapshot；点击、输入、滚动、弹窗、搜索、窗口或新截图都会使旧快照失效。
-15. 布局只确定区域，不代替private+短码、头像/气泡角色、媒体动作回执和S0/S1/S2业务证据。
-16. 所有点击只消费当前executable布局快照并经过OmniAuto唯一截图->屏幕->客户区转换器；模块不得自行叠加窗口偏移或DPI。
-17. 布局缺失、多候选、低置信、区域冲突或截图原点未知时最多零点击重取一帧；仍不明确则技术失败，不使用固定坐标兜底、不创建业务Handoff。
+13. 客户端启动按DPI/工作区选择唯一微信窗口档位：100%=800×852、125%=1000×1065、150%=1200×1278；放不下时宽高等比例缩小，实测客户区不小于700×720。
+14. 窗口归位后只对精确微信客户区截图一次，用原图几何+同尺寸增强OCR建立startup_layout_calibration，C0—C4共用该全局区域地图。
+15. 会话行重排、红点、新消息和聊天滚动不重建全局标定；具体会话行/消息/弹窗/表单仍由0.9.20原流程的当前必要业务帧定位。
+16. 标定只确定导航栏、侧栏、标题、消息视口和输入区；不代替private+短码、角色、媒体回执和S0/S1/S2业务证据。
+17. 只有HWND/进程/客户区/DPI/微信主外壳真实变化才使全局标定失效；不为此增加点击前截图、OCR或改变0.9.20业务流程。
 end note
 
 note over W,WX
-0.9.22通用Windows UI兼容前置门禁（适用于add_friend、authorized_read、pre_send_refresh和send）：
-取得UI锁后、首次业务截图前，OmniAuto使用统一入口规范化并复核微信窗口。
-当前截图建立独立layout_snapshot：capture_mode、截图屏幕原点、window/client rect、DPI、
-侧栏/标题/消息区/输入区边界、锚点、置信度、冲突和executable。
-只有当前快照executable且目标位于已确认bounds内才可经唯一坐标转换器点击。
-独立弹窗/新HWND、新截图或任何UI变化必须建立新快照；PrintWindow/原点未知截图只可诊断。
-固定像素只作最小尺寸、OCR边距和目标内部余量，绝不授权实际点击。
-可执行图只能来自当前精确微信HWND且原点可证明的可见窗口截图；全窗口OCR建立本帧主观察。
-增强OCR只能裁剪同一截图的已确认ROI并映射回原图，只补文字，不另建布局或授权点击。
-PrintWindow、桌面全屏、离屏或原点未知截图只可诊断；S0/S1/S2不可跨帧复用。
-不保留动态布局关闭开关、旧设备profile或同包旧坐标路径；回滚只能整体回退不可变版本并暂停接单。
+0.9.23启动标定兼容门禁（适用于add_friend、authorized_read、pre_send_refresh和send）：
+启动按DPI/工作区选择唯一默认外框档位，归位后用一张精确HWND客户区截图建立startup_layout_calibration。
+原图几何确定导航/侧栏/标题/消息/输入边界；同尺寸增强OCR只补文字锚点，不直接产生点击坐标。
+0.9.20参考点按所属区域分段映射到当前标定；禁止整窗口单比例缩放或各模块自行加偏移。
+会话行、消息、弹窗和表单继续使用0.9.20原有必要业务帧，不在启动时伪造不存在的页面定位。
+会话重排和消息变化不使全局标定失效；HWND/进程/客户区/DPI/主外壳真实变化才重新标定。
+不新增业务截图/OCR，不改变0.9.20点击顺序、重试、失败处理和状态机。
+status/capabilities/calibration-status/sessions保持被动探测，不抢前台。
+add_friend/open-chat/messages/voice-transcribe/recover-render/send在首个物理动作前只激活已标定的唯一微信主HWND并复核前台根HWND。
+该激活不得MoveWindow、缩放、重新规范化、重新标定或新增截图/OCR；有限激活失败则零操作返回技术失败。
 end note
 
 group C0-C1：线索进入、分配销售与加好友
@@ -94,12 +93,12 @@ group C0-C1：线索进入、分配销售与加好友
   C01 -> C01: 手机号去重、分配唯一sales_id\n创建add_friend任务并绑定可用Worker
   C01 --> W: 下发add_friend任务\n手机号 + 正式短码 + 申请语
   W -> Lock: 获取本地微信UI锁
-  W -> OA: add_friend UI前置门禁\n统一窗口规范化 + 当前帧layout_snapshot
-  OA -> WX: 必要时恢复非最大化窗口\n按工作区与DPI移动到安全位置并调整尺寸
-  OA -> OA: 识别真实侧栏、头部、聊天区和输入区\n唯一“+”视觉目标 + 统一坐标转换
+  W -> WX: 仅将已标定的唯一微信主HWND切到前台并复核\n不移动、不缩放、不重新标定
+  W -> OA: add_friend事务\n复用startup_layout_calibration和0.9.20原流程
+  OA -> OA: 在标定的侧栏头部内\n映射0.9.20“+”参考点到当前操作行
   note over W,OA
-  布局不可执行时零业务点击失败；允许重取一帧，仍失败则按原任务技术失败返回。
-  搜索框图案、1920参考点或旧布局不得冒充“+”号。
+  启动标定只定位微信外壳区域，不要求OCR直接识别“+”字符。
+  点击后必须按0.9.20原有截图确认正确菜单；搜索图标不得冒充“+”。
   end note
   W -> OA: add_friend\n最终确定后短暂等待稳定画面
   OA -> WX: 搜索手机号、填写短码备注、发送好友申请
@@ -227,11 +226,10 @@ loop Worker运行中；每次循环最多完成一个会话事务
       W -> OA: sessions：扫描当前第一屏
       OA -> WX: 截图 + 普通/增强OCR\n按视觉行聚合侧栏标题
       WX --> OA: 当前第一屏画面
-      OA -> OA: 用顶部唯一搜索锚点排除头像伪竖边\n从当前像素建立完整动态布局
+      OA -> OA: 复用启动标定的session_list_bounds\n只在当前业务帧聚合会话行和短码
       note right of OA
-        OCR有结果但布局无效时返回
-        sessions_layout_unresolved + WECHAT_UI_LAYOUT_UNRESOLVED，
-        携带置信度和冲突并零点击停止；
+        会话列表变化不重建微信外壳标定；具体行必须用当前帧。
+        标定失效或当前行无法解析时返明确技术失败，
         禁止伪装成成功的0 sessions继续上报。
       end note
       OA --> W: session_scan_result\n短码候选/行证据/conversation_type候选

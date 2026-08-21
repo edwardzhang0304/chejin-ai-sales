@@ -30,15 +30,37 @@ def _test_layout_snapshot(image: Image.Image) -> dict[str, object]:
     nav_right = max(48, int(width * 0.08))
     sidebar_right = max(nav_right + 160, min(380, int(width * 0.38)))
     header_bottom = max(64, min(120, int(height * 0.10)))
-    input_top = height - max(64, min(140, int(height * 0.10)))
+    input_panel_top = height - max(64, min(140, int(height * 0.10)))
+    input_panel_height = max(1, height - input_panel_top)
+    editable_top = input_panel_top + max(1, int(input_panel_height * 0.04))
+    editable_bottom = max(
+        editable_top + 1,
+        min(height, input_panel_top + int(input_panel_height * 0.56)),
+    )
+    editable_left = sidebar_right + max(1, int((width - sidebar_right) * 0.01))
+    editable_right = max(
+        editable_left + 1,
+        width - max(1, int((width - sidebar_right) * 0.16)),
+    )
     regions = {
         "left_nav_bounds": [0, 0, nav_right, height],
         "sidebar_bounds": [nav_right, 0, sidebar_right, height],
         "sidebar_header_bounds": [nav_right, 0, sidebar_right, header_bottom],
         "session_list_bounds": [nav_right, header_bottom, sidebar_right, height],
         "chat_header_bounds": [sidebar_right, 0, width, header_bottom],
-        "message_viewport_bounds": [sidebar_right, header_bottom, width, input_top],
-        "input_bounds": [sidebar_right, input_top, width, height],
+        "message_viewport_bounds": [
+            sidebar_right,
+            header_bottom,
+            width,
+            input_panel_top,
+        ],
+        "toolbar_bounds": [sidebar_right, editable_bottom, width, height],
+        "input_bounds": [
+            editable_left,
+            editable_top,
+            editable_right,
+            editable_bottom,
+        ],
     }
     from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import window_layout
 

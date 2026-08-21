@@ -14,6 +14,14 @@ def session_row_click_x(
     *,
     default_x: int,
 ) -> int:
+    reference_point = session.get("reference_click_point")
+    if isinstance(reference_point, (list, tuple)) and len(reference_point) >= 2:
+        click_bounds = session.get("click_bounds")
+        if isinstance(click_bounds, (list, tuple)) and len(click_bounds) >= 4:
+            left, _top, right, _bottom = [int(float(value or 0)) for value in click_bounds[:4]]
+            reference_x = int(float(reference_point[0] or 0))
+            if left <= reference_x <= right:
+                return reference_x
     click_bounds = session.get("click_bounds")
     if isinstance(click_bounds, (list, tuple)) and len(click_bounds) >= 4:
         left, _top, right, _bottom = [int(float(value or 0)) for value in click_bounds[:4]]
@@ -52,6 +60,12 @@ def session_row_click_candidate_points(
     row_left, top, row_right, bottom = [int(float(value or 0)) for value in click_bounds[:4]]
     if row_right <= row_left or bottom <= top:
         return []
+    reference_point = session.get("reference_click_point")
+    if isinstance(reference_point, (list, tuple)) and len(reference_point) >= 2:
+        reference_x = int(float(reference_point[0] or 0))
+        if row_left <= reference_x <= row_right:
+            # The startup map owns X; the current business frame owns row Y.
+            return [(reference_x, bounded_int(center_y, default=center_y, minimum=top, maximum=bottom))]
     x_fracs = (0.10, 0.20, 0.32, 0.44, 0.56, 0.68, 0.80, 0.90, 0.38, 0.74)
     y_fracs = (0.24, 0.50, 0.78, 0.34, 0.68, 0.42, 0.82, 0.58, 0.18, 0.72)
     points: list[tuple[int, int]] = []

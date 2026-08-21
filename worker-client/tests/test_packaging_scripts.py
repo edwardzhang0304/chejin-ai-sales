@@ -184,7 +184,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("delivery ZIP does not contain the packaged runtime directory", workflow)
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v0.9.22-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v0.9.23-windows-x64.delivery.json", workflow)
         self.assertIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn("vision_credential_embedded", workflow)
         self.assertIn("vision_configuration_locked", workflow)
@@ -506,7 +506,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "8b4e4b05fa7cbe7dc135a0c3dd34a707d90c7006"
+                        "98861fa81cfcc81e81943eb8c33ec2aa5f7c83ed"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -534,7 +534,7 @@ class PackagingScriptsTest(unittest.TestCase):
                         "source_message_transport_allowlist",
                         "typed_committed_media_identity_contract",
                         "media_action_four_terminal_contract",
-                        "c2_contract_0_9_22_generated_schema",
+                        "c2_contract_0_9_23_generated_schema",
                         (
                             "voice_frame_action_binding_observation_"
                             "projection_contract"
@@ -556,27 +556,11 @@ class PackagingScriptsTest(unittest.TestCase):
                             "relocation_contract"
                         ),
                         "tall_image_bubble_same_row_avatar_role_recovery",
-                        "wechat_dynamic_layout_snapshot_contract",
-                        "dpi_aware_window_normalization_contract",
-                        (
-                            "unified_frame_to_screen_coordinate_mapping_"
-                            "contract"
-                        ),
                         "popup_snapshot_bound_media_action_contract",
                         "wechat_legacy_fixed_coordinate_model_removed",
                         "strict_typed_vision_port_only_contract",
                         "pr28_protected_baseline_complete_reporting",
-                        "add_friend_search_row_dynamic_layout_contract",
-                        "add_friend_unique_plus_visual_target_contract",
-                        "dpi_independent_1920_window_normalization_contract",
                         "typed_empty_ocr_region_failure_contract",
-                        "startup_window_normalization_geometry_only_contract",
-                        "business_action_preclick_layout_gate_contract",
-                        "verify_only_after_startup_window_contract",
-                        (
-                            "search_anchor_disambiguates_aligned_avatar_"
-                            "edges_contract"
-                        ),
                         "stable_invite_form_atomic_snapshot_reuse_contract",
                         (
                             "copied_eight_char_short_code_presence_"
@@ -585,11 +569,30 @@ class PackagingScriptsTest(unittest.TestCase):
                         "unchanged_surface_evidence_frame_reuse_contract",
                         "add_friend_frame_seed_facade_forwarding_contract",
                         "verified_send_input_bounds_forwarding_contract",
-                        (
-                            "full_layout_search_anchor_avatar_edge_"
-                            "disambiguation_contract"
-                        ),
                         "invalid_session_layout_explicit_failure_contract",
+                        "v0_9_23_startup_layout_calibration_contract",
+                        "gray_v0_9_20_region_local_coordinate_map_contract",
+                        "current_monitor_dpi_window_profile_contract",
+                        "startup_window_position_and_size_once_contract",
+                        "exact_visible_client_capture_calibration_contract",
+                        "startup_raw_pixel_plus_operation_row_anchor_contract",
+                        (
+                            "business_frame_and_calibration_identity_"
+                            "separation_contract"
+                        ),
+                        "c1_c2_c3_c4_region_map_coordinate_owner_contract",
+                        "business_actions_never_normalize_window_contract",
+                        (
+                            "idle_transaction_restore_inflight_fail_closed_"
+                            "contract"
+                        ),
+                        "c1_eight_business_change_frames_contract",
+                        (
+                            "calibrated_main_hwnd_active_business_"
+                            "foreground_contract"
+                        ),
+                        "frozen_compat_sidecar_single_command_contract",
+                        "four_edge_dpi_window_margin_contract",
                     ],
                 }
             ],
@@ -611,11 +614,10 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["chejin_overlays"],
         )
         self.assertIn(
-            "8b4e4b05fa7cbe7dc135a0c3dd34a707d90c7006",
+            "98861fa81cfcc81e81943eb8c33ec2aa5f7c83ed",
             provenance["integration_note"],
         )
-        self.assertIn("0.9.22", provenance["integration_note"])
-        self.assertIn("committed_message", provenance["integration_note"])
+        self.assertIn("0.9.23", provenance["integration_note"])
         self.assertIn(
             "immutable_visible_scan_frame_reuse_contract",
             provenance["chejin_overlays"],
@@ -628,28 +630,13 @@ class PackagingScriptsTest(unittest.TestCase):
             "send_s0_s1_s2_distinct_frame_local_reuse_contract",
             provenance["chejin_overlays"],
         )
-        self.assertIn("有界恢复合同", provenance["integration_note"])
-        self.assertIn("两次有界恢复合同", provenance["integration_note"])
-        self.assertIn(
-            "此前已经证明的添加朋友 HWND",
-            provenance["integration_note"],
-        )
-        self.assertIn("已经是好友两条完成路径", provenance["integration_note"])
-        self.assertIn(
-            "可靠文字/语音类型一经确认即不可被结构图片覆盖且不依赖动作成功",
-            provenance["integration_note"],
-        )
-        self.assertIn(
-            "OmniAuto 独占标题 OCR",
-            provenance["integration_note"],
-        )
-        self.assertIn("Worker 只校验", provenance["integration_note"])
-        self.assertIn("不读取 `raw_title`", provenance["integration_note"])
-        self.assertIn("侧栏红点或其他会话变化不得阻断发送", provenance["integration_note"])
-        self.assertIn("高图片气泡", provenance["integration_note"])
-        self.assertIn("AI 发送确认回执", provenance["integration_note"])
-        self.assertIn("Brain 软证据澄清", provenance["integration_note"])
-        self.assertIn("reply_then_handoff", provenance["integration_note"])
+        self.assertIn("startup_layout_calibration", provenance["integration_note"])
+        self.assertIn("C1-C4 业务帧", provenance["integration_note"])
+        self.assertIn("OmniAuto 独占区域映射和坐标决策", provenance["integration_note"])
+        self.assertIn("已删除 0.9.22 每帧重建整套外壳", provenance["integration_note"])
+        self.assertIn("C1 保留八类真实变化画面", provenance["integration_note"])
+        self.assertIn("sent_ack 语义不变", provenance["integration_note"])
+        self.assertIn("独立 OmniAuto 固定提交", provenance["integration_note"])
         self.assertEqual(
             provenance["historical_integrations"][0][
                 "chejin_integration_commit"
@@ -969,7 +956,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "0.9.22"', workflow)
+        self.assertIn('version -ne "0.9.23"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)
@@ -1141,7 +1128,7 @@ class PackagingScriptsTest(unittest.TestCase):
             "run_wechat_win32_ocr_env_config_checks.py",
             "run_wechat_win32_ocr_interaction_evidence_checks.py",
             "run_wechat_win32_ocr_humanized_input_checks.py",
-            "run_wechat_win32_ocr_window_action_planning_checks.py",
+            "run_wechat_startup_calibration_v0923_checks.py",
         )
         for script_name in required_scripts:
             self.assertIn(script_name, text)

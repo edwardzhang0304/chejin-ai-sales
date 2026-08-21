@@ -57,6 +57,8 @@ from apps.wechat_ai_customer_service.adapters.add_friend_payloads import (
 from apps.wechat_ai_customer_service.adapters.add_friend_pacing import pacing_metadata, pacing_range
 from apps.wechat_ai_customer_service.adapters.add_friend_result_mapping import (
     ERROR_ACCOUNT_RESTRICTED,
+    ERROR_ADD_CONTACT_ENTRY_NOT_FOUND,
+    ERROR_INVITE_CONFIRM_CLICK_FAILED,
     ERROR_INVITE_FIELD_VERIFICATION_FAILED,
     ERROR_PHONE_NOT_FOUND,
     ERROR_PLUS_ENTRY_NOT_FOUND,
@@ -78,6 +80,7 @@ from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr.geometry import (
 )
 from apps.wechat_ai_customer_service.adapters.add_friend_layout import invite_form_field_verification
 from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import device_profile as win32_ocr_device_profile
+from apps.wechat_ai_customer_service.adapters.wechat_win32_ocr import window_layout as win32_ocr_window_layout
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
@@ -432,7 +435,7 @@ def add_friend_plus_entry_target(
         anchor
         for anchor in ((layout_snapshot or {}).get("anchors") or [])
         if isinstance(anchor, dict)
-        and str(anchor.get("name") or "") == "search_text"
+        and str(anchor.get("name") or "") == "sidebar_search_anchor"
         and isinstance(anchor.get("bounds"), list)
         and len(anchor.get("bounds") or []) >= 4
     ]
@@ -449,6 +452,24 @@ def add_friend_plus_entry_target(
         dynamic_sidebar_header_bounds=dynamic_bounds,
         search_anchor_bounds=search_anchor_bounds,
     )
+    mapped_reference: dict[str, Any] = {}
+    try:
+        mapped_reference = win32_ocr_window_layout.map_reference_region_point(
+            layout_snapshot or {},
+            "plus_entry",
+        )
+    except win32_ocr_window_layout.LayoutSnapshotError:
+        mapped_reference = {}
+    if mapped_reference:
+        mapped_point = list(mapped_reference["image_point"])
+        target["point"] = mapped_point
+        target["x"] = int(mapped_point[0])
+        target["y"] = int(mapped_point[1])
+        target["bounds"] = list(mapped_reference["region_bounds"])
+        target["click_bounds"] = list(mapped_reference["region_bounds"])
+        target["strategy"] = "gray_v0_9_20_region_reference_map"
+        target["source"] = "startup_calibration_region_map"
+        target["executable"] = True
     layout_bounds = {
         name: list(layout_snapshot.get(name) or [])
         for name in (
@@ -467,6 +488,7 @@ def add_friend_plus_entry_target(
     target_metadata.update(
         {
             "layout_snapshot_id": snapshot_id,
+            "calibration_id": str((layout_snapshot or {}).get("calibration_id") or ""),
             "frame_id": str((layout_snapshot or {}).get("frame_id") or ""),
             "hwnd": int((layout_snapshot or {}).get("hwnd") or 0),
             "capture_mode": str((layout_snapshot or {}).get("capture_mode") or ""),
@@ -483,6 +505,21 @@ def add_friend_plus_entry_target(
             "layout_confidence": float((layout_snapshot or {}).get("confidence") or 0.0),
             "layout_conflicts": list((layout_snapshot or {}).get("conflicts") or []),
             "final_click_point": list(target.get("point") or []) if bool(target.get("executable")) else [],
+            "reference_mapping": mapped_reference,
+            "startup_calibration": {
+                "calibration_id": str((layout_snapshot or {}).get("calibration_id") or ""),
+                "regions": {
+                    "left_nav": list((layout_snapshot or {}).get("left_nav_bounds") or []),
+                    "sidebar_search": list((layout_snapshot or {}).get("sidebar_header_bounds") or []),
+                    "session_list": list((layout_snapshot or {}).get("session_list_bounds") or []),
+                    "main_header": list((layout_snapshot or {}).get("chat_header_bounds") or []),
+                    "main_content": list((layout_snapshot or {}).get("message_viewport_bounds") or []),
+                    "toolbar": list((layout_snapshot or {}).get("toolbar_bounds") or []),
+                    "input": list((layout_snapshot or {}).get("input_bounds") or []),
+                },
+                "confidence": float((layout_snapshot or {}).get("confidence") or 0.0),
+                "conflicts": list((layout_snapshot or {}).get("conflicts") or []),
+            },
         }
     )
     target["metadata"] = target_metadata
@@ -1839,6 +1876,8 @@ def click_add_contact_entry_from_search_result(hwnd: int, output_dir: Path, *, r
     click_started_at = time.perf_counter()
     click_result = _ops().human_window_image_click_in_bounds(hwnd, int(target.get('x') or 0), int(target.get('y') or 0), bounds=list(target.get('click_bounds') or []), action_name='add_contact_entry_click', expected_snapshot_id=str(target.get('layout_snapshot_id') or (_ops().layout_snapshot_metadata(hwnd).get('snapshot') or {}).get('layout_snapshot_id') or ''))
     timings.append({'name': 'add_contact_entry_click', 'seconds': round(time.perf_counter() - click_started_at, 3), 'result': click_result})
+    if not click_result.get('ok'):
+        return add_friend_failed_result(state='add_contact_entry_click_failed', error_code=ERROR_ADD_CONTACT_ENTRY_NOT_FOUND, current_step='searching_contact', click=click_result, timings=timings)
     pause_seconds = _ops().add_friend_paced_pause('verify', reason='after_add_contact_entry_click_before_capture')
     timings.append({'name': 'after_add_contact_entry_click_before_capture_pause', 'seconds': round(pause_seconds, 3)})
     invite_probe = _ops().wait_for_add_friend_invite_form_window(exclude_hwnds={int(hwnd or 0)}, output_dir=output_dir)
@@ -2145,6 +2184,8 @@ def fill_add_friend_invite_form_and_confirm(hwnd: int, output_dir: Path, *, veri
     confirm_target = filled_targets_map['invite_confirm_button']
     confirm_result = _ops().human_window_image_click_in_bounds(hwnd, int(confirm_target.get('x') or 0), int(confirm_target.get('y') or 0), bounds=list(confirm_target.get('click_bounds') or []), action_name='invite_confirm_button_click', expected_snapshot_id=str(confirm_target.get('layout_snapshot_id') or (_ops().layout_snapshot_metadata(hwnd).get('snapshot') or {}).get('layout_snapshot_id') or ''))
     timings.append({'name': 'invite_confirm_button_click', 'seconds': round(time.perf_counter() - confirm_started_at, 3), 'result': confirm_result})
+    if not confirm_result.get('ok'):
+        return add_friend_failed_result(state='invite_confirm_click_failed', error_code=ERROR_INVITE_CONFIRM_CLICK_FAILED, current_step='invite_confirming', click=confirm_result, timings=timings)
     if action_journal_path and confirm_result.get('ok'):
         _ops().write_action_phase_journal(
             action_journal_path,
@@ -2449,6 +2490,8 @@ def click_add_friend_menu_entry_and_capture(hwnd: int, output_dir: Path, *, menu
         expected_snapshot_id=layout_snapshot_id,
     )
     timings.append({'name': 'add_friend_menu_entry_click', 'seconds': round(time.perf_counter() - click_started_at, 3), 'result': click_result})
+    if not click_result.get('ok'):
+        return {'clicked': False, 'menu_clicked': False, 'next_hwnd': 0, 'reason': 'add_friend_menu_entry_click_failed', 'target': target, 'hover': hover_result, 'click': click_result, 'timings': timings}
     pause_seconds = _ops().add_friend_paced_pause('verify', reason='after_add_friend_menu_click_before_screen_capture')
     timings.append({'name': 'after_add_friend_menu_click_before_screen_capture_pause', 'seconds': round(pause_seconds, 3)})
     dialog_probe = _ops().wait_for_add_friend_dialog_window(exclude_hwnd=hwnd, output_dir=output_dir)
@@ -2705,7 +2748,7 @@ def write_add_friend_entry_click_review(output_dir: Path, payload: dict[str, Any
                     break
         target_meta = plus_target.get('metadata') if isinstance(plus_target.get('metadata'), dict) else {}
         if plus_target:
-            rows.append({'title': '01 微信窗口布局校准', 'purpose': '先划分微信窗口区域，再在左侧栏顶部右侧区域用图标形状识别 + 入口；旧坐标推算只保留为诊断参考。', 'expected': 'source=vision_plus_icon 且 executable=true；diagnostic_references 只能用于排查，不能作为点击点。', 'raw': before.get('screenshot_path'), 'annotated': before.get('annotated_path'), 'targets': [plus_target], 'detection': {'source': plus_target.get('source'), 'strategy': plus_target.get('strategy'), 'confidence': plus_target.get('confidence'), 'executable': plus_target.get('executable'), 'selected_reason': plus_target.get('selected_reason'), 'layout_calibration': target_meta.get('layout_calibration'), 'diagnostic_references': plus_target.get('diagnostic_references') or target_meta.get('diagnostic_references') or []}})
+            rows.append({'title': '01 微信启动布局标定', 'purpose': '使用启动标定得到的侧栏顶部操作行，将 gray-v0.9.20 的区域内参考点映射到当前“+”入口。', 'expected': 'source=startup_calibration_region_map 且 executable=true；点击后仍由 0.9.20 原菜单识别确认结果，搜索图标不得冒充“+”。', 'raw': before.get('screenshot_path'), 'annotated': before.get('annotated_path'), 'targets': [plus_target], 'detection': {'source': plus_target.get('source'), 'strategy': plus_target.get('strategy'), 'confidence': plus_target.get('confidence'), 'executable': plus_target.get('executable'), 'selected_reason': plus_target.get('selected_reason'), 'startup_calibration': target_meta.get('startup_calibration'), 'calibration_id': plus_target.get('calibration_id') or target_meta.get('calibration_id')}})
         rows.append({'title': '02 运行前屏幕标注', 'purpose': '检查 + 入口目标是否落在微信左侧栏顶部右侧区域；如果菜单本来已经打开，也会标注菜单项。', 'expected': '红色 T1 应落在视觉识别出的 + 上；不能点到搜索框、聊天区或 PowerShell。', 'raw': before.get('screenshot_path'), 'annotated': before.get('annotated_path'), 'targets': before.get('planned_targets') or [], 'detection': before.get('popup_detection')})
     for attempt in payload.get('click_attempts') or []:
         if not isinstance(attempt, dict):
@@ -2940,7 +2983,7 @@ def click_add_friend_ocr_item(hwnd: int, item: dict[str, Any]) -> None:
         int(float(item.get('right') or 0)),
         int(float(item.get('bottom') or 0)),
     ]
-    _ops().human_window_image_click_in_bounds(
+    click_result = _ops().human_window_image_click_in_bounds(
         hwnd,
         x,
         y,
@@ -2948,6 +2991,8 @@ def click_add_friend_ocr_item(hwnd: int, item: dict[str, Any]) -> None:
         action_name='add_friend_ocr_item_click',
         expected_snapshot_id=item_snapshot_id,
     )
+    if not click_result.get('ok'):
+        raise RuntimeError(str(click_result.get('reason') or click_result.get('error') or 'add_friend_ocr_item_click_failed'))
     _ops().add_friend_human_pause(900, 1900, reason='after_mouse_click')
 
 

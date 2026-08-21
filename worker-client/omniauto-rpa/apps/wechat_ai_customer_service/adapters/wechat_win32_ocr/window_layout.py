@@ -1,10 +1,12 @@
-"""Immutable per-frame layout facts and coordinate conversion for WeChat UI."""
+"""v0.9.23 startup calibration, business-frame facts and coordinate mapping."""
 
 from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
+import json
+from pathlib import Path
 from statistics import median
 import time
 import uuid
@@ -27,6 +29,8 @@ ERROR_WINDOW_NORMALIZATION_FAILED = "WECHAT_UI_WINDOW_NORMALIZATION_FAILED"
 ERROR_LAYOUT_UNRESOLVED = "WECHAT_UI_LAYOUT_UNRESOLVED"
 ERROR_LAYOUT_STALE = "WECHAT_UI_LAYOUT_STALE"
 ERROR_COORDINATE_MAPPING_INVALID = "WECHAT_UI_COORDINATE_MAPPING_INVALID"
+ERROR_STARTUP_CALIBRATION_FAILED = "WECHAT_UI_STARTUP_CALIBRATION_FAILED"
+STARTUP_CALIBRATION_SCHEMA_VERSION = "0.9.23"
 
 REQUIRED_LAYOUT_REGION_NAMES = (
     "left_nav_bounds",
@@ -35,6 +39,7 @@ REQUIRED_LAYOUT_REGION_NAMES = (
     "session_list_bounds",
     "chat_header_bounds",
     "message_viewport_bounds",
+    "toolbar_bounds",
     "input_bounds",
 )
 POPUP_LAYOUT_REGION_NAMES = ("surface_bounds",)
@@ -710,7 +715,16 @@ def build_structural_layout_regions(
         search_anchor_candidates,
     )
     ranked_pairs = sorted(pairs, key=lambda item: item[0], reverse=True)
-    _pair_score, nav_boundary, main_boundary = ranked_pairs[0]
+    if search_anchor_candidates:
+        _pair_score, nav_boundary, main_boundary = ranked_pairs[0]
+    else:
+        # The left-most qualified pair is the stable outer shell. Session
+        # avatars and text columns can form stronger verticals farther right;
+        # signal strength alone must never promote them to navigation edges.
+        _pair_score, nav_boundary, main_boundary = min(
+            pairs,
+            key=lambda item: (int(item[1][0]), int(item[2][0])),
+        )
     # A layout snapshot is an action authority, not a best-effort guess.  When
     # two materially different separator pairs have nearly the same pixel
     # evidence, selecting the right-most/strongest one can turn a chat-panel
@@ -747,7 +761,7 @@ def build_structural_layout_regions(
         for item in competing_pairs
         if abs(int(item[1][0]) - int(nav_boundary[0])) > pair_position_tolerance
     ]
-    if unresolved_pairs:
+    if unresolved_pairs and search_anchor_candidates:
         conflicts.append("sidebar_boundary_pair_ambiguous")
         return {
             "ok": False,
@@ -792,6 +806,37 @@ def build_structural_layout_regions(
             "confidence": 0.0,
             "conflicts": conflicts,
         }
+    # The gray-v0.9.20 executable plus detector is also a raw-pixel anchor for
+    # the top operation row. This avoids treating a selected conversation row
+    # or avatar edge as the header when OCR misses ``Q/O/0搜索``.
+    from apps.wechat_ai_customer_service.adapters.add_friend_layout import (
+        vision_plus_icon_candidates,
+    )
+
+    plus_candidates = vision_plus_icon_candidates(
+        image,
+        (width, height),
+        search_bounds=[nav_boundary[0], 0, main_boundary[0], upper_limit],
+    )
+    right_zone_left = nav_boundary[0] + int(
+        (main_boundary[0] - nav_boundary[0]) * 0.70
+    )
+    operation_plus_candidates = [
+        item
+        for item in plus_candidates
+        if int((item.get("point") or [0, 0])[0]) >= right_zone_left
+    ]
+    operation_plus = (
+        max(
+            operation_plus_candidates,
+            key=lambda item: (
+                int((item.get("point") or [0, 0])[0]),
+                float(item.get("confidence") or 0.0),
+            ),
+        )
+        if operation_plus_candidates
+        else None
+    )
     if search_anchors:
         search_bounds = search_anchors[0]["bounds"]
         search_height = max(1, search_bounds[3] - search_bounds[1])
@@ -805,6 +850,13 @@ def build_structural_layout_regions(
             0.75,
             min(0.99, float(search_anchors[0].get("confidence") or 0.0)),
         )
+    elif operation_plus is not None:
+        plus_point = [int(value) for value in operation_plus["point"]]
+        sidebar_header_bottom = min(height, max(1, plus_point[1] * 2 + 2))
+        chat_header_bottom = sidebar_header_bottom
+        header_confidence = min(
+            0.97, max(0.80, float(operation_plus.get("confidence") or 0.0))
+        )
     else:
         # Without an OCR anchor, only a separator observed at the same height
         # in both panels may define the shared WeChat header. A selected row or
@@ -815,7 +867,27 @@ def build_structural_layout_regions(
             for right_item in chat_header_candidates
             if abs(int(left_item[0]) - int(right_item[0])) <= 6
         ]
-        if not shared_header_pairs:
+        if shared_header_pairs:
+            sidebar_edge, chat_edge = min(
+                shared_header_pairs,
+                key=lambda pair: max(int(pair[0][0]), int(pair[1][0])),
+            )
+            sidebar_header_bottom = int(round((sidebar_edge[0] + chat_edge[0]) / 2))
+            chat_header_bottom = sidebar_header_bottom
+            header_confidence = min(
+                _qualified_edge_confidence(sidebar_edge[1], threshold=24.0),
+                _qualified_edge_confidence(chat_edge[1], threshold=24.0),
+            )
+        elif sidebar_header_candidates:
+            # A selected non-first conversation may render no matching line
+            # in the chat panel. The top-most strong boundary in the already
+            # proven sidebar shell is the search operation row; it is raw
+            # pixel structure, not a fixed y coordinate.
+            sidebar_edge = min(sidebar_header_candidates, key=lambda item: int(item[0]))
+            sidebar_header_bottom = int(sidebar_edge[0])
+            chat_header_bottom = sidebar_header_bottom
+            header_confidence = _qualified_edge_confidence(sidebar_edge[1], threshold=24.0)
+        else:
             conflicts.append("shared_header_boundary_missing")
             return {
                 "ok": False,
@@ -824,16 +896,6 @@ def build_structural_layout_regions(
                 "confidence": 0.0,
                 "conflicts": conflicts,
             }
-        sidebar_edge, chat_edge = min(
-            shared_header_pairs,
-            key=lambda pair: max(int(pair[0][0]), int(pair[1][0])),
-        )
-        sidebar_header_bottom = int(round((sidebar_edge[0] + chat_edge[0]) / 2))
-        chat_header_bottom = sidebar_header_bottom
-        header_confidence = min(
-            _qualified_edge_confidence(sidebar_edge[1], threshold=24.0),
-            _qualified_edge_confidence(chat_edge[1], threshold=24.0),
-        )
     input_top_candidates = [
         item
         for item in _full_width_horizontal_separator_candidates(
@@ -893,8 +955,8 @@ def build_structural_layout_regions(
         "session_list_bounds": [nav_boundary[0], sidebar_header_bottom, main_boundary[0], height],
         "chat_header_bounds": [main_boundary[0], 0, width, chat_header_bottom],
         "message_viewport_bounds": [main_boundary[0], chat_header_bottom, width, input_top],
-        "input_bounds": [main_boundary[0], input_top, width, height],
-        "input_text_bounds": [editable_left, editable_top, editable_right, editable_bottom],
+        "toolbar_bounds": [main_boundary[0], editable_bottom, width, height],
+        "input_bounds": [editable_left, editable_top, editable_right, editable_bottom],
     }
     validation = validate_layout_regions(regions, image_size=(width, height))
     confidence_parts = [
@@ -907,6 +969,17 @@ def build_structural_layout_regions(
         {"name": "nav_separator", "x": nav_boundary[0], "score": nav_boundary[1]},
         {"name": "sidebar_separator", "x": main_boundary[0], "score": main_boundary[1]},
         *search_anchors,
+        *(
+            [{
+                "name": "startup_plus_pixel_anchor",
+                "point": list(operation_plus.get("point") or []),
+                "bounds": list(operation_plus.get("bounds") or []),
+                "confidence": float(operation_plus.get("confidence") or 0.0),
+                "source": "gray-v0.9.20 vision_plus_icon",
+            }]
+            if operation_plus is not None
+            else []
+        ),
         {
             "name": "input_separator",
             "y": input_top,
@@ -914,7 +987,7 @@ def build_structural_layout_regions(
         },
         {
             "name": "input_text_region",
-            "bounds": list(regions["input_text_bounds"]),
+            "bounds": list(regions["input_bounds"]),
             "source": "toolbar_ocr" if toolbar_tops else "current_input_panel_proportion",
         },
     ]
@@ -947,6 +1020,217 @@ def build_structural_layout_regions(
         ),
         "vertical_candidates": [{"x": x, "score": score} for x, score in verticals[:12]],
     }
+
+
+# These values are extracted from the gray-v0.9.20 production geometry on its
+# real 980x860 reference window.  That frame has a 41px non-client/title crop,
+# leaving the 980x819 visible client image used by startup calibration.  Every
+# point below is therefore region-local in that client image; none is a screen
+# coordinate and none can authorize a click without a calibration.
+REFERENCE_REGION_MAP_V0920: dict[str, dict[str, Any]] = {
+    "plus_entry": {
+        "region": "sidebar_header_bounds",
+        "reference_region_size": [298, 60],
+        # gray-v0.9.20 only allowed the raw-pixel vision_plus_icon result to
+        # execute.  On its reference client surface the selected icon centre
+        # is (349, 70) in the outer frame, i.e. (265, 29) inside the calibrated
+        # client sidebar header [84, 0, 382, 60].  The old
+        # windows_plus_point helper was diagnostic-only and must not become
+        # the executable reference map.
+        "point": [265, 29],
+        "source": "gray-v0.9.20 vision_plus_icon selected reference-region point",
+    },
+    "sidebar_search": {
+        "region": "sidebar_header_bounds",
+        "reference_region_size": [298, 60],
+        "point": [38, 23],
+        "source": "gray-v0.9.20 search_box_point_for_geometry",
+    },
+    "session_row_x": {
+        "region": "session_list_bounds",
+        "reference_region_size": [298, 759],
+        "point": [182, 0],
+        "source": "gray-v0.9.20 session_click_x_for_geometry",
+    },
+    "input_focus": {
+        "region": "input_bounds",
+        "reference_region_size": [498, 85],
+        "point": [250, 61],
+        "source": "gray-v0.9.20 calculate_send_points.input_point",
+    },
+    "send_button": {
+        "region": "toolbar_bounds",
+        "reference_region_size": [598, 72],
+        "point": [536, 28],
+        "source": "gray-v0.9.20 calculate_send_points.send_point",
+    },
+}
+
+
+def map_reference_region_point(
+    calibration: Mapping[str, Any],
+    reference_name: str,
+    *,
+    dynamic_axis_value: int | None = None,
+) -> dict[str, Any]:
+    """Map one v0.9.20 region-local reference into the calibrated region."""
+
+    reference = REFERENCE_REGION_MAP_V0920.get(str(reference_name or ""))
+    if reference is None:
+        raise LayoutSnapshotError(
+            "reference_region_point_unknown",
+            code=ERROR_COORDINATE_MAPPING_INVALID,
+            details={"reference_name": str(reference_name or "")},
+        )
+    if not bool(calibration.get("executable")):
+        raise LayoutSnapshotError(
+            "startup_calibration_not_executable",
+            code=ERROR_STARTUP_CALIBRATION_FAILED,
+        )
+    region_name = str(reference["region"])
+    bounds = normalize_rect(calibration.get(region_name))
+    region_width, region_height = rect_size(bounds)
+    ref_width, ref_height = [max(1, int(value)) for value in reference["reference_region_size"]]
+    ref_x, ref_y = [int(value) for value in reference["point"]]
+    mapped_x = bounds[0] + int(round((ref_x / ref_width) * region_width))
+    mapped_y = bounds[1] + int(round((ref_y / ref_height) * region_height))
+    if reference_name == "plus_entry":
+        plus_anchors = [
+            item for item in (calibration.get("anchors") or [])
+            if isinstance(item, Mapping)
+            and str(item.get("name") or "") == "startup_plus_pixel_anchor"
+            and isinstance(item.get("point"), (list, tuple))
+            and len(item.get("point") or []) >= 2
+        ]
+        search_anchors = [
+            item for item in (calibration.get("anchors") or [])
+            if isinstance(item, Mapping)
+            and str(item.get("name") or "") == "sidebar_search_anchor"
+            and isinstance(item.get("bounds"), (list, tuple))
+            and len(item.get("bounds") or []) >= 4
+        ]
+        if plus_anchors:
+            mapped_y = int((plus_anchors[0].get("point") or [0, mapped_y])[1])
+        elif len(search_anchors) == 1:
+            search_bounds = normalize_rect(search_anchors[0].get("bounds"))
+            mapped_y = int(round((search_bounds[1] + search_bounds[3]) / 2))
+    if dynamic_axis_value is not None and reference_name == "session_row_x":
+        mapped_y = int(dynamic_axis_value)
+    point = clamp_point([mapped_x, mapped_y], bounds)
+    return {
+        "reference_name": str(reference_name),
+        "region_name": region_name,
+        "region_bounds": bounds,
+        "region_point": [point[0] - bounds[0], point[1] - bounds[1]],
+        "image_point": point,
+        "calibration_id": str(calibration.get("calibration_id") or ""),
+        "source": str(reference.get("source") or ""),
+    }
+
+
+def build_startup_layout_calibration(
+    *,
+    hwnd: int,
+    process_id: int,
+    image: Any,
+    ocr_items: list[Mapping[str, Any]],
+    window_rect: Any,
+    client_rect: Any,
+    client_screen_origin: Any,
+    dpi_scale: float,
+    capture_mode: str,
+    screenshot_path: str = "",
+) -> dict[str, Any]:
+    """Build the one executable main-shell calibration for this HWND state."""
+
+    image_size = getattr(image, "size", (0, 0))
+    width, height = [int(value or 0) for value in image_size[:2]]
+    search_items = []
+    for item in ocr_items or []:
+        compact = "".join(str(item.get("text") or "").split())
+        if "搜索" in compact:
+            search_items.append(dict(item))
+    layout = build_structural_layout_regions(
+        image,
+        ocr_items=ocr_items,
+        search_anchor_items=search_items,
+    )
+    regions = dict(layout.get("regions") or {})
+    validation = validate_layout_regions(regions, image_size=(width, height))
+    conflicts = list(layout.get("conflicts") or [])
+    conflicts.extend(str(item) for item in validation.get("missing") or [])
+    conflicts.extend(str(item) for item in validation.get("invalid") or [])
+    conflicts.extend(str(item) for item in validation.get("conflicts") or [])
+    if width < 700 or height < 720:
+        conflicts.append("client_surface_below_700x720")
+    normalized_client_origin = _normalize_origin(client_screen_origin)
+    exact_client_capture = (
+        str(capture_mode or "") == CAPTURE_MODE_CLIENT_AREA
+        and normalized_client_origin is not None
+        and width == int((client_rect or {}).get("width") or width)
+        and height == int((client_rect or {}).get("height") or height)
+    )
+    executable = bool(
+        int(hwnd or 0) > 0
+        and int(process_id or 0) > 0
+        and exact_client_capture
+        and layout.get("ok")
+        and validation.get("ok")
+        and not conflicts
+        and float(layout.get("confidence") or 0.0) >= 0.70
+    )
+    calibration_id = _stable_id(
+        "calibration",
+        int(hwnd or 0),
+        int(process_id or 0),
+        normalize_rect(window_rect),
+        normalize_rect(client_rect),
+        normalized_client_origin,
+        round(float(dpi_scale or 1.0), 4),
+        width,
+        height,
+    )
+    result = {
+        "calibration_id": calibration_id,
+        "schema_version": STARTUP_CALIBRATION_SCHEMA_VERSION,
+        "hwnd": int(hwnd or 0),
+        "process_id": int(process_id or 0),
+        "window_rect": normalize_rect(window_rect),
+        "client_rect": normalize_rect(client_rect),
+        "client_screen_origin": normalized_client_origin,
+        "dpi_scale": max(0.01, float(dpi_scale or 1.0)),
+        "image_width": width,
+        "image_height": height,
+        "capture_mode": str(capture_mode or ""),
+        **{name: normalize_rect(regions.get(name)) for name in REQUIRED_LAYOUT_REGION_NAMES},
+        "anchors": [dict(item) for item in layout.get("anchors") or []],
+        "confidence": max(0.0, min(1.0, float(layout.get("confidence") or 0.0))),
+        "conflicts": list(dict.fromkeys(conflicts)),
+        "calibrated_at": time.time(),
+        "executable": executable,
+        "screenshot_path": str(screenshot_path or ""),
+        "reference_map_revision": "gray-v0.9.20-region-local",
+        "error_code": "" if executable else ERROR_STARTUP_CALIBRATION_FAILED,
+    }
+    return result
+
+
+def write_startup_layout_calibration(path: Path, calibration: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(dict(calibration), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def read_startup_layout_calibration(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return dict(payload) if isinstance(payload, Mapping) else None
 
 
 def _stable_id(prefix: str, *parts: Any) -> str:

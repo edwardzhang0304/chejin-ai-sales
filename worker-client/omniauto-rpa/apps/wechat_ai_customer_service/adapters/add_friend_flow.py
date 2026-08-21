@@ -347,16 +347,16 @@ def run_add_friend_entry_click_plan_flow(
         window_rect=None,
     )
     layout_meta = plus_target.get("metadata") if isinstance(plus_target.get("metadata"), dict) else {}
-    layout_calibration = layout_meta.get("layout_calibration")
-    layout_annotated_path = output_dir / "add_friend_window_layout_calibration_annotated.png"
+    startup_calibration = layout_meta.get("startup_calibration")
+    layout_annotated_path = output_dir / "add_friend_startup_layout_calibration_annotated.png"
     layout_annotated = ops.draw_add_friend_layout_calibration_annotation(
         before_shot,
-        layout_calibration=layout_calibration,
+        layout_calibration=startup_calibration,
         output_path=layout_annotated_path,
     )
     flow.add_event(
-        step_id="window_layout_calibration",
-        title="微信窗口布局校准",
+        step_id="startup_layout_calibration",
+        title="微信启动布局标定",
         status="completed" if plus_target.get("executable") else "failed",
         state_before="payload_valid",
         state_after="plus_entry_located" if plus_target.get("executable") else "plus_entry_not_found",
@@ -369,8 +369,9 @@ def run_add_friend_entry_click_plan_flow(
             "geometry": geometry,
             "window_rect": window_rect,
             "image_size": list(before_shot.size),
-            "layout_calibration": layout_calibration,
-            "diagnostic_references": plus_target.get("diagnostic_references") or layout_meta.get("diagnostic_references") or [],
+            "startup_calibration": startup_calibration,
+            "calibration_id": str(layout_meta.get("calibration_id") or ""),
+            "reference_mapping": layout_meta.get("reference_mapping") or {},
             "source": plus_target.get("source"),
             "confidence": plus_target.get("confidence"),
             "executable": plus_target.get("executable"),
@@ -458,11 +459,11 @@ def run_add_friend_entry_click_plan_flow(
             "task_status": "failed",
             "result_code": "",
             "error_code": ERROR_PLUS_ENTRY_NOT_FOUND,
-            "current_step": "window_layout_calibration",
+            "current_step": "startup_layout_calibration",
             "server_report_payload": add_friend_server_report_payload(
                 task_status="failed",
                 error_code=ERROR_PLUS_ENTRY_NOT_FOUND,
-                current_step="window_layout_calibration",
+                current_step="startup_layout_calibration",
             ),
             "reason": "plus_icon_not_found_inside_calibrated_sidebar_header",
             "selected_target": plus_target,

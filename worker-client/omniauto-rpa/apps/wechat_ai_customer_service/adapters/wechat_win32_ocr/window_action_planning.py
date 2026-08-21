@@ -14,13 +14,6 @@ ENSURE_VISIBLE_ACTION_MANUAL_TRAY = "manual_open_tray"
 WINDOW_SELECTION_EMPTY_SCORE = (-1, -1, -1, -1, -1)
 
 
-def recommended_window_scale_for_screen(screen_width: int, screen_height: int, *, screen_metrics_available: bool) -> float:
-    # Dynamic layout makes the WeChat surface resolution-independent.  A 2K or
-    # 4K monitor must not make the application window itself 25%/50% larger.
-    del screen_width, screen_height, screen_metrics_available
-    return 1.0
-
-
 def _geometry_int(geometry: dict[str, Any], key: str) -> int:
     try:
         return int(geometry.get(key) or 0)
@@ -31,163 +24,114 @@ def _geometry_int(geometry: dict[str, Any], key: str) -> int:
 def plan_normalize_wechat_window(
     before: dict[str, Any],
     *,
-    enabled: bool,
     dpi_scale: float,
-    requested_width: Any,
-    requested_height: Any,
-    requested_left: Any,
-    requested_top: Any,
-    enforce_recommended: bool,
-    fixed_origin: bool,
-    screen_width: int,
-    screen_height: int,
-    screen_metrics_available: bool,
-    default_width: int,
-    default_height: int,
-    min_width: int,
-    min_height: int,
-    max_width: int,
-    max_height: int,
-    screen_left: int = 0,
-    screen_top: int = 0,
+    work_area: dict[str, Any],
+    minimum_client_width: int = 700,
+    minimum_client_height: int = 720,
 ) -> dict[str, Any]:
+    """Plan the single v0.9.23 startup placement on the HWND monitor.
+
+    The values are outer-window targets.  Actual client geometry is read and
+    validated only after MoveWindow; the planner never guesses it from screen
+    resolution or a primary-monitor profile.
+    """
+
     before_geometry = dict(before or {})
-    if not enabled:
-        return {"ok": True, "enabled": False, "applied": False, "before": before_geometry}
-
-    safe_max_width = max(1, int(max_width or 1))
-    safe_max_height = max(1, int(max_height or 1))
     try:
-        normalized_dpi_scale = max(1.0, float(dpi_scale or 1.0))
+        scale = max(0.5, float(dpi_scale or 1.0))
     except (TypeError, ValueError):
-        normalized_dpi_scale = 1.0
-    screen_scale = recommended_window_scale_for_screen(
-        screen_width,
-        screen_height,
-        screen_metrics_available=screen_metrics_available,
-    )
-    # Window size follows the physical work-area bucket. DPI remains part of
-    # capture/click coordinate diagnostics, but must not enlarge a 1920-class
-    # WeChat window to 1225/1470 pixels and reduce the usable desktop area.
-    resolution_scale = screen_scale
-    scaled_default_width = min(safe_max_width, max(1, int(round(default_width * resolution_scale))))
-    scaled_default_height = min(safe_max_height, max(1, int(round(default_height * resolution_scale))))
-    base_min_width = min(
-        safe_max_width,
-        max(1, int(min_width or 1)),
-    )
-    base_min_height = min(
-        safe_max_height,
-        max(1, int(min_height or 1)),
-    )
-    target_width = bounded_int(requested_width, default=scaled_default_width, minimum=base_min_width, maximum=safe_max_width)
-    target_height = bounded_int(requested_height, default=scaled_default_height, minimum=base_min_height, maximum=safe_max_height)
-    requested_target = {"width": target_width, "height": target_height}
-    recommended_floor_applied = False
-    if enforce_recommended:
-        if target_width < scaled_default_width:
-            target_width = scaled_default_width
-            recommended_floor_applied = True
-        if target_height < scaled_default_height:
-            target_height = scaled_default_height
-            recommended_floor_applied = True
-    effective_target = {"width": target_width, "height": target_height}
+        scale = 1.0
+    left = int(work_area.get("left") or 0)
+    top = int(work_area.get("top") or 0)
+    width = int(work_area.get("width") or 0)
+    height = int(work_area.get("height") or 0)
+    if width <= 0 or height <= 0:
+        return {
+            "ok": False,
+            "move": False,
+            "before": before_geometry,
+            "dpi_scale": scale,
+            "work_area": dict(work_area or {}),
+            "reason": "current_monitor_work_area_unavailable",
+        }
 
-    safe_screen_width = int(screen_width or 0) if screen_metrics_available else 0
-    safe_screen_height = int(screen_height or 0) if screen_metrics_available else 0
-    if screen_metrics_available:
-        screen_width_limit = max(1, safe_screen_width - 12) if safe_screen_width > 0 else 0
-        screen_height_limit = max(1, safe_screen_height - 48) if safe_screen_height > 0 else 0
-        if screen_width_limit < base_min_width or screen_height_limit < base_min_height:
-            return {
-                "ok": False,
-                "enabled": True,
-                "move": False,
-                "before": before_geometry,
-                "target": effective_target,
-                "requested_target": requested_target,
-                "enforce_recommended": bool(enforce_recommended),
-                "recommended_floor_applied": bool(recommended_floor_applied),
-                "fixed_origin": bool(fixed_origin),
-                "screen": {"width": safe_screen_width, "height": safe_screen_height},
-                "work_area": {
-                    "left": int(screen_left or 0),
-                    "top": int(screen_top or 0),
-                    "width": safe_screen_width,
-                    "height": safe_screen_height,
-                },
-                "dpi_scale": normalized_dpi_scale,
-                "resolution_scale": resolution_scale,
-                "reason": "screen_work_area_too_small_for_minimum_safe_window",
-            }
-        safe_width = min(target_width, max(640, screen_width_limit))
-        safe_height = min(target_height, max(640, screen_height_limit))
-        if 0 < safe_screen_width < safe_width:
-            safe_width = safe_screen_width
-        if 0 < safe_screen_height < safe_height:
-            safe_height = safe_screen_height
-        if fixed_origin:
-            left = bounded_int(
-                requested_left,
-                default=int(screen_left or 0),
-                minimum=int(screen_left or 0),
-                maximum=int(screen_left or 0) + max(0, safe_screen_width - safe_width),
-            )
-            top = bounded_int(
-                requested_top,
-                default=int(screen_top or 0),
-                minimum=int(screen_top or 0),
-                maximum=int(screen_top or 0) + max(0, safe_screen_height - safe_height),
-            )
-        else:
-            left = min(
-                max(int(screen_left or 0), _geometry_int(before_geometry, "left")),
-                int(screen_left or 0) + max(0, safe_screen_width - safe_width),
-            )
-            top = min(
-                max(int(screen_top or 0), _geometry_int(before_geometry, "top")),
-                int(screen_top or 0) + max(0, safe_screen_height - safe_height),
-            )
+    if abs(scale - 1.0) <= 0.01:
+        requested_width, requested_height, bucket = 800, 852, "100%"
+    elif abs(scale - 1.25) <= 0.01:
+        requested_width, requested_height, bucket = 1000, 1065, "125%"
+    elif abs(scale - 1.5) <= 0.01:
+        requested_width, requested_height, bucket = 1200, 1278, "150%"
     else:
-        safe_width = target_width
-        safe_height = target_height
-        if fixed_origin:
-            left = bounded_int(requested_left, default=0, minimum=0, maximum=max_width)
-            top = bounded_int(requested_top, default=0, minimum=0, maximum=max_height)
-        else:
-            left = max(0, _geometry_int(before_geometry, "left"))
-            top = max(0, _geometry_int(before_geometry, "top"))
+        requested_width = int(round(800 * scale))
+        requested_height = int(round(852 * scale))
+        bucket = "scaled"
 
-    width_diff = abs(_geometry_int(before_geometry, "width") - safe_width)
-    height_diff = abs(_geometry_int(before_geometry, "height") - safe_height)
-    left_diff = abs(_geometry_int(before_geometry, "left") - left)
-    top_diff = abs(_geometry_int(before_geometry, "top") - top)
-    already_near_target = width_diff <= 6 and height_diff <= 6 and left_diff <= 4 and top_diff <= 4
+    margin = max(0, int(round(12 * scale)))
+    available_width = max(0, width - (2 * margin))
+    available_height = max(0, height - (2 * margin))
+    fit_scale = min(
+        1.0,
+        available_width / max(1, requested_width),
+        available_height / max(1, requested_height),
+    )
+    target_width = max(1, int(requested_width * fit_scale))
+    target_height = max(1, int(requested_height * fit_scale))
+    if target_width < int(minimum_client_width) or target_height < int(minimum_client_height):
+        return {
+            "ok": False,
+            "move": False,
+            "before": before_geometry,
+            "dpi_scale": scale,
+            "dpi_bucket": bucket,
+            "work_area": dict(work_area or {}),
+            "requested_target": {"width": requested_width, "height": requested_height},
+            "target": {"width": target_width, "height": target_height},
+            "reason": "work_area_too_small_for_minimum_client_surface",
+        }
 
+    target_left = left + margin
+    target_top = top + margin
+    target_right = target_left + target_width
+    target_bottom = target_top + target_height
+    safe_right = left + width - margin
+    safe_bottom = top + height - margin
+    if target_right > safe_right or target_bottom > safe_bottom:
+        return {
+            "ok": False,
+            "move": False,
+            "before": before_geometry,
+            "dpi_scale": scale,
+            "dpi_bucket": bucket,
+            "work_area": dict(work_area or {}),
+            "requested_target": {"width": requested_width, "height": requested_height},
+            "target": {"width": target_width, "height": target_height},
+            "reason": "startup_target_exceeds_safe_work_area",
+        }
+    near = (
+        abs(_geometry_int(before_geometry, "left") - target_left) <= 4
+        and abs(_geometry_int(before_geometry, "top") - target_top) <= 4
+        and abs(_geometry_int(before_geometry, "width") - target_width) <= 6
+        and abs(_geometry_int(before_geometry, "height") - target_height) <= 6
+    )
     return {
         "ok": True,
-        "enabled": True,
-        "move": not already_near_target,
+        "move": not near,
         "before": before_geometry,
-        "target": effective_target,
-        "requested_target": requested_target,
-        "enforce_recommended": bool(enforce_recommended),
-        "recommended_floor_applied": bool(recommended_floor_applied),
-        "fixed_origin": bool(fixed_origin),
-        "screen": {"width": safe_screen_width, "height": safe_screen_height},
-        "work_area": {
-            "left": int(screen_left or 0),
-            "top": int(screen_top or 0),
-            "width": safe_screen_width,
-            "height": safe_screen_height,
-        },
-        "dpi_scale": normalized_dpi_scale,
-        "resolution_scale": resolution_scale,
-        "left": int(left),
-        "top": int(top),
-        "width": int(safe_width),
-        "height": int(safe_height),
-        "reason": "needs_normalize" if not already_near_target else "already_near_target",
+        "dpi_scale": scale,
+        "dpi_bucket": bucket,
+        "work_area": dict(work_area or {}),
+        "requested_target": {"width": requested_width, "height": requested_height},
+        "target": {"width": target_width, "height": target_height},
+        "fit_scale": round(fit_scale, 6),
+        "left": target_left,
+        "top": target_top,
+        "width": target_width,
+        "height": target_height,
+        "right": target_right,
+        "bottom": target_bottom,
+        "safe_right": safe_right,
+        "safe_bottom": safe_bottom,
+        "reason": "already_at_startup_profile" if near else "needs_startup_profile",
     }
 
 

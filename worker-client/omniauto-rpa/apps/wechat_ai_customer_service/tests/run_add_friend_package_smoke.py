@@ -1048,14 +1048,21 @@ def test_sidecar_uses_flow_context_for_entry_click() -> None:
         flow_source.count("_build_entry_click_payload(") == 5,
         "entry-click flow should have one helper definition and four branch calls",
     )
-    assert_true('"window_layout_calibration"' in flow_source, "entry-click flow should expose layout calibration as a first-class step")
+    assert_true(
+        '"window_layout_calibration"' not in flow_source,
+        "entry-click flow must not restore the retired per-business-frame global calibration step",
+    )
+    assert_true(
+        '"startup_layout_calibration"' in flow_source,
+        "entry-click flow should reference the process startup calibration as a first-class step",
+    )
     assert_true("ERROR_PLUS_ENTRY_NOT_FOUND" in flow_source, "missing visual plus icon should be a first-class failure")
     assert_true("ERROR_PLUS_ENTRY_POPUP_NOT_DETECTED" in flow_source, "missing popup after plus click should be a first-class failure")
     assert_true("ERROR_ADD_FRIEND_MENU_CLICK_FAILED" in flow_source, "menu click failure should not be reported as plus popup failure")
     assert_true("human_window_image_click_in_bounds(" in flow_source, "plus click must clamp to selected target bounds")
     assert_true(
-        "add_friend_window_layout_calibration_annotated.png" in flow_source,
-        "layout calibration should have its own region annotation artifact",
+        "add_friend_startup_layout_calibration_annotated.png" in flow_source,
+        "startup calibration should have its own region annotation artifact",
     )
     assert_true(
         '"entry_before_capture"' in flow_source and '"annotated": before_annotated' in flow_source,
@@ -2521,19 +2528,16 @@ def test_add_friend_primary_locator_contract() -> None:
         layout_snapshot=primary_snapshot,
     )
     assert_locator(plus_target, "plus_entry")
-    assert_true(plus_target.get("strategy") == "sidebar_header_plus_icon_vision_locator", f"plus locator strategy mismatch: {plus_target}")
-    assert_true(plus_target.get("source") == "vision_plus_icon", f"plus locator must use visual icon detection: {plus_target}")
-    assert_true(plus_target.get("executable") is True, f"visual plus locator should be executable: {plus_target}")
+    assert_true(plus_target.get("strategy") == "gray_v0_9_20_region_reference_map", f"plus locator strategy mismatch: {plus_target}")
+    assert_true(plus_target.get("source") == "startup_calibration_region_map", f"plus locator must use the startup-calibrated operation region: {plus_target}")
+    assert_true(plus_target.get("executable") is True, f"calibrated plus mapping should be executable: {plus_target}")
     assert_true(plus_target.get("fallback_used") is False, f"plus locator must not execute fallback clicks: {plus_target}")
-    assert_true(len(plus_target.get("candidates") or []) >= 1, f"plus locator should expose visual candidates: {plus_target}")
-    sources = {str(item.get("source") or "") for item in plus_target.get("candidates") or [] if isinstance(item, dict)}
-    assert_true("vision_plus_icon" in sources, f"plus locator must expose visual candidate: {plus_target}")
     primary_point = [int(plus_target.get("x") or 0), int(plus_target.get("y") or 0)]
     primary_click_bounds = [int(value) for value in plus_target.get("click_bounds") or []]
     assert_true(
         primary_click_bounds[0] <= primary_point[0] <= primary_click_bounds[2]
         and primary_click_bounds[1] <= primary_point[1] <= primary_click_bounds[3],
-        f"plus locator point must stay inside the detected icon: {plus_target}",
+        f"plus locator point must stay inside the calibrated operation region: {plus_target}",
     )
     primary_metadata = plus_target.get("metadata") or {}
     assert_true(primary_metadata.get("actual_resolution") == [981, 860], f"actual resolution missing: {plus_target}")
@@ -2548,7 +2552,8 @@ def test_add_friend_primary_locator_contract() -> None:
     assert_true(primary_metadata.get("layout_conflicts") == primary_snapshot["conflicts"], f"layout conflicts diagnostic missing: {plus_target}")
     assert_true((primary_metadata.get("dynamic_layout_bounds") or {}).get("sidebar_header_bounds") == primary_snapshot["sidebar_header_bounds"], f"dynamic bounds diagnostic missing: {plus_target}")
     assert_true(primary_metadata.get("final_click_point") == primary_point, f"final click diagnostic mismatch: {plus_target}")
-    assert_true(primary_metadata.get("conflicts") == [], f"unique visual plus must have no conflicts: {plus_target}")
+    assert_true(primary_metadata.get("layout_conflicts") == [], f"startup calibration must have no layout conflicts: {plus_target}")
+    assert_true((primary_metadata.get("reference_mapping") or {}).get("reference_name") == "plus_entry", f"plus reference mapping missing: {plus_target}")
     assert_true("diagnostic_references" not in plus_target, f"legacy coordinate diagnostics must be absent: {plus_target}")
 
     for width, height, dpi_scale in [
@@ -2562,7 +2567,7 @@ def test_add_friend_primary_locator_contract() -> None:
         (2560, 1440, 1.25),
         (3840, 2160, 1.5),
     ]:
-        matrix_image, expected_point, safe_bounds, matrix_snapshot = plus_icon_image_for_size(
+        matrix_image, _expected_visual_point, safe_bounds, matrix_snapshot = plus_icon_image_for_size(
             width,
             height,
             dpi_scale=dpi_scale,
@@ -2585,7 +2590,7 @@ def test_add_friend_primary_locator_contract() -> None:
             layout_snapshot=matrix_snapshot,
         )
         assert_locator(matrix_target, f"plus_entry_{width}x{height}")
-        assert_true(matrix_target.get("source") == "vision_plus_icon", f"matrix plus locator must use vision: {matrix_target}")
+        assert_true(matrix_target.get("source") == "startup_calibration_region_map", f"matrix plus locator must use startup region mapping: {matrix_target}")
         assert_true(matrix_target.get("executable") is True, f"matrix plus locator should be executable: {matrix_target}")
         assert_true(matrix_target.get("fallback_used") is False, f"matrix plus locator must not execute fallback: {matrix_target}")
         actual_point = [int(matrix_target.get("x") or 0), int(matrix_target.get("y") or 0)]
@@ -2594,8 +2599,9 @@ def test_add_friend_primary_locator_contract() -> None:
             f"matrix plus locator outside calibrated safe bounds: {(width, height, actual_point, safe_bounds, matrix_target)}",
         )
         assert_true(
-            abs(actual_point[0] - expected_point[0]) <= 8 and abs(actual_point[1] - expected_point[1]) <= 8,
-            f"matrix plus locator should match visual anchor: {(width, height, actual_point, expected_point, matrix_target)}",
+            (matrix_target.get("metadata") or {}).get("reference_mapping", {}).get("region_name")
+            == "sidebar_header_bounds",
+            f"matrix plus locator must map within the startup sidebar header: {matrix_target}",
         )
         matrix_metadata = matrix_target.get("metadata") or {}
         assert_true(matrix_metadata.get("actual_resolution") == [width, height], f"matrix actual resolution missing: {matrix_target}")
@@ -2632,9 +2638,16 @@ def test_add_friend_primary_locator_contract() -> None:
             layout_snapshot=blank_snapshot,
         )
         assert_locator(blank_target, f"plus_entry_blank_{width}x{height}")
-        assert_true(blank_target.get("source") == "plus_icon_not_found", f"blank matrix must not use geometry fallback: {blank_target}")
-        assert_true(blank_target.get("executable") is False, f"blank matrix must fail closed: {blank_target}")
-        assert_true(blank_target.get("fallback_used") is False, f"blank matrix fallback must stay non-executable: {blank_target}")
+        assert_true(blank_target.get("source") == "startup_calibration_region_map", f"blank matrix should still use the calibrated region map without OCR-reading '+': {blank_target}")
+        assert_true(blank_target.get("executable") is True, f"blank matrix should not require direct '+' character or pixel recognition: {blank_target}")
+        blank_actual = [int(blank_target.get("x") or 0), int(blank_target.get("y") or 0)]
+        blank_bounds = [int(value) for value in blank_target.get("click_bounds") or []]
+        assert_true(
+            blank_bounds[0] <= blank_actual[0] <= blank_bounds[2]
+            and blank_bounds[1] <= blank_actual[1] <= blank_bounds[3],
+            f"blank matrix mapping must stay inside the calibrated operation region: {blank_target}",
+        )
+        assert_true(blank_target.get("fallback_used") is False, f"blank matrix fallback must stay disabled: {blank_target}")
 
     menu_targets = add_friend_menu_candidate_targets(
         [ocr_item("添加朋友", 270, 148, 336, 172)],

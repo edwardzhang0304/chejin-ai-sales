@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 os.environ.setdefault("CHEJIN_WORKER_HOME", tempfile.mkdtemp(prefix="chejin-worker-session-test-"))
 os.environ.setdefault("CHEJIN_RPA_MODE", "mock")
@@ -39,34 +39,61 @@ def ocr_item(text: str, center_y: float, *, enhanced: bool = False) -> dict:
 
 
 def session_layout_snapshot(image_size: tuple[int, int]) -> dict:
-    """A resolved layout input for session-semantic unit tests."""
+    """Run the production startup calibrator for session-semantic tests."""
     width, height = image_size
     sidebar_right = min(380, max(300, int(width * 0.38)))
     header_bottom = min(110, max(64, int(height * 0.10)))
-    return window_layout.build_layout_snapshot(
+    input_top = height - 150
+    image = Image.new("RGB", image_size, (250, 250, 250))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, 74, height - 1), fill=(246, 246, 246))
+    draw.rectangle((75, 0, sidebar_right - 1, height - 1), fill=(234, 234, 234))
+    draw.line((75, 0, 75, height - 1), fill=(155, 155, 155), width=2)
+    draw.line((sidebar_right, 0, sidebar_right, height - 1), fill=(140, 140, 140), width=2)
+    draw.line((sidebar_right, header_bottom, width - 1, header_bottom), fill=(170, 170, 170), width=2)
+    draw.line((sidebar_right, input_top, width - 1, input_top), fill=(170, 170, 170), width=2)
+    calibration = window_layout.build_startup_layout_calibration(
+        hwnd=101,
+        process_id=202,
+        image=image,
+        ocr_items=[
+            {
+                "text": "Q搜索",
+                "left": 105,
+                "top": 48,
+                "right": 160,
+                "bottom": 70,
+                "center_x": 132.5,
+                "center_y": 59.0,
+                "confidence": 0.99,
+            }
+        ],
+        window_rect=[0, 0, width, height],
+        client_rect={"left": 0, "top": 0, "right": width, "bottom": height, "width": width, "height": height},
+        client_screen_origin=[0, 0],
+        dpi_scale=1.0,
+        capture_mode=window_layout.CAPTURE_MODE_CLIENT_AREA,
+    )
+    if not calibration.get("executable"):
+        raise AssertionError(f"production startup calibration rejected session fixture: {calibration}")
+    snapshot = window_layout.build_layout_snapshot(
         hwnd=101,
         frame_id=window_layout.new_frame_id(101),
-        capture_mode=window_layout.CAPTURE_MODE_WINDOW_VISIBLE_SCREEN,
+        capture_mode=window_layout.CAPTURE_MODE_CLIENT_AREA,
         image_size=image_size,
         capture_screen_origin=[0, 0],
         window_rect=[0, 0, width, height],
         client_rect=[0, 0, width, height],
         client_screen_origin=[0, 0],
         dpi_scale=1.0,
-        regions={
-            "left_nav_bounds": [0, 0, 75, height],
-            "sidebar_bounds": [75, 0, sidebar_right, height],
-            "sidebar_header_bounds": [75, 0, sidebar_right, header_bottom],
-            "session_list_bounds": [75, header_bottom, sidebar_right, height],
-            "chat_header_bounds": [sidebar_right, 0, width, header_bottom],
-            "message_viewport_bounds": [sidebar_right, header_bottom, width, height - 100],
-            "input_bounds": [sidebar_right, height - 100, width, height],
-        },
-        anchors=[],
-        confidence=1.0,
-        conflicts=[],
+        regions={name: calibration[name] for name in window_layout.REQUIRED_LAYOUT_REGION_NAMES},
+        anchors=calibration["anchors"],
+        confidence=calibration["confidence"],
+        conflicts=calibration["conflicts"],
         executable=True,
     )
+    snapshot["calibration_id"] = calibration["calibration_id"]
+    return snapshot
 
 
 class WechatWin32OcrSessionRowTest(unittest.TestCase):

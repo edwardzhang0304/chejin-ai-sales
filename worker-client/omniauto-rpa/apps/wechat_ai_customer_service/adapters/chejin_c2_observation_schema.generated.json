@@ -1,8 +1,8 @@
 {
   "generated_file": true,
   "source": "contracts/c2_contract_v3.json",
-  "contract_revision": "0.9.22",
-  "contract_sha256": "1a07dde94d270676cde4e6f1e0af3dcc071f4efedbb66c866c06cd64b36a5d39",
+  "contract_revision": "0.9.23",
+  "contract_sha256": "13bad103155a207b1205696b6eebf9836a7c366288b3532c80f6d122595cd970",
   "observation_schema_version": 3,
   "action_phases": [
     "not_attempted",
@@ -1007,5 +1007,74 @@
         }
       }
     }
+  },
+  "startup_layout_calibration_contract": {
+    "schema_version": "0.9.23",
+    "owner": "omniauto",
+    "worker_role": "persist_path_transport_contract_validation_and_execution_only",
+    "single_runtime_path": true,
+    "capture_mode": "client_area",
+    "forbidden_capture_modes": [
+      "print_window",
+      "desktop_fullscreen",
+      "offscreen"
+    ],
+    "required_fields": [
+      "calibration_id",
+      "schema_version",
+      "hwnd",
+      "process_id",
+      "window_rect",
+      "client_rect",
+      "client_screen_origin",
+      "dpi_scale",
+      "image_width",
+      "image_height",
+      "capture_mode",
+      "left_nav_bounds",
+      "sidebar_bounds",
+      "sidebar_header_bounds",
+      "session_list_bounds",
+      "chat_header_bounds",
+      "message_viewport_bounds",
+      "toolbar_bounds",
+      "input_bounds",
+      "anchors",
+      "confidence",
+      "conflicts",
+      "calibrated_at",
+      "executable"
+    ],
+    "normalization_profiles": {
+      "100%": [
+        800,
+        852
+      ],
+      "125%": [
+        1000,
+        1065
+      ],
+      "150%": [
+        1200,
+        1278
+      ],
+      "other": "round([800,852] * dpi_scale)"
+    },
+    "position_rule": "current_monitor.work_area.origin + round([12,12] * dpi_scale)",
+    "minimum_actual_client_size": [
+      700,
+      720
+    ],
+    "reference_map_revision": "gray-v0.9.20-region-local",
+    "business_frame_identity_field": "frame_id",
+    "calibration_identity_field": "calibration_id",
+    "passive_state_action": "calibration-status",
+    "passive_state_action_rule": "zero_screenshot_zero_ocr_zero_click_zero_window_mutation",
+    "startup_normalization_rule": "normalize_once_after_wechat_appears_then_status_and_heartbeat_are_passive",
+    "idle_change_rule": "restore_default_profile_and_recalibrate_only_before_the_next_new_ui_transaction",
+    "inflight_change_rule": "fail_closed_and_settle_via_existing_journal_outbox_sent_ack_before_any_restore",
+    "business_window_rule": "c1_c2_c3_c4_never_move_resize_restore_or_normalize_wechat",
+    "failure_error_code": "WECHAT_UI_STARTUP_CALIBRATION_FAILED",
+    "failure_rule": "zero_wechat_clicks_no_message_fact_no_brain_no_business_handoff"
   }
 }

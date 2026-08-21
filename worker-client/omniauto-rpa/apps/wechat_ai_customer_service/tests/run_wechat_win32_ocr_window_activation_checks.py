@@ -215,6 +215,23 @@ def test_activate_window_normal_focus_uses_single_foreground_path() -> None:
     assert_true(not any("keybd_event" in item for item in fixture.events), f"normal focus should not press ALT fallback: {fixture.events}")
 
 
+def test_business_foreground_only_ignores_aggressive_input_fallbacks() -> None:
+    fixture = ActivationFixture()
+    with PatchActivation(
+        fixture,
+        focus_results=[{"ok": False, "reason": "foreground_not_wechat_target"}],
+        aggressive=True,
+        attach=True,
+    ):
+        sidecar.activate_window(1001, foreground_only=True)
+    assert_true("user32.SetForegroundWindow:1001" in fixture.events, str(fixture.events))
+    for forbidden in ("BringWindowToTop", "AttachThreadInput", "SetFocus", "SetWindowPos", "keybd_event"):
+        assert_true(
+            not any(forbidden in event for event in fixture.events),
+            f"foreground-only business activation used forbidden {forbidden}: {fixture.events}",
+        )
+
+
 def test_activate_window_aggressive_focus_attaches_detaches_and_uses_alt_fallback() -> None:
     fixture = ActivationFixture()
     focus_results = [
@@ -246,6 +263,7 @@ def main() -> int:
     tests = [
         test_activate_window_returns_without_budget_when_foreground_ready,
         test_activate_window_normal_focus_uses_single_foreground_path,
+        test_business_foreground_only_ignores_aggressive_input_fallbacks,
         test_activate_window_aggressive_focus_attaches_detaches_and_uses_alt_fallback,
     ]
     passed = 0
