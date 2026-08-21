@@ -169,7 +169,7 @@ def check_public_normalize_entry() -> int:
             "try_image_grab", "save_screenshot_artifact", "get_window_geometry", "window_dpi_scale",
             "win32gui", "win32process", "STARTUP_CALIBRATION_PATH", "foreground_window_matches_target",
             "human_window_image_hover", "human_window_image_click_in_bounds", "add_friend_paced_pause",
-            "human_window_image_click", "human_client_click",
+            "human_window_image_click", "human_client_click", "ensure_dpi_awareness_status",
         )
     }
     original_ocr = sidecar.win32_ocr_engine.run_ocr_with_cache
@@ -177,6 +177,13 @@ def check_public_normalize_entry() -> int:
     original_windll = getattr(sidecar.ctypes, "windll", None)
     try:
         sidecar._WIN32_IMPORT_ERROR = ""
+        sidecar.ensure_dpi_awareness_status = lambda: {
+            "ok": True,
+            "per_monitor_aware": True,
+            "awareness": 2,
+            "awareness_name": "per_monitor_aware",
+            "query_method": "test_windows_boundary",
+        }
         foreground = {"hwnd": 909}
         sidecar.ensure_visible_wechat_window = lambda **_kwargs: {
             "main_windows": [{"hwnd": 101, "pid": 202}],
@@ -357,12 +364,80 @@ def check_no_v0922_runtime_bypass() -> int:
     return 6
 
 
+def check_dpi_awareness_is_verified_before_startup_calibration() -> int:
+    class PerMonitorUser32:
+        @staticmethod
+        def SetProcessDpiAwarenessContext(_context):
+            return True
+
+        @staticmethod
+        def GetThreadDpiAwarenessContext():
+            return -4
+
+        @staticmethod
+        def GetAwarenessFromDpiAwarenessContext(_context):
+            return 2
+
+    class SystemAwareUser32(PerMonitorUser32):
+        @staticmethod
+        def GetAwarenessFromDpiAwarenessContext(_context):
+            return 1
+
+    verified = sidecar.configure_dpi_awareness(
+        user32=PerMonitorUser32(),
+        shcore=SimpleNamespace(),
+    )
+    assert_true(verified.get("per_monitor_aware") is True, str(verified))
+    assert_true(verified.get("awareness") == 2, str(verified))
+    unverified = sidecar.configure_dpi_awareness(
+        user32=SystemAwareUser32(),
+        shcore=SimpleNamespace(),
+    )
+    assert_true(unverified.get("per_monitor_aware") is False, str(unverified))
+    assert_true(unverified.get("awareness_name") == "system_aware", str(unverified))
+
+    originals = {
+        "_WIN32_IMPORT_ERROR": sidecar._WIN32_IMPORT_ERROR,
+        "ensure_dpi_awareness_status": sidecar.ensure_dpi_awareness_status,
+        "ensure_visible_wechat_window": sidecar.ensure_visible_wechat_window,
+    }
+    window_probe_calls = {"count": 0}
+    try:
+        sidecar._WIN32_IMPORT_ERROR = ""
+        sidecar.ensure_dpi_awareness_status = lambda: dict(unverified)
+        sidecar.ensure_visible_wechat_window = lambda **_kwargs: (
+            window_probe_calls.__setitem__("count", window_probe_calls["count"] + 1)
+            or {}
+        )
+        result = sidecar.run_action(SimpleNamespace(
+            action="normalize-window",
+            artifact_dir="",
+            phone="",
+            wechat="",
+            verify_message="",
+            remark_name="",
+            remark_code="",
+        ))
+    finally:
+        for name, value in originals.items():
+            setattr(sidecar, name, value)
+    assert_true(result.get("ok") is False, str(result))
+    assert_true(
+        result.get("error_code") == window_layout.ERROR_STARTUP_CALIBRATION_FAILED,
+        str(result),
+    )
+    assert_true(result.get("no_clicks_performed") is True, str(result))
+    assert_true(window_probe_calls["count"] == 0, str(result))
+    return 8
+
+
 def main() -> int:
     checks = 0
     checks += check_window_profiles()
     checks += check_calibration_and_mapping()
     checks += check_public_normalize_entry()
     checks += check_no_v0922_runtime_bypass()
+    checks += check_dpi_awareness_is_verified_before_startup_calibration()
     print(f"v0.9.24 startup calibration checks passed: {checks}")
     return 0
 

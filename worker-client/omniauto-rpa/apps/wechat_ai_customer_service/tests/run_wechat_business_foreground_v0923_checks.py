@@ -128,6 +128,7 @@ class PatchProductionBoundaries:
             "mouse": 0,
             "keyboard": 0,
             "clipboard": 0,
+            "geometry_gate": 0,
         }
 
     def __enter__(self) -> "PatchProductionBoundaries":
@@ -152,6 +153,7 @@ class PatchProductionBoundaries:
             "sessions_payload",
             "normalize_wechat_window",
             "build_and_store_startup_calibration",
+            "validate_startup_calibration_state",
             "capture_wechat",
             "run_ocr",
             "human_client_click",
@@ -261,6 +263,12 @@ class PatchProductionBoundaries:
         sidecar.build_and_store_startup_calibration = lambda *_args, **_kwargs: (
             self.forbidden_counts.__setitem__("recalibrate", self.forbidden_counts["recalibrate"] + 1)
             or {"ok": False}
+        )
+        sidecar.validate_startup_calibration_state = lambda *_args, **_kwargs: (
+            self.forbidden_counts.__setitem__(
+                "geometry_gate", self.forbidden_counts["geometry_gate"] + 1
+            )
+            or {"ok": True, "reason": "diagnostic_only"}
         )
         sidecar.capture_wechat = lambda *_args, **_kwargs: (
             self.forbidden_counts.__setitem__("screenshot", self.forbidden_counts["screenshot"] + 1)
@@ -431,11 +439,40 @@ def check_no_new_global_activation_success_gate() -> int:
     return 25
 
 
+def check_business_map_binding_uses_visible_hwnd_only() -> int:
+    with tempfile.TemporaryDirectory() as directory:
+        with PatchProductionBoundaries(directory, activation_succeeds=True) as patch:
+            calibration = window_layout.read_startup_layout_calibration(
+                sidecar.STARTUP_CALIBRATION_PATH
+            ) or {}
+            calibration["process_id"] = TARGET_PID + 999
+            window_layout.write_startup_layout_calibration(
+                sidecar.STARTUP_CALIBRATION_PATH,
+                calibration,
+            )
+            result = sidecar.run_action(action_args("open-chat"))
+            assert_true(result.get("ok") is True, str(result))
+            assert_true(
+                patch.dispatches == [("C2.open-chat", TARGET_HWND)],
+                str(patch.dispatches),
+            )
+            assert_true(
+                patch.forbidden_counts["geometry_gate"] == 0,
+                str(patch.forbidden_counts),
+            )
+            assert_true(
+                int(calibration.get("hwnd") or 0) == TARGET_HWND,
+                str(calibration),
+            )
+    return 4
+
+
 def main() -> int:
     checks = 0
     checks += check_passive_actions_do_not_steal_foreground()
     checks += check_c1_c2_c3_reuse_v0920_activation_before_dispatch()
     checks += check_no_new_global_activation_success_gate()
+    checks += check_business_map_binding_uses_visible_hwnd_only()
     print(f"v0.9.24 business entry activation checks passed: {checks}")
     return 0
 

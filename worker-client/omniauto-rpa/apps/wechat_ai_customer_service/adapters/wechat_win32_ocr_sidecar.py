@@ -187,6 +187,7 @@ _LAST_SESSION_ACTIVATION_TIMING: dict[str, Any] = {}
 _LAYOUT_SNAPSHOT_STORE = win32_ocr_layout.LayoutSnapshotStore()
 _LATEST_LAYOUT_SNAPSHOT_BY_HWND: dict[int, str] = {}
 _LAYOUT_SNAPSHOT_ID_BY_IMAGE_ID: dict[int, str] = {}
+_DPI_AWARENESS_STATUS: dict[str, Any] = {}
 STARTUP_CALIBRATION_PATH = Path(
     os.getenv("CHEJIN_WECHAT_STARTUP_CALIBRATION_PATH")
     or (PROJECT_ROOT / "runtime" / "wechat_startup_layout_calibration_v0.9.24.json")
@@ -1193,6 +1194,19 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
             "state": "pywin32_unavailable",
             "error": _WIN32_IMPORT_ERROR,
         }
+    if action == "normalize-window":
+        dpi_awareness = ensure_dpi_awareness_status()
+        if not dpi_awareness.get("per_monitor_aware"):
+            failure = startup_calibration_failure_payload(
+                {
+                    "skipped": True,
+                    "reason": "per_monitor_dpi_awareness_not_verified",
+                },
+                {},
+                reason="per_monitor_dpi_awareness_not_verified",
+            )
+            failure["dpi_awareness"] = dpi_awareness
+            return failure
     passive_probe = use_passive_probe_mode(action)
     active_business_action = action in ACTIVE_BUSINESS_ACTIONS
     probe = ensure_visible_wechat_window(interactive=action == "normalize-window")
@@ -1275,14 +1289,6 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
                     calibration_binding.get("reason")
                     or "startup_calibration_missing_or_stale"
                 ),
-            )
-    if action not in {"status", "capabilities", "normalize-window", "calibration-status"}:
-        calibration_state = validate_startup_calibration_state(hwnd)
-        if not calibration_state.get("ok"):
-            return startup_calibration_failure_payload(
-                probe,
-                calibration_state.get("calibration") or {},
-                reason=str(calibration_state.get("reason") or "startup_calibration_missing_or_stale"),
             )
     # v0.9.24 has exactly one geometry owner: the startup normalize action.
     # C1-C4 must never move, resize, restore, or re-normalize the window.
@@ -1439,6 +1445,7 @@ def run_action(args: argparse.Namespace) -> dict[str, Any]:
                 or ("" if ready else "startup_layout_calibration_failed")
             ),
             "window_normalization": normalization,
+            "dpi_awareness": ensure_dpi_awareness_status(),
             "startup_layout_calibration": dict(
                 calibration_result.get("startup_layout_calibration") or {}
             ),
@@ -1935,7 +1942,6 @@ def calibrated_business_window_binding(
             "calibration": calibration,
         }
     target_hwnd = int(calibration.get("hwnd") or 0)
-    target_process_id = int(calibration.get("process_id") or 0)
     # Keep gray-v0.9.20 window selection semantics: hidden Weixin shells are
     # diagnostic only and must not make a single visible chat window
     # non-executable.  The startup calibration still owns identity; the
@@ -1958,38 +1964,13 @@ def calibrated_business_window_binding(
             "actual_hwnd": int(window.get("hwnd") or 0),
             "calibration": calibration,
         }
-    if target_process_id and int(window.get("pid") or 0) != target_process_id:
-        return {
-            "ok": False,
-            "reason": "startup_calibration_process_changed",
-            "target_hwnd": target_hwnd,
-            "expected_process_id": target_process_id,
-            "actual_process_id": int(window.get("pid") or 0),
-            "calibration": calibration,
-        }
-    try:
-        if not bool(win32gui.IsWindow(target_hwnd)):
-            return {
-                "ok": False,
-                "reason": "startup_calibration_hwnd_invalid",
-                "target_hwnd": target_hwnd,
-                "calibration": calibration,
-            }
-    except Exception as exc:
-        return {
-            "ok": False,
-            "reason": "startup_calibration_hwnd_probe_failed",
-            "target_hwnd": target_hwnd,
-            "error": repr(exc),
-            "calibration": calibration,
-        }
     return {
         "ok": True,
         "reason": "startup_calibration_window_confirmed",
         "window": window,
         "calibration": calibration,
         "target_hwnd": target_hwnd,
-        "target_process_id": target_process_id,
+        "target_process_id": int(calibration.get("process_id") or 0),
     }
 
 
@@ -17232,6 +17213,18 @@ def build_and_store_startup_calibration(
 ) -> dict[str, Any]:
     """Capture one exact client frame and build the sole v0.9.24 shell map."""
 
+    dpi_awareness = ensure_dpi_awareness_status()
+    if not dpi_awareness.get("per_monitor_aware"):
+        return {
+            "ok": False,
+            "error_code": win32_ocr_layout.ERROR_STARTUP_CALIBRATION_FAILED,
+            "reason": "per_monitor_dpi_awareness_not_verified",
+            "dpi_awareness": dpi_awareness,
+            "no_clicks_performed": True,
+            "ocr_call_count": 0,
+            "screenshot_call_count": 0,
+        }
+
     client_geometry = get_window_client_geometry(hwnd)
     origin = [
         int(client_geometry.get("screen_left") or 0),
@@ -18778,14 +18771,115 @@ def activate_window(hwnd: int, *, foreground_only: bool = False) -> None:
     )
 
 
-def configure_dpi_awareness() -> None:
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
-    except Exception:
+def configure_dpi_awareness(
+    *,
+    user32: Any | None = None,
+    shcore: Any | None = None,
+) -> dict[str, Any]:
+    """Set and verify the process is actually per-monitor DPI aware."""
+
+    global _DPI_AWARENESS_STATUS
+    windll = getattr(ctypes, "windll", None)
+    user32_api = user32 if user32 is not None else getattr(windll, "user32", None)
+    shcore_api = shcore if shcore is not None else getattr(windll, "shcore", None)
+    attempts: list[dict[str, Any]] = []
+
+    if user32_api is not None and hasattr(user32_api, "SetProcessDpiAwarenessContext"):
         try:
-            ctypes.windll.user32.SetProcessDPIAware()
-        except Exception:
-            pass
+            applied = bool(
+                user32_api.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+            )
+            attempts.append(
+                {
+                    "method": "SetProcessDpiAwarenessContext",
+                    "requested": "per_monitor_aware_v2",
+                    "applied": applied,
+                }
+            )
+        except Exception as exc:
+            attempts.append(
+                {
+                    "method": "SetProcessDpiAwarenessContext",
+                    "requested": "per_monitor_aware_v2",
+                    "applied": False,
+                    "error": repr(exc),
+                }
+            )
+
+    if shcore_api is not None and hasattr(shcore_api, "SetProcessDpiAwareness"):
+        try:
+            result = int(shcore_api.SetProcessDpiAwareness(2))
+            attempts.append(
+                {
+                    "method": "SetProcessDpiAwareness",
+                    "requested": "per_monitor_aware",
+                    "result": result,
+                    "applied": result == 0,
+                }
+            )
+        except Exception as exc:
+            attempts.append(
+                {
+                    "method": "SetProcessDpiAwareness",
+                    "requested": "per_monitor_aware",
+                    "applied": False,
+                    "error": repr(exc),
+                }
+            )
+
+    awareness: int | None = None
+    query_method = ""
+    query_error = ""
+    if (
+        user32_api is not None
+        and hasattr(user32_api, "GetThreadDpiAwarenessContext")
+        and hasattr(user32_api, "GetAwarenessFromDpiAwarenessContext")
+    ):
+        try:
+            context = user32_api.GetThreadDpiAwarenessContext()
+            awareness = int(
+                user32_api.GetAwarenessFromDpiAwarenessContext(context)
+            )
+            query_method = "GetThreadDpiAwarenessContext"
+        except Exception as exc:
+            query_error = repr(exc)
+    if awareness is None and shcore_api is not None and hasattr(shcore_api, "GetProcessDpiAwareness"):
+        try:
+            value = ctypes.c_int(-1)
+            result = int(shcore_api.GetProcessDpiAwareness(None, ctypes.byref(value)))
+            if result == 0:
+                awareness = int(value.value)
+                query_method = "GetProcessDpiAwareness"
+            else:
+                query_error = f"GetProcessDpiAwareness returned {result}"
+        except Exception as exc:
+            query_error = repr(exc)
+
+    per_monitor_aware = awareness == 2
+    _DPI_AWARENESS_STATUS = {
+        "ok": per_monitor_aware,
+        "per_monitor_aware": per_monitor_aware,
+        "awareness": awareness,
+        "awareness_name": (
+            "per_monitor_aware"
+            if awareness == 2
+            else "system_aware"
+            if awareness == 1
+            else "unaware"
+            if awareness == 0
+            else "unverified"
+        ),
+        "query_method": query_method,
+        "query_error": query_error,
+        "attempts": attempts,
+    }
+    return dict(_DPI_AWARENESS_STATUS)
+
+
+def ensure_dpi_awareness_status() -> dict[str, Any]:
+    if not _DPI_AWARENESS_STATUS:
+        return configure_dpi_awareness()
+    return dict(_DPI_AWARENESS_STATUS)
 
 
 def ensure_left_button_released() -> None:
