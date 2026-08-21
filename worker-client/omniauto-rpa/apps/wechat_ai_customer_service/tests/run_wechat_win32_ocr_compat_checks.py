@@ -1065,6 +1065,7 @@ def test_add_friend_menu_click_handles_stale_dialog_hwnd() -> None:
         "window_dpi_scale": sidecar_mod.window_dpi_scale,
         "activate_window": sidecar_mod.activate_window,
         "ensure_left_button_released": sidecar_mod.ensure_left_button_released,
+        "win32gui": sidecar_mod.win32gui,
         "layout_store": sidecar_mod._LAYOUT_SNAPSHOT_STORE,
         "latest_layout": dict(sidecar_mod._LATEST_LAYOUT_SNAPSHOT_BY_HWND),
     }
