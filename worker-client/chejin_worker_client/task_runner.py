@@ -14094,11 +14094,30 @@ class TaskRunner:
                     excluded_voice_anchor_keys=excluded_voice_anchor_keys,
                     flow_outcomes=flow_outcomes,
                 )
+                voice_phase_error_code = str(
+                    voice_result.get("failure_code")
+                    or voice_result.get("error_code")
+                    or ""
+                ).strip()
+                voice_phase_succeeded = bool(
+                    voice_result.get("ok")
+                    and not voice_phase_error_code
+                    and not isinstance(
+                        voice_result.get("terminal_gate"),
+                        dict,
+                    )
+                )
                 record_phase(
                     "voice_transcribe",
                     phase_started_at,
-                    completed=bool(voice_result.get("ok")),
-                    failure_code=voice_result.get("failure_code"),
+                    completed=voice_phase_succeeded,
+                    failed=not voice_phase_succeeded,
+                    error_code=(
+                        None
+                        if voice_phase_succeeded
+                        else voice_phase_error_code
+                        or "C2_VOICE_TRANSCRIPTION_FAILED"
+                    ),
                     item_count=len(voice_result.get("item_outcomes") or []),
                 )
                 if not voice_result.get("ok"):
@@ -14237,7 +14256,19 @@ class TaskRunner:
                     )
                 if image_stats.get("ui_frame_invalidated"):
                     sidecar_payload["ui_frame_invalidated"] = True
-                record_phase("image_understanding", phase_started_at, **image_stats)
+                image_phase_failed = int(
+                    image_stats.get("failed") or 0
+                ) > 0
+                record_phase(
+                    "image_understanding",
+                    phase_started_at,
+                    **image_stats,
+                    error_code=(
+                        "C2_IMAGE_SLOT_FAILED"
+                        if image_phase_failed
+                        else None
+                    ),
+                )
                 append_log(
                     "INFO" if not image_stats.get("failed") else "WARN",
                     "c2_image_slots_finished",

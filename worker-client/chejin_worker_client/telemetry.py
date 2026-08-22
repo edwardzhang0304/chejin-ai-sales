@@ -561,9 +561,22 @@ def enqueue_c2_flow_timing_stages(
             stage_name,
             db_path=db_path,
         )
+        phase_error_code = str(
+            phase.get("error_code")
+            or phase.get("failure_code")
+            or ""
+        ).strip()
+        failed_marker = phase.get("failed")
+        failed_count_present = bool(
+            isinstance(failed_marker, (int, float))
+            and not isinstance(failed_marker, bool)
+            and failed_marker > 0
+        )
         failed = bool(
-            phase.get("failed") is True
+            failed_marker is True
+            or failed_count_present
             or phase.get("completed") is False
+            or phase_error_code
         )
         event = enqueue_existing_duration(
             process_run_id=process_run_id,
@@ -575,7 +588,7 @@ def enqueue_c2_flow_timing_stages(
             ),
             status="failed" if failed else "succeeded",
             error_code=(
-                str(phase.get("error_code") or "C2_STAGE_FAILED")
+                phase_error_code or "C2_STAGE_FAILED"
                 if failed
                 else None
             ),

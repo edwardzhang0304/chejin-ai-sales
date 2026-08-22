@@ -223,6 +223,57 @@ def test_existing_c2_timing_maps_one_to_one_without_changing_duration(tmp_path):
     assert len(pending_stage_events(db_path=db_path)) == 2
 
 
+def test_c2_voice_failure_code_cannot_be_reported_as_succeeded(tmp_path):
+    db_path = tmp_path / "telemetry.sqlite3"
+    events = enqueue_c2_flow_timing_stages(
+        process_run_id=_process_run_id(),
+        conversation_id="conversation-1",
+        read_run_id="read-voice-ambiguous",
+        trace_id="voice-sidecar-1",
+        db_path=db_path,
+        flow_timing={
+            "phases": [
+                {
+                    "name": "voice_transcribe",
+                    "duration_seconds": 7.5,
+                    "completed": True,
+                    "failure_code": "C2_VOICE_RESULT_AMBIGUOUS",
+                }
+            ]
+        },
+    )
+
+    assert events[0]["stage_name"] == "c2.voice_transcription"
+    assert events[0]["status"] == "failed"
+    assert events[0]["error_code"] == "C2_VOICE_RESULT_AMBIGUOUS"
+
+
+def test_c2_image_failure_count_cannot_be_reported_as_succeeded(tmp_path):
+    db_path = tmp_path / "telemetry.sqlite3"
+    events = enqueue_c2_flow_timing_stages(
+        process_run_id=_process_run_id(),
+        conversation_id="conversation-1",
+        read_run_id="read-image-failed",
+        trace_id="image-sidecar-1",
+        db_path=db_path,
+        flow_timing={
+            "phases": [
+                {
+                    "name": "image_understanding",
+                    "duration_seconds": 3.5,
+                    "completed": 0,
+                    "failed": 1,
+                    "failed_source_keys": ["image-source-1"],
+                }
+            ]
+        },
+    )
+
+    assert events[0]["stage_name"] == "c2.image_vision"
+    assert events[0]["status"] == "failed"
+    assert events[0]["error_code"] == "C2_STAGE_FAILED"
+
+
 def test_retries_get_new_stage_id_and_monotonic_attempt_number(tmp_path):
     db_path = tmp_path / "telemetry.sqlite3"
     process_run_id = _process_run_id()

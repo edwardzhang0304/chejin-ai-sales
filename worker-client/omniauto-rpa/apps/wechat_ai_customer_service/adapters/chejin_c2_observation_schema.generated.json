@@ -1,8 +1,8 @@
 {
   "generated_file": true,
   "source": "contracts/c2_contract_v3.json",
-  "contract_revision": "0.9.25",
-  "contract_sha256": "53e2ed19dbf4ee62677660689a7385066a7e660d5d70c74a0254b1e94d753bc7",
+  "contract_revision": "0.9.26",
+  "contract_sha256": "1c939d25ea1e1ec22eb5dac985eb02632b9ed2bf5fed8df2a65a8791ef1fe486",
   "observation_schema_version": 3,
   "action_phases": [
     "not_attempted",
@@ -958,6 +958,8 @@
     ],
     "confirmed_candidate_count": 1,
     "continuous_tracking_rule": "at_least_three_real_capture_frame_ids_and_a_contiguous_chain_of_exactly_adjacent_unique_tracking_edges_from_selected_pre_observation_to_final_bound_observation",
+    "popup_state_query_rule": "a_win32_popup_hwnd_query_exception_is_popup_window_state_unknown_and_must_never_be_reported_as_closed",
+    "post_click_wait_rule": "both_successful_and_failed_click_verification_enter_the_same_passive_transcript_evidence_wait_for_at_most_24_frames_or_120_seconds_without_a_second_transcribe_click",
     "forbidden_compatibility_fields": [
       "tracking_candidate_counts"
     ],
@@ -1009,7 +1011,7 @@
     }
   },
   "startup_layout_calibration_contract": {
-    "schema_version": "0.9.25",
+    "schema_version": "0.9.26",
     "owner": "omniauto",
     "worker_role": "persist_path_transport_contract_validation_and_execution_only",
     "single_runtime_path": true,

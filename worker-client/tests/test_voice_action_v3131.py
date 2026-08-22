@@ -377,6 +377,8 @@ class VoiceActionV3132Test(unittest.TestCase):
                 sidecar, "humanized_action_sleep", return_value=None
             ), patch.object(
                 sidecar, "_bind_voice_transcripts_for_action", return_value=[]
+            ), patch.object(
+                sidecar, "VOICE_TRANSCRIPT_EVIDENCE_MAX_READS", 2
             ):
                 result = sidecar.execute_voice_action_payload(
                     1,
@@ -462,6 +464,8 @@ class VoiceActionV3132Test(unittest.TestCase):
                 click,
             ), patch.object(
                 sidecar, "humanized_action_sleep", return_value=None
+            ), patch.object(
+                sidecar, "VOICE_TRANSCRIPT_EVIDENCE_MAX_READS", 1
             ):
                 result = sidecar.execute_voice_action_payload(
                     1,
@@ -479,18 +483,17 @@ class VoiceActionV3132Test(unittest.TestCase):
                     selected_target_fingerprint="fingerprint-a",
                 )
 
-            self.assertEqual(result["state"], "voice_transcribe_click_failed")
-            self.assertEqual(result["action_phase"], "failed")
-            self.assertEqual(result["transcript_binding_status"], "failed")
-            self.assertEqual(result["binding_candidate_count"], 1)
-            self.assertTrue(
-                result["confirmed_action_mapping"]["binding_confirmed"]
-            )
+            self.assertEqual(result["state"], "voice_transcribe_ambiguous")
+            self.assertEqual(result["error_code"], "C2_VOICE_RESULT_AMBIGUOUS")
+            self.assertEqual(result["action_phase"], "quarantined")
+            self.assertEqual(result["transcript_binding_status"], "ambiguous")
+            self.assertEqual(result["binding_candidate_count"], 0)
+            self.assertFalse(result["confirmed_action_mapping"]["binding_confirmed"])
             self.assertEqual(
                 result["confirmed_action_mapping"]["post_observation_id"],
-                "voice-failed-final",
+                "",
             )
-            self.assertEqual(action_journal_phase(journal), "failed")
+            self.assertEqual(action_journal_phase(journal), "quarantined")
             self.assertEqual(click.call_count, 1)
 
     def test_image_ui_action_invalidates_frame_even_when_phase_not_attempted(self):

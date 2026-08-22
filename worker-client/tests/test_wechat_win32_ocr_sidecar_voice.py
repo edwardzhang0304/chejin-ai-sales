@@ -86,7 +86,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
     def _semantic_layout_for_image(self, image: Image.Image) -> dict:
         """Resolved production snapshot shape for non-layout semantic tests.
 
-        The 0.9.25 geometry tests exercise the real structural detector and
+        The 0.9.26 geometry tests exercise the real structural detector and
         coordinate converter. These older voice tests deliberately provide
         already-resolved semantic regions so they test voice behavior without
         reintroducing a fixed production fallback.
@@ -155,6 +155,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         bound_message: dict | None,
         click_ok: bool = True,
         target_confirmation: dict | None = None,
+        transcript_delay_reads: int = 1,
     ) -> tuple[dict, Mock, Mock, str]:
         action_id = f"action-{candidate['observation_id']}"
         reserved_id = f"worker-{candidate['observation_id']}"
@@ -191,6 +192,16 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
                 }
             )
         image = Image.new("RGB", (965, 852), (247, 247, 247))
+        evidence_read_limit = max(
+            1,
+            int(transcript_delay_reads) if final_message else 2,
+        )
+        post_frames = [
+            [final_message]
+            if final_message and read_index >= int(transcript_delay_reads)
+            else []
+            for read_index in range(1, evidence_read_limit + 1)
+        ]
         click = Mock(return_value={"ok": click_ok, "reason": "click_failed" if not click_ok else ""})
         menu = Mock(
             return_value={
@@ -226,7 +237,7 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             )
 
             builder_patch = nullcontext()
-            if not click_ok:
+            if not click_ok and not final_message:
                 builder_patch = patch.object(
                     sidecar,
                     "build_message_observations_v3",
@@ -252,12 +263,15 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
                 "capture_wechat",
                 side_effect=[
                     (image, "execute-before.png"),
-                    (image, "execute-after.png"),
+                    *[
+                        (image, f"execute-after-{index}.png")
+                        for index in range(1, evidence_read_limit + 1)
+                    ],
                 ],
             ), patch.object(sidecar, "run_ocr", return_value=[]), patch.object(
                 sidecar,
                 "parse_current_chat_frame_messages",
-                side_effect=[[], [final_message] if final_message else []],
+                side_effect=[[], *post_frames],
             ), patch.object(
                 sidecar,
                 "build_unified_voice_observations_v3",
@@ -280,6 +294,10 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
                 "c2_target_activation_confirmed",
                 side_effect=lambda value: value.get("ok") is True,
             ), patch.object(
+                sidecar,
+                "get_window_geometry",
+                return_value={"width": 965, "height": 852},
+            ), patch.object(
                 sidecar, "open_voice_transcribe_context_menu", menu
             ), patch.object(
                 sidecar, "click_voice_transcribe_context_menu_target", click
@@ -287,6 +305,10 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
                 sidecar, "human_window_image_click_in_bounds", click
             ), patch.object(
                 sidecar, "humanized_action_sleep", return_value=None
+            ), patch.object(
+                sidecar,
+                "VOICE_TRANSCRIPT_EVIDENCE_MAX_READS",
+                evidence_read_limit,
             ), builder_patch:
                 result = sidecar.execute_voice_action_payload(
                     1,
@@ -376,6 +398,97 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
             [item["observation_id"] for item in confirmed],
             ["voice-post"],
         )
+
+    def test_popup_verification_failure_recovers_from_confirmed_transcript(
+        self,
+    ) -> None:
+        anchor = {
+            "source": "parser_voice_message_context_menu_anchor",
+            "click_bounds": [488, 220, 536, 248],
+            "item": {
+                "text": '3"',
+                "voice_duration_text": '3"',
+                "left": 488,
+                "top": 220,
+                "right": 536,
+                "bottom": 248,
+                "center_x": 512,
+                "center_y": 234,
+                "sender_role": "customer",
+                "parser_bubble_rect": [488, 220, 536, 248],
+            },
+        }
+        candidate = unified_voice_observation(anchor)
+        assert candidate is not None
+        candidate["observation_id"] = "voice-popup-destroyed"
+
+        result, click, _menu, phase = self._execute_prepared_voice(
+            candidate=candidate,
+            bound_message={
+                "id": "voice-popup-destroyed-post",
+                "sender": "customer",
+                "sender_role": "customer",
+                "content": "10万左右的车有什么推荐的吗？",
+                "bubble_rect": [488, 220, 760, 302],
+            },
+            click_ok=False,
+        )
+
+        self.assertEqual(
+            result["state"],
+            "voice_transcribe_completed",
+            result,
+        )
+        self.assertEqual(result["messages"][0]["content"], "10万左右的车有什么推荐的吗？")
+        self.assertTrue(result["click_verification_recovered"])
+        self.assertEqual(phase, "confirmed")
+        self.assertEqual(click.call_count, 1)
+
+    def test_popup_verification_failure_waits_for_delayed_transcript_without_reclick(
+        self,
+    ) -> None:
+        anchor = {
+            "source": "parser_voice_message_context_menu_anchor",
+            "click_bounds": [488, 220, 536, 248],
+            "item": {
+                "text": '3"',
+                "voice_duration_text": '3"',
+                "left": 488,
+                "top": 220,
+                "right": 536,
+                "bottom": 248,
+                "center_x": 512,
+                "center_y": 234,
+                "sender_role": "customer",
+                "parser_bubble_rect": [488, 220, 536, 248],
+            },
+        }
+        candidate = unified_voice_observation(anchor)
+        assert candidate is not None
+        candidate["observation_id"] = "voice-delayed-after-unknown"
+
+        result, click, _menu, phase = self._execute_prepared_voice(
+            candidate=candidate,
+            bound_message={
+                "id": "voice-delayed-after-unknown-post",
+                "sender": "customer",
+                "sender_role": "customer",
+                "content": "10万左右的车有什么推荐的吗？",
+                "bubble_rect": [488, 220, 760, 302],
+            },
+            click_ok=False,
+            transcript_delay_reads=3,
+        )
+
+        self.assertEqual(
+            result["state"],
+            "voice_transcribe_completed",
+            result,
+        )
+        self.assertEqual(result["evidence_read_count"], 3)
+        self.assertTrue(result["click_verification_recovered"])
+        self.assertEqual(phase, "confirmed")
+        self.assertEqual(click.call_count, 1)
 
     def test_frame_action_binding_mismatch_or_missing_is_never_confirmed(
         self,
@@ -1830,8 +1943,9 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
                 bound_message=upper_transcribed,
             )
 
-        self.assertEqual(failed["state"], "voice_transcribe_click_failed")
-        self.assertEqual(failed_phase, "failed")
+        self.assertEqual(failed["state"], "voice_transcribe_ambiguous")
+        self.assertEqual(failed["error_code"], "C2_VOICE_RESULT_AMBIGUOUS")
+        self.assertEqual(failed_phase, "quarantined")
         self.assertEqual(completed["state"], "voice_transcribe_completed")
         self.assertEqual(completed_phase, "confirmed")
         self.assertEqual(completed["messages"][0]["content"], "上面这条已经转好")
@@ -2767,6 +2881,66 @@ class WechatWin32OcrVoiceSelectionTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(clicks, [(int(item["center_x"]), int(item["center_y"]))])
         self.assertEqual(result["click_jitter"]["reason"], "click_exact_ocr_menu_text_center")
+
+    def test_menu_close_verification_uses_owner_after_popup_is_destroyed(self) -> None:
+        image = Image.new("RGB", (965, 852), (247, 247, 247))
+        with (
+            patch.object(
+                sidecar,
+                "win32gui",
+                Mock(
+                    IsWindow=Mock(return_value=False),
+                    IsWindowVisible=Mock(return_value=False),
+                ),
+            ),
+            patch.object(
+                sidecar,
+                "capture_wechat_window_visible_screen",
+                return_value=(image, "owner-after-click.png"),
+            ) as capture,
+            patch.object(sidecar, "run_ocr", return_value=[]),
+        ):
+            result = sidecar.verify_voice_transcribe_context_menu_closed(
+                hwnd=1,
+                popup_hwnd=2,
+                menu_bounds=[20, 20, 140, 60],
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["reason"], "popup_window_closed")
+        capture.assert_called_once_with(
+            1,
+            artifact_dir=None,
+            label="voice_transcribe_context_menu_after_click",
+        )
+
+    def test_menu_close_verification_reports_unknown_when_popup_query_raises(self) -> None:
+        with (
+            patch.object(
+                sidecar,
+                "win32gui",
+                Mock(
+                    IsWindow=Mock(side_effect=OSError("popup probe failed")),
+                    IsWindowVisible=Mock(return_value=True),
+                ),
+            ),
+            patch.object(
+                sidecar,
+                "capture_wechat_window_visible_screen",
+            ) as capture,
+            patch.object(sidecar, "run_ocr") as run_ocr,
+        ):
+            result = sidecar.verify_voice_transcribe_context_menu_closed(
+                hwnd=1,
+                popup_hwnd=2,
+                menu_bounds=[20, 20, 140, 60],
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "popup_window_state_unknown")
+        self.assertIsNone(result["popup_window_visible"])
+        capture.assert_not_called()
+        run_ocr.assert_not_called()
 
     def test_voice_and_image_popup_clicks_do_not_require_main_hwnd_foreground(self) -> None:
         """Exercise the shared production converter used by both C2 menus."""

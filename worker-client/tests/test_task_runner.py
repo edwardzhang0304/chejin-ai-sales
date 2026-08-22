@@ -8206,10 +8206,27 @@ class TaskRunnerTest(unittest.TestCase):
 
         runner._read_one_wechat_target = tracked_read  # type: ignore[method-assign]
 
-        with patch.object(
-            runner,
-            "_wait_and_send_current_c3_batch",
-        ) as brain:
+        emitted_timings: list[dict] = []
+
+        def capture_timing_log(
+            _level: str,
+            event: str,
+            _message: str,
+            **kwargs,
+        ) -> None:
+            if event == "c2_message_read_timing":
+                emitted_timings.append(kwargs["metadata"])
+
+        with (
+            patch.object(
+                runner,
+                "_wait_and_send_current_c3_batch",
+            ) as brain,
+            patch(
+                "chejin_worker_client.task_runner.append_log",
+                side_effect=capture_timing_log,
+            ),
+        ):
             runner._read_state_target_queue(binding)
 
             self.assertEqual(len(bridge.voice_transcribes), 1)
@@ -8283,6 +8300,19 @@ class TaskRunnerTest(unittest.TestCase):
             1,
         )
         brain.assert_not_called()
+        voice_phases = [
+            phase
+            for timing in emitted_timings
+            for phase in timing.get("phases", [])
+            if phase.get("name") == "voice_transcribe"
+        ]
+        self.assertEqual(len(voice_phases), 1)
+        self.assertFalse(voice_phases[0]["completed"])
+        self.assertTrue(voice_phases[0]["failed"])
+        self.assertEqual(
+            voice_phases[0]["error_code"],
+            "C2_VOICE_RESULT_AMBIGUOUS",
+        )
         journals = list_action_journals(
             conversation_id=ambiguous_target.conversation_id,
             action_kinds=("voice",),
