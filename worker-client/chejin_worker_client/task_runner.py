@@ -1946,11 +1946,14 @@ class TaskRunner:
         return f"inflight_finish_receipt:{str(flow_id or '').strip()}"
 
     @staticmethod
-    def _has_physical_action_journal_for_flow(flow_id: str) -> bool:
+    def _physical_action_journals_for_flow(
+        flow_id: str,
+    ) -> list[tuple[Path, dict[str, Any]]]:
         clean_id = str(flow_id or "").strip()
         if not clean_id:
-            return False
-        for _, payload in list_action_journals():
+            return []
+        matches: list[tuple[Path, dict[str, Any]]] = []
+        for path, payload in list_action_journals():
             payload_matches = clean_id in {
                 str(payload.get("transaction_id") or "").strip(),
                 str(payload.get("origin_read_run_id") or "").strip(),
@@ -1973,6 +1976,19 @@ class TaskRunner:
             if not (payload_matches or item_matches):
                 continue
 
+            matches.append((path, payload))
+        return matches
+
+    @staticmethod
+    def _has_physical_action_journal_for_flow(flow_id: str) -> bool:
+        for _, payload in TaskRunner._physical_action_journals_for_flow(
+            flow_id
+        ):
+            items = payload.get("items")
+            item_values = list(
+                items.values() if isinstance(items, dict) else (items or [])
+            )
+
             # A quarantined media action intentionally has no durable message
             # identity, so it cannot produce a normal Ledger fact.  The
             # Journal remains as the no-repeat audit record and is checked on
@@ -1992,6 +2008,277 @@ class TaskRunner:
                 continue
             return True
         return False
+
+    def _restart_recovery_target(
+        self,
+        binding: Binding,
+        *,
+        flow_id: str,
+        conversation_id: str,
+        journal_entries: list[tuple[Path, dict[str, Any]]],
+    ) -> WechatReadTarget | None:
+        """Resolve the original target without opening or reading WeChat."""
+
+        clean_conversation_id = str(conversation_id or "").strip()
+        if not clean_conversation_id:
+            return None
+        try:
+            authorization = self.api.get_wechat_read_authorization(
+                binding,
+                clean_conversation_id,
+            )
+        except Exception as exc:
+            append_log(
+                "WARN",
+                "restart_action_journal_authorization_failed",
+                "重启恢复旧媒体动作时获取原会话授权失败；保留原 Journal，稍后重试。",
+                error_code="RUNTIME_INFLIGHT_RECOVERY_AUTHORIZATION_FAILED",
+                metadata={
+                    "flow_id": flow_id,
+                    "conversation_id": clean_conversation_id,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            authorization = {}
+        target_payload = (
+            authorization.get("target")
+            if isinstance(authorization, dict)
+            else None
+        )
+        if isinstance(target_payload, dict):
+            target = WechatReadTarget.from_api(target_payload)
+            if (
+                target.conversation_id == clean_conversation_id
+                and str(target.authorization_revision or "").strip()
+                and str(target.remark_code or "").strip()
+            ):
+                return target
+
+        # New journals retain enough of the original authorization envelope
+        # to settle an identity gate even when the binding is no longer a
+        # normal read target.  This is a no-UI fallback for restart recovery;
+        # legacy journals continue to retry the lightweight backend lookup.
+        for _path, payload in journal_entries:
+            evidence = (
+                payload.get("prepare_evidence")
+                if isinstance(payload.get("prepare_evidence"), dict)
+                else {}
+            )
+            authorization_revision = str(
+                evidence.get("authorization_revision") or ""
+            ).strip()
+            remark_code = str(evidence.get("remark_code") or "").strip()
+            if not authorization_revision or not remark_code:
+                continue
+            return WechatReadTarget(
+                conversation_id=clean_conversation_id,
+                rpa_session_key=str(
+                    evidence.get("rpa_session_key") or ""
+                ).strip(),
+                display_name=str(
+                    evidence.get("display_name") or remark_code
+                ).strip(),
+                remark_code=remark_code,
+                read_reason=str(
+                    evidence.get("read_reason") or "action_journal_recovery"
+                ).strip(),
+                authorization_revision=authorization_revision,
+            )
+        return None
+
+    def _recover_restart_physical_action_journals(
+        self,
+        binding: Binding,
+        *,
+        flow_id: str,
+        conversation_id: str,
+    ) -> bool:
+        """Settle the old flow's physical Journal before finishing it.
+
+        Recovery is evidence-only: it may read local Journal/SQLite state and
+        call existing backend settlement endpoints, but it never locates a
+        chat, clicks a media menu, invokes Vision, or repeats a media trigger.
+        """
+
+        journal_entries = self._physical_action_journals_for_flow(flow_id)
+        if not journal_entries:
+            return True
+        journal_conversation_ids = {
+            str(payload.get("conversation_id") or "").strip()
+            for _path, payload in journal_entries
+            if str(payload.get("conversation_id") or "").strip()
+        }
+        expected_conversation_id = str(conversation_id or "").strip()
+        if (
+            len(journal_conversation_ids) != 1
+            or (
+                expected_conversation_id
+                and expected_conversation_id not in journal_conversation_ids
+            )
+        ):
+            append_log(
+                "ERROR",
+                "restart_action_journal_scope_invalid",
+                "重启旧流程关联了不一致的媒体动作会话；保持隔离且不操作微信。",
+                error_code="RUNTIME_INFLIGHT_ACTION_JOURNAL_SCOPE_INVALID",
+                metadata={
+                    "flow_id": flow_id,
+                    "conversation_ids": sorted(journal_conversation_ids),
+                },
+            )
+            return False
+        journal_conversation_id = next(iter(journal_conversation_ids))
+        recovery_target = WechatReadTarget(
+            conversation_id=journal_conversation_id,
+            rpa_session_key="",
+            display_name="",
+        )
+        unresolved = self._recover_physical_action_journals(recovery_target)
+        if unresolved:
+            gate_target = self._restart_recovery_target(
+                binding,
+                flow_id=flow_id,
+                conversation_id=journal_conversation_id,
+                journal_entries=journal_entries,
+            )
+            if gate_target is None:
+                append_log(
+                    "WARN",
+                    "restart_action_journal_target_pending",
+                    "重启旧媒体动作已进入隔离，但原会话授权尚不可用；保留旧流程并稍后重试。",
+                    error_code="RUNTIME_INFLIGHT_RECOVERY_TARGET_PENDING",
+                    metadata={
+                        "flow_id": flow_id,
+                        "conversation_id": journal_conversation_id,
+                    },
+                )
+                return False
+            error_code = str(
+                unresolved[0].get("error_code")
+                or "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+            ).strip()
+            reported = self._report_identity_failure_gate(
+                binding=binding,
+                target=gate_target,
+                read_run_id=flow_id,
+                error_code=error_code,
+                identity_errors=unresolved,
+                authoritative_frame_source="action_journal_recovery",
+                ui_frame_invalidated=False,
+            )
+            if not reported:
+                return False
+            self._quarantine_reported_restart_journals(
+                journal_entries=journal_entries,
+                identity_errors=unresolved,
+            )
+            append_log(
+                "WARN",
+                "restart_action_journal_identity_gate_reported",
+                "重启旧媒体动作已无 UI 隔离并交给现有恢复门禁；释放旧流程后继续其他短码。",
+                error_code=error_code,
+                metadata={
+                    "flow_id": flow_id,
+                    "conversation_id": journal_conversation_id,
+                    "journal_count": len(journal_entries),
+                },
+            )
+
+        if any(
+            str(payload.get("action_kind") or "").strip() == "image"
+            for _path, payload in journal_entries
+        ) and self._has_physical_action_journal_for_flow(flow_id):
+            if not self._recover_pending_image_transaction(
+                binding,
+                conversation_id=journal_conversation_id,
+                allow_ui_resume=False,
+            ):
+                return False
+
+        if self._has_physical_action_journal_for_flow(flow_id):
+            append_log(
+                "INFO",
+                "restart_action_journal_fact_settlement_pending",
+                "重启旧媒体动作已恢复本地终态，但正式事实尚未确认；保持旧流程并继续现有恢复协议。",
+                error_code="RUNTIME_INFLIGHT_ACTION_JOURNAL_PENDING",
+                metadata={
+                    "flow_id": flow_id,
+                    "conversation_id": journal_conversation_id,
+                },
+            )
+            return False
+        return True
+
+    @staticmethod
+    def _quarantine_reported_restart_journals(
+        *,
+        journal_entries: list[tuple[Path, dict[str, Any]]],
+        identity_errors: list[dict[str, Any]],
+    ) -> None:
+        """Make a reported identity ambiguity a finite local terminal.
+
+        The idempotent failure-gate Outbox owns any remaining backend retry.
+        The physical Journal stays on disk as the no-repeat audit record, but
+        must no longer hold the global flow barrier after that gate is
+        confirmed.  Items with a committed source identity are never changed.
+        """
+
+        unresolved_transaction_ids = {
+            str(item.get("transaction_id") or "").strip()
+            for item in identity_errors
+            if isinstance(item, dict)
+            and str(item.get("transaction_id") or "").strip()
+        }
+        for path, raw_payload in journal_entries:
+            transaction_id = str(
+                raw_payload.get("transaction_id") or ""
+            ).strip()
+            if (
+                unresolved_transaction_ids
+                and transaction_id not in unresolved_transaction_ids
+            ):
+                continue
+            items = (
+                raw_payload.get("items")
+                if isinstance(raw_payload.get("items"), dict)
+                else {}
+            )
+            action_kind = str(
+                raw_payload.get("action_kind") or "media"
+            ).strip()
+            for item_id, raw_item in items.items():
+                if (
+                    not isinstance(raw_item, dict)
+                    or str(raw_item.get("source_message_key") or "").strip()
+                    or not action_journal_item_has_formed_fact(raw_item)
+                ):
+                    continue
+                terminal_payload = (
+                    dict(raw_item.get("terminal_payload") or {})
+                    if isinstance(raw_item.get("terminal_payload"), dict)
+                    else {}
+                )
+                update_action_journal_item(
+                    path,
+                    journal_item_id=str(item_id),
+                    action_phase="quarantined",
+                    business_state="failed",
+                    business_result_confirmed=False,
+                    error_code=(
+                        "C2_IMAGE_IDENTITY_CONTRACT_INVALID"
+                        if action_kind == "image"
+                        else "C2_VOICE_RESULT_AMBIGUOUS"
+                    ),
+                    terminal_payload={
+                        **terminal_payload,
+                        "state": "quarantined",
+                        "media_action_terminal": (
+                            MediaActionTerminal.IDENTITY_UNRESOLVED.value
+                        ),
+                        "identity_gate_reported": True,
+                        "reason": "restart_identity_unresolved_reported",
+                    },
+                )
 
     def _finish_inflight_flow(
         self,
@@ -2091,6 +2378,12 @@ class TaskRunner:
             "failed_before_message_action",
             "read_failed_no_fact",
         }:
+            return
+        if not self._recover_restart_physical_action_journals(
+            binding,
+            flow_id=flow_id,
+            conversation_id=str(receipt.get("conversation_id") or ""),
+        ):
             return
         try:
             self._finish_inflight_flow(
@@ -2356,6 +2649,13 @@ class TaskRunner:
             append_log("ERROR", "heartbeat_failed", str(exc))
             return
 
+        # A persisted pre-restart flow owns its Journal recovery.  Run that
+        # recovery before the global new-work barrier: an image Journal is
+        # itself part of that barrier, so checking the barrier first would make
+        # the recovery entry unreachable.  This path is evidence-only and may
+        # finish the old flow; it never performs a WeChat UI action.
+        self._finish_restart_recovery_flow_if_settled(binding)
+
         # All new WeChat work shares one durable transaction barrier. Do not
         # pull add_friend/chat_reply while message facts or sent_ack are pending.
         if (
@@ -2366,8 +2666,6 @@ class TaskRunner:
             )
         ):
             return
-
-        self._finish_restart_recovery_flow_if_settled(binding)
 
         if (
             self._can_start_new_flow(binding)
@@ -5007,6 +5305,9 @@ class TaskRunner:
     def _recover_pending_image_transaction(
         self,
         binding: Binding,
+        *,
+        conversation_id: str | None = None,
+        allow_ui_resume: bool = True,
     ) -> bool:
         self._discard_not_attempted_image_action_journals()
         pending_conversations = (
@@ -5014,7 +5315,13 @@ class TaskRunner:
         )
         if not pending_conversations:
             return True
-        conversation_id = pending_conversations[0]
+        requested_conversation_id = str(conversation_id or "").strip()
+        if requested_conversation_id:
+            if requested_conversation_id not in pending_conversations:
+                return True
+            conversation_id = requested_conversation_id
+        else:
+            conversation_id = pending_conversations[0]
         recovery_target = WechatReadTarget(
             conversation_id=conversation_id,
             rpa_session_key="",
@@ -5203,6 +5510,15 @@ class TaskRunner:
                     "conversation_id": conversation_id,
                     "recovery_decision": recovery_decision or "missing",
                 },
+            )
+            return False
+        if not allow_ui_resume:
+            append_log(
+                "INFO",
+                "c2_image_fact_restart_waiting_no_ui_settlement",
+                "重启旧流程只允许无界面结算；后端尚未授权该终态，保留旧图片事实稍后重试。",
+                error_code="C2_IMAGE_FACT_RECOVERY_RETRY_LATER",
+                metadata={"conversation_id": conversation_id},
             )
             return False
         target_payload = authorization.get("target")
@@ -11405,6 +11721,13 @@ class TaskRunner:
                 "candidate_group_count": int(
                     prepared.get("candidate_group_count") or 0
                 ),
+                "authorization_revision": str(
+                    target.authorization_revision or ""
+                ),
+                "remark_code": str(target.remark_code or ""),
+                "rpa_session_key": str(target.rpa_session_key or ""),
+                "display_name": str(target.display_name or ""),
+                "read_reason": str(target.read_reason or ""),
             }
             journal = self._start_irreversible_action_journal(
                 action_kind="voice",
