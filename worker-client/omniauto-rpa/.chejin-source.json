@@ -4,7 +4,7 @@
   "upstream_base_commit": "a563e6688c47a8922510794101967823fe1389d7",
   "selective_integrations": [
     {
-      "source_commit": "b12591b54630ed3949a997cfece3f8c6fe164700",
+      "source_commit": "f66a57d51583d8225d32e9bc2cdb881798e3af49",
       "scope": [
         "exact_wechat_context_menu_classification",
         "same_popup_menu_panel_evidence_contract",
@@ -22,7 +22,7 @@
         "source_message_transport_allowlist",
         "typed_committed_media_identity_contract",
         "media_action_four_terminal_contract",
-        "c2_contract_0_9_27_generated_schema",
+        "c2_contract_0_9_28_generated_schema",
         "voice_frame_action_binding_observation_projection_contract",
         "bounded_send_foreground_focus_recovery_contract",
         "brain_soft_evidence_clarification_and_reply_then_handoff_contract",
@@ -43,7 +43,7 @@
         "add_friend_frame_seed_facade_forwarding_contract",
         "verified_send_input_bounds_forwarding_contract",
         "invalid_session_layout_explicit_failure_contract",
-        "v0_9_27_startup_layout_calibration_contract",
+        "v0_9_28_startup_layout_calibration_contract",
         "gray_v0_9_20_region_local_coordinate_map_contract",
         "current_monitor_dpi_window_profile_contract",
         "startup_window_position_and_size_once_contract",
@@ -64,7 +64,8 @@
         "voice_click_verification_shared_bounded_evidence_wait_contract",
         "image_popup_cleanup_until_clipboard_confirmation_contract",
         "media_stage_failure_telemetry_correction_contract",
-        "windows_search_focus_fixture_layout_binding_contract"
+        "windows_search_focus_fixture_layout_binding_contract",
+        "add_friend_plus_vertical_search_anchor_constraint_contract"
       ]
     }
   ],
@@ -82,7 +83,7 @@
     "post_brain_pre_send_fresh_frame_local_reuse_contract",
     "send_s0_s1_s2_distinct_frame_local_reuse_contract",
     "chejin_formal_knowledge_category_contract",
-    "wechat_startup_calibration_coordinate_map_0_9_27",
+    "wechat_startup_calibration_coordinate_map_0_9_28",
     "add_friend_preclick_layout_failure_non_pausing_contract"
   ],
   "historical_integrations": [
@@ -98,5 +99,5 @@
       ]
     }
   ],
-  "integration_note": "0.9.27 OmniAuto 独立候选固定于 b12591b54630ed3949a997cfece3f8c6fe164700，并以 gray-v0.9.20 业务流程为基线：启动时先确认 per-monitor DPI awareness，再只用一张可见客户区截图建立 startup_layout_calibration；C1-C4 业务帧只引用 calibration_id，OmniAuto 独占区域映射和坐标决策。业务入口继续使用可见主 HWND 和原 activate_window 顺序，删除统一激活成功布尔门禁、逐点击前台等值门禁和逐事务几何门禁。C3 输入框点击面和文字 ROI 继续沿用 0.9.25 已复审实现。C2 语音点击后无论菜单关闭校验成功或状态未知，都进入同一套最多 24 帧或 120 秒的被动画面等待，不重复点击；Windows 查询菜单 HWND 异常明确返回 popup_window_state_unknown，唯一转写正文仍必须通过正式 action binding 才能入库，超时后隔离。C2 图片在剪贴板确认证据形成前持续把右键菜单视为打开，所有无进展、异常和重试出口都安全收尾，旧剪贴板不能形成图片事实。Worker 将语音、图片失败按真实 error_code 上报，后端允许同一阶段的迟到失败纠正先前成功投影并拒绝成功状态携带错误码。Windows 兼容测试的搜索框焦点截图显式绑定生产布局快照，不再依赖 Python 对象 ID 偶然复用缓存。C1 保留八类真实变化画面；C1、C3、Journal、Outbox、Handoff 和 sent_ack 语义不变。"
+  "integration_note": "0.9.28 OmniAuto 独立候选固定于 f66a57d51583d8225d32e9bc2cdb881798e3af49，并以 gray-v0.9.20 业务流程为基线：启动时先确认 per-monitor DPI awareness，再只用一张可见客户区截图建立 startup_layout_calibration；C1-C4 业务帧只引用 calibration_id，OmniAuto 独占区域映射和坐标决策。业务入口继续使用可见主 HWND 和原 activate_window 顺序，删除统一激活成功布尔门禁、逐点击前台等值门禁和逐事务几何门禁。C3 输入框点击面和文字 ROI 继续沿用 0.9.25 已复审实现。C2 语音点击后无论菜单关闭校验成功或状态未知，都进入同一套最多 24 帧或 120 秒的被动画面等待，不重复点击；Windows 查询菜单 HWND 异常明确返回 popup_window_state_unknown，唯一转写正文仍必须通过正式 action binding 才能入库，超时后隔离。C2 图片在剪贴板确认证据形成前持续把右键菜单视为打开，所有无进展、异常和重试出口都安全收尾，旧剪贴板不能形成图片事实。Windows 兼容测试的搜索框焦点截图显式绑定生产布局快照，不再依赖 Python 对象 ID 偶然复用缓存。添加朋友“+”点击的纵坐标只允许落在已标定搜索框高度内，缺少搜索锚点时零点击失败关闭。Worker 只修改本地 C2 Outbox 确定性批次身份：同一 read_run_id 的不同正式消息事实形成不同 Outbox，相同事实重试复用原 ID，不发送 outbox_batch_key 到后端。enqueue、授权刷新和运输准备入口都对已落盘消息事实执行不可变摘要碰撞保护。后端 HTTP 字段、Brain、MessageBatch、回复作废、发送前复读、暂停、UI 锁和 C0-C4 状态机不变。C1 保留八类真实变化画面；C1、C3、Journal、Outbox、Handoff 和 sent_ack 语义不变。"
 }

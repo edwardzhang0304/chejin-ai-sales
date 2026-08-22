@@ -506,7 +506,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "b12591b54630ed3949a997cfece3f8c6fe164700"
+                        "f66a57d51583d8225d32e9bc2cdb881798e3af49"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -534,7 +534,7 @@ class PackagingScriptsTest(unittest.TestCase):
                         "source_message_transport_allowlist",
                         "typed_committed_media_identity_contract",
                         "media_action_four_terminal_contract",
-                        "c2_contract_0_9_27_generated_schema",
+                        "c2_contract_0_9_28_generated_schema",
                         (
                             "voice_frame_action_binding_observation_"
                             "projection_contract"
@@ -570,7 +570,7 @@ class PackagingScriptsTest(unittest.TestCase):
                         "add_friend_frame_seed_facade_forwarding_contract",
                         "verified_send_input_bounds_forwarding_contract",
                         "invalid_session_layout_explicit_failure_contract",
-                        "v0_9_27_startup_layout_calibration_contract",
+                        "v0_9_28_startup_layout_calibration_contract",
                         "gray_v0_9_20_region_local_coordinate_map_contract",
                         "current_monitor_dpi_window_profile_contract",
                         "startup_window_position_and_size_once_contract",
@@ -610,6 +610,10 @@ class PackagingScriptsTest(unittest.TestCase):
                         ),
                         "media_stage_failure_telemetry_correction_contract",
                         "windows_search_focus_fixture_layout_binding_contract",
+                        (
+                            "add_friend_plus_vertical_search_anchor_"
+                            "constraint_contract"
+                        ),
                     ],
                 }
             ],
@@ -631,10 +635,10 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["chejin_overlays"],
         )
         self.assertIn(
-            "b12591b54630ed3949a997cfece3f8c6fe164700",
+            "f66a57d51583d8225d32e9bc2cdb881798e3af49",
             provenance["integration_note"],
         )
-        self.assertIn("0.9.27", provenance["integration_note"])
+        self.assertIn("0.9.28", provenance["integration_note"])
         self.assertIn("不重复点击", provenance["integration_note"])
         self.assertIn("旧剪贴板不能形成图片事实", provenance["integration_note"])
         self.assertIn(

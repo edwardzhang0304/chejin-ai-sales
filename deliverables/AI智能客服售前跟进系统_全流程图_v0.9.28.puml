@@ -1,5 +1,5 @@
 @startuml
-' 文档版本：v0.9.24；灰度目标版本：0.9.24（方案、代码、合同及架构复审已收口，Windows UAT 待验证）；最后更新：2026-08-21
+' 文档版本：v0.9.28；灰度目标版本：0.9.28（入库幂等批次代码、合同与定向测试已完成并通过复审，ZIP和Windows UAT待完成）；最后更新：2026-08-22
 title AI智能客服售前跟进系统 全流程图（C0-C4、媒体、回复、转人工与恢复）
 
 skinparam monochrome true
@@ -73,6 +73,7 @@ note over W,Reply
 15. 会话行重排、红点、新消息和聊天滚动不重建全局标定；具体会话行/消息/弹窗/表单仍由0.9.20原流程的当前必要业务帧定位。
 16. 标定只确定导航栏、侧栏、标题、消息视口和输入区；不代替private+短码、角色、媒体回执和S0/S1/S2业务证据。
 17. 不在运行中增加窗口变换恢复流程；已有证据确认HWND/窗口变化时停止新UI动作并提示人工重启客户端。
+18. 同一单会话Flow/read_run可先后产生任意多个逻辑入库批次；每组不同正式消息事实使用独立确定性的Worker本地outbox_batch_key和Outbox，相同事实重试复用原本地ID。该键不进入后端合同，read_run_id不得直接充当本地Outbox唯一键。
 end note
 
 note over W,WX
@@ -490,7 +491,7 @@ loop Worker运行中；每次循环最多完成一个会话事务
           end
 
           group 5. MECE身份仲裁：先分类对象，正式提交后才查询事实
-            W -> W: 确认本Flow的read_run_id已被\ninitial/final read、Journal和后续Outbox共用
+            W -> W: 确认本Flow的read_run_id关联\ninitial/final read、Journal和全部Outbox\n每个不同入库载荷另有本地outbox_batch_key
             W -> W: 用checkpoint尾部/动作前全序列与final_read\n执行统一单调一对一对齐
             note right of W
             强锚点优先；剩余匹配必须保持时间顺序、一对一且候选唯一。
@@ -709,8 +710,10 @@ loop Worker运行中；每次循环最多完成一个会话事务
             else 没有新消息但recall_precheck=true
               W -> W: recall_precheck确认客户仍未回复\n不伪造customer消息，进入C3召回门禁
             else 存在新消息
-              W -> Ingest: POST messages/ingest一次\ncontract_version=3 + read_run_id\n按screen_order发送增量消息
-              Ingest -> Ingest: 校验Worker/绑定/短码/private/revision\n校验row_kind/sender_role_source/item_state
+              W -> W: 按完整正式source_message_key集合\n确定性生成本地outbox_batch_key
+              W -> L: 先可靠保存不可变Outbox\nc2-outbox:{read_run_id}:batch-{outbox_batch_key}
+              W -> Ingest: 按原合同POST messages/ingest一次\ncontract_version=3 + read_run_id\n按screen_order发送增量消息
+              Ingest -> Ingest: 校验Worker/绑定/短码/private/revision\n校验row_kind/sender_role_source/item_state\n不接收或重算本地outbox_batch_key
               Ingest -> DB: unique(conversation_id,dedupe_key)
               DB --> Ingest: 每条ingested / duplicated / ignored\nfailed语音/图片事实也返回ingested
               note over W,Ingest
@@ -720,18 +723,19 @@ loop Worker运行中；每次循环最多完成一个会话事务
 
               alt recovery_action=retry
                 Ingest --> W: 暂时性technical_error
-                W -> L: 保存完整JSON到Outbox\n不保存原图
+                W -> L: 保留原Outbox完整事实和本地outbox_batch_key\n不保存原图、不生成新键
                 W -> W: technical_failed\n不调用Brain、不发送回复
               else recovery_action=refresh_and_rebuild
                 Ingest --> W: 授权/续行票失效
-                W -> L: 保存原事实并只重建授权外壳\n不重复RPA/Vision
+                W -> L: 保留原事实和本地outbox_batch_key\n只重建授权外壳，不重复RPA/Vision
                 W -> W: technical_failed\n不调用Brain、不发送回复
               else recovery_action=capability_paused或未知
                 Ingest --> W: 请求级合同/身份整体不兼容
                 W -> L: 冻结原Outbox和ledger\n按退避周期自动探测恢复
                 W -> W: capability_paused\n不调用Brain、不发送回复、不执行新UI动作
               else ingest完成
-                Ingest --> W: ingest results + batch_id（如有新增customer）
+                Ingest --> W: ingest results\n+ batch_id（如有新增customer）
+                W -> W: 按当前本地Outbox结算响应\n不依赖后端回显本地ID
                 W -> L: 只把已确认ingested/duplicated的键\n写入持久化已处理清单
                 opt recall_precheck=true且发现新customer
                   W -> C3: 取消recall_cycle_id\n本轮改为普通客户消息批次
@@ -859,12 +863,19 @@ loop Worker运行中；每次循环最多完成一个会话事务
                   W -> W: 暂停接单\n禁止释放锁后由扫描抢跑
                 end
               else 等待期间出现新customer文字/语音/图片
-                W -> Reply: supersede旧reply_action\n禁止发送旧回复
-                Reply -> C3: batch/action标记superseded
-                W -> W: 保持同一UI锁和当前会话\n回到语音处理 -> final_read -> Vision -> ingest -> Brain
+                W -> W: 保持同一UI锁、Flow和read_run\n完成新增媒体动作、final_read和身份提交
+                W -> W: 按新增后的正式source_message_key集合\n生成不同于首次读取的本地outbox_batch_key
+                W -> L: 先可靠保存新的独立Outbox\n不得覆盖已确认旧Outbox
+                W -> Ingest: 按原合同POST messages/ingest\nread_run_id保持不变
+                Ingest -> DB: 同一事务写入新消息、supersede旧reply_action\n创建或复用新message_batch后提交
+                Ingest --> W: 返回新message_batch及逐消息结果
+                W -> W: 校验新事实与新批次均已确认\n禁止发送旧回复
+                W -> W: 只按最新完整尾部重新调用Brain一次\n随后再次执行pre_send_refresh
               else 检测到新的self消息/销售手机端已回复
                 W -> Reply: cancel旧reply_action
-                W -> Ingest: 增量上报self事实
+                W -> W: 按新self正式source_message_key集合\n确定性生成新的本地outbox_batch_key
+                W -> L: 先可靠保存独立Outbox
+                W -> Ingest: 按原合同增量上报self事实\n本地outbox_batch_key不出Worker
                 Ingest -> DB: 记录销售人工回复\nstatus=sales_replied_waiting_user
                 W -> W: 当前AI回复终止；等待客户\n到期仍可进入recall_precheck
               else 没有新增消息且reply_action仍current
