@@ -184,7 +184,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("delivery ZIP does not contain the packaged runtime directory", workflow)
         self.assertIn("app_name = [string]$manifest.app_name", workflow)
         self.assertIn("delivery ZIP executable SHA256 mismatch", workflow)
-        self.assertIn("chejin-worker-v0.9.25-windows-x64.delivery.json", workflow)
+        self.assertIn("chejin-worker-v0.9.26-windows-x64.delivery.json", workflow)
         self.assertIn("CHEJIN_VISION_CLIENT_API_KEY", workflow)
         self.assertIn("vision_credential_embedded", workflow)
         self.assertIn("vision_configuration_locked", workflow)
@@ -506,7 +506,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "15db96575a23f57beb9bab54be6a21e5de0ac748"
+                        "780f3c00ee53a3c3fce26be21053fa3515a08b81"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -534,7 +534,7 @@ class PackagingScriptsTest(unittest.TestCase):
                         "source_message_transport_allowlist",
                         "typed_committed_media_identity_contract",
                         "media_action_four_terminal_contract",
-                        "c2_contract_0_9_25_generated_schema",
+                        "c2_contract_0_9_26_generated_schema",
                         (
                             "voice_frame_action_binding_observation_"
                             "projection_contract"
@@ -570,7 +570,7 @@ class PackagingScriptsTest(unittest.TestCase):
                         "add_friend_frame_seed_facade_forwarding_contract",
                         "verified_send_input_bounds_forwarding_contract",
                         "invalid_session_layout_explicit_failure_contract",
-                        "v0_9_25_startup_layout_calibration_contract",
+                        "v0_9_26_startup_layout_calibration_contract",
                         "gray_v0_9_20_region_local_coordinate_map_contract",
                         "current_monitor_dpi_window_profile_contract",
                         "startup_window_position_and_size_once_contract",
@@ -599,6 +599,16 @@ class PackagingScriptsTest(unittest.TestCase):
                             "send_input_click_surface_and_text_detection_"
                             "roi_separation_contract"
                         ),
+                        "voice_popup_hwnd_unknown_state_contract",
+                        (
+                            "voice_click_verification_shared_bounded_"
+                            "evidence_wait_contract"
+                        ),
+                        (
+                            "image_popup_cleanup_until_clipboard_"
+                            "confirmation_contract"
+                        ),
+                        "media_stage_failure_telemetry_correction_contract",
                     ],
                 }
             ],
@@ -620,12 +630,12 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["chejin_overlays"],
         )
         self.assertIn(
-            "15db96575a23f57beb9bab54be6a21e5de0ac748",
+            "780f3c00ee53a3c3fce26be21053fa3515a08b81",
             provenance["integration_note"],
         )
-        self.assertIn("0.9.25", provenance["integration_note"])
-        self.assertIn("完整 input_bounds", provenance["integration_note"])
-        self.assertIn("排除底部工具栏", provenance["integration_note"])
+        self.assertIn("0.9.26", provenance["integration_note"])
+        self.assertIn("不重复点击", provenance["integration_note"])
+        self.assertIn("旧剪贴板不能形成图片事实", provenance["integration_note"])
         self.assertIn(
             "immutable_visible_scan_frame_reuse_contract",
             provenance["chejin_overlays"],
@@ -964,7 +974,7 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn('$packageDir = [string]$manifest.package_dir', workflow)
         self.assertIn('$exePath = [string]$manifest.exe_path', workflow)
         self.assertNotIn('dist\\车金Worker客户端', workflow)
-        self.assertIn('version -ne "0.9.25"', workflow)
+        self.assertIn('version -ne "0.9.26"', workflow)
         self.assertIn('tests_status -ne "passed"', workflow)
         self.assertIn('@("--omniauto-sidecar", "--help")', workflow)
         self.assertIn('@("--omniauto-ocr-probe")', workflow)
