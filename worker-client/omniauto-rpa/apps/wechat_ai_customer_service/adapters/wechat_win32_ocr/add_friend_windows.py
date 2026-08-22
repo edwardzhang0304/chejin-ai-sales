@@ -460,16 +460,31 @@ def add_friend_plus_entry_target(
         )
     except win32_ocr_window_layout.LayoutSnapshotError:
         mapped_reference = {}
-    if mapped_reference:
+    if mapped_reference and search_anchor_bounds:
         mapped_point = list(mapped_reference["image_point"])
+        mapped_bounds = list(mapped_reference["region_bounds"])
+        search_top = int(search_anchor_bounds[1])
+        search_bottom = int(search_anchor_bounds[3])
+        mapped_point[1] = int((search_top + search_bottom) / 2)
+        mapped_bounds[1] = max(int(mapped_bounds[1]), search_top)
+        mapped_bounds[3] = min(int(mapped_bounds[3]), search_bottom)
         target["point"] = mapped_point
         target["x"] = int(mapped_point[0])
         target["y"] = int(mapped_point[1])
-        target["bounds"] = list(mapped_reference["region_bounds"])
-        target["click_bounds"] = list(mapped_reference["region_bounds"])
+        target["bounds"] = mapped_bounds
+        target["click_bounds"] = mapped_bounds
         target["strategy"] = "gray_v0_9_20_region_reference_map"
         target["source"] = "startup_calibration_region_map"
         target["executable"] = True
+    elif mapped_reference:
+        target["point"] = [0, 0]
+        target["x"] = 0
+        target["y"] = 0
+        target["bounds"] = list(mapped_reference["region_bounds"])
+        target["click_bounds"] = list(mapped_reference["region_bounds"])
+        target["selected_reason"] = "sidebar_search_anchor_missing"
+        target["source"] = "startup_calibration_search_anchor_missing"
+        target["executable"] = False
     layout_bounds = {
         name: list(layout_snapshot.get(name) or [])
         for name in (
@@ -506,6 +521,11 @@ def add_friend_plus_entry_target(
             "layout_conflicts": list((layout_snapshot or {}).get("conflicts") or []),
             "final_click_point": list(target.get("point") or []) if bool(target.get("executable")) else [],
             "reference_mapping": mapped_reference,
+            "plus_vertical_constraint_bounds": (
+                list(search_anchor_bounds)
+                if search_anchor_bounds
+                else None
+            ),
             "startup_calibration": {
                 "calibration_id": str((layout_snapshot or {}).get("calibration_id") or ""),
                 "regions": {

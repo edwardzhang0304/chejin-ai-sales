@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import sys
@@ -1106,7 +1107,154 @@ def clear_c2_action_journal(flow_id: str) -> None:
         conn.commit()
 
 
-def _c2_outbox_id(payload: dict[str, Any]) -> str:
+_OUTBOX_BATCH_NAMESPACE = "chejin:c2-local-outbox:v1"
+_OUTBOX_IMMUTABLE_MESSAGE_FIELDS = (
+    "source_message_key",
+    "dedupe_key",
+    "sender_role_hint",
+    "message_type",
+    "content",
+    "item_state",
+    "flow_state",
+)
+_OUTBOX_STABLE_VOICE_META_FIELDS = (
+    "state",
+    "action_phase",
+    "ui_action_performed",
+    "business_state",
+    "business_result_confirmed",
+    "canonical_voice_action_id",
+    "voice_action_stage",
+    "selected_pre_observation_id",
+    "selected_action_token",
+    "selected_target_fingerprint",
+    "reserved_worker_stable_id",
+    "transcript_binding_status",
+    "transcript_binding_method",
+    "binding_candidate_count",
+    "native_source_message_id",
+    "confirmed_action_mapping",
+)
+_OUTBOX_STABLE_IMAGE_UNDERSTANDING_FIELDS = (
+    "schema_version",
+    "enabled",
+    "applied",
+    "adoptable",
+    "reason",
+    "vision_summary",
+    "image_ocr_text",
+    "classification",
+    "entities",
+    "intent_hints",
+    "bridge",
+    "catalog_alignment",
+)
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _sorted_unique_strings(values: Any) -> list[str]:
+    return sorted(
+        {
+            str(value or "").strip()
+            for value in (values if isinstance(values, list) else [])
+            if str(value or "").strip()
+        }
+    )
+
+
+def _c2_outbox_message_keys(payload: dict[str, Any]) -> list[str]:
+    evidence = (
+        payload.get("evidence")
+        if isinstance(payload.get("evidence"), dict)
+        else {}
+    )
+    partition = (
+        evidence.get("ingest_partition")
+        if isinstance(evidence.get("ingest_partition"), dict)
+        else {}
+    )
+    expected_keys = partition.get("expected_source_message_keys")
+    if isinstance(expected_keys, list):
+        return _sorted_unique_strings(expected_keys)
+    return _sorted_unique_strings(
+        [
+            item.get("source_message_key")
+            for item in (payload.get("messages") or [])
+            if isinstance(item, dict)
+        ]
+    )
+
+
+def c2_outbox_batch_key(payload: dict[str, Any]) -> str:
+    """Return the deterministic local identity for one immutable fact set."""
+
+    evidence = (
+        payload.get("evidence")
+        if isinstance(payload.get("evidence"), dict)
+        else {}
+    )
+    message_keys = _c2_outbox_message_keys(payload)
+    flow_gate_errors = _sorted_unique_strings(
+        evidence.get("flow_gate_errors")
+    )
+    authorization_scope = str(
+        payload.get("authorization_scope") or ""
+    ).strip()
+    if message_keys:
+        payload_kind = "messages"
+    elif authorization_scope == "fact_settlement":
+        payload_kind = "fact_settlement"
+    elif flow_gate_errors:
+        payload_kind = "flow_gate"
+    else:
+        payload_kind = "control_read"
+
+    def evidence_or_payload(key: str) -> str:
+        return str(evidence.get(key) or payload.get(key) or "").strip()
+
+    flow_gate_identity_key = evidence_or_payload(
+        "flow_gate_identity_key"
+    ) or "\n".join(flow_gate_errors)
+    control_key = ""
+    if payload_kind == "control_read":
+        control_key = ":".join(
+            (
+                evidence_or_payload("authorization_read_reason"),
+                evidence_or_payload("continuation_batch_id"),
+                evidence_or_payload("recall_cycle_id"),
+            )
+        )
+    seed = {
+        "namespace": _OUTBOX_BATCH_NAMESPACE,
+        "conversation_id": str(
+            payload.get("conversation_id") or ""
+        ).strip(),
+        "read_run_id": str(payload.get("read_run_id") or "").strip(),
+        "payload_kind": payload_kind,
+        "source_message_keys": message_keys,
+        "flow_gate_identity_key": flow_gate_identity_key,
+        "recovery_transaction_id": evidence_or_payload(
+            "recovery_transaction_id"
+        ),
+        "source_message_key_digest": evidence_or_payload(
+            "source_message_key_digest"
+        ),
+        "control_key": control_key,
+    }
+    return hashlib.sha256(
+        _canonical_json(seed).encode("utf-8")
+    ).hexdigest()
+
+
+def c2_outbox_id(payload: dict[str, Any]) -> str:
     read_run_id = str(payload.get("read_run_id") or "").strip()
     evidence = (
         payload.get("evidence")
@@ -1119,11 +1267,90 @@ def _c2_outbox_id(payload: dict[str, Any]) -> str:
         else {}
     )
     partition_index = int(partition.get("index") or 0)
-    return (
-        f"c2-outbox:{read_run_id}:part-{partition_index}"
-        if partition_index > 0
-        else f"c2-outbox:{read_run_id}"
+    base = (
+        f"c2-outbox:{read_run_id}:batch-{c2_outbox_batch_key(payload)}"
     )
+    return f"{base}:part-{partition_index}" if partition_index > 0 else base
+
+
+def _stable_media_fact(message: dict[str, Any]) -> dict[str, Any]:
+    raw_payload = (
+        message.get("raw_payload")
+        if isinstance(message.get("raw_payload"), dict)
+        else {}
+    )
+    voice_meta = (
+        raw_payload.get("voice_transcription_meta")
+        if isinstance(raw_payload.get("voice_transcription_meta"), dict)
+        else {}
+    )
+    image_understanding = (
+        raw_payload.get("customer_image_understanding")
+        if isinstance(
+            raw_payload.get("customer_image_understanding"), dict
+        )
+        else {}
+    )
+    stable: dict[str, Any] = {}
+    if voice_meta:
+        stable["voice_transcription_meta"] = {
+            key: voice_meta.get(key)
+            for key in _OUTBOX_STABLE_VOICE_META_FIELDS
+            if key in voice_meta
+        }
+    if image_understanding:
+        stable["customer_image_understanding"] = {
+            key: image_understanding.get(key)
+            for key in _OUTBOX_STABLE_IMAGE_UNDERSTANDING_FIELDS
+            if key in image_understanding
+        }
+    if "visual_bridge_input" in raw_payload:
+        stable["visual_bridge_input"] = raw_payload.get(
+            "visual_bridge_input"
+        )
+    for key in ("error_code", "reason_detail"):
+        if key in raw_payload:
+            stable[key] = raw_payload.get(key)
+    return stable
+
+
+def _c2_outbox_immutable_fact_digest(payload: dict[str, Any]) -> str:
+    messages = []
+    for item in (payload.get("messages") or []):
+        if not isinstance(item, dict):
+            continue
+        messages.append(
+            {
+                **{
+                    key: item.get(key)
+                    for key in _OUTBOX_IMMUTABLE_MESSAGE_FIELDS
+                },
+                "stable_media_result": _stable_media_fact(item),
+            }
+        )
+    messages.sort(
+        key=lambda item: (
+            str(item.get("source_message_key") or ""),
+            _canonical_json(item),
+        )
+    )
+    return hashlib.sha256(
+        _canonical_json(messages).encode("utf-8")
+    ).hexdigest()
+
+
+def _assert_existing_outbox_fact_matches(
+    existing_payload_json: str,
+    payload: dict[str, Any],
+) -> None:
+    try:
+        existing_payload = json.loads(existing_payload_json or "{}")
+    except json.JSONDecodeError as exc:
+        raise ValueError("C2_OUTBOX_LOGICAL_FACT_COLLISION") from exc
+    if _c2_outbox_immutable_fact_digest(
+        existing_payload
+    ) != _c2_outbox_immutable_fact_digest(payload):
+        raise ValueError("C2_OUTBOX_LOGICAL_FACT_COLLISION")
 
 
 def enqueue_c2_outbox(payload: dict[str, Any]) -> str:
@@ -1133,33 +1360,17 @@ def enqueue_c2_outbox(payload: dict[str, Any]) -> str:
     authorization_revision = str(payload.get("authorization_revision") or "").strip()
     if not read_run_id or not conversation_id or not authorization_revision:
         raise ValueError("C2_OUTBOX_IDENTITY_MISSING")
-    outbox_id = _c2_outbox_id(payload)
+    outbox_id = c2_outbox_id(payload)
     now = utc_now_iso()
     encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    immutable_statuses = sorted(
-        _c2_outbox_terminal_states() | {"capability_paused"}
-    )
-    immutable_placeholders = ",".join(
-        "?" for _ in immutable_statuses
-    )
     with db_connection() as conn:
-        conn.execute(
-            f"""
+        cursor = conn.execute(
+            """
             INSERT INTO c2_ingest_outbox (
               outbox_id, conversation_id, authorization_revision, read_run_id,
               payload_json, status, attempt_count, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, 'waiting', 0, ?, ?)
-            ON CONFLICT(outbox_id) DO UPDATE SET
-              payload_json = CASE
-                WHEN c2_ingest_outbox.status IN ({immutable_placeholders})
-                THEN c2_ingest_outbox.payload_json
-                ELSE excluded.payload_json
-              END,
-              updated_at = CASE
-                WHEN c2_ingest_outbox.status IN ({immutable_placeholders})
-                THEN c2_ingest_outbox.updated_at
-                ELSE excluded.updated_at
-              END
+            ON CONFLICT(outbox_id) DO NOTHING
             """,
             (
                 outbox_id,
@@ -1169,10 +1380,19 @@ def enqueue_c2_outbox(payload: dict[str, Any]) -> str:
                 encoded,
                 now,
                 now,
-                *immutable_statuses,
-                *immutable_statuses,
             ),
         )
+        if cursor.rowcount == 0:
+            existing = conn.execute(
+                "SELECT payload_json FROM c2_ingest_outbox WHERE outbox_id = ?",
+                (outbox_id,),
+            ).fetchone()
+            if not existing:
+                raise ValueError("C2_OUTBOX_LOGICAL_FACT_COLLISION")
+            _assert_existing_outbox_fact_matches(
+                str(existing["payload_json"] or "{}"),
+                payload,
+            )
         conn.commit()
     return outbox_id
 
@@ -1460,6 +1680,8 @@ def refresh_c2_outbox_payload(
     next_status: str,
 ) -> None:
     _assert_outbox_text_only(payload)
+    if c2_outbox_id(payload) != str(outbox_id):
+        raise ValueError("C2_OUTBOX_IDENTITY_MISMATCH")
     encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     authorization_revision = str(
         payload.get("authorization_revision") or ""
@@ -1469,6 +1691,21 @@ def refresh_c2_outbox_payload(
     if str(next_status) not in _c2_outbox_states():
         raise ValueError("C2_OUTBOX_TARGET_STATE_INVALID")
     with db_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            """
+            SELECT payload_json
+            FROM c2_ingest_outbox
+            WHERE outbox_id = ? AND status = 'refresh_pending'
+            """,
+            (str(outbox_id),),
+        ).fetchone()
+        if not existing:
+            raise ValueError("C2_OUTBOX_NOT_WAITING")
+        _assert_existing_outbox_fact_matches(
+            str(existing["payload_json"] or "{}"),
+            payload,
+        )
         cursor = conn.execute(
             """
             UPDATE c2_ingest_outbox
@@ -1497,8 +1734,29 @@ def prepare_c2_outbox_payload(
     """Persist a successfully prepared transport payload over its raw checkpoint."""
 
     _assert_outbox_text_only(payload)
+    if c2_outbox_id(payload) != str(outbox_id):
+        raise ValueError("C2_OUTBOX_IDENTITY_MISMATCH")
     encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     with db_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            """
+            SELECT payload_json
+            FROM c2_ingest_outbox
+            WHERE outbox_id = ?
+              AND status IN (
+                'waiting', 'retry_waiting', 'refresh_pending',
+                'rebuild_pending', 'split_pending', 'capability_paused'
+              )
+            """,
+            (str(outbox_id),),
+        ).fetchone()
+        if not existing:
+            raise ValueError("C2_OUTBOX_NOT_PREPARABLE")
+        _assert_existing_outbox_fact_matches(
+            str(existing["payload_json"] or "{}"),
+            payload,
+        )
         cursor = conn.execute(
             """
             UPDATE c2_ingest_outbox
@@ -1527,7 +1785,7 @@ def replace_c2_outbox_with_partitions(
     rows: list[tuple[str, str, str, str, str]] = []
     for payload in payloads:
         _assert_outbox_text_only(payload)
-        child_id = _c2_outbox_id(payload)
+        child_id = c2_outbox_id(payload)
         conversation_id = str(payload.get("conversation_id") or "").strip()
         authorization_revision = str(
             payload.get("authorization_revision") or ""
@@ -1560,8 +1818,8 @@ def replace_c2_outbox_with_partitions(
         ).fetchone()
         if not parent or str(parent["status"]) != "split_pending":
             raise ValueError("C2_OUTBOX_NOT_SPLIT_PENDING")
-        for row in rows:
-            conn.execute(
+        for row, payload in zip(rows, payloads, strict=True):
+            cursor = conn.execute(
                 """
                 INSERT INTO c2_ingest_outbox (
                   outbox_id, conversation_id, authorization_revision,
@@ -1572,6 +1830,17 @@ def replace_c2_outbox_with_partitions(
                 """,
                 (*row, now, now),
             )
+            if cursor.rowcount == 0:
+                existing = conn.execute(
+                    "SELECT payload_json FROM c2_ingest_outbox WHERE outbox_id = ?",
+                    (row[0],),
+                ).fetchone()
+                if not existing:
+                    raise ValueError("C2_OUTBOX_LOGICAL_FACT_COLLISION")
+                _assert_existing_outbox_fact_matches(
+                    str(existing["payload_json"] or "{}"),
+                    payload,
+                )
         conn.execute(
             """
             UPDATE c2_ingest_outbox

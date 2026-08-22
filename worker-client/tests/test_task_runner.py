@@ -48,6 +48,7 @@ from chejin_worker_client.sequence_alignment import (
 from chejin_worker_client.storage import (
     begin_runtime_flow,
     checkpoint_c2_action_outcomes,
+    c2_outbox_id,
     db_connection,
     enqueue_c2_outbox,
     finish_runtime_flow,
@@ -9531,7 +9532,7 @@ class TaskRunnerTest(unittest.TestCase):
 
         def assert_raw_checkpoint_exists(candidate):
             stored = load_c2_outbox_entry(
-                f"c2-outbox:{read_run_id}"
+                c2_outbox_id(payload)
             )
             self.assertIsNotNone(stored)
             self.assertEqual(
@@ -9607,7 +9608,7 @@ class TaskRunnerTest(unittest.TestCase):
         )
 
         self.assertFalse(delivery["ok"])
-        stored = load_c2_outbox_entry(f"c2-outbox:{read_run_id}")
+        stored = load_c2_outbox_entry(c2_outbox_id(payload))
         self.assertEqual(stored["status"], "capability_paused")
         self.assertEqual(
             stored["payload"]["messages"][0]["content"],
@@ -9662,10 +9663,219 @@ class TaskRunnerTest(unittest.TestCase):
             )
 
         self.assertFalse(delivery["ok"])
-        stored = load_c2_outbox_entry(f"c2-outbox:{read_run_id}")
+        stored = load_c2_outbox_entry(c2_outbox_id(payload))
         self.assertEqual(stored["status"], "capability_paused")
         self.assertEqual(stored["payload"]["messages"], messages)
         self.assertEqual(api.message_payloads, [])
+
+    def test_same_read_run_submits_each_new_fact_set_through_a_new_outbox(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(
+                    ok=True,
+                    result_code="invite_sent",
+                    message="unused",
+                )
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        base = {
+            "read_run_id": "read-multi-outbox-production",
+            "conversation_id": "conv-multi-outbox-production",
+            "authorization_revision": "revision-multi-outbox-production",
+            "evidence": {"observations": []},
+        }
+        message_a = {
+            "source_message_key": "source-a",
+            "dedupe_key": "dedupe-a",
+            "sender_role_hint": "customer",
+            "message_type": "text",
+            "content": "A",
+            "item_state": "completed",
+            "flow_state": "completed",
+        }
+        message_b = {
+            "source_message_key": "source-b",
+            "dedupe_key": "dedupe-b",
+            "sender_role_hint": "customer",
+            "message_type": "voice",
+            "content": "B",
+            "item_state": "completed",
+            "flow_state": "completed",
+            "raw_payload": {
+                "voice_transcription_meta": {
+                    "state": "voice_transcribe_completed",
+                    "canonical_voice_action_id": "voice-action-b",
+                    "artifact_dir": "C:/diagnostic-only",
+                }
+            },
+        }
+        first_payload = {**base, "messages": [message_a]}
+        second_payload = {**base, "messages": [message_a, message_b]}
+
+        first = runner._submit_c2_outbox_payload(
+            binding=binding,
+            payload=first_payload,
+            operation="message_ingest",
+        )
+        second = runner._submit_c2_outbox_payload(
+            binding=binding,
+            payload=second_payload,
+            operation="message_ingest",
+        )
+
+        self.assertTrue(first["ok"], first)
+        self.assertTrue(second["ok"], second)
+        self.assertNotEqual(first["outbox_id"], second["outbox_id"])
+        self.assertEqual(len(api.message_payloads), 2)
+        self.assertEqual(
+            [len(payload["messages"]) for payload in api.message_payloads],
+            [1, 2],
+        )
+        with db_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT outbox_id, status
+                FROM c2_ingest_outbox
+                WHERE read_run_id = ?
+                ORDER BY created_at
+                """,
+                (base["read_run_id"],),
+            ).fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({row["status"] for row in rows}, {"confirmed"})
+
+    def test_outbox_fact_collision_blocks_backend_delivery(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(
+                    ok=True,
+                    result_code="invite_sent",
+                    message="unused",
+                )
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        message = {
+            "source_message_key": "source-collision",
+            "dedupe_key": "dedupe-collision",
+            "sender_role_hint": "customer",
+            "message_type": "text",
+            "content": "original",
+            "item_state": "completed",
+            "flow_state": "completed",
+        }
+        payload = {
+            "read_run_id": "read-collision-production",
+            "conversation_id": "conv-collision-production",
+            "authorization_revision": "revision-collision-production",
+            "messages": [message],
+            "evidence": {"observations": []},
+        }
+        first = runner._submit_c2_outbox_payload(
+            binding=binding,
+            payload=payload,
+            operation="message_ingest",
+        )
+        collision = runner._submit_c2_outbox_payload(
+            binding=binding,
+            payload={
+                **payload,
+                "messages": [{**message, "content": "changed"}],
+            },
+            operation="message_ingest",
+        )
+
+        self.assertTrue(first["ok"], first)
+        self.assertFalse(collision["ok"], collision)
+        self.assertEqual(
+            collision["error_code"],
+            "C2_OUTBOX_LOGICAL_FACT_COLLISION",
+        )
+        self.assertEqual(len(api.message_payloads), 1)
+        stored = load_c2_outbox_entry(first["outbox_id"])
+        self.assertEqual(
+            stored["payload"]["messages"][0]["content"],
+            "original",
+        )
+
+    def test_confirmed_outbox_retry_reuses_id_without_second_backend_call(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(
+                    ok=True,
+                    result_code="invite_sent",
+                    message="unused",
+                )
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-1",
+            worker_token="token",
+            client_instance_id="client-1",
+            run_status="running",
+        )
+        message = {
+            "source_message_key": "source-retry-confirmed",
+            "dedupe_key": "dedupe-retry-confirmed",
+            "sender_role_hint": "customer",
+            "message_type": "text",
+            "content": "same fact",
+            "item_state": "completed",
+            "flow_state": "completed",
+        }
+        payload = {
+            "read_run_id": "read-retry-confirmed",
+            "conversation_id": "conv-retry-confirmed",
+            "authorization_revision": "revision-original",
+            "messages": [message],
+            "evidence": {
+                "observations": [],
+                "timing": {"elapsed": 1.0},
+            },
+        }
+        first = runner._submit_c2_outbox_payload(
+            binding=binding,
+            payload=payload,
+            operation="message_ingest",
+        )
+        retried = runner._submit_c2_outbox_payload(
+            binding=binding,
+            payload={
+                **payload,
+                "authorization_revision": "revision-retried",
+                "evidence": {
+                    **payload["evidence"],
+                    "timing": {"elapsed": 99.0},
+                },
+            },
+            operation="message_ingest",
+        )
+
+        self.assertTrue(first["ok"], first)
+        self.assertTrue(retried["ok"], retried)
+        self.assertEqual(first["outbox_id"], retried["outbox_id"])
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(
+            load_c2_outbox_entry(first["outbox_id"])["status"],
+            "confirmed",
+        )
 
     def test_c2_voice_click_failed_still_closes_current_screen_in_one_ingest(self):
         api = FakeApi(None)
@@ -13776,29 +13986,55 @@ class TaskRunnerTest(unittest.TestCase):
             ingest_state="waiting",
             result={"state": "completed"},
         )
-        outbox_id = enqueue_c2_outbox(
-            {
-                "read_run_id": f"read-rollback-{time.time_ns()}",
-                "conversation_id": conversation_id,
-                "authorization_revision": "revision-1",
-                "messages": [],
-            }
+        old_ledger_before = load_c2_ledger_entry(
+            conversation_id,
+            old_source_key,
         )
+        read_run_id = f"read-rollback-{time.time_ns()}"
+        original_payload = {
+            "read_run_id": read_run_id,
+            "conversation_id": conversation_id,
+            "authorization_revision": "revision-1",
+            "messages": [
+                {
+                    "source_message_key": old_source_key,
+                    "dedupe_key": "dedupe-old",
+                    "sender_role_hint": "customer",
+                    "message_type": "text",
+                    "content": "original fact",
+                    "item_state": "completed",
+                    "flow_state": "completed",
+                    "raw_payload": {},
+                }
+            ],
+        }
+        outbox_id = enqueue_c2_outbox(
+            original_payload
+        )
+        outbox_before = load_c2_outbox_entry(outbox_id)
 
-        with self.assertRaisesRegex(ValueError, "C2_OUTBOX_NOT_WAITING"):
+        with self.assertRaisesRegex(
+            ValueError,
+            "C2_OUTBOX_IDENTITY_MISMATCH",
+        ):
             refresh_c2_outbox_payload(
                 outbox_id,
                 {
                     "read_run_id": "read-rollback-refreshed",
                     "conversation_id": conversation_id,
                     "authorization_revision": "revision-2",
-                    "messages": [],
+                    "messages": original_payload["messages"],
                 },
                 next_status="waiting",
             )
 
-        self.assertIsNotNone(
-            load_c2_ledger_entry(conversation_id, old_source_key)
+        self.assertEqual(
+            load_c2_outbox_entry(outbox_id),
+            outbox_before,
+        )
+        self.assertEqual(
+            load_c2_ledger_entry(conversation_id, old_source_key),
+            old_ledger_before,
         )
         self.assertIsNone(
             load_c2_ledger_entry(conversation_id, new_source_key)
@@ -16020,6 +16256,24 @@ class TaskRunnerTest(unittest.TestCase):
                 "sender_role": "customer",
             },
         }
+        text_arriving_during_image = {
+            "schema_version": 3,
+            "observation_id": f"text-during-image-{unique}",
+            "row_kind": "text_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "text",
+            "voice_state": "not_voice",
+            "item_state": "completed",
+            "content_clean": "图片处理期间新增的文字",
+            "bubble_rect": [420, 340, 680, 390],
+            "source_message": {
+                "id": f"text-message-during-image-{unique}",
+                "type": "text",
+                "sender_role": "customer",
+                "content": "图片处理期间新增的文字",
+            },
+        }
         bridge = FakeBridge(
             RpaResult(ok=True, result_code="unused", message="unused")
         )
@@ -16030,7 +16284,10 @@ class TaskRunnerTest(unittest.TestCase):
             },
             {
                 "authoritative_frame_source": "final_read",
-                "observations": [observation],
+                "observations": [
+                    observation,
+                    text_arriving_during_image,
+                ],
             },
         ]
         runner, _ = self.make_runner(api, bridge)
@@ -16173,7 +16430,12 @@ class TaskRunnerTest(unittest.TestCase):
             ],
             "final_read",
         )
-        image_message = api.message_payloads[0]["messages"][0]
+        final_messages = api.message_payloads[0]["messages"]
+        self.assertEqual(
+            [message["message_type"] for message in final_messages],
+            ["image", "text"],
+        )
+        image_message = final_messages[0]
         self.assertNotEqual(
             image_message["source_message_key"],
             journal_source_keys[0],
@@ -16184,12 +16446,22 @@ class TaskRunnerTest(unittest.TestCase):
             image_message["content"],
             "客户发来一张车辆外观图。",
         )
+        self.assertEqual(
+            final_messages[1]["content"],
+            "图片处理期间新增的文字",
+        )
         ledger = load_c2_ledger_entry(
             target.conversation_id,
             image_message["source_message_key"],
         )
         self.assertEqual(ledger["terminal_state"], "completed")
         self.assertEqual(ledger["ingest_state"], "confirmed")
+        text_ledger = load_c2_ledger_entry(
+            target.conversation_id,
+            final_messages[1]["source_message_key"],
+        )
+        self.assertEqual(text_ledger["terminal_state"], "completed")
+        self.assertEqual(text_ledger["ingest_state"], "confirmed")
         self.assertEqual(
             list_c2_action_journal(target.conversation_id),
             [],
