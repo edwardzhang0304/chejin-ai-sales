@@ -1,14 +1,14 @@
 # AI智能客服售前跟进系统 技术方案
 
-版本：v0.9.24
+版本：v0.9.28
 
 日期：2026-07-21
 
-最后更新：2026-08-21
+最后更新：2026-08-22
 
 适用范围：运营后台、车金后端、Windows Worker、OmniAuto Sidecar、C0—C4、车辆 Product Master、人工接管与飞书通知。
 
-当前唯一架构口径：服务端负责授权、状态机、事实持久化、Brain/Guard、任务和通知；OmniAuto 负责微信 UI 观察、物理目标判定和动作证据；Worker 只负责调度、合同校验、事务持久化与执行。C2 使用固定八位短码和 private 单聊门禁；文字、语音、图片按同一最终画面顺序入库，一条物理媒体只形成一个业务对象，所有已触发媒体动作必须有限终态。C2 消息身份只允许沿“帧内观察 -> 待处理媒体动作 -> 正式消息或隔离记录”单向推进；只有正式消息可以生成 source key、查询 Ledger/Outbox、上报后端或进入 Brain。Brain 只在最新待回复尾部完整且证据足够时生成回复；当前客户媒体失败、高意向及必须人工批准的业务硬风险进入人工接管。人工接管以未关闭 `HandoffEvent` 为权威事实并投影 `waiting_sales_reply`，服务端按同一事件通过车金统一飞书应用立即且至多通知一次所属销售。微信列表在截图与点击之间重排时，点击后的短码校验仍是硬门禁，但明确点到其他会话时允许丢弃旧坐标并在同一授权内完整重新定位一次。添加朋友流程无论“邀请已发送”还是“已经是好友”，都只对已经证明的添加朋友 HWND 执行一次右上角关窗并验证结果。`0.9.24` 取消 `0.9.23` 新增的逐点击/统一前台状态机，启动时基于真实微信客户区截图建立一次区域坐标地图，之后只替换 `0.9.20` 中依赖主窗口固定几何的区域边界和点位计算；会话行、消息、菜单、弹窗和表单仍由 `0.9.20` 原必要业务帧与原判断流程决定。整改后实现候选已通过架构师复审，`contract_revision=0.9.24` 的规范化 SHA 为 `290001afed30a8a68a1c8b48c48bf5f0af8b4d8dce1cbf87ddba666ffc6aea69`；Windows 实机 UAT 尚未完成，因此当前 SHA 仍是待 UAT 候选，不是正式发布基线。
+当前唯一架构口径：服务端负责授权、状态机、事实持久化、Brain/Guard、任务和通知；OmniAuto 负责微信 UI 观察、物理目标判定和动作证据；Worker 只负责调度、合同校验、事务持久化与执行。C2 使用固定八位短码和 private 单聊门禁；文字、语音、图片按同一最终画面顺序入库，一条物理媒体只形成一个业务对象，所有已触发媒体动作必须有限终态。C2 消息身份只允许沿“帧内观察 -> 待处理媒体动作 -> 正式消息或隔离记录”单向推进；只有正式消息可以生成 source key、查询 Ledger/Outbox、上报后端或进入 Brain。Brain 只在最新待回复尾部完整且证据足够时生成回复；当前客户媒体失败、高意向及必须人工批准的业务硬风险进入人工接管。人工接管以未关闭 `HandoffEvent` 为权威事实并投影 `waiting_sales_reply`，服务端按同一事件通过车金统一飞书应用立即且至多通知一次所属销售。微信列表在截图与点击之间重排时，点击后的短码校验仍是硬门禁，但明确点到其他会话时允许丢弃旧坐标并在同一授权内完整重新定位一次。添加朋友流程无论“邀请已发送”还是“已经是好友”，都只对已经证明的添加朋友 HWND 执行一次右上角关窗并验证结果。启动时基于真实微信客户区截图建立一次区域坐标地图，之后只替换 `0.9.20` 中依赖主窗口固定几何的区域边界和点位计算；会话行、消息、菜单、弹窗和表单仍由 `0.9.20` 原必要业务帧与原判断流程决定。同一个单会话事务允许在首次读取和发送前复读中形成任意多次逻辑入库；Worker 本地每组不同正式消息事实必须生成独立、确定性的 `outbox_batch_key` 并形成独立 Outbox，相同事实重试复用原本地 ID，不得因为沿用外层 `read_run_id` 而复用已确认 Outbox、丢弃新消息或继续发送旧回复。`outbox_batch_key` 绝不进入 HTTP 请求、后端 Schema 或业务状态机。`0.9.28` 只收口 Worker 本地 Outbox 幂等键，不改变 C0—C4 业务状态机、后端消息接口、UI 锁、暂停语义、媒体编排、Brain 或发送前复读规则；当前代码、`contract_revision=0.9.28` 及规范化 SHA `e0c13e862bf90a1c959d8755228800b7fb141263f807be6257ea382ddcb2d871`、生成 Schema 和定向测试已完成并通过架构复审，Fast UAT ZIP 与 Windows 实机 UAT 仍待完成。
 
 ## 文档治理规则
 
@@ -32,12 +32,12 @@
    字段和领域对象字段使用 snake_case，两者不得被误认为两个接口。新增、改名或废弃
    接口必须先修改本文的权威目录和接口编号，不允许在代码、聊天记录或派生合同中另起
    同义名称。
-7. 灰度版本使用唯一 `0.9.x` 序列：`0.9.0` 至 `0.9.23` 已冻结，当前目标候选为 `0.9.24`；
+7. 灰度版本使用唯一 `0.9.x` 序列：`0.9.0` 至 `0.9.27` 已冻结，当前目标候选为 `0.9.28`；
    后续任何内容不同且进入测试的候选必须继续升版。PRD（仅有产品变化时）、技术方案、全流程图、版本记录、客户端、
    后端、OmniAuto 合同 `contract_revision`、生成 Schema、manifest 和安装包必须写入同一个
    精确版本，禁止各自升版、复用旧号覆盖新内容或把占位符 `0.9.X` 写入运行产物。
    `contract_version=3`、`observation_schema_version=3` 和文中 V3 仅是协议结构代号，不属于
-   灰度发布版本；客户端、后端、OmniAuto、生成 Schema、manifest 与打包入口必须同步为 `contract_revision=0.9.24`，并在每次实现收口后重新实算唯一规范化 SHA。真实 Windows 验收、发布来源固定和正式包仍是后续门禁，不得把未通过复审或未完成 UAT 的本地 SHA 伪报为已发布候选。
+   灰度发布版本；本次实现完成后，客户端、后端、OmniAuto、生成 Schema、manifest 与打包入口必须同步为 `contract_revision=0.9.28`，并重新实算唯一规范化 SHA。当前文档阶段不得预填 SHA、提交或包信息。真实 Windows 验收、发布来源固定和正式包仍是后续门禁，不得把未通过复审或未完成 UAT 的本地 SHA 伪报为已发布候选。
    版本车道固定为：`0.9.x` 仅用于正式上线前灰度验证，`1.0.x` 用于正式上线及其稳定性修复，
    `1.1.x` 用于下一期优化。三个 `x` 都只表示版本系列，任何提交、合同、Schema、manifest、
    安装包和运行日志必须写入 `0.9.15`、`1.0.0`、`1.1.0` 等精确版本，不得写入字面占位符。
@@ -1874,7 +1874,10 @@ unique(worker_id, conversation_id, dedupe_key)
 Worker 必须保留 Outbox 并执行身份刷新重传。在冲突解决前不得把该消息标记为本地
 已入库，也不得把残缺上下文交给 Brain。
 
-同一个 `read_run_id` 重复上报时，服务端必须返回同样或等价的处理结果，不得重复入库。
+服务端继续按每条消息的 `source_message_key/dedupe_key` 幂等；同一消息重复上报时必须返回
+同样或等价的处理结果，不得重复入库。`read_run_id` 只表示读取事实所属轮次；一个读取事务
+可能先后形成多个内容不同的入库请求。Worker 不得再把 `read_run_id` 直接当作本地消息
+Outbox 的唯一键，本地 `outbox_batch_key` 也不得发送给服务端。
 
 ##### 6.0.3.3.1 读取轮次归属与传输状态分层
 
@@ -1922,9 +1925,141 @@ Worker 必须保留 Outbox 并执行身份刷新重传。在冲突解决前不�
 `fact_scope=current_read_run + delivery_state=not_enqueued`；历史图片和已进入 Outbox
 的图片不得重复处理。
 
-机器合同 revision `0.9.24` 必须完整包含媒体和读取轮次字段，同时表达读取轮次与传输状态、语音动作身份与业务身份分离、
+机器合同 revision `0.9.28` 必须完整包含媒体和读取轮次字段，同时表达读取轮次与传输状态、语音动作身份与业务身份分离、
 选中目标两阶段握手和逐相邻帧同对象证明。`identity_checkpoint.recent_messages[]` 回传
 `origin_read_run_id`；`ledger_state` 只允许作为诊断投影，业务门禁不得读取。
+
+##### 6.0.3.3.2 同一会话事务内任意多次入库的本地 Outbox 唯一键
+
+本节只修复 Worker 本地 Outbox 主键冲突，不拆分现有外层单会话 Flow，不改变
+`read_run_id`、HTTP 消息合同、UI 锁、暂停接单、授权、媒体编排、Brain、
+`reply_action`、`pre_send_refresh` 或发送状态机。同一 Flow 内可以发生零次、一次或任意
+多次逻辑入库；次数不写死为两次。每次只要正式消息集合不同，就必须形成独立本地 Outbox。
+
+四类身份的职责固定如下：
+
+| 身份 | 唯一职责 | 禁止用途 |
+|---|---|---|
+| `flow_id` | 当前单会话业务事务、UI 锁和暂停后安全结算范围 | 不得作为消息或 Outbox 载荷身份。 |
+| `read_run_id` | 消息事实所属读取轮次、后端读取结算和 Ledger/Journal 恢复关联 | 可以被多条本地 Outbox 关联，但不能单独成为 Outbox 主键。 |
+| `source_message_key` | 一条正式消息的长期身份 | 不得表示整次请求或 MessageBatch。 |
+| `outbox_batch_key` | Worker 本地一组不可变待投递事实的确定性键，只编码在 `outbox_id` 中 | 不得进入 HTTP 请求、后端 Schema、消息身份、Brain 批次或会话状态。 |
+
+`outbox_batch_key` 必须由 `storage.py` 的唯一函数在首次持久化前计算；TaskRunner、恢复器和
+拆包器不得自行拼接。计算规则为：
+
+```text
+message_keys =
+  若为拆包子项：evidence.ingest_partition.expected_source_message_keys
+  否则：messages[].source_message_key
+然后按字符串升序去重。
+
+payload_kind =
+  message_keys非空                         -> "messages"
+  authorization_scope == "fact_settlement" -> "fact_settlement"
+  flow_gate_errors非空                     -> "flow_gate"
+  其他受控空读                             -> "control_read"
+
+seed = {
+  "namespace": "chejin:c2-local-outbox:v1",
+  "conversation_id": conversation_id,
+  "read_run_id": read_run_id,
+  "payload_kind": payload_kind,
+  "source_message_keys": message_keys,
+  "flow_gate_identity_key": evidence.flow_gate_identity_key或
+      按字符串升序去重的flow_gate_errors以"\n"连接，
+  "recovery_transaction_id": evidence.recovery_transaction_id或空字符串,
+  "source_message_key_digest": evidence.source_message_key_digest或空字符串,
+  "control_key": 对control_read使用
+      authorization_read_reason + ":" + continuation_batch_id + ":" + recall_cycle_id，
+      其他类型为空字符串
+}
+canonical = UTF-8 JSON(seed, sort_keys=true, separators=(",", ":"), ensure_ascii=false)
+outbox_batch_key = SHA256(canonical).hexdigest()
+```
+
+本地 Outbox ID 固定为：
+
+```text
+普通/父批：c2-outbox:{read_run_id}:batch-{outbox_batch_key}
+拆包子项：c2-outbox:{read_run_id}:batch-{outbox_batch_key}:part-{part_index}
+```
+
+规则固定如下：
+
+1. 相同不可变事实在 HTTP 重试、进程重启、授权版本刷新或 Outbox 重传后必须得到相同本地 ID。
+   种子禁止包含合同 revision、时间戳、`trace_id`、HTTP 请求 ID、重试次数、
+   `authorization_revision`、操作阶段、冷却时间、坐标、OCR 文本、诊断字段和瞬时错误。
+2. 同一个 `read_run_id` 内，只要正式 `source_message_key` 集合不同，就得到不同
+   `outbox_batch_key`；A、A+B、A+B+C 是三条独立 Outbox，后续可继续产生第 N 条。
+3. 同一 source key 集合的顺序变化不得改变 ID。同一 source key 的角色、类型、正文、
+   `dedupe_key`、`item_state` 或稳定媒体结果发生变化时，必须命中同一 ID并由
+   `enqueue_c2_outbox` 比较不可变事实摘要后返回 `C2_OUTBOX_LOGICAL_FACT_COLLISION`；
+   不得覆盖旧载荷，也不得生成新 ID 绕过后端身份碰撞。
+4. 不可变事实摘要只包含每条消息的 `source_message_key、dedupe_key、sender_role_hint、
+   message_type、content、item_state、flow_state` 和稳定媒体结果字段；明确排除授权外壳、
+   timing、截图路径、OCR bbox、trace 和诊断。相同 ID 且摘要一致时返回已有 Outbox，
+   `enqueue_c2_outbox` 不覆盖其 JSON；授权刷新只能继续走现有
+   `refresh_c2_outbox_payload` 显式入口。
+5. 已进入 `confirmed、split_completed、identity_quarantined、capability_paused、
+   target_terminated、conversation_terminated` 的 Outbox 永远不可覆盖、改写或删除后复用。
+6. 拆包前后 `evidence.ingest_partition.group_id` 继续沿用现有后端合同的 `read_run_id`；
+   所有子项根据完整 `expected_source_message_keys` 取得相同 `outbox_batch_key`，只用
+   `part_index` 区分本地子行。不得改后端分片合同。
+7. `POST /wechat/messages/ingest` 请求和响应不新增 `ingest_batch_id/outbox_batch_key`；后端继续
+   按 `source_message_key/dedupe_key` 去重，并在同一事务内完成新消息入库、旧回复作废和
+   MessageBatch 创建或复用。本地键不得成为第二套后端业务身份。
+8. 同一 Flow 结束前继续使用现有 `has_pending_c2_outbox_for_read_run_id` 检查该
+   `read_run_id` 关联的全部 Outbox；任一尚未结算时均不得结束 Flow、开始下一个客户或发送旧回复。
+9. 升级到 `0.9.28` 前必须暂停 `0.9.27` Worker，并确认消息 Outbox、媒体 Journal、Ledger
+   和 sent_ack 均无未结算事实；如仍有 pending，只能先使用原版本完成结算，不得删除或改写。
+   本期不增加新旧本地键双轨兼容。
+
+发送前新增消息的唯一处理顺序为：
+
+```text
+原消息批次已生成待发送回复
+-> 同一单会话Flow执行pre_send_refresh
+-> 发现并提交新的客户文字/语音/图片事实
+-> 按新source_message_key集合生成新的本地outbox_batch_key
+-> 先可靠写入新的独立Outbox，再按原合同调用messages/ingest
+-> 后端同一事务入库新消息、将旧reply_action置为superseded、创建或复用新MessageBatch
+-> 事务提交后返回逐消息结果和新MessageBatch
+-> 只基于最新完整尾部重新调用Brain一次
+-> 新回复重新经过pre_send_refresh和发送门禁
+```
+
+若新批次入库失败或结果不确定，必须保留新 Outbox 并阻止旧回复发送；不得把旧批次成功
+冒充为本次新事实成功。若发送前复读没有新正式消息，则不得新建消息 Outbox，继续原发送流程。
+
+本变更的发布门禁必须调用生产构建器、真实本地 SQLite Outbox、后端正式路由和真实服务层；
+允许替换微信截图/OCR/鼠标，但禁止 Fake API 返回预造成功、禁止 mock
+`_read_one_wechat_target`、`enqueue_c2_outbox`、Outbox 投递器或后端 `ingest_messages` 后宣称
+端到端通过。至少覆盖：
+
+1. 初次客户文字 A 入库并生成回复；发送前新增客户语音 B，语音只点击/转写一次，形成第二个
+   `outbox_batch_key` 和第二条 Outbox；后端确实新增 B，旧回复作废，只基于 A+B 生成一次新回复。
+2. 同一 Flow/read_run 连续形成 A、A+B、A+B+C 三组事实，必须有三条不同本地 Outbox；
+   再增加事实时可继续形成第 N 条，不得覆盖前面任一条。
+3. 把 B 分别替换为新文字、新图片、新 self 消息，均验证独立 Outbox、不发送旧回复；
+   self 路径不得调用 Brain。
+4. 相同事实在写 Outbox 前、写后未请求、请求后未响应、后端已提交但本地未确认四个崩溃点
+   重启，均复用同一 ID、零重复消息、零重复媒体动作。
+5. 同一 `read_run_id` 的不同消息集合必须产生不同 ID；相同集合但顺序不同必须产生同一 ID；
+   时间戳、trace、授权 revision、重试次数变化不得改变 ID。
+6. 相同 source key 集合但正文/角色/类型变化必须在本地报
+   `C2_OUTBOX_LOGICAL_FACT_COLLISION`，旧 JSON 不变且零后端调用。
+7. 已确认旧 Outbox 与新 Outbox 同时存在且载荷互不覆盖；Flow 结束门禁会枚举全部行，任一未确认
+   都不能结束、切换客户或发送旧回复。
+8. 拆包场景全部 part 共用基础 `outbox_batch_key`，后端 `group_id` 仍等于 `read_run_id`；
+   重复任一 part 不重复入库。
+9. `flow_gate`、`control_read` 和 `fact_settlement` 分别验证稳定本地 ID、无 UI 重试及合同反例；空事实不得伪装
+   `fact_settlement`。
+10. 授权 revision 刷新前后 Outbox ID 不变，只允许显式授权外壳更新，消息事实 JSON 不变。
+11. 暂停接单发生在任意第 N 批入库边界时，只安全结算当前 Flow，不开始下一个客户；恢复后只
+   重传原 Outbox，不重新读微信。
+12. C4 召回、普通首次读取和没有新事实的发送前复读保持原行为；没有新事实时零新 Outbox、
+    零额外 Brain、原回复仍经过既有发送门禁。
 
 #### 6.0.3.4 低置信和异常处理
 
@@ -3070,7 +3205,7 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `contract_version` | integer | 是 | 协议结构代号固定为 `3`，不是发布版本；当前灰度目标由 `contract_revision=0.9.24` 表达，并同时校验实现完成后实算的规范化 `contract_sha256` 和 `observation_schema_version`。 |
+| `contract_version` | integer | 是 | 协议结构代号固定为 `3`，不是发布版本；当前灰度目标由 `contract_revision=0.9.28` 表达，并同时校验实现完成后实算的规范化 `contract_sha256` 和 `observation_schema_version`。 |
 | `read_run_id` | string | 是 | 本次读取运行 ID。 |
 | `conversation_id` | string | 是 | 服务端已绑定会话 ID。 |
 | `remark_code` | string | 是 | 本轮已确认的客户短码。 |
@@ -3131,7 +3266,11 @@ POST /api/workers/{worker_id}/wechat/messages/ingest
 `next_sequence_floor`。该响应不得消费未读事实、不得更新读取完成退避、不得推进
 Conversation 或创建 Brain 批次。
 
-兼容说明：原 C2 字段保持兼容，C2-C3 单会话串行链路只增加可选 `message_batch={batch_id,batch_status}`。派生接口合同只可细化本手册字段，不得修改 `API-C2-05` 的方法、路径或另建同义消息上报接口。
+`0.9.28` 按灰度版本规则同步升级 `contract_revision` 与实现完成后实算的规范化 SHA；
+`API-C2-05` 请求和响应字段保持不变，严禁新增 `ingest_batch_id`、`outbox_batch_key` 或同义字段。
+旧 `0.9.27` 新请求固定按 `MESSAGE_CONTRACT_REVISION_MISMATCH` 拒绝，不允许双 revision 混跑。
+C2-C3 单会话串行链路继续使用可选 `message_batch={batch_id,batch_status}`；派生接口合同只可
+细化本手册字段，不得修改 `API-C2-05` 的方法、路径或另建同义消息上报接口。
 
 #### 6.2.6 查询当前消息批次
 
