@@ -7276,6 +7276,8 @@ def test_sidebar_search_state_detection_uses_focus_indicator_and_global_search_t
     draw = ImageDraw.Draw(focused)
     draw.rectangle([150, 53, 300, 86], outline=(12, 134, 85), width=2)
     normal = Image.new("RGB", (980, 860), (32, 32, 32))
+    _register_compat_image_layout(sidecar_mod, focused, hwnd=1001)
+    _register_compat_image_layout(sidecar_mod, normal, hwnd=1001)
     assert_true(
         sidecar_mod.sidebar_search_focus_indicator_detected(focused, geometry),
         "green focused search border should be detected",
