@@ -171,6 +171,49 @@ def test_schema_rejects_cross_clock_negative_wall_order():
         )
 
 
+def test_schema_rejects_inconsistent_terminal_status_and_error_code():
+    with pytest.raises(ValueError):
+        _event(status="succeeded", error_code="C2_VOICE_RESULT_AMBIGUOUS")
+    with pytest.raises(ValueError):
+        _event(status="failed", error_code=None)
+
+
+def test_late_failed_terminal_corrects_prior_succeeded_stage():
+    Base.metadata.create_all(bind=engine)
+    with SessionLocal() as db:
+        worker = _worker()
+        db.add(worker)
+        db.flush()
+        succeeded = _event()
+        record_server_stage_best_effort(
+            db,
+            process_run_id=succeeded.process_run_id,
+            stage_name="c1.add_friend_queued",
+            component="backend",
+            worker_id=worker.id,
+            duration_ms=0,
+        )
+        ingest_worker_stage_events(db, worker=worker, events=[succeeded])
+        failed = succeeded.model_copy(
+            update={
+                "status": "failed",
+                "error_code": "C2_VOICE_RESULT_AMBIGUOUS",
+            }
+        )
+
+        result = ingest_worker_stage_events(
+            db,
+            worker=worker,
+            events=[failed],
+        )
+
+        row = db.get(ProcessStageRun, succeeded.stage_run_id)
+        assert result["updated_count"] == 1
+        assert row is not None and row.status == "failed"
+        assert row.error_code == "C2_VOICE_RESULT_AMBIGUOUS"
+        db.rollback()
+
+
 def test_running_ingest_stage_links_following_batch_to_same_process_run():
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
@@ -351,3 +394,13 @@ def test_identity_handoff_ingest_is_not_reported_as_success():
     assert _ingest_telemetry_terminal(
         {"message_batch": {"batch_status": "collecting"}}
     ) == ("succeeded", None)
+    assert _ingest_telemetry_terminal(
+        {
+            "message_batch": {
+                "batch_status": "recoverable_hold",
+                "reason_codes": [
+                    "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
+                ],
+            }
+        }
+    ) == ("failed", "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS")

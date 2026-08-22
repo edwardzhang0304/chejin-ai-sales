@@ -31,15 +31,34 @@ def _ingest_telemetry_terminal(
     """Project the customer-processing terminal, not merely the HTTP result."""
 
     message_batch = data.get("message_batch") if isinstance(data, dict) else None
-    if (
-        isinstance(message_batch, dict)
-        and str(message_batch.get("batch_status") or "") == "handoff_created"
-    ):
+    batch_status = (
+        str(message_batch.get("batch_status") or "")
+        if isinstance(message_batch, dict)
+        else ""
+    )
+    if batch_status in {"handoff_created", "recoverable_hold"}:
+        reason_codes = (
+            list(message_batch.get("reason_codes") or [])
+            if isinstance(message_batch, dict)
+            else []
+        )
         return (
             "failed",
             str(
                 message_batch.get("error_code")
-                or "C2_INGEST_HANDOFF_CREATED"
+                or next(
+                    (
+                        str(code).strip()
+                        for code in reason_codes
+                        if str(code).strip()
+                    ),
+                    "",
+                )
+                or (
+                    "C2_INGEST_RECOVERY_HOLD"
+                    if batch_status == "recoverable_hold"
+                    else "C2_INGEST_HANDOFF_CREATED"
+                )
             )[:64],
         )
     return "succeeded", None

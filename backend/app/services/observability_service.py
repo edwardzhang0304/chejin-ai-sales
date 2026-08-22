@@ -441,6 +441,16 @@ def ingest_worker_stage_events(
             continue
         _assert_immutable_identity(row, event, worker.id)
         if row.status in TERMINAL_STAGE_STATUSES:
+            if row.status == "succeeded" and event.status == "failed":
+                row.status = "failed"
+                row.ended_at = event.ended_at
+                row.execution_duration_ms = event.execution_duration_ms
+                row.error_code = event.error_code
+                if not row.trace_id:
+                    row.trace_id = event.trace_id
+                updated += 1
+                accepted += 1
+                continue
             ignored_terminal_regressions += 1
             accepted += 1
             continue

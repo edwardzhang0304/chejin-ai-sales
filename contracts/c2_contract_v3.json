@@ -1,10 +1,10 @@
 {
   "contract_version": 3,
-  "contract_revision": "0.9.25",
+  "contract_revision": "0.9.26",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "performance_fast_path_contract": {
-    "release": "0.9.25",
+    "release": "0.9.26",
     "business_semantics_unchanged": true,
     "flags": [
       "CHEJIN_TASK_SAFE_WAKE_ENABLED",
@@ -26,7 +26,7 @@
     "fallback_rule": "missing, conflicting, or unequal evidence executes the 0.9.10 full path without changing business state"
   },
   "startup_layout_calibration_contract": {
-    "schema_version": "0.9.25",
+    "schema_version": "0.9.26",
     "owner": "omniauto",
     "worker_role": "persist_path_transport_contract_validation_and_execution_only",
     "single_runtime_path": true,
@@ -1482,6 +1482,8 @@
     ],
     "confirmed_candidate_count": 1,
     "continuous_tracking_rule": "at_least_three_real_capture_frame_ids_and_a_contiguous_chain_of_exactly_adjacent_unique_tracking_edges_from_selected_pre_observation_to_final_bound_observation",
+    "popup_state_query_rule": "a_win32_popup_hwnd_query_exception_is_popup_window_state_unknown_and_must_never_be_reported_as_closed",
+    "post_click_wait_rule": "both_successful_and_failed_click_verification_enter_the_same_passive_transcript_evidence_wait_for_at_most_24_frames_or_120_seconds_without_a_second_transcribe_click",
     "forbidden_compatibility_fields": ["tracking_candidate_counts"],
     "cancel_before_trigger_rule": "token_or_target_revalidation_failure_must_return_cancelled_before_trigger_with_zero_ui_actions_and_burn_the_reservation",
     "ambiguous_terminal_rule": "persist_quarantined_without_body_binding_or_repeat_click_then_allow_at_most_two_evidence_only_reads_or_120_seconds_before_one_idempotent_handoff",
@@ -1497,6 +1499,8 @@
     ],
     "invalidated_field": "ui_frame_invalidated",
     "refresh_rule": "any_invalidating_action_requires_a_fresh_current_private_chat_read_and_unified_sequence_alignment_before_next_media_ingest_or_brain",
+    "popup_cleanup_rule": "copy_injection_does_not_prove_menu_closure; every_no_progress_error_or_retry_exit_must_safely_dismiss_the_open_popup_before_continuing",
+    "clipboard_success_rule": "only_confirmed_clipboard_progress_and_a_valid_current_image_may_set_menu_opened_false_and_complete_the_image_action",
     "reuse_rule": "old_frame_may_be_reused_only_when_no_wechat_ui_action_was_performed",
     "forbidden_shortcuts": [
       "settled_without_refresh",

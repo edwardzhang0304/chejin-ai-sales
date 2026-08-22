@@ -56,6 +56,10 @@ class ProcessStageEventIn(BaseModel):
             and self.ended_at < self.started_at
         ):
             raise ValueError("ended_at 不得早于 started_at")
+        if self.status == "succeeded" and self.error_code:
+            raise ValueError("成功阶段不得携带 error_code")
+        if self.status == "failed" and not str(self.error_code or "").strip():
+            raise ValueError("失败阶段必须携带 error_code")
         return self
 
 

@@ -2317,6 +2317,23 @@ class C2VisionIntegrationTests(unittest.TestCase):
                 return {"ok": True}
 
         clipboard = Clipboard()
+
+        class Actions:
+            dismissed = 0
+
+            def right_click(self, *_args, **_kwargs):
+                return {
+                    "screen_x": 500,
+                    "screen_y": 240,
+                }
+
+            def click_screen(self, *_args, **_kwargs):
+                return None
+
+            def dismiss_menu_safely(self):
+                self.dismissed += 1
+
+        actions = Actions()
         ports = VisionHostPorts(
             rpa_lease=SimpleNamespace(
                 lease=lambda *_args, **_kwargs: nullcontext()
@@ -2336,13 +2353,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
                     "screen_origin": [0, 0],
                 }
             ),
-            ui_action=SimpleNamespace(
-                right_click=lambda *_args, **_kwargs: {
-                    "screen_x": 500,
-                    "screen_y": 240,
-                },
-                click_screen=lambda *_args, **_kwargs: None,
-            ),
+            ui_action=actions,
             clipboard=clipboard,
         )
         with patch.object(
@@ -2374,6 +2385,7 @@ class C2VisionIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(clipboard.read_count, 0)
         self.assertEqual(clipboard.clear_count, 0)
+        self.assertEqual(actions.dismissed, 1)
         image.close()
 
     @patch.object(

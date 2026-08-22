@@ -604,7 +604,11 @@ def _acquire_current_image_via_ports(
                 int(copy_geometry["y"]),
                 bounds=local_bounds,
             )
-            menu_opened = False
+            # A successful input injection does not prove that WeChat
+            # accepted the Copy command or closed its popup.  Keep the menu
+            # marked open until clipboard evidence confirms the action, so
+            # every no-progress/error exit performs the safe dismissal in
+            # ``finally``.
             if sequence_before is None:
                 return fail("clipboard_sequence_missing_before_copy")
             payload = None
@@ -712,6 +716,8 @@ def _acquire_current_image_via_ports(
                 payload.release()
                 acquired_payload = None
                 if retry_attempt < 1:
+                    _dismiss_menu_safely(ports.ui_action)
+                    menu_opened = False
                     retry_data = {
                         **data,
                         "_clipboard_fingerprint_retry_attempt": 1,
@@ -793,6 +799,7 @@ def _acquire_current_image_via_ports(
                     business_state="clipboard_confirmed",
                     business_result_confirmed=False,
                 )
+            menu_opened = False
             payload_transferred = True
             return {
                 "ok": True,
