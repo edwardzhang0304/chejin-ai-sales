@@ -37,6 +37,7 @@ from chejin_worker_client.wechat_c2 import (
     voice_observation_source_key,
 )
 from chejin_worker_client.task_runner import should_submit_c2_ingest_payload
+import chejin_worker_client.storage as worker_storage
 from chejin_worker_client.sequence_alignment import (
     normalized_content_hash as worker_normalized_content_hash,
 )
@@ -2106,6 +2107,184 @@ def test_shared_mixed_roundtrip_fixture_crosses_worker_and_backend_without_secon
         assert db.query(MessageBatch).count() == 1
 
 
+def test_same_worker_read_run_uses_distinct_local_outboxes_for_new_voice_and_supersedes_old_batch(
+    tmp_path,
+):
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "examples"
+        / "c2_v3_mixed_roundtrip.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("发送前语音客户", "13896676695")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, binding["conversation_id"])
+        conversation.status = "waiting_sales_reply"
+        db.commit()
+    read_run_id = "read-local-outbox-multi-fact"
+
+    def target_for(
+        authorization_revision: str,
+        *,
+        continuation: dict | None = None,
+    ) -> WorkerWechatReadTarget:
+        read_reason = str(
+            (continuation or {}).get("read_reason")
+            or "waiting_sales_reply"
+        )
+        return WorkerWechatReadTarget(
+            conversation_id=binding["conversation_id"],
+            remark_code=remark_code,
+            rpa_session_key=binding["rpa_session_key"],
+            display_name=f"发送前语音客户-{remark_code}",
+            read_reason=read_reason,
+            authorization_revision=authorization_revision,
+            raw={
+                "authorization_read_reason": read_reason,
+                "batch_continuation": dict(continuation or {}),
+            },
+        )
+
+    def worker_payload(
+        target: WorkerWechatReadTarget,
+        observation_count: int,
+    ) -> dict:
+        sidecar = copy.deepcopy(fixture["omniauto_output"])
+        sidecar["observations"] = sidecar["observations"][
+            :observation_count
+        ]
+        selected_ids = {
+            item["observation_id"] for item in sidecar["observations"]
+        }
+        sidecar["slot_ledger_states"] = [
+            item
+            for item in sidecar["slot_ledger_states"]
+            if item["observation_id"] in selected_ids
+        ]
+        sidecar["sequence_alignment_evidence"][
+            "new_suffix_observation_ids"
+        ] = [item["observation_id"] for item in sidecar["observations"]]
+        stable_ids = {
+            item["observation_id"]: item["_worker_stable_id"]
+            for item in sidecar["observations"]
+        }
+        for state in sidecar["slot_ledger_states"]:
+            state["origin_read_run_id"] = read_run_id
+            state["source_message_key"] = worker_source_message_key(
+                target,
+                identity_kind="worker_sequence",
+                identity=stable_ids[state["observation_id"]],
+            )
+        return build_worker_message_ingest_payload(
+            target,
+            sidecar,
+            read_run_id=read_run_id,
+        )
+
+    previous_app_dir = worker_storage.APP_DIR
+    previous_db_file = worker_storage.DB_FILE
+    worker_storage.APP_DIR = tmp_path
+    worker_storage.DB_FILE = tmp_path / "worker_client.sqlite3"
+    try:
+        first_payload = worker_payload(
+            target_for(_binding_authorization_revision(binding["id"])),
+            1,
+        )
+        first_outbox_id = worker_storage.enqueue_c2_outbox(first_payload)
+        first = client.post(
+            f"/api/workers/{worker['id']}/wechat/messages/ingest",
+            json=first_payload,
+            headers=_worker_headers(worker),
+        )
+        assert first.status_code == 200, first.text
+        worker_storage.transition_c2_outbox(
+            first_outbox_id,
+            status="confirmed",
+        )
+        first_data = first.json()["data"]
+        assert "message_batch" in first_data, json.dumps(
+            first_data,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        first_batch = first_data["message_batch"]
+        continuation = first_batch["continuation"]
+
+        second_payload = worker_payload(
+            target_for(
+                continuation["authorization_revision"],
+                continuation=continuation,
+            ),
+            2,
+        )
+        second_outbox_id = worker_storage.enqueue_c2_outbox(second_payload)
+        second = client.post(
+            f"/api/workers/{worker['id']}/wechat/messages/ingest",
+            json=second_payload,
+            headers=_worker_headers(worker),
+        )
+        assert second.status_code == 200, second.text
+        worker_storage.transition_c2_outbox(
+            second_outbox_id,
+            status="confirmed",
+        )
+
+        assert first_outbox_id != second_outbox_id
+        assert first_outbox_id.startswith(
+            f"c2-outbox:{read_run_id}:batch-"
+        )
+        assert second_outbox_id.startswith(
+            f"c2-outbox:{read_run_id}:batch-"
+        )
+        with worker_storage.db_connection() as local_db:
+            local_rows = local_db.execute(
+                """
+                SELECT outbox_id, status FROM c2_ingest_outbox
+                WHERE read_run_id = ? ORDER BY created_at
+                """,
+                (read_run_id,),
+            ).fetchall()
+        assert len(local_rows) == 2
+        assert {row["status"] for row in local_rows} == {"confirmed"}
+
+        second_data = second.json()["data"]
+        assert second_data["ingested_count"] == 1
+        assert second_data["duplicated_count"] == 1
+        assert second_data["message_batch"]["batch_id"] != first_batch[
+            "batch_id"
+        ]
+        with SessionLocal() as db:
+            messages = (
+                db.query(MessageEvent)
+                .filter(
+                    MessageEvent.conversation_id
+                    == binding["conversation_id"]
+                )
+                .order_by(MessageEvent.ingested_at.asc())
+                .all()
+            )
+            assert [message.message_type for message in messages] == [
+                "text",
+                "voice",
+            ]
+            old_batch = db.get(MessageBatch, first_batch["batch_id"])
+            assert old_batch.status == "superseded"
+            assert old_batch.active is False
+    finally:
+        worker_storage.APP_DIR = previous_app_dir
+        worker_storage.DB_FILE = previous_db_file
+
+
 def test_failed_vision_fact_and_text_are_persisted_without_failing_batch_or_creating_reply():
     worker = _create_worker()
     _create_sales(worker["id"])
@@ -3754,7 +3933,7 @@ def test_message_batch_status_rejects_other_worker_and_returns_terminal_state():
 
 
 def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revision():
-    assert contract_revision() == "0.9.27"
+    assert contract_revision() == "0.9.28"
     location_recovery = c2_contract_v3()[
         "target_location_recovery_contract"
     ]

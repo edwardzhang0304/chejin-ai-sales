@@ -2459,7 +2459,7 @@ def test_add_friend_primary_locator_contract() -> None:
         header_width = header_bounds[2] - header_bounds[0]
         header_center_y = int((header_bounds[1] + header_bounds[3]) / 2)
         search_anchor = {
-            "name": "search_text",
+            "name": "sidebar_search_anchor",
             "text": "Q搜索",
             "bounds": [
                 header_bounds[0] + max(4, int(header_width * 0.08)),
@@ -2540,6 +2540,22 @@ def test_add_friend_primary_locator_contract() -> None:
         f"plus locator point must stay inside the calibrated operation region: {plus_target}",
     )
     primary_metadata = plus_target.get("metadata") or {}
+    primary_search_bounds = next(
+        anchor["bounds"]
+        for anchor in primary_snapshot["anchors"]
+        if anchor.get("name") == "sidebar_search_anchor"
+    )
+    assert_true(
+        primary_search_bounds[1]
+        <= primary_point[1]
+        <= primary_search_bounds[3],
+        f"plus click must stay within search-box height: {plus_target}",
+    )
+    assert_true(
+        primary_metadata.get("plus_vertical_constraint_bounds")
+        == primary_search_bounds,
+        f"plus vertical constraint evidence missing: {plus_target}",
+    )
     assert_true(primary_metadata.get("actual_resolution") == [981, 860], f"actual resolution missing: {plus_target}")
     assert_true(primary_metadata.get("dynamic_sidebar_header_bounds") == primary_snapshot["sidebar_header_bounds"], f"dynamic header missing: {plus_target}")
     assert_true(primary_metadata.get("dpi_scale") == 1.0, f"DPI diagnostic missing: {plus_target}")
@@ -2555,6 +2571,29 @@ def test_add_friend_primary_locator_contract() -> None:
     assert_true(primary_metadata.get("layout_conflicts") == [], f"startup calibration must have no layout conflicts: {plus_target}")
     assert_true((primary_metadata.get("reference_mapping") or {}).get("reference_name") == "plus_entry", f"plus reference mapping missing: {plus_target}")
     assert_true("diagnostic_references" not in plus_target, f"legacy coordinate diagnostics must be absent: {plus_target}")
+
+    missing_search_snapshot = dict(primary_snapshot)
+    missing_search_snapshot["anchors"] = [
+        anchor
+        for anchor in primary_snapshot["anchors"]
+        if anchor.get("name") != "sidebar_search_anchor"
+    ]
+    missing_search_target = add_friend_plus_entry_target(
+        {"width": 981, "height": 860, "left": 0, "top": 0, "right": 981, "bottom": 860},
+        (981, 860),
+        [],
+        screenshot=primary_image,
+        route_kind="windows",
+        layout_snapshot=missing_search_snapshot,
+    )
+    assert_true(
+        missing_search_target.get("executable") is False,
+        f"plus click must fail closed without measured search-box height: {missing_search_target}",
+    )
+    assert_true(
+        missing_search_target.get("point") == [0, 0],
+        f"missing search anchor must not retain a click point: {missing_search_target}",
+    )
 
     for width, height, dpi_scale in [
         (980, 720, 1.0),
@@ -2594,9 +2633,20 @@ def test_add_friend_primary_locator_contract() -> None:
         assert_true(matrix_target.get("executable") is True, f"matrix plus locator should be executable: {matrix_target}")
         assert_true(matrix_target.get("fallback_used") is False, f"matrix plus locator must not execute fallback: {matrix_target}")
         actual_point = [int(matrix_target.get("x") or 0), int(matrix_target.get("y") or 0)]
+        matrix_search_bounds = next(
+            anchor["bounds"]
+            for anchor in matrix_snapshot["anchors"]
+            if anchor.get("name") == "sidebar_search_anchor"
+        )
         assert_true(
             safe_bounds[0] <= actual_point[0] <= safe_bounds[2] and safe_bounds[1] <= actual_point[1] <= safe_bounds[3],
             f"matrix plus locator outside calibrated safe bounds: {(width, height, actual_point, safe_bounds, matrix_target)}",
+        )
+        assert_true(
+            matrix_search_bounds[1]
+            <= actual_point[1]
+            <= matrix_search_bounds[3],
+            f"matrix plus click exceeds search-box height: {(width, height, actual_point, matrix_search_bounds)}",
         )
         assert_true(
             (matrix_target.get("metadata") or {}).get("reference_mapping", {}).get("region_name")
@@ -2642,10 +2692,21 @@ def test_add_friend_primary_locator_contract() -> None:
         assert_true(blank_target.get("executable") is True, f"blank matrix should not require direct '+' character or pixel recognition: {blank_target}")
         blank_actual = [int(blank_target.get("x") or 0), int(blank_target.get("y") or 0)]
         blank_bounds = [int(value) for value in blank_target.get("click_bounds") or []]
+        blank_search_bounds = next(
+            anchor["bounds"]
+            for anchor in blank_snapshot["anchors"]
+            if anchor.get("name") == "sidebar_search_anchor"
+        )
         assert_true(
             blank_bounds[0] <= blank_actual[0] <= blank_bounds[2]
             and blank_bounds[1] <= blank_actual[1] <= blank_bounds[3],
             f"blank matrix mapping must stay inside the calibrated operation region: {blank_target}",
+        )
+        assert_true(
+            blank_search_bounds[1]
+            <= blank_actual[1]
+            <= blank_search_bounds[3],
+            f"blank plus click exceeds search-box height: {blank_target}",
         )
         assert_true(blank_target.get("fallback_used") is False, f"blank matrix fallback must stay disabled: {blank_target}")
 

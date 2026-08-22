@@ -1,4 +1,4 @@
-"""Production-entry regressions for v0.9.27 startup-map add-friend targeting."""
+"""Production-entry regressions for v0.9.28 startup-map add-friend targeting."""
 
 from __future__ import annotations
 

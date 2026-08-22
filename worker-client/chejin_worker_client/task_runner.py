@@ -70,6 +70,7 @@ from .storage import (
     enqueue_c2_outbox,
     begin_runtime_flow,
     clear_runtime_pause,
+    c2_outbox_id,
     finish_runtime_flow,
     finalize_reply_send_ack,
     discard_reply_send_intent,
@@ -7468,7 +7469,33 @@ class TaskRunner:
                     if slot.get("fact_scope") == "current_read_run":
                         slot["ledger_state"] = "OUTBOX_WAITING"
             durable_payload["evidence"] = durable_evidence
-            outbox_id = enqueue_c2_outbox(durable_payload)
+            try:
+                outbox_id = enqueue_c2_outbox(durable_payload)
+            except ValueError as exc:
+                error_code = str(exc)
+                if error_code != "C2_OUTBOX_LOGICAL_FACT_COLLISION":
+                    raise
+                append_log(
+                    "ERROR",
+                    "c2_outbox_logical_fact_collision",
+                    "同一本地 Outbox 身份对应的不可变消息事实不一致；已保留原载荷并禁止调用后端。",
+                    error_code=error_code,
+                    metadata={
+                        "outbox_id": c2_outbox_id(durable_payload),
+                        "conversation_id": durable_payload.get(
+                            "conversation_id"
+                        ),
+                        "read_run_id": durable_payload.get("read_run_id"),
+                    },
+                    force_incident=True,
+                )
+                return {
+                    "ok": False,
+                    "outbox_id": c2_outbox_id(durable_payload),
+                    "resolved": False,
+                    "error_code": error_code,
+                    "recovery_action": "logical_fact_collision",
+                }
             outbox_items = self._prepare_persisted_c2_outbox(
                 outbox_id=outbox_id,
                 payload=durable_payload,
@@ -7527,8 +7554,13 @@ class TaskRunner:
             "conversation_terminated",
         }:
             return []
+        persisted_payload = (
+            copy.deepcopy(existing.get("payload"))
+            if isinstance(existing.get("payload"), dict)
+            else copy.deepcopy(payload)
+        )
         try:
-            partitions = split_ingest_payload(payload)
+            partitions = split_ingest_payload(persisted_payload)
             if len(partitions) == 1:
                 prepare_c2_outbox_payload(outbox_id, partitions[0])
                 return [(outbox_id, partitions[0])]
@@ -14527,7 +14559,7 @@ class TaskRunner:
                 }
             self._stage_payload_ledger(payload)
             phase_started_at = time.perf_counter()
-            outbox_id = f"c2-outbox:{payload.get('read_run_id')}"
+            outbox_id = c2_outbox_id(payload)
             for image_message in _c2_image_messages(payload):
                 append_log(
                     "INFO",

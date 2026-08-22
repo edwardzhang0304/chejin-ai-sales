@@ -261,7 +261,17 @@ class StorageTest(unittest.TestCase):
             "conversation_id": "conv-quarantine-freeze",
             "authorization_revision": "revision-freeze",
             "read_run_id": "read-freeze",
-            "messages": [{"content": "original"}],
+            "messages": [
+                {
+                    "source_message_key": "source-freeze",
+                    "dedupe_key": "dedupe-freeze",
+                    "sender_role_hint": "customer",
+                    "message_type": "text",
+                    "content": "original",
+                    "item_state": "completed",
+                    "flow_state": "completed",
+                }
+            ],
         }
         outbox_id = self.storage.enqueue_c2_outbox(original)
         self.storage.mark_c2_outbox_capability_paused(
@@ -271,15 +281,386 @@ class StorageTest(unittest.TestCase):
 
         replacement = {
             **original,
-            "messages": [{"content": "replacement"}],
+            "messages": [
+                {**original["messages"][0], "content": "replacement"}
+            ],
         }
-        self.storage.enqueue_c2_outbox(replacement)
+        with self.assertRaisesRegex(
+            ValueError,
+            "C2_OUTBOX_LOGICAL_FACT_COLLISION",
+        ):
+            self.storage.enqueue_c2_outbox(replacement)
         stored = self.storage.load_c2_outbox_entry(outbox_id)
 
         self.assertEqual(stored["status"], "capability_paused")
         self.assertEqual(
             stored["payload"]["messages"][0]["content"],
             "original",
+        )
+
+    @staticmethod
+    def _outbox_message(source_key: str, content: str) -> dict:
+        return {
+            "source_message_key": source_key,
+            "dedupe_key": f"dedupe:{source_key}",
+            "sender_role_hint": "customer",
+            "message_type": "text",
+            "content": content,
+            "item_state": "completed",
+            "flow_state": "completed",
+            "raw_payload": {},
+        }
+
+    def _outbox_payload(
+        self,
+        messages: list[dict],
+        *,
+        authorization_revision: str = "revision-outbox-batch",
+    ) -> dict:
+        return {
+            "conversation_id": "conv-outbox-batch",
+            "authorization_revision": authorization_revision,
+            "read_run_id": "read-outbox-batch",
+            "messages": messages,
+            "evidence": {
+                "authorization_read_reason": "waiting_user_reply",
+                "timing": {"elapsed": 1.2},
+            },
+        }
+
+    def test_outbox_id_is_stable_for_same_fact_set_and_envelope_changes(self):
+        first = self._outbox_payload(
+            [
+                self._outbox_message("source-b", "B"),
+                self._outbox_message("source-a", "A"),
+            ]
+        )
+        retried = self._outbox_payload(
+            [
+                self._outbox_message("source-a", "A"),
+                self._outbox_message("source-b", "B"),
+            ],
+            authorization_revision="revision-refreshed",
+        )
+        retried["trace_id"] = "different-trace"
+        retried["evidence"]["timing"] = {"elapsed": 99.0}
+
+        first_id = self.storage.enqueue_c2_outbox(first)
+        retried_id = self.storage.enqueue_c2_outbox(retried)
+
+        self.assertEqual(first_id, retried_id)
+        self.assertRegex(
+            first_id,
+            r"^c2-outbox:read-outbox-batch:batch-[0-9a-f]{64}$",
+        )
+        stored = self.storage.load_c2_outbox_entry(first_id)
+        self.assertEqual(
+            stored["payload"]["authorization_revision"],
+            "revision-outbox-batch",
+        )
+        self.assertNotIn("trace_id", stored["payload"])
+
+    def test_same_read_run_supports_arbitrarily_many_fact_sets(self):
+        messages = [
+            self._outbox_message("source-a", "A"),
+            self._outbox_message("source-b", "B"),
+            self._outbox_message("source-c", "C"),
+            self._outbox_message("source-d", "D"),
+        ]
+        outbox_ids = [
+            self.storage.enqueue_c2_outbox(
+                self._outbox_payload(messages[:count])
+            )
+            for count in range(1, len(messages) + 1)
+        ]
+
+        self.assertEqual(len(set(outbox_ids)), 4)
+        self.assertEqual(len(self.storage.list_c2_outbox_waiting()), 4)
+
+    def test_same_source_keys_with_changed_immutable_fact_collide(self):
+        original = self._outbox_payload(
+            [self._outbox_message("source-a", "A")]
+        )
+        outbox_id = self.storage.enqueue_c2_outbox(original)
+        mutations = {
+            "content": "changed",
+            "sender_role_hint": "self",
+            "message_type": "voice",
+            "item_state": "failed",
+            "flow_state": "failed",
+        }
+        for field, value in mutations.items():
+            with self.subTest(field=field):
+                changed = self._outbox_payload(
+                    [{**original["messages"][0], field: value}]
+                )
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "C2_OUTBOX_LOGICAL_FACT_COLLISION",
+                ):
+                    self.storage.enqueue_c2_outbox(changed)
+
+        changed_media = self._outbox_payload(
+            [
+                {
+                    **original["messages"][0],
+                    "raw_payload": {
+                        "customer_image_understanding": {
+                            "schema_version": 1,
+                            "vision_summary": "different result",
+                        }
+                    },
+                }
+            ]
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "C2_OUTBOX_LOGICAL_FACT_COLLISION",
+        ):
+            self.storage.enqueue_c2_outbox(changed_media)
+
+        stored = self.storage.load_c2_outbox_entry(outbox_id)
+        self.assertEqual(stored["payload"], original)
+
+    def test_partition_ids_share_parent_batch_key_and_keep_read_run_group(self):
+        messages = [
+            self._outbox_message("source-a", "A"),
+            self._outbox_message("source-b", "B"),
+        ]
+        parent = self._outbox_payload(messages)
+        expected_keys = ["source-a", "source-b"]
+        parts = []
+        for index, message in enumerate(messages, start=1):
+            part = self._outbox_payload([message])
+            part["evidence"]["ingest_partition"] = {
+                "group_id": "read-outbox-batch",
+                "index": index,
+                "count": 2,
+                "expected_source_message_keys": expected_keys,
+            }
+            parts.append(part)
+
+        parent_id = self.storage.c2_outbox_id(parent)
+        batch_prefix = parent_id + ":part-"
+        self.assertEqual(
+            [self.storage.c2_outbox_id(part) for part in parts],
+            [f"{batch_prefix}1", f"{batch_prefix}2"],
+        )
+        self.assertEqual(
+            [
+                part["evidence"]["ingest_partition"]["group_id"]
+                for part in parts
+            ],
+            ["read-outbox-batch", "read-outbox-batch"],
+        )
+
+        persisted_parent_id = self.storage.enqueue_c2_outbox(parent)
+        self.storage.transition_c2_outbox(
+            persisted_parent_id,
+            status="split_pending",
+            error="C2_INGEST_PAYLOAD_TOO_LARGE",
+        )
+        child_ids = self.storage.replace_c2_outbox_with_partitions(
+            persisted_parent_id,
+            parts,
+        )
+        self.assertEqual(
+            child_ids,
+            [f"{batch_prefix}1", f"{batch_prefix}2"],
+        )
+        self.assertEqual(
+            self.storage.load_c2_outbox_entry(persisted_parent_id)[
+                "status"
+            ],
+            "split_completed",
+        )
+        for child_id in child_ids:
+            child = self.storage.load_c2_outbox_entry(child_id)
+            self.assertEqual(child["status"], "waiting")
+            self.assertEqual(
+                child["payload"]["evidence"]["ingest_partition"][
+                    "group_id"
+                ],
+                "read-outbox-batch",
+            )
+
+    def test_authorization_refresh_keeps_message_outbox_identity(self):
+        payload = self._outbox_payload(
+            [self._outbox_message("source-refresh", "refresh")]
+        )
+        outbox_id = self.storage.enqueue_c2_outbox(payload)
+        self.storage.transition_c2_outbox(
+            outbox_id,
+            status="refresh_pending",
+            error="AUTHORIZATION_REVISION_STALE",
+        )
+        refreshed = {
+            **payload,
+            "authorization_revision": "revision-refreshed",
+            "evidence": {
+                **payload["evidence"],
+                "authorization_read_reason": "batch_continuation",
+                "continuation_batch_id": "batch-refreshed",
+                "continuation_token": "token-refreshed",
+            },
+        }
+
+        self.assertEqual(self.storage.c2_outbox_id(refreshed), outbox_id)
+        self.storage.refresh_c2_outbox_payload(
+            outbox_id,
+            refreshed,
+            next_status="waiting",
+        )
+        stored = self.storage.load_c2_outbox_entry(outbox_id)
+        self.assertEqual(
+            stored["authorization_revision"],
+            "revision-refreshed",
+        )
+        self.assertEqual(stored["payload"]["messages"], payload["messages"])
+
+    def test_authorization_refresh_rejects_immutable_fact_change(self):
+        payload = self._outbox_payload(
+            [self._outbox_message("source-refresh-collision", "A")]
+        )
+        outbox_id = self.storage.enqueue_c2_outbox(payload)
+        self.storage.transition_c2_outbox(
+            outbox_id,
+            status="refresh_pending",
+            error="AUTHORIZATION_REVISION_STALE",
+        )
+        before = self.storage.load_c2_outbox_entry(outbox_id)
+        changed = {
+            **payload,
+            "authorization_revision": "revision-refreshed",
+            "messages": [{**payload["messages"][0], "content": "B"}],
+        }
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "C2_OUTBOX_LOGICAL_FACT_COLLISION",
+        ):
+            self.storage.refresh_c2_outbox_payload(
+                outbox_id,
+                changed,
+                next_status="waiting",
+            )
+
+        self.assertEqual(
+            self.storage.load_c2_outbox_entry(outbox_id),
+            before,
+        )
+
+    def test_transport_prepare_rejects_immutable_fact_change(self):
+        payload = self._outbox_payload(
+            [self._outbox_message("source-prepare-collision", "A")]
+        )
+        outbox_id = self.storage.enqueue_c2_outbox(payload)
+        before = self.storage.load_c2_outbox_entry(outbox_id)
+        changed = {
+            **payload,
+            "messages": [{**payload["messages"][0], "content": "B"}],
+        }
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "C2_OUTBOX_LOGICAL_FACT_COLLISION",
+        ):
+            self.storage.prepare_c2_outbox_payload(outbox_id, changed)
+
+        self.assertEqual(
+            self.storage.load_c2_outbox_entry(outbox_id),
+            before,
+        )
+
+    def test_outbox_kinds_have_stable_distinct_local_identities(self):
+        base = {
+            "conversation_id": "conv-outbox-kinds",
+            "authorization_revision": "revision-outbox-kinds",
+            "read_run_id": "read-outbox-kinds",
+            "messages": [],
+        }
+        fact_settlement = {
+            **base,
+            "authorization_scope": "fact_settlement",
+            "evidence": {
+                "recovery_transaction_id": "recovery-1",
+                "source_message_key_digest": "digest-1",
+            },
+        }
+        flow_gate = {
+            **base,
+            "evidence": {
+                "flow_gate_errors": ["C2_MESSAGE_HISTORY_GAP"],
+                "flow_gate_identity_key": "gate-1",
+            },
+        }
+        control_read = {
+            **base,
+            "evidence": {
+                "authorization_read_reason": "recall_precheck",
+                "continuation_batch_id": "batch-1",
+                "recall_cycle_id": "recall-1",
+            },
+        }
+
+        identities = {
+            self.storage.c2_outbox_id(fact_settlement),
+            self.storage.c2_outbox_id(flow_gate),
+            self.storage.c2_outbox_id(control_read),
+        }
+        self.assertEqual(len(identities), 3)
+        self.assertEqual(
+            self.storage.c2_outbox_id(
+                {
+                    **control_read,
+                    "authorization_revision": "revision-changed",
+                    "trace_id": "trace-changed",
+                }
+            ),
+            self.storage.c2_outbox_id(control_read),
+        )
+
+    def test_media_diagnostics_do_not_change_immutable_fact_identity(self):
+        message = {
+            **self._outbox_message("source-voice", "voice text"),
+            "message_type": "voice",
+            "raw_payload": {
+                "voice_transcription_meta": {
+                    "state": "voice_transcribe_completed",
+                    "canonical_voice_action_id": "voice-action-1",
+                    "artifact_dir": "C:/first",
+                    "after_screenshot_path": "C:/first/after.png",
+                    "attempt_count": 1,
+                }
+            },
+        }
+        first = self._outbox_payload([message])
+        retried = self._outbox_payload(
+            [
+                {
+                    **message,
+                    "raw_payload": {
+                        "voice_transcription_meta": {
+                            **message["raw_payload"][
+                                "voice_transcription_meta"
+                            ],
+                            "artifact_dir": "D:/retry",
+                            "after_screenshot_path": "D:/retry/after.png",
+                            "attempt_count": 9,
+                        }
+                    },
+                }
+            ]
+        )
+
+        first_id = self.storage.enqueue_c2_outbox(first)
+        self.assertEqual(
+            self.storage.enqueue_c2_outbox(retried),
+            first_id,
+        )
+        self.assertEqual(
+            self.storage.load_c2_outbox_entry(first_id)["payload"],
+            first,
         )
 
     def test_legacy_payload_terminated_outbox_is_restored_to_safe_pause(self):
