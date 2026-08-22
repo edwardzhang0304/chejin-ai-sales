@@ -78,7 +78,7 @@ class C2ContractTests(unittest.TestCase):
 
     def test_slot_ledger_contract_separates_fact_scope_from_delivery(self):
         schema = c2_contract_v3()["slot_ledger_state_schema"]
-        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.28")
+        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.29")
         startup_layout = c2_contract_v3()["startup_layout_calibration_contract"]
         self.assertIn("full_calibrated_input_bounds", startup_layout["input_click_surface_rule"])
         self.assertIn("excludes_the_bottom_toolbar", startup_layout["input_text_detection_rule"])

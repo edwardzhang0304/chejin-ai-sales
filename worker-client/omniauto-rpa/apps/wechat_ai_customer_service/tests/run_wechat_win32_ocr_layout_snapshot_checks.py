@@ -1,4 +1,4 @@
-"""v0.9.28 startup-calibration and business-frame identity checks.
+"""v0.9.29 startup-calibration and business-frame identity checks.
 
 Synthetic frames here cover deterministic edge cases. Real user screenshots are exercised
 separately by deliverables/test_runs/run_v0923_real_screenshot_calibration.py.
@@ -134,7 +134,7 @@ def main() -> int:
     for test in tests:
         test()
         print(f"PASS {test.__name__}")
-    print(f"All {len(tests)} v0.9.28 calibration/frame checks passed.")
+    print(f"All {len(tests)} v0.9.29 calibration/frame checks passed.")
     return 0
 
 
