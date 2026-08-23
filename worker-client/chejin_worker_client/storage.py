@@ -1098,6 +1098,49 @@ def list_c2_action_journal(
     return results
 
 
+def c2_flow_conversation_ids(read_run_id: str) -> list[str]:
+    """Return durable conversation owners for one local C2 flow.
+
+    Restart reconciliation must not guess a conversation from UI state.  The
+    only admissible owners are the conversation ids already persisted by the
+    Ledger, Outbox or action journal for the exact read run.
+    """
+
+    clean_read_run_id = str(read_run_id or "").strip()
+    if not clean_read_run_id:
+        return []
+    with db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT conversation_id
+            FROM c2_message_ledger
+            WHERE origin_read_run_id = ?
+            UNION
+            SELECT conversation_id
+            FROM c2_ingest_outbox
+            WHERE read_run_id = ?
+            UNION
+            SELECT conversation_id
+            FROM c2_action_journal
+            WHERE origin_read_run_id = ? OR flow_id = ?
+            ORDER BY conversation_id ASC
+            """,
+            (
+                clean_read_run_id,
+                clean_read_run_id,
+                clean_read_run_id,
+                clean_read_run_id,
+            ),
+        ).fetchall()
+    return sorted(
+        {
+            str(row["conversation_id"] or "").strip()
+            for row in rows
+            if str(row["conversation_id"] or "").strip()
+        }
+    )
+
+
 def clear_c2_action_journal(flow_id: str) -> None:
     with db_connection() as conn:
         conn.execute(
