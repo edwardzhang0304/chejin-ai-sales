@@ -13,8 +13,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal, TypeAlias
 
+from requests import exceptions as requests_exceptions
+
 from .api import ApiError, WorkerApiClient
 from .action_journal import (
+    ACTION_JOURNAL_SCHEMA_VERSION,
     action_journal_item_has_formed_fact,
     action_journal_is_strictly_not_attempted,
     action_journal_path,
@@ -63,6 +66,7 @@ from .message_identity_commit import (
 from .models import Binding, ReplySendClaim, RpaResult, RpaStep, Task, WechatReadTarget, WorkerProfile
 from .rpa_bridge import RpaBridge
 from .storage import (
+    archive_legacy_media_flow_records,
     append_log,
     checkpoint_c2_action_outcomes,
     clear_c2_state,
@@ -73,6 +77,7 @@ from .storage import (
     clear_runtime_pause,
     c2_outbox_id,
     finish_runtime_flow,
+    flow_has_pre_cutover_media_records,
     finalize_reply_send_ack,
     discard_reply_send_intent,
     has_pending_c2_outbox,
@@ -88,17 +93,23 @@ from .storage import (
     list_c2_ledger_entries,
     list_waiting_c2_ledger_conversation_ids,
     list_reply_send_ack_outbox,
+    legacy_media_flow_snapshot,
+    legacy_media_recovery_cutover_at,
     load_c2_outbox_entry,
     load_c2_outbox_origin_read_run_ids,
     load_c2_state,
     load_runtime_control,
     load_c2_ledger_entry,
     load_reply_send_ack_outbox,
+    load_legacy_media_recovery,
     mark_c2_ledger_ingested,
     mark_c2_ledger_rejected,
     mark_c2_outbox_attempt,
     mark_c2_outbox_capability_paused,
     mark_c2_outbox_identity_quarantined,
+    mark_legacy_media_recovery_confirmed,
+    mark_legacy_media_recovery_manual_review,
+    mark_legacy_media_recovery_retry,
     mark_reply_send_ack_attempt,
     mark_reply_send_ack_confirmed,
     prepare_c2_outbox_payload,
@@ -107,6 +118,7 @@ from .storage import (
     replace_c2_outbox_with_partitions,
     save_binding,
     save_c2_ledger_terminal,
+    save_legacy_media_recovery_decision,
     save_c2_state,
     save_reply_send_intent,
     request_runtime_pause,
@@ -1747,6 +1759,152 @@ def _ordered_physical_media_journals(
     ]
 
 
+def _legacy_media_digest_value(value: Any) -> Any:
+    """Remove retry/write timestamps while retaining immutable local facts."""
+
+    if isinstance(value, dict):
+        return {
+            str(key): _legacy_media_digest_value(child)
+            for key, child in sorted(value.items(), key=lambda item: str(item[0]))
+            if str(key)
+            not in {
+                "updated_at",
+                "updated_at_unix_ms",
+                "next_attempt_at",
+                "attempt_count",
+                "refresh_attempt_count",
+                "last_error",
+            }
+        }
+    if isinstance(value, list):
+        return [_legacy_media_digest_value(child) for child in value]
+    return value
+
+
+def _legacy_media_record_digest(
+    *,
+    flow_id: str,
+    journal_entries: list[tuple[Path, dict[str, Any]]],
+    sqlite_snapshot: dict[str, Any],
+) -> str:
+    journal_payloads = [
+        _legacy_media_digest_value(payload)
+        for _path, payload in journal_entries
+    ]
+    journal_payloads.sort(
+        key=lambda payload: json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+    canonical = {
+        "flow_id": str(flow_id or "").strip(),
+        "physical_action_journals": journal_payloads,
+        "sqlite": _legacy_media_digest_value(sqlite_snapshot),
+    }
+    return hashlib.sha256(
+        json.dumps(
+            canonical,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _physical_journal_is_pre_cutover(
+    payload: dict[str, Any],
+    *,
+    cutover_at: str,
+) -> bool:
+    try:
+        schema_version = int(payload.get("schema_version") or 0)
+    except (TypeError, ValueError):
+        schema_version = 0
+    created_at = str(payload.get("created_at") or "").strip()
+    return bool(
+        schema_version < ACTION_JOURNAL_SCHEMA_VERSION
+        or (created_at and cutover_at and created_at < cutover_at)
+    )
+
+
+def _legacy_physical_journals_have_proven_identity(
+    journal_entries: list[tuple[Path, dict[str, Any]]],
+) -> bool:
+    """Accept only old evidence that already proves identity and order."""
+
+    try:
+        _ordered_physical_media_journals(journal_entries)
+    except ValueError:
+        return False
+    for _path, payload in journal_entries:
+        action_kind = str(payload.get("action_kind") or "").strip().lower()
+        conversation_id = str(payload.get("conversation_id") or "").strip()
+        action_id = str(payload.get("canonical_action_id") or "").strip()
+        reserved_id = str(
+            payload.get("reserved_worker_stable_id") or ""
+        ).strip()
+        alignment = (
+            payload.get("sequence_alignment_evidence")
+            if isinstance(payload.get("sequence_alignment_evidence"), dict)
+            else {}
+        )
+        items = payload.get("items") if isinstance(payload.get("items"), dict) else {}
+        for item_id, item in items.items():
+            if not isinstance(item, dict) or not action_journal_item_has_formed_fact(
+                item
+            ):
+                continue
+            source_key = str(item.get("source_message_key") or "").strip()
+            replayable = (
+                item.get("replayable_observation")
+                if isinstance(item.get("replayable_observation"), dict)
+                else {}
+            )
+            if source_key and replayable and conversation_id:
+                try:
+                    committed = require_committed_message(
+                        conversation_id=conversation_id,
+                        observation=replayable,
+                    )
+                except ValueError:
+                    committed = None
+                if (
+                    committed is not None
+                    and committed.source_message_key == source_key
+                    and committed.message_type == action_kind
+                ):
+                    continue
+            if (
+                not action_id
+                or str(item_id or "").strip() != action_id
+                or not re.fullmatch(r"worker-message-[1-9][0-9]*", reserved_id)
+            ):
+                return False
+            if action_kind == "voice":
+                if alignment.get("alignment_status") != "unique":
+                    return False
+                if not any(
+                    isinstance(pair, dict)
+                    and str(pair.get("worker_stable_id") or "").strip()
+                    == reserved_id
+                    and pair.get("identity_state") == "selected_action"
+                    for pair in (alignment.get("matched_pairs") or [])
+                ):
+                    return False
+            elif action_kind == "image":
+                receipt, receipt_item_id = _confirmed_image_receipt_from_journal(
+                    payload
+                )
+                if receipt is None or str(receipt_item_id or "").strip() != action_id:
+                    return False
+            else:
+                return False
+    return True
+
+
 def _unconfirmed_voice_action_outcomes(
     *,
     source_keys: list[str] | set[str],
@@ -2407,6 +2565,430 @@ class TaskRunner:
             )
         return None
 
+    @staticmethod
+    def _legacy_media_retry_is_due(state: dict[str, Any]) -> bool:
+        next_attempt_at = str(state.get("next_attempt_at") or "").strip()
+        if not next_attempt_at:
+            return True
+        try:
+            due_at = datetime.fromisoformat(
+                next_attempt_at.replace("Z", "+00:00")
+            )
+        except ValueError:
+            return True
+        if due_at.tzinfo is None:
+            due_at = due_at.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) >= due_at
+
+    @staticmethod
+    def _legacy_media_error_is_retryable(exc: Exception) -> bool:
+        if isinstance(
+            exc,
+            (
+                ConnectionError,
+                TimeoutError,
+                requests_exceptions.RequestException,
+            ),
+        ):
+            return True
+        if not isinstance(exc, ApiError):
+            return False
+        return exc.retryable is True or int(exc.status_code or 0) >= 500
+
+    @staticmethod
+    def _legacy_media_error_code(exc: Exception) -> str:
+        api_code = str(getattr(exc, "code", "") or "").strip()
+        if api_code:
+            return api_code
+        message = str(exc or "").strip()
+        if re.fullmatch(r"[A-Z][A-Z0-9_]{2,}", message):
+            return message
+        return type(exc).__name__ or "LEGACY_MEDIA_RECOVERY_FAILED"
+
+    def _pause_for_legacy_media_manual_review(
+        self,
+        binding: Binding,
+        *,
+        flow_id: str,
+        state: dict[str, Any],
+    ) -> None:
+        error_code = str(
+            state.get("last_error")
+            or "LEGACY_MEDIA_RECOVERY_PERMANENT_FAILURE"
+        ).strip()
+        detail = (
+            dict(state.get("manual_review_detail") or {})
+            if isinstance(state.get("manual_review_detail"), dict)
+            else {}
+        )
+        self._pause_for_restart_flow_reconciliation(
+            binding,
+            error_code=error_code,
+            message=(
+                "旧媒体恢复收到不可自动重试的合同或响应错误；"
+                "已明确暂停并保留现场，请人工检查。"
+            ),
+            local_flow_id=flow_id,
+            backend_flow_id=str(
+                self._backend_inflight_flow_state.get("flow_id") or ""
+            ).strip(),
+            metadata={
+                "decision": state.get("decision"),
+                "legacy_record_digest": state.get(
+                    "legacy_record_digest"
+                ),
+                "automatic_retry": False,
+                **detail,
+            },
+        )
+
+    @staticmethod
+    def _legacy_action_rows_have_proven_identity(
+        conversation_id: str,
+        rows: list[dict[str, Any]],
+    ) -> bool:
+        entries: list[dict[str, Any]] = []
+        for row in rows:
+            outcome = (
+                dict(row.get("outcome") or {})
+                if isinstance(row.get("outcome"), dict)
+                else {}
+            )
+            action_kind = str(
+                (
+                    outcome.get("evidence")
+                    if isinstance(outcome.get("evidence"), dict)
+                    else {}
+                ).get("action_kind")
+                or ""
+            ).strip().lower()
+            if action_kind not in {"voice", "image"}:
+                return False
+            terminal_payload = (
+                dict(outcome.get("terminal_payload") or {})
+                if isinstance(outcome.get("terminal_payload"), dict)
+                else {}
+            )
+            entries.append(
+                {
+                    "source_message_key": str(
+                        row.get("source_message_key") or ""
+                    ).strip(),
+                    "message_type": action_kind,
+                    "result": {
+                        **terminal_payload,
+                        "state": str(outcome.get("result") or "").strip(),
+                        "action_outcome": outcome,
+                    },
+                }
+            )
+        if not entries:
+            return True
+        try:
+            _ordered_media_recovery_entries(conversation_id, entries)
+        except ValueError:
+            return False
+        return True
+
+    def _classify_legacy_media_recovery(
+        self,
+        *,
+        flow_id: str,
+        journal_entries: list[tuple[Path, dict[str, Any]]],
+        conversation_ids: list[str],
+    ) -> dict[str, Any]:
+        persisted = load_legacy_media_recovery(flow_id)
+        if persisted:
+            return persisted
+
+        cutover_at = legacy_media_recovery_cutover_at()
+        is_legacy = flow_has_pre_cutover_media_records(flow_id) or any(
+            _physical_journal_is_pre_cutover(
+                payload,
+                cutover_at=cutover_at,
+            )
+            for _path, payload in journal_entries
+        )
+        if not is_legacy:
+            return {}
+
+        snapshot = legacy_media_flow_snapshot(flow_id)
+        ledger_rows = [
+            dict(item)
+            for item in (snapshot.get("ledger") or [])
+            if isinstance(item, dict)
+        ]
+        action_rows = [
+            dict(item)
+            for item in (snapshot.get("action_journal") or [])
+            if isinstance(item, dict)
+        ]
+        outbox_rows = [
+            dict(item)
+            for item in (snapshot.get("outbox") or [])
+            if isinstance(item, dict)
+        ]
+        action_kinds = sorted(
+            {
+                str(payload.get("action_kind") or "").strip().lower()
+                for _path, payload in journal_entries
+                if str(payload.get("action_kind") or "").strip().lower()
+                in {"voice", "image"}
+            }
+            | {
+                str(item.get("message_type") or "").strip().lower()
+                for item in ledger_rows
+                if str(item.get("message_type") or "").strip().lower()
+                in {"voice", "image"}
+            }
+        )
+        record_summary = {
+            "journal_count": len(journal_entries),
+            "ledger_count": len(ledger_rows),
+            "action_journal_count": len(action_rows),
+            "outbox_count": len(outbox_rows),
+            "action_kinds": action_kinds,
+        }
+        digest = _legacy_media_record_digest(
+            flow_id=flow_id,
+            journal_entries=journal_entries,
+            sqlite_snapshot=snapshot,
+        )
+        has_sqlite_fact = bool(ledger_rows or action_rows or outbox_rows)
+        strictly_not_attempted = bool(journal_entries) and all(
+            action_journal_is_strictly_not_attempted(payload)
+            for _path, payload in journal_entries
+        )
+        if strictly_not_attempted and not has_sqlite_fact:
+            decision = "legacy_cancelled_before_trigger"
+            conversation_id = (
+                conversation_ids[0] if len(conversation_ids) == 1 else None
+            )
+        elif len(conversation_ids) != 1:
+            decision = "legacy_owner_unknown_incident"
+            conversation_id = None
+        else:
+            conversation_id = conversation_ids[0]
+            waiting_ledger = [
+                item
+                for item in ledger_rows
+                if str(item.get("ingest_state") or "").strip()
+                != "confirmed"
+            ]
+            ledger_identity_proven = True
+            if waiting_ledger:
+                try:
+                    _ordered_media_recovery_entries(
+                        conversation_id,
+                        waiting_ledger,
+                    )
+                except ValueError:
+                    ledger_identity_proven = False
+            outbox_identity_proven = all(
+                bool(
+                    [
+                        message
+                        for message in (
+                            (item.get("payload") or {}).get("messages")
+                            if isinstance(item.get("payload"), dict)
+                            else []
+                        )
+                        if isinstance(message, dict)
+                        and str(message.get("source_message_key") or "").strip()
+                    ]
+                )
+                for item in outbox_rows
+            )
+            identity_proven = bool(
+                _legacy_physical_journals_have_proven_identity(
+                    journal_entries
+                )
+                and ledger_identity_proven
+                and self._legacy_action_rows_have_proven_identity(
+                    conversation_id,
+                    action_rows,
+                )
+                and outbox_identity_proven
+            )
+            decision = (
+                "legacy_proven_identity_migration"
+                if identity_proven
+                else "legacy_identity_unresolved_handoff"
+            )
+
+        persisted = save_legacy_media_recovery_decision(
+            flow_id=flow_id,
+            legacy_record_digest=digest,
+            decision=decision,
+            conversation_id=conversation_id,
+            record_summary=record_summary,
+        )
+        append_log(
+            "WARN",
+            "legacy_media_recovery_classified",
+            "检测到升级前媒体记录，已一次性固定有限恢复出口。",
+            error_code={
+                "legacy_identity_unresolved_handoff": (
+                    "LEGACY_MEDIA_IDENTITY_UNRESOLVED"
+                ),
+                "legacy_owner_unknown_incident": (
+                    "LEGACY_MEDIA_OWNER_UNKNOWN"
+                ),
+            }.get(decision),
+            metadata={
+                "flow_id": flow_id,
+                "conversation_id": conversation_id,
+                "decision": decision,
+                "legacy_record_digest": digest,
+                **record_summary,
+            },
+        )
+        return persisted
+
+    def _settle_legacy_media_recovery(
+        self,
+        binding: Binding,
+        *,
+        flow_id: str,
+        journal_entries: list[tuple[Path, dict[str, Any]]],
+        conversation_ids: list[str],
+    ) -> Literal[
+        "not_legacy",
+        "continue_current",
+        "retry",
+        "blocked",
+        "settled",
+    ]:
+        state = self._classify_legacy_media_recovery(
+            flow_id=flow_id,
+            journal_entries=journal_entries,
+            conversation_ids=conversation_ids,
+        )
+        if not state:
+            return "not_legacy"
+        decision = str(state.get("decision") or "").strip()
+        if decision == "legacy_proven_identity_migration":
+            return "continue_current"
+        digest = str(state.get("legacy_record_digest") or "").strip()
+        if state.get("status") == "archived":
+            for path, _payload in journal_entries:
+                remove_action_journal(path)
+            return "settled"
+        if state.get("status") == "backend_confirmed":
+            archived = archive_legacy_media_flow_records(
+                flow_id,
+                legacy_record_digest=digest,
+                resolution=decision,
+                backend_result=(
+                    dict(state.get("backend_result") or {})
+                    if isinstance(state.get("backend_result"), dict)
+                    else {}
+                ),
+            )
+            for path, _payload in journal_entries:
+                remove_action_journal(path)
+            return "settled" if archived.get("status") == "archived" else "retry"
+        if state.get("status") == "manual_review_required":
+            self._pause_for_legacy_media_manual_review(
+                binding,
+                flow_id=flow_id,
+                state=state,
+            )
+            return "blocked"
+        if not self._legacy_media_retry_is_due(state):
+            return "retry"
+
+        try:
+            result = self.api.settle_legacy_media_recovery(
+                binding,
+                flow_id=flow_id,
+                legacy_record_digest=digest,
+                resolution=decision,
+                conversation_id=(
+                    str(state.get("conversation_id") or "").strip() or None
+                ),
+                record_summary=(
+                    dict(state.get("record_summary") or {})
+                    if isinstance(state.get("record_summary"), dict)
+                    else {}
+                ),
+            )
+            if (
+                result.get("confirmed") is not True
+                or str(result.get("legacy_record_digest") or "").strip()
+                != digest
+                or str(result.get("resolution") or "").strip()
+                not in {
+                    decision,
+                    "legacy_owner_unknown_incident",
+                }
+            ):
+                raise ValueError("LEGACY_MEDIA_RECOVERY_CONFIRMATION_INVALID")
+        except Exception as exc:
+            error_code = self._legacy_media_error_code(exc)
+            if not self._legacy_media_error_is_retryable(exc):
+                manual_state = mark_legacy_media_recovery_manual_review(
+                    flow_id,
+                    error_code=error_code,
+                    error_detail={
+                        "error_type": type(exc).__name__,
+                        "status_code": getattr(exc, "status_code", None),
+                        "retryable": getattr(exc, "retryable", None),
+                        "trace_id": getattr(exc, "trace_id", None),
+                    },
+                )
+                self._pause_for_legacy_media_manual_review(
+                    binding,
+                    flow_id=flow_id,
+                    state=manual_state,
+                )
+                return "blocked"
+            retry_state = mark_legacy_media_recovery_retry(
+                flow_id,
+                error_code=error_code,
+            )
+            append_log(
+                "WARN",
+                "legacy_media_recovery_retrying",
+                "旧媒体恢复终态尚未得到后端确认；保留原决定并按退避重试，不暂停接单状态。",
+                error_code=error_code,
+                metadata={
+                    "flow_id": flow_id,
+                    "decision": decision,
+                    "legacy_record_digest": digest,
+                    "attempt_count": retry_state.get("attempt_count"),
+                    "next_attempt_at": retry_state.get("next_attempt_at"),
+                },
+            )
+            return "retry"
+
+        confirmed = mark_legacy_media_recovery_confirmed(
+            flow_id,
+            backend_result=result,
+        )
+        archive_legacy_media_flow_records(
+            flow_id,
+            legacy_record_digest=digest,
+            resolution=str(result.get("resolution") or decision),
+            backend_result=result,
+        )
+        for path, _payload in journal_entries:
+            remove_action_journal(path)
+        append_log(
+            "WARN",
+            "legacy_media_recovery_settled",
+            "升级前媒体记录已得到后端幂等确认并归档；旧流程不再阻塞其他客户。",
+            error_code=str(result.get("reason_code") or "").strip() or None,
+            metadata={
+                "flow_id": flow_id,
+                "decision": decision,
+                "confirmed_resolution": result.get("resolution"),
+                "legacy_record_digest": digest,
+                "attempt_count": confirmed.get("attempt_count"),
+            },
+        )
+        return "settled"
+
     def _recover_restart_physical_action_journals(
         self,
         binding: Binding,
@@ -2755,6 +3337,42 @@ class TaskRunner:
             return "RUNTIME_INFLIGHT_SENT_ACK_PENDING"
         return ""
 
+    def _clear_restart_flow_after_legacy_settlement(
+        self,
+        *,
+        flow_id: str,
+    ) -> None:
+        """Release only the old flow pointer; never change operator pause."""
+
+        finish_runtime_flow(flow_id)
+        clear_c2_state(self._inflight_finish_receipt_key(flow_id))
+        if self.api.inflight_flow_id == flow_id:
+            self.api.inflight_flow_id = None
+        self._backend_inflight_flow_state = {}
+        self._restart_recovery_flow_id = None
+        self._restart_backend_probe_pending = False
+        self._restart_flow_reconciliation_incident = None
+        self._request_task_wake_if_safe(
+            reason="legacy_media_recovery_settled"
+        )
+
+    @staticmethod
+    def _archive_proven_legacy_migration_if_ready(flow_id: str) -> None:
+        state = load_legacy_media_recovery(flow_id)
+        if (
+            str(state.get("decision") or "").strip()
+            != "legacy_proven_identity_migration"
+            or state.get("status") == "archived"
+        ):
+            return
+        archive_legacy_media_flow_records(
+            flow_id,
+            legacy_record_digest=str(
+                state.get("legacy_record_digest") or ""
+            ).strip(),
+            resolution="legacy_proven_identity_migration",
+        )
+
     def _settle_orphaned_local_restart_flow(
         self,
         binding: Binding,
@@ -2791,6 +3409,19 @@ class TaskRunner:
             receipt=receipt,
             journal_entries=journal_entries,
         )
+        legacy_status = self._settle_legacy_media_recovery(
+            binding,
+            flow_id=flow_id,
+            journal_entries=journal_entries,
+            conversation_ids=conversation_ids,
+        )
+        if legacy_status in {"retry", "blocked"}:
+            return
+        if legacy_status == "settled":
+            self._clear_restart_flow_after_legacy_settlement(
+                flow_id=flow_id
+            )
+            return
         if len(conversation_ids) > 1:
             self._pause_for_restart_flow_reconciliation(
                 binding,
@@ -2916,6 +3547,7 @@ class TaskRunner:
                     metadata={"conversation_id": conversation_id},
                 )
             return
+        self._archive_proven_legacy_migration_if_ready(flow_id)
         finish_runtime_flow(flow_id)
         clear_c2_state(self._inflight_finish_receipt_key(flow_id))
         if self.api.inflight_flow_id == flow_id:
@@ -3074,6 +3706,19 @@ class TaskRunner:
             receipt=receipt,
             journal_entries=journal_entries,
         )
+        legacy_status = self._settle_legacy_media_recovery(
+            binding,
+            flow_id=flow_id,
+            journal_entries=journal_entries,
+            conversation_ids=conversation_ids,
+        )
+        if legacy_status in {"retry", "blocked"}:
+            return
+        if legacy_status == "settled":
+            self._clear_restart_flow_after_legacy_settlement(
+                flow_id=flow_id
+            )
+            return
         if len(conversation_ids) > 1:
             self._pause_for_restart_flow_reconciliation(
                 binding,
@@ -3093,6 +3738,9 @@ class TaskRunner:
             conversation_id=conversation_id,
         ) != "settled":
             return
+        if self._local_restart_flow_blocker(flow_id):
+            return
+        self._archive_proven_legacy_migration_if_ready(flow_id)
         terminal_kind = str(receipt.get("terminal_kind") or "").strip()
         if flow_kind in {"task", "chat_reply"}:
             terminal_kind = "task_terminal"

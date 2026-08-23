@@ -1007,6 +1007,8 @@ sent_ack用于确认Worker已发送。
     终止证明。后端仍能证明原事务身份时直接
     `settle_without_ui + fact_only`；身份暂不可证时才 `retry_later`。会话关闭、
     拒绝、可靠确认短码移除也只能停止新 UI，已产生事实仍须结算。
+    该规则只处理已符合当前合同的记录；不得把升级前缺少当前必填字段的
+    历史记录直接当成当前合同错误并无期限暂停。
 12. 单次首屏 OCR 未识别到短码不能把已有 bound 会话判定为短码已移除。低置信、
     截断或单次缺失进入 `degraded`，只有可审计的关闭操作或专门标题复核证据才能
     确认移除。
@@ -1636,6 +1638,24 @@ anchor、`frame_visual_id`、`canonical_visual_id/canonical_input_id`、Vision �
 `completed/failed`；两次或 120 秒仍不能证明时，创建一次幂等 HandoffEvent，当前会话进入
 `waiting_sales_reply`，其他短码继续处理。原隔离 action 保持终态，预留号不得复用。
 
+#### 跨版本历史媒体记录的有限恢复
+
+上述四终态是当前合同内的运行时状态机。当本地 SQLite/ActionJournal 来自旧灰度版本，
+且缺少当前必填的 `worker_stable_id`、提交回执或序列证据时，必须先进入独立
+`legacy_media_recovery` 分类，不得直接进入当前合同提交门。该分类只运行一次并持久化结果，
+禁止每个心跳重新猜测。
+
+| 旧记录可证明状态 | 唯一处理 | 恢复后的全局状态 |
+|---|---|---|
+| 明确未触发媒体 UI，且无 terminal/Ledger/Outbox | 写入 `legacy_cancelled_before_trigger`，烧毁旧预留号并归档；不生成消息 | 清除旧 Flow，继续拉单 |
+| 已形成媒体事实，且旧 checkpoint/receipt 能唯一证明原正式身份和顺序 | 使用已证明的原身份执行一次幂等迁移；不得因字段缺失新编或猜测序号 | 后端逐条确认后归档旧记录、清除旧 Flow |
+| 能唯一确定 conversation，但无法证明消息序号或归属 | 零消息入库、零 Brain、零 UI；以 `worker_id + conversation_id + legacy_record_digest` 创建一次幂等 `LEGACY_MEDIA_IDENTITY_UNRESOLVED` handoff/技术终态 | 后端确认后归档旧记录，当前客户转人工，清除旧 Flow，其他短码继续 |
+| 连 conversation 也无法唯一确定 | 零消息、零 UI；生成一次幂等 Worker 级 `LEGACY_MEDIA_OWNER_UNKNOWN` 事故并归档该媒体记录，不得伪造客户 handoff | 清除旧媒体 Flow，恢复其他可确认客户的工作；后台持续显示待人工审核事故 |
+
+后端临时不可用时，上述已持久化的决定按退避重试，不修改为普通暂停、不重复操作微信；
+后端确认终态前不拉取新工作，确认后自动释放旧 Flow。只有“消息可能已发送但结果无法确认”
+继续使用原发送硬门禁；历史语音/图片记录不得因新序号缺失永久锁死整个 Worker。
+
 运行时只允许一个正式身份提交门（函数名可调整，语义固定为
 `commit_message_identity`）。文字、语音、图片、AI 回执、普通读取、媒体续行、Outbox 恢复和
 ActionJournal 恢复均必须调用该门；Ledger 查询、正式 source key 构建、Outbox 写入、V3 message
@@ -1651,10 +1671,11 @@ ActionJournal 恢复均必须调用该门；Ledger 查询、正式 source key �
 | `_worker_identity_scope` | `0.9.20` 过渡期内部字段；缺失、空白、未知和非 `committed` 一律不是正式身份，不得由消费者直接判定 |
 | `fact_scope / item_state / delivery_state` | 只在正式消息提交后分别表示读取轮次、内容结果和传输进度；不得反向证明身份正式 |
 
-必须显式覆盖下列非法输入：字段缺失、空字符串、未知枚举、合法字段之间矛盾、正式 ID 无提交依据、
+当前合同新产生的记录必须显式覆盖下列非法输入：字段缺失、空字符串、未知枚举、合法字段之间矛盾、正式 ID 无提交依据、
 提交依据指向不同 observation/action/reserved ID、动作已触发但没有终态、隔离记录携带正式消息字段。
 这些输入统一在任何 Ledger/source key/Outbox/ingest/Brain 消费前失败关闭；不得采用“只拒绝已知坏值、
-其他默认放行”的黑名单写法。
+其他默认放行”的黑名单写法。升级前历史记录不得进入该分支，必须先由
+`legacy_media_recovery` 完成版本识别和有限终结。
 
 实现和验收必须使用同一张消费者矩阵，不得继续按现场案例逐个补丁：
 
@@ -1676,6 +1697,7 @@ ActionJournal 恢复、Outbox 恢复逐一执行上述矩阵。至少覆盖：
 5. 崩溃发生在预留前、预留后未触发、触发后未回执、回执后未写 Outbox、Outbox 后未获后端确认的五个边界；
 6. 静态门禁保证 Ledger/source key/Outbox/V3 builder/Brain 入口不能直接读取旧身份状态字段放行，必须依赖唯一正式提交门的类型化返回值；
 7. 全流程正向回归必须包含纯文字、单语音、单图片、文字+语音+图片、媒体动作期间新增同文文字、连续同类型媒体、页面滚动和崩溃恢复，不能只跑安全反例。
+8. 发布前必须直接复制上一个已发布灰度版本的原始 SQLite 和 ActionJournal，不允许测试代码重新构造成当前格式。至少覆盖：无序号但明确未触发、无序号且已形成事实、客户可归属但身份不可证、客户不可归属、结算前断网、结算后崩溃重启。每个分支都必须证明零重复 UI、零伪造消息、幂等终结和最终恢复 `/tasks/pull`。
 
 文字、语音和图片必须共用一套“动作前已确认序列 -> 动作后最新观察序列”对齐器。
 禁止语音、图片、文字分别维护三套身份恢复算法。
@@ -4293,8 +4315,11 @@ identity_unresolved 只写隔离记录并启动无 UI 恢复。若进程在任�
     直接 handoff 且不生成自动回复，self 失败只作 warning，角色未知进入 L2 恢复 hold。
     `fact_settlement` 只补录事实、不改变状态。以上路径完成后，同一 Worker 均可继续
     处理其他短码。
-16. 升级前留下的同类 waiting ledger/ActionJournal 必须可由新版本原样重传并
-    在后端确认后自动清理；不得要求测试人员手工删库、重新绑定或重装。
+16. 升级前留下的 waiting ledger/ActionJournal 必须先按记录自身的合同版本分类。
+    已具备当前正式身份的记录可原样重传；缺失新版必填序号/回执的旧记录必须进入
+    `legacy_media_recovery`，在“可证迁移 / 当前客户幂等 handoff / Worker 级待审核事故”之一
+    获得后端确认后自动归档并释放旧 Flow。不得要求测试人员手工删库、重新绑定或重装，
+    也不得因历史字段缺失永久保持全局暂停。
 17. 使用真实连续大表面的展开语音截图回放：两条语音均已转写时结果必须是两条语音、
     零图片、零图片右键、零 Vision；即使某条动作成功或锚点 alias 证据不完整，只要可靠
     语音类型证据成立，也不得重新归类为图片。

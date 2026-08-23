@@ -1,8 +1,8 @@
 {
   "generated_file": true,
   "source": "contracts/c2_contract_v3.json",
-  "contract_revision": "0.9.30",
-  "contract_sha256": "5c03784ebcb561f451d78e5f0379b4455c981edae2fd093efa072f27bc350b58",
+  "contract_revision": "0.9.31",
+  "contract_sha256": "74b66af403e007a8739a4b22c18bbfa4d9ba0a38838150a15144e0337a5f7f26",
   "observation_schema_version": 3,
   "action_phases": [
     "not_attempted",
@@ -1011,7 +1011,7 @@
     }
   },
   "startup_layout_calibration_contract": {
-    "schema_version": "0.9.30",
+    "schema_version": "0.9.31",
     "owner": "omniauto",
     "worker_role": "persist_path_transport_contract_validation_and_execution_only",
     "single_runtime_path": true,

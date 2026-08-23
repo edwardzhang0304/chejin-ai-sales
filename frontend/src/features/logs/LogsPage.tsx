@@ -25,6 +25,10 @@ const eventOptions = [
   { value: "worker_updated", label: "编辑 Worker" },
   { value: "worker_enabled_changed", label: "启用/停用 Worker" },
   { value: "worker_binding_reset", label: "重置绑定" },
+  {
+    value: "worker_legacy_media_owner_unknown",
+    label: "旧媒体归属待人工检查",
+  },
   { value: "task_created", label: "创建任务" },
   { value: "task_unblocked", label: "解除阻塞" },
   { value: "task_cancelled", label: "取消任务" },

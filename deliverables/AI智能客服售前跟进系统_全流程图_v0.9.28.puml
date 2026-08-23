@@ -176,7 +176,31 @@ loop Worker运行中；每次循环最多完成一个会话事务
       end
     else 存在voice/image动作日志或待结算media事实
       L --> W: 最早原事务 + replayable_observation\n不含图片原图
-      alt 明确未触发UI且没有正式消息/Outbox
+      alt 升级前历史记录缺少当前必填序号/回执
+        W -> L: 一次性classify_legacy_media_record\n持久化legacy_record_digest和分类结果
+        alt 明确未触发且无事实
+          W -> L: legacy_cancelled_before_trigger\n归档记录，不生成消息
+          W -> W: 清除旧Flow，继续拉单
+        else 原正式身份和顺序可由已存证据唯一证明
+          W -> Ingest: 以原身份幂等迁移\n不新编或猜测序号
+          Ingest --> W: 逐条确认
+          W -> L: 归档旧记录并清除旧Flow
+        else conversation唯一，但消息身份/顺序不可证
+          W -> Handoff: 以worker+conversation+legacy digest\n创建一次幂等LEGACY_MEDIA_IDENTITY_UNRESOLVED
+          Handoff --> W: handoff/技术终态已确认
+          W -> L: 归档旧记录，清除旧Flow
+          W -> W: 当前客户转人工，其他短码继续
+        else conversation也不可唯一确定
+          W -> Ingest: 创建一次幂等LEGACY_MEDIA_OWNER_UNKNOWN事故\n零消息、零UI
+          Ingest --> W: Worker级待审核事故已确认
+          W -> L: 归档旧记录，清除旧Flow
+        end
+        note over W,L
+        上述决定只分类一次；后端临时不可用时只退避重传已持久化决定。
+        后端确认前不拉新工作，确认后自动恢复；禁止每4秒重新猜测并永久暂停。
+        发送结果可能已发生但无法确认仍使用独立发送硬门禁，不属于本legacy media出口。
+        end note
+      else 明确未触发UI且没有正式消息/Outbox
         W -> L: cancelled_before_trigger\n烧毁reserved ID并保留最小审计终态
       else 已有committed_completed/failed正式事实或Outbox
         W -> Auth: 查询原事务事实结算决定\ntransaction_id + action_kind + 正式source key摘要

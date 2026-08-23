@@ -36,6 +36,8 @@ EVENT_NAMES: dict[str, str] = {
     "worker_binding_reset": "重置 Worker 绑定",
     "worker_inflight_failed_before_message_action": "读取动作前失败结算",
     "worker_inflight_read_failed_no_fact": "读取无可信事实失败结算",
+    "worker_legacy_media_recovery_settled": "旧媒体恢复已结算",
+    "worker_legacy_media_owner_unknown": "旧媒体归属待人工检查",
     "leads_exported": "导出选中线索",
     "task_created": "创建任务",
     "task_unblocked": "解除任务阻塞",
@@ -71,6 +73,7 @@ FAILED_EVENTS = {
     "vehicle_operation_failed",
     "sales_feishu_open_id_sync_failed",
     "handoff_feishu_notify_failed",
+    "worker_legacy_media_owner_unknown",
 }
 logger = logging.getLogger(__name__)
 
@@ -125,6 +128,8 @@ def _summary_for(log: OperationLog, lead_name: str | None) -> str:
         return f"导出 {count} 条线索" if count is not None else "导出选中线索"
     if log.event_type == "task_unblocked":
         return "销售已绑定 Worker，任务恢复为 pending"
+    if log.event_type == "worker_legacy_media_owner_unknown":
+        return "旧媒体记录无法确认客户归属，需要人工检查"
     if lead_name:
         return f"操作对象：{lead_name}"
     return EVENT_NAMES.get(log.event_type, log.event_type)

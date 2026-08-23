@@ -58,6 +58,14 @@ describe("操作日志运营文案", () => {
     expect(operationObjectName(logItem({}))).toBe("-");
   });
 
+  it("旧媒体归属事故显示明确操作类型", () => {
+    expect(
+      operationEventLabel(
+        logItem({ event_type: "worker_legacy_media_owner_unknown" }),
+      ),
+    ).toBe("旧媒体归属待人工检查");
+  });
+
   it("变更前后转成业务语言并隐藏 Worker UUID", () => {
     expect(formatOperationSnapshot({ worker_id: null, status: "unassigned" })).toBe("未绑定 Worker");
     expect(formatOperationSnapshot({ worker_id: "6ffba552-0d53-4c28-95c4-8d6f4a410999" })).toBe("已绑定 Worker");

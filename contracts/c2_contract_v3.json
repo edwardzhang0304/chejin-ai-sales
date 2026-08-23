@@ -1,10 +1,10 @@
 {
   "contract_version": 3,
-  "contract_revision": "0.9.30",
+  "contract_revision": "0.9.31",
   "observation_schema_version": 3,
   "control_schema_version": 1,
   "performance_fast_path_contract": {
-    "release": "0.9.30",
+    "release": "0.9.31",
     "business_semantics_unchanged": true,
     "flags": [
       "CHEJIN_TASK_SAFE_WAKE_ENABLED",
@@ -26,7 +26,7 @@
     "fallback_rule": "missing, conflicting, or unequal evidence executes the 0.9.10 full path without changing business state"
   },
   "startup_layout_calibration_contract": {
-    "schema_version": "0.9.30",
+    "schema_version": "0.9.31",
     "owner": "omniauto",
     "worker_role": "persist_path_transport_contract_validation_and_execution_only",
     "single_runtime_path": true,
@@ -1042,6 +1042,38 @@
     "retry_later_rule": "retain the exact ledger and action journal, block new UI actions, and retry the lightweight authorization check without reopening another conversation",
     "target_terminated_rule": "only a backend-confirmed permanent target termination may mark the exact conversation's waiting image facts not_required and remove its image action journals",
     "unknown_decision_rule": "missing or unknown decisions fail closed as retry_later"
+  },
+  "legacy_media_upgrade_recovery_contract": {
+    "applies_only_to_records_before_first_0_9_31_cutover": true,
+    "classification_persistence_rule": "classify the exact legacy record digest once before any backend or local terminal side effect; retry and restart must reuse the persisted digest decision and conversation scope",
+    "settlement_endpoint": "POST /api/workers/{worker_id}/legacy-media-recovery/settle",
+    "decisions": [
+      "legacy_cancelled_before_trigger",
+      "legacy_proven_identity_migration",
+      "legacy_identity_unresolved_handoff",
+      "legacy_owner_unknown_incident"
+    ],
+    "proven_identity_rule": "only an already durable exact source_message_key and conflict-free worker-message-N order may use the normal Journal Ledger Outbox ingest recovery path",
+    "cancel_rule": "an explicitly not_attempted or cancelled_before_trigger legacy action with no formed Ledger ActionJournal or Outbox fact is archived without message handoff Brain or UI action",
+    "customer_handoff_rule": "when exactly one authorized conversation is durable but exact message identity or order is not provable create one idempotent handoff with LEGACY_MEDIA_IDENTITY_UNRESOLVED and create no MessageEvent Brain reply or UI action",
+    "owner_unknown_rule": "when no single authorized conversation is provable create one Worker-level pending_manual_review incident with LEGACY_MEDIA_OWNER_UNKNOWN and create no guessed conversation handoff MessageEvent Brain reply or UI action",
+    "stale_owner_rule": "a requested customer handoff whose binding is missing or no longer belongs to the worker degrades to the owner_unknown terminal instead of guessing ownership",
+    "backend_confirmation_rule": "retain the old Flow Journal Ledger and Outbox until one idempotent backend terminal confirmation is durably recorded; only then archive local legacy records and release the old Flow",
+    "lost_response_rule": "an identical retry after backend commit returns the original terminal result even if conversation binding state later changes",
+    "temporary_failure_rule": "connection timeout connection failure HTTP 5xx or an explicit retryable=true keep the exact old Flow and original operator run status then retry with persisted backoff",
+    "permanent_failure_rule": "HTTP 4xx idempotency conflict or contradictory confirmation persists manual_review_required disables automatic retry keeps the exact old Flow and explicitly pauses the Worker with a visible incident",
+    "restart_after_ack_rule": "a crash after backend confirmation but before local archive resumes archive without a second backend side effect",
+    "release_rule": "after backend confirmation and local archive clear only the legacy Flow barrier and resume normal task pull without changing an intentional operator pause",
+    "forbidden_behaviors": [
+      "repeat_wechat_ui_action",
+      "repeat_voice_transcription",
+      "repeat_image_vision",
+      "invent_source_message_key",
+      "invent_worker_message_sequence",
+      "create_message_or_brain_for_unresolved_legacy_media",
+      "reclassify_on_each_heartbeat",
+      "silent_running_permanent_pull_block"
+    ]
   },
   "outbox_recovery_contract": {
     "actions": [

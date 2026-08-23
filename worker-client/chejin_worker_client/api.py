@@ -135,6 +135,34 @@ class WorkerApiClient:
             self.inflight_flow_id = None
         return dict(payload or {})
 
+    def settle_legacy_media_recovery(
+        self,
+        binding: Binding,
+        *,
+        flow_id: str,
+        legacy_record_digest: str,
+        resolution: str,
+        conversation_id: str | None,
+        record_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = self._request(
+            "POST",
+            (
+                f"/workers/{binding.worker_id}"
+                "/legacy-media-recovery/settle"
+            ),
+            binding=binding,
+            json={
+                "flow_id": flow_id,
+                "legacy_record_digest": legacy_record_digest,
+                "resolution": resolution,
+                "conversation_id": conversation_id,
+                "record_summary": dict(record_summary or {}),
+            },
+            extra_headers={"X-Inflight-Flow-Id": flow_id},
+        )
+        return dict(payload or {})
+
     def pull_task(self, binding: Binding) -> tuple[str, Task | None, str | None]:
         payload = self._request("GET", f"/workers/{binding.worker_id}/tasks/pull", binding=binding)
         task = Task.from_api(payload["task"]) if payload.get("task") else None

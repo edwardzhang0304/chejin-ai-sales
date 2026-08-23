@@ -847,6 +847,90 @@ class StorageTest(unittest.TestCase):
         self.assertIsNotNone(stored["next_attempt_at"])
         self.assertTrue(self.storage.has_pending_c2_outbox())
 
+    def test_legacy_recovery_decision_is_immutable(self):
+        digest = "a" * 64
+        first = self.storage.save_legacy_media_recovery_decision(
+            flow_id="read-legacy-immutable",
+            legacy_record_digest=digest,
+            decision="legacy_identity_unresolved_handoff",
+            conversation_id="conversation-legacy",
+            record_summary={"journal_count": 1},
+        )
+        repeated = self.storage.save_legacy_media_recovery_decision(
+            flow_id="read-legacy-immutable",
+            legacy_record_digest=digest,
+            decision="legacy_identity_unresolved_handoff",
+            conversation_id="conversation-legacy",
+            record_summary={"journal_count": 99},
+        )
+
+        self.assertEqual(first, repeated)
+        self.assertEqual(repeated["record_summary"], {"journal_count": 1})
+        with self.assertRaisesRegex(
+            ValueError,
+            "LEGACY_MEDIA_RECOVERY_DECISION_COLLISION",
+        ):
+            self.storage.save_legacy_media_recovery_decision(
+                flow_id="read-legacy-immutable",
+                legacy_record_digest="b" * 64,
+                decision="legacy_owner_unknown_incident",
+                conversation_id=None,
+                record_summary={},
+            )
+
+    def test_legacy_records_cannot_archive_before_backend_confirmation(self):
+        flow_id = "read-legacy-confirm-first"
+        digest = "c" * 64
+        self.storage.save_legacy_media_recovery_decision(
+            flow_id=flow_id,
+            legacy_record_digest=digest,
+            decision="legacy_owner_unknown_incident",
+            conversation_id=None,
+            record_summary={"ledger_count": 2},
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "LEGACY_MEDIA_RECOVERY_BACKEND_CONFIRMATION_MISSING",
+        ):
+            self.storage.archive_legacy_media_flow_records(
+                flow_id,
+                legacy_record_digest=digest,
+                resolution="legacy_owner_unknown_incident",
+            )
+        self.assertEqual(
+            self.storage.load_legacy_media_recovery(flow_id)["status"],
+            "classified",
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "LEGACY_MEDIA_RECOVERY_CONFIRMATION_INVALID",
+        ):
+            self.storage.mark_legacy_media_recovery_confirmed(
+                flow_id,
+                backend_result={
+                    "confirmed": True,
+                    "legacy_record_digest": "d" * 64,
+                    "resolution": "legacy_owner_unknown_incident",
+                },
+            )
+        confirmed = self.storage.mark_legacy_media_recovery_confirmed(
+            flow_id,
+            backend_result={
+                "confirmed": True,
+                "legacy_record_digest": digest,
+                "resolution": "legacy_owner_unknown_incident",
+            },
+        )
+        self.assertEqual(confirmed["status"], "backend_confirmed")
+        archived = self.storage.archive_legacy_media_flow_records(
+            flow_id,
+            legacy_record_digest=digest,
+            resolution="legacy_owner_unknown_incident",
+        )
+        self.assertEqual(archived["status"], "archived")
+
 
 if __name__ == "__main__":
     unittest.main()

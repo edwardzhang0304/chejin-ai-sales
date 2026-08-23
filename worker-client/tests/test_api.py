@@ -124,6 +124,48 @@ class WorkerApiClientTest(unittest.TestCase):
         )
         self.assertEqual(raised.exception.trace_id, "trace-error-1")
 
+    def test_legacy_media_settlement_uses_exact_flow_header_and_payload(self):
+        client = WorkerApiClient("http://127.0.0.1:8000/api")
+        session = _Session()
+        client.session = session
+        binding = Binding(
+            worker_id="worker-legacy",
+            worker_token="worker-token",
+            client_instance_id="client-legacy",
+            run_status="running",
+        )
+
+        client.settle_legacy_media_recovery(
+            binding,
+            flow_id="read-legacy",
+            legacy_record_digest="a" * 64,
+            resolution="legacy_owner_unknown_incident",
+            conversation_id=None,
+            record_summary={"ledger_count": 2},
+        )
+
+        call = session.calls[0]
+        self.assertEqual(call["method"], "POST")
+        self.assertTrue(
+            call["url"].endswith(
+                "/workers/worker-legacy/legacy-media-recovery/settle"
+            )
+        )
+        self.assertEqual(
+            call["headers"]["X-Inflight-Flow-Id"],
+            "read-legacy",
+        )
+        self.assertEqual(
+            call["json"],
+            {
+                "flow_id": "read-legacy",
+                "legacy_record_digest": "a" * 64,
+                "resolution": "legacy_owner_unknown_incident",
+                "conversation_id": None,
+                "record_summary": {"ledger_count": 2},
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

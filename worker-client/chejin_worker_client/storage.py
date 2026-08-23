@@ -25,6 +25,8 @@ RETENTION_DAYS = 30
 MAX_C2_LEDGER_ROWS_PER_CONVERSATION = 2000
 DEFAULT_ACCEPT_SCHEDULE = {"enabled": False, "start": "09:00", "end": "21:00"}
 RUNTIME_CONTROL_KEY = "runtime_control_v1"
+LEGACY_MEDIA_CUTOVER_KEY = "legacy_media_recovery_cutover_v1"
+LEGACY_MEDIA_RECOVERY_STATE_PREFIX = "legacy_media_recovery_v1:"
 DEFAULT_RUNTIME_CONTROL = {
     "pause_requested": False,
     "pause_requested_at": None,
@@ -163,6 +165,25 @@ def init_db(conn: sqlite3.Connection) -> None:
           updated_at TEXT NOT NULL
         )
         """
+    )
+    # This marker is written exactly once on the first 0.9.31-capable open.
+    # Rows/files older than it are eligible for the bounded cross-version
+    # recovery path; records produced afterwards must satisfy the current
+    # identity contract and are never silently downgraded to "legacy".
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO c2_runtime_state (key, value, updated_at)
+        VALUES (?, ?, ?)
+        """,
+        (
+            LEGACY_MEDIA_CUTOVER_KEY,
+            json.dumps(
+                {"cutover_at": utc_now_iso()},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            utc_now_iso(),
+        ),
     )
     conn.execute(
         """
@@ -668,6 +689,188 @@ def clear_c2_state(key: str) -> None:
         conn.commit()
 
 
+def legacy_media_recovery_cutover_at() -> str:
+    state = load_c2_state(LEGACY_MEDIA_CUTOVER_KEY)
+    return str(state.get("cutover_at") or "").strip()
+
+
+def legacy_media_recovery_state_key(flow_id: str) -> str:
+    clean_flow_id = str(flow_id or "").strip()
+    if not clean_flow_id:
+        raise ValueError("LEGACY_MEDIA_FLOW_ID_MISSING")
+    return f"{LEGACY_MEDIA_RECOVERY_STATE_PREFIX}{clean_flow_id}"
+
+
+def load_legacy_media_recovery(flow_id: str) -> dict[str, Any]:
+    return load_c2_state(legacy_media_recovery_state_key(flow_id))
+
+
+def save_legacy_media_recovery_decision(
+    *,
+    flow_id: str,
+    legacy_record_digest: str,
+    decision: str,
+    conversation_id: str | None,
+    record_summary: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist one immutable legacy classification before any side effect."""
+
+    clean_digest = str(legacy_record_digest or "").strip().lower()
+    clean_decision = str(decision or "").strip()
+    clean_conversation_id = str(conversation_id or "").strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", clean_digest):
+        raise ValueError("LEGACY_MEDIA_RECORD_DIGEST_INVALID")
+    if clean_decision not in {
+        "legacy_cancelled_before_trigger",
+        "legacy_proven_identity_migration",
+        "legacy_identity_unresolved_handoff",
+        "legacy_owner_unknown_incident",
+    }:
+        raise ValueError("LEGACY_MEDIA_RECOVERY_DECISION_INVALID")
+    if (
+        clean_decision == "legacy_identity_unresolved_handoff"
+        and not clean_conversation_id
+    ):
+        raise ValueError("LEGACY_MEDIA_RECOVERY_CONVERSATION_MISSING")
+    now = utc_now_iso()
+
+    def update(current: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        if current:
+            if (
+                str(current.get("legacy_record_digest") or "").strip()
+                != clean_digest
+                or str(current.get("decision") or "").strip()
+                != clean_decision
+                or str(current.get("conversation_id") or "").strip()
+                != clean_conversation_id
+            ):
+                raise ValueError("LEGACY_MEDIA_RECOVERY_DECISION_COLLISION")
+            return current, current
+        persisted = {
+            "schema_version": 1,
+            "flow_id": str(flow_id or "").strip(),
+            "legacy_record_digest": clean_digest,
+            "decision": clean_decision,
+            "conversation_id": clean_conversation_id or None,
+            "record_summary": dict(record_summary or {}),
+            "status": "classified",
+            "attempt_count": 0,
+            "next_attempt_at": None,
+            "last_error": None,
+            "classified_at": now,
+            "backend_confirmed_at": None,
+            "archived_at": None,
+        }
+        return persisted, persisted
+
+    return update_c2_state_atomic(
+        legacy_media_recovery_state_key(flow_id),
+        update,
+    )
+
+
+def mark_legacy_media_recovery_retry(
+    flow_id: str,
+    *,
+    error_code: str,
+) -> dict[str, Any]:
+    """Persist retry/backoff without changing the frozen classification."""
+
+    def update(current: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        if not current:
+            raise ValueError("LEGACY_MEDIA_RECOVERY_DECISION_MISSING")
+        attempt_count = int(current.get("attempt_count") or 0) + 1
+        updated = {
+            **current,
+            "status": "retry_waiting",
+            "attempt_count": attempt_count,
+            "next_attempt_at": _next_attempt_iso(attempt_count),
+            "last_error": str(error_code or "LEGACY_MEDIA_RECOVERY_RETRY"),
+        }
+        return updated, updated
+
+    return update_c2_state_atomic(
+        legacy_media_recovery_state_key(flow_id),
+        update,
+    )
+
+
+def mark_legacy_media_recovery_manual_review(
+    flow_id: str,
+    *,
+    error_code: str,
+    error_detail: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Stop automatic retry after a permanent contract/response failure."""
+
+    now = utc_now_iso()
+
+    def update(current: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        if not current:
+            raise ValueError("LEGACY_MEDIA_RECOVERY_DECISION_MISSING")
+        if current.get("status") in {"backend_confirmed", "archived"}:
+            raise ValueError("LEGACY_MEDIA_RECOVERY_ALREADY_CONFIRMED")
+        updated = {
+            **current,
+            "status": "manual_review_required",
+            "next_attempt_at": None,
+            "last_error": str(
+                error_code or "LEGACY_MEDIA_RECOVERY_PERMANENT_FAILURE"
+            ),
+            "manual_review_detail": dict(error_detail or {}),
+            "manual_review_required_at": (
+                current.get("manual_review_required_at") or now
+            ),
+        }
+        return updated, updated
+
+    return update_c2_state_atomic(
+        legacy_media_recovery_state_key(flow_id),
+        update,
+    )
+
+
+def mark_legacy_media_recovery_confirmed(
+    flow_id: str,
+    *,
+    backend_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    now = utc_now_iso()
+
+    def update(current: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        if not current:
+            raise ValueError("LEGACY_MEDIA_RECOVERY_DECISION_MISSING")
+        result = dict(backend_result or {})
+        decision = str(current.get("decision") or "").strip()
+        confirmed_resolution = str(result.get("resolution") or "").strip()
+        allowed_resolutions = {decision}
+        if decision == "legacy_identity_unresolved_handoff":
+            allowed_resolutions.add("legacy_owner_unknown_incident")
+        if (
+            result.get("confirmed") is not True
+            or str(result.get("legacy_record_digest") or "").strip()
+            != str(current.get("legacy_record_digest") or "").strip()
+            or confirmed_resolution not in allowed_resolutions
+        ):
+            raise ValueError("LEGACY_MEDIA_RECOVERY_CONFIRMATION_INVALID")
+        updated = {
+            **current,
+            "status": "backend_confirmed",
+            "next_attempt_at": None,
+            "last_error": None,
+            "backend_result": result,
+            "backend_confirmed_at": (
+                current.get("backend_confirmed_at") or now
+            ),
+        }
+        return updated, updated
+
+    return update_c2_state_atomic(
+        legacy_media_recovery_state_key(flow_id),
+        update,
+    )
+
+
 _OUTBOX_FORBIDDEN_KEYS = set(
     (c2_contract_v3().get("image_persistence_policy") or {}).get("forbidden_field_names") or []
 )
@@ -1139,6 +1342,252 @@ def c2_flow_conversation_ids(read_run_id: str) -> list[str]:
             if str(row["conversation_id"] or "").strip()
         }
     )
+
+
+def legacy_media_flow_snapshot(read_run_id: str) -> dict[str, Any]:
+    """Load the immutable local facts used to classify one old media flow."""
+
+    clean_read_run_id = str(read_run_id or "").strip()
+    if not clean_read_run_id:
+        raise ValueError("LEGACY_MEDIA_FLOW_ID_MISSING")
+    with db_connection() as conn:
+        ledger_rows = conn.execute(
+            """
+            SELECT conversation_id, source_message_key, origin_read_run_id,
+                   dedupe_key, message_type, terminal_state, ingest_state,
+                   result_json, first_seen_at
+            FROM c2_message_ledger
+            WHERE origin_read_run_id = ?
+              AND message_type IN ('voice', 'image')
+            ORDER BY conversation_id, source_message_key
+            """,
+            (clean_read_run_id,),
+        ).fetchall()
+        action_rows = conn.execute(
+            """
+            SELECT flow_id, conversation_id, source_message_key,
+                   origin_read_run_id, outcome_json, created_at
+            FROM c2_action_journal
+            WHERE origin_read_run_id = ? OR flow_id = ?
+            ORDER BY conversation_id, source_message_key
+            """,
+            (clean_read_run_id, clean_read_run_id),
+        ).fetchall()
+        outbox_rows = conn.execute(
+            """
+            SELECT outbox_id, conversation_id, authorization_revision,
+                   read_run_id, payload_json, status, created_at
+            FROM c2_ingest_outbox
+            WHERE read_run_id = ?
+            ORDER BY outbox_id
+            """,
+            (clean_read_run_id,),
+        ).fetchall()
+
+    def decode_rows(
+        rows: list[sqlite3.Row],
+        *,
+        json_column: str,
+        decoded_column: str,
+    ) -> list[dict[str, Any]]:
+        decoded: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                value = json.loads(item.pop(json_column) or "{}")
+            except (json.JSONDecodeError, TypeError):
+                value = {}
+            item[decoded_column] = value if isinstance(value, dict) else {}
+            decoded.append(item)
+        return decoded
+
+    return {
+        "flow_id": clean_read_run_id,
+        "ledger": decode_rows(
+            ledger_rows,
+            json_column="result_json",
+            decoded_column="result",
+        ),
+        "action_journal": decode_rows(
+            action_rows,
+            json_column="outcome_json",
+            decoded_column="outcome",
+        ),
+        "outbox": decode_rows(
+            outbox_rows,
+            json_column="payload_json",
+            decoded_column="payload",
+        ),
+    }
+
+
+def flow_has_pre_cutover_media_records(read_run_id: str) -> bool:
+    """Return whether SQLite facts predate the 0.9.31 recovery cutover."""
+
+    clean_read_run_id = str(read_run_id or "").strip()
+    cutover_at = legacy_media_recovery_cutover_at()
+    if not clean_read_run_id or not cutover_at:
+        return False
+    with db_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM (
+              SELECT first_seen_at AS created_at
+              FROM c2_message_ledger
+              WHERE origin_read_run_id = ?
+                AND message_type IN ('voice', 'image')
+              UNION ALL
+              SELECT created_at
+              FROM c2_action_journal
+              WHERE origin_read_run_id = ? OR flow_id = ?
+              UNION ALL
+              SELECT created_at
+              FROM c2_ingest_outbox
+              WHERE read_run_id = ?
+            ) AS legacy_candidates
+            WHERE created_at < ?
+            LIMIT 1
+            """,
+            (
+                clean_read_run_id,
+                clean_read_run_id,
+                clean_read_run_id,
+                clean_read_run_id,
+                cutover_at,
+            ),
+        ).fetchone()
+    return row is not None
+
+
+def archive_legacy_media_flow_records(
+    flow_id: str,
+    *,
+    legacy_record_digest: str,
+    resolution: str,
+    backend_result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Atomically terminalize old local facts after the frozen exit is safe."""
+
+    clean_flow_id = str(flow_id or "").strip()
+    clean_digest = str(legacy_record_digest or "").strip().lower()
+    state_key = legacy_media_recovery_state_key(clean_flow_id)
+    now = utc_now_iso()
+    with db_connection() as conn:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            state_row = conn.execute(
+                "SELECT value FROM c2_runtime_state WHERE key = ?",
+                (state_key,),
+            ).fetchone()
+            if not state_row:
+                raise ValueError("LEGACY_MEDIA_RECOVERY_DECISION_MISSING")
+            try:
+                state = json.loads(state_row["value"] or "{}")
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise ValueError("LEGACY_MEDIA_RECOVERY_STATE_INVALID") from exc
+            if str(state.get("legacy_record_digest") or "").strip() != clean_digest:
+                raise ValueError("LEGACY_MEDIA_RECOVERY_DECISION_COLLISION")
+            decision = str(state.get("decision") or "").strip()
+            clean_resolution = str(resolution or "").strip()
+            allowed_resolutions = {decision}
+            if decision == "legacy_identity_unresolved_handoff":
+                allowed_resolutions.add("legacy_owner_unknown_incident")
+            if clean_resolution not in allowed_resolutions:
+                raise ValueError("LEGACY_MEDIA_RECOVERY_DECISION_COLLISION")
+            if (
+                decision != "legacy_proven_identity_migration"
+                and str(state.get("status") or "").strip()
+                not in {"backend_confirmed", "archived"}
+            ):
+                raise ValueError(
+                    "LEGACY_MEDIA_RECOVERY_BACKEND_CONFIRMATION_MISSING"
+                )
+
+            ledger_rows = conn.execute(
+                """
+                SELECT conversation_id, source_message_key, result_json
+                FROM c2_message_ledger
+                WHERE origin_read_run_id = ?
+                  AND message_type IN ('voice', 'image')
+                  AND ingest_state != 'confirmed'
+                """,
+                (clean_flow_id,),
+            ).fetchall()
+            for row in ledger_rows:
+                try:
+                    result = json.loads(row["result_json"] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    result = {}
+                if not isinstance(result, dict):
+                    result = {}
+                result["legacy_media_recovery"] = {
+                    "state": "archived",
+                    "resolution": clean_resolution,
+                    "legacy_record_digest": clean_digest,
+                    "archived_at": now,
+                }
+                conn.execute(
+                    """
+                    UPDATE c2_message_ledger
+                    SET ingest_state = 'not_required',
+                        result_json = ?, updated_at = ?
+                    WHERE conversation_id = ? AND source_message_key = ?
+                    """,
+                    (
+                        json.dumps(
+                            result,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                        now,
+                        str(row["conversation_id"]),
+                        str(row["source_message_key"]),
+                    ),
+                )
+            conn.execute(
+                "DELETE FROM c2_action_journal "
+                "WHERE origin_read_run_id = ? OR flow_id = ?",
+                (clean_flow_id, clean_flow_id),
+            )
+            conn.execute(
+                "DELETE FROM c2_ingest_outbox WHERE read_run_id = ?",
+                (clean_flow_id,),
+            )
+            archived = {
+                **state,
+                "status": "archived",
+                "next_attempt_at": None,
+                "last_error": None,
+                "backend_result": dict(
+                    backend_result
+                    if backend_result is not None
+                    else state.get("backend_result") or {}
+                ),
+                "backend_confirmed_at": (
+                    state.get("backend_confirmed_at")
+                    or (now if backend_result is not None else None)
+                ),
+                "archived_at": state.get("archived_at") or now,
+            }
+            conn.execute(
+                "UPDATE c2_runtime_state SET value = ?, updated_at = ? "
+                "WHERE key = ?",
+                (
+                    json.dumps(
+                        archived,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                    now,
+                    state_key,
+                ),
+            )
+            conn.commit()
+            return archived
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def clear_c2_action_journal(flow_id: str) -> None:

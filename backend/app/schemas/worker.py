@@ -1,4 +1,6 @@
-from pydantic import BaseModel, Field, field_validator
+from typing import Literal
+
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class WorkerCreate(BaseModel):
@@ -69,6 +71,47 @@ class WorkerInflightFlowFinishRequest(BaseModel):
             return None
         cleaned = value.strip()
         return cleaned or None
+
+
+class WorkerLegacyMediaRecoverySettleRequest(BaseModel):
+    flow_id: str = Field(min_length=1, max_length=128)
+    legacy_record_digest: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern="^[0-9a-f]{64}$",
+    )
+    resolution: Literal[
+        "legacy_cancelled_before_trigger",
+        "legacy_identity_unresolved_handoff",
+        "legacy_owner_unknown_incident",
+    ]
+    conversation_id: str | None = Field(default=None, max_length=36)
+    record_summary: dict = Field(default_factory=dict)
+
+    @field_validator("flow_id", "conversation_id")
+    @classmethod
+    def strip_legacy_recovery_value(
+        cls,
+        value: str | None,
+    ) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    @model_validator(mode="after")
+    def validate_legacy_recovery_scope(self):
+        if (
+            self.resolution == "legacy_identity_unresolved_handoff"
+            and not self.conversation_id
+        ):
+            raise ValueError("客户级旧媒体终态必须携带 conversation_id")
+        if (
+            self.resolution == "legacy_owner_unknown_incident"
+            and self.conversation_id
+        ):
+            raise ValueError("Worker 级旧媒体事故不得猜测 conversation_id")
+        return self
 
 
 class WorkerResetBindingRequest(BaseModel):
