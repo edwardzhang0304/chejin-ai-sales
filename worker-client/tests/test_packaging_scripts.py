@@ -506,7 +506,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "abc28876354761dc038ee4e99fa4f95e85ab342b"
+                        "5c94a91cd956f37776be73f872b4c34ccaccd810"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -618,6 +618,18 @@ class PackagingScriptsTest(unittest.TestCase):
                             "restart_inflight_media_action_journal_"
                             "recovery_contract"
                         ),
+                        (
+                            "restart_full_durable_media_"
+                            "reconciliation_contract"
+                        ),
+                        (
+                            "worker_sequence_ordered_mixed_media_"
+                            "recovery_contract"
+                        ),
+                        (
+                            "transient_recovery_authorization_"
+                            "retry_contract"
+                        ),
                     ],
                 }
             ],
@@ -639,7 +651,7 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["chejin_overlays"],
         )
         self.assertIn(
-            "abc28876354761dc038ee4e99fa4f95e85ab342b",
+            "5c94a91cd956f37776be73f872b4c34ccaccd810",
             provenance["integration_note"],
         )
         self.assertIn("0.9.30", provenance["integration_note"])
