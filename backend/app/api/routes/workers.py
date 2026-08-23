@@ -11,6 +11,7 @@ from app.schemas.worker import (
     WorkerHeartbeat,
     WorkerInflightFlowFinishRequest,
     WorkerInflightFlowStartRequest,
+    WorkerLegacyMediaRecoverySettleRequest,
     WorkerResetBindingRequest,
     WorkerRunStatusRequest,
     WorkerUpdate,
@@ -191,6 +192,45 @@ def finish_worker_inflight_flow(
             request, worker_id=worker.id, worker_name=worker.worker_name
         )
         data = worker_service.finish_inflight_flow(db, worker, payload, actor)
+        db.commit()
+        return ok(data)
+    except Exception:
+        db.rollback()
+        raise
+
+
+@router.post("/workers/{worker_id}/legacy-media-recovery/settle")
+def settle_worker_legacy_media_recovery(
+    request: Request,
+    worker_id: str,
+    payload: WorkerLegacyMediaRecoverySettleRequest,
+    db: Session = Depends(get_db),
+    x_worker_token: str | None = Header(default=None, alias="X-Worker-Token"),
+    x_client_instance_id: str | None = Header(
+        default=None,
+        alias="X-Client-Instance-Id",
+    ),
+):
+    """Settle an upgrade-only media record without accepting a message."""
+
+    try:
+        worker = worker_service.authenticate_worker_client(
+            db,
+            worker_id,
+            x_worker_token,
+            x_client_instance_id,
+        )
+        actor = worker_actor_context(
+            request,
+            worker_id=worker.id,
+            worker_name=worker.worker_name,
+        )
+        data = worker_service.settle_legacy_media_recovery(
+            db,
+            worker,
+            payload,
+            actor,
+        )
         db.commit()
         return ok(data)
     except Exception:

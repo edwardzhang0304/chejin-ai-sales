@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import ast
+import base64
 import copy
+import gzip
 import inspect
 import json
 import hashlib
 import os
+import shutil
 import tempfile
 import textwrap
 import threading
@@ -58,6 +61,7 @@ from chejin_worker_client.storage import (
     list_c2_ledger_entries,
     list_c2_outbox_waiting,
     load_c2_state,
+    load_legacy_media_recovery,
     load_runtime_control,
     load_c2_ledger_entry,
     load_c2_outbox_entry,
@@ -91,6 +95,22 @@ from chejin_worker_client.wechat_c2 import (
     project_final_slot_flow_gates,
     voice_observation_source_key,
 )
+
+
+LEGACY_FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures"
+
+
+def install_legacy_action_journal(
+    fixture_path: Path,
+) -> tuple[Path, dict]:
+    payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+    destination = action_journal_path(
+        str(payload["action_kind"]),
+        str(payload["transaction_id"]),
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(fixture_path, destination)
+    return destination, payload
 
 
 def worker_source_message_key(target, *, identity_kind, identity):
@@ -526,6 +546,9 @@ class FakeApi:
         self.inflight_flow_id: str | None = None
         self.inflight_flow_state: dict = {}
         self.inflight_flow_events: list[str] = []
+        self.legacy_recovery_payloads: list[dict] = []
+        self.legacy_recovery_error: Exception | None = None
+        self.legacy_recovery_result_override: dict | None = None
 
     def start_inflight_flow(self, binding: Binding, *, flow_id: str, flow_kind: str):
         self.inflight_flow_id = flow_id
@@ -554,6 +577,43 @@ class FakeApi:
         self.inflight_flow_id = None
         self.inflight_flow_state = {}
         return {"finished": True, "flow_id": flow_id}
+
+    def settle_legacy_media_recovery(
+        self,
+        binding: Binding,
+        **payload,
+    ):
+        self.events.append(
+            f"legacy_media_recovery:{payload.get('resolution')}"
+        )
+        self.legacy_recovery_payloads.append(dict(payload))
+        if self.legacy_recovery_error is not None:
+            raise self.legacy_recovery_error
+        self.inflight_flow_id = None
+        self.inflight_flow_state = {}
+        result = {
+            "confirmed": True,
+            "flow_id": payload.get("flow_id"),
+            "legacy_record_digest": payload.get(
+                "legacy_record_digest"
+            ),
+            "resolution": payload.get("resolution"),
+            "reason_code": {
+                "legacy_cancelled_before_trigger": (
+                    "LEGACY_MEDIA_CANCELLED_BEFORE_TRIGGER"
+                ),
+                "legacy_identity_unresolved_handoff": (
+                    "LEGACY_MEDIA_IDENTITY_UNRESOLVED"
+                ),
+                "legacy_owner_unknown_incident": (
+                    "LEGACY_MEDIA_OWNER_UNKNOWN"
+                ),
+            }.get(str(payload.get("resolution") or "")),
+            "flow_released": True,
+        }
+        if self.legacy_recovery_result_override is not None:
+            result.update(self.legacy_recovery_result_override)
+        return result
 
     def heartbeat(self, binding: Binding, **kwargs):
         self.heartbeat_payloads.append(dict(kwargs))
@@ -3909,6 +3969,412 @@ class TaskRunnerTest(unittest.TestCase):
             ),
             "startup must obtain backend flow state before releasing task pull",
         )
+
+    def test_legacy_uat_journal_handoffs_once_then_releases_pull(self):
+        api = FakeApi(None)
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-legacy-uat-journal",
+            worker_token="token",
+            client_instance_id="client-legacy-uat-journal",
+            run_status="running",
+        )
+        runner.binding = binding
+        fixture = (
+            LEGACY_FIXTURE_ROOT
+            / "v0.9.25"
+            / "voice_identity_unresolved_action_journal.json"
+        )
+        fixture_payload = json.loads(fixture.read_text(encoding="utf-8"))
+        flow_id = str(fixture_payload["origin_read_run_id"])
+        begin_runtime_flow(flow_id, "c2_read")
+        runner._restart_recovery_flow_id = flow_id
+        journal_path, _payload = install_legacy_action_journal(fixture)
+
+        runner.tick_once()
+
+        self.assertEqual(binding.run_status, "running")
+        self.assertFalse(journal_path.exists())
+        self.assertIsNone(load_runtime_control()["inflight_flow_id"])
+        self.assertIn("pull", api.events)
+        self.assertEqual(len(api.legacy_recovery_payloads), 1)
+        self.assertEqual(
+            api.legacy_recovery_payloads[0]["resolution"],
+            "legacy_identity_unresolved_handoff",
+        )
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(bridge.locate_chats, [])
+        self.assertEqual(bridge.message_reads, [])
+        self.assertEqual(bridge.voice_transcribes, [])
+        self.assertEqual(bridge.sent_replies, [])
+
+    def test_legacy_not_attempted_journal_cancels_then_releases_pull(self):
+        api = FakeApi(None)
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-legacy-not-attempted",
+            worker_token="token",
+            client_instance_id="client-legacy-not-attempted",
+            run_status="running",
+        )
+        runner.binding = binding
+        fixture = (
+            LEGACY_FIXTURE_ROOT
+            / "v0.9.30"
+            / "image_not_attempted_action_journal.json"
+        )
+        fixture_payload = json.loads(fixture.read_text(encoding="utf-8"))
+        flow_id = str(fixture_payload["origin_read_run_id"])
+        begin_runtime_flow(flow_id, "c2_read")
+        runner._restart_recovery_flow_id = flow_id
+        journal_path, _payload = install_legacy_action_journal(fixture)
+
+        runner.tick_once()
+
+        self.assertFalse(journal_path.exists())
+        self.assertIsNone(load_runtime_control()["inflight_flow_id"])
+        self.assertEqual(
+            api.legacy_recovery_payloads[0]["resolution"],
+            "legacy_cancelled_before_trigger",
+        )
+        self.assertEqual(api.message_payloads, [])
+        self.assertIn("pull", api.events)
+        self.assertEqual(bridge.locate_payloads, [])
+
+    def test_legacy_proven_identity_uses_normal_fact_recovery(self):
+        api = FakeApi(None)
+        conversation_id = "legacy-conversation-proven"
+        api.read_targets = [
+            WechatReadTarget(
+                conversation_id=conversation_id,
+                rpa_session_key="wx:legacy-proven",
+                display_name="CJLEGACY",
+                remark_code="CJLEGACY",
+                read_reason="fact_settlement",
+                authorization_revision="revision-legacy-proven",
+            )
+        ]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-legacy-proven",
+            worker_token="token",
+            client_instance_id="client-legacy-proven",
+            run_status="running",
+        )
+        runner.binding = binding
+        fixture = (
+            LEGACY_FIXTURE_ROOT
+            / "v0.9.30"
+            / "voice_proven_identity_action_journal.json"
+        )
+        fixture_payload = json.loads(fixture.read_text(encoding="utf-8"))
+        flow_id = str(fixture_payload["origin_read_run_id"])
+        begin_runtime_flow(flow_id, "c2_read")
+        runner._restart_recovery_flow_id = flow_id
+        journal_path, _payload = install_legacy_action_journal(fixture)
+
+        runner.tick_once()
+        runner.tick_once()
+
+        state = load_legacy_media_recovery(flow_id)
+        self.assertEqual(
+            state["decision"],
+            "legacy_proven_identity_migration",
+        )
+        self.assertEqual(state["status"], "archived")
+        self.assertFalse(journal_path.exists())
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(api.legacy_recovery_payloads, [])
+        self.assertIsNone(load_runtime_control()["inflight_flow_id"])
+        self.assertIn("pull", api.events)
+        self.assertEqual(bridge.voice_transcribes, [])
+
+    def test_legacy_owner_unknown_from_v0930_sqlite_records_incident(self):
+        fixture = (
+            LEGACY_FIXTURE_ROOT
+            / "v0.9.30"
+            / "legacy_owner_unknown_worker_client.sqlite3.gz.b64"
+        )
+        database_bytes = gzip.decompress(
+            base64.b64decode(fixture.read_text(encoding="ascii"))
+        )
+        with tempfile.TemporaryDirectory(
+            prefix="chejin-legacy-sqlite-copy-"
+        ) as temporary_directory:
+            database_path = Path(temporary_directory) / "worker_client.sqlite3"
+            database_path.write_bytes(database_bytes)
+            with patch(
+                "chejin_worker_client.storage.DB_FILE",
+                database_path,
+            ):
+                api = FakeApi(None)
+                bridge = FakeBridge(
+                    RpaResult(
+                        ok=True,
+                        result_code="unused",
+                        message="unused",
+                    )
+                )
+                runner, _ = self.make_runner(api, bridge)
+                binding = Binding(
+                    worker_id="worker-legacy-owner-unknown",
+                    worker_token="token",
+                    client_instance_id="client-legacy-owner-unknown",
+                    run_status="running",
+                )
+                runner.binding = binding
+                flow_id = "read-legacy-sqlite-owner-unknown"
+                runner._restart_recovery_flow_id = flow_id
+
+                runner.tick_once()
+
+                state = load_legacy_media_recovery(flow_id)
+                self.assertEqual(
+                    state["decision"],
+                    "legacy_owner_unknown_incident",
+                )
+                self.assertEqual(state["status"], "archived")
+                self.assertIsNone(load_runtime_control()["inflight_flow_id"])
+                self.assertEqual(len(api.legacy_recovery_payloads), 1)
+                self.assertIsNone(
+                    api.legacy_recovery_payloads[0]["conversation_id"]
+                )
+                self.assertEqual(api.message_payloads, [])
+                self.assertIn("pull", api.events)
+                self.assertEqual(bridge.voice_transcribes, [])
+
+    def test_legacy_backend_retry_keeps_running_and_reuses_decision(self):
+        api = FakeApi(None)
+        api.legacy_recovery_error = ConnectionError("backend offline")
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-legacy-retry",
+            worker_token="token",
+            client_instance_id="client-legacy-retry",
+            run_status="running",
+        )
+        runner.binding = binding
+        fixture = (
+            LEGACY_FIXTURE_ROOT
+            / "v0.9.25"
+            / "voice_identity_unresolved_action_journal.json"
+        )
+        fixture_payload = json.loads(fixture.read_text(encoding="utf-8"))
+        flow_id = str(fixture_payload["origin_read_run_id"])
+        begin_runtime_flow(flow_id, "c2_read")
+        runner._restart_recovery_flow_id = flow_id
+        install_legacy_action_journal(fixture)
+
+        runner.tick_once()
+
+        first_state = load_legacy_media_recovery(flow_id)
+        self.assertEqual(binding.run_status, "running")
+        self.assertEqual(first_state["status"], "retry_waiting")
+        self.assertNotIn("paused", api.run_status_updates)
+        self.assertNotIn("pull", api.events)
+        first_digest = first_state["legacy_record_digest"]
+        first_state["next_attempt_at"] = "2000-01-01T00:00:00+00:00"
+        save_c2_state(f"legacy_media_recovery_v1:{flow_id}", first_state)
+        api.legacy_recovery_error = None
+
+        runner.tick_once()
+
+        self.assertEqual(binding.run_status, "running")
+        self.assertEqual(len(api.legacy_recovery_payloads), 2)
+        self.assertEqual(
+            {
+                item["legacy_record_digest"]
+                for item in api.legacy_recovery_payloads
+            },
+            {first_digest},
+        )
+        self.assertIsNone(load_runtime_control()["inflight_flow_id"])
+        self.assertIn("pull", api.events)
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(bridge.voice_transcribes, [])
+
+    def test_legacy_retry_policy_distinguishes_transport_and_contract_errors(self):
+        retryable_cases = [
+            ConnectionError("offline"),
+            TimeoutError("timeout"),
+            ApiError("SERVER_ERROR", "server error", 503),
+            ApiError(
+                "RATE_LIMITED",
+                "retry later",
+                429,
+                {"retryable": True},
+            ),
+        ]
+        permanent_cases = [
+            ApiError("LEGACY_CONFLICT", "conflict", 409),
+            ApiError("BAD_REQUEST", "bad request", 400),
+            ValueError("LEGACY_MEDIA_RECOVERY_CONFIRMATION_INVALID"),
+        ]
+
+        for exc in retryable_cases:
+            with self.subTest(retryable=type(exc).__name__, code=str(exc)):
+                self.assertTrue(
+                    TaskRunner._legacy_media_error_is_retryable(exc)
+                )
+        for exc in permanent_cases:
+            with self.subTest(permanent=type(exc).__name__, code=str(exc)):
+                self.assertFalse(
+                    TaskRunner._legacy_media_error_is_retryable(exc)
+                )
+
+    def test_legacy_permanent_api_error_pauses_once_without_silent_retry(self):
+        api = FakeApi(None)
+        api.legacy_recovery_error = ApiError(
+            "LEGACY_MEDIA_RECOVERY_IDEMPOTENCY_CONFLICT",
+            "permanent conflict",
+            409,
+        )
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-legacy-permanent",
+            worker_token="token",
+            client_instance_id="client-legacy-permanent",
+            run_status="running",
+        )
+        runner.binding = binding
+        fixture = (
+            LEGACY_FIXTURE_ROOT
+            / "v0.9.25"
+            / "voice_identity_unresolved_action_journal.json"
+        )
+        fixture_payload = json.loads(fixture.read_text(encoding="utf-8"))
+        flow_id = str(fixture_payload["origin_read_run_id"])
+        begin_runtime_flow(flow_id, "c2_read")
+        runner._restart_recovery_flow_id = flow_id
+        journal_path, _payload = install_legacy_action_journal(fixture)
+
+        runner.tick_once()
+        runner.tick_once()
+
+        state = load_legacy_media_recovery(flow_id)
+        self.assertEqual(state["status"], "manual_review_required")
+        self.assertEqual(
+            state["last_error"],
+            "LEGACY_MEDIA_RECOVERY_IDEMPOTENCY_CONFLICT",
+        )
+        self.assertIsNone(state["next_attempt_at"])
+        self.assertEqual(binding.run_status, "paused")
+        self.assertEqual(api.run_status_updates, ["paused"])
+        self.assertEqual(len(api.legacy_recovery_payloads), 1)
+        self.assertNotIn("pull", api.events)
+        self.assertTrue(journal_path.exists())
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(bridge.voice_transcribes, [])
+
+    def test_legacy_contradictory_success_response_pauses_for_review(self):
+        api = FakeApi(None)
+        api.legacy_recovery_result_override = {
+            "legacy_record_digest": "f" * 64,
+        }
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-legacy-invalid-response",
+            worker_token="token",
+            client_instance_id="client-legacy-invalid-response",
+            run_status="running",
+        )
+        runner.binding = binding
+        fixture = (
+            LEGACY_FIXTURE_ROOT
+            / "v0.9.25"
+            / "voice_identity_unresolved_action_journal.json"
+        )
+        fixture_payload = json.loads(fixture.read_text(encoding="utf-8"))
+        flow_id = str(fixture_payload["origin_read_run_id"])
+        begin_runtime_flow(flow_id, "c2_read")
+        runner._restart_recovery_flow_id = flow_id
+        journal_path, _payload = install_legacy_action_journal(fixture)
+
+        runner.tick_once()
+
+        state = load_legacy_media_recovery(flow_id)
+        self.assertEqual(state["status"], "manual_review_required")
+        self.assertEqual(
+            state["last_error"],
+            "LEGACY_MEDIA_RECOVERY_CONFIRMATION_INVALID",
+        )
+        self.assertEqual(binding.run_status, "paused")
+        self.assertEqual(len(api.legacy_recovery_payloads), 1)
+        self.assertNotIn("pull", api.events)
+        self.assertTrue(journal_path.exists())
+        self.assertEqual(api.message_payloads, [])
+        self.assertEqual(bridge.voice_transcribes, [])
+
+    def test_legacy_crash_after_backend_confirmation_does_not_report_twice(self):
+        api = FakeApi(None)
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        binding = Binding(
+            worker_id="worker-legacy-post-confirm-crash",
+            worker_token="token",
+            client_instance_id="client-legacy-post-confirm-crash",
+            run_status="running",
+        )
+        fixture = (
+            LEGACY_FIXTURE_ROOT
+            / "v0.9.25"
+            / "voice_identity_unresolved_action_journal.json"
+        )
+        fixture_payload = json.loads(fixture.read_text(encoding="utf-8"))
+        flow_id = str(fixture_payload["origin_read_run_id"])
+        begin_runtime_flow(flow_id, "c2_read")
+        journal_path, _payload = install_legacy_action_journal(fixture)
+        first_runner, _ = self.make_runner(api, bridge)
+        first_runner.binding = binding
+        first_runner._restart_recovery_flow_id = flow_id
+
+        with patch(
+            "chejin_worker_client.task_runner.archive_legacy_media_flow_records",
+            side_effect=RuntimeError("simulated crash after backend ack"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "simulated crash"):
+                first_runner.tick_once()
+
+        self.assertEqual(
+            load_legacy_media_recovery(flow_id)["status"],
+            "backend_confirmed",
+        )
+        self.assertTrue(journal_path.exists())
+        self.assertEqual(len(api.legacy_recovery_payloads), 1)
+
+        restarted_runner, _ = self.make_runner(api, bridge)
+        restarted_runner.binding = binding
+        restarted_runner._restart_recovery_flow_id = flow_id
+        restarted_runner.tick_once()
+
+        self.assertEqual(len(api.legacy_recovery_payloads), 1)
+        self.assertFalse(journal_path.exists())
+        self.assertEqual(
+            load_legacy_media_recovery(flow_id)["status"],
+            "archived",
+        )
+        self.assertIsNone(load_runtime_control()["inflight_flow_id"])
+        self.assertIn("pull", api.events)
+        self.assertEqual(api.message_payloads, [])
 
     def test_restart_local_flow_missing_media_sequence_pauses_without_pull(
         self,

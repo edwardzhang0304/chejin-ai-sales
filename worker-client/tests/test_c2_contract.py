@@ -78,7 +78,7 @@ class C2ContractTests(unittest.TestCase):
 
     def test_slot_ledger_contract_separates_fact_scope_from_delivery(self):
         schema = c2_contract_v3()["slot_ledger_state_schema"]
-        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.30")
+        self.assertEqual(c2_contract_v3()["contract_revision"], "0.9.31")
         startup_layout = c2_contract_v3()["startup_layout_calibration_contract"]
         self.assertIn("full_calibrated_input_bounds", startup_layout["input_click_surface_rule"])
         self.assertIn("excludes_the_bottom_toolbar", startup_layout["input_text_detection_rule"])
@@ -106,6 +106,34 @@ class C2ContractTests(unittest.TestCase):
         )
         self.assertIn("sidebar pixel digest", performance["locate_reuse_rule"])
         self.assertIn("0.9.10 full path", performance["fallback_rule"])
+        legacy_recovery = c2_contract_v3()[
+            "legacy_media_upgrade_recovery_contract"
+        ]
+        self.assertTrue(
+            legacy_recovery[
+                "applies_only_to_records_before_first_0_9_31_cutover"
+            ]
+        )
+        self.assertEqual(
+            legacy_recovery["settlement_endpoint"],
+            "POST /api/workers/{worker_id}/legacy-media-recovery/settle",
+        )
+        self.assertIn(
+            "silent_running_permanent_pull_block",
+            legacy_recovery["forbidden_behaviors"],
+        )
+        self.assertIn(
+            "backend terminal confirmation",
+            legacy_recovery["backend_confirmation_rule"],
+        )
+        self.assertIn(
+            "HTTP 4xx",
+            legacy_recovery["permanent_failure_rule"],
+        )
+        self.assertIn(
+            "manual_review_required",
+            legacy_recovery["permanent_failure_rule"],
+        )
         location_recovery = c2_contract_v3()[
             "target_location_recovery_contract"
         ]
