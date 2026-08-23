@@ -39,6 +39,7 @@ from chejin_worker_client.incident_evidence import wait_for_incident
 from chejin_worker_client.message_identity_commit import (
     MessageCommitBasis,
     committed_identity_record,
+    require_committed_message,
 )
 from chejin_worker_client.rpa_bridge import RpaBridge
 from chejin_worker_client.sequence_alignment import (
@@ -145,6 +146,239 @@ def identity_checkpoint(
         "next_sequence_floor": next_sequence_floor,
         "recent_messages": [],
     }
+
+
+def committed_voice_recovery_observation(
+    conversation_id: str,
+    *,
+    stable_id: str,
+    observation_id: str,
+    action_id: str,
+    content: str,
+    sender_role: str = "customer",
+) -> tuple[dict, str]:
+    mapping = {
+        "canonical_action_id": action_id,
+        "reserved_worker_stable_id": stable_id,
+        "selected_action_token": f"token:{action_id}",
+        "pre_observation_id": f"pre:{observation_id}",
+        "post_observation_id": observation_id,
+        "binding_confirmed": True,
+    }
+    observation = {
+        "schema_version": 3,
+        "observation_id": observation_id,
+        "row_kind": "voice_transcript",
+        "sender_role": sender_role,
+        "sender_role_source": "parent_voice",
+        "message_type": "voice",
+        "voice_state": "transcribed",
+        "item_state": "completed",
+        "content_clean": content,
+        "parent_voice_anchor_key": f"anchor:{action_id}",
+        "_worker_stable_id": stable_id,
+        "_worker_identity_scope": "committed",
+        "_worker_voice_action_summary": {
+            "confirmed_action_mapping": dict(mapping),
+        },
+        "_worker_committed_message": committed_identity_record(
+            worker_stable_id=stable_id,
+            commit_basis=MessageCommitBasis.CONFIRMED_VOICE_ACTION,
+            observation_id=observation_id,
+            sender_role=sender_role,
+            message_type="voice",
+            proof=mapping,
+        ),
+        "source_message": {
+            "type": "voice",
+            "sender_role": sender_role,
+        },
+    }
+    committed = require_committed_message(
+        conversation_id=conversation_id,
+        observation=observation,
+    )
+    observation["source_message"]["source_message_key"] = (
+        committed.source_message_key
+    )
+    return observation, committed.source_message_key
+
+
+def initialize_confirmed_voice_recovery_journal(
+    *,
+    conversation_id: str,
+    flow_id: str,
+    action_id: str,
+    stable_id: str,
+    observation_id: str,
+    content: str,
+) -> Path:
+    pre_observation_id = f"pre:{observation_id}"
+    pre_frame_id = f"frame:{pre_observation_id}"
+    path = action_journal_path("voice", action_id)
+    initialize_action_journal(
+        path,
+        action_kind="voice",
+        transaction_id=action_id,
+        conversation_id=conversation_id,
+        origin_read_run_id=flow_id,
+        canonical_action_id=action_id,
+        reserved_worker_stable_id=stable_id,
+        pre_frame_id=pre_frame_id,
+        pre_action_identity_sequence=[
+            {
+                "identity_state": "selected_action",
+                "canonical_action_id": action_id,
+                "reserved_worker_stable_id": stable_id,
+                "pre_observation_id": pre_observation_id,
+                "pre_sequence_index": 0,
+                "sender_role": "customer",
+                "message_type": "voice",
+            }
+        ],
+        prepare_evidence={
+            "pre_frame_id": pre_frame_id,
+            "selected_pre_observation_id": pre_observation_id,
+            "selected_action_token": f"token:{action_id}",
+            "selected_target_fingerprint": f"fingerprint:{action_id}",
+        },
+        items=[
+            {
+                "journal_item_id": action_id,
+                "physical_anchor_keys": [f"anchor:{action_id}"],
+            }
+        ],
+    )
+    record_action_sequence_alignment(
+        path,
+        {
+            "pre_sequence_source": "action_frame",
+            "pre_frame_id": pre_frame_id,
+            "post_frame_id": f"frame:{observation_id}",
+            "alignment_status": "unique",
+            "candidate_alignment_count": 1,
+            "matched_pairs": [
+                {
+                    "identity_state": "selected_action",
+                    "worker_stable_id": stable_id,
+                    "pre_observation_id": pre_observation_id,
+                    "post_observation_id": observation_id,
+                    "pre_index": 0,
+                    "post_index": 0,
+                    "match_basis": "confirmed_action",
+                }
+            ],
+            "old_tail_fully_consumed": True,
+            "new_suffix_observation_ids": [],
+        },
+    )
+    update_action_journal_item(
+        path,
+        journal_item_id=action_id,
+        action_phase="confirmed",
+        business_state="completed",
+        business_result_confirmed=True,
+        terminal_payload={
+            "state": "completed",
+            "transcribed_message": {
+                "content_clean": content,
+                "sender_role": "customer",
+                "parent_voice_anchor_key": f"anchor:{action_id}",
+            },
+        },
+    )
+    return path
+
+
+def initialize_confirmed_image_recovery_journal(
+    *,
+    conversation_id: str,
+    flow_id: str,
+    action_id: str,
+    stable_id: str,
+    observation_id: str,
+) -> Path:
+    fingerprint = f"fingerprint:{action_id}"
+    mapping = {
+        "canonical_action_id": action_id,
+        "reserved_worker_stable_id": stable_id,
+        "pre_observation_id": observation_id,
+        "post_observation_id": observation_id,
+        "binding_confirmed": True,
+    }
+    replayable = {
+        "schema_version": 3,
+        "observation_id": observation_id,
+        "row_kind": "image_bubble",
+        "sender_role": "customer",
+        "sender_role_source": "same_row_avatar",
+        "message_type": "image",
+        "voice_state": "not_voice",
+        "item_state": "discovered",
+        "_worker_stable_id": stable_id,
+        "_worker_identity_scope": "current_read_provisional",
+        "image_physical_anchor": {
+            "sender_role": "customer",
+            "preceding_stable_message": f"before:{action_id}",
+            "following_stable_message": f"after:{action_id}",
+            "bubble_visual_fingerprint": fingerprint,
+            "occurrence_index": 0,
+        },
+        "source_message": {
+            "sender_role": "customer",
+            "type": "image",
+        },
+    }
+    path = action_journal_path("image", action_id)
+    initialize_action_journal(
+        path,
+        action_kind="image",
+        transaction_id=action_id,
+        conversation_id=conversation_id,
+        origin_read_run_id=flow_id,
+        canonical_action_id=action_id,
+        reserved_worker_stable_id=stable_id,
+        pre_frame_id=f"frame:{observation_id}",
+        pre_action_identity_sequence=[
+            {
+                "identity_state": "selected_action",
+                "canonical_action_id": action_id,
+                "reserved_worker_stable_id": stable_id,
+                "pre_observation_id": observation_id,
+                "pre_sequence_index": 0,
+                "sender_role": "customer",
+                "message_type": "image",
+                "image_visual_fingerprint": fingerprint,
+            }
+        ],
+        prepare_evidence={
+            "authorization_revision": "revision-image-recovery",
+            "remark_code": "CJIMGREC",
+        },
+        items=[
+            {
+                "journal_item_id": action_id,
+                "physical_anchor_keys": [fingerprint],
+                "replayable_observation": replayable,
+            }
+        ],
+    )
+    update_action_journal_item(
+        path,
+        journal_item_id=action_id,
+        action_phase="confirmed",
+        business_state="failed",
+        business_result_confirmed=False,
+        error_code="C2_IMAGE_SOURCE_INVALID",
+        terminal_payload={
+            "state": "failed",
+            "error_code": "C2_IMAGE_SOURCE_INVALID",
+            "reason_detail": "clipboard_current_content_not_bitmap",
+            "confirmed_action_mapping": mapping,
+            "image_visual_fingerprint": fingerprint,
+        },
+    )
+    return path
 
 
 def attach_sequence_identity_fixture(
@@ -3555,6 +3789,1447 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual(
             load_runtime_control()["inflight_flow_id"], "read-no-receipt"
         )
+        self.assertTrue(
+            any(
+                item.get("error_code")
+                == "RUNTIME_INFLIGHT_FINISH_RECEIPT_MISSING"
+                for item in read_logs(limit=20)
+            )
+        )
+
+    def test_live_flow_created_after_start_is_not_adopted_by_restart_recovery(
+        self,
+    ):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-live-flow",
+            worker_token="token",
+            client_instance_id="client-live-flow",
+            run_status="running",
+        )
+        runner.binding = binding
+        flow_id = "read-live-current-process"
+        begin_runtime_flow(flow_id, "c2_read")
+        api.inflight_flow_id = flow_id
+        api.inflight_flow_state = {
+            "status": "active",
+            "flow_id": flow_id,
+            "flow_kind": "c2_read",
+        }
+
+        runner.tick_once()
+
+        self.assertIsNone(runner._restart_recovery_flow_id)
+        self.assertEqual(load_runtime_control()["inflight_flow_id"], flow_id)
+        self.assertEqual(binding.run_status, "running")
+        self.assertEqual(api.inflight_flow_events, [])
+        self.assertNotIn("pull", api.events)
+
+    def test_restart_local_flow_backend_empty_settles_then_pulls(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-restart-local-only",
+            worker_token="token",
+            client_instance_id="client-restart-local-only",
+            run_status="running",
+        )
+        runner.binding = binding
+        flow_id = "read-restart-local-only"
+        begin_runtime_flow(flow_id, "c2_read")
+        runner._restart_recovery_flow_id = flow_id
+
+        runner.tick_once()
+
+        self.assertIsNone(load_runtime_control()["inflight_flow_id"])
+        self.assertIsNone(runner._restart_recovery_flow_id)
+        self.assertEqual(api.inflight_flow_events, [])
+        self.assertIn("pull", api.events)
+        self.assertTrue(
+            any(
+                item.get("event")
+                == "restart_orphaned_local_flow_settled"
+                for item in read_logs(limit=30)
+            )
+        )
+
+    def test_startup_loop_reconciles_local_only_flow_before_first_pull(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        runner.poll_interval_seconds = 0.02
+        binding = Binding(
+            worker_id="worker-startup-local-only",
+            worker_token="token",
+            client_instance_id="client-startup-local-only",
+            run_status="running",
+        )
+        flow_id = "read-startup-local-only"
+        begin_runtime_flow(flow_id, "c2_read")
+
+        try:
+            with patch(
+                "chejin_worker_client.task_runner.CONFIG",
+                replace(CONFIG, c2_enabled=False),
+            ):
+                runner.start(binding)
+                deadline = time.monotonic() + 2.0
+                while "pull" not in api.events and time.monotonic() < deadline:
+                    time.sleep(0.01)
+        finally:
+            runner.stop()
+            if runner.thread is not None:
+                runner.thread.join(timeout=2.0)
+            if runner.thread_monitor is not None:
+                runner.thread_monitor.join(timeout=2.0)
+
+        self.assertIn("pull", api.events)
+        self.assertIsNone(load_runtime_control()["inflight_flow_id"])
+        self.assertIsNone(runner._restart_recovery_flow_id)
+        first_pull_index = api.events.index("pull")
+        self.assertTrue(
+            any(
+                event.startswith("heartbeat:")
+                for event in api.events[:first_pull_index]
+            ),
+            "startup must obtain backend flow state before releasing task pull",
+        )
+
+    def test_restart_local_flow_missing_media_sequence_pauses_without_pull(
+        self,
+    ):
+        api = FakeApi(None)
+        target = WechatReadTarget(
+            conversation_id="conv-restart-orphan-journal",
+            rpa_session_key="wx:rpa:v1:restart-orphan-journal",
+            display_name="CJORPHAN",
+            remark_code="CJORPHAN",
+            read_reason="recoverable_hold",
+            authorization_revision="revision-restart-orphan-journal",
+            raw={"identity_checkpoint": identity_checkpoint()},
+        )
+        api.read_targets = [target]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-restart-orphan-journal",
+            worker_token="token",
+            client_instance_id="client-restart-orphan-journal",
+            run_status="running",
+        )
+        runner.binding = binding
+        flow_id = "read-restart-orphan-journal"
+        action_id = "voice-restart-orphan-journal"
+        begin_runtime_flow(flow_id, "c2_read")
+        runner._restart_recovery_flow_id = flow_id
+        journal_path = action_journal_path("voice", action_id)
+        initialize_action_journal(
+            journal_path,
+            action_kind="voice",
+            transaction_id=action_id,
+            conversation_id=target.conversation_id,
+            origin_read_run_id=flow_id,
+            canonical_action_id=action_id,
+            reserved_worker_stable_id="worker-message-orphan",
+            pre_frame_id="voice-frame-orphan",
+            pre_action_identity_sequence=[
+                {
+                    "identity_state": "selected_action",
+                    "canonical_action_id": action_id,
+                    "reserved_worker_stable_id": "worker-message-orphan",
+                    "pre_observation_id": "voice-before-orphan",
+                    "pre_sequence_index": 0,
+                    "sender_role": "customer",
+                    "message_type": "voice",
+                }
+            ],
+            prepare_evidence={
+                "pre_frame_id": "voice-frame-orphan",
+                "selected_pre_observation_id": "voice-before-orphan",
+                "selected_action_token": "voice-token-orphan",
+                "selected_target_fingerprint": "voice-fingerprint-orphan",
+                "candidate_group_count": 1,
+            },
+            items=[
+                {
+                    "journal_item_id": action_id,
+                    "physical_anchor_keys": ["voice-anchor-orphan"],
+                }
+            ],
+        )
+        update_action_journal_item(
+            journal_path,
+            journal_item_id=action_id,
+            action_phase="trigger_attempted",
+            business_state="failed",
+            business_result_confirmed=False,
+            error_code="C2_VOICE_EXECUTE_INTERRUPTED",
+        )
+
+        runner.tick_once()
+
+        self.assertEqual(
+            action_journal_phase(journal_path),
+            "trigger_attempted",
+        )
+        self.assertEqual(binding.run_status, "paused")
+        self.assertEqual(
+            load_runtime_control()["inflight_flow_id"],
+            flow_id,
+        )
+        self.assertEqual(runner._restart_recovery_flow_id, flow_id)
+        self.assertEqual(api.inflight_flow_events, [])
+        self.assertNotIn("pull", api.events)
+        self.assertTrue(
+            any(
+                item.get("error_code")
+                == "C2_MEDIA_FACT_RECOVERY_SEQUENCE_MISSING"
+                for item in read_logs(limit=30)
+            )
+        )
+        self.assertEqual(bridge.locate_payloads, [])
+        self.assertEqual(bridge.message_reads, [])
+        self.assertEqual(bridge.voice_transcribes, [])
+        self.assertEqual(bridge.sent_replies, [])
+
+    def test_restart_local_flow_backend_empty_replays_outbox_then_pulls(
+        self,
+    ):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-restart-orphan-outbox",
+            worker_token="token",
+            client_instance_id="client-restart-orphan-outbox",
+            run_status="running",
+        )
+        runner.binding = binding
+        flow_id = "read-restart-orphan-outbox"
+        conversation_id = "conv-restart-orphan-outbox"
+        begin_runtime_flow(flow_id, "c2_read")
+        runner._restart_recovery_flow_id = flow_id
+        outbox_id = enqueue_c2_outbox(
+            {
+                "read_run_id": flow_id,
+                "conversation_id": conversation_id,
+                "authorization_revision": "revision-restart-orphan-outbox",
+                "messages": [],
+                "evidence": {"test_case": "restart_orphan_outbox"},
+            }
+        )
+
+        runner.tick_once()
+
+        self.assertEqual(load_c2_outbox_entry(outbox_id)["status"], "confirmed")
+        self.assertEqual(
+            load_runtime_control()["inflight_flow_id"],
+            flow_id,
+            "the restart reconciler must not clear the flow before replay settles",
+        )
+        self.assertNotIn("pull", api.events)
+        self.assertEqual(len(api.message_payloads), 1)
+
+        runner.tick_once()
+
+        self.assertIsNone(load_runtime_control()["inflight_flow_id"])
+        self.assertIsNone(runner._restart_recovery_flow_id)
+        self.assertEqual(
+            load_c2_outbox_entry(outbox_id)["status"],
+            "confirmed",
+        )
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertIn("pull", api.events)
+
+    def test_restart_local_flow_backend_empty_keeps_failed_outbox_and_blocks_pull(
+        self,
+    ):
+        api = FakeApi(None)
+        api.message_ingest_error = ConnectionError("backend offline")
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-restart-orphan-outbox-retry",
+            worker_token="token",
+            client_instance_id="client-restart-orphan-outbox-retry",
+            run_status="running",
+        )
+        runner.binding = binding
+        flow_id = "read-restart-orphan-outbox-retry"
+        begin_runtime_flow(flow_id, "c2_read")
+        runner._restart_recovery_flow_id = flow_id
+        outbox_id = enqueue_c2_outbox(
+            {
+                "read_run_id": flow_id,
+                "conversation_id": "conv-restart-orphan-outbox-retry",
+                "authorization_revision": (
+                    "revision-restart-orphan-outbox-retry"
+                ),
+                "messages": [],
+                "evidence": {"test_case": "restart_orphan_outbox_retry"},
+            }
+        )
+
+        runner.tick_once()
+
+        self.assertEqual(
+            load_runtime_control()["inflight_flow_id"],
+            flow_id,
+        )
+        self.assertEqual(
+            load_c2_outbox_entry(outbox_id)["status"],
+            "retry_waiting",
+        )
+        self.assertNotIn("pull", api.events)
+        self.assertIsNotNone(runner._restart_recovery_flow_id)
+
+    def test_restart_sqlite_action_journal_builds_ledger_outbox_then_pulls(
+        self,
+    ):
+        api = FakeApi(None)
+        conversation_id = "conv-restart-sqlite-action"
+        target = WechatReadTarget(
+            conversation_id=conversation_id,
+            rpa_session_key="wx:rpa:v1:restart-sqlite-action",
+            display_name="CJSQL001",
+            remark_code="CJSQL001",
+            read_reason="fact_settlement",
+            authorization_revision="revision-restart-sqlite-action",
+        )
+        api.read_targets = [target]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-restart-sqlite-action",
+            worker_token="token",
+            client_instance_id="client-restart-sqlite-action",
+            run_status="running",
+        )
+        runner.binding = binding
+        flow_id = "read-restart-sqlite-action"
+        action_id = "voice-restart-sqlite-action"
+        observation, source_key = committed_voice_recovery_observation(
+            conversation_id,
+            stable_id="worker-message-301",
+            observation_id="voice-post-restart-sqlite-action",
+            action_id=action_id,
+            content="这是结果日志恢复的语音正文",
+        )
+        begin_runtime_flow(flow_id, "c2_read")
+        runner._restart_recovery_flow_id = flow_id
+        checkpoint_c2_action_outcomes(
+            flow_id="c2-action-restart-sqlite",
+            conversation_id=conversation_id,
+            origin_read_run_id=flow_id,
+            outcomes=[
+                {
+                    "source_message_key": source_key,
+                    "origin_read_run_id": flow_id,
+                    "result": "completed",
+                    "evidence": {
+                        "action_kind": "voice",
+                        "sender_role": "customer",
+                    },
+                    "terminal_payload": {
+                        "state": "completed",
+                        "transcribed_message": {
+                            "content_clean": observation["content_clean"],
+                            "sender_role": "customer",
+                            "parent_voice_anchor_key": observation[
+                                "parent_voice_anchor_key"
+                            ],
+                        },
+                        "replayable_observation": observation,
+                    },
+                }
+            ],
+        )
+        self.assertIsNone(
+            load_c2_ledger_entry(conversation_id, source_key)
+        )
+
+        runner.tick_once()
+        runner.tick_once()
+
+        ledger = load_c2_ledger_entry(conversation_id, source_key)
+        self.assertEqual(ledger["ingest_state"], "confirmed")
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(
+            api.message_payloads[0]["messages"][0]["content"],
+            observation["content_clean"],
+        )
+        self.assertIsNone(load_runtime_control()["inflight_flow_id"])
+        self.assertIn("pull", api.events)
+        self.assertEqual(bridge.locate_chats, [])
+        self.assertEqual(bridge.message_reads, [])
+        self.assertEqual(bridge.voice_transcribes, [])
+
+    def test_restart_waiting_voice_ledger_builds_outbox_then_pulls(self):
+        api = FakeApi(None)
+        conversation_id = "conv-restart-waiting-voice"
+        target = WechatReadTarget(
+            conversation_id=conversation_id,
+            rpa_session_key="wx:rpa:v1:restart-waiting-voice",
+            display_name="CJWAIT01",
+            remark_code="CJWAIT01",
+            read_reason="fact_settlement",
+            authorization_revision="revision-restart-waiting-voice",
+        )
+        api.read_targets = [target]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-restart-waiting-voice",
+            worker_token="token",
+            client_instance_id="client-restart-waiting-voice",
+            run_status="running",
+        )
+        runner.binding = binding
+        flow_id = "read-restart-waiting-voice"
+        observation, source_key = committed_voice_recovery_observation(
+            conversation_id,
+            stable_id="worker-message-302",
+            observation_id="voice-post-restart-waiting",
+            action_id="voice-restart-waiting",
+            content="这是 waiting Ledger 恢复的语音正文",
+        )
+        begin_runtime_flow(flow_id, "c2_read")
+        runner._restart_recovery_flow_id = flow_id
+        save_c2_ledger_terminal(
+            conversation_id=conversation_id,
+            source_message_key=source_key,
+            origin_read_run_id=flow_id,
+            dedupe_key="dedupe-restart-waiting-voice",
+            message_type="voice",
+            terminal_state="completed",
+            ingest_state="waiting",
+            result={
+                "state": "completed",
+                "authorization_revision": target.authorization_revision,
+                "transcribed_message": {
+                    "content_clean": observation["content_clean"],
+                    "sender_role": "customer",
+                    "parent_voice_anchor_key": observation[
+                        "parent_voice_anchor_key"
+                    ],
+                },
+                "replayable_observation": observation,
+            },
+        )
+
+        runner.tick_once()
+        runner.tick_once()
+
+        self.assertEqual(
+            load_c2_ledger_entry(conversation_id, source_key)[
+                "ingest_state"
+            ],
+            "confirmed",
+        )
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(
+            api.message_payloads[0]["messages"][0]["message_type"],
+            "voice",
+        )
+        self.assertIsNone(load_runtime_control()["inflight_flow_id"])
+        self.assertIn("pull", api.events)
+        self.assertEqual(bridge.locate_chats, [])
+        self.assertEqual(bridge.message_reads, [])
+        self.assertEqual(bridge.voice_transcribes, [])
+
+    def test_restart_waiting_voice_transport_retry_does_not_pause(self):
+        api = FakeApi(None)
+        api.message_ingest_error = ConnectionError("backend offline")
+        conversation_id = "conv-restart-waiting-voice-retry"
+        target = WechatReadTarget(
+            conversation_id=conversation_id,
+            rpa_session_key="wx:rpa:v1:restart-waiting-voice-retry",
+            display_name="CJWAIT02",
+            remark_code="CJWAIT02",
+            read_reason="fact_settlement",
+            authorization_revision="revision-restart-waiting-voice-retry",
+        )
+        api.read_targets = [target]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-restart-waiting-voice-retry",
+            worker_token="token",
+            client_instance_id="client-restart-waiting-voice-retry",
+            run_status="running",
+        )
+        runner.binding = binding
+        flow_id = "read-restart-waiting-voice-retry"
+        observation, source_key = committed_voice_recovery_observation(
+            conversation_id,
+            stable_id="worker-message-305",
+            observation_id="voice-post-restart-waiting-retry",
+            action_id="voice-restart-waiting-retry",
+            content="这是等待后端重试的语音正文",
+        )
+        begin_runtime_flow(flow_id, "c2_read")
+        runner._restart_recovery_flow_id = flow_id
+        save_c2_ledger_terminal(
+            conversation_id=conversation_id,
+            source_message_key=source_key,
+            origin_read_run_id=flow_id,
+            dedupe_key="dedupe-restart-waiting-voice-retry",
+            message_type="voice",
+            terminal_state="completed",
+            ingest_state="waiting",
+            result={
+                "state": "completed",
+                "authorization_revision": target.authorization_revision,
+                "replayable_observation": observation,
+            },
+        )
+
+        runner.tick_once()
+
+        self.assertEqual(binding.run_status, "running")
+        self.assertEqual(
+            load_runtime_control()["inflight_flow_id"],
+            flow_id,
+        )
+        with db_connection() as conn:
+            waiting = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT outbox_id, read_run_id, status
+                    FROM c2_ingest_outbox
+                    WHERE read_run_id = ?
+                    """,
+                    (flow_id,),
+                ).fetchall()
+            ]
+        self.assertEqual(len(waiting), 1)
+        self.assertEqual(waiting[0]["status"], "retry_waiting")
+        self.assertNotIn("pull", api.events)
+        self.assertEqual(bridge.locate_chats, [])
+        self.assertEqual(bridge.message_reads, [])
+        self.assertEqual(bridge.voice_transcribes, [])
+
+    def test_restart_recovery_authorization_retries_then_pulls(self):
+        api = FakeApi(None)
+        conversation_id = "conv-restart-authorization-retry"
+        target = WechatReadTarget(
+            conversation_id=conversation_id,
+            rpa_session_key="wx:rpa:v1:restart-authorization-retry",
+            display_name="CJAUTH01",
+            remark_code="CJAUTH01",
+            read_reason="fact_settlement",
+            authorization_revision="revision-restart-authorization-retry",
+        )
+        api.read_targets = [target]
+        original_authorization = api.get_wechat_read_authorization
+        authorization_attempts = 0
+
+        def flaky_authorization(*args, **kwargs):
+            nonlocal authorization_attempts
+            authorization_attempts += 1
+            if authorization_attempts == 1:
+                raise ConnectionError("temporary authorization outage")
+            return original_authorization(*args, **kwargs)
+
+        api.get_wechat_read_authorization = flaky_authorization  # type: ignore[method-assign]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-restart-authorization-retry",
+            worker_token="token",
+            client_instance_id="client-restart-authorization-retry",
+            run_status="running",
+        )
+        runner.binding = binding
+        flow_id = "read-restart-authorization-retry"
+        observation, source_key = committed_voice_recovery_observation(
+            conversation_id,
+            stable_id="worker-message-306",
+            observation_id="voice-post-authorization-retry",
+            action_id="voice-authorization-retry",
+            content="授权恢复后继续处理",
+        )
+        begin_runtime_flow(flow_id, "c2_read")
+        runner._restart_recovery_flow_id = flow_id
+        save_c2_ledger_terminal(
+            conversation_id=conversation_id,
+            source_message_key=source_key,
+            origin_read_run_id=flow_id,
+            dedupe_key="dedupe-restart-authorization-retry",
+            message_type="voice",
+            terminal_state="completed",
+            ingest_state="waiting",
+            result={
+                "state": "completed",
+                "authorization_revision": target.authorization_revision,
+                "replayable_observation": observation,
+            },
+        )
+
+        runner.tick_once()
+
+        self.assertEqual(binding.run_status, "running")
+        self.assertEqual(
+            load_runtime_control()["inflight_flow_id"],
+            flow_id,
+        )
+        self.assertNotIn("pull", api.events)
+        self.assertEqual(api.message_payloads, [])
+
+        runner.tick_once()
+
+        self.assertGreaterEqual(authorization_attempts, 2)
+        self.assertEqual(binding.run_status, "running")
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertIsNone(load_runtime_control()["inflight_flow_id"])
+        self.assertIn("pull", api.events)
+        self.assertEqual(bridge.locate_chats, [])
+        self.assertEqual(bridge.message_reads, [])
+        self.assertEqual(bridge.voice_transcribes, [])
+
+    def test_restart_waiting_image_ledger_builds_outbox_then_pulls(self):
+        api = FakeApi(None)
+        conversation_id = "conv-restart-waiting-image"
+        target = WechatReadTarget(
+            conversation_id=conversation_id,
+            rpa_session_key="wx:rpa:v1:restart-waiting-image",
+            display_name="CJIMG001",
+            remark_code="CJIMG001",
+            read_reason="fact_settlement",
+            authorization_revision="revision-restart-waiting-image",
+        )
+        api.read_targets = [target]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-restart-waiting-image",
+            worker_token="token",
+            client_instance_id="client-restart-waiting-image",
+            run_status="running",
+        )
+        runner.binding = binding
+        flow_id = "read-restart-waiting-image"
+        stable_id = "worker-message-304"
+        action_id = "image-restart-waiting-action"
+        physical_anchor = {
+            "sender_role": "customer",
+            "preceding_stable_message": "before-restart-image",
+            "following_stable_message": "after-restart-image",
+            "bubble_visual_fingerprint": "restart-image-fingerprint",
+            "occurrence_index": 0,
+        }
+        observation = {
+            "schema_version": 3,
+            "observation_id": "image-post-restart-waiting",
+            "row_kind": "image_bubble",
+            "sender_role": "customer",
+            "sender_role_source": "same_row_avatar",
+            "message_type": "image",
+            "voice_state": "not_voice",
+            "item_state": "failed",
+            "_worker_stable_id": stable_id,
+            "_worker_identity_scope": "current_read_provisional",
+            "image_physical_anchor": physical_anchor,
+            "error_code": "C2_IMAGE_SOURCE_INVALID",
+            "reason_detail": "clipboard_current_content_not_bitmap",
+            "source_message": {
+                "sender_role": "customer",
+                "type": "image",
+                "image_physical_anchor": physical_anchor,
+            },
+        }
+        observation = apply_image_terminal_result(
+            observation,
+            {
+                "state": "failed",
+                "reason": "C2_IMAGE_SOURCE_INVALID",
+                "action_phase": "confirmed",
+                "_confirmed_image_action_receipt": {
+                    "canonical_action_id": action_id,
+                    "reserved_worker_stable_id": stable_id,
+                    "pre_observation_id": observation["observation_id"],
+                    "post_observation_id": observation["observation_id"],
+                    "binding_confirmed": True,
+                    "image_visual_fingerprint": physical_anchor[
+                        "bubble_visual_fingerprint"
+                    ],
+                },
+            },
+        )
+        source_key = image_observation_source_key(target, observation)
+        begin_runtime_flow(flow_id, "c2_read")
+        runner._restart_recovery_flow_id = flow_id
+        save_c2_ledger_terminal(
+            conversation_id=conversation_id,
+            source_message_key=source_key,
+            origin_read_run_id=flow_id,
+            dedupe_key="dedupe-restart-waiting-image",
+            message_type="image",
+            terminal_state="failed",
+            ingest_state="waiting",
+            result={
+                "state": "failed",
+                "reason": "C2_IMAGE_SOURCE_INVALID",
+                "reason_detail": "clipboard_current_content_not_bitmap",
+                "authorization_revision": target.authorization_revision,
+                "replayable_observation": observation,
+            },
+        )
+
+        with patch(
+            "chejin_worker_client.task_runner.TaskRunner._execute_one_image_slot_vision",
+            side_effect=AssertionError("restart recovery must not call Vision"),
+        ):
+            runner.tick_once()
+            runner.tick_once()
+
+        self.assertEqual(
+            load_c2_ledger_entry(conversation_id, source_key)[
+                "ingest_state"
+            ],
+            "confirmed",
+        )
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(
+            api.message_payloads[0]["messages"][0]["message_type"],
+            "image",
+        )
+        self.assertIsNone(load_runtime_control()["inflight_flow_id"])
+        self.assertIn("pull", api.events)
+        self.assertEqual(bridge.locate_chats, [])
+        self.assertEqual(bridge.message_reads, [])
+        self.assertEqual(bridge.voice_transcribes, [])
+
+    def test_restart_confirmed_voice_journal_ingests_once_without_ui_then_pulls(
+        self,
+    ):
+        api = FakeApi(None)
+        conversation_id = "conv-restart-confirmed-voice"
+        target = WechatReadTarget(
+            conversation_id=conversation_id,
+            rpa_session_key="wx:rpa:v1:restart-confirmed-voice",
+            display_name="CJVOICE9",
+            remark_code="CJVOICE9",
+            read_reason="fact_settlement",
+            authorization_revision="revision-restart-confirmed-voice",
+        )
+        api.read_targets = [target]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-restart-confirmed-voice",
+            worker_token="token",
+            client_instance_id="client-restart-confirmed-voice",
+            run_status="running",
+        )
+        runner.binding = binding
+        flow_id = "read-restart-confirmed-voice"
+        action_id = "voice-restart-confirmed-action"
+        reserved_id = "worker-message-303"
+        begin_runtime_flow(flow_id, "c2_read")
+        runner._restart_recovery_flow_id = flow_id
+        journal_path = action_journal_path("voice", action_id)
+        initialize_action_journal(
+            journal_path,
+            action_kind="voice",
+            transaction_id=action_id,
+            conversation_id=conversation_id,
+            origin_read_run_id=flow_id,
+            canonical_action_id=action_id,
+            reserved_worker_stable_id=reserved_id,
+            pre_frame_id="voice-restart-confirmed-pre",
+            pre_action_identity_sequence=[
+                {
+                    "identity_state": "selected_action",
+                    "canonical_action_id": action_id,
+                    "reserved_worker_stable_id": reserved_id,
+                    "pre_observation_id": "voice-restart-confirmed-pre",
+                    "pre_sequence_index": 0,
+                    "sender_role": "customer",
+                    "message_type": "voice",
+                }
+            ],
+            prepare_evidence={
+                "authorization_revision": target.authorization_revision,
+                "remark_code": target.remark_code,
+                "rpa_session_key": target.rpa_session_key,
+                "display_name": target.display_name,
+                "read_reason": target.read_reason,
+                "pre_frame_id": "voice-restart-confirmed-pre",
+                "selected_pre_observation_id": (
+                    "voice-restart-confirmed-pre"
+                ),
+                "selected_action_token": "voice-restart-confirmed-token",
+                "selected_target_fingerprint": (
+                    "voice-restart-confirmed-fingerprint"
+                ),
+            },
+            items=[
+                {
+                    "journal_item_id": action_id,
+                    "physical_anchor_keys": [
+                        "voice-restart-confirmed-anchor"
+                    ],
+                }
+            ],
+        )
+        record_action_sequence_alignment(
+            journal_path,
+            {
+                "pre_sequence_source": "action_frame",
+                "pre_frame_id": "voice-restart-confirmed-pre",
+                "post_frame_id": "voice-restart-confirmed-post-frame",
+                "alignment_status": "unique",
+                "candidate_alignment_count": 1,
+                "matched_pairs": [
+                    {
+                        "identity_state": "selected_action",
+                        "worker_stable_id": reserved_id,
+                        "pre_observation_id": (
+                            "voice-restart-confirmed-pre"
+                        ),
+                        "post_observation_id": (
+                            "voice-restart-confirmed-post"
+                        ),
+                        "pre_index": 0,
+                        "post_index": 0,
+                        "match_basis": "confirmed_action",
+                    }
+                ],
+                "old_tail_fully_consumed": True,
+                "new_suffix_observation_ids": [],
+            },
+        )
+        update_action_journal_item(
+            journal_path,
+            journal_item_id=action_id,
+            action_phase="confirmed",
+            business_state="completed",
+            business_result_confirmed=True,
+            terminal_payload={
+                "state": "completed",
+                "transcribed_message": {
+                    "content_clean": "这是确认后崩溃的语音正文",
+                    "sender_role": "customer",
+                    "parent_voice_anchor_key": (
+                        "voice-restart-confirmed-anchor"
+                    ),
+                },
+            },
+        )
+
+        runner.tick_once()
+        runner.tick_once()
+
+        self.assertFalse(journal_path.exists())
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(
+            api.message_payloads[0]["messages"][0]["content"],
+            "这是确认后崩溃的语音正文",
+        )
+        self.assertIsNone(load_runtime_control()["inflight_flow_id"])
+        self.assertIn("pull", api.events)
+        self.assertEqual(bridge.locate_chats, [])
+        self.assertEqual(bridge.message_reads, [])
+        self.assertEqual(bridge.voice_transcribes, [])
+        self.assertEqual(bridge.sent_replies, [])
+
+    def test_restart_two_voice_journals_use_worker_sequence_not_filename(self):
+        api = FakeApi(None)
+        conversation_id = "conv-restart-two-voice-order"
+        target = WechatReadTarget(
+            conversation_id=conversation_id,
+            rpa_session_key="wx:rpa:v1:restart-two-voice-order",
+            display_name="CJORDER1",
+            remark_code="CJORDER1",
+            read_reason="fact_settlement",
+            authorization_revision="revision-restart-two-voice-order",
+        )
+        api.read_targets = [target]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-restart-two-voice-order",
+            worker_token="token",
+            client_instance_id="client-restart-two-voice-order",
+            run_status="running",
+        )
+        runner.binding = binding
+        flow_id = "read-restart-two-voice-order"
+        begin_runtime_flow(flow_id, "c2_read")
+        runner._restart_recovery_flow_id = flow_id
+        first_path = initialize_confirmed_voice_recovery_journal(
+            conversation_id=conversation_id,
+            flow_id=flow_id,
+            action_id="voice-order-4",
+            stable_id="worker-message-401",
+            observation_id="voice-order-post-1",
+            content="第一条语音",
+        )
+        second_path = initialize_confirmed_voice_recovery_journal(
+            conversation_id=conversation_id,
+            flow_id=flow_id,
+            action_id="voice-order-5",
+            stable_id="worker-message-402",
+            observation_id="voice-order-post-2",
+            content="第二条语音",
+        )
+        self.assertGreater(first_path.name, second_path.name)
+
+        runner.tick_once()
+        runner.tick_once()
+
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(
+            [
+                message["content"]
+                for message in api.message_payloads[0]["messages"]
+            ],
+            ["第一条语音", "第二条语音"],
+        )
+        self.assertFalse(first_path.exists())
+        self.assertFalse(second_path.exists())
+        self.assertIsNone(load_runtime_control()["inflight_flow_id"])
+        self.assertIn("pull", api.events)
+        self.assertEqual(bridge.voice_transcribes, [])
+
+    def test_restart_voice_image_journals_share_worker_sequence_order(self):
+        api = FakeApi(None)
+        conversation_id = "conv-restart-mixed-media-order"
+        target = WechatReadTarget(
+            conversation_id=conversation_id,
+            rpa_session_key="wx:rpa:v1:restart-mixed-media-order",
+            display_name="CJORDER2",
+            remark_code="CJORDER2",
+            read_reason="fact_settlement",
+            authorization_revision="revision-restart-mixed-media-order",
+        )
+        api.read_targets = [target]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-restart-mixed-media-order",
+            worker_token="token",
+            client_instance_id="client-restart-mixed-media-order",
+            run_status="running",
+        )
+        runner.binding = binding
+        flow_id = "read-restart-mixed-media-order"
+        begin_runtime_flow(flow_id, "c2_read")
+        runner._restart_recovery_flow_id = flow_id
+        voice_path = initialize_confirmed_voice_recovery_journal(
+            conversation_id=conversation_id,
+            flow_id=flow_id,
+            action_id="voice-mixed-2",
+            stable_id="worker-message-501",
+            observation_id="voice-mixed-post-1",
+            content="先收到的语音",
+        )
+        image_path = initialize_confirmed_image_recovery_journal(
+            conversation_id=conversation_id,
+            flow_id=flow_id,
+            action_id="image-mixed-4",
+            stable_id="worker-message-502",
+            observation_id="image-mixed-post-2",
+        )
+        self.assertGreater(voice_path.name, image_path.name)
+
+        with patch(
+            "chejin_worker_client.task_runner.TaskRunner._execute_one_image_slot_vision",
+            side_effect=AssertionError("restart recovery must not call Vision"),
+        ):
+            runner.tick_once()
+            runner.tick_once()
+
+        self.assertEqual(len(api.message_payloads), 1)
+        self.assertEqual(
+            [
+                message["message_type"]
+                for message in api.message_payloads[0]["messages"]
+            ],
+            ["voice", "image"],
+        )
+        self.assertFalse(voice_path.exists())
+        self.assertFalse(image_path.exists())
+        self.assertIsNone(load_runtime_control()["inflight_flow_id"])
+        self.assertIn("pull", api.events)
+        self.assertEqual(bridge.voice_transcribes, [])
+
+    def test_restart_duplicate_media_sequence_pauses_without_guessing(self):
+        api = FakeApi(None)
+        conversation_id = "conv-restart-media-sequence-conflict"
+        api.read_targets = [
+            WechatReadTarget(
+                conversation_id=conversation_id,
+                rpa_session_key="wx:rpa:v1:restart-media-sequence-conflict",
+                display_name="CJORDER3",
+                remark_code="CJORDER3",
+                read_reason="fact_settlement",
+                authorization_revision=(
+                    "revision-restart-media-sequence-conflict"
+                ),
+            )
+        ]
+        bridge = FakeBridge(
+            RpaResult(ok=True, result_code="unused", message="unused")
+        )
+        runner, _ = self.make_runner(api, bridge)
+        binding = Binding(
+            worker_id="worker-restart-media-sequence-conflict",
+            worker_token="token",
+            client_instance_id="client-restart-media-sequence-conflict",
+            run_status="running",
+        )
+        runner.binding = binding
+        flow_id = "read-restart-media-sequence-conflict"
+        begin_runtime_flow(flow_id, "c2_read")
+        runner._restart_recovery_flow_id = flow_id
+        initialize_confirmed_voice_recovery_journal(
+            conversation_id=conversation_id,
+            flow_id=flow_id,
+            action_id="voice-sequence-conflict-1",
+            stable_id="worker-message-601",
+            observation_id="voice-sequence-conflict-post-1",
+            content="冲突语音一",
+        )
+        initialize_confirmed_voice_recovery_journal(
+            conversation_id=conversation_id,
+            flow_id=flow_id,
+            action_id="voice-sequence-conflict-2",
+            stable_id="worker-message-601",
+            observation_id="voice-sequence-conflict-post-2",
+            content="冲突语音二",
+        )
+
+        runner.tick_once()
+
+        self.assertEqual(binding.run_status, "paused")
+        self.assertEqual(api.message_payloads, [])
+        self.assertNotIn("pull", api.events)
+        self.assertEqual(bridge.voice_transcribes, [])
+        self.assertTrue(
+            any(
+                item.get("error_code")
+                == "C2_MEDIA_FACT_RECOVERY_SEQUENCE_CONFLICT"
+                for item in read_logs(limit=30)
+            )
+        )
+
+    def test_restart_waiting_voice_without_replay_evidence_pauses_explicitly(
+        self,
+    ):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-restart-voice-evidence-missing",
+            worker_token="token",
+            client_instance_id="client-restart-voice-evidence-missing",
+            run_status="running",
+        )
+        runner.binding = binding
+        flow_id = "read-restart-voice-evidence-missing"
+        conversation_id = "conv-restart-voice-evidence-missing"
+        begin_runtime_flow(flow_id, "c2_read")
+        runner._restart_recovery_flow_id = flow_id
+        save_c2_ledger_terminal(
+            conversation_id=conversation_id,
+            source_message_key="source-restart-voice-evidence-missing",
+            origin_read_run_id=flow_id,
+            dedupe_key="dedupe-restart-voice-evidence-missing",
+            message_type="voice",
+            terminal_state="completed",
+            ingest_state="waiting",
+            result={"state": "completed"},
+        )
+
+        runner.tick_once()
+
+        self.assertEqual(binding.run_status, "paused")
+        self.assertEqual(
+            load_runtime_control()["inflight_flow_id"],
+            flow_id,
+        )
+        self.assertNotIn("pull", api.events)
+        self.assertTrue(
+            any(
+                item.get("error_code")
+                == "C2_MEDIA_FACT_RECOVERY_EVIDENCE_INCOMPLETE"
+                for item in read_logs(limit=30)
+            )
+        )
+
+    def test_restart_backend_flow_local_empty_pauses_without_pull(self):
+        api = FakeApi(None)
+        api.inflight_flow_state = {
+            "status": "active",
+            "flow_id": "read-backend-only",
+            "flow_kind": "c2_read",
+        }
+        runner, seen = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-restart-backend-only",
+            worker_token="token",
+            client_instance_id="client-restart-backend-only",
+            run_status="running",
+        )
+        runner.binding = binding
+        runner._restart_backend_probe_pending = True
+
+        runner.tick_once()
+
+        self.assertEqual(binding.run_status, "paused")
+        self.assertEqual(api.run_status_updates, ["paused"])
+        self.assertNotIn("pull", api.events)
+        self.assertIsNone(load_runtime_control()["inflight_flow_id"])
+        self.assertTrue(seen["errors"])
+        self.assertTrue(
+            any(
+                item.get("error_code")
+                == "RUNTIME_INFLIGHT_LOCAL_STATE_MISSING"
+                for item in read_logs(limit=30)
+            )
+        )
+
+    def test_restart_probe_with_both_flow_states_empty_allows_pull(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-restart-both-empty",
+            worker_token="token",
+            client_instance_id="client-restart-both-empty",
+            run_status="running",
+        )
+        runner.binding = binding
+        runner._restart_backend_probe_pending = True
+
+        runner.tick_once()
+
+        self.assertFalse(runner._restart_backend_probe_pending)
+        self.assertEqual(binding.run_status, "running")
+        self.assertIn("pull", api.events)
+
+    def test_restart_memory_pointer_without_sqlite_flow_pauses(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-restart-pointer-missing",
+            worker_token="token",
+            client_instance_id="client-restart-pointer-missing",
+            run_status="running",
+        )
+        runner.binding = binding
+        runner._restart_recovery_flow_id = "read-restart-pointer-missing"
+
+        runner.tick_once()
+
+        self.assertEqual(binding.run_status, "paused")
+        self.assertNotIn("pull", api.events)
+        self.assertTrue(
+            any(
+                item.get("error_code")
+                == "RUNTIME_INFLIGHT_LOCAL_POINTER_MISSING"
+                for item in read_logs(limit=30)
+            )
+        )
+
+    def test_restart_memory_and_sqlite_flow_id_mismatch_pauses(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-restart-pointer-mismatch",
+            worker_token="token",
+            client_instance_id="client-restart-pointer-mismatch",
+            run_status="running",
+        )
+        runner.binding = binding
+        begin_runtime_flow("read-restart-sqlite", "c2_read")
+        runner._restart_recovery_flow_id = "read-restart-memory"
+
+        runner.tick_once()
+
+        self.assertEqual(binding.run_status, "paused")
+        self.assertEqual(
+            load_runtime_control()["inflight_flow_id"],
+            "read-restart-sqlite",
+        )
+        self.assertNotIn("pull", api.events)
+        self.assertTrue(
+            any(
+                item.get("error_code")
+                == "RUNTIME_INFLIGHT_LOCAL_POINTER_MISMATCH"
+                for item in read_logs(limit=30)
+            )
+        )
+
+    def test_restart_local_task_flow_backend_empty_pauses_and_preserves_local(
+        self,
+    ):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-restart-task-local-only",
+            worker_token="token",
+            client_instance_id="client-restart-task-local-only",
+            run_status="running",
+        )
+        runner.binding = binding
+        begin_runtime_flow("task-restart-local-only", "task")
+        runner._restart_recovery_flow_id = "task-restart-local-only"
+
+        runner.tick_once()
+
+        self.assertEqual(binding.run_status, "paused")
+        self.assertEqual(
+            load_runtime_control()["inflight_flow_id"],
+            "task-restart-local-only",
+        )
+        self.assertNotIn("pull", api.events)
+        self.assertTrue(
+            any(
+                item.get("error_code")
+                == "RUNTIME_INFLIGHT_TASK_BACKEND_STATE_MISSING"
+                for item in read_logs(limit=30)
+            )
+        )
+
+    def test_restart_local_backend_flow_id_mismatch_pauses_and_preserves_local(
+        self,
+    ):
+        api = FakeApi(None)
+        api.inflight_flow_state = {
+            "status": "active",
+            "flow_id": "read-backend-different",
+            "flow_kind": "c2_read",
+        }
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-restart-mismatch",
+            worker_token="token",
+            client_instance_id="client-restart-mismatch",
+            run_status="running",
+        )
+        runner.binding = binding
+        begin_runtime_flow("read-local-old", "c2_read")
+        runner._restart_recovery_flow_id = "read-local-old"
+
+        runner.tick_once()
+
+        self.assertEqual(binding.run_status, "paused")
+        self.assertEqual(
+            load_runtime_control()["inflight_flow_id"],
+            "read-local-old",
+        )
+        self.assertEqual(api.run_status_updates, ["paused"])
+        self.assertNotIn("pull", api.events)
+        self.assertTrue(
+            any(
+                item.get("error_code")
+                == "RUNTIME_INFLIGHT_FLOW_ID_MISMATCH"
+                for item in read_logs(limit=30)
+            )
+        )
+
+    def test_restart_matching_flow_with_unknown_backend_status_pauses(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-restart-status-unknown",
+            worker_token="token",
+            client_instance_id="client-restart-status-unknown",
+            run_status="running",
+        )
+        runner.binding = binding
+        flow_id = "read-restart-status-unknown"
+        begin_runtime_flow(flow_id, "c2_read")
+        runner._restart_recovery_flow_id = flow_id
+        api.inflight_flow_state = {
+            "status": "unknown",
+            "flow_id": flow_id,
+            "flow_kind": "c2_read",
+        }
+
+        runner.tick_once()
+
+        self.assertEqual(binding.run_status, "paused")
+        self.assertEqual(load_runtime_control()["inflight_flow_id"], flow_id)
+        self.assertNotIn("pull", api.events)
+        self.assertTrue(
+            any(
+                item.get("error_code")
+                == "RUNTIME_INFLIGHT_BACKEND_STATE_INVALID"
+                for item in read_logs(limit=30)
+            )
+        )
+
+    def test_restart_local_flow_with_multiple_conversations_pauses(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-restart-scope-conflict",
+            worker_token="token",
+            client_instance_id="client-restart-scope-conflict",
+            run_status="running",
+        )
+        runner.binding = binding
+        flow_id = "read-restart-scope-conflict"
+        begin_runtime_flow(flow_id, "c2_read")
+        runner._restart_recovery_flow_id = flow_id
+        for index in (1, 2):
+            save_c2_ledger_terminal(
+                conversation_id=f"conv-restart-scope-{index}",
+                source_message_key=f"source-restart-scope-{index}",
+                origin_read_run_id=flow_id,
+                dedupe_key=f"dedupe-restart-scope-{index}",
+                message_type="text",
+                terminal_state="completed",
+                ingest_state="confirmed",
+                result={"state": "completed"},
+            )
+
+        runner.tick_once()
+
+        self.assertEqual(binding.run_status, "paused")
+        self.assertEqual(load_runtime_control()["inflight_flow_id"], flow_id)
+        self.assertNotIn("pull", api.events)
+        self.assertTrue(
+            any(
+                item.get("error_code")
+                == "RUNTIME_INFLIGHT_LOCAL_FLOW_SCOPE_CONFLICT"
+                for item in read_logs(limit=30)
+            )
+        )
+
+    def test_restart_matching_flow_without_receipt_uses_durable_owner(self):
+        api = FakeApi(None)
+        runner, _ = self.make_runner(
+            api,
+            FakeBridge(
+                RpaResult(ok=True, result_code="unused", message="unused")
+            ),
+        )
+        binding = Binding(
+            worker_id="worker-restart-owner",
+            worker_token="token",
+            client_instance_id="client-restart-owner",
+            run_status="running",
+        )
+        runner.binding = binding
+        flow_id = "read-restart-durable-owner"
+        conversation_id = "conv-restart-durable-owner"
+        begin_runtime_flow(flow_id, "c2_read")
+        runner._restart_recovery_flow_id = flow_id
+        api.inflight_flow_id = flow_id
+        api.inflight_flow_state = {
+            "status": "active",
+            "flow_id": flow_id,
+            "flow_kind": "c2_read",
+        }
+        save_c2_ledger_terminal(
+            conversation_id=conversation_id,
+            source_message_key="source-restart-durable-owner",
+            origin_read_run_id=flow_id,
+            dedupe_key="dedupe-restart-durable-owner",
+            message_type="text",
+            terminal_state="completed",
+            ingest_state="confirmed",
+            result={"state": "completed"},
+        )
+
+        runner.tick_once()
+
+        self.assertIsNone(load_runtime_control()["inflight_flow_id"])
+        self.assertIn(
+            f"finish:{flow_id}:read_confirmed:{conversation_id}:",
+            api.inflight_flow_events,
+        )
+        self.assertIn("pull", api.events)
 
     def test_pending_same_flow_outbox_blocks_inflight_finish(self):
         api = FakeApi(None)

@@ -1,4 +1,4 @@
-"""Production-entry regressions for v0.9.29 startup-map add-friend targeting."""
+"""Production-entry regressions for v0.9.30 startup-map add-friend targeting."""
 
 from __future__ import annotations
 
@@ -582,11 +582,20 @@ class AddFriendProductionEntryTest(unittest.TestCase):
         self.assertNotEqual(measured_nav, 144, snapshot)
         self.assertEqual(snapshot.get("sidebar_bounds", [None, None, None])[2], sidebar_x, snapshot)
         self.assertEqual(len(clicks), 1, clicks)
-        header_left, header_top, header_right, header_bottom = snapshot["sidebar_header_bounds"]
+        header_left, _header_top, header_right, _header_bottom = snapshot["sidebar_header_bounds"]
         expected_x = header_left + round((265 / 298) * (header_right - header_left))
-        expected_y = header_top + round((29 / 60) * (header_bottom - header_top))
+        search_anchor = next(
+            anchor
+            for anchor in snapshot.get("anchors", [])
+            if anchor.get("name") == "sidebar_search_anchor"
+        )
+        search_top = int(search_anchor["bounds"][1])
+        search_bottom = int(search_anchor["bounds"][3])
+        expected_y = int((search_top + search_bottom) / 2)
         self.assertEqual(clicks[0]["point"], [expected_x, expected_y], clicks)
-        self.assertNotEqual(clicks[0]["point"][1], plus_y, clicks)
+        self.assertGreaterEqual(clicks[0]["point"][1], search_top, clicks)
+        self.assertLessEqual(clicks[0]["point"][1], search_bottom, clicks)
+        self.assertLessEqual(abs(clicks[0]["point"][1] - plus_y), 2, clicks)
         self.assertGreater(clicks[0]["point"][0], ocr_items[0]["right"], clicks)
 
     def test_no_header_line_search_noise_and_extra_verticals_reach_real_plus_click(self) -> None:

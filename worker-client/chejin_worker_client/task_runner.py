@@ -67,6 +67,7 @@ from .storage import (
     checkpoint_c2_action_outcomes,
     clear_c2_state,
     clear_c2_action_journal,
+    c2_flow_conversation_ids,
     enqueue_c2_outbox,
     begin_runtime_flow,
     clear_runtime_pause,
@@ -1430,6 +1431,322 @@ def _voice_terminal_payload(
     }
 
 
+def _replayable_voice_observation(
+    *,
+    committed: Any,
+    terminal_payload: dict[str, Any],
+    anchor_keys: list[str] | None = None,
+) -> dict[str, Any] | None:
+    """Rebuild one committed voice observation from durable action evidence."""
+
+    if isinstance(committed, IdentityCommitRejection):
+        return None
+    proof = dict(getattr(committed, "proof", {}) or {})
+    observation_id = str(
+        getattr(committed, "observation_id", "") or ""
+    ).strip()
+    stable_id = str(
+        getattr(committed, "worker_stable_id", "") or ""
+    ).strip()
+    sender_role = str(
+        getattr(committed, "sender_role", "") or ""
+    ).strip().lower()
+    source_key = str(
+        getattr(committed, "source_message_key", "") or ""
+    ).strip()
+    if not all((observation_id, stable_id, sender_role, source_key)):
+        return None
+    transcript = (
+        dict(terminal_payload.get("transcribed_message") or {})
+        if isinstance(terminal_payload.get("transcribed_message"), dict)
+        else {}
+    )
+    state = str(terminal_payload.get("state") or "").strip().lower()
+    item_state = "completed" if state == "completed" else "failed"
+    content = str(
+        transcript.get("content_clean")
+        or transcript.get("content")
+        or ""
+    ).strip()
+    aliases = [
+        str(value).strip()
+        for value in (
+            transcript.get("parent_voice_anchor_key"),
+            transcript.get("voice_anchor_stable_key"),
+            transcript.get("voice_anchor_key"),
+            *(anchor_keys or []),
+        )
+        if str(value or "").strip()
+    ]
+    anchor = aliases[0] if aliases else f"committed:{stable_id}"
+    if item_state == "completed" and not content:
+        return None
+    mapping = dict(proof)
+    observation = {
+        "schema_version": 3,
+        "observation_id": observation_id,
+        "row_kind": (
+            "voice_transcript" if item_state == "completed" else "voice_bubble"
+        ),
+        "sender_role": sender_role,
+        "sender_role_source": (
+            "parent_voice" if item_state == "completed" else "same_row_avatar"
+        ),
+        "message_type": "voice",
+        "voice_state": (
+            "transcribed" if item_state == "completed" else "untranscribed"
+        ),
+        "item_state": item_state,
+        "_worker_stable_id": stable_id,
+        "_worker_identity_scope": "committed",
+        "_worker_voice_action_summary": {
+            "confirmed_action_mapping": mapping,
+        },
+        "_worker_committed_message": committed_identity_record(
+            worker_stable_id=stable_id,
+            commit_basis=MessageCommitBasis.CONFIRMED_VOICE_ACTION,
+            observation_id=observation_id,
+            sender_role=sender_role,
+            message_type="voice",
+            proof=proof,
+        ),
+        "source_message": {
+            "source_message_key": source_key,
+            "sender_role": sender_role,
+            "type": "voice",
+        },
+    }
+    if item_state == "completed":
+        observation.update(
+            {
+                "content_clean": content,
+                "parent_voice_anchor_key": anchor,
+            }
+        )
+    else:
+        error_code = str(
+            terminal_payload.get("error_code")
+            or "C2_VOICE_TRANSCRIBE_FAILED"
+        ).strip()
+        observation.update(
+            {
+                "voice_anchor_key": anchor,
+                "error_code": error_code,
+                "reason_detail": error_code,
+            }
+        )
+    return observation
+
+
+def _replayable_voice_observation_from_ledger(
+    conversation_id: str,
+    entry: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Recover only voice evidence that still passes the formal commit gate."""
+
+    source_key = str(entry.get("source_message_key") or "").strip()
+    result = (
+        dict(entry.get("result") or {})
+        if isinstance(entry.get("result"), dict)
+        else {}
+    )
+    candidates: list[dict[str, Any]] = []
+    direct = result.get("replayable_observation")
+    if isinstance(direct, dict):
+        candidates.append(dict(direct))
+    action_outcome = (
+        result.get("action_outcome")
+        if isinstance(result.get("action_outcome"), dict)
+        else {}
+    )
+    evidence = (
+        action_outcome.get("evidence")
+        if isinstance(action_outcome.get("evidence"), dict)
+        else {}
+    )
+    for key in ("observations", "new_messages", "transcribed_messages"):
+        for item in evidence.get(key) or []:
+            if isinstance(item, dict):
+                candidates.append(dict(item))
+    for candidate in candidates:
+        try:
+            committed = require_committed_message(
+                conversation_id=conversation_id,
+                observation=candidate,
+            )
+        except ValueError:
+            continue
+        if (
+            committed.message_type != "voice"
+            or committed.source_message_key != source_key
+        ):
+            continue
+        if isinstance(direct, dict) and candidate == direct:
+            return candidate
+        rebuilt = _replayable_voice_observation(
+            committed=committed,
+            terminal_payload=result,
+            anchor_keys=list(
+                {
+                    str(candidate.get(key) or "").strip()
+                    for key in (
+                        "parent_voice_anchor_key",
+                        "voice_anchor_stable_key",
+                        "voice_anchor_key",
+                    )
+                    if str(candidate.get(key) or "").strip()
+                }
+            ),
+        )
+        if rebuilt is not None:
+            return rebuilt
+    return None
+
+
+def _ordered_media_recovery_entries(
+    conversation_id: str,
+    entries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Order durable media facts only by their committed worker sequence."""
+
+    ordered: list[tuple[int, dict[str, Any]]] = []
+    seen_sequences: dict[int, str] = {}
+    for entry in entries:
+        message_type = str(entry.get("message_type") or "").strip().lower()
+        if message_type not in {"voice", "image"}:
+            raise ValueError("C2_MEDIA_FACT_RECOVERY_TYPE_INVALID")
+        result = (
+            dict(entry.get("result") or {})
+            if isinstance(entry.get("result"), dict)
+            else {}
+        )
+        replayable = (
+            _replayable_voice_observation_from_ledger(
+                conversation_id,
+                entry,
+            )
+            if message_type == "voice"
+            else (
+                dict(result.get("replayable_observation") or {})
+                if isinstance(result.get("replayable_observation"), dict)
+                else None
+            )
+        )
+        if replayable is None:
+            raise ValueError("C2_MEDIA_FACT_RECOVERY_EVIDENCE_INCOMPLETE")
+        try:
+            committed = require_committed_message(
+                conversation_id=conversation_id,
+                observation=replayable,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "C2_MEDIA_FACT_RECOVERY_IDENTITY_INVALID"
+            ) from exc
+        source_key = str(entry.get("source_message_key") or "").strip()
+        if (
+            committed.message_type != message_type
+            or committed.source_message_key != source_key
+        ):
+            raise ValueError("C2_MEDIA_FACT_RECOVERY_IDENTITY_CONFLICT")
+        sequence_match = re.fullmatch(
+            r"worker-message-([1-9][0-9]*)",
+            str(committed.worker_stable_id or "").strip(),
+        )
+        if sequence_match is None:
+            raise ValueError("C2_MEDIA_FACT_RECOVERY_SEQUENCE_MISSING")
+        sequence = int(sequence_match.group(1))
+        previous_source_key = seen_sequences.get(sequence)
+        if previous_source_key is not None and previous_source_key != source_key:
+            raise ValueError("C2_MEDIA_FACT_RECOVERY_SEQUENCE_CONFLICT")
+        seen_sequences[sequence] = source_key
+        result["replayable_observation"] = replayable
+        ordered.append((sequence, {**entry, "result": result}))
+    return [entry for _sequence, entry in sorted(ordered, key=lambda item: item[0])]
+
+
+def _ordered_physical_media_journals(
+    journal_entries: list[tuple[Path, dict[str, Any]]],
+) -> list[tuple[Path, dict[str, Any]]]:
+    """Validate and order formed Journal facts by worker-message-N."""
+
+    ordered: list[tuple[int, Path, dict[str, Any]]] = []
+    seen_sequences: dict[int, str] = {}
+    for path, payload in journal_entries:
+        items = (
+            payload.get("items")
+            if isinstance(payload.get("items"), dict)
+            else {}
+        )
+        journal_sequences: list[int] = []
+        for item_id, item in items.items():
+            if not isinstance(item, dict) or not action_journal_item_has_formed_fact(
+                item
+            ):
+                continue
+            replayable = (
+                item.get("replayable_observation")
+                if isinstance(item.get("replayable_observation"), dict)
+                else {}
+            )
+            committed_record = (
+                replayable.get("_worker_committed_message")
+                if isinstance(
+                    replayable.get("_worker_committed_message"), dict
+                )
+                else {}
+            )
+            stable_candidates = {
+                str(value or "").strip()
+                for value in (
+                    replayable.get("_worker_stable_id"),
+                    committed_record.get("worker_stable_id"),
+                    (
+                        payload.get("committed_worker_stable_id")
+                        if str(item_id or "").strip()
+                        == str(payload.get("canonical_action_id") or "").strip()
+                        else ""
+                    ),
+                    (
+                        payload.get("reserved_worker_stable_id")
+                        if str(item_id or "").strip()
+                        == str(payload.get("canonical_action_id") or "").strip()
+                        else ""
+                    ),
+                )
+                if str(value or "").strip()
+            }
+            if len(stable_candidates) != 1:
+                raise ValueError("C2_MEDIA_FACT_RECOVERY_SEQUENCE_CONFLICT")
+            stable_id = next(iter(stable_candidates))
+            sequence_match = re.fullmatch(
+                r"worker-message-([1-9][0-9]*)",
+                stable_id,
+            )
+            if sequence_match is None:
+                raise ValueError("C2_MEDIA_FACT_RECOVERY_SEQUENCE_MISSING")
+            sequence = int(sequence_match.group(1))
+            identity = f"{path}:{str(item_id or '').strip()}"
+            if sequence in seen_sequences and seen_sequences[sequence] != identity:
+                raise ValueError("C2_MEDIA_FACT_RECOVERY_SEQUENCE_CONFLICT")
+            seen_sequences[sequence] = identity
+            journal_sequences.append(sequence)
+        ordered.append(
+            (
+                min(journal_sequences) if journal_sequences else 2**63 - 1,
+                path,
+                payload,
+            )
+        )
+    return [
+        (path, payload)
+        for _sequence, path, payload in sorted(
+            ordered,
+            key=lambda item: item[0],
+        )
+    ]
+
+
 def _unconfirmed_voice_action_outcomes(
     *,
     source_keys: list[str] | set[str],
@@ -1552,6 +1869,8 @@ class TaskRunner:
         self._runtime_process_context: dict[str, Any] = {}
         self._backend_inflight_flow_state: dict[str, Any] = {}
         self._restart_recovery_flow_id: str | None = None
+        self._restart_backend_probe_pending = False
+        self._restart_flow_reconciliation_incident: tuple[str, str, str] | None = None
         self.current_ui_lock: UiLockLease | None = None
         self.current_task_lease: TaskLeaseGuard | None = None
         self.last_rpa_component_status: str | None = None
@@ -1681,6 +2000,7 @@ class TaskRunner:
             load_runtime_control().get("inflight_flow_id") or ""
         ).strip()
         self._restart_recovery_flow_id = persisted_flow_id or None
+        self._restart_backend_probe_pending = True
         self.stop_event.clear()
         self._task_wake_event.clear()
         with self._thread_health_lock:
@@ -1887,6 +2207,7 @@ class TaskRunner:
             and active.run_status == "running"
             and control.get("pause_requested") is not True
             and not control.get("inflight_flow_id")
+            and not self._restart_backend_probe_pending
         )
 
     def _can_continue_inflight_flow(self, flow_id: str | None = None) -> bool:
@@ -2092,7 +2413,7 @@ class TaskRunner:
         *,
         flow_id: str,
         conversation_id: str,
-    ) -> bool:
+    ) -> Literal["settled", "retry", "blocked"]:
         """Settle the old flow's physical Journal before finishing it.
 
         Recovery is evidence-only: it may read local Journal/SQLite state and
@@ -2102,7 +2423,7 @@ class TaskRunner:
 
         journal_entries = self._physical_action_journals_for_flow(flow_id)
         if not journal_entries:
-            return True
+            return "settled"
         journal_conversation_ids = {
             str(payload.get("conversation_id") or "").strip()
             for _path, payload in journal_entries
@@ -2126,14 +2447,36 @@ class TaskRunner:
                     "conversation_ids": sorted(journal_conversation_ids),
                 },
             )
-            return False
+            return "blocked"
         journal_conversation_id = next(iter(journal_conversation_ids))
+        try:
+            journal_entries = _ordered_physical_media_journals(
+                journal_entries
+            )
+        except ValueError as exc:
+            error_code = str(exc or "").strip() or (
+                "C2_MEDIA_FACT_RECOVERY_SEQUENCE_CONFLICT"
+            )
+            self._pause_for_restart_flow_reconciliation(
+                binding,
+                error_code=error_code,
+                message=(
+                    "旧媒体动作日志的正式消息序号缺失或冲突；已暂停接单，禁止猜测恢复顺序。"
+                ),
+                local_flow_id=flow_id,
+                backend_flow_id="",
+                metadata={"conversation_id": journal_conversation_id},
+            )
+            return "blocked"
         recovery_target = WechatReadTarget(
             conversation_id=journal_conversation_id,
             rpa_session_key="",
             display_name="",
         )
-        unresolved = self._recover_physical_action_journals(recovery_target)
+        unresolved = self._recover_physical_action_journals(
+            recovery_target,
+            restart_journal_entries=journal_entries,
+        )
         if unresolved:
             gate_target = self._restart_recovery_target(
                 binding,
@@ -2152,7 +2495,7 @@ class TaskRunner:
                         "conversation_id": journal_conversation_id,
                     },
                 )
-                return False
+                return "retry"
             error_code = str(
                 unresolved[0].get("error_code")
                 or "MESSAGE_CROSS_ROUND_IDENTITY_AMBIGUOUS"
@@ -2167,7 +2510,7 @@ class TaskRunner:
                 ui_frame_invalidated=False,
             )
             if not reported:
-                return False
+                return "retry"
             self._quarantine_reported_restart_journals(
                 journal_entries=journal_entries,
                 identity_errors=unresolved,
@@ -2184,16 +2527,14 @@ class TaskRunner:
                 },
             )
 
-        if any(
-            str(payload.get("action_kind") or "").strip() == "image"
-            for _path, payload in journal_entries
-        ) and self._has_physical_action_journal_for_flow(flow_id):
-            if not self._recover_pending_image_transaction(
+        if self._has_physical_action_journal_for_flow(flow_id):
+            media_status = self._recover_pending_media_transaction(
                 binding,
+                flow_id=flow_id,
                 conversation_id=journal_conversation_id,
-                allow_ui_resume=False,
-            ):
-                return False
+            )
+            if media_status != "settled":
+                return media_status
 
         if self._has_physical_action_journal_for_flow(flow_id):
             append_log(
@@ -2206,8 +2547,8 @@ class TaskRunner:
                     "conversation_id": journal_conversation_id,
                 },
             )
-            return False
-        return True
+            return "blocked"
+        return "settled"
 
     @staticmethod
     def _quarantine_reported_restart_journals(
@@ -2345,6 +2686,364 @@ class TaskRunner:
             self._restart_recovery_flow_id = None
         self._request_task_wake_if_safe(reason="inflight_flow_finished")
 
+    def _pause_for_restart_flow_reconciliation(
+        self,
+        binding: Binding,
+        *,
+        error_code: str,
+        message: str,
+        local_flow_id: str,
+        backend_flow_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Fail visibly when two durable flow authorities cannot be aligned."""
+
+        signature = (
+            str(error_code or "").strip(),
+            str(local_flow_id or "").strip(),
+            str(backend_flow_id or "").strip(),
+        )
+        if self._restart_flow_reconciliation_incident != signature:
+            append_log(
+                "ERROR",
+                "restart_inflight_flow_reconciliation_failed",
+                message,
+                error_code=signature[0],
+                metadata={
+                    "local_flow_id": signature[1],
+                    "backend_flow_id": signature[2],
+                    **dict(metadata or {}),
+                },
+                force_incident=True,
+            )
+            self._restart_flow_reconciliation_incident = signature
+        self.on_error(message)
+        if binding.run_status != "paused":
+            self.set_run_status("paused")
+
+    def _restart_flow_conversation_ids(
+        self,
+        flow_id: str,
+        *,
+        receipt: dict[str, Any] | None = None,
+        journal_entries: list[tuple[Path, dict[str, Any]]] | None = None,
+    ) -> list[str]:
+        ids = set(c2_flow_conversation_ids(flow_id))
+        receipt_conversation_id = str(
+            (receipt or {}).get("conversation_id") or ""
+        ).strip()
+        if receipt_conversation_id:
+            ids.add(receipt_conversation_id)
+        for _path, payload in journal_entries or []:
+            conversation_id = str(
+                payload.get("conversation_id") or ""
+            ).strip()
+            if conversation_id:
+                ids.add(conversation_id)
+        return sorted(ids)
+
+    def _local_restart_flow_blocker(self, flow_id: str) -> str:
+        if has_pending_c2_outbox_for_read_run_id(flow_id):
+            return "RUNTIME_INFLIGHT_C2_OUTBOX_PENDING"
+        if has_c2_action_journal_for_origin_read_run_id(flow_id):
+            return "RUNTIME_INFLIGHT_C2_ACTION_JOURNAL_PENDING"
+        if self._has_physical_action_journal_for_flow(flow_id):
+            return "RUNTIME_INFLIGHT_ACTION_JOURNAL_PENDING"
+        if has_c2_ledger_for_origin_read_run_id(flow_id, pending_only=True):
+            return "RUNTIME_INFLIGHT_C2_LEDGER_PENDING"
+        if has_pending_reply_send_ack_for_task_id(flow_id):
+            return "RUNTIME_INFLIGHT_SENT_ACK_PENDING"
+        return ""
+
+    def _settle_orphaned_local_restart_flow(
+        self,
+        binding: Binding,
+        *,
+        flow_id: str,
+    ) -> None:
+        """Settle a local flow whose authoritative backend record is gone.
+
+        The backend empty state is authoritative for flow ownership, but it
+        does not authorize dropping local message facts. Physical Journals
+        are recovered first and every local durable blocker must be clear
+        before the stale runtime marker is removed.
+        """
+
+        journal_entries = self._physical_action_journals_for_flow(flow_id)
+        receipt = load_c2_state(self._inflight_finish_receipt_key(flow_id))
+        flow_kind = str(
+            load_runtime_control().get("inflight_flow_kind") or ""
+        ).strip()
+        if flow_kind != "c2_read":
+            self._pause_for_restart_flow_reconciliation(
+                binding,
+                error_code="RUNTIME_INFLIGHT_TASK_BACKEND_STATE_MISSING",
+                message=(
+                    "本地仍有任务流程，但后端已无对应在途登记；已暂停接单并保留现场。"
+                ),
+                local_flow_id=flow_id,
+                backend_flow_id="",
+                metadata={"flow_kind": flow_kind or "unknown"},
+            )
+            return
+        conversation_ids = self._restart_flow_conversation_ids(
+            flow_id,
+            receipt=receipt,
+            journal_entries=journal_entries,
+        )
+        if len(conversation_ids) > 1:
+            self._pause_for_restart_flow_reconciliation(
+                binding,
+                error_code="RUNTIME_INFLIGHT_LOCAL_FLOW_SCOPE_CONFLICT",
+                message=(
+                    "本地旧流程关联了多个客户，已暂停接单并保留现场。"
+                ),
+                local_flow_id=flow_id,
+                backend_flow_id="",
+                metadata={"conversation_ids": conversation_ids},
+            )
+            return
+        conversation_id = conversation_ids[0] if conversation_ids else ""
+        if journal_entries:
+            media_status = self._recover_restart_physical_action_journals(
+                binding,
+                flow_id=flow_id,
+                conversation_id=conversation_id,
+            )
+            if media_status == "retry":
+                # A complete immutable Outbox now owns delivery.  Keep the
+                # worker running so the normal retry clock can settle it;
+                # the physical Journal remains as crash evidence until the
+                # backend confirms every source key.
+                return
+            if media_status == "blocked":
+                if binding.run_status != "paused":
+                    self._pause_for_restart_flow_reconciliation(
+                        binding,
+                        error_code=(
+                            "RUNTIME_INFLIGHT_ACTION_JOURNAL_PENDING"
+                        ),
+                        message=(
+                            "旧媒体动作日志无法自动结算；已暂停接单并保留现场。"
+                        ),
+                        local_flow_id=flow_id,
+                        backend_flow_id="",
+                        metadata={"conversation_id": conversation_id},
+                    )
+                return
+        if (
+            conversation_id
+            and has_c2_action_journal_for_origin_read_run_id(flow_id)
+        ):
+            try:
+                self._recover_c2_action_journal(
+                    WechatReadTarget(
+                        conversation_id=conversation_id,
+                        rpa_session_key="",
+                        display_name="",
+                    )
+                )
+            except Exception as exc:
+                self._pause_for_restart_flow_reconciliation(
+                    binding,
+                    error_code="C2_ACTION_JOURNAL_RECOVERY_FAILED",
+                    message=(
+                        "旧 C2 结果日志无法恢复到账本；已暂停接单并保留现场。"
+                    ),
+                    local_flow_id=flow_id,
+                    backend_flow_id="",
+                    metadata={
+                        "conversation_id": conversation_id,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                return
+        if (
+            conversation_id
+            and not has_pending_c2_outbox_for_read_run_id(flow_id)
+            and has_c2_ledger_for_origin_read_run_id(
+                flow_id,
+                pending_only=True,
+            )
+        ):
+            waiting_entries = [
+                entry
+                for entry in list_c2_ledger_entries(
+                    conversation_id,
+                    ingest_state="waiting",
+                )
+                if str(entry.get("origin_read_run_id") or "").strip()
+                == flow_id
+            ]
+            waiting_types = {
+                str(entry.get("message_type") or "").strip().lower()
+                for entry in waiting_entries
+            }
+            unsupported_types = waiting_types - {"voice", "image"}
+            if not waiting_entries or unsupported_types:
+                self._pause_for_restart_flow_reconciliation(
+                    binding,
+                    error_code="C2_LEDGER_RECOVERY_EVIDENCE_INCOMPLETE",
+                    message=(
+                        "旧等待账本无法重建完整媒体事实；已暂停接单并保留现场。"
+                    ),
+                    local_flow_id=flow_id,
+                    backend_flow_id="",
+                    metadata={
+                        "conversation_id": conversation_id,
+                        "message_types": sorted(waiting_types),
+                    },
+                )
+                return
+            media_status = self._recover_pending_media_transaction(
+                binding,
+                flow_id=flow_id,
+                conversation_id=conversation_id,
+            )
+            if media_status != "settled":
+                return
+        blocker = self._local_restart_flow_blocker(flow_id)
+        if blocker:
+            if blocker != "RUNTIME_INFLIGHT_C2_OUTBOX_PENDING":
+                self._pause_for_restart_flow_reconciliation(
+                    binding,
+                    error_code=blocker,
+                    message=(
+                        "旧流程仍有未结算事实；已暂停接单并继续无界面恢复。"
+                    ),
+                    local_flow_id=flow_id,
+                    backend_flow_id="",
+                    metadata={"conversation_id": conversation_id},
+                )
+            return
+        finish_runtime_flow(flow_id)
+        clear_c2_state(self._inflight_finish_receipt_key(flow_id))
+        if self.api.inflight_flow_id == flow_id:
+            self.api.inflight_flow_id = None
+        self._backend_inflight_flow_state = {}
+        self._restart_recovery_flow_id = None
+        self._restart_backend_probe_pending = False
+        self._restart_flow_reconciliation_incident = None
+        append_log(
+            "WARN",
+            "restart_orphaned_local_flow_settled",
+            "后端已无对应在途流程；本地事实结算完成后已清除旧流程并恢复接单。",
+            metadata={
+                "flow_id": flow_id,
+                "conversation_id": conversation_id,
+                "backend_flow_state": "empty",
+            },
+        )
+        self._request_task_wake_if_safe(
+            reason="orphaned_local_inflight_flow_settled"
+        )
+
+    def _reconcile_restart_inflight_flow(
+        self,
+        binding: Binding,
+    ) -> bool:
+        """Reconcile the complete local/backend restart-flow state matrix."""
+
+        control = load_runtime_control()
+        local_flow_id = str(
+            control.get("inflight_flow_id") or ""
+        ).strip()
+        backend_flow_id = str(
+            self._backend_inflight_flow_state.get("flow_id") or ""
+        ).strip()
+        backend_status = str(
+            self._backend_inflight_flow_state.get("status") or ""
+        ).strip()
+        if not local_flow_id:
+            if self._restart_recovery_flow_id:
+                self._pause_for_restart_flow_reconciliation(
+                    binding,
+                    error_code="RUNTIME_INFLIGHT_LOCAL_POINTER_MISSING",
+                    message=(
+                        "启动时发现的旧流程已失去 SQLite 主记录；已暂停接单并保留现场。"
+                    ),
+                    local_flow_id="",
+                    backend_flow_id=backend_flow_id,
+                    metadata={
+                        "restart_flow_id": self._restart_recovery_flow_id,
+                        "backend_status": backend_status,
+                    },
+                )
+                return False
+            if self._restart_backend_probe_pending and backend_flow_id:
+                self._pause_for_restart_flow_reconciliation(
+                    binding,
+                    error_code="RUNTIME_INFLIGHT_LOCAL_STATE_MISSING",
+                    message=(
+                        "后端仍有在途流程，但客户端缺少对应本地状态；已暂停接单并保留现场。"
+                    ),
+                    local_flow_id="",
+                    backend_flow_id=backend_flow_id,
+                    metadata={"backend_status": backend_status},
+                )
+                self._restart_backend_probe_pending = False
+                return False
+            self._restart_backend_probe_pending = False
+            self._restart_flow_reconciliation_incident = None
+            return True
+        if not self._restart_recovery_flow_id:
+            # This flow was created after the current process started. The
+            # live owner, not the restart-only reconciler, must finish it.
+            self._restart_backend_probe_pending = False
+            return True
+        if (
+            self._restart_recovery_flow_id
+            and self._restart_recovery_flow_id != local_flow_id
+        ):
+            self._pause_for_restart_flow_reconciliation(
+                binding,
+                error_code="RUNTIME_INFLIGHT_LOCAL_POINTER_MISMATCH",
+                message=(
+                    "客户端内存与 SQLite 的旧流程编号不一致；已暂停接单并保留现场。"
+                ),
+                local_flow_id=local_flow_id,
+                backend_flow_id=backend_flow_id,
+                metadata={
+                    "restart_flow_id": self._restart_recovery_flow_id,
+                },
+            )
+            return False
+        self._restart_backend_probe_pending = False
+        if not backend_flow_id:
+            self._settle_orphaned_local_restart_flow(
+                binding,
+                flow_id=local_flow_id,
+            )
+            return True
+        if backend_flow_id != local_flow_id:
+            self._pause_for_restart_flow_reconciliation(
+                binding,
+                error_code="RUNTIME_INFLIGHT_FLOW_ID_MISMATCH",
+                message=(
+                    "客户端与后端的在途流程编号不一致；已暂停接单并保留现场。"
+                ),
+                local_flow_id=local_flow_id,
+                backend_flow_id=backend_flow_id,
+                metadata={"backend_status": backend_status},
+            )
+            return False
+        if backend_status not in {"active", "draining"}:
+            self._pause_for_restart_flow_reconciliation(
+                binding,
+                error_code="RUNTIME_INFLIGHT_BACKEND_STATE_INVALID",
+                message=(
+                    "后端在途流程状态无法确认；已暂停接单并保留现场。"
+                ),
+                local_flow_id=local_flow_id,
+                backend_flow_id=backend_flow_id,
+                metadata={"backend_status": backend_status},
+            )
+            return False
+        self.api.inflight_flow_id = local_flow_id
+        self._restart_flow_reconciliation_incident = None
+        self._finish_restart_recovery_flow_if_settled(binding)
+        return True
+
     def _finish_restart_recovery_flow_if_settled(
         self,
         binding: Binding,
@@ -2369,21 +3068,77 @@ class TaskRunner:
             load_runtime_control().get("inflight_flow_kind") or ""
         ).strip()
         receipt = load_c2_state(self._inflight_finish_receipt_key(flow_id))
+        journal_entries = self._physical_action_journals_for_flow(flow_id)
+        conversation_ids = self._restart_flow_conversation_ids(
+            flow_id,
+            receipt=receipt,
+            journal_entries=journal_entries,
+        )
+        if len(conversation_ids) > 1:
+            self._pause_for_restart_flow_reconciliation(
+                binding,
+                error_code="RUNTIME_INFLIGHT_LOCAL_FLOW_SCOPE_CONFLICT",
+                message=(
+                    "旧流程关联了多个客户，已暂停接单并保留现场。"
+                ),
+                local_flow_id=flow_id,
+                backend_flow_id=flow_id,
+                metadata={"conversation_ids": conversation_ids},
+            )
+            return
+        conversation_id = conversation_ids[0] if conversation_ids else ""
+        if self._recover_restart_physical_action_journals(
+            binding,
+            flow_id=flow_id,
+            conversation_id=conversation_id,
+        ) != "settled":
+            return
         terminal_kind = str(receipt.get("terminal_kind") or "").strip()
         if flow_kind in {"task", "chat_reply"}:
             terminal_kind = "task_terminal"
+        elif terminal_kind not in {
+            "read_confirmed",
+            "failed_before_message_action",
+            "read_failed_no_fact",
+        } and flow_kind == "c2_read" and conversation_id:
+            durable_read_artifact_exists = bool(
+                journal_entries
+                or c2_flow_conversation_ids(flow_id)
+            )
+            terminal_kind = (
+                "read_confirmed"
+                if durable_read_artifact_exists
+                else "read_failed_no_fact"
+            )
+            receipt = {
+                "terminal_kind": terminal_kind,
+                "conversation_id": conversation_id,
+                "error_code": (
+                    None
+                    if terminal_kind == "read_confirmed"
+                    else "RUNTIME_INFLIGHT_FINISH_RECEIPT_MISSING"
+                ),
+            }
+            save_c2_state(
+                self._inflight_finish_receipt_key(flow_id),
+                receipt,
+            )
         if terminal_kind not in {
             "task_terminal",
             "read_confirmed",
             "failed_before_message_action",
             "read_failed_no_fact",
         }:
-            return
-        if not self._recover_restart_physical_action_journals(
-            binding,
-            flow_id=flow_id,
-            conversation_id=str(receipt.get("conversation_id") or ""),
-        ):
+            self._pause_for_restart_flow_reconciliation(
+                binding,
+                error_code="RUNTIME_INFLIGHT_FINISH_RECEIPT_MISSING",
+                message=(
+                    "旧 C2 流程缺少可验证的客户和结束凭证；已暂停接单并保留现场。"
+                ),
+                local_flow_id=flow_id,
+                backend_flow_id=flow_id,
+                metadata={"flow_kind": flow_kind},
+            )
             return
         try:
             self._finish_inflight_flow(
@@ -2391,7 +3146,9 @@ class TaskRunner:
                 flow_id,
                 terminal_kind=terminal_kind,
                 conversation_id=(
-                    str(receipt.get("conversation_id") or "").strip()
+                    str(
+                        receipt.get("conversation_id") or conversation_id
+                    ).strip()
                     or None
                 ),
                 error_code=(
@@ -2405,6 +3162,16 @@ class TaskRunner:
                 "重启前的原流程仍有业务终态未确认；继续保持暂停且不操作微信。",
                 error_code="RUNTIME_INFLIGHT_RECOVERY_PENDING",
                 metadata={"flow_id": flow_id, "error": str(exc)},
+            )
+            self._pause_for_restart_flow_reconciliation(
+                binding,
+                error_code="RUNTIME_INFLIGHT_RECOVERY_PENDING",
+                message=(
+                    "旧流程尚未达到可验证终态；已暂停接单并继续执行无界面结算。"
+                ),
+                local_flow_id=flow_id,
+                backend_flow_id=flow_id,
+                metadata={"error": str(exc)},
             )
 
     def _apply_local_run_status(self, run_status: str) -> None:
@@ -2654,7 +3421,8 @@ class TaskRunner:
         # itself part of that barrier, so checking the barrier first would make
         # the recovery entry unreachable.  This path is evidence-only and may
         # finish the old flow; it never performs a WeChat UI action.
-        self._finish_restart_recovery_flow_if_settled(binding)
+        if not self._reconcile_restart_inflight_flow(binding):
+            return
 
         # All new WeChat work shares one durable transaction barrier. Do not
         # pull add_friend/chat_reply while message facts or sent_ack are pending.
@@ -5489,8 +6257,9 @@ class TaskRunner:
         ).strip()
         if recovery_decision == "settle_without_ui":
             return bool(
-                self._settle_invalid_image_facts_without_ui(
+                self._settle_media_facts_without_ui(
                     binding=binding,
+                    action_kind="image",
                     conversation_id=conversation_id,
                     authorization=authorization,
                     entries=entries,
@@ -5611,10 +6380,182 @@ class TaskRunner:
         )
         return recovered
 
-    def _settle_invalid_image_facts_without_ui(
+    def _recover_pending_media_transaction(
+        self,
+        binding: Binding,
+        *,
+        flow_id: str,
+        conversation_id: str,
+    ) -> Literal["settled", "retry", "blocked"]:
+        """Settle all media in one committed worker-sequence order."""
+
+        entries = [
+            entry
+            for entry in list_c2_ledger_entries(
+                conversation_id,
+                ingest_state="waiting",
+            )
+            if str(entry.get("origin_read_run_id") or "").strip()
+            == str(flow_id or "").strip()
+            and str(entry.get("message_type") or "").strip().lower()
+            in {"voice", "image"}
+        ]
+        if not entries:
+            return "settled"
+        try:
+            ordered_entries = _ordered_media_recovery_entries(
+                conversation_id,
+                entries,
+            )
+        except ValueError as exc:
+            error_code = str(exc or "").strip() or (
+                "C2_MEDIA_FACT_RECOVERY_EVIDENCE_INCOMPLETE"
+            )
+            self._pause_for_restart_flow_reconciliation(
+                binding,
+                error_code=error_code,
+                message=(
+                    "旧媒体事实缺少唯一、有序的正式消息身份；已暂停接单并保留现场。"
+                ),
+                local_flow_id=flow_id,
+                backend_flow_id="",
+                metadata={"conversation_id": conversation_id},
+            )
+            return "blocked"
+        ordered_source_keys = [
+            str(entry.get("source_message_key") or "").strip()
+            for entry in ordered_entries
+        ]
+        digest_source_keys = sorted(ordered_source_keys)
+        source_digest = hashlib.sha256(
+            "\n".join(digest_source_keys).encode("utf-8")
+        ).hexdigest()
+        action_kind = str(
+            ordered_entries[0].get("message_type") or ""
+        ).strip().lower()
+        physical_transactions = sorted(
+            {
+                str(payload.get("transaction_id") or "").strip()
+                for _path, payload in self._physical_action_journals_for_flow(
+                    flow_id
+                )
+                if str(payload.get("transaction_id") or "").strip()
+            }
+        )
+        transaction_id = (
+            physical_transactions[0]
+            if len(physical_transactions) == 1
+            else f"media-fact-{source_digest[:32]}"
+        )
+        original_revision = next(
+            (
+                str(
+                    (entry.get("result") or {}).get(
+                        "authorization_revision"
+                    )
+                    or ""
+                ).strip()
+                for entry in ordered_entries
+                if str(
+                    (entry.get("result") or {}).get(
+                        "authorization_revision"
+                    )
+                    or ""
+                ).strip()
+            ),
+            f"recovery-{source_digest[:16]}",
+        )
+        try:
+            authorization = self.api.get_wechat_read_authorization(
+                binding,
+                conversation_id,
+                recovery_transaction_id=transaction_id,
+                action_kind=action_kind,
+                source_message_key_digest=source_digest,
+                original_authorization_revision=original_revision,
+            )
+        except Exception as exc:
+            if (
+                not isinstance(exc, ApiError)
+                or exc.retryable is True
+                or classify_outbox_recovery(exc) == "retry"
+            ):
+                append_log(
+                    "WARN",
+                    "c2_media_fact_recovery_authorization_retrying",
+                    "旧媒体事实恢复授权暂时失败；保持原接单状态并稍后重试。",
+                    error_code="C2_MEDIA_FACT_RECOVERY_AUTHORIZATION_RETRY",
+                    metadata={
+                        "conversation_id": conversation_id,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                return "retry"
+            self._pause_for_restart_flow_reconciliation(
+                binding,
+                error_code="C2_MEDIA_FACT_RECOVERY_AUTHORIZATION_CONFLICT",
+                message=(
+                    "旧媒体事实恢复授权被服务端明确拒绝；已暂停接单并保留现场。"
+                ),
+                local_flow_id=flow_id,
+                backend_flow_id="",
+                metadata={
+                    "conversation_id": conversation_id,
+                    "error_code": getattr(exc, "code", None),
+                },
+            )
+            return "blocked"
+        if str(
+            authorization.get("recovery_decision") or ""
+        ).strip() != "settle_without_ui":
+            self._pause_for_restart_flow_reconciliation(
+                binding,
+                error_code="C2_MEDIA_FACT_RECOVERY_NOT_AUTHORIZED",
+                message=(
+                    "后端未授权旧媒体事实无界面结算；已暂停接单并保留现场。"
+                ),
+                local_flow_id=flow_id,
+                backend_flow_id="",
+                metadata={
+                    "conversation_id": conversation_id,
+                    "recovery_decision": authorization.get(
+                        "recovery_decision"
+                    ),
+                },
+            )
+            return "blocked"
+        settled = self._settle_media_facts_without_ui(
+            binding=binding,
+            action_kind=action_kind,
+            conversation_id=conversation_id,
+            authorization=authorization,
+            entries=ordered_entries,
+            source_keys=ordered_source_keys,
+            transaction_id=transaction_id,
+            source_digest=source_digest,
+            original_revision=original_revision,
+        )
+        if settled:
+            return "settled"
+        if has_pending_c2_outbox_for_read_run_id(flow_id):
+            return "retry"
+        self._pause_for_restart_flow_reconciliation(
+            binding,
+            error_code="C2_MEDIA_FACT_RECOVERY_PENDING",
+            message=(
+                "旧媒体事实未得到逐条确认；已暂停接单并保留现场。"
+            ),
+            local_flow_id=flow_id,
+            backend_flow_id="",
+            metadata={"conversation_id": conversation_id},
+        )
+        return "blocked"
+
+    def _settle_media_facts_without_ui(
         self,
         *,
         binding: Binding,
+        action_kind: str,
         conversation_id: str,
         authorization: dict[str, Any],
         entries: list[dict[str, Any]],
@@ -5623,16 +6564,20 @@ class TaskRunner:
         source_digest: str,
         original_revision: str,
     ) -> bool:
-        """Report deterministic invalid-image facts without reopening WeChat.
+        """Report committed media facts without reopening WeChat."""
 
-        Older clients could leave ``C2_IMAGE_SOURCE_INVALID`` in the waiting
-        ledger after a text menu or non-bitmap clipboard result.  Those facts
-        are already terminal: reopening the chat cannot improve them and can
-        starve every other target.  Recovery therefore rebuilds the original
-        failed message observations and waits for per-message backend
-        confirmation without repeating any WeChat or Vision action.
-        """
+        clean_action_kind = str(action_kind or "").strip().lower()
+        if clean_action_kind not in {"voice", "image"}:
+            raise ValueError("C2_FACT_ACTION_KIND_INVALID")
 
+        entries = _ordered_media_recovery_entries(
+            conversation_id,
+            entries,
+        )
+        entry_action_kinds = {
+            str(entry.get("message_type") or "").strip().lower()
+            for entry in entries
+        }
         recovery_observations: list[dict[str, Any]] = []
         for entry in entries:
             result = (
@@ -5790,8 +6735,8 @@ class TaskRunner:
                 "observation_schema_version": 3,
                 "authoritative_frame_source": "action_journal_recovery",
                 "ui_frame_invalidated": False,
-                "adapter": "local_failed_image_recovery",
-                "state": "failed_image_fact_recovery",
+                "adapter": f"local_{clean_action_kind}_fact_recovery",
+                "state": f"{clean_action_kind}_fact_recovery",
                 "sidecar_run_id": "",
                 "observations": (
                     recovery_observations
@@ -5814,12 +6759,12 @@ class TaskRunner:
         )
         if (
             settlement_mode == "fact_only"
-            and payload_source_keys != source_keys
+            and payload_source_keys != sorted(source_keys)
         ):
             append_log(
                 "ERROR",
-                "c2_invalid_image_recovery_identity_mismatch",
-                "失败图片恢复后的消息身份与本地账本不一致；保持等待且不操作微信。",
+                "c2_media_fact_recovery_identity_mismatch",
+                "媒体恢复后的消息身份与本地账本不一致；保持等待且不操作微信。",
                 error_code="MESSAGE_SOURCE_IDENTITY_MISMATCH",
                 metadata={
                     "conversation_id": conversation_id,
@@ -5833,7 +6778,7 @@ class TaskRunner:
         payload_evidence.update(
             {
                 "recovery_transaction_id": transaction_id,
-                "action_kind": "image",
+                "action_kind": clean_action_kind,
                 "source_message_key_digest": source_digest,
                 "settlement_mode": settlement_mode,
                 "settlement_source_message_keys": source_keys,
@@ -5849,13 +6794,13 @@ class TaskRunner:
         delivery = self._submit_c2_outbox_payload(
             binding=binding,
             payload=payload,
-            operation="invalid_image_failure_gate",
+            operation=f"{clean_action_kind}_fact_recovery",
         )
         if not delivery.get("ok"):
             append_log(
                 "WARN",
-                "c2_invalid_image_failure_gate_waiting",
-                "无效图片失败事实尚未得到后端确认；仅重传本地事实，不重新打开微信。",
+                "c2_media_fact_recovery_waiting",
+                "媒体事实尚未得到后端确认；仅重传本地事实，不重新打开微信。",
                 error_code=str(delivery.get("error_code") or ""),
                 metadata={
                     "conversation_id": conversation_id,
@@ -5868,9 +6813,10 @@ class TaskRunner:
             str(entry.get("source_message_key") or "").strip()
             for entry in list_c2_ledger_entries(
                 target.conversation_id,
-                message_type="image",
                 ingest_state="waiting",
             )
+            if str(entry.get("message_type") or "").strip().lower()
+            in entry_action_kinds
         }
         unconfirmed_source_keys = sorted(
             source_key
@@ -5880,9 +6826,9 @@ class TaskRunner:
         if unconfirmed_source_keys:
             append_log(
                 "WARN",
-                "c2_invalid_image_recovery_unconfirmed",
-                "后端未逐条确认全部失败图片事实；未确认记录继续等待且不操作微信。",
-                error_code="C2_IMAGE_FACT_RECOVERY_PENDING",
+                "c2_media_fact_recovery_unconfirmed",
+                "后端未逐条确认全部媒体事实；未确认记录继续等待且不操作微信。",
+                error_code="C2_MEDIA_FACT_RECOVERY_PENDING",
                 metadata={
                     "conversation_id": target.conversation_id,
                     "remark_code": target.remark_code,
@@ -5891,17 +6837,17 @@ class TaskRunner:
             )
             return False
         removed_journal_count = 0
-        for path, _payload in list_action_journals(
+        for path, journal_payload in list_action_journals(
             conversation_id=conversation_id,
-            action_kinds=("image",),
+            action_kinds=tuple(sorted(entry_action_kinds)),
         ):
-            remove_action_journal(path)
-            removed_journal_count += 1
+            if self._action_journal_can_be_removed(journal_payload):
+                remove_action_journal(path)
+                removed_journal_count += 1
         append_log(
             "WARN",
-            "c2_invalid_image_failure_gate_reported",
-            "无效图片事实已由后端逐条确认；本地等待和全局门禁已释放。",
-            error_code="C2_IMAGE_SOURCE_INVALID",
+            "c2_media_fact_recovery_reported",
+            "媒体事实已由后端逐条确认；本地等待和全局门禁已释放。",
             metadata={
                 "conversation_id": conversation_id,
                 "remark_code": target.remark_code,
@@ -12205,6 +13151,15 @@ class TaskRunner:
                     ),
                     identity_confirmed=True,
                 )
+                replayable_voice = _replayable_voice_observation(
+                    committed=committed_voice,
+                    terminal_payload=outcome["terminal_payload"],
+                    anchor_keys=physical_anchor_keys,
+                )
+                if replayable_voice is not None:
+                    outcome["terminal_payload"][
+                        "replayable_observation"
+                    ] = replayable_voice
                 update_action_journal_item(
                     journal,
                     journal_item_id=action_id,
@@ -12351,6 +13306,15 @@ class TaskRunner:
                 error_code=None,
                 identity_confirmed=True,
             )
+            replayable_voice = _replayable_voice_observation(
+                committed=committed_voice,
+                terminal_payload=outcome["terminal_payload"],
+                anchor_keys=physical_anchor_keys,
+            )
+            if replayable_voice is not None:
+                outcome["terminal_payload"][
+                    "replayable_observation"
+                ] = replayable_voice
             update_action_journal_item(
                 journal,
                 journal_item_id=action_id,
@@ -12824,9 +13788,16 @@ class TaskRunner:
         target: WechatReadTarget,
         *,
         image_identity_commit_only: bool = False,
+        restart_journal_entries: list[
+            tuple[Path, dict[str, Any]]
+        ] | None = None,
     ) -> list[dict[str, Any]]:
-        journal_entries = list_action_journals(
-            conversation_id=target.conversation_id,
+        journal_entries = (
+            list(restart_journal_entries)
+            if restart_journal_entries is not None
+            else list_action_journals(
+                conversation_id=target.conversation_id,
+            )
         )
         unresolved: list[dict[str, Any]] = []
         recovered_entries: list[tuple[Path, dict[str, Any]]] = []
@@ -13328,6 +14299,39 @@ class TaskRunner:
                         terminal_observation,
                         source_message_key=str(source_key),
                     )
+                elif action_kind == "voice":
+                    committed_voice = (
+                        _committed_action_identity_from_journal(
+                            target=WechatReadTarget(
+                                conversation_id=str(
+                                    payload.get("conversation_id") or ""
+                                ).strip(),
+                                rpa_session_key="",
+                                display_name="",
+                            ),
+                            payload=payload,
+                            action_kind="voice",
+                            evidence=(
+                                payload.get("sequence_alignment_evidence")
+                                if isinstance(
+                                    payload.get("sequence_alignment_evidence"),
+                                    dict,
+                                )
+                                else {}
+                            ),
+                        )
+                    )
+                    replayable_voice = _replayable_voice_observation(
+                        committed=committed_voice,
+                        terminal_payload=terminal_payload,
+                        anchor_keys=list(
+                            item.get("physical_anchor_keys") or []
+                        ),
+                    )
+                    if replayable_voice is not None:
+                        terminal_payload["replayable_observation"] = (
+                            replayable_voice
+                        )
                 outcome = classify_action_result(
                     action_kind,
                     {

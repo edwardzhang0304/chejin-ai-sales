@@ -1,4 +1,4 @@
-"""v0.9.29 checks for the pure startup window planner."""
+"""v0.9.30 checks for the pure startup window planner."""
 
 from __future__ import annotations
 
@@ -92,7 +92,7 @@ def main() -> int:
     for test in tests:
         test()
         print(f"PASS {test.__name__}")
-    print(f"All {len(tests)} v0.9.29 window planner checks passed.")
+    print(f"All {len(tests)} v0.9.30 window planner checks passed.")
     return 0
 
 

@@ -438,7 +438,7 @@ def main() -> int:
     checks += check_public_normalize_entry()
     checks += check_no_v0922_runtime_bypass()
     checks += check_dpi_awareness_is_verified_before_startup_calibration()
-    print(f"v0.9.29 startup calibration checks passed: {checks}")
+    print(f"v0.9.30 startup calibration checks passed: {checks}")
     return 0
 
 

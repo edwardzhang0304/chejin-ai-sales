@@ -3933,7 +3933,7 @@ def test_message_batch_status_rejects_other_worker_and_returns_terminal_state():
 
 
 def test_v3_ingest_uses_canonical_content_and_rejects_expired_authorization_revision():
-    assert contract_revision() == "0.9.29"
+    assert contract_revision() == "0.9.30"
     location_recovery = c2_contract_v3()[
         "target_location_recovery_contract"
     ]
@@ -7859,6 +7859,80 @@ def test_fact_settlement_persists_full_failed_fact_without_state_side_effects():
     )
     with SessionLocal() as db:
         assert db.query(MessageEvent).count() == 1
+
+
+def test_fact_settlement_preserves_mixed_media_sequence_order():
+    worker = _create_worker()
+    _create_sales(worker["id"])
+    _create_lead("混合媒体恢复客户", "13896676695")
+    remark_code = _pull_remark_code(worker)
+    scan = client.post(
+        f"/api/workers/{worker['id']}/wechat/sessions/scan-result",
+        json=_scan_payload(remark_code),
+        headers=_worker_headers(worker),
+    )
+    binding = scan.json()["data"]["bindings"][0]
+    source_keys = ["recovery-voice-first", "recovery-image-second"]
+    transaction_id = "mixed-media-ledger-before-outbox-crash"
+    authorization = _authorize_fact_settlement(
+        worker,
+        binding,
+        transaction_id=transaction_id,
+        source_keys=source_keys,
+        action_kind="voice",
+    )
+    payload = _fact_settlement_payload(
+        binding,
+        remark_code,
+        transaction_id=transaction_id,
+        source_keys=source_keys,
+        settlement_mode="fact_only",
+        action_kind="voice",
+        messages=[
+            _v3_failed_voice_message(
+                source_keys[0],
+                role="customer",
+                screen_order=1,
+                reason="C2_VOICE_TRANSCRIBE_FAILED",
+            ),
+            _v3_failed_image_message(
+                source_keys[1],
+                role="customer",
+                screen_order=2,
+                reason="C2_IMAGE_SOURCE_INVALID",
+            ),
+        ],
+    )
+
+    response = client.post(
+        f"/api/workers/{worker['id']}/wechat/messages/ingest",
+        json=payload,
+        headers={
+            **_worker_headers(worker),
+            "X-C2-Settlement-Token": authorization["settlement_token"],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert [
+        item["source_message_key"]
+        for item in response.json()["data"]["results"]
+    ] == source_keys
+    with SessionLocal() as db:
+        messages = (
+            db.query(MessageEvent)
+            .order_by(MessageEvent.observation_order.asc())
+            .all()
+        )
+        assert [message.message_type for message in messages] == [
+            "voice",
+            "image",
+        ]
+        assert [message.source_message_key for message in messages] == (
+            source_keys
+        )
+        assert db.query(MessageBatch).count() == 0
+        assert db.query(ReplyAction).count() == 0
 
 
 def test_fact_settlement_technical_terminal_confirms_keys_without_fake_message():
