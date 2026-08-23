@@ -506,7 +506,7 @@ class PackagingScriptsTest(unittest.TestCase):
             [
                 {
                     "source_commit": (
-                        "5c94a91cd956f37776be73f872b4c34ccaccd810"
+                        "3fd52f4e3088acdf5af63eff818fbbfdf9d7aa6e"
                     ),
                     "scope": [
                         "exact_wechat_context_menu_classification",
@@ -534,7 +534,7 @@ class PackagingScriptsTest(unittest.TestCase):
                         "source_message_transport_allowlist",
                         "typed_committed_media_identity_contract",
                         "media_action_four_terminal_contract",
-                        "c2_contract_0_9_30_generated_schema",
+                        "c2_contract_0_9_31_generated_schema",
                         (
                             "voice_frame_action_binding_observation_"
                             "projection_contract"
@@ -570,7 +570,7 @@ class PackagingScriptsTest(unittest.TestCase):
                         "add_friend_frame_seed_facade_forwarding_contract",
                         "verified_send_input_bounds_forwarding_contract",
                         "invalid_session_layout_explicit_failure_contract",
-                        "v0_9_30_startup_layout_calibration_contract",
+                        "v0_9_31_startup_layout_calibration_contract",
                         "gray_v0_9_20_region_local_coordinate_map_contract",
                         "current_monitor_dpi_window_profile_contract",
                         "startup_window_position_and_size_once_contract",
@@ -630,6 +630,12 @@ class PackagingScriptsTest(unittest.TestCase):
                             "transient_recovery_authorization_"
                             "retry_contract"
                         ),
+                        "legacy_media_upgrade_finite_terminal_contract",
+                        (
+                            "legacy_media_permanent_error_manual_review_"
+                            "contract"
+                        ),
+                        "legacy_media_owner_unknown_audit_contract",
                     ],
                 }
             ],
@@ -651,10 +657,10 @@ class PackagingScriptsTest(unittest.TestCase):
             provenance["chejin_overlays"],
         )
         self.assertIn(
-            "5c94a91cd956f37776be73f872b4c34ccaccd810",
+            "3fd52f4e3088acdf5af63eff818fbbfdf9d7aa6e",
             provenance["integration_note"],
         )
-        self.assertIn("0.9.30", provenance["integration_note"])
+        self.assertIn("0.9.31", provenance["integration_note"])
         self.assertIn("不重复点击", provenance["integration_note"])
         self.assertIn("旧剪贴板不能形成图片事实", provenance["integration_note"])
         self.assertIn("无界面的语音/图片 ActionJournal 恢复", provenance["integration_note"])
@@ -677,6 +683,8 @@ class PackagingScriptsTest(unittest.TestCase):
         self.assertIn("删除统一激活成功布尔门禁", provenance["integration_note"])
         self.assertIn("C1 保留八类真实变化画面", provenance["integration_note"])
         self.assertIn("sent_ack 语义不变", provenance["integration_note"])
+        self.assertIn("manual_review_required", provenance["integration_note"])
+        self.assertIn("LEGACY_MEDIA_OWNER_UNKNOWN", provenance["integration_note"])
         self.assertIn("OmniAuto 独立候选固定于", provenance["integration_note"])
         self.assertEqual(
             provenance["historical_integrations"][0][
